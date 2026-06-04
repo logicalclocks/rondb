@@ -697,6 +697,13 @@ static constexpr const char* const jamFileNames[] =
   "QueryDatabase.hpp",                  // 562
   "QueryDatabase.cpp",                  // 563
   "SetDomainId.hpp",                    // 564
+  "SetConfigParam.hpp",                 // 565
+  "AggInterpreterBase.cpp",             // 566
+  "AggInterpreter.cpp",                 // 567
+  "JoinAggInterpreter.cpp",             // 568
+  "GetCpuUsage.hpp",                    // 569
+  "JoinAggregationState.hpp",           // 570
+  "JoinAgg.hpp",                        // 571
   // END jamFileNames (This marker is used by ./test_jamFileNames.sh)
 };
 

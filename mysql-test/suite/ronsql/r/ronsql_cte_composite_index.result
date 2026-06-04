@@ -1,0 +1,159 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: two-column equality bound (a = 1 AND b = 2) ===
+== Query ==
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b = 2 GROUP BY b)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b = 2 GROUP BY b)
+SELECT k, total FROM stats|
+k	total
+2	30
+
+
+=== Test 2: equality + double-bounded range (a = 1 AND 2 <= b <= 4) ===
+== Query ==
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+FROM ix_co
+WHERE a = 1 AND b >= 2 AND b <= 4
+GROUP BY b)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+FROM ix_co
+WHERE a = 1 AND b >= 2 AND b <= 4
+GROUP BY b)
+SELECT k, total FROM stats|
+k	total
+2	30
+3	30
+4	40
+
+
+=== Test 3: gap case (a = 1 AND c = 3) — only a bound, c residual ===
+== Query ==
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND c = 3 GROUP BY c)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND c = 3 GROUP BY c)
+SELECT k, total FROM stats|
+k	total
+3	90
+
+
+=== Test 4: half-open middle (a = 1 AND b > 2 AND c = 3) ===
+== Query ==
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+FROM ix_co
+WHERE a = 1 AND b > 2 AND c = 3
+GROUP BY c)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+FROM ix_co
+WHERE a = 1 AND b > 2 AND c = 3
+GROUP BY c)
+SELECT k, total FROM stats|
+k	total
+3	80
+
+
+=== Test 5: equality + half-open range (a = 1 AND b >= 3) ===
+== Query ==
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b >= 3 GROUP BY b)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b >= 3 GROUP BY b)
+SELECT k, total FROM stats|
+k	total
+3	30
+4	40
+5	50
+
+
+=== Test 6: main-query parity, two-column equality bound ===
+== Query ==
+SELECT a AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b = 2 GROUP BY a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b = 2 GROUP BY a|
+k	total
+1	30
+
+
+=== Test 7: main-query parity, equality + double-bounded range ===
+== Query ==
+SELECT b AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b >= 2 AND b <= 4 GROUP BY b;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT b AS k, SUM(amt) AS total
+FROM ix_co WHERE a = 1 AND b >= 2 AND b <= 4 GROUP BY b|
+k	total
+2	30
+3	30
+4	40

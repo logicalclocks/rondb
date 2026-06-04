@@ -27,11 +27,12 @@
 #include <math.h>
 #include <cstring>
 #include <mutex>
+#include "AggInterpreterBase.hpp"
 #include "PushdownInterpreter.hpp"
 #include "Dbtup.hpp"
 #include "AggHashTable.hpp"
 
-#define DECIMAL_BUFF_LENGTH 9
+// DECIMAL_BUFF_LENGTH now lives in AggInterpreterBase.hpp (Step 1.3).
 
 /**
  * JoinAggInterpreter — aggregation interpreter for join pushdown.
@@ -43,54 +44,30 @@
  * Separated from AggInterpreter so that normal scan aggregation (SELECT
  * COUNT(*) FROM t) stays at 1 page (32KB) with all buffers inline.
  */
-class JoinAggInterpreter : public PushdownInterpreter {
+class JoinAggInterpreter : public AggInterpreterBase {
  public:
   JoinAggInterpreter(Uint32 prog_len,
                      Int64 table_id, Int64 frag_id,
                      Uint32 thread_id):
-    PushdownInterpreter(PushdownType::AGGREGATION, prog_len,
-                        table_id, frag_id, thread_id),
-    m_prog(nullptr), m_cur_pos(0),
-    m_n_gb_cols(0), m_gb_cols(nullptr),
-    m_n_agg_results(0),
-    m_agg_results(nullptr), m_agg_prog_start_pos(0),
-    m_gb_map(nullptr), m_n_groups(0),
-    m_attr_read_buf(nullptr), m_attr_read_pos(0),
+    AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
+                       table_id, frag_id, thread_id),
+    /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size lifted
+     * to base in Step 3a-A; m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups
+     * lifted in Step 2b; m_attr_read_buf lifted in Step 3a-B. */
     m_acc_offset(0),
-    m_processed_rows(0),
-    m_result_size(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
     m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
-    m_chunks(nullptr), m_chunks_tail(nullptr),
-    m_current_chunk(nullptr), m_total_chunk_bytes(0),
-    m_memory_budget(0), m_budget_increment(0),
-    m_total_available(0),
-    m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
-    m_gb_types(nullptr), m_gb_types_inited(false),
-    m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
-    m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
-    m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
-    m_buf_block(nullptr),
-    m_string_results(nullptr) {
-      memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
-      m_decimal.buf = m_decimal_buf;
-      m_decimal.len = DECIMAL_BUFF_LENGTH;
+    /* Chunk allocator state + GB type metadata lifted to
+     * AggInterpreterBase in Step 2a; base ctor initializes them. */
+    m_cached_agg_ops(nullptr), m_agg_ops_cached(false) {
+    /* m_attr_read_buf / m_prog_buf / m_gb_cols_buf / m_agg_results_buf /
+     * m_gb_map_buf / m_buf_block initialised by the base ctor
+     * (Step 3a-B). */
   }
-  ~JoinAggInterpreter() override {
-    release_string_results();
-    freeAllChunks();
-    if (m_xfrm_buf != nullptr) {
-      lc_ndbd_pool_free(m_xfrm_buf);
-      m_xfrm_buf = nullptr;
-    }
-    if (m_buf_block != nullptr) {
-      lc_ndbd_pool_free(m_buf_block);
-      m_buf_block = nullptr;
-    }
-  }
-
-  bool OptimizeProgram();
+  /* ~JoinAggInterpreter() default — base destructor handles
+   * release_string_results, freeAllChunks, and frees both m_xfrm_buf
+   * and m_buf_block. */
 
   bool Init(const Uint32* prog);
 
@@ -100,26 +77,23 @@ class JoinAggInterpreter : public PushdownInterpreter {
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
       Uint32 thread_id,
+      EmulatedJamBuffer *jamBuf,
       const struct LeafProgram* leaf = nullptr);
   Int32 finalizeResults();
   Int32 processNullExtendedRow(
+      Dbtup* block_tup,
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
       Uint32 thread_id,
+      EmulatedJamBuffer *jamBuf,
       const struct LeafProgram* leaf = nullptr);
 
-  Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
-                      Uint32* bytes_written);
   Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups);
 
-  const JoinGBHashTable* gb_map() const {
-    return m_gb_map;
-  }
+  /* gb_map / val_len / n_gb_cols / n_agg_results / agg_results /
+   * processed_rows lifted to AggInterpreterBase in Step 3b. */
   JoinGBHashTable* gb_map_mutable() {
     return m_gb_map;
-  }
-  Uint32 val_len() const {
-    return m_n_agg_results * sizeof(AggResItem);
   }
   /**
    * Compute the full Uint64 distribution hash for a GROUP BY key.
@@ -137,10 +111,6 @@ class JoinAggInterpreter : public PushdownInterpreter {
     }
     return rondb_xxhash_std(key, keyLen);
   }
-  Uint32 n_gb_cols() const { return m_n_gb_cols; }
-  Uint32 n_agg_results() const { return m_n_agg_results; }
-  const AggResItem* agg_results() const { return m_agg_results; }
-  Uint64 processed_rows() const { return m_processed_rows; }
   /* Per-column GROUP BY type info, populated by initGBTypes on first
    * processed row.  Returns nullptr until initialized.  Used by
    * Dblqh::buildCteLinkedBuffer / cteScanAggFeed to encode CTE
@@ -215,81 +185,38 @@ class JoinAggInterpreter : public PushdownInterpreter {
                             Uint32 num_leaves);
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
-  void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
-                          Uint32 available_pages);
-  bool bookMoreMemory();
-  char* allocGroupData(Uint32 len, Uint32 key_len);
-  void freeGroupData(char* ptr);
-  void freeAllChunks();
+  /* initChunkAllocator / bookMoreMemory / allocGroupData / freeGroupData /
+   * freeAllChunks lifted to AggInterpreterBase in Step 2a. */
 
  private:
-  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
-                   Uint32 thread_id);
+  Int32 ProcessRec(Dbtup* block_tup,
+                   Dbtup::KeyReqStruct* req_struct,
+                   Uint32 thread_id,
+                   EmulatedJamBuffer *jamBuf);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /
   // processNullExtendedRow and consumed by MaxString / MinString
-  // helpers when allocating per-(group, slot) string buffers via
-  // val_ptr.  See AggInterpreter.hpp for the same field's rationale.
-  Uint32 m_current_thread_id = 0;
-
-  // Phase I.6 (F.2-K.4c): per-(group, slot) string MIN/MAX update.
-  // Same contract as AggInterpreter::minMaxString — see that header.
-  // Returns 0 on success, ZAGG_ALLOC_MEM_FAILED on OOM.
-  Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
-                     AggResItem* agg_res_ptr, bool is_max);
+  // m_current_thread_id, minMaxString, freeGroupStringSlots,
+  // stringPayloadSize, encodeStringPayload, hasStringSlots,
+  // string_results lifted to AggInterpreterBase in Step 1.3.
   Int32 ensureStringResultsFrom(const StringResult* source);
   Int32 ensureStringResultsFromRedistribution(const AggResItem* slots,
                                               const char* appended,
                                               Uint32 appended_len);
 
-  // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
-  // buffers for one group's AggResItem array.  Called from
-  // evictOneGroup so per-group val_ptr buffers are released when
-  // the group is shipped out of the local hash table.  No-op when
-  // no string slots are present.
-  void freeGroupStringSlots(AggResItem* slots);
-
- public:
-  // Phase I.6 (F.2-K.5): see AggInterpreter for the contract.
-  bool hasStringSlots() const { return m_string_results != nullptr; }
-  const StringResult* string_results() const { return m_string_results; }
-  Uint32 stringPayloadSize(const AggResItem* slots) const;
-  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
- private:
-
-  Uint32* m_prog;
-  Uint32 m_cur_pos;
-  Register m_registers[kRegTotal];
-
-  // Phase I.6 (F.2-K.4a): per-register string scratch.  See the
-  // matching field on AggInterpreter for purpose; populated by
-  // kOpLoadCol's CHAR/VARCHAR/Longvarchar arms.  192 B inline.
-  StringResult m_register_string_data[kRegTotal];
-
-  Uint32 m_n_gb_cols;
-  Uint32* m_gb_cols;
-  Uint32 m_n_agg_results;
-  AggResItem* m_agg_results;
-  Uint32 m_agg_prog_start_pos;
-
-  JoinGBHashTable* m_gb_map;
-  Uint32 m_n_groups;
-  Uint32* m_attr_read_buf;
-  Uint32 m_attr_read_pos;
+  // m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size /
+  // m_registers / m_register_string_data / m_n_agg_results / m_agg_results /
+  // m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups / m_attr_read_buf /
+  // static wire-header constants all lifted to AggInterpreterBase in
+  // Steps 1.3 / 2b / 3a-A / 3a-B.
 
   // Multi-leaf: accumulator offset applied after group lookup/creation.
   // agg_res_ptr is shifted by m_acc_offset so the leaf's 0-based program
   // indices map to the correct physical slots in the combined row.
   Uint32 m_acc_offset;
-  static Uint32 g_attr_read_buf_len_;
-  Uint64 m_processed_rows;
-  Uint32 m_result_size;
-  static Uint32 g_result_header_size_;
-  static Uint32 g_result_header_size_per_group_;
 
-  decimal_t m_decimal;
-  decimal_digit_t m_decimal_buf[DECIMAL_BUFF_LENGTH];
+  // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 
   // Linked attribute buffer for join aggregation
   const Uint32* m_linked_attr_data;// Points to current row's linked attrs
@@ -307,51 +234,28 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 m_max_groups;                // 0 = unlimited
   bool m_cte_mode;                    // see setCteMode()
 
-  // Chunk-based allocator for group data.
-  MemChunk* m_chunks;
-  MemChunk* m_chunks_tail;
-  MemChunk* m_current_chunk;
-  Uint32 m_total_chunk_bytes;
-  Uint32 m_memory_budget;
-  Uint32 m_budget_increment;
-  Uint32 m_total_available;
+  /* Chunk-based allocator state (m_chunks / m_chunks_tail /
+   * m_current_chunk / m_total_chunk_bytes / m_memory_budget /
+   * m_budget_increment / m_total_available) lifted to
+   * AggInterpreterBase in Step 2a. */
 
-  MemChunk* allocNewChunk();
-
-  // Embedded interpreter validation (called at Init time)
-  bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
-
-  // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
+  // Cached agg ops for merge (avoids recomputing per CONTINUEB batch).
+  // Lives in the extra-tail region of m_buf_block (Step 3a-B).
   Uint8* m_cached_agg_ops;
   bool m_agg_ops_cached;
 
-  // Per-column type info for type-aware GROUP BY hashing and comparison
-  GBColTypeInfo* m_gb_types;
-  bool m_gb_types_inited;
-  uchar *m_xfrm_buf;
-  Uint32 m_xfrm_buf_len;
-  Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
-  void initGBTypesForNullLocal(Dbtup* block_tup);
+  /* Per-column GROUP BY type metadata (m_gb_types, m_gb_types_inited,
+   * m_xfrm_buf, m_xfrm_buf_len) lifted to AggInterpreterBase in Step
+   * 2a; initGBTypes lifted in Step 2b (parametrized on linked-attr
+   * args).  initGBTypesForNullLocal stays per-class (JoinAgg-only:
+   * triggered only by m_null_local_columns from outer-join NULL
+   * extension). */
+  void initGBTypesForNullLocal(Dbtup* block_tup,
+                               EmulatedJamBuffer *jamBuf);
 
-  Uint32* m_prog_buf;
-  Uint32* m_gb_cols_buf;
-  AggResItem* m_agg_results_buf;
-  JoinGBHashTable* m_gb_map_buf;
-
-  // Single allocation block for all dynamically allocated buffers above.
-  void* m_buf_block;
-
-  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
-  // allocated (via lc_ndbd_pool_malloc) on the first row that
-  // populates a string-typed slot; sized to m_n_agg_results
-  // entries.  Stays nullptr for programs with no string MIN/MAX,
-  // so non-string queries pay zero memory cost.  Freed via
-  // release_string_results() in the destructor.
-  StringResult* m_string_results;
-  void release_string_results();
+  // m_prog_buf / m_gb_cols_buf / m_agg_results_buf / m_gb_map_buf /
+  // m_buf_block / m_string_results / release_string_results lifted to
+  // AggInterpreterBase in Steps 1.3 / 3a-A / 3a-B.
 };
-
-static_assert(sizeof(JoinAggInterpreter) <= MEM_CHUNK_SIZE,
-              "JoinAggInterpreter must fit in MEM_CHUNK_SIZE allocation");
 
 #endif  // JOINAGGINTERPRETER_H_

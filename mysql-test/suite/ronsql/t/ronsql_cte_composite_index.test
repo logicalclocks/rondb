@@ -1,0 +1,200 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# W3: composite / multi-column index bounds in CTE bodies.
+#
+# select_cte_body_scan_config (via the shared
+# build_scan_config_candidates) can bind several consecutive
+# leading index columns from a CTE body's WHERE, and the single-op
+# CTE-body INDEX_SCAN emit branch builds a multi-column
+# NdbQueryIndexBound (lowKeys[] / highKeys[] chains).  Only the
+# last bound column may be a half-open range; earlier bound columns
+# are equalities, and any conjunct not consumed as a bound (gap
+# column, non-leading column) routes to the residual InterpretedCode
+# filter.
+#
+# Every query is run through both the mysql client and RonSQL (via
+# RDRS) and the outputs are compared, so an over-eager or wrong
+# bound would surface as a result mismatch against MySQL.
+#
+# Tests cover:
+#   1. Two-column equality bound  (a = 1 AND b = 2)  on idx_abc.
+#   2. Equality + double-bounded range  (a = 1 AND b BETWEEN ..).
+#   3. Gap case: a = 1 AND c = 3  -> only a is bound, c residual.
+#   4. Half-open middle: a = 1 AND b > 2 AND c = 3
+#      -> a (eq) + b (low) bound, c residual.
+#   5. Equality + half-open range  (a = 1 AND b >= 3).
+#   6/7. Main-query parity for the composite-bound shape (shared
+#        candidate generator), CTE and non-CTE producing identical
+#        results to MySQL.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE ix_co (
+  c_id  INT NOT NULL,
+  a     BIGINT NOT NULL,
+  b     BIGINT NOT NULL,
+  c     BIGINT NOT NULL,
+  amt   BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (c_id),
+  INDEX idx_a (a),
+  INDEX idx_abc (a, b, c)
+) ENGINE=NDB;
+
+# a=1 has several (b,c) combinations; a=2/a=3 provide rows that
+# must be excluded by the leading-column bound.
+INSERT INTO ix_co VALUES
+  (1, 1, 2, 3, 10),
+  (2, 1, 2, 5, 20),
+  (3, 1, 3, 3, 30),
+  (4, 1, 4, 7, 40),
+  (5, 1, 5, 3, 50),
+  (6, 2, 2, 3, 60),
+  (7, 2, 3, 9, 70),
+  (8, 3, 1, 1, 80);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: two-column equality bound (a = 1 AND b = 2) ===
+
+# idx_abc binds both a and b as equalities; no residual filter.
+let $QUERY=
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+                FROM ix_co WHERE a = 1 AND b = 2 GROUP BY b)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+                FROM ix_co WHERE a = 1 AND b = 2 GROUP BY b)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 2: equality + double-bounded range (a = 1 AND 2 <= b <= 4) ===
+
+# a equality + b range -> a bound (eq) and b bound (low+high) on
+# idx_abc.  c is unconstrained.
+let $QUERY=
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+                FROM ix_co
+                WHERE a = 1 AND b >= 2 AND b <= 4
+                GROUP BY b)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+                FROM ix_co
+                WHERE a = 1 AND b >= 2 AND b <= 4
+                GROUP BY b)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 3: gap case (a = 1 AND c = 3) — only a bound, c residual ===
+
+# idx_abc's leading column a is bound (eq); b has no predicate so
+# coverage stops there and c = 3 must be applied as a residual
+# InterpretedCode filter, NOT skipped.
+let $QUERY=
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+                FROM ix_co WHERE a = 1 AND c = 3 GROUP BY c)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+                FROM ix_co WHERE a = 1 AND c = 3 GROUP BY c)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 4: half-open middle (a = 1 AND b > 2 AND c = 3) ===
+
+# a (eq) + b (half-open low) bound on idx_abc; the half-open b
+# truncates coverage so c = 3 becomes a residual filter.
+let $QUERY=
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+                FROM ix_co
+                WHERE a = 1 AND b > 2 AND c = 3
+                GROUP BY c)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT c AS k, SUM(amt) AS total
+                FROM ix_co
+                WHERE a = 1 AND b > 2 AND c = 3
+                GROUP BY c)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 5: equality + half-open range (a = 1 AND b >= 3) ===
+
+let $QUERY=
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+                FROM ix_co WHERE a = 1 AND b >= 3 GROUP BY b)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT b AS k, SUM(amt) AS total
+                FROM ix_co WHERE a = 1 AND b >= 3 GROUP BY b)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 6: main-query parity, two-column equality bound ===
+
+# Same composite-bound shape as Test 1, but as a plain main-query
+# aggregation (no CTE), exercising the shared candidate generator
+# on the main-query path.
+let $QUERY=
+SELECT a AS k, SUM(amt) AS total
+  FROM ix_co WHERE a = 1 AND b = 2 GROUP BY a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT a AS k, SUM(amt) AS total
+  FROM ix_co WHERE a = 1 AND b = 2 GROUP BY a|
+
+--echo
+--echo
+--echo === Test 7: main-query parity, equality + double-bounded range ===
+
+let $QUERY=
+SELECT b AS k, SUM(amt) AS total
+  FROM ix_co WHERE a = 1 AND b >= 2 AND b <= 4 GROUP BY b;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT b AS k, SUM(amt) AS total
+  FROM ix_co WHERE a = 1 AND b >= 2 AND b <= 4 GROUP BY b|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE ix_co;
+--enable_query_log

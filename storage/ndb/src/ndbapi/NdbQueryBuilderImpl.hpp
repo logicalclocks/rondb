@@ -680,10 +680,14 @@ class NdbQueryIndexScanOperationDefImpl : public NdbQueryScanOperationDefImpl {
                                              const char *ident, Uint32 opNo,
                                              Uint32 internalOpNo, int &error);
 
-  // Append pattern for creating a single bound value to serialized code
+  // Append pattern for creating a single bound value to serialized code.
+  // 'keyNo' is the index column this bound value applies to; it is stamped
+  // into the AttributeHeader of constant bound values so multi-column bounds
+  // carry the correct attribute id even when SPJ does not later renumber them
+  // (e.g. a CTE-materialization root scan, which is not parent-row driven).
   Uint32 appendBoundValue(Uint32Buffer &serializedDef,
                           NdbIndexScanOperation::BoundType type,
-                          const NdbQueryOperandImpl *value,
+                          const NdbQueryOperandImpl *value, Uint32 keyNo,
                           int &paramCnt) const;
 
  private:

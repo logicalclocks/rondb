@@ -1107,6 +1107,20 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueRedistQueueDrain(signal, data0);
     return;
   }
+  case ZCONTINUE_AGG_INTERP_TEARDOWN:
+  {
+    jam();
+    /* Step 4: chunked teardown of an AggInterpreter whose hash table
+     * was non-empty at release time.  Pointer encoded across two
+     * Uint32 words (theData[1] = high, theData[2] = low). */
+    Uint64 ptr_val = (static_cast<Uint64>(data0) << 32) |
+                     static_cast<Uint64>(data1);
+    AggInterpreter* interp =
+        reinterpret_cast<AggInterpreter*>(
+            static_cast<uintptr_t>(ptr_val));
+    continueAggInterpTeardown(signal, interp);
+    return;
+  }
   case ZCONTINUE_CTE_SCAN_AGG_FEED:
   {
     jam();
@@ -15386,8 +15400,12 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   }
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len,
-                                              getThreadId(), leaf);
+  Int32 ret = interp->processNullExtendedRow(c_tup,
+                                             linked_data,
+                                             linked_len,
+                                             getThreadId(),
+                                             jamBuffer(),
+                                             leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
@@ -18706,9 +18724,13 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len,
-                                              getThreadId());
+  Int32 ret = interp->processNullExtendedRow(c_tup,
+                                             cattrInfoBuffer,
+                                             linked_len,
+                                             getThreadId(),
+                                             jamBuffer());
   if (ret == AGG_EVICT_NEEDED) {
+    jam();
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
   }
@@ -19378,6 +19400,12 @@ Dblqh::runCteFilter(Signal *signal,
                        cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
 
   Dbtup::KeyReqStruct filterReqStruct(c_tup);
+  /* No scanned table row in a CTE filter (the row comes from the linked
+   * buffer / group key).  Set tablePtrP to a deterministic nullptr so the
+   * interpreter's normal-column read paths abort cleanly rather than
+   * dereferencing the uninitialised (poisoned) tablePtrP — see the aggReq
+   * in cteLookupAggFeed for the full rationale. */
+  filterReqStruct.tablePtrP           = nullptr;
   filterReqStruct.m_linked_attr_data  = cevictBuffer;
   filterReqStruct.m_linked_attr_len   = linkedLen;
   filterReqStruct.no_exec_instructions = 0;
@@ -19419,11 +19447,21 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
   const Uint32 targetLeafIndex =
       JoinAggregationState::decodeLeafIndex(req.joinAggStateKey);
 
+  JoinAggregationState *sourceState = getJoinAggState(req.aggStateKey);
   JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
   if (unlikely(targetState == nullptr)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_STATE_NOT_READY, req.correlation);
+    return;
+  }
+  if (unlikely(sourceState != nullptr && targetState == sourceState)) {
+    jam();
+    g_eventLogger->debug("(%u) CTE_LOOKUP agg feed rejected: source CTE "
+        "aggStateKey=%u is also target joinAggStateKey=%u",
+        instance(), req.aggStateKey, req.joinAggStateKey);
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_AGG_FEED_SELF_REFERENCE, req.correlation);
     return;
   }
 
@@ -19441,6 +19479,7 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
 
   const LeafProgram *leaf = nullptr;
   if (targetState->m_num_leaves > 1) {
+    jam();
     ndbrequire(targetLeafIndex < targetState->m_num_leaves);
     leaf = &targetState->m_leaf_programs[targetLeafIndex];
   }
@@ -19450,6 +19489,15 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
            instance(), targetBaseKey, targetLeafIndex, linkedPos));
 
   Dbtup::KeyReqStruct aggReq(c_tup);
+  /* A CTE_LOOKUP agg feed has no scanned table row: the aggregator's input
+   * comes entirely from the linked buffer (CTE virtual columns).  c_tup's
+   * tablePtrP is NOT valid here — there is no fragment/table set up for this
+   * request, and under DBQLQH the table would have to come from the fragment
+   * owner.  Set tablePtrP to a deterministic nullptr so that if the
+   * aggregation program ever references a normal (non-linked) column, the
+   * interpreter aborts the query cleanly instead of dereferencing the
+   * uninitialised (poisoned) tablePtrP. */
+  aggReq.tablePtrP = nullptr;
   aggReq.signal = signal;
   aggReq.read_length = 0;
   aggReq.log_size = 0;
@@ -19458,7 +19506,13 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
 retry_agg:
   aggReq.no_exec_instructions = 0;
   Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-      c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+      c_tup,
+      &aggReq,
+      linkedBuf,
+      linkedPos,
+      getThreadId(),
+      jamBuffer(),
+      leaf);
   if (aggRet == AGG_EVICT_NEEDED) {
     jam();
     if (unlikely(targetState->m_cte_mode)) {
@@ -19713,6 +19767,7 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
  * hash bucket for this key.  Returns true if forwarded, false if the local
  * node owns the key (caller should send NOT_FOUND REF).
  */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 bool Dblqh::routeCteLookup(Signal *signal,
                             const JoinAggregationState *state,
                             const JoinAggInterpreter *interp,
@@ -19772,6 +19827,7 @@ bool Dblqh::routeCteLookup(Signal *signal,
              CteLookupReq::SignalLength, JBB, &fwdHandle);
   return true;
 }
+#endif
 
 void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
                              Uint32 senderData, Uint32 errorCode,
@@ -19958,6 +20014,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     jam();
     /* If ROUTE_FLAG is set and the key hashes to a remote node,
      * forward the request there instead of returning NOT_FOUND. */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
     if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
         state->m_cte_num_nodes > 1 &&
         routeCteLookup(signal, state, interp,
@@ -19966,6 +20023,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       jam();
       return;
     }
+#endif
     /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
@@ -20088,6 +20146,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                    ZJOIN_AGG_STATE_NOT_FOUND);
     return;
   }
+  if (unlikely(targetState == state)) {
+    jam();
+    g_eventLogger->debug("(%u) CTE_SCAN agg feed rejected: source CTE "
+        "aggStateKey=%u is also target joinAggStateKey=%u",
+        instance(), aggStateKey, joinAggStateKey);
+    releaseCteScanIterState(aggFeedStateI);
+    sendCteScanRef(signal, senderRef, senderData,
+                   ZCTE_AGG_FEED_SELF_REFERENCE);
+    return;
+  }
   JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
   ndbrequire(targetInterp != nullptr);
 
@@ -20148,6 +20216,9 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                             linkedBuf, &linkedPos);
 
       Dbtup::KeyReqStruct aggReq(c_tup);
+      /* No scanned table row in a CTE_SCAN agg feed — see cteLookupAggFeed.
+       * Deterministic nullptr so normal-column reads abort, not crash. */
+      aggReq.tablePtrP = nullptr;
       aggReq.signal = signal;
       aggReq.read_length = 0;
       aggReq.log_size = 0;
@@ -20156,7 +20227,13 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     retry_agg_scan:
       aggReq.no_exec_instructions = 0;
       Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+          c_tup,
+          &aggReq,
+          linkedBuf,
+          linkedPos,
+          getThreadId(),
+          jamBuffer(),
+          leaf);
       if (aggRet == AGG_EVICT_NEEDED) {
         jam();
         if (unlikely(targetState->m_cte_mode)) {
@@ -20247,6 +20324,10 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       }
 
       Dbtup::KeyReqStruct aggReq(c_tup);
+      /* No scanned table row in a scalar CTE_SCAN agg feed — see
+       * cteLookupAggFeed.  Deterministic nullptr so normal-column reads
+       * abort, not crash. */
+      aggReq.tablePtrP = nullptr;
       aggReq.signal = signal;
       aggReq.read_length = 0;
       aggReq.no_exec_instructions = 0;
@@ -20254,7 +20335,13 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       aggReq.last_row = false;
 
       Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+          c_tup,
+          &aggReq,
+          linkedBuf,
+          linkedPos,
+          getThreadId(),
+          jamBuffer(),
+          leaf);
       if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
         jam();
         releaseCteScanIterState(aggFeedStateI);
@@ -20275,7 +20362,13 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
         /* Retry after eviction */
         aggReq.no_exec_instructions = 0;
         aggRet = targetInterp->processRecWithLinkedAttrs(
-            c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+            c_tup,
+            &aggReq,
+            linkedBuf,
+            linkedPos,
+            getThreadId(),
+            jamBuffer(),
+            leaf);
         if (unlikely(aggRet != 0)) {
           jam();
           releaseCteScanIterState(aggFeedStateI);
@@ -21465,6 +21558,39 @@ void Dblqh::continueRedistQueueDrain(Signal *signal, Uint32 aggStateKey) {
 }
 
 /**
+ * Step 4 — chunked teardown of an AggInterpreter via CONTINUEB.
+ *
+ * Drains up to AGG_TEARDOWN_GROUPS_PER_BATCH groups per signal so the
+ * release of a high-cardinality interpreter (typically only seen on
+ * scan abort, but the contract holds for any non-empty m_gb_map at
+ * release time) doesn't exceed the 10 µs block-thread budget.
+ *
+ * The interpreter pointer is detached from its ScanRecord by the
+ * caller (init_release_scanrec) before the CONTINUEB chain starts,
+ * so the ScanRecord can be released to the pool independently.
+ *
+ * On every entry we drain up to AGG_TEARDOWN_GROUPS_PER_BATCH groups;
+ * if more remain, re-send the CONTINUEB encoding the pointer across
+ * two Uint32 words.  When the hash table is empty we call
+ * PushdownInterpreter::Destruct, which releases m_buf_block.
+ */
+void Dblqh::continueAggInterpTeardown(Signal *signal, AggInterpreter *interp) {
+  static const Uint32 AGG_TEARDOWN_GROUPS_PER_BATCH = 16;
+  if (!interp->tearDownChunk(AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+    /* More groups remain — re-schedule. */
+    Uint64 ptr_val =
+        static_cast<Uint64>(reinterpret_cast<uintptr_t>(interp));
+    signal->theData[0] = ZCONTINUE_AGG_INTERP_TEARDOWN;
+    signal->theData[1] = static_cast<Uint32>(ptr_val >> 32);
+    signal->theData[2] = static_cast<Uint32>(ptr_val & 0xFFFFFFFF);
+    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+    return;
+  }
+  /* Teardown complete; destructor only releases m_buf_block now. */
+  PushdownInterpreter::Destruct(interp);
+}
+
+/**
  * execJOIN_AGG_FINAL_REP — a remote node finished sending its groups.
  */
 void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
@@ -21848,6 +21974,13 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
 error_handler2:
   // no scan number allocated
   scanptr.p->scan_lastSeen = __LINE__;
+  /* Step 4: detach + tear down any pushdown interpreters so the
+   * upcoming c_scanRecordPool.release (or init_release_scanrec)
+   * doesn't run ~ScanRecord with live interpreters.  Scan setup
+   * failure typically lands here with empty m_gb_map (interpreter
+   * may not even exist yet), but using the helper keeps the
+   * release flow uniform. */
+  releaseScanInterpreters(signal, scanptr.p);
   if (scanptr.p->m_reserved == 0) {
     jam();
     release_scan = true;
@@ -21855,7 +21988,7 @@ error_handler2:
   else
   {
     jam();
-    init_release_scanrec(scanptr.p);
+    init_release_scanrec(signal, scanptr.p);
     m_reserved_scans.addFirst(scanptr);
   }
 error_handler:
@@ -24190,6 +24323,14 @@ bool Dblqh::finishScanrec(Signal *signal, ScanRecordPtr &restart_scan,
 void Dblqh::releaseScanrec(Signal *signal) {
   jamDebug();
   ScanRecord *const scanPtr = scanptr.p;
+  /* Step 4: release the pushdown interpreters before either pool path.
+   * For normal scans (m_reserved == 0), c_scanRecordPool.release() runs
+   * ~ScanRecord directly via TransientPool, so the interpreter must
+   * already be detached + torn down by the time we get there.  For
+   * reserved scans we re-enter init_release_scanrec below, which now
+   * just resets ScanRecord fields (the interpreter cleanup has moved
+   * here). */
+  releaseScanInterpreters(signal, scanPtr);
   if (scanPtr->m_reserved == 0) {
     c_scanRecordPool.release(scanptr);
     checkPoolShrinkNeed(DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX,
@@ -24209,11 +24350,11 @@ void Dblqh::releaseScanrec(Signal *signal) {
     Uint32 inx = scanptr.p->scanNumber - FirstNR_ScanNo;
     c_check_scanptr_i[ZCOPY_FRAGREQ_CHECK_INDEX + inx] = RNIL;
   }
-  init_release_scanrec(scanPtr);
+  init_release_scanrec(signal, scanPtr);
   m_reserved_scans.addFirst(scanptr);
 }  // Dblqh::releaseScanrec()
 
-void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
+void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   scanPtr->scanState = ScanRecord::SCAN_FREE;
   scanPtr->scanType = ScanRecord::ST_IDLE;
   scanPtr->scanTcWaiting = 0;
@@ -24227,14 +24368,38 @@ void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
   scanPtr->m_agg_curr_batch_size_bytes = 0;
   scanPtr->m_agg_n_res_recs = 0;
   /*
-   * PA related
-   * release aggregation interpreter
+   * Pushdown interpreter release was moved up to releaseScanrec
+   * (Step 4 normal-scan path also needs it before
+   * c_scanRecordPool.release calls ~ScanRecord directly).
    */
+}
+
+/**
+ * Step 4: detach + tear down the pushdown interpreters attached to a
+ * ScanRecord.  Called from releaseScanrec and the scan setup-error
+ * path before either branch runs c_scanRecordPool.release (which
+ * invokes ~ScanRecord through TransientPool) or init_release_scanrec.
+ *
+ * AggInterpreter: empty m_gb_map is the fast path (existing
+ * behaviour — periodic / end-of-scan drain has consumed every group).
+ * Non-empty m_gb_map uses the chunked CONTINUEB teardown so we don't
+ * hold the LDM thread for ms walking thousands of groups
+ * synchronously.  The interpreter pointer is detached from the
+ * ScanRecord first, so the ScanRecord can go back to the pool while
+ * the CONTINUEB chain is still running.
+ *
+ * VecSearchInterpreter has no chunked teardown (no group state).
+ */
+void Dblqh::releaseScanInterpreters(Signal *signal, ScanRecord *scanPtr) {
   if (scanPtr->m_agg_interpreter != nullptr) {
     AggInterpreter* ptr = scanPtr->m_agg_interpreter;
-    ndbrequire(ptr->gb_map()->empty());
-    PushdownInterpreter::Destruct(ptr);
     scanPtr->m_agg_interpreter = nullptr;
+    if (ptr->gb_map() == nullptr || ptr->gb_map()->empty()) {
+      PushdownInterpreter::Destruct(ptr);
+    } else {
+      ptr->beginTeardown();
+      continueAggInterpTeardown(signal, ptr);
+    }
   }
   if (scanPtr->m_vs_interpreter != nullptr) {
     PushdownInterpreter::Destruct(scanPtr->m_vs_interpreter);
@@ -41986,14 +42151,20 @@ void TraceLCP::restore(SimulatedBlock &lqh, Signal *sig) {
 #endif
 
 Dblqh::ScanRecord::~ScanRecord() {
-  if (m_agg_interpreter != nullptr) {
-    PushdownInterpreter::Destruct(m_agg_interpreter);
-    m_agg_interpreter = nullptr;
-  }
-  if (m_vs_interpreter != nullptr) {
-    PushdownInterpreter::Destruct(m_vs_interpreter);
-    m_vs_interpreter = nullptr;
-  }
+  /* Step 4 invariant: ScanRecord destruction runs only at pool
+   * teardown (= Dblqh block destruction = process shutdown).  By
+   * that time the shutdown protocol must have released every live
+   * scan via init_release_scanrec, which CONTINUEB-drains and
+   * Destructs the interpreter and nulls out the pointer.
+   *
+   * If we land here with a non-null interpreter, that's a leaked
+   * scan and synchronous Destruct could run for many ms walking
+   * thousands of groups — violating the block-thread 10 µs contract
+   * even during shutdown (other blocks coordinate shutdown via
+   * signals and watchdog timers).  Fail fast with a clear diagnostic
+   * rather than silently freeze the thread. */
+  ndbrequire(m_agg_interpreter == nullptr);
+  ndbrequire(m_vs_interpreter == nullptr);
   if (m_local_matched_ranges != nullptr) {
     lc_ndbd_pool_free(m_local_matched_ranges);
     m_local_matched_ranges = nullptr;

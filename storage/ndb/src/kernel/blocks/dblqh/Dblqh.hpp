@@ -363,6 +363,7 @@ class FsReadWriteReq;
 #define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
 #define ZCONTINUE_CTE_REDIST_DRAIN 48
 #define ZCONTINUE_CTE_SCAN_AGG_FEED 49
+#define ZCONTINUE_AGG_INTERP_TEARDOWN 50
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -476,8 +477,9 @@ class FsReadWriteReq;
 /* Node failure error code — same value as DBTC's ZNODEFAIL_BEFORE_COMMIT */
 #define ZNODEFAIL_BEFORE_COMMIT 286
 
-/* CONTINUEB code used by DblqhProxy (outside DBLQH_C) */
+/* CONTINUEB codes used by DblqhProxy (outside DBLQH_C) */
 #define ZCONTINUE_FREE_REDIST_PAGES 49
+#define ZCONTINUE_JOIN_AGG_TEARDOWN 50
 
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
@@ -499,6 +501,7 @@ class FsReadWriteReq;
 #define ZCTE_LOOKUP_OUTPUT_OVERFLOW        1266
 #define ZCTE_EVICT_IN_CTE_LEAF             1267
 #define ZCTE_LOOKUP_FILTER_ERROR           1268
+#define ZCTE_AGG_FEED_SELF_REFERENCE       1269
 
 /**
  * @class dblqh
@@ -3366,12 +3369,14 @@ private:
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
   bool routeCteLookup(Signal* signal,
                       const JoinAggregationState *state,
                       const JoinAggInterpreter *interp,
                       const Uint32 *keyBuf, Uint32 keySectionSz,
                       const Uint32 *cinBuf, Uint32 attrInfoLen,
                       const CteLookupReq *req);
+#endif
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
@@ -3477,6 +3482,7 @@ private:
   void execJOIN_AGG_FINAL_REP(Signal* signal);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
+  void continueAggInterpTeardown(Signal* signal, AggInterpreter* interp);
   void processRedistQueue(Signal* signal, JoinAggregationState* state,
                           Uint32 aggStateKey);
   void checkCteReady(Signal* signal, JoinAggregationState* state);
@@ -5361,7 +5367,8 @@ private:
       __attribute__((noinline));
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal *, Uint32, Uint32, Uint32, Uint32, Uint32);
-  void init_release_scanrec(ScanRecord *);
+  void init_release_scanrec(Signal *signal, ScanRecord *);
+  void releaseScanInterpreters(Signal *signal, ScanRecord *);
   void check_pgman_prep_lcp_active_prep_drop_tab(Signal *, Uint32);
   void check_pgman_prep_lcp_active_drop_tab(Signal *, Uint32);
   LogPartRecord *get_log_part_record(Uint32 instanceKey);

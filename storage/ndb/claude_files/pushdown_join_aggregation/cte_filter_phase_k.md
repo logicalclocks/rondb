@@ -93,6 +93,21 @@ the API uses to set `Is_Anti_Join` on `NdbResultStream`
 (`NdbQueryOperation.cpp:937-944`): `MatchNullOnly` is the only
 flag combination that sets `NI_ANTI_JOIN` without `NI_INNER_JOIN`.
 
+> **Routing superseded by Step 4d (`934ef2993f3`, RONDB-1066).**  The
+> `CTE_LOOKUP_ROUTE_FLAG` + local-send + `routeCteLookup`-forwarding scheme
+> shown in Steps 2 and 2.5 has been **retired**.  `Dbspj::cte_lookup_send`
+> now computes the owner node itself — it normalizes the lookup key's
+> virtual GROUP BY AttributeHeaders to column positions, hashes via the
+> local CTE interpreter's `hashGroupKey`, and sends `CTE_LOOKUP_REQ`
+> directly to that owner with that node's source *and* target agg keys
+> (scalar lookups stay local).  This closed a multi-node SIGSEGV where the
+> forwarded node-local target `joinAggStateKey` was misread by the remote
+> owner as *its own source* CTE state, feeding the source aggregator
+> (local GROUP BY cols) → poisoned `tablePtrP` deref.  The
+> `CTE_LOOKUP_ANTI_JOIN_FLAG` semantics below are unchanged — the anti-join
+> flag now rides the direct send rather than the (removed) route flag.  See
+> Step 4d in `agg_interpreter_unification_plan.md`.
+
 ### Step 2.5 — DBLQH: preserve flag during `routeCteLookup`
 
 When DBSPJ sends `CTE_LOOKUP_REQ` to its local DBLQH and the key

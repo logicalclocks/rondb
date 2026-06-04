@@ -36,66 +36,11 @@
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
-Uint32 AggInterpreter::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
-Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
-Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
+#define JAM_FILE_ID 567
 
-/*
- * GBHashEntryCmp::operator() — charset-aware comparison for std::map ordering.
- * Duplicated from NdbAggregator.cpp (kernel and API are separate link targets).
- */
-bool
-GBHashEntryCmp::operator()(const GBHashEntry &n1,
-                           const GBHashEntry &n2) const {
-  if (ctx == nullptr || ctx->n_cols == 0 || ctx->all_binary_cmp) {
-    /* Binary comparison: safe when all group-by columns are
-       non-charset-aware, since binary identity equals semantic identity. */
-    Uint32 len = n1.len < n2.len ? n1.len : n2.len;
-    int ret = memcmp(n1.ptr, n2.ptr, len);
-    if (ret == 0) {
-      return n1.len < n2.len;
-    }
-    return ret < 0;
-  }
-
-  const char *p1 = n1.ptr;
-  const char *p2 = n2.ptr;
-  [[maybe_unused]] const char *end1 = n1.ptr + n1.len;
-  [[maybe_unused]] const char *end2 = n2.ptr + n2.len;
-
-  for (Uint32 i = 0; i < ctx->n_cols; i++) {
-    assert(p1 + sizeof(Uint32) <= end1);
-    assert(p2 + sizeof(Uint32) <= end2);
-    const AttributeHeader ah1(*(const Uint32 *)p1);
-    const AttributeHeader ah2(*(const Uint32 *)p2);
-
-    bool null1 = ah1.isNULL();
-    bool null2 = ah2.isNULL();
-    if (null1 && null2) {
-      p1 += sizeof(Uint32);
-      p2 += sizeof(Uint32);
-      continue;
-    }
-    if (null1) return true;   /* NULL < non-NULL */
-    if (null2) return false;
-
-    const char *data1 = p1 + sizeof(Uint32);
-    const char *data2 = p2 + sizeof(Uint32);
-    Uint32 byteSize1 = ah1.getByteSize();
-    Uint32 byteSize2 = ah2.getByteSize();
-
-    int ret = NdbSqlUtil::getType(ctx->col_meta[i].typeId).m_cmp(
-                ctx->col_meta[i].cs, data1, byteSize1, data2, byteSize2);
-    if (ret != 0) {
-      return ret < 0;
-    }
-
-    /* Advance past header + word-aligned data */
-    p1 += sizeof(Uint32) + ah1.getDataSize() * sizeof(Uint32);
-    p2 += sizeof(Uint32) + ah2.getDataSize() * sizeof(Uint32);
-  }
-  return false;  /* All columns equal */
-}
+// g_attr_read_buf_len_ / g_result_header_size_ /
+// g_result_header_size_per_group_ definitions moved to
+// AggInterpreterBase.cpp in Step 3a-A.
 
 /*
  * PA related
@@ -147,976 +92,58 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #define VS_INTERP_TRACE(table_id, part_id, format, ...) {}
 #endif // DEBUG_VS_INTERP
 
-/**
- * validateEmbeddedProgram — sanity-check an embedded program at
- * Init() time ("compile" step).
- *
- * Phase C simplification: the opcode whitelist and the forward-only
- * branch-direction check are gone — those are now enforced at
- * runtime by s_agg_interp_handlers (nullptr slots raise
- * ZNO_INSTRUCTION_ERROR) and IFLAG_DISALLOW_BACKWARD_JUMPS (raises
- * ZBACKWARD_JUMP_NOT_ALLOWED).  Keeping those checks here would be
- * a second source of truth that could drift; keep only the
- * structural bounds check on branch targets so a malformed program
- * doesn't pass Init with a garbage offset that would later confuse
- * the runtime.
- *
- * Walks the instruction stream and checks:
- *   1. Each instruction has a well-defined length
- *      (getInstructionPreProcessingInfo returns non-null).
- *   2. Branch targets (forward or otherwise) fall within the
- *      embedded program bounds.
- *
- * Returns true if the program is structurally valid.
- */
-bool AggInterpreter::validateEmbeddedProgram(
-    const Uint32* emb_prog, Uint32 emb_len) {
-  Uint32 pc = 0;
-  while (pc < emb_len) {
-    Uint32 instr = emb_prog[pc];
-    Uint32 opCode = Interpreter::getOpCode(instr);
-
-    /* Bounds-check branch targets.  Direction is left to the runtime
-     * backward-jump guard; here we only care that the target doesn't
-     * leave the program. */
-    switch (opCode) {
-      case Interpreter::BRANCH:
-      case Interpreter::BRANCH_REG_EQ_NULL:
-      case Interpreter::BRANCH_REG_NE_NULL:
-      case Interpreter::BRANCH_EQ_REG_REG:
-      case Interpreter::BRANCH_NE_REG_REG:
-      case Interpreter::BRANCH_LT_REG_REG:
-      case Interpreter::BRANCH_LE_REG_REG:
-      case Interpreter::BRANCH_GT_REG_REG:
-      case Interpreter::BRANCH_GE_REG_REG:
-      case Interpreter::BRANCH_ATTR_OP_ARG:
-      case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-      case Interpreter::BRANCH_MEM_OP_ARG:
-      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE: {
-        Uint32 offset = (instr >> 16) & 0x7FFF;
-        Uint32 target = pc + offset;
-        if (target >= emb_len) {
-          g_eventLogger->warning(
-              "validateEmbeddedProgram: branch target %u out of bounds "
-              "(emb_len=%u) at pc=%u", target, emb_len, pc);
-          return false;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-
-    /* Advance via getInstructionPreProcessingInfo. */
-    Interpreter::InstructionPreProcessing processing;
-    Uint32* next = Interpreter::getInstructionPreProcessingInfo(
-        const_cast<Uint32*>(&emb_prog[pc]), processing);
-    if (next == nullptr) {
-      g_eventLogger->warning(
-          "validateEmbeddedProgram: invalid instruction at pc=%u", pc);
-      return false;
-    }
-    Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
-    pc += instr_len;
-  }
-
-  return true;
-}
-
 bool AggInterpreter::Init(const Uint32* prog) {
   if (m_inited) {
     return true;
   }
-
   require(prog != nullptr);
 
-  /* 0. Prepare the buffer and copy the program */
-  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-  m_prog = m_prog_buf;
-  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
-  memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
-  memset(m_decimal_buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-  m_decimal.buf = m_decimal_buf;
-  m_decimal.len = DECIMAL_BUFF_LENGTH;
+  /* Step 3 Cand-A: peek the program header (sets m_n_gb_cols /
+   * m_n_agg_results + asserts).  Version mismatch returns true without
+   * setting m_inited so ProcessRec rejects on entry. */
+  bool compatible = true;
+  peekProgramHeader(prog, &compatible);
+  if (!compatible) return true;
 
-
-  Uint32 value = 0;
-  /*
-   * 1. Double check the magic num and  total length of program.
-   */
-  value = m_prog[m_cur_pos++];
-  assert(((value & 0xFFFF0000) >> 16) == 0x0721);
-  assert((value & 0xFFFF) == m_prog_len);
-
-  /*
-   * 2. Get num of columns for group by and num of aggregation results;
-   */
-  value = m_prog[m_cur_pos++];
-  m_n_gb_cols = (value >> 16) & 0xFFFF;
-  m_n_agg_results = value & 0xFFFF;
-
-  Uint32 version = m_prog[m_cur_pos++];
-  if (version > PUSHDOWN_AGGREGATION_VERSION) {
-    g_eventLogger->warning("Pushdown aggregation program version(%u) is "
-                           "not compatible with "
-                           "the version (%u) on data node",
-                           version, PUSHDOWN_AGGREGATION_VERSION);
-    /*
-     * Return with m_inited = false, and
-     * ProcessRec() will handle this incompatible issue.
-     */
-    return true;
-  }
-
-  /* Skip the next 5 reserved Uint32 elements (word 3 = VS flag, not set for PA) */
-  assert((m_prog[m_cur_pos] & 0x80000000) == 0);
-  assert(m_prog[m_cur_pos] == 0);
-  m_cur_pos += 5;
-
-  /*
-   * 3. Get all the group by columns id.
-   */
-  if (m_n_gb_cols) {
-    assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
-    m_gb_cols = m_gb_cols_buf;
-
-    Uint32 i = 0;
-    while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
-      m_gb_cols[i++] = m_prog[m_cur_pos++];
-    }
-    m_gb_cmp_ctx.n_cols = 0;
-    m_gb_cmp_ctx.all_binary_cmp = false;
-    m_gb_map_buf = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                      GBHashEntryCmp(&m_gb_cmp_ctx));
-    m_gb_map = &m_gb_map_buf;
-    m_alloc_len = 0;
-  }
-
-  /*
-   * 4. Reset all aggregation results
-   */
-  if (m_n_agg_results) {
-    assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
-    m_agg_results = m_agg_results_buf;
-    for (Uint32 i = 0; i < m_n_agg_results; i++) {
-      m_agg_results[i].type = NDB_TYPE_UNDEFINED;
-      m_agg_results[i].value.val_int64 = 0;
-      m_agg_results[i].is_unsigned = false;
-      m_agg_results[i].is_null = true;
-    }
-  }
-
-  m_inited = true;
-  m_agg_prog_start_pos = m_cur_pos;
-  memset(m_registers, 0, sizeof(m_registers));
-
-  /*
-   * 5. Validate any embedded interpreter blocks in the aggregation program.
-   *    This "compiles" the embedded programs to ensure they will execute
-   *    correctly in interpreterNextLab.
-   */
-  {
-    Uint32 scan_pos = m_agg_prog_start_pos;
-    while (scan_pos < m_prog_len) {
-      Uint32 w = m_prog[scan_pos];
-      Uint8 op = (w & 0xFC000000) >> 26;
-      if (op == kOpEmbeddedInterp) {
-        Uint32 emb_len = w & 0xFFFF;
-        if (scan_pos + 1 + emb_len > m_prog_len ||
-            !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
-          g_eventLogger->warning(
-              "AggInterpreter::Init: embedded program validation failed "
-              "at scan_pos=%u", scan_pos);
-          m_inited = false;
-          return false;
-        }
-        scan_pos += 1 + emb_len;  /* skip header + embedded words */
-      } else if (op == kOpLoadConst) {
-        scan_pos += 3;  /* header + 2 constant value words */
-      } else if (op == kOpLoadCol) {
-        Uint32 type = (w & 0x03E00000) >> 21;
-        scan_pos += (type == NDB_TYPE_DECIMAL ||
-                     type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
-      } else {
-        scan_pos++;
-      }
-    }
-  }
-
-  return true;
-}
-
-
-/**
- * OptimizeProgram - Analyze the aggregation program and replace generic opcodes
- * with type-specific ones based on static type analysis.
- *
- * This function walks through the program instructions, tracks the type of each
- * register, and replaces generic opcodes (kOpSum, kOpPlus, etc.) with their
- * type-specific variants (kOpSumBigint, kOpSumDouble, kOpPlusBigint, etc.).
- *
- * Since the aggregation program has no loops, the type of each register is
- * deterministic and can be computed in a single pass.
- *
- * Must be called after Init() and before the first ProcessRec().
- */
-bool AggInterpreter::OptimizeProgram() {
-  if (!m_inited) {
+  /* Right-sized buffer-block carve.  Skip the m_gb_map_buf slot when
+   * n_gb_cols == 0 — scalar aggregation never touches a hash table. */
+  if (initBufBlock(/*prog_words=*/m_prog_len,
+                   /*n_gb_cols_alloc=*/m_n_gb_cols,
+                   /*n_agg_results_alloc=*/m_n_agg_results,
+                   /*alloc_gb_map=*/m_n_gb_cols > 0,
+                   /*extra_tail_bytes=*/0) == nullptr) {
+    g_eventLogger->error("AggInterpreter::Init: m_buf_block allocation failed");
     return false;
   }
-  OptimizeProgramBuffer(m_prog, m_prog_len, m_agg_prog_start_pos);
+
+  /* Common post-allocation steps. */
+  initSharedAfterAlloc(prog);
+
+  /* AggInterpreter-specific: chunk-allocator budget.  Starts small and
+   * lets bookMoreMemory grow it if a high-cardinality GROUP BY needs
+   * more; available_pages is generous because the query memory pool
+   * enforces the real cap. */
+  if (m_n_gb_cols) {
+    initChunkAllocator(/*thread_id=*/0,
+                       /*budget_pages=*/1,
+                       /*available_pages=*/4096);
+  }
+
+  /* Validate embedded interpreter blocks. */
+  if (!scanAndValidateEmbeddedPrograms("AggInterpreter")) {
+    return false;
+  }
   return true;
 }
 
-static bool TypeSupported(DataType type) {
-  switch (type) {
-    case NDB_TYPE_TINYINT:
-    case NDB_TYPE_SMALLINT:
-    case NDB_TYPE_MEDIUMINT:
-    case NDB_TYPE_INT:
-    case NDB_TYPE_BIGINT:
 
-    case NDB_TYPE_TINYUNSIGNED:
-    case NDB_TYPE_SMALLUNSIGNED:
-    case NDB_TYPE_MEDIUMUNSIGNED:
-    case NDB_TYPE_UNSIGNED:
-    case NDB_TYPE_BIGUNSIGNED:
-
-    case NDB_TYPE_FLOAT:
-    case NDB_TYPE_DOUBLE:
-
-    case NDB_TYPE_DECIMAL:
-    case NDB_TYPE_DECIMALUNSIGNED:
-
-    // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
-    // Sum is rejected separately (see Sum()).  Count is
-    // type-agnostic and works for any column type.  String
-    // value handling lives in MinString / MaxString and the
-    // m_string_results sidecar — see cte_filter_phase_i6_varchar.md.
-    case NDB_TYPE_CHAR:
-    case NDB_TYPE_VARCHAR:
-    case NDB_TYPE_LONGVARCHAR:
-      return true;
-    default:
-      return false;
-  }
-  return false;
-}
-
-static bool IsUnsigned(DataType type) {
-  switch (type) {
-    case NDB_TYPE_TINYUNSIGNED:
-    case NDB_TYPE_SMALLUNSIGNED:
-    case NDB_TYPE_MEDIUMUNSIGNED:
-    case NDB_TYPE_UNSIGNED:
-    case NDB_TYPE_BIGUNSIGNED:
-    case NDB_TYPE_DECIMALUNSIGNED:
-      return true;
-    default:
-      return false;
-  }
-  return false;
-}
-
-static DataType AlignedType(DataType type, int scale) {
-  switch (type) {
-    case NDB_TYPE_TINYINT:
-    case NDB_TYPE_SMALLINT:
-    case NDB_TYPE_MEDIUMINT:
-    case NDB_TYPE_INT:
-    case NDB_TYPE_BIGINT:
-
-    case NDB_TYPE_TINYUNSIGNED:
-    case NDB_TYPE_SMALLUNSIGNED:
-    case NDB_TYPE_MEDIUMUNSIGNED:
-    case NDB_TYPE_UNSIGNED:
-    case NDB_TYPE_BIGUNSIGNED:
-
-      return NDB_TYPE_BIGINT;
-    case NDB_TYPE_FLOAT:
-    case NDB_TYPE_DOUBLE:
-      return NDB_TYPE_DOUBLE;
-    case NDB_TYPE_DECIMAL:
-    case NDB_TYPE_DECIMALUNSIGNED:
-      return scale == 0 ? NDB_TYPE_BIGINT : NDB_TYPE_DOUBLE;
-
-    // Phase I.6 (F.2): string MIN/MAX preserves the source type —
-    // wire format stays as the source's [length_prefix][payload].
-    case NDB_TYPE_CHAR:
-    case NDB_TYPE_VARCHAR:
-    case NDB_TYPE_LONGVARCHAR:
-      return type;
-    default:
-      assert(0);
-  }
-  return NDB_TYPE_UNDEFINED;
-}
-
-[[maybe_unused]] static void PrintValue(const AggResItem* res, char* log_buf) {
-  if (res->type == NDB_TYPE_BIGINT) {
-    if (res->is_unsigned) {
-      sprintf(log_buf + strlen(log_buf), "[%llu, %d, %d, %d]",
-          res->value.val_uint64, res->type, res->is_unsigned, res->is_null);
-    } else {
-      sprintf(log_buf + strlen(log_buf), "[%lld, %d, %d, %d]",
-          res->value.val_int64, res->type, res->is_unsigned, res->is_null);
-    }
-  } else {
-    assert(res->type == NDB_TYPE_DOUBLE);
-    sprintf(log_buf + strlen(log_buf), "[%lf, %d, %d, %d]",
-        res->value.val_double, res->type, res->is_unsigned, res->is_null);
-  }
-  g_eventLogger->info("[PA_INTERP_TRACE] %s", log_buf);
-}
-
-static Int32 Sum(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (res->type == NDB_TYPE_UNDEFINED) {
-    // Agg result first initialized
-    *res = a;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "Sum() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 1;
-  }
-
-  if (a.is_null) {
-    // Register has a null value
-    return 1;
-  }
-
-  if (res->is_null) {
-    assert(res->value.val_int64 == 0);
-  }
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || res->type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT &&
-          (res->type == NDB_TYPE_BIGINT || res->type == NDB_TYPE_UNDEFINED));
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    Int64 val0 = a.value.val_int64;
-    Int64 val1 = res->value.val_int64;
-    Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
-    bool res_unsigned = false;
-
-    if (a.is_unsigned) {
-      if (res->is_unsigned || val1 >= 0) {
-        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
-          // overflows;
-          return -1;
-        } else {
-          res_unsigned = true;
-        }
-      } else {
-        if ((Uint64)val0 > (Uint64)(LLONG_MAX)) {
-          res_unsigned = true;
-        }
-      }
-    } else {
-      if (res->is_unsigned) {
-        if (val0 >= 0) {
-          if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
-            // overflows;
-            return -1;
-          } else {
-            res_unsigned = true;
-          }
-        } else {
-          if ((Uint64)val1 > (Uint64)(LLONG_MAX)) {
-            res_unsigned = true;
-          }
-        }
-      } else {
-        if (val0 >= 0 && val1 >= 0) {
-          res_unsigned = true;
-        } else if (val0 < 0 && val1 < 0 && res_val >= 0) {
-          // overflow
-          return -1;
-        }
-      }
-    }
-
-    // Check if res_val is overflow
-    bool unsigned_flag = (a.is_unsigned | res->is_unsigned);
-    if ((unsigned_flag && !res_unsigned && res_val < 0) ||
-        (!unsigned_flag && res_unsigned &&
-         (Uint64)res_val > (Uint64)LLONG_MAX)) {
-      return -1;
-    } else {
-      if (unsigned_flag) {
-        res->value.val_uint64 = res_val;
-      } else {
-        res->value.val_int64 = res_val;
-      }
-    }
-    res->is_unsigned = unsigned_flag;
-  } else {
-    double val0 = (a.type == NDB_TYPE_DOUBLE) ?
-                     a.value.val_double :
-                     ((a.is_unsigned == true) ?
-                       static_cast<double>(a.value.val_uint64) :
-                       static_cast<double>(a.value.val_int64));
-    double val1 = (res->type == NDB_TYPE_DOUBLE) ?
-                     res->value.val_double :
-                     ((res->is_unsigned == true) ?
-                       static_cast<double>(res->value.val_uint64) :
-                       static_cast<double>(res->value.val_int64));
-    double res_val = val0 + val1;
-    if (std::isfinite(res_val)) {
-      res->value.val_double = res_val;
-    } else {
-      // overflow
-      return -1;
-    }
-    res->is_unsigned = false;
-  }
-
-  res->type = res_type;
-  res->is_null = false;
-
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "Sum(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-/**
- * SumBigint - Sum for BIGINT (handles both signed and unsigned dynamically)
+/*
+ * Numeric / type aggregation kernels (TypeSupported, IsUnsigned,
+ * AlignedType, PrintValue, Sum/SumBigint/SumDouble, Max/MaxBigint/MaxDouble,
+ * Min/MinBigint/MinDouble, Count) live in the shared base class
+ * AggInterpreterBase (AggInterpreterBase.{hpp,cpp}) and are reached here via
+ * inherited name lookup.  See agg_interpreter_unification_plan.md, Step 1.
  */
-static Int32 SumBigint(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (unlikely(a.is_null)) {
-    return 1;
-  }
-
-  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
-    res->type = NDB_TYPE_BIGINT;
-    res->value.val_int64 = a.value.val_int64;
-    res->is_unsigned = a.is_unsigned;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "SumBigint() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 0;
-  }
-
-  Int64 val0 = a.value.val_int64;
-  Int64 val1 = res->value.val_int64;
-  Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
-  bool res_unsigned = false;
-
-  if (a.is_unsigned) {
-    if (res->is_unsigned || val1 >= 0) {
-      if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
-        return -1;
-      }
-      res_unsigned = true;
-    } else {
-      if ((Uint64)val0 > (Uint64)(LLONG_MAX)) {
-        res_unsigned = true;
-      }
-    }
-  } else {
-    if (res->is_unsigned) {
-      if (val0 >= 0) {
-        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
-          return -1;
-        }
-        res_unsigned = true;
-      } else {
-        if ((Uint64)val1 > (Uint64)(LLONG_MAX)) {
-          res_unsigned = true;
-        }
-      }
-    } else {
-      if (val0 >= 0 && val1 >= 0) {
-        res_unsigned = true;
-      } else if (val0 < 0 && val1 < 0 && res_val >= 0) {
-        return -1;
-      }
-    }
-  }
-
-  bool unsigned_flag = (a.is_unsigned | res->is_unsigned);
-  if ((unsigned_flag && !res_unsigned && res_val < 0) ||
-      (!unsigned_flag && res_unsigned &&
-       (Uint64)res_val > (Uint64)LLONG_MAX)) {
-    return -1;
-  }
-
-  if (unsigned_flag) {
-    res->value.val_uint64 = res_val;
-  } else {
-    res->value.val_int64 = res_val;
-  }
-  res->is_unsigned = unsigned_flag;
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "SumBigint(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-/**
- * SumDouble - Sum for double precision floats
- */
-static Int32 SumDouble(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (unlikely(a.is_null)) {
-    return 1;
-  }
-
-  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
-    res->type = NDB_TYPE_DOUBLE;
-    res->value.val_double = a.value.val_double;
-    res->is_unsigned = false;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "SumDouble() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 0;
-  }
-
-  double res_val = a.value.val_double + res->value.val_double;
-
-  if (unlikely(!std::isfinite(res_val))) {
-    return -1;
-  }
-
-  res->value.val_double = res_val;
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "SumDouble(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-static Int32 Max(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
-    // Agg result first initialized
-    *res = a;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "Max(), init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 1;
-  }
-
-  if (a.is_null) {
-    // Register has a null value
-    return 1;
-  }
-
-  if (res->is_null) {
-    assert(res->value.val_int64 == 0);
-  }
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || res->type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT &&
-          (res->type == NDB_TYPE_BIGINT || res->type == NDB_TYPE_UNDEFINED));
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    if (!a.is_unsigned && !res->is_unsigned) {
-      res->value.val_int64 = (a.value.val_int64 > res->value.val_int64) ?
-                              a.value.val_int64 : res->value.val_int64;
-    } else if (a.is_unsigned && res->is_unsigned) {
-      res->value.val_uint64 = (a.value.val_uint64 > res->value.val_uint64) ?
-                              a.value.val_uint64 : res->value.val_uint64;
-    } else if (a.is_unsigned && !res->is_unsigned) {
-      if (res->value.val_int64 < 0) {
-        res->value.val_uint64 = a.value.val_uint64;
-      } else {
-        res->value.val_uint64 = a.value.val_uint64 >
-                static_cast<Uint64>(res->value.val_int64) ?
-                a.value.val_uint64 :
-                static_cast<Uint64>(res->value.val_int64);
-      }
-      res->is_unsigned = true;
-    } else {
-      assert(!a.is_unsigned && res->is_unsigned);
-      if (a.value.val_int64 < 0) {
-      } else {
-        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64) >
-                                res->value.val_uint64;
-      }
-    }
-  } else {
-    assert(res_type == NDB_TYPE_DOUBLE);
-    res->value.val_double = (a.value.val_double > res->value.val_double) ?
-                             a.value.val_double : res->value.val_double;
-  }
-  res->is_null = false;
-
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "Max(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-
-  return 0;
-}
-
-/**
- * MaxBigint - Max for BIGINT (handles both signed and unsigned dynamically)
- */
-static Int32 MaxBigint(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (unlikely(a.is_null)) {
-    return 1;
-  }
-
-  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
-    res->type = NDB_TYPE_BIGINT;
-    res->value.val_int64 = a.value.val_int64;
-    res->is_unsigned = a.is_unsigned;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "MaxBigint() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 0;
-  }
-
-  if (!a.is_unsigned && !res->is_unsigned) {
-    if (a.value.val_int64 > res->value.val_int64) {
-      res->value.val_int64 = a.value.val_int64;
-    }
-  } else if (a.is_unsigned && res->is_unsigned) {
-    if (a.value.val_uint64 > res->value.val_uint64) {
-      res->value.val_uint64 = a.value.val_uint64;
-    }
-  } else if (a.is_unsigned && !res->is_unsigned) {
-    if (res->value.val_int64 < 0) {
-      res->value.val_uint64 = a.value.val_uint64;
-      res->is_unsigned = true;
-    } else {
-      if (a.value.val_uint64 > static_cast<Uint64>(res->value.val_int64)) {
-        res->value.val_uint64 = a.value.val_uint64;
-        res->is_unsigned = true;
-      }
-    }
-  } else {
-    // !a.is_unsigned && res->is_unsigned
-    if (a.value.val_int64 >= 0) {
-      if (static_cast<Uint64>(a.value.val_int64) > res->value.val_uint64) {
-        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64);
-      }
-    }
-    // If a is negative and res is unsigned, res is already larger
-  }
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "MaxBigint(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-/**
- * MaxDouble - Max for double precision floats
- */
-static Int32 MaxDouble(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (unlikely(a.is_null)) {
-    return 1;
-  }
-
-  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
-    res->type = NDB_TYPE_DOUBLE;
-    res->value.val_double = a.value.val_double;
-    res->is_unsigned = false;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "MaxDouble() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 0;
-  }
-
-  if (a.value.val_double > res->value.val_double) {
-    res->value.val_double = a.value.val_double;
-  }
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "MaxDouble(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-static Int32 Min(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
-    // Agg result first initialized
-    *res = a;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "Min(), init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 1;
-  }
-
-  if (a.is_null) {
-    // Register has a null value
-    return 1;
-  }
-
-  if (res->is_null) {
-    assert(res->value.val_int64 == 0);
-  }
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || res->type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT &&
-          (res->type == NDB_TYPE_BIGINT || res->type == NDB_TYPE_UNDEFINED));
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    if (!a.is_unsigned && !res->is_unsigned) {
-      res->value.val_int64 = (a.value.val_int64 < res->value.val_int64) ?
-                              a.value.val_int64 : res->value.val_int64;
-    } else if (a.is_unsigned && res->is_unsigned) {
-      res->value.val_uint64 = (a.value.val_uint64 < res->value.val_uint64) ?
-                              a.value.val_uint64 : res->value.val_uint64;
-    } else if (a.is_unsigned && !res->is_unsigned) {
-      if (res->value.val_int64 < 0) {
-      } else {
-        res->value.val_uint64 = a.value.val_uint64 <
-                static_cast<Uint64>(res->value.val_int64) ?
-                a.value.val_uint64 :
-                static_cast<Uint64>(res->value.val_int64);
-        res->is_unsigned = true;
-      }
-    } else {
-      assert(!a.is_unsigned && res->is_unsigned);
-      if (a.value.val_int64 < 0) {
-        res->value.val_int64 = a.value.val_int64;
-        res->is_unsigned = false;
-      } else {
-        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64) <
-                                res->value.val_uint64 ?
-                                static_cast<Uint64>(a.value.val_int64) :
-                                res->value.val_uint64;
-      }
-    }
-  } else {
-    assert(res_type == NDB_TYPE_DOUBLE);
-    res->value.val_double = (a.value.val_double < res->value.val_double) ?
-                             a.value.val_double : res->value.val_double;
-  }
-  res->is_null = false;
-
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "Min(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-
-  return 0;
-}
-
-/**
- * MinBigint - Min for BIGINT (handles both signed and unsigned dynamically)
- */
-static Int32 MinBigint(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (unlikely(a.is_null)) {
-    return 1;
-  }
-
-  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
-    res->type = NDB_TYPE_BIGINT;
-    res->value.val_int64 = a.value.val_int64;
-    res->is_unsigned = a.is_unsigned;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "MinBigint() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 0;
-  }
-
-  if (!a.is_unsigned && !res->is_unsigned) {
-    if (a.value.val_int64 < res->value.val_int64) {
-      res->value.val_int64 = a.value.val_int64;
-    }
-  } else if (a.is_unsigned && res->is_unsigned) {
-    if (a.value.val_uint64 < res->value.val_uint64) {
-      res->value.val_uint64 = a.value.val_uint64;
-    }
-  } else if (a.is_unsigned && !res->is_unsigned) {
-    // a is unsigned, res is signed
-    if (res->value.val_int64 < 0) {
-      // res is negative, so res is smaller - keep res
-    } else {
-      if (a.value.val_uint64 < static_cast<Uint64>(res->value.val_int64)) {
-        res->value.val_uint64 = a.value.val_uint64;
-        res->is_unsigned = true;
-      }
-    }
-  } else {
-    // !a.is_unsigned && res->is_unsigned
-    if (a.value.val_int64 < 0) {
-      res->value.val_int64 = a.value.val_int64;
-      res->is_unsigned = false;
-    } else {
-      if (static_cast<Uint64>(a.value.val_int64) < res->value.val_uint64) {
-        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64);
-      }
-    }
-  }
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "MinBigint(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-/**
- * MinDouble - Min for double precision floats
- */
-static Int32 MinDouble(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (unlikely(a.is_null)) {
-    return 1;
-  }
-
-  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
-    res->type = NDB_TYPE_DOUBLE;
-    res->value.val_double = a.value.val_double;
-    res->is_unsigned = false;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "MinDouble() init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-    assert(res->type != NDB_TYPE_UNDEFINED);
-    return 0;
-  }
-
-  if (a.value.val_double < res->value.val_double) {
-    res->value.val_double = a.value.val_double;
-  }
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "MinDouble(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-  return 0;
-}
-
-static Int32 Count(const Register& a, AggResItem* res, bool print) {
-  assert(a.type != NDB_TYPE_UNDEFINED);
-  if (res->type == NDB_TYPE_UNDEFINED) {
-    // Agg result first initialized
-    res->type = NDB_TYPE_BIGINT;
-    res->value.val_uint64 = 0;
-    res->is_unsigned = true;
-    res->is_null = false;
-#ifdef DEBUG_PA_INTERP
-    if (print) {
-      char log_buf[128];
-      sprintf(log_buf, "Count(), init AggRes to ");
-      PrintValue(res, log_buf);
-    }
-#endif // DEBUG_PA_INTERP
-  }
-
-  if (a.is_null) {
-    // Register has a null value
-    return 1;
-  }
-
-  assert(res->type == NDB_TYPE_BIGINT &&
-      res->is_null == false && res->is_unsigned == true);
-  res->value.val_uint64 += 1;
-
-#ifdef DEBUG_PA_INTERP
-  if (print) {
-    char log_buf[128];
-    sprintf(log_buf, "Count(), update AggRes to ");
-    PrintValue(res, log_buf);
-  }
-#endif // DEBUG_PA_INTERP
-
-  return 0;
-}
 
 /*
  * Success: RETURN 0
@@ -1125,8 +152,16 @@ static Int32 Count(const Register& a, AggResItem* res, bool print) {
  */
 Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
-        Uint32 thread_id) {
+        Uint32 thread_id,
+        EmulatedJamBuffer *jamBuf) {
   m_current_thread_id = thread_id;
+  /* Step 3 Cand-C: bind m_attr_read_buf to the per-LDM-thread scratch
+   * buffer on the Dbtup block instance.  The buffer is reused across
+   * concurrent AggInterpreter instances on the same thread because
+   * ProcessRec runs single-threaded per LDM thread; the buffer's
+   * liveness is per-ProcessRec-call. */
+  require(block_tup != nullptr);
+  m_attr_read_buf = block_tup->getAggAttrReadBuf();
   if (!m_inited || req_struct->read_length != 0) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
             "inited=%d, read_length=%u",
@@ -1136,8 +171,14 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
   AggResItem* agg_res_ptr = nullptr;
   if (m_n_gb_cols) {
-    if (!m_gb_cmp_inited) {
-      initGBCmpCtx(block_tup, req_struct);
+    /* Step 2b: resolve GROUP BY column type metadata once.  Normal-scan
+     * never has linked-attr columns, so pass nullptr / 0. */
+    if (!m_gb_types_inited) {
+      Int32 err = initGBTypes(block_tup, req_struct,
+                              /*linked_attr_data=*/nullptr,
+                              /*linked_attr_len=*/0,
+                              jamBuf);
+      if (unlikely(err != 0)) return err;
     }
 
     AttributeHeader* header = nullptr;
@@ -1155,64 +196,42 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       m_attr_read_pos += Uint32(ret);
     }
 
+    /* Step 2b: hash-table find / insert via the shared chunk allocator,
+     * mirroring JoinAggInterpreter's group prologue minus the linked /
+     * CTE / multi-leaf branches. */
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
-    GBHashEntry lookup_key;
-    lookup_key.ptr = reinterpret_cast<char*>(m_attr_read_buf);
-    lookup_key.len = len_in_char;
-    auto it = m_gb_map->find(lookup_key);
-    if (it != m_gb_map->end()) {
-      agg_res_ptr = reinterpret_cast<AggResItem*>(it->second.ptr);
+    char* found = m_gb_map->find(
+        reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
+    if (found != nullptr) {
+      agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
       PA_INTERP_TRACE(m_frag_id,
-                      "Found GBHashEntry, len: %u", len_in_char);
+                      "Found group, len: %u", len_in_char);
     } else {
-      /*
-       * update req_struct->read_length here, which will update the
-       * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
-       * Dblqh::scanTupkeyConfLab, even we don't use that variable
-       * to decide whether reaches batch limitation. Only increase
-       * Dblqh::ScanRecord::m_curr_batch_size_bytes when new group
-       * item is inserted into m_gb_map.
-       * For aggregation,
-       * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes to
-       * indicate batch limitation
-       */
+      /* read_length update keeps Dblqh::ScanRecord::m_curr_batch_size_bytes
+       * tracking accurate even though aggregation uses its own batch
+       * accounting via m_agg_curr_batch_size_bytes. */
       req_struct->read_length = (len_in_char +
                        m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
-
-      // we use m_result_size to decide whether need to send some aggregation
-      // results to API.
       m_result_size += len_in_char +
                        m_n_agg_results * sizeof(AggResItem);
-      Uint32 total_alloc = len_in_char +
-                           m_n_agg_results * sizeof(AggResItem);
-      char* agg_rec = MemAlloc(total_alloc);
+      char* agg_rec = allocGroupData(
+          len_in_char + m_n_agg_results * sizeof(AggResItem),
+          len_in_char);
       if (agg_rec == nullptr) {
         return ZAGG_OTHER_ERROR;
       }
-      memset(agg_rec, 0, total_alloc);
+      memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
-
-      GBHashEntry map_key;
-      map_key.ptr = agg_rec;
-      map_key.len = len_in_char;
-      GBHashEntry map_val;
-      map_val.ptr = agg_rec + len_in_char;
-      map_val.len = m_n_agg_results * sizeof(AggResItem);
-      m_gb_map->insert(std::make_pair(map_key, map_val));
+      m_gb_map->insert(agg_rec, len_in_char);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
-      // Initialize the new group's aggregation slots
       assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
       for (Uint32 i = 0; i < m_n_agg_results; i++) {
         agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
         agg_res_ptr[i].value.val_int64 = 0;
         agg_res_ptr[i].is_unsigned = false;
         agg_res_ptr[i].is_null = true;
-        assert(agg_res_ptr[i].type == m_agg_results[i].type);
-        assert(agg_res_ptr[i].value.val_int64 == m_agg_results[i].value.val_int64);
-        assert(agg_res_ptr[i].is_unsigned == m_agg_results[i].is_unsigned);
-        assert(agg_res_ptr[i].is_null == m_agg_results[i].is_null);
       }
     }
   } else {
@@ -1223,21 +242,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   DataType type;
   bool is_unsigned;
   Uint32 reg_index;
-
-  Uint32 reg_index2;
-
-  Uint32 agg_index;
+  /* reg_index2 / agg_index used only by shared opcodes — moved to base
+   * helper in Step 1.4. */
 
   const Uint32* attrDescriptor = nullptr;
-
-  Int32 decimal_info = 0;
-  Int32 precision = 0;
-  Int32 scale = 0;
-  Int32 dec_ret = E_DEC_OK;
-  Uint8* dec_buf_ptr = nullptr;
-  double dec_val_dbl = 0;
-  longlong dec_val_ll = 0;
-  ulonglong dec_val_ull = 0;
+  /* decimal_info / precision / scale / dec_ret / dec_buf_ptr /
+   * dec_val_dbl / dec_val_ll / dec_val_ull moved into
+   * AggInterpreterBase::loadColumnTypedFromBuf in Step 3 Cand-B. */
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
@@ -1249,663 +260,33 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     AttributeHeader* header = nullptr;
 
     switch (op) {
-      case kOpPlus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-
-        ret = RegPlusReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[PLUS], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-      case kOpMinus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-
-        ret = RegMinusReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MINUS], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-      case kOpMul:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-
-        ret = RegMulReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MUL], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-      case kOpDiv:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-
-        ret = RegDivReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index], false);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[DIV], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-      case kOpDivInt:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-
-        ret = RegDivReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index], true);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[DIVINT], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-      case kOpMod:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-
-        ret = RegModReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MOD], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      // Type-specific Plus operations
-      case kOpPlusBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[PlusBigint], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      case kOpPlusDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[PlusDouble], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      // Type-specific Minus operations
-      case kOpMinusBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MinusBigint], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      case kOpMinusDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MinusDouble], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      // Type-specific Multiply operations
-      case kOpMulBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MulBigint], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      case kOpMulDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[MulDouble], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      // Type-specific Division operations
-      case kOpDivDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[DivDouble], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      case kOpDivIntBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivIntBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[DivIntBigint], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      case kOpLoadCol:
+      case kOpLoadCol: {
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
-        {
-          const Uint32 col_id = value & 0x0000FFFF;
-          ret = block_tup->readSingleAttribute(
-              req_struct, col_id,
-              m_attr_read_buf + m_attr_read_pos,
-              g_attr_read_buf_len_ - m_attr_read_pos);
-          if (ret < 0) {
-            DEB_AGG(("read column error: %d", ret));
-            return -ret;
-          }
-          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-          attrDescriptor =
-              req_struct->tablePtrP->tabDescriptor + (col_id * ZAD_SIZE);
-          assert(header->getAttributeId() == col_id);
-          assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
-        }
-        if (!TypeSupported(type)) {
-          DEB_AGG(("Unsupported column type: %u", type));
-          return ZAGG_COL_TYPE_UNSUPPORTED;
-        }
-
-        if (type == NDB_TYPE_DECIMAL ||
-            type == NDB_TYPE_DECIMALUNSIGNED) {
-          if (unlikely(exec_pos >= m_prog_len)) {
-            g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
-                "kOpLoadCol DECIMAL overflow exec_pos=%u prog_len=%u",
-                exec_pos, m_prog_len);
-            return ZAGG_OTHER_ERROR;
-          }
-          decimal_info =
-              sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
-          precision = decimal_info >> 16;
-          scale = decimal_info & 0xFFFF;
-        } else {
-          precision = 0;
-          scale = 0;
-        }
-
-        ResetRegister(&m_registers[reg_index]);
-        m_registers[reg_index].type = AlignedType(type, scale);
-        m_registers[reg_index].is_unsigned = is_unsigned;
-        m_registers[reg_index].is_null = header->isNULL();
-        if (m_registers[reg_index].is_null) {
-          // Column has a null value
-          PA_INTERP_TRACE(m_frag_id,
-                          "Load NULL, type: %u",
-                          m_registers[reg_index].type);
-          m_registers[reg_index].value.val_int64 = 0;
-          break;
-        }
-        switch (type) {
-          case NDB_TYPE_TINYINT:
-            m_registers[reg_index].value.val_int64 =
-                *reinterpret_cast<Int8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_TINYINT %lld",
-                            m_registers[reg_index].value.val_int64);
-            break;
-          case NDB_TYPE_SMALLINT:
-            m_registers[reg_index].value.val_int64 =
-                sint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_SMALLINT %lld",
-                            m_registers[reg_index].value.val_int64);
-            break;
-          case NDB_TYPE_MEDIUMINT:
-            m_registers[reg_index].value.val_int64 =
-                sint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_MEDIUM %lld",
-                            m_registers[reg_index].value.val_int64);
-            break;
-          case NDB_TYPE_INT:
-            m_registers[reg_index].value.val_int64 =
-                sint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_INT %lld",
-                            m_registers[reg_index].value.val_int64);
-            break;
-          case NDB_TYPE_BIGINT:
-            m_registers[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_BIGINT %lld",
-                            m_registers[reg_index].value.val_int64);
-            break;
-          case NDB_TYPE_TINYUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_TINYUNSIGNED %llu",
-                            m_registers[reg_index].value.val_uint64);
-            break;
-          case NDB_TYPE_SMALLUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_SMALLUNSIGNED %llu",
-                            m_registers[reg_index].value.val_uint64);
-            break;
-          case NDB_TYPE_MEDIUMUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
-                            m_registers[reg_index].value.val_uint64);
-            break;
-          case NDB_TYPE_UNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_UNSIGNED %llu",
-                            m_registers[reg_index].value.val_uint64);
-            break;
-          case NDB_TYPE_BIGUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_BIGUNSIGNED %llu",
-                            m_registers[reg_index].value.val_uint64);
-            break;
-          case NDB_TYPE_FLOAT:
-            m_registers[reg_index].value.val_double =
-                floatget(reinterpret_cast<unsigned char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_FLOAT %lf",
-                            m_registers[reg_index].value.val_double);
-            break;
-          case NDB_TYPE_DOUBLE:
-            m_registers[reg_index].value.val_double =
-                doubleget(reinterpret_cast<unsigned char*>(
-                      &m_attr_read_buf[m_attr_read_pos + 1]));
-            PA_INTERP_TRACE(m_frag_id,
-                            "Load NDB_TYPE_DOUBLE %lf",
-                            m_registers[reg_index].value.val_double);
-            break;
-          case NDB_TYPE_DECIMAL:
-            assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                header->getByteSize());
-            // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&m_attr_read_buf[m_attr_read_pos + 1]),
-                      &m_decimal, precision, scale);
-            if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-              char log_buf[128];
-              sprintf(log_buf, "Error while parsing decimal: ");
-              for (Uint32 i = 0;
-                  i < header->getByteSize(); i++) {
-                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-              }
-              DEB_AGG(("%s", log_buf));
-              if (dec_ret == E_DEC_OVERFLOW) {
-                return ZAGG_DECIMAL_PARSE_OVERFLOW;
-              } else {
-                return ZAGG_DECIMAL_PARSE_ERROR;
-              }
-            }
-            /*
-             * Moz
-             * convert from decimal to double or bigint.
-             */
-            assert(m_registers[reg_index].is_unsigned == false);
-            if (scale != 0) {
-              assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
-              dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
-              m_registers[reg_index].value.val_double = dec_val_dbl;
-            } else {
-              assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
-              dec_ret = decimal2longlong(&m_decimal, &dec_val_ll);
-              m_registers[reg_index].value.val_int64 = dec_val_ll;
-            }
-            if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-              char log_buf[128];
-              sprintf(log_buf, "Error while converting decimal: ");
-              for (Uint32 i = 0;
-                  i < header->getByteSize(); i++) {
-                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-              }
-              DEB_AGG(("%s", log_buf));
-              if (dec_ret == E_DEC_OVERFLOW) {
-                return ZAGG_DECIMAL_CONV_OVERFLOW;
-              } else {
-                return ZAGG_DECIMAL_CONV_ERROR;
-              }
-            }
-#ifdef DEBUG_PA_INTERP
-            if (scale != 0) {
-              PA_INTERP_TRACE(m_frag_id,
-                              "Load NDB_TYPE_DECIMAL[double] %lf",
-                              m_registers[reg_index].value.val_double);
-            } else {
-              PA_INTERP_TRACE(m_frag_id,
-                              "Load NDB_TYPE_DECIMAL[int64] %lld",
-                              m_registers[reg_index].value.val_int64);
-            }
-#endif // DEBUG_PA_INTERP
-          break;
-        case NDB_TYPE_DECIMALUNSIGNED:
-            assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                header->getByteSize());
-            // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&m_attr_read_buf[m_attr_read_pos + 1]),
-                      &m_decimal, precision, scale);
-            if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-              char log_buf[128];
-              sprintf(log_buf, "Error while parsing decimal: ");
-              for (Uint32 i = 0;
-                  i < header->getByteSize(); i++) {
-                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-              }
-              DEB_AGG(("%s", log_buf));
-              if (dec_ret == E_DEC_OVERFLOW) {
-                return ZAGG_DECIMAL_PARSE_OVERFLOW;
-              } else {
-                return ZAGG_DECIMAL_PARSE_ERROR;
-              }
-            }
-            /*
-             * Moz
-             * convert from decimal unsigned to double or bigint.
-             */
-            assert(m_registers[reg_index].is_unsigned == true);
-            if(unlikely(m_decimal.sign)) {
-              return ZAGG_DECIMAL_CONV_ERROR;
-            }
-            if (scale != 0) {
-              assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
-              dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
-              m_registers[reg_index].value.val_double = dec_val_dbl;
-            } else {
-              assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
-              dec_ret = decimal2ulonglong(&m_decimal, &dec_val_ull);
-              m_registers[reg_index].value.val_uint64 = dec_val_ull;
-            }
-            if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-              char log_buf[128];
-              sprintf(log_buf, "Error while converting decimal: ");
-              for (Uint32 i = 0;
-                  i < header->getByteSize(); i++) {
-                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-              }
-              DEB_AGG(("%s", log_buf));
-              if (dec_ret == E_DEC_OVERFLOW) {
-                return ZAGG_DECIMAL_CONV_OVERFLOW;
-              } else {
-                return ZAGG_DECIMAL_CONV_ERROR;
-              }
-            }
-#ifdef DEBUG_PA_INTERP
-            if (scale != 0) {
-              PA_INTERP_TRACE(m_frag_id,
-                              "Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
-                              m_registers[reg_index].value.val_double);
-            } else {
-              PA_INTERP_TRACE(m_frag_id,
-                              "Load NDB_TYPE_DECIMALUNSIGEND[uint64] %llu",
-                              m_registers[reg_index].value.val_uint64);
-            }
-#endif // DEBUG_PA_INTERP
-          break;
-
-          case NDB_TYPE_CHAR:
-          case NDB_TYPE_VARCHAR:
-          case NDB_TYPE_LONGVARCHAR: {
-            // Phase I.6 (F.2-K.4b): stash a read-only view into
-            // m_attr_read_buf for a subsequent kOpMin / kOpMax to
-            // compare and copy without re-walking the AttributeDescriptor.
-            // The register's val_int64 is unused on the string path —
-            // dispatch goes through m_registers[reg].type to the
-            // MaxString / MinString helpers.
-            const Uint32 TattrDesc1 = attrDescriptor[0];
-            const Uint32 TattrDesc2 = attrDescriptor[1];
-            const CHARSET_INFO* cs = nullptr;
-            if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
-              const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-              cs = req_struct->tablePtrP->charsetArray[pos];
-            }
-            const Uint32 declared =
-                AttributeDescriptor::getSizeInBytes(TattrDesc1);
-            const Uint16 prefix =
-                (type == NDB_TYPE_CHAR) ? 0 :
-                (type == NDB_TYPE_VARCHAR) ? 1 : 2;
-            char* base = reinterpret_cast<char*>(
-                &m_attr_read_buf[m_attr_read_pos + 1]);
-            Uint16 payload_len;
-            if (type == NDB_TYPE_CHAR) {
-              payload_len = static_cast<Uint16>(declared);
-            } else if (type == NDB_TYPE_VARCHAR) {
-              payload_len = static_cast<Uint16>(
-                  static_cast<Uint8>(base[0]));
-            } else {
-              payload_len = static_cast<Uint16>(
-                  static_cast<Uint8>(base[0]) |
-                  (static_cast<Uint16>(static_cast<Uint8>(base[1])) << 8));
-            }
-            StringResult& sr = m_register_string_data[reg_index];
-            sr.ptr = base;
-            sr.length = payload_len;
-            sr.size = 0;
-            sr.prefix_bytes = prefix;
-            sr.declared_size = static_cast<Uint16>(declared);
-            sr.charset = cs;
-            m_registers[reg_index].value.val_int64 = 0;
-            // Advance m_attr_read_pos past the AttributeHeader + string
-            // bytes so the next kOpLoadCol doesn't overwrite the
-            // captured ptr.  Numeric paths leave m_attr_read_pos at 0
-            // (they extract into the register's 8-byte union and the
-            // buffer is then disposable); strings need the buffer to
-            // stay live until kOpMax / kOpMin runs minMaxString.
-            {
-              const Uint32 string_bytes = prefix + payload_len;
-              const Uint32 words_consumed = 1 /*AttributeHeader*/ +
-                                            ((string_bytes + 3) >> 2);
-              if (unlikely(m_attr_read_pos + words_consumed >
-                           g_attr_read_buf_len_)) {
-                g_eventLogger->debug("AggInterpreter::ProcessRec "
-                    "ZAGG_OTHER_ERROR: string attr buffer overflow "
-                    "pos=%u words=%u buf_words=%u",
-                    m_attr_read_pos, words_consumed, g_attr_read_buf_len_);
-                return ZAGG_OTHER_ERROR;
-              }
-              m_attr_read_pos += words_consumed;
-            }
-            break;
-          }
-          default:
-            return ZAGG_LOAD_COL_WRONG_TYPE;
-        }
-        break;
-      case kOpLoadConst:
-        type = (value & 0x03E00000) >> 21;
-        reg_index = (value & 0x000F0000) >> 16;
-        assert(type == NDB_TYPE_BIGINT || type == NDB_TYPE_BIGUNSIGNED ||
-               type == NDB_TYPE_DOUBLE);
-        ResetRegister(&m_registers[reg_index]);
-        m_registers[reg_index].type = AlignedType(type, 0);
-        m_registers[reg_index].is_unsigned = IsUnsigned(type);
-        m_registers[reg_index].is_null = false;
-        if (unlikely(exec_pos + 2 > m_prog_len)) {
-          g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
-              "kOpLoadConst overflow exec_pos=%u prog_len=%u",
-              exec_pos, m_prog_len);
-          return ZAGG_OTHER_ERROR;
-        }
-        switch (type) {
-          case NDB_TYPE_BIGINT:
-            m_registers[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&m_prog[exec_pos]));
-              PA_INTERP_TRACE(m_frag_id,
-                              "LoadConst[%u] NDB_TYPE_BIGINT %lld",
-                              reg_index, m_registers[reg_index].value.val_int64);
-            break;
-          case NDB_TYPE_BIGUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&m_prog[exec_pos]));
-              PA_INTERP_TRACE(m_frag_id,
-                              "LoadConst[%u] "
-                              "NDB_TYPE_BIGUNSIGNED %llu",
-                              reg_index, m_registers[reg_index].value.val_uint64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            m_registers[reg_index].value.val_double =
-                doubleget(reinterpret_cast<unsigned char*>(
-                      &m_prog[exec_pos]));
-              PA_INTERP_TRACE(m_frag_id,
-                              "LoadConst[%u] NDB_TYPE_DOUBLE %lf",
-                              reg_index, m_registers[reg_index].value.val_double);
-            break;
-          default:
-            return ZAGG_LOAD_CONST_WRONG_TYPE;
-        }
-        exec_pos += 2;
-        break;
-      case kOpMov:
-        reg_index = (value >> 12 ) & 0x0F;
-        reg_index2 = (value >> 8 ) & 0x0F;
-
-        m_registers[reg_index] = m_registers[reg_index2];
-        PA_INTERP_TRACE(m_frag_id,
-                        "Move [%u]->[%u]",
-                        reg_index2, reg_index);
-        break;
-
-      case kOpSetRegNull:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
-          m_registers[reg_index].type = NDB_TYPE_BIGINT;
-          m_registers[reg_index].is_unsigned = false;
-          m_registers[reg_index].value.val_int64 = 0;
-        }
-        m_registers[reg_index].is_null = true;
-        PA_INTERP_TRACE(m_frag_id, "SetRegNull[%u]", reg_index);
-        break;
-
-      case kOpSum:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-
-        ret = Sum(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
+        const Uint32 col_id = value & 0x0000FFFF;
+        ret = block_tup->readSingleAttribute(
+            req_struct, col_id,
+            m_attr_read_buf + m_attr_read_pos,
+            g_attr_read_buf_len_ - m_attr_read_pos);
         if (ret < 0) {
-          DEB_AGG(("Overflow[SUM], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
+          DEB_AGG(("read column error: %d", ret));
+          return -ret;
         }
-        break;
-      case kOpMax:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
-            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
-            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
-          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
-                             /*is_max=*/true);
-        } else {
-          ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index],
-                    debug_print);
-        }
-        break;
-      case kOpMin:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
-            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
-            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
-          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
-                             /*is_max=*/false);
-        } else {
-          ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index],
-                    debug_print);
-        }
-        break;
-      case kOpCount:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-
-        ret = Count(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      // Type-specific Sum operations
-      case kOpSumBigint:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = SumBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[SumBigint], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      case kOpSumDouble:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = SumDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        if (ret < 0) {
-          DEB_AGG(("Overflow[SumDouble], value is out of range"));
-          return ZAGG_MATH_OVERFLOW;
-        }
-        break;
-
-      // Type-specific Max operations
-      case kOpMaxBigint:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MaxBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      case kOpMaxDouble:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MaxDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      // Type-specific Min operations
-      case kOpMinBigint:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MinBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      case kOpMinDouble:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MinDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      case kOpSkip:
-      {
-        Uint32 skip_count = value & 0xFFFF;
-        exec_pos += skip_count;
+        header = reinterpret_cast<AttributeHeader*>(
+            m_attr_read_buf + m_attr_read_pos);
+        attrDescriptor =
+            req_struct->tablePtrP->tabDescriptor + (col_id * ZAD_SIZE);
+        assert(header->getAttributeId() == col_id);
+        assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
+        Int32 lret = loadColumnTypedFromBuf(
+            type, is_unsigned, reg_index, header, attrDescriptor,
+            /*linked_cte_attr=*/false,
+            /*linked_word0=*/0, /*linked_word1=*/0,
+            req_struct, exec_pos, "AggInterpreter");
+        if (lret != 0) return lret;
         break;
       }
-
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1956,113 +337,25 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
-      default:
-        return ZAGG_WRONG_OPERATION;
+      default: {
+        /* Step 1.4: every opcode other than kOpLoadCol /
+         * kOpEmbeddedInterp is handled by the shared base helper.
+         * AggInterpreter's normal-scan dispatch stays free of any
+         * linked-attribute or CTE-specific machinery — those live in
+         * JoinAggInterpreter's per-class arms only. */
+        bool op_handled = false;
+        Int32 op_ret = executeStandardOpcode(op, value, exec_pos,
+                                              agg_res_ptr, debug_print,
+                                              &op_handled);
+        if (!op_handled) return ZAGG_WRONG_OPERATION;
+        if (op_ret != 0) return op_ret;
+        break;
+      }
     }
   }
   m_processed_rows++;
   return 0;
 }
-
-void AggInterpreter::Print() {
-  char log_buf[1024];
-  if (m_n_gb_cols) {
-    if (m_gb_map) {
-      sprintf(log_buf, "Group by columns: [");
-      for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-        if (i != m_n_gb_cols - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u ", m_gb_cols[i] >> 16);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u", m_gb_cols[i] >> 16);
-        }
-      }
-      sprintf(log_buf + strlen(log_buf), "]");
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-
-      g_eventLogger->info("Num of groups: %zu, Aggregation results:",
-                          m_gb_map->size());
-      for (auto iter = m_gb_map->begin(); iter != m_gb_map->end(); ++iter) {
-        int pos = 0;
-        char* data = iter->first.ptr;
-        sprintf(log_buf, "(");
-        for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-          if (i != m_n_gb_cols - 1) {
-            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, data + pos);
-          } else {
-            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, data + pos);
-          }
-        }
-
-        AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        for (Uint32 i = 0; i < m_n_agg_results; i++) {
-          sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-                  item[i].is_unsigned, item[i].is_null);
-          if (item[i].is_null) {
-            sprintf(log_buf + strlen(log_buf), "[NULL]");
-          } else {
-            switch (item[i].type) {
-              case NDB_TYPE_BIGINT:
-                sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-                break;
-              case NDB_TYPE_DOUBLE:
-                sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-                break;
-              default:
-                assert(0);
-            }
-          }
-        }
-        g_eventLogger->info("%s", log_buf);
-      }
-    }
-  } else {
-    AggResItem* item = m_agg_results;
-    log_buf[0] = '\0';
-    for (Uint32 i = 0; i < m_n_agg_results; i++) {
-      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-              item[i].is_unsigned, item[i].is_null);
-      if (item[i].is_null) {
-        sprintf(log_buf + strlen(log_buf), "[NULL]");
-      } else {
-        switch (item[i].type) {
-          case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-            break;
-          default:
-            assert(0);
-        }
-      }
-    }
-    g_eventLogger->info("%s", log_buf);
-  }
-}
-
-
-void AggInterpreter::initGBCmpCtx(Dbtup* block_tup,
-                                  Dbtup::KeyReqStruct* req_struct) {
-  m_gb_cmp_ctx.n_cols = m_n_gb_cols;
-  m_gb_cmp_ctx.all_binary_cmp = true;
-  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-    Uint32 attr_id = m_gb_cols[i] >> 16;
-    GBColMeta &meta = m_gb_cmp_ctx.col_meta[i];
-
-    const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
-        attr_id * ZAD_SIZE;
-    meta.typeId = AttributeDescriptor::getType(attrDesc[0]);
-    meta.cs = nullptr;
-    if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-      Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-      meta.cs = req_struct->tablePtrP->charsetArray[csPos];
-      m_gb_cmp_ctx.all_binary_cmp = false;
-    }
-  }
-  m_gb_cmp_inited = true;
-}
-
 
 Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   // Limitation
@@ -2102,32 +395,41 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     Uint32 n_groups_pos = pos++;
     const Uint32 v_len_base = val_len();
     Uint32 n_groups = 0;
-    for (auto iter = m_gb_map->begin(); iter != m_gb_map->end();) {
-      Uint32 key_len = iter->first.len;
-      AggResItem* slots = reinterpret_cast<AggResItem*>(iter->second.ptr);
+    /* Step 2b: iterate the JoinGBHashTable, emit each group, then
+     * erase + freeGroupData.  Same emit→erase→free shape as
+     * JoinAggInterpreter::evictOneGroup but generalized to drain
+     * every currently-resident group. */
+    for (auto iter = m_gb_map->begin(); iter.valid();) {
+      Uint32 key_len = iter.keyLen();
+      char* key_ptr = iter.data();
+      AggResItem* slots =
+          reinterpret_cast<AggResItem*>(iter.data() + key_len);
       Uint32 payload_bytes = has_strings ? stringPayloadSize(slots) : 0;
       Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
       assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
       data_buf[pos++] = key_len << 16 | v_len_total;
-      MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
-          key_len >> 2);
+      MEMCOPY_NO_WORDS(&data_buf[pos], key_ptr, key_len >> 2);
       MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], slots,
-          v_len_base >> 2);
+                       v_len_base >> 2);
       if (payload_bytes > 0) {
         encodeStringPayload(slots, reinterpret_cast<char*>(
             &data_buf[pos + ((key_len + v_len_base) >> 2)]));
       }
       pos += ((key_len + v_len_total) >> 2);
-      // Phase I.6 (F.2-K.4e): per-group string val_ptr buffers have
-      // been substituted into the wire payload above and are no
-      // longer needed locally — free before erasing the map entry.
+      /* Free per-group string val_ptr buffers (Phase I.6 F.2-K.4e) —
+       * payload bytes already substituted into the wire above. */
       freeGroupStringSlots(slots);
-      iter = m_gb_map->erase(iter);
+      /* eraseAndNext removes the entry from the bucket chain and
+       * advances iter past it; freeGroupData then releases the
+       * group's chunk slot.  Hold key_ptr before erase so we still
+       * have a valid pointer for freeGroupData. */
+      m_gb_map->eraseAndNext(iter);
+      freeGroupData(key_ptr);
       n_groups++;
     }
     data_buf[n_groups_pos] = n_groups;
-    m_alloc_len = 0;
+    m_n_groups = m_gb_map->size();
     m_result_size = 0;
   } else {
     const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
@@ -2288,217 +590,5 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
   }
 }
 
-char* AggInterpreter::MemAlloc(Uint32 len) {
-  if (m_alloc_len + len > MAX_AGG_RESULT_BATCH_BYTES) {
-    return nullptr;
-  }
-  char* ptr = &(m_mem_buf[m_alloc_len]);
-  m_alloc_len += len;
-  return ptr;
-}
+// release_string_results body lifted to AggInterpreterBase in Step 3a-A.
 
-// Phase I.6 (F.2): release string MIN/MAX state.  Per-(group, slot)
-// winner buffers live in AggResItem.value.val_ptr inside m_gb_map's
-// group entries (or m_agg_results for the no-GROUP-BY scalar case);
-// walk both and free any non-null val_ptr whose slot type is one of
-// the string types.  Then free the slot-level metadata array.
-// Called only from the destructor — no post-free pointer clearing.
-void AggInterpreter::release_string_results() {
-  if (m_string_results == nullptr) {
-    return;
-  }
-  // Scalar (no-GROUP-BY) group lives in m_agg_results directly.
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = m_agg_results[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        m_agg_results[i].value.val_ptr != nullptr) {
-      lc_ndbd_pool_free(m_agg_results[i].value.val_ptr);
-    }
-  }
-  // GROUP BY case: walk every group still in m_gb_map.
-  if (m_gb_map != nullptr) {
-    for (auto& entry : *m_gb_map) {
-      AggResItem* slots = reinterpret_cast<AggResItem*>(entry.second.ptr);
-      for (Uint32 i = 0; i < m_n_agg_results; i++) {
-        DataType t = slots[i].type;
-        if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-             t == NDB_TYPE_LONGVARCHAR) &&
-            slots[i].value.val_ptr != nullptr) {
-          lc_ndbd_pool_free(slots[i].value.val_ptr);
-        }
-      }
-    }
-  }
-  lc_ndbd_pool_free(m_string_results);
-}
-
-// Phase I.6 (F.2-K.4e): release one group's string val_ptr buffers.
-// Called from the drain loop after wire-format emit has consumed the
-// payload.  Cheap no-op when m_string_results is unallocated (i.e.
-// no string MIN/MAX in this program).
-void AggInterpreter::freeGroupStringSlots(AggResItem* slots) {
-  if (m_string_results == nullptr) {
-    return;
-  }
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = slots[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        slots[i].value.val_ptr != nullptr) {
-      lc_ndbd_pool_free(slots[i].value.val_ptr);
-      slots[i].value.val_ptr = nullptr;
-    }
-  }
-}
-
-// Phase I.6 (F.2-K.5): bytes that one group's appended
-// string-payload region will consume on the wire.  Walks the slot
-// array, summing the size contribution of each string slot:
-// `[Uint32 byte_size][prefix+payload, Uint32-padded]`.  Non-string
-// slots and null string slots contribute zero bytes.
-Uint32 AggInterpreter::stringPayloadSize(const AggResItem* slots) const {
-  if (m_string_results == nullptr) {
-    return 0;
-  }
-  Uint32 total = 0;
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = slots[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
-      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
-      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
-      const Uint32 prefix = m_string_results[i].prefix_bytes;
-      const Uint32 byte_size = prefix + payload_len;
-      total += sizeof(Uint32);                            // byte_size header
-      total += (byte_size + 3) & ~3U;                     // payload + padding
-    }
-  }
-  return total;
-}
-
-// Phase I.6 (F.2-K.5): write one group's appended string-payload
-// region into `dst`.  Caller must size `dst` from stringPayloadSize.
-Uint32 AggInterpreter::encodeStringPayload(const AggResItem* slots,
-                                            char* dst) const {
-  if (m_string_results == nullptr) {
-    return 0;
-  }
-  char* p = dst;
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = slots[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
-      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
-      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
-      const Uint32 prefix = m_string_results[i].prefix_bytes;
-      const Uint32 byte_size = prefix + payload_len;
-      *reinterpret_cast<Uint32*>(p) = byte_size;
-      p += sizeof(Uint32);
-      memcpy(p, buf + 4, byte_size);
-      p += byte_size;
-      const Uint32 pad = ((byte_size + 3) & ~3U) - byte_size;
-      if (pad > 0) {
-        memset(p, 0, pad);
-        p += pad;
-      }
-    }
-  }
-  return static_cast<Uint32>(p - dst);
-}
-
-// Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
-// See header for layout and contract.
-Int32 AggInterpreter::minMaxString(Uint32 reg_index, Uint32 agg_index,
-                                    AggResItem* agg_res_ptr,
-                                    bool is_max) {
-  const Register& src_reg = m_registers[reg_index];
-  if (src_reg.is_null) {
-    return 0;
-  }
-  // Lazy-allocate the slot metadata array on the first string
-  // MIN/MAX touch — non-string queries pay zero memory cost.
-  if (m_string_results == nullptr) {
-    Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
-    m_string_results = static_cast<StringResult*>(
-        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY,
-                            m_current_thread_id, true));
-    if (m_string_results == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-  }
-  const StringResult& src = m_register_string_data[reg_index];
-  StringResult& slot = m_string_results[agg_index];
-  if (slot.declared_size == 0) {
-    slot.charset = src.charset;
-    slot.prefix_bytes = src.prefix_bytes;
-    slot.declared_size = src.declared_size;
-  }
-  AggResItem& dst = agg_res_ptr[agg_index];
-  const Uint32 needed_payload = src.prefix_bytes + src.length;
-  Uint32 alloc_size = (4 + needed_payload + 15) & ~15U;
-  if (alloc_size < 16) alloc_size = 16;
-
-  if (dst.value.val_ptr == nullptr) {
-    char* buf = static_cast<char*>(
-        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                            m_current_thread_id, false));
-    if (buf == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    Uint16* hdr = reinterpret_cast<Uint16*>(buf);
-    hdr[0] = src.length;
-    hdr[1] = static_cast<Uint16>(alloc_size - 4);
-    if (needed_payload > 0) {
-      memcpy(buf + 4, src.ptr, needed_payload);
-    }
-    dst.type = src_reg.type;
-    dst.value.val_ptr = buf;
-    dst.is_unsigned = false;
-    dst.is_null = false;
-    return 0;
-  }
-
-  char* old_buf = static_cast<char*>(dst.value.val_ptr);
-  const Uint16* old_hdr = reinterpret_cast<const Uint16*>(old_buf);
-  const Uint16 old_payload_len = old_hdr[0];
-  const Uint16 old_capacity = old_hdr[1];
-  const unsigned n_new = src.prefix_bytes + src.length;
-  const unsigned n_old = slot.prefix_bytes + old_payload_len;
-  const void* v_new = src.ptr;
-  const void* v_old = old_buf + 4;
-  const Uint32 type_id =
-      (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
-      (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
-  int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
-  const bool replace = is_max ? (cmp > 0) : (cmp < 0);
-  if (!replace) return 0;
-
-  if (needed_payload <= old_capacity) {
-    Uint16* h = reinterpret_cast<Uint16*>(old_buf);
-    h[0] = src.length;
-    if (needed_payload > 0) {
-      memcpy(old_buf + 4, src.ptr, needed_payload);
-    }
-  } else {
-    // Allocate-then-free order keeps the existing winner intact on OOM.
-    char* new_buf = static_cast<char*>(
-        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                            m_current_thread_id, false));
-    if (new_buf == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    Uint16* h = reinterpret_cast<Uint16*>(new_buf);
-    h[0] = src.length;
-    h[1] = static_cast<Uint16>(alloc_size - 4);
-    if (needed_payload > 0) {
-      memcpy(new_buf + 4, src.ptr, needed_payload);
-    }
-    dst.value.val_ptr = new_buf;
-    lc_ndbd_pool_free(old_buf);
-  }
-  return 0;
-}

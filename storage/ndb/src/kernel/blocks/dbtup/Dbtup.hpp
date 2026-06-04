@@ -4514,6 +4514,24 @@ private:
   Uint32 c_interpreter_output[2 * AttributeHeader::MaxInterpreterOutputIndex];
   Uint64 m_interpreter_input[AttributeHeader::MaxInterpreterInputIndex];
 
+  /* Per-LDM-thread scratch buffer for AggInterpreter / JoinAggInterpreter
+   * column reads.  Used as `m_attr_read_buf` by ProcessRec:
+   *   - GROUP BY key assembly (prologue) concatenates all GB cols here
+   *   - kOpLoadCol writes one column at a time here; string MIN/MAX
+   *     captures keep a pointer into this buffer alive within a single
+   *     ProcessRec call until kOpMax / kOpMin consumes it.
+   * Liveness is per-ProcessRec-call; the buffer is reused (m_attr_read_pos
+   * resets on each opcode loop iteration).  Since Dbtup is a per-LDM-thread
+   * block instance, this is automatically per-thread without locking.
+   * Sized to NDB_MAX_TUPLE_SIZE so any single-row projection that NDB can
+   * construct fits.  See AggInterpreter::m_attr_read_buf for the contract. */
+  Uint32 m_agg_attr_read_buf[MAX_TUPLE_SIZE_IN_WORDS];
+ public:
+  Uint32* getAggAttrReadBuf() { return m_agg_attr_read_buf; }
+  static constexpr Uint32 AGG_ATTR_READ_BUF_WORD_SIZE =
+      MAX_TUPLE_SIZE_IN_WORDS;
+ private:
+
   /*
    * In executeTrigger()
    *   - cinBuffer also used for key

@@ -48,7 +48,7 @@ struct CteLookupReq {
   Uint32 joinAggStateKey; // RNIL = send to API via FLUSH_AI;
                           // else = encoded aggStateKey for target JoinAggInterpreter
                           // (CTE_LOOKUP feeds result into aggregation instead of API)
-  Uint32 flags;           // CTE_LOOKUP_ROUTE_FLAG: DBLQH may forward to remote node
+  Uint32 flags;           // CTE_LOOKUP_ROUTE_FLAG: debug fallback for DBLQH routing
 
   static constexpr Uint32 SignalLength = 10;
   enum { KeySectionNum = 0, AttrInfoSectionNum = 1, LinkedSectionNum = 2 };
@@ -90,6 +90,7 @@ struct CteLookupRef {
   // Error codes (mirrors ZCTE_LOOKUP_* in Dblqh.hpp / ndberror.cpp)
   static constexpr Uint32 GROUP_NOT_FOUND = 1263;
   static constexpr Uint32 STATE_NOT_READY = 1264;
+  static constexpr Uint32 AGG_FEED_SELF_REFERENCE = 1269;
 };
 
 #endif  // NDB_CTE_LOOKUP_HPP

@@ -48,6 +48,7 @@
 #include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "../dblqh/JoinAggregationState.hpp"
+#include "../dbtup/JoinAggInterpreter.hpp"
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/QueryTree.hpp>
@@ -6272,11 +6273,12 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       keyInfoPtrI = tmp;
     }
 
-    /* Always send CTE_LOOKUP_REQ to local DBLQH. For multi-node
-     * clusters, set CTE_LOOKUP_ROUTE_FLAG so DBLQH forwards to the
-     * correct owner node (determined by hashGroupKey) if the group
-     * is not found locally. DBLQH has access to the hash table's
-     * type metadata needed for correct collation-aware hashing. */
+    /* Send CTE_LOOKUP_REQ directly to the owner DBLQH.  joinAggStateKey
+     * is node-local, so routing through a different DBLQH after encoding
+     * it can make the remote owner interpret the target key as its source
+     * CTE state.  Use the local CTE result interpreter to compute the same
+     * hash DBLQH uses for CTE redistribution and select both source and
+     * target aggregation keys for that owner node. */
     ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
 
     // Compute key length in bytes
@@ -6285,10 +6287,43 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     const Uint32 keyLenBytes = keyPtr.sz * sizeof(Uint32);
 
     Uint32 targetNodeId = getOwnNodeId();
+    if (m_numDataNodes > 1) {
+      jam();
+      const Uint32 localCteAggKey =
+          requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + getOwnNodeId()];
+      JoinAggregationState *localCteState = getJoinAggState(localCteAggKey);
+      ndbrequire(localCteState != nullptr);
+      JoinAggInterpreter *localCteInterp =
+          (localCteState->m_strategy == JoinAggregationState::MUTEX_FREE)
+          ? localCteState->m_per_thread_interpreters[0]
+          : localCteState->m_agg_interpreter;
+      ndbrequire(localCteInterp != nullptr);
+      const Uint32 nGbCols = localCteInterp->n_gb_cols();
+      if (nGbCols > 0) {
+        Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
+        ndbrequire(keyPtr.sz <= MAX_KEY_SIZE_IN_WORDS);
+        copy(keyBuf, keyPtr);
+        Uint32 kp = 0;
+        for (Uint32 i = 0; i < nGbCols && kp < keyPtr.sz; i++) {
+          const Uint32 dataSize = AttributeHeader::getDataSize(keyBuf[kp]);
+          keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
+          kp += 1 + dataSize;
+        }
+        const Uint64 h = localCteInterp->hashGroupKey(
+            reinterpret_cast<const char *>(keyBuf), keyLenBytes);
+        const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
+        targetNodeId = m_dataNodeList[ownerIdx];
+      }
+    }
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
-    Uint32 lookupFlags =
-        (m_numDataNodes > 1) ? CteLookupReq::CTE_LOOKUP_ROUTE_FLAG : 0;
+    Uint32 lookupFlags = 0;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    /* Production sends directly to the CTE hash owner.  Keep the old
+     * DBLQH re-route path reachable in debug builds as a diagnostic
+     * fallback if DBSPJ ever computes the wrong owner. */
+    lookupFlags |= CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
+#endif
 
     /* Anti-join: parseDA sets T_FIRST_MATCH from NI_ANTI_JOIN, but
      * SEMI_JOIN (FirstMatch over INNER) sets both T_FIRST_MATCH and
@@ -6303,7 +6338,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       lookupFlags |= CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG;
     }
 
-    DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u (local) "
+    DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u "
              "cteIdx=%u targetAggKey=%u keyLenBytes=%u flags=0x%x",
              instance(), targetNodeId,
              cteIdx, targetAggKey, keyLenBytes, lookupFlags));

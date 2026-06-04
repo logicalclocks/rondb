@@ -5236,7 +5236,13 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
 
 retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
-      this, req_struct, linked_data, linked_len, getThreadId(), leaf);
+      this,
+      req_struct,
+      linked_data,
+      linked_len,
+      getThreadId(),
+      jamBuffer(),
+      leaf);
   if (ret == AGG_EVICT_NEEDED) {
     c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;
@@ -5575,11 +5581,16 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         bool vec_update_candidate = false;
         int ret = 0;
         if (scan_rec_ptr->m_agg_interpreter != nullptr) {
-          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct,
-                                                            getThreadId());
+          jam();
+          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this,
+                                                            req_struct,
+                                                            getThreadId(),
+                                                            jamBuffer());
         } else {
-          ret = scan_rec_ptr->m_vs_interpreter->ProcessRec(this, req_struct,
-                                                         &vec_update_candidate);
+          jam();
+          ret = scan_rec_ptr->m_vs_interpreter->ProcessRec(this,
+                                                    req_struct,
+                                                    &vec_update_candidate);
         }
         if (ret != 0) {
           return TUPKEY_abort(req_struct, ret);

@@ -1,0 +1,161 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# W1: MySQL-style index hints FORCE / USE / IGNORE INDEX.
+#
+# Since RonSQL has no cost-based optimiser, the SQL can steer index
+# selection.  A hint is honored only on a root-table scan — the main
+# query root and a CTE body root.  A hint on a joined table is
+# rejected.  INDEX and KEY are synonyms; USE INDEX () forces a table
+# scan.
+#
+# Positive cases produce the same rows as MySQL (which also accepts
+# the hint syntax), so they go through ronsql_compare.inc.  Error
+# cases are run through ronsql_cli with --error 1 so the rejection
+# message is recorded.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE hint_t (
+  id   INT NOT NULL,
+  a    BIGINT NOT NULL,
+  b    BIGINT NOT NULL,
+  v    BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_a (a),
+  INDEX idx_b (b)
+) ENGINE=NDB;
+
+INSERT INTO hint_t VALUES
+  (1, 10, 1,  5),
+  (2, 10, 2, 15),
+  (3, 10, 1, 25),
+  (4, 20, 1, 35),
+  (5, 20, 2, 45),
+  (6, 30, 3, 55);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: main-query FORCE INDEX ===
+
+let $QUERY=
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a|
+
+--echo
+--echo
+--echo === Test 2: main-query USE INDEX ===
+
+let $QUERY=
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t USE INDEX (idx_a) WHERE a = 10 GROUP BY a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t USE INDEX (idx_a) WHERE a = 10 GROUP BY a|
+
+--echo
+--echo
+--echo === Test 3: main-query IGNORE INDEX (steers to idx_b) ===
+
+let $QUERY=
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t IGNORE INDEX (idx_a) WHERE a = 10 AND b = 1 GROUP BY a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t IGNORE INDEX (idx_a) WHERE a = 10 AND b = 1 GROUP BY a|
+
+--echo
+--echo
+--echo === Test 4: CTE-body FORCE INDEX ===
+
+let $QUERY=
+WITH s AS (SELECT a AS k, SUM(v) AS tot
+            FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a)
+SELECT k, tot FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT a AS k, SUM(v) AS tot
+            FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a)
+SELECT k, tot FROM s|
+
+--echo
+--echo
+--echo === Test 5: alias + FORCE INDEX (KEY synonym) ===
+
+let $QUERY=
+SELECT x.a AS k, SUM(x.v) AS tot
+  FROM hint_t AS x FORCE KEY (idx_a) WHERE x.a = 10 GROUP BY x.a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT x.a AS k, SUM(x.v) AS tot
+  FROM hint_t AS x FORCE KEY (idx_a) WHERE x.a = 10 GROUP BY x.a|
+
+--echo
+--echo
+--echo === Test 6: USE INDEX () forces a table scan ===
+
+let $QUERY=
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t USE INDEX () WHERE a = 10 GROUP BY a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT a AS k, SUM(v) AS tot
+  FROM hint_t USE INDEX () WHERE a = 10 GROUP BY a|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 7: FORCE INDEX names a non-existent index (rejected) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a AS k, SUM(v) AS tot FROM hint_t FORCE INDEX (no_such_idx) WHERE a = 10 GROUP BY a;' 2>&1
+
+--echo
+--echo
+--echo === Test 8: FORCE INDEX not matching the WHERE leading column (rejected) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a AS k, SUM(v) AS tot FROM hint_t FORCE INDEX (idx_b) WHERE a = 10 GROUP BY a;' 2>&1
+
+--echo
+--echo
+--echo === Test 9: index hint on a joined table (rejected) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT a AS k, SUM(v) AS t FROM hint_t GROUP BY a) SELECT o.id FROM hint_t AS o JOIN c AS s USE INDEX (idx_a) ON s.k = o.a WHERE o.a = 10;' 2>&1
+
+--disable_query_log
+DROP TABLE hint_t;
+--enable_query_log

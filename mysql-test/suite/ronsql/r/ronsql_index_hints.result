@@ -1,0 +1,133 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: main-query FORCE INDEX ===
+== Query ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a|
+k	tot
+10	45
+
+
+=== Test 2: main-query USE INDEX ===
+== Query ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t USE INDEX (idx_a) WHERE a = 10 GROUP BY a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t USE INDEX (idx_a) WHERE a = 10 GROUP BY a|
+k	tot
+10	45
+
+
+=== Test 3: main-query IGNORE INDEX (steers to idx_b) ===
+== Query ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t IGNORE INDEX (idx_a) WHERE a = 10 AND b = 1 GROUP BY a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t IGNORE INDEX (idx_a) WHERE a = 10 AND b = 1 GROUP BY a|
+k	tot
+10	30
+
+
+=== Test 4: CTE-body FORCE INDEX ===
+== Query ==
+WITH s AS (SELECT a AS k, SUM(v) AS tot
+FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a)
+SELECT k, tot FROM s;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT a AS k, SUM(v) AS tot
+FROM hint_t FORCE INDEX (idx_a) WHERE a = 10 GROUP BY a)
+SELECT k, tot FROM s|
+k	tot
+10	45
+
+
+=== Test 5: alias + FORCE INDEX (KEY synonym) ===
+== Query ==
+SELECT x.a AS k, SUM(x.v) AS tot
+FROM hint_t AS x FORCE KEY (idx_a) WHERE x.a = 10 GROUP BY x.a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT x.a AS k, SUM(x.v) AS tot
+FROM hint_t AS x FORCE KEY (idx_a) WHERE x.a = 10 GROUP BY x.a|
+k	tot
+10	45
+
+
+=== Test 6: USE INDEX () forces a table scan ===
+== Query ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t USE INDEX () WHERE a = 10 GROUP BY a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a AS k, SUM(v) AS tot
+FROM hint_t USE INDEX () WHERE a = 10 GROUP BY a|
+k	tot
+10	45
+
+
+=== Test 7: FORCE INDEX names a non-existent index (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX names 'no_such_idx', which is not an available ordered index on the scanned table.
+
+
+=== Test 8: FORCE INDEX not matching the WHERE leading column (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_b' cannot be used: no WHERE condition matches its leading column.
+
+
+=== Test 9: index hint on a joined table (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: Index hints (FORCE/USE/IGNORE INDEX) are only supported on the root table of a query or CTE body, not on a joined table.

@@ -408,6 +408,31 @@ private:
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
+  // Shared scan-config candidate generator used by both the main-query
+  // path (`generate_scan_config_candidates`) and the per-CTE-body path
+  // (`select_cte_body_scan_config`).  Pushes one TABLE_SCAN candidate
+  // (goodness 0) plus one INDEX_SCAN candidate per ordered index that
+  // any top-level conjunct can serve as a (possibly multi-column)
+  // bound.  Bound-vs-residual routing for each conjunct is recorded in
+  // the candidate's `condition_handling_map`.  Candidate selection
+  // (highest goodness) is left to the caller.
+  //
+  // `hint` is the table reference whose optional MySQL-style index hint
+  // (FORCE/USE/IGNORE INDEX) constrains which indexes are considered.  NULL
+  // (or a hint of kind NONE) means "no hint".  A FORCE hint that names no
+  // usable index throws RonSQLPermanentError.
+  void build_scan_config_candidates(
+      DynamicArray<const NdbDictionary::Index*>& indexes,
+      DynamicArray<ConditionalExpression*>& toplevel_conditions,
+      DynamicArray<ScanConfig>& out_candidates,
+      const TableRef* hint);
+  // True if `index` is named in the table ref's index-hint list (case
+  // insensitive).  Used to apply FORCE/USE/IGNORE INDEX.
+  static bool index_named_in_hint(const NdbDictionary::Index* index,
+                                  const TableRef* hint);
+  // Reject (throw) a FORCE/USE/IGNORE INDEX hint on any joined table — index
+  // hints are only honored on root-table scans.  Safe to call with NULL.
+  void reject_index_hints_on_joins(const JoinClause* joins) const;
   // Phase I.9: per-CTE-body version of the scan-config selection
   // pipeline.  Loads the body's source-table indexes, walks the
   // body's WHERE for top-level AND conjuncts, scores candidate
@@ -416,7 +441,8 @@ private:
   // Bound vs residual filter routing lives in
   // `scope.body_scan_config->condition_handling_map`.
   void select_cte_body_scan_config(QueryScope& scope,
-                                    ConditionalExpression* where_ce);
+                                    ConditionalExpression* where_ce,
+                                    const TableRef* hint);
   bool load_cte_body_indexes(QueryScope& scope,
                              const NdbDictionary::Table* tab);
   static bool decimal_minmax_fits_64bit(

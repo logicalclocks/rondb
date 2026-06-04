@@ -205,11 +205,27 @@ struct OrderbyColumns
   struct OrderbyColumns* next;
 };
 
+/* A single index name in a FORCE/USE/IGNORE INDEX hint list. */
+struct IndexHintList
+{
+  LexCString index_name;
+  struct IndexHintList* next;
+};
+
 struct TableRef
 {
   LexCString database;     /* database name, or {NULL, 0} if unqualified */
   LexCString name;         /* table name */
   LexCString alias;        /* alias, or same as name if no alias */
+  /* MySQL-style index hint attached to this table reference.  Honored only
+   * for root-table scans (main-query root and CTE-body root); a hint on a
+   * joined table is rejected at prepare time.  USE with an empty
+   * hint_indexes list means "use no index" (force a table scan). */
+  /* Enumerator names are prefixed to avoid clashing with NONE / FORCE /
+   * USE / IGNORE preprocessor macros pulled in by MySQL/NDB headers. */
+  enum class HintKind : Uint8 { HINT_NONE = 0, HINT_FORCE, HINT_USE, HINT_IGNORE };
+  HintKind hint_kind = HintKind::HINT_NONE;
+  IndexHintList* hint_indexes = NULL;
 };
 
 struct JoinCondition
