@@ -54,39 +54,64 @@ bool ndb_file::is_regular_file() const {
 
 int ndb_file::write_forward(const void *buf, ndb_file::size_t count) {
   require(check_block_size_and_alignment(buf, count, get_pos()));
-  const DWORD bytes_to_write = count;
 
-  DWORD dwWritten;
-  BOOL bWrite = WriteFile(m_handle, buf, bytes_to_write, &dwWritten, nullptr);
-  if (!bWrite) {
-    return -1;
+  const ndb_file::size_t orig_count = count;
+  const char *p = static_cast<const char *>(buf);
+  constexpr int MAX_PARTIAL_RETRIES = 10;
+  int partials = 0;
+
+  while (count > 0) {
+    DWORD to_write =
+        (count > MAXDWORD) ? MAXDWORD : static_cast<DWORD>(count);
+    DWORD dwWritten = 0;
+    if (!WriteFile(m_handle, p, to_write, &dwWritten, nullptr)) {
+      return -1;
+    }
+    p     += dwWritten;
+    count -= dwWritten;
+    if (count == 0) break;
+    if (++partials >= MAX_PARTIAL_RETRIES) {
+      return -1;
+    }
   }
-  assert(ndb_file::size_t(dwWritten) == count);
-  if (do_sync_after_write(dwWritten) == -1) return -1;
-  return dwWritten;
+  if (do_sync_after_write(orig_count) == -1) return -1;
+  return static_cast<int>(orig_count);
 }
 
 int ndb_file::write_pos(const void *buf, ndb_file::size_t count,
                         ndb_off_t offset) {
   require(check_block_size_and_alignment(buf, count, offset));
-  LARGE_INTEGER li;
-  li.QuadPart = offset;
 
-  OVERLAPPED ov;
-  std::memset(&ov, 0, sizeof(ov));
-  ov.Offset = li.LowPart;
-  ov.OffsetHigh = li.HighPart;
+  const ndb_file::size_t orig_count = count;
+  const char *p = static_cast<const char *>(buf);
+  constexpr int MAX_PARTIAL_RETRIES = 10;
+  int partials = 0;
 
-  const DWORD bytes_to_write = count;
+  while (count > 0) {
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
 
-  DWORD dwWritten;
-  BOOL bWrite = WriteFile(m_handle, buf, bytes_to_write, &dwWritten, &ov);
-  if (!bWrite) {
-    return -1;
+    OVERLAPPED ov;
+    std::memset(&ov, 0, sizeof(ov));
+    ov.Offset = li.LowPart;
+    ov.OffsetHigh = li.HighPart;
+
+    DWORD to_write =
+        (count > MAXDWORD) ? MAXDWORD : static_cast<DWORD>(count);
+    DWORD dwWritten = 0;
+    if (!WriteFile(m_handle, p, to_write, &dwWritten, &ov)) {
+      return -1;
+    }
+    p      += dwWritten;
+    count  -= dwWritten;
+    offset += dwWritten;
+    if (count == 0) break;
+    if (++partials >= MAX_PARTIAL_RETRIES) {
+      return -1;
+    }
   }
-  assert(ndb_file::size_t(dwWritten) == count);
-  if (do_sync_after_write(dwWritten) == -1) return -1;
-  return dwWritten;
+  if (do_sync_after_write(orig_count) == -1) return -1;
+  return static_cast<int>(orig_count);
 }
 
 int ndb_file::read_forward(void *buf, ndb_file::size_t count) const {
