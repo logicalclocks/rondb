@@ -40,6 +40,7 @@
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
+#define JAM_FILE_ID 568
 // ATTR_READ_BUF_WORD_SIZE + g_attr_read_buf_len_ /
 // g_result_header_size_ / g_result_header_size_per_group_ moved to
 // AggInterpreterBase in Step 3a-A.
@@ -284,7 +285,8 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
  */
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
-        Uint32 thread_id) {
+        Uint32 thread_id,
+        EmulatedJamBuffer *jamBuf) {
   m_current_thread_id = thread_id;
   /* Step 3 Cand-C: bind m_attr_read_buf to the calling LDM thread's
    * Dbtup scratch buffer.  processNullExtendedRow / processRecWithLinkedAttrs
@@ -297,6 +299,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     return ZAGG_OTHER_ERROR;
   }
   if (!m_null_local_columns) {
+    thrjam(jamBuf);
     if (req_struct->read_length != 0) {
       g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
               "read_length=%u", req_struct->read_length);
@@ -308,10 +311,15 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   if (m_n_gb_cols) {
     if (!m_gb_types_inited) {
       if (m_null_local_columns) {
-        initGBTypesForNullLocal(block_tup);
+        thrjam(jamBuf);
+        initGBTypesForNullLocal(block_tup, jamBuf);
       } else {
-        Int32 err = initGBTypes(block_tup, req_struct,
-                                m_linked_attr_data, m_linked_attr_len);
+        thrjam(jamBuf);
+        Int32 err = initGBTypes(block_tup,
+                                req_struct,
+                                m_linked_attr_data,
+                                m_linked_attr_len,
+                                jamBuf);
         if (unlikely(err != 0)) return err;
       }
     }
@@ -320,8 +328,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     AttributeHeader* header = nullptr;
     m_attr_read_pos = 0;
     for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+      thrjamDebug(jamBuf);
       Uint32 attr_id = m_gb_cols[i] >> 16;
       if ((attr_id & 0x8000) != 0) {
+        thrjamDebug(jamBuf);
         /* Linked GROUP BY column — must have a linked-attr buffer.
          * If the attr_id has the linked flag set but
          * m_linked_attr_data is null, the API caller didn't
@@ -338,14 +348,19 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           return ZAGG_OTHER_ERROR;
         }
         Uint32 position = attr_id & 0x7FFF;
+        thrjamDataDebug(jamBuf, position);
+        thrjamDataDebug(jamBuf, m_linked_attr_len);
         const Uint32* p = m_linked_attr_data;
         const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
         Uint32 pos_count = 0;
         while (p < p_end) {
+          thrjamDebug(jamBuf);
           if (pos_count == position) break;
           p += 2;
-          p += 1 + AttributeHeader::getDataSize(*p);
+          Uint32 data_size = AttributeHeader::getDataSize(*p);
+          p += (1 + data_size);
           pos_count++;
+          thrjamDataDebug(jamBuf, data_size);
         }
         if (p >= p_end) {
           g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
@@ -360,12 +375,26 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         m_attr_read_pos += words;
       } else {
         if (m_null_local_columns) {
+          thrjam(jamBuf);
           AttributeHeader null_ah(attr_id, 0);
           m_attr_read_buf[m_attr_read_pos] = null_ah.m_value;
           header = reinterpret_cast<AttributeHeader*>(
               m_attr_read_buf + m_attr_read_pos);
           m_attr_read_pos += 1;
         } else {
+          thrjam(jamBuf);
+          /* Normal (non-linked) GROUP BY column.  Only a real scanned-table
+           * request supplies a valid tablePtrP; a CTE agg feed sets it to
+           * nullptr.  Abort rather than read a table column that does not
+           * exist in this context (see initGBTypes for the rationale). */
+          if (unlikely(req_struct == nullptr ||
+                       req_struct->tablePtrP == nullptr)) {
+            g_eventLogger->debug(
+                "JoinAggInterpreter::ProcessRec: normal GROUP BY column %u "
+                "referenced in a CTE agg-feed with no scanned table — "
+                "aborting query", m_gb_cols[i] >> 16);
+            return ZAGG_OTHER_ERROR;
+          }
           int ret = block_tup->readSingleAttribute(
               req_struct, m_gb_cols[i] >> 16,
               m_attr_read_buf + m_attr_read_pos,
@@ -502,6 +531,18 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
               m_attr_read_buf + m_attr_read_pos);
           attrDescriptor = nullptr;
         } else {
+          /* Normal (non-linked) column load.  A CTE agg feed has no scanned
+           * table (tablePtrP == nullptr); reaching here means the
+           * aggregation program references a table column that cannot be
+           * supplied — abort cleanly (see initGBTypes). */
+          if (unlikely(req_struct == nullptr ||
+                       req_struct->tablePtrP == nullptr)) {
+            g_eventLogger->debug(
+                "JoinAggInterpreter::ProcessRec kOpLoadCol: normal column %u "
+                "referenced in a CTE agg-feed with no scanned table — "
+                "aborting query", col_id_raw);
+            return ZAGG_OTHER_ERROR;
+          }
           ret = block_tup->readSingleAttribute(
               req_struct, col_id_raw,
               m_attr_read_buf + m_attr_read_pos,
@@ -597,6 +638,7 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
     Uint32 thread_id,
+    EmulatedJamBuffer *jamBuf,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
@@ -604,6 +646,7 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
   // Switch to leaf program under mutex protection.
   // For single-leaf queries, leaf is nullptr — no switch needed.
   if (leaf != nullptr) {
+    thrjam(jamBuf);
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
@@ -616,10 +659,11 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
   // When called without a table reference (CTE_LOOKUP agg feed),
   // treat local columns as NULL to avoid nullptr dereference in ProcessRec.
   if (block_tup == nullptr) {
+    thrjam(jamBuf);
     m_null_local_columns = true;
   }
 
-  Int32 ret = ProcessRec(block_tup, req_struct, thread_id);
+  Int32 ret = ProcessRec(block_tup, req_struct, thread_id, jamBuf);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
@@ -1234,7 +1278,8 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
   }
   return ret;
 }
-void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
+void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
+                                                 EmulatedJamBuffer *jamBuf) {
   /*
    * Called when the first row is a null-extended row (m_null_local_columns).
    * Linked columns: resolve type from DBTUP tablerec (same as initGBTypes).
@@ -1244,9 +1289,12 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
    */
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     Uint32 attr_id = m_gb_cols[i] >> 16;
+    thrjamDebug(jamBuf);
+    thrjamDataDebug(jamBuf, attr_id);
     GBColTypeInfo &info = m_gb_types[i];
 
     if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+      thrjamDebug(jamBuf);
       Uint32 position = attr_id & 0x7FFF;
       const Uint32* p = m_linked_attr_data;
       const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
@@ -1260,16 +1308,20 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
         Uint32 word0 = p[0];
         Uint32 word1 = p[1];
         if (CteLinkedAttr::isCteMarker(word0)) {
+          thrjamDebug(jamBuf);
           info.typeId = CteLinkedAttr::decodeTypeId(word0);
           info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
           info.cs = nullptr;
           Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
           if (csNumber != 0) {
+            thrjamDebug(jamBuf);
             info.cs = all_charsets[csNumber];
           }
         } else if (block_tup != nullptr) {
+          thrjamDebug(jamBuf);
           Uint32 tableId = word0;
           if (tableId != 0 && tableId < block_tup->cnoOfTablerec) {
+            thrjamDebug(jamBuf);
             Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
             Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
             const Uint32* attrDesc = tab->tabDescriptor +
@@ -1278,25 +1330,30 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
             info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
             info.cs = nullptr;
             if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+              thrjamDebug(jamBuf);
               Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
               info.cs = tab->charsetArray[csPos];
             }
           } else {
+            thrjamDebug(jamBuf);
             info.typeId = NDB_TYPE_UNSIGNED;
             info.maxBytes = 4;
             info.cs = nullptr;
           }
         } else {
+          thrjamDebug(jamBuf);
           info.typeId = NDB_TYPE_UNSIGNED;
           info.maxBytes = 4;
           info.cs = nullptr;
         }
       } else {
+        thrjamDebug(jamBuf);
         info.typeId = NDB_TYPE_UNSIGNED;
         info.maxBytes = 4;
         info.cs = nullptr;
       }
     } else {
+      thrjamDebug(jamBuf);
       info.typeId = NDB_TYPE_UNSIGNED;
       info.maxBytes = 4;
       info.cs = nullptr;
@@ -1313,11 +1370,13 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
     Uint32 thread_id,
+    EmulatedJamBuffer *jamBuf,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
 
   if (leaf != nullptr) {
+    thrjam(jamBuf);
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
@@ -1333,7 +1392,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
    * null-extended row path still passes req_struct=nullptr (no row
    * data to read) — m_null_local_columns drives kOpLoadCol to
    * synthesise NULL AttributeHeaders into m_attr_read_buf instead. */
-  Int32 ret = ProcessRec(block_tup, nullptr, thread_id);
+  Int32 ret = ProcessRec(block_tup, nullptr, thread_id, jamBuf);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;

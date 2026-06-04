@@ -90,6 +90,7 @@ struct CteLookupRef {
   // Error codes (mirrors ZCTE_LOOKUP_* in Dblqh.hpp / ndberror.cpp)
   static constexpr Uint32 GROUP_NOT_FOUND = 1263;
   static constexpr Uint32 STATE_NOT_READY = 1264;
+  static constexpr Uint32 AGG_FEED_SELF_REFERENCE = 1269;
 };
 
 #endif  // NDB_CTE_LOOKUP_HPP

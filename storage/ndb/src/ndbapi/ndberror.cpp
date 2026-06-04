@@ -478,6 +478,7 @@ ErrorBundle ErrorCodes[] = {
   { 1266, DMEC, IE, "CTE lookup output buffer overflow" },
   { 1267, DMEC, IE, "CTE evict in CTE materialization leaf" },
   { 1268, DMEC, IE, "CTE lookup filter execution error" },
+  { 1269, DMEC, IE, "CTE aggregation feed targets its source CTE state" },
 
   /**
    * Application error

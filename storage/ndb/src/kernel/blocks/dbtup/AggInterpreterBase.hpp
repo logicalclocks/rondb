@@ -77,6 +77,37 @@ class AggInterpreterBase : public PushdownInterpreter {
   static constexpr Uint32 GROUP_LINK_OVERHEAD = 24;
 
   /**
+   * Step 4 — chunked teardown protocol.  When a high-cardinality
+   * interpreter is released (e.g., on scan abort with thousands of
+   * resident groups), walking the group list synchronously inside
+   * ~AggInterpreterBase() can take many milliseconds and violate the
+   * 10 µs block-thread latency contract.
+   *
+   * Callers that may face a non-empty m_gb_map should:
+   *   1. interp->beginTeardown();
+   *   2. While (!interp->tearDownChunk(N)) sendSignal CONTINUEB;
+   *   3. PushdownInterpreter::Destruct(interp);
+   *
+   * tearDownChunk(N) processes up to N items per call, bounded the
+   * same way at every phase: drain N groups from m_gb_map (each
+   * freeGroupData also releases the underlying chunk slot when its
+   * last group leaves), or — when the map is empty and chunks
+   * remain because of partial accounting — release up to N chunks
+   * from m_chunks.  Returns true once m_gb_map is empty, the chunk
+   * list is drained, and the per-instance scratch (m_string_results,
+   * m_xfrm_buf) has been freed; the subsequent Destruct call then
+   * only releases m_buf_block.
+   *
+   * Synchronous Destruct (without beginTeardown/tearDownChunk) is
+   * still safe for already-drained interpreters — the destructor is
+   * idempotent and bails out via nullptr checks.  Use the CONTINUEB
+   * path only when the map is potentially non-empty.
+   */
+  void beginTeardown() { m_tearing_down = true; }
+  bool isTearingDown() const { return m_tearing_down; }
+  bool tearDownChunk(Uint32 max_groups);
+
+  /**
    * Step 3a-B — central teardown: release per-(group, slot) string
    * winner buffers (release_string_results), then free the chunk pages
    * (freeAllChunks), the xfrm scratch buffer, and m_buf_block.  Order
@@ -99,6 +130,7 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_attr_read_buf(nullptr), m_prog_buf(nullptr),
       m_gb_cols_buf(nullptr), m_agg_results_buf(nullptr),
       m_gb_map_buf(nullptr), m_buf_block(nullptr),
+      m_tearing_down(false),
       m_chunks(nullptr), m_chunks_tail(nullptr),
       m_current_chunk(nullptr), m_total_chunk_bytes(0),
       m_memory_budget(0), m_budget_increment(0),
@@ -437,9 +469,11 @@ class AggInterpreterBase : public PushdownInterpreter {
    * (normal scan) passes nullptr / 0; the linked-attr resolution
    * branches are dead code on that path (the JoinAgg-only attr_id
    * bit 0x8000 never appears in normal-scan GB cols). */
-  Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+  Int32 initGBTypes(Dbtup* block_tup,
+                    Dbtup::KeyReqStruct* req_struct,
                     const Uint32* linked_attr_data,
-                    Uint32 linked_attr_len);
+                    Uint32 linked_attr_len,
+                    EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
    * `initBufBlock` allocates one combined block from RG_QUERY_MEMORY
@@ -454,6 +488,11 @@ class AggInterpreterBase : public PushdownInterpreter {
   AggResItem* m_agg_results_buf;
   JoinGBHashTable* m_gb_map_buf;
   void* m_buf_block;
+
+  /* Step 4 — chunked-teardown protocol flag.  Set by beginTeardown(),
+   * read by callers / asserts.  Drives the CONTINUEB-driven release
+   * path described above on the public interface. */
+  bool m_tearing_down;
 
   /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
    * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;

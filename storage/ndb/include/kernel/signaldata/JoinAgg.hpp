@@ -28,7 +28,7 @@
 
 #include "SignalData.hpp"
 
-#define JAM_FILE_ID 564
+#define JAM_FILE_ID 571
 
 struct JoinAggSetupReq {
   static constexpr Uint32 SignalLength = 12;

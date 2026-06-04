@@ -599,6 +599,7 @@ class DblqhProxy : public LocalProxy {
   // CONTINUEB handler for batched page freeing
   void execCONTINUEB(Signal*);
   void continueFreeRedistPages(Signal*, Uint32 aggStateKey);
+  void continueJoinAggTeardown(Signal*, Uint32 aggStateKey);
 };
 
 #undef JAM_FILE_ID

@@ -26,7 +26,7 @@
 #ifndef GET_CPU_USAGE_HPP
 #define GET_CPU_USAGE_HPP
 
-#define JAM_FILE_ID 49
+#define JAM_FILE_ID 569
 
 
 /**

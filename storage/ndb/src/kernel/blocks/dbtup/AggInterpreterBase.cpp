@@ -58,6 +58,8 @@
 #include "my_sys.h"
 #include "../dblqh/Dblqh.hpp"
 
+#define JAM_FILE_ID 566
+
 /*
  * DEBUG_PA_INTERP / DEBUG_AGG machinery (off by default).  The kernels'
  * debug-only trace blocks reference DEBUG_PA_INTERP / PrintValue, and
@@ -2114,13 +2116,19 @@ void AggInterpreterBase::freeAllChunks() {
  * normal-scan GB column.
  */
 Int32 AggInterpreterBase::initGBTypes(
-    Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
-    const Uint32* linked_attr_data, Uint32 linked_attr_len) {
+    Dbtup* block_tup,
+    Dbtup::KeyReqStruct* req_struct,
+    const Uint32* linked_attr_data,
+    Uint32 linked_attr_len,
+    EmulatedJamBuffer *jamBuf) {
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    thrjamDebug(jamBuf);
     Uint32 attr_id = m_gb_cols[i] >> 16;
+    thrjamDataDebug(jamBuf, attr_id);
     GBColTypeInfo &info = m_gb_types[i];
 
     if ((attr_id & 0x8000) != 0) {
+      thrjam(jamBuf);
       if (unlikely(linked_attr_data == nullptr)) {
         g_eventLogger->debug(
             "initGBTypes: linked GB col %u (attr_id=0x%x) but "
@@ -2146,14 +2154,17 @@ Int32 AggInterpreterBase::initGBTypes(
       Uint32 word1 = p[1];
 
       if (CteLinkedAttr::isCteMarker(word0)) {
+        thrjamDebug(jamBuf);
         info.typeId = CteLinkedAttr::decodeTypeId(word0);
         info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
         info.cs = nullptr;
         Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
         if (csNumber != 0) {
+          thrjamDebug(jamBuf);
           info.cs = all_charsets[csNumber];
         }
       } else {
+        thrjamDebug(jamBuf);
         Uint32 tableId = word0;
         Uint32 tableVersion = word1;
         require(tableId != 0);
@@ -2185,17 +2196,34 @@ Int32 AggInterpreterBase::initGBTypes(
         info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
         info.cs = nullptr;
         if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+          thrjamDebug(jamBuf);
           Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
           info.cs = tab->charsetArray[csPos];
         }
       }
     } else {
+      thrjam(jamBuf);
+      /* Normal (non-linked) GROUP BY column.  Resolving its type needs a
+       * valid tablePtrP, which only a real scanned-table request supplies.
+       * A CTE_LOOKUP / CTE_SCAN agg feed has no scanned table (the row comes
+       * from the linked buffer) and sets tablePtrP == nullptr, so reaching
+       * here means the aggregator references a normal column in a context
+       * that cannot supply one.  Abort the query cleanly rather than
+       * dereference a null/poisoned tablePtrP. */
+      if (unlikely(req_struct == nullptr ||
+                   req_struct->tablePtrP == nullptr)) {
+        g_eventLogger->debug(
+            "initGBTypes: normal GROUP BY column attr_id=%u referenced in a "
+            "CTE agg-feed with no scanned table — aborting query", attr_id);
+        return ZAGG_OTHER_ERROR;
+      }
       const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
           attr_id * ZAD_SIZE;
       info.typeId = AttributeDescriptor::getType(attrDesc[0]);
       info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
       info.cs = nullptr;
       if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+        thrjamDebug(jamBuf);
         Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
         info.cs = req_struct->tablePtrP->charsetArray[csPos];
       }
@@ -2205,7 +2233,9 @@ Int32 AggInterpreterBase::initGBTypes(
   }
   Uint32 max_xfrm_len = 0;
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    thrjamDebug(jamBuf);
     if (m_gb_types[i].cs != nullptr) {
+      thrjamDebug(jamBuf);
       Uint32 lb = 0;
       if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
       else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
@@ -2216,6 +2246,7 @@ Int32 AggInterpreterBase::initGBTypes(
     }
   }
   if (max_xfrm_len > 0) {
+    thrjamDebug(jamBuf);
     void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
                                   m_thread_id, false);
     if (unlikely(p == nullptr)) {
@@ -2242,15 +2273,118 @@ Uint32 AggInterpreterBase::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreterBase::g_result_header_size_per_group_ = sizeof(Uint32);
 
 /*
- * Step 3a-B — central teardown: release per-(group, slot) string
- * winner buffers, free the chunk pages backing the GBHashTable's
- * stored entries, free the xfrm scratch buffer, then free m_buf_block
- * (which backs the bucket array itself).  Subclass destructors
- * default — this is the single cleanup site for both.
+ * Step 4 — chunked teardown.  Drains up to max_groups groups from
+ * m_gb_map per call.  When the map is empty, finishes the
+ * per-instance cleanup (scalar string slots, m_string_results,
+ * m_xfrm_buf, freeAllChunks) and returns true.  Subsequent
+ * Destruct/~AggInterpreterBase() only needs to release m_buf_block —
+ * the destructor body is nullptr-guarded throughout, so a clean
+ * tearDownChunk run leaves it with no real work.
+ *
+ * Returning false means: at least one more tearDownChunk(N) call is
+ * required.  Caller schedules a CONTINUEB and re-enters.
+ *
+ * Idempotent re-entry on a fully drained interpreter returns true
+ * immediately (no work).
+ */
+bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
+  /* Phase 1: drain up to max_count groups from m_gb_map.  Each
+   * freeGroupData call releases the underlying chunk slot, so chunks
+   * are freed incrementally as their last live group leaves. */
+  if (m_gb_map != nullptr && !m_gb_map->empty()) {
+    Uint32 count = 0;
+    auto iter = m_gb_map->begin();
+    while (iter.valid() && count < max_count) {
+      Uint32 key_len = iter.keyLen();
+      char* key_ptr = iter.data();
+      if (m_string_results != nullptr) {
+        AggResItem* slots =
+            reinterpret_cast<AggResItem*>(key_ptr + key_len);
+        freeGroupStringSlots(slots);
+      }
+      m_gb_map->eraseAndNext(iter);
+      freeGroupData(key_ptr);
+      count++;
+    }
+    if (!m_gb_map->empty()) {
+      return false;  /* More groups remain — caller re-schedules. */
+    }
+  }
+  /* Phase 2: scalar (no-GROUP-BY) string winners + m_string_results
+   * metadata array.  One-shot; idempotent on re-entry. */
+  if (m_agg_results != nullptr && m_string_results != nullptr) {
+    freeGroupStringSlots(m_agg_results);
+  }
+  if (m_string_results != nullptr) {
+    lc_ndbd_pool_free(m_string_results);
+    m_string_results = nullptr;
+  }
+  /* Phase 3: drain chunks.  In normal flow Phase 1 has already
+   * released every chunk via freeGroupData (each chunk auto-frees
+   * when its last live_groups hits zero), so m_chunks is nullptr by
+   * the time we get here and this loop is a no-op.  The bounded walk
+   * is defense-in-depth for cases where the live_groups accounting
+   * leaves chunks behind — at the 10 µs budget per signal we don't
+   * want a 4096-chunk fallback walk to run synchronously. */
+  if (m_chunks != nullptr) {
+    Uint32 count = 0;
+    while (m_chunks != nullptr && count < max_count) {
+      MemChunk* chunk = m_chunks;
+      m_chunks = chunk->next;
+      lc_ndbd_pool_free(chunk);
+      count++;
+    }
+    if (m_chunks != nullptr) {
+      return false;  /* More chunks remain — caller re-schedules. */
+    }
+    m_chunks_tail = nullptr;
+    m_current_chunk = nullptr;
+    m_total_chunk_bytes = 0;
+  }
+  /* Phase 4: xfrm scratch (one-shot, idempotent). */
+  if (m_xfrm_buf != nullptr) {
+    lc_ndbd_pool_free(m_xfrm_buf);
+    m_xfrm_buf = nullptr;
+  }
+  return true;
+}
+
+/*
+ * Step 4 — central teardown.  The destructor expects an invariant
+ * that no unbounded iteration is needed:
+ *
+ *   - m_gb_map is nullptr or empty — release_string_results' map walk
+ *     iterates 0 times.
+ *   - m_chunks is nullptr — freeAllChunks iterates 0 times.
+ *
+ * These hold when reaching the destructor via:
+ *   (a) tearDownChunk → ... → true (CONTINUEB path).  Both m_gb_map
+ *       and m_chunks are drained; m_string_results / m_xfrm_buf are
+ *       already freed in tearDownChunk's tail; the destructor's
+ *       remaining work is just m_buf_block.
+ *   (b) the synchronous "empty map" fast path in
+ *       init_release_scanrec.  By contract the periodic / end-of-scan
+ *       drain has emptied the map; freeGroupData's per-group chunk
+ *       release ensures m_chunks is nullptr in lock-step.  m_string_results
+ *       and m_xfrm_buf may be present — both are O(1) frees here.
+ *   (c) an interpreter that never processed rows (Init failure,
+ *       version mismatch) — m_gb_map / m_chunks / m_string_results /
+ *       m_xfrm_buf are all nullptr.
+ *
+ * Anything else means the caller bypassed the CONTINUEB protocol
+ * while still holding live group state; the destructor would otherwise
+ * walk thousands of groups synchronously and blow the 10 µs
+ * block-thread budget (true even during graceful shutdown — other
+ * blocks coordinate via signals and watchdogs).  Fail fast with
+ * ndbrequire rather than silently freeze.
  */
 AggInterpreterBase::~AggInterpreterBase() {
+  ndbrequire(m_gb_map == nullptr || m_gb_map->empty());
+  ndbrequire(m_chunks == nullptr);
+  /* m_string_results / m_xfrm_buf may be present; both are O(1).
+   * release_string_results' scalar slot walk is bounded by
+   * m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also O(1). */
   release_string_results();
-  freeAllChunks();
   if (m_xfrm_buf != nullptr) {
     lc_ndbd_pool_free(m_xfrm_buf);
     m_xfrm_buf = nullptr;

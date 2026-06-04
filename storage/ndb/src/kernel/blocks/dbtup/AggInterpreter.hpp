@@ -67,7 +67,7 @@ class AggInterpreter : public AggInterpreterBase {
   bool Init(const Uint32* prog);
 
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
-                   Uint32 thread_id);
+                   Uint32 thread_id, EmulatedJamBuffer *jamBuf);
 
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
   Uint32 NumOfResRecords(bool last_time = false);

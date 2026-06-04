@@ -36,6 +36,8 @@
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
+#define JAM_FILE_ID 567
+
 // g_attr_read_buf_len_ / g_result_header_size_ /
 // g_result_header_size_per_group_ definitions moved to
 // AggInterpreterBase.cpp in Step 3a-A.
@@ -150,7 +152,8 @@ bool AggInterpreter::Init(const Uint32* prog) {
  */
 Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
-        Uint32 thread_id) {
+        Uint32 thread_id,
+        EmulatedJamBuffer *jamBuf) {
   m_current_thread_id = thread_id;
   /* Step 3 Cand-C: bind m_attr_read_buf to the per-LDM-thread scratch
    * buffer on the Dbtup block instance.  The buffer is reused across
@@ -173,7 +176,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     if (!m_gb_types_inited) {
       Int32 err = initGBTypes(block_tup, req_struct,
                               /*linked_attr_data=*/nullptr,
-                              /*linked_attr_len=*/0);
+                              /*linked_attr_len=*/0,
+                              jamBuf);
       if (unlikely(err != 0)) return err;
     }
 

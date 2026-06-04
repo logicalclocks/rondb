@@ -2811,26 +2811,25 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_numReceiverIds = 0;
     }
 
-    // Free JoinAggInterpreter(s)
+    /* Step 4d: mark all interpreters for chunked teardown.  The
+     * interpreters themselves are torn down by continueJoinAggTeardown
+     * via CONTINUEB so we don't stall the LDM thread walking thousands
+     * of groups synchronously.  We do NOT call freeAllChunks here —
+     * that pattern (chunks freed before destructor walks m_gb_map) is
+     * UB if the map is non-empty; tearDownChunk handles the proper
+     * order (per-group string slot free → erase from map → freeGroupData
+     * → eventually freeAllChunks once the map is drained). */
     if (state->m_agg_interpreter != nullptr) {
       jam();
-      state->m_agg_interpreter->freeAllChunks();
-      state->m_agg_interpreter->~JoinAggInterpreter();
-      lc_ndbd_pool_free(state->m_agg_interpreter);
-      state->m_agg_interpreter = nullptr;
+      state->m_agg_interpreter->beginTeardown();
     }
     if (state->m_per_thread_interpreters != nullptr) {
       jam();
       for (Uint32 i = 0; i < state->m_num_threads; i++) {
         if (state->m_per_thread_interpreters[i] != nullptr) {
-          state->m_per_thread_interpreters[i]->freeAllChunks();
-          state->m_per_thread_interpreters[i]->~JoinAggInterpreter();
-          lc_ndbd_pool_free(state->m_per_thread_interpreters[i]);
-          state->m_per_thread_interpreters[i] = nullptr;
+          state->m_per_thread_interpreters[i]->beginTeardown();
         }
       }
-      lc_ndbd_pool_free(state->m_per_thread_interpreters);
-      state->m_per_thread_interpreters = nullptr;
     }
 
     // Clear queue pointers — entries live in pages being freed below
@@ -2839,7 +2838,7 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     state->m_redist_queue_count = 0;
   }
 
-  // Send CONF before page cleanup — caller need not wait
+  // Send CONF before teardown — caller need not wait
   if (!noReply) {
     jam();
     JoinAggReleaseConf *conf =
@@ -2851,15 +2850,14 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
                signal, JoinAggReleaseConf::SignalLength, JBB);
   }
 
-  // Free redistribution pages in batches, then release pool record.
-  // State must stay alive until all pages are freed.
-  if (state != nullptr && state->m_redist_page_head != nullptr) {
+  /* Step 4d: drive interpreter teardown + redist-page free chain via
+   * CONTINUEB.  continueJoinAggTeardown walks the shared + per-thread
+   * interpreters one chunk at a time; when all are torn down it falls
+   * through to continueFreeRedistPages (or releaseJoinAggState if no
+   * pages remain).  State stays alive until the whole chain finishes. */
+  if (state != nullptr) {
     jam();
-    signal->theData[0] = ZCONTINUE_FREE_REDIST_PAGES;
-    signal->theData[1] = aggStateKey;
-    continueFreeRedistPages(signal, aggStateKey);
-  } else if (state != nullptr) {
-    releaseJoinAggState(aggStateKey);
+    continueJoinAggTeardown(signal, aggStateKey);
   }
 }
 
@@ -2912,6 +2910,10 @@ DblqhProxy::execCONTINUEB(Signal *signal) {
       jam();
       continueFreeRedistPages(signal, signal->theData[1]);
       break;
+    case ZCONTINUE_JOIN_AGG_TEARDOWN:
+      jam();
+      continueJoinAggTeardown(signal, signal->theData[1]);
+      break;
     default:
       ndbabort();
   }
@@ -2956,6 +2958,98 @@ DblqhProxy::continueFreeRedistPages(Signal *signal, Uint32 aggStateKey) {
   /* All pages freed — release pool record */
   state->m_redist_page_ptr = nullptr;
   state->m_redist_page_remaining = 0;
+  releaseJoinAggState(aggStateKey);
+}
+
+/**
+ * Step 4d — chunked teardown of JoinAggInterpreter(s) attached to a
+ * JoinAggregationState.
+ *
+ * Walks the shared MUTEX_BASED interpreter (if present) and every
+ * non-null entry of the MUTEX_FREE per-thread array, calling
+ * tearDownChunk(N) on each.  When an interpreter completes its
+ * tearDownChunk chain, it is destructed and its slot is nulled out;
+ * the CONTINUEB re-fires to advance to the next one.  Once all
+ * interpreters are gone and the per-thread array itself is freed, we
+ * hand off to the existing continueFreeRedistPages chain (or directly
+ * release the state if no pages remain).
+ *
+ * Uses the nullptr-marker pattern: a fully-torn-down interpreter has
+ * been removed from its slot, so a fresh scan over the state finds
+ * the next non-null one.  No extra teardown-position state needed on
+ * JoinAggregationState.
+ *
+ * Signal format:
+ *   theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN
+ *   theData[1] = aggStateKey
+ */
+void
+DblqhProxy::continueJoinAggTeardown(Signal *signal, Uint32 aggStateKey) {
+  static const Uint32 JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH = 16;
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+
+  /* Phase 1: shared MUTEX_BASED interpreter, if present. */
+  if (state->m_agg_interpreter != nullptr) {
+    jam();
+    JoinAggInterpreter *interp = state->m_agg_interpreter;
+    if (!interp->tearDownChunk(JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+      jam();
+      signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
+      signal->theData[1] = aggStateKey;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+      return;
+    }
+    /* tearDownChunk returned true: drained.  Destruct + free. */
+    interp->~JoinAggInterpreter();
+    lc_ndbd_pool_free(interp);
+    state->m_agg_interpreter = nullptr;
+    /* Re-enter to advance to next phase. */
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
+    signal->theData[1] = aggStateKey;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+
+  /* Phase 2: MUTEX_FREE per-thread interpreters. */
+  if (state->m_per_thread_interpreters != nullptr) {
+    for (Uint32 i = 0; i < state->m_num_threads; i++) {
+      JoinAggInterpreter *interp = state->m_per_thread_interpreters[i];
+      if (interp == nullptr) continue;
+      jam();
+      if (!interp->tearDownChunk(JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+        jam();
+        signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
+        signal->theData[1] = aggStateKey;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+      interp->~JoinAggInterpreter();
+      lc_ndbd_pool_free(interp);
+      state->m_per_thread_interpreters[i] = nullptr;
+      signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
+      signal->theData[1] = aggStateKey;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+      return;
+    }
+    /* All per-thread slots torn down — free the array itself. */
+    jam();
+    lc_ndbd_pool_free(state->m_per_thread_interpreters);
+    state->m_per_thread_interpreters = nullptr;
+  }
+
+  /* Phase 3: redist pages (existing batched-free path).  If pages
+   * remain, kick off continueFreeRedistPages which will eventually
+   * call releaseJoinAggState.  Otherwise release directly. */
+  if (state->m_redist_page_head != nullptr) {
+    jam();
+    continueFreeRedistPages(signal, aggStateKey);
+    return;
+  }
+  jam();
   releaseJoinAggState(aggStateKey);
 }
 
