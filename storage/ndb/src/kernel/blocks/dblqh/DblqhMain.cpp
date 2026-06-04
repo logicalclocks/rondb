@@ -19767,6 +19767,7 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
  * hash bucket for this key.  Returns true if forwarded, false if the local
  * node owns the key (caller should send NOT_FOUND REF).
  */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 bool Dblqh::routeCteLookup(Signal *signal,
                             const JoinAggregationState *state,
                             const JoinAggInterpreter *interp,
@@ -19826,6 +19827,7 @@ bool Dblqh::routeCteLookup(Signal *signal,
              CteLookupReq::SignalLength, JBB, &fwdHandle);
   return true;
 }
+#endif
 
 void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
                              Uint32 senderData, Uint32 errorCode,
@@ -20012,6 +20014,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     jam();
     /* If ROUTE_FLAG is set and the key hashes to a remote node,
      * forward the request there instead of returning NOT_FOUND. */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
     if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
         state->m_cte_num_nodes > 1 &&
         routeCteLookup(signal, state, interp,
@@ -20020,6 +20023,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       jam();
       return;
     }
+#endif
     /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,

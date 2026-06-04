@@ -48,7 +48,7 @@ struct CteLookupReq {
   Uint32 joinAggStateKey; // RNIL = send to API via FLUSH_AI;
                           // else = encoded aggStateKey for target JoinAggInterpreter
                           // (CTE_LOOKUP feeds result into aggregation instead of API)
-  Uint32 flags;           // CTE_LOOKUP_ROUTE_FLAG: DBLQH may forward to remote node
+  Uint32 flags;           // CTE_LOOKUP_ROUTE_FLAG: debug fallback for DBLQH routing
 
   static constexpr Uint32 SignalLength = 10;
   enum { KeySectionNum = 0, AttrInfoSectionNum = 1, LinkedSectionNum = 2 };

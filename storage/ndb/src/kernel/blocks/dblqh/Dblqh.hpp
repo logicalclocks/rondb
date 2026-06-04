@@ -3369,12 +3369,14 @@ private:
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
   bool routeCteLookup(Signal* signal,
                       const JoinAggregationState *state,
                       const JoinAggInterpreter *interp,
                       const Uint32 *keyBuf, Uint32 keySectionSz,
                       const Uint32 *cinBuf, Uint32 attrInfoLen,
                       const CteLookupReq *req);
+#endif
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
