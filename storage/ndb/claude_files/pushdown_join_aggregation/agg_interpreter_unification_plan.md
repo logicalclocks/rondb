@@ -537,6 +537,74 @@ implementations of the same thing.  Keeping AggInterpreter as a thin
 subclass expresses this distinction and avoids tangling two different use
 cases inside one class.
 
+### Step 4 ✅ DONE — Per-LDM scratch, Init factoring, bounded teardown, CTE feed hardening
+
+Post-Step-3 work, shipped across five commits.
+
+**4a — `attr_read_buf` → Dbtup per-LDM-thread scratch** (`86627c3ef31`).
+`AggInterpreterBase::m_attr_read_buf` is no longer a per-interpreter carve of
+`m_buf_block`; it is a per-call pointer bound at `ProcessRec` entry from
+`block_tup->getAggAttrReadBuf()` — a `MAX_TUPLE_SIZE_IN_WORDS` (= 18000 words /
+72 KB) inline array on each LDM thread's Dbtup.  `ProcessRec` now
+`require(block_tup != nullptr)`, and `processNullExtendedRow` gained a `Dbtup*`
+parameter so the null-extended path can bind the buffer too.  Per-interpreter
+footprint drops 8 KB; the 72 KB ceiling absorbs the widest single-row projection.
+
+**4b — Init prologue/epilogue + kOpLoadCol factoring** (`a9aed46c175` Cand-A,
+`6ef2ae2bd17` Cand-B).  Cand-A lifts the shared Init header-peek + GB-col
+population + COUNT pre-init into base helpers; Cand-B factors the `kOpLoadCol`
+type-extraction switch into `loadColumnTypedFromBuf` on the base.  Each subclass
+Init body is ~30 lines instead of ~120.
+
+**4c — Bounded interpreter teardown** (`934ef2993f3`).  Releasing a
+high-cardinality interpreter (thousands of resident groups) by walking
+`m_gb_map` synchronously inside `~AggInterpreterBase()` violates the 10 µs
+block-thread budget.  New `beginTeardown()` / `tearDownChunk(N)` protocol drains
+up to N groups per call (per-group string slots → erase → `freeGroupData` →
+chunk auto-free), then frees `m_string_results` / `m_xfrm_buf`;
+`~AggInterpreterBase()` now `ndbrequire`s the map + chunk list are already
+drained and only releases `m_buf_block`.  Two CONTINUEB drivers:
+`Dblqh::continueAggInterpTeardown` (`ZCONTINUE_AGG_INTERP_TEARDOWN`, scan-release
+path via the new `releaseScanInterpreters`) and
+`DblqhProxy::continueJoinAggTeardown` (`ZCONTINUE_JOIN_AGG_TEARDOWN`,
+JOIN_AGG_RELEASE path).  `ScanRecord::~ScanRecord` now `ndbrequire`s the
+interpreter pointers were already detached.
+
+**4d — CTE join-agg routing + self-feed hardening** (`934ef2993f3`).  Fixes a
+multi-node SIGSEGV surfaced by `ronsql_cte_partial_key` (2 data nodes):
+
+- *Root cause.*  `Dbspj::cte_lookup_send` sent CTE_LOOKUP to the local DBLQH with
+  `CTE_LOOKUP_ROUTE_FLAG`, letting the remote owner forward-and-misinterpret the
+  node-local target `joinAggStateKey` as *its own source* CTE state.  The feed
+  then landed in the source CTE materialization aggregator, whose GROUP BY columns
+  are the CTE-body table's *local* (non-`0x8000`) columns.  Because a CTE feed has
+  no scanned table row, `initGBTypes` dereferenced the uninitialised (poisoned)
+  `req_struct->tablePtrP` → crash (jam trail: `cteLookupAggFeed` →
+  `processRecWithLinkedAttrs` → `ProcessRec` → `initGBTypes` local-column branch).
+- *Primary fix (DBSPJ).*  DBSPJ now computes the owner node itself instead of
+  relying on DBLQH forwarding: it normalizes the lookup key's virtual GROUP BY
+  AttributeHeaders to column positions (`keyBuf[kp] = (i<<16) | (keyBuf[kp] &
+  0xFFFF)`), hashes via the *local* CTE interpreter's `hashGroupKey`, and sends the
+  CTE_LOOKUP_REQ directly to that owner with that owner's source *and* target agg
+  keys.  `CTE_LOOKUP_ROUTE_FLAG` retired; scalar CTE lookups stay local.
+- *Self-feed guard.*  `cteLookupAggFeed` / `cteScanAggFeed` reject when the target
+  aggregation state equals the source CTE state (`targetState == sourceState`)
+  with new `ZCTE_AGG_FEED_SELF_REFERENCE` (1269 =
+  `CteLookupRef::AGG_FEED_SELF_REFERENCE`; ndberror "CTE aggregation feed targets
+  its source CTE state"), so invalid state reuse is reported, not hung.
+- *Linked-only guard (defense in depth).*  All four CTE-feed `KeyReqStruct` sites
+  (`runCteFilter`, `cteLookupAggFeed`, both `cteScanAggFeed` paths) set
+  `tablePtrP = nullptr` deterministically; `initGBTypes`, the GB-col read in
+  `ProcessRec`, and `kOpLoadCol` abort with `ZAGG_OTHER_ERROR` if they reach a
+  normal-column read with `tablePtrP == nullptr` — a CTE feed must read only
+  linked columns.  (`c_tup`'s `tablePtrP` is not valid here; under DBQLQH the
+  table would have to come from the fragment owner.)
+- *Jam passthrough.*  `jamBuffer()` is threaded through
+  `processRecWithLinkedAttrs` / `processNullExtendedRow` / `ProcessRec` /
+  `initGBTypes` so the kernel jam trail pinpoints the failing interpreter line.
+
+MTR: `ronsql_cte_basic` + `ronsql_cte_partial_key` green; build + agg block tests green.
+
 ---
 
 ## 7. Risks & how the plan addresses them
