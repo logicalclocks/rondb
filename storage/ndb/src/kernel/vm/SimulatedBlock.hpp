@@ -1815,9 +1815,9 @@ public:
           low_load = 0;
         }
       }
-      handle->m_low_load = low_load;
     }
     jam();
+    handle->m_low_load = low_load;
     jamLine(m_num_rr_groups);
     ndbrequire(m_inited_rr_groups);
     ndbrequire(m_num_distribution_threads);
@@ -2058,6 +2058,81 @@ public:
             globalData.ndbMtReceiveThreads,
             globalData.ndbMtMainThreads);
       }
+    }
+    ndbrequire(num_rr_groups <= MAX_RR_GROUPS);
+    Uint32 threads_per_rr_group[MAX_RR_GROUPS];
+    Uint32 ldm_threads_per_rr_group[MAX_RR_GROUPS];
+    Uint32 tc_threads_per_rr_group[MAX_RR_GROUPS];
+    Uint32 recv_threads_per_rr_group[MAX_RR_GROUPS];
+    Uint32 main_threads_per_rr_group[MAX_RR_GROUPS];
+    Uint32 rep_threads_per_rr_group[MAX_RR_GROUPS];
+    for (Uint32 rr_group = 0; rr_group < MAX_RR_GROUPS; rr_group++)
+    {
+      threads_per_rr_group[rr_group] = 0;
+      ldm_threads_per_rr_group[rr_group] = 0;
+      tc_threads_per_rr_group[rr_group] = 0;
+      recv_threads_per_rr_group[rr_group] = 0;
+      main_threads_per_rr_group[rr_group] = 0;
+      rep_threads_per_rr_group[rr_group] = 0;
+    }
+    for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
+    {
+      Uint32 rr_group = m_rr_group[thr_no];
+      ndbrequire(rr_group < num_rr_groups);
+      threads_per_rr_group[rr_group]++;
+      if (thr_no < globalData.ndbMtLqhThreads)
+      {
+        ldm_threads_per_rr_group[rr_group]++;
+      }
+      else if (thr_no <
+               (globalData.ndbMtLqhThreads + globalData.ndbMtTcThreads))
+      {
+        tc_threads_per_rr_group[rr_group]++;
+      }
+      else if (thr_no < (globalData.ndbMtLqhThreads +
+                         globalData.ndbMtTcThreads +
+                         globalData.ndbMtReceiveThreads))
+      {
+        recv_threads_per_rr_group[rr_group]++;
+      }
+      else if (thr_no == (globalData.ndbMtLqhThreads +
+                          globalData.ndbMtTcThreads +
+                          globalData.ndbMtReceiveThreads))
+      {
+        main_threads_per_rr_group[rr_group]++;
+      }
+      else
+      {
+        rep_threads_per_rr_group[rr_group]++;
+      }
+    }
+    if (globalData.ndbMtLqhThreads >= num_rr_groups)
+    {
+      const Uint32 min_ldm_covered_rr_group_size = 3;
+      Uint32 num_rr_groups_without_ldm = 0;
+      for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
+      {
+        if (ldm_threads_per_rr_group[rr_group] == 0)
+        {
+          num_rr_groups_without_ldm++;
+        }
+        ndbrequire(threads_per_rr_group[rr_group] <
+                     min_ldm_covered_rr_group_size ||
+                   ldm_threads_per_rr_group[rr_group] > 0);
+      }
+      ndbrequire(num_rr_groups_without_ldm <= 1);
+    }
+    for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
+    {
+      g_eventLogger->info("RR Group %u has %u threads: "
+                          "%u LDM, %u TC, %u recv, %u main, %u rep",
+                          rr_group,
+                          threads_per_rr_group[rr_group],
+                          ldm_threads_per_rr_group[rr_group],
+                          tc_threads_per_rr_group[rr_group],
+                          recv_threads_per_rr_group[rr_group],
+                          main_threads_per_rr_group[rr_group],
+                          rep_threads_per_rr_group[rr_group]);
     }
     for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
     {

@@ -2360,8 +2360,22 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "255"},
 
     {CFG_RDMA_TRAFFIC_CLASS, "RdmaTrafficClass", "RDMA",
-     "DSCP-style traffic class for the QP",
+     "DSCP-style traffic class for the QP (sets ah_attr.grh.traffic_class "
+     "on the QP, which maps to the IP DSCP byte on RoCEv2 traffic). Use "
+     "this together with switch/HCA QoS configuration to mark RonDB RDMA "
+     "traffic into a specific fabric class.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "255"},
+
+    {CFG_RDMA_SERVICE_LEVEL, "RdmaServiceLevel", "RDMA",
+     "InfiniBand service level for the QP address handle (sets "
+     "ah_attr.sl, 4-bit field, range 0..15). For RoCE this maps to the "
+     "HCA scheduler's per-priority class and, on RoCEv1, to the 802.1p "
+     "PCP value on the wire. Use a non-default value to give RonDB "
+     "RDMA QPs a different HCA scheduler class than other QPs sharing "
+     "the same HCA (for example to isolate RonDB from NFSoRDMA on the "
+     "same port). Requires matching switch/HCA QoS configuration to have "
+     "effect; default 0 preserves the previous hardcoded behaviour.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "15"},
 
     {CFG_RDMA_RETRY_COUNT, "RdmaRetryCount", "RDMA",
      "QP retry count",

@@ -109,6 +109,7 @@ static void create_rdma_config(ConfigValuesFactory &cvf) {
   require(cvf.put(CFG_RDMA_PORT, 1));
   require(cvf.put(CFG_RDMA_GID_INDEX, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_TRAFFIC_CLASS, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_SERVICE_LEVEL, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
   require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
   cvf.closeSection();
@@ -133,6 +134,7 @@ static void create_rdma_config(ConfigValuesFactory &cvf) {
   require(cvf.put(CFG_RDMA_PORT, 1));
   require(cvf.put(CFG_RDMA_GID_INDEX, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_TRAFFIC_CLASS, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_SERVICE_LEVEL, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
   require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
   cvf.closeSection();
@@ -192,6 +194,8 @@ static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
   require(iter.get(CFG_RDMA_GID_INDEX, &value));
   require(value == 0);
   require(iter.get(CFG_RDMA_TRAFFIC_CLASS, &value));
+  require(value == 0);
+  require(iter.get(CFG_RDMA_SERVICE_LEVEL, &value));
   require(value == 0);
   require(iter.get(CFG_RDMA_RETRY_COUNT, &value));
   require(value == 7);

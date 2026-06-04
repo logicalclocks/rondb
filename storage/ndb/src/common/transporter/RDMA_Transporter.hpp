@@ -416,9 +416,10 @@ class RDMA_Transporter : public Transporter {
 
   /*
    * Build and post a single zero-payload CREDIT_ONLY WR using the
-   * current pending credit grant. Callers must hold the send-side
-   * lock (see Transporter::lock_send_transporter) because this method
-   * mutates m_send_slots / m_send_slots_in_flight / m_local_send_seq /
+   * current pending credit grant. Callers must hold m_post_mutex (the
+   * per-transporter QP-posting mutex) -- and, on ndbmtd, the callback
+   * send lock that nests outside it -- because this method mutates
+   * m_send_slots / m_send_slots_in_flight / m_local_send_seq /
    * m_peer_recv_credits / m_pending_credit_grant and calls
    * ibv_post_send, which the verbs API requires to be serialized
    * against other posts on the same QP.
@@ -594,6 +595,15 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_rdma_port;
   Uint32 m_gid_index;
   Uint32 m_traffic_class;
+  /*
+   * IB Service Level applied to the QP's address handle (ah_attr.sl).
+   * 4-bit field, valid range 0..15. On RoCE this maps to the HCA
+   * scheduler's per-priority class and (RoCEv1) the 802.1p PCP value;
+   * setting it lets operators give RonDB RDMA QPs a different HCA
+   * scheduling class than other QPs sharing the same HCA. Default 0
+   * preserves the previous hardcoded behaviour.
+   */
+  Uint32 m_service_level;
   Uint32 m_retry_count;
   Uint32 m_rnr_retry_count;
   /*
@@ -672,8 +682,14 @@ class RDMA_Transporter : public Transporter {
    * 0x80000000" trick to handle wrap correctly.
    *
    *  m_local_send_seq      next seq number we will stamp on an outgoing
-   *                        SEND. Only mutated under the send lock; non-
-   *                        atomic.
+   *                        SEND. Only mutated while holding m_post_mutex
+   *                        (the per-transporter QP-posting mutex); non-
+   *                        atomic. Both posting paths -- doSend() and
+   *                        post_credit_only_locked() -- run under that
+   *                        mutex, so on the API node (where the callback
+   *                        send lock is a no-op) the send thread and the
+   *                        recv-thread credit path cannot race this
+   *                        counter or ibv_post_send() on the same QP.
    *  m_local_recv_seq      next seq number we expect from the peer; any
    *                        SEND with seq != this value is a protocol
    *                        violation and disconnects the link.
@@ -779,6 +795,41 @@ class RDMA_Transporter : public Transporter {
    * starting index; the loop always tries all slots.
    */
   Uint32 m_next_send_slot;
+
+  /*
+   * Per-transporter QP-posting mutex.
+   *
+   * Serializes every ibv_post_send() on m_qp together with the single-
+   * writer send-sequence state it stamps: m_local_send_seq, the send-slot
+   * claim/commit, the m_peer_recv_credits decrement, and the send-CQ reap.
+   * The two posting paths are doSend() (send thread) and
+   * post_credit_only_locked() (reached from doSend()'s refill and from
+   * recv_thread_emit_credit_only() on the receive thread).
+   *
+   * Why this is needed in addition to the callback send lock:
+   *   - On ndbmtd, Transporter::lock_send_transporter() maps to the real
+   *     per-transporter m_send_lock, and performSend() already runs under
+   *     it, so doSend() and the recv-thread credit path were already
+   *     mutually exclusive there.
+   *   - On the API node, TransporterFacade does NOT override
+   *     lock_send_transporter(); it inherits the empty default in
+   *     TransporterCallback.hpp. The client send path is serialized only
+   *     by TFSendBuffer::m_sending, which the recv-thread credit path does
+   *     not take. That left m_local_send_seq and ibv_post_send() racing
+   *     between the send path and recv_thread_emit_credit_only(), which
+   *     produced duplicate send_seq values on the wire and the peer's
+   *     out-of-order / QP-error disconnect.
+   *
+   * m_post_mutex is owned by the transporter itself, so it enforces the
+   * verbs "one poster per QP" rule and single-writer send-seq semantics
+   * uniformly on both node types, independent of whether the callback
+   * send lock is real. It is always the innermost lock: any path that also
+   * holds the callback send lock (ndbmtd) acquires that first, so the
+   * global acquisition order is (callback send lock) -> m_post_mutex and
+   * no deadlock cycle exists. Uncontended in the common case -- at most
+   * one send-path thread and one receive thread ever contend for it.
+   */
+  NdbMutex m_post_mutex;
 
   /*
    * Per recv-slot state. payload_len is the byte count of the framed
