@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-05-29.** Single entry point for resuming work. Branch:
+**Updated: 2026-06-05.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -8,6 +8,75 @@
 > implemented and wired end-to-end (~34 real code commits across
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
+
+## Merge verification — RONDB-1066 AggInterpreter refactor (2026-06-05)
+
+The `RONDB-1066-refactor` (PR #953) unified `AggInterpreter` and
+`JoinAggInterpreter` under a shared base **`AggInterpreterBase`**. State and
+shared kernels were lifted into the base: **`m_jit_entry`**
+(`AggInterpreterBase.hpp:405`), `m_n_gb_cols` (~470), `m_prog`,
+`executeStandardOpcode`, `validateEmbeddedProgram` /
+`scanAndValidateEmbeddedPrograms`, `loadColumnTypedFromBuf`. `ProcessRec`
+stays **per-subclass and non-virtual**; the JIT per-row dispatch
+(`if (m_jit_entry != nullptr && m_n_gb_cols == 0) dbtup_jit_invoke(...)`)
+still lives **only** in `JoinAggInterpreter::ProcessRec` — now
+~`JoinAggInterpreter.cpp:484-500` (was ~1116; ProcessRec was compressed by
+the refactor, dispatch happens before the interpreter loop and returns).
+`m_linked_attr_data` / `m_linked_attr_len` stayed in `JoinAggInterpreter`
+(`.hpp:287-288`).
+
+**Reconciliation edits (UNCOMMITTED in the working tree — commit these):**
+- `AggInterpreterBase.hpp` (+7): moved the `struct JitState; typedef void
+  (*JitEntry)(JitState*);` forward-decl up to the base header (because
+  `m_jit_entry` now lives there).
+- `JoinAggInterpreter.hpp` (−6): removed that same forward-decl from the
+  subclass header.
+- `JoinAggInterpreter.cpp` (−2): removed an orphaned `Uint32 col_index;`
+  local (zero remaining uses after the refactor) + a trailing blank line.
+
+These are the minimal, correct adaptation of the JIT hook to the field
+lift — no behavior change. All six JIT integration surfaces were
+statically re-verified intact (dispatch site, lifted members in scope via
+inheritance, `JitState.value_updated[]` writeback mask at
+`DbtupJitGlue.cpp:342-349`, `dbtup_jit_invoke`/`ndb_jit_h_*` signatures,
+allow-list + `s_agg_interp_handlers[19/41/42]`, DblqhProxy compile path).
+
+**Verification status of the merge:**
+- **Build: GREEN.** `ndbmtd` relinked 15:57 and `JoinAggInterpreter.cpp.o`
+  15:56 from the reconciled source — the refactored kernel + JIT
+  integration compiles and links cleanly (a broken member-move would have
+  failed to compile). This is the most important gate and it has passed.
+- **Host JIT unit layer: GREEN.** `bridge_tests` 36/36, `admission_tests`
+  16/16, `coldcall_tests` 7/7, `proto_interp_only` PASS. NB these exercise
+  the JIT engine/bridge **in isolation** — they do NOT link the refactored
+  kernel classes, so they confirm "JIT engine unbroken" but NOT the
+  integration with the unified interpreter.
+- **Data-node layer: NOT YET RUN — this is the real merge gate.** Only the
+  live-cluster tests exercise the refactored `ProcessRec` + JIT dispatch AND
+  the unified interpreter path (the class merge changed the *interpreter*,
+  not just JIT, so the regression risk is broader than the JIT canaries).
+  Recommended run (operator to execute), from `debug_build/mysql-test`:
+  ```sh
+  ./mtr --suite=ndb_push_agg --force --nowarnings \
+    rondb_jit_canary rondb_jit_embedded_canary rondb_jit_must_compile \
+    rondb_jit_ndbapi_must_compile rondb_jit_ndbapi_null_sum \
+    rondb_jit_ndbapi_linked_null \
+    testJoinAggNdbApi testInterpreterTypedRegs testVarcharMinMax testCaseAgg \
+    testJoinAgg testJoinAggSpj testStarJoinAgg testMultiOuterJoinAggNdbApi \
+    ndb_join_pushdown_agg ndb_join_pushdown_agg_linked
+  ```
+  Rationale for the non-canary picks: `testInterpreterTypedRegs` →
+  refactored `loadColumnTypedFromBuf`; `testVarcharMinMax` → shared string
+  MIN/MAX helpers lifted to the base; `testCaseAgg` → CASE/embedded path;
+  the `testJoinAgg*` / `testStarJoinAgg*` / `ndb_join_pushdown_agg*` family
+  → the unified interpreter dispatch end-to-end.
+
+**Cleanup item (low priority, not a JIT risk):** the comment at
+`AggInterpreterBase.hpp:407-410` claims "both static_asserts on subclass
+sizeof still hold," but no `static_assert(sizeof(...))` on the subclasses
+remains in the tree (removed/relaxed during the refactor). The
+placement-new sizing at `DblqhProxy.cpp:~2876` no longer has that
+compile-time guard — either re-add the asserts or drop the stale comment.
 
 ## Where we actually are
 
@@ -21,7 +90,8 @@
   admission walk, dual-mapping W^X arena, two host tools.
 - **Data-node integration (Phase 4):** JIT is **already wired** —
   there is no separate `interpreterExec`; the dispatch point is
-  `JoinAggInterpreter::ProcessRec` (`JoinAggInterpreter.cpp:1116-1121`):
+  `JoinAggInterpreter::ProcessRec` (`JoinAggInterpreter.cpp:~484-500`
+  post-RONDB-1066; was ~1116-1121):
   when `m_jit_entry != nullptr && m_n_gb_cols == 0` it calls
   `dbtup_jit_invoke()`. Compile happens at
   `DblqhProxy::execJOIN_AGG_SETUP_REQ` → `ndb_jit_bridge_translate()`
@@ -217,7 +287,8 @@ Apple clang is rejected by the version check).
 
 | What | Path |
 |---|---|
-| Per-row JIT dispatch | `dbtup/JoinAggInterpreter.cpp:1116-1121` |
+| Per-row JIT dispatch | `dbtup/JoinAggInterpreter.cpp:~484-500` (post-RONDB-1066; was ~1116) |
+| Lifted JIT members | `m_jit_entry`/`m_n_gb_cols` now in `AggInterpreterBase.hpp:405,~470` |
 | Glue + cold-call helpers | `dbtup/DbtupJitGlue.{cpp,hpp}` |
 | Compile-time setup | `dblqh/DblqhProxy.cpp` (`execJOIN_AGG_SETUP_REQ`, ~2336; compile ~2763-2800) |
 | Bytecode→Program bridge | `dbtup/jit/ndb_jit_bridge.c` |
