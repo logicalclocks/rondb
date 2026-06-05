@@ -228,6 +228,7 @@ static char *test_mysql_command_services_apis_udf(UDF_INIT *, UDF_ARGS *args,
   MYSQL_ROW_H row = nullptr;
   uint64_t row_count = 0;
   unsigned int num_column = 0;
+  void *option_val = nullptr;
   std::string result_set;
 
   //  Execute the SQL specified in the argument.
@@ -261,7 +262,6 @@ static char *test_mysql_command_services_apis_udf(UDF_INIT *, UDF_ARGS *args,
   }
 
   /* To get the mysql option value */
-  void *option_val;
   cmd_options_srv->get(mysql_h, MYSQL_OPT_MAX_ALLOWED_PACKET, &option_val);
 
   {

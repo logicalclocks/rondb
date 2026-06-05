@@ -95,12 +95,11 @@ IF(MY_COMPILER_IS_GNU)
 ENDIF()
 
 # Same thing as above, but for clang, disable warnings for memset().
-MY_CHECK_CXX_COMPILER_WARNING("-Wnontrivial-memcall" HAS_WARN_FLAG)
-IF(HAS_WARN_FLAG)
+IF(MY_COMPILER_IS_CLANG)
   ADD_COMPILE_FLAGS(
     ${MYISAM_SOURCES}
     myisamchk.cc
-    COMPILE_FLAGS "${HAS_WARN_FLAG}")
+    COMPILE_FLAGS "-Wno-nontrivial-memcall")
 ENDIF()
 
 MY_CHECK_CXX_COMPILER_WARNING("-Wcast-function-type" HAS_WARN_FLAG)

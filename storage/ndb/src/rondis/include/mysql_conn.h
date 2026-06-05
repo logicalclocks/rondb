@@ -86,7 +86,7 @@ public:
   MysqlConnFactory(const char* backend_host, uint16_t backend_port,
                    int thread_id_offset, bool debug_logging,
                    const char* tls_cert_file, const char* tls_key_file);
-  ~MysqlConnFactory();
+  ~MysqlConnFactory() override;
   std::shared_ptr<pink::PinkConn> NewPinkConn(
       int connfd, const std::string& ip_port,
       pink::Thread* thread, void* worker_specific_data,
