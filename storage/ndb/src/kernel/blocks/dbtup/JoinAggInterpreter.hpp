@@ -33,12 +33,6 @@
 #include "AggHashTable.hpp"
 
 // DECIMAL_BUFF_LENGTH now lives in AggInterpreterBase.hpp (Step 1.3).
-/* Phase 4 RONDB-1056: forward-declare the JIT engine's per-row
- * entry-pointer typedef so JoinAggInterpreter can hold one without
- * pulling jit1.h transitively. The .cpp pulls jit1.h for the real
- * definition. */
-struct JitState;
-typedef void (*JitEntry)(JitState *);
 
 /**
  * JoinAggInterpreter — aggregation interpreter for join pushdown.

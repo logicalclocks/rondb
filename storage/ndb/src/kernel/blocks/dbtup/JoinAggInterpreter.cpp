@@ -1003,7 +1003,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   }
 #endif
 
-  Uint32 col_index;
   Uint32 value;
   DataType type;
   bool is_unsigned;

@@ -32,6 +32,13 @@
 #include "Dbtup.hpp"             // Dbtup::KeyReqStruct (nested) — needed by initGBTypes
 #include "decimal.h"
 
+/* Phase 4 RONDB-1056: forward-declare the JIT engine's per-row
+ * entry-pointer typedef so AggInterpreterBase can hold one without
+ * pulling jit1.h transitively. The .cpp pulls jit1.h for the real
+ * definition. */
+struct JitState;
+typedef void (*JitEntry)(JitState *);
+
 /* ATTR_READ_BUF_WORD_SIZE retired in Step 3 Cand-C.  The scratch
  * buffer that used to live inline at this size is now an LDM-thread-
  * scoped Uint32 m_agg_attr_read_buf[MAX_TUPLE_SIZE_IN_WORDS] on the
