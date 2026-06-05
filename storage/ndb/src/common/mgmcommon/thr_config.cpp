@@ -667,7 +667,8 @@ THRConfig::do_parse_auto(unsigned realtime,
         exclusive_io_cpus);
     }
     num_rr_groups =
-      Ndb_CreateCPUMap(num_query_instances, max_rr_group_size);
+      Ndb_CreateCPUMap(num_query_instances, max_rr_group_size, num_cpus);
+    Ndb_PrintCPUBindingTopology();
     Uint32 count_ldm_threads = ldm_threads;
     Uint32 count_tc_threads = tc_threads;
     Uint32 count_main_threads = main_threads;
@@ -695,6 +696,25 @@ THRConfig::do_parse_auto(unsigned realtime,
     Uint32 num_only_ldms_in_group = num_rr_groups * num_only_ldm_groups;
     assert(num_only_ldms_in_group <= count_ldm_threads);
 
+    Uint32 ldm_thread_order[MAX_NDBMT_LQH_WORKERS];
+    Uint32 ldm_thread_order_count = 0;
+    Uint32 assigned_ldm_threads = 0;
+    Uint32 num_ldm_rows =
+      (ldm_threads + num_rr_groups - 1) / num_rr_groups;
+    for (Uint32 col = 0; col < num_rr_groups; col++)
+    {
+      for (Uint32 row = 0; row < num_ldm_rows; row++)
+      {
+        Uint32 ldm_inx = (row * num_rr_groups) + col;
+        if (ldm_inx < ldm_threads)
+        {
+          ldm_thread_order[ldm_thread_order_count++] =
+            ldm_threads - ldm_inx - 1;
+        }
+      }
+    }
+    require(ldm_thread_order_count == ldm_threads);
+
     for (Uint32 i = exclusive_io_cpus; i < num_cpus; i++) {
       Uint32 thread_type = T_SEND; // T_SEND silences compiler
       Uint32 inx = RNIL;
@@ -707,7 +727,8 @@ THRConfig::do_parse_auto(unsigned realtime,
         thread_type = T_LDM;
         count_ldm_threads--;
         num_only_ldms_in_group--;
-        inx = count_ldm_threads;
+        require(assigned_ldm_threads < ldm_threads);
+        inx = ldm_thread_order[assigned_ldm_threads++];
       } else {
         /**
          * We want to balance the CPU load on the non-LDM CPU cores and
@@ -749,7 +770,8 @@ THRConfig::do_parse_auto(unsigned realtime,
           if (count_ldm_threads > 0) {
             thread_type = T_LDM;
             count_ldm_threads--;
-            inx = count_ldm_threads;
+            require(assigned_ldm_threads < ldm_threads);
+            inx = ldm_thread_order[assigned_ldm_threads++];
           } else if (count_recv_threads > 0) {
             thread_type = T_RECV;
             count_recv_threads--;
