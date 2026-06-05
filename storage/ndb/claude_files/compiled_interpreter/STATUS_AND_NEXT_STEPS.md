@@ -51,11 +51,12 @@ allow-list + `s_agg_interp_handlers[19/41/42]`, DblqhProxy compile path).
   the JIT engine/bridge **in isolation** — they do NOT link the refactored
   kernel classes, so they confirm "JIT engine unbroken" but NOT the
   integration with the unified interpreter.
-- **Data-node layer: NOT YET RUN — this is the real merge gate.** Only the
-  live-cluster tests exercise the refactored `ProcessRec` + JIT dispatch AND
-  the unified interpreter path (the class merge changed the *interpreter*,
-  not just JIT, so the regression risk is broader than the JIT canaries).
-  Recommended run (operator to execute), from `debug_build/mysql-test`:
+- **Data-node layer: GREEN (2026-06-05).** The live-cluster MTR sweep below
+  (JIT canaries + the broader unified-interpreter regression set) was run and
+  **all tests passed** — the real merge gate is closed. These exercise the
+  refactored `ProcessRec` + JIT dispatch AND the unified interpreter path
+  (the class merge changed the *interpreter*, not just JIT). Command used,
+  from `debug_build/mysql-test`:
   ```sh
   ./mtr --suite=ndb_push_agg --force --nowarnings \
     rondb_jit_canary rondb_jit_embedded_canary rondb_jit_must_compile \
@@ -199,7 +200,26 @@ compile-time guard — either re-add the asserts or drop the stale comment.
   - **Deferred:** CASE-style non-zero skip_offset in JIT (rejects to
     interpreter for now). A JIT-off differential Test 25 variant would be
     a good follow-up (same bytecode, proves 900 both ways).
-- **Test 26** — negative/unsupported-program fallback canary.
+- **Test 26** — unsupported-program fallback canary: **IMPLEMENTED
+  (2026-06-05), pending test run.** Shape: `MAX(amount)` over the Test 23
+  `jagg_parent`/`jagg_child` tables (no GROUP BY → a JIT-eligible shape).
+  `MAX` lowers to `kOpMaxBigint`, which the bridge's main switch does not
+  emit — it hits the `default` → `JIT_BRIDGE_UNSUPPORTED_OP`
+  (`ndb_jit_bridge.c:901-903`), so the program is rejected at setup,
+  `m_jit_entry` stays nullptr, and `JoinAggInterpreter::ProcessRec` runs the
+  interpreter. The canary asserts the query succeeds and returns the correct
+  `MAX` (=500) — proving the reject path falls back cleanly. **No error
+  inserts** (4060/4062 would abort the very path under test), so it also runs
+  in production builds. Files: `testJoinAggNdbApi.cpp`
+  (`testJitUnsupportedFallback` + Test 26 dispatch), `r/testJoinAggNdbApi.result`
+  (added line), new MTR wrapper `t/rondb_jit_ndbapi_unsupported_fallback.test`
+  + `r/...result`. **Verify:** build `testJoinAggNdbApi`, then
+  `--only 26 -v` against a cluster, then
+  `./mtr --suite=ndb_push_agg rondb_jit_ndbapi_unsupported_fallback testJoinAggNdbApi`.
+  Developer-only: a one-off `4062` run should make it fail at setup with a
+  `kOpMaxBigint` UNSUPPORTED_OP reason (kept out of MTR). Durability: if a
+  later phase lowers MAX, switch the program to a still-unsupported op
+  (DivInt/Mod) to retain fallback coverage.
 - **Test 27** — operand-width boundary canary — **blocked on a policy
   decision** (see Open Decisions).
 - **Overflow parity (`phase_5_1_overflow_parity.md`)** — NOT landed.

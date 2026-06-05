@@ -1,0 +1,10 @@
+Running rondb_jit_ndbapi_unsupported_fallback
+=== testJoinAggNdbApi ===
+Connect string: #
+MySQL port: #
+
+Test 26: Unsupported JIT shape falls back cleanly ... OK (max=500 via interpreter fallback)
+
+All tests PASSED
+PASSED
+DROP DATABASE IF EXISTS test_db;

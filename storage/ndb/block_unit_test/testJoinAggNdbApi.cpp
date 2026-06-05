@@ -1421,6 +1421,161 @@ testJitLinkedNullSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 26: Unsupported-program fallback canary                        */
+/*                                                                     */
+/* Purpose: lock in clean interpreter fallback for a program that is a */
+/* JIT candidate by shape (child leaf aggregation, no GROUP BY) but    */
+/* contains an opcode the bridge does not lower.                       */
+/*                                                                     */
+/* The bridge's main switch (ndb_jit_bridge.c) emits only kOpSumBigint;*/
+/* MAX/MIN/COUNT and the division/modulo opcodes fall through to its   */
+/* default case (JIT_BRIDGE_UNSUPPORTED_OP). The program is therefore  */
+/* rejected at JOIN_AGG_SETUP_REQ, m_jit_entry stays nullptr, and      */
+/* JoinAggInterpreter::ProcessRec runs the normal interpreter loop.    */
+/* This test proves that reject path produces the correct result and   */
+/* never errors the query.                                             */
+/*                                                                     */
+/* MAX(amount) is the shape used here. Deliberately runs with NO error */
+/* inserts: 4060 (fallback fatal) and 4062 (setup-compile fatal) would */
+/* both abort precisely the path we want to exercise. A developer can  */
+/* confirm the reject reason manually with a one-off 4062 run; that    */
+/* fatal variant is intentionally kept out of MTR (see                 */
+/* phase_5_1_ndbapi_test_additions.md, Test 26). Because it needs no   */
+/* error inserts, this test also runs for real in production builds.   */
+/*                                                                     */
+/* Durability note: if a later phase teaches the bridge to lower MAX,  */
+/* this test still passes (it only checks the result) but stops being  */
+/* a fallback canary. At that point switch the program to a still-     */
+/* unsupported op (e.g. DivInt or Mod) to retain fallback coverage.    */
+/* ------------------------------------------------------------------ */
+static int
+testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
+{
+  const char *testName = "Test 27: Unsupported JIT shape falls back cleanly";
+  printf("%s ... ", testName);
+  fflush(stdout);
+
+  if (verifyScalarWithMysql(conn, testName,
+        "SELECT MAX(amount) FROM jagg_parent "
+        "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id",
+        {expectedMax}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(PARENT_TABLE);
+  dict->invalidateTable(CHILD_TABLE);
+  const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
+  const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* MAX(amount): kOpMaxBigint is outside the bridge's main switch, so the
+   * program is rejected at setup and the query runs on the interpreter. */
+  NdbAggregator agg(childTab);
+  if (!agg.LoadColumn("amount", 0) ||
+      !agg.Max(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"),
+    nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts.setAggregation(agg);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result maxRes = rec.FetchAggregationResult();
+  Int64 actualMax = maxRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actualMax != expectedMax) {
+    printf("FAILED (MAX: expected %lld, got %lld)\n",
+           (long long)expectedMax, (long long)actualMax);
+    return -1;
+  }
+
+  printf("OK (max=%lld via interpreter fallback)\n", (long long)actualMax);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test 3: Multiple groups with SUM and COUNT                          */
 /*                                                                     */
 /* SQL equivalent:                                                     */
@@ -7002,6 +7157,19 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropT25Tables(conn);
+        }
+
+        /* Test 27: unsupported-program fallback (MAX is not JIT-lowered).
+         * No error inserts: this exercises the clean reject->interpreter
+         * path, which 4060/4062 would abort. Reuses the Test 23 tables. */
+        if (shouldRun(27)) {
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testJitUnsupportedFallback(&ndb, conn, 500) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
         }
 
         mysql_close(conn);

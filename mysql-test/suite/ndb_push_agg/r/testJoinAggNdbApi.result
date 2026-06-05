@@ -30,6 +30,7 @@ Test 24: aggregate lookup-rooted query def rejected ... OK (prepare rejected wit
 Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
 Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
 Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)
+Test 27: Unsupported JIT shape falls back cleanly ... OK (max=500 via interpreter fallback)
 
 All tests PASSED
 PASSED
