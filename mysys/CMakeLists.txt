@@ -206,6 +206,20 @@ ADD_CONVENIENCE_LIBRARY(mysys ${MYSYS_SOURCES}
   OpenSSL::SSL OpenSSL::Crypto
   )
 
+MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+  HAS_UNINITIALIZED_CONST_POINTER)
+IF(HAS_UNINITIALIZED_CONST_POINTER)
+  ADD_COMPILE_FLAGS(
+    charset.cc
+    mf_cache.cc
+    mf_iocache.cc
+    mf_iocache2.cc
+    my_default.cc
+    my_init.cc
+    my_largepage.cc
+    COMPILE_FLAGS "-Wno-uninitialized-const-pointer")
+ENDIF()
+
 IF(WITH_EXT_BACKTRACE)
   TARGET_LINK_LIBRARIES(mysys ext::backtrace)
   TARGET_LINK_LIBRARIES(mysys_objlib ext::backtrace)

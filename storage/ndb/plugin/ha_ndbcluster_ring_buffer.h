@@ -43,9 +43,9 @@
 #include "storage/ndb/include/ndbapi/NdbDictionary.hpp"
 
 class Item;
-class TABLE;
+struct TABLE;
 class THD;
-struct KEY;
+class KEY;
 struct NDB_Modifier;
 
 namespace ndb_ring_buffer {

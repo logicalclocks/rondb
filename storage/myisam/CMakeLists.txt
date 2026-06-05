@@ -111,6 +111,19 @@ IF(HAS_WARN_FLAG)
     COMPILE_FLAGS "${HAS_WARN_FLAG}")
 ENDIF()
 
+MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+  HAS_UNINITIALIZED_CONST_POINTER)
+IF(HAS_UNINITIALIZED_CONST_POINTER)
+  ADD_COMPILE_FLAGS(
+    ${MYISAM_SOURCES}
+    ha_myisam.cc
+    myisam_ftdump.cc
+    myisamchk.cc
+    myisamlog.cc
+    myisampack.cc
+    COMPILE_FLAGS "-Wno-uninitialized-const-pointer")
+ENDIF()
+
 ADD_LIBRARY(myisam_library STATIC ${MYISAM_SOURCES})
 ADD_DEPENDENCIES(myisam_library GenError)
 TARGET_LINK_LIBRARIES(myisam_library mysys extra::rapidjson)

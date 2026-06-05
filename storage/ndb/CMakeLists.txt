@@ -146,6 +146,13 @@ IF(NOT WITHOUT_SERVER)
   SET_PROPERTY(SOURCE plugin/ha_ndbcluster.cc
                PROPERTY COMPILE_DEFINITIONS
                NDB_TLS_SEARCH_PATH="${WITH_NDB_TLS_SEARCH_PATH}")
+  MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+    HAS_UNINITIALIZED_CONST_POINTER)
+  IF(HAS_UNINITIALIZED_CONST_POINTER)
+    ADD_COMPILE_FLAGS(
+      plugin/ndb_dd_upgrade_table.cc
+      COMPILE_FLAGS "-Wno-uninitialized-const-pointer")
+  ENDIF()
 
   # Sanity check that MYSQL_ADD_PLUGIN didn't decide to skip build
   IF (NOT WITH_NDBCLUSTER_STORAGE_ENGINE)

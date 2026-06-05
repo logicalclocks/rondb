@@ -93,6 +93,14 @@ public:
   Uint32 getThreadCount(T_Type) const;
   Uint32 getMtClassic() const { return m_classic; }
   static bool isThreadPermanent(T_Type type);
+  void compute_automatic_thread_config(
+    Uint32 & num_cpus,
+    Uint32 & tc_threads,
+    Uint32 & ldm_threads,
+    Uint32 & main_threads,
+    Uint32 & rep_threads,
+    Uint32 & send_threads,
+    Uint32 & recv_threads);
   unsigned get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads);
 
 protected:
@@ -142,15 +150,6 @@ protected:
 
   unsigned count_unbound(const Vector<T_Thread> &vec) const;
   void bind_unbound(Vector<T_Thread> &vec, unsigned cpu);
-
-  void compute_automatic_thread_config(
-    Uint32 & num_cpus,
-    Uint32 & tc_threads,
-    Uint32 & ldm_threads,
-    Uint32 & main_threads,
-    Uint32 & rep_threads,
-    Uint32 & send_threads,
-    Uint32 & recv_threads);
 
   static unsigned getMaxEntries(Uint32 type);
   static unsigned getMinEntries(Uint32 type);

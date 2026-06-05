@@ -2050,7 +2050,7 @@ void Dbdict::readSchemaConf(Signal *signal, FsConnectRecordPtr fsPtr) {
   for (Uint32 n = 0; n < xsf->noOfPages; n++) {
     SchemaFile *sf = &xsf->schemaPage[n];
     bool ok = false;
-    const char *reason;
+    const char *reason = nullptr;
     if (memcmp(sf->Magic, NDB_SF_MAGIC, sizeof(sf->Magic)) != 0) {
       jam();
       reason = "magic code";
@@ -35022,4 +35022,3 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
              ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
 }
-

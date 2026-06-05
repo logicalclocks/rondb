@@ -140,7 +140,8 @@ struct TransporterConfiguration {
       Uint32 spintime;             // Microseconds to spin before sleep
       Uint32 rdmaPort;             // HCA physical port number
       Uint32 gidIndex;             // GID index for RoCE
-      Uint32 trafficClass;         // DSCP-like traffic class
+      Uint32 trafficClass;         // DSCP-like traffic class (RoCEv2 grh.traffic_class)
+      Uint32 serviceLevel;         // IB SL / RoCE PCP-equivalent (ah_attr.sl, 0..15)
       Uint32 retryCount;           // QP retry count
       Uint32 rnrRetryCount;        // QP RNR retry count
       Uint32 overloadLimit;        // Unsent bytes overload threshold
