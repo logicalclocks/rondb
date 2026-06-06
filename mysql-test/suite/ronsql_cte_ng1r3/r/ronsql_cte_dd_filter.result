@@ -1,0 +1,4548 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== filter-01: CTE-body WHERE > on o_totalprice ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders WHERE o_totalprice > 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders WHERE o_totalprice > 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.t)	SUM(sums.n)
+1	2	2
+10	0	2
+100	0	2
+101	2	2
+102	4	2
+103	6	2
+104	8	2
+105	0	2
+106	2	2
+107	4	2
+108	6	2
+109	8	2
+11	2	2
+110	0	2
+111	2	2
+112	4	2
+113	6	2
+114	8	2
+115	0	2
+116	2	2
+117	4	2
+118	6	2
+119	8	2
+12	4	2
+120	0	2
+121	2	2
+122	4	2
+123	6	2
+124	8	2
+125	0	2
+126	2	2
+127	4	2
+128	6	2
+129	8	2
+13	6	2
+130	0	2
+131	2	2
+132	4	2
+133	6	2
+134	8	2
+135	0	2
+136	2	2
+137	4	2
+138	6	2
+139	8	2
+14	8	2
+140	0	2
+141	2	2
+142	4	2
+143	6	2
+144	8	2
+145	0	2
+146	2	2
+147	4	2
+148	9	3
+149	12	3
+15	0	2
+150	0	3
+151	3	3
+152	6	3
+153	9	3
+154	12	3
+155	0	3
+156	3	3
+157	6	3
+158	9	3
+159	12	3
+16	2	2
+160	0	3
+161	3	3
+162	6	3
+163	9	3
+164	12	3
+165	0	3
+166	3	3
+167	6	3
+168	9	3
+169	12	3
+17	4	2
+170	0	3
+171	3	3
+172	6	3
+173	9	3
+174	12	3
+175	0	3
+176	3	3
+177	6	3
+178	9	3
+179	12	3
+18	6	2
+180	0	3
+181	3	3
+182	6	3
+183	9	3
+184	12	3
+185	0	3
+186	3	3
+187	6	3
+188	9	3
+189	12	3
+19	8	2
+190	0	3
+191	3	3
+192	6	3
+193	9	3
+194	12	3
+195	0	3
+196	3	3
+197	6	3
+198	9	3
+199	12	3
+2	4	2
+20	0	2
+200	0	3
+201	3	3
+202	6	3
+203	9	3
+204	12	3
+205	0	3
+206	3	3
+207	6	3
+208	9	3
+209	12	3
+21	2	2
+210	0	3
+211	3	3
+212	6	3
+213	9	3
+214	12	3
+215	0	3
+216	3	3
+217	6	3
+218	9	3
+219	12	3
+22	4	2
+220	0	3
+221	3	3
+222	6	3
+223	9	3
+224	12	3
+225	0	3
+226	3	3
+227	6	3
+228	9	3
+229	12	3
+23	6	2
+230	0	3
+231	3	3
+232	6	3
+233	9	3
+234	12	3
+235	0	3
+236	3	3
+237	6	3
+238	9	3
+239	12	3
+24	8	2
+240	0	3
+241	3	3
+242	6	3
+243	9	3
+244	12	3
+245	0	3
+246	3	3
+247	6	3
+248	9	3
+249	12	3
+25	0	2
+250	0	3
+251	3	3
+252	6	3
+253	9	3
+254	12	3
+255	0	3
+256	3	3
+257	6	3
+258	9	3
+259	12	3
+26	2	2
+260	0	3
+261	3	3
+262	6	3
+263	9	3
+264	12	3
+265	0	3
+266	3	3
+267	6	3
+268	9	3
+269	12	3
+27	4	2
+270	0	3
+271	3	3
+272	6	3
+273	9	3
+274	12	3
+275	0	3
+276	3	3
+277	6	3
+278	9	3
+279	12	3
+28	6	2
+280	0	3
+281	3	3
+282	6	3
+283	9	3
+284	12	3
+285	0	3
+286	3	3
+287	6	3
+288	9	3
+289	12	3
+29	8	2
+290	0	3
+291	3	3
+292	6	3
+293	9	3
+294	12	3
+295	0	3
+296	3	3
+297	6	3
+298	9	3
+299	12	3
+3	6	2
+30	0	2
+300	0	3
+31	2	2
+32	4	2
+33	6	2
+34	8	2
+35	0	2
+36	2	2
+37	4	2
+38	6	2
+39	8	2
+4	8	2
+40	0	2
+41	2	2
+42	4	2
+43	6	2
+44	8	2
+45	0	2
+46	2	2
+47	4	2
+48	6	2
+49	8	2
+5	0	2
+50	0	2
+51	2	2
+52	4	2
+53	6	2
+54	8	2
+55	0	2
+56	2	2
+57	4	2
+58	6	2
+59	8	2
+6	2	2
+60	0	2
+61	2	2
+62	4	2
+63	6	2
+64	8	2
+65	0	2
+66	2	2
+67	4	2
+68	6	2
+69	8	2
+7	4	2
+70	0	2
+71	2	2
+72	4	2
+73	6	2
+74	8	2
+75	0	2
+76	2	2
+77	4	2
+78	6	2
+79	8	2
+8	6	2
+80	0	2
+81	2	2
+82	4	2
+83	6	2
+84	8	2
+85	0	2
+86	2	2
+87	4	2
+88	6	2
+89	8	2
+9	8	2
+90	0	2
+91	2	2
+92	4	2
+93	6	2
+94	8	2
+95	0	2
+96	2	2
+97	4	2
+98	6	2
+99	8	2
+
+=== filter-02: CTE-body WHERE >= on o_totalprice ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice >= 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice >= 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	2
+10	0
+100	0
+101	2
+102	4
+103	6
+104	8
+105	0
+106	2
+107	4
+108	6
+109	8
+11	2
+110	0
+111	2
+112	4
+113	6
+114	8
+115	0
+116	2
+117	4
+118	6
+119	8
+12	4
+120	0
+121	2
+122	4
+123	6
+124	8
+125	0
+126	2
+127	4
+128	6
+129	8
+13	6
+130	0
+131	2
+132	4
+133	6
+134	8
+135	0
+136	2
+137	4
+138	6
+139	8
+14	8
+140	0
+141	2
+142	4
+143	6
+144	8
+145	0
+146	2
+147	4
+148	9
+149	12
+15	0
+150	0
+151	3
+152	6
+153	9
+154	12
+155	0
+156	3
+157	6
+158	9
+159	12
+16	2
+160	0
+161	3
+162	6
+163	9
+164	12
+165	0
+166	3
+167	6
+168	9
+169	12
+17	4
+170	0
+171	3
+172	6
+173	9
+174	12
+175	0
+176	3
+177	6
+178	9
+179	12
+18	6
+180	0
+181	3
+182	6
+183	9
+184	12
+185	0
+186	3
+187	6
+188	9
+189	12
+19	8
+190	0
+191	3
+192	6
+193	9
+194	12
+195	0
+196	3
+197	6
+198	9
+199	12
+2	4
+20	0
+200	0
+201	3
+202	6
+203	9
+204	12
+205	0
+206	3
+207	6
+208	9
+209	12
+21	2
+210	0
+211	3
+212	6
+213	9
+214	12
+215	0
+216	3
+217	6
+218	9
+219	12
+22	4
+220	0
+221	3
+222	6
+223	9
+224	12
+225	0
+226	3
+227	6
+228	9
+229	12
+23	6
+230	0
+231	3
+232	6
+233	9
+234	12
+235	0
+236	3
+237	6
+238	9
+239	12
+24	8
+240	0
+241	3
+242	6
+243	9
+244	12
+245	0
+246	3
+247	6
+248	9
+249	12
+25	0
+250	0
+251	3
+252	6
+253	9
+254	12
+255	0
+256	3
+257	6
+258	9
+259	12
+26	2
+260	0
+261	3
+262	6
+263	9
+264	12
+265	0
+266	3
+267	6
+268	9
+269	12
+27	4
+270	0
+271	3
+272	6
+273	9
+274	12
+275	0
+276	3
+277	6
+278	9
+279	12
+28	6
+280	0
+281	3
+282	6
+283	9
+284	12
+285	0
+286	3
+287	6
+288	9
+289	12
+29	8
+290	0
+291	3
+292	6
+293	9
+294	12
+295	0
+296	3
+297	6
+298	9
+299	12
+3	6
+30	0
+300	0
+31	2
+32	4
+33	6
+34	8
+35	0
+36	2
+37	4
+38	6
+39	8
+4	8
+40	0
+41	2
+42	4
+43	6
+44	8
+45	0
+46	2
+47	4
+48	6
+49	8
+5	0
+50	0
+51	2
+52	4
+53	6
+54	8
+55	0
+56	2
+57	4
+58	6
+59	8
+6	2
+60	0
+61	2
+62	4
+63	6
+64	8
+65	0
+66	2
+67	4
+68	6
+69	8
+7	4
+70	0
+71	2
+72	4
+73	6
+74	8
+75	0
+76	2
+77	4
+78	6
+79	8
+8	6
+80	0
+81	2
+82	4
+83	6
+84	8
+85	0
+86	2
+87	4
+88	6
+89	8
+9	8
+90	0
+91	2
+92	4
+93	6
+94	8
+95	0
+96	2
+97	4
+98	6
+99	8
+
+=== filter-03: CTE-body WHERE < on o_totalprice ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice < 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice < 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	3
+10	0
+100	0
+101	3
+102	6
+103	9
+104	12
+105	0
+106	3
+107	6
+108	9
+109	12
+11	3
+110	0
+111	3
+112	6
+113	9
+114	12
+115	0
+116	3
+117	6
+118	9
+119	12
+12	6
+120	0
+121	3
+122	6
+123	9
+124	12
+125	0
+126	3
+127	6
+128	9
+129	12
+13	9
+130	0
+131	3
+132	6
+133	9
+134	12
+135	0
+136	3
+137	6
+138	9
+139	12
+14	12
+140	0
+141	3
+142	6
+143	9
+144	12
+145	0
+146	3
+147	6
+148	6
+149	8
+15	0
+150	0
+151	2
+152	4
+153	6
+154	8
+155	0
+156	2
+157	4
+158	6
+159	8
+16	3
+160	0
+161	2
+162	4
+163	6
+164	8
+165	0
+166	2
+167	4
+168	6
+169	8
+17	6
+170	0
+171	2
+172	4
+173	6
+174	8
+175	0
+176	2
+177	4
+178	6
+179	8
+18	9
+180	0
+181	2
+182	4
+183	6
+184	8
+185	0
+186	2
+187	4
+188	6
+189	8
+19	12
+190	0
+191	2
+192	4
+193	6
+194	8
+195	0
+196	2
+197	4
+198	6
+199	8
+2	6
+20	0
+200	0
+201	2
+202	4
+203	6
+204	8
+205	0
+206	2
+207	4
+208	6
+209	8
+21	3
+210	0
+211	2
+212	4
+213	6
+214	8
+215	0
+216	2
+217	4
+218	6
+219	8
+22	6
+220	0
+221	2
+222	4
+223	6
+224	8
+225	0
+226	2
+227	4
+228	6
+229	8
+23	9
+230	0
+231	2
+232	4
+233	6
+234	8
+235	0
+236	2
+237	4
+238	6
+239	8
+24	12
+240	0
+241	2
+242	4
+243	6
+244	8
+245	0
+246	2
+247	4
+248	6
+249	8
+25	0
+250	0
+251	2
+252	4
+253	6
+254	8
+255	0
+256	2
+257	4
+258	6
+259	8
+26	3
+260	0
+261	2
+262	4
+263	6
+264	8
+265	0
+266	2
+267	4
+268	6
+269	8
+27	6
+270	0
+271	2
+272	4
+273	6
+274	8
+275	0
+276	2
+277	4
+278	6
+279	8
+28	9
+280	0
+281	2
+282	4
+283	6
+284	8
+285	0
+286	2
+287	4
+288	6
+289	8
+29	12
+290	0
+291	2
+292	4
+293	6
+294	8
+295	0
+296	2
+297	4
+298	6
+299	8
+3	9
+30	0
+300	0
+31	3
+32	6
+33	9
+34	12
+35	0
+36	3
+37	6
+38	9
+39	12
+4	12
+40	0
+41	3
+42	6
+43	9
+44	12
+45	0
+46	3
+47	6
+48	9
+49	12
+5	0
+50	0
+51	3
+52	6
+53	9
+54	12
+55	0
+56	3
+57	6
+58	9
+59	12
+6	3
+60	0
+61	3
+62	6
+63	9
+64	12
+65	0
+66	3
+67	6
+68	9
+69	12
+7	6
+70	0
+71	3
+72	6
+73	9
+74	12
+75	0
+76	3
+77	6
+78	9
+79	12
+8	9
+80	0
+81	3
+82	6
+83	9
+84	12
+85	0
+86	3
+87	6
+88	9
+89	12
+9	12
+90	0
+91	3
+92	6
+93	9
+94	12
+95	0
+96	3
+97	6
+98	9
+99	12
+
+=== filter-04: CTE-body WHERE <= on o_totalprice ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice <= 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice <= 10000 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	3
+10	0
+100	0
+101	3
+102	6
+103	9
+104	12
+105	0
+106	3
+107	6
+108	9
+109	12
+11	3
+110	0
+111	3
+112	6
+113	9
+114	12
+115	0
+116	3
+117	6
+118	9
+119	12
+12	6
+120	0
+121	3
+122	6
+123	9
+124	12
+125	0
+126	3
+127	6
+128	9
+129	12
+13	9
+130	0
+131	3
+132	6
+133	9
+134	12
+135	0
+136	3
+137	6
+138	9
+139	12
+14	12
+140	0
+141	3
+142	6
+143	9
+144	12
+145	0
+146	3
+147	6
+148	6
+149	8
+15	0
+150	0
+151	2
+152	4
+153	6
+154	8
+155	0
+156	2
+157	4
+158	6
+159	8
+16	3
+160	0
+161	2
+162	4
+163	6
+164	8
+165	0
+166	2
+167	4
+168	6
+169	8
+17	6
+170	0
+171	2
+172	4
+173	6
+174	8
+175	0
+176	2
+177	4
+178	6
+179	8
+18	9
+180	0
+181	2
+182	4
+183	6
+184	8
+185	0
+186	2
+187	4
+188	6
+189	8
+19	12
+190	0
+191	2
+192	4
+193	6
+194	8
+195	0
+196	2
+197	4
+198	6
+199	8
+2	6
+20	0
+200	0
+201	2
+202	4
+203	6
+204	8
+205	0
+206	2
+207	4
+208	6
+209	8
+21	3
+210	0
+211	2
+212	4
+213	6
+214	8
+215	0
+216	2
+217	4
+218	6
+219	8
+22	6
+220	0
+221	2
+222	4
+223	6
+224	8
+225	0
+226	2
+227	4
+228	6
+229	8
+23	9
+230	0
+231	2
+232	4
+233	6
+234	8
+235	0
+236	2
+237	4
+238	6
+239	8
+24	12
+240	0
+241	2
+242	4
+243	6
+244	8
+245	0
+246	2
+247	4
+248	6
+249	8
+25	0
+250	0
+251	2
+252	4
+253	6
+254	8
+255	0
+256	2
+257	4
+258	6
+259	8
+26	3
+260	0
+261	2
+262	4
+263	6
+264	8
+265	0
+266	2
+267	4
+268	6
+269	8
+27	6
+270	0
+271	2
+272	4
+273	6
+274	8
+275	0
+276	2
+277	4
+278	6
+279	8
+28	9
+280	0
+281	2
+282	4
+283	6
+284	8
+285	0
+286	2
+287	4
+288	6
+289	8
+29	12
+290	0
+291	2
+292	4
+293	6
+294	8
+295	0
+296	2
+297	4
+298	6
+299	8
+3	9
+30	0
+300	0
+31	3
+32	6
+33	9
+34	12
+35	0
+36	3
+37	6
+38	9
+39	12
+4	12
+40	0
+41	3
+42	6
+43	9
+44	12
+45	0
+46	3
+47	6
+48	9
+49	12
+5	0
+50	0
+51	3
+52	6
+53	9
+54	12
+55	0
+56	3
+57	6
+58	9
+59	12
+6	3
+60	0
+61	3
+62	6
+63	9
+64	12
+65	0
+66	3
+67	6
+68	9
+69	12
+7	6
+70	0
+71	3
+72	6
+73	9
+74	12
+75	0
+76	3
+77	6
+78	9
+79	12
+8	9
+80	0
+81	3
+82	6
+83	9
+84	12
+85	0
+86	3
+87	6
+88	9
+89	12
+9	12
+90	0
+91	3
+92	6
+93	9
+94	12
+95	0
+96	3
+97	6
+98	9
+99	12
+
+=== filter-05: CTE-body WHERE = on o_shippriority ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority = 0 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 61
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority = 0 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.n)
+10	5
+100	5
+105	5
+110	5
+115	5
+120	5
+125	5
+130	5
+135	5
+140	5
+145	5
+15	5
+150	5
+155	5
+160	5
+165	5
+170	5
+175	5
+180	5
+185	5
+190	5
+195	5
+20	5
+200	5
+205	5
+210	5
+215	5
+220	5
+225	5
+230	5
+235	5
+240	5
+245	5
+25	5
+250	5
+255	5
+260	5
+265	5
+270	5
+275	5
+280	5
+285	5
+290	5
+295	5
+30	5
+300	5
+35	5
+40	5
+45	5
+5	5
+50	5
+55	5
+60	5
+65	5
+70	5
+75	5
+80	5
+85	5
+90	5
+95	5
+
+=== filter-06: CTE-body WHERE != on o_shippriority ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority != 0 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 241
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority != 0 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.n)
+1	5
+101	5
+102	5
+103	5
+104	5
+106	5
+107	5
+108	5
+109	5
+11	5
+111	5
+112	5
+113	5
+114	5
+116	5
+117	5
+118	5
+119	5
+12	5
+121	5
+122	5
+123	5
+124	5
+126	5
+127	5
+128	5
+129	5
+13	5
+131	5
+132	5
+133	5
+134	5
+136	5
+137	5
+138	5
+139	5
+14	5
+141	5
+142	5
+143	5
+144	5
+146	5
+147	5
+148	5
+149	5
+151	5
+152	5
+153	5
+154	5
+156	5
+157	5
+158	5
+159	5
+16	5
+161	5
+162	5
+163	5
+164	5
+166	5
+167	5
+168	5
+169	5
+17	5
+171	5
+172	5
+173	5
+174	5
+176	5
+177	5
+178	5
+179	5
+18	5
+181	5
+182	5
+183	5
+184	5
+186	5
+187	5
+188	5
+189	5
+19	5
+191	5
+192	5
+193	5
+194	5
+196	5
+197	5
+198	5
+199	5
+2	5
+201	5
+202	5
+203	5
+204	5
+206	5
+207	5
+208	5
+209	5
+21	5
+211	5
+212	5
+213	5
+214	5
+216	5
+217	5
+218	5
+219	5
+22	5
+221	5
+222	5
+223	5
+224	5
+226	5
+227	5
+228	5
+229	5
+23	5
+231	5
+232	5
+233	5
+234	5
+236	5
+237	5
+238	5
+239	5
+24	5
+241	5
+242	5
+243	5
+244	5
+246	5
+247	5
+248	5
+249	5
+251	5
+252	5
+253	5
+254	5
+256	5
+257	5
+258	5
+259	5
+26	5
+261	5
+262	5
+263	5
+264	5
+266	5
+267	5
+268	5
+269	5
+27	5
+271	5
+272	5
+273	5
+274	5
+276	5
+277	5
+278	5
+279	5
+28	5
+281	5
+282	5
+283	5
+284	5
+286	5
+287	5
+288	5
+289	5
+29	5
+291	5
+292	5
+293	5
+294	5
+296	5
+297	5
+298	5
+299	5
+3	5
+31	5
+32	5
+33	5
+34	5
+36	5
+37	5
+38	5
+39	5
+4	5
+41	5
+42	5
+43	5
+44	5
+46	5
+47	5
+48	5
+49	5
+51	5
+52	5
+53	5
+54	5
+56	5
+57	5
+58	5
+59	5
+6	5
+61	5
+62	5
+63	5
+64	5
+66	5
+67	5
+68	5
+69	5
+7	5
+71	5
+72	5
+73	5
+74	5
+76	5
+77	5
+78	5
+79	5
+8	5
+81	5
+82	5
+83	5
+84	5
+86	5
+87	5
+88	5
+89	5
+9	5
+91	5
+92	5
+93	5
+94	5
+96	5
+97	5
+98	5
+99	5
+
+=== filter-07: CTE-body WHERE range on o_custkey (two predicates, >= AND <=) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_custkey >= 50 AND o_custkey <= 150 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 102
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_custkey >= 50 AND o_custkey <= 150 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+150	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+=== filter-08: CTE-body WHERE AND of two predicates on different cols ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice > 5000 AND o_shippriority = 2 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 61
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+FROM orders WHERE o_totalprice > 5000 AND o_shippriority = 2 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.n)	SUM(sums.t)
+102	4	8
+107	4	8
+112	4	8
+117	4	8
+12	3	6
+122	4	8
+127	4	8
+132	4	8
+137	4	8
+142	4	8
+147	4	8
+152	4	8
+157	4	8
+162	4	8
+167	4	8
+17	3	6
+172	4	8
+177	4	8
+182	4	8
+187	4	8
+192	4	8
+197	4	8
+2	3	6
+202	4	8
+207	4	8
+212	4	8
+217	4	8
+22	3	6
+222	4	8
+227	4	8
+232	4	8
+237	4	8
+242	4	8
+247	4	8
+252	4	8
+257	4	8
+262	4	8
+267	4	8
+27	3	6
+272	4	8
+277	4	8
+282	4	8
+287	4	8
+292	4	8
+297	4	8
+32	3	6
+37	3	6
+42	3	6
+47	3	6
+52	3	6
+57	3	6
+62	3	6
+67	3	6
+7	3	6
+72	3	6
+77	4	8
+82	4	8
+87	4	8
+92	4	8
+97	4	8
+
+=== filter-09: CTE-body WHERE OR/DNF on o_shippriority ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority = 0 OR o_shippriority = 4 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 121
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority = 0 OR o_shippriority = 4 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.n)
+10	5
+100	5
+104	5
+105	5
+109	5
+110	5
+114	5
+115	5
+119	5
+120	5
+124	5
+125	5
+129	5
+130	5
+134	5
+135	5
+139	5
+14	5
+140	5
+144	5
+145	5
+149	5
+15	5
+150	5
+154	5
+155	5
+159	5
+160	5
+164	5
+165	5
+169	5
+170	5
+174	5
+175	5
+179	5
+180	5
+184	5
+185	5
+189	5
+19	5
+190	5
+194	5
+195	5
+199	5
+20	5
+200	5
+204	5
+205	5
+209	5
+210	5
+214	5
+215	5
+219	5
+220	5
+224	5
+225	5
+229	5
+230	5
+234	5
+235	5
+239	5
+24	5
+240	5
+244	5
+245	5
+249	5
+25	5
+250	5
+254	5
+255	5
+259	5
+260	5
+264	5
+265	5
+269	5
+270	5
+274	5
+275	5
+279	5
+280	5
+284	5
+285	5
+289	5
+29	5
+290	5
+294	5
+295	5
+299	5
+30	5
+300	5
+34	5
+35	5
+39	5
+4	5
+40	5
+44	5
+45	5
+49	5
+5	5
+50	5
+54	5
+55	5
+59	5
+60	5
+64	5
+65	5
+69	5
+70	5
+74	5
+75	5
+79	5
+80	5
+84	5
+85	5
+89	5
+9	5
+90	5
+94	5
+95	5
+99	5
+
+=== filter-10: main WHERE on CTE output MAX(o_clerk) IS NOT NULL ===
+== Query ==
+WITH clk AS (
+SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_clerk) AS mc
+FROM orders GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c
+JOIN clk ON clk.k = c.c_custkey
+WHERE clk.mc IS NOT NULL
+GROUP BY clk.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH clk AS (
+SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_clerk) AS mc
+FROM orders GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c
+JOIN clk ON clk.k = c.c_custkey
+WHERE clk.mc IS NOT NULL
+GROUP BY clk.k|
+k	SUM(clk.n)
+1	5
+10	5
+100	5
+101	5
+102	5
+103	5
+104	5
+105	5
+106	5
+107	5
+108	5
+109	5
+11	5
+110	5
+111	5
+112	5
+113	5
+114	5
+115	5
+116	5
+117	5
+118	5
+119	5
+12	5
+120	5
+121	5
+122	5
+123	5
+124	5
+125	5
+126	5
+127	5
+128	5
+129	5
+13	5
+130	5
+131	5
+132	5
+133	5
+134	5
+135	5
+136	5
+137	5
+138	5
+139	5
+14	5
+140	5
+141	5
+142	5
+143	5
+144	5
+145	5
+146	5
+147	5
+148	5
+149	5
+15	5
+150	5
+151	5
+152	5
+153	5
+154	5
+155	5
+156	5
+157	5
+158	5
+159	5
+16	5
+160	5
+161	5
+162	5
+163	5
+164	5
+165	5
+166	5
+167	5
+168	5
+169	5
+17	5
+170	5
+171	5
+172	5
+173	5
+174	5
+175	5
+176	5
+177	5
+178	5
+179	5
+18	5
+180	5
+181	5
+182	5
+183	5
+184	5
+185	5
+186	5
+187	5
+188	5
+189	5
+19	5
+190	5
+191	5
+192	5
+193	5
+194	5
+195	5
+196	5
+197	5
+198	5
+199	5
+2	5
+20	5
+200	5
+201	5
+202	5
+203	5
+204	5
+205	5
+206	5
+207	5
+208	5
+209	5
+21	5
+210	5
+211	5
+212	5
+213	5
+214	5
+215	5
+216	5
+217	5
+218	5
+219	5
+22	5
+220	5
+221	5
+222	5
+223	5
+224	5
+225	5
+226	5
+227	5
+228	5
+229	5
+23	5
+230	5
+231	5
+232	5
+233	5
+234	5
+235	5
+236	5
+237	5
+238	5
+239	5
+24	5
+240	5
+241	5
+242	5
+243	5
+244	5
+245	5
+246	5
+247	5
+248	5
+249	5
+25	5
+250	5
+251	5
+252	5
+253	5
+254	5
+255	5
+256	5
+257	5
+258	5
+259	5
+26	5
+260	5
+261	5
+262	5
+263	5
+264	5
+265	5
+266	5
+267	5
+268	5
+269	5
+27	5
+270	5
+271	5
+272	5
+273	5
+274	5
+275	5
+276	5
+277	5
+278	5
+279	5
+28	5
+280	5
+281	5
+282	5
+283	5
+284	5
+285	5
+286	5
+287	5
+288	5
+289	5
+29	5
+290	5
+291	5
+292	5
+293	5
+294	5
+295	5
+296	5
+297	5
+298	5
+299	5
+3	5
+30	5
+300	5
+31	5
+32	5
+33	5
+34	5
+35	5
+36	5
+37	5
+38	5
+39	5
+4	5
+40	5
+41	5
+42	5
+43	5
+44	5
+45	5
+46	5
+47	5
+48	5
+49	5
+5	5
+50	5
+51	5
+52	5
+53	5
+54	5
+55	5
+56	5
+57	5
+58	5
+59	5
+6	5
+60	5
+61	5
+62	5
+63	5
+64	5
+65	5
+66	5
+67	5
+68	5
+69	5
+7	5
+70	5
+71	5
+72	5
+73	5
+74	5
+75	5
+76	5
+77	5
+78	5
+79	5
+8	5
+80	5
+81	5
+82	5
+83	5
+84	5
+85	5
+86	5
+87	5
+88	5
+89	5
+9	5
+90	5
+91	5
+92	5
+93	5
+94	5
+95	5
+96	5
+97	5
+98	5
+99	5
+
+=== filter-11: main WHERE on CTE output MAX(o_clerk) IS NULL ===
+== Query ==
+WITH clk AS (
+SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_clerk) AS mc
+FROM orders GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c
+JOIN clk ON clk.k = c.c_custkey
+WHERE clk.mc IS NULL
+GROUP BY clk.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH clk AS (
+SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_clerk) AS mc
+FROM orders GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c
+JOIN clk ON clk.k = c.c_custkey
+WHERE clk.mc IS NULL
+GROUP BY clk.k|
+k	SUM(clk.n)
+
+
+=== filter-16: CTE-body WHERE o_orderstatus = 'O' (CHAR(1)) ===
+== Query ==
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_orderstatus = 'O' GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k;
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+FROM orders WHERE o_orderstatus = 'O' GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+GROUP BY sums.k|
+k	SUM(sums.n)	SUM(sums.t)
+102	5	10
+105	5	0
+108	5	15
+111	5	5
+114	5	20
+117	5	10
+12	5	10
+120	5	0
+123	5	15
+126	5	5
+129	5	20
+132	5	10
+135	5	0
+138	5	15
+141	5	5
+144	5	20
+147	5	10
+15	5	0
+150	5	0
+153	5	15
+156	5	5
+159	5	20
+162	5	10
+165	5	0
+168	5	15
+171	5	5
+174	5	20
+177	5	10
+18	5	15
+180	5	0
+183	5	15
+186	5	5
+189	5	20
+192	5	10
+195	5	0
+198	5	15
+201	5	5
+204	5	20
+207	5	10
+21	5	5
+210	5	0
+213	5	15
+216	5	5
+219	5	20
+222	5	10
+225	5	0
+228	5	15
+231	5	5
+234	5	20
+237	5	10
+24	5	20
+240	5	0
+243	5	15
+246	5	5
+249	5	20
+252	5	10
+255	5	0
+258	5	15
+261	5	5
+264	5	20
+267	5	10
+27	5	10
+270	5	0
+273	5	15
+276	5	5
+279	5	20
+282	5	10
+285	5	0
+288	5	15
+291	5	5
+294	5	20
+297	5	10
+3	5	15
+30	5	0
+300	5	0
+33	5	15
+36	5	5
+39	5	20
+42	5	10
+45	5	0
+48	5	15
+51	5	5
+54	5	20
+57	5	10
+6	5	5
+60	5	0
+63	5	15
+66	5	5
+69	5	20
+72	5	10
+75	5	0
+78	5	15
+81	5	5
+84	5	20
+87	5	10
+9	5	20
+90	5	0
+93	5	15
+96	5	5
+99	5	20
+
+=== filter-17: CTE-body WHERE c_mktsegment = 'BUILDING' (VARCHAR) ===
+== Query ==
+WITH segs AS (
+  SELECT c_nationkey AS k, COUNT(*) AS n, SUM(c_nationkey) AS bal
+  FROM customer WHERE c_mktsegment = 'BUILDING' GROUP BY c_nationkey)
+SELECT segs.k, SUM(segs.n), SUM(segs.bal)
+FROM nation AS n
+JOIN segs ON segs.k = n.n_nationkey
+GROUP BY segs.k;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH segs AS (
+SELECT c_nationkey AS k, COUNT(*) AS n, SUM(c_nationkey) AS bal
+FROM customer WHERE c_mktsegment = 'BUILDING' GROUP BY c_nationkey)
+SELECT segs.k, SUM(segs.n), SUM(segs.bal)
+FROM nation AS n
+JOIN segs ON segs.k = n.n_nationkey
+GROUP BY segs.k|
+k	SUM(segs.n)	SUM(segs.bal)
+1	12	12
+11	12	132
+16	12	192
+21	12	252
+6	12	72
+
+=== filter-18: CTE-body WHERE l_returnflag = 'R' (CHAR(1), lineitem) ===
+== Query ==
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
+  FROM lineitem WHERE l_returnflag = 'R' GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n), SUM(liq.q)
+FROM orders AS o
+JOIN liq ON liq.k = o.o_orderkey
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 201
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH liq AS (
+SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
+FROM lineitem WHERE l_returnflag = 'R' GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n), SUM(liq.q)
+FROM orders AS o
+JOIN liq ON liq.k = o.o_orderkey
+GROUP BY o.o_custkey|
+o_custkey	SUM(liq.n)	SUM(liq.q)
+101	5	20
+102	5	20
+104	5	35
+105	5	35
+107	5	50
+108	5	50
+11	5	70
+110	5	65
+111	5	65
+113	5	80
+114	5	80
+116	5	95
+117	5	95
+119	5	110
+12	5	70
+120	5	110
+122	5	125
+123	5	125
+125	5	140
+126	5	140
+128	5	155
+129	5	155
+131	5	170
+132	5	170
+134	5	185
+135	5	185
+137	5	200
+138	5	200
+14	5	85
+140	5	215
+141	5	215
+143	5	230
+144	5	230
+146	5	245
+147	5	245
+149	5	10
+15	5	85
+150	5	10
+152	5	25
+153	5	25
+155	5	40
+156	5	40
+158	5	55
+159	5	55
+161	5	70
+162	5	70
+164	5	85
+165	5	85
+167	5	100
+168	5	100
+17	5	100
+170	5	115
+171	5	115
+173	5	130
+174	5	130
+176	5	145
+177	5	145
+179	5	160
+18	5	100
+180	5	160
+182	5	175
+183	5	175
+185	5	190
+186	5	190
+188	5	205
+189	5	205
+191	5	220
+192	5	220
+194	5	235
+195	5	235
+197	5	250
+198	5	250
+2	5	25
+20	5	115
+200	5	15
+201	5	15
+203	5	30
+204	5	30
+206	5	45
+207	5	45
+209	5	60
+21	5	115
+210	5	60
+212	5	75
+213	5	75
+215	5	90
+216	5	90
+218	5	105
+219	5	105
+221	5	120
+222	5	120
+224	5	135
+225	5	135
+227	5	150
+228	5	150
+23	5	130
+230	5	165
+231	5	165
+233	5	180
+234	5	180
+236	5	195
+237	5	195
+239	5	210
+24	5	130
+240	5	210
+242	5	225
+243	5	225
+245	5	240
+246	5	240
+248	5	5
+249	5	5
+251	5	20
+252	5	20
+254	5	35
+255	5	35
+257	5	50
+258	5	50
+26	5	145
+260	5	65
+261	5	65
+263	5	80
+264	5	80
+266	5	95
+267	5	95
+269	5	110
+27	5	145
+270	5	110
+272	5	125
+273	5	125
+275	5	140
+276	5	140
+278	5	155
+279	5	155
+281	5	170
+282	5	170
+284	5	185
+285	5	185
+287	5	200
+288	5	200
+29	5	160
+290	5	215
+291	5	215
+293	5	230
+294	5	230
+296	5	245
+297	5	245
+299	5	10
+3	5	25
+30	5	160
+300	5	10
+32	5	175
+33	5	175
+35	5	190
+36	5	190
+38	5	205
+39	5	205
+41	5	220
+42	5	220
+44	5	235
+45	5	235
+47	5	250
+48	5	250
+5	5	40
+50	5	15
+51	5	15
+53	5	30
+54	5	30
+56	5	45
+57	5	45
+59	5	60
+6	5	40
+60	5	60
+62	5	75
+63	5	75
+65	5	90
+66	5	90
+68	5	105
+69	5	105
+71	5	120
+72	5	120
+74	5	135
+75	5	135
+77	5	150
+78	5	150
+8	5	55
+80	5	165
+81	5	165
+83	5	180
+84	5	180
+86	5	195
+87	5	195
+89	5	210
+9	5	55
+90	5	210
+92	5	225
+93	5	225
+95	5	240
+96	5	240
+98	5	5
+99	5	5
+
+=== filter-19: main WHERE = on CTE key ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k = 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k = 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	0
+
+=== filter-20: main WHERE != on CTE key ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k != 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 300
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k != 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	5
+10	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+=== filter-21: main WHERE < on CTE key ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k < 50
+GROUP BY sums.k;
+
+Number of output lines, including header: 50
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k < 50
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	5
+10	0
+11	5
+12	10
+13	15
+14	20
+15	0
+16	5
+17	10
+18	15
+19	20
+2	10
+20	0
+21	5
+22	10
+23	15
+24	20
+25	0
+26	5
+27	10
+28	15
+29	20
+3	15
+30	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+6	5
+7	10
+8	15
+9	20
+
+=== filter-22: main WHERE <= on CTE key ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k <= 50
+GROUP BY sums.k;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k <= 50
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	5
+10	0
+11	5
+12	10
+13	15
+14	20
+15	0
+16	5
+17	10
+18	15
+19	20
+2	10
+20	0
+21	5
+22	10
+23	15
+24	20
+25	0
+26	5
+27	10
+28	15
+29	20
+3	15
+30	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+6	5
+7	10
+8	15
+9	20
+
+=== filter-23: main WHERE > on CTE key (crosses the 256-group batch boundary) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k > 250
+GROUP BY sums.k;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k > 250
+GROUP BY sums.k|
+k	SUM(sums.t)
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+300	0
+
+=== filter-24: main WHERE >= on CTE key ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k >= 250
+GROUP BY sums.k;
+
+Number of output lines, including header: 52
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k >= 250
+GROUP BY sums.k|
+k	SUM(sums.t)
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+300	0
+
+=== filter-25: main WHERE = on CTE aggregate output ===
+== Query ==
+WITH cnt AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM customer AS c
+JOIN cnt ON cnt.k = c.c_custkey
+WHERE cnt.n = 5
+GROUP BY cnt.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cnt AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM customer AS c
+JOIN cnt ON cnt.k = c.c_custkey
+WHERE cnt.n = 5
+GROUP BY cnt.k|
+k	SUM(cnt.n)
+1	5
+10	5
+100	5
+101	5
+102	5
+103	5
+104	5
+105	5
+106	5
+107	5
+108	5
+109	5
+11	5
+110	5
+111	5
+112	5
+113	5
+114	5
+115	5
+116	5
+117	5
+118	5
+119	5
+12	5
+120	5
+121	5
+122	5
+123	5
+124	5
+125	5
+126	5
+127	5
+128	5
+129	5
+13	5
+130	5
+131	5
+132	5
+133	5
+134	5
+135	5
+136	5
+137	5
+138	5
+139	5
+14	5
+140	5
+141	5
+142	5
+143	5
+144	5
+145	5
+146	5
+147	5
+148	5
+149	5
+15	5
+150	5
+151	5
+152	5
+153	5
+154	5
+155	5
+156	5
+157	5
+158	5
+159	5
+16	5
+160	5
+161	5
+162	5
+163	5
+164	5
+165	5
+166	5
+167	5
+168	5
+169	5
+17	5
+170	5
+171	5
+172	5
+173	5
+174	5
+175	5
+176	5
+177	5
+178	5
+179	5
+18	5
+180	5
+181	5
+182	5
+183	5
+184	5
+185	5
+186	5
+187	5
+188	5
+189	5
+19	5
+190	5
+191	5
+192	5
+193	5
+194	5
+195	5
+196	5
+197	5
+198	5
+199	5
+2	5
+20	5
+200	5
+201	5
+202	5
+203	5
+204	5
+205	5
+206	5
+207	5
+208	5
+209	5
+21	5
+210	5
+211	5
+212	5
+213	5
+214	5
+215	5
+216	5
+217	5
+218	5
+219	5
+22	5
+220	5
+221	5
+222	5
+223	5
+224	5
+225	5
+226	5
+227	5
+228	5
+229	5
+23	5
+230	5
+231	5
+232	5
+233	5
+234	5
+235	5
+236	5
+237	5
+238	5
+239	5
+24	5
+240	5
+241	5
+242	5
+243	5
+244	5
+245	5
+246	5
+247	5
+248	5
+249	5
+25	5
+250	5
+251	5
+252	5
+253	5
+254	5
+255	5
+256	5
+257	5
+258	5
+259	5
+26	5
+260	5
+261	5
+262	5
+263	5
+264	5
+265	5
+266	5
+267	5
+268	5
+269	5
+27	5
+270	5
+271	5
+272	5
+273	5
+274	5
+275	5
+276	5
+277	5
+278	5
+279	5
+28	5
+280	5
+281	5
+282	5
+283	5
+284	5
+285	5
+286	5
+287	5
+288	5
+289	5
+29	5
+290	5
+291	5
+292	5
+293	5
+294	5
+295	5
+296	5
+297	5
+298	5
+299	5
+3	5
+30	5
+300	5
+31	5
+32	5
+33	5
+34	5
+35	5
+36	5
+37	5
+38	5
+39	5
+4	5
+40	5
+41	5
+42	5
+43	5
+44	5
+45	5
+46	5
+47	5
+48	5
+49	5
+5	5
+50	5
+51	5
+52	5
+53	5
+54	5
+55	5
+56	5
+57	5
+58	5
+59	5
+6	5
+60	5
+61	5
+62	5
+63	5
+64	5
+65	5
+66	5
+67	5
+68	5
+69	5
+7	5
+70	5
+71	5
+72	5
+73	5
+74	5
+75	5
+76	5
+77	5
+78	5
+79	5
+8	5
+80	5
+81	5
+82	5
+83	5
+84	5
+85	5
+86	5
+87	5
+88	5
+89	5
+9	5
+90	5
+91	5
+92	5
+93	5
+94	5
+95	5
+96	5
+97	5
+98	5
+99	5
+
+=== filter-26: main WHERE != on CTE aggregate output ===
+== Query ==
+WITH cnt AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM customer AS c
+JOIN cnt ON cnt.k = c.c_custkey
+WHERE cnt.n != 5
+GROUP BY cnt.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cnt AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM customer AS c
+JOIN cnt ON cnt.k = c.c_custkey
+WHERE cnt.n != 5
+GROUP BY cnt.k|
+k	SUM(cnt.n)
+
+=== filter-27: main WHERE < on CTE aggregate output (SUM) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t < 30000
+GROUP BY sums.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t < 30000
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+=== filter-28: main WHERE <= on CTE aggregate output (SUM) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t <= 30000
+GROUP BY sums.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t <= 30000
+GROUP BY sums.k|
+k	SUM(sums.t)
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+=== filter-29: main WHERE > on CTE aggregate output (SUM) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t > 60000
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t > 60000
+GROUP BY sums.k|
+k	SUM(sums.t)
+
+=== filter-30: main WHERE >= on CTE aggregate output (SUM) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t >= 60000
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.t >= 60000
+GROUP BY sums.k|
+k	SUM(sums.t)
+
+=== filter-31: main WHERE multi-conjunct AND (key predicate AND aggregate predicate) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k >= 100 AND sums.t > 50000
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k >= 100 AND sums.t > 50000
+GROUP BY sums.k|
+k	SUM(sums.t)

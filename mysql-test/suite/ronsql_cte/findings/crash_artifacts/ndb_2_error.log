@@ -1,0 +1,42 @@
+Current byte-offset of file-pointer is: 3063                      
+
+
+Time: Friday 5 June 2026 - 20:43:23
+Status: Temporary error, restart node
+Message: Internal program error (failed ndbassert) (Internal error, programming error or missing error message, please report a bug)
+Error: 2343
+Error data: DbspjMain.cpp
+Error object: DBSPJ (Line: 7825) 0x00000002 Check requestPtr.p->m_cnt_active == 0 failed
+Program: ndbmtd
+Pid: 44278 thr: 4
+Version: RonDB-26.04.1
+Trace file name: ndb_2_trace.log.1_t4
+Trace file path: /Users/mikael/mysql_trees/rondb_1072_CTE_test/debug_build/mysql-test/var/mysql_cluster.1/ndbd.2/ndb_2_trace.log.1 [t1..t11]
+***EOM***
+                                                                                                                                                                                                                                                                                                                                                                                                                                 
+Time: Friday 5 June 2026 - 20:43:23
+Status: Temporary error, restart node
+Message: Internal program error (failed ndbassert) (Internal error, programming error or missing error message, please report a bug)
+Error: 2343
+Error data: DbspjMain.cpp
+Error object: DBSPJ (Line: 7825) 0x00000002 Check requestPtr.p->m_cnt_active == 0 failed
+Program: ndbmtd
+Pid: 44278 thr: 6
+Version: RonDB-26.04.1
+Trace file name: ndb_2_trace.log.2_t6
+Trace file path: /Users/mikael/mysql_trees/rondb_1072_CTE_test/debug_build/mysql-test/var/mysql_cluster.1/ndbd.2/ndb_2_trace.log.2 [t1..t11]
+***EOM***
+                                                                                                                                                                                                                                                                                                                                                                                                                                 
+Time: Friday 5 June 2026 - 20:43:23
+Status: Temporary error, restart node
+Message: Internal program error (failed ndbassert) (Internal error, programming error or missing error message, please report a bug)
+Error: 2343
+Error data: DbspjMain.cpp
+Error object: DBSPJ (Line: 7825) 0x00000002 Check requestPtr.p->m_cnt_active == 0 failed
+Program: ndbmtd
+Pid: 44278 thr: 5
+Version: RonDB-26.04.1
+Trace file name: ndb_2_trace.log.3_t5
+Trace file path: /Users/mikael/mysql_trees/rondb_1072_CTE_test/debug_build/mysql-test/var/mysql_cluster.1/ndbd.2/ndb_2_trace.log.3 [t1..t11]
+***EOM***
+                                                                                                                                                                                                                                                                                                                                                                                                                                 
