@@ -9,6 +9,22 @@
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
 
+## Latest verification — checked overflow stencils (2026-06-06)
+
+Checked arithmetic stencils for ADD/MINUS/MUL/SUM are implemented, wired
+through the bridge, and committed as `7d0498410be` (`RONDB-1056 Add checked
+JIT overflow stencils`). The wide-column regression that originally tripped
+the one-byte column-id assertion now passes, and Mikael reported that all tests
+in the `ndb_push_agg` suite pass after the change.
+
+Host-layer verification before commit:
+- `regen-stencils`: PASS.
+- `bridge_tests`: 38/38 passed.
+- `admission_tests`: 16/16 passed.
+- `coldcall_tests`: 9/9 passed.
+- `proto_microbench`: PASS, including the checked-arithmetic normal-path
+  informational run.
+
 ## Merge verification — RONDB-1066 AggInterpreter refactor (2026-06-05)
 
 The `RONDB-1066-refactor` (PR #953) unified `AggInterpreter` and
