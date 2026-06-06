@@ -1,4 +1,5 @@
 --source include/have_ndb.inc
+--source have_ndb_error_insert.inc
 
 # RONDB-1056 Phase 4 — JIT canary.
 #
@@ -14,11 +15,11 @@
 # The supported program shape: load each input column, do bigint
 # arithmetic, sum into the accumulator, exit.
 #
-# Validation strategy (Phase 4): assert correctness — JIT'd result
-# must match the interpreted result. We don't have a session
-# variable to flip JIT off (Phase 4 doesn't include one), but the
-# WHERE-bearing fallback query exercises the interpreter on the
-# same rows and the totals must agree under simple arithmetic.
+# Validation strategy: Q1-Q3 run with ERROR_INSERT 4060, making
+# fallback to the aggregation interpreter fatal. These queries stay
+# child-local in the aggregation body because linked kOpLoadCol is
+# not lowered by the JIT bridge yet. Q4 intentionally remains a
+# fallback smoke query and runs after 4060 is cleared.
 
 --echo ############################################################
 --echo # RONDB-1056 Phase 4 JIT canary
@@ -55,24 +56,30 @@ INSERT INTO t2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
 --echo #     Expected: SUM(t2.c2) for matched pks = 100+200+300+400+500 = 1500
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=ON;
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
 SELECT SUM(t2.c2)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ############################################################
---echo # Q2: SUM of bigint arithmetic over the same join.
---echo #     Expected: SUM(t1.c1 + t2.c2) = (10+100)+(20+200)+(30+300)+(40+400)+(50+500) = 1650
+--echo # Q2: SUM of child-local bigint arithmetic over the same join.
+--echo #     Expected: SUM(t2.c2 + t2.pk) = (100+1)+(200+2)+(300+3)+(400+4)+(500+5) = 1515
 --echo ############################################################
-SELECT SUM(t1.c1 + t2.c2)
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(t2.c2 + t2.pk)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ############################################################
---echo # Q3: SUM of mixed arithmetic (Plus + Minus + Mul).
---echo #     Expected: SUM(t2.c2 - t1.c1 + t1.c1 * 0)
---echo #             = (100-10)+(200-20)+(300-30)+(400-40)+(500-50)
---echo #             = 90+180+270+360+450 = 1350
+--echo # Q3: SUM of child-local mixed arithmetic (Plus + Minus + Mul).
+--echo #     Expected: SUM(t2.c2 - t2.pk + t2.pk * 0)
+--echo #             = (100-1)+(200-2)+(300-3)+(400-4)+(500-5)
+--echo #             = 99+198+297+396+495 = 1485
 --echo ############################################################
-SELECT SUM(t2.c2 - t1.c1 + t1.c1 * 0)
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(t2.c2 - t2.pk + t2.pk * 0)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ############################################################
 --echo # Q4 (fallback): query with WHERE clause — admission MUST reject
@@ -90,3 +97,5 @@ SELECT SUM(t2.c2)
 --echo ############################################################
 DROP TABLE t2;
 DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT
