@@ -45,6 +45,8 @@ Host-layer verification:
   pass with the CASE skip-offset implementation.
 - Added Test 28 (`JIT CASE skip offset`) as an NDB API/MTR canary; Mikael
   reported `testJoinAggNdbApi` passing after the addition.
+- Mikael then reported the dedicated `rondb_jit_ndbapi_case_skip` MTR wrapper
+  and the full `ndb_push_agg` suite passing with Test 28 included.
 
 ## Merge verification — RONDB-1066 AggInterpreter refactor (2026-06-05)
 
