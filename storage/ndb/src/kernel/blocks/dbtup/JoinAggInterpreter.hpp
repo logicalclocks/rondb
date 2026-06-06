@@ -92,21 +92,20 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * Default-null = interpreter path. */
   void setJitEntry(JitEntry e) { m_jit_entry = e; }
 
-  /* Phase 4 cold-call helper bridge: exposes readAttributes to
+  /* Phase 4 cold-call helper bridge: exposes readSingleAttribute to
    * DbtupJitGlue via the friend access JoinAggInterpreter has on
    * Dbtup. Reads the AttributeHeader + raw column bytes into
    * `read_buf`; caller decodes per the column's type.
    *
-   * Returns the same value as Dbtup::readAttributes — non-negative
-   * on success, negative on failure. */
+   * Returns the same value as Dbtup::readSingleAttribute — words
+   * written on success, negative on failure. */
   int readAttributeForJit(Dbtup *block_tup,
                            Dbtup::KeyReqStruct *req_struct,
                            Uint32 col_id,
                            Uint32 *read_buf,
                            Uint32 buf_words) {
-    Uint32 col_index = col_id << 16;
-    return block_tup->readAttributes(req_struct, &col_index, 1,
-                                      read_buf, buf_words);
+    return block_tup->readSingleAttribute(req_struct, col_id,
+                                           read_buf, buf_words);
   }
 
   /* Phase 5.1a: friend-accessor wrappers for Dbtup's cheapMemory.

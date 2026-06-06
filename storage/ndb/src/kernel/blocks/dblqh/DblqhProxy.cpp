@@ -88,9 +88,11 @@ std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
 #define DEB_JIT_IF(cond, arglist) do { } while (0)
 #endif
 
+#ifdef DEBUG_JIT
 static void ndb_jit_event_logger(void *, const char *line) {
   g_eventLogger->info("%s", line);
 }
+#endif
 
 #ifdef DEBUG_EXEC_SR
 #define DEB_EXEC_SR(arglist)     \
@@ -2831,6 +2833,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * Bytecode handed to the bridge starts at lp.m_agg_program +
    * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede
    * the actual aggregation instructions). */
+#ifdef DEBUG_JIT
 #ifdef ERROR_INSERT
   const bool dump_jit_program = ERROR_INSERTED(4061);
   const bool fatal_compile_failure = ERROR_INSERTED(4062);
@@ -2839,12 +2842,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const bool fatal_compile_failure = false;
 #endif
   const bool log_jit_decision = dump_jit_program || fatal_compile_failure;
+#else
+  const bool fatal_compile_failure = false;
+#endif
   if (m_jit_arena != nullptr && state->m_num_leaves == 1) {
     jam();
     LeafProgram &lp = state->m_leaf_programs[0];
     Uint32 bc_off = lp.m_agg_prog_start_pos;
     if (bc_off < lp.m_agg_program_len) {
       Uint32 bc_words = lp.m_agg_program_len - bc_off;
+#ifdef DEBUG_JIT
       if (dump_jit_program) {
         g_eventLogger->info("[RONDB-1056] ERROR_INSERT 4061: "
                             "dumping JIT setup for key=%u", key);
@@ -2852,15 +2859,41 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                   lp.m_agg_program + bc_off, bc_words,
                                   ndb_jit_event_logger, nullptr);
       }
+#endif
       Program p;
       JitBridgeError berr;
+      /*
+       * Two-stage compiler pipeline:
+       *
+       * 1. ndb_jit_bridge_translate() understands NDB aggregation bytecode
+       *    (kOp* word encoding, embedded normal-interpreter blocks, NDB-side
+       *    admission/reject reasons) and lowers it into the normalized
+       *    internal Program/Op[] form used by the JIT engine.
+       *
+       * 2. jit1_compile() is deliberately NDB-agnostic. It validates the
+       *    normalized Program, copies machine-code stencils, patches operand
+       *    holes, seals executable memory, and returns a callable entry point.
+       *
+       * The stencils copied by jit1_compile() are generated offline:
+       *
+       *   a. stencils_src.c is compiled to ordinary object code using the
+       *      pinned upstream clang version.
+       *   b. extract_stencils reads that object file, extracts each op_*
+       *      function's machine-code bytes and patch holes, and writes the
+       *      checked-in stencils_x86_64.h / stencils_arm64.h headers.
+       *   c. Normal ndbd builds include those generated headers. At setup
+       *      time jit1_compile() uses copy-and-patch on the checked-in byte
+       *      arrays; it does not invoke clang or the extractor.
+       */
       JitBridgeReason brc =
           ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
                                     bc_words, &p, &berr);
       if (brc == JIT_BRIDGE_OK) {
+#ifdef DEBUG_JIT
         if (dump_jit_program) {
           ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
         }
+#endif
         Jit1Prog *jp = jit1_compile(m_jit_arena, &p, /*timing=*/nullptr);
         if (jp != nullptr) {
           lp.m_jit_prog  = jp;
@@ -2907,11 +2940,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                     ndb_jit_bridge_agg_op_name(berr.offending_op),
                     ow));
         if (fatal_compile_failure) {
+#ifdef DEBUG_JIT
           if (!dump_jit_program) {
             ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
                                       lp.m_agg_program + bc_off, bc_words,
                                       ndb_jit_event_logger, nullptr);
           }
+#endif
           g_eventLogger->error(
               "ERROR_INSERT 4062: JIT bridge rejected key=%u "
               "reason=%d (%s) word=%u op=%u (%s) value=0x%08x. Aborting.",

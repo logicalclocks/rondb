@@ -156,6 +156,7 @@ storage/ndb/claude_files/compiled_interpreter/
 | 5.0 | Embedded interpreter calls (BRANCH_ATTR_*_NULL) | no | 4-5 d |
 | 5 | Hot-opcode lowering, full set + embedded normal-interp branches | no | 6-8 d |
 | 6 | Cross-branch always-JIT test integration | no | 2-3 d |
+| 6.5 | Standalone `AggInterpreter` JIT dispatch | no | 2-3 d |
 | 7 | `SCAN_FRAGREQ` scan-filter path | no | 4-5 d |
 | 8 | Production readiness: perf counters, error paths, defaults | no | 3-4 d |
 
@@ -1208,6 +1209,53 @@ JIT-compiled.
 **Effort.** 2-3 days, mostly merge mechanics + bug-fixing surfaced by
 heavy testing.
 
+## 12.5. Phase 6.5 — standalone `AggInterpreter` JIT dispatch
+
+**Goal.** Reuse the existing aggregation JIT path for non-join
+aggregation programs executed by `AggInterpreter::ProcessRec`. The
+current Phase 4/5 integration invokes `dbtup_jit_invoke()` only from
+`JoinAggInterpreter::ProcessRec`; this phase adds the equivalent
+dispatch to `AggInterpreter` so single-table pushed aggregation can run
+compiled code when its program shape is supported.
+
+This is distinct from Phase 7 scan-filter JIT. Phase 6.5 still targets
+aggregation bytecode and accumulator updates. Phase 7 targets general
+WHERE-clause interpreter programs carried by `SCAN_FRAGREQ`.
+
+**Deliverables.**
+
+- Identify the setup path that constructs `AggInterpreter` programs and
+  add the same bridge/compile sequence used by
+  `DblqhProxy::execJOIN_AGG_SETUP_REQ`: NDB aggregation bytecode →
+  `ndb_jit_bridge_translate()` → `jit1_compile()`.
+- Store the resulting `JitEntry` in the shared `AggInterpreterBase`
+  state. `m_jit_entry` already lives in the base class after the
+  RONDB-1066 refactor, so both `AggInterpreter` and
+  `JoinAggInterpreter` can share the dispatch field.
+- Add an `AggInterpreter::ProcessRec` JIT branch shaped like the
+  existing `JoinAggInterpreter` branch:
+  `m_jit_entry != nullptr && m_n_gb_cols == 0` dispatches through
+  `dbtup_jit_invoke()`, otherwise the existing interpreter loop runs.
+- Ensure `dbtup_jit_invoke()` handles the non-join caller cleanly:
+  no linked-attribute buffer is required, and cold-call helpers only
+  depend on `block_tup`, `req_struct`, and the interpreter instance.
+- Add focused MTR/NDBAPI coverage for simple single-table
+  `SUM(BIGINT NOT NULL)` and child-local arithmetic forms under
+  `ERROR_INSERT 4060`, plus fallback coverage for an unsupported shape.
+
+**Test approach.**
+
+- Run the new standalone aggregation canary with `4060` to prove the
+  `AggInterpreter` path actually executes compiled code.
+- Re-run the existing `JoinAggInterpreter` JIT canaries to prove the
+  shared `dbtup_jit_invoke()` path still behaves identically.
+
+**Exit criterion.** Supported single-table aggregation programs can run
+through JIT from `AggInterpreter::ProcessRec`; unsupported programs
+fall back per-program with no behavior change.
+
+**Effort.** 2-3 days.
+
 ## 13. Phase 7 — `SCAN_FRAGREQ` scan-filter path
 
 **Goal.** Extend JIT compilation to scan filters — the WHERE-clause
@@ -1262,13 +1310,35 @@ scans, no regressions in any CTE test suite.
 - **Default behaviour.** Config parameter `JoinAggCompiledInterpreter`
   with values `OFF` / `AUTO` / `ON`. Default `AUTO`: compile programs
   >K opcodes covering supported opcodes only.
-- **Arena lifecycle.** **One arena per data node**, owned by the
-  `DblqhProxy` (matches the per-node compile scope decided in §10.1),
-  sized from a config parameter, sub-allocated for compiled programs.
-  All LDM workers read RX bytes from this single arena; the proxy is
-  the sole writer. On OOM, release LRU programs; if can't, fall back
-  to interpreter. Counter reporting (next bullet) is naturally
-  per-node because there is only one arena per node.
+- **JIT code-memory lifecycle.** Replace the Phase 0 monotonic bump
+  arena with a **node-global JIT code-memory manager**, owned by the
+  data node and protected by a mutex for compile/free operations. The
+  execution path never takes this mutex: workers only call already
+  published RX entry pointers.
+  - Keep the platform-specific executable-memory substrate: Linux
+    still uses W^X dual RW/RX mappings over shared backing memory;
+    macOS still uses `MAP_JIT` and per-thread write protection. Generic
+    `lc_ndbd_pool_malloc` remains suitable for metadata, but not for
+    executable bytes directly.
+  - Allocate code in a small fixed set of slot sizes, e.g. `256B`,
+    `512B`, `1KB`, `2KB`, `4KB`, and `8KB`. `jit1_compile` picks the
+    smallest class that can hold the emitted blob plus alignment.
+  - Each size class owns one or more executable pages split into fixed
+    slots. Free slots are tracked by simple intrusive linked lists;
+    allocation pops from the list, free pushes the slot back. This
+    avoids general-purpose executable-heap fragmentation and keeps
+    accounting predictable.
+  - A compiled program owns a slot handle carrying both RW and RX
+    addresses, size-class id, blob length, and debug sidecar pointer.
+    The handle, not just a raw function pointer, is the unit returned
+    to the manager when the program is no longer live.
+  - Start with one global mutex. If compile/free churn later shows up
+    in profiling, split locks per size class. Per-row execution remains
+    lock-free either way.
+  - On OOM, first evict unused cached programs / reclaim freeable
+    slots; if no slot can be obtained, publish a `NULL` JIT entry and
+    fall back to the interpreter for that program. Counter reporting
+    is per-node because the manager is per-node.
 - **`DUMP` commands** (debug builds only): toggles for force-on /
   force-off / log-stats.
 - **Crash diagnosis.** JIT'd code has no symbols, so a SIGSEGV inside
