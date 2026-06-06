@@ -172,6 +172,10 @@ void interp_run(const Program *prog,
           }
           break;
 
+        case OP_JUMP:
+          pc = op->c;
+          break;
+
         case OP_SKIP:
           /* Forward jump to row_end — represented here by exiting
            * the per-row pc loop. */

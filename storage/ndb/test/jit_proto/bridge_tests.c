@@ -754,25 +754,55 @@ static void test_embedded_linked_accept_path(void) {
   mark_pass("T22b embedded_linked_accept_path");
 }
 
-/* T22c: a non-zero skip_offset (CASE-style multi-way disposition) is not
- * modelled by the JIT and must reject so the program falls back to the
- * interpreter. LOAD_CONST16 with a non-zero constant triggers this. */
-static void test_embedded_nonzero_skip_offset_reject(void) {
-  uint32_t prog[9] = {
+/* T22c: CASE-style non-zero skip_offset accepts by emitting OP_JUMP. The
+ * accept arm below skips the first outer LoadCol/SUM pair and lands on the
+ * second pair.
+ *   embedded(emb_len=6):
+ *     0: READ_LINKED_TO_MEM 0
+ *     1: BRANCH_LINKED_NE_NULL +2   (non-NULL -> accept @3)
+ *     2: EXIT_REFUSE 626            (NULL -> skip)
+ *     3: LOAD_CONST16 r2, 2         (skip 2 outer words)
+ *     4: WRITE_INTERPRETER_OUTPUT r2, 0
+ *     5: EXIT_OK
+ *   outer: kOpLoadCol(0), kOpSum(0), kOpLoadCol(1), kOpSum(1)
+ * Expected jump target: outer word pos 9 -> JIT op index 6. */
+static void test_embedded_case_skip_offset_accept(void) {
+  uint32_t prog[11] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
     enc_emb_read_linked_to_mem(/*position=*/0),
     enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
-    enc_emb_load_const16(/*reg=*/2, /*val=*/5),   /* non-zero skip_offset */
+    enc_emb_load_const16(/*reg=*/2, /*val=*/2),
     enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
     enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/1),
   };
-  /* offending_word = outer_word_pos(0) + 1 + emb_pc(3) = 4
-   * (LOAD_CONST16 is the 4th embedded instruction, emb_pc 3). */
-  assert_rejected("T22c embedded_nonzero_skip_offset_reject", prog, 9,
-                   JIT_BRIDGE_UNSUPPORTED_OP, 4, EMB_LOAD_CONST16);
+
+  Program p;
+  if (!expect_accepted("T22c embedded_case_skip_offset_accept", prog, 11,
+                       &p, /*expected_n_ops=*/10)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 1,
+                       "c", p.ops[1].c, 3)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 3,
+                       "kind", p.ops[3].kind, OP_JUMP)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 3,
+                       "c", p.ops[3].c, 6)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 4,
+                       "kind", p.ops[4].kind, OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 5,
+                       "kind", p.ops[5].kind, OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 6,
+                       "kind", p.ops[6].kind, OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 7,
+                       "kind", p.ops[7].kind, OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 5,
+                       "d", p.ops[5].d, 9)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 7,
+                       "d", p.ops[7].d, 9)) return;
+  mark_pass("T22c embedded_case_skip_offset_accept");
 }
 
 /* T23: local-attribute branch target outside the embedded block must
@@ -1003,7 +1033,7 @@ int main(void) {
   test_embedded_linked_eq_null_accept();
   test_embedded_linked_backward_reject();
   test_embedded_linked_accept_path();
-  test_embedded_nonzero_skip_offset_reject();
+  test_embedded_case_skip_offset_accept();
   test_embedded_attr_target_oor_reject();
   test_embedded_linked_target_oor_reject();
   test_embedded_direct_linked_ne_null_lowering();

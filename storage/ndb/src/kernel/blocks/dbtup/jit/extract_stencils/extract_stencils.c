@@ -300,6 +300,7 @@ static TailPolicy classify_tail(const char *name) {
   if (strcmp(name, "op_skip") == 0) return TAIL_TERMINATOR;
   if (strcmp(name, "op_exit") == 0) return TAIL_TERMINATOR;
   if (strcmp(name, "op_overflow_exit") == 0) return TAIL_BODY_TERMINATOR;
+  if (strcmp(name, "op_jump") == 0) return TAIL_KEEP_ALL;
   if (starts_with(name, "op_branch_")) return TAIL_KEEP_ALL;
   if (strstr(name, "_checked") != NULL) return TAIL_KEEP_ALL;
   return TAIL_STRIP_TAIL;
@@ -988,6 +989,7 @@ static const OpkindMap kOpkindMap[] = {
   { "op_mul_int_int_checked",   "OP_MUL_INT_INT_CHECKED"   },
   { "op_sum_bigint_checked",    "OP_SUM_BIGINT_CHECKED"    },
   { "op_overflow_exit",         "OP_OVERFLOW_EXIT"         },
+  { "op_jump",                  "OP_JUMP"                  },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

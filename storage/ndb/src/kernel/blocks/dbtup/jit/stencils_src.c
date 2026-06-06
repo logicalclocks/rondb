@@ -727,6 +727,16 @@ STENCIL op_branch_linked_ne_null(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_jump : unconditional forward branch.                            */
+/* Used by embedded CASE accept paths after WRITE_INTERPRETER_OUTPUT   */
+/* selects a non-zero skip_offset in the outer aggregation program.    */
+/* ------------------------------------------------------------------ */
+extern __attribute__((preserve_none)) void HOLE_JMP_TGT(JitState *);
+STENCIL op_jump(JitState *s) {
+  [[clang::musttail]] return HOLE_JMP_TGT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -791,4 +801,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_mul_int_int_checked,
     op_sum_bigint_checked,
     op_overflow_exit,
+    op_jump,
 };

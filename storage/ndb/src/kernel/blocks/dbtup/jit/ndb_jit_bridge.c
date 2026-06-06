@@ -262,6 +262,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_MUL_INT_INT_CHECKED:  return "mul_int_int_checked";
     case OP_SUM_BIGINT_CHECKED:   return "sum_bigint_checked";
     case OP_OVERFLOW_EXIT:        return "overflow_exit";
+    case OP_JUMP:                 return "jump";
     default:                      return "jit_op?";
   }
 }
@@ -366,13 +367,17 @@ static inline int embedded_filters_enabled(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Embedded normal-interpreter block translation (Phase 5.0).         */
+/* Embedded normal-interpreter block translation (Phase 5.0+).        */
 /*                                                                    */
 /* Walks the inner NDB-bytecode words emitted after kOpEmbeddedInterp's*/
-/* header word. Phase 5.0 admits a very narrow opcode set:             */
+/* header word. The JIT admits a deliberately narrow opcode set:       */
 /*                                                                    */
 /*   BRANCH_ATTR_EQ_NULL  → OP_BRANCH_ATTR_EQ_NULL                    */
 /*   BRANCH_ATTR_NE_NULL  → OP_BRANCH_ATTR_NE_NULL                    */
+/*   READ_LINKED_TO_MEM   → OP_LOAD_LINKED_TO_MEM                     */
+/*   BRANCH_LINKED_*_NULL → OP_BRANCH_LINKED_*_NULL                   */
+/*   LOAD_CONST16         → stage row-disposition skip_offset          */
+/*   WRITE_INTERP_OUTPUT  → no Op for skip_offset 0, OP_JUMP otherwise*/
 /*   EXIT_OK / EXIT_OK_LAST → no Op (fall through to outer program)   */
 /*   EXIT_REFUSE          → OP_EXIT (early-terminate the JIT'd row)   */
 /*                                                                    */
@@ -385,7 +390,9 @@ static inline int embedded_filters_enabled(void) {
 /* space (0..emb_len-1). We track each instruction's output Op index  */
 /* in emb_pc_to_op_idx[]. After the linear walk, a fixup pass walks   */
 /* the emitted Ops and replaces their temporary `c` (= target embedded*/
-/* pc) with the corresponding output Op index.                        */
+/* pc) with the corresponding output Op index. CASE OP_JUMP targets   */
+/* are resolved later by the outer translator because their skip       */
+/* offsets name positions in the outer aggregation word stream.        */
 /* ------------------------------------------------------------------ */
 
 /* Sentinel for `pending_target_emb_pc[]` slots that don't need
@@ -394,10 +401,18 @@ static inline int embedded_filters_enabled(void) {
  * is 1024. */
 #define BR_EMB_NO_PENDING_FIXUP     0xFFFFu
 
+typedef struct {
+  uint16_t op_idx;
+  uint32_t target_word_pos;
+} PendingCaseJump;
+
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
     Program *out_prog, JitBridgeError *out_err,
-    uint32_t outer_word_pos /* for error reporting */) {
+    uint32_t outer_word_pos, /* for error reporting */
+    uint32_t outer_after_emb_pos,
+    PendingCaseJump *pending_case_jumps,
+    uint16_t *n_pending_case_jumps) {
 
   if (emb_len == 0) {
     /* Empty embedded block — equivalent to "always pass". */
@@ -434,6 +449,10 @@ static JitBridgeReason translate_embedded_block(
     pending_target_emb_pc[i] = BR_EMB_NO_PENDING_FIXUP;
   }
   uint16_t first_op_idx_at_entry = (uint16_t)out_prog->n_ops;
+  uint16_t const16_by_reg[8];
+  uint8_t const16_valid[8];
+  memset(const16_by_reg, 0, sizeof(const16_by_reg));
+  memset(const16_valid, 0, sizeof(const16_valid));
 
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
@@ -591,20 +610,30 @@ static JitBridgeReason translate_embedded_block(
       }
 
       case BR_EMB_LOAD_CONST16: {
-        /* Phase 5.1: 1-word. Stages the accept-path skip_offset for a
-         * following WRITE_INTERPRETER_OUTPUT. The JIT only models the
-         * "run the immediately-following aggregation instruction" case
-         * (skip_offset == 0), which is exactly what a plain WHERE filter
-         * emits — the flattened Op stream's natural continuation already
-         * IS skip_offset 0, so this loads no JIT state and emits no Op.
-         * A non-zero constant means a CASE-style multi-way skip_offset,
-         * which the JIT doesn't yet model: reject so the whole program
-         * falls back to the interpreter (which handles it correctly).
-         * No-op emission keeps emb_pc_to_op_idx[emb_pc] pointing at the
-         * next emitted Op (the outer aggregation's first instruction),
-         * so a branch targeting this accept pc resolves there. */
+        /* Stages the accept-path skip_offset for a following
+         * WRITE_INTERPRETER_OUTPUT. The JIT only models constants written
+         * to output slot 0, which is the aggregation row-disposition slot.
+         * LOAD_CONST16 itself emits no JIT op; branches targeting this pc
+         * resolve to the next emitted op, either an OP_JUMP for non-zero
+         * CASE skip offsets or the outer aggregation continuation for 0. */
+        uint32_t reg = (inst >> 6) & 0x7u;
         uint32_t const16 = (inst >> 16) & 0xFFFFu;
-        if (const16 != 0) {
+        const16_by_reg[reg] = (uint16_t)const16;
+        const16_valid[reg] = 1;
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_WRITE_INTERP_OUTPUT: {
+        /* Writes the staged skip_offset to interpreter output slot 0. A
+         * zero value is the natural fall-through to the next outer
+         * aggregate instruction. A non-zero value is CASE row-disposition:
+         * branch to the later outer instruction selected by the skip
+         * offset. Other output slots are not part of aggregation row
+         * disposition and still fall back to the interpreter. */
+        uint32_t reg = (inst >> 6) & 0x7u;
+        uint32_t out_slot = (inst >> 16) & 0xFFFFu;
+        if (out_slot != 0 || !const16_valid[reg]) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -612,24 +641,30 @@ static JitBridgeReason translate_embedded_block(
           }
           return JIT_BRIDGE_UNSUPPORTED_OP;
         }
-        emb_pc += 1;
-        break;
-      }
-
-      case BR_EMB_WRITE_INTERP_OUTPUT: {
-        /* Phase 5.1: 1-word. Writes the row-disposition skip_offset to
-         * interpreter output slot. The JIT only models slot 0 with a
-         * zero skip_offset (plain filter accept); any other slot is a
-         * CASE / multi-output shape the JIT doesn't model — reject to
-         * interpreter fallback. Emits no Op (see LOAD_CONST16 above). */
-        uint32_t out_slot = (inst >> 16) & 0xFFFFu;
-        if (out_slot != 0) {
-          if (out_err) {
-            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
-            out_err->offending_word = outer_word_pos + 1 + emb_pc;
-            out_err->offending_op   = emb_op;
+        uint16_t skip_offset = const16_by_reg[reg];
+        if (skip_offset != 0) {
+          uint16_t jump_op_idx = out_prog->n_ops;
+          if (!emit_op(out_prog, OP_JUMP, 0, 0, 0, 0)) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_PROG_TOO_LARGE;
           }
-          return JIT_BRIDGE_UNSUPPORTED_OP;
+          if (*n_pending_case_jumps >= BC_MAX_OPS) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          pending_case_jumps[*n_pending_case_jumps] = (PendingCaseJump){
+            .op_idx = jump_op_idx,
+            .target_word_pos = outer_after_emb_pos + (uint32_t)skip_offset,
+          };
+          (*n_pending_case_jumps)++;
         }
         emb_pc += 1;
         break;
@@ -724,8 +759,12 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
     out_err->offending_word = 0;
     out_err->offending_op = 0;
   }
+  PendingCaseJump pending_case_jumps[BC_MAX_OPS];
+  uint16_t n_pending_case_jumps = 0;
   return translate_embedded_block(emb_prog, emb_len, out_prog, out_err,
-                                  outer_word_pos);
+                                  outer_word_pos, outer_word_pos + 1 + emb_len,
+                                  pending_case_jumps,
+                                  &n_pending_case_jumps);
 }
 
 /* ------------------------------------------------------------------ */
@@ -748,10 +787,23 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   uint16_t agg_result_index = 0;
   uint16_t checked_arith_ops[BC_MAX_OPS];
   uint16_t n_checked_arith_ops = 0;
+  PendingCaseJump pending_case_jumps[BC_MAX_OPS];
+  uint16_t n_pending_case_jumps = 0;
+  uint32_t outer_word_pos[BC_MAX_OPS];
+  uint16_t outer_op_idx[BC_MAX_OPS];
+  uint16_t n_outer_map = 0;
   while (pos < n_words) {
     uint32_t word = ndb_prog[pos];
     uint8_t  op   = (uint8_t)((word & 0xFC000000u) >> 26);
     uint32_t this_pos = pos;
+
+    if (n_outer_map >= BC_MAX_OPS) {
+      set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+      return JIT_BRIDGE_PROG_TOO_LARGE;
+    }
+    outer_word_pos[n_outer_map] = this_pos;
+    outer_op_idx[n_outer_map] = out_prog->n_ops;
+    n_outer_map++;
 
     switch (op) {
       case BR_kOpLoadConst: {
@@ -910,7 +962,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           return JIT_BRIDGE_MALFORMED;
         }
         JitBridgeReason rc = translate_embedded_block(
-            ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos);
+            ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
+            pos + 1 + emb_len, pending_case_jumps,
+            &n_pending_case_jumps);
         if (rc != JIT_BRIDGE_OK) return rc;
         pos += 1 + emb_len;
         break;
@@ -931,6 +985,34 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
     set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, n_words, 0);
     return JIT_BRIDGE_PROG_TOO_LARGE;
   }
+  uint16_t tail_exit_pc = (uint16_t)(out_prog->n_ops - 1);
+
+  for (uint16_t i = 0; i < n_pending_case_jumps; i++) {
+    uint32_t target_word = pending_case_jumps[i].target_word_pos;
+    uint16_t target_op = UINT16_MAX;
+    if (target_word == n_words) {
+      target_op = tail_exit_pc;
+    } else {
+      for (uint16_t m = 0; m < n_outer_map; m++) {
+        if (outer_word_pos[m] == target_word) {
+          target_op = outer_op_idx[m];
+          break;
+        }
+      }
+    }
+    if (target_op == UINT16_MAX) {
+      set_err(out_err, JIT_BRIDGE_MALFORMED, target_word,
+              BR_kOpEmbeddedInterp);
+      return JIT_BRIDGE_MALFORMED;
+    }
+    if (target_op <= pending_case_jumps[i].op_idx) {
+      set_err(out_err, JIT_BRIDGE_EMBEDDED_BACKWARD, target_word,
+              BR_kOpEmbeddedInterp);
+      return JIT_BRIDGE_EMBEDDED_BACKWARD;
+    }
+    out_prog->ops[pending_case_jumps[i].op_idx].c = target_op;
+  }
+
   if (n_checked_arith_ops != 0) {
     uint16_t overflow_exit_pc = out_prog->n_ops;
     if (!emit_op(out_prog, OP_OVERFLOW_EXIT, 0, 0, 0, 0)) {

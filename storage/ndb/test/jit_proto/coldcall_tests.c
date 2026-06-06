@@ -475,6 +475,43 @@ static void test_checked_add_overflow(void) {
   mark_pass("T9 checked_add_overflow");
 }
 
+static void test_jump_skips_sum(void) {
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 4;
+  p.ops[0] = (Op){ .kind = OP_LOAD_CONST_UINT16, .a = 0, .imm = 5 };
+  p.ops[1] = (Op){ .kind = OP_JUMP, .c = 3 };
+  p.ops[2] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0, .c = 0 };
+  p.ops[3] = (Op){ .kind = OP_EXIT };
+
+  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  if (arena == NULL) {
+    mark_fail("T10 jump_skips_sum", "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T10 jump_skips_sum",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  jit1_entry(jp)(&s);
+  if (s.regs_i64[0] != 5 || s.acc_i64[0] != 0 ||
+      s.value_updated[0] != 0) {
+    mark_fail("T10 jump_skips_sum",
+              "reg0=%lld acc0=%lld updated0=%" PRIu64 ", want 5/0/0",
+              (long long)s.regs_i64[0], (long long)s.acc_i64[0],
+              s.value_updated[0]);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  ndb_jit_arena_destroy(arena);
+  mark_pass("T10 jump_skips_sum");
+}
+
 /* ------------------------------------------------------------------ */
 /* main.                                                              */
 /* ------------------------------------------------------------------ */
@@ -501,6 +538,7 @@ int main(void) {
   test_registry_basics();
   test_checked_add_no_overflow();
   test_checked_add_overflow();
+  test_jump_skips_sum();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

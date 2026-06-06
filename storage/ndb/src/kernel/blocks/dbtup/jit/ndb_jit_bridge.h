@@ -27,10 +27,10 @@
  * referenced.
  *
  * Current coverage: type-specialised bigint hot ops from Phase 4
- * plus the Phase 5 embedded NULL-check subset
+ * plus the Phase 5 embedded filter/row-disposition subset
  * (BRANCH_ATTR_*_NULL, READ_LINKED_TO_MEM, BRANCH_LINKED_*_NULL,
- * EXIT_OK, EXIT_REFUSE). Everything else returns
- * JIT_BRIDGE_UNSUPPORTED_OP.
+ * LOAD_CONST16, WRITE_INTERPRETER_OUTPUT slot 0, EXIT_OK,
+ * EXIT_REFUSE). Everything else returns JIT_BRIDGE_UNSUPPORTED_OP.
  */
 
 #ifndef NDB_JIT_BRIDGE_H

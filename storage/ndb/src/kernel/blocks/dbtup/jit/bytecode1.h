@@ -137,7 +137,10 @@ typedef enum {
   OP_SUM_BIGINT_CHECKED    = 29,
   /* Terminator reached only from checked arithmetic overflow branches. */
   OP_OVERFLOW_EXIT         = 30,
-  OP_KIND_MAX           = OP_OVERFLOW_EXIT
+  /* Unconditional forward jump. Used for embedded CASE accept paths whose
+   * WRITE_INTERPRETER_OUTPUT skip_offset selects a later aggregate op. */
+  OP_JUMP                  = 31,
+  OP_KIND_MAX           = OP_JUMP
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -157,6 +160,7 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_ATTR_NE_NULL:
     case OP_BRANCH_LINKED_EQ_NULL:
     case OP_BRANCH_LINKED_NE_NULL:
+    case OP_JUMP:
       return 1;
     default:
       return 0;

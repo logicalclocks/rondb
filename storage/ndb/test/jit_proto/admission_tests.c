@@ -252,6 +252,13 @@ static void build_backward_branch_linked_ne(Program *p) {
   p->ops[1] = (Op){ .kind = OP_EXIT };
 }
 
+static void build_backward_jump(Program *p) {
+  memset(p, 0, sizeof(*p));
+  p->n_ops = 2;
+  p->ops[0] = (Op){ .kind = OP_JUMP, .c = 0 };
+  p->ops[1] = (Op){ .kind = OP_EXIT };
+}
+
 /* Op with kind=0 (admission rejects). */
 static void build_invalid_kind_zero(Program *p) {
   memset(p, 0, sizeof(*p));
@@ -411,6 +418,15 @@ static void test_backward_branch_linked_ne(NdbJitArena *arena) {
                    /*kind=*/OP_BRANCH_LINKED_NE_NULL);
 }
 
+static void test_backward_jump(NdbJitArena *arena) {
+  Program p;
+  build_backward_jump(&p);
+  assert_rejected(arena, &p, "T17 backward_jump",
+                   JIT_ADMIT_BACKWARD_BRANCH,
+                   /*pc=*/0, /*target=*/0,
+                   /*kind=*/OP_JUMP);
+}
+
 /* The expensive one: prove a reject doesn't grow the arena. We need
  * a fresh arena for this so the "before" reading is the empty-arena
  * baseline (a previous accept would muddy it). */
@@ -475,6 +491,7 @@ int main(void) {
   test_backward_branch_attr_ne(arena);
   test_backward_branch_linked_eq(arena);
   test_backward_branch_linked_ne(arena);
+  test_backward_jump(arena);
 
   ndb_jit_arena_destroy(arena);
 

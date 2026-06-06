@@ -105,9 +105,8 @@ typedef struct {
                                 aarch64: full b imm26 word) starts */
 } Fixup;
 
-/* Phase 1 hard limits. The 30-op program has 1 branch; we size
- * generously. */
-#define J1_MAX_FIXUPS  16
+/* One forward branch fixup per bytecode op is the practical maximum. */
+#define J1_MAX_FIXUPS  BC_MAX_OPS
 
 struct Jit1Prog {
   const uint8_t *rx_entry;      /* RX-mapping pointer to start of compiled blob */

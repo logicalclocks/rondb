@@ -25,6 +25,25 @@ Host-layer verification before commit:
 - `proto_microbench`: PASS, including the checked-arithmetic normal-path
   informational run.
 
+## Latest implementation — CASE skip offsets (2026-06-06)
+
+CASE-style embedded accept paths with non-zero
+`WRITE_INTERPRETER_OUTPUT slot 0` skip offsets are now implemented in the JIT.
+The bridge lowers such accept paths to a new unconditional forward `OP_JUMP`;
+the jump target is resolved from the outer aggregation word position to the
+corresponding JIT op after the full outer program has been translated. Output
+slots other than 0 still reject to interpreter fallback.
+
+Host-layer verification:
+- `regen-stencils`: PASS; generated headers now contain 31 stencils.
+- `bridge_tests`: 38/38 passed, including `T22c
+  embedded_case_skip_offset_accept`.
+- `admission_tests`: 17/17 passed, including malformed `OP_JUMP` admission.
+- `coldcall_tests`: 10/10 passed, including native `OP_JUMP` execution.
+- `proto_microbench`: PASS.
+- After rebuild, Mikael reported that all tests in the `ndb_push_agg` suite
+  pass with the CASE skip-offset implementation.
+
 ## Merge verification — RONDB-1066 AggInterpreter refactor (2026-06-05)
 
 The `RONDB-1066-refactor` (PR #953) unified `AggInterpreter` and
@@ -203,14 +222,12 @@ compile-time guard — either re-add the asserts or drop the stale comment.
        BRANCH_LINKED_NE_NULL +2 (→accept @3); EXIT_REFUSE 626;
        LOAD_CONST16 r2,0; WRITE_INTERPRETER_OUTPUT r2,0; EXIT_OK`.
      - **Bridge** (`ndb_jit_bridge.c`): handle `LOAD_CONST16`(4) +
-       `WRITE_INTERPRETER_OUTPUT`(123) in embedded blocks as no-ops when
-       skip_offset==0 / slot==0 (plain filter); reject non-zero (CASE →
-       interpreter fallback). Because `emb_pc_to_op_idx` records
-       emb_pc→next-op at the top of the loop, the no-op accept pcs map to
-       the outer LoadCol, so the NE_NULL branch resolves to it — no
-       pass-2 change needed.
+       `WRITE_INTERPRETER_OUTPUT`(123) in embedded blocks. `skip_offset==0`
+       / slot 0 remains a no-op plain-filter accept path; non-zero slot-0
+       skip offsets now emit `OP_JUMP` and resolve to the selected later
+       outer aggregation instruction.
      - Both paths verified → SUM=900. bridge_tests T22b (accept-path) +
-       T22c (non-zero skip_offset reject) added.
+       T22c (CASE non-zero skip_offset accept) added.
   - **Multi-file kernel change → rebuild `ndbmtd`** (+ test binary), then
     `rondb_jit_ndbapi_linked_null` / `--only 25 -v`. Files: `ndb_jit_bridge.c`
     (EXIT consts + LOAD_CONST16/WRITE_INTERPRETER_OUTPUT accept-path),
@@ -218,9 +235,9 @@ compile-time guard — either re-add the asserts or drop the stale comment.
     reject-skip + linked-attr req_struct plumbing), `AggInterpreter.cpp`,
     `DbtupExecQuery.cpp` (handlers[19]/[41]/[42]), `bridge_tests.c`,
     `testJoinAggNdbApi.cpp` (+ .result + MTR wrapper).
-  - **Deferred:** CASE-style non-zero skip_offset in JIT (rejects to
-    interpreter for now). A JIT-off differential Test 25 variant would be
-    a good follow-up (same bytecode, proves 900 both ways).
+  - **CASE non-zero skip_offset:** implemented on 2026-06-06 via `OP_JUMP`
+    and verified in host tests. A JIT-off differential Test 25 variant would
+    still be a useful follow-up (same bytecode, proves 900 both ways).
 - **Test 26** — unsupported-program fallback canary: **IMPLEMENTED
   (2026-06-05), pending test run.** Shape: `MAX(amount)` over the Test 23
   `jagg_parent`/`jagg_child` tables (no GROUP BY → a JIT-eligible shape).

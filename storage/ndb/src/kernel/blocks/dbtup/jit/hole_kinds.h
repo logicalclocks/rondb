@@ -169,6 +169,8 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_MINUS_OVF_TGT", HK_OVERFLOW_TAKE },
   { "HOLE_MUL_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_SUM_OVF_TGT",   HK_OVERFLOW_TAKE },
+  /* CASE accept-path unconditional jump. */
+  { "HOLE_JMP_TGT",       HK_BRANCH_TAKE   },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
