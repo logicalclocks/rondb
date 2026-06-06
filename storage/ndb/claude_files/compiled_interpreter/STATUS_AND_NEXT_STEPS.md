@@ -43,6 +43,8 @@ Host-layer verification:
 - `proto_microbench`: PASS.
 - After rebuild, Mikael reported that all tests in the `ndb_push_agg` suite
   pass with the CASE skip-offset implementation.
+- Added Test 28 (`JIT CASE skip offset`) as an NDB API/MTR canary; Mikael
+  reported `testJoinAggNdbApi` passing after the addition.
 
 ## Merge verification — RONDB-1066 AggInterpreter refactor (2026-06-05)
 

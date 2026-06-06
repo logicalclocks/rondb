@@ -210,6 +210,8 @@ static const char *T13_PARENT   = "t13_parent";
 static const char *T13_CHILD    = "t13_child";
 static const char *T25_PARENT   = "t25_parent";
 static const char *T25_CHILD    = "t25_child";
+static const char *T28_PARENT   = "t28_parent";
+static const char *T28_CHILD    = "t28_child";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -1813,6 +1815,245 @@ testJitWideColumn(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
 
   printf("OK (sum=%lld, col_id=%d, JIT required)\n",
          (long long)expectedSum, targetColNo);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 28: JIT CASE non-zero skip_offset canary                       */
+/*                                                                     */
+/* The bridge lowers WRITE_INTERPRETER_OUTPUT slot 0 with a non-zero   */
+/* skip_offset to OP_JUMP. This test proves the full NDB API path      */
+/* compiles and executes that jump: accepted rows jump over a dummy    */
+/* SUM and land on the real SUM. ERROR_INSERT 4060 makes fallback      */
+/* fatal, so a green run proves the CASE skip path was JIT-compiled.   */
+/* ------------------------------------------------------------------ */
+
+static int
+createT28Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_parent");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t28_parent ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  marker BIGINT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  if (sqlExec(conn,
+        "CREATE TABLE t28_child ("
+        "  parent_id INT NOT NULL PRIMARY KEY,"
+        "  dummy BIGINT NOT NULL,"
+        "  amount BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  return 0;
+}
+
+static int
+insertT28Data(MYSQL *conn)
+{
+  /* marker NULL for parents 2,4; non-NULL for 1,3,5. */
+  if (sqlExec(conn,
+        "INSERT INTO t28_parent VALUES "
+        "(1,10),(2,NULL),(3,30),(4,NULL),(5,50)") != 0) return -1;
+  if (sqlExec(conn,
+        "INSERT INTO t28_child VALUES "
+        "(1,10000,100),(2,20000,200),(3,30000,300),"
+        "(4,40000,400),(5,50000,500)") != 0) return -1;
+  return 0;
+}
+
+static int
+dropT28Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_parent");
+  return 0;
+}
+
+static int
+testJitCaseSkipOffset(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  const char *testName = "Test 28: JIT CASE skip offset";
+  printf("%s ... ", testName);
+  fflush(stdout);
+
+  if (verifyScalarWithMysql(conn, testName,
+        "SELECT SUM(c.amount) FROM t28_parent p "
+        "JOIN t28_child c ON c.parent_id = p.id "
+        "WHERE p.marker IS NOT NULL",
+        {900}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T28_PARENT);
+  dict->invalidateTable(T28_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T28_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T28_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* Embedded block (emb_len=6):
+   *   0: READ_LINKED_TO_MEM position 0   (parent.marker)
+   *   1: BRANCH_LINKED_NE_NULL +2        (non-NULL -> accept @3)
+   *   2: EXIT_REFUSE 626                 (NULL -> skip row)
+   *   3: LOAD_CONST16 r2, 2              (skip dummy LoadCol+SUM)
+   *   4: WRITE_INTERPRETER_OUTPUT r2, 0  (slot 0 = CASE skip_offset)
+   *   5: EXIT_OK
+   * Outer program:
+   *   LoadColumn(dummy);  Sum(agg0,dummy);
+   *   LoadColumn(amount); Sum(agg1,amount);
+   *
+   * Correct JIT behavior leaves agg0 NULL and sets agg1=900. If the
+   * non-zero skip_offset is ignored, agg0 would be updated with the large
+   * dummy values instead. */
+  NdbAggregator agg(childTab);
+  if (!agg.EmbeddedInterp(6) ||
+      !agg.EmitEmbeddedWord(encEmbeddedReadLinkedToMem(0)) ||
+      !agg.EmitEmbeddedWord(
+          encEmbeddedBranchLinkedNull(EMB_OP_BRANCH_LINKED_NE_NULL, 2)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedExitRefuse(626)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedLoadConst16(2, 2)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedWriteOutput(2, 0)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedOp(EMB_OP_EXIT_OK, 0)) ||
+      !agg.LoadColumn("dummy", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Sum(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4060) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4060))\n");
+    return -1;
+  }
+  bool mustCompileSet = true;
+  auto clearMustCompile = [&]() {
+    if (mustCompileSet) {
+      restarter.insertErrorInAllNodes(0);
+      mustCompileSet = false;
+      V("  ERROR_INSERT cleared\n");
+    }
+  };
+  V("\n  ERROR_INSERT 4060 set (JIT fallback is fatal)\n");
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"),
+    nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+
+  const NdbLinkedOperand *markerLink = qb->linkedValue(parentOp, "marker");
+  if (markerLink == nullptr) {
+    printf("FAILED (linkedValue marker: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  opts.addLinkedProjection(markerLink);
+  opts.setAggregation(agg);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    clearMustCompile();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    clearMustCompile();
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  clearMustCompile();
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result dummyRes = rec.FetchAggregationResult();
+  NdbAggregator::Result amountRes = rec.FetchAggregationResult();
+  const bool dummyNull = dummyRes.is_null();
+  const bool amountNull = amountRes.is_null();
+  const Int64 dummySum = dummyNull ? 0 : dummyRes.data_int64();
+  const Int64 amountSum = amountNull ? 0 : amountRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (!dummyNull) {
+    printf("FAILED (dummy SUM expected NULL, got %lld)\n",
+           (long long)dummySum);
+    return -1;
+  }
+  if (amountNull || amountSum != 900) {
+    printf("FAILED (amount SUM expected 900, got %s)\n",
+           amountNull ? "NULL" : std::to_string((long long)amountSum).c_str());
+    return -1;
+  }
+
+  printf("OK (dummy=NULL, amount=900, JIT required)\n");
   return 0;
 }
 
@@ -6896,6 +7137,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 25: return "Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)";
     case 26: return "Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)";
     case 28: return "Test 28: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)";
+    case 29: return "Test 29: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)";
     default: return nullptr;
   }
 }
@@ -7426,6 +7668,19 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropT27Tables(conn);
+        }
+
+        /* Test 28: embedded CASE non-zero skip_offset — JIT must jump
+         * over the dummy aggregate and land on the real aggregate. */
+        if (shouldRun(28)) {
+          NdbRestarter restarter(connectString);
+          if (createT28Tables(conn) == 0 && insertT28Data(conn) == 0) {
+            if (testJitCaseSkipOffset(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropT28Tables(conn);
         }
 
         mysql_close(conn);
