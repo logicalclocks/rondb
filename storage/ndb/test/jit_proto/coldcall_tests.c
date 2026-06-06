@@ -401,6 +401,80 @@ static void test_registry_basics(void) {
   mark_pass("T7 registry_basics");
 }
 
+static void test_checked_add_no_overflow(void) {
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 5;
+  p.ops[0] = (Op){ .kind = OP_LOAD_CONST_UINT16, .a = 0, .imm = 40 };
+  p.ops[1] = (Op){ .kind = OP_LOAD_CONST_UINT16, .a = 1, .imm = 2 };
+  p.ops[2] = (Op){ .kind = OP_ADD_INT_INT_CHECKED,
+                   .a = 2, .b = 0, .c = 1, .d = 4 };
+  p.ops[3] = (Op){ .kind = OP_EXIT };
+  p.ops[4] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  if (arena == NULL) {
+    mark_fail("T8 checked_add_no_overflow", "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T8 checked_add_no_overflow",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  jit1_entry(jp)(&s);
+  if (s.row_overflowed != 0 || s.regs_i64[2] != 42) {
+    mark_fail("T8 checked_add_no_overflow",
+              "row_overflowed=%u reg2=%lld, want 0/42",
+              s.row_overflowed, (long long)s.regs_i64[2]);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  ndb_jit_arena_destroy(arena);
+  mark_pass("T8 checked_add_no_overflow");
+}
+
+static void test_checked_add_overflow(void) {
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 5;
+  p.ops[0] = (Op){ .kind = OP_LOAD_CONST_INT, .a = 0, .imm = INT64_MAX };
+  p.ops[1] = (Op){ .kind = OP_LOAD_CONST_UINT16, .a = 1, .imm = 1 };
+  p.ops[2] = (Op){ .kind = OP_ADD_INT_INT_CHECKED,
+                   .a = 2, .b = 0, .c = 1, .d = 4 };
+  p.ops[3] = (Op){ .kind = OP_EXIT };
+  p.ops[4] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  if (arena == NULL) {
+    mark_fail("T9 checked_add_overflow", "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T9 checked_add_overflow",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  jit1_entry(jp)(&s);
+  if (s.row_overflowed != 1 || s.regs_i64[2] != 0) {
+    mark_fail("T9 checked_add_overflow",
+              "row_overflowed=%u reg2=%lld, want 1/0",
+              s.row_overflowed, (long long)s.regs_i64[2]);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  ndb_jit_arena_destroy(arena);
+  mark_pass("T9 checked_add_overflow");
+}
+
 /* ------------------------------------------------------------------ */
 /* main.                                                              */
 /* ------------------------------------------------------------------ */
@@ -425,6 +499,8 @@ int main(void) {
   test_sum_marks_result_index();
   test_exit_does_not_mark_result();
   test_registry_basics();
+  test_checked_add_no_overflow();
+  test_checked_add_overflow();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -257,6 +257,11 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_LOAD_LINKED_TO_MEM:   return "load_linked_to_mem";
     case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
     case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
+    case OP_ADD_INT_INT_CHECKED:  return "add_int_int_checked";
+    case OP_MINUS_INT_INT_CHECKED:return "minus_int_int_checked";
+    case OP_MUL_INT_INT_CHECKED:  return "mul_int_int_checked";
+    case OP_SUM_BIGINT_CHECKED:   return "sum_bigint_checked";
+    case OP_OVERFLOW_EXIT:        return "overflow_exit";
     default:                      return "jit_op?";
   }
 }
@@ -316,10 +321,10 @@ void ndb_jit_bridge_dump_program(const Program *prog,
   for (uint16_t pc = 0; pc < prog->n_ops; pc++) {
     const Op *op = &prog->ops[pc];
     snprintf(line, sizeof(line),
-             "[RONDB-1056]   op[%u] %-24s kind=%u a=%u b=%u c=%u imm=%lld",
+             "[RONDB-1056]   op[%u] %-24s kind=%u a=%u b=%u c=%u d=%u imm=%lld",
              (unsigned)pc, ndb_jit_bridge_jit_op_name(op->kind),
              (unsigned)op->kind, (unsigned)op->a, (unsigned)op->b,
-             (unsigned)op->c, (long long)op->imm);
+             (unsigned)op->c, (unsigned)op->d, (long long)op->imm);
     dump_line(dump, ctx, line);
   }
 }
@@ -335,16 +340,22 @@ static inline int64_t read_int64_le(const uint32_t *prog, uint32_t pos) {
 
 /* Append an Op to out_prog, returning 1 on success, 0 if the
  * program is full. */
-static inline int emit_op(Program *out, uint8_t kind,
-                          uint8_t a, uint16_t b, uint16_t c, int64_t imm) {
+static inline int emit_op_d(Program *out, uint8_t kind, uint8_t a,
+                            uint16_t b, uint16_t c, uint16_t d, int64_t imm) {
   if (out->n_ops >= BC_MAX_OPS) return 0;
   Op *op = &out->ops[out->n_ops++];
   op->kind = kind;
   op->a    = a;
   op->b    = b;
   op->c    = c;
+  op->d    = d;
   op->imm  = imm;
   return 1;
+}
+
+static inline int emit_op(Program *out, uint8_t kind,
+                          uint8_t a, uint16_t b, uint16_t c, int64_t imm) {
+  return emit_op_d(out, kind, a, b, c, 0, imm);
 }
 
 static inline int embedded_filters_enabled(void) {
@@ -735,6 +746,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
 
   uint32_t pos = 0;
   uint16_t agg_result_index = 0;
+  uint16_t checked_arith_ops[BC_MAX_OPS];
+  uint16_t n_checked_arith_ops = 0;
   while (pos < n_words) {
     uint32_t word = ndb_prog[pos];
     uint8_t  op   = (uint8_t)((word & 0xFC000000u) >> 26);
@@ -849,14 +862,16 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         uint8_t our_kind;
         switch (op) {
-          case BR_kOpPlusBigint:  our_kind = OP_ADD_INT_INT;   break;
-          case BR_kOpMinusBigint: our_kind = OP_MINUS_INT_INT; break;
-          default:                our_kind = OP_MUL_INT_INT;   break;
+          case BR_kOpPlusBigint:  our_kind = OP_ADD_INT_INT_CHECKED;   break;
+          case BR_kOpMinusBigint: our_kind = OP_MINUS_INT_INT_CHECKED; break;
+          default:                our_kind = OP_MUL_INT_INT_CHECKED;   break;
         }
         if (!emit_op(out_prog, our_kind, dst, dst, src, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        checked_arith_ops[n_checked_arith_ops++] =
+            (uint16_t)(out_prog->n_ops - 1);
         pos += 1;
         break;
       }
@@ -869,11 +884,13 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        if (!emit_op(out_prog, OP_SUM_BIGINT,
+        if (!emit_op(out_prog, OP_SUM_BIGINT_CHECKED,
                      (uint8_t)agg_index, reg_index, agg_result_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        checked_arith_ops[n_checked_arith_ops++] =
+            (uint16_t)(out_prog->n_ops - 1);
         agg_result_index++;
         pos += 1;
         break;
@@ -913,6 +930,16 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   if (!emit_op(out_prog, OP_EXIT, 0, 0, 0, 0)) {
     set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, n_words, 0);
     return JIT_BRIDGE_PROG_TOO_LARGE;
+  }
+  if (n_checked_arith_ops != 0) {
+    uint16_t overflow_exit_pc = out_prog->n_ops;
+    if (!emit_op(out_prog, OP_OVERFLOW_EXIT, 0, 0, 0, 0)) {
+      set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, n_words, 0);
+      return JIT_BRIDGE_PROG_TOO_LARGE;
+    }
+    for (uint16_t i = 0; i < n_checked_arith_ops; i++) {
+      out_prog->ops[checked_arith_ops[i]].d = overflow_exit_pc;
+    }
   }
 
   return JIT_BRIDGE_OK;

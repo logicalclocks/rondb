@@ -72,6 +72,58 @@ void interp_run(const Program *prog,
           ++pc;
           break;
 
+        case OP_ADD_INT_INT_CHECKED: {
+          int64_t result;
+          int overflow = __builtin_add_overflow(s.regs_i64[op->b],
+                                                s.regs_i64[op->c], &result);
+          if (overflow) {
+            pc = op->d;
+          } else {
+            s.regs_i64[op->a] = result;
+            ++pc;
+          }
+          break;
+        }
+
+        case OP_MINUS_INT_INT_CHECKED: {
+          int64_t result;
+          int overflow = __builtin_sub_overflow(s.regs_i64[op->b],
+                                                s.regs_i64[op->c], &result);
+          if (overflow) {
+            pc = op->d;
+          } else {
+            s.regs_i64[op->a] = result;
+            ++pc;
+          }
+          break;
+        }
+
+        case OP_MUL_INT_INT_CHECKED: {
+          int64_t result;
+          int overflow = __builtin_mul_overflow(s.regs_i64[op->b],
+                                                s.regs_i64[op->c], &result);
+          if (overflow) {
+            pc = op->d;
+          } else {
+            s.regs_i64[op->a] = result;
+            ++pc;
+          }
+          break;
+        }
+
+        case OP_SUM_BIGINT_CHECKED: {
+          int64_t result;
+          int overflow = __builtin_add_overflow(s.acc_i64[op->a],
+                                                s.regs_i64[op->b], &result);
+          if (overflow) {
+            pc = op->d;
+          } else {
+            s.acc_i64[op->a] = result;
+            ++pc;
+          }
+          break;
+        }
+
         case OP_BRANCH_LT_INT_INT:
           if (s.regs_i64[op->a] < s.regs_i64[op->b]) {
             pc = op->c;
@@ -126,6 +178,9 @@ void interp_run(const Program *prog,
           goto row_done;
 
         case OP_EXIT:
+          goto row_done;
+
+        case OP_OVERFLOW_EXIT:
           goto row_done;
 
         default:

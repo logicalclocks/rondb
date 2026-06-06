@@ -96,6 +96,27 @@ void mb_build_30op_program(Program *out) {
   out->ops[branch_pc].c = (uint8_t)label_skip;
 }
 
+void mb_build_checked_30op_program(Program *out) {
+  mb_build_30op_program(out);
+  uint16_t overflow_pc = out->n_ops;
+  emit_(out, OP_OVERFLOW_EXIT, 0, 0, 0, 0);
+
+  for (uint16_t pc = 0; pc < overflow_pc; pc++) {
+    switch (out->ops[pc].kind) {
+      case OP_ADD_INT_INT:
+        out->ops[pc].kind = OP_ADD_INT_INT_CHECKED;
+        out->ops[pc].d = overflow_pc;
+        break;
+      case OP_SUM_BIGINT:
+        out->ops[pc].kind = OP_SUM_BIGINT_CHECKED;
+        out->ops[pc].d = overflow_pc;
+        break;
+      default:
+        break;
+    }
+  }
+}
+
 void mb_build_forked_program(Program *out) {
   memset(out, 0, sizeof(*out));
   size_t br_le_pc, br_eq_pc, br_gt_pc;
@@ -183,6 +204,11 @@ const char *bc_op_name(uint8_t kind) {
     case OP_MINUS_INT_INT:     return "minus_int_int";
     case OP_MUL_INT_INT:       return "mul_int_int";
     case OP_LOAD_COL_NDB:      return "load_col_ndb";
+    case OP_ADD_INT_INT_CHECKED:   return "add_int_int_checked";
+    case OP_MINUS_INT_INT_CHECKED: return "minus_int_int_checked";
+    case OP_MUL_INT_INT_CHECKED:   return "mul_int_int_checked";
+    case OP_SUM_BIGINT_CHECKED:    return "sum_bigint_checked";
+    case OP_OVERFLOW_EXIT:         return "overflow_exit";
     default:                   return "?";
   }
 }

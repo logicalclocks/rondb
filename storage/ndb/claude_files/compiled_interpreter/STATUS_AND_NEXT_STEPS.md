@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-06-05.** Single entry point for resuming work. Branch:
+**Updated: 2026-06-06.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -119,6 +119,11 @@ compile-time guard — either re-add the asserts or drop the stale comment.
   compile, 93-row break-even), `admission_tests`, `bridge_tests`,
   `coldcall_tests`, `proto_interp_only`, under
   `debug_build/storage/ndb/test/jit_proto/`.
+  The microbench also includes an informational checked-arithmetic
+  normal-path variant (canonical 30-op program with checked ADD/SUM and a
+  hidden `OP_OVERFLOW_EXIT`): last run on 2026-06-06 reported 31 ops,
+  668 emitted bytes, 11.06 ns/row JIT median, 4.50 us warm compile, and
+  4.87x speedup on the local arm64 debug build.
 - **NDB API canary harness:** `storage/ndb/block_unit_test/testJoinAggNdbApi.cpp`
   (MTR wrapper `mysql-test/suite/ndb_push_agg/t/testJoinAggNdbApi.test`).
   - **Test 23** — "JIT must compile SUM local attr" (`testJitMustCompileSum`,
@@ -252,10 +257,12 @@ compile-time guard — either re-add the asserts or drop the stale comment.
     `bridge_tests`, `testJoinAggNdbApi`, `ndbmtd` (the bridge is kernel
     code), then `./mtr --suite=ndb_push_agg rondb_jit_ndbapi_wide_column
     testJoinAggNdbApi` and run `bridge_tests` directly.
-- **Overflow parity (`phase_5_1_overflow_parity.md`)** — NOT landed.
-  JIT silently wraps signed overflow where the interpreter returns
-  `ZAGG_MATH_OVERFLOW`. Stage 1 = admission flag + canary + docs (~1d);
-  Stage 2 = overflow-checked stencils (~5–7d).
+- **Overflow parity (`phase_5_1_overflow_parity.md`)** — NOT landed;
+  **chosen path is overflow-checked stencils.** JIT silently wraps
+  signed overflow where the interpreter returns `ZAGG_MATH_OVERFLOW`.
+  Do not ship the Stage-1 fallback/SQL-var guardrail as the solution; implement
+  checked add/sub/mul/sum stencils and make the JIT return the interpreter's
+  overflow error directly.
 - **Phase 5 (full)** — type-state lattice + stencil picker, full
   ~70–75 stencil matrix, full embedded-branch family (ATTR_OP_ATTR /
   OP_PARAM / OP_ARG, MEM family). `phase_5_implementation.md`.
@@ -316,9 +323,10 @@ helper failures) so tests can distinguish "never reached setup" from
    `JoinAggInterpreter.cpp:1131` guards with
    `block_tup != nullptr && block_tup->jit_error_inserted(4060)`. No
    action needed; left here for the record.
-3. **Overflow parity stance.** Ship Stage-1 guardrail (admission flag
-   + documented divergence) now, or schedule Stage-2 checked stencils?
-   Affects whether overflow canaries can join the suite.
+3. ~~**Overflow parity stance.**~~ **RESOLVED — checked stencils.** Implement
+   overflow-checked stencils for signed add/sub/mul/SUM and return
+   `ZAGG_MATH_OVERFLOW` from the JIT path. The Stage-1 fallback/SQL-var
+   guardrail is not the chosen product path.
 
 ## How to build & run (from the docs)
 

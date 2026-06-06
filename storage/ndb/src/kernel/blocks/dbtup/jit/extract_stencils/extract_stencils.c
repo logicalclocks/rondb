@@ -286,17 +286,22 @@ typedef struct {
  *   STRIP_TAIL     — ordinary stencil, strip the trailing 5-byte jmp to next.
  *   KEEP_ALL       — branch stencil, keep both the jge and the jmp.
  *   TERMINATOR     — op_skip / op_exit, override bytes with engine-required
- *                    pop-r12-then-ret sequence (3 bytes on x86_64). */
+ *                    pop-r12-then-ret sequence (3 bytes on x86_64).
+ *   BODY_TERMINATOR — keep the function body but replace its native ret with
+ *                    the engine-required terminator. */
 typedef enum {
   TAIL_STRIP_TAIL,
   TAIL_KEEP_ALL,
   TAIL_TERMINATOR,
+  TAIL_BODY_TERMINATOR,
 } TailPolicy;
 
 static TailPolicy classify_tail(const char *name) {
   if (strcmp(name, "op_skip") == 0) return TAIL_TERMINATOR;
   if (strcmp(name, "op_exit") == 0) return TAIL_TERMINATOR;
+  if (strcmp(name, "op_overflow_exit") == 0) return TAIL_BODY_TERMINATOR;
   if (starts_with(name, "op_branch_")) return TAIL_KEEP_ALL;
+  if (strstr(name, "_checked") != NULL) return TAIL_KEEP_ALL;
   return TAIL_STRIP_TAIL;
 }
 
@@ -325,6 +330,20 @@ static const uint8_t kArm64Terminator[] = {
   0xF4, 0x7B, 0xC1, 0xA8,   /* ldp x20, x30, [sp], #16 */
   0xC0, 0x03, 0x5F, 0xD6,   /* ret */
 };
+
+static void append_body_terminator(ExtractedStencil *out,
+                                   const uint8_t *terminator,
+                                   uint16_t terminator_len) {
+  uint16_t new_n_bytes = (uint16_t)(out->n_bytes + terminator_len);
+  uint8_t *bytes = (uint8_t *)malloc(new_n_bytes);
+  if (bytes == NULL) {
+    die("oom appending terminator to stencil %s", out->name);
+  }
+  memcpy(bytes, out->bytes, out->n_bytes);
+  memcpy(bytes + out->n_bytes, terminator, terminator_len);
+  out->bytes = bytes;
+  out->n_bytes = new_n_bytes;
+}
 
 /* Trailing-jmp width by arch — informational; the strip code derives
  * the same value from the relocation offset. Kept here as documentation
@@ -476,6 +495,12 @@ static ExtractedStencil extract_one_x86(
     out.n_bytes = (uint16_t)sizeof(kX86Terminator);
     return out;
   }
+  if (policy == TAIL_BODY_TERMINATOR) {
+    if (out.n_bytes == 0 || out.bytes[out.n_bytes - 1] != 0xc3) {
+      die("%s: BODY_TERMINATOR expected trailing x86 ret", name);
+    }
+    out.n_bytes--;
+  }
 
   /* Walk all relocations whose r_offset falls in this symbol's range. */
   uint64_t lo = sym->st_value;
@@ -546,8 +571,9 @@ static ExtractedStencil extract_one_x86(
         continue;
       }
       uint8_t lookup_kind = lookup_hole_kind(tname);
-      if (type == R_X86_64_PLT32 && lookup_kind == HK_BRANCH_TAKE) {
-        add_hole(&out.holes, local_off, HK_BRANCH_TAKE, 4);
+      if (type == R_X86_64_PLT32 &&
+          (lookup_kind == HK_BRANCH_TAKE || lookup_kind == HK_OVERFLOW_TAKE)) {
+        add_hole(&out.holes, local_off, lookup_kind, 4);
         continue;
       }
     }
@@ -581,6 +607,10 @@ static ExtractedStencil extract_one_x86(
   /* Sort holes deterministically. */
   qsort(out.holes.holes, out.holes.n_holes, sizeof(Hole), hole_cmp);
   expand_x86_coldcalls(&out);
+  if (policy == TAIL_BODY_TERMINATOR) {
+    append_body_terminator(&out, kX86Terminator,
+                           (uint16_t)sizeof(kX86Terminator));
+  }
   return out;
 }
 
@@ -632,6 +662,19 @@ static ExtractedStencil extract_one_arm64(
     out.bytes   = kArm64Terminator;
     out.n_bytes = (uint16_t)sizeof(kArm64Terminator);
     return out;
+  }
+  if (policy == TAIL_BODY_TERMINATOR) {
+    if (out.n_bytes < 4) {
+      die("%s: BODY_TERMINATOR symbol too small", name);
+    }
+    uint32_t tail = (uint32_t)out.bytes[out.n_bytes - 4] |
+                    ((uint32_t)out.bytes[out.n_bytes - 3] << 8) |
+                    ((uint32_t)out.bytes[out.n_bytes - 2] << 16) |
+                    ((uint32_t)out.bytes[out.n_bytes - 1] << 24);
+    if (tail != 0xD65F03C0u) {
+      die("%s: BODY_TERMINATOR expected trailing arm64 ret", name);
+    }
+    out.n_bytes = (uint16_t)(out.n_bytes - 4);
   }
 
   uint64_t lo = sym->st_value;
@@ -693,8 +736,8 @@ static ExtractedStencil extract_one_arm64(
       }
       uint8_t lookup_kind = lookup_hole_kind(tname);
       if ((type == R_AARCH64_CALL26 || type == R_AARCH64_JUMP26) &&
-          lookup_kind == HK_BRANCH_TAKE) {
-        add_hole(&out.holes, local_off, HK_BRANCH_TAKE, 4);
+          (lookup_kind == HK_BRANCH_TAKE || lookup_kind == HK_OVERFLOW_TAKE)) {
+        add_hole(&out.holes, local_off, lookup_kind, 4);
         continue;
       }
     }
@@ -896,6 +939,10 @@ static ExtractedStencil extract_one_arm64(
   }
 
   qsort(out.holes.holes, out.holes.n_holes, sizeof(Hole), hole_cmp);
+  if (policy == TAIL_BODY_TERMINATOR) {
+    append_body_terminator(&out, kArm64Terminator,
+                           (uint16_t)sizeof(kArm64Terminator));
+  }
   return out;
 }
 
@@ -936,6 +983,11 @@ static const OpkindMap kOpkindMap[] = {
   { "op_load_linked_to_mem",  "OP_LOAD_LINKED_TO_MEM"  },
   { "op_branch_linked_eq_null", "OP_BRANCH_LINKED_EQ_NULL" },
   { "op_branch_linked_ne_null", "OP_BRANCH_LINKED_NE_NULL" },
+  { "op_add_int_int_checked",   "OP_ADD_INT_INT_CHECKED"   },
+  { "op_minus_int_int_checked", "OP_MINUS_INT_INT_CHECKED" },
+  { "op_mul_int_int_checked",   "OP_MUL_INT_INT_CHECKED"   },
+  { "op_sum_bigint_checked",    "OP_SUM_BIGINT_CHECKED"    },
+  { "op_overflow_exit",         "OP_OVERFLOW_EXIT"         },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 
@@ -955,6 +1007,7 @@ static const char *kind_name(uint8_t kind) {
     case HK_BRANCH_FALL: return "HK_BRANCH_FALL";
     case HK_BRANCH_TAKE: return "HK_BRANCH_TAKE";
     case HK_COLDCALL:    return "HK_COLDCALL";
+    case HK_OVERFLOW_TAKE:return "HK_OVERFLOW_TAKE";
     default:             return "?";
   }
 }

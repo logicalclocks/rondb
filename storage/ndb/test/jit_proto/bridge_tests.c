@@ -256,7 +256,7 @@ static void test_simple_sum_accept(void) {
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
     enc_sum(/*reg=*/0, /*agg=*/0),
   };
-  assert_accepted("T2 simple_sum_accept", prog, 2, /*expected_n_ops=*/3);
+  assert_accepted("T2 simple_sum_accept", prog, 2, /*expected_n_ops=*/4);
 }
 
 /* T3: SELECT SUM(c1+c2-c3*c4) shape — full arithmetic battery.
@@ -280,8 +280,27 @@ static void test_arithmetic_battery_accept(void) {
     enc_2reg(kOpMinusBigint, 0, 2),
     enc_sum(0, 0),
   };
-  assert_accepted("T3 arithmetic_battery_accept", prog, 8,
-                   /*expected_n_ops=*/9);
+  Program p;
+  if (!expect_accepted("T3 arithmetic_battery_accept", prog, 8,
+                       &p, /*expected_n_ops=*/10)) return;
+  if (!expect_op_field("T3 arithmetic_battery_accept", &p, 2,
+                       "kind", p.ops[2].kind,
+                       OP_ADD_INT_INT_CHECKED)) return;
+  if (!expect_op_field("T3 arithmetic_battery_accept", &p, 5,
+                       "kind", p.ops[5].kind,
+                       OP_MUL_INT_INT_CHECKED)) return;
+  if (!expect_op_field("T3 arithmetic_battery_accept", &p, 6,
+                       "kind", p.ops[6].kind,
+                       OP_MINUS_INT_INT_CHECKED)) return;
+  if (!expect_op_field("T3 arithmetic_battery_accept", &p, 7,
+                       "kind", p.ops[7].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  for (uint16_t pc = 2; pc <= 7; pc++) {
+    if (pc == 3 || pc == 4) continue;
+    if (!expect_op_field("T3 arithmetic_battery_accept", &p, pc,
+                         "d", p.ops[pc].d, 9)) return;
+  }
+  mark_pass("T3 arithmetic_battery_accept");
 }
 
 /* T4: load_const + sum. Verify the 3-word LoadConst layout works. */
@@ -303,8 +322,8 @@ static void test_load_const_accept(void) {
               "expected OK, got reason=%d", r);
     return;
   }
-  if (p.n_ops != 3) {
-    mark_fail("T4 load_const_accept", "n_ops=%u, want 3", (unsigned)p.n_ops);
+  if (p.n_ops != 4) {
+    mark_fail("T4 load_const_accept", "n_ops=%u, want 4", (unsigned)p.n_ops);
     return;
   }
   if (p.ops[0].imm != (int64_t)0x123456789ABCDEF0LL) {
@@ -336,7 +355,7 @@ static void test_load_col_255_accept(void) {
               r, err.offending_word, err.offending_op);
     return;
   }
-  if (p.n_ops != 3 ||
+  if (p.n_ops != 4 ||
       p.ops[0].kind != OP_LOAD_COL_NDB ||
       p.ops[0].c != 255) {
     mark_fail("T5 load_col_255_accept",
@@ -362,7 +381,7 @@ static void test_load_col_256_accept(void) {
               r, err.offending_word, err.offending_op);
     return;
   }
-  if (p.n_ops != 3 ||
+  if (p.n_ops != 4 ||
       p.ops[0].kind != OP_LOAD_COL_NDB ||
       p.ops[0].c != 256) {
     mark_fail("T6 load_col_256_accept",
@@ -388,7 +407,7 @@ static void test_load_col_4095_accept(void) {
               r, err.offending_word, err.offending_op);
     return;
   }
-  if (p.n_ops != 3 ||
+  if (p.n_ops != 4 ||
       p.ops[0].kind != OP_LOAD_COL_NDB ||
       p.ops[0].c != 4095) {
     mark_fail("T6b load_col_4095_accept",
@@ -700,7 +719,8 @@ static void test_embedded_linked_backward_reject(void) {
  *     5: EXIT_OK
  *   outer: kOpLoadCol, kOpSumBigint
  * Expected Ops: [0]LOAD_LINKED_TO_MEM [1]BRANCH_LINKED_NE_NULL(c=3)
- *   [2]OP_EXIT(reject) [3]OP_LOAD_COL_NDB [4]OP_SUM_BIGINT [5]OP_EXIT(tail). */
+ *   [2]OP_EXIT(reject) [3]OP_LOAD_COL_NDB [4]OP_SUM_BIGINT_CHECKED
+ *   [5]OP_EXIT(tail) [6]OP_OVERFLOW_EXIT. */
 static void test_embedded_linked_accept_path(void) {
   uint32_t prog[9] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
@@ -716,7 +736,7 @@ static void test_embedded_linked_accept_path(void) {
 
   Program p;
   if (!expect_accepted("T22b embedded_linked_accept_path", prog, 9,
-                       &p, /*expected_n_ops=*/6)) return;
+                       &p, /*expected_n_ops=*/7)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 1,
                        "kind", p.ops[1].kind,
                        OP_BRANCH_LINKED_NE_NULL)) return;
@@ -728,7 +748,9 @@ static void test_embedded_linked_accept_path(void) {
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 3,
                        "kind", p.ops[3].kind, OP_LOAD_COL_NDB)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 4,
-                       "kind", p.ops[4].kind, OP_SUM_BIGINT)) return;
+                       "kind", p.ops[4].kind, OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 4,
+                       "d", p.ops[4].d, 6)) return;
   mark_pass("T22b embedded_linked_accept_path");
 }
 
@@ -936,15 +958,19 @@ static void test_sum_result_indexes_accept(void) {
               "expected OK, got reason=%d", r);
     return;
   }
-  if (p.n_ops != 5) {
+  if (p.n_ops != 6) {
     mark_fail("T34 sum_result_indexes_accept",
-              "n_ops=%u, want 5", (unsigned)p.n_ops);
+              "n_ops=%u, want 6", (unsigned)p.n_ops);
     return;
   }
   if (!expect_op_field("T34 sum_result_indexes_accept", &p, 2,
                        "c", p.ops[2].c, 0)) return;
   if (!expect_op_field("T34 sum_result_indexes_accept", &p, 3,
                        "c", p.ops[3].c, 1)) return;
+  if (!expect_op_field("T34 sum_result_indexes_accept", &p, 2,
+                       "d", p.ops[2].d, 5)) return;
+  if (!expect_op_field("T34 sum_result_indexes_accept", &p, 3,
+                       "d", p.ops[3].d, 5)) return;
   mark_pass("T34 sum_result_indexes_accept");
 }
 

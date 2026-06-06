@@ -1,11 +1,12 @@
 # RONDB-1056 Phase 5.1 fix — signed-overflow parity with the interpreter
 
-**Status: planning.** Correctness defect: the JIT silently wraps
-on signed overflow while `JoinAggInterpreter` returns
-`ZAGG_MATH_OVERFLOW` (= 1860) and aborts the aggregation. Given
-identical input rows the two paths can produce different
-outcomes (wrap vs. error), which violates the
-JIT-must-be-equivalent-to-interpreter contract.
+**Status: planning; checked stencils chosen.** Correctness defect: the JIT silently
+wraps on signed overflow while `JoinAggInterpreter` returns
+`ZAGG_MATH_OVERFLOW` (= 1860) and aborts the aggregation. Given identical input
+rows the two paths can produce different outcomes (wrap vs. error), which
+violates the JIT-must-be-equivalent-to-interpreter contract. The chosen fix is
+overflow-checked arithmetic stencils; the fallback/SQL-var guardrail is not the
+product path.
 
 Branch: `RONDB-1056-compiled-interpreter`.
 
@@ -24,9 +25,9 @@ The interpreter raises an error; the JIT produces an arbitrary
 wrapped value. For sums of int64 columns at the upper end of the
 type's range this divergence is reachable in practice.
 
-## The trilemma
+## The choice
 
-Three paths, each with different cost / coverage tradeoffs:
+Three paths were considered, each with different cost / coverage tradeoffs:
 
 **A. Wide admission rejection (safe-but-aggressive)**
 
@@ -67,27 +68,22 @@ JitState field + one new HOLE_BRANCH_OVERFLOW pattern + audit
 updates + extractor regen. Estimated 5-7 days. Comparable in
 scope to Phase 5.0.
 
+**Decision (2026-06-06): choose overflow-checked stencils.** This is Option B
+from the latest two-option discussion, and Path C in the older trilemma below.
+Do not add a user-visible "overflow safe mode" flag as the product path. The
+JIT should either match the interpreter directly or not claim support for the
+operation.
+
 ## Recommended path
 
-**Stage 1 (now, ~1 day) — Path B with explicit guardrails**:
-- Document the known divergence in `plan.md` and a new
-  `phase_5_1_overflow_parity.md` with reproducer.
-- Add a session variable
-  `ndb_join_pushdown_jit_aggregate_overflow_safe` (default OFF)
-  that, when ON, forces interpreter fallback for any program
-  containing `PLUS` / `MINUS` / `MUL` / `SUM_BIGINT`. Default
-  OFF preserves Phase 4 behavior.
-- Add a `bridge_tests` case `T17 overflow_admission_safe_mode`
-  that verifies the bridge rejects an arithmetic program when
-  the safe-mode flag is set in `dbtup_jit_call_ctx` (the bridge
-  reads the same flag at admission time).
-- Add a regression test
-  `mysql-test/suite/ndb_push_agg/rondb_jit_overflow_canary.test`
-  that demonstrates the divergence: under the flag OFF, JIT
-  wraps; under flag ON, interp errors with ZAGG_MATH_OVERFLOW.
-  Both behaviors recorded as the canary's expected output.
+**Stage 1 (now) — checked-stencil spike and skeleton**:
+- Add the overflow result field to `JitState` and wire the
+  `dbtup_jit_invoke` post-call check to return `ZAGG_MATH_OVERFLOW`.
+- Add the shared overflow-exit stencil and prove the extractor can produce a
+  patchable overflow branch target on x86_64 and arm64.
+- Add focused host tests that force an overflow path and a non-overflow path.
 
-**Stage 2 (~5 days, follow-on phase) — Path C overflow-checked stencils**:
+**Stage 2 — full checked arithmetic coverage**:
 - New JitState field: `uint32_t row_overflowed`. Zeroed per row
   by `dbtup_jit_invoke`'s memset (no extra code).
 - New stencils, each with one extra branch hole pointing to a
@@ -111,13 +107,15 @@ scope to Phase 5.0.
 - audit_magics gains the new HOLE_OVERFLOW_TAKE entries (one
   per checked stencil).
 - Stencil regen.
-- Stage 1's safe-mode flag is removed; the canary's expected
-  output is updated to show the JIT path producing
+-- Add an overflow canary whose expected output shows the JIT path producing
   `ZAGG_MATH_OVERFLOW` directly.
 
-## Concrete change set — Stage 1
+## Rejected change set — fallback guardrail
 
-### Files to touch
+This was the previous Stage-1 proposal. It is recorded for context only and is
+not the chosen implementation path.
+
+### Files it would have touched
 
 | File | Change |
 |---|---|
@@ -130,7 +128,7 @@ scope to Phase 5.0.
 | `mysql-test/suite/ndb_push_agg/t/rondb_jit_overflow_canary.test` | New canary: flag OFF → JIT wraps (record value); flag ON → interp errors |
 | `storage/ndb/claude_files/compiled_interpreter/plan.md` | Note the known divergence and link to this plan + Stage 2 |
 
-### Reproducer (canary skeleton)
+### Reproducer shape
 
 ```sql
 -- Two BIGINT NOT NULL rows whose sum overflows int64.
@@ -154,9 +152,7 @@ SELECT SUM(c1) FROM t1;        -- expected: ZAGG_MATH_OVERFLOW → SQL error
 The canary records BOTH behaviors as the test's expected output.
 The diff between the two is the documented divergence.
 
-## Concrete change set — Stage 2 (deferred)
-
-Outline only; full plan to be written when Stage 2 starts.
+## Concrete change set — checked stencils
 
 ### New stencils (4 + 1 tail)
 
@@ -220,56 +216,35 @@ Always emit `_checked` variants. The unchecked stencils remain
 in `stencils_src.c` strictly for `proto_microbench`'s
 benchmark-only programs.
 
-## Verification — Stage 1
-
-| Test | Expected |
-|---|---|
-| `bridge_tests` T17 | rejects PLUS/MINUS/MUL/SUM_BIGINT in safe mode, admits when off |
-| `rondb_jit_overflow_canary` flag=OFF | JIT runs, value wraps (expected output records the wrapped value) |
-| `rondb_jit_overflow_canary` flag=ON | bridge rejects → interp runs → error 1860 |
-| `rondb_jit_canary` (Phase 4) | unaffected (flag default OFF) |
-| `rondb_jit_embedded_canary` (Phase 5.0) | unaffected (no arithmetic in WHERE) |
-
-## Verification — Stage 2
+## Verification
 
 | Test | Expected |
 |---|---|
 | `proto_microbench` arithmetic suite | new "overflow-checked" variant column added; speedup stays ≥1.5x with checked stencils |
-| `rondb_jit_overflow_canary` (flag removed) | JIT path runs, returns error 1860 — same as interp |
+| `rondb_jit_overflow_canary` | JIT path runs, returns error 1860 — same as interp |
 | Phase 4 / 5 canaries | unchanged outputs |
 | New unit test `overflow_stencil_tests` (microbench-style) | proves: checked stencils detect INT64_MAX+1 overflow; non-overflow paths produce identical results to unchecked variants byte-for-byte |
 
 ## Effort + risk
 
-| Stage | Effort | Risk |
+| Work | Effort | Risk |
 |---|---|---|
-| 1 — admission flag + canary + docs | ~1 day | low; flag default OFF preserves existing behavior |
-| 2 — overflow-checked stencils | ~5-7 days | medium; spike needed to confirm flag-detect lowering on both arches; copy-and-patch + branch from arithmetic is novel for this codebase |
+| overflow-exit skeleton + one checked op spike | ~1-2 days | medium; confirms branch lowering and extractor support |
+| full checked add/sub/mul/sum coverage | ~5-7 days | medium; spike needed to confirm flag-detect lowering on both arches; copy-and-patch + branch from arithmetic is novel for this codebase |
 
-**Stage-1 rollback**: revert the SQL var registration + bridge
-flag check. Three files. Trivial.
-
-**Stage-2 rollback**: revert the new stencils + hole kind +
+**Rollback**: revert the new stencils + hole kind +
 JitState field as a single commit. The bridge falls back to
 emitting the unchecked variants again. Stencil regen reverts
 automatically.
 
-## Sequencing — Stage 1
+## Sequencing
 
-| Day | Work |
-|---|---|
-| 1 | All Stage-1 changes: SQL var, ctx field, bridge admission gate, T17, canary, docs. Run full unit suite + the canary on both flag values. |
-
-## Sequencing — Stage 2 (when scheduled)
-
-| Day | Work |
-|---|---|
 | 1 | Spike: confirm flag-detect lowering on arm64 (ADDS/V flag) and x86_64 (add/JO). Land overflow_exit stencil + JitState field. |
 | 2 | Implement the 4 _checked stencils (one stencil per session). Run extractor; confirm bytes contain expected BR/JO instructions. |
 | 3 | audit_magics: HK_OVERFLOW_TAKE recognition + per-checked-stencil hole count check. |
 | 4 | Bridge: switch emission to _checked variants. dbtup_jit_invoke: ZAGG_MATH_OVERFLOW return. |
 | 5 | Verification: rondb_jit_overflow_canary updated to expect error 1860 from JIT path. Add overflow_stencil_tests microbench. Re-run full canary set. |
-| 6 | Stage-1 SQL variable removal + cleanup. Update plan.md. |
+| 6 | Cleanup docs and benchmarking split: unchecked variants remain benchmark-only, checked variants are the bridge default. |
 | 7 | Buffer for arch-specific debugging (likely arm64 imm hole interactions). |
 
 ## Out of scope

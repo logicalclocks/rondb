@@ -294,6 +294,70 @@ static const Hole holes_op_branch_linked_ne_null[] = {
   { .byte_offset = 36, .kind = HK_BRANCH_FALL, .width = 4 },
 };
 
+/* op_add_int_int_checked — 28 bytes, 5 holes */
+static const uint8_t bytes_op_add_int_int_checked[] = {
+  0x88, 0x9e, 0x5d, 0xf9, 0x89, 0x8a, 0x54, 0xf9, 0x08, 0x01, 0x09, 0xab,
+  0x47, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x14, 0x88, 0xd2, 0x25, 0xf9,
+  0x00, 0x00, 0x00, 0x14,
+};
+static const Hole holes_op_add_int_int_checked[] = {
+  { .byte_offset = 0, .kind = HK_OP_B, .width = 1 },
+  { .byte_offset = 4, .kind = HK_OP_C, .width = 1 },
+  { .byte_offset = 16, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 20, .kind = HK_OP_A, .width = 1 },
+  { .byte_offset = 24, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_minus_int_int_checked — 28 bytes, 5 holes */
+static const uint8_t bytes_op_minus_int_int_checked[] = {
+  0x88, 0x46, 0x4b, 0xf9, 0x89, 0xa6, 0x40, 0xf9, 0x08, 0x01, 0x09, 0xeb,
+  0x47, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x14, 0x88, 0xe2, 0x01, 0xf9,
+  0x00, 0x00, 0x00, 0x14,
+};
+static const Hole holes_op_minus_int_int_checked[] = {
+  { .byte_offset = 0, .kind = HK_OP_B, .width = 1 },
+  { .byte_offset = 4, .kind = HK_OP_C, .width = 1 },
+  { .byte_offset = 16, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 20, .kind = HK_OP_A, .width = 1 },
+  { .byte_offset = 24, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_mul_int_int_checked — 36 bytes, 5 holes */
+static const uint8_t bytes_op_mul_int_int_checked[] = {
+  0x89, 0xd6, 0x7c, 0xf9, 0x8a, 0x1a, 0x57, 0xf9, 0x28, 0x7d, 0x0a, 0x9b,
+  0x29, 0x7d, 0x4a, 0x9b, 0x3f, 0xfd, 0x88, 0xeb, 0x40, 0x00, 0x00, 0x54,
+  0x00, 0x00, 0x00, 0x14, 0x88, 0x22, 0x08, 0xf9, 0x00, 0x00, 0x00, 0x14,
+};
+static const Hole holes_op_mul_int_int_checked[] = {
+  { .byte_offset = 0, .kind = HK_OP_B, .width = 1 },
+  { .byte_offset = 4, .kind = HK_OP_C, .width = 1 },
+  { .byte_offset = 24, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 28, .kind = HK_OP_A, .width = 1 },
+  { .byte_offset = 32, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_sum_bigint_checked — 44 bytes, 6 holes */
+static const uint8_t bytes_op_sum_bigint_checked[] = {
+  0x88, 0x02, 0x01, 0x91, 0x09, 0x31, 0x42, 0xf9, 0x8a, 0xc2, 0x5b, 0xf9,
+  0x29, 0x01, 0x0a, 0xab, 0x47, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x14,
+  0x09, 0x31, 0x02, 0xf9, 0x88, 0xc2, 0x01, 0x91, 0x29, 0x00, 0x80, 0x52,
+  0x09, 0x1d, 0x2d, 0xf9, 0x00, 0x00, 0x00, 0x14,
+};
+static const Hole holes_op_sum_bigint_checked[] = {
+  { .byte_offset = 4, .kind = HK_OP_A, .width = 1 },
+  { .byte_offset = 8, .kind = HK_OP_B, .width = 1 },
+  { .byte_offset = 20, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 24, .kind = HK_OP_A, .width = 1 },
+  { .byte_offset = 36, .kind = HK_OP_C, .width = 1 },
+  { .byte_offset = 40, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_overflow_exit — 16 bytes, 0 holes */
+static const uint8_t bytes_op_overflow_exit[] = {
+  0x28, 0x00, 0x80, 0x52, 0x88, 0x92, 0x00, 0xb9, 0xf4, 0x7b, 0xc1, 0xa8,
+  0xc0, 0x03, 0x5f, 0xd6,
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -332,6 +396,11 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_LOAD_LINKED_TO_MEM] = STENCIL_(op_load_linked_to_mem),
   [OP_BRANCH_LINKED_EQ_NULL] = STENCIL_(op_branch_linked_eq_null),
   [OP_BRANCH_LINKED_NE_NULL] = STENCIL_(op_branch_linked_ne_null),
+  [OP_ADD_INT_INT_CHECKED] = STENCIL_(op_add_int_int_checked),
+  [OP_MINUS_INT_INT_CHECKED] = STENCIL_(op_minus_int_int_checked),
+  [OP_MUL_INT_INT_CHECKED] = STENCIL_(op_mul_int_int_checked),
+  [OP_SUM_BIGINT_CHECKED] = STENCIL_(op_sum_bigint_checked),
+  [OP_OVERFLOW_EXIT] = STENCIL_NOHOLES(op_overflow_exit),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */

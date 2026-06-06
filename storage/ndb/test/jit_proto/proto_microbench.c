@@ -95,6 +95,122 @@ static double dbl_pct(const double *sorted, size_t n, double p) {
   return sorted[idx];
 }
 
+static int run_informational_bench(const char *title,
+                                   const Program *prog,
+                                   const Row *rows,
+                                   size_t nrows,
+                                   int repeats) {
+  int64_t acc_interp = 0;
+  uint64_t t_i0 = now_ns();
+  interp_run(prog, rows, nrows, &acc_interp);
+  uint64_t t_i1 = now_ns();
+  double interp_ns_per_row = (double)(t_i1 - t_i0) / (double)nrows;
+
+  double *compile_samples =
+      (double *)calloc((size_t)repeats, sizeof(double));
+  double *jit_per_row_samples =
+      (double *)calloc((size_t)repeats, sizeof(double));
+  if (!compile_samples || !jit_per_row_samples) {
+    fprintf(stderr, "FAIL %s: OOM samples\n", title);
+    free(compile_samples);
+    free(jit_per_row_samples);
+    return 0;
+  }
+
+  int64_t acc_jit = 0;
+  size_t emitted = 0;
+  for (int it = 0; it < repeats; ++it) {
+    NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+    if (!arena) {
+      fprintf(stderr, "FAIL %s: arena create failed\n", title);
+      free(compile_samples);
+      free(jit_per_row_samples);
+      return 0;
+    }
+
+    uint64_t t_c0 = now_ns();
+    Jit1Prog *jp = jit1_compile(arena, prog, NULL);
+    uint64_t t_c1 = now_ns();
+    if (!jp) {
+      const Jit1AdmitError *err = jit1_last_admit_error();
+      fprintf(stderr,
+              "FAIL %s: jit1_compile failed (errno=%d, reason=%d, iter=%d)\n",
+              title, errno, err->reason, it);
+      ndb_jit_arena_destroy(arena);
+      free(compile_samples);
+      free(jit_per_row_samples);
+      return 0;
+    }
+    compile_samples[it] = (double)(t_c1 - t_c0);
+    if (it == 0) emitted = jit1_emitted_size(jp);
+
+    JitEntry entry = jit1_entry(jp);
+    uint64_t t_j0 = now_ns();
+    int64_t acc_this = jit_run(entry, rows, nrows);
+    uint64_t t_j1 = now_ns();
+    jit_per_row_samples[it] = (double)(t_j1 - t_j0) / (double)nrows;
+
+    if (it == 0) {
+      acc_jit = acc_this;
+    } else if (acc_this != acc_jit) {
+      fprintf(stderr, "FAIL %s: acc drift across iters: %" PRId64
+                      " -> %" PRId64 " at iter=%d\n",
+              title, acc_jit, acc_this, it);
+      ndb_jit_arena_destroy(arena);
+      free(compile_samples);
+      free(jit_per_row_samples);
+      return 0;
+    }
+
+    ndb_jit_arena_destroy(arena);
+  }
+
+  if (acc_interp != acc_jit) {
+    fprintf(stderr, "FAIL %s: acc mismatch: interp=%" PRId64
+                    " jit=%" PRId64 "\n",
+            title, acc_interp, acc_jit);
+    free(compile_samples);
+    free(jit_per_row_samples);
+    return 0;
+  }
+
+  size_t warm_n = (size_t)(repeats - 1);
+  double cold_compile_ns = compile_samples[0];
+  double *warm_compile = compile_samples + 1;
+  qsort(warm_compile, warm_n, sizeof(double), dbl_cmp);
+  qsort(jit_per_row_samples, (size_t)repeats, sizeof(double), dbl_cmp);
+
+  double warm_compile_med = warm_compile[warm_n / 2];
+  double warm_compile_min = warm_compile[0];
+  double warm_compile_p99 = dbl_pct(warm_compile, warm_n, 0.99);
+  double jit_ns_per_row_med = jit_per_row_samples[(size_t)repeats / 2];
+  double jit_ns_per_row_min = jit_per_row_samples[0];
+  double jit_ns_per_row_p99 =
+      dbl_pct(jit_per_row_samples, (size_t)repeats, 0.99);
+  double speedup = interp_ns_per_row / jit_ns_per_row_med;
+
+  printf("%s\n", title);
+  printf("========================================\n");
+  printf("  Program        : %u ops, %zu bytes emitted\n",
+         (unsigned)prog->n_ops, emitted);
+  printf("  Aggregate      : %" PRId64 "  (interp == jit, ok)\n", acc_jit);
+  printf("  Interpreter    : %7.2f ns/row\n", interp_ns_per_row);
+  printf("  JIT'd (median) : %7.2f ns/row   (min %.2f, p99 %.2f)\n",
+         jit_ns_per_row_med, jit_ns_per_row_min, jit_ns_per_row_p99);
+  printf("  Speedup        : %7.2fx\n", speedup);
+  printf("  Compile (cold) : %7.2f us      (informational)\n",
+         cold_compile_ns / 1000.0);
+  printf("  Compile (warm) : %7.2f us      (min %.2f, p99 %.2f us)\n",
+         warm_compile_med / 1000.0,
+         warm_compile_min / 1000.0,
+         warm_compile_p99 / 1000.0);
+  printf("\n");
+
+  free(compile_samples);
+  free(jit_per_row_samples);
+  return 1;
+}
+
 int main(int argc, char **argv) {
   size_t   nrows   = (argc > 1) ? strtoull(argv[1], NULL, 10) : 100000;
   uint64_t seed    = (argc > 2) ? strtoull(argv[2], NULL, 10) : 1;
@@ -505,6 +621,12 @@ int main(int argc, char **argv) {
          forked_jit_ns_per_row);
   printf("\n");
 
+  Program checked_prog;
+  mb_build_checked_30op_program(&checked_prog);
+  int checked_ok = run_informational_bench(
+      "Checked arithmetic normal-path microbench",
+      &checked_prog, rows, nrows, repeats);
+
   free(rows);
-  return (all_ok && forked_ok) ? 0 : 6;
+  return (all_ok && forked_ok && checked_ok) ? 0 : 6;
 }

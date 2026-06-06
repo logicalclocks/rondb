@@ -23,6 +23,10 @@
 
 #include <cstring>
 
+#ifndef ZAGG_MATH_OVERFLOW
+#define ZAGG_MATH_OVERFLOW 1860
+#endif
+
 #ifdef ERROR_INSERT
 static bool dbtup_jit_trace_start(JoinAggInterpreter *agg,
                                   Dbtup *block_tup,
@@ -323,6 +327,10 @@ Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
 
   /* Run the JIT'd program. */
   entry_fn(&s);
+
+  if (s.row_overflowed != 0) {
+    return ZAGG_MATH_OVERFLOW;
+  }
 
 #ifdef ERROR_INSERT
   if (ctx.trace_enabled) {

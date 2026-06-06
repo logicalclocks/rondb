@@ -191,15 +191,27 @@ static const struct {
   { "MAGIC_ADD_DST_FOLD",     "op_add_int_int",        1 },
   { "MAGIC_ADD_A_FOLD",       "op_add_int_int",        1 },
   { "MAGIC_ADD_B_FOLD",       "op_add_int_int",        1 },
+  { "MAGIC_ADD_DST_FOLD",     "op_add_int_int_checked", 1 },
+  { "MAGIC_ADD_A_FOLD",       "op_add_int_int_checked", 1 },
+  { "MAGIC_ADD_B_FOLD",       "op_add_int_int_checked", 1 },
   { "MAGIC_MINUS_DST_FOLD",   "op_minus_int_int",      1 },
   { "MAGIC_MINUS_A_FOLD",     "op_minus_int_int",      1 },
   { "MAGIC_MINUS_B_FOLD",     "op_minus_int_int",      1 },
+  { "MAGIC_MINUS_DST_FOLD",   "op_minus_int_int_checked", 1 },
+  { "MAGIC_MINUS_A_FOLD",     "op_minus_int_int_checked", 1 },
+  { "MAGIC_MINUS_B_FOLD",     "op_minus_int_int_checked", 1 },
   { "MAGIC_MUL_DST_FOLD",     "op_mul_int_int",        1 },
   { "MAGIC_MUL_A_FOLD",       "op_mul_int_int",        1 },
   { "MAGIC_MUL_B_FOLD",       "op_mul_int_int",        1 },
+  { "MAGIC_MUL_DST_FOLD",     "op_mul_int_int_checked", 1 },
+  { "MAGIC_MUL_A_FOLD",       "op_mul_int_int_checked", 1 },
+  { "MAGIC_MUL_B_FOLD",       "op_mul_int_int_checked", 1 },
   { "MAGIC_SUM_SLOT_FOLD",    "op_sum_bigint",         2 },  /* L+S */
   { "MAGIC_SUM_SRC_FOLD",     "op_sum_bigint",         1 },
   { "MAGIC_SUM_RESULT_FOLD",  "op_sum_bigint",         1 },
+  { "MAGIC_SUM_SLOT_FOLD",    "op_sum_bigint_checked", 2 },  /* L+S */
+  { "MAGIC_SUM_SRC_FOLD",     "op_sum_bigint_checked", 1 },
+  { "MAGIC_SUM_RESULT_FOLD",  "op_sum_bigint_checked", 1 },
   { "MAGIC_BLT_A_FOLD",       "op_branch_lt_int_int",  1 },
   { "MAGIC_BLT_B_FOLD",       "op_branch_lt_int_int",  1 },
   { "MAGIC_BLE_A_FOLD",       "op_branch_le_int_int",  1 },
@@ -233,6 +245,17 @@ static const char *expected_stencil_for_fold(const char *magic_name,
    * fold magic" — caller treats as "expected 0× everywhere". */
   if (out_count != NULL) *out_count = 0;
   return NULL;
+}
+
+static int expected_count_for_fold(const char *magic_name,
+                                   const char *stencil_name) {
+  for (size_t i = 0; i < kFoldMagicToStencilLen; ++i) {
+    if (strcmp(kFoldMagicToStencil[i].magic_name, magic_name) == 0 &&
+        strcmp(kFoldMagicToStencil[i].stencil_name, stencil_name) == 0) {
+      return kFoldMagicToStencil[i].expected_count;
+    }
+  }
+  return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -687,10 +710,7 @@ int main(int argc, char **argv) {
         int count = count_fold_matches_arm64(stencils[i].bytes,
                                               stencils[i].n_bytes,
                                               m->magic);
-        int expected =
-            (strcmp(stencils[i].name, expected_in) == 0)
-                ? expected_count_in_decl
-                : 0;
+        int expected = expected_count_for_fold(m->name, stencils[i].name);
 
         if (count != expected) {
           fprintf(stderr,

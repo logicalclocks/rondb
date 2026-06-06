@@ -131,6 +131,18 @@ static inline int64_t hole_value_from_op(uint8_t kind, const Op *op) {
   }
 }
 
+static inline int op_has_overflow_target(uint8_t kind) {
+  switch (kind) {
+    case OP_ADD_INT_INT_CHECKED:
+    case OP_MINUS_INT_INT_CHECKED:
+    case OP_MUL_INT_INT_CHECKED:
+    case OP_SUM_BIGINT_CHECKED:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Per-arch hole-patching helpers.                                    */
 /*                                                                    */
@@ -366,6 +378,26 @@ static Jit1AdmitReason admit_program(const Program *prog) {
         return JIT_ADMIT_BRANCH_OOR;
       }
     }
+    if (op_has_overflow_target(kind)) {
+      if (op->d <= pc) {
+        g_last_admit = (Jit1AdmitError){
+          .reason           = JIT_ADMIT_BACKWARD_BRANCH,
+          .offending_pc     = pc,
+          .offending_target = op->d,
+          .offending_kind   = kind,
+        };
+        return JIT_ADMIT_BACKWARD_BRANCH;
+      }
+      if (op->d >= prog->n_ops) {
+        g_last_admit = (Jit1AdmitError){
+          .reason           = JIT_ADMIT_BRANCH_OOR,
+          .offending_pc     = pc,
+          .offending_target = op->d,
+          .offending_kind   = kind,
+        };
+        return JIT_ADMIT_BRANCH_OOR;
+      }
+    }
   }
 
   g_last_admit = (Jit1AdmitError){ .reason = JIT_ADMIT_OK };
@@ -586,6 +618,18 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
           /* Leave the patch site bytes as the stencil emitted; the
            * displacement field will be cleared + filled by
            * patch_branch_disp during the drain. */
+          break;
+        }
+        case HK_OVERFLOW_TAKE: {
+          assert(op->d > pc && op->d < prog->n_ops);
+          if (n_fixups >= J1_MAX_FIXUPS) {
+            errno = ENOSPC;
+            return NULL;
+          }
+          fixups[n_fixups++] = (Fixup){
+            .target_pc = op->d,
+            .patch_off = this_off + hole->byte_offset,
+          };
           break;
         }
         default:

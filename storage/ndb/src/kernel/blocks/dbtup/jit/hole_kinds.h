@@ -45,7 +45,11 @@ typedef enum {
    * The Hole's helper_name field carries the symbol name to
    * resolve. */
   HK_COLDCALL       = 7,
-  HK_KIND_MAX       = HK_COLDCALL,
+  /* Checked arithmetic overflow branch target. Unlike HK_BRANCH_TAKE
+   * (op->c), this patches from op->d because checked arithmetic already
+   * uses c for rhs/source register. */
+  HK_OVERFLOW_TAKE  = 8,
+  HK_KIND_MAX       = HK_OVERFLOW_TAKE,
 } HoleKind;
 
 /* ------------------------------------------------------------------ */
@@ -160,6 +164,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_LLM_POS",   HK_OP_B         },
   { "HOLE_BLEN_TGT",  HK_BRANCH_TAKE  },   /* eq variant */
   { "HOLE_BLNN_TGT",  HK_BRANCH_TAKE  },   /* ne variant */
+  /* Overflow-checked arithmetic variants. */
+  { "HOLE_ADD_OVF_TGT",   HK_OVERFLOW_TAKE },
+  { "HOLE_MINUS_OVF_TGT", HK_OVERFLOW_TAKE },
+  { "HOLE_MUL_OVF_TGT",   HK_OVERFLOW_TAKE },
+  { "HOLE_SUM_OVF_TGT",   HK_OVERFLOW_TAKE },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);

@@ -42,6 +42,7 @@ typedef struct JitState {
   const int64_t *row_cols_i64;       /* current row's columns (microbench path) */
   void     *ctx;                     /* opaque per-call context for cold-call helpers */
   uint64_t  value_updated[BC_MAX_ACCS]; /* per-row aggregate-result update flags */
+  uint32_t  row_overflowed;          /* checked arithmetic saw signed overflow */
 } JitState;
 
 /* Per-row entry function — produced by jit1_compile.

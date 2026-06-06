@@ -129,7 +129,15 @@ typedef enum {
   OP_LOAD_LINKED_TO_MEM   = 23,
   OP_BRANCH_LINKED_EQ_NULL = 24,
   OP_BRANCH_LINKED_NE_NULL = 25,
-  OP_KIND_MAX           = OP_BRANCH_LINKED_NE_NULL
+  /* Overflow-checked signed arithmetic variants. Same operand layout as
+   * their unchecked siblings for a/b/c; d carries the overflow-exit pc. */
+  OP_ADD_INT_INT_CHECKED   = 26,
+  OP_MINUS_INT_INT_CHECKED = 27,
+  OP_MUL_INT_INT_CHECKED   = 28,
+  OP_SUM_BIGINT_CHECKED    = 29,
+  /* Terminator reached only from checked arithmetic overflow branches. */
+  OP_OVERFLOW_EXIT         = 30,
+  OP_KIND_MAX           = OP_OVERFLOW_EXIT
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -163,6 +171,8 @@ typedef struct {
                         * including PSEUDO_FLAG (0x8000+). */
   uint16_t c;          /* register, column id, or branch target pc.
                         * 16-bit for the same reason as b. */
+  uint16_t d;          /* overflow branch target pc for checked arithmetic;
+                        * unused by existing opcodes. */
   int64_t  imm;        /* immediate (load_const_int) — 0 otherwise */
 } Op;
 

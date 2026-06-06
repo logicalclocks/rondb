@@ -376,6 +376,18 @@ STENCIL op_add_int_int(JitState *s) {
   TAIL_NEXT(s);
 }
 
+extern __attribute__((preserve_none)) void HOLE_ADD_OVF_TGT(JitState *);
+STENCIL op_add_int_int_checked(JitState *s) {
+  int64_t result;
+  if (__builtin_add_overflow(HOLE_LOAD_REG(ADD_A, s),
+                             HOLE_LOAD_REG(ADD_B, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_ADD_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(ADD_DST, s, result);
+  TAIL_NEXT(s);
+}
+
 /* ------------------------------------------------------------------ */
 /* op_sum_bigint : acc_i64[SLOT] += regs_i64[SRC]                     */
 /* ------------------------------------------------------------------ */
@@ -385,6 +397,19 @@ DECLARE_FOLD_HOLE(SUM_RESULT);
 STENCIL op_sum_bigint(JitState *s) {
   HOLE_STORE_ACC(SUM_SLOT, s,
                  HOLE_LOAD_ACC(SUM_SLOT, s) + HOLE_LOAD_REG(SUM_SRC, s));
+  HOLE_STORE_VALUE_UPDATED(SUM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+extern __attribute__((preserve_none)) void HOLE_SUM_OVF_TGT(JitState *);
+STENCIL op_sum_bigint_checked(JitState *s) {
+  int64_t result;
+  if (__builtin_add_overflow(HOLE_LOAD_ACC(SUM_SLOT, s),
+                             HOLE_LOAD_REG(SUM_SRC, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_SUM_OVF_TGT(s);
+  }
+  HOLE_STORE_ACC(SUM_SLOT, s, result);
   HOLE_STORE_VALUE_UPDATED(SUM_RESULT, s, 1u);
   TAIL_NEXT(s);
 }
@@ -489,12 +514,36 @@ STENCIL op_minus_int_int(JitState *s) {
   TAIL_NEXT(s);
 }
 
+extern __attribute__((preserve_none)) void HOLE_MINUS_OVF_TGT(JitState *);
+STENCIL op_minus_int_int_checked(JitState *s) {
+  int64_t result;
+  if (__builtin_sub_overflow(HOLE_LOAD_REG(MINUS_A, s),
+                             HOLE_LOAD_REG(MINUS_B, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_MINUS_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(MINUS_DST, s, result);
+  TAIL_NEXT(s);
+}
+
 DECLARE_FOLD_HOLE(MUL_DST);
 DECLARE_FOLD_HOLE(MUL_A);
 DECLARE_FOLD_HOLE(MUL_B);
 STENCIL op_mul_int_int(JitState *s) {
   HOLE_STORE_REG(MUL_DST, s,
                  HOLE_LOAD_REG(MUL_A, s) * HOLE_LOAD_REG(MUL_B, s));
+  TAIL_NEXT(s);
+}
+
+extern __attribute__((preserve_none)) void HOLE_MUL_OVF_TGT(JitState *);
+STENCIL op_mul_int_int_checked(JitState *s) {
+  int64_t result;
+  if (__builtin_mul_overflow(HOLE_LOAD_REG(MUL_A, s),
+                             HOLE_LOAD_REG(MUL_B, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_MUL_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(MUL_DST, s, result);
   TAIL_NEXT(s);
 }
 
@@ -696,6 +745,16 @@ STENCIL op_exit(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_overflow_exit : checked arithmetic overflow terminator.          */
+/* The extractor overrides this return with the engine terminator,     */
+/* matching op_skip/op_exit.                                           */
+/* ------------------------------------------------------------------ */
+STENCIL op_overflow_exit(JitState *s) {
+  s->row_overflowed = 1u;
+  return;
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -727,4 +786,9 @@ const StencilTailFn g_stencil_anchor[] = {
     op_load_linked_to_mem,
     op_branch_linked_eq_null,
     op_branch_linked_ne_null,
+    op_add_int_int_checked,
+    op_minus_int_int_checked,
+    op_mul_int_int_checked,
+    op_sum_bigint_checked,
+    op_overflow_exit,
 };
