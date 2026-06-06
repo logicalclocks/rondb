@@ -316,10 +316,11 @@ static void test_load_const_accept(void) {
   mark_pass("T4 load_const_accept");
 }
 
-/* T5: kOpLoadCol still has the Phase 5.1a narrow column-id policy.
- * The largest admitted value is 255; larger column ids must fall
- * back until the stencil holes and bridge operands are widened end to
- * end. */
+/* T5/T6: kOpLoadCol column-id width policy (RONDB-1056 Test 27).
+ * The bridge admits col_id 0..BR_MAX_LOCAL_ATTR_ID (4095), matching
+ * NDB's MAX_ATTRIBUTES_IN_TABLE (4096 columns); 4096 and above reject.
+ * op->c is uint16_t and the operand holes (aarch64 narrow MOVZ /
+ * x86_64 imm32) carry the full value, so these compile end to end. */
 static void test_load_col_255_accept(void) {
   uint32_t prog[2] = {
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/255),
@@ -345,11 +346,65 @@ static void test_load_col_255_accept(void) {
   mark_pass("T5 load_col_255_accept");
 }
 
-static void test_load_col_256_reject(void) {
-  uint32_t prog[1] = {
+/* T6: col_id=256 now ACCEPTS (was reject under the old 255 cap). */
+static void test_load_col_256_accept(void) {
+  uint32_t prog[2] = {
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/256),
+    enc_sum(/*reg=*/0, /*agg=*/0),
   };
-  assert_rejected("T6 load_col_256_reject", prog, 1,
+
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 2, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T6 load_col_256_accept",
+              "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return;
+  }
+  if (p.n_ops != 3 ||
+      p.ops[0].kind != OP_LOAD_COL_NDB ||
+      p.ops[0].c != 256) {
+    mark_fail("T6 load_col_256_accept",
+              "unexpected translated column op (c=%u)", p.ops[0].c);
+    return;
+  }
+  mark_pass("T6 load_col_256_accept");
+}
+
+/* T6b: the maximum admitted column id, BR_MAX_LOCAL_ATTR_ID=4095. */
+static void test_load_col_4095_accept(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/4095),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 2, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T6b load_col_4095_accept",
+              "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return;
+  }
+  if (p.n_ops != 3 ||
+      p.ops[0].kind != OP_LOAD_COL_NDB ||
+      p.ops[0].c != 4095) {
+    mark_fail("T6b load_col_4095_accept",
+              "unexpected translated column op (c=%u)", p.ops[0].c);
+    return;
+  }
+  mark_pass("T6b load_col_4095_accept");
+}
+
+/* T6c: one past the maximum (4096) must reject — beyond NDB's
+ * MAX_ATTRIBUTES_IN_TABLE. */
+static void test_load_col_4096_reject(void) {
+  uint32_t prog[1] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/4096),
+  };
+  assert_rejected("T6c load_col_4096_reject", prog, 1,
                    JIT_BRIDGE_REG_OUT_OF_RANGE, 0, kOpLoadCol);
 }
 
@@ -902,7 +957,9 @@ int main(void) {
   test_arithmetic_battery_accept();
   test_load_const_accept();
   test_load_col_255_accept();
-  test_load_col_256_reject();
+  test_load_col_256_accept();
+  test_load_col_4095_accept();
+  test_load_col_4096_reject();
   test_embedded_interp_reject();
   test_div_reject();
   test_load_const_double_reject();

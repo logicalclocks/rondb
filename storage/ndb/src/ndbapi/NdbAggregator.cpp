@@ -769,12 +769,12 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
   }
 
   Int32 col_id = col->getAttrId();
-  assert((col_id & 0xFFFFFF00) == 0);
+  assert((col_id & 0xFFFF0000) == 0);
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
     encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
-    col_id;
+    (col_id & 0xFFFF);
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
   // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
@@ -818,12 +818,12 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
     disk_columns_ = true;
   }
 
-  assert((col_id & 0xFFFFFF00) == 0);
+  assert((col_id & 0xFFFF0000) == 0);
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
     encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
-    col_id;
+    (col_id & 0xFFFF);
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
   // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path

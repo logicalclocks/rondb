@@ -220,8 +220,38 @@ compile-time guard — either re-add the asserts or drop the stale comment.
   `kOpMaxBigint` UNSUPPORTED_OP reason (kept out of MTR). Durability: if a
   later phase lowers MAX, switch the program to a still-unsupported op
   (DivInt/Mod) to retain fallback coverage.
-- **Test 27** — operand-width boundary canary — **blocked on a policy
-  decision** (see Open Decisions).
+- **Test 27** — operand-width boundary canary: **IMPLEMENTED
+  (2026-06-06), pending test run.** Policy decided (option (a)): widen the
+  real-column path to the full 0..4095 range (4096 columns, =
+  `MAX_ATTRIBUTES_IN_TABLE`); linked `position` stays at 255 because it is
+  an 8-bit field in NDB's own Interpreter wire format
+  (`(inst>>16)&0xFF`), not an arbitrary JIT cap — and a query never has
+  thousands of linked projections.
+  - **Audit result (all interpreter commands):** the only operand that is
+    a real table column id is `kOpLoadCol`'s `col_index`; every other
+    operand is a register (≤`BC_MAX_REGS`=8), accumulator slot
+    (≤`BC_MAX_ACCS`=4), branch offset/length, or emb length — bounded by
+    JIT resources, not table width. The engine was *already* wide: `Op.b`/
+    `Op.c` are `uint16_t`, the cold-call helper args are `uint32_t`
+    (`ndb_jit_h_load_col(JitState*, uint32_t col_id, uint32_t)`), and the
+    operand holes carry the full value (x86_64 `imm32`; aarch64 narrow
+    `movz` writes a 16-bit imm with no 255 clamp — same patcher the
+    already-4095 `BRANCH_ATTR_*_NULL` attr_id uses).
+  - **Fix (1 functional line):** `ndb_jit_bridge.c` `kOpLoadCol` — change
+    `col_index > 255` → `> BR_MAX_LOCAL_ATTR_ID` and drop the
+    `(uint8_t)col_index` cast (value goes into the `uint16_t` `c`). No
+    engine/stencil/helper change. Stale `≤255` comments updated in
+    `ndb_jit_bridge.c` + `bytecode1.h`.
+  - **Tests:** `bridge_tests.c` — T5 (255 accept) kept; T6 flipped
+    256→accept; added T6b (4095 accept) + T6c (4096 reject). NDB API
+    `testJitWideColumn` (Test 27): 260-column child table, aggregate
+    `c260` (column id 260 > 255) with `4060` (JIT required) → SUM=1500;
+    self-checks `c260`'s column id is actually > 255. New MTR wrapper
+    `t/rondb_jit_ndbapi_wide_column.test` (+result) + line in the
+    consolidated `testJoinAggNdbApi.result`. **Verify:** rebuild
+    `bridge_tests`, `testJoinAggNdbApi`, `ndbmtd` (the bridge is kernel
+    code), then `./mtr --suite=ndb_push_agg rondb_jit_ndbapi_wide_column
+    testJoinAggNdbApi` and run `bridge_tests` directly.
 - **Overflow parity (`phase_5_1_overflow_parity.md`)** — NOT landed.
   JIT silently wraps signed overflow where the interpreter returns
   `ZAGG_MATH_OVERFLOW`. Stage 1 = admission flag + canary + docs (~1d);
@@ -255,14 +285,15 @@ Recommended order — develop each with `4061`/`4062`, then lock with `4060`:
    embedded READ_LINKED_TO_MEM + BRANCH_LINKED_*_NULL. Expect
    SUM(non-NULL marker rows). Verify with `4061`, trace with `4063`,
    lock with `4060`.
-5. **Test 26 — unsupported-program fallback** (negative): pick an
-   unadmitted shape (e.g. `LoadLinkedColumn` in arithmetic, or an
-   opcode the bridge rejects); verify clean interpreter fallback.
-   Do not enable `4060`; a developer-only `4062` run confirms the
-   reject reason.
-6. **Test 27 — operand-width boundaries** — only after the width
-   policy is decided (below). Add bridge unit tests first, then table
-   tests if high-attr-id tables are practical.
+5. **Test 26 — unsupported-program fallback** (negative): **DONE
+   (2026-06-05).** Shipped shape is `MAX(amount)` (→ `kOpMaxBigint`,
+   rejected by the bridge default), no `4060`/`4062` in MTR. See the
+   Test 26 entry above.
+6. **Test 27 — operand-width boundaries** — **DONE (2026-06-06).** Policy
+   = option (a): `kOpLoadCol` widened to 4095; linked `position` stays at
+   255 (8-bit wire format). Bridge unit tests (255/256/4095 accept, 4096
+   reject) + NDB API canary (260-col table, col_id 260, `4060`). See the
+   Test 27 entry above.
 
 Optional but recommended alongside: cheap runtime counters (compile
 attempts/successes, bridge/admission rejects, JIT vs fallback rows,
@@ -271,16 +302,16 @@ helper failures) so tests can distinguish "never reached setup" from
 
 ## Open decisions (need a call before parts of the suite)
 
-1. **Operand width policy (gates Test 27) — now an *asymmetry* to
-   resolve, not a from-scratch decision.** `emit_op`'s `b`/`c` operands
-   are already `uint16_t`, and embedded `BRANCH_ATTR_*_NULL` already
-   admits up to `BR_MAX_LOCAL_ATTR_ID = 4095` (`ndb_jit_bridge.c:135,468`).
-   But `BR_kOpLoadCol` still rejects `col_index > 255` (packs into a
-   `uint8_t`, line ~752,757) and `READ_LINKED_TO_MEM` rejects
-   `position > 255` (line ~509). Decide: (a) widen LoadCol (+ position)
-   to 4095 to match the branch path and test 255/256/4095-accept,
-   4096-reject; or (b) keep LoadCol at 255 deliberately and document the
-   asymmetry. Test 27 then proves whichever line is chosen.
+1. ~~**Operand width policy (gates Test 27).**~~ **RESOLVED 2026-06-06 —
+   option (a).** `BR_kOpLoadCol` now admits `col_index` up to
+   `BR_MAX_LOCAL_ATTR_ID = 4095` (was 255), matching the
+   `BRANCH_ATTR_*_NULL` path and NDB's `MAX_ATTRIBUTES_IN_TABLE = 4096`;
+   the `(uint8_t)` cast was dropped. `READ_LINKED_TO_MEM` `position`
+   deliberately stays at 255 — it is an 8-bit field in NDB's Interpreter
+   wire encoding, not an arbitrary JIT cap (widening it would require an
+   NdbAggregator/Interpreter wire-format change, and linked-projection
+   counts never approach 4096). See the Test 27 entry above for the audit
+   and the shipped change.
 2. ~~`ERROR_INSERT 4060` + null `block_tup`.~~ **Already handled** —
    `JoinAggInterpreter.cpp:1131` guards with
    `block_tup != nullptr && block_tup->jit_error_inserted(4060)`. No

@@ -793,8 +793,13 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          *   a = dst register slot (4 bits in NDB's bits 19-16)
          *   c = NDB col_id        (16 bits in NDB's bits 15-0)
          *
-         * Phase 4 narrow scope: col_id ≤ 255 (fits in op->c uint8).
-         * Larger col_ids would need an extended hole. */
+         * Operand width (RONDB-1056 Test 27): col_id is admitted up to
+         * BR_MAX_LOCAL_ATTR_ID (4095), matching NDB's
+         * MAX_ATTRIBUTES_IN_TABLE (4096 columns) and the embedded
+         * BRANCH_ATTR_*_NULL attr_id path. op->c is uint16_t and the
+         * aarch64 narrow MOVZ / x86_64 imm32 operand holes both carry the
+         * full 16-bit value, so no engine change is needed — only this
+         * admission bound and dropping the former (uint8_t) cast. */
         uint8_t  type      = (uint8_t)((word >> 21) & 0x1Fu);
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t col_index = (uint16_t)(word & 0xFFFFu);
@@ -802,12 +807,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
-        if (reg_index >= BC_MAX_REGS || col_index > 255) {
+        if (reg_index >= BC_MAX_REGS || col_index > BR_MAX_LOCAL_ATTR_ID) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         if (!emit_op(out_prog, OP_LOAD_COL_NDB,
-                     reg_index, 0, (uint8_t)col_index, 0)) {
+                     reg_index, 0, col_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }

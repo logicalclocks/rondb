@@ -102,8 +102,9 @@ typedef enum {
    * JitState.ctx pointer. Bridge maps kOpLoadCol to this opcode;
    * the existing OP_LOAD_COL_INT (pure stencil, reads a flat
    * row_cols_i64[] array) stays unchanged for microbench tests.
-   * Operand layout: a=dst_reg, c=col_id (16-bit, fits in op->c
-   * after Phase 4's ≤255 col_id restriction). */
+   * Operand layout: a=dst_reg, c=col_id (16-bit in op->c; the bridge
+   * admits col_id up to BR_MAX_LOCAL_ATTR_ID=4095, matching NDB's
+   * MAX_ATTRIBUTES_IN_TABLE — see RONDB-1056 Test 27). */
   OP_LOAD_COL_NDB       = 16,
   /* Phase 4.7 narrow LoadConst variants. The bridge picks the
    * smallest-fitting variant per constant value. Operand layout:

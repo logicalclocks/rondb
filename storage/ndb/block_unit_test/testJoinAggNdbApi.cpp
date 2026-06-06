@@ -1576,6 +1576,247 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 27: operand-width boundary — JIT must compile SUM of a column  */
+/* whose id is past the old 255 cap (RONDB-1056).                      */
+/*                                                                     */
+/* Builds a child table wide enough that the aggregated column sits at */
+/* a column id > 255 (NDB allows up to MAX_ATTRIBUTES_IN_TABLE=4096).  */
+/* With ERROR_INSERT 4060 (fallback fatal), the test passes only if    */
+/* the high-id LoadCol actually compiled through JIT — proving the     */
+/* bridge admits col_id up to 4095 and the engine encodes the full     */
+/* 16-bit value. Before the widening fix the bridge rejected col_id    */
+/* 260, fell back, and 4060 would have made the run fatal. The bridge  */
+/* full-range boundary (255/256/4095 accept, 4096 reject) is covered   */
+/* at the unit level in bridge_tests.c; this is the end-to-end proof.  */
+/* ------------------------------------------------------------------ */
+static const int   T27_NUM_COLS = 260;  /* c1..c260; c260 -> column id 260 */
+static const char *T27_PARENT   = "t27_parent";
+static const char *T27_CHILD    = "t27_child";
+
+static int
+createT27Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t27_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t27_parent");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t27_parent ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  /* Wide child: parent_id PK + c1..c260, all BIGINT NOT NULL, declared
+   * in order so c260 gets column id 260. */
+  std::string create = "CREATE TABLE t27_child ("
+                       "parent_id INT NOT NULL PRIMARY KEY";
+  for (int i = 1; i <= T27_NUM_COLS; i++) {
+    create += ", c";
+    create += std::to_string(i);
+    create += " BIGINT NOT NULL";
+  }
+  create += ") ENGINE=NDB";
+  if (sqlExec(conn, create.c_str()) != 0) return -1;
+  V("Created Test 27 tables (%d child columns)\n", T27_NUM_COLS);
+  return 0;
+}
+
+static int
+insertT27Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO t27_parent VALUES "
+        "(1,1),(2,1),(3,2),(4,2),(5,3)") != 0) return -1;
+
+  /* 5 child rows. Only the last column (c260) carries the aggregated
+   * values 100..500 (sum=1500); c1..c259 are 0 padding whose only job
+   * is to push c260's column id past 255. */
+  static const long long lastColVals[5] = {100, 200, 300, 400, 500};
+  std::string ins = "INSERT INTO t27_child VALUES ";
+  for (int r = 0; r < 5; r++) {
+    if (r != 0) ins += ",";
+    ins += "(";
+    ins += std::to_string(r + 1);            /* parent_id */
+    for (int i = 1; i <= T27_NUM_COLS; i++) {
+      ins += ",";
+      ins += (i == T27_NUM_COLS) ? std::to_string(lastColVals[r]) : "0";
+    }
+    ins += ")";
+  }
+  if (sqlExec(conn, ins.c_str()) != 0) return -1;
+  V("Inserted 5 Test 27 child rows\n");
+  return 0;
+}
+
+static int
+dropT27Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t27_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t27_parent");
+  V("Dropped Test 27 tables\n");
+  return 0;
+}
+
+static int
+testJitWideColumn(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
+                  Int64 expectedSum)
+{
+  const char *testName = "Test 27: JIT compiles SUM of column id > 255";
+  printf("%s ... ", testName);
+  fflush(stdout);
+
+  if (verifyScalarWithMysql(conn, testName,
+        "SELECT SUM(c260) FROM t27_parent "
+        "JOIN t27_child ON t27_child.parent_id = t27_parent.id",
+        {expectedSum}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T27_PARENT);
+  dict->invalidateTable(T27_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T27_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T27_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* Self-check: confirm the aggregated column really sits past the old
+   * 255 cap, so this test cannot silently stop exercising the widening. */
+  const NdbDictionary::Column *targetCol = childTab->getColumn("c260");
+  if (targetCol == nullptr) {
+    printf("FAILED (column c260 lookup)\n");
+    return -1;
+  }
+  int targetColNo = targetCol->getColumnNo();
+  if (targetColNo <= 255) {
+    printf("FAILED (c260 column id %d, expected > 255)\n", targetColNo);
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.LoadColumn("c260", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4060) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4060))\n");
+    return -1;
+  }
+  bool mustCompileSet = true;
+  auto clearMustCompile = [&]() {
+    if (mustCompileSet) {
+      restarter.insertErrorInAllNodes(0);
+      mustCompileSet = false;
+      V("  ERROR_INSERT cleared\n");
+    }
+  };
+  V("\n  ERROR_INSERT 4060 set (JIT fallback is fatal); c260 col_id=%d\n",
+    targetColNo);
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"),
+    nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts.setAggregation(agg);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    clearMustCompile();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    clearMustCompile();
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  clearMustCompile();
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 actualSum = sumRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actualSum != expectedSum) {
+    printf("FAILED (SUM: expected %lld, got %lld)\n",
+           (long long)expectedSum, (long long)actualSum);
+    return -1;
+  }
+
+  printf("OK (sum=%lld, col_id=%d, JIT required)\n",
+         (long long)expectedSum, targetColNo);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test 3: Multiple groups with SUM and COUNT                          */
 /*                                                                     */
 /* SQL equivalent:                                                     */
@@ -6654,6 +6895,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 24: return "Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
     case 25: return "Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)";
     case 26: return "Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)";
+    case 28: return "Test 28: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)";
     default: return nullptr;
   }
 }
@@ -7170,6 +7412,20 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTestTables(conn);
+        }
+
+        /* Test 27: operand-width boundary — JIT must compile SUM of a
+         * column whose id is > 255 (proves the bridge admits col_id up to
+         * 4095, matching NDB's MAX_ATTRIBUTES_IN_TABLE). */
+        if (shouldRun(27)) {
+          NdbRestarter restarter(connectString);
+          if (createT27Tables(conn) == 0 && insertT27Data(conn) == 0) {
+            if (testJitWideColumn(&ndb, conn, restarter, 1500) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropT27Tables(conn);
         }
 
         mysql_close(conn);
