@@ -1281,6 +1281,30 @@ class Dbtc : public SimulatedBlock {
     LocalTcIndexOperation_dllist::Head theSeizedIndexOperations;
     UintR tcIndxSendArray[6];
 
+    /**
+     * RONDB-1062 proactive deadlock discovery.
+     *
+     * Wait-for edges for which THIS transaction is the "collector" — the
+     * endpoint with the smaller hash(transid) of the edge's two endpoints
+     * (DBACC routes each edge to that endpoint's TC).  For each other
+     * transaction X we remember whether this transaction waits-on X and/or
+     * is waited-on-by X (a directed wait-for edge in each direction), with
+     * the ctcTimer of the latest observation for freshness.  A 2-cycle
+     * deadlock is detected when, for some X, both directions are recorded
+     * and fresh; the collector (== this transaction, always local) is then
+     * aborted.  This is a small fixed-size cache; under heavy contention an
+     * edge may be evicted (the timeout backstop still catches those).
+     */
+    enum DeadlockDir { DLD_WAITS_ON = 1, DLD_WAITED_BY = 2 };
+    static constexpr Uint32 MAX_DEADLOCK_EDGES = 4;
+    struct DeadlockEdge {
+      Uint32 transId1;   // the OTHER endpoint's transaction id
+      Uint32 transId2;
+      Uint32 timer;      // ctcTimer at last update (freshness)
+      Uint32 direction;  // bitmask of DeadlockDir; 0 == empty slot
+    };
+    DeadlockEdge m_deadlock_edges[MAX_DEADLOCK_EDGES];
+
     bool isExecutingDeferredTriggers() const {
       return apiConnectstate == CS_SEND_FIRE_TRIG_REQ ||
              apiConnectstate == CS_WAIT_FIRE_TRIG_REQ;
@@ -2272,6 +2296,11 @@ class Dbtc : public SimulatedBlock {
   void execCTE_PHASE_COMPLETE_REP(Signal *signal);
   void sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
                                     Uint32 phase);
+
+  /* RONDB-1062 proactive deadlock discovery (DBACC wait-for edge). */
+  void execDBACC_WAITFOR_REP(Signal *signal);
+  bool recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
+                          Uint32 otherTransId2, Uint32 direction);
 
   /* Phase L (C): allocate / look up / release aggregation completion
    * records.  Records are linked into ScanRecord::m_aggRecordsHead and

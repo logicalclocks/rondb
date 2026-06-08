@@ -38,6 +38,7 @@
 #include <signaldata/AccLock.hpp>
 #include <signaldata/AccScan.hpp>
 #include <signaldata/DbinfoScan.hpp>
+#include <signaldata/DeadlockWaitfor.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/EventReport.hpp>
@@ -2066,7 +2067,39 @@ ref:
   return;
 }
 
-void 
+/**
+ * RONDB-1062 deadlock discovery.
+ *
+ * A deterministic, unbiased hash of a transaction id.  Used to pick the
+ * "collector" of a wait-for edge (the endpoint with the smaller hash) so that
+ * both edges of a 2-cycle converge on the same DBTC, and so that the chosen
+ * victim is not systematically biased towards the oldest transaction or a
+ * lower-numbered API node (raw transid ordering would have that bias).
+ */
+static inline Uint32 deadlock_transid_hash(Uint32 t1, Uint32 t2)
+{
+  Uint32 h = t1 * 2654435761U;   // Knuth multiplicative
+  h ^= t2 * 0x85ebca6bU;
+  h ^= h >> 15;
+  return h;
+}
+
+/**
+ * Total order over transactions for collector/victim selection: returns true
+ * iff endpoint A is the collector, i.e. (hash(A), A) sorts before (hash(B), B).
+ * Tie-broken by the raw transid so the order is total even on hash collision.
+ */
+static inline bool deadlock_a_is_collector(Uint32 a1, Uint32 a2,
+                                           Uint32 b1, Uint32 b2)
+{
+  const Uint32 ha = deadlock_transid_hash(a1, a2);
+  const Uint32 hb = deadlock_transid_hash(b1, b2);
+  if (ha != hb) return ha < hb;
+  if (a2 != b2) return a2 < b2;
+  return a1 < b1;
+}
+
+void
 Dbacc::accIsLockedLab(Signal* signal,
                       OperationrecPtr lockOwnerPtr,
                       Uint32 hash,
@@ -2155,6 +2188,35 @@ Dbacc::accIsLockedLab(Signal* signal,
                     tcBlockref,
                     lockOwnerPtr.i));
 
+    /**
+     * RONDB-1062 deadlock discovery: when this request must wait (it was put
+     * on the serial/wait queue behind a conflicting lock held by a different
+     * transaction), capture the wait-for edge (waiter -> lock owner) while we
+     * still hold the fragment mutex (both operation records are stable here).
+     * The edge is sent to DBTC after releasing the mutex.  We resolve TC
+     * identity via the guarded try_get_tc_ref because the lock owner may be
+     * any kind of operation (e.g. a scan), not necessarily a key op.
+     */
+    Uint32 dl_waiterT1 = 0, dl_waiterT2 = 0, dl_waiterTcOprec = 0,
+           dl_waiterTcRef = 0;
+    Uint32 dl_ownerT1 = 0, dl_ownerT2 = 0, dl_ownerTcOprec = 0,
+           dl_ownerTcRef = 0;
+    bool dl_report = false;
+    if (return_result == ZSERIAL_QUEUE &&
+        !operationRecPtr.p->is_same_trans(lockOwnerPtr.p))
+    {
+      dl_waiterT1 = operationRecPtr.p->transId1;
+      dl_waiterT2 = operationRecPtr.p->transId2;
+      dl_ownerT1 = lockOwnerPtr.p->transId1;
+      dl_ownerT2 = lockOwnerPtr.p->transId2;
+      Dblqh *const lqh = m_ldm_instance_used->c_lqh;
+      dl_report =
+          lqh->try_get_tc_ref(operationRecPtr.p->userptr, dl_waiterTcOprec,
+                              dl_waiterTcRef) &&
+          lqh->try_get_tc_ref(lockOwnerPtr.p->userptr, dl_ownerTcOprec,
+                              dl_ownerTcRef);
+    }
+
     release_frag_mutex_hash(fragrecptr.p, hash);
 
     if (return_result == ZPARALLEL_QUEUE)
@@ -2176,6 +2238,37 @@ Dbacc::accIsLockedLab(Signal* signal,
       fragrecptr.p->m_lockStats.req_start(
           (bits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
           operationRecPtr.p->m_lockTime, getHighResTimer());
+      if (dl_report)
+      {
+        jam();
+        /**
+         * Send the wait-for edge to the collector TC (the endpoint with the
+         * smaller hash(transid)).  NOTE: this reuses signal->theData, so we
+         * restore the "blocked" indicator (theData[0] = RNIL) afterwards.
+         * Both callers (DBLQH and execACC_LOCKREQ) read only theData[0] on
+         * the blocked path.
+         */
+        const bool collectorIsWaiter = deadlock_a_is_collector(
+            dl_waiterT1, dl_waiterT2, dl_ownerT1, dl_ownerT2);
+        const BlockReference dstRef =
+            collectorIsWaiter ? dl_waiterTcRef : dl_ownerTcRef;
+        DeadlockWaitforRep *const rep =
+            reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
+        rep->senderRef = reference();
+        rep->flags =
+            collectorIsWaiter ? (Uint32)DeadlockWaitforRep::CollectorIsWaiter
+                              : 0;
+        rep->waiterTransId1 = dl_waiterT1;
+        rep->waiterTransId2 = dl_waiterT2;
+        rep->waiterTcRef = dl_waiterTcRef;
+        rep->waiterTcOprec = dl_waiterTcOprec;
+        rep->ownerTransId1 = dl_ownerT1;
+        rep->ownerTransId2 = dl_ownerT2;
+        rep->ownerTcRef = dl_ownerTcRef;
+        rep->ownerTcOprec = dl_ownerTcOprec;
+        sendSignal(dstRef, GSN_DBACC_WAITFOR_REP, signal,
+                   DeadlockWaitforRep::SignalLength, JBB);
+      }
       signal->theData[0] = RNIL;
       return;
     } else {

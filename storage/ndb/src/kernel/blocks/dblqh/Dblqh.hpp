@@ -5650,6 +5650,13 @@ private:
   void get_tc_ref(Uint32 tcPtrI,
                   Uint32 & tcOprec,
                   Uint32 & tcRef);
+  /* Guarded variant of get_tc_ref: returns false (without crashing) if the
+   * op index does not resolve to a valid TcConnectionrec, e.g. when the lock
+   * holder is a scan op rather than a key op.  Used by deadlock discovery
+   * (RONDB-1062) where the lock owner may be any kind of operation. */
+  bool try_get_tc_ref(Uint32 tcPtrI,
+                      Uint32 & tcOprec,
+                      Uint32 & tcRef);
 
   bool is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP);
 
@@ -6282,6 +6289,21 @@ inline void Dblqh::get_tc_ref(Uint32 tcPtrI,
   ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
   tcOprec = tcConnectptr.p->tcOprec;
   tcRef = tcConnectptr.p->tcBlockref;
+}
+
+inline bool Dblqh::try_get_tc_ref(Uint32 tcPtrI,
+                                  Uint32 & tcOprec,
+                                  Uint32 & tcRef)
+{
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = tcPtrI;
+  if (!tcConnect_pool.getValidPtr(tcConnectptr))
+  {
+    return false;
+  }
+  tcOprec = tcConnectptr.p->tcOprec;
+  tcRef = tcConnectptr.p->tcBlockref;
+  return true;
 }
 
 inline bool Dblqh::have_frag_scan_access() const {

@@ -466,3 +466,41 @@ is disabled or misses.
 | `storage/ndb/src/kernel/blocks/dbtc/DbtcInit.cpp` | `addRecSignal(GSN_DBACC_WAITFOR_REP, …)` |
 | `storage/ndb/src/kernel/blocks/dbtc/DbtcMain.cpp` | `#include` header; `execDBACC_WAITFOR_REP` (resolve, verify, store, detect, abort); pool registration; init/release of `waitForEdges` in ctor / `initApiConnectRec` / release |
 | `storage/ndb/src/common/debugger/signaldata/{DeadlockWaitfor.cpp,CMakeLists.txt}` + `SignalDataPrint.cpp` | **OPTIONAL** signal printer |
+
+## 13. Implementation status
+
+**Phase 0 + Phase 1 implemented** (2-cycle detection, immediate reporting, single
+collector, min-hash local victim). Files changed:
+
+- `signaldata/DeadlockWaitfor.hpp` (NEW) — `DeadlockWaitforRep` (10 words: senderRef,
+  flags, and {transId1,transId2,tcRef,tcOprec} for waiter + owner). `CollectorIsWaiter`
+  flag tells DBTC which endpoint is the local collector.
+- `GlobalSignalNumbers.h` — `GSN_DBACC_WAITFOR_REP = 979`, `MAX_GSN → 979`.
+- `SignalNames.cpp` — name-table entry.
+- `dblqh/Dblqh.hpp` — `try_get_tc_ref()` (guarded `get_tc_ref`: returns false instead of
+  crashing when the lock owner is not a key-op TcConnectionrec, e.g. a scan).
+- `dbacc/DbaccMain.cpp` — file-local `deadlock_transid_hash()` / `deadlock_a_is_collector()`;
+  in `accIsLockedLab`, on the `ZSERIAL_QUEUE` result, capture the waiter→owner edge under
+  the frag mutex, then after releasing it send `DBACC_WAITFOR_REP` to the min-hash
+  collector TC (reusing `signal`, restoring `theData[0]=RNIL` for the blocked-path caller).
+- `dbtc/Dbtc.hpp` — `ApiConnectRecord::m_deadlock_edges[4]` (inline fixed array;
+  `DeadlockEdge` = other transid + timer + direction bitmask) + `DLD_WAITS_ON/DLD_WAITED_BY`;
+  decls for `execDBACC_WAITFOR_REP` + `recordDeadlockEdge`.
+- `dbtc/DbtcInit.cpp` — `addRecSignal(GSN_DBACC_WAITFOR_REP, …)`.
+- `dbtc/DbtcMain.cpp` — `#include`; clear edges in ctor + `initApiConnectRec`;
+  `execDBACC_WAITFOR_REP` (resolve local collector by tcOprec, validate transid + active
+  state, record edge, on 2-cycle call `timeOutFoundLab(…, ZTIME_OUT_ERROR)`);
+  `recordDeadlockEdge` (per-other-txn directed-edge cache with a freshness window =
+  `ctimeOutValue`, evicts oldest slot when full).
+
+**Deviation from §3 Component C (deliberate, "simple first"):** edges are stored in a small
+**inline fixed array** on `ApiConnectRecord` (capacity 4) rather than a `TransientPool`.
+This avoids the pool-plumbing (bumping `c_transient_pool_count`, RSS snapshots) at the cost
+of ~64 bytes per `ApiConnectRecord` and a bounded edge count (overflow evicts oldest; the
+timeout backstop still catches anything dropped). Migrating to a `TransientPool` to remove
+the per-record footprint and the capacity bound is a Phase 2 hardening item.
+
+**Not yet done:** scan-lock waiters (Phase 3), deferred `T_detect` reporting (Phase 4),
+shared-lock parallel-queue fan-out (only the head lock owner is reported today — Phase 3),
+`ndbinfo`/DUMP observability (Phase 2), longer-cycle handling (Phase 5). The existing
+`TransactionDeadlockDetectionTimeout` remains the backstop for all of these.

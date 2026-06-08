@@ -77,6 +77,7 @@
 #include <signaldata/TrigAttrInfo.hpp>
 #include <signaldata/SetDomainId.hpp>
 #include <signaldata/CteScan.hpp>
+#include <signaldata/DeadlockWaitfor.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include <signaldata/QueryTree.hpp>
 #include "NdbAggregationCommon.hpp"
@@ -3376,6 +3377,10 @@ void Dbtc::initApiConnectRec(Signal *signal, ApiConnectRecord *const regApiPtr,
   regApiPtr->transid[0] = Ttransid0;
   regApiPtr->transid[1] = Ttransid1;
   regApiPtr->m_tc_hbrep_timer = ctcTimer;
+  /* RONDB-1062: start the new transaction with no recorded wait-for edges. */
+  for (Uint32 i = 0; i < ApiConnectRecord::MAX_DEADLOCK_EDGES; i++) {
+    regApiPtr->m_deadlock_edges[i].direction = 0;
+  }
   ndbrequire(regApiPtr->commitAckMarker == RNIL);
   ndbrequire(regApiPtr->num_commit_ack_markers == 0);
   /**
@@ -7475,6 +7480,10 @@ Dbtc::ApiConnectRecord::ApiConnectRecord()
   theFiredTriggers.init();
   theSeizedIndexOperations.init();
 
+  for (Uint32 i = 0; i < MAX_DEADLOCK_EDGES; i++) {
+    m_deadlock_edges[i].direction = 0;  // RONDB-1062: empty slot
+  }
+
   m_transaction_nodes.clear();
 }
 
@@ -11328,6 +11337,135 @@ void Dbtc::periodicLogOddTimeoutAndResetTimer(ApiConnectRecordPtr apiPtr) {
     /* Set timer start to now, to avoid over-logging */
     setApiConTimer(apiPtr, ctcTimer, __LINE__);
   }
+}
+
+/**
+ * DBACC_WAITFOR_REP (RONDB-1062 proactive deadlock discovery).
+ *
+ * DBACC reports a lock wait-for edge (a waiter transaction is waiting on a
+ * lock held by an owner transaction).  DBACC routes the edge to the
+ * "collector": the endpoint with the smaller hash(transid).  This TC owns
+ * the collector transaction.  We record the edge on the collector's
+ * ApiConnectRecord; if that closes a 2-cycle (the collector both waits on
+ * and is waited on by the same other transaction) we abort the collector.
+ *
+ * Because the collector is the smaller-hash endpoint of BOTH edges of a
+ * 2-cycle, both edges arrive here and the collector is local, so the abort
+ * is purely local.  We reuse timeOutFoundLab with ZTIME_OUT_ERROR so the
+ * application sees the usual deadlock error (266), identical to a deadlock
+ * resolved by the timeout — only faster and deterministic.
+ */
+void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
+  jamEntry();
+  const DeadlockWaitforRep *const rep =
+      reinterpret_cast<const DeadlockWaitforRep *>(signal->getDataPtr());
+
+  const bool collectorIsWaiter =
+      (rep->flags & DeadlockWaitforRep::CollectorIsWaiter) != 0;
+  const Uint32 collectorTcOprec =
+      collectorIsWaiter ? rep->waiterTcOprec : rep->ownerTcOprec;
+  const Uint32 collectorT1 =
+      collectorIsWaiter ? rep->waiterTransId1 : rep->ownerTransId1;
+  const Uint32 collectorT2 =
+      collectorIsWaiter ? rep->waiterTransId2 : rep->ownerTransId2;
+  const Uint32 otherT1 =
+      collectorIsWaiter ? rep->ownerTransId1 : rep->waiterTransId1;
+  const Uint32 otherT2 =
+      collectorIsWaiter ? rep->ownerTransId2 : rep->waiterTransId2;
+
+  /* Resolve the collector's local TcConnectRecord -> ApiConnectRecord. */
+  TcConnectRecordPtr localTcPtr;
+  localTcPtr.i = collectorTcOprec;
+  if (unlikely(!tcConnectRecord.getValidPtr(localTcPtr))) {
+    jam();
+    return;
+  }
+  if (localTcPtr.p->tcConnectstate != OS_OPERATING) {
+    jam();
+    return;
+  }
+  ApiConnectRecordPtr apiConnectptr;
+  apiConnectptr.i = localTcPtr.p->apiConnect;
+  if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
+    jam();
+    return;
+  }
+  /* Guard against stale tcOprec reuse: the transid must still match. */
+  if (apiConnectptr.p->transid[0] != collectorT1 ||
+      apiConnectptr.p->transid[1] != collectorT2) {
+    jam();
+    return;
+  }
+  /* Only act on a transaction that is still active and abortable. */
+  switch (apiConnectptr.p->apiConnectstate) {
+    case CS_STARTED:
+    case CS_RECEIVING:
+    case CS_REC_COMMITTING:
+    case CS_START_COMMITTING:
+    case CS_SEND_FIRE_TRIG_REQ:
+    case CS_WAIT_FIRE_TRIG_REQ:
+      break;
+    default:
+      jam();
+      return;
+  }
+
+  const Uint32 dir = collectorIsWaiter ? ApiConnectRecord::DLD_WAITS_ON
+                                       : ApiConnectRecord::DLD_WAITED_BY;
+  if (recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir)) {
+    jam();
+    /* 2-cycle: the collector (local, smaller-hash endpoint) is the victim. */
+    timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR);
+  }
+}
+
+/**
+ * Record a wait-for edge to/from another transaction on this collector's
+ * ApiConnectRecord.  Returns true iff this closes a fresh 2-cycle, i.e. the
+ * same other transaction is now recorded in both directions (this txn waits
+ * on it AND it waits on this txn) within the freshness window.
+ */
+bool Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
+                              Uint32 otherTransId2, Uint32 direction) {
+  const Uint32 now = ctcTimer;
+  const Uint32 window = ctimeOutValue;  // freshness window (10ms ticks)
+  Int32 freeSlot = -1;
+  Int32 oldestSlot = -1;
+  Uint32 oldestTimer = 0;
+  const Uint32 bothDirs =
+      ApiConnectRecord::DLD_WAITS_ON | ApiConnectRecord::DLD_WAITED_BY;
+
+  for (Uint32 i = 0; i < ApiConnectRecord::MAX_DEADLOCK_EDGES; i++) {
+    ApiConnectRecord::DeadlockEdge &e = regApiPtr->m_deadlock_edges[i];
+    if (e.direction == 0) {
+      if (freeSlot < 0) freeSlot = (Int32)i;
+      continue;
+    }
+    if (e.transId1 == otherTransId1 && e.transId2 == otherTransId2) {
+      /* Existing entry for this other transaction. */
+      if ((Uint32)(now - e.timer) > window) {
+        /* The prior observation has expired; start over from this one. */
+        e.direction = 0;
+      }
+      e.direction |= direction;
+      e.timer = now;
+      return e.direction == bothDirs;
+    }
+    /* Track the oldest occupied slot for eviction (signed diff handles wrap). */
+    if (oldestSlot < 0 || (Int32)(e.timer - oldestTimer) < 0) {
+      oldestSlot = (Int32)i;
+      oldestTimer = e.timer;
+    }
+  }
+
+  /* No existing entry: take a free slot, else evict the oldest. */
+  const Uint32 slot = (freeSlot >= 0) ? (Uint32)freeSlot : (Uint32)oldestSlot;
+  ApiConnectRecord::DeadlockEdge &e = regApiPtr->m_deadlock_edges[slot];
+  e.transId1 = otherTransId1;
+  e.transId2 = otherTransId2;
+  e.direction = direction;
+  e.timer = now;
+  return false;
 }
 
 void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
