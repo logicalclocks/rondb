@@ -527,3 +527,29 @@ Full scan-as-collector/victim support would need a scan-kind flag in the signal 
 edge cleanup on wakeup (hardening), `ndbinfo`/DUMP observability (Phase 2), longer-cycle
 handling and full scan-as-collector support (Phase 5). The existing
 `TransactionDeadlockDetectionTimeout` remains the backstop for all of these.
+
+## 14. Bug fix, tracing, and the MTR test
+
+**Bug fixed (owner-side edge was dropped).** The first `execDBACC_WAITFOR_REP` rejected any
+edge whose collector operation was not `OS_OPERATING`. For a 2-cycle the two edges resolve at
+the same collector transaction via *two different* operations: the waiter-side op (still
+blocked → `OS_OPERATING`) and the owner-side op (already holds the lock, so it completed →
+`OS_PREPARED`). The owner-side edge was therefore always dropped, so only the `WAITS_ON`
+direction was recorded and the cycle never closed — it fell back to the timeout. **Fix:**
+removed the op-level `tcConnectstate` check; safety is preserved by `getValidPtr` (magic) on
+the `TcConnectRecord`, the **transid match** on the resolved `ApiConnectRecord`, and the
+transaction-level abortable-state switch.
+
+**Tracing.** A `DEB_DEADLOCK` macro (gated on `DEBUG_DEADLOCK`, off by default) in both
+`DbaccMain.cpp` and `DbtcMain.cpp` logs every edge sent, the per-serial-wait waiter/owner
+resolution, the received edge, **every** DBTC drop point with its reason, the accumulated
+per-other-transaction direction bitmask, and the cycle/victim-abort. Enable by flipping
+`//#define DEBUG_DEADLOCK 1` in both files.
+
+**Test.** `mysql-test/suite/ndb/ndb_deadlock_discovery.{test,cnf,result}`:
+- The `.cnf` sets `TransactionDeadlockDetectionTimeout = 60000`, so a deadlock resolved in
+  well under that proves *proactive* detection fired rather than the timeout.
+- Scenario 1 (negative): a plain lock wait (no cycle) must not be falsely aborted.
+- Scenario 2: a true 2-row cycle; the victim is chosen by hash (either connection), so the
+  per-connection outcome is suppressed and the test asserts (a) no hang, (b) resolution
+  `< 20s` (the proactive proof, via a `--die` guard), and (c) consistent committed data.

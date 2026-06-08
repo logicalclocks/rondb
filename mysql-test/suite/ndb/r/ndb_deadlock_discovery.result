@@ -1,0 +1,11 @@
+# RONDB-1062: proactive deadlock discovery.
+# TransactionDeadlockDetectionTimeout is set to 60s (see .cnf), so a
+# deadlock that resolves in well under that proves that proactive
+# detection fired (DBACC -> DBTC wait-for edges) rather than the slow
+# timeout backstop.
+# Committed data is consistent: scenario 1 left row 1 at 12 (two
+# committed increments); scenario 2 was rolled back on both sides.
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	12
+2	20

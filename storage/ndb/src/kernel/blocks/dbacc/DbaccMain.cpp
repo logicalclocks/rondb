@@ -75,6 +75,7 @@ extern EventLogger *g_eventLogger;
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_LOCK_TRANS 1
+//#define DEBUG_DEADLOCK 1
 //#define DEBUG_HASH 1
 #endif
 
@@ -82,6 +83,13 @@ extern EventLogger *g_eventLogger;
 #define DEB_LOCK_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_LOCK_TRANS(arglist) do { } while (0)
+#endif
+
+/* RONDB-1062 proactive deadlock discovery trace. */
+#ifdef DEBUG_DEADLOCK
+#define DEB_DEADLOCK(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_DEADLOCK(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -2144,6 +2152,12 @@ void Dbacc::send_deadlock_waitfor(Signal *signal, Uint32 waiterTransId1,
   const bool collectorIsWaiter = deadlock_a_is_collector(
       waiterTransId1, waiterTransId2, ownerTransId1, ownerTransId2);
   const BlockReference dstRef = collectorIsWaiter ? waiterTcRef : ownerTcRef;
+  DEB_DEADLOCK(("(%u) send DBACC_WAITFOR_REP: waiter trans(%u,%u) tc(0x%x,%u)"
+                " -> owner trans(%u,%u) tc(0x%x,%u), collectorIsWaiter=%u"
+                " dst=0x%x",
+                instance(), waiterTransId1, waiterTransId2, waiterTcRef,
+                waiterTcOprec, ownerTransId1, ownerTransId2, ownerTcRef,
+                ownerTcOprec, (Uint32)collectorIsWaiter, dstRef));
   DeadlockWaitforRep *const rep =
       reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
   rep->senderRef = reference();
@@ -2267,39 +2281,51 @@ Dbacc::accIsLockedLab(Signal* signal,
       Uint32 t1, t2, tcOprec, tcRef;
     } dl_owners[DL_MAX_OWNERS];
     Uint32 dl_num = 0;
-    if (return_result == ZSERIAL_QUEUE &&
-        get_op_tc_ref(operationRecPtr.p, dl_wTcOprec, dl_wTcRef))
+    if (return_result == ZSERIAL_QUEUE)
     {
-      dl_wT1 = operationRecPtr.p->transId1;
-      dl_wT2 = operationRecPtr.p->transId2;
-      OperationrecPtr loopPtr = lockOwnerPtr;
-      while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
+      const bool dl_waiter_resolved =
+          get_op_tc_ref(operationRecPtr.p, dl_wTcOprec, dl_wTcRef);
+      if (dl_waiter_resolved)
       {
-        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
-        if (!operationRecPtr.p->is_same_trans(loopPtr.p))
+        dl_wT1 = operationRecPtr.p->transId1;
+        dl_wT2 = operationRecPtr.p->transId2;
+        OperationrecPtr loopPtr = lockOwnerPtr;
+        while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
         {
-          bool dup = false;
-          for (Uint32 j = 0; j < dl_num; j++)
+          ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+          if (!operationRecPtr.p->is_same_trans(loopPtr.p))
           {
-            if (dl_owners[j].t1 == loopPtr.p->transId1 &&
-                dl_owners[j].t2 == loopPtr.p->transId2)
+            bool dup = false;
+            for (Uint32 j = 0; j < dl_num; j++)
             {
-              dup = true;
-              break;
+              if (dl_owners[j].t1 == loopPtr.p->transId1 &&
+                  dl_owners[j].t2 == loopPtr.p->transId2)
+              {
+                dup = true;
+                break;
+              }
+            }
+            Uint32 oOprec, oRef;
+            if (!dup && get_op_tc_ref(loopPtr.p, oOprec, oRef))
+            {
+              dl_owners[dl_num].t1 = loopPtr.p->transId1;
+              dl_owners[dl_num].t2 = loopPtr.p->transId2;
+              dl_owners[dl_num].tcOprec = oOprec;
+              dl_owners[dl_num].tcRef = oRef;
+              dl_num++;
             }
           }
-          Uint32 oOprec, oRef;
-          if (!dup && get_op_tc_ref(loopPtr.p, oOprec, oRef))
-          {
-            dl_owners[dl_num].t1 = loopPtr.p->transId1;
-            dl_owners[dl_num].t2 = loopPtr.p->transId2;
-            dl_owners[dl_num].tcOprec = oOprec;
-            dl_owners[dl_num].tcRef = oRef;
-            dl_num++;
-          }
+          loopPtr.i = loopPtr.p->nextParallelQue;
         }
-        loopPtr.i = loopPtr.p->nextParallelQue;
       }
+      DEB_DEADLOCK(("(%u) serial lock wait on tab(%u,%u) row(%u,%u): waiter"
+                    " trans(%u,%u) resolved=%u, distinct foreign owners=%u",
+                    instance(), fragrecptr.p->myTableId,
+                    fragrecptr.p->fragmentid,
+                    operationRecPtr.p->localdata.m_page_no,
+                    operationRecPtr.p->localdata.m_page_idx,
+                    operationRecPtr.p->transId1, operationRecPtr.p->transId2,
+                    (Uint32)dl_waiter_resolved, dl_num));
     }
 
     release_frag_mutex_hash(fragrecptr.p, hash);

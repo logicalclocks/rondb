@@ -154,12 +154,20 @@
 //#define DEBUG_RATE_OVERFLOW 1
 #define DEBUG_CONT_SCAN 1
 #define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_DEADLOCK 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+/* RONDB-1062 proactive deadlock discovery trace. */
+#ifdef DEBUG_DEADLOCK
+#define DEB_DEADLOCK(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_DEADLOCK(arglist) do { } while (0)
 #endif
 
 #define MAX_QUEUE_TIME_MS 60
@@ -11373,27 +11381,41 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
   const Uint32 otherT2 =
       collectorIsWaiter ? rep->ownerTransId2 : rep->waiterTransId2;
 
+  DEB_DEADLOCK(("(%u) recv DBACC_WAITFOR_REP from 0x%x: waiter trans(%u,%u)"
+                " owner trans(%u,%u), collectorIsWaiter=%u collector"
+                " trans(%u,%u) tcOprec=%u other trans(%u,%u)",
+                instance(), rep->senderRef, rep->waiterTransId1,
+                rep->waiterTransId2, rep->ownerTransId1, rep->ownerTransId2,
+                (Uint32)collectorIsWaiter, collectorT1, collectorT2,
+                collectorTcOprec, otherT1, otherT2));
+
   /* Resolve the collector's local TcConnectRecord -> ApiConnectRecord. */
   TcConnectRecordPtr localTcPtr;
   localTcPtr.i = collectorTcOprec;
   if (unlikely(!tcConnectRecord.getValidPtr(localTcPtr))) {
     jam();
-    return;
-  }
-  if (localTcPtr.p->tcConnectstate != OS_OPERATING) {
-    jam();
+    DEB_DEADLOCK(("(%u) drop: tcOprec %u not a valid TcConnectRecord",
+                  instance(), collectorTcOprec));
     return;
   }
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = localTcPtr.p->apiConnect;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
+    DEB_DEADLOCK(("(%u) drop: apiConnect %u (from tcOprec %u, state %u) not"
+                  " valid", instance(), localTcPtr.p->apiConnect,
+                  collectorTcOprec, (Uint32)localTcPtr.p->tcConnectstate));
     return;
   }
   /* Guard against stale tcOprec reuse: the transid must still match. */
   if (apiConnectptr.p->transid[0] != collectorT1 ||
       apiConnectptr.p->transid[1] != collectorT2) {
     jam();
+    DEB_DEADLOCK(("(%u) drop: transid mismatch, apiConn trans(%u,%u) !="
+                  " collector trans(%u,%u) (tcOprec %u, opstate %u)",
+                  instance(), apiConnectptr.p->transid[0],
+                  apiConnectptr.p->transid[1], collectorT1, collectorT2,
+                  collectorTcOprec, (Uint32)localTcPtr.p->tcConnectstate));
     return;
   }
   /* Only act on a transaction that is still active and abortable. */
@@ -11407,14 +11429,25 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
       break;
     default:
       jam();
+      DEB_DEADLOCK(("(%u) drop: collector trans(%u,%u) not abortable,"
+                    " apiConnectstate=%u", instance(), collectorT1,
+                    collectorT2, (Uint32)apiConnectptr.p->apiConnectstate));
       return;
   }
 
   const Uint32 dir = collectorIsWaiter ? ApiConnectRecord::DLD_WAITS_ON
                                        : ApiConnectRecord::DLD_WAITED_BY;
-  if (recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir)) {
+  const bool cycle =
+      recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir);
+  DEB_DEADLOCK(("(%u) recorded edge dir=%u on collector trans(%u,%u) vs other"
+                " trans(%u,%u): cycle=%u", instance(), dir, collectorT1,
+                collectorT2, otherT1, otherT2, (Uint32)cycle));
+  if (cycle) {
     jam();
     /* 2-cycle: the collector (local, smaller-hash endpoint) is the victim. */
+    DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting victim trans(%u,%u)"
+                  " (apiConnectptr %u) with error %u", instance(), collectorT1,
+                  collectorT2, apiConnectptr.i, ZTIME_OUT_ERROR));
     timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR);
   }
 }
@@ -11449,6 +11482,9 @@ bool Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
       }
       e.direction |= direction;
       e.timer = now;
+      DEB_DEADLOCK(("(%u) edge vs other trans(%u,%u): direction now %u"
+                    " (WAITS_ON=1 WAITED_BY=2; cycle when 3)", instance(),
+                    otherTransId1, otherTransId2, e.direction));
       return e.direction == bothDirs;
     }
     /* Track the oldest occupied slot for eviction (signed diff handles wrap). */
@@ -11465,6 +11501,8 @@ bool Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
   e.transId2 = otherTransId2;
   e.direction = direction;
   e.timer = now;
+  DEB_DEADLOCK(("(%u) new edge slot %u vs other trans(%u,%u): direction %u",
+                instance(), slot, otherTransId1, otherTransId2, direction));
   return false;
 }
 
