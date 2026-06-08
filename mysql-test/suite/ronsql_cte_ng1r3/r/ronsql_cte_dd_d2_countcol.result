@@ -1,0 +1,77 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== D2a: COUNT(<col>) in CTE, AGGREGATING main (isolates COUNT(col) from the projection path) ===
+== Query ==
+WITH ord AS (
+SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(ord.n_all), SUM(ord.n_clerk)
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (
+SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(ord.n_all), SUM(ord.n_clerk)
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+c_mktsegment	SUM(ord.n_all)	SUM(ord.n_clerk)
+AUTOMOBILE	300	258
+BUILDING	300	257
+FURNITURE	300	257
+HOUSEHOLD	300	257
+MACHINERY	300	257
+
+=== D2b: COUNT(<col>) in CTE, PROJECTION-ONLY main (original D2/agg-02 shape) ===
+== Query ==
+WITH ord AS (
+SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+FROM orders GROUP BY o_custkey)
+SELECT ord.k, ord.n_all, ord.n_clerk
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (
+SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+FROM orders GROUP BY o_custkey)
+SELECT ord.k, ord.n_all, ord.n_clerk
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+WHERE c.c_custkey <= 20|
+k	n_all	n_clerk
+1	5	4
+10	5	4
+11	5	4
+12	5	5
+13	5	5
+14	5	4
+15	5	4
+16	5	4
+17	5	4
+18	5	4
+19	5	5
+2	5	4
+20	5	5
+3	5	4
+4	5	4
+5	5	5
+6	5	5
+7	5	4
+8	5	4
+9	5	4

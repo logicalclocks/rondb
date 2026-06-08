@@ -66,7 +66,7 @@ topologies.
 
 | ID | Shape | Repro |
 |----|-------|-------|
-| **D2** | `COUNT(<column>)` (vs `COUNT(*)`) in a CTE body | `... COUNT(o_clerk) ...` (agg-02) |
+| **D2 ✅ RESOLVED by D3 (2026-06-08)** | `COUNT(<column>)` (vs `COUNT(*)`) in a CTE body | The agg-02 repro was projection-only over a CTE_LOOKUP (D3), not a COUNT(col) bug. COUNT(col) verified correct in aggregating + projection-only main; regression test `ronsql_cte_dd_d2_countcol` |
 | **D3 ✅ FIXED (2026-06-08)** | projection-only main SELECT over a CTE_LOOKUP child (no main aggregate) | `SELECT cte.col FROM real JOIN cte ON ...` (agg-03, mainmode MM1-6/13/14/16). Fixed: `execute_passthrough_drain` now registers a dummy `getValue` on the main root op when no output reads it (RonSQLPreparer.cpp; mirrors testCteNdbApi.cpp Test 17). Regression: `ronsql_cte_dd_d3_hang.test` |
 | **D4** | CTE-body signed-int col-vs-col over lineitem feeding P-GB | `... WHERE l_quantity < l_partkey ...` (filter-13) |
 | **D5** | 3-table chain `real JOIN cte JOIN real` (real-table child alongside a CTE_LOOKUP child under one parent) | customer JOIN cust JOIN nation (J16/J17) |

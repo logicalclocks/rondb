@@ -58,10 +58,12 @@ and `Dblqh::continueJoinAgg*`.
   delta (CTE_LOOKUP child vs CTE_SCAN root, or an un-closed CTE-subtree scan op)
   is the bug. Fix this first — several other "hangs" may share this consumer-side
   completion gap.
-- **H2 — D2: `COUNT(<column>)` in a CTE body hangs** (`COUNT(*)` is fine).
-  Repro: `body_agg.inc` agg-02 marker. Suspect: COUNT-of-column lowering in the
-  CTE aggregation program vs COUNT(*) — diverges into a non-terminating state on
-  the projection-feed path (interacts with H1).
+- **H2 — D2: `COUNT(<column>)` in a CTE body — ✅ RESOLVED by the D3 fix
+  (2026-06-08).** As predicted ("interacts with H1"), the agg-02 repro was
+  projection-only over a CTE_LOOKUP — i.e. D3, not a COUNT(col) bug. With D3
+  fixed, `COUNT(<column>)` is correct (counts non-NULLs, matches MySQL) in both
+  aggregating and projection-only main. Regression test:
+  `ronsql_cte_dd_d2_countcol.test` (D2a aggregating + D2b projection-only).
 - **H3 — D4 + D12: CTE-body signed-int col-vs-col WHERE.** lineitem variant
   HANGS (D4), orders variant exhausts retries with `RonSQLRetryableError`
   ("Integer type column…") (D12). Repro: `body_filter.inc` filter-12/13 markers.
