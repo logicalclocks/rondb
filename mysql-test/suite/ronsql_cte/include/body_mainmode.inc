@@ -8,12 +8,12 @@
 # plus multi-batch (>256-group) redistribution stress (results ~300 rows that
 # cross the API batch boundary and exercise multi-node redistribution).
 #
-# CORRECTED ENVELOPE: projection-only main SELECTs over a CTE_LOOKUP HANG
-# (discovery finding D3) — the headline finding of this family.  ALL
-# projection-only main SELECTs (mode (a) and the projection-only multi-batch
-# cases) are therefore DISABLED as `# NEXT-PHASE` probes; only the AGGREGATING
-# main SELECTs (mode (b) / P-GB and the aggregating multi-batch case) stay
-# ENABLED.  See findings/mainmode.md.
+# D3 was the headline finding of this family: projection-only main SELECTs over
+# a CTE_LOOKUP used to HANG.  D3 is now FIXED (2026-06-08, RonSQLPreparer root-op
+# dummy getValue), so BOTH modes are exercised and ENABLED here: mode (a)
+# projection-only main SELECTs (MM1-MM6, MM13/MM14/MM16) and mode (b) aggregating
+# / P-GB main SELECTs (MM7-MM12, MM15).  Only clause-level shapes (ORDER BY /
+# LIMIT / DISTINCT / HAVING) remain deferred as probes.  See findings/mainmode.md.
 #
 # CTE always aggregates.  The aggregating main SELECTs wrap the CTE outputs in
 # SUM/COUNT/MIN/MAX and GROUP BY a parent column (or scalar).  The harness sorts
@@ -203,82 +203,190 @@ GROUP BY c.c_custkey|
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-# HEADLINE FINDING (D3): projection-only main SELECTs over a CTE_LOOKUP HANG.
-#   Any `SELECT cte.col, real.col FROM real JOIN cte ...` with NO main
-#   aggregate never returns on this build.  The fix is to wrap the CTE outputs
-#   in a main aggregate (mode (b) / P-GB above).  Every projection-only case
-#   below — both bounded (mode (a)) and the unbounded multi-batch variants — is
-#   the SAME hang class, disabled as a probe.  Discovery finding D3 / D2.
+# D3 FIXED (2026-06-08): projection-only main SELECTs over a CTE_LOOKUP no
+# longer hang (RonSQLPreparer root-op dummy getValue).  The cases below were
+# the disabled D3 probes, now re-enabled as live MAIN cases.  MM4 reads an
+# INT CTE agg (MAX(o_shippriority)) rather than the original DECIMAL
+# MAX(o_totalprice) to avoid the separate D15 DECIMAL-scale format gap.
 # ----------------------------------------------------------------------------
 
-# NEXT-PHASE: projection-only INNER join over complete-key CTE lookup (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
-#   FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+--echo
+--echo === MM1: proj-only INNER over complete-key CTE_LOOKUP (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20|
+
+--echo
+--echo === MM2: proj-only LEFT over complete-key CTE_LOOKUP (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20|
+
+--echo
+--echo === MM3: proj-only LEFT with unmatched parents (NULL-injected) (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 200;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 200|
+
+--echo
+--echo === MM4: proj-only INNER, single CTE agg column (int) (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, MAX(o_shippriority) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.mx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 15;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, MAX(o_shippriority) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.mx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 15|
+
+--echo
+--echo === MM5: proj-only INNER + main WHERE on a CTE aggregate output (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 60 AND cust.n >= 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 60 AND cust.n >= 5|
+
+--echo
+--echo === MM6: proj-only cte JOIN real_table (CTE_SCAN root + child) (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, c.c_mktsegment
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k
+WHERE cust.k <= 25;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, c.c_mktsegment
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k
+WHERE cust.k <= 25|
+
+--echo
+--echo === MM13: multi-batch proj-only over full 300-group CTE (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey|
+
+--echo
+--echo === MM14: multi-batch proj-only CTE_SCAN root (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, cust.n
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, cust.n
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k|
+
+--echo
+--echo === MM16: multi-batch LEFT join proj-only, all 300 custkeys (was D3 hang) ===
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey|
+
+# NEXT-PHASE (DISABLED — DATA NODE CRASH / SIGSEGV, D23): a projection-only main
+# SELECT where a CTE_LOOKUP child is joined but has NO user-selected columns
+# crashes the data node (NDB Error 6000 / Signal 11 — segfault). The API
+# registers all CTE virt columns (cteAttrsByCol), so this is a kernel-side
+# CTE_LOOKUP emit/projection bug specific to the PROJECTION-ONLY path; the
+# anti-join / aggregating path with an unprojected CTE child (joins J8/J9) is
+# fine. Crash artifacts: findings/crash_artifacts/d23_*. See cte_fix_plan.md.
+# Repro:
+#   WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+#                 FROM orders GROUP BY o_custkey)
+#   SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey
 #   WHERE c.c_custkey <= 20;
-
-# NEXT-PHASE: projection-only LEFT join over complete-key CTE lookup (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
-#   FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
-#   WHERE c.c_custkey <= 20;
-
-# NEXT-PHASE: projection-only LEFT join with unmatched parents (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
-#   SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
-#   FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
-#   WHERE c.c_custkey <= 200;
-
-# NEXT-PHASE: projection-only INNER join, single CTE agg column (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, MAX(o_totalprice) AS mx
-#     FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey, cust.mx
-#   FROM customer AS c JOIN cust ON cust.k = c.c_custkey
-#   WHERE c.c_custkey <= 15;
-
-# NEXT-PHASE: projection-only INNER join + WHERE on a CTE aggregate output (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey, cust.t, cust.n
-#   FROM customer AS c JOIN cust ON cust.k = c.c_custkey
-#   WHERE c.c_custkey <= 60 AND cust.n >= 5;
-
-# NEXT-PHASE: projection-only cte JOIN real_table (CTE_SCAN root + child) (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders GROUP BY o_custkey)
-#   SELECT cust.k, cust.t, c.c_mktsegment
-#   FROM cust JOIN customer AS c ON c.c_custkey = cust.k
-#   WHERE cust.k <= 25;
-
-# NEXT-PHASE: multi-batch projection-only over full 300-group CTE (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#     FROM orders GROUP BY o_custkey)
-#   SELECT cust.k, cust.t
-#   FROM customer AS c JOIN cust ON cust.k = c.c_custkey;
-
-# NEXT-PHASE: multi-batch projection-only CTE_SCAN root (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders GROUP BY o_custkey)
-#   SELECT cust.k, cust.t, cust.n
-#   FROM cust JOIN customer AS c ON c.c_custkey = cust.k;
-
-# NEXT-PHASE: multi-batch LEFT join projection-only, all 300 custkeys (HANG, D3)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
-#     FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey, cust.t, cust.n
-#   FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey;
 
 # ----------------------------------------------------------------------------
 # Clause-level deferrals per the capability matrix (ORDER BY / LIMIT / DISTINCT

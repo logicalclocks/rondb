@@ -6402,11 +6402,16 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   // Real-table outputs — register in SELECT declaration order.  Also
   // build attrs[] for both real-table and CTE outputs (CTE entries
   // resolve via cteAttrsByCol).
-  // Track whether any output column is read off the main ROOT op (JoinPlan
-  // op 0).  If none is (e.g. SELECT projects only CTE_LOOKUP-child columns),
-  // the root scan would never get a getValue and nextResult() would hang —
-  // see the D3/H1 guard after this loop.
-  bool root_op_has_value = false;
+  // Track which main ops have at least one projected column.  An op with an
+  // EMPTY projection (no getValue) breaks the NDB API two ways: a root op
+  // hangs in nextResult (the D3/H1 case), and a real-table CHILD op is
+  // rejected with NDB error 4826 "Query has operation with empty projection"
+  // (e.g. `cte JOIN real` selecting only CTE columns — the real table is used
+  // for the join but never projected).  CTE_LOOKUP/CTE_SCAN ops always get a
+  // getValue from the cteAttrsByCol loop above, so only real-table ops need
+  // the guard applied after this loop.
+  bool* op_has_value = m_amalloc->alloc_exc<bool>(numMainOps);
+  for (Uint32 dop = 0; dop < numMainOps; dop++) op_has_value[dop] = false;
   Uint32 i = 0;
   for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
        o = o->next, i++) {
@@ -6422,7 +6427,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     require_run(plan_op_idx < numMainOps,
                 "Pass-through drain: column resolves to op outside "
                 "the main JoinPlan.");
-    if (plan_op_idx == 0) root_op_has_value = true;
+    op_has_value[plan_op_idx] = true;
     NdbQueryOperation* op =
         query->getQueryOperation(numCteSubtreeOps + plan_op_idx);
     require_run(op != NULL,
@@ -6447,27 +6452,32 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     output_ops[i] = op;
   }
 
-  // D3/H1 fix: the NDB API only drives (and sizes the receive buffer for) a
-  // query operation that has at least one getValue().  When every projected
-  // column comes from a CTE_LOOKUP/CTE_SCAN child and NOTHING is read off the
-  // main ROOT op, nextResult(true) blocks forever on the first call because the
-  // root scan was never set up to receive rows (testCteNdbApi.cpp Test 17 always
-  // reads >=1 column off the main root: mainQueryOp->getValue("grp")).  Register
-  // a throwaway getValue on the root op's first column so the root scan delivers
-  // rows and nextResult() advances to scanComplete.
-  if (!root_op_has_value) {
-    const NdbDictionary::Table* rootTab = m_main_scope.join_plan.ops[0].table;
-    if (rootTab != NULL && rootTab->getNoOfColumns() > 0) {
-      NdbQueryOperation* rootOp = query->getQueryOperation(numCteSubtreeOps);
-      require_run(rootOp != NULL,
-                  "Pass-through drain: failed to resolve root op for the "
-                  "dummy root read.");
-      require_run(rootOp->getValue(rootTab->getColumn(0)) != NULL,
-                  "Pass-through drain: root-op dummy getValue() failed.");
-      DEB_DRAIN(("[drain] registered dummy getValue on root op (col '%s') — "
-                 "no SELECT column reads the root\n",
-                 rootTab->getColumn(0)->getName()));
-    }
+  // D3/H1 + empty-projection fix: the NDB API only drives (and sizes the
+  // receive buffer for) a query operation that has at least one getValue().
+  // A real-table main op with an EMPTY projection either hangs (root op — the
+  // projected columns all come from a CTE child, D3/H1) or is rejected with
+  // NDB error 4826 (a real-table child used only for the join, e.g. cte JOIN
+  // real selecting only CTE columns).  For every real-table main op that no
+  // output reads, register a throwaway getValue on its first column (mirrors
+  // testCteNdbApi.cpp Test 17's mainQueryOp->getValue("grp")).  CTE ops are
+  // skipped — cteAttrsByCol already registered all their virtual columns.
+  for (Uint32 dop = 0; dop < numMainOps; dop++) {
+    if (op_has_value[dop]) continue;
+    const JoinOp& gjop = m_main_scope.join_plan.ops[dop];
+    if (gjop.type == JoinOp::CTE_LOOKUP || gjop.type == JoinOp::CTE_SCAN)
+      continue;
+    const NdbDictionary::Table* gtab = gjop.table;
+    if (gtab == NULL || gtab->getNoOfColumns() == 0) continue;
+    NdbQueryOperation* gop = query->getQueryOperation(numCteSubtreeOps + dop);
+    require_run(gop != NULL,
+                "Pass-through drain: failed to resolve op for the dummy "
+                "empty-projection read.");
+    require_run(gop->getValue(gtab->getColumn(0)) != NULL,
+                "Pass-through drain: dummy getValue() on an empty-projection "
+                "op failed.");
+    DEB_DRAIN(("[drain] registered dummy getValue on main op %u (col '%s') — "
+               "no SELECT column reads it\n",
+               dop, gtab->getColumn(0)->getName()));
   }
 
   DEB_DRAIN(("[drain] before execute(NoCommit): numTotalOps=%u numMainOps=%u "

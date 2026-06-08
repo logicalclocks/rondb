@@ -32,8 +32,14 @@ and `Dblqh::continueJoinAgg*`.
   `nextResult(true)` blocked on the first call. Fix: when no output reads the
   root op, register a throwaway `getValue` on the root's first column before
   `execute` (mirrors `testCteNdbApi.cpp` Test 17). Regression test:
-  `ronsql_cte_dd_d3_hang.test` (drains 5 rows → scanComplete). Re-enable the
-  remaining D3 cases (mainmode MM1–MM6/13/14/16) on top of this. Original notes:
+  `ronsql_cte_dd_d3_hang.test` (drains 5 rows → scanComplete). Generalized to
+  also fix NDB 4826 "empty projection" on a real-table CHILD op (cte JOIN real
+  selecting only CTE columns). Re-enabled D3 cases mainmode MM1–MM6/13/14/16 are
+  green across all topologies. **NEW residual crash D23 (Phase 2):** the related
+  sub-case — projection-only with a CTE_LOOKUP child that has NO user-selected
+  columns — SIGSEGVs in the kernel (MM17, disabled; the API registers all CTE
+  virt cols, so it's a kernel CTE_LOOKUP-emit bug in the projection-only path).
+  Original notes:
   Repro: `ronsql_cte/t/ronsql_cte_dd_d3_hang.test` (dedicated minimal repro:
   region JOIN nat, projection-only); also `body_mainmode.inc` MM1–MM6/13/14/16.
   **DBSPJ RULED OUT (2026-06-06, via the DbspjMain.cpp counter trace):** on the
