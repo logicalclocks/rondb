@@ -57,7 +57,9 @@
 // Independent of the very verbose DEBUG_RONSQLPREPARER DEB_TRACE(): a printf-style
 // trace (stdout -> RDRS log) for the projection-only pass-through drain, used to
 // chase the D3 hang (nextResult loop over a CTE subtree + CTE_LOOKUP child).
-#define DEBUG_RONSQL_DRAIN 1
+// Keep disabled: the [drain] lines print to ronsql_cli stdout and break
+// ronsql_compare diffs (e.g. ronsql_minmax_string).
+//#define DEBUG_RONSQL_DRAIN 1
 #endif
 
 #ifdef DEBUG_RONSQL_DRAIN
