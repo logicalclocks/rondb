@@ -25,14 +25,33 @@ repro and inspecting the outstanding `ScanFragRec` / `requestPtr` state, and
 turning on `DEB_CONT_SCAN` / the CTE trace macros around `cteLookupEmitResult`
 and `Dblqh::continueJoinAgg*`.
 
-- **H1 — D3: projection-only main SELECT over a CTE_LOOKUP hangs** (broadest
-  impact — blocks every no-aggregation main SELECT that reads CTE columns).
-  Repro: `body_agg.inc` agg-03 marker; `body_mainmode.inc` MM1–MM6/13/14/16.
-  Suspect: the passthrough/`execute_passthrough_drain` delivery for a CTE_LOOKUP
-  child with no main aggregator never closes the scan. Fix this first — several
-  other "hangs" may be the same missing completion. Cross-check the working
-  projection-only path over a CTE_SCAN **root** (ronsql_cte_scan.test) vs the
-  CTE_LOOKUP **child** path.
+- **H1 — D3: projection-only main SELECT over a CTE_LOOKUP hangs — ✅ FIXED
+  (2026-06-08).** Root cause: `RonSQLPreparer::execute_passthrough_drain`
+  registered no `getValue` on the main ROOT op when every projected column came
+  from a CTE child, so the root scan was never set up to receive rows and
+  `nextResult(true)` blocked on the first call. Fix: when no output reads the
+  root op, register a throwaway `getValue` on the root's first column before
+  `execute` (mirrors `testCteNdbApi.cpp` Test 17). Regression test:
+  `ronsql_cte_dd_d3_hang.test` (drains 5 rows → scanComplete). Re-enable the
+  remaining D3 cases (mainmode MM1–MM6/13/14/16) on top of this. Original notes:
+  Repro: `ronsql_cte/t/ronsql_cte_dd_d3_hang.test` (dedicated minimal repro:
+  region JOIN nat, projection-only); also `body_mainmode.inc` MM1–MM6/13/14/16.
+  **DBSPJ RULED OUT (2026-06-06, via the DbspjMain.cpp counter trace):** on the
+  repro, DBSPJ activity is *bounded* (8 `sendConf`, all `is_complete=1`, 5
+  `cte_lookup_send` all matched by `CTE_LOOKUP_CONF`, `m_outstanding` reaches 0,
+  `m_cnt_active` reaches 0) and finishes in a ~1 ms burst, then goes idle until
+  the timeout kill. No request left in `RS_WAITING`. So the kernel completes the
+  query correctly; **the hang is on the consumer side — RonSQL's
+  `execute_passthrough_drain` `nextResult(true)` loop at
+  `RonSQLPreparer.cpp:6455`** (the NdbQuery carries a CTE subtree +
+  CTE_LOOKUP child; `nextResult` evidently blocks even though DBSPJ already sent
+  `is_complete=1`). Next step: instrument `execute_passthrough_drain` around
+  `m_trans->execute(NoCommit)` (6434) and each `nextResult` iteration (rebuild
+  `rdrs2`), and diff the NdbQuery operation/scan state against the WORKING
+  projection-only-over-CTE_SCAN-**root** path (`ronsql_cte_scan.test`) — the
+  delta (CTE_LOOKUP child vs CTE_SCAN root, or an un-closed CTE-subtree scan op)
+  is the bug. Fix this first — several other "hangs" may share this consumer-side
+  completion gap.
 - **H2 — D2: `COUNT(<column>)` in a CTE body hangs** (`COUNT(*)` is fine).
   Repro: `body_agg.inc` agg-02 marker. Suspect: COUNT-of-column lowering in the
   CTE aggregation program vs COUNT(*) — diverges into a non-terminating state on

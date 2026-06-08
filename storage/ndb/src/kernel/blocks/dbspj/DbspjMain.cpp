@@ -117,8 +117,21 @@
  * which TreeNodes are still TN_ACTIVE.  That identifies the path that
  * incremented but never decremented without slowing the race window
  * enough to mask the bug. */
+#ifdef DEBUG_CNT_ACTIVE
+/* Verbose counter trace: log every m_cnt_active mutation with its site label,
+ * node number, and the resulting m_cnt_active / m_outstanding.  Used to chase
+ * CTE hangs (a counter that never returns to 0 → checkBatchComplete never
+ * trips → no terminal SCAN_FRAGCONF).  Debug/ERROR_INSERT builds only. */
+#define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; \
+  g_eventLogger->info("(%u) INC_CNT_ACTIVE[%s] node=%u -> cnt_active=%u outstanding=%u", \
+    instance(), (site), (Uint32)(nodeNo), (reqP)->m_cnt_active, (reqP)->m_outstanding); } while (0)
+#define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; \
+  g_eventLogger->info("(%u) DEC_CNT_ACTIVE[%s] node=%u -> cnt_active=%u outstanding=%u", \
+    instance(), (site), (Uint32)(nodeNo), (reqP)->m_cnt_active, (reqP)->m_outstanding); } while (0)
+#else
 #define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; } while (0)
 #define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; } while (0)
+#endif
 
 #ifdef DEBUG_CTE_BUILD
 #define DEB_CTE_BUILD(arglist) \
@@ -3453,6 +3466,20 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
  * execution, *must* call ::checkBatchComplete() before returning.
  */
 void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
+  /* Unconditional counter trace: logged on EVERY reply handler's tail, so a
+   * hang shows exactly which value m_outstanding sticks at (and which handler
+   * stopped decrementing it).  The DEB_CTE below only fires once outstanding
+   * already reached 0, which is useless when it never does. */
+  DEB_CTE(("(%u) checkBatchComplete: outstanding=%u cnt_active=%u "
+           "CTE_PHASE=%d state=0x%x completed=0x%x active=0x%x suspended=0x%x",
+           instance(),
+           requestPtr.p->m_outstanding,
+           requestPtr.p->m_cnt_active,
+           !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+           requestPtr.p->m_state,
+           requestPtr.p->m_completed_tree_nodes.rep.data[0],
+           requestPtr.p->m_active_tree_nodes.rep.data[0],
+           requestPtr.p->m_suspended_tree_nodes.rep.data[0]));
   if (unlikely(requestPtr.p->m_outstanding == 0)) {
     jam();
     DEB_CTE(("(%u) checkBatchComplete: outstanding=0, "
@@ -6165,6 +6192,17 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
     // CTE not ready — queue this lookup for later.
     // When the CTE transitions to READY, all pending lookups will be flushed.
     treeNodePtr.p->m_cteLookup_data.m_pendingCount++;
+    // Hang diagnostic: parked rows must later be flushed (and turned into
+    // outstanding lookups) when the CTE reaches READY.  If pendingCount keeps
+    // climbing and is never drained, request m_outstanding never returns to 0
+    // and checkBatchComplete never fires → hang.  Watch this vs the flush site.
+    DEB_CTE(("(%u) cte_lookup_parent_row: PARKED (cte_state=%u) "
+             "pendingCount=%u node_outstanding=%u req_outstanding=%u cnt_active=%u",
+             instance(), cteCtx->m_state,
+             treeNodePtr.p->m_cteLookup_data.m_pendingCount,
+             treeNodePtr.p->m_cteLookup_data.m_outstanding,
+             requestPtr.p->m_outstanding,
+             requestPtr.p->m_cnt_active));
     break;
 
   case CteContext::CTE_FAILED:

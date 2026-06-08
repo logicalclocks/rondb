@@ -54,6 +54,16 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPREPARER 1
+// Independent of the very verbose DEBUG_RONSQLPREPARER DEB_TRACE(): a printf-style
+// trace (stdout -> RDRS log) for the projection-only pass-through drain, used to
+// chase the D3 hang (nextResult loop over a CTE subtree + CTE_LOOKUP child).
+#define DEBUG_RONSQL_DRAIN 1
+#endif
+
+#ifdef DEBUG_RONSQL_DRAIN
+#define DEB_DRAIN(arglist) do { printf arglist ; fflush(stdout); } while (0)
+#else
+#define DEB_DRAIN(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_RONSQLPREPARER
@@ -6392,6 +6402,11 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   // Real-table outputs — register in SELECT declaration order.  Also
   // build attrs[] for both real-table and CTE outputs (CTE entries
   // resolve via cteAttrsByCol).
+  // Track whether any output column is read off the main ROOT op (JoinPlan
+  // op 0).  If none is (e.g. SELECT projects only CTE_LOOKUP-child columns),
+  // the root scan would never get a getValue and nextResult() would hang —
+  // see the D3/H1 guard after this loop.
+  bool root_op_has_value = false;
   Uint32 i = 0;
   for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
        o = o->next, i++) {
@@ -6407,6 +6422,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     require_run(plan_op_idx < numMainOps,
                 "Pass-through drain: column resolves to op outside "
                 "the main JoinPlan.");
+    if (plan_op_idx == 0) root_op_has_value = true;
     NdbQueryOperation* op =
         query->getQueryOperation(numCteSubtreeOps + plan_op_idx);
     require_run(op != NULL,
@@ -6431,8 +6447,35 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     output_ops[i] = op;
   }
 
+  // D3/H1 fix: the NDB API only drives (and sizes the receive buffer for) a
+  // query operation that has at least one getValue().  When every projected
+  // column comes from a CTE_LOOKUP/CTE_SCAN child and NOTHING is read off the
+  // main ROOT op, nextResult(true) blocks forever on the first call because the
+  // root scan was never set up to receive rows (testCteNdbApi.cpp Test 17 always
+  // reads >=1 column off the main root: mainQueryOp->getValue("grp")).  Register
+  // a throwaway getValue on the root op's first column so the root scan delivers
+  // rows and nextResult() advances to scanComplete.
+  if (!root_op_has_value) {
+    const NdbDictionary::Table* rootTab = m_main_scope.join_plan.ops[0].table;
+    if (rootTab != NULL && rootTab->getNoOfColumns() > 0) {
+      NdbQueryOperation* rootOp = query->getQueryOperation(numCteSubtreeOps);
+      require_run(rootOp != NULL,
+                  "Pass-through drain: failed to resolve root op for the "
+                  "dummy root read.");
+      require_run(rootOp->getValue(rootTab->getColumn(0)) != NULL,
+                  "Pass-through drain: root-op dummy getValue() failed.");
+      DEB_DRAIN(("[drain] registered dummy getValue on root op (col '%s') — "
+                 "no SELECT column reads the root\n",
+                 rootTab->getColumn(0)->getName()));
+    }
+  }
+
+  DEB_DRAIN(("[drain] before execute(NoCommit): numTotalOps=%u numMainOps=%u "
+             "numCteSubtreeOps=%u num_cols=%u\n",
+             numTotalOps, numMainOps, numCteSubtreeOps, num_cols));
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
               "Failed to execute transaction (pass-through).");
+  DEB_DRAIN(("[drain] execute(NoCommit) returned OK; entering drain\n"));
 
   // For JSON output we always want the framing '[' ... ']' (an empty
   // array is the correct empty representation).  For TSV we defer
@@ -6452,7 +6495,20 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
 
   Uint32 row_count = 0;
   NdbQuery::NextResultOutcome rc;
-  while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+  // D3-hang instrumentation: log BEFORE each nextResult(true) and the rc it
+  // returns.  If the consumer hangs, the last line will be "calling nextResult,
+  // row_count=N" with NO following "returned rc=..." — i.e. it blocked in
+  // nextResult after N rows instead of returning scanComplete.
+  for (;;) {
+    DEB_DRAIN(("[drain] calling nextResult(true), row_count=%u\n", row_count));
+    rc = query->nextResult(true);
+    DEB_DRAIN(("[drain] nextResult returned rc=%d "
+               "(gotRow=%d scanComplete=%d error=%d bufferEmpty=%d)\n",
+               (int)rc, (int)NdbQuery::NextResult_gotRow,
+               (int)NdbQuery::NextResult_scanComplete,
+               (int)NdbQuery::NextResult_error,
+               (int)NdbQuery::NextResult_bufferEmpty));
+    if (rc != NdbQuery::NextResult_gotRow) break;
     if (!header_emitted) {
       m_resultprinter->print_passthrough_header(
           const_cast<const NdbRecAttr* const*>(attrs), num_cols,
@@ -6473,6 +6529,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
         m_conf.out_stream);
     row_count++;
   }
+  DEB_DRAIN(("[drain] loop exited: rc=%d total_rows=%u\n", (int)rc, row_count));
   if (rc == NdbQuery::NextResult_error) {
     const NdbError& err = query->getNdbError();
     std::basic_ostream<char>& errout = *m_conf.err_stream;

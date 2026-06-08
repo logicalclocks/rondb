@@ -66,7 +66,7 @@ topologies.
 | ID | Shape | Repro |
 |----|-------|-------|
 | **D2** | `COUNT(<column>)` (vs `COUNT(*)`) in a CTE body | `... COUNT(o_clerk) ...` (agg-02) |
-| **D3** | projection-only main SELECT over a CTE_LOOKUP child (no main aggregate) | `SELECT cte.col FROM real JOIN cte ON ...` (agg-03, mainmode MM1-6/13/14/16) |
+| **D3 ✅ FIXED (2026-06-08)** | projection-only main SELECT over a CTE_LOOKUP child (no main aggregate) | `SELECT cte.col FROM real JOIN cte ON ...` (agg-03, mainmode MM1-6/13/14/16). Fixed: `execute_passthrough_drain` now registers a dummy `getValue` on the main root op when no output reads it (RonSQLPreparer.cpp; mirrors testCteNdbApi.cpp Test 17). Regression: `ronsql_cte_dd_d3_hang.test` |
 | **D4** | CTE-body signed-int col-vs-col over lineitem feeding P-GB | `... WHERE l_quantity < l_partkey ...` (filter-13) |
 | **D5** | 3-table chain `real JOIN cte JOIN real` (real-table child alongside a CTE_LOOKUP child under one parent) | customer JOIN cust JOIN nation (J16/J17) |
 | **D19** | `real JOIN cte` with a main-query WHERE on a parent column | `WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey) SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k=c.c_custkey WHERE c.c_nationkey=5 GROUP BY cust.k;` (J18) |
