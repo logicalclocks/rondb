@@ -1,0 +1,45 @@
+--source include/have_ndb.inc
+
+# ============================================================================
+# Data node security: ndbinfo.security_events must require the PROCESS
+# privilege (it exposes per-NodeId malicious-signal activity, which on a
+# shared mysqld would let one tenant infer another's query patterns).
+# Enforced in ha_ndbinfo::rnd_init via check_global_access(thd, PROCESS_ACL).
+# The view is SQL SECURITY INVOKER, so the check runs against the querying
+# user; the base table ndb$security_events is gated the same way.
+# ============================================================================
+
+--echo # Create a user with SELECT on ndbinfo.* but WITHOUT the PROCESS privilege
+CREATE USER 'sec_noproc'@'localhost';
+GRANT SELECT ON ndbinfo.* TO 'sec_noproc'@'localhost';
+
+connect (noproc, localhost, sec_noproc,,);
+
+connection noproc;
+--echo # Without PROCESS: reading security_events (view) is denied
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT * FROM ndbinfo.security_events;
+
+--echo # Without PROCESS: the underlying base table is denied too
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT * FROM ndbinfo.`ndb$security_events`;
+
+--echo # A non-sensitive ndbinfo table remains readable without PROCESS
+--disable_result_log
+SELECT COUNT(*) >= 0 FROM ndbinfo.blocks;
+--enable_result_log
+--echo # (ndbinfo.blocks readable without PROCESS: OK)
+
+connection default;
+--echo # Grant PROCESS and the same user can now read security_events
+GRANT PROCESS ON *.* TO 'sec_noproc'@'localhost';
+
+connect (proc, localhost, sec_noproc,,);
+connection proc;
+--echo # Clean cluster: no violations recorded, so the count is 0
+SELECT COUNT(*) AS security_events_rows FROM ndbinfo.security_events;
+
+connection default;
+disconnect noproc;
+disconnect proc;
+DROP USER 'sec_noproc'@'localhost';

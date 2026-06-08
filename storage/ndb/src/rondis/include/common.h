@@ -36,6 +36,13 @@
 // other.
 extern thread_local int g_dbg_worker_id;
 
+// Client attribution for SECURITY_EVENT lines: RondisConn::DealMessage sets
+// this to the connection's "ip:port" on entry (and clears it on return) so a
+// security event fired anywhere down the call stack can name which client
+// connection triggered it. Thread-local, mirroring g_dbg_worker_id. Empty
+// string means "no connection context" (e.g. a violation outside a command).
+extern thread_local std::string g_client_ip_port;
+
 // NDB error code behind the most recent error reply written by the
 // assign_*_to_response helpers; 0 for a non-NDB error or no error.
 // rondb_redis_handler reads it to decide whether to retry a temporary
@@ -93,7 +100,7 @@ Uint32 get_length(char* buf);
 #define FAILED_MALLOC "Failed to allocate memory for operation"
 #define FAILED_INCRBY_DECRBY_PARAMETER "value is not an integer or out of range"
 #define FAILED_SELECT_COMMAND "Wrong parameter to SELECT command"
-#define FAILED_SELECT_NO_SUCH_DATABASE "The database selected doesn't exist"
+#define FAILED_SELECT_NO_SUCH_DATABASE "DB index is out of range"
 
 // NDB interpreted-code runtime error codes that we surface specially.
 // Mirrors entries in storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp.
@@ -132,7 +139,15 @@ Uint32 get_length(char* buf);
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"
 #define REDIS_WRONG_NUMBER_OF_ARGS "wrong number of arguments for '%s' command"
 #define REDIS_NO_SUCH_KEY "$-1\r\n"
+<<<<<<< HEAD
 #define REDIS_KEY_TOO_LARGE "key is too large (3000 bytes max)"
+=======
+// Note: error strings deliberately omit the exact limit so the wire response
+// does not disclose the internal threshold to clients (security finding 2).
+#define REDIS_KEY_TOO_LARGE "key too large"
+#define REDIS_MAX_VALUE_LEN 512000
+#define REDIS_VALUE_TOO_LARGE "value too large"
+>>>>>>> 26fd8a0ecc2 (Security System v1.1)
 #define REDIS_SYNTAX_ERROR "syntax error"
 #define REDIS_INVALID_INTEGER "value is not an integer or out of range"
 #define REDIS_OFFSET_OUT_OF_RANGE "offset is out of range"
@@ -151,14 +166,20 @@ Uint32 get_length(char* buf);
  * "no NDB NodeId at this granularity"; source_block=RONDIS distinguishes the
  * source. All RONDIS violations are Tier B (log-only) per the policy doc.
  *
+ * `client=<ip:port>` and `worker=<id>` attribute the event to the specific
+ * Redis connection (set by RondisConn::DealMessage / rondb_redis_handler), so
+ * the forensic trail names *who* triggered it rather than only *that* it
+ * happened. client= is empty when there is no connection context.
+ *
  * Usage: RONDIS_SECURITY_EVENT("rondis_oversize_value");
  */
 #define RONDIS_SECURITY_EVENT(violation)                                  \
   do {                                                                    \
     printf("SECURITY_EVENT: tier=B node_id=0 node_type=API "              \
+           "client=%s worker=%d "                                         \
            "violation=" violation " source_block=RONDIS source_line=%d "  \
            "window_count=0 total_count=0\n",                              \
-           __LINE__);                                                     \
+           g_client_ip_port.c_str(), g_dbg_worker_id, __LINE__);          \
   } while (0)
 
 #endif

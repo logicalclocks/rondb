@@ -35,6 +35,8 @@
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "scope_guard.h"
+#include "sql/auth/auth_acls.h"    // PROCESS_ACL
+#include "sql/auth/auth_common.h"  // check_global_access
 #include "sql/current_thd.h"
 #include "sql/derror.h"  // ER_THD
 #include "sql/field.h"
@@ -473,6 +475,17 @@ int ha_ndbinfo::close(void) {
   return 0;
 }
 
+/*
+  ndbinfo tables that require the PROCESS privilege to read (data node
+  security). Keyed by the kernel table name (NdbInfo::Table::getName(), i.e.
+  without the "ndb$" prefix). Adding a future sensitive table is a one-line
+  change here. See ha_ndbinfo::rnd_init for the enforcement point.
+*/
+static bool ndbinfo_table_requires_process_acl(const char *table_name) {
+  return table_name != nullptr &&
+         native_strcasecmp(table_name, "security_events") == 0;
+}
+
 int ha_ndbinfo::rnd_init(bool scan) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("scan: %d", scan));
@@ -574,6 +587,23 @@ int ha_ndbinfo::rnd_init(bool scan) {
   }
 
   THD *thd = current_thd;
+
+  /*
+    Data node security: a few ndbinfo tables expose sensitive operational
+    state and must be gated behind a privilege rather than being readable by
+    any account with SELECT on ndbinfo.*. ndbinfo.security_events exposes
+    per-NodeId malicious-signal activity which, on a shared (multi-tenant)
+    mysqld, would let one tenant infer another's query patterns. Gate it
+    behind PROCESS, the same privilege SHOW PROCESSLIST and
+    ndb_transid_mysql_connection_map use. The security_events view is
+    SQL SECURITY INVOKER, so this check runs against the querying user.
+    check_global_access() raises ER_SPECIFIC_ACCESS_DENIED_ERROR on denial.
+  */
+  if (ndbinfo_table_requires_process_acl(m_impl.m_table->getName()) &&
+      check_global_access(thd, PROCESS_ACL)) {
+    return HA_ERR_GENERIC;  // error already raised by check_global_access
+  }
+
   int err;
   NdbInfoScanOperation *scan_op = nullptr;
   if ((err = g_ndbinfo->createScanOperation(m_impl.m_table, &scan_op,

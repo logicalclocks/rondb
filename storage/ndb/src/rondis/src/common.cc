@@ -35,6 +35,10 @@
 // path) so DEB_* lines emitted there carry [w-1].
 thread_local int g_dbg_worker_id = -1;
 
+// Per-connection "ip:port" for SECURITY_EVENT attribution (see common.h).
+// Set by RondisConn::DealMessage on entry, cleared on return; empty otherwise.
+thread_local std::string g_client_ip_port;
+
 // NDB error code behind the most recent error reply (see common.h).
 thread_local int g_last_ndb_error_code = 0;
 

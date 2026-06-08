@@ -1,0 +1,19 @@
+# Create a user with SELECT on ndbinfo.* but WITHOUT the PROCESS privilege
+CREATE USER 'sec_noproc'@'localhost';
+GRANT SELECT ON ndbinfo.* TO 'sec_noproc'@'localhost';
+# Without PROCESS: reading security_events (view) is denied
+SELECT * FROM ndbinfo.security_events;
+ERROR 42000: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation
+# Without PROCESS: the underlying base table is denied too
+SELECT * FROM ndbinfo.`ndb$security_events`;
+ERROR 42000: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation
+# A non-sensitive ndbinfo table remains readable without PROCESS
+SELECT COUNT(*) >= 0 FROM ndbinfo.blocks;
+# (ndbinfo.blocks readable without PROCESS: OK)
+# Grant PROCESS and the same user can now read security_events
+GRANT PROCESS ON *.* TO 'sec_noproc'@'localhost';
+# Clean cluster: no violations recorded, so the count is 0
+SELECT COUNT(*) AS security_events_rows FROM ndbinfo.security_events;
+security_events_rows
+0
+DROP USER 'sec_noproc'@'localhost';
