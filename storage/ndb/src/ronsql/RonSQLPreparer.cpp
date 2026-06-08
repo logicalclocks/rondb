@@ -2802,6 +2802,72 @@ check_no_nested_exists(struct ConditionalExpression* ce)
   }
 }
 
+/*
+ * Walk a CTE-body WHERE tree and throw a permanent error if any
+ * comparison predicate compares two columns (column-vs-column).
+ *
+ * In a CTE body a col-vs-col WHERE predicate is not yet supported and
+ * misbehaves two ways depending on whether the left column is indexed:
+ *   - on an INDEX_SCAN body it is mis-classified as an index bound and
+ *     encode_constant() then fails on the column RHS, thrown as the
+ *     retryable RonSQLMaybeStaleSchema so RDRS retries it 10x (D12);
+ *   - on a TABLE_SCAN body it is emitted as an NdbScanFilter attr-vs-attr
+ *     program that hangs the data node (D4).
+ * Reject it cleanly and permanently here so RonSQL fails fast instead of
+ * retrying or hanging.  Column-vs-constant predicates are unaffected.
+ * Supporting col-vs-col in a CTE-body filter is tracked for a later phase.
+ * Main-query col-vs-col does not flow through build_cte_scopes and is
+ * unaffected by this check.
+ */
+static void
+check_no_cte_body_col_vs_col(struct ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  switch (ce->op)
+  {
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_LT:
+  case T_LE:
+  case T_GT:
+  case T_GE:
+    if (ce->args.left != NULL && ce->args.right != NULL &&
+        ce->args.left->op == T_IDENTIFIER &&
+        ce->args.right->op == T_IDENTIFIER)
+    {
+      throw RonSQLPermanentError(
+          "Column-vs-column comparison in a CTE body WHERE clause is not "
+          "yet supported. Compare a column to a constant instead.");
+    }
+    // A comparison's operands are scalar expressions, not boolean
+    // connectives, so there is no nested comparison to recurse into.
+    return;
+  case T_IS:
+    check_no_cte_body_col_vs_col(ce->is.arg);
+    return;
+  case T_INTERVAL:
+    check_no_cte_body_col_vs_col(ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    check_no_cte_body_col_vs_col(ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_NULL:
+  case I_SUBQUERY:
+  case I_IN_SUBQUERY:
+  case I_CORR_SCALAR:
+    return;
+  default:
+    check_no_cte_body_col_vs_col(ce->args.left);
+    check_no_cte_body_col_vs_col(ce->args.right);
+    return;
+  }
+}
+
 void
 RonSQLPreparer::decorrelate_exists()
 {
@@ -3791,6 +3857,11 @@ RonSQLPreparer::build_cte_scopes()
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope, *cte->stmt);
     classify_where_by_table(*scope, cte->stmt->where_expression);
+    // Col-vs-col in a CTE-body WHERE is not yet supported and otherwise
+    // either retries 10x (indexed left column, D12) or hangs the data node
+    // (TABLE_SCAN body, D4).  Reject it permanently before scan-config
+    // selection and emit.  See check_no_cte_body_col_vs_col.
+    check_no_cte_body_col_vs_col(cte->stmt->where_expression);
     promote_left_to_inner_for_where(*scope);
     // W1: an index hint on a joined table inside a CTE body is rejected;
     // only the body's root scan honors FORCE/USE/IGNORE INDEX.

@@ -1,0 +1,43 @@
+# D4/D12 regression — signed-int column-vs-column WHERE in a CTE body is now
+# cleanly + PERMANENTLY rejected (was: retryable error / hang).
+#
+# Findings D4 + D12 (cte_test_driven_findings.md) / fix-plan H3.  A col-vs-col
+# predicate in a CTE-body WHERE used to misbehave two ways depending on whether
+# the left column is indexed:
+#   D4a/D12 (orders, o_custkey < o_orderkey): o_custkey is indexed, so the
+#       conjunct was mis-classified as an index bound and encode_constant()
+#       failed on the column RHS, thrown as the RETRYABLE RonSQLMaybeStaleSchema
+#       -> RDRS retried it 10x before giving up (hang-like).
+#   D4b/D4 (lineitem, l_quantity < l_partkey): l_quantity is not indexed, so the
+#       body took the TABLE_SCAN path and emitted an NdbScanFilter attr-vs-attr
+#       program that HUNG the data node.
+# Both compare two SIGNED INT columns.  RonSQL now rejects col-vs-col in a
+# CTE-body WHERE up front with a clean RonSQLPermanentError (RPE) in
+# build_cte_scopes (check_no_cte_body_col_vs_col), so neither retries nor hangs.
+# Supporting col-vs-col in a CTE-body filter is tracked for a later phase.
+#
+# This is a rejection-assert regression (prepare-time error -> no data touched),
+# run via $RONSQL_CLI_EXE with --error 1, mirroring body_index.inc /
+# body_chain_scalar.inc.  --record to refresh r/ when the message changes.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === D4a/D12: CTE-body col-vs-col on orders (o_custkey < o_orderkey, indexed left) — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t FROM orders WHERE o_custkey < o_orderkey GROUP BY o_custkey) SELECT sums.k, SUM(sums.n), SUM(sums.t) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
+
+--echo
+--echo === D4b/D4: CTE-body col-vs-col on lineitem (l_quantity < l_partkey, non-indexed left) — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey) SELECT o.o_custkey, SUM(liq.n), SUM(liq.q) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;' 2>&1
+
+--source suite/ronsql_cte/include/cte_drop.inc

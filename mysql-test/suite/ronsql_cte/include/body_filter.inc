@@ -307,34 +307,28 @@ WHERE clk.mc IS NULL
 GROUP BY clk.k|
 
 # =====================================================================
-# Group 4 — CTE-body column-vs-column on SIGNED integers (only the
-# signed-int col-vs-col shape is supported).  o_custkey and o_orderkey
-# are both signed INT.  For orderkey 1..300, o_custkey == o_orderkey
-# (those rows are filtered out by the strict '<').
+# Group 4 — CTE-body column-vs-column on SIGNED integers.
+#
+# DISPOSITION (D4 + D12, fix-plan H3): col-vs-col in a CTE-body WHERE is
+# NOT yet supported and is now cleanly + PERMANENTLY rejected at prepare
+# time (RonSQLPreparer::check_no_cte_body_col_vs_col, called from
+# build_cte_scopes).  Previously it either retried 10x (indexed left
+# column -> mis-classified as an index bound, encode_constant fails on
+# the column RHS, thrown retryable; filter-12/D12) or hung the data node
+# (non-indexed left column -> TABLE_SCAN attr-vs-attr NdbScanFilter;
+# filter-13/D4).  Both are now rejection-asserts.  Supporting col-vs-col
+# in a CTE-body filter is tracked for a later phase.
 # =====================================================================
 
-# NEXT-PHASE (DISABLED — RonSQLRetryableError after 10 attempts "Integer type
-# column...", D12): CTE-body signed-int col-vs-col WHERE (o_custkey < o_orderkey)
-# on orders feeding an aggregating main.  Together with the already-disabled
-# filter-13 HANG, col-vs-col in a CTE body is broadly broken. (was filter-12)
-#   WITH sums AS (
-#     SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
-#     FROM orders WHERE o_custkey < o_orderkey GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.n), SUM(sums.t)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
-# See findings/_discovery_log.md (D12).
+--echo
+--echo == filter-12 (D12): CTE-body col-vs-col on orders (indexed left) — permanent rejection ==
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t FROM orders WHERE o_custkey < o_orderkey GROUP BY o_custkey) SELECT sums.k, SUM(sums.n), SUM(sums.t) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
 
 --echo
-# NEXT-PHASE (DISABLED — HANG): hangs RonSQL/RDRS. CTE body with a signed-int
-# col-vs-col WHERE (l_quantity < l_partkey) over lineitem keyed by l_orderkey,
-# feeding a P-GB main aggregation grouped by the parent o_custkey. (filter-12,
-# same col-vs-col idea, is shielded by a SUM-over-DECIMAL prepare error so it
-# never executes — D1.) Trigger not yet isolated.
-# Repro:
-#   WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
-#                FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey)
-#   SELECT o.o_custkey, SUM(liq.n), SUM(liq.q) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;
-# See findings/_discovery_log.md (D4).
+--echo == filter-13 (D4): CTE-body col-vs-col on lineitem (non-indexed left) — permanent rejection ==
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey) SELECT o.o_custkey, SUM(liq.n), SUM(liq.q) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;' 2>&1
 
 # =====================================================================
 # Group 5 — CTE-body GREATEST / LEAST in WHERE.

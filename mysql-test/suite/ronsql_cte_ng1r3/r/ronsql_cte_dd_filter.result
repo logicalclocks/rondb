@@ -2383,6 +2383,13 @@ WHERE clk.mc IS NULL
 GROUP BY clk.k|
 k	SUM(clk.n)
 
+== filter-12 (D12): CTE-body col-vs-col on orders (indexed left) — permanent rejection ==
+Error handling: RPE
+ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause is not yet supported. Compare a column to a constant instead.
+
+== filter-13 (D4): CTE-body col-vs-col on lineitem (non-indexed left) — permanent rejection ==
+Error handling: RPE
+ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause is not yet supported. Compare a column to a constant instead.
 
 === filter-16: CTE-body WHERE o_orderstatus = 'O' (CHAR(1)) ===
 == Query ==

@@ -64,13 +64,27 @@ and `Dblqh::continueJoinAgg*`.
   fixed, `COUNT(<column>)` is correct (counts non-NULLs, matches MySQL) in both
   aggregating and projection-only main. Regression test:
   `ronsql_cte_dd_d2_countcol.test` (D2a aggregating + D2b projection-only).
-- **H3 — D4 + D12: CTE-body signed-int col-vs-col WHERE.** lineitem variant
-  HANGS (D4), orders variant exhausts retries with `RonSQLRetryableError`
-  ("Integer type column…") (D12). Repro: `body_filter.inc` filter-12/13 markers.
-  Suspect: the col-vs-col interpreted-code filter emitted into the CTE-body scan
-  (`NdbScanFilter`/`branch_col_*` attr-vs-attr) — note the inverted-branch gotcha
-  in CLAUDE.md. Verify the emitted program terminates and the retry isn't a
-  livelock.
+- **H3 — D4 + D12: CTE-body signed-int col-vs-col WHERE — ✅ REJECTED
+  (2026-06-08).** Root cause was two distinct failures, split by whether the
+  left column is indexed:
+    - *D12 (orders `o_custkey < o_orderkey`, indexed left):* the conjunct was
+      mis-classified as an index bound by `build_scan_config_candidates`, so the
+      INDEX_SCAN bound-extraction at `RonSQLPreparer.cpp:6033` called
+      `encode_constant()` on the **column** RHS (`o_orderkey`), which throws the
+      retryable `RonSQLMaybeStaleSchema` ("Only integer literals are supported")
+      → RDRS retried 10× (hang-like).
+    - *D4 (lineitem `l_quantity < l_partkey`, non-indexed left):* TABLE_SCAN body
+      → `apply_filter_cmp`'s col-vs-col branch (`:8595`) emitted an `NdbScanFilter`
+      attr-vs-attr program that **hangs** the data node.
+  Per maintainer decision (permanent-error for now, feature deferred), both are
+  rejected up front: new static `check_no_cte_body_col_vs_col` walks each CTE
+  body's WHERE in `build_cte_scopes` (after `classify_where_by_table`, before
+  scan-config selection + emit) and throws a clean `RonSQLPermanentError` when a
+  comparison has two column operands. Main-query col-vs-col does not flow through
+  `build_cte_scopes` and is unaffected. Re-enabled as rejection-asserts:
+  `body_filter.inc` filter-12/13 + standalone `ronsql_cte_dd_d4_colvscol.test`.
+  **Later phase:** actually *support* col-vs-col in a CTE-body filter — see
+  "Deferred feature work" below.
 - **H4 — D19: `real JOIN cte` with a main-query WHERE on a parent column
   hangs.** Repro: `body_joins.inc` J18 marker. Suspect: pushing the parent-column
   predicate changes the CTE_LOOKUP feed so a batch boundary/CONF is missed.
@@ -168,6 +182,25 @@ Lower priority; some may be intentional scope limits — confirm before building
   aggregation program." Add DATE handling to the CTE aggregation-program writer
   (treat as the underlying integer day value, preserve DATE type out). Repro:
   `body_index.inc` D17 marker (and the `body_agg.inc` DATE MIN/MAX probe).
+
+---
+
+## Deferred feature work (not bugs — capabilities to add later)
+
+- **F-colvscol — support col-vs-col in a CTE-body WHERE.** Currently rejected
+  permanently (H3 fix, `check_no_cte_body_col_vs_col`). To support it:
+    1. Stop `build_scan_config_candidates` from treating a comparison whose RHS
+       is a column (not a constant) as an index bound — route such conjuncts to
+       the residual InterpretedCode filter instead (guards the `encode_constant`
+       error path at `RonSQLPreparer.cpp:6033`).
+    2. Make the CTE-body scan's `NdbScanFilter` attr-vs-attr program
+       (`apply_filter_cmp:8595`) actually terminate on the data node — the D4
+       hang showed the attr-vs-attr filter inside a CTE-body materialisation scan
+       does not complete, unlike the same emit on a top-level main-query scan.
+       Investigate the CTE-body scan / self-join leaf interaction (kernel side).
+    3. Remove the `check_no_cte_body_col_vs_col` reject and convert filter-12/13 +
+       `ronsql_cte_dd_d4_colvscol` from rejection-asserts back to value-compare
+       cases (`ronsql_compare.inc`), re-record across all five topologies.
 
 ---
 
