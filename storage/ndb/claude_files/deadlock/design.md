@@ -500,7 +500,30 @@ of ~64 bytes per `ApiConnectRecord` and a bounded edge count (overflow evicts ol
 timeout backstop still catches anything dropped). Migrating to a `TransientPool` to remove
 the per-record footprint and the capacity bound is a Phase 2 hardening item.
 
-**Not yet done:** scan-lock waiters (Phase 3), deferred `T_detect` reporting (Phase 4),
-shared-lock parallel-queue fan-out (only the head lock owner is reported today — Phase 3),
-`ndbinfo`/DUMP observability (Phase 2), longer-cycle handling (Phase 5). The existing
+**Phase 3 implemented** (shared-lock parallel-queue fan-out + scan coverage):
+
+- **Shared-lock fan-out** — `accIsLockedLab` now walks the lock owner's *parallel
+  queue* and emits one wait-for edge per *distinct foreign transaction* co-holding the
+  lock (capped at 8/wait), instead of only the head owner. Captured under the frag mutex
+  into a local array, sent after release.
+- **Scan coverage** — a new `Dbacc::get_op_tc_ref()` resolves *both* key ops (via
+  `userptr`→`try_get_tc_ref`) and scan ops (via ACC `ScanRec.scanUserptr`→ LQH
+  `ScanRecord.scanTcrec`→`try_get_scan_tc_ref`). It is used for waiter and every owner in
+  the fan-out, so scan-held locks now appear in the graph. A new hook in
+  `checkNextBucketLab` reports edges when a *scan itself* must wait. All resolution goes
+  through the owning LDM's LQH and **fails safe** (`getValidPtr` magic check → skip the
+  edge) for cross-instance/query-thread records, so no fragile cross-thread access.
+
+**Known scan limitation (deliberate, backstopped):** a scan endpoint's TC handle is a TC
+*ScanFragRec* index (via `scanTcrec`), not a `TcConnectRecord` index. The DBTC handler
+resolves the *collector* via `tcConnectRecord` + a transid guard, so when a scan would be
+the min-hash *collector* the edge is safely dropped (no crash, no misfire). Scans thus
+participate fully as the *non-collector* endpoint (their transid is recorded and a key-op
+collector detects/aborts the cycle); scan-as-collector cycles fall back to the timeout.
+Full scan-as-collector/victim support would need a scan-kind flag in the signal plus a
+`ScanFragRec`→`ApiConnectRecord` resolution path in DBTC — a later item.
+
+**Not yet done:** deferred `T_detect` reporting (Phase 4), pool-backed edge storage +
+edge cleanup on wakeup (hardening), `ndbinfo`/DUMP observability (Phase 2), longer-cycle
+handling and full scan-as-collector support (Phase 5). The existing
 `TransactionDeadlockDetectionTimeout` remains the backstop for all of these.

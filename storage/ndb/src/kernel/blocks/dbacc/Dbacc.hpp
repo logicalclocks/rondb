@@ -1021,6 +1021,17 @@ private:
   Uint32 placeReadInLockQueue(OperationrecPtr lockOwnerPtr) const;
   Uint32 placeWriteInLockQueue(OperationrecPtr lockOwnerPtr) const;
   void placeSerialQueue(OperationrecPtr lockOwner, OperationrecPtr op) const;
+  /* RONDB-1062 deadlock discovery: resolve an ACC operation (key op or scan
+   * op) to its coordinating transaction's TC (block ref + op index).  Returns
+   * false (fail-safe, no crash) if it cannot be resolved locally. */
+  bool get_op_tc_ref(const Operationrec *opP, Uint32 &tcOprec, Uint32 &tcRef);
+  /* Send one wait-for edge (waiter -> owner) to the collector TC (the
+   * endpoint with the smaller hash(transid)).  Reuses signal->theData. */
+  void send_deadlock_waitfor(Signal *signal, Uint32 waiterTransId1,
+                             Uint32 waiterTransId2, Uint32 waiterTcOprec,
+                             Uint32 waiterTcRef, Uint32 ownerTransId1,
+                             Uint32 ownerTransId2, Uint32 ownerTcOprec,
+                             Uint32 ownerTcRef);
   void abortSerieQueueOperation(Signal* signal,
                                 OperationrecPtr op,
                                 Uint32 hash);

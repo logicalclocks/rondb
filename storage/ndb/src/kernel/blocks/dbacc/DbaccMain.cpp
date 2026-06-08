@@ -2099,6 +2099,68 @@ static inline bool deadlock_a_is_collector(Uint32 a1, Uint32 a2,
   return a1 < b1;
 }
 
+/**
+ * RONDB-1062: resolve an ACC operation to its coordinating transaction's TC.
+ * Key ops carry the LQH op index in userptr (-> get_tc_ref).  Scan ops carry
+ * userptr == RNIL and instead reference an ACC ScanRec, whose scanUserptr is
+ * the LQH ScanRecord index; that ScanRecord's scanTcrec gives the scan's TC.
+ * Resolution goes through the owning LDM's LQH; if the records live in a
+ * different (e.g. query-thread) instance, getValidPtr fails and we return
+ * false so the edge is simply skipped (the timeout backstop still applies).
+ */
+bool Dbacc::get_op_tc_ref(const Operationrec *opP, Uint32 &tcOprec,
+                          Uint32 &tcRef)
+{
+  Dblqh *const lqh = m_ldm_instance_used->c_lqh;
+  if (opP->userptr != RNIL)
+  {
+    return lqh->try_get_tc_ref(opP->userptr, tcOprec, tcRef);
+  }
+  if (opP->scanRecPtr != RNIL)
+  {
+    ScanRecPtr sp;
+    sp.i = opP->scanRecPtr;
+    if (!m_curr_acc->scanRec_pool.getValidPtr(sp))
+    {
+      return false;
+    }
+    return lqh->try_get_scan_tc_ref(sp.p->scanUserptr, tcOprec, tcRef);
+  }
+  return false;
+}
+
+/**
+ * RONDB-1062: send one wait-for edge (waiter waits on owner) to the collector
+ * TC, i.e. whichever endpoint has the smaller hash(transid).  NOTE: this
+ * reuses signal->theData, so callers that still need the signal contents must
+ * rebuild them afterwards.
+ */
+void Dbacc::send_deadlock_waitfor(Signal *signal, Uint32 waiterTransId1,
+                                  Uint32 waiterTransId2, Uint32 waiterTcOprec,
+                                  Uint32 waiterTcRef, Uint32 ownerTransId1,
+                                  Uint32 ownerTransId2, Uint32 ownerTcOprec,
+                                  Uint32 ownerTcRef)
+{
+  const bool collectorIsWaiter = deadlock_a_is_collector(
+      waiterTransId1, waiterTransId2, ownerTransId1, ownerTransId2);
+  const BlockReference dstRef = collectorIsWaiter ? waiterTcRef : ownerTcRef;
+  DeadlockWaitforRep *const rep =
+      reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
+  rep->senderRef = reference();
+  rep->flags =
+      collectorIsWaiter ? (Uint32)DeadlockWaitforRep::CollectorIsWaiter : 0;
+  rep->waiterTransId1 = waiterTransId1;
+  rep->waiterTransId2 = waiterTransId2;
+  rep->waiterTcRef = waiterTcRef;
+  rep->waiterTcOprec = waiterTcOprec;
+  rep->ownerTransId1 = ownerTransId1;
+  rep->ownerTransId2 = ownerTransId2;
+  rep->ownerTcRef = ownerTcRef;
+  rep->ownerTcOprec = ownerTcOprec;
+  sendSignal(dstRef, GSN_DBACC_WAITFOR_REP, signal,
+             DeadlockWaitforRep::SignalLength, JBB);
+}
+
 void
 Dbacc::accIsLockedLab(Signal* signal,
                       OperationrecPtr lockOwnerPtr,
@@ -2190,31 +2252,54 @@ Dbacc::accIsLockedLab(Signal* signal,
 
     /**
      * RONDB-1062 deadlock discovery: when this request must wait (it was put
-     * on the serial/wait queue behind a conflicting lock held by a different
-     * transaction), capture the wait-for edge (waiter -> lock owner) while we
-     * still hold the fragment mutex (both operation records are stable here).
-     * The edge is sent to DBTC after releasing the mutex.  We resolve TC
-     * identity via the guarded try_get_tc_ref because the lock owner may be
-     * any kind of operation (e.g. a scan), not necessarily a key op.
+     * on the serial/wait queue), capture wait-for edges from the waiter to
+     * EVERY distinct foreign transaction currently holding the lock.  The lock
+     * owner's parallel queue can hold several transactions co-holding a shared
+     * read lock, so we walk it and emit one edge per distinct foreign trans.
+     * Captured under the fragment mutex (records are stable here); the edges
+     * are sent to the collector TC(s) after the mutex is released.  TC identity
+     * is resolved via get_op_tc_ref, which handles key ops and scan ops and
+     * fails safe (no edge) for anything it cannot resolve locally.
      */
-    Uint32 dl_waiterT1 = 0, dl_waiterT2 = 0, dl_waiterTcOprec = 0,
-           dl_waiterTcRef = 0;
-    Uint32 dl_ownerT1 = 0, dl_ownerT2 = 0, dl_ownerTcOprec = 0,
-           dl_ownerTcRef = 0;
-    bool dl_report = false;
+    Uint32 dl_wT1 = 0, dl_wT2 = 0, dl_wTcOprec = 0, dl_wTcRef = 0;
+    const Uint32 DL_MAX_OWNERS = 8;
+    struct {
+      Uint32 t1, t2, tcOprec, tcRef;
+    } dl_owners[DL_MAX_OWNERS];
+    Uint32 dl_num = 0;
     if (return_result == ZSERIAL_QUEUE &&
-        !operationRecPtr.p->is_same_trans(lockOwnerPtr.p))
+        get_op_tc_ref(operationRecPtr.p, dl_wTcOprec, dl_wTcRef))
     {
-      dl_waiterT1 = operationRecPtr.p->transId1;
-      dl_waiterT2 = operationRecPtr.p->transId2;
-      dl_ownerT1 = lockOwnerPtr.p->transId1;
-      dl_ownerT2 = lockOwnerPtr.p->transId2;
-      Dblqh *const lqh = m_ldm_instance_used->c_lqh;
-      dl_report =
-          lqh->try_get_tc_ref(operationRecPtr.p->userptr, dl_waiterTcOprec,
-                              dl_waiterTcRef) &&
-          lqh->try_get_tc_ref(lockOwnerPtr.p->userptr, dl_ownerTcOprec,
-                              dl_ownerTcRef);
+      dl_wT1 = operationRecPtr.p->transId1;
+      dl_wT2 = operationRecPtr.p->transId2;
+      OperationrecPtr loopPtr = lockOwnerPtr;
+      while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
+      {
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+        if (!operationRecPtr.p->is_same_trans(loopPtr.p))
+        {
+          bool dup = false;
+          for (Uint32 j = 0; j < dl_num; j++)
+          {
+            if (dl_owners[j].t1 == loopPtr.p->transId1 &&
+                dl_owners[j].t2 == loopPtr.p->transId2)
+            {
+              dup = true;
+              break;
+            }
+          }
+          Uint32 oOprec, oRef;
+          if (!dup && get_op_tc_ref(loopPtr.p, oOprec, oRef))
+          {
+            dl_owners[dl_num].t1 = loopPtr.p->transId1;
+            dl_owners[dl_num].t2 = loopPtr.p->transId2;
+            dl_owners[dl_num].tcOprec = oOprec;
+            dl_owners[dl_num].tcRef = oRef;
+            dl_num++;
+          }
+        }
+        loopPtr.i = loopPtr.p->nextParallelQue;
+      }
     }
 
     release_frag_mutex_hash(fragrecptr.p, hash);
@@ -2238,36 +2323,18 @@ Dbacc::accIsLockedLab(Signal* signal,
       fragrecptr.p->m_lockStats.req_start(
           (bits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
           operationRecPtr.p->m_lockTime, getHighResTimer());
-      if (dl_report)
+      /**
+       * Send one wait-for edge per blocking transaction to its collector TC.
+       * NOTE: this reuses signal->theData, so we restore the "blocked"
+       * indicator (theData[0] = RNIL) afterwards.  Both callers (DBLQH and
+       * execACC_LOCKREQ) read only theData[0] on the blocked path.
+       */
+      for (Uint32 i = 0; i < dl_num; i++)
       {
         jam();
-        /**
-         * Send the wait-for edge to the collector TC (the endpoint with the
-         * smaller hash(transid)).  NOTE: this reuses signal->theData, so we
-         * restore the "blocked" indicator (theData[0] = RNIL) afterwards.
-         * Both callers (DBLQH and execACC_LOCKREQ) read only theData[0] on
-         * the blocked path.
-         */
-        const bool collectorIsWaiter = deadlock_a_is_collector(
-            dl_waiterT1, dl_waiterT2, dl_ownerT1, dl_ownerT2);
-        const BlockReference dstRef =
-            collectorIsWaiter ? dl_waiterTcRef : dl_ownerTcRef;
-        DeadlockWaitforRep *const rep =
-            reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
-        rep->senderRef = reference();
-        rep->flags =
-            collectorIsWaiter ? (Uint32)DeadlockWaitforRep::CollectorIsWaiter
-                              : 0;
-        rep->waiterTransId1 = dl_waiterT1;
-        rep->waiterTransId2 = dl_waiterT2;
-        rep->waiterTcRef = dl_waiterTcRef;
-        rep->waiterTcOprec = dl_waiterTcOprec;
-        rep->ownerTransId1 = dl_ownerT1;
-        rep->ownerTransId2 = dl_ownerT2;
-        rep->ownerTcRef = dl_ownerTcRef;
-        rep->ownerTcOprec = dl_ownerTcOprec;
-        sendSignal(dstRef, GSN_DBACC_WAITFOR_REP, signal,
-                   DeadlockWaitforRep::SignalLength, JBB);
+        send_deadlock_waitfor(signal, dl_wT1, dl_wT2, dl_wTcOprec, dl_wTcRef,
+                              dl_owners[i].t1, dl_owners[i].t2,
+                              dl_owners[i].tcOprec, dl_owners[i].tcRef);
       }
       signal->theData[0] = RNIL;
       return;
@@ -8562,6 +8629,53 @@ void Dbacc::checkNextBucketLab(Signal *signal) {
             scanPtr.p->scanLockMode != ZREADLOCK, operationRecPtr.p->m_lockTime,
             getHighResTimer());
         putOpScanLockQue(); /* PUT THE OP IN A QUE IN THE SCAN REC */
+        /**
+         * RONDB-1062 deadlock discovery: this scan operation must wait for
+         * the lock held by queOperPtr's transaction(s).  Report a wait-for
+         * edge from the scan's transaction to each distinct foreign holder in
+         * the owner's parallel queue.  Sent here, before signal->theData is
+         * reused for ACC_CHECK_SCAN below.
+         */
+        {
+          Uint32 dl_wTcOprec, dl_wTcRef;
+          if (get_op_tc_ref(operationRecPtr.p, dl_wTcOprec, dl_wTcRef))
+          {
+            const Uint32 dl_wT1 = operationRecPtr.p->transId1;
+            const Uint32 dl_wT2 = operationRecPtr.p->transId2;
+            const Uint32 DL_MAX_OWNERS = 8;
+            Uint32 dl_seenT1[DL_MAX_OWNERS], dl_seenT2[DL_MAX_OWNERS];
+            Uint32 dl_num = 0;
+            OperationrecPtr loopPtr = queOperPtr;
+            while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
+            {
+              ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+              if (!operationRecPtr.p->is_same_trans(loopPtr.p))
+              {
+                bool dup = false;
+                for (Uint32 j = 0; j < dl_num; j++)
+                {
+                  if (dl_seenT1[j] == loopPtr.p->transId1 &&
+                      dl_seenT2[j] == loopPtr.p->transId2)
+                  {
+                    dup = true;
+                    break;
+                  }
+                }
+                Uint32 oOprec, oRef;
+                if (!dup && get_op_tc_ref(loopPtr.p, oOprec, oRef))
+                {
+                  dl_seenT1[dl_num] = loopPtr.p->transId1;
+                  dl_seenT2[dl_num] = loopPtr.p->transId2;
+                  dl_num++;
+                  send_deadlock_waitfor(signal, dl_wT1, dl_wT2, dl_wTcOprec,
+                                        dl_wTcRef, loopPtr.p->transId1,
+                                        loopPtr.p->transId2, oOprec, oRef);
+                }
+              }
+              loopPtr.i = loopPtr.p->nextParallelQue;
+            }
+          }
+        }
         scanPtr.p->scan_lastSeen = __LINE__;
         BlockReference ref = scanPtr.p->scanUserblockref;
         signal->theData[0] = scanPtr.p->scanUserptr;
