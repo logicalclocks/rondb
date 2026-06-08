@@ -1,0 +1,46 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 6.5 — standalone AggInterpreter JIT canary.
+#
+# ERROR_INSERT 4060 makes fallback to AggInterpreter's interpreter loop
+# fatal. These queries must therefore compile in
+# PushdownInterpreterFactory::Create() and run through the JIT branch in
+# AggInterpreter::ProcessRec.
+
+--echo ############################################################
+--echo # RONDB-1056 standalone aggregation JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk BIGINT NOT NULL,
+  v  BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: SUM over one BIGINT NOT NULL column must JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(v) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q2: SUM over simple bigint addition must JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(v + pk) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q3: SUM over plus, minus and mul must JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(v - pk + pk * 0) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q4: WHERE clause remains a fallback smoke query.
+SELECT SUM(v) FROM t1 WHERE pk >= 3;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

@@ -314,13 +314,16 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #endif
 
 class Dbtux;
+class AggInterpreterBase;
 class AggInterpreter;
 class JoinAggInterpreter;
+struct NdbJitArena;
 struct Register;
 
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
   friend class Suma;
+  friend class AggInterpreterBase;
   friend class AggInterpreter;
   friend class JoinAggInterpreter;
   friend class VecSearchInterpreter;
@@ -4615,8 +4618,10 @@ private:
    * Sized to NDB_MAX_TUPLE_SIZE so any single-row projection that NDB can
    * construct fits.  See AggInterpreter::m_attr_read_buf for the contract. */
   Uint32 m_agg_attr_read_buf[MAX_TUPLE_SIZE_IN_WORDS];
+  NdbJitArena *m_jit_arena;
  public:
   Uint32* getAggAttrReadBuf() { return m_agg_attr_read_buf; }
+  NdbJitArena* getJitArena() const { return m_jit_arena; }
   static constexpr Uint32 AGG_ATTR_READ_BUF_WORD_SIZE =
       MAX_TUPLE_SIZE_IN_WORDS;
 

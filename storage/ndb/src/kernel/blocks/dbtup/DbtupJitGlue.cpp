@@ -15,6 +15,7 @@
  */
 
 #include "DbtupJitGlue.hpp"
+#include "AggInterpreterBase.hpp"
 #include "JoinAggInterpreter.hpp"
 #include "AggInterpreter.hpp"   /* for AlignedType / IsUnsigned helpers */
 
@@ -28,7 +29,7 @@
 #endif
 
 #ifdef ERROR_INSERT
-static bool dbtup_jit_trace_start(JoinAggInterpreter *agg,
+static bool dbtup_jit_trace_start(AggInterpreterBase *agg,
                                   Dbtup *block_tup,
                                   Uint32 *row_no,
                                   Uint32 *limit) {
@@ -65,7 +66,8 @@ static void dbtup_jit_trace_accs(const char *stage,
 
 extern "C" void
 ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
-  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
   /* Phase 4 admission guarantees ctx is set. If it isn't, the
    * dispatch path is broken — fail fast. ndbrequire requires a
    * JAM context only available inside blocks, so we use direct
@@ -149,7 +151,8 @@ extern "C" int
 ndb_jit_h_branch_attr_null(JitState *s,
                             uint32_t attr_id,
                             uint32_t want_null) {
-  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
   if (ctx == nullptr || ctx->agg == nullptr ||
       ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
@@ -203,8 +206,9 @@ ndb_jit_h_branch_attr_null(JitState *s,
  * interpreter READ_LINKED_TO_MEM handler — no drift risk. */
 extern "C" void
 ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
-  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  if (ctx == nullptr || ctx->agg == nullptr ||
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->join_agg == nullptr ||
       ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_read_linked_to_mem: JitState.ctx is malformed "
@@ -214,11 +218,12 @@ ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
   /* Routes through JoinAggInterpreter::readLinkedToMemForJit since
    * Dbtup::cheapMemory is private — JoinAggInterpreter is friend of
    * Dbtup so it can reach the buffer + the static walk routine. */
-  ctx->agg->readLinkedToMemForJit(ctx->block_tup, ctx->req_struct,
-                                    position);
+  JoinAggInterpreter *join_agg = ctx->join_agg;
+  join_agg->readLinkedToMemForJit(ctx->block_tup, ctx->req_struct,
+                                  position);
 #ifdef ERROR_INSERT
   if (ctx->trace_enabled) {
-    AttributeHeader ah(ctx->agg->cheapMemoryHeaderForJit(ctx->block_tup));
+    AttributeHeader ah(join_agg->cheapMemoryHeaderForJit(ctx->block_tup));
     g_eventLogger->info(
         "ERROR_INSERT 4063: row=%u helper=read_linked_to_mem "
         "position=%u is_null=%u bytes=%u",
@@ -236,14 +241,16 @@ ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
  * cheapMemory[0] which a preceding op_load_linked_to_mem populated. */
 extern "C" int
 ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
-  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  if (ctx == nullptr || ctx->agg == nullptr ||
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->join_agg == nullptr ||
       ctx->block_tup == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_branch_linked_null: JitState.ctx is malformed");
     abort();
   }
-  AttributeHeader ah(ctx->agg->cheapMemoryHeaderForJit(ctx->block_tup));
+  JoinAggInterpreter *join_agg = ctx->join_agg;
+  AttributeHeader ah(join_agg->cheapMemoryHeaderForJit(ctx->block_tup));
   bool is_null = ah.isNULL();
   int take_branch = (is_null == (want_null != 0)) ? 1 : 0;
 #ifdef ERROR_INSERT
@@ -282,17 +289,19 @@ extern "C" void dbtup_jit_register_helpers(void) {
 /* Per-row dispatch.                                                  */
 /* ------------------------------------------------------------------ */
 
-Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
+Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
                        Dbtup *block_tup,
                        Dbtup::KeyReqStruct *req_struct,
                        JitEntry            entry_fn,
                        AggResItem         *agg_res_ptr,
-                       Uint32              n_agg_results) {
+                       Uint32              n_agg_results,
+                       JoinAggInterpreter *join_agg) {
   /* Build the per-row context on the stack. JitState.ctx points
    * at this; helpers consult it during the JIT'd code's execution
    * and never retain pointers into it. */
   dbtup_jit_call_ctx ctx;
   ctx.agg        = agg;
+  ctx.join_agg   = join_agg;
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
 #ifdef ERROR_INSERT

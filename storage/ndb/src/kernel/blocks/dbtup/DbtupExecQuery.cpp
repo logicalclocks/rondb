@@ -1058,11 +1058,12 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
         Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
 
-        auto result = PushdownInterpreterFactory::Create(
+        PushdownCreateResult result = PushdownInterpreterFactory::Create(
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
             prepare_fragptr.p->fragmentId,
-            getThreadId());
+            getThreadId(),
+            getJitArena());
         ndbrequire(result.agg != nullptr || result.vs != nullptr);
         scan_rec_ptr->m_agg_interpreter = result.agg;
         scan_rec_ptr->m_vs_interpreter = result.vs;

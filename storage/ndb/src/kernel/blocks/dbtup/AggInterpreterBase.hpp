@@ -302,6 +302,39 @@ class AggInterpreterBase : public PushdownInterpreter {
   bool hasStringSlots() const { return m_string_results != nullptr; }
   const StringResult* string_results() const { return m_string_results; }
 
+  /* Phase 6.5 RONDB-1056: shared JIT hooks for both aggregation
+   * interpreters. Join aggregation and standalone pushed aggregation
+   * use the same per-row dispatch glue once their setup path has
+   * published a compiled entry. */
+  void setJitEntry(JitEntry e) { m_jit_entry = e; }
+  const Uint32* agg_program() const { return m_prog; }
+  Uint32 agg_prog_start_pos() const { return m_agg_prog_start_pos; }
+
+  int readAttributeForJit(Dbtup *block_tup,
+                          Dbtup::KeyReqStruct *req_struct,
+                          Uint32 col_id,
+                          Uint32 *read_buf,
+                          Uint32 buf_words) {
+    return block_tup->readSingleAttribute(req_struct, col_id,
+                                          read_buf, buf_words);
+  }
+
+#ifdef ERROR_INSERT
+  bool jitTraceEnabledForJit(Dbtup *block_tup,
+                             Uint32 *trace_limit) const {
+    if (block_tup == nullptr ||
+        !block_tup->jit_error_inserted(4063)) {
+      return false;
+    }
+    Uint32 limit = block_tup->jit_error_insert_extra();
+    if (limit == 0) {
+      limit = 16;
+    }
+    *trace_limit = limit;
+    return true;
+  }
+#endif
+
  protected:
 
   /**

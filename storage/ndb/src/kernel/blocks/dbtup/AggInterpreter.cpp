@@ -33,6 +33,7 @@
 #include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
@@ -243,6 +244,33 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   } else {
     agg_res_ptr = m_agg_results;
   }
+
+  /* Phase 6.5 RONDB-1056: standalone pushed aggregation JIT path.
+   * This is the same scalar-aggregation dispatch shape used by
+   * JoinAggInterpreter once setup has published a compiled entry.
+   * GROUP BY remains on the interpreter path until the JIT supports
+   * grouped accumulator lookup/update. */
+  if (m_jit_entry != nullptr && m_n_gb_cols == 0) {
+    m_processed_rows++;
+    return dbtup_jit_invoke(this, block_tup, req_struct,
+                            m_jit_entry, agg_res_ptr,
+                            m_n_agg_results);
+  }
+
+#ifdef ERROR_INSERT
+  /* ERROR_INSERT 4060: makes JIT fallback fatal for canaries that
+   * expect a standalone aggregation program to admit and compile. */
+  if (block_tup != nullptr && block_tup->jit_error_inserted(4060)) {
+    g_eventLogger->error(
+        "ERROR_INSERT 4060: standalone aggregation program reached "
+        "the interpreter loop instead of the JIT path "
+        "(m_jit_entry=%p, m_n_gb_cols=%u). Aborting per test "
+        "directive - the failing program was expected to admit "
+        "+ compile.",
+        m_jit_entry, m_n_gb_cols);
+    abort();
+  }
+#endif
 
   Uint32 value;
   DataType type;

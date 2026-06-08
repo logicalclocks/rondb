@@ -977,7 +977,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     req_struct->m_linked_attr_len = m_linked_attr_len;
     int jit_rc = dbtup_jit_invoke(this, block_tup, req_struct,
                                   m_jit_entry, agg_res_ptr,
-                                  m_n_agg_results);
+                                  m_n_agg_results, this);
     req_struct->m_linked_attr_data = nullptr;
     req_struct->m_linked_attr_len = 0;
     return jit_rc;

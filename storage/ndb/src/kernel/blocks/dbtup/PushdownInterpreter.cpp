@@ -29,6 +29,11 @@
 #include "NdbAggregationCommon.hpp"
 #include "util/require.h"
 
+extern "C" {
+#include "jit/jit1.h"
+#include "jit/ndb_jit_bridge.h"
+}
+
 void PushdownInterpreter::Destruct(PushdownInterpreter* ptr) {
   if (ptr == nullptr) {
     return;
@@ -259,7 +264,8 @@ PushdownInterpreterFactory::DetectType(const Uint32* prog, Uint32 prog_len) {
 PushdownCreateResult
 PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                    Int64 table_id, Int64 frag_id,
-                                   Uint32 thread_id) {
+                                   Uint32 thread_id,
+                                   NdbJitArena *jit_arena) {
   PushdownCreateResult result = {nullptr, nullptr};
   PushdownType type = DetectType(prog, prog_len);
 
@@ -275,6 +281,23 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                               thread_id);
     require(result.agg->Init(prog));
     require(result.agg->OptimizeProgram());
+    if (jit_arena != nullptr) {
+      const Uint32 *agg_prog = result.agg->agg_program();
+      const Uint32 bc_off = result.agg->agg_prog_start_pos();
+      if (bc_off < prog_len) {
+        Program p;
+        JitBridgeError berr;
+        JitBridgeReason brc =
+            ndb_jit_bridge_translate(agg_prog + bc_off, prog_len - bc_off,
+                                      &p, &berr);
+        if (brc == JIT_BRIDGE_OK) {
+          Jit1Prog *jp = jit1_compile(jit_arena, &p, /*timing=*/nullptr);
+          if (jp != nullptr) {
+            result.agg->setJitEntry(jit1_entry(jp));
+          }
+        }
+      }
+    }
   } else {
     result.vs = new(page_ptr) VecSearchInterpreter(prog_len, table_id, frag_id,
                                                    thread_id);

@@ -47,6 +47,7 @@
 #include "Dbtup.hpp"
 #include "ndbapi/NdbAggregationCommon.hpp"   /* for AggResItem */
 
+class AggInterpreterBase;
 class JoinAggInterpreter;
 
 extern "C" {
@@ -63,7 +64,8 @@ extern "C" {
  * not retain pointers into the ctx beyond the helper's return —
  * which they don't, since helpers return immediately. */
 struct dbtup_jit_call_ctx {
-  JoinAggInterpreter *agg;          /* the interpreter instance */
+  AggInterpreterBase *agg;          /* the interpreter instance */
+  JoinAggInterpreter *join_agg;     /* non-null only for join-only helpers */
   Dbtup              *block_tup;    /* DBTUP block context for readAttributes */
   Dbtup::KeyReqStruct *req_struct;  /* row position / linked-attr context */
 #ifdef ERROR_INSERT
@@ -125,18 +127,20 @@ void dbtup_jit_register_helpers(void);
 
 } /* extern "C" */
 
-/* Per-row dispatch entry — invoked from JoinAggInterpreter::ProcessRec
- * when m_jit_entry != nullptr AND m_n_gb_cols == 0. Returns 0 on
- * success; the existing ProcessRec error codes otherwise.
+/* Per-row dispatch entry — invoked from AggInterpreter::ProcessRec or
+ * JoinAggInterpreter::ProcessRec when m_jit_entry != nullptr AND
+ * m_n_gb_cols == 0. Returns 0 on success; the existing ProcessRec
+ * error codes otherwise.
  *
  * Sets up JitState with the cold-call ctx, copies accumulators
  * into JitState.acc_i64, calls the JIT entry, and writes the
  * (possibly updated) accumulators back into agg_res_ptr. */
-Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
+Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
                        Dbtup *block_tup,
                        Dbtup::KeyReqStruct *req_struct,
                        JitEntry            entry_fn,
                        AggResItem         *agg_res_ptr,
-                       Uint32              n_agg_results);
+                       Uint32              n_agg_results,
+                       JoinAggInterpreter *join_agg = nullptr);
 
 #endif /* DBTUP_JIT_GLUE_HPP_ */
