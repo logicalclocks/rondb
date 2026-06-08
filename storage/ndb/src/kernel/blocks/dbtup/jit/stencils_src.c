@@ -764,6 +764,11 @@ STENCIL op_overflow_exit(JitState *s) {
   return;
 }
 
+STENCIL op_filter_reject_exit(JitState *s) {
+  s->row_filter_rejected = 1u;
+  return;
+}
+
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
@@ -802,4 +807,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_sum_bigint_checked,
     op_overflow_exit,
     op_jump,
+    op_filter_reject_exit,
 };

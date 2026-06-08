@@ -210,6 +210,7 @@ const char *bc_op_name(uint8_t kind) {
     case OP_SUM_BIGINT_CHECKED:    return "sum_bigint_checked";
     case OP_OVERFLOW_EXIT:         return "overflow_exit";
     case OP_JUMP:                  return "jump";
+    case OP_FILTER_REJECT_EXIT:    return "filter_reject_exit";
     default:                   return "?";
   }
 }

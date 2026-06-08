@@ -140,7 +140,10 @@ typedef enum {
   /* Unconditional forward jump. Used for embedded CASE accept paths whose
    * WRITE_INTERPRETER_OUTPUT skip_offset selects a later aggregate op. */
   OP_JUMP                  = 31,
-  OP_KIND_MAX           = OP_JUMP
+  /* Scan-filter reject terminator. Sets JitState::row_filter_rejected before
+   * returning so scan-filter callers can distinguish reject from accept. */
+  OP_FILTER_REJECT_EXIT    = 32,
+  OP_KIND_MAX           = OP_FILTER_REJECT_EXIT
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

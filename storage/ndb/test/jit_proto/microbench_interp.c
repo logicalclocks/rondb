@@ -187,6 +187,9 @@ void interp_run(const Program *prog,
         case OP_OVERFLOW_EXIT:
           goto row_done;
 
+        case OP_FILTER_REJECT_EXIT:
+          goto row_done;
+
         default:
           /* Unknown opcode — Phase 1 has no fallback; in production
            * this is the JIT's whole-program fallback trigger.

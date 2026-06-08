@@ -512,6 +512,38 @@ static void test_jump_skips_sum(void) {
   mark_pass("T10 jump_skips_sum");
 }
 
+static void test_filter_reject_exit_sets_state(void) {
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 1;
+  p.ops[0] = (Op){ .kind = OP_FILTER_REJECT_EXIT };
+
+  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  if (arena == NULL) {
+    mark_fail("T11 filter_reject_exit_sets_state", "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T11 filter_reject_exit_sets_state",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  jit1_entry(jp)(&s);
+  if (s.row_filter_rejected != 1 || s.row_overflowed != 0) {
+    mark_fail("T11 filter_reject_exit_sets_state",
+              "row_filter_rejected=%u row_overflowed=%u, want 1/0",
+              s.row_filter_rejected, s.row_overflowed);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  ndb_jit_arena_destroy(arena);
+  mark_pass("T11 filter_reject_exit_sets_state");
+}
+
 /* ------------------------------------------------------------------ */
 /* main.                                                              */
 /* ------------------------------------------------------------------ */
@@ -539,6 +571,7 @@ int main(void) {
   test_checked_add_no_overflow();
   test_checked_add_overflow();
   test_jump_skips_sum();
+  test_filter_reject_exit_sets_state();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

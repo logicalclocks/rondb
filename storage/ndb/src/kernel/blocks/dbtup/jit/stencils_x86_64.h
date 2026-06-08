@@ -376,6 +376,12 @@ static const Hole holes_op_jump[] = {
   { .byte_offset = 1, .kind = HK_BRANCH_TAKE, .width = 4 },
 };
 
+/* op_filter_reject_exit — 19 bytes, 0 holes */
+static const uint8_t bytes_op_filter_reject_exit[] = {
+  0x41, 0xc7, 0x84, 0x24, 0x94, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+  0x48, 0x83, 0xc4, 0x08, 0x41, 0x5c, 0xc3,
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -420,6 +426,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_SUM_BIGINT_CHECKED] = STENCIL_(op_sum_bigint_checked),
   [OP_OVERFLOW_EXIT] = STENCIL_NOHOLES(op_overflow_exit),
   [OP_JUMP] = STENCIL_(op_jump),
+  [OP_FILTER_REJECT_EXIT] = STENCIL_NOHOLES(op_filter_reject_exit),
 };
 
 #endif /* NDB_JIT_STENCILS_X86_64_H */

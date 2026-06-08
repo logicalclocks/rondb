@@ -89,6 +89,24 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                           Program       *out_prog,
                                           JitBridgeError *out_err);
 
+/* Phase 7 groundwork: translate a standalone SCAN_FRAGREQ scan-filter
+ * interpreter program into the internal Program/Op[] form.
+ *
+ * This reuses the embedded-interpreter subset already supported for
+ * aggregation filters: BRANCH_ATTR_*_NULL, READ_LINKED_TO_MEM,
+ * BRANCH_LINKED_*_NULL, EXIT_OK, and EXIT_REFUSE. On success the
+ * returned Program uses OP_FILTER_REJECT_EXIT for EXIT_REFUSE and has
+ * a trailing OP_EXIT for the fall-through accepted-row path.
+ *
+ * This is a translation/admission API only. DBTUP still needs runtime
+ * scan-filter invocation glue before it can replace interpreterNextLab()
+ * for SCAN_FRAGREQ filters. */
+JitBridgeReason ndb_jit_bridge_translate_scan_filter(
+    const uint32_t *filter_prog,
+    uint32_t       n_words,
+    Program       *out_prog,
+    JitBridgeError *out_err);
+
 #ifdef NDB_JIT_BRIDGE_TESTING
 JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
     const uint32_t *emb_prog,

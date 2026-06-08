@@ -237,6 +237,54 @@ static void assert_embedded_rejected(const char *name,
   mark_pass(name);
 }
 
+static int assert_scan_filter_accepted(const char *name,
+                                       const uint32_t *filter_prog,
+                                       uint32_t n_words,
+                                       Program *out_prog,
+                                       uint16_t expected_n_ops) {
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate_scan_filter(
+      filter_prog, n_words, out_prog, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail(name, "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return 0;
+  }
+  if (out_prog->n_ops != expected_n_ops) {
+    mark_fail(name, "n_ops=%u, want %u", (unsigned)out_prog->n_ops,
+              (unsigned)expected_n_ops);
+    return 0;
+  }
+  return 1;
+}
+
+static void assert_scan_filter_rejected(const char *name,
+                                        const uint32_t *filter_prog,
+                                        uint32_t n_words,
+                                        JitBridgeReason want_reason,
+                                        uint32_t want_word,
+                                        uint32_t want_op) {
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate_scan_filter(
+      filter_prog, n_words, &p, &err);
+  if (r != want_reason) {
+    mark_fail(name, "reason=%d, want %d", r, want_reason);
+    return;
+  }
+  if (want_word != UINT32_MAX && err.offending_word != want_word) {
+    mark_fail(name, "offending_word=%u, want %u",
+              err.offending_word, want_word);
+    return;
+  }
+  if (want_op != UINT32_MAX && err.offending_op != want_op) {
+    mark_fail(name, "offending_op=%u, want %u",
+              err.offending_op, want_op);
+    return;
+  }
+  mark_pass(name);
+}
+
 /* ------------------------------------------------------------------ */
 /* Test cases.                                                        */
 /* ------------------------------------------------------------------ */
@@ -1004,6 +1052,70 @@ static void test_sum_result_indexes_accept(void) {
   mark_pass("T34 sum_result_indexes_accept");
 }
 
+/* T35: Phase 7 scan-filter bridge accepts the same local attr-null
+ * shape as embedded aggregation filters and appends a fall-through
+ * OP_EXIT for accepted rows. EXIT_REFUSE lowers to OP_FILTER_REJECT_EXIT
+ * so runtime callers can distinguish rejected rows from accepted rows. */
+static void test_scan_filter_attr_ne_null_accept(void) {
+  uint32_t filter_prog[3] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_NE_NULL, /*offset=*/2),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  Program p;
+  const char *name = "T35 scan_filter_attr_ne_null_accept";
+  if (!assert_scan_filter_accepted(name, filter_prog, 3, &p,
+                                   /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_ATTR_NE_NULL)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 1)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_FILTER_REJECT_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T36: linked-null scan-filter shape lowers through the public Phase 7
+ * scan-filter bridge. */
+static void test_scan_filter_linked_ne_null_accept(void) {
+  uint32_t filter_prog[3] = {
+    enc_emb_read_linked_to_mem(/*position=*/7),
+    enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  Program p;
+  const char *name = "T36 scan_filter_linked_ne_null_accept";
+  if (!assert_scan_filter_accepted(name, filter_prog, 3, &p,
+                                   /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_TO_MEM)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 7)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_BRANCH_LINKED_NE_NULL)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 2)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_FILTER_REJECT_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T37: WRITE_INTERPRETER_OUTPUT skip-offset is aggregation-embedded
+ * row-disposition machinery. Standalone scan filters have no outer
+ * aggregation word stream, so the Phase 7 bridge rejects it for now. */
+static void test_scan_filter_write_output_reject(void) {
+  uint32_t filter_prog[3] = {
+    enc_emb_load_const16(/*reg=*/2, /*val=*/2),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_scan_filter_rejected("T37 scan_filter_write_output_reject",
+                              filter_prog, 3,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              0, EMB_WRITE_INTERP_OUTPUT);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1046,6 +1158,9 @@ int main(void) {
   test_embedded_direct_attr_linked_last_reject();
   test_embedded_direct_attr_pseudo_reject();
   test_sum_result_indexes_accept();
+  test_scan_filter_attr_ne_null_accept();
+  test_scan_filter_linked_ne_null_accept();
+  test_scan_filter_write_output_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

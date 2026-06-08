@@ -263,6 +263,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_SUM_BIGINT_CHECKED:   return "sum_bigint_checked";
     case OP_OVERFLOW_EXIT:        return "overflow_exit";
     case OP_JUMP:                 return "jump";
+    case OP_FILTER_REJECT_EXIT:   return "filter_reject_exit";
     default:                      return "jit_op?";
   }
 }
@@ -360,9 +361,9 @@ static inline int emit_op(Program *out, uint8_t kind,
 }
 
 static inline int embedded_filters_enabled(void) {
-  /* EXIT_REFUSE lowers to OP_EXIT, which returns before accumulator
-   * opcodes can set JitState::value_updated[]. DbtupJitGlue writeback
-   * preserves NULL metadata for aggregate results not updated by a row. */
+  /* Aggregation embedded filters lower EXIT_REFUSE to OP_EXIT, which
+   * returns before accumulator opcodes can set JitState::value_updated[].
+   * Standalone scan-filter translation uses OP_FILTER_REJECT_EXIT instead. */
   return 1;
 }
 
@@ -379,7 +380,7 @@ static inline int embedded_filters_enabled(void) {
 /*   LOAD_CONST16         → stage row-disposition skip_offset          */
 /*   WRITE_INTERP_OUTPUT  → no Op for skip_offset 0, OP_JUMP otherwise*/
 /*   EXIT_OK / EXIT_OK_LAST → no Op (fall through to outer program)   */
-/*   EXIT_REFUSE          → OP_EXIT (early-terminate the JIT'd row)   */
+/*   EXIT_REFUSE          → caller-selected reject terminator          */
 /*                                                                    */
 /* Every other embedded opcode rejects the WHOLE program. The         */
 /* admission contract: if Phase 5.0 can't handle every opcode in the  */
@@ -411,6 +412,7 @@ static JitBridgeReason translate_embedded_block(
     Program *out_prog, JitBridgeError *out_err,
     uint32_t outer_word_pos, /* for error reporting */
     uint32_t outer_after_emb_pos,
+    uint8_t exit_refuse_kind,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps) {
 
@@ -686,7 +688,7 @@ static JitBridgeReason translate_embedded_block(
          * terminate the JIT'd function (skip accumulators).
          * OP_EXIT's stencil is the function-return sequence,
          * so executing it stops row processing immediately. */
-        if (!emit_op(out_prog, OP_EXIT, 0, 0, 0, 0)) {
+        if (!emit_op(out_prog, exit_refuse_kind, 0, 0, 0, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -763,8 +765,53 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
   uint16_t n_pending_case_jumps = 0;
   return translate_embedded_block(emb_prog, emb_len, out_prog, out_err,
                                   outer_word_pos, outer_word_pos + 1 + emb_len,
+                                  OP_EXIT,
                                   pending_case_jumps,
                                   &n_pending_case_jumps);
+}
+
+JitBridgeReason ndb_jit_bridge_translate_scan_filter(
+    const uint32_t *filter_prog,
+    uint32_t       n_words,
+    Program       *out_prog,
+    JitBridgeError *out_err) {
+  memset(out_prog, 0, sizeof(*out_prog));
+  if (out_err != NULL) {
+    out_err->reason = JIT_BRIDGE_OK;
+    out_err->offending_word = 0;
+    out_err->offending_op = 0;
+  }
+
+  PendingCaseJump pending_case_jumps[BC_MAX_OPS];
+  uint16_t n_pending_case_jumps = 0;
+  JitBridgeReason rc =
+      translate_embedded_block(filter_prog, n_words, out_prog, out_err,
+                               /*outer_word_pos=*/0,
+                               /*outer_after_emb_word_pos=*/n_words,
+                               OP_FILTER_REJECT_EXIT,
+                               pending_case_jumps,
+                               &n_pending_case_jumps);
+  if (rc != JIT_BRIDGE_OK) {
+    return rc;
+  }
+
+  /* WRITE_INTERPRETER_OUTPUT skip-offset handling is meaningful only
+   * when an embedded filter is embedded inside an outer aggregation
+   * program. A standalone scan filter has no outer aggregate word stream
+   * to skip through, so reject those programs until Phase 7 grows a
+   * dedicated standalone CASE disposition model. */
+  if (n_pending_case_jumps != 0) {
+    set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, 0,
+            BR_EMB_WRITE_INTERP_OUTPUT);
+    return JIT_BRIDGE_UNSUPPORTED_OP;
+  }
+
+  if (out_prog->n_ops >= BC_MAX_OPS) {
+    set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, n_words, 0);
+    return JIT_BRIDGE_PROG_TOO_LARGE;
+  }
+  emit_op(out_prog, OP_EXIT, 0, 0, 0, 0);
+  return JIT_BRIDGE_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -963,7 +1010,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         JitBridgeReason rc = translate_embedded_block(
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
-            pos + 1 + emb_len, pending_case_jumps,
+            pos + 1 + emb_len, OP_EXIT, pending_case_jumps,
             &n_pending_case_jumps);
         if (rc != JIT_BRIDGE_OK) return rc;
         pos += 1 + emb_len;
