@@ -85,20 +85,45 @@ and `Dblqh::continueJoinAgg*`.
   `body_filter.inc` filter-12/13 + standalone `ronsql_cte_dd_d4_colvscol.test`.
   **Later phase:** actually *support* col-vs-col in a CTE-body filter — see
   "Deferred feature work" below.
-- **H4 — D19: `real JOIN cte` with a main-query WHERE on a parent column
-  hangs.** Repro: `body_joins.inc` J18 marker. Suspect: pushing the parent-column
-  predicate changes the CTE_LOOKUP feed so a batch boundary/CONF is missed.
-- **H5 — D20: multi-key complete-key CTE lookup hangs** (both predicate
-  orders). Repro: `body_joins.inc` J14/J15 markers. Suspect: building the
-  2-column virtual-PK lookup key from the join predicates — wrong key length or
-  an unmatched lookup that never completes. (The single-key lookup path is
-  green; this is the >1-PK-column generalisation.)
-- **H6 — D5: 3-table chain `real JOIN cte JOIN real` hangs** (a real-table child
-  alongside a CTE_LOOKUP child under one parent). Repro: `body_joins.inc`
-  J16/J17 markers. Likely depends on H1/H4; retest after those.
+- **H4 — D19: `real JOIN cte` with a main-query WHERE on a parent column — ✅
+  NOT-REPRODUCIBLE (2026-06-08).** Does not reproduce on the current build: the
+  query executes correctly and matches MySQL. EXPLAIN (base vs indexed-parent-
+  WHERE vs non-indexed-parent-WHERE) showed the parent WHERE leaves the plan
+  structurally identical — ROOT TABLE_SCAN customer + INNER CTE_LOOKUP cust
+  (agg leaf), just with a root-scan filter added — and all variants run green.
+  The recorded hang was a **stale rdrs2/ndbmtd captured during parallel suite
+  authoring** (the only RonSQL changes since suite creation are the D3 + D4
+  fixes, neither of which touches D19's aggregating path; the CTE join-agg
+  routing/teardown hardening in `934ef2`/`985059` was already in HEAD).
+  Re-enabled green: `body_joins.inc` J18 + standalone `ronsql_cte_dd_d19_hang`.
+  **Action item: re-verify the remaining disabled hangs (H5/D20, H6/D5) against
+  freshly-built binaries before diagnosing — they may also be stale-binary
+  artifacts.**
+- **H5 — D20: multi-key complete-key CTE lookup — ✅ NOT-REPRODUCIBLE
+  (2026-06-08).** Executes correctly on the current build in both predicate
+  orders (verified J15 reversed; J14 in-order re-enabled). Another stale-binary
+  artifact like D19. Re-enabled green: `body_joins.inc` J14 + J15.
+- **H6 — D5: 3-table chain `real JOIN cte JOIN real` — ✅ REJECTED (was a CRASH,
+  not a hang; 2026-06-08).** Re-verification crashed the RDRS server
+  (`NdbQueryBuilder.cpp:3020` `appendLinkedOperand` assert / null deref), not a
+  hang. The pushed aggregation needs columns from BOTH children of `customer`
+  (SUM over CTE child `cust` + GROUP BY real child `nation`) — a fan-out whose
+  aggregation references a NON-ANCESTOR sibling. The NDB API serializes linked
+  operands by walking the agg leaf's ancestor chain, and a sibling source walks
+  off the root → abort. Only CTE_LOOKUP siblings are linearized into the
+  ancestor chain (`QueryPlanner.cpp` `tree_parent_op_idx` loop); a real-table
+  sibling never is. RonSQL now rejects cleanly at prepare via the
+  `linked_source_is_leaf_ancestor` guard in `emit_child_ops` (mirrors the NDB
+  API walk). Re-enabled as rejection-asserts: `body_joins.inc` J16/J17. The
+  guard cannot regress any working query: in a debug build a non-ancestor
+  linked projection already asserts, so no green test relied on it. **Later
+  phase:** support fan-out aggregation across a real-table/CTE sibling (extend
+  `tree_parent_op_idx` linearization to real-table siblings, with kernel SPJ
+  support for the topology) — see "Deferred feature work".
 
 Exit criteria: re-enable agg-02/03, filter-12/13, mainmode projection cases,
-joins J14–J18 → all green on the base suite + topologies.
+joins J14/J15/J18 green + J16/J17 rejection-asserts → all green on the base
+suite + topologies.
 
 ---
 
@@ -201,6 +226,22 @@ Lower priority; some may be intentional scope limits — confirm before building
     3. Remove the `check_no_cte_body_col_vs_col` reject and convert filter-12/13 +
        `ronsql_cte_dd_d4_colvscol` from rejection-asserts back to value-compare
        cases (`ronsql_compare.inc`), re-record across all five topologies.
+
+- **F-fanout — support fan-out aggregation across a real-table/CTE sibling
+  (D5).** Currently rejected permanently (H6 fix, `linked_source_is_leaf_ancestor`
+  guard).  Today only CTE_LOOKUP siblings are linearized into the agg leaf's
+  ancestor chain (`QueryPlanner.cpp` `tree_parent_op_idx` loop, ~:293); a
+  real-table sibling under the same parent (e.g. `customer JOIN cust(CTE) JOIN
+  nation`) stays a sibling, so an aggregation reading from both children walks
+  off the root in `NdbQueryBuilder` `appendLinkedOperand` and aborts.  To
+  support it: extend the `tree_parent_op_idx` linearization to also re-parent a
+  real-table sibling under the deepest CTE_LOOKUP (or vice versa) so every
+  agg-referenced op is on one ancestor chain, and confirm the kernel SPJ
+  protocol accepts the resulting topology (key source on the original join
+  parent, tree parent on the sibling — the same split already used for chained
+  CTE_LOOKUPs).  Then convert `body_joins.inc` J16/J17 from rejection-asserts
+  back to value-compare cases and re-record.  (Relates to the RONDB-1044
+  star-schema fan-out work.)
 
 ---
 

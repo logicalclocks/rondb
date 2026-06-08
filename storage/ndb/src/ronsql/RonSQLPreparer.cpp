@@ -7989,6 +7989,29 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
               "CTE_LOOKUP filter: finalise failed.");
 }
 
+// True iff `target_op_idx` is the aggregation leaf itself or one of its
+// tree-ancestors (walking tree_parent_op_idx up to the root).  A linked
+// projection / interpreted param attached to the agg leaf can only reference
+// an ancestor operation: the NDB API serializes it by walking up the parent
+// chain (NdbQueryBuilder.cpp appendLinkedOperand), and a non-ancestor (sibling)
+// source walks off the root and aborts the server (assert in debug, null deref
+// in release).  Used to reject fan-out aggregation across a non-ancestor
+// sibling branch cleanly instead of crashing.
+static bool
+linked_source_is_leaf_ancestor(const JoinPlan& plan, Uint32 leaf_idx,
+                               Uint32 target_op_idx)
+{
+  Uint32 cur = leaf_idx;
+  for (Uint32 guard = 0; guard <= plan.num_ops; guard++) {
+    if (cur == target_op_idx) return true;
+    if (plan.ops[cur].is_root) return false;       // reached root, not found
+    Uint32 next = plan.ops[cur].tree_parent_op_idx;
+    if (next == cur) return false;                 // self-loop safety
+    cur = next;
+  }
+  return false;                                    // malformed chain — reject
+}
+
 // Emit every non-root op in scope.join_plan: linked keys from the parent,
 // optional WHERE filter, optional aggregator attachment (multi-leaf if
 // leafAggs[i] is non-null, else single-leaf at plan.agg_leaf_idx), and
@@ -8080,6 +8103,13 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       require_run(opts.setAggregation(*leafAggs[i]) == 0,
                   "Failed to set aggregation on leaf.");
       for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        require_prm(
+            linked_source_is_leaf_ancestor(plan, i,
+                                           plan.linked_projs[j].source_op_idx),
+            "Aggregation references a column from a join branch that is not an "
+            "ancestor of the aggregation leaf. Fan-out aggregation across a "
+            "non-ancestor sibling (e.g. a real-table child alongside a CTE "
+            "lookup under the same parent) is not yet supported.");
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
             plan.linked_projs[j].column_name);
@@ -8092,6 +8122,13 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       require_run(opts.setAggregation(*singleAgg) == 0,
                   "Failed to set aggregation.");
       for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        require_prm(
+            linked_source_is_leaf_ancestor(plan, i,
+                                           plan.linked_projs[j].source_op_idx),
+            "Aggregation references a column from a join branch that is not an "
+            "ancestor of the aggregation leaf. Fan-out aggregation across a "
+            "non-ancestor sibling (e.g. a real-table child alongside a CTE "
+            "lookup under the same parent) is not yet supported.");
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
             plan.linked_projs[j].column_name);

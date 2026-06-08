@@ -294,56 +294,73 @@ WHERE cust.k > 100
 GROUP BY cust.k|
 
 
-# NEXT-PHASE (DISABLED — HANG, D20): J14 multi-key CTE complete-key lookup
-# (predicates in virt-PK order) ALSO hangs — multi-key complete-key CTE lookup
-# hangs regardless of predicate order (D20 below was J15, reversed order).
-
-# NEXT-PHASE (DISABLED — HANG, D20): multi-key CTE complete-key lookup with the
-# join predicates in REVERSED order (x.k2=... AND x.k1=...) HANGS. J14 (same
-# 2-col-PK CTE, predicates in virt-PK order) is kept enabled. Suggests the
-# CTE_LOOKUP key build requires predicates in virtual-PK column order.
-#   WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, COUNT(*) AS n
-#              FROM orders GROUP BY o_custkey, o_orderstatus)
-#   SELECT o2.o_custkey, SUM(x.n) FROM orders AS o2
-#   JOIN x ON x.k2 = o2.o_orderstatus AND x.k1 = o2.o_custkey GROUP BY o2.o_custkey;
-# See findings/_discovery_log.md (D20).
-
-# NEXT-PHASE (DISABLED — HANG, D5): J16 3-table INNER chain (real customer JOIN
-# cte cust JOIN real nation), group by n_regionkey, SUM over INT.  Now that the
-# SUM-over-DECIMAL prepare error is globally fixed (SUM(o_shippriority), an INT),
-# this chain actually EXECUTES and hangs RonSQL/RDRS — the SAME 3-table
-# real-cte-real chain shape as J17 (D5).  A real-table child (nation) alongside a
-# CTE_LOOKUP child (cust) under one parent (customer) appears unsupported / buggy.
-# Repro:
-#   WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#                 FROM orders GROUP BY o_custkey)
-#   SELECT n.n_regionkey, SUM(cust.t) FROM customer AS c
-#   JOIN cust ON cust.k = c.c_custkey
-#   JOIN nation AS n ON n.n_nationkey = c.c_nationkey GROUP BY n.n_regionkey;
-# See findings/_discovery_log.md (D5).
+--echo
+--echo === J14: multi-key (2-col virt PK) complete-key CTE lookup, predicates in virt-PK order (D20 — now green) ===
+# D20 was recorded as a hang against a stale rdrs2/ndbmtd during parallel suite
+# authoring; multi-key complete-key CTE lookup executes correctly on the current
+# build, in either predicate order (J14 virt-PK order, J15 reversed).
+let $QUERY=
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, COUNT(*) AS n
+           FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT o2.o_custkey, SUM(x.n) FROM orders AS o2
+JOIN x ON x.k1 = o2.o_custkey AND x.k2 = o2.o_orderstatus GROUP BY o2.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, COUNT(*) AS n
+           FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT o2.o_custkey, SUM(x.n) FROM orders AS o2
+JOIN x ON x.k1 = o2.o_custkey AND x.k2 = o2.o_orderstatus GROUP BY o2.o_custkey|
 
 --echo
-# NEXT-PHASE (DISABLED — HANG, D5): J17 3-table INNER chain (real customer JOIN
-# cte cust JOIN real nation) that actually executes (SUM over INT, not DECIMAL)
-# hangs RonSQL/RDRS.  Same chain shape as J16.  A real-table child alongside a
-# CTE_LOOKUP child under one parent appears unsupported / buggy.
-# Repro:
-#   WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
-#                 FROM orders GROUP BY o_custkey)
-#   SELECT n.n_name, SUM(cust.n), SUM(cust.prio) FROM customer AS c
-#   JOIN cust ON cust.k = c.c_custkey JOIN nation AS n ON n.n_nationkey = c.c_nationkey GROUP BY n.n_name;
-# See findings/_discovery_log.md (D5).
+--echo === J15: same multi-key CTE lookup, predicates in REVERSED order (D20 — now green) ===
+let $QUERY=
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, COUNT(*) AS n
+           FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT o2.o_custkey, SUM(x.n) FROM orders AS o2
+JOIN x ON x.k2 = o2.o_orderstatus AND x.k1 = o2.o_custkey GROUP BY o2.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, COUNT(*) AS n
+           FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT o2.o_custkey, SUM(x.n) FROM orders AS o2
+JOIN x ON x.k2 = o2.o_orderstatus AND x.k1 = o2.o_custkey GROUP BY o2.o_custkey|
+
+# D5 (J16/J17): 3-table INNER chain real customer JOIN cte cust JOIN real nation.
+# The pushed aggregation needs columns from BOTH children of customer — SUM over
+# the CTE child (cust) and GROUP BY a real-table child (nation) — i.e. a fan-out
+# whose agg references a NON-ANCESTOR sibling.  This used to CRASH the RDRS server
+# (NdbQueryBuilder.cpp appendLinkedOperand assert / null deref, finding D5 — was
+# mis-recorded as a hang).  RonSQL now rejects it cleanly at prepare time
+# (linked_source_is_leaf_ancestor guard in emit_child_ops).  Kept ENABLED as
+# rejection-asserts in the REJECTION-ASSERTS section below.  Supporting fan-out
+# aggregation across a real-table/CTE sibling is tracked for a later phase.
 
 --echo
-# NEXT-PHASE (DISABLED — HANG, D19): real_table JOIN cte with a main-query WHERE
-# on a parent column (c.c_nationkey = 5) hangs RonSQL/RDRS. (was J18)
-#   WITH cust AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#     FROM orders GROUP BY o_custkey)
-#   SELECT cust.k, SUM(cust.t)
-#   FROM customer AS c JOIN cust ON cust.k = c.c_custkey
-#   WHERE c.c_nationkey = 5 GROUP BY cust.k;
-# See findings/_discovery_log.md (D19).
+--echo === J18: real JOIN cte(agg-leaf), main-query WHERE on a parent column (D19 — now green) ===
+# D19 was recorded as a hang against a stale rdrs2/ndbmtd during parallel suite
+# authoring; it does not reproduce on the current build (the CTE join-agg
+# routing/teardown hardening was already in HEAD).  A parent-column WHERE on the
+# root TABLE_SCAN of a real-JOIN-cte(agg-leaf) query executes correctly.
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_nationkey = 5
+GROUP BY cust.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_nationkey = 5
+GROUP BY cust.k|
 
 # ============================================================================
 # REJECTION-ASSERTS (clean permanent reject — kept ENABLED via ronsql_cli)
@@ -352,6 +369,16 @@ GROUP BY cust.k|
 # forces $suppress_ronsql_cli for the green cases does not apply here.
 
 DELIMITER ;|
+
+--echo
+--echo == J16 (D5): customer JOIN cte cust JOIN real nation, GROUP BY n_regionkey — fan-out agg across non-ancestor sibling, permanent rejection ==
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey) SELECT n.n_regionkey, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey JOIN nation AS n ON n.n_nationkey = c.c_nationkey GROUP BY n.n_regionkey;' 2>&1
+
+--echo
+--echo == J17 (D5): same 3-table chain, GROUP BY n_name, two SUMs — permanent rejection ==
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio FROM orders GROUP BY o_custkey) SELECT n.n_name, SUM(cust.n), SUM(cust.prio) FROM customer AS c JOIN cust ON cust.k = c.c_custkey JOIN nation AS n ON n.n_nationkey = c.c_nationkey GROUP BY n.n_name;' 2>&1
 
 # NEXT-PHASE (REMOVED — rejection-assert did not reject, D21): the J19 partial-key
 # lookup to a non-root parent (binds only k1 of virt PK (k1,k2)) EXECUTED and
