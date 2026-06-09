@@ -114,6 +114,10 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       Uint32 is_active = 1;
       iter.get(CFG_NODE_ACTIVE, &is_active);
       tr.set_active_node(i, is_active, !transporter_to_self);
+
+      Uint32 node_type = 255;
+      iter.get(CFG_TYPE_OF_SECTION, &node_type);
+      tr.set_node_type(i, node_type);
     }
     else
     {
