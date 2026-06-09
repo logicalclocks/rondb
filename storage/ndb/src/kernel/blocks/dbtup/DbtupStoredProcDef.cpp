@@ -181,6 +181,11 @@ void Dbtup::scanProcedure(Signal* signal,
   storedPtr.p->cachedLinearAttrInfo = nullptr;
   storedPtr.p->cachedLinearLen = 0;
   storedPtr.p->copyAttrinfoCalled = false;
+  /* RONDB-1056 Phase 7: a pooled record must not run a previous
+   * program's compiled scan filter — reset the JIT cache here, where
+   * a new scan procedure is (re)initialised. */
+  storedPtr.p->m_jit_filter_state = JIT_FILTER_UNTRIED;
+  storedPtr.p->m_jit_filter_entry = nullptr;
 
   set_trans_state(regOperPtr, TRANS_IDLE);
 

@@ -24,6 +24,10 @@
 
 #include <cstring>
 
+extern "C" {
+#include "jit/ndb_jit_bridge.h"   /* ndb_jit_bridge_translate_scan_filter */
+}
+
 #ifndef ZAGG_MATH_OVERFLOW
 #define ZAGG_MATH_OVERFLOW 1860
 #endif
@@ -68,11 +72,13 @@ extern "C" void
 ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   dbtup_jit_call_ctx *ctx =
       static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  /* Phase 4 admission guarantees ctx is set. If it isn't, the
-   * dispatch path is broken — fail fast. ndbrequire requires a
-   * JAM context only available inside blocks, so we use direct
-   * null-checks + abort here. */
-  if (ctx == nullptr || ctx->agg == nullptr ||
+  /* Admission guarantees ctx is set. If it isn't, the dispatch path
+   * is broken — fail fast. ndbrequire requires a JAM context only
+   * available inside blocks, so we use direct null-checks + abort
+   * here. ctx->agg is NOT required: the scan-filter path
+   * (dbtup_jit_invoke_scan_filter) leaves it null and reaches the row
+   * through block_tup + req_struct, same as the aggregation path. */
+  if (ctx == nullptr ||
       ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_load_col: JitState.ctx is malformed (col_id=%u)",
@@ -83,16 +89,15 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   /* Read buffer: 1 word AttributeHeader + up to 2 words (8 bytes)
    * for a BIGINT. 4 words gives breathing room for alignment.
    *
-   * readAttributes is private on Dbtup (friended only to
-   * AggInterpreter / JoinAggInterpreter). The glue calls into
-   * ctx->agg->readAttributeForJit which forwards through the
-   * friend access. */
+   * readSingleAttribute is private on Dbtup; the glue reaches it via
+   * the public Dbtup::readSingleAttributeForJit forwarder (the same
+   * call AggInterpreterBase::readAttributeForJit makes), so this
+   * helper no longer depends on an AggInterpreter instance. */
   Uint32 read_buf[4];
 
-  int ret = ctx->agg->readAttributeForJit(ctx->block_tup,
-                                            ctx->req_struct,
-                                            col_id, read_buf,
-                                            sizeof(read_buf) / sizeof(Uint32));
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
   if (ret < 0) {
     /* Column read failed — Phase 4 panics. Phase 5 wires this into
      * the JoinAggInterpreter error path so the row can be skipped
@@ -153,7 +158,9 @@ ndb_jit_h_branch_attr_null(JitState *s,
                             uint32_t want_null) {
   dbtup_jit_call_ctx *ctx =
       static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  if (ctx == nullptr || ctx->agg == nullptr ||
+  /* ctx->agg is NOT required — see ndb_jit_h_load_col. The scan-filter
+   * path leaves agg null and reads through block_tup + req_struct. */
+  if (ctx == nullptr ||
       ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_branch_attr_null: JitState.ctx is malformed "
@@ -166,11 +173,9 @@ ndb_jit_h_branch_attr_null(JitState *s,
    * room for the readAttributes path's worst-case header
    * size. */
   Uint32 read_buf[4];
-  int ret = ctx->agg->readAttributeForJit(ctx->block_tup,
-                                            ctx->req_struct,
-                                            attr_id, read_buf,
-                                            sizeof(read_buf) /
-                                                sizeof(Uint32));
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, attr_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
   if (ret < 0) {
     /* Column read failed — same Phase 4 policy: panic. Phase 5+
      * wires this into JoinAggInterpreter's error path so a row
@@ -366,4 +371,71 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   }
 
   return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 7 — scan-filter compile + per-row invoke.                    */
+/* ------------------------------------------------------------------ */
+
+void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
+                                    const Uint32 *filter_prog,
+                                    Uint32        n_words) {
+  if (arena == nullptr || filter_prog == nullptr || n_words == 0) {
+    return nullptr;
+  }
+
+  /* Stage 1: NDB scan-filter wire format -> normalized Program. The
+   * scan-filter bridge admits only the embedded NULL-branch subset
+   * (BRANCH_ATTR_*_NULL / READ_LINKED_TO_MEM / BRANCH_LINKED_*_NULL /
+   * EXIT_OK / EXIT_REFUSE); anything else returns != JIT_BRIDGE_OK and
+   * we leave the scan on the interpreter. */
+  Program p;
+  JitBridgeError berr;
+  JitBridgeReason brc =
+      ndb_jit_bridge_translate_scan_filter(filter_prog, n_words, &p, &berr);
+  if (brc != JIT_BRIDGE_OK) {
+    return nullptr;
+  }
+
+  /* Stage 2: NDB-agnostic compile into the per-DBTUP arena. */
+  Jit1Prog *jp = jit1_compile(arena, &p, /*timing=*/nullptr);
+  if (jp == nullptr) {
+    return nullptr;
+  }
+  return reinterpret_cast<void *>(jit1_entry(jp));
+}
+
+bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
+                                  Dbtup::KeyReqStruct *req_struct,
+                                  JitEntry             entry_fn) {
+  /* Per-row context: no aggregation instance. The cold-call helpers
+   * (ndb_jit_h_load_col / ndb_jit_h_branch_attr_null) reach the row
+   * through block_tup->readSingleAttributeForJit, so agg / join_agg
+   * stay null. */
+  dbtup_jit_call_ctx ctx;
+  ctx.agg        = nullptr;
+  ctx.join_agg   = nullptr;
+  ctx.block_tup  = block_tup;
+  ctx.req_struct = req_struct;
+#ifdef ERROR_INSERT
+  ctx.trace_enabled = false;   /* 4063 row trace is aggregation-only for now */
+  ctx.trace_row_no  = 0;
+  ctx.trace_limit   = 0;
+#endif
+
+  JitState s;
+  std::memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+
+  entry_fn(&s);
+
+  /* A scan filter keeps the row unless OP_FILTER_REJECT_EXIT set the
+   * reject flag. The admitted NULL-branch subset performs no
+   * arithmetic, so row_overflowed cannot legitimately be set here;
+   * treat any unexpected overflow defensively as "reject" so a
+   * miscompiled program can never leak a row past the filter. */
+  if (s.row_overflowed != 0) {
+    return false;
+  }
+  return s.row_filter_rejected == 0;
 }

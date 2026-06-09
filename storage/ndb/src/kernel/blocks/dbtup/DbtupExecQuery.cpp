@@ -50,6 +50,7 @@
 #include "JoinAggInterpreter.hpp"
 #include "PushdownInterpreter.hpp"
 #include "VecSearchInterpreter.hpp"
+#include "DbtupJitGlue.hpp"   /* Phase 7: scan-filter compile/invoke glue */
 #include "dblqh/JoinAggregationState.hpp"
 #include "my_time.h"
 #include "my_systime.h"
@@ -1067,6 +1068,49 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         ndbrequire(result.agg != nullptr || result.vs != nullptr);
         scan_rec_ptr->m_agg_interpreter = result.agg;
         scan_rec_ptr->m_vs_interpreter = result.vs;
+      } else if (!scan_rec_ptr->m_has_pushdown) {
+        /* RONDB-1056 Phase 7: JIT-compile a plain scan WHERE filter (the
+         * RexecRegionLen exec region of the interpreted scan program).
+         * Compiled once per stored procedure (cached on it), then the
+         * per-scan fast pointer is copied onto the scan record for the
+         * per-row dispatch in interpreterStartLab. Pushdown
+         * aggregation/vector scans keep their own JIT path above. */
+        if (storedPtr.p->m_jit_filter_state == JIT_FILTER_UNTRIED) {
+          jam();
+          /* Decide once; default to INELIGIBLE and only upgrade on a
+           * successful compile, so we never re-attempt per batch. */
+          storedPtr.p->m_jit_filter_state = JIT_FILTER_INELIGIBLE;
+          const Uint32 *cache = storedPtr.p->cachedLinearAttrInfo;
+          if (cache != nullptr && getJitArena() != nullptr) {
+            const Uint32 rinit = cache[0];   // RinitReadLen
+            const Uint32 rexec = cache[1];   // RexecRegionLen (the filter)
+            const Uint32 rfupd = cache[2];   // RfinalUpdateLen
+            const Uint32 rsub  = cache[4];   // RsubLen (subroutines/params)
+            /* v1 eligibility: a read filter with no final-update region
+             * (i.e. not an interpreted UPDATE) and no subroutine/param
+             * region (the bridge can't lower CALL/RETURN/params). A
+             * final-read region (RfinalRLen, projection) is fine — it
+             * runs after the filter via the normal readAttributes path,
+             * with RinstructionCounter advanced past the exec region. The
+             * exec region always begins at word (5 + RinitReadLen); the
+             * input-param offset cancels out (see interpreterStartLab's
+             * RinstructionCounter arithmetic). */
+            if (rexec > 0 && rfupd == 0 && rsub == 0 &&
+                (Uint64(5) + rinit + rexec) <= storedPtr.p->cachedLinearLen) {
+              void *entry = dbtup_jit_compile_scan_filter(
+                  getJitArena(), &cache[5 + rinit], rexec);
+              if (entry != nullptr) {
+                jam();
+                storedPtr.p->m_jit_filter_entry = entry;
+                storedPtr.p->m_jit_filter_state = JIT_FILTER_COMPILED;
+              }
+            }
+          }
+        }
+        if (storedPtr.p->m_jit_filter_state == JIT_FILTER_COMPILED) {
+          jam();
+          scan_rec_ptr->m_jit_filter_entry = storedPtr.p->m_jit_filter_entry;
+        }
       }
     }
   } else {
@@ -5700,26 +5744,70 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       // a register-based virtual machine which can read and write attributes
       // to and from registers.
       /* ---------------------------------------------------------------- */
-      Uint32 RsubPC= RinstructionCounter + RexecRegionLen
-        + RfinalUpdateLen + RfinalRLen;
-      TnoDataRW= interpreterNextLab(signal,
-          req_struct,
-          &cinBuffer[RinstructionCounter],
-          RexecRegionLen,
-          &cinBuffer[RsubPC],
-          RsubLen,
-          &coutBuffer[0],
-          sizeof(coutBuffer) / 4);
-      if (TnoDataRW != -1)
-      {
+      /* RONDB-1056 Phase 7: if this scan's WHERE filter was JIT-compiled
+       * at scan setup, run the native filter instead of the interpreter.
+       * A compiled entry is published on the scan record only for a pure
+       * read filter (no final update/read, no subroutine) that the bridge
+       * admitted, so the RexecRegionLen region is the whole program. */
+      void *jit_filter = nullptr;
+      if (req_struct->scan_rec != nullptr) {
+        jit_filter = reinterpret_cast<Dblqh::ScanRecord *>(
+                         req_struct->scan_rec)->m_jit_filter_entry;
+      }
+#ifdef ERROR_INSERT
+      /* ERROR_INSERT 4060: make interpreter fallback fatal for the
+       * scan-filter canary. The canary only runs JIT-eligible filters
+       * under 4060, so reaching the interpreter for a scan here means the
+       * filter failed to compile or wire up — abort, matching the
+       * aggregation 4060 contract. */
+      if (jit_filter == nullptr &&
+          req_struct->scan_rec != nullptr &&
+          jit_error_inserted(4060)) {
+        g_eventLogger->error(
+            "ERROR_INSERT 4060: scan filter (RexecRegionLen=%u) reached the "
+            "interpreter instead of the JIT path. Aborting per test directive "
+            "- the filter was expected to compile.",
+            RexecRegionLen);
+        abort();
+      }
+#endif
+      if (jit_filter != nullptr) {
         jamDebug();
-        RinstructionCounter += RexecRegionLen;
+        bool accepted = dbtup_jit_invoke_scan_filter(
+            this, req_struct, reinterpret_cast<JitEntry>(jit_filter));
+        if (accepted) {
+          jamDebug();
+          RinstructionCounter += RexecRegionLen;
+        } else {
+          jamDebug();
+          /* Row rejected by the JIT filter — same disposition as the
+           * interpreter's EXIT_REFUSE for a scan: TUPKEY_abort with the
+           * search-condition-false code, which the LQH scan layer
+           * (scanTupkeyRefLab) treats as "row filtered, keep scanning". */
+          return TUPKEY_abort(req_struct, ZUSER_SEARCH_CONDITION_FALSE_CODE);
+        }
       } else {
-        jamDebug();
-        /**
-         * TUPKEY REF is sent from within interpreter
-         */
-        return -1;
+        Uint32 RsubPC= RinstructionCounter + RexecRegionLen
+          + RfinalUpdateLen + RfinalRLen;
+        TnoDataRW= interpreterNextLab(signal,
+            req_struct,
+            &cinBuffer[RinstructionCounter],
+            RexecRegionLen,
+            &cinBuffer[RsubPC],
+            RsubLen,
+            &coutBuffer[0],
+            sizeof(coutBuffer) / 4);
+        if (TnoDataRW != -1)
+        {
+          jamDebug();
+          RinstructionCounter += RexecRegionLen;
+        } else {
+          jamDebug();
+          /**
+           * TUPKEY REF is sent from within interpreter
+           */
+          return -1;
+        }
       }
     }
 

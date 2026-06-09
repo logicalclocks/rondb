@@ -143,4 +143,29 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
                        Uint32              n_agg_results,
                        JoinAggInterpreter *join_agg = nullptr);
 
+/* RONDB-1056 Phase 7 — SCAN_FRAGREQ scan-filter compile + invoke.
+ *
+ * dbtup_jit_compile_scan_filter translates a scan-filter interpreter
+ * program (NDB wire format — the RexecRegionLen region of a scan's
+ * interpreted program) via ndb_jit_bridge_translate_scan_filter and
+ * compiles it with jit1_compile. Returns the JIT entry as a void*
+ * (the caller casts to JitEntry), or nullptr if the program is not
+ * JIT-eligible or compilation failed — in which case the caller runs
+ * the interpreter (interpreterNextLab) as before. Called once per
+ * prepared scan program at scan setup. */
+void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
+                                    const Uint32 *filter_prog,
+                                    Uint32        n_words);
+
+/* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
+ * current row. Returns true to keep the row, false to reject it. The
+ * caller maps a rejected row to TUPKEY_abort with
+ * ZUSER_SEARCH_CONDITION_FALSE_CODE, matching the interpreter's
+ * EXIT_REFUSE disposition for scans. No aggregation accumulators are
+ * involved; ctx.agg / ctx.join_agg stay null and column reads go
+ * through Dbtup::readSingleAttributeForJit. */
+bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
+                                  Dbtup::KeyReqStruct *req_struct,
+                                  JitEntry             entry_fn);
+
 #endif /* DBTUP_JIT_GLUE_HPP_ */

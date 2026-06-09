@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-06-09.** Single entry point for resuming work. Branch:
+**Updated: 2026-06-10.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -8,6 +8,42 @@
 > implemented and wired end-to-end (~34 real code commits across
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
+
+## Latest implementation — Phase 7 scan-filter runtime glue (2026-06-10)
+
+First vertical slice of the SCAN_FRAGREQ scan-filter runtime wiring —
+makes the inert `ndb_jit_bridge_translate_scan_filter` + `OP_FILTER_REJECT_EXIT`
+groundwork actually run. A pushed-down `WHERE` filter is now compiled once
+per stored procedure at scan setup and executed natively per row instead of
+`interpreterNextLab()`. **Implemented 2026-06-10, pending build + test.**
+Full design + file map in `phase_7_implementation.md`.
+
+- **Compile-once on storedProc:** `struct storedProc` gains
+  `m_jit_filter_state` (untried/compiled/ineligible) + `m_jit_filter_entry`;
+  reset in the ZSCAN_PROCEDURE init so a pooled record can't reuse a stale
+  program's filter. `Dbtup::scanCopyAttrinfo` compiles from
+  `cachedLinearAttrInfo` (exec region = `cache[5+cache[0]]`, len `cache[1]`)
+  in a new `!m_has_pushdown` branch, then copies the entry onto
+  `Dblqh::ScanRecord::m_jit_filter_entry` for fast per-row access.
+- **Per-row dispatch:** `Dbtup::interpreterStartLab` runs the JIT filter
+  when the scan record carries an entry; reject ⇒
+  `TUPKEY_abort(req_struct, ZUSER_SEARCH_CONDITION_FALSE_CODE=899)` (the
+  scan "row filtered" disposition), accept ⇒ advance past the exec region
+  and fall through to the normal projection read. Null entry ⇒ unchanged
+  interpreter path.
+- **Glue:** `dbtup_jit_compile_scan_filter` / `dbtup_jit_invoke_scan_filter`
+  in `DbtupJitGlue`; cold-call helpers `ndb_jit_h_load_col` /
+  `ndb_jit_h_branch_attr_null` rewired to read via the new public
+  `Dbtup::readSingleAttributeForJit` (no AggInterpreter dependency).
+- **Eligibility (v1):** `RexecRegionLen>0 && RfinalUpdateLen==0 &&
+  RsubLen==0`; a final-read/projection region is allowed.
+- **Diagnostics/canary:** ERROR_INSERT 4060 made fallback-fatal for filtered
+  scans; MTR `rondb_jit_scan_filter_canary` (IS NULL / IS NOT NULL under
+  4060 + differential). The canary `.result` is **best-effort — `--record`
+  if it diffs**.
+- **Limitation:** only the NULL-branch subset compiles today
+  (`WHERE col IS [NOT] NULL`); richer predicates need Phase 5's full
+  embedded-branch family and stay on the interpreter until then.
 
 ## Latest implementation — standalone aggregation JIT (2026-06-08)
 
@@ -384,23 +420,28 @@ very loose guard, not a restoration).
 
 The Phase 5.1 canary suite (Tests 23–28) is **complete and verified**, and
 standalone aggregation now JITs (2026-06-08). The translate + engine half of
-Phase 7 scan filters also landed (2026-06-08). The remaining gap — and the
-recommended next implementation chunk — is the **DBTUP runtime side** that
-makes `ndb_jit_bridge_translate_scan_filter()` actually run:
+Phase 7 scan filters landed 2026-06-08; the **DBTUP runtime side** —
+setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
+(first vertical slice; see the "Latest implementation" section above and
+`phase_7_implementation.md`). What was the next chunk is now:
 
-1. **Setup/compile hook for SCAN_FRAGREQ filters** — the scan-filter
-   analogue of `PushdownInterpreterFactory::Create()` /
-   `DblqhProxy::execJOIN_AGG_SETUP_REQ`: detect a JIT-eligible scan filter,
-   call `ndb_jit_bridge_translate_scan_filter()` → `jit1_compile()`, stash
-   the resulting `jit1_entry()` so the per-row path can find it.
-2. **Per-row invocation glue** — replace/short-circuit `interpreterNextLab()`
-   for the supported subset: call the compiled entry, then accept/reject the
-   row based on `JitState::row_filter_rejected` (set by
-   `OP_FILTER_REJECT_EXIT`). Fall back to `interpreterNextLab()` for any
-   filter the bridge rejected at setup.
-3. **Canary** — an MTR / NDB API test that forces a scan filter through JIT
-   (e.g. `4060`-style) and checks the row set matches the interpreter.
-4. **(Deferred)** standalone CASE disposition model — the translate API
+1. ~~Setup/compile hook for SCAN_FRAGREQ filters~~ **DONE** — compile-once
+   on the stored procedure in `Dbtup::scanCopyAttrinfo`, entry copied onto
+   `Dblqh::ScanRecord`.
+2. ~~Per-row invocation glue~~ **DONE** — `Dbtup::interpreterStartLab` runs
+   the compiled entry and maps `row_filter_rejected` → `TUPKEY_abort(899)`,
+   else falls through; null entry → `interpreterNextLab()` unchanged.
+3. ~~Canary~~ **DONE (pending run)** — `rondb_jit_scan_filter_canary`
+   (4060-forced IS NULL / IS NOT NULL + differential). `.result` is
+   best-effort; `--record` if it diffs.
+4. **Now next:** (a) **verify** the slice builds + the canary passes (and
+   that `IS [NOT] NULL` actually pushes down as a JIT-admitted filter);
+   (b) tighten `translate_scan_filter` to reject linked ops (remove an abort
+   risk on the scan path); (c) capture the per-instruction `EXIT_REFUSE`
+   code instead of assuming 899; (d) **the big one** — lift onto Phase 5's
+   full embedded-branch family so real comparison predicates (`col > 5`,
+   `col = 'x'`) JIT, not just NULL tests.
+5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
    (`n_pending_case_jumps != 0`); only needed if scan filters require
    multi-way CASE.

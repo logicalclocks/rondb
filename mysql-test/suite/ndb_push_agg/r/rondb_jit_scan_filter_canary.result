@@ -1,0 +1,28 @@
+############################################################
+# RONDB-1056 scan-filter JIT canary
+############################################################
+CREATE TABLE t1 (
+pk BIGINT NOT NULL,
+v  BIGINT,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 10), (2, NULL), (3, 30), (4, NULL), (5, 50);
+# Q1: WHERE v IS NOT NULL must JIT (filter rejects the NULL rows).
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+pk	v
+1	10
+3	30
+5	50
+# Q2: WHERE v IS NULL must JIT (filter keeps the NULL rows).
+SELECT pk FROM t1 WHERE v IS NULL;
+pk
+2
+4
+# Q3: differential — same filter without the error insert matches Q1.
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+pk	v
+1	10
+3	30
+5	50
+DROP TABLE t1;

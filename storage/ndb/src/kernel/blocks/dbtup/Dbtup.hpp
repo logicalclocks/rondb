@@ -1734,12 +1734,34 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint8 copyOverwrite;
     Uint8 copyOverwriteLen;
     bool  copyAttrinfoCalled;    // Set true after first copyAttrinfo call
+
+    /* RONDB-1056 Phase 7: JIT-compiled scan-filter cache.
+     * m_jit_filter_state is a tri-state (0 = untried, 1 = compiled,
+     * 2 = ineligible): UNTRIED until the first interpreted scan setup
+     * attempts a compile, then COMPILED (entry valid) or INELIGIBLE.
+     * The entry is compiled once per prepared scan program and reused
+     * by every scan that shares this stored procedure; the per-scan
+     * fast pointer is copied onto Dblqh::ScanRecord at setup.  Both
+     * fields are reset when a record is (re)initialised for a new scan
+     * procedure so a pooled record can never run a stale program's
+     * compiled filter.
+     *
+     * Field order: the Uint8 joins the existing byte cluster above and
+     * the 8-byte pointer follows, so the pointer's alignment padding is
+     * not duplicated. */
+    Uint8 m_jit_filter_state;
+    void* m_jit_filter_entry;    // JitEntry, or nullptr
     union {
       Uint32 nextPool;
       Uint32 nextList;
     };
     Uint32 prevList;
   };
+  /* RONDB-1056 Phase 7: storedProc::m_jit_filter_state values. */
+  static constexpr Uint8 JIT_FILTER_UNTRIED = 0;
+  static constexpr Uint8 JIT_FILTER_COMPILED = 1;
+  static constexpr Uint8 JIT_FILTER_INELIGIBLE = 2;
+
   typedef Ptr<storedProc> StoredProcPtr;
   typedef TransientPool<storedProc> StoredProc_pool;
   static constexpr Uint32 DBTUP_STORED_PROCEDURE_TRANSIENT_POOL_INDEX = 1;
@@ -3294,6 +3316,17 @@ public:
                              Uint32 *mainProgram, Uint32 TmainProgLen,
                              Uint32 *tmpArea, Uint32 tmpAreaSz,
                              const Register *aggRegisters);
+
+  /* RONDB-1056 Phase 7: public forwarder to the private
+   * readSingleAttribute fast path, callable from the DbtupJitGlue
+   * cold-call helpers (free functions, not friends).  Used by the
+   * scan-filter JIT path, which has no AggInterpreter to route
+   * through.  Same contract as readSingleAttribute: returns words
+   * written (>= 1) or a negative error code. */
+  int readSingleAttributeForJit(KeyReqStruct *req_struct, Uint32 attrId,
+                                Uint32 *outBuf, Uint32 maxWords) {
+    return readSingleAttribute(req_struct, attrId, outBuf, maxWords);
+  }
 
 private:
 

@@ -1,0 +1,47 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 7 — SCAN_FRAGREQ scan-filter JIT canary.
+#
+# A pushed-down WHERE filter (IS [NOT] NULL) is JIT-compiled once at
+# scan setup (PushdownInterpreterFactory path is for aggregation; the
+# plain-filter path compiles in Dbtup::scanCopyAttrinfo and caches the
+# entry on the stored procedure) and run natively per row in
+# Dbtup::interpreterStartLab instead of interpreterNextLab.
+#
+# ERROR_INSERT 4060 makes interpreter fallback fatal for any scan that
+# carries a WHERE filter, so the SELECTs below must run through the JIT
+# path. The non-error-insert query (Q3) is a JIT-on differential of Q1.
+
+--echo ############################################################
+--echo # RONDB-1056 scan-filter JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk BIGINT NOT NULL,
+  v  BIGINT,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 50);
+
+--echo # Q1: WHERE v IS NOT NULL must JIT (filter rejects the NULL rows).
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q2: WHERE v IS NULL must JIT (filter keeps the NULL rows).
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk FROM t1 WHERE v IS NULL;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q3: differential — same filter without the error insert matches Q1.
+--sorted_result
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT
