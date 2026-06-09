@@ -5657,15 +5657,6 @@ private:
   bool try_get_tc_ref(Uint32 tcPtrI,
                       Uint32 & tcOprec,
                       Uint32 & tcRef);
-  /* Resolve a scan to its coordinating transaction's TC: given an LQH
-   * ScanRecord index (as stored in DBACC ScanRec::scanUserptr), follow
-   * ScanRecord::scanTcrec to the scan's TcConnectionrec and return its TC
-   * ref + oprec.  Returns false (no crash) if the index is not a valid
-   * ScanRecord of this LQH instance (e.g. a different/query-thread instance)
-   * or the scan has no TC (scanTcrec == RNIL).  RONDB-1062. */
-  bool try_get_scan_tc_ref(Uint32 scanPtrI,
-                           Uint32 & tcOprec,
-                           Uint32 & tcRef);
 
   bool is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP);
 
@@ -6313,23 +6304,6 @@ inline bool Dblqh::try_get_tc_ref(Uint32 tcPtrI,
   tcOprec = tcConnectptr.p->tcOprec;
   tcRef = tcConnectptr.p->tcBlockref;
   return true;
-}
-
-inline bool Dblqh::try_get_scan_tc_ref(Uint32 scanPtrI,
-                                       Uint32 & tcOprec,
-                                       Uint32 & tcRef)
-{
-  ScanRecordPtr sp;
-  sp.i = scanPtrI;
-  if (!c_scanRecordPool.getValidPtr(sp))
-  {
-    return false;
-  }
-  if (sp.p->scanTcrec == RNIL)
-  {
-    return false;
-  }
-  return try_get_tc_ref(sp.p->scanTcrec, tcOprec, tcRef);
 }
 
 inline bool Dblqh::have_frag_scan_access() const {

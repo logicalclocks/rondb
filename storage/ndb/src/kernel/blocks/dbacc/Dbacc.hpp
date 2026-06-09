@@ -1021,17 +1021,28 @@ private:
   Uint32 placeReadInLockQueue(OperationrecPtr lockOwnerPtr) const;
   Uint32 placeWriteInLockQueue(OperationrecPtr lockOwnerPtr) const;
   void placeSerialQueue(OperationrecPtr lockOwner, OperationrecPtr op) const;
-  /* RONDB-1062 deadlock discovery: resolve an ACC operation (key op or scan
-   * op) to its coordinating transaction's TC (block ref + op index).  Returns
-   * false (fail-safe, no crash) if it cannot be resolved locally. */
-  bool get_op_tc_ref(const Operationrec *opP, Uint32 &tcOprec, Uint32 &tcRef);
-  /* Send one wait-for edge (waiter -> owner) to the collector TC (the
-   * endpoint with the smaller hash(transid)).  Reuses signal->theData. */
-  void send_deadlock_waitfor(Signal *signal, Uint32 waiterTransId1,
-                             Uint32 waiterTransId2, Uint32 waiterTcOprec,
-                             Uint32 waiterTcRef, Uint32 ownerTransId1,
-                             Uint32 ownerTransId2, Uint32 ownerTcOprec,
-                             Uint32 ownerTcRef);
+  /* RONDB-1062 deadlock discovery.  One endpoint of a wait-for edge. */
+  struct DeadlockEndpoint {
+    Uint32 transId1;
+    Uint32 transId2;
+    /* A transient *batch* scan lock (scanRecPtr != RNIL) vs a key op / taken-
+     * over lock held to commit.  A scan's deadlock node is its transaction,
+     * but it is never chosen as the collector/victim (we abort the key-op
+     * side instead), so its TC handle is not needed and is left 0. */
+    bool isScan;
+    Uint32 tcOprec;  // valid only when !isScan
+    Uint32 tcRef;    // valid only when !isScan; 0 if unresolved
+  };
+  /* Fill a DeadlockEndpoint from an ACC operation: transid, kind, and (for a
+   * key op only) its coordinating transaction's TC ref + op index. */
+  void describe_deadlock_endpoint(const Operationrec *opP,
+                                  DeadlockEndpoint &ep);
+  /* Send one wait-for edge (waiter -> owner) to the collector TC.  The
+   * collector is the non-scan (key-op) endpoint when exactly one endpoint is
+   * a scan, else the smaller-hash endpoint.  A scan<->scan edge is dropped
+   * (left to the timeout backstop).  Reuses signal->theData. */
+  void send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &waiter,
+                             const DeadlockEndpoint &owner);
   void abortSerieQueueOperation(Signal* signal,
                                 OperationrecPtr op,
                                 Uint32 hash);

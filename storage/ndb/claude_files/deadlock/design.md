@@ -506,22 +506,9 @@ the per-record footprint and the capacity bound is a Phase 2 hardening item.
   queue* and emits one wait-for edge per *distinct foreign transaction* co-holding the
   lock (capped at 8/wait), instead of only the head owner. Captured under the frag mutex
   into a local array, sent after release.
-- **Scan coverage** — a new `Dbacc::get_op_tc_ref()` resolves *both* key ops (via
-  `userptr`→`try_get_tc_ref`) and scan ops (via ACC `ScanRec.scanUserptr`→ LQH
-  `ScanRecord.scanTcrec`→`try_get_scan_tc_ref`). It is used for waiter and every owner in
-  the fan-out, so scan-held locks now appear in the graph. A new hook in
-  `checkNextBucketLab` reports edges when a *scan itself* must wait. All resolution goes
-  through the owning LDM's LQH and **fails safe** (`getValidPtr` magic check → skip the
-  edge) for cross-instance/query-thread records, so no fragile cross-thread access.
-
-**Known scan limitation (deliberate, backstopped):** a scan endpoint's TC handle is a TC
-*ScanFragRec* index (via `scanTcrec`), not a `TcConnectRecord` index. The DBTC handler
-resolves the *collector* via `tcConnectRecord` + a transid guard, so when a scan would be
-the min-hash *collector* the edge is safely dropped (no crash, no misfire). Scans thus
-participate fully as the *non-collector* endpoint (their transid is recorded and a key-op
-collector detects/aborts the cycle); scan-as-collector cycles fall back to the timeout.
-Full scan-as-collector/victim support would need a scan-kind flag in the signal plus a
-`ScanFragRec`→`ApiConnectRecord` resolution path in DBTC — a later item.
+- **Scan coverage** — see §15 for the model. (The initial `scanTcrec`-based resolution was
+  superseded; scans are now handled via the kind-aware routing in §15, which never makes a
+  scan the collector/victim and so needs no scan-side TC resolution.)
 
 **Not yet done:** deferred `T_detect` reporting (Phase 4), pool-backed edge storage +
 edge cleanup on wakeup (hardening), `ndbinfo`/DUMP observability (Phase 2), longer-cycle
@@ -553,3 +540,74 @@ per-other-transaction direction bitmask, and the cycle/victim-abort. Enable by f
 - Scenario 2: a true 2-row cycle; the victim is chosen by hash (either connection), so the
   per-connection outcome is suppressed and the test asserts (a) no hang, (b) resolution
   `< 20s` (the proactive proof, via a `--die` guard), and (c) consistent committed data.
+
+## 15. Scan locking and deadlock nodes (revised model)
+
+The Phase-3 scan handling (resolve a scan endpoint via `scanTcrec`, route by min-hash,
+drop scan-as-collector) is **superseded** by the model below, which is both simpler and a
+better fit for how NDB scan locks actually behave.
+
+**Key fact (lock lifetime + abortability).** A locking scan holds its row locks only for
+the lifetime of a *batch*; at the next `SCAN_NEXTREQ` they are released, unless the API
+**takes over** a lock — which converts it into a normal key operation held to commit.
+Crucially, a scan fragment **cannot be aborted in isolation**: takeover ties some locks
+into the transaction, and there is no support for aborting a subset of a transaction's
+operations. So **aborting a scan ⇒ aborting its whole transaction.**
+
+**Consequences:**
+1. The deadlock-graph **node for a scan is its transaction** (keyed by the transaction's
+   transid, already on the scan op as `scanTrid1/2`), *not* a separate "batch" node — a
+   batch is not an independently-abortable victim. The batch concept only affects edge
+   *lifetime* (a batch-held lock is released sooner than commit), which the freshness
+   window (and, later, deferred reporting) already handle.
+2. A **taken-over** lock is a key op held to commit → it is a transaction (key-op) node.
+   The discriminator is the ACC op's `scanRecPtr`: `!= RNIL` ⇒ a transient *batch* scan
+   lock (kind = scan); `== RNIL` ⇒ a key op / taken-over lock (kind = key-op). Ownership of
+   a lock therefore flips from scan-node to transaction-node exactly at takeover, for free.
+
+**Victim policy — "don't always abort scans".** Aborting a scan transaction is the costly,
+messy path (cascade through takeover + scan teardown), so proactive detection avoids it.
+This is achieved purely in the **collector-routing rule** (no remote abort needed, victim
+stays = collector = local):
+
+```
+collector(W, O) =
+    if exactly one of {W, O} is a scan:  the NON-scan (key-op) endpoint
+    else (both key-op, or both scan):    the smaller-hash endpoint   (as before)
+```
+
+- **scan ↔ key-op deadlock:** both edges have endpoint set {scanTxn, keyOpTxn} with exactly
+  one scan, so both route to the **key-op** transaction → it is the collector and the
+  victim. The key-op is aborted via the existing `timeOutFoundLab` path; the scan survives
+  and proceeds once the lock is released. *Proactive detection never aborts the scan.*
+- **scan ↔ scan deadlock:** both endpoints are scans → min-hash → falls back to the
+  **timeout** (left unhandled proactively for now; rare). Could be added later if needed.
+- **key-op ↔ key-op:** min-hash, exactly as today.
+
+**Why this is also simpler.** In the scan↔key-op case the collector is always a key op, so
+DBTC resolves it via `tcOprec → TcConnectRecord` (already works) and the scan endpoint is
+just the "other", recorded by **transid** (`scanTrid`). No `scanTcrec`/`ScanFragRec`
+resolution, no scan-as-collector path, no cross-instance scan lookup. DBACC only needs, per
+endpoint: its transid, its kind (`scanRecPtr != RNIL`), and — for the key-op endpoint only —
+its `(tcOprec, tcRef)` via `get_tc_ref`.
+
+**Status: IMPLEMENTED.** Changes from the initial Phase-3 scan handling:
+- `Dbacc::DeadlockEndpoint` + `describe_deadlock_endpoint()` classify each endpoint by
+  `scanRecPtr` (`!= RNIL` ⇒ scan) and resolve the TC handle only for key ops
+  (`try_get_tc_ref`); scan endpoints carry just transid + `isScan` (handle 0).
+- `send_deadlock_waitfor()` applies the kind-aware collector rule and drops scan↔scan
+  edges; used by both the `accIsLockedLab` fan-out and the `checkNextBucketLab` scan hook.
+- The `get_op_tc_ref`/`try_get_scan_tc_ref` (`scanTcrec`) resolution was removed.
+- The DBTC handler is unchanged (the collector is always a key op in the cases we act on).
+
+**Verified:** a normal key-op ACC op has `scanRecPtr == RNIL` on every non-scan seize path
+(`DbaccMain.cpp` key-op init, explicit/takeover lock req, copy-frag), and only the batch
+scan seize sets it; so the discriminator is reliable and takeover locks correctly classify
+as key ops. Aborting the key-op victim frees the scan's awaited lock via the standard
+transaction-abort path.
+
+**Note (scan↔scan):** two locking scans can deadlock only if at least one takes exclusive
+locks (two shared scans don't conflict). These are dropped proactively and left to the
+timeout; supporting them would require a scan-victim abort path (abort the scan ⇒ abort its
+transaction, since a scan fragment can't be aborted in isolation — takeover entanglement +
+no partial abort).
