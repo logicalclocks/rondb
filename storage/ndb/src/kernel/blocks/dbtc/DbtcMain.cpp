@@ -11370,6 +11370,8 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
 
   const bool collectorIsWaiter =
       (rep->flags & DeadlockWaitforRep::CollectorIsWaiter) != 0;
+  const bool collectorIsScan =
+      (rep->flags & DeadlockWaitforRep::CollectorIsScan) != 0;
   const Uint32 collectorTcOprec =
       collectorIsWaiter ? rep->waiterTcOprec : rep->ownerTcOprec;
   const Uint32 collectorT1 =
@@ -11382,29 +11384,59 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
       collectorIsWaiter ? rep->ownerTransId2 : rep->waiterTransId2;
 
   DEB_DEADLOCK(("(%u) recv DBACC_WAITFOR_REP from 0x%x: waiter trans(%u,%u)"
-                " owner trans(%u,%u), collectorIsWaiter=%u collector"
-                " trans(%u,%u) tcOprec=%u other trans(%u,%u)",
+                " owner trans(%u,%u), collectorIsWaiter=%u collectorIsScan=%u"
+                " collector trans(%u,%u) tcOprec=%u other trans(%u,%u)",
                 instance(), rep->senderRef, rep->waiterTransId1,
                 rep->waiterTransId2, rep->ownerTransId1, rep->ownerTransId2,
-                (Uint32)collectorIsWaiter, collectorT1, collectorT2,
-                collectorTcOprec, otherT1, otherT2));
+                (Uint32)collectorIsWaiter, (Uint32)collectorIsScan, collectorT1,
+                collectorT2, collectorTcOprec, otherT1, otherT2));
 
-  /* Resolve the collector's local TcConnectRecord -> ApiConnectRecord. */
-  TcConnectRecordPtr localTcPtr;
-  localTcPtr.i = collectorTcOprec;
-  if (unlikely(!tcConnectRecord.getValidPtr(localTcPtr))) {
-    jam();
-    DEB_DEADLOCK(("(%u) drop: tcOprec %u not a valid TcConnectRecord",
-                  instance(), collectorTcOprec));
-    return;
-  }
+  /* Resolve the collector to its ApiConnectRecord.  A key-op collector
+   * resolves via its TcConnectRecord (tcOprec); a scan collector via the TC
+   * ScanFragRec (tcOprec) -> ScanRecord -> ApiConnectRecord, and is aborted
+   * with scanError() rather than the key-op timeout path. */
   ApiConnectRecordPtr apiConnectptr;
-  apiConnectptr.i = localTcPtr.p->apiConnect;
+  ScanRecordPtr scanptr;
+  scanptr.i = RNIL;
+  if (collectorIsScan) {
+    ScanFragRecPtr scanFragPtr;
+    scanFragPtr.i = collectorTcOprec;  // tcOprec is the TC ScanFragRec id
+    if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
+      jam();
+      DEB_DEADLOCK(("(%u) drop: scanFrag %u not a valid ScanFragRec",
+                    instance(), collectorTcOprec));
+      return;
+    }
+    scanptr.i = scanFragPtr.p->scanRec;
+    if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
+      jam();
+      DEB_DEADLOCK(("(%u) drop: scanRec %u (from scanFrag %u) invalid",
+                    instance(), scanFragPtr.p->scanRec, collectorTcOprec));
+      return;
+    }
+    if (scanptr.p->scanState != ScanRecord::RUNNING) {
+      jam();
+      DEB_DEADLOCK(("(%u) drop: scan not RUNNING (scanState %u)", instance(),
+                    (Uint32)scanptr.p->scanState));
+      return;
+    }
+    apiConnectptr.i = scanptr.p->scanApiRec;
+  } else {
+    TcConnectRecordPtr localTcPtr;
+    localTcPtr.i = collectorTcOprec;
+    if (unlikely(!tcConnectRecord.getValidPtr(localTcPtr))) {
+      jam();
+      DEB_DEADLOCK(("(%u) drop: tcOprec %u not a valid TcConnectRecord",
+                    instance(), collectorTcOprec));
+      return;
+    }
+    apiConnectptr.i = localTcPtr.p->apiConnect;
+  }
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    DEB_DEADLOCK(("(%u) drop: apiConnect %u (from tcOprec %u, state %u) not"
-                  " valid", instance(), localTcPtr.p->apiConnect,
-                  collectorTcOprec, (Uint32)localTcPtr.p->tcConnectstate));
+    DEB_DEADLOCK(("(%u) drop: apiConnect (from collector tcOprec %u,"
+                  " isScan %u) not valid", instance(), collectorTcOprec,
+                  (Uint32)collectorIsScan));
     return;
   }
   /* Guard against stale tcOprec reuse: the transid must still match. */
@@ -11412,43 +11444,63 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
       apiConnectptr.p->transid[1] != collectorT2) {
     jam();
     DEB_DEADLOCK(("(%u) drop: transid mismatch, apiConn trans(%u,%u) !="
-                  " collector trans(%u,%u) (tcOprec %u, opstate %u)",
+                  " collector trans(%u,%u) (tcOprec %u, isScan %u)",
                   instance(), apiConnectptr.p->transid[0],
                   apiConnectptr.p->transid[1], collectorT1, collectorT2,
-                  collectorTcOprec, (Uint32)localTcPtr.p->tcConnectstate));
+                  collectorTcOprec, (Uint32)collectorIsScan));
     return;
   }
   /* Only act on a transaction that is still active and abortable. */
-  switch (apiConnectptr.p->apiConnectstate) {
-    case CS_STARTED:
-    case CS_RECEIVING:
-    case CS_REC_COMMITTING:
-    case CS_START_COMMITTING:
-    case CS_SEND_FIRE_TRIG_REQ:
-    case CS_WAIT_FIRE_TRIG_REQ:
-      break;
-    default:
+  if (collectorIsScan) {
+    if (apiConnectptr.p->apiConnectstate != CS_START_SCAN) {
       jam();
-      DEB_DEADLOCK(("(%u) drop: collector trans(%u,%u) not abortable,"
-                    " apiConnectstate=%u", instance(), collectorT1,
-                    collectorT2, (Uint32)apiConnectptr.p->apiConnectstate));
+      DEB_DEADLOCK(("(%u) drop: scan collector trans(%u,%u) not in"
+                    " CS_START_SCAN (apiConnectstate=%u)", instance(),
+                    collectorT1, collectorT2,
+                    (Uint32)apiConnectptr.p->apiConnectstate));
       return;
+    }
+  } else {
+    switch (apiConnectptr.p->apiConnectstate) {
+      case CS_STARTED:
+      case CS_RECEIVING:
+      case CS_REC_COMMITTING:
+      case CS_START_COMMITTING:
+      case CS_SEND_FIRE_TRIG_REQ:
+      case CS_WAIT_FIRE_TRIG_REQ:
+        break;
+      default:
+        jam();
+        DEB_DEADLOCK(("(%u) drop: key-op collector trans(%u,%u) not abortable,"
+                      " apiConnectstate=%u", instance(), collectorT1,
+                      collectorT2, (Uint32)apiConnectptr.p->apiConnectstate));
+        return;
+    }
   }
 
   const Uint32 dir = collectorIsWaiter ? ApiConnectRecord::DLD_WAITS_ON
                                        : ApiConnectRecord::DLD_WAITED_BY;
   const bool cycle =
       recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir);
-  DEB_DEADLOCK(("(%u) recorded edge dir=%u on collector trans(%u,%u) vs other"
-                " trans(%u,%u): cycle=%u", instance(), dir, collectorT1,
-                collectorT2, otherT1, otherT2, (Uint32)cycle));
+  DEB_DEADLOCK(("(%u) recorded edge dir=%u on collector trans(%u,%u) isScan=%u"
+                " vs other trans(%u,%u): cycle=%u", instance(), dir,
+                collectorT1, collectorT2, (Uint32)collectorIsScan, otherT1,
+                otherT2, (Uint32)cycle));
   if (cycle) {
     jam();
     /* 2-cycle: the collector (local, smaller-hash endpoint) is the victim. */
-    DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting victim trans(%u,%u)"
-                  " (apiConnectptr %u) with error %u", instance(), collectorT1,
-                  collectorT2, apiConnectptr.i, ZTIME_OUT_ERROR));
-    timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR);
+    if (collectorIsScan) {
+      DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting scan victim trans(%u,%u)"
+                    " (scanRec %u) with error %u", instance(), collectorT1,
+                    collectorT2, scanptr.i, ZSCANTIME_OUT_ERROR));
+      scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
+    } else {
+      DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting key-op victim"
+                    " trans(%u,%u) (apiConnectptr %u) with error %u",
+                    instance(), collectorT1, collectorT2, apiConnectptr.i,
+                    ZTIME_OUT_ERROR));
+      timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR);
+    }
   }
 }
 

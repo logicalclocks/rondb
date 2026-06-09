@@ -69,7 +69,11 @@ struct DeadlockWaitforRep {
   static constexpr Uint32 SignalLength = 10;
 
   enum Flags {
-    CollectorIsWaiter = 0x1  // collector == waiter (else collector == owner)
+    CollectorIsWaiter = 0x1,  // collector == waiter (else collector == owner)
+    CollectorIsScan = 0x2     // collector is a locking scan: DBTC resolves it
+                              // via ScanFragRec -> ScanRecord -> ApiConnect and
+                              // aborts it with scanError().  Else it is a key
+                              // op: resolved via TcConnectRecord + tcOprec.
   };
 };
 

@@ -2127,19 +2127,36 @@ void Dbacc::describe_deadlock_endpoint(const Operationrec *opP,
   ep.isScan = (opP->scanRecPtr != RNIL);
   ep.tcOprec = 0;
   ep.tcRef = 0;
+  Dblqh *const lqh = m_ldm_instance_used->c_lqh;
   if (!ep.isScan)
   {
-    m_ldm_instance_used->c_lqh->try_get_tc_ref(opP->userptr, ep.tcOprec,
-                                               ep.tcRef);
+    /* Key op (incl. taken-over / explicit lock req): userptr is the LQH op. */
+    lqh->try_get_tc_ref(opP->userptr, ep.tcOprec, ep.tcRef);
+  }
+  else
+  {
+    /* Batch scan lock: ACC ScanRec.scanUserptr is the LQH ScanRecord index,
+     * whose scanTcrec gives the scan's TC + ScanFragRec id (tcOprec).  Only
+     * needed if this scan becomes the collector (scan<->scan); for scan<->
+     * key-op the scan is never the collector. */
+    ScanRecPtr sp;
+    sp.i = opP->scanRecPtr;
+    if (m_curr_acc->scanRec_pool.getValidPtr(sp))
+    {
+      lqh->try_get_scan_tc_ref(sp.p->scanUserptr, ep.tcOprec, ep.tcRef);
+    }
   }
 }
 
 /**
  * RONDB-1062: send one wait-for edge (waiter waits on owner) to the collector
  * TC.  The collector is the non-scan (key-op) endpoint when exactly one
- * endpoint is a scan (so a deadlock involving a scan aborts the key-op side,
- * never the scan); otherwise it is the smaller-hash endpoint.  A scan<->scan
- * edge has no key-op victim and is dropped (left to the timeout backstop).
+ * endpoint is a scan (so a scan<->key-op deadlock aborts the key-op side,
+ * never the scan); otherwise (both key-op, or scan<->scan) it is the
+ * smaller-hash endpoint.  For a scan<->scan deadlock the collector is a scan
+ * and DBTC aborts it via scanError(); the CollectorIsScan flag tells DBTC
+ * which resolution/abort path to use.  An edge is dropped only if the
+ * collector's TC ref could not be resolved locally (e.g. a query-thread scan).
  * NOTE: reuses signal->theData, so callers needing the signal contents must
  * rebuild them afterwards.
  */
@@ -2147,46 +2164,43 @@ void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
                                   const DeadlockEndpoint &o)
 {
   bool collectorIsWaiter;
-  if (w.isScan && o.isScan)
+  if (o.isScan && !w.isScan)
   {
-    DEB_DEADLOCK(("(%u) drop scan<->scan edge: waiter trans(%u,%u) owner"
-                  " trans(%u,%u) (left to timeout)", instance(), w.transId1,
-                  w.transId2, o.transId1, o.transId2));
-    return;  // no key-op victim available; leave to the timeout backstop
+    collectorIsWaiter = true;  // exactly one scan -> collector = waiter (key op)
   }
-  else if (o.isScan)
+  else if (w.isScan && !o.isScan)
   {
-    collectorIsWaiter = true;  // collector = waiter (the key op)
-  }
-  else if (w.isScan)
-  {
-    collectorIsWaiter = false;  // collector = owner (the key op)
+    collectorIsWaiter = false;  // exactly one scan -> collector = owner (key op)
   }
   else
   {
+    /* Both key ops, or both scans (scan<->scan): smaller-hash endpoint. */
     collectorIsWaiter =
         deadlock_a_is_collector(w.transId1, w.transId2, o.transId1, o.transId2);
   }
-  const BlockReference dstRef = collectorIsWaiter ? w.tcRef : o.tcRef;
+  const DeadlockEndpoint &collector = collectorIsWaiter ? w : o;
+  const BlockReference dstRef = collector.tcRef;
   if (dstRef == 0)
   {
-    DEB_DEADLOCK(("(%u) drop edge: collector (key op) TC ref unresolved;"
-                  " waiter trans(%u,%u) scan=%u owner trans(%u,%u) scan=%u",
+    DEB_DEADLOCK(("(%u) drop edge: collector TC ref unresolved; waiter"
+                  " trans(%u,%u) scan=%u owner trans(%u,%u) scan=%u",
                   instance(), w.transId1, w.transId2, (Uint32)w.isScan,
                   o.transId1, o.transId2, (Uint32)o.isScan));
-    return;  // collector (key op) TC ref could not be resolved locally
+    return;  // collector TC ref could not be resolved locally
   }
   DEB_DEADLOCK(("(%u) send DBACC_WAITFOR_REP: waiter trans(%u,%u) scan=%u"
                 " tc(0x%x,%u) -> owner trans(%u,%u) scan=%u tc(0x%x,%u),"
-                " collectorIsWaiter=%u dst=0x%x",
+                " collectorIsWaiter=%u collectorIsScan=%u dst=0x%x",
                 instance(), w.transId1, w.transId2, (Uint32)w.isScan, w.tcRef,
                 w.tcOprec, o.transId1, o.transId2, (Uint32)o.isScan, o.tcRef,
-                o.tcOprec, (Uint32)collectorIsWaiter, dstRef));
+                o.tcOprec, (Uint32)collectorIsWaiter, (Uint32)collector.isScan,
+                dstRef));
   DeadlockWaitforRep *const rep =
       reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
   rep->senderRef = reference();
   rep->flags =
-      collectorIsWaiter ? (Uint32)DeadlockWaitforRep::CollectorIsWaiter : 0;
+      (collectorIsWaiter ? (Uint32)DeadlockWaitforRep::CollectorIsWaiter : 0) |
+      (collector.isScan ? (Uint32)DeadlockWaitforRep::CollectorIsScan : 0);
   rep->waiterTransId1 = w.transId1;
   rep->waiterTransId2 = w.transId2;
   rep->waiterTcRef = w.tcRef;
@@ -8701,8 +8715,8 @@ void Dbacc::checkNextBucketLab(Signal *signal) {
                 dl_num++;
                 DeadlockEndpoint dl_owner;
                 describe_deadlock_endpoint(loopPtr.p, dl_owner);
-                /* scan waiter vs scan owner is dropped inside; only scan-vs-
-                 * key-op edges are sent (collector = the key-op owner). */
+                /* scan waiter vs key-op owner -> collector is the key-op
+                 * owner; scan vs scan -> collector is the min-hash scan. */
                 send_deadlock_waitfor(signal, dl_waiter, dl_owner);
               }
             }
