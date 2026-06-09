@@ -466,9 +466,11 @@ class AggInterpreterBase : public PushdownInterpreter {
   JitEntry m_jit_entry = nullptr;
 
   /* Fields lifted from the subclasses in Step 1.2 to support the shared
-   * OptimizeProgram.  Total sizeof is unchanged — same fields, moved up
-   * the class hierarchy — so both static_asserts on subclass sizeof
-   * still hold. */
+   * OptimizeProgram — same fields, moved up the class hierarchy.  (The
+   * old "sizeof(subclass) <= MEM_CHUNK_SIZE" static_asserts were removed
+   * in Step 3a-B when the big inline buffers moved out to an externally
+   * carved, right-sized m_buf_block; the placement-new'd object header is
+   * now only a few hundred bytes, well under the 32 KB chunk.) */
   Uint32* m_prog;
   Uint32 m_agg_prog_start_pos;
 

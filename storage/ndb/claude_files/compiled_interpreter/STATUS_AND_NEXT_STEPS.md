@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-06-06.** Single entry point for resuming work. Branch:
+**Updated: 2026-06-09.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -8,6 +8,62 @@
 > implemented and wired end-to-end (~34 real code commits across
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
+
+## Latest implementation — standalone aggregation JIT (2026-06-08)
+
+Commit `55dab872ef4` (`RONDB-1056 JIT standalone aggregation`) extends the
+JIT beyond *join* aggregation to **standalone pushed aggregation**
+(`AggInterpreter`, the non-join path). Previously only
+`JoinAggInterpreter::ProcessRec` dispatched to the JIT; now
+`AggInterpreter::ProcessRec` carries the same scalar-aggregation dispatch
+(`if (m_jit_entry != nullptr && m_n_gb_cols == 0) dbtup_jit_invoke(...)`).
+GROUP BY still stays on the interpreter (the `m_n_gb_cols == 0` gate is
+unchanged).
+
+- **New compile/setup hook:** `PushdownInterpreterFactory::Create()` now
+  takes a `NdbJitArena *jit_arena`; for an admitted aggregation program it
+  runs `ndb_jit_bridge_translate()` → `jit1_compile()` → `setJitEntry()`.
+  This is the standalone analogue of the join path's
+  `DblqhProxy::execJOIN_AGG_SETUP_REQ` compile. Touched
+  `PushdownInterpreter.{cpp,hpp}`, `Dbtup.hpp`, `DbtupGen.cpp`,
+  `DbtupExecQuery.cpp`, `DbtupJitGlue.{cpp,hpp}`, `AggInterpreterBase.hpp`,
+  `AggInterpreter.cpp`, `JoinAggInterpreter.cpp`.
+- **Diagnostics:** `ERROR_INSERT 4060` now also guards
+  `AggInterpreter::ProcessRec` — a standalone program that reaches the
+  interpreter loop instead of the JIT aborts under the canary.
+- **New MTR canary:** `rondb_jit_standalone_canary` (ndb_push_agg suite):
+  `SUM(v)`, `SUM(v+pk)`, `SUM(v-pk+pk*0)` forced through JIT via
+  `all error 4060`, plus a `WHERE`-clause fallback smoke query (Q4).
+- **Verification: DONE** (per Mikael) — host unit binaries and the
+  `ndb_push_agg` JIT set, including `rondb_jit_standalone_canary`, pass.
+
+## Phase 7 groundwork — scan-filter reject state (2026-06-08)
+
+Commit `c955005048b` (`RONDB-1056 Add scan filter reject JIT state`) lands
+the *translation + engine* half of SCAN_FRAGREQ scan-filter JIT, but the
+path is **inert** — nothing in DBTUP calls it at runtime yet.
+
+- **New translate API:** `ndb_jit_bridge_translate_scan_filter()` reuses the
+  embedded-interpreter subset (`BRANCH_ATTR_*_NULL`, `READ_LINKED_TO_MEM`,
+  `BRANCH_LINKED_*_NULL`, `EXIT_OK`, `EXIT_REFUSE`). It lowers `EXIT_REFUSE`
+  to the new **`OP_FILTER_REJECT_EXIT`** (via a `exit_refuse_kind` param now
+  threaded through `translate_embedded_block`) and appends a trailing
+  `OP_EXIT` for the fall-through accepted-row path. Standalone CASE
+  skip-offsets (`WRITE_INTERPRETER_OUTPUT` with non-zero slot 0, i.e.
+  `n_pending_case_jumps != 0`) are **rejected for now** — there is no outer
+  aggregate word stream to skip through.
+- **New opcode + stencils:** `OP_FILTER_REJECT_EXIT` with x86_64 + arm64
+  stencils (`stencils_src.c`, `stencils_{x86_64,arm64}.h`,
+  `extract_stencils.c`); it sets `JitState::row_filter_rejected` (new field
+  in `jit1.h`) and returns.
+- **Tests:** `coldcall_tests.c` T11 (`filter_reject_exit_sets_state`) proves
+  native execution sets `row_filter_rejected=1`; `bridge_tests.c` adds
+  scan-filter translate/admission coverage.
+- **Verification: DONE** (per Mikael) — host unit binaries pass.
+- **Explicitly NOT done (the next feature):** DBTUP runtime scan-filter
+  invocation glue — a setup/compile hook for SCAN_FRAGREQ filters and the
+  per-row call that branches on `row_filter_rejected` instead of
+  `interpreterNextLab()`. See "Next focus" below.
 
 ## Latest verification — checked overflow stencils (2026-06-06)
 
@@ -111,12 +167,17 @@ allow-list + `s_agg_interp_handlers[19/41/42]`, DblqhProxy compile path).
   the `testJoinAgg*` / `testStarJoinAgg*` / `ndb_join_pushdown_agg*` family
   → the unified interpreter dispatch end-to-end.
 
-**Cleanup item (low priority, not a JIT risk):** the comment at
-`AggInterpreterBase.hpp:407-410` claims "both static_asserts on subclass
+**Cleanup item (RESOLVED 2026-06-09):** the comment at
+`AggInterpreterBase.hpp:~440` claimed "both static_asserts on subclass
 sizeof still hold," but no `static_assert(sizeof(...))` on the subclasses
-remains in the tree (removed/relaxed during the refactor). The
-placement-new sizing at `DblqhProxy.cpp:~2876` no longer has that
-compile-time guard — either re-add the asserts or drop the stale comment.
+remains. Investigation showed the asserts were **deliberately removed** in
+RONDB-1066 Step 3a-B (`d22ccf510d8`) when the ~30 KB inline buffers moved
+out to an externally carved, right-sized `m_buf_block` — the placement-new'd
+object header (`PushdownInterpreter.cpp:280`, into a 32 KB `MEM_CHUNK_SIZE`
+chunk) is now only a few hundred bytes, so the guard was no longer
+meaningful. Fixed as a documentation correction: the comment now describes
+the post-3a-B allocation reality (no assert re-added — that would be a new,
+very loose guard, not a restoration).
 
 ## Where we actually are
 
@@ -137,6 +198,12 @@ compile-time guard — either re-add the asserts or drop the stale comment.
   `DblqhProxy::execJOIN_AGG_SETUP_REQ` → `ndb_jit_bridge_translate()`
   → `jit1_compile()` → `jit1_entry()` sets `m_jit_entry`. Glue in
   `DbtupJitGlue.{cpp,hpp}` (cold-call helpers + `dbtup_jit_invoke`).
+- **Standalone aggregation (2026-06-08, `55dab872ef4`):** the same
+  scalar-aggregation dispatch is now ALSO in `AggInterpreter::ProcessRec`
+  (non-join path). Standalone compile happens in
+  `PushdownInterpreterFactory::Create()` (now takes `NdbJitArena *jit_arena`)
+  → `ndb_jit_bridge_translate()` → `jit1_compile()` → `setJitEntry()`.
+  Same `m_n_gb_cols == 0` gate; canary `rondb_jit_standalone_canary`.
 - **Phase 4.5–4.7:** narrow-hole encoding, inline-asm imm constraint,
   addr-mode fold / narrow LoadConst (aarch64).
 - **Phase 5.0:** embedded normal-interpreter calls, first slice
@@ -304,11 +371,41 @@ compile-time guard — either re-add the asserts or drop the stale comment.
   ~70–75 stencil matrix, full embedded-branch family (ATTR_OP_ATTR /
   OP_PARAM / OP_ARG, MEM family). `phase_5_implementation.md`.
 - **Phase 6** — cross-branch always-JIT (`--force-jit`) differential
-  testing. **Phase 7** — SCAN_FRAGREQ scan filters. **Phase 8** —
-  production readiness (NDBINFO counters, config param, SIGSEGV
-  sidecar, GROUP BY — i.e. lifting the `m_n_gb_cols == 0` gate).
+  testing. **Phase 7** — SCAN_FRAGREQ scan filters: **translate + engine
+  half LANDED 2026-06-08** (`ndb_jit_bridge_translate_scan_filter` +
+  `OP_FILTER_REJECT_EXIT`, see the Phase 7 groundwork section above); the
+  **runtime DBTUP invocation glue is the next feature** (see "Next focus").
+  **Phase 8** — production readiness (NDBINFO counters, config param,
+  SIGSEGV sidecar, GROUP BY — i.e. lifting the `m_n_gb_cols == 0` gate;
+  note standalone *and* join scalar aggregation now both JIT under that
+  gate as of 2026-06-08).
 
-## Chosen next focus: finish the Phase 5.1 canary suite
+## Next focus: Phase 7 — SCAN_FRAGREQ scan-filter runtime glue
+
+The Phase 5.1 canary suite (Tests 23–28) is **complete and verified**, and
+standalone aggregation now JITs (2026-06-08). The translate + engine half of
+Phase 7 scan filters also landed (2026-06-08). The remaining gap — and the
+recommended next implementation chunk — is the **DBTUP runtime side** that
+makes `ndb_jit_bridge_translate_scan_filter()` actually run:
+
+1. **Setup/compile hook for SCAN_FRAGREQ filters** — the scan-filter
+   analogue of `PushdownInterpreterFactory::Create()` /
+   `DblqhProxy::execJOIN_AGG_SETUP_REQ`: detect a JIT-eligible scan filter,
+   call `ndb_jit_bridge_translate_scan_filter()` → `jit1_compile()`, stash
+   the resulting `jit1_entry()` so the per-row path can find it.
+2. **Per-row invocation glue** — replace/short-circuit `interpreterNextLab()`
+   for the supported subset: call the compiled entry, then accept/reject the
+   row based on `JitState::row_filter_rejected` (set by
+   `OP_FILTER_REJECT_EXIT`). Fall back to `interpreterNextLab()` for any
+   filter the bridge rejected at setup.
+3. **Canary** — an MTR / NDB API test that forces a scan filter through JIT
+   (e.g. `4060`-style) and checks the row set matches the interpreter.
+4. **(Deferred)** standalone CASE disposition model — the translate API
+   currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
+   (`n_pending_case_jumps != 0`); only needed if scan filters require
+   multi-way CASE.
+
+### Historical: the Phase 5.1 canary suite (DONE)
 
 (Per `phase_5_1_ndbapi_test_additions.md` + `phase_5_1_debug_test_strategy.md`.)
 
@@ -383,11 +480,14 @@ Apple clang is rejected by the version check).
 
 | What | Path |
 |---|---|
-| Per-row JIT dispatch | `dbtup/JoinAggInterpreter.cpp:~484-500` (post-RONDB-1066; was ~1116) |
+| Per-row JIT dispatch (join) | `dbtup/JoinAggInterpreter.cpp:~484-500` (post-RONDB-1066; was ~1116) |
+| Per-row JIT dispatch (standalone) | `dbtup/AggInterpreter.cpp::ProcessRec` (added 2026-06-08, `55dab872ef4`) |
 | Lifted JIT members | `m_jit_entry`/`m_n_gb_cols` now in `AggInterpreterBase.hpp:405,~470` |
 | Glue + cold-call helpers | `dbtup/DbtupJitGlue.{cpp,hpp}` |
-| Compile-time setup | `dblqh/DblqhProxy.cpp` (`execJOIN_AGG_SETUP_REQ`, ~2336; compile ~2763-2800) |
+| Compile-time setup (join) | `dblqh/DblqhProxy.cpp` (`execJOIN_AGG_SETUP_REQ`, ~2336; compile ~2763-2800) |
+| Compile-time setup (standalone) | `dbtup/PushdownInterpreter.cpp` (`PushdownInterpreterFactory::Create`, `jit_arena` param) |
 | Bytecode→Program bridge | `dbtup/jit/ndb_jit_bridge.c` |
+| Scan-filter translate (Phase 7, inert) | `ndb_jit_bridge_translate_scan_filter` + `OP_FILTER_REJECT_EXIT` (`c955005048b`) |
 | Copy-and-patch engine | `dbtup/jit/jit1.c`, `bytecode1.h`, `hole_kinds.h` |
 | Stencils | `dbtup/jit/stencils_src.c`, `stencils_{x86_64,arm64}.h` |
 | NDB API canaries | `block_unit_test/testJoinAggNdbApi.cpp` |
