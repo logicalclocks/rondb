@@ -818,6 +818,35 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     // look for next
     scanFind(scanPtr, frag);
   }
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  /**
+   * RONDB-1062 deadlock-discovery test hook (error insert 12010): once this
+   * scan already holds at least one batch scan-lock, stall before locking the
+   * next row until the test clears the error insert.  Two opposing (ASC/DESC)
+   * locking scans on a 2-row single fragment thus each grab their first row
+   * before colliding on each other's, making the scan<->scan cycle
+   * deterministic.  Reuses the normal lock-wait real-time break, so the scan
+   * keeps holding its already-acquired batch lock(s) while it waits.
+   */
+  if (scan.m_state == ScanOp::Found && !scan.m_readCommitted &&
+      ERROR_INSERTED(12010) && !scan.m_accLockOps.isEmpty()) {
+    jam();
+    CheckLcpStop *cls = (CheckLcpStop *)signal->theData;
+    cls->scanPtrI = scan.m_userPtr;
+    cls->scanState = CheckLcpStop::ZSCAN_RESOURCE_WAIT;
+    c_lqh->execCHECK_LCP_STOP(signal);
+    if (signal->theData[0] == CheckLcpStop::ZTAKE_A_BREAK) {
+      jamEntryDebug();
+      release_c_free_scan_lock();
+      relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
+      /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
+      return;  // re-driven by LQH; re-checks the error insert each time
+    }
+    jamEntryDebug();
+    ndbrequire(signal->theData[0] == CheckLcpStop::ZABORT_SCAN);
+    scan.m_state = ScanOp::Last;  // TC aborted: fall through to close the scan
+  }
+#endif
   // for reading tuple key in Found or Locked state
   Uint32 *pkData = c_ctx.c_dataBuffer;
   unsigned pkSize = 0;  // indicates not yet done
@@ -1796,4 +1825,15 @@ void Dbtux::releaseScanOp(ScanOpPtr &scanPtr) {
   // unlink from per-fragment list and release from pool
   c_scanOpPool.release(scanPtr);
   checkPoolShrinkNeed(DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX, c_scanOpPool);
+}
+
+/* RONDB-1062 deadlock discovery: ScanOp index -> LQH scan record index. */
+bool Dbtux::get_scan_lqh_ptr(Uint32 scanPtrI, Uint32& lqhScanPtr) {
+  ScanOpPtr scanPtr;
+  scanPtr.i = scanPtrI;
+  if (!c_scanOpPool.getValidPtr(scanPtr)) {
+    return false;
+  }
+  lqhScanPtr = scanPtr.p->m_userPtr;
+  return true;
 }

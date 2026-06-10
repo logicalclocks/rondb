@@ -1025,22 +1025,29 @@ private:
   struct DeadlockEndpoint {
     Uint32 transId1;
     Uint32 transId2;
-    /* A transient *batch* scan lock (scanRecPtr != RNIL) vs a key op / taken-
-     * over lock held to commit.  A scan's deadlock node is its transaction,
-     * but it is never chosen as the collector/victim (we abort the key-op
-     * side instead), so its TC handle is not needed and is left 0. */
+    /* Kind of the requesting operation: a key op / taken-over lock held to
+     * commit (isScan == false) vs an ordered-index (DBTUX) or full-table
+     * (DBTUP) scan lock (isScan == true).  Set from the requesting block in
+     * userblockref; see describe_deadlock_endpoint. */
     bool isScan;
-    Uint32 tcOprec;  // valid only when !isScan
-    Uint32 tcRef;    // valid only when !isScan; 0 if unresolved
+    /* The coordinating transaction's TC handle.  For a key op: TC ref + LQH
+     * op index.  For a scan: the scan's TC ref (clientBlockref) + ScanFragRec
+     * id.  tcRef == 0 means the endpoint could not be resolved and the edge is
+     * dropped (the timeout backstop still applies). */
+    Uint32 tcOprec;
+    Uint32 tcRef;
   };
-  /* Fill a DeadlockEndpoint from an ACC operation: transid, kind, and (for a
-   * key op only) its coordinating transaction's TC ref + op index. */
+  /* Fill a DeadlockEndpoint from an ACC operation: transid, kind, and the
+   * coordinating transaction's TC ref + op index (key op) or scan TC ref +
+   * ScanFragRec id (scan), resolved through the instance in userblockref. */
   void describe_deadlock_endpoint(const Operationrec *opP,
                                   DeadlockEndpoint &ep);
   /* Send one wait-for edge (waiter -> owner) to the collector TC.  The
    * collector is the non-scan (key-op) endpoint when exactly one endpoint is
-   * a scan, else the smaller-hash endpoint.  A scan<->scan edge is dropped
-   * (left to the timeout backstop).  Reuses signal->theData. */
+   * a scan (so a scan<->key-op deadlock aborts the key-op side), else the
+   * smaller-hash endpoint (incl. scan<->scan, which aborts a scan).  An edge
+   * with an unresolved collector (tcRef == 0) is dropped.  Reuses
+   * signal->theData. */
   void send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &waiter,
                              const DeadlockEndpoint &owner);
   void abortSerieQueueOperation(Signal* signal,

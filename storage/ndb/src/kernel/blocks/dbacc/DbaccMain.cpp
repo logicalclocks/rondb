@@ -101,6 +101,7 @@ extern EventLogger *g_eventLogger;
 // primary key is stored in TUP
 #include "../dblqh/Dblqh.hpp"
 #include "../dbtup/Dbtup.hpp"
+#include "../dbtux/Dbtux.hpp"
 /**
  * DBACC interface description
  * ---------------------------
@@ -2110,41 +2111,69 @@ static inline bool deadlock_a_is_collector(Uint32 a1, Uint32 a2,
 /**
  * RONDB-1062: fill a DeadlockEndpoint from an ACC operation.
  *
- * The deadlock-graph node for a scan is its transaction (keyed by transid),
- * but a scan is never chosen as the collector/victim (we abort the key-op
- * side instead), so a scan endpoint only needs its transid + the isScan kind;
- * its TC handle is left 0.  A key op (this includes taken-over / explicit
- * lock requests, which are held to commit and have scanRecPtr == RNIL) is
- * resolved to its coordinating transaction's TC via the owning LDM's LQH;
- * if it lives in a different (e.g. query-thread) instance, try_get_tc_ref
- * fails and tcRef stays 0 so the edge is skipped (the timeout still applies).
+ * The op's userblockref/userptr refer to the block instance that actually
+ * requested the lock (LDM thread or query thread), so we resolve through that
+ * instance (via globalData.getBlock), not the fragment-owning instance:
+ *   - DBLQH/DBQLQH : a key operation; userptr is the LQH TcConnectionrec ->
+ *     try_get_tc_ref gives the TC ref + op index.  isScan = false.
+ *   - DBTUX/DBQTUX : an ordered-index scan; userptr is the DBTUX ScanOp ->
+ *     ScanOp::m_userPtr is the LQH scan record -> try_get_scan_tc_ref gives the
+ *     scan's TC ref (clientBlockref) + ScanFragRec id.  isScan = true.
+ *   - DBTUP/DBQTUP : a full-table scan; same as DBTUX via the DBTUP ScanOp.
+ * Anything that does not resolve leaves tcRef = 0 and the edge is dropped (the
+ * timeout backstop still applies).
  */
 void Dbacc::describe_deadlock_endpoint(const Operationrec *opP,
                                        DeadlockEndpoint &ep)
 {
   ep.transId1 = opP->transId1;
   ep.transId2 = opP->transId2;
-  ep.isScan = (opP->scanRecPtr != RNIL);
+  ep.isScan = false;
   ep.tcOprec = 0;
   ep.tcRef = 0;
-  Dblqh *const lqh = m_ldm_instance_used->c_lqh;
-  if (!ep.isScan)
+  const Uint32 ref = opP->userblockref;
+  const Uint32 bno = refToMain(ref);
+  const Uint32 inst = refToInstance(ref);
+  if (bno == DBLQH || bno == DBQLQH)
   {
-    /* Key op (incl. taken-over / explicit lock req): userptr is the LQH op. */
-    lqh->try_get_tc_ref(opP->userptr, ep.tcOprec, ep.tcRef);
+    Dblqh *const lqh = (Dblqh *)globalData.getBlock(bno, inst);
+    if (lqh != nullptr)
+    {
+      lqh->try_get_tc_ref(opP->userptr, ep.tcOprec, ep.tcRef);
+    }
+    return;
+  }
+  /* Scan lock (DBTUX ordered index, or DBTUP full table scan).  Follow the
+   * scan op to its LQH scan record (same instance as the scan block), then to
+   * the scan's TC. */
+  Uint32 lqhScanPtr = RNIL;
+  if (bno == DBTUX || bno == DBQTUX)
+  {
+    ep.isScan = true;
+    Dbtux *const tux = (Dbtux *)globalData.getBlock(bno, inst);
+    if (tux == nullptr || !tux->get_scan_lqh_ptr(opP->userptr, lqhScanPtr))
+    {
+      return;
+    }
+  }
+  else if (bno == DBTUP || bno == DBQTUP)
+  {
+    ep.isScan = true;
+    Dbtup *const tup = (Dbtup *)globalData.getBlock(bno, inst);
+    if (tup == nullptr || !tup->get_scan_lqh_ptr(opP->userptr, lqhScanPtr))
+    {
+      return;
+    }
   }
   else
   {
-    /* Batch scan lock: ACC ScanRec.scanUserptr is the LQH ScanRecord index,
-     * whose scanTcrec gives the scan's TC + ScanFragRec id (tcOprec).  Only
-     * needed if this scan becomes the collector (scan<->scan); for scan<->
-     * key-op the scan is never the collector. */
-    ScanRecPtr sp;
-    sp.i = opP->scanRecPtr;
-    if (m_curr_acc->scanRec_pool.getValidPtr(sp))
-    {
-      lqh->try_get_scan_tc_ref(sp.p->scanUserptr, ep.tcOprec, ep.tcRef);
-    }
+    return;  // unknown requestor block: leave unresolvable
+  }
+  const Uint32 lqhBno = (bno == DBQTUX || bno == DBQTUP) ? DBQLQH : DBLQH;
+  Dblqh *const lqh = (Dblqh *)globalData.getBlock(lqhBno, inst);
+  if (lqh != nullptr)
+  {
+    lqh->try_get_scan_tc_ref(lqhScanPtr, ep.tcOprec, ep.tcRef);
   }
 }
 
@@ -2180,13 +2209,16 @@ void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
   }
   const DeadlockEndpoint &collector = collectorIsWaiter ? w : o;
   const BlockReference dstRef = collector.tcRef;
-  if (dstRef == 0)
+  // The collector must be a transaction coordinator.  Skip (rather than risk a
+  // sendSignal to an unknown node) if the ref didn't resolve to a TC - e.g. an
+  // endpoint whose records live in another (query-thread) instance.
+  if (dstRef == 0 || refToMain(dstRef) != DBTC)
   {
-    DEB_DEADLOCK(("(%u) drop edge: collector TC ref unresolved; waiter"
-                  " trans(%u,%u) scan=%u owner trans(%u,%u) scan=%u",
-                  instance(), w.transId1, w.transId2, (Uint32)w.isScan,
-                  o.transId1, o.transId2, (Uint32)o.isScan));
-    return;  // collector TC ref could not be resolved locally
+    DEB_DEADLOCK(("(%u) drop edge: collector TC ref unresolved/invalid"
+                  " (dst=0x%x); waiter trans(%u,%u) scan=%u owner trans(%u,%u)"
+                  " scan=%u", instance(), dstRef, w.transId1, w.transId2,
+                  (Uint32)w.isScan, o.transId1, o.transId2, (Uint32)o.isScan));
+    return;
   }
   DEB_DEADLOCK(("(%u) send DBACC_WAITFOR_REP: waiter trans(%u,%u) scan=%u"
                 " tc(0x%x,%u) -> owner trans(%u,%u) scan=%u tc(0x%x,%u),"
@@ -8679,50 +8711,9 @@ void Dbacc::checkNextBucketLab(Signal *signal) {
             scanPtr.p->scanLockMode != ZREADLOCK, operationRecPtr.p->m_lockTime,
             getHighResTimer());
         putOpScanLockQue(); /* PUT THE OP IN A QUE IN THE SCAN REC */
-        /**
-         * RONDB-1062 deadlock discovery: this scan operation must wait for
-         * the lock held by queOperPtr's transaction(s).  Report a wait-for
-         * edge from the scan's transaction to each distinct foreign holder in
-         * the owner's parallel queue.  Sent here, before signal->theData is
-         * reused for ACC_CHECK_SCAN below.
-         */
-        {
-          DeadlockEndpoint dl_waiter;  // the scan op (isScan == true)
-          describe_deadlock_endpoint(operationRecPtr.p, dl_waiter);
-          const Uint32 DL_MAX_OWNERS = 8;
-          Uint32 dl_seenT1[DL_MAX_OWNERS], dl_seenT2[DL_MAX_OWNERS];
-          Uint32 dl_num = 0;
-          OperationrecPtr loopPtr = queOperPtr;
-          while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
-          {
-            ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
-            if (!operationRecPtr.p->is_same_trans(loopPtr.p))
-            {
-              bool dup = false;
-              for (Uint32 j = 0; j < dl_num; j++)
-              {
-                if (dl_seenT1[j] == loopPtr.p->transId1 &&
-                    dl_seenT2[j] == loopPtr.p->transId2)
-                {
-                  dup = true;
-                  break;
-                }
-              }
-              if (!dup)
-              {
-                dl_seenT1[dl_num] = loopPtr.p->transId1;
-                dl_seenT2[dl_num] = loopPtr.p->transId2;
-                dl_num++;
-                DeadlockEndpoint dl_owner;
-                describe_deadlock_endpoint(loopPtr.p, dl_owner);
-                /* scan waiter vs key-op owner -> collector is the key-op
-                 * owner; scan vs scan -> collector is the min-hash scan. */
-                send_deadlock_waitfor(signal, dl_waiter, dl_owner);
-              }
-            }
-            loopPtr.i = loopPtr.p->nextParallelQue;
-          }
-        }
+        /* RONDB-1062: no deadlock wait-for edge is reported here - this is the
+         * dead DBACC full-table-scan path (real scans run in DBTUX/DBTUP and
+         * take their locks via ACC_LOCKREQ -> accIsLockedLab). */
         scanPtr.p->scan_lastSeen = __LINE__;
         BlockReference ref = scanPtr.p->scanUserblockref;
         signal->theData[0] = scanPtr.p->scanUserptr;

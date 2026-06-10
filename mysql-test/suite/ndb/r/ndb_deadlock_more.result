@@ -1,0 +1,4 @@
+# RONDB-1062: additional proactive deadlock-discovery cases.
+# TransactionDeadlockDetectionTimeout is 60s (see .cnf), so a deadlock
+# resolved in well under that proves proactive detection fired.
+# ndb_deadlock_more: all scenarios resolved as expected.

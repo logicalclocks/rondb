@@ -1,0 +1,6 @@
+# RONDB-1062: scan vs key-op deadlock discovery.
+# A locking range scan deadlocked with a key operation must be resolved
+# by aborting the KEY OP (the scan survives), promptly (proactive), with
+# TransactionDeadlockDetectionTimeout set to 60s (see .cnf).
+# ndb_deadlock_scan: scan vs key-op deadlock aborted the key op,
+# the scan survived, resolved proactively.

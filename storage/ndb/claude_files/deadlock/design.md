@@ -595,26 +595,57 @@ would *not* abort proactively, which is why the scan victim is aborted via `scan
 directly.
 
 **Status: IMPLEMENTED (incl. scan↔scan).**
-- `Dbacc::DeadlockEndpoint` + `describe_deadlock_endpoint()` classify each endpoint by
-  `scanRecPtr` (`!= RNIL` ⇒ scan). Key ops resolve their TC handle via `try_get_tc_ref`;
-  scan endpoints resolve theirs via ACC `ScanRec.scanUserptr` → `Dblqh::try_get_scan_tc_ref`
-  (→ `scanTcrec` → TC ref + ScanFragRec id), needed when a scan is the collector.
+- `Dbacc::DeadlockEndpoint` + `describe_deadlock_endpoint()` classify and resolve each endpoint
+  from the requesting op's `userblockref`/`userptr`, which name the **instance actually used**
+  (LDM or query thread). `globalData.getBlock(refToMain(userblockref), refToInstance(userblockref))`
+  reaches that instance and dispatches by block:
+  - `DBLQH`/`DBQLQH` → key op → `Dblqh::try_get_tc_ref(userptr)` (TC ref + LQH op idx);
+  - `DBTUX`/`DBQTUX` (ordered-index) and `DBTUP`/`DBQTUP` (full-table) → scan →
+    `get_scan_lqh_ptr(userptr)` (= `ScanOp::m_userPtr`, the LQH scan record) → that instance's
+    `Dblqh::try_get_scan_tc_ref` (→ `scanTcrec` → `clientBlockref` (TC) + `clientConnectrec`
+    (ScanFragRec id)).
+
+  `m_ldm_instance_used` is **not** used here — it names the fragment-owning block (for metadata),
+  not the op's actual instance. An endpoint that doesn't resolve leaves `tcRef == 0` and the edge
+  is dropped (timeout backstop).
 - `send_deadlock_waitfor()` applies the kind-aware collector rule, sets `CollectorIsWaiter`
-  and `CollectorIsScan` in the signal, and only drops an edge if the collector's TC ref is
-  unresolvable (e.g. a query-thread scan); used by both the `accIsLockedLab` fan-out and the
-  `checkNextBucketLab` scan hook.
+  and `CollectorIsScan` in the signal, and drops an edge only if the collector ref is not a TC
+  (`refToMain(dstRef) != DBTC`). Driven by the `accIsLockedLab` fan-out; the dead
+  `checkNextBucketLab` hook (DBACC full-table scan, no longer used) was removed — real scans run
+  in DBTUX/DBTUP and take their locks via `ACC_LOCKREQ` → `accIsLockedLab`.
 - DBTC `execDBACC_WAITFOR_REP` branches on `CollectorIsScan`: key-op collector →
   `TcConnectRecord` + `timeOutFoundLab(266)`; scan collector → `ScanFragRec`→`ScanRecord`
   (must be `RUNNING`, state `CS_START_SCAN`) + `scanError(296)`. The transid guard applies in
   both paths.
 
-**Verified:** a normal key-op ACC op has `scanRecPtr == RNIL` on every non-scan seize path
-(key-op init, explicit/takeover lock req, copy-frag); only the batch scan seize sets it, so
-the discriminator is reliable and takeover locks classify as key ops. The LQH scan's
-`tcConnectrec.tcOprec` is the TC `ScanFragRec` id (SCAN_FRAGREQ `senderData` →
-`clientConnectrec` → `tcOprec`), so DBTC can resolve a scan collector from the carried
-`tcOprec`.
+**Verified:** the LQH scan's `tcConnectrec.{clientBlockref,clientConnectrec}` give the scan's TC
+ref + TC `ScanFragRec` id (SCAN_FRAGREQ `senderData` → `clientConnectrec`), so DBTC resolves a
+scan collector from the carried `tcOprec`. Because routing is by the requesting op's *actual*
+instance, a query-thread-driven scan (`DBQTUX`/`DBQTUP`) resolves the same way as an LDM scan.
 
-**Remaining caveat:** a scan whose `ScanRecord` lives in a different LQH instance than the
-fragment's LDM (e.g. a query-thread-driven scan) won't resolve its TC handle and is dropped
-(timeout backstop). Exclusive-locking scans run in the LDM, so the scan↔scan case resolves.
+## 16. Test coverage
+
+| Test | Kind | Covers |
+|------|------|--------|
+| `suite/ndb/ndb_deadlock_discovery` | MTR | key-op↔key-op 2-cycle; negative (plain lock wait not falsely aborted) |
+| `suite/ndb/ndb_deadlock_more` | MTR | heavy contention (no false deadlock); 3 concurrent 2-cycles; DELETE↔UPDATE; unique-index↔PK |
+| `suite/ndb/ndb_deadlock_scan` | MTR | scan↔key-op (the key op is the deterministic victim; the scan survives) |
+| `suite/ndb/ndb_deadlock_scan_scan` | MTR → C++ | scan↔scan, via `testDeadlock -scan s` |
+
+All MTR tests set `TransactionDeadlockDetectionTimeout = 60000` and assert resolution well
+under that (typically `< 20s`), so a pass proves *proactive* detection rather than the timeout.
+
+**scan↔scan (`testDeadlock.cpp` `-scan s`, `ss_*`):** a deterministic SQL test is not practical
+(MySQL fetches `FOR UPDATE` scans eagerly), so the C++ NDB-API program runs two exclusive
+ordered index scans (ascending/descending, **batch 2**, **single-fragment** table) concurrently.
+DBTUX **error insert 12010** makes a locking scan stall — via the normal `ZSCAN_RESOURCE_WAIT`
+real-time break, so it keeps holding its already-acquired batch lock — before locking the *next*
+row of a batch. The program arms it, lets each scan grab its first row and block, then clears it
+so both proceed to the other's row and collide. **Batch 2** (not 1) keeps the first row's lock
+held while waiting on the second; lock takeover is deliberately avoided (it would turn the held
+locks into key ops, and scan↔key-op routing would split the two edges to different collectors).
+A dedicated `Ndb` owns the table so it is always dropped (no check-testcase leak); program output
+goes to a private file removed on success (not the shared `$NDB_TOOLS_OUTPUT`). It asserts exactly
+one scan is aborted (266/274/296), the other survives, and resolution is prompt (`< 20s` vs the
+60s timeout). MTR locates the binary via `NDB_TEST_DEADLOCK_BINARY` (set in `mysql-test-run.pl`)
+and `--skip`s if it wasn't built (`WITH_NDB_TEST`).

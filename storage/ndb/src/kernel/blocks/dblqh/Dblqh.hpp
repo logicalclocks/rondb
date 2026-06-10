@@ -6329,7 +6329,19 @@ inline bool Dblqh::try_get_scan_tc_ref(Uint32 scanPtrI,
   {
     return false;
   }
-  return try_get_tc_ref(sp.p->scanTcrec, tcOprec, tcRef);
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = sp.p->scanTcrec;
+  if (!tcConnect_pool.getValidPtr(tcConnectptr))
+  {
+    return false;
+  }
+  /* For a scan the coordinating TC is the SCAN_FRAGCONF destination
+   * (clientBlockref), and the TC-side handle is clientConnectrec (the TC
+   * ScanFragRec id).  A scan does NOT set tcBlockref/tcOprec the way a key op
+   * does, so using those (as try_get_tc_ref would) routes to an unknown node. */
+  tcOprec = tcConnectptr.p->clientConnectrec;
+  tcRef = tcConnectptr.p->clientBlockref;
+  return true;
 }
 
 inline bool Dblqh::have_frag_scan_access() const {

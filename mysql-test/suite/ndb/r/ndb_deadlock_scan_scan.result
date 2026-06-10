@@ -1,0 +1,12 @@
+# RONDB-1062: deterministic scan<->scan deadlock (testDeadlock -scan s).
+# Two exclusive ordered index scans (ascending/descending, batch 2) on a
+# single-fragment table run concurrently.  A DBTUX error insert (12010)
+# makes each scan stall after locking its first row until the program
+# clears it, so both still hold a row when they collide on each other's,
+# forming a scan<->scan cycle.  With TransactionDeadlockDetectionTimeout
+# = 60s (see .cnf), the program asserts the cycle is resolved in well
+# under that (one scan aborted with a lock-wait/timeout error, the other
+# survives) - which proves proactive detection.  The program's exit code
+# is the pass/fail signal; its output is logged to NDB_TOOLS_OUTPUT, not
+# the result file.
+# scan<->scan deadlock detected and resolved proactively.
