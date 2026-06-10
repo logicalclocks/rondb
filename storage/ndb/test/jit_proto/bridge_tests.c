@@ -244,7 +244,7 @@ static int assert_scan_filter_accepted(const char *name,
                                        uint16_t expected_n_ops) {
   JitBridgeError err;
   JitBridgeReason r = ndb_jit_bridge_translate_scan_filter(
-      filter_prog, n_words, out_prog, &err);
+      filter_prog, n_words, out_prog, &err, /*out_reject_code=*/NULL);
   if (r != JIT_BRIDGE_OK) {
     mark_fail(name, "expected OK, got reason=%d (offending_word=%u op=%u)",
               r, err.offending_word, err.offending_op);
@@ -267,7 +267,7 @@ static void assert_scan_filter_rejected(const char *name,
   Program p;
   JitBridgeError err;
   JitBridgeReason r = ndb_jit_bridge_translate_scan_filter(
-      filter_prog, n_words, &p, &err);
+      filter_prog, n_words, &p, &err, /*out_reject_code=*/NULL);
   if (r != want_reason) {
     mark_fail(name, "reason=%d, want %d", r, want_reason);
     return;
@@ -1153,6 +1153,55 @@ static void test_scan_filter_exit_ok_before_refuse_accept(void) {
   mark_pass(name);
 }
 
+/* T39: the scan-filter bridge captures the program's EXIT_REFUSE code
+ * (theInstruction >> 16) into out_reject_code, so the runtime can
+ * TUPKEY_abort with the program's actual code instead of a hardcoded one.
+ * Same IS-NOT-NULL shape as T38 but with refuse code 899. */
+static void test_scan_filter_captures_refuse_code(void) {
+  const char *name = "T39 scan_filter_captures_refuse_code";
+  uint32_t filter_prog[4] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/3),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 899u << 16),
+  };
+  Program p;
+  JitBridgeError err;
+  uint32_t reject_code = 0;
+  JitBridgeReason r = ndb_jit_bridge_translate_scan_filter(
+      filter_prog, 4, &p, &err, &reject_code);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail(name, "expected OK, got reason=%d", r);
+    return;
+  }
+  if (reject_code != 899u) {
+    mark_fail(name, "reject_code=%u, want 899", (unsigned)reject_code);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T40: a program whose EXIT_REFUSE words carry differing codes can't be
+ * represented by a single per-program reject code, so the scan-filter
+ * bridge rejects it (it falls back to the interpreter). Shape:
+ *     0: BRANCH_ATTR_NE_NULL col -> 3   (not NULL -> reject with 626)
+ *     2: EXIT_REFUSE 899                (NULL     -> reject with 899)
+ *     3: EXIT_REFUSE 626
+ * The walk captures 899 at pc 2, then sees 626 at pc 3 -> mismatch. */
+static void test_scan_filter_mixed_refuse_codes_reject(void) {
+  uint32_t filter_prog[4] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_NE_NULL, /*offset=*/3),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 899u << 16),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 626u << 16),
+  };
+  assert_scan_filter_rejected("T40 scan_filter_mixed_refuse_codes_reject",
+                              filter_prog, 4,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/UINT32_MAX,
+                              EMB_EXIT_REFUSE);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1199,6 +1248,8 @@ int main(void) {
   test_scan_filter_linked_reject();
   test_scan_filter_write_output_reject();
   test_scan_filter_exit_ok_before_refuse_accept();
+  test_scan_filter_captures_refuse_code();
+  test_scan_filter_mixed_refuse_codes_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

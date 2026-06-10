@@ -379,20 +379,26 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
 
 void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
                                     const Uint32 *filter_prog,
-                                    Uint32        n_words) {
+                                    Uint32        n_words,
+                                    Uint32       *out_reject_code) {
+  if (out_reject_code != nullptr) {
+    *out_reject_code = 0;
+  }
   if (arena == nullptr || filter_prog == nullptr || n_words == 0) {
     return nullptr;
   }
 
   /* Stage 1: NDB scan-filter wire format -> normalized Program. The
-   * scan-filter bridge admits only the embedded NULL-branch subset
-   * (BRANCH_ATTR_*_NULL / READ_LINKED_TO_MEM / BRANCH_LINKED_*_NULL /
-   * EXIT_OK / EXIT_REFUSE); anything else returns != JIT_BRIDGE_OK and
-   * we leave the scan on the interpreter. */
+   * scan-filter bridge admits only the embedded attr-NULL-branch subset
+   * (BRANCH_ATTR_*_NULL / EXIT_OK / EXIT_REFUSE); linked ops and anything
+   * else return != JIT_BRIDGE_OK and we leave the scan on the interpreter.
+   * reject_code captures the program's EXIT_REFUSE code so the caller can
+   * TUPKEY_abort with the program's actual code, not a hardcoded one. */
   Program p;
   JitBridgeError berr;
-  JitBridgeReason brc =
-      ndb_jit_bridge_translate_scan_filter(filter_prog, n_words, &p, &berr);
+  Uint32 reject_code = 0;
+  JitBridgeReason brc = ndb_jit_bridge_translate_scan_filter(
+      filter_prog, n_words, &p, &berr, &reject_code);
   if (brc != JIT_BRIDGE_OK) {
     return nullptr;
   }
@@ -401,6 +407,9 @@ void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
   Jit1Prog *jp = jit1_compile(arena, &p, /*timing=*/nullptr);
   if (jp == nullptr) {
     return nullptr;
+  }
+  if (out_reject_code != nullptr) {
+    *out_reject_code = reject_code;
   }
   return reinterpret_cast<void *>(jit1_entry(jp));
 }

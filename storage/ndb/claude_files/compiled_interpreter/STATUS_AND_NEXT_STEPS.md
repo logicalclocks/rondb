@@ -448,10 +448,13 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    2026-06-10** (bridge_tests incl. T38 + the MTR canary all pass).
    ~~(b) tighten `translate_scan_filter` to reject linked ops~~ **DONE
    2026-06-10** (`allow_linked_ops` flag; bridge_tests T36 flipped to a
-   reject test). (c) capture the per-instruction `EXIT_REFUSE` code instead
-   of assuming 626; (d) **the big one** — lift onto Phase 5's full
-   embedded-branch family so real comparison predicates (`col > 5`,
-   `col = 'x'`) JIT, not just NULL tests.
+   reject test). ~~(c) capture the `EXIT_REFUSE` code instead of assuming
+   626~~ **DONE 2026-06-10** — bridge returns `out_reject_code` (the
+   program's uniform `EXIT_REFUSE` code), cached on storedProc + scan_rec
+   and used in the per-row `TUPKEY_abort`; mixed-code programs fall back to
+   the interpreter (bridge_tests T39/T40). (d) **the big one** — lift onto
+   Phase 5's full embedded-branch family so real comparison predicates
+   (`col > 5`, `col = 'x'`) JIT, not just NULL tests.
 5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
    (`n_pending_case_jumps != 0`); only needed if scan filters require

@@ -78,12 +78,20 @@ natively per row instead of `interpreterNextLab()`.
    `RinstructionCounter += RexecRegionLen`, fall through. Reject →
    `TUPKEY_abort(req_struct, TUP_NO_TUPLE_FOUND)`. Null entry → existing
    `interpreterNextLab` path, unchanged.
-5. **Reject code 626** (`TUP_NO_TUPLE_FOUND`). The bridge collapses all
-   `EXIT_REFUSE` to `OP_FILTER_REJECT_EXIT` (drops the per-instruction
-   code); 626 is the code Dblqh.hpp recommends for new filter programs (the
-   legacy 899 / `ZUSER_SEARCH_CONDITION_FALSE_CODE` is also whitelisted by
-   `scanTupkeyRefLab`, but is overloaded with "rowid already allocated").
-   Capturing the actual per-instruction code is a possible refinement.
+5. **Reject code: captured from the program** (done 2026-06-10). The bridge
+   now reads each `EXIT_REFUSE`'s code (`inst >> 16` — the field the
+   interpreter's `handleExitRefuse` reads) and returns it via
+   `out_reject_code`; the runtime `TUPKEY_abort`s with the program's actual
+   code, so the JIT reject behaves exactly like the interpreter (the LQH
+   scan layer decides skip-row vs abort-scan from the code; 626/899 ⇒ skip).
+   A boolean WHERE filter rejects with one uniform code, so a single
+   per-program value suffices; a program whose `EXIT_REFUSE` words carry
+   *differing* codes is rejected (`JIT_BRIDGE_UNSUPPORTED_OP` → interpreter
+   fallback) since one value can't represent them. The code is cached on the
+   stored procedure (`m_jit_filter_reject_code`) and copied onto the scan
+   record. (True per-instruction codes — different codes hit at runtime
+   within one program — would need the `OP_FILTER_REJECT_EXIT` stencil to
+   carry the code into `JitState`; boolean filters never need that.)
 6. **`EXIT_OK` lowering differs from aggregation** (bring-up bug, fixed).
    NdbScanFilter lays out `col IS NOT NULL` as
    `BRANCH_ATTR_EQ_NULL -> EXIT_OK -> EXIT_REFUSE` — an explicit `EXIT_OK`
@@ -152,7 +160,11 @@ natively per row instead of `interpreterNextLab()`.
   practice. Regression: `bridge_tests` T36 (now a reject test).
 - **No standalone CASE disposition.** `translate_scan_filter` already
   rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets (`n_pending_case_jumps`).
-- **Per-instruction EXIT_REFUSE code** is dropped in favour of a fixed 626.
+- **Mixed per-instruction EXIT_REFUSE codes** aren't supported: a single
+  per-program code is captured and programs with differing codes fall back
+  to the interpreter. True per-instruction (different codes hit at runtime)
+  would need a stencil-carried `JitState` field; boolean WHERE filters use
+  one uniform code so this isn't needed in practice.
 
 ## Files touched
 
@@ -187,7 +199,9 @@ cd debug_build/mysql-test && ./mtr --suite=ndb_push_agg --force --nowarnings \
 2. ~~Tighten `translate_scan_filter` to reject linked ops.~~ **DONE
    2026-06-10** — `allow_linked_ops` flag; scan path rejects
    READ_LINKED_TO_MEM / BRANCH_LINKED_*_NULL at translate (bridge_tests T36).
-3. Capture the per-instruction EXIT_REFUSE code instead of assuming 626.
+3. ~~Capture the EXIT_REFUSE code instead of assuming 626.~~ **DONE
+   2026-06-10** — bridge returns `out_reject_code`, plumbed to the runtime;
+   mixed-code programs fall back (bridge_tests T39/T40).
 4. Lands on top of Phase 5's full embedded-branch family to JIT real
    comparison predicates (`col > 5`, `col = 'x'`), not just NULL tests —
    the big one for real-world coverage.

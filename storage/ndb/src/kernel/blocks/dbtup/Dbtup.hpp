@@ -1746,10 +1746,16 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      * procedure so a pooled record can never run a stale program's
      * compiled filter.
      *
-     * Field order: the Uint8 joins the existing byte cluster above and
-     * the 8-byte pointer follows, so the pointer's alignment padding is
+     * m_jit_filter_reject_code holds the program's EXIT_REFUSE code
+     * (theInstruction >> 16, captured at compile), so the per-row reject
+     * path can TUPKEY_abort with the program's actual code rather than a
+     * hardcoded one. It is a 16-bit field in the wire format.
+     *
+     * Field order: the Uint8 + Uint16 join the existing byte cluster above
+     * and the 8-byte pointer follows, so the pointer's alignment padding is
      * not duplicated. */
     Uint8 m_jit_filter_state;
+    Uint16 m_jit_filter_reject_code;
     void* m_jit_filter_entry;    // JitEntry, or nullptr
     union {
       Uint32 nextPool;

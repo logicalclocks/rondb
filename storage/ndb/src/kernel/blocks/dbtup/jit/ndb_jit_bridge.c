@@ -415,6 +415,12 @@ typedef struct {
  * case for why). 0xFF is not a valid JIT op kind. */
 #define BR_EXIT_OK_FALLTHROUGH 0xFFu
 
+/* out_exit_refuse_code sentinel: "no EXIT_REFUSE seen yet". A real refuse
+ * code is `inst >> 16`, i.e. at most 16 bits, so a >16-bit sentinel can't
+ * collide. Callers that capture the code init their local to this before
+ * calling translate_embedded_block. */
+#define BR_NO_REFUSE_CODE 0xFFFFFFFFu
+
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
     Program *out_prog, JitBridgeError *out_err,
@@ -424,7 +430,8 @@ static JitBridgeReason translate_embedded_block(
     uint8_t exit_ok_kind,
     int allow_linked_ops,
     PendingCaseJump *pending_case_jumps,
-    uint16_t *n_pending_case_jumps) {
+    uint16_t *n_pending_case_jumps,
+    uint32_t *out_exit_refuse_code) {
 
   if (emb_len == 0) {
     /* Empty embedded block — equivalent to "always pass". */
@@ -746,6 +753,29 @@ static JitBridgeReason translate_embedded_block(
       }
 
       case BR_EMB_EXIT_REFUSE: {
+        /* Capture the refuse code (theInstruction >> 16 — same field the
+         * interpreter's handleExitRefuse reads). The scan-filter runtime
+         * TUPKEY_aborts with this code instead of a hardcoded one, so the
+         * JIT reject behaves exactly like the interpreter (the LQH scan
+         * layer decides skip-row vs abort-scan from the code). A boolean
+         * WHERE filter rejects with one uniform code across the program;
+         * a single per-program value can't represent differing codes, so
+         * if two EXIT_REFUSE words disagree we reject the program (it
+         * falls back to the interpreter). out_exit_refuse_code is NULL for
+         * the aggregation/test paths, which don't need the code. */
+        if (out_exit_refuse_code != NULL) {
+          uint32_t refuse_code = inst >> 16;
+          if (*out_exit_refuse_code != BR_NO_REFUSE_CODE &&
+              *out_exit_refuse_code != refuse_code) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
+          *out_exit_refuse_code = refuse_code;
+        }
         /* Phase 5.0: EXIT_REFUSE = "row rejected" = early-
          * terminate the JIT'd function (skip accumulators).
          * OP_EXIT's stencil is the function-return sequence,
@@ -831,23 +861,29 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   BR_EXIT_OK_FALLTHROUGH,
                                   /*allow_linked_ops=*/1,
                                   pending_case_jumps,
-                                  &n_pending_case_jumps);
+                                  &n_pending_case_jumps,
+                                  /*out_exit_refuse_code=*/NULL);
 }
 
 JitBridgeReason ndb_jit_bridge_translate_scan_filter(
     const uint32_t *filter_prog,
     uint32_t       n_words,
     Program       *out_prog,
-    JitBridgeError *out_err) {
+    JitBridgeError *out_err,
+    uint32_t       *out_reject_code) {
   memset(out_prog, 0, sizeof(*out_prog));
   if (out_err != NULL) {
     out_err->reason = JIT_BRIDGE_OK;
     out_err->offending_word = 0;
     out_err->offending_op = 0;
   }
+  if (out_reject_code != NULL) {
+    *out_reject_code = 0;
+  }
 
   PendingCaseJump pending_case_jumps[BC_MAX_OPS];
   uint16_t n_pending_case_jumps = 0;
+  uint32_t refuse_code = BR_NO_REFUSE_CODE;
   JitBridgeReason rc =
       translate_embedded_block(filter_prog, n_words, out_prog, out_err,
                                /*outer_word_pos=*/0,
@@ -856,9 +892,18 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                /*exit_ok_kind=*/OP_EXIT,
                                /*allow_linked_ops=*/0,
                                pending_case_jumps,
-                               &n_pending_case_jumps);
+                               &n_pending_case_jumps,
+                               &refuse_code);
   if (rc != JIT_BRIDGE_OK) {
     return rc;
+  }
+
+  /* Publish the program's (uniform) EXIT_REFUSE code. If the filter has
+   * no reject path (no EXIT_REFUSE), leave it 0 — the runtime never
+   * rejects such a program, so the value is unused. The DBTUP glue maps
+   * this to the TUPKEY_abort code on the reject path. */
+  if (out_reject_code != NULL && refuse_code != BR_NO_REFUSE_CODE) {
+    *out_reject_code = refuse_code;
   }
 
   /* WRITE_INTERPRETER_OUTPUT skip-offset handling is meaningful only
@@ -1078,7 +1123,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
             pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
             /*allow_linked_ops=*/1, pending_case_jumps,
-            &n_pending_case_jumps);
+            &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);
         if (rc != JIT_BRIDGE_OK) return rc;
         pos += 1 + emb_len;
         break;

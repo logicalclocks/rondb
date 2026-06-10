@@ -152,10 +152,16 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
  * (the caller casts to JitEntry), or nullptr if the program is not
  * JIT-eligible or compilation failed — in which case the caller runs
  * the interpreter (interpreterNextLab) as before. Called once per
- * prepared scan program at scan setup. */
+ * prepared scan program at scan setup.
+ *
+ * out_reject_code (nullable) receives the program's EXIT_REFUSE code so
+ * the per-row path can TUPKEY_abort with the program's actual code
+ * instead of a hardcoded one (matching the interpreter). Set to 0 on any
+ * failure/early return, or for a filter with no reject path. */
 void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
                                     const Uint32 *filter_prog,
-                                    Uint32        n_words);
+                                    Uint32        n_words,
+                                    Uint32       *out_reject_code);
 
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The

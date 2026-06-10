@@ -186,6 +186,7 @@ void Dbtup::scanProcedure(Signal* signal,
    * a new scan procedure is (re)initialised. */
   storedPtr.p->m_jit_filter_state = JIT_FILTER_UNTRIED;
   storedPtr.p->m_jit_filter_entry = nullptr;
+  storedPtr.p->m_jit_filter_reject_code = 0;
 
   set_trans_state(regOperPtr, TRANS_IDLE);
 

@@ -89,23 +89,31 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                           Program       *out_prog,
                                           JitBridgeError *out_err);
 
-/* Phase 7 groundwork: translate a standalone SCAN_FRAGREQ scan-filter
- * interpreter program into the internal Program/Op[] form.
+/* Phase 7: translate a standalone SCAN_FRAGREQ scan-filter interpreter
+ * program into the internal Program/Op[] form. Wired into DBTUP via
+ * Dbtup::scanCopyAttrinfo (compile) + Dbtup::interpreterStartLab (per-row
+ * dispatch); see phase_7_implementation.md.
  *
- * This reuses the embedded-interpreter subset already supported for
- * aggregation filters: BRANCH_ATTR_*_NULL, READ_LINKED_TO_MEM,
- * BRANCH_LINKED_*_NULL, EXIT_OK, and EXIT_REFUSE. On success the
- * returned Program uses OP_FILTER_REJECT_EXIT for EXIT_REFUSE and has
- * a trailing OP_EXIT for the fall-through accepted-row path.
+ * Reuses the embedded-interpreter subset BRANCH_ATTR_*_NULL, EXIT_OK,
+ * EXIT_REFUSE. EXIT_OK lowers to OP_EXIT (the accept terminator) and
+ * EXIT_REFUSE to OP_FILTER_REJECT_EXIT; a trailing OP_EXIT covers a
+ * fall-off-the-end accept. Linked ops (READ_LINKED_TO_MEM,
+ * BRANCH_LINKED_*_NULL) are rejected here — they need a join-aggregation
+ * context a standalone scan filter doesn't have.
  *
- * This is a translation/admission API only. DBTUP still needs runtime
- * scan-filter invocation glue before it can replace interpreterNextLab()
- * for SCAN_FRAGREQ filters. */
+ * out_reject_code (nullable) receives the program's EXIT_REFUSE code
+ * (theInstruction >> 16 — the same field the interpreter's handleExitRefuse
+ * reads), so the runtime can TUPKEY_abort with the program's actual code
+ * instead of a hardcoded one. A boolean WHERE filter rejects with one
+ * uniform code; a program whose EXIT_REFUSE words carry differing codes is
+ * rejected (JIT_BRIDGE_UNSUPPORTED_OP) since one value can't represent them.
+ * 0 is written when the filter has no reject path. */
 JitBridgeReason ndb_jit_bridge_translate_scan_filter(
     const uint32_t *filter_prog,
     uint32_t       n_words,
     Program       *out_prog,
-    JitBridgeError *out_err);
+    JitBridgeError *out_err,
+    uint32_t       *out_reject_code);
 
 #ifdef NDB_JIT_BRIDGE_TESTING
 JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(

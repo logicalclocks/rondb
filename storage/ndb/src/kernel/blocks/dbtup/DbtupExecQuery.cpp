@@ -1097,11 +1097,16 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
              * RinstructionCounter arithmetic). */
             if (rexec > 0 && rfupd == 0 && rsub == 0 &&
                 (Uint64(5) + rinit + rexec) <= storedPtr.p->cachedLinearLen) {
+              Uint32 reject_code = 0;
               void *entry = dbtup_jit_compile_scan_filter(
-                  getJitArena(), &cache[5 + rinit], rexec);
+                  getJitArena(), &cache[5 + rinit], rexec, &reject_code);
               if (entry != nullptr) {
                 jam();
                 storedPtr.p->m_jit_filter_entry = entry;
+                /* The program's EXIT_REFUSE code (theInstruction >> 16,
+                 * captured by the bridge). If the filter had no reject path
+                 * the bridge returns 0, which is unused (no row rejects). */
+                storedPtr.p->m_jit_filter_reject_code = (Uint16)reject_code;
                 storedPtr.p->m_jit_filter_state = JIT_FILTER_COMPILED;
               }
             }
@@ -1110,6 +1115,8 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         if (storedPtr.p->m_jit_filter_state == JIT_FILTER_COMPILED) {
           jam();
           scan_rec_ptr->m_jit_filter_entry = storedPtr.p->m_jit_filter_entry;
+          scan_rec_ptr->m_jit_filter_reject_code =
+              storedPtr.p->m_jit_filter_reject_code;
         }
       }
     }
@@ -5750,9 +5757,11 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
        * read filter (no final update/read, no subroutine) that the bridge
        * admitted, so the RexecRegionLen region is the whole program. */
       void *jit_filter = nullptr;
+      Dblqh::ScanRecord *scan_rec_ptr = nullptr;
       if (req_struct->scan_rec != nullptr) {
-        jit_filter = reinterpret_cast<Dblqh::ScanRecord *>(
-                         req_struct->scan_rec)->m_jit_filter_entry;
+        scan_rec_ptr =
+            reinterpret_cast<Dblqh::ScanRecord *>(req_struct->scan_rec);
+        jit_filter = scan_rec_ptr->m_jit_filter_entry;
       }
 #ifdef ERROR_INSERT
       /* ERROR_INSERT 4060: make interpreter fallback fatal for the
@@ -5781,14 +5790,15 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         } else {
           jamDebug();
           /* Row rejected by the JIT filter — same disposition as the
-           * interpreter's EXIT_REFUSE for a scan: TUPKEY_abort with a
-           * search-condition-false code, which the LQH scan layer
-           * (scanTupkeyRefLab) treats as "row filtered, keep scanning".
-           * Use 626 (TUP_NO_TUPLE_FOUND): Dblqh.hpp documents it as the
-           * preferred filter-reject code for new programs over the legacy
-           * 899 (ZUSER_SEARCH_CONDITION_FALSE_CODE), and scanTupkeyRefLab
-           * whitelists both. */
-          return TUPKEY_abort(req_struct, TUP_NO_TUPLE_FOUND);
+           * interpreter's EXIT_REFUSE for a scan: TUPKEY_abort with the
+           * program's own refuse code, which the bridge captured from the
+           * EXIT_REFUSE instruction (theInstruction >> 16) and copied onto
+           * the scan record. Using the program's actual code (rather than a
+           * hardcoded one) makes the JIT reject behave exactly like the
+           * interpreter — the LQH scan layer (scanTupkeyRefLab) decides
+           * skip-row vs abort-scan from this code (626/899 => skip). */
+          return TUPKEY_abort(req_struct,
+                              scan_rec_ptr->m_jit_filter_reject_code);
         }
       } else {
         Uint32 RsubPC= RinstructionCounter + RexecRegionLen
