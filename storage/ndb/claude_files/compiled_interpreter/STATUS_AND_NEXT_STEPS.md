@@ -15,8 +15,10 @@ First vertical slice of the SCAN_FRAGREQ scan-filter runtime wiring —
 makes the inert `ndb_jit_bridge_translate_scan_filter` + `OP_FILTER_REJECT_EXIT`
 groundwork actually run. A pushed-down `WHERE` filter is now compiled once
 per stored procedure at scan setup and executed natively per row instead of
-`interpreterNextLab()`. **Implemented 2026-06-10, pending build + test.**
-Full design + file map in `phase_7_implementation.md`.
+`interpreterNextLab()`. **Implemented + verified 2026-06-10** — Mikael
+reported `bridge_tests` (incl. T38) and the `rondb_jit_scan_filter_canary`
+MTR all passing after two bring-up fixes (reject code 626 not 899; EXIT_OK
+lowering — see below). Full design + file map in `phase_7_implementation.md`.
 
 - **Compile-once on storedProc:** `struct storedProc` gains
   `m_jit_filter_state` (untried/compiled/ineligible) + `m_jit_filter_entry`;
@@ -39,8 +41,15 @@ Full design + file map in `phase_7_implementation.md`.
   RsubLen==0`; a final-read/projection region is allowed.
 - **Diagnostics/canary:** ERROR_INSERT 4060 made fallback-fatal for filtered
   scans; MTR `rondb_jit_scan_filter_canary` (IS NULL / IS NOT NULL under
-  4060 + differential). The canary `.result` is **best-effort — `--record`
-  if it diffs**.
+  4060 + differential) — **passing** (committed `.result` matched).
+- **Two bring-up fixes (both in the tree):** (1) reject code → 626
+  (`TUP_NO_TUPLE_FOUND`); 899 isn't visible in `DbtupExecQuery.cpp` and 626
+  is Dblqh.hpp's recommended filter code anyway. (2) **EXIT_OK lowering** —
+  the first run rejected *every* row because the aggregation-embedded bridge
+  lowers `EXIT_OK` to a no-op (accept = fall through to accumulators), but a
+  scan filter's `EXIT_OK` precedes its `EXIT_REFUSE`, so accepted rows fell
+  into `OP_FILTER_REJECT_EXIT`. Fixed via an `exit_ok_kind` param
+  (scan→`OP_EXIT`, aggregation→fall-through); `bridge_tests` T38 regresses it.
 - **Limitation:** only the NULL-branch subset compiles today
   (`WHERE col IS [NOT] NULL`); richer predicates need Phase 5's full
   embedded-branch family and stay on the interpreter until then.
@@ -435,8 +444,8 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
 3. ~~Canary~~ **DONE (pending run)** — `rondb_jit_scan_filter_canary`
    (4060-forced IS NULL / IS NOT NULL + differential). `.result` is
    best-effort; `--record` if it diffs.
-4. **Now next:** (a) **verify** the slice builds + the canary passes (and
-   that `IS [NOT] NULL` actually pushes down as a JIT-admitted filter);
+4. **Now next:** ~~(a) verify the slice builds + the canary passes~~ **DONE
+   2026-06-10** (bridge_tests incl. T38 + the MTR canary all pass).
    (b) tighten `translate_scan_filter` to reject linked ops (remove an abort
    risk on the scan path); (c) capture the per-instruction `EXIT_REFUSE`
    code instead of assuming 626; (d) **the big one** — lift onto Phase 5's

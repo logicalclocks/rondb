@@ -1,7 +1,12 @@
 # Phase 7 — SCAN_FRAGREQ scan-filter JIT (runtime glue)
 
-**Status: first vertical slice implemented (2026-06-10), pending build +
-test.** Branch `RONDB-1056-compiled-interpreter`.
+**Status: first vertical slice implemented + verified (2026-06-10).** Branch
+`RONDB-1056-compiled-interpreter`. Mikael reported `bridge_tests` (incl. the
+T38 regression) and the `rondb_jit_scan_filter_canary` MTR all passing after
+the two bring-up fixes (reject code 626; EXIT_OK lowering). `WHERE col IS
+[NOT] NULL` now JIT-compiles, returns correct rows, and runs through the JIT
+path under ERROR_INSERT 4060 (proving it isn't falling back to the
+interpreter).
 
 This doc covers the *runtime* half of Phase 7. The *translation + engine*
 half landed earlier (`c955005048b`): `ndb_jit_bridge_translate_scan_filter()`
@@ -122,8 +127,8 @@ natively per row instead of `interpreterNextLab()`.
 - **MTR:** `mysql-test/suite/ndb_push_agg/{t,r}/rondb_jit_scan_filter_canary`.
   Nullable column, mixed NULL/non-NULL rows; `WHERE v IS NOT NULL` and
   `WHERE v IS NULL` under `all error 4060` (must not abort ⇒ JIT ran), plus
-  a JIT-on differential. **The `.result` is best-effort (authored without
-  running mysqld); run with `--record` if MTR reports a diff.**
+  a JIT-on differential. **Verified passing 2026-06-10** (the committed
+  `.result` matched — no `--record` needed).
 
 ## Scope / known limitations (v1)
 
@@ -172,10 +177,12 @@ cd debug_build/mysql-test && ./mtr --suite=ndb_push_agg --force --nowarnings \
 
 ## Next (Phase 7 continued)
 
-1. Confirm `WHERE col IS [NOT] NULL` actually pushes down as an interpreted
-   scan filter (`RexecRegionLen>0`) and compiles; adjust the canary /
-   `.result` from a real run.
-2. Tighten `translate_scan_filter` to reject linked ops (remove abort risk).
+1. ~~Confirm `WHERE col IS [NOT] NULL` pushes down + compiles + returns
+   correct rows.~~ **DONE 2026-06-10** — canary passes; the filter pushes
+   down, JIT-compiles, and runs through the JIT path under 4060.
+2. Tighten `translate_scan_filter` to reject linked ops (remove abort risk
+   on the scan path — linked helpers need `ctx->join_agg`, null for scans).
 3. Capture the per-instruction EXIT_REFUSE code instead of assuming 626.
 4. Lands on top of Phase 5's full embedded-branch family to JIT real
-   comparison predicates, not just NULL tests.
+   comparison predicates (`col > 5`, `col = 'x'`), not just NULL tests —
+   the big one for real-world coverage.
