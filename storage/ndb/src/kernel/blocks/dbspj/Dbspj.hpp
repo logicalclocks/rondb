@@ -1704,6 +1704,7 @@ class Dbspj : public SimulatedBlock {
   void checkBatchComplete(Signal *, Ptr<Request>);
   void batchComplete(Signal *, Ptr<Request>);
   void handleJoinAggNextBatch(Signal *, Ptr<Request>);
+  void handleCtePhaseNextBatch(Signal *, Ptr<Request>);
   void prepareNextBatch(Signal *, Ptr<Request>);
   void sendConf(Signal *, Ptr<Request>, bool is_complete);
   void complete(Signal *, Ptr<Request>);

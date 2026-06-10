@@ -3512,6 +3512,28 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
    */
   if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
     jam();
+    /**
+     * Report CTE-phase completion only after the materialisation scan has
+     * genuinely finished (EndOfData).  A multi-batch CTE scan reaches
+     * m_outstanding==0 at every batch boundary while its scan node is still
+     * TN_ACTIVE (m_cnt_active != 0).  CTE materialisation rows are fed to the
+     * DBLQH aggregator, never sent to the API, so there is no API round-trip
+     * to drive the next batch.  Instead of consulting DBTC per batch (high
+     * latency, and the SCAN_FRAGCONF→SCAN_NEXTREQ continuation is suppressed
+     * for CTE scans), restart the next batch directly here via
+     * handleCtePhaseNextBatch() — the CTE-phase analogue of the JoinAgg
+     * no-rows-to-API continuation.
+     */
+    if (requestPtr.p->m_cnt_active != 0) {
+      jam();
+      DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE more batches, "
+               "cnt_active=%u rows=%u -> restart next batch in DBSPJ",
+               instance(),
+               requestPtr.p->m_cnt_active,
+               requestPtr.p->m_rows));
+      handleCtePhaseNextBatch(signal, requestPtr);
+      return;
+    }
     DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE set, "
              "outstanding=%u cnt_active=%u rows=%u",
              instance(),
@@ -3675,6 +3697,44 @@ Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
     }
   }
   ndbassert(requestPtr.p->m_outstanding > 0);
+}
+
+/**
+ * Restart the next batch of a multi-batch CTE materialisation scan directly
+ * in DBSPJ (no DBTC / API round-trip).  Used from batchComplete() when a CTE
+ * phase reaches m_outstanding==0 at a batch boundary while its scan node is
+ * still TN_ACTIVE.
+ *
+ * Unlike the main-query path we must NOT use prepareNextBatch(): its
+ * RT_REPEAT_SCAN_RESULT branch invokes scanFrag_parent_batch_repeat() on scan
+ * nodes positioned after the active node, which ndbasserts m_parentPtrI !=
+ * RNIL.  During a CTE phase the m_nodes list also holds *inactive* root scan
+ * nodes belonging to other phases (the main-query root, sibling CTE
+ * materialisation roots), so that assert fires.  Here we only need to continue
+ * the currently-active scan node(s), so we register them as cursor nodes
+ * directly — mirroring prepareNextBatch()'s non-REPEAT registration, which
+ * never calls parent_batch_repeat — and then drive SCAN_NEXTREQ via
+ * handleJoinAggNextBatch().
+ */
+void
+Dbspj::handleCtePhaseNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  ndbassert(requestPtr.p->m_suspended_tree_nodes.isclear());
+  requestPtr.p->m_cursor_nodes.init();
+  requestPtr.p->m_active_tree_nodes.clear();
+  requestPtr.p->m_suspended_tree_nodes.clear();
+
+  Ptr<TreeNode> nodePtr;
+  Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+  TreeNodeBitMask predecessors_of_active;
+  for (list.last(nodePtr); !nodePtr.isNull(); list.prev(nodePtr)) {
+    if (nodePtr.p->m_state == TreeNode::TN_ACTIVE &&
+        !predecessors_of_active.get(nodePtr.p->m_node_no)) {
+      jam();
+      registerActiveCursor(requestPtr, nodePtr);
+      predecessors_of_active.bitOR(nodePtr.p->m_predecessors);
+    }
+  }
+  handleJoinAggNextBatch(signal, requestPtr);
 }
 
 /**

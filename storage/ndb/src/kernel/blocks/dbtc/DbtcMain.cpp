@@ -18059,7 +18059,9 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
     /* During CTE phase, suppress SCAN_TABCONF entirely — CTE scans
-     * don't participate in the fragment delivery lifecycle. */
+     * don't participate in the fragment delivery lifecycle.  The per-batch
+     * SCAN_NEXTREQ continuation is driven directly by DBSPJ (batchComplete),
+     * so DBTC never needs to act on these CTE-phase SCAN_FRAGCONFs. */
     if (scanptr.p->m_numCtes > 0 &&
         scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
       jam();
