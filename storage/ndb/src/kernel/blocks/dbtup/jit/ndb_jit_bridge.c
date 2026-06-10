@@ -407,12 +407,20 @@ typedef struct {
   uint32_t target_word_pos;
 } PendingCaseJump;
 
+/* exit_ok_kind sentinel: "emit no Op for EXIT_OK; the accepted row falls
+ * through to whatever the outer translation emits next." Used by the
+ * aggregation-embedded path, where accept continues into accumulator ops.
+ * The standalone scan-filter path passes OP_EXIT instead (see the EXIT_OK
+ * case for why). 0xFF is not a valid JIT op kind. */
+#define BR_EXIT_OK_FALLTHROUGH 0xFFu
+
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
     Program *out_prog, JitBridgeError *out_err,
     uint32_t outer_word_pos, /* for error reporting */
     uint32_t outer_after_emb_pos,
     uint8_t exit_refuse_kind,
+    uint8_t exit_ok_kind,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps) {
 
@@ -674,11 +682,35 @@ static JitBridgeReason translate_embedded_block(
 
       case BR_EMB_EXIT_OK:
       case BR_EMB_EXIT_OK_LAST: {
-        /* EXIT_OK = "row accepted" = fall through to the outer
-         * program's accumulator updates. Emit no Op. emb_pc_to_op_idx
-         * for this pc points at the next emitted Op (the outer agg's
-         * first instruction), so a branch landing on the accept path
-         * resolves to the aggregation rather than this no-op pc. */
+        /* EXIT_OK = "row accepted".
+         *
+         * Aggregation-embedded model (exit_ok_kind ==
+         * BR_EXIT_OK_FALLTHROUGH): accept must continue into the outer
+         * program's accumulator updates, so emit no Op.
+         * emb_pc_to_op_idx for this pc points at the next emitted Op
+         * (the outer agg's first instruction), so a branch landing on
+         * the accept path resolves to the aggregation rather than this
+         * no-op pc.
+         *
+         * Standalone scan-filter model (exit_ok_kind == OP_EXIT): there
+         * are no following accumulator ops, and a scan filter typically
+         * lays out EXIT_OK *before* the EXIT_REFUSE it guards
+         * (BRANCH_ATTR_EQ_NULL -> EXIT_OK -> EXIT_REFUSE). Emitting no Op
+         * there would let a fall-through accept run straight into the
+         * following OP_FILTER_REJECT_EXIT and reject every accepted row.
+         * So emit OP_EXIT — the function-return terminator that leaves
+         * JitState::row_filter_rejected == 0 (accept). A branch that
+         * targets EXIT_OK then resolves to this OP_EXIT, also correct. */
+        if (exit_ok_kind != BR_EXIT_OK_FALLTHROUGH) {
+          if (!emit_op(out_prog, exit_ok_kind, 0, 0, 0, 0)) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+        }
         emb_pc += 1;
         break;
       }
@@ -766,6 +798,7 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
   return translate_embedded_block(emb_prog, emb_len, out_prog, out_err,
                                   outer_word_pos, outer_word_pos + 1 + emb_len,
                                   OP_EXIT,
+                                  BR_EXIT_OK_FALLTHROUGH,
                                   pending_case_jumps,
                                   &n_pending_case_jumps);
 }
@@ -789,6 +822,7 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                /*outer_word_pos=*/0,
                                /*outer_after_emb_word_pos=*/n_words,
                                OP_FILTER_REJECT_EXIT,
+                               /*exit_ok_kind=*/OP_EXIT,
                                pending_case_jumps,
                                &n_pending_case_jumps);
   if (rc != JIT_BRIDGE_OK) {
@@ -1010,8 +1044,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         JitBridgeReason rc = translate_embedded_block(
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
-            pos + 1 + emb_len, OP_EXIT, pending_case_jumps,
-            &n_pending_case_jumps);
+            pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
+            pending_case_jumps, &n_pending_case_jumps);
         if (rc != JIT_BRIDGE_OK) return rc;
         pos += 1 + emb_len;
         break;

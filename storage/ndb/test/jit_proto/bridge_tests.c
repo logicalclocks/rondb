@@ -1116,6 +1116,46 @@ static void test_scan_filter_write_output_reject(void) {
                               0, EMB_WRITE_INTERP_OUTPUT);
 }
 
+/* T38: scan filter with an explicit EXIT_OK *before* the EXIT_REFUSE it
+ * guards — the real NdbScanFilter shape for `col IS NOT NULL`:
+ *
+ *     0: BRANCH_ATTR_EQ_NULL col -> 3   (if NULL, jump to the refuse)
+ *     2: EXIT_OK                        (not NULL -> accept)
+ *     3: EXIT_REFUSE                    (NULL    -> reject)
+ *
+ * Regression test for the all-rows-rejected bug: a standalone scan
+ * filter must lower EXIT_OK to OP_EXIT (the accept terminator), NOT to
+ * nothing. If EXIT_OK is elided (the aggregation-embedded behaviour), a
+ * fall-through accept runs straight into the following
+ * OP_FILTER_REJECT_EXIT and every accepted row is wrongly rejected.
+ * Expected lowering (4 ops):
+ *     op0 OP_BRANCH_ATTR_EQ_NULL (target -> op2, the reject)
+ *     op1 OP_EXIT                (the EXIT_OK accept)
+ *     op2 OP_FILTER_REJECT_EXIT  (the EXIT_REFUSE)
+ *     op3 OP_EXIT                (trailing accept terminator)
+ * Before the fix this was 3 ops with op1 == OP_FILTER_REJECT_EXIT. */
+static void test_scan_filter_exit_ok_before_refuse_accept(void) {
+  uint32_t filter_prog[4] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/3),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  Program p;
+  const char *name = "T38 scan_filter_exit_ok_before_refuse_accept";
+  if (!assert_scan_filter_accepted(name, filter_prog, 4, &p,
+                                   /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_ATTR_EQ_NULL)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_FILTER_REJECT_EXIT)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_EXIT)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1161,6 +1201,7 @@ int main(void) {
   test_scan_filter_attr_ne_null_accept();
   test_scan_filter_linked_ne_null_accept();
   test_scan_filter_write_output_reject();
+  test_scan_filter_exit_ok_before_refuse_accept();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

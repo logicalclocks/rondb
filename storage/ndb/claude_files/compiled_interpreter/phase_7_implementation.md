@@ -79,6 +79,22 @@ natively per row instead of `interpreterNextLab()`.
    legacy 899 / `ZUSER_SEARCH_CONDITION_FALSE_CODE` is also whitelisted by
    `scanTupkeyRefLab`, but is overloaded with "rowid already allocated").
    Capturing the actual per-instruction code is a possible refinement.
+6. **`EXIT_OK` lowering differs from aggregation** (bring-up bug, fixed).
+   NdbScanFilter lays out `col IS NOT NULL` as
+   `BRANCH_ATTR_EQ_NULL -> EXIT_OK -> EXIT_REFUSE` — an explicit `EXIT_OK`
+   *before* the `EXIT_REFUSE`. The aggregation-embedded bridge lowers
+   `EXIT_OK` to **no Op** (accept = fall through to accumulator ops), which
+   for a scan filter let an accepted (fall-through) row run straight into
+   the following `OP_FILTER_REJECT_EXIT` — so **every row was rejected**
+   (the first canary run returned 0 rows for both IS NULL and IS NOT NULL).
+   Fix: `translate_embedded_block` takes an `exit_ok_kind` param; the
+   scan-filter path passes `OP_EXIT` so `EXIT_OK` lowers to the accept
+   terminator (function return, `row_filter_rejected == 0`), while the
+   aggregation path keeps the fall-through (`BR_EXIT_OK_FALLTHROUGH`).
+   Regression test: `bridge_tests.c` T38. The earlier scan-filter tests
+   (T35/T36) used a branch-over-refuse shape with no explicit `EXIT_OK`, so
+   they passed while real filters failed — translation-only tests didn't
+   exercise the accept fall-through.
 
 ## Glue (DbtupJitGlue.{hpp,cpp})
 
