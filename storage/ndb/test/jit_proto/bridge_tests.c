@@ -1076,29 +1076,26 @@ static void test_scan_filter_attr_ne_null_accept(void) {
   mark_pass(name);
 }
 
-/* T36: linked-null scan-filter shape lowers through the public Phase 7
- * scan-filter bridge. */
-static void test_scan_filter_linked_ne_null_accept(void) {
+/* T36: linked-attr ops are REJECTED on the standalone scan-filter path.
+ * They depend on the join-aggregation linked buffer (the cold-call
+ * helpers reach it via JitState.ctx->join_agg), which a scan filter has
+ * no instance of. Linked attrs only arise from pushdown joins (JOIN_AGG),
+ * never plain SCAN_FRAGREQ filters, so rejecting them at translate time is
+ * a safety guard against compiling a program whose helper would
+ * dereference a null context at runtime. READ_LINKED_TO_MEM is the first
+ * op walked, so it is the one reported. (The aggregation-embedded path
+ * still admits these — see T20/T21.) */
+static void test_scan_filter_linked_reject(void) {
   uint32_t filter_prog[3] = {
     enc_emb_read_linked_to_mem(/*position=*/7),
     enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/1),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  Program p;
-  const char *name = "T36 scan_filter_linked_ne_null_accept";
-  if (!assert_scan_filter_accepted(name, filter_prog, 3, &p,
-                                   /*expected_n_ops=*/4)) return;
-  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
-                       OP_LOAD_LINKED_TO_MEM)) return;
-  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 7)) return;
-  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
-                       OP_BRANCH_LINKED_NE_NULL)) return;
-  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 2)) return;
-  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
-                       OP_EXIT)) return;
-  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
-                       OP_FILTER_REJECT_EXIT)) return;
-  mark_pass(name);
+  assert_scan_filter_rejected("T36 scan_filter_linked_reject",
+                              filter_prog, 3,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/UINT32_MAX,
+                              EMB_READ_LINKED_TO_MEM);
 }
 
 /* T37: WRITE_INTERPRETER_OUTPUT skip-offset is aggregation-embedded
@@ -1199,7 +1196,7 @@ int main(void) {
   test_embedded_direct_attr_pseudo_reject();
   test_sum_result_indexes_accept();
   test_scan_filter_attr_ne_null_accept();
-  test_scan_filter_linked_ne_null_accept();
+  test_scan_filter_linked_reject();
   test_scan_filter_write_output_reject();
   test_scan_filter_exit_ok_before_refuse_accept();
 

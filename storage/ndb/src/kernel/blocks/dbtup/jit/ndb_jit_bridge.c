@@ -375,8 +375,9 @@ static inline int embedded_filters_enabled(void) {
 /*                                                                    */
 /*   BRANCH_ATTR_EQ_NULL  → OP_BRANCH_ATTR_EQ_NULL                    */
 /*   BRANCH_ATTR_NE_NULL  → OP_BRANCH_ATTR_NE_NULL                    */
-/*   READ_LINKED_TO_MEM   → OP_LOAD_LINKED_TO_MEM                     */
-/*   BRANCH_LINKED_*_NULL → OP_BRANCH_LINKED_*_NULL                   */
+/*   READ_LINKED_TO_MEM   → OP_LOAD_LINKED_TO_MEM (reject if          */
+/*                          !allow_linked_ops — scan-filter path)     */
+/*   BRANCH_LINKED_*_NULL → OP_BRANCH_LINKED_*_NULL (likewise)        */
 /*   LOAD_CONST16         → stage row-disposition skip_offset          */
 /*   WRITE_INTERP_OUTPUT  → no Op for skip_offset 0, OP_JUMP otherwise*/
 /*   EXIT_OK / EXIT_OK_LAST → no Op (fall through to outer program)   */
@@ -421,6 +422,7 @@ static JitBridgeReason translate_embedded_block(
     uint32_t outer_after_emb_pos,
     uint8_t exit_refuse_kind,
     uint8_t exit_ok_kind,
+    int allow_linked_ops,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps) {
 
@@ -548,6 +550,22 @@ static JitBridgeReason translate_embedded_block(
       }
 
       case BR_EMB_READ_LINKED_TO_MEM: {
+        /* Linked-attr ops depend on the join-aggregation linked buffer
+         * (the cold-call helpers reach it through JitState.ctx->join_agg).
+         * A standalone scan filter has no join_agg, so reject these for
+         * the scan-filter path rather than compile a program whose helper
+         * would dereference a null context at runtime. Linked attrs only
+         * arise from pushdown joins (JOIN_AGG), never plain SCAN_FRAGREQ
+         * filters, so this should never fire in practice — it's a safety
+         * guard. */
+        if (!allow_linked_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
         /* Phase 5.1a: 1-word instruction. position is in bits
          * 16..23 of word 0 (8-bit field — sufficient for NDB's
          * linked-attr buffer position range). Translates to
@@ -578,6 +596,18 @@ static JitBridgeReason translate_embedded_block(
 
       case BR_EMB_BRANCH_LINKED_EQ_NULL:
       case BR_EMB_BRANCH_LINKED_NE_NULL: {
+        /* Reject on the scan-filter path — see READ_LINKED_TO_MEM above.
+         * (A well-formed program reaches this only after a
+         * READ_LINKED_TO_MEM, which would already have been rejected, but
+         * guard here too for defence in depth.) */
+        if (!allow_linked_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
         /* Phase 5.1a: 1-word instruction. branch_offset in bits
          * 30..16, direction in bit 31. No operand word — the
          * cheapMemory[0] state from the preceding
@@ -799,6 +829,7 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   outer_word_pos, outer_word_pos + 1 + emb_len,
                                   OP_EXIT,
                                   BR_EXIT_OK_FALLTHROUGH,
+                                  /*allow_linked_ops=*/1,
                                   pending_case_jumps,
                                   &n_pending_case_jumps);
 }
@@ -823,6 +854,7 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                /*outer_after_emb_word_pos=*/n_words,
                                OP_FILTER_REJECT_EXIT,
                                /*exit_ok_kind=*/OP_EXIT,
+                               /*allow_linked_ops=*/0,
                                pending_case_jumps,
                                &n_pending_case_jumps);
   if (rc != JIT_BRIDGE_OK) {
@@ -1045,7 +1077,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         JitBridgeReason rc = translate_embedded_block(
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
             pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
-            pending_case_jumps, &n_pending_case_jumps);
+            /*allow_linked_ops=*/1, pending_case_jumps,
+            &n_pending_case_jumps);
         if (rc != JIT_BRIDGE_OK) return rc;
         pos += 1 + emb_len;
         break;

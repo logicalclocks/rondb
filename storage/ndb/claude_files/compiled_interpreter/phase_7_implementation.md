@@ -140,12 +140,16 @@ natively per row instead of `interpreterNextLab()`.
   family** (`ATTR_OP_ATTR / OP_PARAM / OP_ARG`, MEM family), still open.
   Until then those filters stay on the interpreter (correct, just not
   accelerated).
-- **Linked ops on a scan filter would mis-route.** `READ_LINKED_TO_MEM` /
-  `BRANCH_LINKED_*_NULL` helpers need `ctx->join_agg`, which is null on the
-  scan path. Linked attrs are an SPJ/join concept delivered via JOIN_AGG,
-  not SCAN_FRAGREQ, and the path is gated to `!m_has_pushdown` scans, so
-  they can't appear here — but tightening `translate_scan_filter` to reject
-  linked ops outright is a cheap follow-up to remove the abort risk.
+- **Linked ops are rejected on the scan-filter path (done 2026-06-10).**
+  `READ_LINKED_TO_MEM` / `BRANCH_LINKED_*_NULL` helpers need
+  `ctx->join_agg`, which is null on the scan path. `translate_embedded_block`
+  now takes an `allow_linked_ops` flag; the scan-filter caller passes 0, so
+  these ops return `JIT_BRIDGE_UNSUPPORTED_OP` at translate time (the program
+  stays on the interpreter) instead of compiling a helper that would
+  dereference a null context. Aggregation/test paths pass 1 (unchanged).
+  Linked attrs only arise from pushdown joins (JOIN_AGG), never plain
+  SCAN_FRAGREQ filters, so this is a safety guard that shouldn't fire in
+  practice. Regression: `bridge_tests` T36 (now a reject test).
 - **No standalone CASE disposition.** `translate_scan_filter` already
   rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets (`n_pending_case_jumps`).
 - **Per-instruction EXIT_REFUSE code** is dropped in favour of a fixed 626.
@@ -180,8 +184,9 @@ cd debug_build/mysql-test && ./mtr --suite=ndb_push_agg --force --nowarnings \
 1. ~~Confirm `WHERE col IS [NOT] NULL` pushes down + compiles + returns
    correct rows.~~ **DONE 2026-06-10** — canary passes; the filter pushes
    down, JIT-compiles, and runs through the JIT path under 4060.
-2. Tighten `translate_scan_filter` to reject linked ops (remove abort risk
-   on the scan path — linked helpers need `ctx->join_agg`, null for scans).
+2. ~~Tighten `translate_scan_filter` to reject linked ops.~~ **DONE
+   2026-06-10** — `allow_linked_ops` flag; scan path rejects
+   READ_LINKED_TO_MEM / BRANCH_LINKED_*_NULL at translate (bridge_tests T36).
 3. Capture the per-instruction EXIT_REFUSE code instead of assuming 626.
 4. Lands on top of Phase 5's full embedded-branch family to JIT real
    comparison predicates (`col > 5`, `col = 'x'`), not just NULL tests —

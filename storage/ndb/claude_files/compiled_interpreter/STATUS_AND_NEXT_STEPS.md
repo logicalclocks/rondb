@@ -446,10 +446,11 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    best-effort; `--record` if it diffs.
 4. **Now next:** ~~(a) verify the slice builds + the canary passes~~ **DONE
    2026-06-10** (bridge_tests incl. T38 + the MTR canary all pass).
-   (b) tighten `translate_scan_filter` to reject linked ops (remove an abort
-   risk on the scan path); (c) capture the per-instruction `EXIT_REFUSE`
-   code instead of assuming 626; (d) **the big one** — lift onto Phase 5's
-   full embedded-branch family so real comparison predicates (`col > 5`,
+   ~~(b) tighten `translate_scan_filter` to reject linked ops~~ **DONE
+   2026-06-10** (`allow_linked_ops` flag; bridge_tests T36 flipped to a
+   reject test). (c) capture the per-instruction `EXIT_REFUSE` code instead
+   of assuming 626; (d) **the big one** — lift onto Phase 5's full
+   embedded-branch family so real comparison predicates (`col > 5`,
    `col = 'x'`) JIT, not just NULL tests.
 5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
