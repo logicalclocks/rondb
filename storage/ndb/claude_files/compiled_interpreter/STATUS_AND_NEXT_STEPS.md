@@ -27,10 +27,10 @@ Full design + file map in `phase_7_implementation.md`.
   `Dblqh::ScanRecord::m_jit_filter_entry` for fast per-row access.
 - **Per-row dispatch:** `Dbtup::interpreterStartLab` runs the JIT filter
   when the scan record carries an entry; reject ⇒
-  `TUPKEY_abort(req_struct, ZUSER_SEARCH_CONDITION_FALSE_CODE=899)` (the
-  scan "row filtered" disposition), accept ⇒ advance past the exec region
-  and fall through to the normal projection read. Null entry ⇒ unchanged
-  interpreter path.
+  `TUPKEY_abort(req_struct, TUP_NO_TUPLE_FOUND=626)` (the scan "row
+  filtered" disposition — Dblqh.hpp's recommended filter-reject code over
+  the legacy 899), accept ⇒ advance past the exec region and fall through
+  to the normal projection read. Null entry ⇒ unchanged interpreter path.
 - **Glue:** `dbtup_jit_compile_scan_filter` / `dbtup_jit_invoke_scan_filter`
   in `DbtupJitGlue`; cold-call helpers `ndb_jit_h_load_col` /
   `ndb_jit_h_branch_attr_null` rewired to read via the new public
@@ -429,8 +429,9 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    on the stored procedure in `Dbtup::scanCopyAttrinfo`, entry copied onto
    `Dblqh::ScanRecord`.
 2. ~~Per-row invocation glue~~ **DONE** — `Dbtup::interpreterStartLab` runs
-   the compiled entry and maps `row_filter_rejected` → `TUPKEY_abort(899)`,
-   else falls through; null entry → `interpreterNextLab()` unchanged.
+   the compiled entry and maps `row_filter_rejected` →
+   `TUPKEY_abort(TUP_NO_TUPLE_FOUND=626)`, else falls through; null entry →
+   `interpreterNextLab()` unchanged.
 3. ~~Canary~~ **DONE (pending run)** — `rondb_jit_scan_filter_canary`
    (4060-forced IS NULL / IS NOT NULL + differential). `.result` is
    best-effort; `--record` if it diffs.
@@ -438,7 +439,7 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    that `IS [NOT] NULL` actually pushes down as a JIT-admitted filter);
    (b) tighten `translate_scan_filter` to reject linked ops (remove an abort
    risk on the scan path); (c) capture the per-instruction `EXIT_REFUSE`
-   code instead of assuming 899; (d) **the big one** — lift onto Phase 5's
+   code instead of assuming 626; (d) **the big one** — lift onto Phase 5's
    full embedded-branch family so real comparison predicates (`col > 5`,
    `col = 'x'`) JIT, not just NULL tests.
 5. **(Deferred)** standalone CASE disposition model — the translate API

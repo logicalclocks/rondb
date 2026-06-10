@@ -30,10 +30,12 @@ natively per row instead of `interpreterNextLab()`.
   RexecRegionLen` before falling through.
 - **Accept/reject contract:** `interpreterNextLab` returns
   `req_struct->log_size` (≥0) on `EXIT_OK`; on `EXIT_REFUSE` it calls
-  `TUPKEY_abort(req_struct, code)` → returns −1 + sends a TUPKEY_REF. The
-  scan reject code is **`ZUSER_SEARCH_CONDITION_FALSE_CODE = 899`**
-  (`Dblqh.hpp:466`), which `scanTupkeyRefLab` (`DblqhMain.cpp:23400`)
-  whitelists (with `ZNO_TUPLE_FOUND`) as "row filtered, keep scanning."
+  `TUPKEY_abort(req_struct, code)` → returns −1 + sends a TUPKEY_REF.
+  `scanTupkeyRefLab` (`DblqhMain.cpp:23400`) whitelists two filter-reject
+  codes as "row filtered, keep scanning": `ZNO_TUPLE_FOUND = 626` and the
+  legacy `ZUSER_SEARCH_CONDITION_FALSE_CODE = 899` (`Dblqh.hpp:455,466`).
+  Dblqh.hpp documents 626 as the **preferred** code for new programs; we use
+  it (`TUP_NO_TUPLE_FOUND`, locally defined in `DbtupExecQuery.cpp:65`).
 - **Arena:** `Dbtup::getJitArena()` / `m_jit_arena` — per-LDM-thread, the
   same arena standalone aggregation compiles into. `interpreterStartLab`
   and `scanCopyAttrinfo` both run on that thread, so compiling there is
@@ -69,12 +71,14 @@ natively per row instead of `interpreterNextLab()`.
    `scan_rec->m_jit_filter_entry`; if non-null, calls
    `dbtup_jit_invoke_scan_filter(this, req_struct, entry)`. Accept →
    `RinstructionCounter += RexecRegionLen`, fall through. Reject →
-   `TUPKEY_abort(req_struct, ZUSER_SEARCH_CONDITION_FALSE_CODE)`. Null entry
-   → existing `interpreterNextLab` path, unchanged.
-5. **Reject code 899.** The bridge collapses all `EXIT_REFUSE` to
-   `OP_FILTER_REJECT_EXIT` (drops the per-instruction code); 899 is the
-   WHERE-false convention the LQH scan layer expects. Capturing the actual
-   per-instruction code is a possible refinement.
+   `TUPKEY_abort(req_struct, TUP_NO_TUPLE_FOUND)`. Null entry → existing
+   `interpreterNextLab` path, unchanged.
+5. **Reject code 626** (`TUP_NO_TUPLE_FOUND`). The bridge collapses all
+   `EXIT_REFUSE` to `OP_FILTER_REJECT_EXIT` (drops the per-instruction
+   code); 626 is the code Dblqh.hpp recommends for new filter programs (the
+   legacy 899 / `ZUSER_SEARCH_CONDITION_FALSE_CODE` is also whitelisted by
+   `scanTupkeyRefLab`, but is overloaded with "rowid already allocated").
+   Capturing the actual per-instruction code is a possible refinement.
 
 ## Glue (DbtupJitGlue.{hpp,cpp})
 
@@ -123,7 +127,7 @@ natively per row instead of `interpreterNextLab()`.
   linked ops outright is a cheap follow-up to remove the abort risk.
 - **No standalone CASE disposition.** `translate_scan_filter` already
   rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets (`n_pending_case_jumps`).
-- **Per-instruction EXIT_REFUSE code** is dropped in favour of a fixed 899.
+- **Per-instruction EXIT_REFUSE code** is dropped in favour of a fixed 626.
 
 ## Files touched
 
@@ -156,6 +160,6 @@ cd debug_build/mysql-test && ./mtr --suite=ndb_push_agg --force --nowarnings \
    scan filter (`RexecRegionLen>0`) and compiles; adjust the canary /
    `.result` from a real run.
 2. Tighten `translate_scan_filter` to reject linked ops (remove abort risk).
-3. Capture the per-instruction EXIT_REFUSE code instead of assuming 899.
+3. Capture the per-instruction EXIT_REFUSE code instead of assuming 626.
 4. Lands on top of Phase 5's full embedded-branch family to JIT real
    comparison predicates, not just NULL tests.

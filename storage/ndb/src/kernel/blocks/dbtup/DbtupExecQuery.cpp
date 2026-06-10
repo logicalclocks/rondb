@@ -5781,10 +5781,14 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         } else {
           jamDebug();
           /* Row rejected by the JIT filter — same disposition as the
-           * interpreter's EXIT_REFUSE for a scan: TUPKEY_abort with the
+           * interpreter's EXIT_REFUSE for a scan: TUPKEY_abort with a
            * search-condition-false code, which the LQH scan layer
-           * (scanTupkeyRefLab) treats as "row filtered, keep scanning". */
-          return TUPKEY_abort(req_struct, ZUSER_SEARCH_CONDITION_FALSE_CODE);
+           * (scanTupkeyRefLab) treats as "row filtered, keep scanning".
+           * Use 626 (TUP_NO_TUPLE_FOUND): Dblqh.hpp documents it as the
+           * preferred filter-reject code for new programs over the legacy
+           * 899 (ZUSER_SEARCH_CONDITION_FALSE_CODE), and scanTupkeyRefLab
+           * whitelists both. */
+          return TUPKEY_abort(req_struct, TUP_NO_TUPLE_FOUND);
         }
       } else {
         Uint32 RsubPC= RinstructionCounter + RexecRegionLen
