@@ -2486,8 +2486,9 @@ void MgmApiSession::report_event(Parser_t::Context &ctx,
   Vector<BaseString> item;
   tmp.split(item, " ");
   if (length > MAX_EVENT_LENGTH)
-    // Data is going to be truncated
     length = MAX_EVENT_LENGTH;
+  if (length > (Uint32)item.size())
+    length = (Uint32)item.size();
   for (int i = 0; (Uint32)i < length; i++) {
     sscanf(item[i].c_str(), "%u", data + i);
   }

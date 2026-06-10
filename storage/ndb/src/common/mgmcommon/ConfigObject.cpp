@@ -561,6 +561,10 @@ bool ConfigObject::unpack_v1(const Uint32 *src, Uint32 len) {
        */
       Uint32 ref_sect =
           (entry.m_int >> OLD_KP_SECTION_SHIFT) & OLD_KP_SECTION_MASK;
+      if (unlikely(ref_sect >= m_num_sections)) {
+        m_error_code = WRONG_SECTION_REFERENCE;
+        return false;
+      }
       if (unlikely(!curr_cfg_sect->set_base_section())) {
         m_error_code = SET_NOT_REAL_SECTION_ERROR;
         return false;
@@ -590,6 +594,10 @@ bool ConfigObject::unpack_v1(const Uint32 *src, Uint32 len) {
     } else if (curr_cfg_sect->is_pointer_section()) {
       Uint32 ref_sect =
           (entry.m_int >> OLD_KP_SECTION_SHIFT) & OLD_KP_SECTION_MASK;
+      if (unlikely(ref_sect >= m_num_sections)) {
+        m_error_code = WRONG_SECTION_REFERENCE;
+        return false;
+      }
       if (curr_cfg_sect->is_pointer_node_section()) {
         DEB_UNPACK_V1(("ref_sect: %u set as node", ref_sect));
         m_cfg_sections[ref_sect]->set_node_section();
