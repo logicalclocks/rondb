@@ -1334,6 +1334,13 @@ int NdbQueryBuilder::defineCte(Uint32 cteId,
       return Err_MemoryAlloc;
     }
   }
+  const Uint32 nAggResults = progBuf[1] & 0xFFFF;
+  for (Uint32 i = 0; i < nAggResults; i++) {
+    if (cteInfo.aggColumns.push_back(aggProgram.agg_columns()[i]) != 0) {
+      ::setErrorCode(&m_impl, Err_MemoryAlloc);
+      return Err_MemoryAlloc;
+    }
+  }
 
   if (m_impl.m_cteDefs.push_back(cteInfo) != 0) {
     ::setErrorCode(&m_impl, Err_MemoryAlloc);

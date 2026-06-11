@@ -3721,8 +3721,8 @@ int NdbQueryImpl::prepareAggregation() {
           cte.aggProgram.size(),
           cte.gbColumns.getBase(),
           cte.gbColumns.size(),
-          nullptr,
-          0,
+          cte.aggColumns.getBase(),
+          cte.aggColumns.size(),
           cte.tableId,
           cte.schemaVersion);
       if (unlikely(block.isMemoryExhausted())) {
