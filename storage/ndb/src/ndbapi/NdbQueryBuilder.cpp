@@ -1328,6 +1328,12 @@ int NdbQueryBuilder::defineCte(Uint32 cteId,
   for (Uint32 i = 0; i < progLen; i++) {
     cteInfo.aggProgram.push_back(progBuf[i]);
   }
+  for (Uint32 i = 0; i < aggProgram.n_gb_cols(); i++) {
+    if (cteInfo.gbColumns.push_back(aggProgram.gb_columns()[i]) != 0) {
+      ::setErrorCode(&m_impl, Err_MemoryAlloc);
+      return Err_MemoryAlloc;
+    }
+  }
 
   if (m_impl.m_cteDefs.push_back(cteInfo) != 0) {
     ::setErrorCode(&m_impl, Err_MemoryAlloc);

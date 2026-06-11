@@ -34,6 +34,7 @@
 #include "NdbInterpretedCode.hpp"
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
+#include "NdbDictionaryImpl.hpp"
 #include "NdbQueryOperationImpl.hpp"
 #include "util/require.h"
 
@@ -108,6 +109,90 @@ static constexpr Uint16 tupleNotFound = 0xffff;
 
 // We use the upper tupleId bit to flag a 'skip' of that tupleId
 static constexpr Uint16 skipTupleFlag = 0x8000;
+
+static bool isUnsignedAggMetaType(NdbDictionary::Column::Type type) {
+  switch (type) {
+    case NdbDictionary::Column::Tinyunsigned:
+    case NdbDictionary::Column::Smallunsigned:
+    case NdbDictionary::Column::Mediumunsigned:
+    case NdbDictionary::Column::Unsigned:
+    case NdbDictionary::Column::Bigunsigned:
+    case NdbDictionary::Column::Decimalunsigned:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static void appendJoinAggColumnMetaEntry(
+    Uint32Buffer &dst,
+    const NdbDictionary::Column *col,
+    Uint32 gbProgramWord,
+    Uint32 gbIndex,
+    Uint32 tableId,
+    Uint32 schemaVersion) {
+  const Uint32 encodedColId = gbProgramWord >> 16;
+  const bool isLinked = (encodedColId & AGG_LINKED_COL_FLAG) != 0;
+  const Uint32 sourceId = encodedColId & ~AGG_LINKED_COL_FLAG;
+  const NdbDictionary::Column::Type type = col->getType();
+  Uint32 flags = JOIN_AGG_META_FLAG_GROUP_BY;
+  if (isUnsignedAggMetaType(type)) {
+    flags |= JOIN_AGG_META_FLAG_UNSIGNED;
+  }
+  if (col->getNullable()) {
+    flags |= JOIN_AGG_META_FLAG_NULLABLE;
+  }
+
+  dst.append(isLinked ? JOIN_AGG_META_SOURCE_LINKED_COLUMN
+                      : JOIN_AGG_META_SOURCE_LOCAL_COLUMN);
+  dst.append(sourceId);
+  dst.append(8 + gbIndex);
+  dst.append(gbIndex);
+  dst.append(isLinked ? RNIL : tableId);
+  dst.append(isLinked ? 0 : schemaVersion);
+  dst.append(col->getAttrId());
+  dst.append((Uint32)type);
+  dst.append(col->getSizeInBytes());
+  dst.append(col->getCharsetNumber());
+  dst.append((col->getPrecision() << 16) | (col->getScale() & 0xFFFF));
+  dst.append(flags);
+}
+
+static bool buildJoinAggGbColumnMetaBlock(
+    Uint32Buffer &block,
+    const Uint32 *program,
+    Uint32 programLen,
+    const NdbDictionary::Column *const *gbColumns,
+    Uint32 nGbColumns,
+    Uint32 tableId,
+    Uint32 schemaVersion) {
+  if (program == nullptr || gbColumns == nullptr || nGbColumns == 0) {
+    return false;
+  }
+  if (programLen < 8 + nGbColumns) {
+    return false;
+  }
+
+  Uint32 entryCount = 0;
+  block.append(JOIN_AGG_META_MARKER);
+  block.append(JOIN_AGG_META_VERSION);
+  const Uint32 entryCountPos = block.getSize();
+  block.append(0);
+  for (Uint32 i = 0; i < nGbColumns; i++) {
+    const NdbDictionary::Column *col = gbColumns[i];
+    if (col == nullptr) {
+      continue;
+    }
+    appendJoinAggColumnMetaEntry(block, col, program[8 + i], i,
+                                 tableId, schemaVersion);
+    entryCount++;
+  }
+  if (entryCount == 0) {
+    return false;
+  }
+  block.put(entryCountPos, entryCount);
+  return true;
+}
 
 /* Various error codes that are not specific to NdbQuery. */
 static const int Err_TupleNotFound = 626;
@@ -3444,6 +3529,76 @@ int NdbQueryImpl::prepareAggregation() {
       for (Uint32 i = 0; i < cte.aggProgram.size(); i++) {
         m_aggProgram.append(cte.aggProgram[i]);
       }
+    }
+  }
+
+  {
+    Uint32Buffer metaContainer;
+    Uint32 blockCount = 0;
+    metaContainer.append(JOIN_AGG_META_MARKER);
+    metaContainer.append(JOIN_AGG_META_VERSION);
+    const Uint32 blockCountPos = metaContainer.getSize();
+    metaContainer.append(0);
+
+    if (numLeaves > 0 && firstOpts != nullptr) {
+      Uint32Buffer block;
+      const NdbTableImpl *aggTable = firstOpts->getAggTable();
+      const Uint32 *progBuf = firstOpts->getAggProgramBuffer();
+      bool hasBlock = false;
+      if (aggTable != nullptr && aggTable->m_facade != nullptr) {
+        hasBlock = buildJoinAggGbColumnMetaBlock(
+            block,
+            progBuf,
+            firstOpts->getAggProgramLen(),
+            firstOpts->getAggGbColumns(),
+            firstOpts->getAggNGroupByCols(),
+            aggTable->m_facade->getObjectId(),
+            aggTable->m_facade->getObjectVersion());
+      }
+      if (unlikely(block.isMemoryExhausted())) {
+        setErrorCode(Err_MemoryAlloc);
+        return -1;
+      }
+      if (hasBlock) {
+        metaContainer.append(JOIN_AGG_META_KIND_MAIN);
+        metaContainer.append(RNIL);
+        metaContainer.append(block.getSize());
+        metaContainer.append(block);
+        blockCount++;
+      }
+    }
+
+    for (Uint32 c = 0; c < numCtes; c++) {
+      const NdbQueryDefImpl::CteDefInfo &cte = getQueryDef().getCteDef(c);
+      Uint32Buffer block;
+      const bool hasBlock = buildJoinAggGbColumnMetaBlock(
+          block,
+          cte.aggProgram.getBase(),
+          cte.aggProgram.size(),
+          cte.gbColumns.getBase(),
+          cte.gbColumns.size(),
+          cte.tableId,
+          cte.schemaVersion);
+      if (unlikely(block.isMemoryExhausted())) {
+        setErrorCode(Err_MemoryAlloc);
+        return -1;
+      }
+      if (hasBlock) {
+        metaContainer.append(JOIN_AGG_META_KIND_CTE);
+        metaContainer.append(c);
+        metaContainer.append(block.getSize());
+        metaContainer.append(block);
+        blockCount++;
+      }
+    }
+
+    if (blockCount > 0) {
+      metaContainer.put(blockCountPos, blockCount);
+      if (unlikely(metaContainer.isMemoryExhausted())) {
+        setErrorCode(Err_MemoryAlloc);
+        return -1;
+      }
+      m_aggProgram.append(metaContainer);
     }
   }
 

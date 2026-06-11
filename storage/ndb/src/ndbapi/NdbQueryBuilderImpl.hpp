@@ -716,6 +716,7 @@ class NdbQueryDefImpl {
     Uint64 depMask;
     Uint32 flags;
     Vector<Uint32> aggProgram;
+    Vector<const NdbDictionary::Column *> gbColumns;
   };
 
   explicit NdbQueryDefImpl(const Ndb *ndb,
