@@ -147,6 +147,8 @@ struct JoinAggregationState {
   Uint32       m_total_agg_results; // Sum of all leaf m_n_agg_results
   Uint32*      m_all_programs_buf;  // Single allocation holding all leaf programs
                                     // LeafProgram::m_agg_program points into this
+  Uint32*      m_column_meta_buf;   // Optional setup-time column metadata cache
+  Uint32       m_column_meta_len;   // Length of m_column_meta_buf in words
 
   //------------------------------------------------------------------
   // Concurrency Strategy (immutable after creation)
@@ -329,6 +331,8 @@ struct JoinAggregationState {
     m_leaf_programs(nullptr),
     m_total_agg_results(0),
     m_all_programs_buf(nullptr),
+    m_column_meta_buf(nullptr),
+    m_column_meta_len(0),
     m_strategy(MUTEX_BASED),
     m_num_threads(0),
     m_agg_interpreter(nullptr),
