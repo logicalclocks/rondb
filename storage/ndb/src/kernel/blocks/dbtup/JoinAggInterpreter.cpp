@@ -312,7 +312,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     if (!m_gb_types_inited) {
       if (m_null_local_columns) {
         thrjam(jamBuf);
-        initGBTypesForNullLocal(block_tup, jamBuf);
+        Int32 err = initGBTypesForNullLocal(block_tup, jamBuf);
+        if (unlikely(err != 0)) return err;
       } else {
         thrjam(jamBuf);
         Int32 err = initGBTypes(block_tup,
@@ -1278,8 +1279,8 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
   }
   return ret;
 }
-void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
-                                                 EmulatedJamBuffer *jamBuf) {
+Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
+                                                  EmulatedJamBuffer *jamBuf) {
   /*
    * Called when the first row is a null-extended row (m_null_local_columns).
    * Linked columns: resolve type from DBTUP tablerec (same as initGBTypes).
@@ -1315,12 +1316,22 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
           Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
           if (csNumber != 0) {
             thrjamDebug(jamBuf);
+            if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                         all_charsets[csNumber] == nullptr)) {
+              return ZAGG_OTHER_ERROR;
+            }
             info.cs = all_charsets[csNumber];
           }
         } else if (block_tup != nullptr) {
           thrjamDebug(jamBuf);
           Uint32 tableId = word0;
-          if (tableId != 0 && tableId < block_tup->cnoOfTablerec) {
+          Uint32 tableVersion = word1;
+          Dblqh* lqh = block_tup->c_lqh;
+          if (tableId != 0 &&
+              tableId < block_tup->cnoOfTablerec &&
+              tableId < lqh->ctabrecFileSize &&
+              table_version_major(tableVersion) ==
+                  table_version_major(lqh->tablerec[tableId].schemaVersion)) {
             thrjamDebug(jamBuf);
             Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
             Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
@@ -1361,8 +1372,7 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
     const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
     info.cmpFn = sqlType.m_cmp;
   }
-  m_gb_types_inited = true;
-  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  return publishGBTypes(jamBuf);
 }
 
 Int32 JoinAggInterpreter::processNullExtendedRow(
@@ -1466,5 +1476,4 @@ Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
   }
   return 0;
 }
-
 

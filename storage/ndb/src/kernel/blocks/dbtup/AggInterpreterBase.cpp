@@ -2231,36 +2231,7 @@ Int32 AggInterpreterBase::initGBTypes(
     const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
     info.cmpFn = sqlType.m_cmp;
   }
-  Uint32 max_xfrm_len = 0;
-  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-    thrjamDebug(jamBuf);
-    if (m_gb_types[i].cs != nullptr) {
-      thrjamDebug(jamBuf);
-      Uint32 lb = 0;
-      if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
-      else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
-      Uint32 defLen = m_gb_types[i].maxBytes - lb;
-      Uint32 xfrm_len = NdbSqlUtil::strnxfrm_hash_len(m_gb_types[i].cs,
-                                                       defLen);
-      if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
-    }
-  }
-  if (max_xfrm_len > 0) {
-    thrjamDebug(jamBuf);
-    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
-                                  m_thread_id, false);
-    if (unlikely(p == nullptr)) {
-      g_eventLogger->debug("initGBTypes: failed to allocate xfrm buffer "
-          "(%u bytes)", max_xfrm_len);
-      return ZAGG_OTHER_ERROR;
-    }
-    m_xfrm_buf = static_cast<uchar*>(p);
-    m_xfrm_buf_len = max_xfrm_len;
-  }
-
-  m_gb_types_inited = true;
-  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
-  return 0;
+  return publishGBTypes(jamBuf);
 }
 
 Int32 AggInterpreterBase::initGBTypesFromMetadata(
@@ -2348,6 +2319,17 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
     return ZAGG_OTHER_ERROR;
   }
 
+  return publishGBTypes(jamBuf);
+}
+
+Int32 AggInterpreterBase::publishGBTypes(EmulatedJamBuffer *jamBuf) {
+  if (m_gb_types_inited || m_n_gb_cols == 0) {
+    return 0;
+  }
+  if (unlikely(m_gb_map == nullptr)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
   Uint32 max_xfrm_len = 0;
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     thrjamDebug(jamBuf);
@@ -2368,6 +2350,8 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
     void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
                                   m_thread_id, false);
     if (unlikely(p == nullptr)) {
+      g_eventLogger->debug("publishGBTypes: failed to allocate xfrm buffer "
+          "(%u bytes)", max_xfrm_len);
       return ZAGG_OTHER_ERROR;
     }
     m_xfrm_buf = static_cast<uchar*>(p);

@@ -252,8 +252,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * args).  initGBTypesForNullLocal stays per-class (JoinAgg-only:
    * triggered only by m_null_local_columns from outer-join NULL
    * extension). */
-  void initGBTypesForNullLocal(Dbtup* block_tup,
-                               EmulatedJamBuffer *jamBuf);
+  Int32 initGBTypesForNullLocal(Dbtup* block_tup,
+                                EmulatedJamBuffer *jamBuf);
 
   // m_prog_buf / m_gb_cols_buf / m_agg_results_buf / m_gb_map_buf /
   // m_buf_block / m_string_results / release_string_results lifted to

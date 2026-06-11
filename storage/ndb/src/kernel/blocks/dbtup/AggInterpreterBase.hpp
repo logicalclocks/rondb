@@ -481,6 +481,7 @@ class AggInterpreterBase : public PushdownInterpreter {
                                       Uint32 typeId,
                                       Uint32 maxBytes,
                                       Uint32 csNumber);
+  Int32 publishGBTypes(EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
    * `initBufBlock` allocates one combined block from RG_QUERY_MEMORY
