@@ -2315,8 +2315,13 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
       foundCount++;
     }
     if (isLoadColumn) {
-      Int32 ret = initStringAggSlotFromMetadata(slotIndex, typeId, maxBytes,
-                                                csNumber);
+      Int32 ret = initLoadColumnMetaFromMetadata(entry[2], typeId, maxBytes,
+                                                 csNumber, entryCount);
+      if (unlikely(ret != 0)) {
+        return ret;
+      }
+      ret = initStringAggSlotFromMetadata(slotIndex, typeId, maxBytes,
+                                          csNumber);
       if (unlikely(ret != 0)) {
         return ret;
       }
@@ -2427,6 +2432,69 @@ Int32 AggInterpreterBase::initStringAggSlotFromMetadata(
   return 0;
 }
 
+Int32 AggInterpreterBase::initLoadColumnMetaFromMetadata(
+    Uint32 programOffset,
+    Uint32 typeId,
+    Uint32 maxBytes,
+    Uint32 csNumber,
+    Uint32 entryCapacity) {
+  if (unlikely(programOffset == RNIL || programOffset >= m_prog_len)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  if (csNumber != 0) {
+    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                 all_charsets[csNumber] == nullptr)) {
+      return ZAGG_OTHER_ERROR;
+    }
+  }
+
+  for (Uint32 i = 0; i < m_load_column_meta_count; i++) {
+    LoadColumnMeta &meta = m_load_column_meta[i];
+    if (meta.programOffset == programOffset) {
+      if (unlikely(meta.typeId != typeId ||
+                   meta.maxBytes != maxBytes ||
+                   meta.csNumber != csNumber)) {
+        return ZAGG_OTHER_ERROR;
+      }
+      return 0;
+    }
+  }
+
+  if (m_load_column_meta == nullptr) {
+    if (unlikely(entryCapacity == 0)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    m_load_column_meta = static_cast<LoadColumnMeta*>(
+        lc_ndbd_pool_malloc(entryCapacity * sizeof(LoadColumnMeta),
+                            RG_QUERY_MEMORY, m_thread_id, false));
+    if (m_load_column_meta == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    m_load_column_meta_capacity = entryCapacity;
+    m_load_column_meta_count = 0;
+  }
+  if (unlikely(m_load_column_meta_count >= m_load_column_meta_capacity)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  LoadColumnMeta &meta = m_load_column_meta[m_load_column_meta_count++];
+  meta.programOffset = programOffset;
+  meta.typeId = typeId;
+  meta.maxBytes = maxBytes;
+  meta.csNumber = csNumber;
+  return 0;
+}
+
+const AggInterpreterBase::LoadColumnMeta*
+AggInterpreterBase::findLoadColumnMeta(Uint32 programOffset) const {
+  for (Uint32 i = 0; i < m_load_column_meta_count; i++) {
+    if (m_load_column_meta[i].programOffset == programOffset) {
+      return &m_load_column_meta[i];
+    }
+  }
+  return nullptr;
+}
+
 /*
  * Step 3a-A — wire-format header sizes used by both interpreters.
  * Definitions previously duplicated in each subclass .cpp.
@@ -2510,6 +2578,12 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
     lc_ndbd_pool_free(m_xfrm_buf);
     m_xfrm_buf = nullptr;
   }
+  if (m_load_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_load_column_meta);
+    m_load_column_meta = nullptr;
+    m_load_column_meta_count = 0;
+    m_load_column_meta_capacity = 0;
+  }
   return true;
 }
 
@@ -2552,6 +2626,10 @@ AggInterpreterBase::~AggInterpreterBase() {
   if (m_xfrm_buf != nullptr) {
     lc_ndbd_pool_free(m_xfrm_buf);
     m_xfrm_buf = nullptr;
+  }
+  if (m_load_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_load_column_meta);
+    m_load_column_meta = nullptr;
   }
   if (m_buf_block != nullptr) {
     lc_ndbd_pool_free(m_buf_block);

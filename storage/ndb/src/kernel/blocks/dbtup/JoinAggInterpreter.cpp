@@ -485,6 +485,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
   while (exec_pos < m_prog_len) {
+    const Uint32 load_program_offset = exec_pos;
     value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;
@@ -520,6 +521,16 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           linked_word0 = p[0];
           linked_word1 = p[1];
           linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
+          if (!linked_cte_attr) {
+            const LoadColumnMeta *meta =
+                findLoadColumnMeta(load_program_offset);
+            if (meta != nullptr) {
+              linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                        meta->maxBytes);
+              linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+              linked_cte_attr = true;
+            }
+          }
           p += 2;
           Uint32 words = 1 + AttributeHeader::getDataSize(*p);
           memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
@@ -1476,4 +1487,3 @@ Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
   }
   return 0;
 }
-

@@ -136,7 +136,9 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_memory_budget(0), m_budget_increment(0),
       m_total_available(0),
       m_gb_types(nullptr), m_gb_types_inited(false),
-      m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
+      m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
+      m_load_column_meta(nullptr), m_load_column_meta_count(0),
+      m_load_column_meta_capacity(0) {
     memset(m_decimal_buf, 0,
            sizeof(decimal_digit_t) * AGG_DECIMAL_BUFF_LENGTH);
     m_decimal.buf = m_decimal_buf;
@@ -459,6 +461,13 @@ class AggInterpreterBase : public PushdownInterpreter {
   JoinGBHashTable* m_gb_map;
   Uint32 m_n_groups;
 
+  struct LoadColumnMeta {
+    Uint32 programOffset;
+    Uint32 typeId;
+    Uint32 maxBytes;
+    Uint32 csNumber;
+  };
+
   /* Step 2b — shared GROUP BY type-metadata initializer.
    * Resolves AttributeDescriptor / linked-attr metadata for each GB
    * column into m_gb_types[], allocates m_xfrm_buf if any column has
@@ -481,6 +490,12 @@ class AggInterpreterBase : public PushdownInterpreter {
                                       Uint32 typeId,
                                       Uint32 maxBytes,
                                       Uint32 csNumber);
+  Int32 initLoadColumnMetaFromMetadata(Uint32 programOffset,
+                                       Uint32 typeId,
+                                       Uint32 maxBytes,
+                                       Uint32 csNumber,
+                                       Uint32 entryCapacity);
+  const LoadColumnMeta* findLoadColumnMeta(Uint32 programOffset) const;
   Int32 publishGBTypes(EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
@@ -523,6 +538,10 @@ class AggInterpreterBase : public PushdownInterpreter {
   bool m_gb_types_inited;
   uchar* m_xfrm_buf;       // scratch buffer for strnxfrm_hash
   Uint32 m_xfrm_buf_len;   // size in bytes
+
+  LoadColumnMeta* m_load_column_meta;
+  Uint32 m_load_column_meta_count;
+  Uint32 m_load_column_meta_capacity;
 };
 
 #endif  // AGGINTERPRETERBASE_H_
