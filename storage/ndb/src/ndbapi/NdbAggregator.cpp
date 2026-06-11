@@ -1072,6 +1072,7 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpSum;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
@@ -1122,6 +1123,7 @@ bool NdbAggregator::Count(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpCount;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
