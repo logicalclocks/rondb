@@ -2263,6 +2263,89 @@ Int32 AggInterpreterBase::initGBTypes(
   return 0;
 }
 
+Int32 AggInterpreterBase::initGBTypesFromTable(
+    Dbtup* block_tup,
+    EmulatedJamBuffer *jamBuf) {
+  if (m_gb_types_inited || m_n_gb_cols == 0) {
+    return 0;
+  }
+  if (unlikely(block_tup == nullptr || m_gb_map == nullptr)) {
+    return 0;
+  }
+  const Int64 rawTableId = table_id();
+  if (unlikely(rawTableId < 0)) {
+    return 0;
+  }
+  const Uint32 tableId = static_cast<Uint32>(rawTableId);
+  if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
+    return 0;
+  }
+
+  Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+  bool has_charset_col = false;
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    thrjamDebug(jamBuf);
+    Uint32 attr_id = m_gb_cols[i] >> 16;
+    if (unlikely((attr_id & 0x8000) != 0)) {
+      return 0;
+    }
+    const Uint32* attrDesc = tab->tabDescriptor + attr_id * ZAD_SIZE;
+    if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+      has_charset_col = true;
+    }
+  }
+
+  if (!has_charset_col) {
+    return 0;
+  }
+
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    thrjamDebug(jamBuf);
+    Uint32 attr_id = m_gb_cols[i] >> 16;
+    GBColTypeInfo &info = m_gb_types[i];
+    const Uint32* attrDesc = tab->tabDescriptor + attr_id * ZAD_SIZE;
+    info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+    info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+    info.cs = nullptr;
+    if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+      thrjamDebug(jamBuf);
+      Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+      info.cs = tab->charsetArray[csPos];
+    }
+    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+    info.cmpFn = sqlType.m_cmp;
+  }
+
+  Uint32 max_xfrm_len = 0;
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    thrjamDebug(jamBuf);
+    if (m_gb_types[i].cs != nullptr) {
+      thrjamDebug(jamBuf);
+      Uint32 lb = 0;
+      if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
+      else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
+      Uint32 defLen = m_gb_types[i].maxBytes - lb;
+      Uint32 xfrm_len = NdbSqlUtil::strnxfrm_hash_len(m_gb_types[i].cs,
+                                                       defLen);
+      if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
+    }
+  }
+  if (max_xfrm_len > 0) {
+    thrjamDebug(jamBuf);
+    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
+                                  m_thread_id, false);
+    if (unlikely(p == nullptr)) {
+      return 0;
+    }
+    m_xfrm_buf = static_cast<uchar*>(p);
+    m_xfrm_buf_len = max_xfrm_len;
+  }
+
+  m_gb_types_inited = true;
+  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  return 0;
+}
+
 /*
  * Step 3a-A — wire-format header sizes used by both interpreters.
  * Definitions previously duplicated in each subclass .cpp.

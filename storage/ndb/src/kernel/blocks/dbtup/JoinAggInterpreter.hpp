@@ -90,6 +90,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
 
   Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups);
 
+  using AggInterpreterBase::initGBTypesFromTable;
+
   /* gb_map / val_len / n_gb_cols / n_agg_results / agg_results /
    * processed_rows lifted to AggInterpreterBase in Step 3b. */
   JoinGBHashTable* gb_map_mutable() {

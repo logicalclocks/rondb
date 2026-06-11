@@ -474,6 +474,8 @@ class AggInterpreterBase : public PushdownInterpreter {
                     const Uint32* linked_attr_data,
                     Uint32 linked_attr_len,
                     EmulatedJamBuffer *jamBuf);
+  Int32 initGBTypesFromTable(Dbtup* block_tup,
+                             EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
    * `initBufBlock` allocates one combined block from RG_QUERY_MEMORY

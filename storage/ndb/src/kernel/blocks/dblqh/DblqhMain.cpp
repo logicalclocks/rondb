@@ -18822,6 +18822,13 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     }
   }
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  const JoinGBHashTable *gb_map = interp->gb_map();
+  if (state->m_cte_mode && interp->n_gb_cols() > 0 &&
+      interp->gb_types() == nullptr && gb_map != nullptr &&
+      gb_map->size() != 0) {
+    jam();
+    (void)interp->initGBTypesFromTable(c_tup, jamBuffer());
+  }
   interp->finalizeResults();
 
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
@@ -21416,6 +21423,11 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   /* Process immediately: merge into local hash table */
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
+  if (keyLen != 0 && interp->n_gb_cols() > 0 &&
+      interp->gb_types() == nullptr) {
+    jam();
+    (void)interp->initGBTypesFromTable(c_tup, jamBuffer());
+  }
 
   Int32 ret = interp->mergeOneGroup(
       reinterpret_cast<const char *>(keyBuf), keyLen,
@@ -21496,6 +21508,10 @@ void Dblqh::processRedistQueue(Signal *signal,
                                 Uint32 aggStateKey) {
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
+  if (interp->n_gb_cols() > 0 && interp->gb_types() == nullptr) {
+    jam();
+    (void)interp->initGBTypesFromTable(c_tup, jamBuffer());
+  }
 
   Uint32 count = 0;
   auto *entry = state->m_redist_queue_head;
