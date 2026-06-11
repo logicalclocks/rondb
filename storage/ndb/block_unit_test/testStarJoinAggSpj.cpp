@@ -414,6 +414,40 @@ buildMultiLeafAggSection(const std::vector<std::vector<Uint32>> &programs,
   return section;
 }
 
+static void
+appendLinkedGroupByMetadata(std::vector<Uint32> &section,
+                            Uint32 tableId,
+                            Uint32 schemaVersion,
+                            Uint32 linkedPosition,
+                            Uint32 groupBySlot,
+                            Uint32 columnId)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(1);  /* entry count */
+  block.push_back(JOIN_AGG_META_SOURCE_LINKED_COLUMN);
+  block.push_back(linkedPosition);
+  block.push_back(8);  /* GROUP BY program word */
+  block.push_back(groupBySlot);
+  block.push_back(tableId);
+  block.push_back(schemaVersion);
+  block.push_back(columnId);
+  block.push_back(COL_TYPE_BIGINT);
+  block.push_back(8);
+  block.push_back(0);
+  block.push_back(0);
+  block.push_back(JOIN_AGG_META_FLAG_GROUP_BY);
+
+  section.push_back(JOIN_AGG_META_MARKER);
+  section.push_back(JOIN_AGG_META_VERSION);
+  section.push_back(1);  /* block count */
+  section.push_back(JOIN_AGG_META_KIND_MAIN);
+  section.push_back(RNIL);
+  section.push_back(static_cast<Uint32>(block.size()));
+  section.insert(section.end(), block.begin(), block.end());
+}
+
 /* ------------------------------------------------------------------ */
 /* Table setup via MySQL                                               */
 /* ------------------------------------------------------------------ */
@@ -1199,6 +1233,12 @@ testStarSumCountGroupBy(Ndb *ndb, SignalSender &ss, Uint32 nodeId,
   std::vector<std::vector<Uint32>> programs = {prog0, prog1};
   std::vector<Uint32> aggSection = buildMultiLeafAggSection(programs,
                                                              receiverId);
+  appendLinkedGroupByMetadata(aggSection,
+                              meta.tableId,
+                              meta.schemaVersion,
+                              0,  /* linked position 0 = parent PK */
+                              0,  /* GROUP BY slot */
+                              meta.attrIdA);
 
   int rc = sendStarScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
                                meta, queryTree, aggSection, receiverId);
