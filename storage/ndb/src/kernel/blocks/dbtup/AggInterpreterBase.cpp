@@ -2167,6 +2167,21 @@ Int32 AggInterpreterBase::initGBTypes(
         thrjamDebug(jamBuf);
         Uint32 tableId = word0;
         Uint32 tableVersion = word1;
+        Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+        const ColumnMeta *meta =
+            findColumnMeta(tableId, tableVersion, linkedAttrId);
+        if (meta != nullptr) {
+          info.typeId = meta->typeId;
+          info.maxBytes = meta->maxBytes;
+          info.cs = nullptr;
+          if (meta->csNumber != 0) {
+            thrjamDebug(jamBuf);
+            info.cs = all_charsets[meta->csNumber];
+          }
+          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+          info.cmpFn = sqlType.m_cmp;
+          continue;
+        }
         require(tableId != 0);
 
         Dblqh* lqh = block_tup->c_lqh;
@@ -2190,7 +2205,6 @@ Int32 AggInterpreterBase::initGBTypes(
           return ZINVALID_SCHEMA_VERSION;
         }
         Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-        Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
         const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
         info.typeId = AttributeDescriptor::getType(attrDesc[0]);
         info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
@@ -2261,6 +2275,9 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
   const Uint32* entry = metadata + 3;
   for (Uint32 e = 0; e < entryCount; e++) {
     const Uint32 sourceKind = entry[0];
+    const Uint32 tableId = entry[4];
+    const Uint32 tableVersion = entry[5];
+    const Uint32 columnId = entry[6];
     const Uint32 slotIndex = entry[3];
     const Uint32 typeId = entry[7];
     const Uint32 maxBytes = entry[8];
@@ -2283,6 +2300,12 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
     if (unlikely((flags & ~knownFlags) != 0 ||
                  isGroupBy == isLoadColumn)) {
       return ZAGG_OTHER_ERROR;
+    }
+    Int32 ret = initColumnMetaFromMetadata(tableId, tableVersion, columnId,
+                                           typeId, maxBytes, csNumber,
+                                           entryCount);
+    if (unlikely(ret != 0)) {
+      return ret;
     }
 
     if (isGroupBy) {
@@ -2315,8 +2338,8 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
       foundCount++;
     }
     if (isLoadColumn) {
-      Int32 ret = initLoadColumnMetaFromMetadata(entry[2], typeId, maxBytes,
-                                                 csNumber, entryCount);
+      ret = initLoadColumnMetaFromMetadata(entry[2], typeId, maxBytes,
+                                           csNumber, entryCount);
       if (unlikely(ret != 0)) {
         return ret;
       }
@@ -2485,12 +2508,139 @@ Int32 AggInterpreterBase::initLoadColumnMetaFromMetadata(
   return 0;
 }
 
+static Uint32 joinAggColumnMetaHash(Uint32 tableId,
+                                    Uint32 tableVersion,
+                                    Uint32 columnId) {
+  Uint32 h = tableId * 2654435761U;
+  h ^= table_version_major(tableVersion) * 2246822519U;
+  h ^= columnId * 3266489917U;
+  h ^= h >> 16;
+  return h;
+}
+
+static Uint32 joinAggColumnMetaHashSize(Uint32 entryCapacity) {
+  Uint32 hashSize = 8;
+  while (hashSize < entryCapacity * 2) {
+    hashSize <<= 1;
+  }
+  return hashSize;
+}
+
+Int32 AggInterpreterBase::initColumnMetaFromMetadata(
+    Uint32 tableId,
+    Uint32 tableVersion,
+    Uint32 columnId,
+    Uint32 typeId,
+    Uint32 maxBytes,
+    Uint32 csNumber,
+    Uint32 entryCapacity) {
+  if (tableId == RNIL || tableId == 0 || tableVersion == 0) {
+    return 0;
+  }
+  if (csNumber != 0) {
+    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                 all_charsets[csNumber] == nullptr)) {
+      return ZAGG_OTHER_ERROR;
+    }
+  }
+
+  if (m_column_meta == nullptr) {
+    if (unlikely(entryCapacity == 0)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    const Uint32 hashSize = joinAggColumnMetaHashSize(entryCapacity);
+    m_column_meta = static_cast<ColumnMeta*>(
+        lc_ndbd_pool_malloc(entryCapacity * sizeof(ColumnMeta),
+                            RG_QUERY_MEMORY, m_thread_id, false));
+    if (m_column_meta == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    m_column_meta_hash = static_cast<Uint32*>(
+        lc_ndbd_pool_malloc(hashSize * sizeof(Uint32),
+                            RG_QUERY_MEMORY, m_thread_id, false));
+    if (m_column_meta_hash == nullptr) {
+      lc_ndbd_pool_free(m_column_meta);
+      m_column_meta = nullptr;
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    for (Uint32 i = 0; i < hashSize; i++) {
+      m_column_meta_hash[i] = RNIL;
+    }
+    m_column_meta_capacity = entryCapacity;
+    m_column_meta_hash_size = hashSize;
+    m_column_meta_count = 0;
+  }
+
+  const Uint32 hash =
+      joinAggColumnMetaHash(tableId, tableVersion, columnId) &
+      (m_column_meta_hash_size - 1);
+  Uint32 metaIndex = m_column_meta_hash[hash];
+  while (metaIndex != RNIL) {
+    ColumnMeta &meta = m_column_meta[metaIndex];
+    if (meta.tableId == tableId &&
+        table_version_major(meta.tableVersion) ==
+            table_version_major(tableVersion) &&
+        meta.columnId == columnId) {
+      if (unlikely(meta.typeId != typeId ||
+                   meta.maxBytes != maxBytes ||
+                   meta.csNumber != csNumber)) {
+        return ZAGG_OTHER_ERROR;
+      }
+      return 0;
+    }
+    metaIndex = meta.nextIndex;
+  }
+
+  if (unlikely(m_column_meta_count >= m_column_meta_capacity)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  ColumnMeta &meta = m_column_meta[m_column_meta_count];
+  meta.tableId = tableId;
+  meta.tableVersion = tableVersion;
+  meta.columnId = columnId;
+  meta.typeId = typeId;
+  meta.maxBytes = maxBytes;
+  meta.csNumber = csNumber;
+  meta.nextIndex = m_column_meta_hash[hash];
+  m_column_meta_hash[hash] = m_column_meta_count;
+  m_column_meta_count++;
+  return 0;
+}
+
 const AggInterpreterBase::LoadColumnMeta*
 AggInterpreterBase::findLoadColumnMeta(Uint32 programOffset) const {
   for (Uint32 i = 0; i < m_load_column_meta_count; i++) {
     if (m_load_column_meta[i].programOffset == programOffset) {
       return &m_load_column_meta[i];
     }
+  }
+  return nullptr;
+}
+
+const AggInterpreterBase::ColumnMeta*
+AggInterpreterBase::findColumnMeta(Uint32 tableId,
+                                   Uint32 tableVersion,
+                                   Uint32 columnId) const {
+  if (m_column_meta_hash == nullptr ||
+      m_column_meta_hash_size == 0 ||
+      tableId == RNIL ||
+      tableId == 0 ||
+      tableVersion == 0) {
+    return nullptr;
+  }
+  const Uint32 hash =
+      joinAggColumnMetaHash(tableId, tableVersion, columnId) &
+      (m_column_meta_hash_size - 1);
+  Uint32 metaIndex = m_column_meta_hash[hash];
+  while (metaIndex != RNIL) {
+    const ColumnMeta &meta = m_column_meta[metaIndex];
+    if (meta.tableId == tableId &&
+        table_version_major(meta.tableVersion) ==
+            table_version_major(tableVersion) &&
+        meta.columnId == columnId) {
+      return &meta;
+    }
+    metaIndex = meta.nextIndex;
   }
   return nullptr;
 }
@@ -2584,6 +2734,17 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
     m_load_column_meta_count = 0;
     m_load_column_meta_capacity = 0;
   }
+  if (m_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_column_meta);
+    m_column_meta = nullptr;
+    m_column_meta_count = 0;
+    m_column_meta_capacity = 0;
+  }
+  if (m_column_meta_hash != nullptr) {
+    lc_ndbd_pool_free(m_column_meta_hash);
+    m_column_meta_hash = nullptr;
+    m_column_meta_hash_size = 0;
+  }
   return true;
 }
 
@@ -2630,6 +2791,14 @@ AggInterpreterBase::~AggInterpreterBase() {
   if (m_load_column_meta != nullptr) {
     lc_ndbd_pool_free(m_load_column_meta);
     m_load_column_meta = nullptr;
+  }
+  if (m_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_column_meta);
+    m_column_meta = nullptr;
+  }
+  if (m_column_meta_hash != nullptr) {
+    lc_ndbd_pool_free(m_column_meta_hash);
+    m_column_meta_hash = nullptr;
   }
   if (m_buf_block != nullptr) {
     lc_ndbd_pool_free(m_buf_block);

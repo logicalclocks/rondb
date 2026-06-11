@@ -138,7 +138,10 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_gb_types(nullptr), m_gb_types_inited(false),
       m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
       m_load_column_meta(nullptr), m_load_column_meta_count(0),
-      m_load_column_meta_capacity(0) {
+      m_load_column_meta_capacity(0),
+      m_column_meta(nullptr), m_column_meta_count(0),
+      m_column_meta_capacity(0),
+      m_column_meta_hash(nullptr), m_column_meta_hash_size(0) {
     memset(m_decimal_buf, 0,
            sizeof(decimal_digit_t) * AGG_DECIMAL_BUFF_LENGTH);
     m_decimal.buf = m_decimal_buf;
@@ -467,6 +470,15 @@ class AggInterpreterBase : public PushdownInterpreter {
     Uint32 maxBytes;
     Uint32 csNumber;
   };
+  struct ColumnMeta {
+    Uint32 tableId;
+    Uint32 tableVersion;
+    Uint32 columnId;
+    Uint32 typeId;
+    Uint32 maxBytes;
+    Uint32 csNumber;
+    Uint32 nextIndex;
+  };
 
   /* Step 2b — shared GROUP BY type-metadata initializer.
    * Resolves AttributeDescriptor / linked-attr metadata for each GB
@@ -495,7 +507,17 @@ class AggInterpreterBase : public PushdownInterpreter {
                                        Uint32 maxBytes,
                                        Uint32 csNumber,
                                        Uint32 entryCapacity);
+  Int32 initColumnMetaFromMetadata(Uint32 tableId,
+                                   Uint32 tableVersion,
+                                   Uint32 columnId,
+                                   Uint32 typeId,
+                                   Uint32 maxBytes,
+                                   Uint32 csNumber,
+                                   Uint32 entryCapacity);
   const LoadColumnMeta* findLoadColumnMeta(Uint32 programOffset) const;
+  const ColumnMeta* findColumnMeta(Uint32 tableId,
+                                   Uint32 tableVersion,
+                                   Uint32 columnId) const;
   Int32 publishGBTypes(EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
@@ -542,6 +564,11 @@ class AggInterpreterBase : public PushdownInterpreter {
   LoadColumnMeta* m_load_column_meta;
   Uint32 m_load_column_meta_count;
   Uint32 m_load_column_meta_capacity;
+  ColumnMeta* m_column_meta;
+  Uint32 m_column_meta_count;
+  Uint32 m_column_meta_capacity;
+  Uint32* m_column_meta_hash;
+  Uint32 m_column_meta_hash_size;
 };
 
 #endif  // AGGINTERPRETERBASE_H_

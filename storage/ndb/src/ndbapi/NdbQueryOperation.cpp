@@ -152,9 +152,8 @@ static void appendJoinAggColumnMetaEntry(
   dst.append(sourceId);
   dst.append(programOffset);
   dst.append(slotIndex);
-  dst.append(sourceKind == JOIN_AGG_META_SOURCE_LOCAL_COLUMN ? tableId : RNIL);
-  dst.append(sourceKind == JOIN_AGG_META_SOURCE_LOCAL_COLUMN
-             ? schemaVersion : 0);
+  dst.append(tableId);
+  dst.append(schemaVersion);
   dst.append(col->getAttrId());
   dst.append((Uint32)type);
   dst.append(col->getSizeInBytes());
@@ -163,20 +162,57 @@ static void appendJoinAggColumnMetaEntry(
   dst.append(flags);
 }
 
+static void getJoinAggColumnMetaTable(
+    Uint32 sourceKind,
+    Uint32 sourceId,
+    Uint32 localTableId,
+    Uint32 localSchemaVersion,
+    const Vector<const NdbLinkedOperandImpl *> *linkedProjection,
+    Uint32 &tableId,
+    Uint32 &schemaVersion) {
+  tableId = localTableId;
+  schemaVersion = localSchemaVersion;
+  if (sourceKind != JOIN_AGG_META_SOURCE_LINKED_COLUMN) {
+    return;
+  }
+  tableId = RNIL;
+  schemaVersion = 0;
+  if (linkedProjection == nullptr || sourceId >= linkedProjection->size()) {
+    return;
+  }
+  const NdbLinkedOperandImpl *linked = (*linkedProjection)[sourceId];
+  if (linked == nullptr) {
+    return;
+  }
+  const NdbTableImpl &table = linked->getParentOperation().getTable();
+  if (table.m_facade == nullptr) {
+    return;
+  }
+  tableId = table.m_facade->getObjectId();
+  schemaVersion = table.m_facade->getObjectVersion();
+}
+
 static void appendJoinAggGbColumnMetaEntry(
     Uint32Buffer &dst,
     const NdbDictionary::Column *col,
     Uint32 gbProgramWord,
     Uint32 gbIndex,
-    Uint32 tableId,
-    Uint32 schemaVersion) {
+    Uint32 localTableId,
+    Uint32 localSchemaVersion,
+    const Vector<const NdbLinkedOperandImpl *> *linkedProjection) {
   const Uint32 encodedColId = gbProgramWord >> 16;
   const bool isLinked = (encodedColId & AGG_LINKED_COL_FLAG) != 0;
   const Uint32 sourceId = encodedColId & ~AGG_LINKED_COL_FLAG;
-  appendJoinAggColumnMetaEntry(
-      dst, col,
+  const Uint32 sourceKind =
       isLinked ? JOIN_AGG_META_SOURCE_LINKED_COLUMN
-               : JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+               : JOIN_AGG_META_SOURCE_LOCAL_COLUMN;
+  Uint32 tableId;
+  Uint32 schemaVersion;
+  getJoinAggColumnMetaTable(sourceKind, sourceId, localTableId,
+                            localSchemaVersion, linkedProjection,
+                            tableId, schemaVersion);
+  appendJoinAggColumnMetaEntry(
+      dst, col, sourceKind,
       sourceId, 8 + gbIndex, gbIndex, tableId, schemaVersion,
       JOIN_AGG_META_FLAG_GROUP_BY);
 }
@@ -189,6 +225,7 @@ static bool appendJoinAggGbColumnMetaEntries(
     Uint32 nGbColumns,
     Uint32 tableId,
     Uint32 schemaVersion,
+    const Vector<const NdbLinkedOperandImpl *> *linkedProjection,
     Uint32 &entryCount) {
   if (gbColumns == nullptr || nGbColumns == 0) {
     return true;
@@ -202,7 +239,8 @@ static bool appendJoinAggGbColumnMetaEntries(
       continue;
     }
     appendJoinAggGbColumnMetaEntry(block, col, program[8 + i], i,
-                                   tableId, schemaVersion);
+                                   tableId, schemaVersion,
+                                   linkedProjection);
     entryCount++;
   }
   return true;
@@ -231,6 +269,7 @@ static bool appendJoinAggLoadColumnMetaEntries(
     Uint32 aggSlotOffset,
     Uint32 tableId,
     Uint32 schemaVersion,
+    const Vector<const NdbLinkedOperandImpl *> *linkedProjection,
     Uint32 &entryCount) {
   if (aggColumns == nullptr || nAggColumns == 0 || program == nullptr ||
       programLen < 8) {
@@ -316,10 +355,15 @@ static bool appendJoinAggLoadColumnMetaEntries(
       }
       const Uint32 programOffsetKey =
           (aggSlotOffset << 16) | source.m_program_offset;
+      Uint32 metaTableId;
+      Uint32 metaSchemaVersion;
+      getJoinAggColumnMetaTable(source.m_source_kind, source.m_source_id,
+                                tableId, schemaVersion, linkedProjection,
+                                metaTableId, metaSchemaVersion);
       appendJoinAggColumnMetaEntry(
           block, source.m_column, source.m_source_kind, source.m_source_id,
           programOffsetKey, aggSlot + aggSlotOffset,
-          tableId, schemaVersion,
+          metaTableId, metaSchemaVersion,
           JOIN_AGG_META_FLAG_LOAD_COLUMN);
       entryCount++;
     }
@@ -337,7 +381,8 @@ static bool buildJoinAggColumnMetaBlock(
     Uint32 nAggColumns,
     Uint32 aggSlotOffset,
     Uint32 tableId,
-    Uint32 schemaVersion) {
+    Uint32 schemaVersion,
+    const Vector<const NdbLinkedOperandImpl *> *linkedProjection) {
   if (program == nullptr) {
     return false;
   }
@@ -353,6 +398,7 @@ static bool buildJoinAggColumnMetaBlock(
   if (!appendJoinAggGbColumnMetaEntries(block, program, programLen,
                                         gbColumns, nGbColumns,
                                         tableId, schemaVersion,
+                                        linkedProjection,
                                         entryCount)) {
     return false;
   }
@@ -360,6 +406,7 @@ static bool buildJoinAggColumnMetaBlock(
                                           aggColumns, nAggColumns,
                                           aggSlotOffset,
                                           tableId, schemaVersion,
+                                          linkedProjection,
                                           entryCount)) {
     return false;
   }
@@ -3733,7 +3780,8 @@ int NdbQueryImpl::prepareAggregation() {
               progBuf != nullptr ? (progBuf[1] & 0xFFFF) : 0,
               0,
               aggTable->m_facade->getObjectId(),
-              aggTable->m_facade->getObjectVersion());
+              aggTable->m_facade->getObjectVersion(),
+              &firstOpts->getLinkedProjection());
         }
       } else {
         Uint32 entryCount = 0;
@@ -3754,6 +3802,7 @@ int NdbQueryImpl::prepareAggregation() {
                               firstOpts->getAggNGroupByCols(),
                               firstAggTable->m_facade->getObjectId(),
                               firstAggTable->m_facade->getObjectVersion(),
+                              &firstOpts->getLinkedProjection(),
                               entryCount);
 
         Uint32 accOffset = 0;
@@ -3779,6 +3828,7 @@ int NdbQueryImpl::prepareAggregation() {
               accOffset,
               aggTable->m_facade->getObjectId(),
               aggTable->m_facade->getObjectVersion(),
+              &leafOpts.getLinkedProjection(),
               entryCount);
           accOffset += nAggResults;
         }
@@ -3813,7 +3863,8 @@ int NdbQueryImpl::prepareAggregation() {
           cte.aggColumns.size(),
           0,
           cte.tableId,
-          cte.schemaVersion);
+          cte.schemaVersion,
+          nullptr);
       if (unlikely(block.isMemoryExhausted())) {
         setErrorCode(Err_MemoryAlloc);
         return -1;

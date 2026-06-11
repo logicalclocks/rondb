@@ -513,7 +513,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             p += 1 + AttributeHeader::getDataSize(*p);
             pos_count++;
           }
-          if (p >= p_end) {
+          if (p + 2 >= p_end) {
             g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
                 "kOpLoadCol linked position %u not found in buffer "
                 "(linked_len=%u)", position, m_linked_attr_len);
@@ -523,13 +523,24 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           linked_word1 = p[1];
           linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
           if (!linked_cte_attr) {
-            const LoadColumnMeta *meta =
-                findLoadColumnMeta(load_program_offset);
-            if (meta != nullptr) {
-              linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
-                                                        meta->maxBytes);
-              linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+            const Uint32 linked_attr_id =
+                AttributeHeader(p[2]).getAttributeId();
+            const ColumnMeta *column_meta =
+                findColumnMeta(linked_word0, linked_word1, linked_attr_id);
+            if (column_meta != nullptr) {
+              linked_word0 = CteLinkedAttr::encodeWord0(column_meta->typeId,
+                                                        column_meta->maxBytes);
+              linked_word1 = CteLinkedAttr::encodeWord1(column_meta->csNumber);
               linked_cte_attr = true;
+            } else {
+              const LoadColumnMeta *meta =
+                  findLoadColumnMeta(load_program_offset);
+              if (meta != nullptr) {
+                linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                          meta->maxBytes);
+                linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+                linked_cte_attr = true;
+              }
             }
           }
           p += 2;
@@ -1338,30 +1349,42 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
           thrjamDebug(jamBuf);
           Uint32 tableId = word0;
           Uint32 tableVersion = word1;
-          Dblqh* lqh = block_tup->c_lqh;
-          if (tableId != 0 &&
-              tableId < block_tup->cnoOfTablerec &&
-              tableId < lqh->ctabrecFileSize &&
-              table_version_major(tableVersion) ==
-                  table_version_major(lqh->tablerec[tableId].schemaVersion)) {
-            thrjamDebug(jamBuf);
-            Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-            Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
-            const Uint32* attrDesc = tab->tabDescriptor +
-                linkedAttrId * ZAD_SIZE;
-            info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-            info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+          Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+          const ColumnMeta *meta =
+              findColumnMeta(tableId, tableVersion, linkedAttrId);
+          if (meta != nullptr) {
+            info.typeId = meta->typeId;
+            info.maxBytes = meta->maxBytes;
             info.cs = nullptr;
-            if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+            if (meta->csNumber != 0) {
               thrjamDebug(jamBuf);
-              Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-              info.cs = tab->charsetArray[csPos];
+              info.cs = all_charsets[meta->csNumber];
             }
           } else {
-            thrjamDebug(jamBuf);
-            info.typeId = NDB_TYPE_UNSIGNED;
-            info.maxBytes = 4;
-            info.cs = nullptr;
+            Dblqh* lqh = block_tup->c_lqh;
+            if (tableId != 0 &&
+                tableId < block_tup->cnoOfTablerec &&
+                tableId < lqh->ctabrecFileSize &&
+                table_version_major(tableVersion) ==
+                    table_version_major(lqh->tablerec[tableId].schemaVersion)) {
+              thrjamDebug(jamBuf);
+              Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+              const Uint32* attrDesc = tab->tabDescriptor +
+                  linkedAttrId * ZAD_SIZE;
+              info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+              info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+              info.cs = nullptr;
+              if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+                thrjamDebug(jamBuf);
+                Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+                info.cs = tab->charsetArray[csPos];
+              }
+            } else {
+              thrjamDebug(jamBuf);
+              info.typeId = NDB_TYPE_UNSIGNED;
+              info.maxBytes = 4;
+              info.cs = nullptr;
+            }
           }
         } else {
           thrjamDebug(jamBuf);
