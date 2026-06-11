@@ -75,6 +75,13 @@ So the API-side query section needs a container format, not a single flat
 metadata table. DBTC should not rediscover metadata, but it must parse enough of
 the container to select the correct block for each outgoing setup request.
 
+DBTC should store the selected per-aggregation metadata blocks in QueryMemory
+allocated by `lc_ndbd_pool_malloc`, not as persistent long sections. Section
+memory is a more constrained resource, while QueryMemory can be extended more
+easily and gives DBTC contiguous buffers. DBTC should create the optional
+`JOIN_AGG_SETUP_REQ` section 2 only transiently when sending each setup signal,
+then let normal signal section ownership release it.
+
 Suggested API-to-DBTC metadata container:
 
 ```text

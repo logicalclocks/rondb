@@ -79,6 +79,18 @@ struct CHARSET_INFO;
  * DBTC checks for this marker after parsing the main agg program.
  */
 #define CTE_DEFS_MARKER 0xCDE00000
+
+/*
+ * Marker for the optional join aggregation column metadata container appended
+ * after the main aggregation program and optional CTE definitions in the
+ * API-to-DBTC aggregation payload. DBTC splits this container into the
+ * per-aggregation ColumnMetaSectionNum section on JOIN_AGG_SETUP_REQ.
+ */
+#define JOIN_AGG_META_MARKER 0xA66D0000
+#define JOIN_AGG_META_VERSION 1
+
+#define JOIN_AGG_META_KIND_MAIN 0
+#define JOIN_AGG_META_KIND_CTE 1
 enum InterpreterOp {
   kOpUnknown = 0,
   kOpPlus,

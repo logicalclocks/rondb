@@ -2009,6 +2009,8 @@ class Dbtc : public SimulatedBlock {
 
     // Join aggregation state (Phase 7)
     Uint32 m_aggProgramPtrI;
+    Uint32 *m_aggColumnMeta;
+    Uint32 m_aggColumnMetaLen;
     Uint32 m_aggKeysSectionPtrI;
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     Uint32 m_aggNodesOutstanding;
@@ -2050,6 +2052,8 @@ class Dbtc : public SimulatedBlock {
       Uint32 tableId;
       Uint32 schemaVersion;
       Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
+      Uint32 *columnMeta;       // QueryMemory copy of this CTE's metadata
+      Uint32 columnMetaLen;
       Uint32 phase;             // Execution phase (0 = no deps, computed)
       Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW (no GROUP BY)
     };

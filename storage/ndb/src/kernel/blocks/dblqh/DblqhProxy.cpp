@@ -2499,7 +2499,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_receiverIds = nullptr;
   state->m_numReceiverIds = 0;
   {
-    if (unlikely(signal->getNoOfSections() != 2)) {
+    const Uint32 noOfSections = signal->getNoOfSections();
+    if (unlikely(noOfSections != 2 && noOfSections != 3)) {
       jam();
       SectionHandle handle(this, signal);
       releaseSections(handle);
