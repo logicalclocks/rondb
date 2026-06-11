@@ -485,7 +485,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
   while (exec_pos < m_prog_len) {
-    const Uint32 load_program_offset = exec_pos;
+    const Uint32 load_program_offset =
+        ((m_acc_offset & 0xFFFF) << 16) | (exec_pos & 0xFFFF);
     value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;

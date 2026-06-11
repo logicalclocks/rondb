@@ -2438,7 +2438,7 @@ Int32 AggInterpreterBase::initLoadColumnMetaFromMetadata(
     Uint32 maxBytes,
     Uint32 csNumber,
     Uint32 entryCapacity) {
-  if (unlikely(programOffset == RNIL || programOffset >= m_prog_len)) {
+  if (unlikely(programOffset == RNIL)) {
     return ZAGG_OTHER_ERROR;
   }
   if (csNumber != 0) {

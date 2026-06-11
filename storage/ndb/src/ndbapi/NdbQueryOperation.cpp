@@ -236,6 +236,9 @@ static bool appendJoinAggLoadColumnMetaEntries(
       programLen < 8) {
     return true;
   }
+  if (unlikely(aggSlotOffset > 0xFFFF)) {
+    return false;
+  }
 
   const Uint32 nGbColumns = program[1] >> 16;
   if (programLen < 8 + nGbColumns) {
@@ -308,9 +311,14 @@ static bool appendJoinAggLoadColumnMetaEntries(
       if (source.m_source_id == RNIL) {
         source.m_source_id = source.m_column->getAttrId();
       }
+      if (unlikely(source.m_program_offset > 0xFFFF)) {
+        return false;
+      }
+      const Uint32 programOffsetKey =
+          (aggSlotOffset << 16) | source.m_program_offset;
       appendJoinAggColumnMetaEntry(
           block, source.m_column, source.m_source_kind, source.m_source_id,
-          source.m_program_offset, aggSlot + aggSlotOffset,
+          programOffsetKey, aggSlot + aggSlotOffset,
           tableId, schemaVersion,
           JOIN_AGG_META_FLAG_LOAD_COLUMN);
       entryCount++;
