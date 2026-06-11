@@ -181,6 +181,33 @@ static void appendJoinAggGbColumnMetaEntry(
       JOIN_AGG_META_FLAG_GROUP_BY);
 }
 
+static bool appendJoinAggGbColumnMetaEntries(
+    Uint32Buffer &block,
+    const Uint32 *program,
+    Uint32 programLen,
+    const NdbDictionary::Column *const *gbColumns,
+    Uint32 nGbColumns,
+    Uint32 tableId,
+    Uint32 schemaVersion,
+    Uint32 &entryCount) {
+  if (gbColumns == nullptr || nGbColumns == 0) {
+    return true;
+  }
+  if (program == nullptr || programLen < 8 + nGbColumns) {
+    return false;
+  }
+  for (Uint32 i = 0; i < nGbColumns; i++) {
+    const NdbDictionary::Column *col = gbColumns[i];
+    if (col == nullptr) {
+      continue;
+    }
+    appendJoinAggGbColumnMetaEntry(block, col, program[8 + i], i,
+                                   tableId, schemaVersion);
+    entryCount++;
+  }
+  return true;
+}
+
 struct JoinAggLoadMetaSource {
   const NdbDictionary::Column *m_column;
   Uint32 m_source_kind;
@@ -201,6 +228,7 @@ static bool appendJoinAggLoadColumnMetaEntries(
     Uint32 programLen,
     const NdbDictionary::Column *const *aggColumns,
     Uint32 nAggColumns,
+    Uint32 aggSlotOffset,
     Uint32 tableId,
     Uint32 schemaVersion,
     Uint32 &entryCount) {
@@ -282,7 +310,8 @@ static bool appendJoinAggLoadColumnMetaEntries(
       }
       appendJoinAggColumnMetaEntry(
           block, source.m_column, source.m_source_kind, source.m_source_id,
-          source.m_program_offset, aggSlot, tableId, schemaVersion,
+          source.m_program_offset, aggSlot + aggSlotOffset,
+          tableId, schemaVersion,
           JOIN_AGG_META_FLAG_LOAD_COLUMN);
       entryCount++;
     }
@@ -298,6 +327,7 @@ static bool buildJoinAggColumnMetaBlock(
     Uint32 nGbColumns,
     const NdbDictionary::Column *const *aggColumns,
     Uint32 nAggColumns,
+    Uint32 aggSlotOffset,
     Uint32 tableId,
     Uint32 schemaVersion) {
   if (program == nullptr) {
@@ -312,19 +342,15 @@ static bool buildJoinAggColumnMetaBlock(
   block.append(JOIN_AGG_META_VERSION);
   const Uint32 entryCountPos = block.getSize();
   block.append(0);
-  if (gbColumns != nullptr) {
-    for (Uint32 i = 0; i < nGbColumns; i++) {
-      const NdbDictionary::Column *col = gbColumns[i];
-      if (col == nullptr) {
-        continue;
-      }
-      appendJoinAggGbColumnMetaEntry(block, col, program[8 + i], i,
-                                     tableId, schemaVersion);
-      entryCount++;
-    }
+  if (!appendJoinAggGbColumnMetaEntries(block, program, programLen,
+                                        gbColumns, nGbColumns,
+                                        tableId, schemaVersion,
+                                        entryCount)) {
+    return false;
   }
   if (!appendJoinAggLoadColumnMetaEntries(block, program, programLen,
                                           aggColumns, nAggColumns,
+                                          aggSlotOffset,
                                           tableId, schemaVersion,
                                           entryCount)) {
     return false;
@@ -3684,20 +3710,74 @@ int NdbQueryImpl::prepareAggregation() {
 
     if (numLeaves > 0 && firstOpts != nullptr) {
       Uint32Buffer block;
-      const NdbTableImpl *aggTable = firstOpts->getAggTable();
-      const Uint32 *progBuf = firstOpts->getAggProgramBuffer();
       bool hasBlock = false;
-      if (aggTable != nullptr && aggTable->m_facade != nullptr) {
-        hasBlock = buildJoinAggColumnMetaBlock(
-            block,
-            progBuf,
-            firstOpts->getAggProgramLen(),
-            firstOpts->getAggGbColumns(),
-            firstOpts->getAggNGroupByCols(),
-            firstOpts->getAggColumns(),
-            progBuf != nullptr ? (progBuf[1] & 0xFFFF) : 0,
-            aggTable->m_facade->getObjectId(),
-            aggTable->m_facade->getObjectVersion());
+      if (numLeaves == 1) {
+        const NdbTableImpl *aggTable = firstOpts->getAggTable();
+        const Uint32 *progBuf = firstOpts->getAggProgramBuffer();
+        if (aggTable != nullptr && aggTable->m_facade != nullptr) {
+          hasBlock = buildJoinAggColumnMetaBlock(
+              block,
+              progBuf,
+              firstOpts->getAggProgramLen(),
+              firstOpts->getAggGbColumns(),
+              firstOpts->getAggNGroupByCols(),
+              firstOpts->getAggColumns(),
+              progBuf != nullptr ? (progBuf[1] & 0xFFFF) : 0,
+              0,
+              aggTable->m_facade->getObjectId(),
+              aggTable->m_facade->getObjectVersion());
+        }
+      } else {
+        Uint32 entryCount = 0;
+        block.append(JOIN_AGG_META_MARKER);
+        block.append(JOIN_AGG_META_VERSION);
+        const Uint32 entryCountPos = block.getSize();
+        block.append(0);
+
+        const NdbTableImpl *firstAggTable = firstOpts->getAggTable();
+        const Uint32 *firstProgBuf = firstOpts->getAggProgramBuffer();
+        bool validBlock = firstAggTable != nullptr &&
+                          firstAggTable->m_facade != nullptr &&
+                          appendJoinAggGbColumnMetaEntries(
+                              block,
+                              firstProgBuf,
+                              firstOpts->getAggProgramLen(),
+                              firstOpts->getAggGbColumns(),
+                              firstOpts->getAggNGroupByCols(),
+                              firstAggTable->m_facade->getObjectId(),
+                              firstAggTable->m_facade->getObjectVersion(),
+                              entryCount);
+
+        Uint32 accOffset = 0;
+        for (Uint32 leaf = 0; validBlock && leaf < numLeaves; leaf++) {
+          const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+          const NdbQueryOperationDefImpl &leafDef =
+              getQueryDef().getQueryOperation(leafOpNo);
+          const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+          const NdbTableImpl *aggTable = leafOpts.getAggTable();
+          const Uint32 *progBuf = leafOpts.getAggProgramBuffer();
+          if (aggTable == nullptr || aggTable->m_facade == nullptr ||
+              progBuf == nullptr) {
+            validBlock = false;
+            break;
+          }
+          const Uint32 nAggResults = progBuf[1] & 0xFFFF;
+          validBlock = appendJoinAggLoadColumnMetaEntries(
+              block,
+              progBuf,
+              leafOpts.getAggProgramLen(),
+              leafOpts.getAggColumns(),
+              nAggResults,
+              accOffset,
+              aggTable->m_facade->getObjectId(),
+              aggTable->m_facade->getObjectVersion(),
+              entryCount);
+          accOffset += nAggResults;
+        }
+        if (validBlock && entryCount > 0) {
+          block.put(entryCountPos, entryCount);
+          hasBlock = true;
+        }
       }
       if (unlikely(block.isMemoryExhausted())) {
         setErrorCode(Err_MemoryAlloc);
@@ -3723,6 +3803,7 @@ int NdbQueryImpl::prepareAggregation() {
           cte.gbColumns.size(),
           cte.aggColumns.getBase(),
           cte.aggColumns.size(),
+          0,
           cte.tableId,
           cte.schemaVersion);
       if (unlikely(block.isMemoryExhausted())) {
