@@ -2346,6 +2346,111 @@ Int32 AggInterpreterBase::initGBTypesFromTable(
   return 0;
 }
 
+Int32 AggInterpreterBase::initGBTypesFromMetadata(
+    const Uint32* metadata,
+    Uint32 metadataLen,
+    EmulatedJamBuffer *jamBuf) {
+  if (m_gb_types_inited || m_n_gb_cols == 0) {
+    return 0;
+  }
+  if (metadata == nullptr || metadataLen == 0) {
+    return 0;
+  }
+  if (unlikely(m_gb_map == nullptr ||
+               metadataLen < 3 ||
+               metadata[0] != JOIN_AGG_META_MARKER ||
+               metadata[1] != JOIN_AGG_META_VERSION)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  const Uint32 entryCount = metadata[2];
+  if (unlikely(entryCount == 0 ||
+               entryCount > (metadataLen - 3) / JOIN_AGG_META_ENTRY_WORDS ||
+               metadataLen != 3 + entryCount * JOIN_AGG_META_ENTRY_WORDS)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  bool found[MAX_AGG_N_GROUPBY_COLS];
+  memset(found, 0, sizeof(found));
+  Uint32 foundCount = 0;
+  const Uint32* entry = metadata + 3;
+  for (Uint32 e = 0; e < entryCount; e++) {
+    const Uint32 sourceKind = entry[0];
+    const Uint32 gbIndex = entry[3];
+    const Uint32 typeId = entry[7];
+    const Uint32 maxBytes = entry[8];
+    const Uint32 csNumber = entry[9];
+    const Uint32 flags = entry[11];
+
+    if ((flags & JOIN_AGG_META_FLAG_GROUP_BY) != 0) {
+      if (unlikely(gbIndex >= m_n_gb_cols ||
+                   gbIndex >= MAX_AGG_N_GROUPBY_COLS ||
+                   found[gbIndex])) {
+        return ZAGG_OTHER_ERROR;
+      }
+      if (unlikely(sourceKind != JOIN_AGG_META_SOURCE_LOCAL_COLUMN &&
+                   sourceKind != JOIN_AGG_META_SOURCE_LINKED_COLUMN &&
+                   sourceKind != JOIN_AGG_META_SOURCE_CTE_COLUMN)) {
+        return ZAGG_OTHER_ERROR;
+      }
+
+      GBColTypeInfo &info = m_gb_types[gbIndex];
+      info.typeId = typeId;
+      info.maxBytes = maxBytes;
+      info.cs = nullptr;
+      if (csNumber != 0) {
+        if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                     all_charsets[csNumber] == nullptr)) {
+          return ZAGG_OTHER_ERROR;
+        }
+        info.cs = all_charsets[csNumber];
+      }
+      const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+      info.cmpFn = sqlType.m_cmp;
+      found[gbIndex] = true;
+      foundCount++;
+    }
+    entry += JOIN_AGG_META_ENTRY_WORDS;
+  }
+
+  if (foundCount == 0) {
+    return 0;
+  }
+  if (unlikely(foundCount != m_n_gb_cols)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  Uint32 max_xfrm_len = 0;
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    thrjamDebug(jamBuf);
+    if (m_gb_types[i].cs != nullptr) {
+      Uint32 lb = 0;
+      if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
+      else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
+      if (unlikely(m_gb_types[i].maxBytes < lb)) {
+        return ZAGG_OTHER_ERROR;
+      }
+      Uint32 defLen = m_gb_types[i].maxBytes - lb;
+      Uint32 xfrm_len = NdbSqlUtil::strnxfrm_hash_len(m_gb_types[i].cs,
+                                                       defLen);
+      if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
+    }
+  }
+  if (max_xfrm_len > 0) {
+    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
+                                  m_thread_id, false);
+    if (unlikely(p == nullptr)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    m_xfrm_buf = static_cast<uchar*>(p);
+    m_xfrm_buf_len = max_xfrm_len;
+  }
+
+  m_gb_types_inited = true;
+  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  return 0;
+}
+
 /*
  * Step 3a-A — wire-format header sizes used by both interpreters.
  * Definitions previously duplicated in each subclass .cpp.

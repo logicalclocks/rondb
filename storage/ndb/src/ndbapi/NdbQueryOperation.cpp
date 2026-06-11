@@ -153,7 +153,7 @@ static void appendJoinAggColumnMetaEntry(
   dst.append(col->getAttrId());
   dst.append((Uint32)type);
   dst.append(col->getSizeInBytes());
-  dst.append(col->getCharsetNumber());
+  dst.append(col->getCharset() != nullptr ? col->getCharsetNumber() : 0);
   dst.append((col->getPrecision() << 16) | (col->getScale() & 0xFFFF));
   dst.append(flags);
 }

@@ -2747,6 +2747,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                     req->tableId,
                                     0,
                                     getThreadId());
+    state->m_agg_interpreter = interp;
     interp->Init(leaf0.m_agg_program);
     if (state->m_num_leaves > 1) {
       interp->setTotalAggResults(state->m_total_agg_results);
@@ -2755,8 +2756,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     }
     interp->setUseMutex(true);
     interp->setCteMode(state->m_cte_mode);
+    if (state->m_column_meta_buf != nullptr) {
+      Int32 ret = interp->initGBTypesFromMetadata(state->m_column_meta_buf,
+                                                  state->m_column_meta_len,
+                                                  jamBuffer());
+      if (unlikely(ret != 0)) {
+        jam();
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+    }
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
-    state->m_agg_interpreter = interp;
   } else {
     jam();
     Uint32 num_threads = state->m_num_threads;
@@ -2791,6 +2802,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                       req->tableId,
                                       0,
                                       getThreadId());
+      arr[i] = interp;
       interp->Init(leaf0.m_agg_program);
       if (state->m_num_leaves > 1) {
         interp->setTotalAggResults(state->m_total_agg_results);
@@ -2798,9 +2810,19 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                       state->m_num_leaves);
       }
       interp->setCteMode(state->m_cte_mode);
+      if (state->m_column_meta_buf != nullptr) {
+        Int32 ret = interp->initGBTypesFromMetadata(state->m_column_meta_buf,
+                                                    state->m_column_meta_len,
+                                                    jamBuffer());
+        if (unlikely(ret != 0)) {
+          jam();
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key);
+          return;
+        }
+      }
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
-      arr[i] = interp;
     }
   }
 
