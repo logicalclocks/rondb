@@ -1350,6 +1350,12 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
           Uint32 tableId = word0;
           Uint32 tableVersion = word1;
           Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+          if (unlikely(tableId == 0 || tableId == RNIL)) {
+            g_eventLogger->debug("initGBTypesForNullLocal: linked GROUP BY "
+                "column has untyped synthetic metadata prefix tableId=%u "
+                "schemaVersion=%u", tableId, tableVersion);
+            return ZAGG_OTHER_ERROR;
+          }
           const ColumnMeta *meta =
               findColumnMeta(tableId, tableVersion, linkedAttrId);
           if (meta != nullptr) {
@@ -1380,23 +1386,14 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
                 info.cs = tab->charsetArray[csPos];
               }
             } else {
-              thrjamDebug(jamBuf);
-              info.typeId = NDB_TYPE_UNSIGNED;
-              info.maxBytes = 4;
-              info.cs = nullptr;
+              return ZAGG_OTHER_ERROR;
             }
           }
         } else {
-          thrjamDebug(jamBuf);
-          info.typeId = NDB_TYPE_UNSIGNED;
-          info.maxBytes = 4;
-          info.cs = nullptr;
+          return ZAGG_OTHER_ERROR;
         }
       } else {
-        thrjamDebug(jamBuf);
-        info.typeId = NDB_TYPE_UNSIGNED;
-        info.maxBytes = 4;
-        info.cs = nullptr;
+        return ZAGG_OTHER_ERROR;
       }
     } else {
       thrjamDebug(jamBuf);

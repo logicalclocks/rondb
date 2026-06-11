@@ -3380,7 +3380,8 @@ private:
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
-   * Each entry is [tableId=0][schemaVersion=0][AttrHeader][data...].
+   * CTE result entries use the CteLinkedAttr typed 2-word header followed
+   * by [AttrHeader][data...].
    * Shared by cteLookupAggFeed (downstream agg feed) and the filter
    * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
   void buildCteLinkedBuffer(const JoinAggInterpreter *interp,

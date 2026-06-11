@@ -9836,10 +9836,17 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   if (treeNodePtr.p->m_info == &g_CteLookupOpInfo) {
     jam();
     const Uint32 nCols = treeNodePtr.p->m_cteLookup_data.m_numResultCols;
+    const Uint32 *virtTypeInfo =
+        treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo;
+    if (unlikely(nCols > 0 && virtTypeInfo == nullptr)) {
+      jam();
+      releaseSection(linkedPtrI);
+      return DbspjErr::InvalidTreeNodeSpecification;
+    }
     for (Uint32 i = 0; i < nCols; i++) {
       Uint32 entry[3];
-      entry[0] = 0;  // tableId
-      entry[1] = 0;  // schemaVersion
+      entry[0] = virtTypeInfo[i * 2];
+      entry[1] = virtTypeInfo[i * 2 + 1];
       AttributeHeader::init(&entry[2], i, 0);  // byteSize=0 → NULL
       if (unlikely(!appendToSection(linkedPtrI, entry, 3))) {
         jam();
@@ -14107,34 +14114,18 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
 /**
  * emitNullAttrinfo
  *
- * Emit a NULL attribute for a given attrId: optional table metadata
- * (2 prefix words) followed by an AttributeHeader with length 0.
- *
- * Default (cteOrigin = true): emit a CTE-marker prefix encoding a
- * neutral inline type (NDB_TYPE_BIGINT / 8 bytes / no charset).  A
- * NULL entry has no payload, so the choice of typeId is metadata-
- * only — BIGINT gives the receiver a non-null cmpFn fallback if
- * initGBTypes ever caches type info from this entry.  Both
- * JoinAggInterpreter::initGBTypes and initGBTypesForNullLocal decode
- * the CTE branch cleanly.
- *
- * Legacy mode (cteOrigin = false): emit `[0][0]` — produces a
- * tableId=0 prefix that initGBTypes rejects with require(tableId !=
- * 0).  Retained for callers that explicitly opt out (none today);
- * the chained-outer-join null path picks up the safe default.  See
- * cte_filter_phase_e1k_site4.md.
+ * Emit a synthetic NULL attribute for a given attrId: optional
+ * CteLinkedAttr typed prefix followed by an AttributeHeader with length 0.
+ * Synthetic NULL linked columns must be distinguishable from real table
+ * linked columns, so they never use a raw [0][0] metadata prefix.
  */
 Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                                bool &hasNull, bool addTableMeta,
-                                bool cteOrigin) {
+                                bool &hasNull, bool addTableMeta) {
   jam();
   if (addTableMeta) {
-    Uint32 meta[2] = {0, 0};
-    if (cteOrigin) {
-      jam();
-      meta[0] = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
-      meta[1] = CteLinkedAttr::encodeWord1(0);
-    }
+    Uint32 meta[2];
+    meta[0] = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    meta[1] = CteLinkedAttr::encodeWord1(0);
     if (unlikely(!appendToSection(dst, meta, 2)))
       return DbspjErr::OutOfSectionMemory;
   }
@@ -14156,7 +14147,7 @@ Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
 Uint32 Dbspj::emitNullFromParent(
     Uint32 &dst, Local_pattern_store &pattern,
     Local_pattern_store::ConstDataBufferIterator &it,
-    bool &hasNull, bool addTableMeta, bool cteOrigin) {
+    bool &hasNull, bool addTableMeta) {
   jam();
   if (unlikely(it.isNull())) {
     DEBUG_CRASH();
@@ -14168,7 +14159,7 @@ Uint32 Dbspj::emitNullFromParent(
   pattern.next(it);
 
   if (subType == QueryPattern::P_ATTRINFO) {
-    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta, cteOrigin);
+    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta);
   }
   if (subType == QueryPattern::P_COL) {
     hasNull = true;
@@ -14410,11 +14401,11 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
           /**
            * Null propagation path: direct P_ATTRINFO references the leaf's
            * parent, but rowRef is from the scan ancestor. The leaf's parent
-           * is an unmatched or unreachable intermediate whose columns
-           * should be NULL.  emitNullAttrinfo's default cteOrigin=true now
-           * emits a safe CTE-marker prefix with a neutral inline type, so
-           * both real-table and CTE-virt-col intermediates are handled
-           * correctly.  See cte_filter_phase_e1k_site4.md.
+           * is an unmatched or unreachable intermediate whose columns should
+           * be NULL.  emitNullAttrinfo emits a distinct typed synthetic NULL
+           * marker rather than the legacy 0/0 prefix.  The marker uses a
+           * neutral BIGINT type because this path does not currently carry
+           * enough source-node metadata to recover the exact column type.
            */
           err = emitNullAttrinfo(dst, val, hasNull, addTableMeta);
         } else if (addTableMeta) {

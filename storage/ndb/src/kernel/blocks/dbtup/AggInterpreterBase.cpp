@@ -2168,6 +2168,12 @@ Int32 AggInterpreterBase::initGBTypes(
         Uint32 tableId = word0;
         Uint32 tableVersion = word1;
         Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+        if (unlikely(tableId == 0 || tableId == RNIL)) {
+          g_eventLogger->debug("initGBTypes: linked GROUP BY column has "
+              "untyped synthetic metadata prefix tableId=%u schemaVersion=%u",
+              tableId, tableVersion);
+          return ZAGG_OTHER_ERROR;
+        }
         const ColumnMeta *meta =
             findColumnMeta(tableId, tableVersion, linkedAttrId);
         if (meta != nullptr) {
@@ -2182,7 +2188,6 @@ Int32 AggInterpreterBase::initGBTypes(
           info.cmpFn = sqlType.m_cmp;
           continue;
         }
-        require(tableId != 0);
 
         Dblqh* lqh = block_tup->c_lqh;
         if (unlikely(tableId >= lqh->ctabrecFileSize)) {

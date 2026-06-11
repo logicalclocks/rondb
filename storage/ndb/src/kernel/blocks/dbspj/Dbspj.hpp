@@ -1808,17 +1808,15 @@ class Dbspj : public SimulatedBlock {
                           Uint64 nullNodes = 0);
   /**
    * Emit a NULL attribute entry.  When addTableMeta is true, prepend
-   * the per-entry 2-word header: zeros for a real-table NULL,
-   * CteLinkedAttr::MARKER_BIT for a CTE virt-column NULL (cteOrigin =
-   * true).  See cte_filter_phase_e1k.md.
+   * the per-entry 2-word CteLinkedAttr typed-NULL header.  Real table
+   * NULL linked columns keep their table id/schema in appendFromParent().
+   * Synthetic NULL linked columns must never use a raw 0/0 prefix.
    */
   Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                          bool &hasNull, bool addTableMeta,
-                          bool cteOrigin = true);
+                          bool &hasNull, bool addTableMeta);
   Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
-                             bool &hasNull, bool addTableMeta,
-                             bool cteOrigin = true);
+                             bool &hasNull, bool addTableMeta);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
                 Uint32 parentLevelAdjust = 0,
