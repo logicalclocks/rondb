@@ -304,6 +304,10 @@ struct TableMeta {
   Uint32 fragCount;
   std::vector<Uint32> fragNodes;
   std::map<std::string, Uint32> attrIds;
+  std::map<std::string, Uint32> types;
+  std::map<std::string, Uint32> maxBytes;
+  std::map<std::string, Uint32> charsetNumbers;
+  std::map<std::string, Uint32> precisionScale;
 };
 
 /* ------------------------------------------------------------------ */
@@ -346,6 +350,12 @@ loadTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta)
   for (int i = 0; i < ptab->getNoOfColumns(); i++) {
     const NdbDictionary::Column *col = ptab->getColumn(i);
     meta.attrIds[col->getName()] = col->getAttrId();
+    meta.types[col->getName()] = col->getType();
+    meta.maxBytes[col->getName()] = col->getSizeInBytes();
+    meta.charsetNumbers[col->getName()] =
+      col->getCharset() != nullptr ? col->getCharsetNumber() : 0;
+    meta.precisionScale[col->getName()] =
+      (Uint32(col->getPrecision()) << 16) | Uint32(col->getScale());
   }
 
   meta.fragNodes.resize(meta.fragCount);
@@ -901,6 +911,89 @@ buildAggProgram_Q9(const TableMeta &nationMeta,
   return prog;
 }
 
+static void
+appendJoinAggMetaEntry(std::vector<Uint32> &block,
+                       Uint32 sourceKind,
+                       Uint32 sourceId,
+                       Uint32 programOffset,
+                       Uint32 slotIndex,
+                       const TableMeta &tableMeta,
+                       const char *columnName,
+                       Uint32 flags)
+{
+  block.push_back(sourceKind);
+  block.push_back(sourceId);
+  block.push_back(programOffset);
+  block.push_back(slotIndex);
+  block.push_back(tableMeta.tableId);
+  block.push_back(tableMeta.schemaVersion);
+  block.push_back(tableMeta.attrIds.at(columnName));
+  block.push_back(tableMeta.types.at(columnName));
+  block.push_back(tableMeta.maxBytes.at(columnName));
+  block.push_back(tableMeta.charsetNumbers.at(columnName));
+  block.push_back(tableMeta.precisionScale.at(columnName));
+  block.push_back(flags);
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadataContainer_Q9(const TableMeta &lineitemMeta,
+                                 const TableMeta &ordersMeta,
+                                 const TableMeta &partsuppMeta,
+                                 const TableMeta &nationMeta)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(6);  /* entry count */
+
+  appendJoinAggMetaEntry(block,
+                         JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+                         nationMeta.attrIds.at("n_name"),
+                         8, 0,
+                         nationMeta, "n_name",
+                         JOIN_AGG_META_FLAG_GROUP_BY);
+  appendJoinAggMetaEntry(block,
+                         JOIN_AGG_META_SOURCE_LINKED_COLUMN,
+                         0,
+                         9, 1,
+                         ordersMeta, "o_orderyear",
+                         JOIN_AGG_META_FLAG_GROUP_BY);
+  appendJoinAggMetaEntry(block,
+                         JOIN_AGG_META_SOURCE_LINKED_COLUMN,
+                         1,
+                         10, 0,
+                         lineitemMeta, "l_extendedprice",
+                         JOIN_AGG_META_FLAG_LOAD_COLUMN);
+  appendJoinAggMetaEntry(block,
+                         JOIN_AGG_META_SOURCE_LINKED_COLUMN,
+                         2,
+                         15, 0,
+                         lineitemMeta, "l_discount",
+                         JOIN_AGG_META_FLAG_LOAD_COLUMN);
+  appendJoinAggMetaEntry(block,
+                         JOIN_AGG_META_SOURCE_LINKED_COLUMN,
+                         4,
+                         20, 0,
+                         partsuppMeta, "ps_supplycost",
+                         JOIN_AGG_META_FLAG_LOAD_COLUMN);
+  appendJoinAggMetaEntry(block,
+                         JOIN_AGG_META_SOURCE_LINKED_COLUMN,
+                         3,
+                         22, 0,
+                         lineitemMeta, "l_quantity",
+                         JOIN_AGG_META_FLAG_LOAD_COLUMN);
+
+  std::vector<Uint32> container;
+  container.push_back(JOIN_AGG_META_MARKER);
+  container.push_back(JOIN_AGG_META_VERSION);
+  container.push_back(1);  /* block count */
+  container.push_back(JOIN_AGG_META_KIND_MAIN);
+  container.push_back(RNIL);
+  container.push_back(static_cast<Uint32>(block.size()));
+  container.insert(container.end(), block.begin(), block.end());
+  return container;
+}
+
 /* ------------------------------------------------------------------ */
 /* SCAN_TABREQ sender                                                  */
 /* ------------------------------------------------------------------ */
@@ -923,6 +1016,7 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
                const TableMeta &scanMeta,
                const std::vector<Uint32> &queryTree,
                const std::vector<Uint32> &aggProgram,
+               const std::vector<Uint32> &columnMeta,
                Uint32 receiverIdBase, Uint32 parallelism,
                Uint32 numRecvIds)
 {
@@ -960,6 +1054,7 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back(0);  // boundsLen = 0 (no bounds)
   aggSection.push_back(receiverIdBase);
   aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
+  aggSection.insert(aggSection.end(), columnMeta.begin(), columnMeta.end());
 
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = &dummyReceiverId;
@@ -975,9 +1070,10 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   }
 
   V("  Sent SCAN_TABREQ: requestInfo=0x%08x, parallelism=%u, "
-    "receivers=%u, queryTree=%zu words, aggProgram=%zu words\n",
+    "receivers=%u, queryTree=%zu words, aggProgram=%zu words, "
+    "columnMeta=%zu words\n",
     requestInfo, parallelism, numRecvIds,
-    queryTree.size(), aggProgram.size());
+    queryTree.size(), aggProgram.size(), columnMeta.size());
   return 0;
 }
 
@@ -1248,9 +1344,12 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
 
   std::vector<Uint32> aggProgram =
     buildAggProgram_Q9(nationMeta, ordersMeta, lineitemMeta, partsuppMeta);
+  std::vector<Uint32> columnMeta =
+    buildJoinAggMetadataContainer_Q9(lineitemMeta, ordersMeta, partsuppMeta,
+                                     nationMeta);
 
-  V("QueryTree: %zu words, AggProgram: %zu words\n",
-    queryTree.size(), aggProgram.size());
+  V("QueryTree: %zu words, AggProgram: %zu words, ColumnMeta: %zu words\n",
+    queryTree.size(), aggProgram.size(), columnMeta.size());
   if (verbose) {
     fprintf(stderr, "QueryTree hex dump:\n");
     for (size_t i = 0; i < queryTree.size(); i++)
@@ -1258,6 +1357,9 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
     fprintf(stderr, "AggProgram hex dump:\n");
     for (size_t i = 0; i < aggProgram.size(); i++)
       fprintf(stderr, "  [%2zu] 0x%08x\n", i, aggProgram[i]);
+    fprintf(stderr, "ColumnMeta hex dump:\n");
+    for (size_t i = 0; i < columnMeta.size(); i++)
+      fprintf(stderr, "  [%2zu] 0x%08x\n", i, columnMeta[i]);
   }
 
   /* Seize TC connect */
@@ -1270,6 +1372,7 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   /* Send SCAN_TABREQ */
   int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
                           lineitemMeta, queryTree, aggProgram,
+                          columnMeta,
                           receiverId, scanParallel, numReceivers);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
