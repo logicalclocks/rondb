@@ -2266,14 +2266,26 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
     const Uint32 maxBytes = entry[8];
     const Uint32 csNumber = entry[9];
     const Uint32 flags = entry[11];
+    const Uint32 knownFlags = JOIN_AGG_META_FLAG_UNSIGNED |
+                              JOIN_AGG_META_FLAG_NULLABLE |
+                              JOIN_AGG_META_FLAG_GROUP_BY |
+                              JOIN_AGG_META_FLAG_LOAD_COLUMN;
+    const bool isGroupBy =
+        (flags & JOIN_AGG_META_FLAG_GROUP_BY) != 0;
+    const bool isLoadColumn =
+        (flags & JOIN_AGG_META_FLAG_LOAD_COLUMN) != 0;
 
     if (unlikely(sourceKind != JOIN_AGG_META_SOURCE_LOCAL_COLUMN &&
                  sourceKind != JOIN_AGG_META_SOURCE_LINKED_COLUMN &&
                  sourceKind != JOIN_AGG_META_SOURCE_CTE_COLUMN)) {
       return ZAGG_OTHER_ERROR;
     }
+    if (unlikely((flags & ~knownFlags) != 0 ||
+                 isGroupBy == isLoadColumn)) {
+      return ZAGG_OTHER_ERROR;
+    }
 
-    if ((flags & JOIN_AGG_META_FLAG_GROUP_BY) != 0) {
+    if (isGroupBy) {
       haveGroupByMetadata = true;
       if (m_gb_types_inited) {
         entry += JOIN_AGG_META_ENTRY_WORDS;
@@ -2302,7 +2314,7 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
       found[slotIndex] = true;
       foundCount++;
     }
-    if ((flags & JOIN_AGG_META_FLAG_LOAD_COLUMN) != 0) {
+    if (isLoadColumn) {
       Int32 ret = initStringAggSlotFromMetadata(slotIndex, typeId, maxBytes,
                                                 csNumber);
       if (unlikely(ret != 0)) {
