@@ -477,6 +477,10 @@ class AggInterpreterBase : public PushdownInterpreter {
   Int32 initGBTypesFromMetadata(const Uint32* metadata,
                                 Uint32 metadataLen,
                                 EmulatedJamBuffer *jamBuf);
+  Int32 initStringAggSlotFromMetadata(Uint32 aggIndex,
+                                      Uint32 typeId,
+                                      Uint32 maxBytes,
+                                      Uint32 csNumber);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
    * `initBufBlock` allocates one combined block from RG_QUERY_MEMORY
