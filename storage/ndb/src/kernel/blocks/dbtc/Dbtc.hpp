@@ -2493,6 +2493,7 @@ class Dbtc : public SimulatedBlock {
   void close_scan_req(Signal*, ScanRecordPtr, bool received_req, ApiConnectRecordPtr apiConnectptr);
   void close_scan_req_send_conf(Signal*, ScanRecordPtr, ApiConnectRecordPtr apiConnectptr);
   void sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
+  Uint32 findJoinAggHeartbeatScanFrag(ScanRecordPtr, Uint32 nodeId);
   void sendJoinAggCompleteReqs(Signal *, ScanRecordPtr);
   void sendJoinAggReleaseReqs(Signal *, ScanRecordPtr);
   void joinAggAbortAfterRelease(Signal *, ScanRecordPtr);

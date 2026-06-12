@@ -291,6 +291,9 @@ struct JoinAggregationState {
   Uint32 m_cte_complete_senderRef;
   Uint32 m_cte_complete_senderData;
   Uint32 m_cte_complete_requestId;
+  Uint32 m_cte_complete_transid[2];
+  Uint32 m_cte_complete_hb_scanFragPtrI;
+  Uint32 m_cte_complete_last_hb_time;
 
   //------------------------------------------------------------------
   // CTE Scan State (for CTE_SCAN_REQ iteration)
@@ -368,6 +371,8 @@ struct JoinAggregationState {
     m_cte_complete_senderRef(0),
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),
+    m_cte_complete_hb_scanFragPtrI(RNIL),
+    m_cte_complete_last_hb_time(0),
     m_cteScan_groupsSent(0),
     m_cteScan_iterBucket(0),
     m_cteScan_iterRaw(nullptr),
@@ -379,6 +384,8 @@ struct JoinAggregationState {
   {
     m_transid[0] = 0;
     m_transid[1] = 0;
+    m_cte_complete_transid[0] = 0;
+    m_cte_complete_transid[1] = 0;
   }
 
   ~JoinAggregationState() {

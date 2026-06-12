@@ -81,7 +81,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
       const struct LeafProgram* leaf = nullptr);
   Int32 finalizeResults();
   Int32 processNullExtendedRow(
-      Dbtup* block_tup,
+      Uint32* attr_read_buf,
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
       Uint32 thread_id,
@@ -194,7 +194,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Int32 ProcessRec(Dbtup* block_tup,
                    Dbtup::KeyReqStruct* req_struct,
                    Uint32 thread_id,
-                   EmulatedJamBuffer *jamBuf);
+                   EmulatedJamBuffer *jamBuf,
+                   Uint32* attr_read_buf = nullptr);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /
@@ -252,8 +253,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * args).  initGBTypesForNullLocal stays per-class (JoinAgg-only:
    * triggered only by m_null_local_columns from outer-join NULL
    * extension). */
-  Int32 initGBTypesForNullLocal(Dbtup* block_tup,
-                                EmulatedJamBuffer *jamBuf);
+  Int32 initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf);
 
   // m_prog_buf / m_gb_cols_buf / m_agg_results_buf / m_gb_map_buf /
   // m_buf_block / m_string_results / release_string_results lifted to

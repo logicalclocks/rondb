@@ -11726,9 +11726,15 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
   jamEntry();
 
   BlockReference senderRef = signal->senderBlockRef();
+  const bool joinAggCompleteHb =
+      signal->getLength() >= 4 &&
+      isAggCompleteRequestId(signal->theData[3]);
   scanFragptr.i = signal->theData[0];
   if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragptr))) {
     jam();
+    if (joinAggCompleteHb) {
+      return;
+    }
     warningHandlerLab(signal, __LINE__);
     return;
   }
@@ -11737,6 +11743,10 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     case ScanFragRec::LQH_ACTIVE:
       break;
     default:
+      if (joinAggCompleteHb) {
+        jam();
+        return;
+      }
       DEBUG("execSCAN_HBREP: scanFragState=" << scanFragptr.p->scanFragState);
       systemErrorLab(signal, __LINE__);
       break;
@@ -11757,6 +11767,9 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
   ndbrequire(Magic::check_ptr(apiConnectptr.p));
   if (unlikely(compare_transid1 != 0 || compare_transid2 != 0)) {
     jam();
+    if (joinAggCompleteHb) {
+      return;
+    }
     /**
      * Send signal back to sender so that the crash occurs there
      */
@@ -11791,6 +11804,10 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     updateBuddyTimer(apiConnectptr);
     scanFragptr.p->startFragTimer(ctcTimer);
   } else {
+    if (joinAggCompleteHb) {
+      jam();
+      return;
+    }
     ndbassert(false);
     DEBUG("SCAN_HBREP when scanFragTimer was turned off");
   }
@@ -30073,6 +30090,22 @@ void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
   execCTE_PHASE_COMPLETE_REP(signal);
 }
 
+Uint32
+Dbtc::findJoinAggHeartbeatScanFrag(ScanRecordPtr scanptr, Uint32 nodeId) {
+  Local_ScanFragRec_dllist list(c_scan_frag_pool,
+                                scanptr.p->m_running_scan_frags);
+  ScanFragRecPtr scanFragPtr;
+  for (list.first(scanFragPtr); !scanFragPtr.isNull();
+       list.next(scanFragPtr)) {
+    if (scanFragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE &&
+        refToNode(scanFragPtr.p->lqhBlockref) == nodeId) {
+      jam();
+      return scanFragPtr.i;
+    }
+  }
+  return RNIL;
+}
+
 /**
  * Send JOIN_AGG_COMPLETE_REQ for CTEs in the specified phase.
  * This triggers hash table redistribution on multi-node clusters.
@@ -30178,6 +30211,8 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       req->transid[1] = apiPtr.p->transid[1];
       req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
       req->maxBatchRows = 256;
+      req->heartbeatScanFragPtrI =
+          findJoinAggHeartbeatScanFrag(scanptr, nodeId);
       DEB_JOIN_AGG(("(%u) send JOIN_AGG_COMPLETE_REQ aggKey=%u node=%u "
                     "recI=%u",
         instance(), cteNodes->m_aggStateKeys[nodeId], nodeId, cteRec.i));
@@ -30401,6 +30436,8 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
+    req->heartbeatScanFragPtrI =
+        findJoinAggHeartbeatScanFrag(scanptr, nodeId);
     DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_COMPLETE_REQ: "
                   "nodeId=%u aggStateKey=%u scanPtr.i=%u recI=%u",
                   instance(), nodeId,

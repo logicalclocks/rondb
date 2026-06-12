@@ -84,13 +84,14 @@ struct JoinAggSetupRef {
 };
 
 struct JoinAggCompleteReq {
-  static constexpr Uint32 SignalLength = 7;
+  static constexpr Uint32 SignalLength = 8;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 transid[2];
   Uint32 aggStateKey;
   Uint32 maxBatchRows;
+  Uint32 heartbeatScanFragPtrI;
 
   // Optional section: per-node aggStateKeys for CTE lookup forwarding.
   // Format: [nodeId1, aggKey1, ownerInstance1, ...] triples.

@@ -3366,6 +3366,8 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void sendJoinAggCompleteHeartbeat(Signal* signal,
+                                    JoinAggregationState *state);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);

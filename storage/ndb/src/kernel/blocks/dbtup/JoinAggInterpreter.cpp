@@ -286,14 +286,19 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id,
-        EmulatedJamBuffer *jamBuf) {
+        EmulatedJamBuffer *jamBuf,
+        Uint32* attr_read_buf) {
   m_current_thread_id = thread_id;
-  /* Step 3 Cand-C: bind m_attr_read_buf to the calling LDM thread's
-   * Dbtup scratch buffer.  processNullExtendedRow / processRecWithLinkedAttrs
-   * both pass block_tup; the buffer is per-thread so MUTEX_BASED's
-   * shared interpreter sees the calling thread's buffer on each entry. */
-  require(block_tup != nullptr);
-  m_attr_read_buf = block_tup->getAggAttrReadBuf();
+  /*
+   * Normal row processing binds m_attr_read_buf from DBTUP.  Null-extended
+   * rows have no tuple to read and pass the per-LDM scratch buffer directly.
+   */
+  if (attr_read_buf != nullptr) {
+    m_attr_read_buf = attr_read_buf;
+  } else {
+    require(block_tup != nullptr);
+    m_attr_read_buf = block_tup->getAggAttrReadBuf();
+  }
   if (!m_inited) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: not inited");
     return ZAGG_OTHER_ERROR;
@@ -312,7 +317,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     if (!m_gb_types_inited) {
       if (m_null_local_columns) {
         thrjam(jamBuf);
-        Int32 err = initGBTypesForNullLocal(block_tup, jamBuf);
+        Int32 err = initGBTypesForNullLocal(jamBuf);
         if (unlikely(err != 0)) return err;
       } else {
         thrjam(jamBuf);
@@ -1308,14 +1313,12 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
   }
   return ret;
 }
-Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
-                                                  EmulatedJamBuffer *jamBuf) {
+Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
   /*
    * Called when the first row is a null-extended row (m_null_local_columns).
-   * Linked columns: resolve type from DBTUP tablerec (same as initGBTypes).
-   * Local columns: use NDB_TYPE_UNSIGNED as placeholder — all values will
-   * be NULL (data size 0), so the actual type doesn't affect comparison.
-   * If a matched row arrives later, types are already initialized.
+   * JOIN_AGG_SETUP_REQ normally initializes GROUP BY metadata before any row
+   * is processed.  This fallback only handles typed linked data that arrives
+   * in the NULL-row request itself; otherwise metadata must already be cached.
    */
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     Uint32 attr_id = m_gb_cols[i] >> 16;
@@ -1323,8 +1326,11 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
     thrjamDataDebug(jamBuf, attr_id);
     GBColTypeInfo &info = m_gb_types[i];
 
-    if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+    if ((attr_id & 0x8000) != 0) {
       thrjamDebug(jamBuf);
+      if (unlikely(m_linked_attr_data == nullptr)) {
+        return ZAGG_OTHER_ERROR;
+      }
       Uint32 position = attr_id & 0x7FFF;
       const Uint32* p = m_linked_attr_data;
       const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
@@ -1351,7 +1357,7 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
             }
             info.cs = all_charsets[csNumber];
           }
-        } else if (block_tup != nullptr) {
+        } else {
           thrjamDebug(jamBuf);
           Uint32 tableId = word0;
           Uint32 tableVersion = word1;
@@ -1378,17 +1384,14 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
                 "columnId=%u", tableId, tableVersion, linkedAttrId);
             return ZAGG_OTHER_ERROR;
           }
-        } else {
-          return ZAGG_OTHER_ERROR;
         }
       } else {
         return ZAGG_OTHER_ERROR;
       }
     } else {
-      thrjamDebug(jamBuf);
-      info.typeId = NDB_TYPE_UNSIGNED;
-      info.maxBytes = 4;
-      info.cs = nullptr;
+      g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "
+          "for local GROUP BY column attr_id=%u", attr_id);
+      return ZAGG_OTHER_ERROR;
     }
     const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
     info.cmpFn = sqlType.m_cmp;
@@ -1397,7 +1400,7 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
 }
 
 Int32 JoinAggInterpreter::processNullExtendedRow(
-    Dbtup* block_tup,
+    Uint32* attr_read_buf,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
     Uint32 thread_id,
@@ -1418,12 +1421,11 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_len = linked_attr_len;
   m_null_local_columns = true;
 
-  /* Step 3 Cand-C: block_tup is needed inside ProcessRec to bind
-   * m_attr_read_buf to the per-LDM-thread scratch on Dbtup.  The
-   * null-extended row path still passes req_struct=nullptr (no row
-   * data to read) — m_null_local_columns drives kOpLoadCol to
-   * synthesise NULL AttributeHeaders into m_attr_read_buf instead. */
-  Int32 ret = ProcessRec(block_tup, nullptr, thread_id, jamBuf);
+  /*
+   * Null-extended rows have no local tuple to read.  m_null_local_columns
+   * drives kOpLoadCol to synthesize NULL AttributeHeaders into attr_read_buf.
+   */
+  Int32 ret = ProcessRec(nullptr, nullptr, thread_id, jamBuf, attr_read_buf);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;

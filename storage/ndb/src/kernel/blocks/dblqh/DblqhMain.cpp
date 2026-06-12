@@ -15400,7 +15400,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   }
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(c_tup,
+  Int32 ret = interp->processNullExtendedRow(c_tup->getAggAttrReadBuf(),
                                              linked_data,
                                              linked_len,
                                              getThreadId(),
@@ -18435,6 +18435,48 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
              ScanFragRef::SignalLength, JBB);
 }
 
+void
+Dblqh::sendJoinAggCompleteHeartbeat(Signal *signal,
+                                    JoinAggregationState *state) {
+  if (state->m_cte_complete_hb_scanFragPtrI == RNIL ||
+      state->m_cte_complete_senderRef == 0) {
+    return;
+  }
+
+  const Uint32 now = cLqhTimeOutCount;
+  const Uint32 last = state->m_cte_complete_last_hb_time;
+  const Uint32 timeout = cTransactionDeadlockDetectionTimeout;
+  const Uint32 limit = timeout / 16;
+  const Uint32 time_waiting = (now - last) * 10;
+
+  ndbassert(limit > 0);
+  if (time_waiting <= limit) {
+    return;
+  }
+
+  jam();
+  state->m_cte_complete_last_hb_time = now;
+
+  Uint32 save[5];
+  save[0] = signal->theData[0];
+  save[1] = signal->theData[1];
+  save[2] = signal->theData[2];
+  save[3] = signal->theData[3];
+  save[4] = signal->getLength();
+
+  signal->theData[0] = state->m_cte_complete_hb_scanFragPtrI;
+  signal->theData[1] = state->m_cte_complete_transid[0];
+  signal->theData[2] = state->m_cte_complete_transid[1];
+  signal->theData[3] = state->m_cte_complete_requestId;
+  sendSignal(state->m_cte_complete_senderRef, GSN_SCAN_HBREP, signal, 4, JBB);
+
+  signal->theData[0] = save[0];
+  signal->theData[1] = save[1];
+  signal->theData[2] = save[2];
+  signal->theData[3] = save[3];
+  signal->setLength(save[4]);
+}
+
 void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   jamEntry();
   if (unlikely(!assembleFragments(signal))) {
@@ -18600,6 +18642,12 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   releaseSections(handle);
 
   state->m_max_batch_rows = maxBatchRows;
+  state->m_cte_complete_transid[0] = req->transid[0];
+  state->m_cte_complete_transid[1] = req->transid[1];
+  state->m_cte_complete_hb_scanFragPtrI =
+      ((requestId & 0x80000000) != 0)
+          ? req->heartbeatScanFragPtrI
+          : RNIL;
   state->m_state.store(JoinAggregationState::FINALIZING);
 
   /*
@@ -18724,7 +18772,7 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(c_tup,
+  Int32 ret = interp->processNullExtendedRow(c_tup->getAggAttrReadBuf(),
                                              cattrInfoBuffer,
                                              linked_len,
                                              getThreadId(),
@@ -18734,7 +18782,20 @@ retry:
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
   }
-  ndbrequire(ret == 0);
+  if (unlikely(ret != 0)) {
+    jam();
+    JoinAggNullRowRef *ref =
+      (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_INTERPRETER_ERROR;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
+               signal, JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
   state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
   /* Send CONF back to DBSPJ */
@@ -18863,6 +18924,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       state->m_cte_complete_senderRef = senderRef;
       state->m_cte_complete_senderData = senderData;
       state->m_cte_complete_requestId = requestId;
+      state->m_cte_complete_last_hb_time = cLqhTimeOutCount;
 
       /* Check for node failure since SETUP */
       if (JoinAggregationState::s_node_fail_count.load(
@@ -21127,6 +21189,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
     return;
   }
 
+  sendJoinAggCompleteHeartbeat(signal, state);
+
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
@@ -21174,6 +21238,7 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
 
     for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
+      sendJoinAggCompleteHeartbeat(signal, state);
       const char *data = reinterpret_cast<const char *>(iter.data());
       const Uint32 keyLen = iter.keyLen();
       const AggResItem* slots = reinterpret_cast<const AggResItem*>(
@@ -21501,6 +21566,7 @@ void Dblqh::processRedistQueue(Signal *signal,
   auto *entry = state->m_redist_queue_head;
   while (entry != nullptr) {
     jam();
+    sendJoinAggCompleteHeartbeat(signal, state);
     Uint32 keyWords = (entry->keyLen + 3) >> 2;
     Int32 ret = interp->mergeOneGroup(
         reinterpret_cast<const char *>(entry->data), entry->keyLen,
