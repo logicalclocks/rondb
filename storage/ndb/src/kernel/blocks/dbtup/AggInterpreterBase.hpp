@@ -487,13 +487,14 @@ class AggInterpreterBase : public PushdownInterpreter {
    *
    * linked_attr_data / linked_attr_len are the per-row linked-attr
    * buffer JoinAgg passes in for join queries.  AggInterpreter
-   * (normal scan) passes nullptr / 0; the linked-attr resolution
-   * branches are dead code on that path (the JoinAgg-only attr_id
-   * bit 0x8000 never appears in normal-scan GB cols). */
+   * (normal scan) passes nullptr / 0 and requireMetadata=false, so local
+   * GROUP BY metadata can still come from the scanned table descriptor.
+   * JoinAgg passes requireMetadata=true and must have setup-time metadata. */
   Int32 initGBTypes(Dbtup* block_tup,
                     Dbtup::KeyReqStruct* req_struct,
                     const Uint32* linked_attr_data,
                     Uint32 linked_attr_len,
+                    bool requireMetadata,
                     EmulatedJamBuffer *jamBuf);
   Int32 initGBTypesFromMetadata(const Uint32* metadata,
                                 Uint32 metadataLen,

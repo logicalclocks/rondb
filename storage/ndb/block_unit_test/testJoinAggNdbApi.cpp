@@ -480,13 +480,18 @@ testSumGroupBy(Ndb *ndb, MYSQL *conn,
     printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
     return -1;
   }
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (grp column lookup)\n");
+    return -1;
+  }
 
   /* Build aggregation program:
-   *   GROUP BY grp (parent column → AGG_LINKED_COL_FLAG)
+   *   GROUP BY grp (parent column)
    *   SUM(amount)  (child column)
    */
   NdbAggregator agg(childTab);
-  if (!agg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||  /* linked projection pos 0 = grp */
+  if (!agg.GroupByLinked(0, grpCol) ||  /* linked projection pos 0 = grp */
       !agg.LoadColumn("amount", 0) ||   /* reg 0 */
       !agg.Sum(0, 0) ||                 /* agg[0] = SUM(reg 0) */
       !agg.Finalize()) {
@@ -821,10 +826,15 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
     printf("FAILED (table lookup)\n");
     return -1;
   }
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (grp column lookup)\n");
+    return -1;
+  }
 
   /* Build aggregation: GROUP BY grp, COUNT(*), SUM(amount) */
   NdbAggregator agg(childTab);
-  if (!agg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||  /* linked projection pos 0 = grp */
+  if (!agg.GroupByLinked(0, grpCol) ||  /* linked projection pos 0 = grp */
       !agg.LoadColumn("amount", 0) ||
       !agg.Count(0, 0) ||  /* agg[0] = COUNT */
       !agg.Sum(1, 0) ||    /* agg[1] = SUM */

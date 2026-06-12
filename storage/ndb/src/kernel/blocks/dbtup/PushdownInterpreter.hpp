@@ -50,11 +50,10 @@ struct CHARSET_INFO;
  * `prefix_bytes` is 1 for VARCHAR, 2 for Longvarchar, 0 for CHAR.
  * `declared_size` is CHAR's fixed width (used for space-padding on
  * emit) or VARCHAR/Longvarchar's max byte length.  `charset` is the
- * column's collation, populated on the first row that touches the
- * slot via the existing AttributeOffset::getCharsetFlag /
- * tablePtrP->charsetArray[] path.  All four metadata fields are
- * stable across rows once captured — avoids re-walking the
- * AttributeDescriptor for every row.
+ * column's collation, populated on the first row that touches the slot
+ * from either the table descriptor path (normal AggInterpreter) or the
+ * setup-time metadata cache (JoinAggInterpreter).  All four metadata
+ * fields are stable across rows once captured.
  *
  * See cte_filter_phase_i6_varchar.md (Phase I.6 finish, F.2).
  */

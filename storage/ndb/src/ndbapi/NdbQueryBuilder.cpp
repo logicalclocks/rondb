@@ -349,6 +349,8 @@ class NdbQueryCteSubtreeOperationDefImpl : public NdbQueryOperationDefImpl {
   }
 
   void setNumNodes(Uint32 n) { m_numNodes = n; }
+  Uint32 getCteId() const { return m_cteId; }
+  Uint32 getNumNodes() const { return m_numNodes; }
 
  private:
   explicit NdbQueryCteSubtreeOperationDefImpl(
@@ -1314,6 +1316,8 @@ int NdbQueryBuilder::defineCte(Uint32 cteId,
   cteInfo.cteId = cteId;
   cteInfo.tableId = sourceTable->getObjectId();
   cteInfo.schemaVersion = sourceTable->getObjectVersion();
+  cteInfo.sourceTable = sourceTable;
+  cteInfo.aggTable = nullptr;
   cteInfo.depMask = depMask;
   cteInfo.flags = flags;
 
@@ -1339,6 +1343,42 @@ int NdbQueryBuilder::defineCte(Uint32 cteId,
     if (cteInfo.aggColumns.push_back(aggProgram.agg_columns()[i]) != 0) {
       ::setErrorCode(&m_impl, Err_MemoryAlloc);
       return Err_MemoryAlloc;
+    }
+  }
+  const Vector<const NdbLinkedOperandImpl *> *linkedProjection = nullptr;
+  for (Uint32 i = 0; i < m_impl.m_operations.size(); i++) {
+    NdbQueryOperationDefImpl *op = m_impl.m_operations[i];
+    if (op->getType() != NdbQueryOperationDef::CteSubtree) {
+      continue;
+    }
+    const NdbQueryCteSubtreeOperationDefImpl *subtree =
+        static_cast<const NdbQueryCteSubtreeOperationDefImpl *>(op);
+    if (subtree->getCteId() != cteId) {
+      continue;
+    }
+
+    const Uint32 first = i + 1;
+    const Uint32 end = first + subtree->getNumNodes();
+    if (end > m_impl.m_operations.size()) {
+      break;
+    }
+    for (Uint32 j = first; j < end; j++) {
+      const NdbQueryOperationDefImpl *cteOp = m_impl.m_operations[j];
+      if (cteOp->isAggregateLeaf()) {
+        const NdbQueryOptionsImpl &aggOpts = cteOp->getOptions();
+        linkedProjection = &aggOpts.getLinkedProjection();
+        cteInfo.aggTable = aggOpts.getAggTable();
+        break;
+      }
+    }
+    break;
+  }
+  if (linkedProjection != nullptr) {
+    for (Uint32 i = 0; i < linkedProjection->size(); i++) {
+      if (cteInfo.linkedProjection.push_back((*linkedProjection)[i]) != 0) {
+        ::setErrorCode(&m_impl, Err_MemoryAlloc);
+        return Err_MemoryAlloc;
+      }
     }
   }
 

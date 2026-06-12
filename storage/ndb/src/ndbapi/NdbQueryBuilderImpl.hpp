@@ -713,11 +713,14 @@ class NdbQueryDefImpl {
     Uint32 cteId;
     Uint32 tableId;
     Uint32 schemaVersion;
+    const NdbDictionary::Table *sourceTable;
+    const NdbTableImpl *aggTable;
     Uint64 depMask;
     Uint32 flags;
     Vector<Uint32> aggProgram;
     Vector<const NdbDictionary::Column *> gbColumns;
     Vector<const NdbDictionary::Column *> aggColumns;
+    Vector<const NdbLinkedOperandImpl *> linkedProjection;
   };
 
   explicit NdbQueryDefImpl(const Ndb *ndb,

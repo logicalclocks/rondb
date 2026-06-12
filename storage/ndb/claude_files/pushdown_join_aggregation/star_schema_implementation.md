@@ -889,13 +889,13 @@ testJoinAggNdbApi.cpp).
 ```cpp
 // 1. Build aggregation programs for each leaf
 NdbAggregator aggMeas(measTab);
-aggMeas.GroupBy(0 | AGG_LINKED_COL_FLAG);  // linked entity_id
+aggMeas.GroupByLinked(0, entityTab->getColumn("id"));
 aggMeas.LoadColumn("value", 0);
 aggMeas.Sum(0, 0);                          // agg[0] = SUM(value)
 aggMeas.Finalize();
 
 NdbAggregator aggEvt(evtTab);
-aggEvt.GroupBy(0 | AGG_LINKED_COL_FLAG);   // linked entity_id
+aggEvt.GroupByLinked(0, entityTab->getColumn("id"));
 aggEvt.LoadColumn("event_type", 0);
 aggEvt.Count(0);                            // agg[0] = COUNT(event_type)
 aggEvt.Finalize();

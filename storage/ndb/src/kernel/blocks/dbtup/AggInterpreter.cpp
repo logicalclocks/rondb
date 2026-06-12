@@ -177,6 +177,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       Int32 err = initGBTypes(block_tup, req_struct,
                               /*linked_attr_data=*/nullptr,
                               /*linked_attr_len=*/0,
+                              /*requireMetadata=*/false,
                               jamBuf);
       if (unlikely(err != 0)) return err;
     }
@@ -591,4 +592,3 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
 }
 
 // release_string_results body lifted to AggInterpreterBase in Step 3a-A.
-

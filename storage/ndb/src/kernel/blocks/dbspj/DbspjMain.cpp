@@ -6416,12 +6416,6 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
     Uint32 lookupFlags = 0;
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
-    /* Production sends directly to the CTE hash owner.  Keep the old
-     * DBLQH re-route path reachable in debug builds as a diagnostic
-     * fallback if DBSPJ ever computes the wrong owner. */
-    lookupFlags |= CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
-#endif
 
     /* Anti-join: parseDA sets T_FIRST_MATCH from NI_ANTI_JOIN, but
      * SEMI_JOIN (FirstMatch over INNER) sets both T_FIRST_MATCH and

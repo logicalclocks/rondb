@@ -369,11 +369,10 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
     case NDB_TYPE_LONGVARCHAR: {
       /* Phase I.6 (F.2-K.4b): stash a read-only view into
        * m_attr_read_buf for a subsequent kOpMin / kOpMax to compare and
-       * copy without re-walking the AttributeDescriptor.  CTE linked-
-       * attr branch (Phase I.6 F.4-K.3, JoinAgg-only) reads the type
-       * metadata from the two linked-attr header words.  AggInterpreter
-       * never enters that branch (attrDescriptor is always non-null on
-       * its prelude path). */
+       * copy without re-walking the AttributeDescriptor.  JoinAgg passes
+       * attrDescriptor == nullptr and linked_cte_attr == true when string
+       * metadata comes from JOIN_AGG_SETUP_REQ or a typed CTE linked attr.
+       * AggInterpreter keeps the normal table-descriptor path. */
       const CHARSET_INFO* cs = nullptr;
       Uint32 declared = 0;
       if (attrDescriptor != nullptr) {
@@ -2111,15 +2110,16 @@ void AggInterpreterBase::freeAllChunks() {
  * linked_attr_data / linked_attr_len are the per-row linked-attr
  * buffer JoinAgg passes for join queries (kOpLoadCol-equivalent
  * linked-GB columns).  AggInterpreter (normal scan) passes
- * nullptr / 0; the linked branches below are dead code on that
- * path because the attr_id 0x8000 bit never appears in a
- * normal-scan GB column.
+ * nullptr / 0 and requireMetadata=false, so local GROUP BY metadata
+ * can still come from the scanned table descriptor.  JoinAgg passes
+ * requireMetadata=true and must have setup-time metadata.
  */
 Int32 AggInterpreterBase::initGBTypes(
-    Dbtup* block_tup,
+    Dbtup* /*block_tup*/,
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
+    bool requireMetadata,
     EmulatedJamBuffer *jamBuf) {
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     thrjamDebug(jamBuf);
@@ -2188,52 +2188,23 @@ Int32 AggInterpreterBase::initGBTypes(
           info.cmpFn = sqlType.m_cmp;
           continue;
         }
-
-        Dblqh* lqh = block_tup->c_lqh;
-        if (unlikely(tableId >= lqh->ctabrecFileSize)) {
-          g_eventLogger->debug("initGBTypes: tableId %u out of range "
-              "(max=%u)", tableId, lqh->ctabrecFileSize);
-          return ZINVALID_SCHEMA_VERSION;
-        }
-        if (unlikely(table_version_major(tableVersion) !=
-                     table_version_major(
-                         lqh->tablerec[tableId].schemaVersion))) {
-          g_eventLogger->debug("initGBTypes: schema version mismatch for "
-              "tableId %u: linked=%u, current=%u",
-              tableId, tableVersion, lqh->tablerec[tableId].schemaVersion);
-          return ZINVALID_SCHEMA_VERSION;
-        }
-
-        if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
-          g_eventLogger->debug("initGBTypes: tableId %u out of range for "
-              "DBTUP (max=%u)", tableId, block_tup->cnoOfTablerec);
-          return ZINVALID_SCHEMA_VERSION;
-        }
-        Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-        const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
-        info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-        info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
-        info.cs = nullptr;
-        if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-          thrjamDebug(jamBuf);
-          Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-          info.cs = tab->charsetArray[csPos];
-        }
+        g_eventLogger->debug("initGBTypes: missing metadata for linked "
+            "GROUP BY column tableId=%u schemaVersion=%u columnId=%u",
+            tableId, tableVersion, linkedAttrId);
+        return ZAGG_OTHER_ERROR;
       }
     } else {
       thrjam(jamBuf);
-      /* Normal (non-linked) GROUP BY column.  Resolving its type needs a
-       * valid tablePtrP, which only a real scanned-table request supplies.
-       * A CTE_LOOKUP / CTE_SCAN agg feed has no scanned table (the row comes
-       * from the linked buffer) and sets tablePtrP == nullptr, so reaching
-       * here means the aggregator references a normal column in a context
-       * that cannot supply one.  Abort the query cleanly rather than
-       * dereference a null/poisoned tablePtrP. */
+      if (requireMetadata) {
+        g_eventLogger->debug("initGBTypes: missing metadata for local "
+            "GROUP BY column attr_id=%u", attr_id);
+        return ZAGG_OTHER_ERROR;
+      }
       if (unlikely(req_struct == nullptr ||
                    req_struct->tablePtrP == nullptr)) {
         g_eventLogger->debug(
-            "initGBTypes: normal GROUP BY column attr_id=%u referenced in a "
-            "CTE agg-feed with no scanned table — aborting query", attr_id);
+            "initGBTypes: local GROUP BY column attr_id=%u has no table "
+            "metadata source", attr_id);
         return ZAGG_OTHER_ERROR;
       }
       const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
@@ -2348,10 +2319,12 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
       if (unlikely(ret != 0)) {
         return ret;
       }
-      ret = initStringAggSlotFromMetadata(slotIndex, typeId, maxBytes,
-                                          csNumber);
-      if (unlikely(ret != 0)) {
-        return ret;
+      if (slotIndex != RNIL) {
+        ret = initStringAggSlotFromMetadata(slotIndex, typeId, maxBytes,
+                                            csNumber);
+        if (unlikely(ret != 0)) {
+          return ret;
+        }
       }
     }
     entry += JOIN_AGG_META_ENTRY_WORDS;

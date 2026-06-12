@@ -1163,15 +1163,14 @@ bool NdbAggregator::GroupBy(const char* name) {
 }
 
 bool NdbAggregator::GroupBy(Int32 col_id) {
-  // AGG_LINKED_COL_FLAG (bit 15): column is from parent table in a pushed join.
-  // Strip for table lookup but preserve in the program buffer.
+  if (col_id & AGG_LINKED_COL_FLAG) {
+    SetError(kErrInvalidColumnId);
+    return false;
+  }
   const Int32 raw_col_id = col_id & ~AGG_LINKED_COL_FLAG;
-  const bool is_linked = (col_id & AGG_LINKED_COL_FLAG) != 0;
 
   const NdbDictionary::Column* col = table_impl_->getColumn(raw_col_id);
-  if (col == nullptr && !is_linked) {
-    // For linked (parent) columns, the column may not exist in the child table.
-    // We cannot validate it here — the kernel will validate at execution time.
+  if (col == nullptr) {
     SetError(kErrInvalidColumnId);
     return false;
   }
@@ -1184,21 +1183,15 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     }
   }
 
-  buffer_[curr_prog_pos_++] = col_id << 16;
+  buffer_[curr_prog_pos_++] = raw_col_id << 16;
 
-  if (col != nullptr) {
-    result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
-    if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
-      disk_columns_ = true;
-    }
-  } else {
-    // Linked column: estimate 8 bytes (bigint) for size estimation
-    result_size_est_ += (sizeof(AttributeHeader) + 8);
+  result_size_est_ +=
+      (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+  if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
+    disk_columns_ = true;
   }
 
-  /* For non-linked columns store the column definition; for linked columns
-     the caller should use GroupByLinked() to supply the parent column. */
-  gb_columns_[n_gb_cols_] = is_linked ? nullptr : col;
+  gb_columns_[n_gb_cols_] = col;
   n_gb_cols_++;
 
   return true;

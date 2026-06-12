@@ -320,6 +320,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                                 req_struct,
                                 m_linked_attr_data,
                                 m_linked_attr_len,
+                                /*requireMetadata=*/true,
                                 jamBuf);
         if (unlikely(err != 0)) return err;
       }
@@ -542,6 +543,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                 linked_cte_attr = true;
               }
             }
+            if (!linked_cte_attr) {
+              return ZAGG_OTHER_ERROR;
+            }
           }
           p += 2;
           Uint32 words = 1 + AttributeHeader::getDataSize(*p);
@@ -555,16 +559,20 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
               m_attr_read_buf + m_attr_read_pos);
           attrDescriptor = nullptr;
         } else {
-          /* Normal (non-linked) column load.  A CTE agg feed has no scanned
-           * table (tablePtrP == nullptr); reaching here means the
-           * aggregation program references a table column that cannot be
-           * supplied — abort cleanly (see initGBTypes). */
+          /* Normal (non-linked) column load.  The value still comes from the
+           * scanned tuple, but type/charset metadata must come from the
+           * JOIN_AGG_SETUP_REQ metadata cache. */
+          const LoadColumnMeta *meta =
+              findLoadColumnMeta(load_program_offset);
+          if (unlikely(meta == nullptr)) {
+            return ZAGG_OTHER_ERROR;
+          }
+          linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                    meta->maxBytes);
+          linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+          linked_cte_attr = true;
           if (unlikely(req_struct == nullptr ||
                        req_struct->tablePtrP == nullptr)) {
-            g_eventLogger->debug(
-                "JoinAggInterpreter::ProcessRec kOpLoadCol: normal column %u "
-                "referenced in a CTE agg-feed with no scanned table — "
-                "aborting query", col_id_raw);
             return ZAGG_OTHER_ERROR;
           }
           ret = block_tup->readSingleAttribute(
@@ -576,10 +584,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             return -ret;
           }
           header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-          attrDescriptor =
-              req_struct->tablePtrP->tabDescriptor + (col_id_raw * ZAD_SIZE);
+          attrDescriptor = nullptr;
           assert(header->getAttributeId() == col_id_raw);
-          assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         }
         Int32 lret = loadColumnTypedFromBuf(
             type, is_unsigned, reg_index, header, attrDescriptor,
@@ -1367,27 +1373,10 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
               info.cs = all_charsets[meta->csNumber];
             }
           } else {
-            Dblqh* lqh = block_tup->c_lqh;
-            if (tableId != 0 &&
-                tableId < block_tup->cnoOfTablerec &&
-                tableId < lqh->ctabrecFileSize &&
-                table_version_major(tableVersion) ==
-                    table_version_major(lqh->tablerec[tableId].schemaVersion)) {
-              thrjamDebug(jamBuf);
-              Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-              const Uint32* attrDesc = tab->tabDescriptor +
-                  linkedAttrId * ZAD_SIZE;
-              info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-              info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
-              info.cs = nullptr;
-              if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-                thrjamDebug(jamBuf);
-                Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-                info.cs = tab->charsetArray[csPos];
-              }
-            } else {
-              return ZAGG_OTHER_ERROR;
-            }
+            g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "
+                "for linked GROUP BY column tableId=%u schemaVersion=%u "
+                "columnId=%u", tableId, tableVersion, linkedAttrId);
+            return ZAGG_OTHER_ERROR;
           }
         } else {
           return ZAGG_OTHER_ERROR;
