@@ -1990,3 +1990,40 @@ c_custkey	t	n
 97	10	5
 98	15	5
 99	20	5
+
+=== MM17: projection-only main SELECT over a CTE_LOOKUP child with no CTE cols selected (was D23 crash) ===
+== Query ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.c_custkey <= 20|
+c_custkey
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+3
+4
+5
+6
+7
+8
+9

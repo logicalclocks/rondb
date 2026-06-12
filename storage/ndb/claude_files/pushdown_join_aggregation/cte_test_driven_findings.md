@@ -104,10 +104,49 @@ in `findings/<family>.md`.
 - Regression guard: `../debug_build/mysql-test/mtr --suite=ronsql` still green
   (the new suites only read its include files).
 
+## Resolution status (running)
+
+- **Hangs:** D2, D3, D4/D12, D5, D19, D20 — resolved (fixes or clean
+  rejections). See `cte_fix_plan.md` Phase 1.
+- **Crashes — ✅ ALL FIXED (D6, D18, D23).** The metadata series (GB / linked /
+  load column type metadata published through `JOIN_AGG_SETUP` and consumed via
+  `initGBTypesFromMetadata`, incl. typed-NULL for CTE linked columns) plus the
+  CTE multi-batch completion fix resolved all three:
+    - **D18** (string MIN/MAX re-aggregation): the linked string aggregate is
+      now correctly typed/sized — `ronsql_cte_dd_d18_probe` D18a → `F, P, 1500`.
+    - **D23** (projection-only CTE_LOOKUP-child SIGSEGV): linked-column metadata
+      supplied up front fixes the `0x8000` ProcessRec / `JOIN_AGG_NULL_ROW_REQ`
+      path — `ronsql_cte_dd_d23_probe` D23a → `c_custkey` 1..20.
+  Closing follow-up: re-enable agg-06/11–15/19–21 + MM17, `--record`, re-run
+  topologies; retire the untracked `*_probe` files; re-verify D22.
+- **D25 (crash) — OPEN, surfaced while re-enabling the D6 cases.** Re-enabling
+  the high-cardinality cases recorded green on base + ng1r3 (1 node group) but
+  crashed `ronsql_cte_ng2r2` (2 NG) at agg-06: DBLQH `Error 2343,
+  DblqhMain.cpp:21519, m_owner_instance == instance()` in
+  `execJOIN_AGG_REDISTRIBUTE_CONF`.  High-cardinality cross-node-group
+  redistribution (`RI_NEED_CONF` batched round-trip) mis-correlates the CONF —
+  the REQ carries only the destination pool key, so the sender resumes the wrong
+  state.  Latent until now (D6 disabled the only high-card cross-NG cases).
+  Fix + repro in `cte_fix_plan.md` C4.  D6/D18/D23 remain fixed on the base /
+  1-NG topology; this is the multi-NG high-cardinality redistribution path.
+- **D6 (crash) — ✅ FIXED.** Premature multi-batch CTE completion (DBSPJ now
+  restarts batches via `handleCtePhaseNextBatch` + EndOfData-only
+  `CTE_PHASE_COMPLETE_REP` + a `SCAN_HBREP` heartbeat) **and** the cross-node
+  charset-key hash inconsistency (a.k.a. the **agg-16 / redistribution-hash /
+  "D24"** bug) — fixed by publishing GROUP BY / linked / load column **type
+  metadata through `JOIN_AGG_SETUP`** and initialising the interpreter from it
+  (`initGBTypesFromMetadata`) instead of lazily on the first row, so every
+  node's `hashGroupKey` is charset-aware and identical regardless of data
+  distribution. Landed as the metadata commit series + the CTE-completion
+  heartbeat commit. The same series hardened several related metadata paths
+  (multi-leaf input metadata, typed NULL for CTE linked columns, cached
+  load/linked column metadata).  *Test re-enable (agg-06/19/20/21) + D22
+  re-verify are a closing follow-up — see `cte_fix_plan.md` C1.*
+
 ## Notes for the next dev phase
 
-- The two **crashes (D6, D18)** are the priority — both have preserved traces /
-  exact asserts and minimal repros above.
+- **Remaining crashes: D18 and D23** are the priority — both have preserved
+  traces / exact asserts and minimal repros above (see `cte_fix_plan.md` C2/C3).
 - The **projection-only-over-CTE_LOOKUP hang (D3)** and **multi-key lookup hang
   (D20)** block whole categories of otherwise-natural queries.
 - **D1 (SUM over DECIMAL)** and **D15 (DECIMAL MIN/MAX scale)** together mean

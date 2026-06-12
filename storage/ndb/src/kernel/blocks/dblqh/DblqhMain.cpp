@@ -21099,7 +21099,8 @@ void Dblqh::abortCteRedistribution(Signal *signal,
 void Dblqh::sendScalarRedistributeReq(Signal* signal,
                                        JoinAggregationState* state,
                                        JoinAggInterpreter* interp,
-                                       Uint32 ownerNode) {
+                                       Uint32 ownerNode,
+                                       Uint32 senderAggStateKey) {
   const AggResItem* accumulators = interp->agg_results();
   const Uint32 valLen = interp->redistributionValueLen(accumulators);
 
@@ -21110,6 +21111,9 @@ void Dblqh::sendScalarRedistributeReq(Signal* signal,
   JoinAggRedistributeReq* req =
       (JoinAggRedistributeReq*)signal->getDataPtrSend();
   req->aggStateKey = dstKey;
+  /* D25: even though no CONF is requested below, the receiver echoes this in
+   * an error REF, so set it to our own state key. */
+  req->senderAggStateKey = senderAggStateKey;
   req->keyLen = 0;
   req->valueLen = valLen;
   /* No NEED_CONF: scalar payload is a single small message; flow
@@ -21207,7 +21211,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       Uint32 ownerNode = refToNode(state->m_senderRef);
       if (ownerNode != getOwnNodeId()) {
         jam();
-        sendScalarRedistributeReq(signal, state, interp, ownerNode);
+        sendScalarRedistributeReq(signal, state, interp, ownerNode,
+                                  aggStateKey);
       } else {
         jam();
         DEB_CTE(("(%u) CTE REDIST: scalar — this node is owner "
@@ -21284,6 +21289,10 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       JoinAggRedistributeReq *req =
         (JoinAggRedistributeReq *)signal->getDataPtrSend();
       req->aggStateKey = dstKey;
+      /* D25: carry our own state key so the receiver echoes it in the CONF/REF
+       * and we resume the right state (the CONF returns to this owner LDM, but
+       * dstKey would resolve to the wrong local state). */
+      req->senderAggStateKey = aggStateKey;
       req->keyLen = keyLen;
       req->valueLen = valLen;
       req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
@@ -21380,6 +21389,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   const JoinAggRedistributeReq *req =
     (const JoinAggRedistributeReq *)signal->getDataPtr();
   const Uint32 aggStateKey = req->aggStateKey;
+  /* D25: echo the sender's own state key back in the CONF/REF so the sender
+   * resumes the correct state (it looks the state up by this key, not ours). */
+  const Uint32 senderAggStateKey = req->senderAggStateKey;
   const Uint32 keyLen = req->keyLen;
   const Uint32 valueLen = req->valueLen;
   const bool needConf =
@@ -21421,6 +21433,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       (JoinAggRedistributeConf *)signal->getDataPtrSend();
     conf->aggStateKey = aggStateKey;
     conf->senderNodeId = getOwnNodeId();
+    conf->senderAggStateKey = senderAggStateKey;  // D25
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_CONF,
                signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
@@ -21436,6 +21449,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     ref->aggStateKey = aggStateKey;
     ref->senderNodeId = getOwnNodeId();
     ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->senderAggStateKey = senderAggStateKey;  // D25
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
@@ -21461,6 +21475,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       ref->aggStateKey = aggStateKey;
       ref->senderNodeId = getOwnNodeId();
       ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      ref->senderAggStateKey = senderAggStateKey;  // D25
       sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                  signal, JoinAggRedistributeRef::SignalLength, JBB);
       return;
@@ -21493,6 +21508,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     ref->aggStateKey = aggStateKey;
     ref->senderNodeId = getOwnNodeId();
     ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+    ref->senderAggStateKey = senderAggStateKey;  // D25
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
@@ -21506,7 +21522,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
   jamEntry();
   const JoinAggRedistributeConf *conf =
     (const JoinAggRedistributeConf *)signal->getDataPtr();
-  const Uint32 aggStateKey = conf->aggStateKey;
+  /* D25: resume the SENDER's state (echoed back), not conf->aggStateKey which
+   * is the destination node's pool index and would resolve to the wrong
+   * local state here. */
+  const Uint32 aggStateKey = conf->senderAggStateKey;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
@@ -21529,7 +21548,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
   jamEntry();
   const JoinAggRedistributeRef *ref =
     (const JoinAggRedistributeRef *)signal->getDataPtr();
-  const Uint32 aggStateKey = ref->aggStateKey;
+  /* D25: abort the SENDER's state (echoed back), not ref->aggStateKey which is
+   * the destination node's pool index. */
+  const Uint32 aggStateKey = ref->senderAggStateKey;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {

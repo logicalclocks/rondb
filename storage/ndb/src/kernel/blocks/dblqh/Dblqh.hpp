@@ -3476,7 +3476,8 @@ private:
   void sendScalarRedistributeReq(Signal* signal,
                                   JoinAggregationState* state,
                                   JoinAggInterpreter* interp,
-                                  Uint32 ownerNode);
+                                  Uint32 ownerNode,
+                                  Uint32 senderAggStateKey);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);

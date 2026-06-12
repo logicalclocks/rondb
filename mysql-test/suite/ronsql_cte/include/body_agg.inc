@@ -128,20 +128,22 @@ FROM part AS p
 JOIN prt ON prt.brand = p.p_brand
 GROUP BY p.p_brand|
 
-# NEXT-PHASE (DISABLED — DATA NODE CRASH, D6): scalar main aggregation over a CTE
-# keyed by l_orderkey (1500 distinct) used as a CTE_LOOKUP child of a large
-# orders root scan crashes BOTH data nodes with a DBSPJ ndbassert:
-#   Error 2343, DbspjMain.cpp:7825, "Check requestPtr.p->m_cnt_active == 0 failed".
-# (agg-04, the same scalar-agg shape but CTE keyed by o_custkey/300 joined to the
-# small customer parent, PASSES — the crash needs the large 1500-key root scan +
-# CTE lookup + scalar agg, likely a multi-batch teardown bug.)  INT-width MIN/MAX/
-# SUM coverage over lineitem is exercised instead via the CTE_SCAN root agg-19.
-# Crash artifacts preserved in findings/crash_artifacts/.
-# Repro:
-#   WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
-#               FROM lineitem GROUP BY l_orderkey)
-#   SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey;
-# See findings/_discovery_log.md (D6).
+# agg-06 (was D6, FIXED): scalar main aggregation over a high-cardinality CTE
+# (l_orderkey/1500) used as a CTE_LOOKUP child of a large orders root scan.
+# Crashed (DBSPJ Error 2343, m_cnt_active==0) before the CTE multi-batch
+# completion + GROUP BY metadata fixes; now green.
+--echo
+--echo === agg-06: high-cardinality lineitem CTE (l_orderkey) as CTE_LOOKUP child of orders root, scalar main agg ===
+let $QUERY=
+WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
+            FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
+            FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey|
 
 --echo
 --echo === agg-07: MIN/MAX/SUM over BIGINT UNSIGNED (supplier.s_total_sales), grouped by nation ===
@@ -188,17 +190,76 @@ JOIN sup ON sup.nk = n.n_nationkey|
 
 # --- string MIN/MAX (CHAR + VARCHAR) ---
 
-# NEXT-PHASE (DISABLED — DATA NODE CRASH, NDB Error 6000 / Signal 6 abort, D18):
-# the main query RE-AGGREGATES a string (CHAR/VARCHAR) MIN/MAX CTE output (e.g.
-# SELECT MIN(ord.mn), MAX(ord.mx) ... where mn/mx are CTE string MIN/MAX).
-# Numeric MIN/MAX re-aggregation works; string does not.  Collapses all five
-# string-MIN/MAX cases (agg-11..agg-15) covering CHAR(1) o_orderstatus, CHAR(10)
-# p_brand, CHAR(1) l_returnflag via CTE_SCAN root, VARCHAR(12) c_mktsegment, and
-# VARCHAR(40) p_name.
-#   WITH ord AS (SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx, COUNT(*) AS n
-#                FROM orders GROUP BY o_custkey)
-#   SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.n) FROM customer AS c JOIN ord ON ord.k = c.c_custkey;
-# See findings/_discovery_log.md (D18).
+# agg-11..15 (was D18, FIXED): the main query RE-AGGREGATES a string (CHAR /
+# VARCHAR) MIN/MAX CTE output.  Crashed (NDB Error 6000) before the CTE linked-
+# column type-metadata fix; now green.  Covers CHAR(1) o_orderstatus, VARCHAR(12)
+# c_mktsegment (lookup form), and CHAR(1) l_returnflag, CHAR(10) p_brand,
+# VARCHAR(40) p_name (CTE_SCAN-root form).
+
+--echo
+--echo === agg-11: CHAR(1) o_orderstatus MIN/MAX re-aggregated through CTE_LOOKUP ===
+let $QUERY=
+WITH ord AS (SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx, COUNT(*) AS n
+             FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.n) FROM customer AS c JOIN ord ON ord.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ord AS (SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx, COUNT(*) AS n
+             FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.n) FROM customer AS c JOIN ord ON ord.k = c.c_custkey|
+
+--echo
+--echo === agg-12: VARCHAR(12) c_mktsegment MIN/MAX re-aggregated through CTE_LOOKUP ===
+let $QUERY=
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx, COUNT(*) AS n
+            FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx), SUM(cs.n) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx, COUNT(*) AS n
+            FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx), SUM(cs.n) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey|
+
+--echo
+--echo === agg-13: CHAR(1) l_returnflag MIN/MAX re-aggregated over a CTE_SCAN root ===
+let $QUERY=
+WITH l AS (SELECT l_orderkey AS k, MIN(l_returnflag) AS mn, MAX(l_returnflag) AS mx
+           FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(l.mn), MAX(l.mx), COUNT(*) FROM l;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH l AS (SELECT l_orderkey AS k, MIN(l_returnflag) AS mn, MAX(l_returnflag) AS mx
+           FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(l.mn), MAX(l.mx), COUNT(*) FROM l|
+
+--echo
+--echo === agg-14: CHAR(10) p_brand MIN/MAX re-aggregated over a CTE_SCAN root ===
+let $QUERY=
+WITH p AS (SELECT p_size AS sz, MIN(p_brand) AS mn, MAX(p_brand) AS mx, COUNT(*) AS n
+           FROM part GROUP BY p_size)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH p AS (SELECT p_size AS sz, MIN(p_brand) AS mn, MAX(p_brand) AS mx, COUNT(*) AS n
+           FROM part GROUP BY p_size)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p|
+
+--echo
+--echo === agg-15: VARCHAR(40) p_name MIN/MAX re-aggregated over a CTE_SCAN root ===
+let $QUERY=
+WITH p AS (SELECT p_brand AS b, MIN(p_name) AS mn, MAX(p_name) AS mx, COUNT(*) AS n
+           FROM part GROUP BY p_brand)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH p AS (SELECT p_brand AS b, MIN(p_name) AS mn, MAX(p_name) AS mx, COUNT(*) AS n
+           FROM part GROUP BY p_brand)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p|
 
 # =====================================================================
 # GROUP BY shapes — single column (covered above) and multiple columns.
@@ -264,13 +325,34 @@ WITH x AS (
 SELECT COUNT(*), SUM(x.t), MIN(x.t), MAX(x.t)
 FROM x|
 
-# NEXT-PHASE (DISABLED — DATA NODE CRASH D6 + malformed, agg-19/20/21): a CTE_SCAN
-# root over a HIGH-CARDINALITY lineitem CTE (keyed by l_orderkey / l_partkey,
-# 1500+ groups) crashes BOTH data nodes with the same DBSPJ ndbassert as D6
-# (Error 2343, DbspjMain.cpp:7825, m_cnt_active==0). agg-19/agg-20 were also
-# malformed by the rework (trailing comma, undefined x.mn/x.mx). agg-21 also
-# re-aggregates a string MIN/MAX (D18). Small-cardinality CTE_SCAN roots over
-# orders (agg-18) are GREEN. See findings/_discovery_log.md (D6/D18).
+# agg-19/20 (was D6, FIXED): scalar main aggregation over a HIGH-CARDINALITY
+# lineitem CTE_SCAN root (keyed by l_orderkey/1500 and l_partkey).  Crashed
+# (DBSPJ Error 2343, m_cnt_active==0) before the CTE multi-batch completion fix;
+# now green.  (The high-cardinality CTE_SCAN-root STRING case — formerly agg-21
+# — is covered by agg-13 above.)
+--echo
+--echo === agg-19: high-cardinality lineitem CTE_SCAN root (l_orderkey), scalar main agg ===
+let $QUERY=
+WITH li AS (SELECT l_orderkey AS k, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.sq), MAX(li.sq) FROM li;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH li AS (SELECT l_orderkey AS k, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.sq), MAX(li.sq) FROM li|
+
+--echo
+--echo === agg-20: high-cardinality lineitem CTE_SCAN root (l_partkey), scalar main agg ===
+let $QUERY=
+WITH li AS (SELECT l_partkey AS k, SUM(l_quantity) AS sq, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx
+            FROM lineitem GROUP BY l_partkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH li AS (SELECT l_partkey AS k, SUM(l_quantity) AS sq, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx
+            FROM lineitem GROUP BY l_partkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li|
 # NEXT-PHASE (DISABLED — HANG, D3): projection-only main SELECT over a CTE_LOOKUP
 # child (selecting CTE columns without wrapping them in a main aggregate) HANGS
 # RonSQL/RDRS (never returns).  Same class as the COUNT(col) hang (D2).  Every

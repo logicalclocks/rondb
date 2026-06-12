@@ -206,8 +206,10 @@ struct JoinAggNullRowRef {
  * Long section 1: accumulator_data (AggResItem array)
  */
 struct JoinAggRedistributeReq {
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 5;
   Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
+  Uint32 senderAggStateKey; // Sender's own state, echoed in CONF/REF so the
+                            // sender resumes the correct state (D25 fix).
   Uint32 keyLen;          // Group key length in bytes
   Uint32 valueLen;        // Accumulator data length in bytes
   Uint32 requestInfo;     // Flags (RI_NEED_CONF)
@@ -222,9 +224,11 @@ struct JoinAggRedistributeReq {
  * REDISTRIBUTE_REQ of the batch, providing flow control.
  */
 struct JoinAggRedistributeConf {
-  static constexpr Uint32 SignalLength = 2;
+  static constexpr Uint32 SignalLength = 3;
   Uint32 aggStateKey;
   Uint32 senderNodeId;    // Node that processed the group(s)
+  Uint32 senderAggStateKey; // Echoed from the REQ; the redistributing sender's
+                            // own state to resume (D25 fix).
 };
 
 /**
@@ -233,10 +237,12 @@ struct JoinAggRedistributeConf {
  * redistribution and send COMPLETE_REF.
  */
 struct JoinAggRedistributeRef {
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 4;
   Uint32 aggStateKey;
   Uint32 senderNodeId;
   Uint32 errorCode;
+  Uint32 senderAggStateKey; // Echoed from the REQ; the redistributing sender's
+                            // own state to resume/abort (D25 fix).
 };
 
 /**

@@ -127,31 +127,96 @@ suite + topologies.
 
 ---
 
-## Phase 2 — CRASHES (next)
-
-Both have preserved evidence; reproduce under a debug data node and walk the
-trace.
+## Phase 2 — CRASHES
 
 - **C1 — D6: DBSPJ ndbassert `Error 2343, DbspjMain.cpp:7825,
-  requestPtr.p->m_cnt_active == 0`** when a CTE keyed by a high-cardinality key
-  (l_orderkey/1500) is used as a CTE_LOOKUP child of a large `orders` root scan,
-  OR as a high-cardinality CTE_SCAN root. The near-identical low-cardinality
-  shape (o_custkey/300 → small `customer`) is GREEN, so the trigger is
-  cardinality / multi-batch teardown. Repro: `body_agg.inc` agg-06 marker (lookup
-  form) and agg-19/20/21 marker (CTE_SCAN-root form). Evidence:
-  `findings/crash_artifacts/ndb_{1,2}_error.log`. Start at `DbspjMain.cpp:7825`
-  and the active-operation accounting on request teardown when child batches span
-  SCAN_NEXTREQ cycles.
+  requestPtr.p->m_cnt_active == 0` — ✅ FIXED.** Two distinct root causes,
+  both resolved:
+    1. *Premature CTE completion.* A multi-batch CTE materialisation scan
+       reached `m_outstanding==0` at every batch boundary while its scan node was
+       still TN_ACTIVE; `batchComplete` reported `CTE_PHASE_COMPLETE_REP` per
+       batch (truncating the scan / leaving an active node at teardown). DBSPJ
+       now restarts the next batch directly (`handleCtePhaseNextBatch`, driving
+       `SCAN_NEXTREQ` to DBLQH) and only reports completion at genuine EndOfData
+       (`m_cnt_active==0`); a `SCAN_HBREP` heartbeat keeps DBTC's scan-frag timer
+       alive during the multi-batch completion (`RONDB-1072: heartbeat during CTE
+       aggregation completion`).
+    2. *Cross-node GROUP BY hash inconsistency (the agg-16 / redistribution-hash
+       bug, a.k.a. D24-class).* `hashGroupKey` chose charset-aware vs raw xxhash
+       per the result interpreter's `m_gb_types_inited` state; a node whose
+       result interpreter never processed a CTE row (so never ran the per-row
+       `initGBTypes`) hashed CHAR/VARCHAR keys with raw xxhash while type-aware
+       nodes used the charset-aware hash → the same group routed to two owners →
+       split groups / over-count (and contributed to teardown accounting bugs).
+       Fixed by **publishing GROUP BY (and linked / load) column type metadata
+       through `JOIN_AGG_SETUP`** and initialising the interpreter from it
+       (`initGBTypesFromMetadata`) instead of lazily on the first row — so every
+       node's hash is charset-aware and identical regardless of data
+       distribution. Landed as the metadata commit series
+       (`…emit/carry/consume/validate/centralize … metadata`,
+       `use setup metadata for join aggregation columns`,
+       `use typed NULL metadata for CTE linked columns`).
+  Follow-up (deferred): re-enable the disabled `body_agg.inc` cases (agg-06
+  lookup form; agg-19/20/21 CTE_SCAN-root form), `--record`, and re-run all
+  topologies to confirm green; then retire the untracked probes
+  (`ronsql_cte_dd_d6_crash.test`, `ronsql_cte_ng4r2/…_agg16_probe.test`).
+  **Re-verify D22 (W1)** against the metadata fix — it is the same CHAR-key
+  (`p_brand`) cross-node redistribution shape and may already be resolved.
 - **C2 — D18: data-node crash `NDB Error 6000 / Signal 6 abort`** when the main
-  query RE-AGGREGATES a string (CHAR/VARCHAR) MIN/MAX CTE output (numeric MIN/MAX
-  re-aggregation is GREEN). Repro: `body_agg.inc` agg-11..15 marker. Suspect: the
-  linked string-aggregate delivery/merge path (Phase I.6 F.4 —
-  `cte_filter_phase_i6_string_minmax_f4.md`: `Dblqh::buildCteLinkedBuffer` /
-  `emitCteGroupOutput`, `JoinAggInterpreter::kOpLoadCol` string load, string-slot
-  redistribution). A string aggregate consumed as a *linked* input to the main
-  aggregator likely mis-sizes or mis-points the payload.
+  query RE-AGGREGATES a string (CHAR/VARCHAR) MIN/MAX CTE output — **✅ FIXED by
+  the metadata series.** A string aggregate consumed as a *linked* input to the
+  main aggregator was mis-sized/mis-pointed because the linked-column type was
+  inferred per-row rather than supplied; publishing typed (incl. typed-NULL)
+  CTE linked-column metadata through `JOIN_AGG_SETUP` and consuming it via
+  `initGBTypesFromMetadata` gives the linked string aggregate the correct
+  type/charset/size up front.  Verified: `ronsql_cte_dd_d18_probe` D18a (CHAR(1)
+  `o_orderstatus`) → `F, P, 1500` (RonSQL == MySQL, no crash).  Closing
+  follow-up: re-enable `body_agg.inc` agg-11..15 to confirm the remaining string
+  types (CHAR(10) `p_brand`, CHAR(1) `l_returnflag` via CTE_SCAN root,
+  VARCHAR(12) `c_mktsegment`, VARCHAR(40) `p_name`), `--record`, re-run
+  topologies.
+- **C3 — D23: SIGSEGV (`NDB Error 6000 / Signal 11`)** in the kernel CTE_LOOKUP
+  emit/projection path for a **projection-only** main SELECT that joins a
+  CTE_LOOKUP child with **no user-selected columns** from the CTE — **✅ FIXED by
+  the metadata series.** The pre-fix trace crashed in the linked-attr (`0x8000`)
+  `ProcessRec` path while handling a `JOIN_AGG_NULL_ROW_REQ`; supplying validated
+  linked-column metadata up front (vs per-row inference with no projected CTE
+  columns) fixed the segfault.  Verified: `ronsql_cte_dd_d23_probe` D23a →
+  `c_custkey` 1..20 (RonSQL == MySQL, no crash).  Closing follow-up: re-enable
+  `body_mainmode.inc` MM17, `--record`, re-run topologies.
 
-Exit criteria: re-enable agg-06/11–15/19–21 → green; re-run all topologies.
+**D6, D18, D23 fixed on the base / single-node-group topology** by the metadata
+series (GB/linked/load type metadata published through `JOIN_AGG_SETUP` +
+`initGBTypesFromMetadata`) plus the CTE multi-batch completion fix (batch restart
+in DBSPJ + EndOfData-only `CTE_PHASE_COMPLETE_REP` + heartbeat).  Re-enabling the
+disabled cases (item 1) recorded green on base + ng1r3 (1 node group) but
+surfaced **D25** below on ≥2 node groups.
+
+- **C4 — D25: DBLQH ndbassert `Error 2343, DblqhMain.cpp:21519,
+  state->m_owner_instance == instance()`** in `execJOIN_AGG_REDISTRIBUTE_CONF`,
+  on a **high-cardinality CTE redistributed across ≥2 node groups**.  Latent
+  until now: D6 had disabled the only high-cardinality cross-NG cases, so the
+  `RI_NEED_CONF` batched redistribution round-trip was never exercised on
+  multi-NG.  Root cause: the `JOIN_AGG_REDISTRIBUTE_REQ` carries only the
+  **destination** node's pool key (`req->aggStateKey = dstKey =
+  m_cte_remote_aggKeys[ownerNode]`); the receiver echoes that key in the CONF
+  (`execJOIN_AGG_REDISTRIBUTE_REQ` → `conf->aggStateKey = aggStateKey`); the
+  sender's `execJOIN_AGG_REDISTRIBUTE_CONF` then does `getJoinAggState(dstKey)`
+  — looking up its **own** waiting state by the *destination's* pool index,
+  landing on the wrong `JoinAggregationState` (whose `m_owner_instance` ≠ the
+  current instance).  **Fix:** carry the sender's own `aggStateKey` in
+  `JoinAggRedistributeReq` (room in `SignalLength`), have the receiver echo it
+  in `JoinAggRedistributeConf`, and resume via that sender key in the CONF/REF
+  handlers.  Repro (now enabled): `body_agg.inc` agg-06 on any ≥2-NG suite
+  (ng2r2 / ng2r3 / ng4r2).  Evidence:
+  `var/log/ronsql_cte_ng2r2.ronsql_cte_dd_agg/.../ndb_3_error.log`.  Likely
+  shares the multi-NG-redistribution neighbourhood with D22 (W1) but is a
+  distinct (crash vs wrong-result) bug.  **NEXT (blocks item-1 re-record on
+  multi-NG).**
+
+Closing follow-up once D25 is fixed: `--record` agg + mainmode on all
+topologies, retire the untracked `*_probe` / `d6_crash` files, and re-verify
+D22 (W1).
 
 ---
 

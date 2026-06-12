@@ -375,18 +375,20 @@ WITH cust AS (
 SELECT c.c_custkey, cust.t, cust.n
 FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey|
 
-# NEXT-PHASE (DISABLED — DATA NODE CRASH / SIGSEGV, D23): a projection-only main
-# SELECT where a CTE_LOOKUP child is joined but has NO user-selected columns
-# crashes the data node (NDB Error 6000 / Signal 11 — segfault). The API
-# registers all CTE virt columns (cteAttrsByCol), so this is a kernel-side
-# CTE_LOOKUP emit/projection bug specific to the PROJECTION-ONLY path; the
-# anti-join / aggregating path with an unprojected CTE child (joins J8/J9) is
-# fine. Crash artifacts: findings/crash_artifacts/d23_*. See cte_fix_plan.md.
-# Repro:
-#   WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#                 FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey
-#   WHERE c.c_custkey <= 20;
+# MM17 (was D23, FIXED): a projection-only main SELECT that INNER-joins a
+# CTE_LOOKUP child with NO user-selected columns from the CTE.  Segfaulted
+# (NDB Error 6000 / Signal 11) in the kernel CTE_LOOKUP emit/projection path
+# before the linked-column metadata fix; now green.
+--echo
+--echo === MM17: projection-only main SELECT over a CTE_LOOKUP child with no CTE cols selected (was D23 crash) ===
+let $QUERY=
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.c_custkey <= 20|
 
 # ----------------------------------------------------------------------------
 # Clause-level deferrals per the capability matrix (ORDER BY / LIMIT / DISTINCT
