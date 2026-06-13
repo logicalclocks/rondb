@@ -129,6 +129,13 @@ in `findings/<family>.md`.
   state.  Latent until now (D6 disabled the only high-card cross-NG cases).
   Fix + repro in `cte_fix_plan.md` C4.  D6/D18/D23 remain fixed on the base /
   1-NG topology; this is the multi-NG high-cardinality redistribution path.
+- **D25 (crash) — ✅ FIXED** (commit `77629762cb4`): `senderAggStateKey` added to
+  `JoinAggRedistributeReq/Conf/Ref` so the CONF/REF round-trip resumes the
+  sender's own state.  Re-enabled cases recorded green on all 5 topologies.
+- **D22 (wrong COUNT, 2NG×3rep) — ✅ FIXED** by the metadata + D25 work (same
+  CHAR-key `p_brand` cross-NG redistribution shape).  Restored
+  `ronsql_cte_ng2r3` agg test; agg-05 `SUM(prt.n)=400` per brand, result
+  byte-identical to base.  Phase 3 wrong-results remaining: D16, D15, D21.
 - **D6 (crash) — ✅ FIXED.** Premature multi-batch CTE completion (DBSPJ now
   restarts batches via `handleCtePhaseNextBatch` + EndOfData-only
   `CTE_PHASE_COMPLETE_REP` + a `SCAN_HBREP` heartbeat) **and** the cross-node

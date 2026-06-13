@@ -1,0 +1,374 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== agg-03: MIN/MAX over TINYINT (nation.n_nationkey), grouped by region ===
+== Query ==
+WITH nat AS (
+SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
+FROM nation GROUP BY n_regionkey)
+SELECT MIN(nat.mn), MAX(nat.mx), SUM(nat.n)
+FROM region AS r
+JOIN nat ON nat.rk = r.r_regionkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH nat AS (
+SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
+FROM nation GROUP BY n_regionkey)
+SELECT MIN(nat.mn), MAX(nat.mx), SUM(nat.n)
+FROM region AS r
+JOIN nat ON nat.rk = r.r_regionkey|
+MIN(nat.mn)	MAX(nat.mx)	SUM(nat.n)
+0	24	25
+
+=== agg-04: MIN/MAX over SMALLINT UNSIGNED (orders.o_shippriority), grouped by custkey ===
+== Query ==
+WITH ord AS (
+SELECT o_custkey AS k, MIN(o_shippriority) AS mn, MAX(o_shippriority) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.mx)
+FROM customer AS c
+JOIN ord ON ord.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (
+SELECT o_custkey AS k, MIN(o_shippriority) AS mn, MAX(o_shippriority) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.mx)
+FROM customer AS c
+JOIN ord ON ord.k = c.c_custkey|
+MIN(ord.mn)	MAX(ord.mx)	SUM(ord.mx)
+0	4	600
+
+=== agg-05: MIN/MAX over MEDIUMINT (part.p_size), grouped by brand (parent dimension) ===
+== Query ==
+WITH prt AS (
+SELECT p_brand AS brand, MIN(p_size) AS mn, MAX(p_size) AS mx, COUNT(*) AS n
+FROM part GROUP BY p_brand)
+SELECT p.p_brand, MIN(prt.mn), MAX(prt.mx), SUM(prt.n)
+FROM part AS p
+JOIN prt ON prt.brand = p.p_brand
+GROUP BY p.p_brand;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH prt AS (
+SELECT p_brand AS brand, MIN(p_size) AS mn, MAX(p_size) AS mx, COUNT(*) AS n
+FROM part GROUP BY p_brand)
+SELECT p.p_brand, MIN(prt.mn), MAX(prt.mx), SUM(prt.n)
+FROM part AS p
+JOIN prt ON prt.brand = p.p_brand
+GROUP BY p.p_brand|
+p_brand	MIN(prt.mn)	MAX(prt.mx)	SUM(prt.n)
+BRAND#11	1	46	400
+BRAND#22	2	47	400
+BRAND#33	3	48	400
+BRAND#44	4	49	400
+BRAND#55	5	50	400
+
+=== agg-06: high-cardinality lineitem CTE (l_orderkey) as CTE_LOOKUP child of orders root, scalar main agg ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey|
+MIN(li.mn)	MAX(li.mx)	SUM(li.sq)
+1	50	76500
+
+=== agg-07: MIN/MAX/SUM over BIGINT UNSIGNED (supplier.s_total_sales), grouped by nation ===
+== Query ==
+WITH sup AS (
+SELECT s_nationkey AS nk, MIN(s_total_sales) AS mn, MAX(s_total_sales) AS mx, COUNT(*) AS n
+FROM supplier GROUP BY s_nationkey)
+SELECT MIN(sup.mn), MAX(sup.mx), SUM(sup.n)
+FROM nation AS n
+JOIN sup ON sup.nk = n.n_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sup AS (
+SELECT s_nationkey AS nk, MIN(s_total_sales) AS mn, MAX(s_total_sales) AS mx, COUNT(*) AS n
+FROM supplier GROUP BY s_nationkey)
+SELECT MIN(sup.mn), MAX(sup.mx), SUM(sup.n)
+FROM nation AS n
+JOIN sup ON sup.nk = n.n_nationkey|
+MIN(sup.mn)	MAX(sup.mx)	SUM(sup.n)
+100000	5000000	50
+
+=== agg-10: MIN/MAX over DECIMAL scale-0 (supplier.s_margin) + SUM(int), grouped by nation ===
+== Query ==
+WITH sup AS (
+SELECT s_nationkey AS nk, MIN(s_margin) AS mn, MAX(s_margin) AS mx, SUM(s_nationkey) AS sm
+FROM supplier GROUP BY s_nationkey)
+SELECT MIN(sup.mn), MAX(sup.mx), SUM(sup.sm)
+FROM nation AS n
+JOIN sup ON sup.nk = n.n_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sup AS (
+SELECT s_nationkey AS nk, MIN(s_margin) AS mn, MAX(s_margin) AS mx, SUM(s_nationkey) AS sm
+FROM supplier GROUP BY s_nationkey)
+SELECT MIN(sup.mn), MAX(sup.mx), SUM(sup.sm)
+FROM nation AS n
+JOIN sup ON sup.nk = n.n_nationkey|
+MIN(sup.mn)	MAX(sup.mx)	SUM(sup.sm)
+3	150	600
+
+=== agg-11: CHAR(1) o_orderstatus MIN/MAX re-aggregated through CTE_LOOKUP ===
+== Query ==
+WITH ord AS (SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.n) FROM customer AS c JOIN ord ON ord.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.n) FROM customer AS c JOIN ord ON ord.k = c.c_custkey|
+MIN(ord.mn)	MAX(ord.mx)	SUM(ord.n)
+F	P	1500
+
+=== agg-12: VARCHAR(12) c_mktsegment MIN/MAX re-aggregated through CTE_LOOKUP ===
+== Query ==
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx, COUNT(*) AS n
+FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx), SUM(cs.n) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx, COUNT(*) AS n
+FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx), SUM(cs.n) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey|
+MIN(cs.mn)	MAX(cs.mx)	SUM(cs.n)
+AUTOMOBILE	MACHINERY	300
+
+=== agg-13: CHAR(1) l_returnflag MIN/MAX re-aggregated over a CTE_SCAN root ===
+== Query ==
+WITH l AS (SELECT l_orderkey AS k, MIN(l_returnflag) AS mn, MAX(l_returnflag) AS mx
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(l.mn), MAX(l.mx), COUNT(*) FROM l;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH l AS (SELECT l_orderkey AS k, MIN(l_returnflag) AS mn, MAX(l_returnflag) AS mx
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(l.mn), MAX(l.mx), COUNT(*) FROM l|
+MIN(l.mn)	MAX(l.mx)	COUNT(*)
+A	R	1500
+
+=== agg-14: CHAR(10) p_brand MIN/MAX re-aggregated over a CTE_SCAN root ===
+== Query ==
+WITH p AS (SELECT p_size AS sz, MIN(p_brand) AS mn, MAX(p_brand) AS mx, COUNT(*) AS n
+FROM part GROUP BY p_size)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH p AS (SELECT p_size AS sz, MIN(p_brand) AS mn, MAX(p_brand) AS mx, COUNT(*) AS n
+FROM part GROUP BY p_size)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p|
+MIN(p.mn)	MAX(p.mx)	SUM(p.n)
+BRAND#11	BRAND#55	100
+
+=== agg-15: VARCHAR(40) p_name MIN/MAX re-aggregated over a CTE_SCAN root ===
+== Query ==
+WITH p AS (SELECT p_brand AS b, MIN(p_name) AS mn, MAX(p_name) AS mx, COUNT(*) AS n
+FROM part GROUP BY p_brand)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH p AS (SELECT p_brand AS b, MIN(p_name) AS mn, MAX(p_name) AS mx, COUNT(*) AS n
+FROM part GROUP BY p_brand)
+SELECT MIN(p.mn), MAX(p.mx), SUM(p.n) FROM p|
+MIN(p.mn)	MAX(p.mx)	SUM(p.n)
+part#1	part#99	100
+
+=== agg-16: CTE body GROUP BY two columns (o_orderstatus, o_shippriority), scalar main agg ===
+== Query ==
+WITH ord AS (
+SELECT o_orderstatus AS st, o_shippriority AS pr,
+COUNT(*) AS n, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_orderstatus, o_shippriority)
+SELECT SUM(ord.n), SUM(ord.sp), MIN(ord.pr), MAX(ord.pr), COUNT(*)
+FROM ord;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (
+SELECT o_orderstatus AS st, o_shippriority AS pr,
+COUNT(*) AS n, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_orderstatus, o_shippriority)
+SELECT SUM(ord.n), SUM(ord.sp), MIN(ord.pr), MAX(ord.pr), COUNT(*)
+FROM ord|
+SUM(ord.n)	SUM(ord.sp)	MIN(ord.pr)	MAX(ord.pr)	COUNT(*)
+1500	3000	0	4	15
+
+=== agg-17: CTE body GROUP BY two columns, main re-aggregates by first key ===
+== Query ==
+WITH ord AS (
+SELECT o_orderstatus AS st, o_shippriority AS pr, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_orderstatus, o_shippriority)
+SELECT ord.st, SUM(ord.sp), MIN(ord.sp), MAX(ord.sp), COUNT(*)
+FROM ord
+GROUP BY ord.st;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (
+SELECT o_orderstatus AS st, o_shippriority AS pr, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_orderstatus, o_shippriority)
+SELECT ord.st, SUM(ord.sp), MIN(ord.sp), MAX(ord.sp), COUNT(*)
+FROM ord
+GROUP BY ord.st|
+st	SUM(ord.sp)	MIN(ord.sp)	MAX(ord.sp)	COUNT(*)
+F	1000	0	400	5
+O	1000	0	400	5
+P	1000	0	400	5
+
+=== agg-18: CTE_SCAN root, scalar main aggregation over CTE output ===
+== Query ==
+WITH x AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(x.t), MIN(x.t), MAX(x.t)
+FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(x.t), MIN(x.t), MAX(x.t)
+FROM x|
+COUNT(*)	SUM(x.t)	MIN(x.t)	MAX(x.t)
+300	3000	0	20
+
+=== agg-19: high-cardinality lineitem CTE_SCAN root (l_orderkey), scalar main agg ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.sq), MAX(li.sq) FROM li;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li AS (SELECT l_orderkey AS k, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.sq), MAX(li.sq) FROM li|
+COUNT(*)	SUM(li.sq)	MIN(li.sq)	MAX(li.sq)
+1500	76500	3	99
+
+=== agg-20: high-cardinality lineitem CTE_SCAN root (l_partkey), scalar main agg ===
+== Query ==
+WITH li AS (SELECT l_partkey AS k, SUM(l_quantity) AS sq, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx
+FROM lineitem GROUP BY l_partkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li AS (SELECT l_partkey AS k, SUM(l_quantity) AS sq, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx
+FROM lineitem GROUP BY l_partkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li|
+COUNT(*)	SUM(li.sq)	MIN(li.mn)	MAX(li.mx)
+100	76500	1	50

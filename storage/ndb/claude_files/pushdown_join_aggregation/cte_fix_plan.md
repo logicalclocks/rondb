@@ -223,14 +223,14 @@ D22 (W1).
 ## Phase 3 — WRONG RESULTS / semantics
 
 - **W1 — D22: wrong COUNT under the 2 node-group × 3-replica (6-node) topology
-  only.** `SUM(prt.n)` (a COUNT fan-in) returns e.g. BRAND#44=220/BRAND#55=240
-  instead of 400; passes on 2/3/4/8 nodes. Repro: `ronsql_cte/include/body_agg.inc`
-  agg-05 (currently omitted from `ronsql_cte_ng2r3`). Suspect: CTE_LOOKUP fan-out
-  / `continueJoinAggRedistribute` under the specific node-group×replica geometry
-  — a per-fragment/owner accounting that's only wrong when NG≠replicas in this
-  ratio. Reproduce by running the base agg suite against a 2NG×3rep cluster.
-  Re-enable: restore `ronsql_cte_ng2r3/t/ronsql_cte_dd_agg.test` + `.result`,
-  delete `README_D22.txt`.
+  only — ✅ FIXED (resolved by the metadata + D25 redistribution work).**
+  `SUM(prt.n)` (a COUNT fan-in over the CHAR-key `p_brand` CTE_LOOKUP, agg-05)
+  returned e.g. BRAND#44=220/BRAND#55=240 instead of 400 only on 2NG×3rep — the
+  same charset-key cross-NG redistribution shape that the GROUP BY type-metadata
+  fix (consistent `hashGroupKey` across nodes) and the D25 CONF-correlation fix
+  addressed.  Verified: restored `ronsql_cte_ng2r3/t/ronsql_cte_dd_agg.test`,
+  recorded green; agg-05 now `SUM(prt.n)=400` for every brand and the ng2r3 agg
+  result is byte-identical to base.  `README_D22.txt` removed.
 - **W2 — D16: scalar `COUNT(*)` over EMPTY input returns NULL, not 0.** Repro:
   `body_index.inc` index-17, `body_chain_scalar.inc` cs20 markers. SQL requires
   COUNT=0 (SUM/MIN/MAX=NULL) on empty. Likely the empty-group/no-rows finalize in
