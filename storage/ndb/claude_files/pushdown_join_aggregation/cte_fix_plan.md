@@ -99,10 +99,14 @@ and `Dblqh::continueJoinAgg*`.
   **Action item: re-verify the remaining disabled hangs (H5/D20, H6/D5) against
   freshly-built binaries before diagnosing — they may also be stale-binary
   artifacts.**
-- **H5 — D20: multi-key complete-key CTE lookup — ✅ NOT-REPRODUCIBLE
-  (2026-06-08).** Executes correctly on the current build in both predicate
-  orders (verified J15 reversed; J14 in-order re-enabled). Another stale-binary
-  artifact like D19. Re-enabled green: `body_joins.inc` J14 + J15.
+- **H5 — D20: multi-key complete-key CTE lookup — ✅ NOT-REPRODUCIBLE as a hang
+  (2026-06-08); but later found to harbor a flaky data race — see D26 (W4).**
+  Executes (mostly) correctly on the current build in both predicate orders
+  (verified J15 reversed; J14 in-order re-enabled). The original hang was a
+  stale-binary artifact like D19, BUT J14/J15 subsequently surfaced an
+  intermittent wrong-COUNT under multi-node-group stress (the shared
+  strnxfrm-buffer race, **D26 / W5** below), now fixed. Re-enabled: `body_joins.inc`
+  J14 + J15.
 - **H6 — D5: 3-table chain `real JOIN cte JOIN real` — ✅ REJECTED (was a CRASH,
   not a hang; 2026-06-08).** Re-verification crashed the RDRS server
   (`NdbQueryBuilder.cpp:3020` `appendLinkedOperand` assert / null deref), not a
@@ -253,6 +257,20 @@ D22 (W1).
   unverified. Repro: `body_joins.inc` J19/J20 (removed). Decide: either reject
   cleanly (as `ronsql_cte_partial_key.test` does for the simple case) or support
   it and verify correctness. Couple this with H5/D20.
+- **W5 — D26: flaky wrong COUNT on a multi-node-group composite CHAR key — ✅
+  FIXED** (commit `94527c480f3`): a cross-thread data race on the strnxfrm hash
+  scratch buffer.  J14/J15 (`GROUP BY o_custkey, o_orderstatus` re-aggregated
+  through a multi-key CTE_LOOKUP) failed ~3-6/200 on `ng2r3`, off by one group
+  (`25→20`), failing custkey varying per run.  The CTE `JoinAggInterpreter` /
+  `AggHashTable` is shared across LDM threads, but `hashKeyFull`'s `strnxfrm_hash`
+  wrote into the interpreter's single `m_xfrm_buf` — used concurrently by the
+  mutex-free lookup path and the DBSPJ TC-thread routing hash → corrupted bucket
+  hash → `find()` miss → INNER join drops a row.  Only multi-col charset keys
+  affected (int-only keys use raw `xxhash`).  Fix: `m_xfrm_buf` removed; every
+  hash method REQUIRES a per-LDM-thread buffer (`Dbtup::getAggXfrmBuf`,
+  compiler-enforced, no default); DBSPJ routes via `cte_lookup_hash_key` using
+  block-local `m_buffer0`.  Stress-green 200×/100× on ng2r3/ng2r2/ng4r2.  See
+  `cte_test_driven_findings.md` (D26) for the full write-up.
 
 ---
 
