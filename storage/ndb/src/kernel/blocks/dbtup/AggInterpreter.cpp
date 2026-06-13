@@ -201,8 +201,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
      * mirroring JoinAggInterpreter's group prologue minus the linked /
      * CTE / multi-leaf branches. */
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
+    /* D26: hash into this LDM thread's private xfrm scratch (block_tup is this
+     * thread's Dbtup, required non-null above), never a shared buffer. */
+    uchar* gb_xfrm_buf = block_tup->getAggXfrmBuf();
+    Uint32 gb_xfrm_buf_len = block_tup->getAggXfrmBufLen();
     char* found = m_gb_map->find(
-        reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
+        reinterpret_cast<char*>(m_attr_read_buf), len_in_char,
+        gb_xfrm_buf, gb_xfrm_buf_len);
     if (found != nullptr) {
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
       PA_INTERP_TRACE(m_frag_id,
@@ -223,7 +228,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       }
       memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
-      m_gb_map->insert(agg_rec, len_in_char);
+      m_gb_map->insert(agg_rec, len_in_char, gb_xfrm_buf, gb_xfrm_buf_len);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 

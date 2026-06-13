@@ -136,7 +136,6 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_memory_budget(0), m_budget_increment(0),
       m_total_available(0),
       m_gb_types(nullptr), m_gb_types_inited(false),
-      m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
       m_load_column_meta(nullptr), m_load_column_meta_count(0),
       m_load_column_meta_capacity(0),
       m_column_meta(nullptr), m_column_meta_count(0),
@@ -559,8 +558,9 @@ class AggInterpreterBase : public PushdownInterpreter {
    * GBHashTable uses these for charset-aware hash + comparison. */
   GBColTypeInfo* m_gb_types;
   bool m_gb_types_inited;
-  uchar* m_xfrm_buf;       // scratch buffer for strnxfrm_hash
-  Uint32 m_xfrm_buf_len;   // size in bytes
+  /* D26: the strnxfrm scratch buffer is no longer owned by this (thread-
+   * shared) interpreter — the group-key hash takes a per-LDM-thread buffer
+   * (Dbtup::getAggXfrmBuf) as a required argument instead. */
 
   LoadColumnMeta* m_load_column_meta;
   Uint32 m_load_column_meta_count;

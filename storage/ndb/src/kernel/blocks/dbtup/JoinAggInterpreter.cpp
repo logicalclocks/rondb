@@ -287,6 +287,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id,
         EmulatedJamBuffer *jamBuf,
+        uchar* xfrm_buf,
+        Uint32 xfrm_buf_len,
         Uint32* attr_read_buf) {
   m_current_thread_id = thread_id;
   /*
@@ -431,7 +433,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
-    char* found = m_gb_map->find(reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
+    char* found = m_gb_map->find(reinterpret_cast<char*>(m_attr_read_buf),
+                                 len_in_char, xfrm_buf, xfrm_buf_len);
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
@@ -457,7 +460,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                         m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
 
-      m_gb_map->insert(agg_rec, len_in_char);
+      m_gb_map->insert(agg_rec, len_in_char, xfrm_buf, xfrm_buf_len);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
@@ -698,7 +701,11 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     m_null_local_columns = true;
   }
 
-  Int32 ret = ProcessRec(block_tup, req_struct, thread_id, jamBuf);
+  // D26: the build path runs on this LDM thread (block_tup is its own Dbtup),
+  // so the group-key hash uses that thread's private xfrm scratch.
+  Int32 ret = ProcessRec(block_tup, req_struct, thread_id, jamBuf,
+                         block_tup->getAggXfrmBuf(),
+                         block_tup->getAggXfrmBufLen());
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
@@ -707,7 +714,9 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
 }
 
 Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
-                                         Uint32* words_written) {
+                                         Uint32* words_written,
+                                         uchar* xfrm_buf,
+                                         Uint32 xfrm_buf_len) {
   if (m_gb_map == nullptr || m_gb_map->empty()) {
     return -1;
   }
@@ -769,7 +778,7 @@ Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   // wire-format emit has already substituted payload into the
   // outbound packet above, so val_ptr is safe to free here.
   freeGroupStringSlots(slots);
-  m_gb_map->erase(data_ptr, key_len);
+  m_gb_map->erase(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
   freeGroupData(data_ptr);
 
   return 0;
@@ -1050,7 +1059,9 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
 }
 
 Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
-                                      Uint32 max_groups) {
+                                      Uint32 max_groups,
+                                      uchar* xfrm_buf,
+                                      Uint32 xfrm_buf_len) {
   assert(other != nullptr);
   assert(m_n_agg_results == other->m_n_agg_results);
 
@@ -1115,7 +1126,7 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
         }
         other->freeGroupData(other_data);
       } else {
-        m_gb_map->insertRaw(other_data);
+        m_gb_map->insertRaw(other_data, xfrm_buf, xfrm_buf_len);
         m_result_size += other_key_len + v_len;
       }
       count++;
@@ -1153,7 +1164,9 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
 Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
                                          const char* accumulators,
-                                         Uint32 accLen) {
+                                         Uint32 accLen,
+                                         uchar* xfrm_buf,
+                                         Uint32 xfrm_buf_len) {
   /* Phase I.17e: scalar (no GROUP BY) redistribute reuses this entry
    * point with keyLen == 0 — dispatch to the accumulator-only merge. */
   if (keyLen == 0) {
@@ -1194,7 +1207,7 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
   }
 
   /* Look up key in local hash table */
-  char* found = m_gb_map->find(key, keyLen);
+  char* found = m_gb_map->find(key, keyLen, xfrm_buf, xfrm_buf_len);
 
   if (found != nullptr) {
     /* Key exists — merge accumulators */
@@ -1253,7 +1266,7 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
       memcpy(new_group + keyLen, accumulators, v_len);
     }
 
-    m_gb_map->insert(new_group, keyLen);
+    m_gb_map->insert(new_group, keyLen, xfrm_buf, xfrm_buf_len);
     m_n_groups = m_gb_map->size();
     m_result_size += keyLen + v_len;
   }
@@ -1405,6 +1418,8 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     Uint32 linked_attr_len,
     Uint32 thread_id,
     EmulatedJamBuffer *jamBuf,
+    uchar* xfrm_buf,
+    Uint32 xfrm_buf_len,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
@@ -1425,7 +1440,8 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
    * Null-extended rows have no local tuple to read.  m_null_local_columns
    * drives kOpLoadCol to synthesize NULL AttributeHeaders into attr_read_buf.
    */
-  Int32 ret = ProcessRec(nullptr, nullptr, thread_id, jamBuf, attr_read_buf);
+  Int32 ret = ProcessRec(nullptr, nullptr, thread_id, jamBuf,
+                         xfrm_buf, xfrm_buf_len, attr_read_buf);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;

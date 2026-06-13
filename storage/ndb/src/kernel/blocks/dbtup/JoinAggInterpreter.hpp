@@ -86,9 +86,13 @@ class JoinAggInterpreter : public AggInterpreterBase {
       Uint32 linked_attr_len,
       Uint32 thread_id,
       EmulatedJamBuffer *jamBuf,
+      // D26: per-LDM strnxfrm scratch (required) for the group-key hash.
+      uchar* xfrm_buf,
+      Uint32 xfrm_buf_len,
       const struct LeafProgram* leaf = nullptr);
 
-  Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups);
+  Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups,
+                   uchar* xfrm_buf, Uint32 xfrm_buf_len);
 
   using AggInterpreterBase::initGBTypesFromMetadata;
 
@@ -103,11 +107,14 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * via hashKeyFull. Otherwise uses rondb_xxhash_std on raw key bytes,
    * which is consistent with DBSPJ's CTE_LOOKUP routing hash.
    */
-  Uint64 hashGroupKey(const char* key, Uint32 keyLen) const {
+  Uint64 hashGroupKey(const char* key, Uint32 keyLen,
+                      uchar* xfrm_buf, Uint32 xfrm_buf_len) const {
     if (m_gb_types_inited) {
       for (Uint32 i = 0; i < m_n_gb_cols; i++) {
         if (m_gb_types[i].cs != nullptr) {
-          return m_gb_map->hashKeyFull(key, keyLen);
+          // D26: callers pass a required per-LDM scratch buffer so the group
+          // key is never hashed in a buffer shared across threads.
+          return m_gb_map->hashKeyFull(key, keyLen, xfrm_buf, xfrm_buf_len);
         }
       }
     }
@@ -127,8 +134,13 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * The returned pointer points past the 24-byte group link header.
    * Layout: [key_data (keyLen bytes)] [accumulator_data (val_len() bytes)]
    */
-  const char* lookupGroup(const char* key, Uint32 keyLen) const {
-    return m_gb_map ? m_gb_map->find(key, keyLen) : nullptr;
+  const char* lookupGroup(const char* key, Uint32 keyLen,
+                          uchar* xfrm_buf, Uint32 xfrm_buf_len) const {
+    // D26: the lookup runs on the (mutex-free) owner-LDM path while the CTE
+    // interpreter is shared across threads; the required per-LDM scratch buffer
+    // means the bucket hash is never computed in a buffer another thread clobbers.
+    return m_gb_map ? m_gb_map->find(key, keyLen, xfrm_buf, xfrm_buf_len)
+                    : nullptr;
   }
 
   /**
@@ -140,7 +152,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * Returns 0 on success, negative on error (e.g., memory allocation failure).
    */
   Int32 mergeOneGroup(const char* key, Uint32 keyLen,
-                      const char* accumulators, Uint32 accLen);
+                      const char* accumulators, Uint32 accLen,
+                      uchar* xfrm_buf, Uint32 xfrm_buf_len);
   Uint32 redistributionValueLen(const AggResItem* slots) const;
 
   /**
@@ -186,15 +199,20 @@ class JoinAggInterpreter : public AggInterpreterBase {
   void cacheMultiLeafAggOps(const struct LeafProgram* leaves,
                             Uint32 num_leaves);
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
-                      Uint32* words_written);
+                      Uint32* words_written,
+                      uchar* xfrm_buf, Uint32 xfrm_buf_len);
   /* initChunkAllocator / bookMoreMemory / allocGroupData / freeGroupData /
    * freeAllChunks lifted to AggInterpreterBase in Step 2a. */
 
  private:
+  // D26: xfrm_buf/xfrm_buf_len (required) — per-LDM strnxfrm scratch for the
+  // group-key hash; placed before the defaulted attr_read_buf.
   Int32 ProcessRec(Dbtup* block_tup,
                    Dbtup::KeyReqStruct* req_struct,
                    Uint32 thread_id,
                    EmulatedJamBuffer *jamBuf,
+                   uchar* xfrm_buf,
+                   Uint32 xfrm_buf_len,
                    Uint32* attr_read_buf = nullptr);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec

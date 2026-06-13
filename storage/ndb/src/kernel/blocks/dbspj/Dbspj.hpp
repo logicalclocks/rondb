@@ -43,6 +43,7 @@
 #define JAM_FILE_ID 481
 
 class SectionReader;
+class JoinAggInterpreter;
 struct QueryNode;
 struct QueryNodeParameters;
 
@@ -1895,6 +1896,8 @@ class Dbspj : public SimulatedBlock {
   void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
   void cte_lookup_serve_cached_row(Signal *, Ptr<Request>,
                                    Ptr<TreeNode>, const CteContext &);
+  Uint64 cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
+                             Uint32, Uint32);
   void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
                        const RowPtr &);
   void execCTE_LOOKUP_CONF(Signal *);

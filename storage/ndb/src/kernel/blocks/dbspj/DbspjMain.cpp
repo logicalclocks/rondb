@@ -34,6 +34,7 @@
 #include <CteLinkedAttr.hpp>
 #include <Interpreter.hpp>
 #include <KeyDescriptor.hpp>
+#include <NdbSqlUtil.hpp>
 #include <SectionReader.hpp>
 #include <cstring>
 #include <signaldata/AlterTab.hpp>
@@ -6306,6 +6307,68 @@ void Dbspj::cte_lookup_serve_cached_row(Signal *signal,
              TransIdAI::HeaderLength, JBB, lsp, 1);
 }
 
+Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
+                                  const char *key,
+                                  Uint32 keyLen,
+                                  Uint32 nGbCols) {
+  const GBColTypeInfo *colTypes = interp->gb_types();
+  if (colTypes == nullptr) {
+    return rondb_xxhash_std(key, keyLen);
+  }
+
+  bool hasCharset = false;
+  for (Uint32 i = 0; i < nGbCols; i++) {
+    if (colTypes[i].cs != nullptr) {
+      hasCharset = true;
+      break;
+    }
+  }
+  if (!hasCharset) {
+    return rondb_xxhash_std(key, keyLen);
+  }
+
+  uchar *xfrmBuf = reinterpret_cast<uchar *>(m_buffer0);
+  const Uint32 xfrmBufLen = sizeof(m_buffer0);
+  Uint64 hash = 0;
+  const Uint32 *p = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 *end = reinterpret_cast<const Uint32 *>(key + keyLen);
+  for (Uint32 i = 0; i < nGbCols && p < end; i++) {
+    AttributeHeader ah(*p);
+    const Uint32 dataSize = ah.getDataSize();
+    if (colTypes[i].cs != nullptr && dataSize > 0) {
+      const uchar *src = reinterpret_cast<const uchar *>(p + 1);
+      const Uint32 byteSize = ah.getByteSize();
+      Uint32 lb, srcLen;
+      NdbSqlUtil::get_var_length(colTypes[i].typeId, src, byteSize,
+                                 lb, srcLen);
+      const Uint32 maxBytes = colTypes[i].maxBytes;
+      ndbrequire(maxBytes >= lb);
+      const Uint32 defLen = maxBytes - lb;
+      ndbrequire(NdbSqlUtil::strnxfrm_hash_len(colTypes[i].cs, defLen) <=
+                 xfrmBufLen);
+      const int n = NdbSqlUtil::strnxfrm_hash(colTypes[i].cs,
+                                              colTypes[i].typeId,
+                                              xfrmBuf, xfrmBufLen,
+                                              src + lb, srcLen, defLen);
+      if (n > 0) {
+        const Uint64 colHash =
+            rondb_xxhash_std(reinterpret_cast<const char *>(xfrmBuf), n);
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      }
+    } else if (dataSize > 0) {
+      const Uint32 byteSize = ah.getByteSize();
+      const Uint64 colHash =
+          rondb_xxhash_std(reinterpret_cast<const char *>(p + 1), byteSize);
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    } else {
+      const Uint64 colHash = 0xDEADBEEFDEADBEEFULL;
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    }
+    p += 1 + dataSize;
+  }
+  return hash;
+}
+
 /**
  * Build and send CTE_LOOKUP_REQ to DBLQH.
  *
@@ -6407,8 +6470,9 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
           kp += 1 + dataSize;
         }
-        const Uint64 h = localCteInterp->hashGroupKey(
-            reinterpret_cast<const char *>(keyBuf), keyLenBytes);
+        const Uint64 h = cte_lookup_hash_key(
+            localCteInterp, reinterpret_cast<const char *>(keyBuf),
+            keyLenBytes, nGbCols);
         const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
         targetNodeId = m_dataNodeList[ownerIdx];
       }

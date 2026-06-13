@@ -155,6 +155,32 @@ in `findings/<family>.md`.
   (multi-leaf input metadata, typed NULL for CTE linked columns, cached
   load/linked column metadata).  *Test re-enable (agg-06/19/20/21) + D22
   re-verify are a closing follow-up — see `cte_fix_plan.md` C1.*
+- **D26 (flaky wrong COUNT, multi-NG composite CHAR key) — ✅ FIXED** (data
+  race on the strnxfrm hash scratch buffer).  `ronsql_cte_dd_joins` J14/J15
+  (`GROUP BY o_custkey, o_orderstatus` re-aggregated through a multi-key
+  CTE_LOOKUP) failed ~3–6/200 runs on `ng2r3`, off by exactly one group's
+  contribution (`25→20`); the failing custkey varied per run.  Root cause: the
+  CTE `JoinAggInterpreter` (and its single `AggHashTable`) is **shared across
+  LDM threads**, but the group-key hash (`hashKeyFull` → `strnxfrm_hash`) wrote
+  into the interpreter's one `m_xfrm_buf` scratch — and the mutex-free lookup
+  path (and the DBSPJ TC-thread routing hash via `localCteInterp->hashGroupKey`)
+  used it concurrently with other threads, so `strnxfrm_hash` output was
+  overwritten mid-computation → corrupted bucket hash → `find()` missed an
+  existing group → INNER join dropped a row.  Only multi-column keys with a
+  charset (CHAR/VARCHAR) column were affected (integer-only keys use raw
+  `xxhash`, no scratch); flaky and worse with more nodes (more concurrent
+  hashing).  Fix: the scratch buffer is no longer owned by the thread-shared
+  interpreter — `m_xfrm_buf` was removed and every hash-computing method
+  (`AggHashTable::hashKeyFull/hashKey/find/insert/erase/insertRaw`,
+  `JoinAggInterpreter::hashGroupKey/lookupGroup/mergeOneGroup/mergeFrom/
+  evictOneGroup/ProcessRec/processNullExtendedRow`) now **requires** a
+  per-LDM-thread buffer (`Dbtup::getAggXfrmBuf`, 32 KB), compiler-enforced (no
+  default).  DBSPJ gained `Dbspj::cte_lookup_hash_key` which computes the
+  routing hash in the block-local `m_buffer0` instead of the shared interpreter
+  buffer.  Mirrors `getAggAttrReadBuf` (Step 4a).  Stress: J14/J15 green over
+  200×/100× on ng2r3/ng2r2/ng4r2.  Likely the deeper cause behind residual
+  multi-NG COUNT flakiness (the metadata fix made the hash *consistent across
+  nodes*; this race was a separate defect).
 
 ## Notes for the next dev phase
 

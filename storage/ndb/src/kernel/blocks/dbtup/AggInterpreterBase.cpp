@@ -2364,20 +2364,20 @@ Int32 AggInterpreterBase::publishGBTypes(EmulatedJamBuffer *jamBuf) {
       if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
     }
   }
-  if (max_xfrm_len > 0) {
-    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
-                                  m_thread_id, false);
-    if (unlikely(p == nullptr)) {
-      g_eventLogger->debug("publishGBTypes: failed to allocate xfrm buffer "
-          "(%u bytes)", max_xfrm_len);
-      return ZAGG_OTHER_ERROR;
-    }
-    m_xfrm_buf = static_cast<uchar*>(p);
-    m_xfrm_buf_len = max_xfrm_len;
+  /* D26: the group-key hash (AggHashTable::hashKeyFull) no longer uses a
+   * scratch buffer owned by this thread-shared interpreter.  Every hash call
+   * instead passes a per-LDM-thread buffer (Dbtup::getAggXfrmBuf,
+   * AGG_XFRM_BUF_BYTE_SIZE), eliminating the cross-thread race.  That fixed
+   * per-thread buffer must hold the widest single-column strnxfrm output;
+   * reject a (pathological) GROUP BY key that would overflow it rather than
+   * silently truncating the hash and corrupting bucket placement.  No buffer
+   * is allocated here anymore. */
+  if (unlikely(max_xfrm_len > Dbtup::AGG_XFRM_BUF_BYTE_SIZE)) {
+    return ZAGG_OTHER_ERROR;
   }
 
   m_gb_types_inited = true;
-  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols);
   return 0;
 }
 
@@ -2701,11 +2701,8 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
     m_current_chunk = nullptr;
     m_total_chunk_bytes = 0;
   }
-  /* Phase 4: xfrm scratch (one-shot, idempotent). */
-  if (m_xfrm_buf != nullptr) {
-    lc_ndbd_pool_free(m_xfrm_buf);
-    m_xfrm_buf = nullptr;
-  }
+  /* D26: m_xfrm_buf removed — the group-key hash now uses a per-LDM-thread
+   * Dbtup scratch (getAggXfrmBuf), so there is nothing to free here. */
   if (m_load_column_meta != nullptr) {
     lc_ndbd_pool_free(m_load_column_meta);
     m_load_column_meta = nullptr;
@@ -2758,14 +2755,11 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
 AggInterpreterBase::~AggInterpreterBase() {
   ndbrequire(m_gb_map == nullptr || m_gb_map->empty());
   ndbrequire(m_chunks == nullptr);
-  /* m_string_results / m_xfrm_buf may be present; both are O(1).
-   * release_string_results' scalar slot walk is bounded by
-   * m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also O(1). */
+  /* m_string_results may be present; O(1).  release_string_results' scalar
+   * slot walk is bounded by m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also
+   * O(1).  D26: m_xfrm_buf removed (group-key hash uses a per-LDM-thread
+   * Dbtup scratch), so nothing to free for it. */
   release_string_results();
-  if (m_xfrm_buf != nullptr) {
-    lc_ndbd_pool_free(m_xfrm_buf);
-    m_xfrm_buf = nullptr;
-  }
   if (m_load_column_meta != nullptr) {
     lc_ndbd_pool_free(m_load_column_meta);
     m_load_column_meta = nullptr;

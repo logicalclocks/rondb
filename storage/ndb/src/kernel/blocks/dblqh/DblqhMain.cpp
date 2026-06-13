@@ -15310,7 +15310,8 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
   Int32 evict_ret = interp->evictOneGroup(
       cevictBuffer,
       sizeof(cevictBuffer) / sizeof(Uint32),
-      &words_written);
+      &words_written,
+      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   ndbrequire(evict_ret == 0);
 
   TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
@@ -15318,7 +15319,9 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
     Uint32 key_len = cevictBuffer[3] >> 16;
     const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
     transIdAI->connectPtr =
-        state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
+        state->selectReceiverData(interp->hashGroupKey(
+            key_data, key_len,
+            c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
   }
   transIdAI->transId[0] = state->m_transid[0];
   transIdAI->transId[1] = state->m_transid[1];
@@ -15405,6 +15408,8 @@ retry:
                                              linked_len,
                                              getThreadId(),
                                              jamBuffer(),
+                                             c_tup->getAggXfrmBuf(),  // D26
+                                             c_tup->getAggXfrmBufLen(),
                                              leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
@@ -18776,7 +18781,9 @@ retry:
                                              cattrInfoBuffer,
                                              linked_len,
                                              getThreadId(),
-                                             jamBuffer());
+                                             jamBuffer(),
+                                             c_tup->getAggXfrmBuf(),  // D26
+                                             c_tup->getAggXfrmBufLen());
   if (ret == AGG_EVICT_NEEDED) {
     jam();
     sendEvictedAggGroup(signal, interp, state);
@@ -18844,7 +18851,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         Uint32 batch = (other_size > MERGE_GROUPS_PER_BATCH) ?
                        MERGE_GROUPS_PER_BATCH : 0;
         Uint32 remaining = interps[0]->mergeFrom(
-            interps[merge_idx], batch);
+            interps[merge_idx], batch,
+            c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
         if (remaining > 0) {
           jam();
           signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
@@ -19099,7 +19107,9 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       {
         const char *key_data = reinterpret_cast<const char*>(iter.data());
         transIdAI->connectPtr =
-            state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
+            state->selectReceiverData(interp->hashGroupKey(
+                key_data, key_len,
+                c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
       }
       transIdAI->transId[0] = state->m_transid[0];
       transIdAI->transId[1] = state->m_transid[1];
@@ -19838,7 +19848,8 @@ bool Dblqh::routeCteLookup(Signal *signal,
                             const CteLookupReq *req) {
   const Uint32 keyLen = req->keyLen;
   Uint64 h = interp->hashGroupKey(
-      reinterpret_cast<const char *>(keyBuf), keyLen);
+      reinterpret_cast<const char *>(keyBuf), keyLen,
+      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
   Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
   if (ownerNode == getOwnNodeId()) {
@@ -20065,7 +20076,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     const_cast<CteLookupReq &>(req).keyLen = 0;
   } else {
     groupData = interp->lookupGroup(
-        reinterpret_cast<const char *>(keyBuf), req.keyLen);
+        reinterpret_cast<const char *>(keyBuf), req.keyLen,
+        c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   }
 
   DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
@@ -21251,7 +21263,9 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       const Uint32 valLen = interp->redistributionValueLen(slots);
 
       /* Determine hash owner (type-aware for complex character sets) */
-      Uint64 h = interp->hashGroupKey(data, keyLen);
+      Uint64 h = interp->hashGroupKey(data, keyLen,
+                                      c_tup->getAggXfrmBuf(),
+                                      c_tup->getAggXfrmBufLen());  // D26
       Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
       Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
 
@@ -21499,7 +21513,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
 
   Int32 ret = interp->mergeOneGroup(
       reinterpret_cast<const char *>(keyBuf), keyLen,
-      reinterpret_cast<const char *>(valBuf), valueLen);
+      reinterpret_cast<const char *>(valBuf), valueLen,
+      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   if (unlikely(ret != 0)) {
     jam();
     abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
@@ -21592,7 +21607,8 @@ void Dblqh::processRedistQueue(Signal *signal,
     Int32 ret = interp->mergeOneGroup(
         reinterpret_cast<const char *>(entry->data), entry->keyLen,
         reinterpret_cast<const char *>(entry->data + keyWords),
-        entry->valueLen);
+        entry->valueLen,
+        c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread
     if (unlikely(ret != 0)) {
       jam();
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
