@@ -7170,6 +7170,13 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           NdbDictionary::Column::Bigint;  // fallback for COUNT
       Uint32 derived_length = 1;
       const void* derived_cs = NULL;
+      // D15: display scale + precision carried onto the virt column so the
+      // result printer formats DECIMAL-derived MIN/MAX (widened to DOUBLE) with
+      // the source scale, matching MySQL (e.g. 20055.00) — but only when the
+      // DECIMAL is within DOUBLE's exact range (precision <= 15); the printer
+      // gates on precision.  0 for non-scaled outputs.
+      Int32 derived_scale = 0;
+      Int32 derived_precision = 0;
       bool have_derived = false;
 
       if (o->type == Outputs::Type::COLUMN) {
@@ -7186,6 +7193,8 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         derived_type = rt;
         derived_length = rlen;
         derived_cs = rcs;
+        derived_scale = rscale;
+        derived_precision = rprecision;
         have_derived = true;
       } else if (o->type == Outputs::Type::AGGREGATE) {
         TokenKind fun = o->aggregate.fun;
@@ -7288,6 +7297,11 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
                                : NdbDictionary::Column::Bigint;
               } else {
                 derived_type = NdbDictionary::Column::Double;
+                // D15: keep the source scale + precision for display so the
+                // DOUBLE result prints with fixed scale (e.g. 20055.00) like
+                // MySQL — gated on precision <= 15 in the printer.
+                derived_scale = src_scale;
+                derived_precision = src_precision;
               }
               derived_length = 1;
               break;
@@ -7343,6 +7357,15 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       if (derived_cs != NULL) {
         vcol.setCharset(
             static_cast<CHARSET_INFO*>(const_cast<void*>(derived_cs)));
+      }
+      // D15: carry the display scale + precision (DECIMAL source) onto the virt
+      // column so column metadata / the result printer can format with fixed
+      // scale, gated on precision <= 15.  Only set when meaningful.
+      if (derived_scale > 0) {
+        vcol.setScale(derived_scale);
+      }
+      if (derived_precision > 0) {
+        vcol.setPrecision(derived_precision);
       }
       vcol.setPrimaryKey(is_groupby);
       vcol.setNullable(cte_is_scalar ? true : !is_groupby);

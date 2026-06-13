@@ -92,6 +92,7 @@ private:
       {
         Uint32 reg_a;
         CHARSET_INFO* charset;
+        int scale;   // source DECIMAL scale for MIN/MAX (0 = none/compact)
       } print_aggregate;
       struct
       {
@@ -157,8 +158,11 @@ private:
   void print_float_or_double(std::ostream& out, double value);
   void print_aggregate_result(std::ostream& out,
                               NdbAggregator::Result result,
-                              CHARSET_INFO* charset);
+                              CHARSET_INFO* charset,
+                              int scale);
   CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
+  int aggregate_arg_scale(const Outputs* out) const;
+  int aggregate_arg_precision(const Outputs* out) const;
   bool evaluate_having(const ConditionalExpression* expr);
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,

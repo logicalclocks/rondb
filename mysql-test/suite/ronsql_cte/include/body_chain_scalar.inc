@@ -239,11 +239,16 @@ GROUP BY c.c_nationkey|
 
 --echo
 --echo
-# NEXT-PHASE (DISABLED — WRONG values, D15): DECIMAL MIN/MAX output drops scale
-# (RonSQL 20055, MySQL 20055.00); RonSQL strips trailing zeros from whole-number
-# DECIMAL aggregate output. (was cs09 — scalar CTE MAX over a populated table)
-#   WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x;
-# See findings/_discovery_log.md (D15).
+# cs09 (was D15, FIXED): pass-through of a scalar-CTE DECIMAL MAX.  RonSQL now
+# formats the DOUBLE-widened DECIMAL with the source scale (20055.00) like MySQL.
+--echo
+--echo === cs09: scalar CTE MAX(o_totalprice) projected directly (pass-through) ===
+let $QUERY=
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x|
 
 --echo
 --echo
@@ -261,15 +266,22 @@ SELECT n, s, lo FROM x|
 
 --echo
 --echo
-# NEXT-PHASE (DISABLED — WRONG values, D15): DECIMAL MIN/MAX output drops scale
-# (RonSQL 20055, MySQL 20055.00); RonSQL strips trailing zeros from whole-number
-# DECIMAL aggregate output. (was cs11 — scalar CTE with multiple aggregate
-# outputs projected together)
-#   WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
-#                     SUM(o_shippriority) AS total, COUNT(*) AS n
-#              FROM orders)
-#   SELECT lo, hi, total, n FROM x;
-# See findings/_discovery_log.md (D15).
+# cs11 (was D15, FIXED): pass-through of mixed scalar-CTE aggregates — DECIMAL
+# MIN/MAX (now scale-formatted) alongside an integer SUM and COUNT.
+--echo
+--echo === cs11: scalar CTE multiple aggregates projected together (pass-through) ===
+let $QUERY=
+WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
+                  SUM(o_shippriority) AS total, COUNT(*) AS n
+           FROM orders)
+SELECT lo, hi, total, n FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
+                  SUM(o_shippriority) AS total, COUNT(*) AS n
+           FROM orders)
+SELECT lo, hi, total, n FROM x|
 
 --echo
 --echo

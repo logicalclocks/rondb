@@ -48,12 +48,12 @@ DELIMITER |;
 # =====================================================================
 
 
-# NEXT-PHASE (DISABLED — WRONG/format, D15): scale-2 DECIMAL MIN/MAX delivered to
-# query output drops trailing zeros (RonSQL 20055 / 5275.5 vs MySQL 20055.00 /
-# 5275.50). Values are correct; only the DECIMAL display scale diverges. This was
-# the agg-01 flagship COUNT/SUM/MIN/MAX case (MIN/MAX over o_totalprice). INT
-# MIN/MAX (agg-03/04/07) and scale-0 DECIMAL MIN/MAX (agg-10) are GREEN.
-# See findings/_discovery_log.md (D15).
+# D15 (scale-2 DECIMAL MIN/MAX display scale) is FIXED — RonSQL now formats the
+# DOUBLE-widened DECIMAL result with the source scale (20055.00 / 5275.50), see
+# agg-08/09 below.  The agg-01 "flagship COUNT/SUM/MIN/MAX" case is NOT restored
+# as a single query only because its SUM is over a DECIMAL column, which is the
+# separate D1 limitation (SUM over DECIMAL not yet supported); its MIN/MAX
+# coverage is agg-08/09.  See findings/_discovery_log.md (D15, D1).
 
 # NEXT-PHASE (DISABLED — HANG, D2): COUNT(<column>) (here the nullable o_clerk)
 # in a CTE body HANGS RonSQL/RDRS (never returns).  COUNT(*) in the same shape
@@ -165,9 +165,35 @@ FROM nation AS n
 JOIN sup ON sup.nk = n.n_nationkey|
 
 
-# NEXT-PHASE (DISABLED — WRONG/format, D15): scale-2 DECIMAL MIN/MAX type-coverage
-# (agg-08 o_totalprice, agg-09 c_acctbal) — same trailing-zero display divergence.
-# Scale-0 DECIMAL MIN/MAX (agg-10) stays GREEN below.
+# agg-08/09 (was D15, FIXED): scale-2 DECIMAL MIN/MAX type-coverage.  RonSQL now
+# formats the DOUBLE-widened DECIMAL result with the source scale (e.g.
+# 20055.00 / 5275.50) like MySQL.  Scale-0 DECIMAL MIN/MAX (agg-10) is below.
+
+--echo
+--echo === agg-08: MIN/MAX over DECIMAL(12,2) o_totalprice, re-aggregated through CTE_LOOKUP ===
+let $QUERY=
+WITH x AS (SELECT o_custkey AS k, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+           FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn), MAX(x.mx) FROM customer AS c JOIN x ON x.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT o_custkey AS k, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+           FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn), MAX(x.mx) FROM customer AS c JOIN x ON x.k = c.c_custkey|
+
+--echo
+--echo === agg-09: MIN/MAX over DECIMAL(12,2) c_acctbal, re-aggregated through CTE_LOOKUP ===
+let $QUERY=
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_acctbal) AS mn, MAX(c_acctbal) AS mx
+            FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_acctbal) AS mn, MAX(c_acctbal) AS mx
+            FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey|
 
 --echo
 --echo === agg-10: MIN/MAX over DECIMAL scale-0 (supplier.s_margin) + SUM(int), grouped by nation ===

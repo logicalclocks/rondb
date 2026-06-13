@@ -70,10 +70,12 @@ JOIN cust ON cust.k = c.c_custkey
 GROUP BY c.c_mktsegment|
 
 
-# NEXT-PHASE (DISABLED — WRONG/format, D15): re-aggregating scale-2 DECIMAL
-# MIN/MAX CTE outputs (SUM(cust.mn)/SUM(cust.mx), mn/mx = MIN/MAX(o_totalprice))
-# yields DECIMAL output that drops trailing zeros vs MySQL. Same class as
-# agg-01/08/09. See findings/_discovery_log.md (D15).
+# NEXT-PHASE (DISABLED — D1, SUM over DECIMAL): this case SUMs scale-2 DECIMAL
+# MIN/MAX CTE outputs (SUM(cust.mn)/SUM(cust.mx), mn/mx = MIN/MAX(o_totalprice)).
+# The D15 display-scale issue is now fixed (MIN/MAX format with scale — agg-08/09),
+# but SUMming a DECIMAL-derived value goes through DOUBLE accumulation, which is
+# the separate D1 limitation (SUM over DECIMAL not yet supported / lossy).
+# See findings/_discovery_log.md (D1, D15).
 --echo
 --echo === J4: LEFT JOIN, CTE omits keys 151..300 -> genuine NULL injection ===
 # CTE materialises only custkeys 1..150 (WHERE o_custkey <= 150); customers

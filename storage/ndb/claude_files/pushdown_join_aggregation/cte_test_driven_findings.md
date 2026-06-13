@@ -135,7 +135,13 @@ in `findings/<family>.md`.
 - **D22 (wrong COUNT, 2NG×3rep) — ✅ FIXED** by the metadata + D25 work (same
   CHAR-key `p_brand` cross-NG redistribution shape).  Restored
   `ronsql_cte_ng2r3` agg test; agg-05 `SUM(prt.n)=400` per brand, result
-  byte-identical to base.  Phase 3 wrong-results remaining: D16, D15, D21.
+  byte-identical to base.
+- **D15 (DECIMAL MIN/MAX display scale) — ✅ FIXED** (RonSQL output formatting):
+  the DOUBLE-widened DECIMAL MIN/MAX now prints with the source scale
+  (`20055.00`) like MySQL, via `setScale` on the virt column +
+  scale-aware `print_aggregate_result` / `print_passthrough_value`.  Re-enabled
+  agg-08/09, cs09/cs11.  J3 reclassified to **D1** (SUM over DECIMAL).  Phase 3
+  wrong-results remaining: D16, D21.
 - **D6 (crash) — ✅ FIXED.** Premature multi-batch CTE completion (DBSPJ now
   restarts batches via `handleCtePhaseNextBatch` + EndOfData-only
   `CTE_PHASE_COMPLETE_REP` + a `SCAN_HBREP` heartbeat) **and** the cross-node

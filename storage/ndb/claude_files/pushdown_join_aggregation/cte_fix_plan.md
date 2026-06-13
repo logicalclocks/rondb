@@ -235,13 +235,19 @@ D22 (W1).
   `body_index.inc` index-17, `body_chain_scalar.inc` cs20 markers. SQL requires
   COUNT=0 (SUM/MIN/MAX=NULL) on empty. Likely the empty-group/no-rows finalize in
   the aggregation interpreter emits NULL uniformly. Smaller, well-scoped fix.
-- **W3 — D15: scale-2 DECIMAL MIN/MAX output drops trailing zeros** (`20055.00`
-  → `20055`). Values are correct — only display scale is lost. Cheapest win:
-  carry the source DECIMAL scale through the virt-table type so the result
-  printer formats with fixed scale (mirrors the F.1 widening metadata). Repro:
-  `body_agg.inc` agg-01/08/09, `body_joins.inc` J3, `body_chain_scalar.inc`
-  cs09/cs11. (Alternatively the suite can canonicalize, but fixing the format is
-  the right outcome.)
+- **W3 — D15: scale-2 DECIMAL MIN/MAX output drops trailing zeros — ✅ FIXED
+  (RonSQL output formatting).**  `print_float_or_double` already uses MySQL's
+  `my_fcvt_compact`, so true DOUBLE/FLOAT columns already matched; the divergence
+  was only DECIMAL MIN/MAX (widened to DOUBLE via F.1) losing scale (`20055` vs
+  `20055.00`).  Fix: carry the source DECIMAL scale onto the virt column
+  (`build_cte_virtual_tables` `setScale`), thread it into `PRINT_AGGREGATE`
+  (`aggregate_arg_scale`), and format `Double`-with-`scale>0` as `%.*f` in both
+  `print_aggregate_result` (re-aggregation path) and `print_passthrough_value`
+  (pass-through projection).  Re-enabled: agg-08/09 (MIN/MAX o_totalprice /
+  c_acctbal), cs09/cs11 (scalar-CTE pass-through).  **J3 stays disabled — it is
+  `SUM(MIN(o_totalprice))`, i.e. SUM over a DECIMAL-derived DOUBLE = the separate
+  D1 limitation, not formatting.**  Verified base + (pending) all topologies +
+  `ronsql` regression.
 - **W4 — D21: partial-key / wrong-column-bound multi-key CTE lookup is NOT
   rejected** (it executed and returned rows) — value-correctness vs MySQL is
   unverified. Repro: `body_joins.inc` J19/J20 (removed). Decide: either reject

@@ -131,6 +131,46 @@ JOIN sup ON sup.nk = n.n_nationkey|
 MIN(sup.mn)	MAX(sup.mx)	SUM(sup.n)
 100000	5000000	50
 
+=== agg-08: MIN/MAX over DECIMAL(12,2) o_totalprice, re-aggregated through CTE_LOOKUP ===
+== Query ==
+WITH x AS (SELECT o_custkey AS k, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn), MAX(x.mx) FROM customer AS c JOIN x ON x.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT o_custkey AS k, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn), MAX(x.mx) FROM customer AS c JOIN x ON x.k = c.c_custkey|
+MIN(x.mn)	MAX(x.mx)
+13.37	20055.00
+
+=== agg-09: MIN/MAX over DECIMAL(12,2) c_acctbal, re-aggregated through CTE_LOOKUP ===
+== Query ==
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_acctbal) AS mn, MAX(c_acctbal) AS mx
+FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cs AS (SELECT c_nationkey AS nk, MIN(c_acctbal) AS mn, MAX(c_acctbal) AS mx
+FROM customer GROUP BY c_nationkey)
+SELECT MIN(cs.mn), MAX(cs.mx) FROM nation AS n JOIN cs ON cs.nk = n.n_nationkey|
+MIN(cs.mn)	MAX(cs.mx)
+117.75	5275.50
+
 === agg-10: MIN/MAX over DECIMAL scale-0 (supplier.s_margin) + SUM(int), grouped by nation ===
 == Query ==
 WITH sup AS (

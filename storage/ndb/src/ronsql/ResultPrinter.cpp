@@ -459,6 +459,14 @@ ResultPrinter::compile()
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
         cmd.print_aggregate.charset = aggregate_arg_charset(o);
+        {
+          // D15: only format with fixed scale when the source DECIMAL is within
+          // DOUBLE's exact range (precision <= 15); wider DECIMALs keep compact
+          // formatting (the value is already a lossy DOUBLE).
+          int sc = aggregate_arg_scale(o);
+          int pr = aggregate_arg_precision(o);
+          cmd.print_aggregate.scale = (pr > 0 && pr <= 15) ? sc : 0;
+        }
         m_program.push(cmd);
         break;
       }
@@ -797,7 +805,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        print_aggregate_result(out, result, cmd.print_aggregate.charset);
+        print_aggregate_result(out, result, cmd.print_aggregate.charset,
+                               cmd.print_aggregate.scale);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1133,7 +1142,23 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   case NdbDictionary::Column::Float:
     print_float_or_double(out, (double)attr->float_value()); break;
   case NdbDictionary::Column::Double:
-    print_float_or_double(out, attr->double_value()); break;
+    {
+      // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
+      // scale (set on the virt column via setScale) to match MySQL — but only
+      // within DOUBLE's exact range (precision <= 15).  True DOUBLE columns
+      // have scale 0; wider DECIMALs keep the compact formatting.
+      const NdbDictionary::Column* col = attr->getColumn();
+      int sc = (col != nullptr) ? col->getScale() : 0;
+      int pr = (col != nullptr) ? col->getPrecision() : 0;
+      if (sc > 0 && pr > 0 && pr <= 15) {
+        char buf[FLOATING_POINT_BUFFER];
+        snprintf(buf, sizeof(buf), "%.*f", sc, attr->double_value());
+        out << buf;
+      } else {
+        print_float_or_double(out, attr->double_value());
+      }
+    }
+    break;
   case NdbDictionary::Column::Char:
     {
       const NdbDictionary::Column* col = attr->getColumn();
@@ -1578,7 +1603,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        print_aggregate_result(out, result, cmd.print_aggregate.charset);
+        print_aggregate_result(out, result, cmd.print_aggregate.charset,
+                               cmd.print_aggregate.scale);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1932,10 +1958,62 @@ ResultPrinter::aggregate_arg_charset(const Outputs* out) const
   return m_column_metadata[col_idx].charset;
 }
 
+// Source DECIMAL scale of a MIN/MAX aggregate's argument column, so the
+// printer can format the (DOUBLE-widened) result with a fixed scale to match
+// MySQL's DECIMAL output (e.g. 20055.00, not 20055).  Returns 0 when the
+// argument is not a scaled column — true DOUBLE/FLOAT and integer results then
+// keep their compact (my_fcvt_compact) formatting unchanged.
+int
+ResultPrinter::aggregate_arg_scale(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return 0;
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+    return 0;
+  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg == NULL || !arg->isLoad())
+    return 0;
+  Uint32 col_idx = arg->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return 0;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return 0;
+  }
+  return m_column_metadata[col_idx].scale;
+}
+
+// Source DECIMAL precision of a MIN/MAX aggregate's argument column.  Used to
+// gate scale-formatting to the DOUBLE-exact range (precision <= 15): wider
+// DECIMALs are unrepresentable as DOUBLE, so fixed-scale formatting would
+// expose mantissa noise — those keep the compact my_fcvt_compact form.
+int
+ResultPrinter::aggregate_arg_precision(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return 0;
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+    return 0;
+  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg == NULL || !arg->isLoad())
+    return 0;
+  Uint32 col_idx = arg->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return 0;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return 0;
+  }
+  return m_column_metadata[col_idx].precision;
+}
+
 void
 ResultPrinter::print_aggregate_result(std::ostream& out,
                                       NdbAggregator::Result result,
-                                      CHARSET_INFO* charset)
+                                      CHARSET_INFO* charset,
+                                      int scale)
 {
   if (result.is_null())
   {
@@ -1952,7 +2030,20 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
     out << result.data_uint64();
     break;
   case NdbDictionary::Column::Double:
-    print_float_or_double(out, result.data_double());
+    if (scale > 0)
+    {
+      // MIN/MAX over a DECIMAL(_, scale) is widened to DOUBLE in the kernel,
+      // but MySQL prints it with the source scale (e.g. 20055.00).  Format
+      // with fixed scale so the output matches; true DOUBLE/FLOAT results
+      // pass scale == 0 and keep the compact my_fcvt_compact formatting.
+      char buf[FLOATING_POINT_BUFFER];
+      snprintf(buf, sizeof(buf), "%.*f", scale, result.data_double());
+      out << buf;
+    }
+    else
+    {
+      print_float_or_double(out, result.data_double());
+    }
     break;
   case NdbDictionary::Column::Char:
   case NdbDictionary::Column::Varchar:

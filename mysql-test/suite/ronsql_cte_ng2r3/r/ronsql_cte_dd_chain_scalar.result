@@ -1054,6 +1054,22 @@ c_nationkey	SUM(sums.s)	SUM(cnts.n)
 
 
 
+=== cs09: scalar CTE MAX(o_totalprice) projected directly (pass-through) ===
+== Query ==
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x|
+m
+20055.00
+
 
 === cs10: scalar CTE COUNT/SUM/MIN variants over a populated table ===
 == Query ==
@@ -1076,6 +1092,28 @@ n	s	lo
 1500	3000	13.37
 
 
+
+=== cs11: scalar CTE multiple aggregates projected together (pass-through) ===
+== Query ==
+WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
+SUM(o_shippriority) AS total, COUNT(*) AS n
+FROM orders)
+SELECT lo, hi, total, n FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
+SUM(o_shippriority) AS total, COUNT(*) AS n
+FROM orders)
+SELECT lo, hi, total, n FROM x|
+lo	hi	total	n
+13.37	20055.00	3000	1500
 
 
 === cs12: scalar CTE MAX over EMPTY input — returns NULL ===
