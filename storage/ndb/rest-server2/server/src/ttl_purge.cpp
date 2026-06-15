@@ -970,36 +970,10 @@ enum SpecialShardVal {
   kShardFirst = 0
 };
 
-/*
-static const uint mon_lengths[2][MONS_PER_YEAR] = {
-    {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
-    {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}};
-static const uint year_lengths[2] = {DAYS_PER_NYEAR, DAYS_PER_LYEAR};
-*/
-static const uint mon_starts[2][MONS_PER_YEAR] = {
-    {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334},
-    {0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335}};
-#define LEAPS_THRU_END_OF(y) ((y) / 4 - (y) / 100 + (y) / 400)
-static my_time_t sec_since_epoch(int year, int mon, int mday, int hour, int min,
-                                 int sec) {
-  assert(mon > 0 && mon < 13 && year <= 9999);
-  my_time_t days = year * DAYS_PER_NYEAR - EPOCH_YEAR * DAYS_PER_NYEAR +
-                   LEAPS_THRU_END_OF(year - 1) -
-                   LEAPS_THRU_END_OF(EPOCH_YEAR - 1);
-  days += mon_starts[isleap(year)][mon - 1];
-  days += mday - 1;
-
-  const my_time_t result =
-      ((days * HOURS_PER_DAY + hour) * MINS_PER_HOUR + min) * SECS_PER_MIN +
-      sec;
-  return result;
-}
-static my_time_t sec_since_epoch(const MYSQL_TIME &mt) {
-  return sec_since_epoch(static_cast<int>(mt.year), static_cast<int>(mt.month),
-                         static_cast<int>(mt.day), static_cast<int>(mt.hour),
-                         static_cast<int>(mt.minute),
-                         static_cast<int>(mt.second));
-}
+// sec_since_epoch()/mon_starts/LEAPS_THRU_END_OF were removed: their only use
+// was encoding the purge high-water mark as the index-scan lower bound, which
+// is now always the infimum (see PurgeWorkerJob). GetNow() handles all the
+// now/threshold encoding the purger needs.
 
 void TTLPurger::PurgeWorkerJob() {
   bool purge_trx_started = false;
@@ -1032,6 +1006,7 @@ void TTLPurger::PurgeWorkerJob() {
   NdbScanOperation* scan_op = nullptr;
   Int64 packed_last = 0;
   unsigned char encoded_last[8] = {0};
+  unsigned char encoded_threshold[8] = {0};
   unsigned char encoded_curr_purge[8] = {0};
   MYSQL_TIME datetime = {};
   Int64 packed_now = 0;
@@ -1172,6 +1147,16 @@ void TTLPurger::PurgeWorkerJob() {
     dict = worker_ndb_->getDictionary();
     for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();) {
       if (purge_worker_exit_) {
+        break;
+      }
+      // Honor a disable observed mid-round. The worker is the sole writer of
+      // status_, so it reports kDisabled exactly when it actually stops purging
+      // -- never earlier (the config setter must not write status while we are
+      // still working) and never as late as the next round boundary (which can
+      // be a long round on a big cluster). Re-checked per table, since the
+      // purger does ~one batch per table per round.
+      if (!IsEnabled()) {
+        UpdateStatus(TTLPurgeStatus::State::kDisabled);
         break;
       }
       purge_trx_started = false;
@@ -1348,6 +1333,11 @@ retry_trx:
         }
 
         log_buf += "-[";
+        // purged_pos_ high-water mark: read ONLY for diagnostics (logged
+        // below) and to position purge_tab_iter for the post-commit update.
+        // It is NO LONGER used as the scan lower bound -- a row inserted with
+        // an old ttl_col (below this mark) would otherwise be skipped forever,
+        // so we always scan from the infimum.
         packed_last = 0;
         purge_tab_iter = purged_pos_.find(iter->second.table_id);
         if (purge_tab_iter != purged_pos_.end()) {
@@ -1358,24 +1348,22 @@ retry_trx:
         }
         if (packed_last != 0) {
           TIME_from_longlong_datetime_packed(&datetime, packed_last);
-          log_buf += std::to_string(TIME_to_ulonglong_datetime(datetime));
-          if (type_timestamp) {
-            MYSQL_TIME tmp;
-            TIME_from_longlong_datetime_packed(&tmp, packed_last);
-            my_timeval tm = {sec_since_epoch(tmp), 0};
-            my_timestamp_to_binary(&tm, encoded_last, 0);
-          } else {
-            my_datetime_packed_to_binary(packed_last, encoded_last, 0);
-          }
+          log_buf += "hwm:" +
+                     std::to_string(TIME_to_ulonglong_datetime(datetime));
         } else {
-          memset(encoded_last, 0, 8);
-          log_buf += "INF";
+          log_buf += "hwm:INF";
         }
-        log_buf += " --- ";
-        packed_now = GetNow(encoded_now, type_timestamp);
+        // Lower bound = infimum: always scan the whole expired prefix.
+        memset(encoded_last, 0, 8);
+        // Upper bound = expiry threshold = now - (ttl_sec + purge_window).
+        // The kernel adds purge_window to ttl_sec when judging expiry
+        // (DbtupExecQuery), so this bounds the index scan to exactly the rows
+        // SF_OnlyExpiredScan accepts -- instead of [infimum, now) = every row.
+        packed_now = GetNow(encoded_threshold, type_timestamp,
+                            iter->second.ttl_sec + purge_window);
         TIME_from_longlong_datetime_packed(&datetime, packed_now);
-        log_buf += std::to_string(TIME_to_ulonglong_datetime(datetime));
-        log_buf += ")";
+        log_buf += " --- expire<=" +
+                   std::to_string(TIME_to_ulonglong_datetime(datetime)) + "]";
 
         if (index_scan_op->setBound(ttl_col_index->getName(),
                             NdbIndexScanOperation::BoundLE,
@@ -1389,7 +1377,7 @@ retry_trx:
 	  goto table_err;
         }
         if (index_scan_op->setBound(ttl_col_index->getName(),
-                            NdbIndexScanOperation::BoundGT, encoded_now)) {
+                            NdbIndexScanOperation::BoundGE, encoded_threshold)) {
           g_eventLogger->warning("[TTL PWorker] Failed to setBound "
                                  "on table %s"
                                  ", error: %d(%s). Retry...",
@@ -2218,13 +2206,19 @@ err:
   return false;
 }
 
-Int64 TTLPurger::GetNow(unsigned char* encoded_now, bool timestamp) {
+Int64 TTLPurger::GetNow(unsigned char* encoded_now, bool timestamp,
+                        Uint32 minus_sec) {
   assert(encoded_now != nullptr);
   Int64 packed_now = 0;
   memset(encoded_now, 0, 8);
   MYSQL_TIME curr_dt;
   struct tm tmp_tm;
   time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
+  // Callers computing the TTL expiry threshold pass
+  // minus_sec = ttl_sec + purge_window; encode (now - minus_sec). Clamp at 0
+  // so an oversized TTL cannot wrap into a future instant (which would
+  // re-open the unbounded [infimum, now) scan).
+  t_now = (t_now > (time_t)minus_sec) ? (t_now - (time_t)minus_sec) : 0;
   gmtime_r(&t_now, &tmp_tm);
   curr_dt.neg = false;
   curr_dt.second_part = 0;
