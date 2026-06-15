@@ -313,11 +313,17 @@ Lower priority; some may be intentional scope limits — confirm before building
   :7090). Add arms widening to Bigint/Bigunsigned/Double mirroring
   `AggInterpreter::AlignedType` and the F.1 DECIMAL widening. Unblocks the most
   natural CTE backbone (`SUM(price)`). Repro: `body_agg.inc` D1 marker.
-- **E2 — D10: `IS NULL` / `IS NOT NULL` in a CTE-body WHERE** —
-  `RonSQLPreparer.cpp:5934` `apply_filter` switch has no `case T_IS:` (hits
-  :8507). Add a `T_IS` arm emitting `branch_col_eq_null` / `branch_col_ne_null`.
-  Already supported on the main-query CTE_LOOKUP output, so reuse that lowering.
-  Repro: `body_filter.inc` D10 marker.
+- **E2 — D10: `IS NULL` / `IS NOT NULL` in a CTE-body WHERE — ✅ FIXED.**
+  `apply_filter`'s switch had no `case T_IS:` arm, so `o_clerk IS NULL` in a
+  CTE body (or any single-table scan WHERE) fell to the default throw
+  "Non-boolean term in WHERE condition".  Added a `T_IS` arm + `apply_filter_isnull`
+  helper that resolves the operand to a stored-table column and emits
+  `NdbScanFilter::isnull` / `isnotnull` (the high-level scan filter the existing
+  comparison cases already use; `isnull`/`isnotnull` are unaffected by the
+  inverted-inequality gotcha that only touches `cmp` LT/LE/GT/GE).  The
+  main-query CTE_LOOKUP-output IS NULL path (Phase I.1 `branch_linked_isnull`)
+  is unchanged.  Re-enabled `body_filter.inc` filter-10a (CTE-body IS NOT NULL)
+  + filter-11a (CTE-body IS NULL), recorded green ×5 topologies.
 - **E3 — D11: `GREATEST` / `LEAST` in a CTE-body WHERE term** — grammar permits
   them only in the top-level SELECT scalar position (`RonSQLParser.y`). Extend
   the conditional-expression grammar + the WHERE codegen. Repro: `body_filter.inc`

@@ -558,6 +558,8 @@ private:
                          NdbScanFilter::BinaryCondition cond,
                          struct ConditionalExpression* left,
                          struct ConditionalExpression* right);
+  void apply_filter_isnull(NdbScanFilter* filter, QueryScope& scope,
+                           struct ConditionalExpression* ce);
   raw_value encode_constant(struct ConditionalExpression *ce,
                             const NdbDictionary::Column* col);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,

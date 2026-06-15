@@ -8703,6 +8703,13 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
     apply_filter_like(filter, scope, NdbScanFilter::COND_LIKE,
                       ce->args.left, ce->args.right);
     break;
+  case T_IS:
+    // D10: `col IS NULL` / `col IS NOT NULL` in a (CTE-body or top-level)
+    // WHERE.  NdbScanFilter::isnull / isnotnull lower this directly; the
+    // same predicate on a main-query CTE_LOOKUP output is handled
+    // separately via branch_linked_isnull (Phase I.1).
+    apply_filter_isnull(filter, scope, ce);
+    break;
   default:
     throw RonSQLPermanentError("Non-boolean term in WHERE condition");
   }
@@ -8772,6 +8779,31 @@ RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
                                right->string.str,
                                right->string.len)) >= 0,
               filter_fail);
+}
+
+void
+RonSQLPreparer::apply_filter_isnull(NdbScanFilter* filter,
+                                    QueryScope& scope,
+                                    struct ConditionalExpression* ce)
+{
+  // ce->op == T_IS; ce->is.null is true for `IS NULL`, false for
+  // `IS NOT NULL`; ce->is.arg is the operand (must be a column).
+  struct ConditionalExpression* arg = ce->is.arg;
+  if (arg == NULL || arg->op != T_IDENTIFIER) {
+    throw RonSQLPermanentError("IS NULL / IS NOT NULL requires a column name "
+                               "as its operand");
+  }
+  require_run(scope.resolved_columns != NULL,
+              "WHERE IS NULL filter: missing resolved columns.");
+  const QueryScope::ResolvedColumnRef& ref =
+      scope.resolved_columns[arg->col_idx];
+  require_prm(ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+              "WHERE IS NULL / IS NOT NULL requires a stored-table column.");
+  if (ce->is.null) {
+    require_sch(DBG(filter->isnull(ref.attr_id)) >= 0, filter_fail);
+  } else {
+    require_sch(DBG(filter->isnotnull(ref.attr_id)) >= 0, filter_fail);
+  }
 }
 
 void

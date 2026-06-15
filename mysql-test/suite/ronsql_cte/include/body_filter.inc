@@ -220,37 +220,51 @@ GROUP BY sums.k|
 # =====================================================================
 # Group 3 — IS NULL / IS NOT NULL on the nullable o_clerk.
 #
-# DISCOVERY: IS NULL / IS NOT NULL in a *CTE body* WHERE is NOT supported
-# on this build.  A single-table CTE body emits its pre-GROUP-BY WHERE
-# through NdbScanFilter::apply_filter (RonSQLPreparer.cpp:5934), whose
-# switch has no `case T_IS:` arm — so `o_clerk IS NULL` falls to the
-# default arm and throws "Non-boolean term in WHERE condition"
-# (RonSQLPreparer.cpp:8507).  IS NULL/IS NOT NULL ARE supported on the
-# *main-query* CTE_LOOKUP output (Phase I.1 branch_linked_isnull, used by
-# the joins family's anti-join cases J8/J9), just not in the CTE body.
-# Both o_clerk-IS-NULL CTE-body cases are therefore disabled as
-# NEXT-PHASE probes.  See findings/filter.md and _discovery_log.md (D10).
-# o_clerk is NULL when o_orderkey % 7 == 0 (~1/7 of rows).
+# D10 (FIXED): IS NULL / IS NOT NULL in a *CTE body* WHERE is now
+# supported.  A single-table CTE body emits its pre-GROUP-BY WHERE
+# through NdbScanFilter::apply_filter, which now has a `case T_IS:` arm
+# lowering to NdbScanFilter::isnull / isnotnull (previously the default
+# arm threw "Non-boolean term in WHERE condition").  The SAME predicate
+# on a main-query CTE_LOOKUP output uses Phase I.1 branch_linked_isnull
+# (filter-10/11 below).  o_clerk is NULL when o_orderkey % 7 == 0
+# (~1/7 of rows).
+# filter-10a/11a exercise the CTE-body path (D10); filter-10/11 the
+# main-query CTE-output path.
+# =====================================================================
 
-# NEXT-PHASE (DISABLED — ERROR "Non-boolean term in WHERE condition"):
-#   CTE-body WHERE o_clerk IS NOT NULL.  apply_filter (NdbScanFilter) has
-#   no T_IS arm; IS NULL/IS NOT NULL only supported on the main-query
-#   CTE_LOOKUP filter (Phase I.1), not the CTE body. (was filter-10)
-#   WITH sums AS (
-#     SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
-#     FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.n), SUM(sums.t)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+--echo
+--echo === filter-10a (D10): CTE-body WHERE o_clerk IS NOT NULL ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
 
-# NEXT-PHASE (DISABLED — ERROR "Non-boolean term in WHERE condition"):
-#   CTE-body WHERE o_clerk IS NULL.  Same root cause as above — confirmed
-#   at record time (the exact "Non-boolean term in WHERE condition"
-#   exception). (was filter-11)
-#   WITH sums AS (
-#     SELECT o_custkey AS k, COUNT(*) AS n
-#     FROM orders WHERE o_clerk IS NULL GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.n)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+--echo
+--echo === filter-11a (D10): CTE-body WHERE o_clerk IS NULL ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_clerk IS NULL GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_clerk IS NULL GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
 
 # o_clerk NULL-semantics coverage that DOES work: aggregate o_clerk in the
 # CTE body (MIN/MAX/COUNT(*)) and filter IS NULL / IS NOT NULL on the CTE
