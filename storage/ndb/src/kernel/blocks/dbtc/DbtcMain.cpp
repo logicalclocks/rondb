@@ -11459,14 +11459,16 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
       return;
     }
     apiConnectptr.i = localTcPtr.p->apiConnect;
+    if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
+      jam();
+      DEB_DEADLOCK(("(%u) drop: apiConnect (from key-op tcOprec %u) not valid",
+                    instance(), collectorTcOprec));
+      return;
+    }
   }
-  if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
-    jam();
-    DEB_DEADLOCK(("(%u) drop: apiConnect (from collector tcOprec %u,"
-                  " isScan %u) not valid", instance(), collectorTcOprec,
-                  (Uint32)collectorIsScan));
-    return;
-  }
+  /* apiConnectptr is now validated on every path: the scan branch validates the
+   * scan record (and the buddy, when canonicalised) above; the key-op branch
+   * just validated it here. */
   /* Guard against stale tcOprec reuse: the transid must still match. */
   if (apiConnectptr.p->transid[0] != collectorT1 ||
       apiConnectptr.p->transid[1] != collectorT2) {
