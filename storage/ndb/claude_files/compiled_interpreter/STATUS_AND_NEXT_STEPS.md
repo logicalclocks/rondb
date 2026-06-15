@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-06-10.** Single entry point for resuming work. Branch:
+**Updated: 2026-06-15.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -452,9 +452,15 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    626~~ **DONE 2026-06-10** — bridge returns `out_reject_code` (the
    program's uniform `EXIT_REFUSE` code), cached on storedProc + scan_rec
    and used in the per-row `TUPKEY_abort`; mixed-code programs fall back to
-   the interpreter (bridge_tests T39/T40). (d) **the big one** — lift onto
-   Phase 5's full embedded-branch family so real comparison predicates
-   (`col > 5`, `col = 'x'`) JIT, not just NULL tests.
+   the interpreter (bridge_tests T39/T40). (d) ~~**the big one** — real
+   comparison predicates (`col > 5`)~~ **FIRST SLICE DONE & VERIFIED
+   2026-06-15** — integer `BRANCH_ATTR_OP_ARG` (EQ/NE/LT/LE/GT/GE vs an
+   inline literal) now JITs via a new `op_branch_attr_op_arg` cold-call
+   stencil whose helper reads the instruction from the program buffer and
+   reuses the interpreter's `m_cmp` (commits `fa5464df51f` + `d1a710abb92`;
+   `phase_7_comparison_predicates.md`). Deferred within (d): OP_PARAM
+   (`col <op> ?`), OP_ATTR (`col <op> col2`), and string/VARCHAR
+   comparison — those are the remaining "full embedded-branch family" work.
 5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
    (`n_pending_case_jumps != 0`); only needed if scan filters require

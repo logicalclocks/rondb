@@ -1,11 +1,14 @@
 # Phase 7 — scan-filter comparison predicates (`WHERE col <op> const`)
 
-**Status: in progress (2026-06-10).** Extends the scan-filter JIT beyond
-`IS [NOT] NULL` to integer comparison predicates. Scope (chosen): integer
-`BRANCH_ATTR_OP_ARG` only — `WHERE int_col <op> const`, all 6 comparators
-(EQ/NE/LT/LE/GT/GE), inline constant. Deferred: OP_PARAM (query params),
-OP_ATTR (col vs col), strings/VARCHAR. Requires `regen-stencils`
-(LLVM clang 20.1.8).
+**Status: implemented & verified (2026-06-15).** Extends the scan-filter
+JIT beyond `IS [NOT] NULL` to integer comparison predicates. Scope (chosen):
+integer `BRANCH_ATTR_OP_ARG` only — `WHERE int_col <op> const`, all 6
+comparators (EQ/NE/LT/LE/GT/GE), inline constant. Deferred: OP_PARAM (query
+params), OP_ATTR (col vs col), strings/VARCHAR. Required `regen-stencils`
+(LLVM clang 20.1.8). Verified by Mikael: regen-stencils, `bridge_tests`
+(T41 lower / T42 LIKE-reject), and `rondb_jit_scan_filter_canary`
+(Q4 `v>25`, Q5 `v=30` under 4060 + Q6 differential) all pass. Commits
+`fa5464df51f` (impl) + `d1a710abb92` (regen + extractor/audit cap bumps).
 
 ## NDB encoding (`BRANCH_ATTR_OP_ARG`, opcode 23)
 
