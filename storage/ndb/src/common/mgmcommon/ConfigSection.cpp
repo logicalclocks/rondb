@@ -1078,6 +1078,7 @@ bool ConfigSection::unpack_comm_section(const Uint32 **data) {
 void ConfigSection::get_keys(Key_bitset &keys) const {
   for (Uint32 i = 0; i < m_num_entries; i++) {
     Entry *entry = m_entry_array[i];
-    keys.set(entry->m_key);
+    if (entry->m_key < CONFIG_MAX_KEY_COUNT)
+      keys.set(entry->m_key);
   }
 }

@@ -868,7 +868,8 @@ bool ConfigObject::read_v2_header_info(const Uint32 **data) {
       m_num_data_nodes + m_num_api_nodes > ABS_MAX_NODES ||
       m_num_data_nodes == 0 ||
       m_num_api_nodes == 0 || m_num_mgm_nodes == 0 ||
-      m_num_comm_sections == 0) {
+      m_num_comm_sections == 0 ||
+      m_num_comm_sections > (Uint32)ABS_MAX_NODES * (Uint32)ABS_MAX_NODES) {
     m_error_code = INCONSISTENT_CONFIGURATION;
     return false;
   }

@@ -1294,6 +1294,15 @@ void MgmApiSession::startBackup(Parser<MgmApiSession>::Context &,
     args.get("encryption_password", &encryption_password);
     assert(args.contains("password_length"));
     args.get("password_length", &password_length);
+    if (encryption_password != nullptr &&
+        password_length > (Uint32)strlen(encryption_password)) {
+      m_output->println("start backup reply");
+      m_output->println("result: %s",
+                        "Backup encryption password length exceeds actual "
+                        "password length");
+      m_output->println("%s", "");
+      DBUG_VOID_RETURN;
+    }
   }
   result =
       m_mgmsrv.startBackup(backupId, completed, input_backupId, backuppoint,
