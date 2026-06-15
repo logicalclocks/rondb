@@ -235,10 +235,24 @@ D22 (W1).
   addressed.  Verified: restored `ronsql_cte_ng2r3/t/ronsql_cte_dd_agg.test`,
   recorded green; agg-05 now `SUM(prt.n)=400` for every brand and the ng2r3 agg
   result is byte-identical to base.  `README_D22.txt` removed.
-- **W2 — D16: scalar `COUNT(*)` over EMPTY input returns NULL, not 0.** Repro:
-  `body_index.inc` index-17, `body_chain_scalar.inc` cs20 markers. SQL requires
-  COUNT=0 (SUM/MIN/MAX=NULL) on empty. Likely the empty-group/no-rows finalize in
-  the aggregation interpreter emits NULL uniformly. Smaller, well-scoped fix.
+- **W2 — D16: scalar `COUNT(*)` over EMPTY input returns NULL, not 0 — ✅ FIXED.**
+  Repro: `body_index.inc` index-17, `body_chain_scalar.inc` cs20.  Symptom was
+  precise: RonSQL emitted exactly one scalar row, MIN/MAX/SUM correctly NULL, but
+  the COUNT slot read NULL instead of 0 (`NULL NULL NULL NULL` vs MySQL
+  `NULL NULL NULL 0`).  Root cause is API-side, not kernel: `NdbAggregator`'s
+  scalar (no-GROUP-BY) result record is the pre-initialised `agg_results_` array
+  (every slot `is_null=true`), and `FetchResultRecord` always returns exactly one
+  scalar record from it.  For a main scalar aggregation reading an EMPTY CTE_SCAN
+  (the CTE materialised to zero rows) the kernel sends no scalar group, so the
+  COUNT slot's NULL survives.  Non-CTE scalar works only because the kernel
+  actively sends `COUNT=0` (its `JoinAggInterpreter::Init` pre-zeroes COUNT, but
+  that interpreter never runs on a never-fed empty CTE_SCAN main agg).  The
+  GROUP BY path already carried the RONDB-831 COUNT-null→0 fixup; the scalar path
+  was missing it.  Fix: `NdbAggregator::PrepareResults` mirrors that fixup for the
+  scalar case — any `kOpCount` slot still NULL/UNDEFINED at finalize becomes
+  BIGINT-unsigned 0; SUM/MIN/MAX stay NULL.  Mathematically COUNT is never NULL,
+  so the fixup is unconditionally correct and a no-op for the already-green
+  non-CTE scalar path.  Re-enabled index-17 + cs20; recorded green ×5 topologies.
 - **W3 — D15: scale-2 DECIMAL MIN/MAX output drops trailing zeros — ✅ FIXED
   (RonSQL output formatting).**  `print_float_or_double` already uses MySQL's
   `my_fcvt_compact`, so true DOUBLE/FLOAT columns already matched; the divergence

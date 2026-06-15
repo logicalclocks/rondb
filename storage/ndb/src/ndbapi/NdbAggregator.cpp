@@ -1361,6 +1361,26 @@ bool NdbAggregator::Finalize() {
 void NdbAggregator::PrepareResults() {
   if (n_gb_cols_) {
     iter_ = gb_map_->begin();
+  } else if (agg_results_ != nullptr) {
+    // RONDB-831 (scalar analog): COUNT() over zero rows must read 0, not
+    // NULL.  The GROUP BY path applies this fixup at group-insert time
+    // (see the "RONDB-831" block in iterate()); the scalar (no-GROUP-BY)
+    // result record is simply the pre-initialised agg_results_ array,
+    // whose every slot starts is_null=true.  When the kernel sends no
+    // scalar group at all — e.g. a main scalar aggregation reading an
+    // EMPTY CTE_SCAN that materialised to zero rows (D16) — that NULL
+    // state survives to FetchResultRecord.  SUM / MIN / MAX correctly
+    // surface NULL on empty input, but COUNT must surface 0.
+    for (Uint32 i = 0; i < n_agg_results_; i++) {
+      if (agg_ops_[i] == kOpCount &&
+          (agg_results_[i].is_null ||
+           agg_results_[i].type == NDB_TYPE_UNDEFINED)) {
+        agg_results_[i].type = NDB_TYPE_BIGINT;
+        agg_results_[i].is_unsigned = 1;
+        agg_results_[i].is_null = false;
+        agg_results_[i].value.val_uint64 = 0;
+      }
+    }
   }
   finished_ = true;
 }

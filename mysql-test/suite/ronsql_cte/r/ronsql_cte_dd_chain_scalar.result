@@ -1556,6 +1556,35 @@ k	SUM(m)
 
 
 
+=== cs20: scalar agg over an EMPTY chained CTE — SUM=NULL, COUNT(*)=0 (D16) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b|
+gt	ng
+NULL	0
+
+
 === cs-probe-5 (rejection): non-aggregate col in a scalar CTE body ===
 CTE 'x' has non-aggregate output columns and must contain GROUP BY.
 Error handling: RPE

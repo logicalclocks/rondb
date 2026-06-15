@@ -52,19 +52,19 @@ The first recording pass (BEFORE the global SUM-over-decimal fix) showed:
 | cs18 | skewed CTE — WHERE narrows to a single group, joined to customer |
 | cs19 | empty-intermediate chain (a always empty -> b empty), grouped main |
 
-### DISABLED MAIN cases
+### Previously-disabled MAIN cases — now ENABLED (all fixed)
 
 | id   | Shape | Disposition |
 |------|-------|-------------|
-| cs09 | scalar CTE MAX over a populated table (DECIMAL output) | NEXT-PHASE-disabled (WRONG, D15) |
-| cs11 | scalar CTE with multiple aggregate outputs projected together (DECIMAL MIN/MAX) | NEXT-PHASE-disabled (WRONG, D15) |
-| cs20 | empty grouped intermediate feeding a scalar-aggregating main | NEXT-PHASE-disabled (WRONG, D16) |
+| cs09 | scalar CTE MAX over a populated table (DECIMAL output) | ENABLED (D15 FIXED) |
+| cs11 | scalar CTE with multiple aggregate outputs projected together (DECIMAL MIN/MAX) | ENABLED (D15 FIXED) |
+| cs20 | empty grouped intermediate feeding a scalar-aggregating main | ENABLED (D16 FIXED) |
 
-cs09/cs11 — DECIMAL MIN/MAX output drops scale (RonSQL `20055`, MySQL
-`20055.00`); RonSQL strips trailing zeros from whole-number DECIMAL aggregate
-output (D15). cs20 — scalar/chained COUNT(*) over EMPTY input returns NULL
-(RonSQL) vs 0 (MySQL) (D16). All three recorded commented-out under NEXT-PHASE
-markers in body_chain_scalar.inc.
+cs09/cs11 — DECIMAL MIN/MAX output dropped scale (RonSQL `20055`, MySQL
+`20055.00`); fixed (D15) via scale-aware RonSQL output formatting. cs20 —
+scalar/chained COUNT(*) over EMPTY input returned NULL (RonSQL) vs 0 (MySQL);
+fixed (D16) via `NdbAggregator::PrepareResults` scalar COUNT-null→0 fixup. All
+three re-enabled in body_chain_scalar.inc and recorded green ×5 topologies.
 
 ## PROBES — 8 (6 NEXT-PHASE-disabled, 2 rejection-asserts)
 

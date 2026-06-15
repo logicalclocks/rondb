@@ -340,16 +340,28 @@ WITH x AS (SELECT c_nationkey AS k, COUNT(*) AS n
            WHERE c_nationkey >= 5 GROUP BY c_nationkey)
 SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM x|
 
-# NEXT-PHASE (DISABLED — WRONG values, D16): scalar COUNT(*) over EMPTY input
-# returns NULL (RonSQL) vs 0 (MySQL).  This was the IGNORE INDEX steering case
-# whose result set was empty (c_nationkey = 4 AND c_mktsegment = 'BUILDING'
-# matched no rows). (was index-17)
-#   WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
-#              FROM customer IGNORE INDEX (idx_c_nationkey)
-#              WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
-#              GROUP BY c_mktsegment)
-#   SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x;
-# See findings/_discovery_log.md (D16).
+--echo
+--echo === index-17: scalar agg over an EMPTY grouped CTE — COUNT(*)=0, others NULL (D16) ===
+# CTE x matches no rows (c_nationkey = 4 AND c_mktsegment = 'BUILDING' is empty
+# under the IGNORE INDEX table scan), so the scalar main aggregation must still
+# emit exactly one row: COUNT(*)=0 and MIN/MAX/SUM = NULL.
+# String literal -> QUERY_FILE path (single quotes break -e '$QUERY').
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_17.sql
+--write_file $QUERY_FILE
+WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
+           FROM customer IGNORE INDEX (idx_c_nationkey)
+           WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
+           GROUP BY c_mktsegment)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
+           FROM customer IGNORE INDEX (idx_c_nationkey)
+           WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
+           GROUP BY c_mktsegment)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x|
 
 # ============================================================
 # PROBES (form 1): clean permanent rejection via ronsql_cli --error 1.

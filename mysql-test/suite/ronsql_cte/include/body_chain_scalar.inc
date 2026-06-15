@@ -408,17 +408,31 @@ SELECT k, SUM(m) FROM b GROUP BY k|
 
 --echo
 --echo
-# NEXT-PHASE (DISABLED — WRONG values, D16): scalar/chained COUNT(*) over EMPTY
-# input returns NULL (RonSQL) vs 0 (MySQL).  a is empty (WHERE never matches), b
-# re-groups a (also empty), main scalar-aggregates b's empty output. (was cs20)
-#   WITH a AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS s
-#     FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
-#        b AS (
-#     SELECT k, MAX(s) AS m
-#     FROM a GROUP BY k)
-#   SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b;
-# See findings/_discovery_log.md (D16).
+--echo
+--echo
+--echo === cs20: scalar agg over an EMPTY chained CTE — SUM=NULL, COUNT(*)=0 (D16) ===
+# a is always empty (o_totalprice < 0 never matches), b re-groups a (also
+# empty), and the main query SCALAR-aggregates b's empty output.  MySQL emits
+# exactly one row: SUM(m)=NULL, COUNT(*)=0.  (Contrast cs19 above: same empty
+# chain but a GROUP BY main query -> zero rows, which already matches.)
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS s
+  FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS s
+  FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b|
 
 # ===========================================================================
 # PROBES — recorded, disabled (genuine gaps / uncertain) or rejection-asserts

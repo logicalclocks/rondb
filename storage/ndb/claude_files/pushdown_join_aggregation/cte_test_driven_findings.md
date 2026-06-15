@@ -88,7 +88,7 @@ topologies.
 | ID | Shape | Divergence |
 |----|-------|-----------|
 | **D15** | scale-2 DECIMAL MIN/MAX delivered to output (and re-aggregated) | RonSQL drops trailing zeros (`20055.00`→`20055`, `5275.50`→`5275.5`); values correct, scale lost (agg-01/08/09, J3, cs09/cs11). Could be made green via output canonicalization |
-| **D16** | scalar `COUNT(*)` over **empty** input | returns NULL (RonSQL) vs 0 (MySQL) (index-17, cs20) |
+| **D16** | scalar `COUNT(*)` over **empty** input | ✅ FIXED — returned NULL (RonSQL) vs 0 (MySQL) on a scalar main aggregation reading an empty CTE_SCAN.  Root cause: the API-side `NdbAggregator` scalar (no-GROUP-BY) result is the pre-initialised `agg_results_` array (every slot `is_null=true`); when the kernel sends no scalar group (empty CTE materialised to 0 rows) the COUNT slot's NULL survives to `FetchResultRecord`.  The GROUP BY path already had the RONDB-831 COUNT-null→0 fixup; the scalar path was missing it.  Fix: `NdbAggregator::PrepareResults` applies the same fixup to `agg_results_` for the scalar case (`kOpCount` slot NULL/UNDEFINED → BIGINT-unsigned 0; SUM/MIN/MAX stay NULL).  Re-enabled index-17 + cs20, recorded green ×5 topologies (index-17, cs20) |
 | **D21** | partial-key / wrong-column-bound multi-key CTE lookup | EXECUTED + returned rows instead of cleanly rejecting; value-correctness vs MySQL unverified (J19/J20 removed; clean rejection covered by `ronsql/t/ronsql_cte_partial_key.test`) |
 
 Full per-row detail (symptoms, exact repros, source line cites) is in
@@ -141,7 +141,14 @@ in `findings/<family>.md`.
   (`20055.00`) like MySQL, via `setScale` on the virt column +
   scale-aware `print_aggregate_result` / `print_passthrough_value`.  Re-enabled
   agg-08/09, cs09/cs11.  J3 reclassified to **D1** (SUM over DECIMAL).  Phase 3
-  wrong-results remaining: D16, D21.
+  wrong-results remaining: D21.
+- **D16 (scalar `COUNT(*)` over EMPTY input = NULL not 0) — ✅ FIXED**
+  (NDB-API output finalize): a main scalar aggregation reading an empty CTE_SCAN
+  emitted one row with COUNT=NULL because `NdbAggregator`'s scalar result is the
+  pre-initialised (all-NULL) `agg_results_` array and the kernel sends no scalar
+  group for an empty CTE.  `NdbAggregator::PrepareResults` now mirrors the
+  RONDB-831 GROUP-BY COUNT-null→0 fixup for the scalar case.  Re-enabled
+  index-17 + cs20; recorded green ×5 topologies.
 - **D6 (crash) — ✅ FIXED.** Premature multi-batch CTE completion (DBSPJ now
   restarts batches via `handleCtePhaseNextBatch` + EndOfData-only
   `CTE_PHASE_COMPLETE_REP` + a `SCAN_HBREP` heartbeat) **and** the cross-node

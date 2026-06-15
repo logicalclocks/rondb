@@ -249,6 +249,30 @@ SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM x|
 mnk	mxk	sn	g
 5	24	240	20
 
+=== index-17: scalar agg over an EMPTY grouped CTE — COUNT(*)=0, others NULL (D16) ===
+== Query ==
+WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
+           FROM customer IGNORE INDEX (idx_c_nationkey)
+           WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
+           GROUP BY c_mktsegment)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
+FROM customer IGNORE INDEX (idx_c_nationkey)
+WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
+           GROUP BY c_mktsegment)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x|
+mns	mxs	sn	g
+NULL	NULL	NULL	0
+
 === index-P1 (rejection): index hint on a JOINED (non-root) table ===
 Error handling: RPE
 ronsql_cli caught exception: Index hints (FORCE/USE/IGNORE INDEX) are only supported on the root table of a query or CTE body, not on a joined table.

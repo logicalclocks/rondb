@@ -54,7 +54,7 @@ record time.
 | index-14 | `Body root: TABLE_SCAN` (nullable-col fallback; negative-space assert) |
 | index-15 | `Body root: INDEX_SCAN using idx_o_custkey` (FORCE INDEX) |
 | index-16 | `Body root: INDEX_SCAN using idx_c_nationkey` (USE INDEX) |
-| index-17 | DISABLED (D16) — empty result: scalar COUNT(*) over EMPTY input returns NULL (RonSQL) vs 0 (MySQL) |
+| index-17 | ENABLED (D16 FIXED) — scalar COUNT(*) over EMPTY input now reads 0; `NdbAggregator::PrepareResults` scalar COUNT-null→0 fixup |
 
 Source of the exact strings: `RonSQLPreparer.cpp`
 - `Body root: ` then `TABLE_SCAN` / `INDEX_SCAN` (lines 10814-10822)
@@ -77,16 +77,16 @@ Confirmed against the existing committed tests
 | Scalar MIN/MAX-via-index + WHERE composition | `WITH mx AS (SELECT MAX(p_size) AS m FROM part WHERE p_size < 40) SELECT m FROM mx;` | NEXT-PHASE-disabled | I.10 detects a single-op body whose only output is a direct-column MIN/MAX; a WHERE bound may force the residual-filter path and drop maxRows=1 — uncertain | body_index.inc (NEXT-PHASE comment) |
 | BETWEEN as an index bound in a CTE body | `WITH lp AS (SELECT l_partkey AS k, SUM(l_quantity) AS q FROM lineitem WHERE l_partkey BETWEEN 40 AND 60 GROUP BY l_partkey) SELECT k, q FROM lp;` | NEXT-PHASE-disabled | I.9 / W3 — uncertain whether BETWEEN lowers to the same low+high NdbQueryIndexBound that `col >= x AND col <= y` produces (matrix marks BETWEEN UNCERTAIN) | body_index.inc (NEXT-PHASE comment) |
 | MIN/MAX over a DATE column in a CTE (was index-9) | `WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t FROM orders WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01' AND o_shippriority < 3 GROUP BY o_orderdate) SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;` | NEXT-PHASE-disabled (D17) | ERROR "Failed writing aggregation program. Please report a bug." — DATE aggregate output not yet supported | body_index.inc (NEXT-PHASE comment) |
-| Scalar COUNT(*) over EMPTY input (was index-17) | `WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n FROM customer IGNORE INDEX (idx_c_nationkey) WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING' GROUP BY c_mktsegment) SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x;` | NEXT-PHASE-disabled (D16) | WRONG — scalar COUNT(*) over empty input returns NULL (RonSQL) vs 0 (MySQL); the IGNORE INDEX steering predicate matched no rows | body_index.inc (NEXT-PHASE comment) |
+| Scalar COUNT(*) over EMPTY input (index-17) | `WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n FROM customer IGNORE INDEX (idx_c_nationkey) WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING' GROUP BY c_mktsegment) SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x;` | ENABLED (D16 FIXED) | `NdbAggregator::PrepareResults` now applies the RONDB-831 COUNT-null→0 fixup in the scalar (no-GROUP-BY) path; COUNT reads 0, MIN/MAX/SUM stay NULL | body_index.inc index-17 |
 
 ## Notes
 
-- **Enabled MAIN cases: 12** (each = value-compare + EXPLAIN assert):
-  index-1, -2, -3, -6, -7, -10, -11, -12, -13, -14, -15, -16.
-  **Disabled probes: 5** (index-4, -5, -8 — D9 index-scan-root; index-9 — D17
-  MIN/MAX over DATE; index-17 — D16 scalar COUNT(*) over empty input; all
-  NEXT-PHASE). Plus 1 rejection-assert (index-P1) and 3 other NEXT-PHASE probes
-  (nullable MIN/MAX EXPLAIN gap, MIN/MAX+WHERE, BETWEEN).
+- **Enabled MAIN cases: 13** (each = value-compare + EXPLAIN assert):
+  index-1, -2, -3, -6, -7, -10, -11, -12, -13, -14, -15, -16, -17 (D16 FIXED).
+  **Disabled probes: 4** (index-4, -5, -8 — D9 index-scan-root; index-9 — D17
+  MIN/MAX over DATE; all NEXT-PHASE). Plus 1 rejection-assert (index-P1) and
+  3 other NEXT-PHASE probes (nullable MIN/MAX EXPLAIN gap, MIN/MAX+WHERE,
+  BETWEEN).
 - **QUERY_FILE used for all single-quoted-literal cases**: index-6 (CHAR
   `p_brand`), index-7/9 (composite, CHAR `o_orderstatus` + DATE), index-17
   (CHAR `c_mktsegment`). (The DATE/composite-DATE cases index-4/5/8 are now
