@@ -267,7 +267,7 @@ static int expected_count_for_fold(const char *magic_name,
 /* the identifier, then read hex bytes (`0xXX`) until `}`.            */
 /* ------------------------------------------------------------------ */
 
-#define MAX_STENCILS         32
+#define MAX_STENCILS         96   /* headroom for the full Phase 5 matrix */
 #define MAX_STENCIL_BYTES  2048
 #define MAX_NAME_LEN         64
 

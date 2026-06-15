@@ -372,6 +372,20 @@ static const uint8_t bytes_op_filter_reject_exit[] = {
   0xc0, 0x03, 0x5f, 0xd6,
 };
 
+/* op_branch_attr_op_arg — 40 bytes, 4 holes */
+static const uint8_t bytes_op_branch_attr_op_arg[] = {
+  0xfd, 0x7b, 0xbf, 0xa9, 0x61, 0x9f, 0x9a, 0x52, 0xe0, 0x03, 0x14, 0xaa,
+  0xfd, 0x03, 0x00, 0x91, 0x00, 0x00, 0x00, 0x94, 0x60, 0x00, 0x00, 0x34,
+  0xfd, 0x7b, 0xc1, 0xa8, 0x00, 0x00, 0x00, 0x14, 0xfd, 0x7b, 0xc1, 0xa8,
+  0x00, 0x00, 0x00, 0x14,
+};
+static const Hole holes_op_branch_attr_op_arg[] = {
+  { .byte_offset = 4, .kind = HK_OP_B, .width = 2 },
+  { .byte_offset = 16, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_branch_attr_op_arg" },
+  { .byte_offset = 28, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 36, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -417,6 +431,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_OVERFLOW_EXIT] = STENCIL_NOHOLES(op_overflow_exit),
   [OP_JUMP] = STENCIL_(op_jump),
   [OP_FILTER_REJECT_EXIT] = STENCIL_NOHOLES(op_filter_reject_exit),
+  [OP_BRANCH_ATTR_OP_ARG] = STENCIL_(op_branch_attr_op_arg),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */

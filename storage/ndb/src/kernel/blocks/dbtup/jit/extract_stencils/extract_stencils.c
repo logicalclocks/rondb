@@ -1134,8 +1134,9 @@ int main(int argc, char **argv) {
   SymbolTable  symbols  = parse_symbols(&blob, &sections);
   TextRelas    relas    = parse_text_relas(&blob, &sections);
 
-  /* Walk symbols in order, extract each op_*. */
-  ExtractedStencil stencils[32];
+  /* Walk symbols in order, extract each op_*. Sized with headroom for the
+   * full Phase 5 stencil matrix (~75); OP_KIND_MAX+1 is the live count. */
+  ExtractedStencil stencils[96];
   size_t n_stencils = 0;
   for (size_t i = 0; i < symbols.n_syms; ++i) {
     const Elf64_Sym *sym = &symbols.syms[i];
