@@ -68,6 +68,13 @@ struct dbtup_jit_call_ctx {
   JoinAggInterpreter *join_agg;     /* non-null only for join-only helpers */
   Dbtup              *block_tup;    /* DBTUP block context for readAttributes */
   Dbtup::KeyReqStruct *req_struct;  /* row position / linked-attr context */
+  /* Phase 7: program buffer base for the scan-filter
+   * BRANCH_ATTR_OP_ARG helper, which reads the instruction (and its inline
+   * literal) by word offset. Points at the exec region passed to
+   * interpreterStartLab (&cinBuffer[RinstructionCounter]); the offset the
+   * helper adds is the bridge's emb_pc within that region. nullptr on the
+   * aggregation path (which does not emit OP_BRANCH_ATTR_OP_ARG). */
+  const Uint32       *prog_buf;
 #ifdef ERROR_INSERT
   bool                trace_enabled;
   Uint32              trace_row_no;
@@ -102,6 +109,16 @@ void ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg);
  * rax. */
 int ndb_jit_h_branch_attr_null(JitState *s, uint32_t attr_id,
                                  uint32_t want_null);
+
+/* ndb_jit_h_branch_attr_op_arg — Phase 7 cold-call branch helper for
+ * BRANCH_ATTR_OP_ARG (WHERE col <op> literal). inst_word_off is the
+ * instruction's word offset within ctx->prog_buf. Forwards to
+ * Dbtup::evalBranchColLiteralForJit, which reads the column, compares it
+ * against the inline literal via the type's NdbSqlUtil comparator, and
+ * returns the take-branch decision. Returns 1 to take the branch, 0 to
+ * fall through; aborts on a fatal error (read failure / unsupported type
+ * or condition — never expected for the admitted integer scope). */
+int ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off);
 
 /* ndb_jit_h_read_linked_to_mem — Phase 5.1a cold-call helper.
  *
@@ -172,6 +189,7 @@ void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
  * through Dbtup::readSingleAttributeForJit. */
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
-                                  JitEntry             entry_fn);
+                                  JitEntry             entry_fn,
+                                  const Uint32        *prog_buf);
 
 #endif /* DBTUP_JIT_GLUE_HPP_ */

@@ -157,6 +157,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BAEN_TGT",  HK_BRANCH_TAKE  },
   { "HOLE_BANN_ATTR", HK_OP_B         },
   { "HOLE_BANN_TGT",  HK_BRANCH_TAKE  },
+  /* Phase 7 cold-call comparison branch (BRANCH_ATTR_OP_ARG): the operand
+   * hole carries the instruction's word offset (op->b), and the target is
+   * an HK_BRANCH_TAKE — same shape as the attr-null branches above. */
+  { "HOLE_BAOA_OFF",  HK_OP_B         },
+  { "HOLE_BAOA_TGT",  HK_BRANCH_TAKE  },
   /* Phase 5.1a linked-column variants. LOAD_LINKED is a cold-call
    * (no branch); the BRANCH_LINKED_*_NULL stencils have only the
    * branch target as a hole (the want_null flag is baked into
@@ -316,6 +321,9 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_BANN_ATTR_NARROW    0xb2bfu
 /* Phase 5.1a position hole for op_load_linked_to_mem (narrow). */
 #define MAGIC_LLM_POS_NARROW      0x3c73u
+/* Phase 7 op_branch_attr_op_arg — instruction word-offset hole (narrow).
+ * sha256("RONDB-1056-Phase4_5-narrow-magic-v1|MAGIC_BAOA_OFF_NARROW")[0:2] LE. */
+#define MAGIC_BAOA_OFF_NARROW     0xd4fbu
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -441,6 +449,8 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   { MAGIC_BANN_ATTR_NARROW, HK_OP_B,  "MAGIC_BANN_ATTR_NARROW" },
   /* Phase 5.1a: position hole for op_load_linked_to_mem. */
   { MAGIC_LLM_POS_NARROW,   HK_OP_B,  "MAGIC_LLM_POS_NARROW"   },
+  /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
+  { MAGIC_BAOA_OFF_NARROW,  HK_OP_B,  "MAGIC_BAOA_OFF_NARROW"  },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

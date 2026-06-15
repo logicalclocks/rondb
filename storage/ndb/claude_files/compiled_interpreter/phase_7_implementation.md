@@ -1,12 +1,14 @@
 # Phase 7 — SCAN_FRAGREQ scan-filter JIT (runtime glue)
 
-**Status: first vertical slice implemented + verified (2026-06-10).** Branch
-`RONDB-1056-compiled-interpreter`. Mikael reported `bridge_tests` (incl. the
-T38 regression) and the `rondb_jit_scan_filter_canary` MTR all passing after
-the two bring-up fixes (reject code 626; EXIT_OK lowering). `WHERE col IS
-[NOT] NULL` now JIT-compiles, returns correct rows, and runs through the JIT
-path under ERROR_INSERT 4060 (proving it isn't falling back to the
-interpreter).
+**Status: first vertical slice + follow-ups implemented & verified
+(2026-06-10).** Branch `RONDB-1056-compiled-interpreter`. Mikael reported
+`bridge_tests` (incl. T36/T38/T39/T40) and the `rondb_jit_scan_filter_canary`
+MTR all passing after the two bring-up fixes (reject code; EXIT_OK lowering)
+and the two follow-ups (linked-op rejection; per-program EXIT_REFUSE code
+capture). `WHERE col IS [NOT] NULL` JIT-compiles, returns correct rows, runs
+through the JIT path under ERROR_INSERT 4060, rejects with the program's own
+refuse code, and rejects linked ops. Remaining: real comparison predicates
+(see "Next" — needs Phase 5's embedded-branch family).
 
 This doc covers the *runtime* half of Phase 7. The *translation + engine*
 half landed earlier (`c955005048b`): `ndb_jit_bridge_translate_scan_filter()`

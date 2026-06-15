@@ -143,7 +143,15 @@ typedef enum {
   /* Scan-filter reject terminator. Sets JitState::row_filter_rejected before
    * returning so scan-filter callers can distinguish reject from accept. */
   OP_FILTER_REJECT_EXIT    = 32,
-  OP_KIND_MAX           = OP_FILTER_REJECT_EXIT
+  /* Phase 7: cold-call comparison branch (WHERE col <op> literal). The
+   * helper reads the whole instruction from the program buffer, so the
+   * stencil carries just one operand hole (the instruction's word offset,
+   * ≤ BR_EMB_MAX_LEN so it fits the 16-bit narrow hole) plus the branch
+   * target — the same shape as OP_BRANCH_ATTR_EQ_NULL. Operand layout:
+   * b = inst word offset into ctx->prog_buf; c = branch target pc (after
+   * bridge fixup); a/imm unused. */
+  OP_BRANCH_ATTR_OP_ARG    = 33,
+  OP_KIND_MAX           = OP_BRANCH_ATTR_OP_ARG
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -163,6 +171,7 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_ATTR_NE_NULL:
     case OP_BRANCH_LINKED_EQ_NULL:
     case OP_BRANCH_LINKED_NE_NULL:
+    case OP_BRANCH_ATTR_OP_ARG:
     case OP_JUMP:
       return 1;
     default:

@@ -121,6 +121,11 @@
 #define BR_EMB_EXIT_OK              18
 #define BR_EMB_EXIT_REFUSE          19
 #define BR_EMB_EXIT_OK_LAST         22
+/* BRANCH_ATTR_OP_ARG (Interpreter.hpp = 23). cond≤GE keeps bit 15 clear,
+ * so getOpCode decodes it as 23 (Phase 7 comparison predicates). */
+#define BR_EMB_BRANCH_ATTR_OP_ARG   23
+/* Highest BinaryCondition the JIT lowers (EQ..GE); LIKE/mask reject. */
+#define BR_EMB_MAX_BINARY_COND       5
 /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
 #define BR_EMB_WRITE_INTERP_OUTPUT 123
 #define BR_EMB_BRANCH_ATTR_EQ_NULL  24
@@ -223,6 +228,7 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_WRITE_INTERP_OUTPUT:   return "WRITE_INTERPRETER_OUTPUT";
     case BR_EMB_BRANCH_ATTR_EQ_NULL:   return "BRANCH_ATTR_EQ_NULL";
     case BR_EMB_BRANCH_ATTR_NE_NULL:   return "BRANCH_ATTR_NE_NULL";
+    case BR_EMB_BRANCH_ATTR_OP_ARG:    return "BRANCH_ATTR_OP_ARG";
     case BR_EMB_READ_LINKED_TO_MEM:    return "READ_LINKED_TO_MEM";
     case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
     case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
@@ -254,6 +260,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_LOAD_CONST_INT32:     return "load_const_int32";
     case OP_BRANCH_ATTR_EQ_NULL:  return "branch_attr_eq_null";
     case OP_BRANCH_ATTR_NE_NULL:  return "branch_attr_ne_null";
+    case OP_BRANCH_ATTR_OP_ARG:   return "branch_attr_op_arg";
     case OP_LOAD_LINKED_TO_MEM:   return "load_linked_to_mem";
     case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
     case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
@@ -429,6 +436,7 @@ static JitBridgeReason translate_embedded_block(
     uint8_t exit_refuse_kind,
     uint8_t exit_ok_kind,
     int allow_linked_ops,
+    int allow_attr_op_arg,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps,
     uint32_t *out_exit_refuse_code) {
@@ -553,6 +561,100 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         emb_pc += 2;
+        break;
+      }
+
+      case BR_EMB_BRANCH_ATTR_OP_ARG: {
+        /* Phase 7: WHERE col <op> literal. The JIT helper reads the whole
+         * instruction (cond/nulls/attrId + inline literal) from the program
+         * buffer by offset, so we record the instruction's offset (emb_pc)
+         * in op->imm and the branch target in op->c, then advance past the
+         * variable-length instruction. Only the scan-filter path is wired
+         * (ctx->prog_buf set); other paths reject (fall back to interp). */
+        if (!allow_attr_op_arg) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        /* word 0 = inst (cond/nulls/offset); word 1 = (attrId<<16)|argLen. */
+        if (emb_pc + 2 > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        /* Only EQ..GE (0..5) lower; LIKE / mask conditions reject. */
+        uint32_t cond = (inst >> 12) & 0xFu;
+        if (cond > BR_EMB_MAX_BINARY_COND) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t direction = inst >> 31;
+        if (direction != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t inst2 = emb_prog[emb_pc + 1];
+        uint32_t attr_id = (inst2 >> 16) & 0xFFFFu;
+        if (attr_id > BR_MAX_LOCAL_ATTR_ID) {
+          /* Local table columns only — linked/pseudo are out of scope. */
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc + 1;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        /* Inline literal: argLen bytes => ceil(argLen/4) words after w1. */
+        uint32_t arg_len_bytes = inst2 & 0xFFFFu;
+        uint32_t inst_words = 2u + ((arg_len_bytes + 3u) >> 2);
+        if (emb_pc + inst_words > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        /* op->b = the instruction's word offset within the exec region
+         * (= ctx->prog_buf base at runtime). emb_pc < emb_len ≤
+         * BR_EMB_MAX_LEN (1024), so it fits the 16-bit op->b / narrow-MOVZ
+         * hole — same shape as the attr_id hole on BRANCH_ATTR_*_NULL.
+         * op->c is the branch target (pass-2 fixup). */
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
+        if (!emit_op(out_prog, OP_BRANCH_ATTR_OP_ARG, /*a=*/0,
+                     /*b=*/(uint16_t)emb_pc, /*c=*/0, /*imm=*/0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += inst_words;
         break;
       }
 
@@ -860,6 +962,7 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   OP_EXIT,
                                   BR_EXIT_OK_FALLTHROUGH,
                                   /*allow_linked_ops=*/1,
+                                  /*allow_attr_op_arg=*/0,
                                   pending_case_jumps,
                                   &n_pending_case_jumps,
                                   /*out_exit_refuse_code=*/NULL);
@@ -891,6 +994,7 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                OP_FILTER_REJECT_EXIT,
                                /*exit_ok_kind=*/OP_EXIT,
                                /*allow_linked_ops=*/0,
+                               /*allow_attr_op_arg=*/1,
                                pending_case_jumps,
                                &n_pending_case_jumps,
                                &refuse_code);
@@ -1122,7 +1226,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         JitBridgeReason rc = translate_embedded_block(
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
             pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
-            /*allow_linked_ops=*/1, pending_case_jumps,
+            /*allow_linked_ops=*/1, /*allow_attr_op_arg=*/0,
+            pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);
         if (rc != JIT_BRIDGE_OK) return rc;
         pos += 1 + emb_len;

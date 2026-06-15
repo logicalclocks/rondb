@@ -130,6 +130,8 @@ static const struct {
   { "MAGIC_BANN_ATTR_NARROW", "op_branch_attr_ne_null"    },
   /* Phase 5.1a: position hole for op_load_linked_to_mem. */
   { "MAGIC_LLM_POS_NARROW",   "op_load_linked_to_mem"     },
+  /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
+  { "MAGIC_BAOA_OFF_NARROW",  "op_branch_attr_op_arg"     },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

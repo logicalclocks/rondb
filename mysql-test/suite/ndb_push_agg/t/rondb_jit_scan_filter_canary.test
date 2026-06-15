@@ -42,6 +42,22 @@ SELECT pk FROM t1 WHERE v IS NULL;
 --sorted_result
 SELECT pk, v FROM t1 WHERE v IS NOT NULL;
 
+--echo # Q4: WHERE v > 25 must JIT (BRANCH_ATTR_OP_ARG, integer GT literal).
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, v FROM t1 WHERE v > 25;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q5: WHERE v = 30 must JIT (BRANCH_ATTR_OP_ARG, integer EQ literal).
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, v FROM t1 WHERE v = 30;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q6: differential — same comparison without the error insert matches Q4.
+--sorted_result
+SELECT pk, v FROM t1 WHERE v > 25;
+
 DROP TABLE t1;
 
 --remove_file $NDB_TOOLS_OUTPUT

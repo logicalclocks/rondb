@@ -5612,6 +5612,92 @@ retry:
   return 0;
 }
 
+/* RONDB-1056 Phase 7: shared evaluate for a BRANCH_ATTR_OP_ARG
+ * (column-vs-literal) scan-filter branch, called from the JIT cold-call
+ * helper ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
+ * instruction in the program buffer. This mirrors the BRANCH_ATTR_OP_ARG
+ * arm of InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826)
+ * — same descriptor walk, same NdbSqlUtil compare, same NULL-semantics and
+ * condition mapping — so the JIT and interpreter agree bit-for-bit. The
+ * byte comparison itself is NDB's own sqlType.m_cmp (no re-implementation,
+ * no drift); only the small null/cond glue is duplicated. */
+int Dbtup::evalBranchColLiteralForJit(KeyReqStruct *req_struct,
+                                      const Uint32 *inst) {
+  const Uint32 w0 = inst[0];                 // opcode | nulls | cond | offset
+  const Uint32 w1 = inst[1];                 // (attrId << 16) | argLen(bytes)
+  const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
+
+  /* Read the column value. read_buf holds the AttributeHeader (word 0) then
+   * the value bytes. 64 words covers integers and short strings; a value
+   * too large to fit returns a negative rc which the caller treats as
+   * fatal (the admitted scope is integer columns). */
+  Uint32 read_buf[64];
+  int rc = readSingleAttribute(req_struct, attrId, read_buf,
+                               sizeof(read_buf) / sizeof(Uint32));
+  if (unlikely(rc < 0)) {
+    return rc;
+  }
+  const AttributeHeader ah(read_buf[0]);
+
+  /* Type + charset from the table descriptor (mirrors handleBranchAttrOp). */
+  const Uint32 *attrDescriptor =
+      req_struct->tablePtrP->tabDescriptor + (attrId * ZAD_SIZE);
+  const Uint32 TattrDesc1 = attrDescriptor[0];
+  const Uint32 TattrDesc2 = attrDescriptor[1];
+  const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+  const CHARSET_INFO *cs = nullptr;
+  if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+    const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+    cs = req_struct->tablePtrP->charsetArray[pos];
+  }
+  const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+
+  const char *s1 = (const char *)&read_buf[1];
+  Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+  if (unlikely(typeId == NDB_TYPE_BIT)) {
+    attrLen = (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
+  }
+
+  /* Literal (2nd operand): bytes follow word 1; argLen is its byte size. */
+  const Uint32 argLen = Interpreter::getBranchCol_Len(w1);
+  const char *s2 = (const char *)&inst[2];
+
+  const bool r1_null = ah.isNULL();
+  const bool r2_null = (argLen == 0);
+  if (r1_null || r2_null) {
+    const Uint32 nulls = Interpreter::getNullSemantics(w0);
+    if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+      return 1;  // take the branch
+    }
+    if (nulls == Interpreter::IF_NULL_CONTINUE) {
+      return 0;  // fall through
+    }
+    /* NULL_CMP_EQUAL: fall into the comparison with res1 derived below. */
+  }
+
+  const Uint32 cond = Interpreter::getBinaryCondition(w0);
+  int res1;
+  if (r1_null || r2_null) {
+    res1 = (r1_null && r2_null) ? 0 : (r1_null ? -1 : 1);
+  } else {
+    if (unlikely(sqlType.m_cmp == nullptr)) {
+      return -40;  // type has no comparator (matches interpreter)
+    }
+    res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+  }
+
+  switch ((Interpreter::BinaryCondition)cond) {
+    case Interpreter::EQ: return (res1 == 0) ? 1 : 0;
+    case Interpreter::NE: return (res1 != 0) ? 1 : 0;
+    case Interpreter::LT: return (res1 > 0) ? 1 : 0;   // inverted, per cmp
+    case Interpreter::LE: return (res1 >= 0) ? 1 : 0;
+    case Interpreter::GT: return (res1 < 0) ? 1 : 0;
+    case Interpreter::GE: return (res1 <= 0) ? 1 : 0;
+    default:
+      return -40;  // LIKE / mask conditions are not JIT-admitted
+  }
+}
+
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
@@ -5782,8 +5868,12 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
 #endif
       if (jit_filter != nullptr) {
         jamDebug();
+        /* prog_buf = the exec region (the filter program). The
+         * BRANCH_ATTR_OP_ARG helper reads its instruction + inline literal
+         * by the bridge-recorded offset within this region. */
         bool accepted = dbtup_jit_invoke_scan_filter(
-            this, req_struct, reinterpret_cast<JitEntry>(jit_filter));
+            this, req_struct, reinterpret_cast<JitEntry>(jit_filter),
+            &cinBuffer[RinstructionCounter]);
         if (accepted) {
           jamDebug();
           RinstructionCounter += RexecRegionLen;

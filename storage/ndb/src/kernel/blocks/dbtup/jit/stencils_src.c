@@ -685,6 +685,28 @@ STENCIL op_branch_attr_ne_null(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_branch_attr_op_arg (Phase 7)                                    */
+/*                                                                    */
+/* Cold-call comparison branch — WHERE col <op> literal. Same 1-hole  */
+/* shape as op_branch_attr_eq_null: a single narrow operand (the      */
+/* instruction's word offset within ctx->prog_buf, ≤ BR_EMB_MAX_LEN   */
+/* so it fits a single MOVZ) + the HK_BRANCH_TAKE target. The helper  */
+/* reads the whole instruction (cond / nulls / attrId + inline        */
+/* literal) from the program buffer and returns 1 to take the branch, */
+/* 0 to fall through (it aborts on a fatal decode/compare error). */
+extern int ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off);
+
+DECLARE_NARROW_HOLE(BAOA_OFF);
+extern __attribute__((preserve_none)) void HOLE_BAOA_TGT(JitState *);
+STENCIL op_branch_attr_op_arg(JitState *s) {
+  if (ndb_jit_h_branch_attr_op_arg(s,
+                                   (uint32_t)HOLE_NARROW(BAOA_OFF))) {
+    [[clang::musttail]] return HOLE_BAOA_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_load_linked_to_mem (Phase 5.1a)                                 */
 /*                                                                    */
 /* Cold-call (no branch) — populates ctx->block_tup->cheapMemory[0]   */
@@ -808,4 +830,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_overflow_exit,
     op_jump,
     op_filter_reject_exit,
+    op_branch_attr_op_arg,
 };

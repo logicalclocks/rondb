@@ -3334,6 +3334,18 @@ public:
     return readSingleAttribute(req_struct, attrId, outBuf, maxWords);
   }
 
+  /* RONDB-1056 Phase 7: evaluate a BRANCH_ATTR_OP_ARG (column-vs-literal)
+   * scan-filter branch for the JIT cold-call helper. `inst` points at the
+   * instruction's word 0 in the program buffer (word0 = opcode|nulls|cond|
+   * branch_offset, word1 = attrId|argLen, words 2..N = inline literal).
+   * Reads the column, compares against the literal via the type's
+   * NdbSqlUtil compare, and applies the same NULL-semantics + condition
+   * mapping as the interpreter's handleBranchAttrOp. Returns 1 to take the
+   * branch, 0 to fall through, or a negative error code (read failure /
+   * unsupported type or condition) which the caller treats as fatal. */
+  int evalBranchColLiteralForJit(KeyReqStruct *req_struct,
+                                 const Uint32 *inst);
+
 private:
 
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,

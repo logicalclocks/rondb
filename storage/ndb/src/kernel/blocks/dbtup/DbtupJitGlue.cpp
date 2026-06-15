@@ -202,6 +202,45 @@ ndb_jit_h_branch_attr_null(JitState *s,
   return take_branch;
 }
 
+/* ndb_jit_h_branch_attr_op_arg — Phase 7 cold-call branch helper for
+ * BRANCH_ATTR_OP_ARG (WHERE col <op> literal). The whole instruction is
+ * read from the program buffer: ctx->prog_buf + inst_word_off points at the
+ * instruction's word 0, and Dbtup::evalBranchColLiteralForJit decodes it
+ * (cond / nulls / attrId / inline literal), reads the column, and compares
+ * via the type's NdbSqlUtil comparator — mirroring the interpreter's
+ * handleBranchAttrOp. Returns 1 to take the branch, 0 to fall through. */
+extern "C" int
+ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr ||
+      ctx->req_struct == nullptr || ctx->prog_buf == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_op_arg: JitState.ctx is malformed "
+        "(inst_word_off=%u)", inst_word_off);
+    abort();
+  }
+  int rc = ctx->block_tup->evalBranchColLiteralForJit(
+      ctx->req_struct, ctx->prog_buf + inst_word_off);
+  if (rc < 0) {
+    /* Read failure / unsupported type or condition. The bridge's admission
+     * is meant to keep these off the JIT path; if one surfaces, fail fast
+     * (same policy as the other helpers) rather than silently mis-filter. */
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_op_arg: evalBranchColLiteralForJit failed "
+        "(inst_word_off=%u, rc=%d)", inst_word_off, rc);
+    abort();
+  }
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_attr_op_arg off=%u take=%d",
+        ctx->trace_row_no, inst_word_off, rc);
+  }
+#endif
+  return rc;
+}
+
 /* ndb_jit_h_read_linked_to_mem — Phase 5.1a cold-call helper.
  *
  * Used by op_load_linked_to_mem to populate
@@ -284,6 +323,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
+  jit1_register_helper("ndb_jit_h_branch_attr_op_arg",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_op_arg));
   jit1_register_helper("ndb_jit_h_read_linked_to_mem",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_linked_to_mem));
   jit1_register_helper("ndb_jit_h_branch_linked_null",
@@ -309,6 +350,7 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   ctx.join_agg   = join_agg;
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
+  ctx.prog_buf   = nullptr;  /* aggregation path emits no BRANCH_ATTR_OP_ARG */
 #ifdef ERROR_INSERT
   ctx.trace_enabled = dbtup_jit_trace_start(agg, block_tup,
                                             &ctx.trace_row_no,
@@ -416,16 +458,20 @@ void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
 
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
-                                  JitEntry             entry_fn) {
+                                  JitEntry             entry_fn,
+                                  const Uint32        *prog_buf) {
   /* Per-row context: no aggregation instance. The cold-call helpers
-   * (ndb_jit_h_load_col / ndb_jit_h_branch_attr_null) reach the row
-   * through block_tup->readSingleAttributeForJit, so agg / join_agg
-   * stay null. */
+   * (ndb_jit_h_load_col / ndb_jit_h_branch_attr_null /
+   * ndb_jit_h_branch_attr_op_arg) reach the row through
+   * block_tup->readSingleAttributeForJit, so agg / join_agg stay null.
+   * prog_buf is the exec-region base so the OP_ARG helper can read the
+   * instruction + its inline literal by offset. */
   dbtup_jit_call_ctx ctx;
   ctx.agg        = nullptr;
   ctx.join_agg   = nullptr;
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
+  ctx.prog_buf   = prog_buf;
 #ifdef ERROR_INSERT
   ctx.trace_enabled = false;   /* 4063 row trace is aggregation-only for now */
   ctx.trace_row_no  = 0;

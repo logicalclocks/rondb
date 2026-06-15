@@ -25,4 +25,18 @@ pk	v
 1	10
 3	30
 5	50
+# Q4: WHERE v > 25 must JIT (BRANCH_ATTR_OP_ARG, integer GT literal).
+SELECT pk, v FROM t1 WHERE v > 25;
+pk	v
+3	30
+5	50
+# Q5: WHERE v = 30 must JIT (BRANCH_ATTR_OP_ARG, integer EQ literal).
+SELECT pk, v FROM t1 WHERE v = 30;
+pk	v
+3	30
+# Q6: differential — same comparison without the error insert matches Q4.
+SELECT pk, v FROM t1 WHERE v > 25;
+pk	v
+3	30
+5	50
 DROP TABLE t1;
