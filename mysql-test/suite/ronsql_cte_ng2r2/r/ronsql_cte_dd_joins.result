@@ -2324,6 +2324,58 @@ k	SUM(cust.t)
 55	0
 80	0
 
+=== J19: PARTIAL-key lookup to a multi-key CTE; root-eligible parent -> I.16c CTE_SCAN-root rewrite (D21 — now green) ===
+== Query ==
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT n.n_name, SUM(x.t) AS s
+FROM customer AS c
+JOIN nation AS n ON n.n_nationkey = c.c_nationkey
+JOIN x ON x.k1 = c.c_custkey
+GROUP BY n.n_name;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT n.n_name, SUM(x.t) AS s
+FROM customer AS c
+JOIN nation AS n ON n.n_nationkey = c.c_nationkey
+JOIN x ON x.k1 = c.c_custkey
+GROUP BY n.n_name|
+n_name	s
+NATION0	0
+NATION1	60
+NATION10	0
+NATION11	60
+NATION12	120
+NATION13	180
+NATION14	240
+NATION15	0
+NATION16	60
+NATION17	120
+NATION18	180
+NATION19	240
+NATION2	120
+NATION20	0
+NATION21	60
+NATION22	120
+NATION23	180
+NATION24	240
+NATION3	180
+NATION4	240
+NATION5	0
+NATION6	60
+NATION7	120
+NATION8	180
+NATION9	240
+
 == J16 (D5): customer JOIN cte cust JOIN real nation, GROUP BY n_regionkey — fan-out agg across non-ancestor sibling, permanent rejection ==
 Error handling: RPE
 ronsql_cli caught exception: Aggregation references a column from a join branch that is not an ancestor of the aggregation leaf. Fan-out aggregation across a non-ancestor sibling (e.g. a real-table child alongside a CTE lookup under the same parent) is not yet supported.
@@ -2331,3 +2383,7 @@ ronsql_cli caught exception: Aggregation references a column from a join branch 
 == J17 (D5): same 3-table chain, GROUP BY n_name, two SUMs — permanent rejection ==
 Error handling: RPE
 ronsql_cli caught exception: Aggregation references a column from a join branch that is not an ancestor of the aggregation leaf. Fan-out aggregation across a non-ancestor sibling (e.g. a real-table child alongside a CTE lookup under the same parent) is not yet supported.
+
+== J20 (D21): WRONG-column multi-key lookup — binds aggregate output x.n, not PK col k2 — permanent rejection ==
+Error handling: RPE
+ronsql_cli caught exception: CTE lookup key references a CTE output column that is not part of the virtual primary key.  The virtual CTE primary key matches the CTE body's GROUP BY column list.

@@ -364,6 +364,34 @@ FROM customer AS c JOIN cust ON cust.k = c.c_custkey
 WHERE c.c_nationkey = 5
 GROUP BY cust.k|
 
+--echo
+--echo === J19: PARTIAL-key lookup to a multi-key CTE; root-eligible parent -> I.16c CTE_SCAN-root rewrite (D21 — now green) ===
+# x has a 2-col virtual PK (k1=o_custkey, k2=o_orderstatus); the join binds only
+# k1 (= c.c_custkey), a strict subset of the PK.  Because the bound parent alias
+# (customer c) is the original root, the I.16c auto-rewrite promotes x to a
+# CTE_SCAN root, sums x.t across all k2 values per customer, and linearizes the
+# would-be fan-out (x -> customer -> nation).  Verified byte-identical to MySQL.
+# (The original D21 finding pre-dated I.16c; partial-key here is supported, not
+# rejected.)  Contrast J20 below — binding a NON-PK column is rejected.
+let $QUERY=
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, SUM(o_shippriority) AS t
+           FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT n.n_name, SUM(x.t) AS s
+FROM customer AS c
+JOIN nation AS n ON n.n_nationkey = c.c_nationkey
+JOIN x ON x.k1 = c.c_custkey
+GROUP BY n.n_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, SUM(o_shippriority) AS t
+           FROM orders GROUP BY o_custkey, o_orderstatus)
+SELECT n.n_name, SUM(x.t) AS s
+FROM customer AS c
+JOIN nation AS n ON n.n_nationkey = c.c_nationkey
+JOIN x ON x.k1 = c.c_custkey
+GROUP BY n.n_name|
+
 # ============================================================================
 # REJECTION-ASSERTS (clean permanent reject — kept ENABLED via ronsql_cli)
 # ============================================================================
@@ -382,16 +410,16 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio FROM orders GROUP BY o_custkey) SELECT n.n_name, SUM(cust.n), SUM(cust.prio) FROM customer AS c JOIN cust ON cust.k = c.c_custkey JOIN nation AS n ON n.n_nationkey = c.c_nationkey GROUP BY n.n_name;' 2>&1
 
-# NEXT-PHASE (REMOVED — rejection-assert did not reject, D21): the J19 partial-key
-# lookup to a non-root parent (binds only k1 of virt PK (k1,k2)) EXECUTED and
-# returned rows under ronsql_cli instead of cleanly rejecting (the --error 1
-# assert failed).  So partial-key / wrong-column-bound multi-key lookups are NOT
-# uniformly rejected here; value-correctness vs MySQL is unverified.  Clean
-# partial-key REJECTION is already covered by ronsql/t/ronsql_cte_partial_key.test.
-# Removed from this suite to keep it green; recorded for next-phase follow-up.
-#   J19: ... JOIN x ON x.k1 = c.c_custkey   (k2 unbound, non-root parent)
-#   J20: ... JOIN x ON x.k1 = o2.o_custkey AND x.cnt = o2.o_shippriority  (binds agg, not k2)
-# See findings/_discovery_log.md (D21).
+--echo
+--echo == J20 (D21): WRONG-column multi-key lookup — binds aggregate output x.n, not PK col k2 — permanent rejection ==
+# x has virtual PK (k1, k2); the join binds k1 + the aggregate output x.n, leaving
+# the PK column k2 unbound.  Unlike J19 (which binds a strict SUBSET of the PK with
+# a root-eligible parent and is auto-rewritten to a CTE_SCAN root), binding a
+# NON-PK column cannot be satisfied by a key lookup or the I.16c rewrite, so RonSQL
+# rejects at prepare time: "CTE lookup key references a CTE output column that is
+# not part of the virtual primary key."  (Resolves D21's wrong-column half.)
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH x AS (SELECT o_custkey AS k1, o_orderstatus AS k2, COUNT(*) AS n FROM orders GROUP BY o_custkey, o_orderstatus) SELECT o2.o_custkey, SUM(x.n) FROM orders AS o2 JOIN x ON x.k1 = o2.o_custkey AND x.n = o2.o_shippriority GROUP BY o2.o_custkey;' 2>&1
 
 # ============================================================================
 # PROBES (recorded + disabled)

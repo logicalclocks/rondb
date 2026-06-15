@@ -266,11 +266,27 @@ D22 (W1).
   `SUM(MIN(o_totalprice))`, i.e. SUM over a DECIMAL-derived DOUBLE = the separate
   D1 limitation, not formatting.**  Verified base + (pending) all topologies +
   `ronsql` regression.
-- **W4 — D21: partial-key / wrong-column-bound multi-key CTE lookup is NOT
-  rejected** (it executed and returned rows) — value-correctness vs MySQL is
-  unverified. Repro: `body_joins.inc` J19/J20 (removed). Decide: either reject
-  cleanly (as `ronsql_cte_partial_key.test` does for the simple case) or support
-  it and verify correctness. Couple this with H5/D20.
+- **W4 — D21: partial-key / wrong-column-bound multi-key CTE lookup — ✅
+  RESOLVED (re-verify only, no code change).**  Re-verified against current
+  binaries (the I.16a/I.16c/I.20 partial-key coverage + the D5 fan-out guard all
+  landed AFTER D21 was first recorded), splitting the two halves:
+    - **Partial key, root-eligible parent (J19):** `JOIN x ON x.k1 = c.c_custkey`
+      binds a strict SUBSET of x's virtual PK (k1,k2), and the bound parent alias
+      (`customer c`) is the original query root.  The **I.16c auto-rewrite**
+      promotes x to a CTE_SCAN root, sums `x.t` across all k2 values per customer,
+      and linearizes the would-be fan-out (x → customer → nation).  RDRS output is
+      **byte-identical to MySQL** (verified, empty strict-diff).  So this is
+      *supported*, not a bug — re-enabled as a green compare case.
+    - **Wrong column (J20):** `JOIN x ON x.k1 = o2.o_custkey AND x.n =
+      o2.o_shippriority` binds k1 + the aggregate output `x.n` (not the PK column
+      k2).  A non-PK bind can't be a key lookup nor the I.16c rewrite, so RonSQL
+      **rejects cleanly at prepare time**: "CTE lookup key references a CTE output
+      column that is not part of the virtual primary key."  Re-enabled as a
+      `--error 1` rejection-assert.
+  D21's original concern ("not rejected, correctness unverified") is answered:
+  the partial-key shape is correct via auto-rewrite, the wrong-column shape
+  rejects.  Re-enabled `body_joins.inc` J19 (green) + J20 (rejection-assert),
+  recorded green ×5 topologies.
 - **W5 — D26: flaky wrong COUNT on a multi-node-group composite CHAR key — ✅
   FIXED** (commit `94527c480f3`): a cross-thread data race on the strnxfrm hash
   scratch buffer.  J14/J15 (`GROUP BY o_custkey, o_orderstatus` re-aggregated
