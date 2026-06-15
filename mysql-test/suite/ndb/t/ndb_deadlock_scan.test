@@ -1,8 +1,10 @@
 --source include/have_ndb.inc
 
---echo # RONDB-1062: scan vs key-op deadlock discovery.
---echo # A locking range scan deadlocked with a key operation must be resolved
---echo # by aborting the KEY OP (the scan survives), promptly (proactive), with
+--echo # RONDB-1062: scan vs key-op deadlock discovery (lock takeover).
+--echo # A locking range scan (FOR UPDATE takes its row locks over to commit on
+--echo # a buddy key-op connection) deadlocked with a key operation must be
+--echo # resolved proactively - exactly one transaction aborted (the victim is
+--echo # the smaller transaction-id hash, either side), promptly, with
 --echo # TransactionDeadlockDetectionTimeout set to 60s (see .cnf).
 
 --disable_query_log
@@ -39,15 +41,22 @@ connection c2;
 
 connection default;
 SET @t0 = NOW(6);
-# The key op (c2) is the deterministic victim of a scan<->key-op cycle.
+# Either transaction may be the victim (collector = smaller transaction-id
+# hash); exactly one is aborted with a deadlock error, the other proceeds.
 connection c2;
---error 1205,1213
+--error 0,1205,1213
 --reap
-# The scan (c1) survives and completes once the lock is released.
+--let $c2_err = $mysql_errno
 connection c1;
+--error 0,1205,1213
 --reap
+--let $c1_err = $mysql_errno
 connection default;
 SET @t1 = NOW(6);
+if (`SELECT ($c1_err <> 0) + ($c2_err <> 0) <> 1`)
+{
+  --die scan<->key-op: expected exactly one deadlock victim
+}
 if (`SELECT TIMESTAMPDIFF(SECOND, @t0, @t1) >= 20`)
 {
   --die scan<->key-op deadlock not resolved promptly (proactive regressed?)
@@ -65,5 +74,5 @@ disconnect c2;
 --enable_result_log
 --enable_query_log
 
---echo # ndb_deadlock_scan: scan vs key-op deadlock aborted the key op,
---echo # the scan survived, resolved proactively.
+--echo # ndb_deadlock_scan: scan vs key-op (takeover) deadlock resolved
+--echo # proactively - exactly one transaction aborted.

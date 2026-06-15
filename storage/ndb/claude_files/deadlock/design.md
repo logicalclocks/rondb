@@ -568,31 +568,35 @@ operations. So **aborting a scan ⇒ aborting its whole transaction.**
 
 **Victim policy — "don't always abort scans".** Aborting a scan transaction is the costly,
 messy path (cascade through takeover + scan teardown), so proactive detection avoids it.
-This is achieved purely in the **collector-routing rule** (no remote abort needed, victim
-stays = collector = local):
+**Routing is by transaction id (smaller hash), always** — *not* by op kind:
 
 ```
-collector(W, O) =
-    if exactly one of {W, O} is a scan:  the NON-scan (key-op) endpoint
-    else (both key-op, or both scan):    the smaller-hash endpoint   (as before)
+collector(W, O) = the smaller-hash endpoint by transaction id   (min-hash)
 ```
 
-- **scan ↔ key-op deadlock:** both edges have endpoint set {scanTxn, keyOpTxn} with exactly
-  one scan, so both route to the **key-op** transaction → it is the collector and the
-  victim. The key-op is aborted via the existing `timeOutFoundLab` path; the scan survives
-  and proceeds once the lock is released. *A scan is never the victim here.*
-- **scan ↔ scan deadlock:** both endpoints are scans (it requires ≥1 exclusive-locking scan;
-  two shared scans don't conflict) → min-hash → the collector is a scan. DBTC resolves it
-  via `ScanFragRec → ScanRecord → ApiConnectRecord` and aborts it with
-  `scanError(ZSCANTIME_OUT_ERROR=296)` — aborting the scan aborts its transaction, since a
-  scan fragment can't be aborted in isolation (takeover entanglement + no partial abort).
-- **key-op ↔ key-op:** min-hash, exactly as today.
+An earlier "send to the key-op endpoint" rule (to spare scans) was abandoned because it
+cannot converge a **lock-takeover** cycle: a transaction there is a *scan-waiter* in one edge
+and a *key-op owner* in the other (its scan waits while its taken-over lock blocks the other
+party), so kind-based routing sends the two edges to different collectors and never assembles
+the cycle. Only the transaction id is identical for both edges, so min-hash is the only key
+that converges. Picking a scan as the victim is acceptable (it is not *forced* — a scan that
+took its lock over is aborted via its key-op buddy, see below).
 
-A scan's per-fragment `ScanFragRec`s all point at the one `ScanRecord`/`ApiConnectRecord`,
-so the two edges of a scan↔scan cycle (captured at different fragments) converge on the same
-collector record. `timeOutFoundLab`'s `CS_START_SCAN` case has an appl-timeout guard that
-would *not* abort proactively, which is why the scan victim is aborted via `scanError()`
-directly.
+- **key-op ↔ key-op** (incl. unique-index↔PK, shared→exclusive upgrades): min-hash → both
+  edges converge → `timeOutFoundLab(266)`.
+- **scan ↔ scan via batch locks** (≥1 exclusive, not taken over): both endpoints are scans,
+  no buddy → converge on the scan `ApiConnectRecord` → `scanError(296)` (aborting the scan
+  aborts its transaction; a scan fragment can't be aborted in isolation).
+- **lock takeover** (`FOR UPDATE` / `lockCurrentTuple`, scan↔key-op or scan↔scan): a scan
+  that took its lock over holds it to commit on a **buddy** key-op connection — a separate
+  `ApiConnectRecord` sharing the transid. DBTC canonicalises a scan endpoint with a matching
+  `buddyPtr` to that buddy, so the scan-op edge and the key-op edge of one transaction land
+  on the same record and the cycle assembles; the victim (the lock holder) is aborted via
+  `timeOutFoundLab(266)`. This closes the classic two-`FOR UPDATE`-scans-opposite-order
+  deadlock and is the common unique-index/takeover case.
+
+DBTC accumulates edges per `ApiConnectRecord` (`m_deadlock_edges`); min-hash routing +
+buddy canonicalisation ensure both edges of any 2-cycle reach the same record.
 
 **Status: IMPLEMENTED (incl. scan↔scan).**
 - `Dbacc::DeadlockEndpoint` + `describe_deadlock_endpoint()` classify and resolve each endpoint
@@ -608,15 +612,17 @@ directly.
   `m_ldm_instance_used` is **not** used here — it names the fragment-owning block (for metadata),
   not the op's actual instance. An endpoint that doesn't resolve leaves `tcRef == 0` and the edge
   is dropped (timeout backstop).
-- `send_deadlock_waitfor()` applies the kind-aware collector rule, sets `CollectorIsWaiter`
+- `send_deadlock_waitfor()` routes by min-hash transaction id (always), sets `CollectorIsWaiter`
   and `CollectorIsScan` in the signal, and drops an edge only if the collector ref is not a TC
   (`refToMain(dstRef) != DBTC`). Driven by the `accIsLockedLab` fan-out; the dead
   `checkNextBucketLab` hook (DBACC full-table scan, no longer used) was removed — real scans run
   in DBTUX/DBTUP and take their locks via `ACC_LOCKREQ` → `accIsLockedLab`.
-- DBTC `execDBACC_WAITFOR_REP` branches on `CollectorIsScan`: key-op collector →
-  `TcConnectRecord` + `timeOutFoundLab(266)`; scan collector → `ScanFragRec`→`ScanRecord`
-  (must be `RUNNING`, state `CS_START_SCAN`) + `scanError(296)`. The transid guard applies in
-  both paths.
+- DBTC `execDBACC_WAITFOR_REP` resolves the collector to the record its edges accumulate on:
+  key-op → `TcConnectRecord`; scan → `ScanFragRec`→`ScanRecord` (must be `RUNNING`) →
+  scan `ApiConnectRecord`, then **canonicalised to its `buddyPtr`** (the lock-holding key-op
+  connection) when present and transid-matching. The victim is aborted by its kind: a buddy-less
+  batch scan via `scanError(296)` (state `CS_START_SCAN`), otherwise (key op or buddy) via
+  `timeOutFoundLab(266)`. The transid guard applies in all paths.
 
 **Verified:** the LQH scan's `tcConnectrec.{clientBlockref,clientConnectrec}` give the scan's TC
 ref + TC `ScanFragRec` id (SCAN_FRAGREQ `senderData` → `clientConnectrec`), so DBTC resolves a
@@ -629,8 +635,8 @@ instance, a query-thread-driven scan (`DBQTUX`/`DBQTUP`) resolves the same way a
 |------|------|--------|
 | `suite/ndb/ndb_deadlock_discovery` | MTR | key-op↔key-op 2-cycle; negative (plain lock wait not falsely aborted) |
 | `suite/ndb/ndb_deadlock_more` | MTR | heavy contention (no false deadlock); 3 concurrent 2-cycles; DELETE↔UPDATE; unique-index↔PK |
-| `suite/ndb/ndb_deadlock_scan` | MTR | scan↔key-op (the key op is the deterministic victim; the scan survives) |
-| `suite/ndb/ndb_deadlock_scan_scan` | MTR → C++ | scan↔scan, via `testDeadlock -scan s` |
+| `suite/ndb/ndb_deadlock_scan` | MTR | scan↔key-op with **lock takeover** (`FOR UPDATE` scan whose lock is held to commit on a buddy); exactly one victim, either side |
+| `suite/ndb/ndb_deadlock_scan_scan` | MTR → C++ | scan↔scan via batch locks (no takeover), via `testDeadlock -scan s` |
 
 All MTR tests set `TransactionDeadlockDetectionTimeout = 60000` and assert resolution well
 under that (typically `< 20s`), so a pass proves *proactive* detection rather than the timeout.

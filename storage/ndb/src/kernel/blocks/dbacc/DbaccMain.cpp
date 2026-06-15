@@ -2179,12 +2179,17 @@ void Dbacc::describe_deadlock_endpoint(const Operationrec *opP,
 
 /**
  * RONDB-1062: send one wait-for edge (waiter waits on owner) to the collector
- * TC.  The collector is the non-scan (key-op) endpoint when exactly one
- * endpoint is a scan (so a scan<->key-op deadlock aborts the key-op side,
- * never the scan); otherwise (both key-op, or scan<->scan) it is the
- * smaller-hash endpoint.  For a scan<->scan deadlock the collector is a scan
- * and DBTC aborts it via scanError(); the CollectorIsScan flag tells DBTC
- * which resolution/abort path to use.  An edge is dropped only if the
+ * TC.  The collector is always the smaller-hash endpoint (by transaction id).
+ *
+ * Routing MUST be by transaction id, not by op kind: a transaction caught in a
+ * lock-takeover deadlock appears as a scan-waiter in one edge and a key-op
+ * owner in the other (its scan waits while its taken-over lock blocks the other
+ * party), so a kind-based "send to the key-op" rule would send the two edges of
+ * the cycle to different collectors and never assemble it.  The smaller-hash
+ * transaction id is the only key identical for both edges, so both converge
+ * there.  The CollectorIsScan flag still tells DBTC which resolution/abort path
+ * the collector endpoint needs (scan vs key op); DBTC further canonicalises a
+ * taken-over scan to its lock-holding buddy.  An edge is dropped only if the
  * collector's TC ref could not be resolved locally (e.g. a query-thread scan).
  * NOTE: reuses signal->theData, so callers needing the signal contents must
  * rebuild them afterwards.
@@ -2192,21 +2197,8 @@ void Dbacc::describe_deadlock_endpoint(const Operationrec *opP,
 void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
                                   const DeadlockEndpoint &o)
 {
-  bool collectorIsWaiter;
-  if (o.isScan && !w.isScan)
-  {
-    collectorIsWaiter = true;  // exactly one scan -> collector = waiter (key op)
-  }
-  else if (w.isScan && !o.isScan)
-  {
-    collectorIsWaiter = false;  // exactly one scan -> collector = owner (key op)
-  }
-  else
-  {
-    /* Both key ops, or both scans (scan<->scan): smaller-hash endpoint. */
-    collectorIsWaiter =
-        deadlock_a_is_collector(w.transId1, w.transId2, o.transId1, o.transId2);
-  }
+  const bool collectorIsWaiter =
+      deadlock_a_is_collector(w.transId1, w.transId2, o.transId1, o.transId2);
   const DeadlockEndpoint &collector = collectorIsWaiter ? w : o;
   const BlockReference dstRef = collector.tcRef;
   // The collector must be a transaction coordinator.  Skip (rather than risk a
@@ -2370,11 +2362,22 @@ Dbacc::accIsLockedLab(Signal* signal,
           }
           if (!dup)
           {
+            ndbrequire(dl_num < DL_MAX_OWNERS);  // guaranteed by the loop guard
             describe_deadlock_endpoint(loopPtr.p, dl_owners[dl_num]);
             dl_num++;
           }
         }
         loopPtr.i = loopPtr.p->nextParallelQue;
+      }
+      /* If we stopped on the cap rather than the end of the queue, there are
+       * more distinct lock-owner transactions than we report edges for; those
+       * extra wait-for relationships fall back to the deadlock timeout. */
+      if (loopPtr.i != RNIL)
+      {
+        jam();
+        DEB_DEADLOCK(("(%u) deadlock fan-out truncated at DL_MAX_OWNERS=%u;"
+                      " extra owners fall back to the timeout", instance(),
+                      DL_MAX_OWNERS));
       }
       DEB_DEADLOCK(("(%u) serial lock wait on tab(%u,%u) row(%u,%u): waiter"
                     " trans(%u,%u) scan=%u, distinct foreign owners=%u",

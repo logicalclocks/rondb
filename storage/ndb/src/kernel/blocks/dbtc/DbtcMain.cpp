@@ -11391,13 +11391,21 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
                 (Uint32)collectorIsWaiter, (Uint32)collectorIsScan, collectorT1,
                 collectorT2, collectorTcOprec, otherT1, otherT2));
 
-  /* Resolve the collector to its ApiConnectRecord.  A key-op collector
-   * resolves via its TcConnectRecord (tcOprec); a scan collector via the TC
-   * ScanFragRec (tcOprec) -> ScanRecord -> ApiConnectRecord, and is aborted
-   * with scanError() rather than the key-op timeout path. */
+  /* Resolve the collector to the ApiConnectRecord on which its deadlock edges
+   * accumulate, and decide how to abort it.  A key-op collector resolves via
+   * its TcConnectRecord (tcOprec).  A scan collector resolves via the TC
+   * ScanFragRec (tcOprec) -> ScanRecord -> scan ApiConnectRecord; if that scan
+   * took its lock over, the lock is held to commit on a buddy key-op connection
+   * (a separate ApiConnectRecord sharing the transid) and the deadlock is on
+   * that held lock - so we canonicalise to the buddy and abort it as a key op.
+   * Both the scan-op edge and the key-op edge of one transaction thus land on
+   * the same record (the buddy), which is what lets a takeover cycle assemble.
+   * A scan with no buddy holds only batch locks and is aborted via scanError().
+   */
   ApiConnectRecordPtr apiConnectptr;
   ScanRecordPtr scanptr;
   scanptr.i = RNIL;
+  bool abortAsScan = false;
   if (collectorIsScan) {
     ScanFragRecPtr scanFragPtr;
     scanFragPtr.i = collectorTcOprec;  // tcOprec is the TC ScanFragRec id
@@ -11421,6 +11429,26 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
       return;
     }
     apiConnectptr.i = scanptr.p->scanApiRec;
+    if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
+      jam();
+      DEB_DEADLOCK(("(%u) drop: scan apiConnect (scanRec %u) not valid",
+                    instance(), scanptr.i));
+      return;
+    }
+    /* Canonicalise a taken-over scan to its lock-holding buddy (same transid). */
+    ApiConnectRecordPtr buddyApiPtr;
+    buddyApiPtr.i = apiConnectptr.p->buddyPtr;
+    if (buddyApiPtr.i != RNIL &&
+        c_apiConnectRecordPool.getValidPtr(buddyApiPtr) &&
+        buddyApiPtr.p->transid[0] == collectorT1 &&
+        buddyApiPtr.p->transid[1] == collectorT2) {
+      jam();
+      apiConnectptr = buddyApiPtr;  // abort the lock-holding key-op transaction
+      scanptr.i = RNIL;
+    } else {
+      jam();
+      abortAsScan = true;  // batch scan-lock: abort the scan itself
+    }
   } else {
     TcConnectRecordPtr localTcPtr;
     localTcPtr.i = collectorTcOprec;
@@ -11450,8 +11478,10 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
                   collectorTcOprec, (Uint32)collectorIsScan));
     return;
   }
-  /* Only act on a transaction that is still active and abortable. */
-  if (collectorIsScan) {
+  /* Only act on a transaction that is still active and abortable.  The victim
+   * record is the scan itself (batch lock) or the key-op connection (key op or
+   * canonicalised buddy). */
+  if (abortAsScan) {
     if (apiConnectptr.p->apiConnectstate != CS_START_SCAN) {
       jam();
       DEB_DEADLOCK(("(%u) drop: scan collector trans(%u,%u) not in"
@@ -11471,7 +11501,7 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
         break;
       default:
         jam();
-        DEB_DEADLOCK(("(%u) drop: key-op collector trans(%u,%u) not abortable,"
+        DEB_DEADLOCK(("(%u) drop: key-op victim trans(%u,%u) not abortable,"
                       " apiConnectstate=%u", instance(), collectorT1,
                       collectorT2, (Uint32)apiConnectptr.p->apiConnectstate));
         return;
@@ -11482,14 +11512,14 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
                                        : ApiConnectRecord::DLD_WAITED_BY;
   const bool cycle =
       recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir);
-  DEB_DEADLOCK(("(%u) recorded edge dir=%u on collector trans(%u,%u) isScan=%u"
+  DEB_DEADLOCK(("(%u) recorded edge dir=%u on victim trans(%u,%u) abortAsScan=%u"
                 " vs other trans(%u,%u): cycle=%u", instance(), dir,
-                collectorT1, collectorT2, (Uint32)collectorIsScan, otherT1,
+                collectorT1, collectorT2, (Uint32)abortAsScan, otherT1,
                 otherT2, (Uint32)cycle));
   if (cycle) {
     jam();
-    /* 2-cycle: the collector (local, smaller-hash endpoint) is the victim. */
-    if (collectorIsScan) {
+    /* 2-cycle: the collector (local, smaller-hash transaction) is the victim. */
+    if (abortAsScan) {
       DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting scan victim trans(%u,%u)"
                     " (scanRec %u) with error %u", instance(), collectorT1,
                     collectorT2, scanptr.i, ZSCANTIME_OUT_ERROR));
