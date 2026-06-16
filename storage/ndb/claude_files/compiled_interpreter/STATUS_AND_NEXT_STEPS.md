@@ -9,6 +9,50 @@
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
 
+## NEXT UP: Phase 8 — production readiness (start here after compaction)
+
+**Phase 7 is complete.** The scan-filter JIT runs the full
+column-vs-value comparison-predicate family — `col IS [NOT] NULL`,
+`col <op> const|?|col2`, integer **and** string — plus standalone +
+join aggregation (narrow shapes). All verified (bridge_tests T1–T44 +
+`rondb_jit_scan_filter_canary` Q1–Q12). See
+`phase_7_comparison_predicates.md` + `phase_7_implementation.md`. Last
+commits: `c3e4eacc6eb`/`90f1ae60829` (strings). Branch pushed, green.
+
+**Phase 8 = make it shippable** (full design: `plan.md` §14, line ~1298).
+Recommended order:
+
+1. **JIT code-memory manager — the one true ship blocker.** Today the
+   arena is a **monotonic bump allocator that never frees**
+   (`jit/jit_arena.c`): per-DBTUP `m_jit_arena = ndb_jit_arena_create(1 MB)`
+   at `DbtupGen.cpp:~269` (+ per-`DblqhProxy` arena in `DblqhProxy.cpp`
+   ctor). Every compiled program (agg + scan filter) consumes arena and is
+   never reclaimed → a long-running node with many distinct prepared
+   statements exhausts it and silently stops JITting. Replace with a
+   **node-global slot allocator** (size classes 256 B–8 KB, intrusive
+   free-lists, slot handle carrying RW+RX addrs; keep Linux W^X dual-map /
+   macOS MAP_JIT; execution path stays lock-free). On OOM → publish NULL
+   entry → interpreter fallback. plan.md §14.
+2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
+   always-on-if-eligible — no off switch; operability blocker).
+3. **NDBINFO counters** — compiles / runs / fallbacks / compile-ns /
+   arena-bytes (observability).
+4. **SIGSEGV sidecar** — JIT'd code has no symbols; keep bytecode +
+   stencil-IDs on the writable side for post-mortem of a crash in a blob.
+5. **GROUP BY gate lift** (big coverage, hard; arguably its own phase) —
+   today *all* grouped aggregation falls back via the
+   `m_jit_entry != nullptr && m_n_gb_cols == 0` gate in `ProcessRec`
+   (`JoinAggInterpreter.cpp:~484`, `AggInterpreter.cpp`). Lifting it needs
+   grouped accumulator lookup/update in the JIT.
+
+**Other open tracks** (not Phase 8, alternatives to it): **Phase 6**
+cross-branch always-JIT `--force-jit` differential testing (high
+confidence; needs the parallel interpreter-test-program branch merged);
+**Phase 5 (full)** type-state lattice + ~70–75 aggregation stencil matrix
+(broader aggregation expressions; needs regen). **Cheap leftover:** verify
+compound scan predicates (`WHERE a > 5 AND b < 'x'`) — likely already JIT
+(forward branches the bridge admits); one canary confirms.
+
 ## Latest implementation — Phase 7 scan-filter runtime glue (2026-06-10)
 
 First vertical slice of the SCAN_FRAGREQ scan-filter runtime wiring —
