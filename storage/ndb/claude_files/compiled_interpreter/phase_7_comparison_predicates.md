@@ -19,8 +19,9 @@ predicates. Landed:
   row, the handler's `cmp(cond, field1, field2)` path). **No stencil regen**:
   reuses the same stencil/helper; for OP_ATTR the eval reads the 2nd column
   from the row (into a 2nd buffer) and compares it using the 1st column's
-  type/charset comparator — mirroring handleBranchAttrOp. `bridge_tests` T44
-  + canary Q8 (`WHERE pk < v` under 4060). **Pending Mikael's build + run.**
+  type/charset comparator — mirroring handleBranchAttrOp. **Verified by
+  Mikael (2026-06-16):** `bridge_tests` T44 + `rondb_jit_scan_filter_canary`
+  Q8 (`WHERE pk < v` under 4060) + Q9 differential pass. Commit `2f35cc1771c`.
 
 Deferred: strings/VARCHAR.
 

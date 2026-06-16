@@ -461,9 +461,12 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    `phase_7_comparison_predicates.md`). **OP_PARAM also DONE & VERIFIED
    2026-06-16** — `col <op> ?` (bound parameter, `cmp_param`) reuses the same
    stencil (no regen); the helper resolves the operand from the param region
-   via `lookupInterpreterParameter` (commit `51f0f6a5718`). Remaining within
-   (d): OP_ATTR (`col <op> col2`) and string/VARCHAR comparison — the rest of
-   the "full embedded-branch family" work.
+   via `lookupInterpreterParameter` (commit `51f0f6a5718`). **OP_ATTR also
+   DONE & VERIFIED 2026-06-16** — `col1 <op> col2` (column-vs-column,
+   `cmp(cond,field1,field2)`) reuses the same stencil/helper; the eval reads
+   the 2nd column and compares with the 1st column's comparator (commit
+   `2f35cc1771c`). Remaining within (d): **string/VARCHAR comparison**
+   (charset/collation) — the last piece of the comparison-predicate family.
 5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
    (`n_pending_case_jumps != 0`); only needed if scan filters require
