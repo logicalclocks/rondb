@@ -29,6 +29,7 @@ timeout remains as a backstop.
 | File | Contents |
 |------|----------|
 | `design.md` | Full design + phased implementation plan + file-by-file change checklist + open questions. **Start here.** |
+| `error_reporting_plan.md` | Plan (not started) to enrich the deadlock error reported to the NDB API: optional real-deadlock indicator, tables involved, and the aborted deadlocking operation — without changing the 266/296 error code. |
 
 ## Key code anchors (verified against current tree)
 
