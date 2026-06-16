@@ -5636,13 +5636,16 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
   const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
   const Uint32 opCode = Interpreter::getOpCode(w0) % OVERFLOW_OPCODE;
 
-  /* Read the column value. read_buf holds the AttributeHeader (word 0) then
-   * the value bytes. 64 words covers integers and short strings; a value
-   * too large to fit returns a negative rc which the caller treats as
-   * fatal (the admitted scope is integer columns). */
-  Uint32 read_buf[64];
-  int rc = readSingleAttribute(req_struct, attrId, read_buf,
-                               sizeof(read_buf) / sizeof(Uint32));
+  /* Read the column value into the block's large coutBuffer rather than a
+   * small stack buffer. coutBuffer is the interpreter's tmpArea — free on
+   * the JIT path (a drop-in for interpreterNextLab, which is skipped) and
+   * sized for any attribute, so a wide string/VARCHAR column can't overflow.
+   * The first half holds the 1st column; the OP_ATTR 2nd column uses the
+   * second half (from ATTR_BUF_CAP). The read buffer holds the
+   * AttributeHeader (word 0) then the value bytes. */
+  const Uint32 ATTR_BUF_CAP = ZATTR_BUFFER_SIZE / 2;
+  Uint32 *const read_buf = coutBuffer;
+  int rc = readSingleAttribute(req_struct, attrId, read_buf, ATTR_BUF_CAP);
   if (unlikely(rc < 0)) {
     return rc;
   }
@@ -5670,8 +5673,7 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
   /* 2nd operand: an inline literal (OP_ARG), a parameter from the
    * subroutine/param region (OP_PARAM), or another column of the same row
    * (OP_ATTR). Each mirrors the corresponding arm of handleBranchAttrOp.
-   * read_buf2 backs the OP_ATTR second-column read; s2 may point into it. */
-  Uint32 read_buf2[64];
+   * For OP_ATTR the 2nd column is read into coutBuffer's second half. */
   Uint32 argLen;
   const char *s2;
   if (opCode == Interpreter::BRANCH_ATTR_OP_ARG) {
@@ -5696,8 +5698,9 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
      * declared size from its descriptor (the comparator + charset still come
      * from the 1st column). */
     const Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(w1);
+    Uint32 *const read_buf2 = &coutBuffer[ATTR_BUF_CAP];   // 2nd half
     int rc2 = readSingleAttribute(req_struct, attr2Id, read_buf2,
-                                  sizeof(read_buf2) / sizeof(Uint32));
+                                  ATTR_BUF_CAP);
     if (unlikely(rc2 < 0)) {
       return rc2;
     }

@@ -80,4 +80,35 @@ SELECT pk, v FROM t1 WHERE pk < v;
 
 DROP TABLE t1;
 
+--echo ############################################################
+--echo # String (VARCHAR) comparison predicates
+--echo ############################################################
+CREATE TABLE t2 (
+  pk BIGINT NOT NULL,
+  s  VARCHAR(32),
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t2 VALUES
+  (1, 'apple'), (2, NULL), (3, 'cherry'), (4, 'date'), (5, 'cherry');
+
+--echo # Q10: WHERE s = 'cherry' (VARCHAR literal) must JIT — string compare
+--echo #      via the column's charset, read into the large coutBuffer.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q11: WHERE s < 'cherry' (VARCHAR range) must JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, s FROM t2 WHERE s < 'cherry';
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q12: differential — same string filter without the error insert.
+--sorted_result
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+
+DROP TABLE t2;
+
 --remove_file $NDB_TOOLS_OUTPUT

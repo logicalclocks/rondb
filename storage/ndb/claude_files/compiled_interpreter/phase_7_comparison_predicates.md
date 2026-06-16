@@ -22,8 +22,19 @@ predicates. Landed:
   type/charset comparator — mirroring handleBranchAttrOp. **Verified by
   Mikael (2026-06-16):** `bridge_tests` T44 + `rondb_jit_scan_filter_canary`
   Q8 (`WHERE pk < v` under 4060) + Q9 differential pass. Commit `2f35cc1771c`.
+- **Strings / VARCHAR** — `WHERE s = 'x'` / `s < 'm'` (and the OP_PARAM /
+  OP_ATTR variants) now JIT too. The comparison was already charset-correct
+  (`evalBranchColForJit` passes the column's `cs` to `m_cmp`); the only fix
+  needed was the read buffer: the eval now reads the column(s) into the
+  block's large `coutBuffer` (the interpreter's `tmpArea`, free on the JIT
+  path, sized for any attribute incl. max VARCHAR) instead of a 64-word
+  stack buffer, so a wide string value can't overflow. No bridge /
+  eligibility / regen change. `bridge_tests` unchanged (translation is
+  type-agnostic); canary Q10/Q11/Q12 (`s = 'cherry'`, `s < 'cherry'`).
+  **Pending Mikael's build + run.**
 
-Deferred: strings/VARCHAR.
+Deferred: none for the comparison-predicate family — `LIKE`/mask conditions
+stay on the interpreter (bridge rejects cond > GE) by design.
 
 ## NDB encoding (`BRANCH_ATTR_OP_ARG`, opcode 23)
 
@@ -145,5 +156,12 @@ regen if either 16-bit half is zero. The branch target is a relocation
   for the row; the helper runs synchronously within that window. Safe.
 - aarch64 magic for the wide offset imm — verify the chain matches an
   existing 32-bit-imm stencil's shape.
-- Only the integer path is canary-tested; m_cmp makes the code type-general
-  but strings are unexercised (deferred scope).
+- Integer and short-VARCHAR paths are canary-tested; `m_cmp` makes the code
+  type-general. The 2nd-column read for OP_ATTR and the 1st-column read share
+  `coutBuffer` halves (`ZATTR_BUFFER_SIZE/2` words each) — ample for any
+  single attribute (max VARCHAR ≈ 16384 words), but if a future caller needs
+  two simultaneously-huge columns, revisit the split.
+- `coutBuffer` reuse is safe because the JIT scan-filter path is a drop-in
+  for `interpreterNextLab` (which uses `coutBuffer` as its `tmpArea`) and the
+  downstream projection reads write to `dst` (`signal->theData`), not
+  `coutBuffer`; scans are `ZREAD` so it holds no after-values.

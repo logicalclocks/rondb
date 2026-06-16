@@ -61,3 +61,29 @@ pk	v
 3	30
 5	50
 DROP TABLE t1;
+############################################################
+# String (VARCHAR) comparison predicates
+############################################################
+CREATE TABLE t2 (
+pk BIGINT NOT NULL,
+s  VARCHAR(32),
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+(1, 'apple'), (2, NULL), (3, 'cherry'), (4, 'date'), (5, 'cherry');
+# Q10: WHERE s = 'cherry' (VARCHAR literal) must JIT — string compare
+#      via the column's charset, read into the large coutBuffer.
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+pk	s
+3	cherry
+5	cherry
+# Q11: WHERE s < 'cherry' (VARCHAR range) must JIT.
+SELECT pk, s FROM t2 WHERE s < 'cherry';
+pk	s
+1	apple
+# Q12: differential — same string filter without the error insert.
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+pk	s
+3	cherry
+5	cherry
+DROP TABLE t2;
