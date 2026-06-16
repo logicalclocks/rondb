@@ -465,8 +465,13 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    DONE & VERIFIED 2026-06-16** — `col1 <op> col2` (column-vs-column,
    `cmp(cond,field1,field2)`) reuses the same stencil/helper; the eval reads
    the 2nd column and compares with the 1st column's comparator (commit
-   `2f35cc1771c`). Remaining within (d): **string/VARCHAR comparison**
-   (charset/collation) — the last piece of the comparison-predicate family.
+   `2f35cc1771c`). **String/VARCHAR also DONE & VERIFIED 2026-06-16** — the
+   eval reads columns into the large `coutBuffer` (not a stack buffer) so
+   wide strings can't overflow; `m_cmp`+charset already handled the compare
+   (commit `c3e4eacc6eb`). **(d) — the comparison-predicate family is now
+   complete:** `col <op> const | ? | col2`, integer and string. Only
+   `LIKE`/mask conditions stay on the interpreter (bridge rejects cond > GE),
+   by design.
 5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
    (`n_pending_case_jumps != 0`); only needed if scan filters require

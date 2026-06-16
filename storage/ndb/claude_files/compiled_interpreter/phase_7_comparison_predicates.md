@@ -1,8 +1,9 @@
 # Phase 7 — scan-filter comparison predicates (`WHERE col <op> const | ?`)
 
-**Status: OP_ARG verified (2026-06-15); OP_PARAM added (2026-06-16).**
-Extends the scan-filter JIT beyond `IS [NOT] NULL` to integer comparison
-predicates. Landed:
+**Status: comparison-predicate family complete & verified (2026-06-16).**
+Extends the scan-filter JIT beyond `IS [NOT] NULL` to the full
+column-vs-value comparison family (literal / parameter / column, integer and
+string). Landed:
 - **`BRANCH_ATTR_OP_ARG`** — `WHERE int_col <op> const` (inline literal),
   all 6 comparators (EQ/NE/LT/LE/GT/GE). Verified: regen-stencils,
   `bridge_tests` (T41/T42), `rondb_jit_scan_filter_canary` (Q4 `v>25`,
@@ -31,7 +32,8 @@ predicates. Landed:
   stack buffer, so a wide string value can't overflow. No bridge /
   eligibility / regen change. `bridge_tests` unchanged (translation is
   type-agnostic); canary Q10/Q11/Q12 (`s = 'cherry'`, `s < 'cherry'`).
-  **Pending Mikael's build + run.**
+  **Verified by Mikael (2026-06-16):** bridge_tests + the canary pass.
+  Commit `c3e4eacc6eb`.
 
 Deferred: none for the comparison-predicate family — `LIKE`/mask conditions
 stay on the interpreter (bridge rejects cond > GE) by design.
