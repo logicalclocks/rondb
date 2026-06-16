@@ -19,20 +19,39 @@ join aggregation (narrow shapes). All verified (bridge_tests T1–T44 +
 `phase_7_comparison_predicates.md` + `phase_7_implementation.md`. Last
 commits: `c3e4eacc6eb`/`90f1ae60829` (strings). Branch pushed, green.
 
-**Phase 8 = make it shippable** (full design: `plan.md` §14, line ~1298).
+**Phase 8 = make it shippable** (full design: `plan.md` §14, line ~1298;
+code-memory manager detail: `phase_8_code_memory_manager.md`).
 Recommended order:
 
-1. **JIT code-memory manager — the one true ship blocker.** Today the
-   arena is a **monotonic bump allocator that never frees**
-   (`jit/jit_arena.c`): per-DBTUP `m_jit_arena = ndb_jit_arena_create(1 MB)`
-   at `DbtupGen.cpp:~269` (+ per-`DblqhProxy` arena in `DblqhProxy.cpp`
-   ctor). Every compiled program (agg + scan filter) consumes arena and is
-   never reclaimed → a long-running node with many distinct prepared
-   statements exhausts it and silently stops JITting. Replace with a
-   **node-global slot allocator** (size classes 256 B–8 KB, intrusive
-   free-lists, slot handle carrying RW+RX addrs; keep Linux W^X dual-map /
-   macOS MAP_JIT; execution path stays lock-free). On OOM → publish NULL
-   entry → interpreter fallback. plan.md §14.
+1. **JIT code-memory manager — the one true ship blocker. IN PROGRESS.**
+   Was a **monotonic bump allocator that never frees** (`jit/jit_arena.c`):
+   per-DBTUP `ndb_jit_arena_create(1 MB)` at `DbtupGen.cpp:~269` + per-
+   `DblqhProxy` arena → a long-running node with many distinct prepared
+   statements exhausts it and silently stops JITting forever. **Decided
+   (2026-06-17): node-global, two layers, striped locks + a reuse cache.**
+   - **Slice 1a — `jit_codemem.{h,c}` DONE (inert, host-tested).** Free-
+     capable slot allocator over the kept W^X substrate: size classes
+     256 B–8 KB, **each class its own free list + mutex** (striped), slabs =
+     `NdbJitArena`s carved into fixed slots, free-list links in heap (so
+     `free` never touches code mem / needs no macOS write-toggle), 16 MB
+     node cap → OOM returns −1 → interpreter fallback, lock-free execution.
+     `+ndb_jit_arena_prepare_write` substrate call. Unit test
+     `test/jit_proto/codemem_tests.c` (class selection, alloc/seal/execute,
+     reuse-after-free, accounting, cap OOM, validation, global singleton).
+     **NOT yet wired into `jit1_compile` or DBTUP.**
+   - **Slice 1b — `jit_progcache.{h,c}` (next).** Sharded refcounted hash
+     keyed on exact bytecode words → identical programs share one blob
+     (sound: blob is pure fn of bytecode; OP_PARAM binds read per-row via
+     `param_buf`). `acquire(bytecode,…,pinned)` / `release` with a `pinned`
+     hint = the RonSQL **PREPARE** reuse hook. Mock-compiler host tests.
+   - **Slice 2** — `jit1_compile` allocates from `codemem` (record the slot
+     handle in `Jit1Prog`) + `jit1_free`; stop leaking `Jit1Prog*`.
+   - **Slice 3** — DBTUP/agg switch to `progcache` acquire/release; wire
+     the program-death sites (scan filter `storedProc` set
+     `DbtupExecQuery.cpp:1106` / reset `DbtupStoredProcDef.cpp:188`; agg
+     `setJitEntry` on `AggInterpreter`/`JoinAggInterpreter`/
+     `DblqhProxy::m_leaf_programs[i]`); drop the per-block `m_jit_arena`s.
+   - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
    always-on-if-eligible — no off switch; operability blocker).
 3. **NDBINFO counters** — compiles / runs / fallbacks / compile-ns /

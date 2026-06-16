@@ -96,6 +96,20 @@ const void *ndb_jit_arena_exec_addr(const NdbJitArena *arena,
   return arena->rx_base + (size_t)(p - arena->rw_base);
 }
 
+void ndb_jit_arena_prepare_write(NdbJitArena *arena) {
+  if (!arena) return;
+#ifdef __APPLE__
+  /* MAP_JIT write protection is per-thread; re-enable on the calling
+   * thread (the one about to emit). Reuses the macOS backend helper so
+   * the jit_write_enabled bookkeeping stays in one place. */
+  extern void ndb_jit_arena_macos_enable_write(NdbJitArena *);
+  ndb_jit_arena_macos_enable_write(arena);
+#else
+  /* Linux: the RW mapping is always writable; nothing to do. */
+  (void)arena;
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* Bump-pointer alloc — same on all platforms.                        */
 /* ------------------------------------------------------------------ */

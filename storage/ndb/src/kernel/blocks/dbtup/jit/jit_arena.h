@@ -121,6 +121,21 @@ const void *ndb_jit_arena_exec_addr(const NdbJitArena *arena,
                                     const void *rw_ptr);
 
 /**
+ * Re-enable writes to the arena's RW view on the *calling thread*.
+ *
+ *   - macOS: pthread_jit_write_protect_np(0) — MAP_JIT write protection
+ *     is per-thread, so a thread that did not create/seal the arena
+ *     (or that wrote through it before a seal flipped protection on)
+ *     must call this before emitting. Idempotent and cheap.
+ *   - Linux: no-op (the RW mapping is always writable).
+ *
+ * ndb_jit_arena_alloc already does this internally; this entry point
+ * exists for a slot allocator that re-emits into a *recycled* slot
+ * without going through alloc's bump pointer. Safe to call with NULL.
+ */
+void ndb_jit_arena_prepare_write(NdbJitArena *arena);
+
+/**
  * Total size of the arena in bytes (page-rounded value passed
  * to ndb_jit_arena_create).
  */

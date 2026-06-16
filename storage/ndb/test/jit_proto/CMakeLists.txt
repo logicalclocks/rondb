@@ -178,3 +178,23 @@ TARGET_LINK_LIBRARIES(coldcall_tests PRIVATE
   ndb_jit1
   ndb_jit_arena
 )
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 8: codemem_tests — node-global JIT code-memory
+# manager unit tests.
+#
+# Exercises jit_codemem.c (size-class selection, alloc/seal/execute,
+# slot reuse after free, reserved/in-use accounting, the reserved-byte
+# cap OOM path, over-max / zero rejection, the global singleton). Pure
+# substrate — links only ndb_jit_arena (which now contains jit_codemem).
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(codemem_tests codemem_tests.c)
+SET_TARGET_PROPERTIES(codemem_tests PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(codemem_tests PRIVATE
+  ndb_jit_arena
+)

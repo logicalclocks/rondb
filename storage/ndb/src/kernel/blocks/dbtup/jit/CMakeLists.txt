@@ -36,8 +36,12 @@ IF(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   RETURN()
 ENDIF()
 
+# jit_codemem.c (Phase 8) is the node-global free-capable code-memory
+# manager layered on the arena substrate; it lives in the same static
+# library since it is part of the executable-memory substrate.
 ADD_LIBRARY(ndb_jit_arena STATIC
   jit_arena.c
+  jit_codemem.c
 )
 
 # The .inc.c platform bodies are #included from jit_arena.c, not
@@ -53,12 +57,10 @@ TARGET_INCLUDE_DIRECTORIES(ndb_jit_arena PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# No external libraries needed — pure libc + libpthread on macOS for
-# pthread_jit_write_protect_np.
-IF(APPLE)
-  FIND_PACKAGE(Threads REQUIRED)
-  TARGET_LINK_LIBRARIES(ndb_jit_arena PUBLIC Threads::Threads)
-ENDIF()
+# libpthread: macOS for pthread_jit_write_protect_np; all platforms for
+# the code-memory manager's per-size-class mutexes + pthread_once.
+FIND_PACKAGE(Threads REQUIRED)
+TARGET_LINK_LIBRARIES(ndb_jit_arena PUBLIC Threads::Threads)
 
 # ---------------------------------------------------------------------------
 # RONDB-1056 Phase 1: copy-and-patch JIT engine.
