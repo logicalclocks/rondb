@@ -345,33 +345,85 @@ GROUP BY clk.k|
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey) SELECT o.o_custkey, SUM(liq.n), SUM(liq.q) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;' 2>&1
 
 # =====================================================================
-# Group 5 — CTE-body GREATEST / LEAST in WHERE.
+# Group 5 — CTE-body GREATEST / LEAST in WHERE (D11 — now supported).
 #
-# DISCOVERY: GREATEST / LEAST are NOT accepted in a CTE-body WHERE
-# conditional expression on this build — RonSQL's grammar only permits
-# GREATEST/LEAST in the top-level SELECT scalar position (RonSQLParser.y
-# rules 421/448), not inside a WHERE term.  Both cases fail at record
-# time with a hard "Syntax error: Unexpected at this point" pointing at
-# GREATEST/LEAST.  (This is the parser gate, distinct from the
-# NdbScanFilter "Non-boolean term" gate that disables o_clerk IS NULL.)
-# Disabled as NEXT-PHASE probes.  See findings/filter.md / _discovery_log.md (D11).
+# GREATEST / LEAST are now accepted in a CTE-body WHERE conditional
+# expression.  RonSQL lowers `GREATEST(...) <cmp> const` / `LEAST(...)
+# <cmp> const` to a boolean OR/AND of per-argument column-vs-constant
+# comparisons in simplify_ce (GREATEST > / LEAST < -> OR with IS NOT NULL
+# guards; GREATEST < / LEAST > -> AND).  Constant arguments are folded;
+# the comparand must be a constant and = / != are rejected.  Cases below
+# cover GREATEST+OR (const-arg fold), LEAST+OR (two columns), and the
+# AND direction via n-ary (3-arg) GREATEST/LEAST.  See _discovery_log.md (D11).
+# =====================================================================
 
-# NEXT-PHASE (DISABLED — Syntax error): GREATEST in a CTE-body WHERE.
-#   Grammar rejects GREATEST/LEAST in a WHERE conditional expression
-#   (only top-level SELECT scalar position is accepted). (was filter-14)
-#   WITH sums AS (
-#     SELECT o_custkey AS k, COUNT(*) AS n
-#     FROM orders WHERE GREATEST(o_shippriority, 1) > 2 GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.n)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+--echo
+--echo === filter-14 (D11): CTE-body WHERE GREATEST(o_shippriority, 1) > 2 (OR dir, const-arg fold) ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE GREATEST(o_shippriority, 1) > 2 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE GREATEST(o_shippriority, 1) > 2 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
 
-# NEXT-PHASE (DISABLED — Syntax error): LEAST(col, col) in a CTE-body
-#   WHERE.  Same grammar gate as above. (was filter-15)
-#   WITH liq AS (
-#     SELECT l_orderkey AS k, COUNT(*) AS n
-#     FROM lineitem WHERE LEAST(l_quantity, l_partkey) < 10 GROUP BY l_orderkey)
-#   SELECT o.o_custkey, SUM(liq.n)
-#   FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;
+--echo
+--echo === filter-14b (D11): CTE-body WHERE GREATEST(o_shippriority, o_custkey, 5) <= 50 (AND dir, n-ary) ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE GREATEST(o_shippriority, o_custkey, 5) <= 50 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE GREATEST(o_shippriority, o_custkey, 5) <= 50 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
+
+--echo
+--echo === filter-15 (D11): CTE-body WHERE LEAST(l_quantity, l_partkey) < 10 (OR dir, two columns) ===
+let $QUERY=
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n
+  FROM lineitem WHERE LEAST(l_quantity, l_partkey) < 10 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n
+  FROM lineitem WHERE LEAST(l_quantity, l_partkey) < 10 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey|
+
+--echo
+--echo === filter-15b (D11): CTE-body WHERE LEAST(l_quantity, l_partkey, 100) > 5 (AND dir, n-ary) ===
+let $QUERY=
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n
+  FROM lineitem WHERE LEAST(l_quantity, l_partkey, 100) > 5 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n
+  FROM lineitem WHERE LEAST(l_quantity, l_partkey, 100) > 5 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey|
 
 # =====================================================================
 # Group 6 — CTE-body string-equality filters (single-quoted SQL

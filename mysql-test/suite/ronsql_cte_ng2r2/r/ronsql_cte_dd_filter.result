@@ -2951,6 +2951,616 @@ ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE cla
 Error handling: RPE
 ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause is not yet supported. Compare a column to a constant instead.
 
+=== filter-14 (D11): CTE-body WHERE GREATEST(o_shippriority, 1) > 2 (OR dir, const-arg fold) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE GREATEST(o_shippriority, 1) > 2 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+
+Number of output lines, including header: 121
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE GREATEST(o_shippriority, 1) > 2 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
+k	SUM(sums.n)
+103	5
+104	5
+108	5
+109	5
+113	5
+114	5
+118	5
+119	5
+123	5
+124	5
+128	5
+129	5
+13	5
+133	5
+134	5
+138	5
+139	5
+14	5
+143	5
+144	5
+148	5
+149	5
+153	5
+154	5
+158	5
+159	5
+163	5
+164	5
+168	5
+169	5
+173	5
+174	5
+178	5
+179	5
+18	5
+183	5
+184	5
+188	5
+189	5
+19	5
+193	5
+194	5
+198	5
+199	5
+203	5
+204	5
+208	5
+209	5
+213	5
+214	5
+218	5
+219	5
+223	5
+224	5
+228	5
+229	5
+23	5
+233	5
+234	5
+238	5
+239	5
+24	5
+243	5
+244	5
+248	5
+249	5
+253	5
+254	5
+258	5
+259	5
+263	5
+264	5
+268	5
+269	5
+273	5
+274	5
+278	5
+279	5
+28	5
+283	5
+284	5
+288	5
+289	5
+29	5
+293	5
+294	5
+298	5
+299	5
+3	5
+33	5
+34	5
+38	5
+39	5
+4	5
+43	5
+44	5
+48	5
+49	5
+53	5
+54	5
+58	5
+59	5
+63	5
+64	5
+68	5
+69	5
+73	5
+74	5
+78	5
+79	5
+8	5
+83	5
+84	5
+88	5
+89	5
+9	5
+93	5
+94	5
+98	5
+99	5
+
+=== filter-14b (D11): CTE-body WHERE GREATEST(o_shippriority, o_custkey, 5) <= 50 (AND dir, n-ary) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE GREATEST(o_shippriority, o_custkey, 5) <= 50 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE GREATEST(o_shippriority, o_custkey, 5) <= 50 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
+k	SUM(sums.n)
+1	5
+10	5
+11	5
+12	5
+13	5
+14	5
+15	5
+16	5
+17	5
+18	5
+19	5
+2	5
+20	5
+21	5
+22	5
+23	5
+24	5
+25	5
+26	5
+27	5
+28	5
+29	5
+3	5
+30	5
+31	5
+32	5
+33	5
+34	5
+35	5
+36	5
+37	5
+38	5
+39	5
+4	5
+40	5
+41	5
+42	5
+43	5
+44	5
+45	5
+46	5
+47	5
+48	5
+49	5
+5	5
+50	5
+6	5
+7	5
+8	5
+9	5
+
+=== filter-15 (D11): CTE-body WHERE LEAST(l_quantity, l_partkey) < 10 (OR dir, two columns) ===
+== Query ==
+WITH liq AS (
+SELECT l_orderkey AS k, COUNT(*) AS n
+FROM lineitem WHERE LEAST(l_quantity, l_partkey) < 10 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;
+
+Number of output lines, including header: 82
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH liq AS (
+SELECT l_orderkey AS k, COUNT(*) AS n
+FROM lineitem WHERE LEAST(l_quantity, l_partkey) < 10 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey|
+o_custkey	SUM(liq.n)
+1	10
+100	10
+101	10
+102	10
+103	10
+104	10
+105	10
+106	10
+107	5
+114	5
+115	10
+129	10
+14	5
+143	10
+148	5
+149	10
+15	10
+150	10
+151	10
+152	10
+153	10
+154	10
+155	10
+156	10
+157	10
+158	10
+172	10
+186	10
+198	5
+199	10
+2	10
+200	10
+201	10
+202	10
+203	10
+204	10
+205	10
+206	10
+207	5
+214	5
+215	10
+229	10
+243	10
+248	5
+249	10
+250	10
+251	10
+252	10
+253	10
+254	10
+255	10
+256	10
+257	10
+258	10
+272	10
+286	10
+29	10
+298	5
+299	10
+3	10
+300	10
+4	10
+43	10
+48	5
+49	10
+5	10
+50	10
+51	10
+52	10
+53	10
+54	10
+55	10
+56	10
+57	10
+58	10
+6	10
+7	5
+72	10
+86	10
+98	5
+99	10
+
+=== filter-15b (D11): CTE-body WHERE LEAST(l_quantity, l_partkey, 100) > 5 (AND dir, n-ary) ===
+== Query ==
+WITH liq AS (
+SELECT l_orderkey AS k, COUNT(*) AS n
+FROM lineitem WHERE LEAST(l_quantity, l_partkey, 100) > 5 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;
+
+Number of output lines, including header: 268
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH liq AS (
+SELECT l_orderkey AS k, COUNT(*) AS n
+FROM lineitem WHERE LEAST(l_quantity, l_partkey, 100) > 5 GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey|
+o_custkey	SUM(liq.n)
+10	10
+103	5
+104	10
+105	10
+106	10
+107	10
+108	10
+109	10
+11	10
+110	10
+111	10
+112	10
+113	10
+114	5
+115	10
+116	10
+117	10
+118	10
+119	10
+12	10
+120	10
+121	10
+122	10
+123	10
+124	10
+125	10
+126	10
+127	10
+128	10
+129	5
+13	10
+130	10
+131	10
+132	10
+133	10
+134	10
+135	10
+136	10
+137	10
+138	10
+139	10
+14	5
+140	10
+141	10
+142	10
+144	10
+145	10
+146	10
+147	10
+148	5
+15	10
+153	5
+154	10
+155	10
+156	10
+158	10
+159	10
+16	10
+160	10
+161	10
+162	10
+163	10
+164	10
+165	10
+166	10
+167	10
+168	10
+169	10
+17	10
+170	10
+171	10
+172	10
+173	10
+174	10
+175	10
+176	10
+177	10
+178	10
+179	10
+18	10
+180	10
+181	10
+182	10
+183	10
+184	10
+185	10
+187	10
+188	10
+189	10
+19	10
+190	10
+191	10
+192	10
+193	10
+194	10
+195	10
+196	10
+197	10
+198	5
+20	10
+203	5
+204	10
+205	10
+206	10
+207	10
+208	10
+209	10
+21	10
+210	10
+211	10
+212	10
+213	10
+214	5
+215	10
+216	10
+217	10
+218	10
+219	10
+22	10
+220	10
+221	10
+222	10
+223	10
+224	10
+225	10
+226	10
+227	10
+228	10
+229	5
+23	10
+230	10
+231	10
+232	10
+233	10
+234	10
+235	10
+236	10
+237	10
+238	10
+239	10
+24	10
+240	10
+241	10
+242	10
+244	10
+245	10
+246	10
+247	10
+248	5
+25	10
+253	5
+254	10
+255	10
+256	10
+258	10
+259	10
+26	10
+260	10
+261	10
+262	10
+263	10
+264	10
+265	10
+266	10
+267	10
+268	10
+269	10
+27	10
+270	10
+271	10
+272	10
+273	10
+274	10
+275	10
+276	10
+277	10
+278	10
+279	10
+28	10
+280	10
+281	10
+282	10
+283	10
+284	10
+285	10
+287	10
+288	10
+289	10
+29	5
+290	10
+291	10
+292	10
+293	10
+294	10
+295	10
+296	10
+297	10
+298	5
+3	5
+30	10
+31	10
+32	10
+33	10
+34	10
+35	10
+36	10
+37	10
+38	10
+39	10
+4	10
+40	10
+41	10
+42	10
+44	10
+45	10
+46	10
+47	10
+48	5
+5	10
+53	5
+54	10
+55	10
+56	10
+58	10
+59	10
+6	10
+60	10
+61	10
+62	10
+63	10
+64	10
+65	10
+66	10
+67	10
+68	10
+69	10
+7	10
+70	10
+71	10
+72	10
+73	10
+74	10
+75	10
+76	10
+77	10
+78	10
+79	10
+8	10
+80	10
+81	10
+82	10
+83	10
+84	10
+85	10
+87	10
+88	10
+89	10
+9	10
+90	10
+91	10
+92	10
+93	10
+94	10
+95	10
+96	10
+97	10
+98	5
+
 === filter-16: CTE-body WHERE o_orderstatus = 'O' (CHAR(1)) ===
 == Query ==
 WITH sums AS (

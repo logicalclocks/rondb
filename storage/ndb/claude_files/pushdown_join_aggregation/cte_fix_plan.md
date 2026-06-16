@@ -324,10 +324,24 @@ Lower priority; some may be intentional scope limits — confirm before building
   main-query CTE_LOOKUP-output IS NULL path (Phase I.1 `branch_linked_isnull`)
   is unchanged.  Re-enabled `body_filter.inc` filter-10a (CTE-body IS NOT NULL)
   + filter-11a (CTE-body IS NULL), recorded green ×5 topologies.
-- **E3 — D11: `GREATEST` / `LEAST` in a CTE-body WHERE term** — grammar permits
-  them only in the top-level SELECT scalar position (`RonSQLParser.y`). Extend
-  the conditional-expression grammar + the WHERE codegen. Repro: `body_filter.inc`
-  D11 marker.
+- **E3 — D11: `GREATEST` / `LEAST` in a CTE-body WHERE term — ✅ FIXED.**
+  The grammar previously permitted GREATEST/LEAST only in the top-level SELECT
+  scalar position (`arith_expr`), so a WHERE term hit a hard parser "Syntax
+  error".  Fix: (1) two `cond_expr` rules (`T_GREATEST/T_LEAST T_LEFT in_list
+  T_RIGHT`) building a generic n-ary node — distinct from the `arith_expr`
+  aggregation-program rules; (2) a `simplify_ce` boolean rewrite of
+  `GREATEST/LEAST(...) <cmp> const`: `GREATEST > / >=` and `LEAST < / <=`
+  expand to OR (with per-column `IS NOT NULL` guards, since GREATEST/LEAST is
+  NULL when any arg is NULL); the opposite directions expand to AND (already
+  NULL-rejecting).  Constant arguments are folded (`GREATEST(col,1) > 2` drops
+  the `1 > 2` arm); `=`/`!=` and non-constant comparands are rejected with a
+  clean permanent error (the latter avoids generating an unsupported
+  column-vs-column CTE-body filter).  Allocation uses the non-throwing
+  `ArenaMalloc::alloc` (one batched call, nullptr → caller leaves the node
+  unchanged), per the move away from `alloc_exc`.  Re-enabled `body_filter.inc`
+  filter-14 (GREATEST `>`, OR + const fold), filter-14b (GREATEST `<=`, AND,
+  3-arg), filter-15 (LEAST `<`, OR, two cols), filter-15b (LEAST `>`, AND,
+  3-arg); recorded green ×5 topologies.
 - **E4 — D17: `MIN`/`MAX` over a DATE column in a CTE** — "Failed writing
   aggregation program." Add DATE handling to the CTE aggregation-program writer
   (treat as the underlying integer day value, preserve DATE type out). Repro:

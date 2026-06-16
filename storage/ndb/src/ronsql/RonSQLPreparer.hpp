@@ -564,6 +564,15 @@ private:
                             const NdbDictionary::Column* col);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
+  // D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`
+  // comparison (either operand may be the min/max node) into a boolean
+  // OR/AND of per-argument column-vs-constant comparisons (with IS NOT NULL
+  // guards on the OR direction).  Called from simplify_ce.
+  struct ConditionalExpression* rewrite_minmax_comparison(
+      TokenKind cmp_op,
+      struct ConditionalExpression* left,
+      struct ConditionalExpression* right,
+      int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void programAggregator_join(QueryScope& scope, SelectStatement& stmt,
                               NdbAggregator* aggregator,

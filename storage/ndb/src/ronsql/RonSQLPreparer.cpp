@@ -9121,6 +9121,16 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
         else if (op == T_LT) op = T_GT;
         ConditionalExpression* tmp = left; left = right; right = tmp;
       }
+      // D11: GREATEST(...)/LEAST(...) in a comparison -> boolean rewrite.
+      if (left->op == T_GREATEST || left->op == T_LEAST ||
+          right->op == T_GREATEST || right->op == T_LEAST) {
+        ConditionalExpression* rw =
+            rewrite_minmax_comparison(op, left, right, maxdepth - 1);
+        // rw == NULL signals an allocation failure (no exception); leave the
+        // node unchanged so we don't dereference a null node.
+        if (rw == NULL) return ce;
+        return simplify_ce(rw, maxdepth - 1);
+      }
       if (op == ce->op && left == ce->args.left && right == ce->args.right) {
         return ce;
       }
@@ -9345,6 +9355,164 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
     // No simplification to do
     return ce;
   }
+}
+
+// D11 helper: evaluate a constant-integer comparison arm at prepare time.
+static bool ronsql_eval_int_cmp(TokenKind op, Int64 a, Int64 b) {
+  switch (op) {
+    case T_GT: return a >  b;
+    case T_GE: return a >= b;
+    case T_LT: return a <  b;
+    case T_LE: return a <= b;
+    default:   return false;  // = / != are rejected before reaching here
+  }
+}
+
+// D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`
+// comparison (the min/max node may be on either side) into a boolean
+// OR/AND of per-argument column-vs-constant comparisons.  Semantics:
+//   GREATEST(a..) >  c  <=>  a > c OR  b > c ...     (OR direction)
+//   GREATEST(a..) <  c  <=>  a < c AND b < c ...     (AND direction)
+//   LEAST(a..)    <  c  <=>  a < c OR  b < c ...     (OR direction)
+//   LEAST(a..)    >  c  <=>  a > c AND b > c ...     (AND direction)
+// (>= / <= analogous.)  GREATEST/LEAST is NULL when any argument is NULL,
+// so the OR direction additionally requires every column argument to be
+// non-NULL; the AND direction is already NULL-rejecting through its per-arg
+// comparisons.  Constant arguments are folded; = / != and non-constant
+// comparands are rejected (the latter would otherwise yield an unsupported
+// column-vs-column CTE-body filter).
+//
+// Returns NULL (without throwing) on allocation failure; the caller leaves
+// the comparison node unchanged in that case.  Semantic rejections use the
+// file's normal RonSQLPermanentError path.
+struct ConditionalExpression*
+RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
+                                          struct ConditionalExpression* left,
+                                          struct ConditionalExpression* right,
+                                          int maxdepth)
+{
+  struct ConditionalExpression* mm;
+  struct ConditionalExpression* comparand;
+  TokenKind op;  // normalised so the relation reads `mm <op> comparand`
+  if (left->op == T_GREATEST || left->op == T_LEAST) {
+    mm = left; comparand = right; op = cmp_op;
+  } else {
+    mm = right; comparand = left;
+    switch (cmp_op) {            // `c <cmp_op> mm`  ==  `mm <op> c`
+      case T_GT: op = T_LT; break;
+      case T_GE: op = T_LE; break;
+      case T_LT: op = T_GT; break;
+      case T_LE: op = T_GE; break;
+      default:   op = cmp_op; break;
+    }
+  }
+  const bool is_greatest = (mm->op == T_GREATEST);
+
+  if (op == T_EQUALS || op == T_NOT_EQUALS) {
+    throw RonSQLPermanentError(
+        "GREATEST/LEAST with = or != in a WHERE clause is not supported; "
+        "use a range comparison (<, <=, >, >=).");
+  }
+  const bool comparand_is_int = (comparand->op == T_INT);
+  if (comparand->op != T_INT && comparand->op != T_FLOAT &&
+      comparand->op != T_STRING) {
+    throw RonSQLPermanentError(
+        "GREATEST/LEAST in a WHERE clause must be compared to a constant "
+        "value.");
+  }
+
+  const bool or_dir = is_greatest ? (op == T_GT || op == T_GE)
+                                   : (op == T_LT || op == T_LE);
+
+  // Count arguments, then make a single allocation for all the new nodes so
+  // there is exactly one out-of-memory check (no per-node alloc_exc).  Upper
+  // bound per column arg: cmp + combiner + guard + guard-combiner (= 4), plus
+  // one root AND node.
+  Uint32 n_args = 0;
+  for (struct ConditionalExpression* node = mm->args.left; node != NULL;
+       node = node->args.right) {
+    n_args++;
+  }
+  struct ConditionalExpression* pool =
+      m_amalloc->alloc<ConditionalExpression>(4 * n_args + 4);
+  if (pool == NULL) {
+    return NULL;  // allocation failure -> caller leaves the node unchanged
+  }
+  Uint32 used = 0;
+
+  struct ConditionalExpression* combined = NULL;  // OR/AND of column arms
+  struct ConditionalExpression* guards = NULL;    // AND of `col IS NOT NULL`
+  bool forced_true = false;                       // OR forced true by a const
+  Uint32 n_col_args = 0;
+
+  for (struct ConditionalExpression* node = mm->args.left; node != NULL;
+       node = node->args.right) {
+    struct ConditionalExpression* elem = simplify_ce(node->args.left, maxdepth);
+    if (elem->op == T_INT && comparand_is_int) {
+      const bool arm = ronsql_eval_int_cmp(op, elem->constant_integer,
+                                           comparand->constant_integer);
+      if (or_dir) {
+        if (arm) forced_true = true;     // false arm: drop
+      } else if (!arm) {
+        throw RonSQLPermanentError(
+            "GREATEST/LEAST WHERE predicate is a constant contradiction; "
+            "not supported.");
+      }                                  // true AND-arm: drop
+      continue;
+    }
+    if (elem->op != T_IDENTIFIER) {
+      throw RonSQLPermanentError(
+          "GREATEST/LEAST in a WHERE clause supports only column and integer "
+          "constant arguments.");
+    }
+    n_col_args++;
+    struct ConditionalExpression* cmp = &pool[used++];
+    cmp->op = op;
+    cmp->args.left = elem;
+    cmp->args.right = comparand;
+    if (combined == NULL) {
+      combined = cmp;
+    } else {
+      struct ConditionalExpression* c = &pool[used++];
+      c->op = or_dir ? T_OR : T_AND;
+      c->args.left = combined;
+      c->args.right = cmp;
+      combined = c;
+    }
+    if (or_dir) {
+      struct ConditionalExpression* g = &pool[used++];
+      g->op = T_IS;
+      g->is.arg = elem;
+      g->is.null = false;  // IS NOT NULL
+      if (guards == NULL) {
+        guards = g;
+      } else {
+        struct ConditionalExpression* a = &pool[used++];
+        a->op = T_AND;
+        a->args.left = guards;
+        a->args.right = g;
+        guards = a;
+      }
+    }
+  }
+
+  if (n_col_args == 0) {
+    throw RonSQLPermanentError(
+        "GREATEST/LEAST in a WHERE clause requires at least one column "
+        "argument.");
+  }
+  if (!or_dir) {
+    return combined;  // AND of per-arg comparisons (NULL-safe as-is)
+  }
+  struct ConditionalExpression* core = forced_true ? NULL : combined;
+  if (core == NULL) {
+    return guards;    // always-true comparison: only the non-NULL guards remain
+  }
+  struct ConditionalExpression* root = &pool[used++];
+  root->op = T_AND;
+  root->args.left = guards;
+  root->args.right = core;
+  return root;
 }
 
 #define programAggregator_do_or_fail(CALL) \

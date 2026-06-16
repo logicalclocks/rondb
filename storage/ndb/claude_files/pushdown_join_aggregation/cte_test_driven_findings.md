@@ -79,7 +79,7 @@ topologies.
 |----|-------|-------|
 | **D1** | `SUM(<DECIMAL col>)` in a CTE body | "SUM over this column type in CTE not yet supported" (RonSQLPreparer.cpp:7090 — SUM supports int + FLOAT/DOUBLE only) |
 | **D10** | `IS NULL` / `IS NOT NULL` in a **CTE body** WHERE | ✅ FIXED — was "Non-boolean term in WHERE condition" (no `T_IS` arm in `apply_filter`).  Added a `T_IS` arm + `apply_filter_isnull` helper lowering to `NdbScanFilter::isnull`/`isnotnull`.  Re-enabled filter-10a (IS NOT NULL) + filter-11a (IS NULL) ×5 topologies |
-| **D11** | `GREATEST`/`LEAST` in a **CTE body** WHERE term | parser "Syntax error" (grammar allows them only in top-level SELECT scalar position) |
+| **D11** | `GREATEST`/`LEAST` in a **CTE body** WHERE term | ✅ FIXED — was a parser "Syntax error" (grammar allowed them only in the top-level SELECT scalar position).  Added `cond_expr` grammar rules + a `simplify_ce` boolean rewrite (`GREATEST(a,b) > c` → `a>c OR b>c`, AND for the opposite direction; OR direction adds `IS NOT NULL` guards; constant arms folded; `=`/`!=` and non-constant comparands rejected).  Re-enabled filter-14/14b/15/15b ×5 topologies |
 | **D12 ✅ REJECTED (2026-06-08)** | CTE-body signed-int col-vs-col over orders | Was `RonSQLRetryableError` ×10 (indexed left col mis-classified as an index bound → `encode_constant` fails on the column RHS, thrown retryable). Now a clean `RonSQLPermanentError` via the same `check_no_cte_body_col_vs_col` fix as D4. Rejection-assert: filter-12 + `ronsql_cte_dd_d4_colvscol` |
 | **D17** | `MIN`/`MAX` over a **DATE** column in a CTE | "Failed writing aggregation program. Please report a bug." |
 
