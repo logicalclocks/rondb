@@ -3918,10 +3918,15 @@ RonSQLPreparer::resolve_cte_output_columns_for_scope(QueryScope& scope)
       if (src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
         ref.dict_column = src_ref.dict_column;
     } else if (o->type == Outputs::Type::AGGREGATE) {
-      // MIN/MAX preserve source type; SUM/COUNT synthesize numeric
-      // (charset-irrelevant) — only plumb MIN/MAX metadata here.
+      // MIN/MAX preserve the source type; SUM preserves the source SCALE
+      // (SUM(DECIMAL(M,s)) is scale s, widened to DOUBLE in the kernel —
+      // D1).  Plumb the source column's metadata for all three so the
+      // result printer can format a DECIMAL-derived result with the source
+      // scale (D15/D1); for int/float sources this carries scale 0, which
+      // leaves the compact formatting unchanged.  COUNT has no source
+      // column and stays unplumbed.
       TokenKind fun = o->aggregate.fun;
-      if (fun != T_MIN && fun != T_MAX) continue;
+      if (fun != T_MIN && fun != T_MAX && fun != T_SUM) continue;
       AggregationAPICompiler::Expr* arg = o->aggregate.arg;
       if (arg == NULL || !arg->isLoad()) continue;
       Uint32 src_col_idx = arg->getLoadIdx();
@@ -7032,6 +7037,23 @@ RonSQLPreparer::resolve_chained_column_type(
           out_type = NdbDictionary::Column::Double;
           out_length = 1; out_cs = NULL;
           out_scale = 0; out_precision = 0; return true;
+        case NdbDictionary::Column::Decimal:
+        case NdbDictionary::Column::Decimalunsigned:
+          // D1: mirror the MIN/MAX DECIMAL widening below (kernel widens
+          // DECIMAL -> BIGINT (scale==0) / DOUBLE (scale>0) on load).
+          require_prm(
+              decimal_minmax_fits_64bit(arg_type, arg_precision, arg_scale),
+              "SUM over scale-zero DECIMAL wider than the 64-bit integer "
+              "range is not yet supported.");
+          if (arg_scale == 0) {
+            out_type = (arg_type == NdbDictionary::Column::Decimalunsigned)
+                       ? NdbDictionary::Column::Bigunsigned
+                       : NdbDictionary::Column::Bigint;
+          } else {
+            out_type = NdbDictionary::Column::Double;
+          }
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         default:
           return false;
       }
@@ -7243,6 +7265,31 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
             case NdbDictionary::Column::Float:
             case NdbDictionary::Column::Double:
               derived_type = NdbDictionary::Column::Double;
+              break;
+            case NdbDictionary::Column::Decimal:
+            case NdbDictionary::Column::Decimalunsigned:
+              // D1: the kernel widens DECIMAL -> BIGINT (scale==0) or DOUBLE
+              // (scale>0) on load via AggInterpreter::AlignedType, so SUM
+              // accumulates the widened value.  Mirror the MIN/MAX DECIMAL
+              // widening (below) so the virt-table column type matches the
+              // wire format the kernel emits.  scale>0 SUM is therefore a
+              // DOUBLE sum (best-effort, like DECIMAL MIN/MAX — no exact
+              // DECIMAL accumulation in the kernel); the source scale +
+              // precision are carried for fixed-scale display (D15), gated on
+              // precision <= 15 in the result printer.
+              require_prm(
+                  decimal_minmax_fits_64bit(st, src_precision, src_scale),
+                  "SUM over scale-zero DECIMAL wider than the 64-bit integer "
+                  "range is not yet supported.");
+              if (src_scale == 0) {
+                derived_type = (st == NdbDictionary::Column::Decimalunsigned)
+                               ? NdbDictionary::Column::Bigunsigned
+                               : NdbDictionary::Column::Bigint;
+              } else {
+                derived_type = NdbDictionary::Column::Double;
+                derived_scale = src_scale;
+                derived_precision = src_precision;
+              }
               break;
             default:
               throw RonSQLPermanentError(

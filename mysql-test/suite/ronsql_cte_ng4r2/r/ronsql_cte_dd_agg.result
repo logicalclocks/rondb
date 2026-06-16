@@ -412,3 +412,111 @@ FROM lineitem GROUP BY l_partkey)
 SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li|
 COUNT(*)	SUM(li.sq)	MIN(li.mn)	MAX(li.mx)
 100	76500	1	50
+
+=== agg-d1a (D1): SUM over scale-2 DECIMAL (o_totalprice) re-aggregated through CTE_LOOKUP ===
+== Query ==
+WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey)
+SELECT SUM(x.t) AS grand FROM customer AS c JOIN x ON x.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey)
+SELECT SUM(x.t) AS grand FROM customer AS c JOIN x ON x.k = c.c_custkey|
+grand
+15051277.50
+
+=== agg-d1b (D1): flagship COUNT(*) + SUM over scale-2 DECIMAL, grouped by parent dimension ===
+== Query ==
+WITH x AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(x.n) AS cnt, SUM(x.s) AS tot
+FROM customer AS c JOIN x ON x.k = c.c_custkey GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(x.n) AS cnt, SUM(x.s) AS tot
+FROM customer AS c JOIN x ON x.k = c.c_custkey GROUP BY c.c_nationkey|
+c_nationkey	cnt	tot
+0	60	611677.50
+1	60	592424.70
+10	60	599644.50
+11	60	600446.70
+12	60	601248.90
+13	60	602051.10
+14	60	602853.30
+15	60	603655.50
+16	60	604457.70
+17	60	605259.90
+18	60	606062.10
+19	60	606864.30
+2	60	593226.90
+20	60	607666.50
+21	60	608468.70
+22	60	609270.90
+23	60	610073.10
+24	60	610875.30
+3	60	594029.10
+4	60	594831.30
+5	60	595633.50
+6	60	596435.70
+7	60	597237.90
+8	60	598040.10
+9	60	598842.30
+
+=== agg-d1c (D1): SUM over scale-0 DECIMAL (s_margin DECIMAL(8,0)) — exact BIGINT path ===
+== Query ==
+WITH x AS (SELECT s_nationkey AS k, SUM(s_margin) AS t FROM supplier GROUP BY s_nationkey)
+SELECT nat.n_name, SUM(x.t) AS sm
+FROM nation AS nat JOIN x ON x.k = nat.n_nationkey GROUP BY nat.n_name;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT s_nationkey AS k, SUM(s_margin) AS t FROM supplier GROUP BY s_nationkey)
+SELECT nat.n_name, SUM(x.t) AS sm
+FROM nation AS nat JOIN x ON x.k = nat.n_nationkey GROUP BY nat.n_name|
+n_name	sm
+NATION0	225
+NATION1	81
+NATION10	135
+NATION11	141
+NATION12	147
+NATION13	153
+NATION14	159
+NATION15	165
+NATION16	171
+NATION17	177
+NATION18	183
+NATION19	189
+NATION2	87
+NATION20	195
+NATION21	201
+NATION22	207
+NATION23	213
+NATION24	219
+NATION3	93
+NATION4	99
+NATION5	105
+NATION6	111
+NATION7	117
+NATION8	123
+NATION9	129

@@ -1968,7 +1968,12 @@ ResultPrinter::aggregate_arg_scale(const Outputs* out) const
 {
   if (out == NULL || out->type != Outputs::Type::AGGREGATE)
     return 0;
-  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+  // D15: MIN/MAX over a scale-bearing DECIMAL-derived column.  D1: SUM over
+  // the same — SUM over a scale>0 DECIMAL widens to DOUBLE in the kernel and
+  // must print with the source scale (e.g. 15051277.50) like MySQL's exact
+  // DECIMAL sum, instead of the compact full-precision DOUBLE form.
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
+      out->aggregate.fun != T_SUM)
     return 0;
   AggregationAPICompiler::Expr* arg = out->aggregate.arg;
   if (arg == NULL || !arg->isLoad())
@@ -1993,7 +1998,10 @@ ResultPrinter::aggregate_arg_precision(const Outputs* out) const
 {
   if (out == NULL || out->type != Outputs::Type::AGGREGATE)
     return 0;
-  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+  // D15 (MIN/MAX) + D1 (SUM): see aggregate_arg_scale.  The precision gate
+  // keeps fixed-scale formatting within the DOUBLE-exact range (<= 15).
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
+      out->aggregate.fun != T_SUM)
     return 0;
   AggregationAPICompiler::Expr* arg = out->aggregate.arg;
   if (arg == NULL || !arg->isLoad())

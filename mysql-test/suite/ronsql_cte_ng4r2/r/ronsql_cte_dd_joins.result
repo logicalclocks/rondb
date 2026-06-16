@@ -360,6 +360,56 @@ FURNITURE	300
 HOUSEHOLD	300
 MACHINERY	300
 
+=== J3 (D1): re-aggregate scale-2 DECIMAL MIN/MAX CTE outputs with SUM, grouped by parent ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS n, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(cust.n) AS cnt, SUM(cust.mn) AS smn, SUM(cust.mx) AS smx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS n, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(cust.n) AS cnt, SUM(cust.mn) AS smn, SUM(cust.mx) AS smx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	cnt	smn	smx
+0	60	26071.50	218599.50
+1	60	22220.94	214748.94
+10	60	23664.90	216192.90
+11	60	23825.34	216353.34
+12	60	23985.78	216513.78
+13	60	24146.22	216674.22
+14	60	24306.66	216834.66
+15	60	24467.10	216995.10
+16	60	24627.54	217155.54
+17	60	24787.98	217315.98
+18	60	24948.42	217476.42
+19	60	25108.86	217636.86
+2	60	22381.38	214909.38
+20	60	25269.30	217797.30
+21	60	25429.74	217957.74
+22	60	25590.18	218118.18
+23	60	25750.62	218278.62
+24	60	25911.06	218439.06
+3	60	22541.82	215069.82
+4	60	22702.26	215230.26
+5	60	22862.70	215390.70
+6	60	23023.14	215551.14
+7	60	23183.58	215711.58
+8	60	23344.02	215872.02
+9	60	23504.46	216032.46
+
 === J4: LEFT JOIN, CTE omits keys 151..300 -> genuine NULL injection ===
 == Query ==
 WITH cust AS (

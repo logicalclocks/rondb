@@ -308,11 +308,23 @@ D22 (W1).
 
 Lower priority; some may be intentional scope limits — confirm before building.
 
-- **E1 — D1: `SUM(<DECIMAL col>)` in a CTE body** — `RonSQLPreparer.cpp:7069`
-  SUM type switch has no Decimal/Decimalunsigned arm (falls to the throw at
-  :7090). Add arms widening to Bigint/Bigunsigned/Double mirroring
-  `AggInterpreter::AlignedType` and the F.1 DECIMAL widening. Unblocks the most
-  natural CTE backbone (`SUM(price)`). Repro: `body_agg.inc` D1 marker.
+- **E1 — D1: `SUM(<DECIMAL col>)` in a CTE body — ✅ FIXED.**  The SUM
+  type-switch in `build_cte_virtual_tables` (and `resolve_chained_column_type`
+  for chained CTEs) had no Decimal arm and threw "SUM over this column type in
+  CTE not yet supported".  Fix mirrors the existing MIN/MAX DECIMAL widening
+  (F.1): scale==0 → BIGINT / Bigunsigned (exact), scale>0 → DOUBLE (best-effort —
+  the kernel already widens DECIMAL on load via `AggInterpreter::AlignedType`, so
+  SUM accumulates the widened value; no exact DECIMAL accumulation), with the
+  `decimal_minmax_fits_64bit` guard.  Display: the source DECIMAL scale must
+  reach the printer, which required two more edits beyond the type widening —
+  `resolve_cte_output_columns_for_scope` now plumbs SUM's source `dict_column`
+  (it previously skipped SUM/COUNT), and `aggregate_arg_scale`/`precision` accept
+  `T_SUM` — so a scale>0 SUM prints with the source scale (`15051277.50`) via
+  D15's `%.*f` path instead of the compact formatter dropping trailing zeros.
+  Re-enabled `body_agg.inc` agg-d1a (scale-2 `SUM(o_totalprice)`), agg-d1b
+  (flagship COUNT + scale-2 SUM grouped), agg-d1c (scale-0 `SUM(s_margin)` —
+  exact BIGINT) and `body_joins.inc` J3 (SUM of DECIMAL-derived MIN/MAX);
+  recorded green ×5 topologies.
 - **E2 — D10: `IS NULL` / `IS NOT NULL` in a CTE-body WHERE — ✅ FIXED.**
   `apply_filter`'s switch had no `case T_IS:` arm, so `o_clerk IS NULL` in a
   CTE body (or any single-table scan WHERE) fell to the default throw
@@ -342,10 +354,25 @@ Lower priority; some may be intentional scope limits — confirm before building
   filter-14 (GREATEST `>`, OR + const fold), filter-14b (GREATEST `<=`, AND,
   3-arg), filter-15 (LEAST `<`, OR, two cols), filter-15b (LEAST `>`, AND,
   3-arg); recorded green ×5 topologies.
-- **E4 — D17: `MIN`/`MAX` over a DATE column in a CTE** — "Failed writing
-  aggregation program." Add DATE handling to the CTE aggregation-program writer
-  (treat as the underlying integer day value, preserve DATE type out). Repro:
-  `body_index.inc` D17 marker (and the `body_agg.inc` DATE MIN/MAX probe).
+- **E4 — D17: `MIN`/`MAX` over a DATE column in a CTE — DEFERRED to its own
+  phase (NOT contained).**  Investigation (2026-06) found DATE is unsupported at
+  *every* layer, not just the agg-program writer:
+    - Kernel `AggInterpreterBase::loadColumnTypedFromBuf` has no `NDB_TYPE_DATE`
+      arm → returns `ZAGG_LOAD_COL_WRONG_TYPE`; `AlignedType` has no Date mapping.
+    - `NdbAggregator::TypeSupported` rejects `Date` → `LoadColumn` returns false →
+      the "Failed writing aggregation program" error.
+    - No DATE result formatting (a loaded value would print as a number).
+  So this is a full new-type feature across kernel + NDB API + RonSQL (needs an
+  **ndbmtd rebuild** + 5-topology record), comparable to the string MIN/MAX phase
+  (D18 / I.6).  **Integer-day shortcut** (recommended when picked up): add a
+  `NDB_TYPE_DATE` arm to `loadColumnTypedFromBuf` that reads the 3-byte packed
+  Date as an unsigned int, map `AlignedType(Date)→Bigunsigned` (the packed
+  encoding is monotonic, so MIN/MAX reuse the BIGINT compare + wire path),
+  accept Date in `TypeSupported`, tag the MIN/MAX output virt-column as DATE in
+  `build_cte_virtual_tables`, and unpack the packed integer to `YYYY-MM-DD` in
+  `ResultPrinter` (encoding-sensitive — must match NDB's 3-byte Date layout).
+  Repro: `body_index.inc` index-9 (main-query MIN/MAX over a DATE virt-column) +
+  `body_agg.inc` (MIN/MAX over a DATE column in the CTE body).
 
 ---
 

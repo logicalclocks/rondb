@@ -70,12 +70,28 @@ JOIN cust ON cust.k = c.c_custkey
 GROUP BY c.c_mktsegment|
 
 
-# NEXT-PHASE (DISABLED — D1, SUM over DECIMAL): this case SUMs scale-2 DECIMAL
-# MIN/MAX CTE outputs (SUM(cust.mn)/SUM(cust.mx), mn/mx = MIN/MAX(o_totalprice)).
-# The D15 display-scale issue is now fixed (MIN/MAX format with scale — agg-08/09),
-# but SUMming a DECIMAL-derived value goes through DOUBLE accumulation, which is
-# the separate D1 limitation (SUM over DECIMAL not yet supported / lossy).
-# See findings/_discovery_log.md (D1, D15).
+--echo
+--echo === J3 (D1): re-aggregate scale-2 DECIMAL MIN/MAX CTE outputs with SUM, grouped by parent ===
+# cust.mn / cust.mx = MIN/MAX(o_totalprice) (DECIMAL(12,2) -> DOUBLE).  The main
+# query SUMs those DECIMAL-derived DOUBLE outputs (D1, now supported; best-effort
+# DOUBLE accumulation — exact here since each o_totalprice <= ~8 sig digits is
+# representable in double and the per-nation sums are small).
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(cust.n) AS cnt, SUM(cust.mn) AS smn, SUM(cust.mx) AS smx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, MIN(o_totalprice) AS mn, MAX(o_totalprice) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(cust.n) AS cnt, SUM(cust.mn) AS smn, SUM(cust.mx) AS smx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_nationkey|
 --echo
 --echo === J4: LEFT JOIN, CTE omits keys 151..300 -> genuine NULL injection ===
 # CTE materialises only custkeys 1..150 (WHERE o_custkey <= 150); customers

@@ -388,12 +388,52 @@ SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li|
 #                FROM nation GROUP BY n_regionkey)
 #   SELECT nat.rk, nat.mn, nat.mx, nat.n FROM region AS r JOIN nat ON nat.rk = r.r_regionkey;
 
-# NEXT-PHASE (DISABLED — ERROR, D1): SUM over a DECIMAL column in a CTE body —
-# "SUM over this column type in CTE not yet supported" (RonSQLPreparer.cpp:7090;
-# SUM supports int + FLOAT/DOUBLE, not DECIMAL).  MAIN cases SUM int columns and
-# MIN/MAX (not SUM) the decimal columns instead.  See findings/_discovery_log.md (D1).
-#   WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey)
-#   SELECT SUM(x.t) FROM customer AS c JOIN x ON x.k = c.c_custkey;
+# D1 (SUM over a DECIMAL column in a CTE body) is now supported.  The kernel
+# widens DECIMAL -> BIGINT (scale==0) or DOUBLE (scale>0) on load via
+# AggInterpreter::AlignedType, and build_cte_virtual_tables now mirrors that
+# widening in its SUM arm (was: "SUM over this column type ... not yet
+# supported").  scale==0 DECIMAL sums exactly (BIGINT); scale>0 sums through
+# DOUBLE (best-effort, like DECIMAL MIN/MAX) and the result prints with the
+# source scale (D15).  See findings/_discovery_log.md (D1).
+
+--echo
+--echo === agg-d1a (D1): SUM over scale-2 DECIMAL (o_totalprice) re-aggregated through CTE_LOOKUP ===
+let $QUERY=
+WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey)
+SELECT SUM(x.t) AS grand FROM customer AS c JOIN x ON x.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey)
+SELECT SUM(x.t) AS grand FROM customer AS c JOIN x ON x.k = c.c_custkey|
+
+--echo
+--echo === agg-d1b (D1): flagship COUNT(*) + SUM over scale-2 DECIMAL, grouped by parent dimension ===
+let $QUERY=
+WITH x AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+           FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(x.n) AS cnt, SUM(x.s) AS tot
+FROM customer AS c JOIN x ON x.k = c.c_custkey GROUP BY c.c_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+           FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(x.n) AS cnt, SUM(x.s) AS tot
+FROM customer AS c JOIN x ON x.k = c.c_custkey GROUP BY c.c_nationkey|
+
+--echo
+--echo === agg-d1c (D1): SUM over scale-0 DECIMAL (s_margin DECIMAL(8,0)) — exact BIGINT path ===
+let $QUERY=
+WITH x AS (SELECT s_nationkey AS k, SUM(s_margin) AS t FROM supplier GROUP BY s_nationkey)
+SELECT nat.n_name, SUM(x.t) AS sm
+FROM nation AS nat JOIN x ON x.k = nat.n_nationkey GROUP BY nat.n_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT s_nationkey AS k, SUM(s_margin) AS t FROM supplier GROUP BY s_nationkey)
+SELECT nat.n_name, SUM(x.t) AS sm
+FROM nation AS nat JOIN x ON x.k = nat.n_nationkey GROUP BY nat.n_name|
 
 # NEXT-PHASE: AVG aggregate in CTE body — matrix "NOT SUPPORTED / DEFERRED" (AVG).
 #   WITH x AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a

@@ -49,9 +49,10 @@ l_orderkey-under-orders CTE_LOOKUP (D6 crash topology) to a CTE_SCAN root.)
 Notes:
 - `GROUP BY o_custkey` produces 300 groups (>256) so agg-01/04/08/11/18 cross
   the 256-row API batch boundary on the CTE materialisation.
-- SUM is applied ONLY to integer columns (o_shippriority, s_nationkey, l_quantity,
-  the COUNT(*) carry-through column n). DECIMAL columns are MIN/MAX'd, never
-  SUM'd (D1: SUM over DECIMAL in a CTE is a clean error).
+- SUM over DECIMAL in a CTE body is now supported (D1 FIXED): scale-0 DECIMAL
+  sums exactly (BIGINT), scale>0 sums through DOUBLE (best-effort) and prints
+  with the source scale.  See agg-d1a/b/c.  (Originally SUM was applied only to
+  integer columns and DECIMALs were MIN/MAX'd because SUM-over-DECIMAL errored.)
 - agg-05/12/15 join a real table back to a CTE grouped by a non-unique column,
   producing a fan-out; the main `GROUP BY <parent dimension>` + aggregates
   collapses it. VALUES are engine-identical.
@@ -64,7 +65,7 @@ Notes:
 |-------|--------------------|-------------|----------------------------|----------|
 | projection-only main over CTE_LOOKUP (HANG, D3) | `WITH nat AS (SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n FROM nation GROUP BY n_regionkey) SELECT nat.rk, nat.mn, nat.mx, nat.n FROM region AS r JOIN nat ON nat.rk = r.r_regionkey` | NEXT-PHASE-disabled | main SELECT projecting CTE_LOOKUP outputs without a main aggregate never returns | body_agg.inc (agg-03 disabled probe) |
 | COUNT(`<col>`) in CTE body (HANG, D2) | `WITH ord AS (SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk FROM orders GROUP BY o_custkey) SELECT SUM(ord.n_all), SUM(ord.n_clerk) FROM customer AS c JOIN ord ON ord.k = c.c_custkey` | NEXT-PHASE-disabled | COUNT of a column (vs COUNT(*)) hangs; high-value bug | body_agg.inc (agg-02 disabled probe) |
-| SUM(`<DECIMAL col>`) in CTE body (ERROR, D1) | `WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey) SELECT SUM(x.t) FROM customer AS c JOIN x ON x.k = c.c_custkey` | NEXT-PHASE-disabled | RonSQLPreparer.cpp:7090 — SUM supports int + FLOAT/DOUBLE, not DECIMAL | body_agg.inc probe |
+| SUM(`<DECIMAL col>`) in CTE body (D1 FIXED) | `WITH x AS (SELECT o_custkey AS k, SUM(o_totalprice) AS t FROM orders GROUP BY o_custkey) SELECT SUM(x.t) FROM customer AS c JOIN x ON x.k = c.c_custkey` | ENABLED (agg-d1a) | SUM arm widens DECIMAL (scale 0 → BIGINT exact, scale>0 → DOUBLE); source scale plumbed for fixed-scale display | body_agg.inc agg-d1a/b/c |
 | scalar agg over l_orderkey CTE_LOOKUP under orders root (CRASH, D6) | `WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey) SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey` | NEXT-PHASE-disabled | DBSPJ ndbassert Error 2343, DbspjMain.cpp:7825 `m_cnt_active==0` — both nodes crash; multi-batch CTE-lookup teardown | body_agg.inc (agg-06 disabled probe) |
 | AVG in CTE body | `WITH x AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a FROM orders GROUP BY o_custkey) SELECT x.k, x.a FROM customer AS c JOIN x ON x.k = c.c_custkey` | NEXT-PHASE-disabled | AVG not in supported CTE-body aggregate set | body_agg.inc probe |
 | COUNT(DISTINCT col) | `WITH x AS (SELECT o_orderstatus AS st, COUNT(DISTINCT o_custkey) AS d FROM orders GROUP BY o_orderstatus) SELECT x.st, x.d FROM x` | NEXT-PHASE-disabled | COUNT(DISTINCT) unsupported | body_agg.inc probe |
