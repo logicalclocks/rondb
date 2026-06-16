@@ -40,6 +40,40 @@ extern EventLogger *g_eventLogger;
 #define DEB_EVENT(...) do { } while (0)
 #endif
 
+namespace {
+/*
+ * TTL related
+ * Lock-free UTC epoch-seconds -> broken-down MYSQL_TIME; twin of
+ * Dbtup::ttl_utc_sec_to_TIME in DbtupExecQuery.cpp. glibc's gmtime_r() takes
+ * the process-global tzset_lock on every call (even for UTC); this uses only
+ * in-tree calendar arithmetic (get_date_from_daynr), so the purge worker never
+ * touches that lock. Field-for-field equivalent to MySQL's
+ * sec_to_TIME(out, t, 0) (the Time_zone_offset / my_tz_OFFSET0 path).
+ */
+inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
+  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
+  const int64_t EPOCH_DAYNR = 719528;
+  int64_t days = t / 86400;
+  int32_t secs = static_cast<int32_t>(t % 86400);
+  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
+    secs += 86400;
+    days -= 1;
+  }
+  unsigned int year, month, day;
+  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
+  out->neg = false;
+  out->second_part = 0;
+  out->year = year;
+  out->month = month;
+  out->day = day;
+  out->hour = secs / 3600;
+  out->minute = (secs % 3600) / 60;
+  out->second = secs % 60;
+  out->time_zone_displacement = 0;
+  out->time_type = MYSQL_TIMESTAMP_DATETIME;
+}
+}  // namespace
+
 TTLPurger::TTLPurger() :
   watcher_ndb_(nullptr), worker_ndb_(nullptr),
   exit_(false), cache_updated_(false),
@@ -1421,25 +1455,14 @@ retry_trx:
               my_timestamp_from_binary(&timestamp,
                   reinterpret_cast<const unsigned char*>(rec_attr[0]->aRef()),
                   0);
-              struct tm tmp_tm;
+              /*
+               * TTL related
+               * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) keeps the
+               * per-row purge loop off glibc's global tzset_lock.
+               */
               const time_t tmp_t = (time_t)timestamp.m_tv_sec;
-              gmtime_r(&tmp_t, &tmp_tm);
               MYSQL_TIME tmp;
-              if (tmp_tm.tm_year <= 0) {
-                tmp.year = 0;
-                tmp.month = 0;
-                tmp.day = 0;
-                tmp.hour = 0;
-                tmp.minute = 0;
-                tmp.second = 0;
-                tmp.second_part = 0;
-                tmp.time_type = MYSQL_TIMESTAMP_DATETIME;
-              }
-              localtime_to_TIME(&tmp, &tmp_tm);
-              tmp.time_type = MYSQL_TIMESTAMP_DATETIME;
-              if (tmp.second == 60 || tmp.second == 61) {
-                tmp.second = 59;
-              }
+              ttl_utc_sec_to_TIME(tmp_t, &tmp);
               my_datetime_packed_to_binary(
                   TIME_to_longlong_datetime_packed(tmp),
                   encoded_curr_purge, 0);
@@ -2212,27 +2235,18 @@ Int64 TTLPurger::GetNow(unsigned char* encoded_now, bool timestamp,
   Int64 packed_now = 0;
   memset(encoded_now, 0, 8);
   MYSQL_TIME curr_dt;
-  struct tm tmp_tm;
   time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
   // Callers computing the TTL expiry threshold pass
   // minus_sec = ttl_sec + purge_window; encode (now - minus_sec). Clamp at 0
   // so an oversized TTL cannot wrap into a future instant (which would
   // re-open the unbounded [infimum, now) scan).
   t_now = (t_now > (time_t)minus_sec) ? (t_now - (time_t)minus_sec) : 0;
-  gmtime_r(&t_now, &tmp_tm);
-  curr_dt.neg = false;
-  curr_dt.second_part = 0;
-  curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
-  curr_dt.month = tmp_tm.tm_mon + 1;
-  curr_dt.day = tmp_tm.tm_mday;
-  curr_dt.hour = tmp_tm.tm_hour;
-  curr_dt.minute = tmp_tm.tm_min;
-  curr_dt.second = tmp_tm.tm_sec;
-  curr_dt.time_zone_displacement = 0;
-  curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-  if (curr_dt.second == 60 || curr_dt.second == 61) {
-    curr_dt.second = 59;
-  }
+  /*
+   * TTL related
+   * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) avoids glibc's
+   * global tzset_lock.
+   */
+  ttl_utc_sec_to_TIME(t_now, &curr_dt);
   packed_now = TIME_to_longlong_datetime_packed(curr_dt);
 
   if (timestamp) {
@@ -2339,22 +2353,13 @@ bool TTLPurger::IsNodeAlive(const unsigned char* encoded_last_active) {
   date_add_interval(&last_active_dt, INTERVAL_SECOND, interval, nullptr);
 
   MYSQL_TIME curr_dt;
-  struct tm tmp_tm;
   time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-  gmtime_r(&t_now, &tmp_tm);
-  curr_dt.neg = false;
-  curr_dt.second_part = 0;
-  curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
-  curr_dt.month = tmp_tm.tm_mon + 1;
-  curr_dt.day = tmp_tm.tm_mday;
-  curr_dt.hour = tmp_tm.tm_hour;
-  curr_dt.minute = tmp_tm.tm_min;
-  curr_dt.second = tmp_tm.tm_sec;
-  curr_dt.time_zone_displacement = 0;
-  curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-  if (curr_dt.second == 60 || curr_dt.second == 61) {
-    curr_dt.second = 59;
-  }
+  /*
+   * TTL related
+   * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) avoids glibc's
+   * global tzset_lock.
+   */
+  ttl_utc_sec_to_TIME(t_now, &curr_dt);
 
   int res = my_time_compare(last_active_dt, curr_dt);
   if (res >= 0) {
