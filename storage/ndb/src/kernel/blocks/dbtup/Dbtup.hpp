@@ -3335,8 +3335,9 @@ public:
   }
 
   /* RONDB-1056 Phase 7: evaluate a column-vs-value scan-filter branch for
-   * the JIT cold-call helper — BRANCH_ATTR_OP_ARG (vs an inline literal) and
-   * BRANCH_ATTR_OP_PARAM (vs a parameter). `inst` points at the instruction's
+   * the JIT cold-call helper — BRANCH_ATTR_OP_ARG (vs an inline literal),
+   * BRANCH_ATTR_OP_PARAM (vs a parameter), and BRANCH_ATTR_OP_ATTR (vs a 2nd
+   * column). `inst` points at the instruction's
    * word 0 in the program buffer (word0 = opcode|nulls|cond|branch_offset,
    * word1 = attrId|argLen|paramNo); `param_buf` is the subroutine/param
    * region (only dereferenced for OP_PARAM; may be nullptr otherwise). Reads

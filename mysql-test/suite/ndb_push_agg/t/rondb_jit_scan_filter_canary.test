@@ -68,6 +68,16 @@ EXECUTE pstmt USING @lim;
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 DEALLOCATE PREPARE pstmt;
 
+--echo # Q8: WHERE pk < v (column vs column) must JIT (BRANCH_ATTR_OP_ATTR).
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, v FROM t1 WHERE pk < v;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q9: differential — same col-vs-col comparison without the error insert.
+--sorted_result
+SELECT pk, v FROM t1 WHERE pk < v;
+
 DROP TABLE t1;
 
 --remove_file $NDB_TOOLS_OUTPUT

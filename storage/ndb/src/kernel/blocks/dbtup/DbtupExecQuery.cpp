@@ -5616,9 +5616,10 @@ retry:
 }
 
 /* RONDB-1056 Phase 7: shared evaluate for a column-vs-value scan-filter
- * branch — BRANCH_ATTR_OP_ARG (vs an inline literal) and BRANCH_ATTR_OP_PARAM
- * (vs a parameter in the subroutine region) — called from the JIT cold-call
- * helper ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
+ * branch — BRANCH_ATTR_OP_ARG (vs an inline literal), BRANCH_ATTR_OP_PARAM
+ * (vs a parameter in the subroutine region), and BRANCH_ATTR_OP_ATTR (vs a
+ * 2nd column of the same row) — called from the JIT cold-call helper
+ * ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
  * instruction in the program buffer; `param_buf` is the subroutine/param
  * region (only used for OP_PARAM; may be nullptr otherwise). This mirrors
  * InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826) — same
@@ -5666,17 +5667,18 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
     attrLen = (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
   }
 
-  /* 2nd operand: an inline literal (OP_ARG) or a parameter looked up in the
-   * subroutine/param region (OP_PARAM). For OP_PARAM the value comes from
-   * the same place the interpreter reads it — lookupInterpreterParameter on
-   * the subroutine region. */
+  /* 2nd operand: an inline literal (OP_ARG), a parameter from the
+   * subroutine/param region (OP_PARAM), or another column of the same row
+   * (OP_ATTR). Each mirrors the corresponding arm of handleBranchAttrOp.
+   * read_buf2 backs the OP_ATTR second-column read; s2 may point into it. */
+  Uint32 read_buf2[64];
   Uint32 argLen;
   const char *s2;
   if (opCode == Interpreter::BRANCH_ATTR_OP_ARG) {
     argLen = Interpreter::getBranchCol_Len(w1);   // byte size of the literal
     s2 = (const char *)&inst[2];                  // inline, after word 1
-  } else {
-    /* BRANCH_ATTR_OP_PARAM: w1 low 16 = paramNo. */
+  } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
+    /* w1 low 16 = paramNo; value lives in the subroutine/param region. */
     const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(w1);
     if (unlikely(param_buf == nullptr)) {
       return -99;
@@ -5687,6 +5689,33 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
     }
     argLen = AttributeHeader::getByteSize(*paramPtr);
     s2 = (const char *)(paramPtr + 1);
+  } else {
+    /* BRANCH_ATTR_OP_ATTR: w1 low 16 = the 2nd column's attrId; read it
+     * from the same row. A NULL 2nd column makes argLen 0 (r2_null), exactly
+     * as handleBranchAttrOp leaves it; otherwise argLen is the 2nd column's
+     * declared size from its descriptor (the comparator + charset still come
+     * from the 1st column). */
+    const Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(w1);
+    int rc2 = readSingleAttribute(req_struct, attr2Id, read_buf2,
+                                  sizeof(read_buf2) / sizeof(Uint32));
+    if (unlikely(rc2 < 0)) {
+      return rc2;
+    }
+    const AttributeHeader ah2(read_buf2[0]);
+    if (ah2.isNULL()) {
+      argLen = 0;        // r2_null
+      s2 = nullptr;      // not dereferenced when r2_null
+    } else {
+      const Uint32 *attr2Desc =
+          req_struct->tablePtrP->tabDescriptor + (attr2Id * ZAD_SIZE);
+      const Uint32 Tattr2Desc1 = attr2Desc[0];
+      const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
+      argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
+      if (unlikely(type2Id == NDB_TYPE_BIT)) {
+        argLen = (AttributeDescriptor::getArraySize(Tattr2Desc1) + 7) / 8;
+      }
+      s2 = (const char *)&read_buf2[1];
+    }
   }
 
   const bool r1_null = ah.isNULL();

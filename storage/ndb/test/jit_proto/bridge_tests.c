@@ -540,6 +540,7 @@ static void test_set_reg_null_reject(void) {
 #define EMB_BRANCH_ATTR_NE_NULL  25
 #define EMB_BRANCH_ATTR_OP_ARG   23   /* Phase 7 comparison branch */
 #define EMB_BRANCH_ATTR_OP_PARAM 26   /* Phase 7 col-vs-param branch */
+#define EMB_BRANCH_ATTR_OP_ATTR  27   /* Phase 7 col-vs-col branch */
 #define EMB_EXIT_REFUSE          19
 #define EMB_READ_LINKED_TO_MEM   39
 #define EMB_BRANCH_LINKED_EQ_NULL 41
@@ -1291,6 +1292,35 @@ static void test_scan_filter_attr_op_param_lower(void) {
   mark_pass(name);
 }
 
+/* T44: BRANCH_ATTR_OP_ATTR (WHERE col1 <op> col2) lowers to the same
+ * OP_BRANCH_ATTR_OP_ARG cold-call branch — a 2-word instruction (no inline
+ * literal; the 2nd operand is another column read at runtime). word0 =
+ * opcode | nulls(3) | cond(LT=2) | (offset=3<<16); word1 = (attrId1=0 << 16)
+ * | attrId2(1); emb_pc 2 = EXIT_OK; emb_pc 3 = EXIT_REFUSE (target).
+ * Expected lowering matches T43 (4 ops). */
+static void test_scan_filter_attr_op_attr_lower(void) {
+  const char *name = "T44 scan_filter_attr_op_attr_lower";
+  uint32_t filter_prog[4] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ATTR,
+                    (3u << 6) | (2u << 12) | (3u << 16)),
+    (0u << 16) | 1u,                     // attrId1=0, attrId2=1
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  Program p;
+  if (!assert_scan_filter_accepted(name, filter_prog, 4, &p,
+                                   /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_ATTR_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 0)) return;  // inst offset
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;  // target -> op2
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_FILTER_REJECT_EXIT)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_EXIT)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1342,6 +1372,7 @@ int main(void) {
   test_scan_filter_attr_op_arg_lower();
   test_scan_filter_attr_op_arg_like_reject();
   test_scan_filter_attr_op_param_lower();
+  test_scan_filter_attr_op_attr_lower();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

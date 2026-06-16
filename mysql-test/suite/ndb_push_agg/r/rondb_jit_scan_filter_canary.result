@@ -48,4 +48,16 @@ pk	v
 3	30
 5	50
 DEALLOCATE PREPARE pstmt;
+# Q8: WHERE pk < v (column vs column) must JIT (BRANCH_ATTR_OP_ATTR).
+SELECT pk, v FROM t1 WHERE pk < v;
+pk	v
+1	10
+3	30
+5	50
+# Q9: differential — same col-vs-col comparison without the error insert.
+SELECT pk, v FROM t1 WHERE pk < v;
+pk	v
+1	10
+3	30
+5	50
 DROP TABLE t1;

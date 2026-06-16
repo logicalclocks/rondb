@@ -15,8 +15,14 @@ predicates. Landed:
   (2026-06-16):** `bridge_tests` T43 + `rondb_jit_scan_filter_canary` Q7
   (`PREPARE … WHERE v > ?`; `EXECUTE USING @lim` under 4060) pass. Commit
   `51f0f6a5718`.
+- **`BRANCH_ATTR_OP_ATTR`** — `WHERE col1 <op> col2` (two columns of the same
+  row, the handler's `cmp(cond, field1, field2)` path). **No stencil regen**:
+  reuses the same stencil/helper; for OP_ATTR the eval reads the 2nd column
+  from the row (into a 2nd buffer) and compares it using the 1st column's
+  type/charset comparator — mirroring handleBranchAttrOp. `bridge_tests` T44
+  + canary Q8 (`WHERE pk < v` under 4060). **Pending Mikael's build + run.**
 
-Deferred: OP_ATTR (`col <op> col2`), strings/VARCHAR.
+Deferred: strings/VARCHAR.
 
 ## NDB encoding (`BRANCH_ATTR_OP_ARG`, opcode 23)
 
