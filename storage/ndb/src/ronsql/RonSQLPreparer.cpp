@@ -5268,6 +5268,15 @@ RonSQLPreparer::execute_subqueries()
       delete[] buf;
       throw;
     }
+    catch (const std::bad_alloc&)
+    {
+      // Out of memory: free this scope's buffer and let the OOM propagate
+      // so the whole query fails cleanly as out-of-memory (handled by
+      // handle_ronsql_exception) rather than being relabelled as a generic
+      // subquery execution failure below.
+      delete[] buf;
+      throw;
+    }
     catch (const std::exception& e)
     {
       delete[] buf;
@@ -8369,6 +8378,20 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     DEB_TRACE(); err << "->RPE\n";
     throw RonSQLPermanentError(e.what());
   }
+  catch (const std::bad_alloc&)
+  {
+    // Out of memory while processing the query (ArenaMalloc::alloc_exc /
+    // realloc_exc, or any other std::bad_alloc on this query's stack).
+    // Roll back — cleanup_trans() releases the NDB transaction, and the
+    // caller frees this query's arena once the failure propagates — then
+    // fail the whole query with a clean permanent error.  Without this arm
+    // std::bad_alloc would fall to the catch(...) below and abort().  Note
+    // it must precede the std::runtime_error arm in intent: std::bad_alloc
+    // is NOT a std::runtime_error, so it would otherwise reach catch(...).
+    DEB_TRACE(); err << "Error handling: OOM->RPE\n";
+    cleanup_trans();
+    throw RonSQLPermanentError("Out of memory while processing the query.");
+  }
   catch (const std::runtime_error& e)
   {
     Ndb* ndb = m_conf.ndb;
@@ -9126,9 +9149,6 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
           right->op == T_GREATEST || right->op == T_LEAST) {
         ConditionalExpression* rw =
             rewrite_minmax_comparison(op, left, right, maxdepth - 1);
-        // rw == NULL signals an allocation failure (no exception); leave the
-        // node unchanged so we don't dereference a null node.
-        if (rw == NULL) return ce;
         return simplify_ce(rw, maxdepth - 1);
       }
       if (op == ce->op && left == ce->args.left && right == ce->args.right) {
@@ -9382,9 +9402,10 @@ static bool ronsql_eval_int_cmp(TokenKind op, Int64 a, Int64 b) {
 // comparands are rejected (the latter would otherwise yield an unsupported
 // column-vs-column CTE-body filter).
 //
-// Returns NULL (without throwing) on allocation failure; the caller leaves
-// the comparison node unchanged in that case.  Semantic rejections use the
-// file's normal RonSQLPermanentError path.
+// Node allocation uses ArenaMalloc::alloc_exc; on out-of-memory it throws
+// std::bad_alloc, which RonSQL's exception handler turns into a clean
+// permanent "out of memory" failure of the whole query.  Semantic rejections
+// use the file's normal RonSQLPermanentError path.
 struct ConditionalExpression*
 RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
                                           struct ConditionalExpression* left,
@@ -9424,22 +9445,6 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
   const bool or_dir = is_greatest ? (op == T_GT || op == T_GE)
                                    : (op == T_LT || op == T_LE);
 
-  // Count arguments, then make a single allocation for all the new nodes so
-  // there is exactly one out-of-memory check (no per-node alloc_exc).  Upper
-  // bound per column arg: cmp + combiner + guard + guard-combiner (= 4), plus
-  // one root AND node.
-  Uint32 n_args = 0;
-  for (struct ConditionalExpression* node = mm->args.left; node != NULL;
-       node = node->args.right) {
-    n_args++;
-  }
-  struct ConditionalExpression* pool =
-      m_amalloc->alloc<ConditionalExpression>(4 * n_args + 4);
-  if (pool == NULL) {
-    return NULL;  // allocation failure -> caller leaves the node unchanged
-  }
-  Uint32 used = 0;
-
   struct ConditionalExpression* combined = NULL;  // OR/AND of column arms
   struct ConditionalExpression* guards = NULL;    // AND of `col IS NOT NULL`
   bool forced_true = false;                       // OR forced true by a const
@@ -9466,28 +9471,28 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
           "constant arguments.");
     }
     n_col_args++;
-    struct ConditionalExpression* cmp = &pool[used++];
+    struct ConditionalExpression* cmp = m_amalloc->alloc_exc<ConditionalExpression>(1);
     cmp->op = op;
     cmp->args.left = elem;
     cmp->args.right = comparand;
     if (combined == NULL) {
       combined = cmp;
     } else {
-      struct ConditionalExpression* c = &pool[used++];
+      struct ConditionalExpression* c = m_amalloc->alloc_exc<ConditionalExpression>(1);
       c->op = or_dir ? T_OR : T_AND;
       c->args.left = combined;
       c->args.right = cmp;
       combined = c;
     }
     if (or_dir) {
-      struct ConditionalExpression* g = &pool[used++];
+      struct ConditionalExpression* g = m_amalloc->alloc_exc<ConditionalExpression>(1);
       g->op = T_IS;
       g->is.arg = elem;
       g->is.null = false;  // IS NOT NULL
       if (guards == NULL) {
         guards = g;
       } else {
-        struct ConditionalExpression* a = &pool[used++];
+        struct ConditionalExpression* a = m_amalloc->alloc_exc<ConditionalExpression>(1);
         a->op = T_AND;
         a->args.left = guards;
         a->args.right = g;
@@ -9508,7 +9513,7 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
   if (core == NULL) {
     return guards;    // always-true comparison: only the non-NULL guards remain
   }
-  struct ConditionalExpression* root = &pool[used++];
+  struct ConditionalExpression* root = m_amalloc->alloc_exc<ConditionalExpression>(1);
   root->op = T_AND;
   root->args.left = guards;
   root->args.right = core;
