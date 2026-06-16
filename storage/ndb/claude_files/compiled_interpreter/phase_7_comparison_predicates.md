@@ -11,9 +11,10 @@ predicates. Landed:
   ndbcluster handler's `cmp_param` path). **No stencil regen**: reuses the
   `op_branch_attr_op_arg` stencil — the helper reads the instruction, decodes
   the opcode, and resolves the 2nd operand from the param region
-  (`lookupInterpreterParameter`) instead of inline. `bridge_tests` T43 +
-  canary Q7 (`PREPARE … WHERE v > ?` under 4060). **Pending Mikael's build +
-  run.**
+  (`lookupInterpreterParameter`) instead of inline. **Verified by Mikael
+  (2026-06-16):** `bridge_tests` T43 + `rondb_jit_scan_filter_canary` Q7
+  (`PREPARE … WHERE v > ?`; `EXECUTE USING @lim` under 4060) pass. Commit
+  `51f0f6a5718`.
 
 Deferred: OP_ATTR (`col <op> col2`), strings/VARCHAR.
 

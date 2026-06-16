@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-06-15.** Single entry point for resuming work. Branch:
+**Updated: 2026-06-16.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -458,9 +458,12 @@ setup/compile hook + per-row dispatch + canary — was implemented 2026-06-10
    inline literal) now JITs via a new `op_branch_attr_op_arg` cold-call
    stencil whose helper reads the instruction from the program buffer and
    reuses the interpreter's `m_cmp` (commits `fa5464df51f` + `d1a710abb92`;
-   `phase_7_comparison_predicates.md`). Deferred within (d): OP_PARAM
-   (`col <op> ?`), OP_ATTR (`col <op> col2`), and string/VARCHAR
-   comparison — those are the remaining "full embedded-branch family" work.
+   `phase_7_comparison_predicates.md`). **OP_PARAM also DONE & VERIFIED
+   2026-06-16** — `col <op> ?` (bound parameter, `cmp_param`) reuses the same
+   stencil (no regen); the helper resolves the operand from the param region
+   via `lookupInterpreterParameter` (commit `51f0f6a5718`). Remaining within
+   (d): OP_ATTR (`col <op> col2`) and string/VARCHAR comparison — the rest of
+   the "full embedded-branch family" work.
 5. **(Deferred)** standalone CASE disposition model — the translate API
    currently rejects `WRITE_INTERPRETER_OUTPUT` skip-offsets
    (`n_pending_case_jumps != 0`); only needed if scan filters require
