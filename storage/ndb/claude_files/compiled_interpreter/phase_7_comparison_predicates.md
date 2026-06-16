@@ -1,14 +1,21 @@
-# Phase 7 — scan-filter comparison predicates (`WHERE col <op> const`)
+# Phase 7 — scan-filter comparison predicates (`WHERE col <op> const | ?`)
 
-**Status: implemented & verified (2026-06-15).** Extends the scan-filter
-JIT beyond `IS [NOT] NULL` to integer comparison predicates. Scope (chosen):
-integer `BRANCH_ATTR_OP_ARG` only — `WHERE int_col <op> const`, all 6
-comparators (EQ/NE/LT/LE/GT/GE), inline constant. Deferred: OP_PARAM (query
-params), OP_ATTR (col vs col), strings/VARCHAR. Required `regen-stencils`
-(LLVM clang 20.1.8). Verified by Mikael: regen-stencils, `bridge_tests`
-(T41 lower / T42 LIKE-reject), and `rondb_jit_scan_filter_canary`
-(Q4 `v>25`, Q5 `v=30` under 4060 + Q6 differential) all pass. Commits
-`fa5464df51f` (impl) + `d1a710abb92` (regen + extractor/audit cap bumps).
+**Status: OP_ARG verified (2026-06-15); OP_PARAM added (2026-06-16).**
+Extends the scan-filter JIT beyond `IS [NOT] NULL` to integer comparison
+predicates. Landed:
+- **`BRANCH_ATTR_OP_ARG`** — `WHERE int_col <op> const` (inline literal),
+  all 6 comparators (EQ/NE/LT/LE/GT/GE). Verified: regen-stencils,
+  `bridge_tests` (T41/T42), `rondb_jit_scan_filter_canary` (Q4 `v>25`,
+  Q5 `v=30`, Q6). Commits `fa5464df51f` + `d1a710abb92`.
+- **`BRANCH_ATTR_OP_PARAM`** — `WHERE int_col <op> ?` (bound parameter, the
+  ndbcluster handler's `cmp_param` path). **No stencil regen**: reuses the
+  `op_branch_attr_op_arg` stencil — the helper reads the instruction, decodes
+  the opcode, and resolves the 2nd operand from the param region
+  (`lookupInterpreterParameter`) instead of inline. `bridge_tests` T43 +
+  canary Q7 (`PREPARE … WHERE v > ?` under 4060). **Pending Mikael's build +
+  run.**
+
+Deferred: OP_ATTR (`col <op> col2`), strings/VARCHAR.
 
 ## NDB encoding (`BRANCH_ATTR_OP_ARG`, opcode 23)
 
@@ -59,14 +66,14 @@ fields, the **helper reads the whole instruction from the program buffer**:
   `ndb_jit_h_branch_attr_op_arg(s, inst_word_off)`.
 - **Helper** `ndb_jit_h_branch_attr_op_arg(JitState*, uint32_t inst_off)`:
   `inst = ctx->prog_buf + inst_off`; returns
-  `ctx->block_tup->evalBranchColLiteralForJit(ctx->req_struct, inst)`
+  `ctx->block_tup->evalBranchColForJit(ctx->req_struct, inst)`
   (1 take / 0 fall). agg/join_agg stay null.
 - **`dbtup_jit_call_ctx.prog_buf`** — the exec-region pointer (what
   interpreterStartLab would pass to interpreterNextLab,
   `&cinBuffer[RinstructionCounter]`). Set per-row in
   `dbtup_jit_invoke_scan_filter`. Offsets are relative to the exec region,
   i.e. the bridge's `emb_pc`. cinBuffer is valid for the row's duration.
-- **Shared evaluate** `Dbtup::evalBranchColLiteralForJit(KeyReqStruct*,
+- **Shared evaluate** `Dbtup::evalBranchColForJit(KeyReqStruct*,
   const Uint32* inst)` in DbtupExecQuery.cpp next to handleBranchAttrOp —
   does steps 1-5 above, reusing `sqlType.m_cmp` so the byte comparison is
   NDB's own (no drift); only the small null/cond glue is mirrored, with a

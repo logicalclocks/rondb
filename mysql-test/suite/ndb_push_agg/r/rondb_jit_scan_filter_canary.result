@@ -39,4 +39,13 @@ SELECT pk, v FROM t1 WHERE v > 25;
 pk	v
 3	30
 5	50
+# Q7: WHERE v > ? (bound parameter) must JIT (BRANCH_ATTR_OP_PARAM —
+#     the ndbcluster handler pushes a non-const param via cmp_param).
+PREPARE pstmt FROM 'SELECT pk, v FROM t1 WHERE v > ?';
+SET @lim = 25;
+EXECUTE pstmt USING @lim;
+pk	v
+3	30
+5	50
+DEALLOCATE PREPARE pstmt;
 DROP TABLE t1;

@@ -75,6 +75,11 @@ struct dbtup_jit_call_ctx {
    * helper adds is the bridge's emb_pc within that region. nullptr on the
    * aggregation path (which does not emit OP_BRANCH_ATTR_OP_ARG). */
   const Uint32       *prog_buf;
+  /* Phase 7: subroutine/param region base, for BRANCH_ATTR_OP_PARAM
+   * (WHERE col <op> ?) where the parameter value lives. Passed to
+   * lookupInterpreterParameter by evalBranchColForJit. nullptr when the
+   * scan has no param region (or on the aggregation path). */
+  const Uint32       *param_buf;
 #ifdef ERROR_INSERT
   bool                trace_enabled;
   Uint32              trace_row_no;
@@ -113,7 +118,7 @@ int ndb_jit_h_branch_attr_null(JitState *s, uint32_t attr_id,
 /* ndb_jit_h_branch_attr_op_arg — Phase 7 cold-call branch helper for
  * BRANCH_ATTR_OP_ARG (WHERE col <op> literal). inst_word_off is the
  * instruction's word offset within ctx->prog_buf. Forwards to
- * Dbtup::evalBranchColLiteralForJit, which reads the column, compares it
+ * Dbtup::evalBranchColForJit, which reads the column, compares it
  * against the inline literal via the type's NdbSqlUtil comparator, and
  * returns the take-branch decision. Returns 1 to take the branch, 0 to
  * fall through; aborts on a fatal error (read failure / unsupported type
@@ -190,6 +195,7 @@ void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
                                   JitEntry             entry_fn,
-                                  const Uint32        *prog_buf);
+                                  const Uint32        *prog_buf,
+                                  const Uint32        *param_buf);
 
 #endif /* DBTUP_JIT_GLUE_HPP_ */

@@ -1085,17 +1085,20 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
             const Uint32 rinit = cache[0];   // RinitReadLen
             const Uint32 rexec = cache[1];   // RexecRegionLen (the filter)
             const Uint32 rfupd = cache[2];   // RfinalUpdateLen
-            const Uint32 rsub  = cache[4];   // RsubLen (subroutines/params)
             /* v1 eligibility: a read filter with no final-update region
-             * (i.e. not an interpreted UPDATE) and no subroutine/param
-             * region (the bridge can't lower CALL/RETURN/params). A
-             * final-read region (RfinalRLen, projection) is fine — it
-             * runs after the filter via the normal readAttributes path,
-             * with RinstructionCounter advanced past the exec region. The
-             * exec region always begins at word (5 + RinitReadLen); the
-             * input-param offset cancels out (see interpreterStartLab's
+             * (i.e. not an interpreted UPDATE). A final-read region
+             * (RfinalRLen, projection) is fine — it runs after the filter
+             * via the normal readAttributes path with RinstructionCounter
+             * advanced past the exec region. A subroutine/param region
+             * (RsubLen, cache[4]) is also fine: it holds BRANCH_ATTR_OP_PARAM
+             * parameters, resolved at runtime by the helper. Real
+             * subroutines would require a CALL in the exec region, which the
+             * bridge rejects (unknown opcode) — so an admitted exec region
+             * never references subroutines, only params. The exec region
+             * always begins at word (5 + RinitReadLen); the input-param
+             * offset cancels out (see interpreterStartLab's
              * RinstructionCounter arithmetic). */
-            if (rexec > 0 && rfupd == 0 && rsub == 0 &&
+            if (rexec > 0 && rfupd == 0 &&
                 (Uint64(5) + rinit + rexec) <= storedPtr.p->cachedLinearLen) {
               Uint32 reject_code = 0;
               void *entry = dbtup_jit_compile_scan_filter(
@@ -5612,20 +5615,25 @@ retry:
   return 0;
 }
 
-/* RONDB-1056 Phase 7: shared evaluate for a BRANCH_ATTR_OP_ARG
- * (column-vs-literal) scan-filter branch, called from the JIT cold-call
+/* RONDB-1056 Phase 7: shared evaluate for a column-vs-value scan-filter
+ * branch — BRANCH_ATTR_OP_ARG (vs an inline literal) and BRANCH_ATTR_OP_PARAM
+ * (vs a parameter in the subroutine region) — called from the JIT cold-call
  * helper ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
- * instruction in the program buffer. This mirrors the BRANCH_ATTR_OP_ARG
- * arm of InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826)
- * — same descriptor walk, same NdbSqlUtil compare, same NULL-semantics and
- * condition mapping — so the JIT and interpreter agree bit-for-bit. The
- * byte comparison itself is NDB's own sqlType.m_cmp (no re-implementation,
- * no drift); only the small null/cond glue is duplicated. */
-int Dbtup::evalBranchColLiteralForJit(KeyReqStruct *req_struct,
-                                      const Uint32 *inst) {
+ * instruction in the program buffer; `param_buf` is the subroutine/param
+ * region (only used for OP_PARAM; may be nullptr otherwise). This mirrors
+ * InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826) — same
+ * descriptor walk, same NdbSqlUtil compare, same NULL-semantics and
+ * condition mapping — so the JIT and interpreter agree bit-for-bit. The byte
+ * comparison itself is NDB's own sqlType.m_cmp (no re-implementation, no
+ * drift); only the small operand-resolution + null/cond glue is duplicated.
+ * Returns 1 = take branch, 0 = fall through, <0 = fatal error. */
+int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
+                               const Uint32 *inst,
+                               const Uint32 *param_buf) {
   const Uint32 w0 = inst[0];                 // opcode | nulls | cond | offset
-  const Uint32 w1 = inst[1];                 // (attrId << 16) | argLen(bytes)
+  const Uint32 w1 = inst[1];                 // (attrId << 16) | argLen|paramNo
   const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
+  const Uint32 opCode = Interpreter::getOpCode(w0) % OVERFLOW_OPCODE;
 
   /* Read the column value. read_buf holds the AttributeHeader (word 0) then
    * the value bytes. 64 words covers integers and short strings; a value
@@ -5658,9 +5666,28 @@ int Dbtup::evalBranchColLiteralForJit(KeyReqStruct *req_struct,
     attrLen = (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
   }
 
-  /* Literal (2nd operand): bytes follow word 1; argLen is its byte size. */
-  const Uint32 argLen = Interpreter::getBranchCol_Len(w1);
-  const char *s2 = (const char *)&inst[2];
+  /* 2nd operand: an inline literal (OP_ARG) or a parameter looked up in the
+   * subroutine/param region (OP_PARAM). For OP_PARAM the value comes from
+   * the same place the interpreter reads it — lookupInterpreterParameter on
+   * the subroutine region. */
+  Uint32 argLen;
+  const char *s2;
+  if (opCode == Interpreter::BRANCH_ATTR_OP_ARG) {
+    argLen = Interpreter::getBranchCol_Len(w1);   // byte size of the literal
+    s2 = (const char *)&inst[2];                  // inline, after word 1
+  } else {
+    /* BRANCH_ATTR_OP_PARAM: w1 low 16 = paramNo. */
+    const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(w1);
+    if (unlikely(param_buf == nullptr)) {
+      return -99;
+    }
+    const Uint32 *paramPtr = lookupInterpreterParameter(paramNo, param_buf);
+    if (unlikely(paramPtr == nullptr)) {
+      return -99;  // matches handleBranchAttrOp's missing-param path
+    }
+    argLen = AttributeHeader::getByteSize(*paramPtr);
+    s2 = (const char *)(paramPtr + 1);
+  }
 
   const bool r1_null = ah.isNULL();
   const bool r2_null = (argLen == 0);
@@ -5868,12 +5895,18 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
 #endif
       if (jit_filter != nullptr) {
         jamDebug();
-        /* prog_buf = the exec region (the filter program). The
-         * BRANCH_ATTR_OP_ARG helper reads its instruction + inline literal
-         * by the bridge-recorded offset within this region. */
+        /* prog_buf = the exec region (the filter program); the helper reads
+         * its instruction + inline literal by the bridge-recorded offset.
+         * param_buf = the subroutine/param region, where BRANCH_ATTR_OP_PARAM
+         * parameters live (lookupInterpreterParameter reads its [0] length).
+         * It sits after the read/exec/final-update/final-read regions —
+         * RfinalUpdateLen is 0 for an admitted filter, but include it so the
+         * offset matches interpreterNextLab's RsubPC exactly. */
+        const Uint32 RsubPC = RinstructionCounter + RexecRegionLen +
+                              RfinalUpdateLen + RfinalRLen;
         bool accepted = dbtup_jit_invoke_scan_filter(
             this, req_struct, reinterpret_cast<JitEntry>(jit_filter),
-            &cinBuffer[RinstructionCounter]);
+            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC]);
         if (accepted) {
           jamDebug();
           RinstructionCounter += RexecRegionLen;

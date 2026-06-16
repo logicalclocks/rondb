@@ -205,7 +205,7 @@ ndb_jit_h_branch_attr_null(JitState *s,
 /* ndb_jit_h_branch_attr_op_arg — Phase 7 cold-call branch helper for
  * BRANCH_ATTR_OP_ARG (WHERE col <op> literal). The whole instruction is
  * read from the program buffer: ctx->prog_buf + inst_word_off points at the
- * instruction's word 0, and Dbtup::evalBranchColLiteralForJit decodes it
+ * instruction's word 0, and Dbtup::evalBranchColForJit decodes it
  * (cond / nulls / attrId / inline literal), reads the column, and compares
  * via the type's NdbSqlUtil comparator — mirroring the interpreter's
  * handleBranchAttrOp. Returns 1 to take the branch, 0 to fall through. */
@@ -220,14 +220,14 @@ ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
         "(inst_word_off=%u)", inst_word_off);
     abort();
   }
-  int rc = ctx->block_tup->evalBranchColLiteralForJit(
-      ctx->req_struct, ctx->prog_buf + inst_word_off);
+  int rc = ctx->block_tup->evalBranchColForJit(
+      ctx->req_struct, ctx->prog_buf + inst_word_off, ctx->param_buf);
   if (rc < 0) {
     /* Read failure / unsupported type or condition. The bridge's admission
      * is meant to keep these off the JIT path; if one surfaces, fail fast
      * (same policy as the other helpers) rather than silently mis-filter. */
     g_eventLogger->error(
-        "ndb_jit_h_branch_attr_op_arg: evalBranchColLiteralForJit failed "
+        "ndb_jit_h_branch_attr_op_arg: evalBranchColForJit failed "
         "(inst_word_off=%u, rc=%d)", inst_word_off, rc);
     abort();
   }
@@ -351,6 +351,7 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
   ctx.prog_buf   = nullptr;  /* aggregation path emits no BRANCH_ATTR_OP_ARG */
+  ctx.param_buf  = nullptr;
 #ifdef ERROR_INSERT
   ctx.trace_enabled = dbtup_jit_trace_start(agg, block_tup,
                                             &ctx.trace_row_no,
@@ -459,7 +460,8 @@ void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
                                   JitEntry             entry_fn,
-                                  const Uint32        *prog_buf) {
+                                  const Uint32        *prog_buf,
+                                  const Uint32        *param_buf) {
   /* Per-row context: no aggregation instance. The cold-call helpers
    * (ndb_jit_h_load_col / ndb_jit_h_branch_attr_null /
    * ndb_jit_h_branch_attr_op_arg) reach the row through
@@ -472,6 +474,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
   ctx.prog_buf   = prog_buf;
+  ctx.param_buf  = param_buf;
 #ifdef ERROR_INSERT
   ctx.trace_enabled = false;   /* 4063 row trace is aggregation-only for now */
   ctx.trace_row_no  = 0;

@@ -3334,17 +3334,19 @@ public:
     return readSingleAttribute(req_struct, attrId, outBuf, maxWords);
   }
 
-  /* RONDB-1056 Phase 7: evaluate a BRANCH_ATTR_OP_ARG (column-vs-literal)
-   * scan-filter branch for the JIT cold-call helper. `inst` points at the
-   * instruction's word 0 in the program buffer (word0 = opcode|nulls|cond|
-   * branch_offset, word1 = attrId|argLen, words 2..N = inline literal).
-   * Reads the column, compares against the literal via the type's
-   * NdbSqlUtil compare, and applies the same NULL-semantics + condition
-   * mapping as the interpreter's handleBranchAttrOp. Returns 1 to take the
-   * branch, 0 to fall through, or a negative error code (read failure /
+  /* RONDB-1056 Phase 7: evaluate a column-vs-value scan-filter branch for
+   * the JIT cold-call helper — BRANCH_ATTR_OP_ARG (vs an inline literal) and
+   * BRANCH_ATTR_OP_PARAM (vs a parameter). `inst` points at the instruction's
+   * word 0 in the program buffer (word0 = opcode|nulls|cond|branch_offset,
+   * word1 = attrId|argLen|paramNo); `param_buf` is the subroutine/param
+   * region (only dereferenced for OP_PARAM; may be nullptr otherwise). Reads
+   * the column, compares against the operand via the type's NdbSqlUtil
+   * compare, and applies the same NULL-semantics + condition mapping as the
+   * interpreter's handleBranchAttrOp. Returns 1 to take the branch, 0 to
+   * fall through, or a negative error code (read failure / missing param /
    * unsupported type or condition) which the caller treats as fatal. */
-  int evalBranchColLiteralForJit(KeyReqStruct *req_struct,
-                                 const Uint32 *inst);
+  int evalBranchColForJit(KeyReqStruct *req_struct, const Uint32 *inst,
+                          const Uint32 *param_buf);
 
 private:
 

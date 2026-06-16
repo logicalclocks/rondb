@@ -124,6 +124,11 @@
 /* BRANCH_ATTR_OP_ARG (Interpreter.hpp = 23). cond≤GE keeps bit 15 clear,
  * so getOpCode decodes it as 23 (Phase 7 comparison predicates). */
 #define BR_EMB_BRANCH_ATTR_OP_ARG   23
+/* BRANCH_ATTR_OP_PARAM (Interpreter.hpp = 26) — WHERE col <op> ?param. Same
+ * word0/word1 layout as OP_ARG but no inline literal (2-word instruction);
+ * the value lives in the subroutine/param region, resolved at runtime by
+ * the helper via lookupInterpreterParameter. */
+#define BR_EMB_BRANCH_ATTR_OP_PARAM 26
 /* Highest BinaryCondition the JIT lowers (EQ..GE); LIKE/mask reject. */
 #define BR_EMB_MAX_BINARY_COND       5
 /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
@@ -229,6 +234,7 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_BRANCH_ATTR_EQ_NULL:   return "BRANCH_ATTR_EQ_NULL";
     case BR_EMB_BRANCH_ATTR_NE_NULL:   return "BRANCH_ATTR_NE_NULL";
     case BR_EMB_BRANCH_ATTR_OP_ARG:    return "BRANCH_ATTR_OP_ARG";
+    case BR_EMB_BRANCH_ATTR_OP_PARAM:  return "BRANCH_ATTR_OP_PARAM";
     case BR_EMB_READ_LINKED_TO_MEM:    return "READ_LINKED_TO_MEM";
     case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
     case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
@@ -564,13 +570,17 @@ static JitBridgeReason translate_embedded_block(
         break;
       }
 
-      case BR_EMB_BRANCH_ATTR_OP_ARG: {
-        /* Phase 7: WHERE col <op> literal. The JIT helper reads the whole
-         * instruction (cond/nulls/attrId + inline literal) from the program
-         * buffer by offset, so we record the instruction's offset (emb_pc)
-         * in op->imm and the branch target in op->c, then advance past the
-         * variable-length instruction. Only the scan-filter path is wired
-         * (ctx->prog_buf set); other paths reject (fall back to interp). */
+      case BR_EMB_BRANCH_ATTR_OP_ARG:
+      case BR_EMB_BRANCH_ATTR_OP_PARAM: {
+        /* Phase 7: WHERE col <op> literal (OP_ARG) or ?param (OP_PARAM).
+         * Both lower to OP_BRANCH_ATTR_OP_ARG — the JIT helper reads the
+         * whole instruction from the program buffer by offset and resolves
+         * the 2nd operand (inline literal vs param-region lookup) from the
+         * decoded opcode. We record the instruction's offset (emb_pc) in
+         * op->b and the branch target in op->c, then advance past the
+         * instruction (OP_ARG is variable-length; OP_PARAM is 2 words). Only
+         * the scan-filter path is wired (ctx->prog_buf / param_buf set);
+         * other paths reject (fall back to interp). */
         if (!allow_attr_op_arg) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
@@ -628,9 +638,17 @@ static JitBridgeReason translate_embedded_block(
           }
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        /* Inline literal: argLen bytes => ceil(argLen/4) words after w1. */
-        uint32_t arg_len_bytes = inst2 & 0xFFFFu;
-        uint32_t inst_words = 2u + ((arg_len_bytes + 3u) >> 2);
+        /* OP_ARG carries an inline literal (argLen bytes => ceil(argLen/4)
+         * words after word 1); OP_PARAM has no inline data (its word 1 low
+         * 16 bits are a paramNo, and the value lives in the param region),
+         * so it is a fixed 2-word instruction. */
+        uint32_t inst_words;
+        if (emb_op == BR_EMB_BRANCH_ATTR_OP_PARAM) {
+          inst_words = 2u;
+        } else {
+          uint32_t arg_len_bytes = inst2 & 0xFFFFu;
+          inst_words = 2u + ((arg_len_bytes + 3u) >> 2);
+        }
         if (emb_pc + inst_words > emb_len) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_MALFORMED;

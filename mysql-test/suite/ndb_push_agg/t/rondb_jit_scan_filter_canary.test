@@ -58,6 +58,16 @@ SELECT pk, v FROM t1 WHERE v = 30;
 --sorted_result
 SELECT pk, v FROM t1 WHERE v > 25;
 
+--echo # Q7: WHERE v > ? (bound parameter) must JIT (BRANCH_ATTR_OP_PARAM —
+--echo #     the ndbcluster handler pushes a non-const param via cmp_param).
+PREPARE pstmt FROM 'SELECT pk, v FROM t1 WHERE v > ?';
+SET @lim = 25;
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+EXECUTE pstmt USING @lim;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+DEALLOCATE PREPARE pstmt;
+
 DROP TABLE t1;
 
 --remove_file $NDB_TOOLS_OUTPUT
