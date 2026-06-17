@@ -2894,7 +2894,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
         }
 #endif
-        Jit1Prog *jp = jit1_compile(m_jit_arena, &p, /*timing=*/nullptr);
+        /* Slice 2: compile into the node-global code-memory manager
+         * (free-capable, shared) rather than the per-block bump arena.
+         * The per-block m_jit_arena is removed in Slice 3. */
+        Jit1Prog *jp =
+            jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
         if (jp != nullptr) {
           lp.m_jit_prog  = jp;
           lp.m_jit_entry = jit1_entry(jp);

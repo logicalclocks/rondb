@@ -36,6 +36,7 @@
 #include "bytecode1.h"
 #include "jit1.h"
 #include "jit_arena.h"
+#include "jit_codemem.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -83,7 +84,7 @@ static void mark_fail(const char *name, const char *fmt, ...) {
 #define DONTCARE_U16 ((uint16_t)0xFFFF)
 #define DONTCARE_U8  ((uint8_t)0xFF)
 
-static void assert_rejected(NdbJitArena *arena,
+static void assert_rejected(NdbJitCodeMem *arena,
                              const Program *prog,
                              const char *test_name,
                              Jit1AdmitReason want_reason,
@@ -125,7 +126,7 @@ static void assert_rejected(NdbJitArena *arena,
   mark_pass(test_name);
 }
 
-static void assert_accepted(NdbJitArena *arena,
+static void assert_accepted(NdbJitCodeMem *arena,
                              const Program *prog,
                              const char *test_name)
 {
@@ -299,25 +300,25 @@ static void build_oversized(Program *p) {
 /* Tests.                                                             */
 /* ------------------------------------------------------------------ */
 
-static void test_minimal_accept(NdbJitArena *arena) {
+static void test_minimal_accept(NdbJitCodeMem *arena) {
   Program p;
   build_minimal_accept(&p);
   assert_accepted(arena, &p, "T1 minimal_accept");
 }
 
-static void test_one_branch_accept(NdbJitArena *arena) {
+static void test_one_branch_accept(NdbJitCodeMem *arena) {
   Program p;
   build_one_branch_accept(&p);
   assert_accepted(arena, &p, "T2 one_branch_accept");
 }
 
-static void test_forked_accept(NdbJitArena *arena) {
+static void test_forked_accept(NdbJitCodeMem *arena) {
   Program p;
   build_forked_accept(&p);
   assert_accepted(arena, &p, "T3 forked_accept");
 }
 
-static void test_empty_reject(NdbJitArena *arena) {
+static void test_empty_reject(NdbJitCodeMem *arena) {
   Program p;
   build_empty(&p);
   assert_rejected(arena, &p, "T4 empty_reject",
@@ -325,7 +326,7 @@ static void test_empty_reject(NdbJitArena *arena) {
                    DONTCARE_U16, DONTCARE_U16, DONTCARE_U8);
 }
 
-static void test_oversized_reject(NdbJitArena *arena) {
+static void test_oversized_reject(NdbJitCodeMem *arena) {
   Program p;
   build_oversized(&p);
   assert_rejected(arena, &p, "T5 oversized_reject",
@@ -333,7 +334,7 @@ static void test_oversized_reject(NdbJitArena *arena) {
                    DONTCARE_U16, DONTCARE_U16, DONTCARE_U8);
 }
 
-static void test_invalid_kind_zero(NdbJitArena *arena) {
+static void test_invalid_kind_zero(NdbJitCodeMem *arena) {
   Program p;
   build_invalid_kind_zero(&p);
   assert_rejected(arena, &p, "T6 invalid_kind_zero",
@@ -341,7 +342,7 @@ static void test_invalid_kind_zero(NdbJitArena *arena) {
                    /*pc=*/0, DONTCARE_U16, /*kind=*/0);
 }
 
-static void test_invalid_kind_too_large(NdbJitArena *arena) {
+static void test_invalid_kind_too_large(NdbJitCodeMem *arena) {
   Program p;
   build_invalid_kind_too_large(&p);
   assert_rejected(arena, &p, "T7 invalid_kind_too_large",
@@ -350,7 +351,7 @@ static void test_invalid_kind_too_large(NdbJitArena *arena) {
                    /*kind=*/(uint8_t)(OP_KIND_MAX + 1));
 }
 
-static void test_backward_self_branch(NdbJitArena *arena) {
+static void test_backward_self_branch(NdbJitCodeMem *arena) {
   Program p;
   build_backward_self_branch(&p);
   assert_rejected(arena, &p, "T8 backward_self_branch",
@@ -358,7 +359,7 @@ static void test_backward_self_branch(NdbJitArena *arena) {
                    /*pc=*/1, /*target=*/1, /*kind=*/OP_BRANCH_LT_INT_INT);
 }
 
-static void test_backward_branch(NdbJitArena *arena) {
+static void test_backward_branch(NdbJitCodeMem *arena) {
   Program p;
   build_backward_branch(&p);
   assert_rejected(arena, &p, "T9 backward_branch",
@@ -366,7 +367,7 @@ static void test_backward_branch(NdbJitArena *arena) {
                    /*pc=*/2, /*target=*/0, /*kind=*/OP_BRANCH_LT_INT_INT);
 }
 
-static void test_branch_oor_eq(NdbJitArena *arena) {
+static void test_branch_oor_eq(NdbJitCodeMem *arena) {
   Program p;
   build_branch_oor_eq(&p);
   assert_rejected(arena, &p, "T10 branch_oor_eq",
@@ -374,7 +375,7 @@ static void test_branch_oor_eq(NdbJitArena *arena) {
                    /*pc=*/1, /*target=*/3, /*kind=*/OP_BRANCH_LT_INT_INT);
 }
 
-static void test_branch_oor_gt(NdbJitArena *arena) {
+static void test_branch_oor_gt(NdbJitCodeMem *arena) {
   Program p;
   build_branch_oor_gt(&p);
   assert_rejected(arena, &p, "T11 branch_oor_gt",
@@ -382,7 +383,7 @@ static void test_branch_oor_gt(NdbJitArena *arena) {
                    /*pc=*/1, /*target=*/99, /*kind=*/OP_BRANCH_LT_INT_INT);
 }
 
-static void test_backward_branch_attr_eq(NdbJitArena *arena) {
+static void test_backward_branch_attr_eq(NdbJitCodeMem *arena) {
   Program p;
   build_backward_branch_attr_eq(&p);
   assert_rejected(arena, &p, "T13 backward_branch_attr_eq",
@@ -391,7 +392,7 @@ static void test_backward_branch_attr_eq(NdbJitArena *arena) {
                    /*kind=*/OP_BRANCH_ATTR_EQ_NULL);
 }
 
-static void test_backward_branch_attr_ne(NdbJitArena *arena) {
+static void test_backward_branch_attr_ne(NdbJitCodeMem *arena) {
   Program p;
   build_backward_branch_attr_ne(&p);
   assert_rejected(arena, &p, "T14 backward_branch_attr_ne",
@@ -400,7 +401,7 @@ static void test_backward_branch_attr_ne(NdbJitArena *arena) {
                    /*kind=*/OP_BRANCH_ATTR_NE_NULL);
 }
 
-static void test_backward_branch_linked_eq(NdbJitArena *arena) {
+static void test_backward_branch_linked_eq(NdbJitCodeMem *arena) {
   Program p;
   build_backward_branch_linked_eq(&p);
   assert_rejected(arena, &p, "T15 backward_branch_linked_eq",
@@ -409,7 +410,7 @@ static void test_backward_branch_linked_eq(NdbJitArena *arena) {
                    /*kind=*/OP_BRANCH_LINKED_EQ_NULL);
 }
 
-static void test_backward_branch_linked_ne(NdbJitArena *arena) {
+static void test_backward_branch_linked_ne(NdbJitCodeMem *arena) {
   Program p;
   build_backward_branch_linked_ne(&p);
   assert_rejected(arena, &p, "T16 backward_branch_linked_ne",
@@ -418,7 +419,7 @@ static void test_backward_branch_linked_ne(NdbJitArena *arena) {
                    /*kind=*/OP_BRANCH_LINKED_NE_NULL);
 }
 
-static void test_backward_jump(NdbJitArena *arena) {
+static void test_backward_jump(NdbJitCodeMem *arena) {
   Program p;
   build_backward_jump(&p);
   assert_rejected(arena, &p, "T17 backward_jump",
@@ -427,36 +428,37 @@ static void test_backward_jump(NdbJitArena *arena) {
                    /*kind=*/OP_JUMP);
 }
 
-/* The expensive one: prove a reject doesn't grow the arena. We need
- * a fresh arena for this so the "before" reading is the empty-arena
- * baseline (a previous accept would muddy it). */
+/* The expensive one: prove a reject allocates no code memory. A fresh
+ * manager gives an empty-in-use baseline (a previous accept would muddy
+ * it). The admission walk runs before any slot is reserved, so a
+ * rejected program must leave in-use bytes unchanged at 0. */
 static void test_no_leak_on_reject(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   if (!arena) {
-    mark_fail("T12 no_leak_on_reject", "arena create failed");
+    mark_fail("T12 no_leak_on_reject", "manager create failed");
     return;
   }
 
-  size_t used_before = ndb_jit_arena_used(arena);
+  size_t used_before = ndb_jit_codemem_inuse_bytes(arena);
 
   Program p;
   build_backward_branch(&p);
   errno = 0;
   Jit1Prog *result = jit1_compile(arena, &p, NULL);
 
-  size_t used_after = ndb_jit_arena_used(arena);
+  size_t used_after = ndb_jit_codemem_inuse_bytes(arena);
 
   if (result != NULL) {
     mark_fail("T12 no_leak_on_reject", "expected NULL on backward branch");
   } else if (used_after != used_before) {
     mark_fail("T12 no_leak_on_reject",
-              "arena grew %zu -> %zu bytes despite reject",
+              "code memory grew %zu -> %zu in-use bytes despite reject",
               used_before, used_after);
   } else {
     mark_pass("T12 no_leak_on_reject");
   }
 
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* ------------------------------------------------------------------ */
@@ -470,7 +472,7 @@ int main(void) {
   /* Most cases share an arena to verify the sidecar gets reset
    * properly across calls (a stale reason from a prior reject
    * shouldn't leak into a subsequent accept). */
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   if (!arena) {
     fprintf(stderr, "FATAL: arena create failed\n");
     return 2;
@@ -493,7 +495,7 @@ int main(void) {
   test_backward_branch_linked_ne(arena);
   test_backward_jump(arena);
 
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 
   /* T12 wants its own arena. */
   test_no_leak_on_reject();

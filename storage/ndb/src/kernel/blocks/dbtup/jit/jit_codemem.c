@@ -249,7 +249,7 @@ int ndb_jit_codemem_alloc(NdbJitCodeMem *mem, size_t bytes,
   ndb_jit_arena_prepare_write(arena);
 
   out->rw = slot->rw;
-  out->rx = NULL;
+  out->rx = slot->rx;   /* executable alias known now; callable after seal */
   out->capacity = cls->slot_bytes;
   out->length = 0;
   out->_slot = slot;

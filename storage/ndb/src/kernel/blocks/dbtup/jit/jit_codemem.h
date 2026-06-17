@@ -73,7 +73,7 @@ typedef struct NdbJitCodeMem NdbJitCodeMem;
  * calling seal. `_slot` is opaque allocator bookkeeping. */
 typedef struct {
   void       *rw;        /* write emitted code here (writable view) */
-  const void *rx;        /* callable entry; valid only after seal */
+  const void *rx;        /* executable alias; set at alloc, CALLABLE after seal */
   uint32_t    capacity;  /* usable bytes in the slot (size-class size) */
   uint32_t    length;    /* bytes the caller emitted; set before seal */
   void       *_slot;     /* opaque: owning NjcSlot* */
@@ -107,9 +107,10 @@ NdbJitCodeMem *ndb_jit_codemem_global(void);
 
 /**
  * Reserve a slot able to hold @p bytes of code. On success returns 0
- * and fills @p out (rw, capacity, _slot; rx=NULL, length=0); the
- * calling thread is left write-enabled for the slot's backing region
- * (macOS) so the caller can emit immediately.
+ * and fills @p out (rw, capacity, _slot, length=0, and rx = the slot's
+ * executable alias — known immediately for branch fixups, but only
+ * CALLABLE after seal); the calling thread is left write-enabled for
+ * the slot's backing region (macOS) so the caller can emit immediately.
  *
  * Returns -1 if @p bytes exceeds NDB_JIT_CODEMEM_MAX_BLOB, or on OOM
  * (reserved-byte cap reached, or a new slab's mmap failed). On -1 the

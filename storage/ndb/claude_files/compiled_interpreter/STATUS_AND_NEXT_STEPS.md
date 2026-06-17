@@ -49,8 +49,18 @@ Recommended order:
      Diagnostics: live/compiles/hits. Test `progcache_tests.c` (mock-compiler
      cases + a capstone integration test on the real `codemem`: reuse → one
      slot, release-to-zero → slot freed). **NOT yet wired into DBTUP.**
-   - **Slice 2** — `jit1_compile` allocates from `codemem` (record the slot
-     handle in `Jit1Prog`) + `jit1_free`; stop leaking `Jit1Prog*`.
+   - **Slice 2 — `jit1_compile` on `codemem` DONE (first live-path change).**
+     `jit1_compile(NdbJitCodeMem*, …)` reserves/seals a slot instead of the
+     per-block bump arena; `Jit1Prog` records the slot + manager; new
+     `jit1_free(prog)` returns it; post-reserve failures `goto fail` and
+     free the slot (no leak on compile error). aarch64 cold-call fixup uses
+     the slot's rx alias (set at alloc). Kernel call sites (DblqhProxy,
+     PushdownInterpreter, DbtupJitGlue) compile via `ndb_jit_codemem_global()`
+     — per-block `m_jit_arena`s now dead (removed Slice 3). Host tests
+     (admission/coldcall/microbench) migrated. **`jit1_free` not yet called
+     by the kernel** → programs still accumulate (in the shared 16 MB pool)
+     until Slice 3 wires the lifecycle. Regression net: existing
+     `coldcall_tests`/`admission_tests`/`bridge_tests`.
    - **Slice 3** — DBTUP/agg switch to `progcache` acquire/release; wire
      the program-death sites (scan filter `storedProc` set
      `DbtupExecQuery.cpp:1106` / reset `DbtupStoredProcDef.cpp:188`; agg

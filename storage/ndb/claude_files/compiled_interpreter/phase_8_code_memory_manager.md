@@ -1,9 +1,10 @@
 # Phase 8 — JIT code-memory manager + compiled-program cache
 
-**Status: Slices 1a (code-memory manager) + 1b (program reuse cache)
-implemented, host-testable, inert in the kernel (2026-06-17).** The
-remaining slices (2 jit1 wiring, 3 DBTUP/agg wiring, 4 RonSQL PREPARE) are
-designed below but not yet built.
+**Status: Slices 1a (code-memory manager) + 1b (program reuse cache) +
+2 (`jit1_compile` on codemem) implemented & host-tested (2026-06-17).**
+Slice 2 is the first to touch the live JIT path. The remaining slices
+(3 DBTUP/agg lifecycle, 4 RonSQL PREPARE) are designed below but not yet
+built.
 
 This is Phase 8 item #1 from `plan.md` §14 — *the* ship blocker. Before
 this, JIT code memory was a per-block monotonic bump arena
@@ -118,9 +119,21 @@ Sharded refcounted hash so identical bytecode reuses one compiled blob.
 
 - **1a — `jit_codemem` + tests.** ✅ implemented, inert in kernel.
 - **1b — `jit_progcache` + tests.** ✅ implemented, inert in kernel.
-- **2 — `jit1_compile`** gains a `codemem`-backed allocation path
-  (`Jit1Prog` records the `NdbJitCodeSlot` handle) + `jit1_free(prog)`;
-  callers stop leaking the `Jit1Prog*`.
+- **2 — `jit1_compile` on `codemem`.** ✅ done. `jit1_compile(NdbJitCodeMem*,
+  …)` reserves/seals a slot (no more per-block bump arena); `Jit1Prog`
+  records the `NdbJitCodeSlot` + its manager; new `jit1_free(prog)` returns
+  the slot. A compile that fails after reserving the slot now `goto fail`s
+  and frees it (no code-memory leak on error). The aarch64 cold-call
+  PC-rel fixup computes the exec address from the slot's rx alias (set at
+  alloc) instead of `ndb_jit_arena_exec_addr`. Kernel call sites (DblqhProxy
+  join-agg, PushdownInterpreter standalone-agg, DbtupJitGlue scan filter)
+  now pass `ndb_jit_codemem_global()`; the per-block `m_jit_arena`s are dead
+  and removed in Slice 3. Host tests (`admission`/`coldcall`/`microbench`)
+  migrated to a `NdbJitCodeMem` (admission's no-leak check now reads
+  `inuse_bytes`). `jit1_free` is **not yet called by the kernel** — the
+  per-program lifecycle (which frees, and the `progcache` acquire/release)
+  is Slice 3, so production code memory still accumulates until then (now
+  in the shared 16 MB pool rather than per-block 1 MB).
 - **3 — DBTUP / agg** switch their compiles to `progcache` acquire/release
   and wire the program-death sites: scan filter `storedProc`
   (`DbtupExecQuery.cpp:1106` set / `DbtupStoredProcDef.cpp:188` reset), agg
@@ -139,10 +152,17 @@ caches are coherent).
 
 ## Files
 
-- `src/kernel/blocks/dbtup/jit/jit_codemem.{h,c}` — the manager (Slice 1a).
+- `src/kernel/blocks/dbtup/jit/jit_codemem.{h,c}` — the manager (Slice 1a;
+  Slice 2 set `slot.rx` at alloc).
 - `src/kernel/blocks/dbtup/jit/jit_progcache.{h,c}` — the reuse cache (Slice 1b).
 - `src/kernel/blocks/dbtup/jit/jit_arena.{h,c}` — `+ndb_jit_arena_prepare_write`.
+- `src/kernel/blocks/dbtup/jit/jit1.{h,c}` — Slice 2: `jit1_compile` takes
+  `NdbJitCodeMem*`, `+jit1_free`, slot recorded in `Jit1Prog`, `goto fail`
+  slot reclaim.
+- `src/kernel/blocks/{dblqh/DblqhProxy.cpp, dbtup/PushdownInterpreter.cpp,
+  dbtup/DbtupJitGlue.cpp}` — Slice 2: compile via `ndb_jit_codemem_global()`.
 - `src/kernel/blocks/dbtup/jit/CMakeLists.txt` — `jit_codemem.c` into
   `ndb_jit_arena`; new `ndb_jit_progcache` lib; `Threads::Threads` linked.
 - `test/jit_proto/codemem_tests.c`, `progcache_tests.c` + `CMakeLists.txt` —
-  host unit tests.
+  host unit tests. `admission_tests.c` / `coldcall_tests.c` /
+  `proto_microbench.c` migrated to `NdbJitCodeMem` (Slice 2).

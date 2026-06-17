@@ -446,8 +446,11 @@ void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
     return nullptr;
   }
 
-  /* Stage 2: NDB-agnostic compile into the per-DBTUP arena. */
-  Jit1Prog *jp = jit1_compile(arena, &p, /*timing=*/nullptr);
+  /* Stage 2: NDB-agnostic compile into the node-global code-memory
+   * manager (Slice 2 — the per-DBTUP arena is superseded; the `arena`
+   * parameter and its null-guard above are removed in Slice 3). */
+  Jit1Prog *jp =
+      jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
   if (jp == nullptr) {
     return nullptr;
   }

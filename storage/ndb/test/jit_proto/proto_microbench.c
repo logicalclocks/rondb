@@ -29,6 +29,7 @@
 #include "bytecode1.h"
 #include "jit1.h"
 #include "jit_arena.h"
+#include "jit_codemem.h"
 #include "microbench_interp.h"
 #include "microbench_program.h"
 
@@ -120,7 +121,7 @@ static int run_informational_bench(const char *title,
   int64_t acc_jit = 0;
   size_t emitted = 0;
   for (int it = 0; it < repeats; ++it) {
-    NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+    NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
     if (!arena) {
       fprintf(stderr, "FAIL %s: arena create failed\n", title);
       free(compile_samples);
@@ -136,7 +137,7 @@ static int run_informational_bench(const char *title,
       fprintf(stderr,
               "FAIL %s: jit1_compile failed (errno=%d, reason=%d, iter=%d)\n",
               title, errno, err->reason, it);
-      ndb_jit_arena_destroy(arena);
+      ndb_jit_codemem_destroy(arena);
       free(compile_samples);
       free(jit_per_row_samples);
       return 0;
@@ -156,13 +157,13 @@ static int run_informational_bench(const char *title,
       fprintf(stderr, "FAIL %s: acc drift across iters: %" PRId64
                       " -> %" PRId64 " at iter=%d\n",
               title, acc_jit, acc_this, it);
-      ndb_jit_arena_destroy(arena);
+      ndb_jit_codemem_destroy(arena);
       free(compile_samples);
       free(jit_per_row_samples);
       return 0;
     }
 
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
   }
 
   if (acc_interp != acc_jit) {
@@ -271,9 +272,9 @@ int main(int argc, char **argv) {
   }
 
   for (int it = 0; it < repeats; ++it) {
-    NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+    NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
     if (!arena) {
-      perror("ndb_jit_arena_create");
+      perror("ndb_jit_codemem_create");
       free(compile_samples);   free(jit_per_row_samples);
       free(pass1_samples);     free(alloc_samples);
       free(emit_samples);      free(seal_samples);
@@ -287,7 +288,7 @@ int main(int argc, char **argv) {
     uint64_t t_c1 = now_ns();
     if (!jp) {
       fprintf(stderr, "FAIL jit1_compile errno=%d (iter=%d)\n", errno, it);
-      ndb_jit_arena_destroy(arena);
+      ndb_jit_codemem_destroy(arena);
       free(compile_samples);   free(jit_per_row_samples);
       free(pass1_samples);     free(alloc_samples);
       free(emit_samples);      free(seal_samples);
@@ -314,7 +315,7 @@ int main(int argc, char **argv) {
       fprintf(stderr, "FAIL acc drift across iters: %" PRId64
                       " -> %" PRId64 " at iter=%d\n",
               acc_jit, acc_this, it);
-      ndb_jit_arena_destroy(arena);
+      ndb_jit_codemem_destroy(arena);
       free(compile_samples);   free(jit_per_row_samples);
       free(pass1_samples);     free(alloc_samples);
       free(emit_samples);      free(seal_samples);
@@ -322,7 +323,7 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
   }
 
   /* ---------------- Correctness ---------------- */
@@ -572,7 +573,7 @@ int main(int argc, char **argv) {
   double forked_interp_ns_per_row = (double)(t_fi1 - t_fi0) / (double)nrows;
 
   /* JIT-compile + run the forked program. */
-  NdbJitArena *arena_f = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena_f = ndb_jit_codemem_create(0);
   if (!arena_f) {
     fprintf(stderr, "FAIL forked: arena create failed\n");
     free(rows);
@@ -583,7 +584,7 @@ int main(int argc, char **argv) {
     const Jit1AdmitError *err = jit1_last_admit_error();
     fprintf(stderr, "FAIL forked: jit1_compile failed (errno=%d, reason=%d)\n",
             errno, err->reason);
-    ndb_jit_arena_destroy(arena_f);
+    ndb_jit_codemem_destroy(arena_f);
     free(rows);
     return 7;
   }
@@ -605,7 +606,7 @@ int main(int argc, char **argv) {
   }
   uint64_t t_fj1 = now_ns();
   double forked_jit_ns_per_row = (double)(t_fj1 - t_fj0) / (double)nrows;
-  ndb_jit_arena_destroy(arena_f);
+  ndb_jit_codemem_destroy(arena_f);
 
   int forked_ok = (acc_forked_interp == acc_forked_jit);
 

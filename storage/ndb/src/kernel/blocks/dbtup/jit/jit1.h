@@ -21,6 +21,7 @@
 
 #include "bytecode1.h"
 #include "jit_arena.h"
+#include "jit_codemem.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -113,18 +114,27 @@ typedef struct {
   uint8_t         offending_kind;   /* meaningful for INVALID_KIND / UNSUPPORTED_OP */
 } Jit1AdmitError;
 
-/* Compile `prog` into `arena`. Returns NULL on:
+/* Compile `prog` into a slot from the code-memory manager `mem`.
+ * Returns NULL on:
  *   - admission rejection (errno=EINVAL; jit1_last_admit_error()
  *     carries the reason)
- *   - arena OOM (errno=ENOMEM)
- * The returned handle remains valid until the arena is destroyed.
+ *   - code-memory OOM (errno=ENOMEM) — `mem`'s reservation cap reached,
+ *     or the blob exceeds the largest size class
+ * The returned handle owns one code-memory slot; free it with
+ * jit1_free() (which returns the slot to `mem`). The handle remains
+ * valid until jit1_free() or until `mem` is destroyed.
  *
  * If `out_timing` is non-NULL, the per-phase breakdown is written
  * there. Pass NULL when timing isn't needed (no measurement
  * overhead is paid in that case). */
-Jit1Prog *jit1_compile(NdbJitArena *arena,
+Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
                        const Program *prog,
                        Jit1Timing *out_timing);
+
+/* Release a compiled program: returns its code-memory slot to the
+ * manager it was compiled from and frees the handle. Safe with NULL.
+ * The entry pointer from jit1_entry() must not be used afterwards. */
+void jit1_free(Jit1Prog *prog);
 
 /* Read-only view of the most recent admission failure on the
  * calling thread. Returns a pointer to thread-local storage; the

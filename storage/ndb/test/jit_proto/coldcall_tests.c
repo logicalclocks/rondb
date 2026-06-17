@@ -38,6 +38,7 @@
 #include "bytecode1.h"
 #include "jit1.h"
 #include "jit_arena.h"
+#include "jit_codemem.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -127,7 +128,7 @@ static void build_load_col_then_sum(Program *p, uint8_t col_id) {
  * and pass-1 / pass-2 emit the bytes before failing on the
  * unresolved cold-call hole), but no NULL deref / crash. */
 static void test_no_helper_registered(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   Program p;
   build_load_col_then_sum(&p, /*col_id=*/3);
 
@@ -136,17 +137,17 @@ static void test_no_helper_registered(void) {
   if (jp != NULL) {
     mark_fail("T1 no_helper_registered",
               "jit1_compile returned non-NULL");
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   if (errno != ENOENT) {
     mark_fail("T1 no_helper_registered",
               "errno=%d, want ENOENT", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   mark_pass("T1 no_helper_registered");
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* T2: single-row invocation.
@@ -156,7 +157,7 @@ static void test_no_helper_registered(void) {
  * Verify the helper was called with the expected args and its
  * value flowed into the accumulator. */
 static void test_single_row(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   Program p;
   build_load_col_then_sum(&p, /*col_id=*/7);
 
@@ -164,7 +165,7 @@ static void test_single_row(void) {
   if (jp == NULL) {
     mark_fail("T2 single_row",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitEntry entry = jit1_entry(jp);
@@ -194,7 +195,7 @@ static void test_single_row(void) {
   } else {
     mark_pass("T2 single_row");
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* T3: multi-row accumulation.
@@ -203,7 +204,7 @@ static void test_single_row(void) {
  * across rows; regs reset each row (we memset them). Verify the
  * helper was called 100 times and acc holds the cumulative sum. */
 static void test_multi_row(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   Program p;
   build_load_col_then_sum(&p, /*col_id=*/4);
 
@@ -211,7 +212,7 @@ static void test_multi_row(void) {
   if (jp == NULL) {
     mark_fail("T3 multi_row",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitEntry entry = jit1_entry(jp);
@@ -239,7 +240,7 @@ static void test_multi_row(void) {
   } else {
     mark_pass("T3 multi_row");
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* T4: cold-call combined with hot arithmetic.
@@ -255,7 +256,7 @@ static void test_multi_row(void) {
  * via JitState.regs_i64 — i.e., the value the helper writes is
  * the same value subsequent stencils read. */
 static void test_coldcall_plus_arith(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
 
   Program p;
   memset(&p, 0, sizeof(p));
@@ -270,7 +271,7 @@ static void test_coldcall_plus_arith(void) {
   if (jp == NULL) {
     mark_fail("T4 coldcall_plus_arith",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitEntry entry = jit1_entry(jp);
@@ -294,14 +295,14 @@ static void test_coldcall_plus_arith(void) {
   } else {
     mark_pass("T4 coldcall_plus_arith");
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* T5: aggregation result update index is independent of the accumulator
  * slot operand. This matches DBTUP writeback, which is ordered by result
  * value rather than by whatever temporary slot the program used. */
 static void test_sum_marks_result_index(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
 
   Program p;
   memset(&p, 0, sizeof(p));
@@ -313,7 +314,7 @@ static void test_sum_marks_result_index(void) {
   if (jp == NULL) {
     mark_fail("T5 sum_marks_result_index",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitEntry entry = jit1_entry(jp);
@@ -336,13 +337,13 @@ static void test_sum_marks_result_index(void) {
   } else {
     mark_pass("T5 sum_marks_result_index");
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* T6: a row that exits before any aggregate opcode must not mark any
  * result value as updated. */
 static void test_exit_does_not_mark_result(void) {
-  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
 
   Program p;
   memset(&p, 0, sizeof(p));
@@ -353,7 +354,7 @@ static void test_exit_does_not_mark_result(void) {
   if (jp == NULL) {
     mark_fail("T6 exit_does_not_mark_result",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitEntry entry = jit1_entry(jp);
@@ -367,12 +368,12 @@ static void test_exit_does_not_mark_result(void) {
       mark_fail("T6 exit_does_not_mark_result",
                 "value_updated[%u]=%" PRIu64 ", want 0",
                 i, s.value_updated[i]);
-      ndb_jit_arena_destroy(arena);
+      ndb_jit_codemem_destroy(arena);
       return;
     }
   }
   mark_pass("T6 exit_does_not_mark_result");
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* T7: registry idempotency + miss.
@@ -412,7 +413,7 @@ static void test_checked_add_no_overflow(void) {
   p.ops[3] = (Op){ .kind = OP_EXIT };
   p.ops[4] = (Op){ .kind = OP_OVERFLOW_EXIT };
 
-  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   if (arena == NULL) {
     mark_fail("T8 checked_add_no_overflow", "arena_create failed");
     return;
@@ -421,7 +422,7 @@ static void test_checked_add_no_overflow(void) {
   if (jp == NULL) {
     mark_fail("T8 checked_add_no_overflow",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitState s;
@@ -431,10 +432,10 @@ static void test_checked_add_no_overflow(void) {
     mark_fail("T8 checked_add_no_overflow",
               "row_overflowed=%u reg2=%lld, want 0/42",
               s.row_overflowed, (long long)s.regs_i64[2]);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
   mark_pass("T8 checked_add_no_overflow");
 }
 
@@ -449,7 +450,7 @@ static void test_checked_add_overflow(void) {
   p.ops[3] = (Op){ .kind = OP_EXIT };
   p.ops[4] = (Op){ .kind = OP_OVERFLOW_EXIT };
 
-  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   if (arena == NULL) {
     mark_fail("T9 checked_add_overflow", "arena_create failed");
     return;
@@ -458,7 +459,7 @@ static void test_checked_add_overflow(void) {
   if (jp == NULL) {
     mark_fail("T9 checked_add_overflow",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitState s;
@@ -468,10 +469,10 @@ static void test_checked_add_overflow(void) {
     mark_fail("T9 checked_add_overflow",
               "row_overflowed=%u reg2=%lld, want 1/0",
               s.row_overflowed, (long long)s.regs_i64[2]);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
   mark_pass("T9 checked_add_overflow");
 }
 
@@ -484,7 +485,7 @@ static void test_jump_skips_sum(void) {
   p.ops[2] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0, .c = 0 };
   p.ops[3] = (Op){ .kind = OP_EXIT };
 
-  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   if (arena == NULL) {
     mark_fail("T10 jump_skips_sum", "arena_create failed");
     return;
@@ -493,7 +494,7 @@ static void test_jump_skips_sum(void) {
   if (jp == NULL) {
     mark_fail("T10 jump_skips_sum",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitState s;
@@ -505,10 +506,10 @@ static void test_jump_skips_sum(void) {
               "reg0=%lld acc0=%lld updated0=%" PRIu64 ", want 5/0/0",
               (long long)s.regs_i64[0], (long long)s.acc_i64[0],
               s.value_updated[0]);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
   mark_pass("T10 jump_skips_sum");
 }
 
@@ -518,7 +519,7 @@ static void test_filter_reject_exit_sets_state(void) {
   p.n_ops = 1;
   p.ops[0] = (Op){ .kind = OP_FILTER_REJECT_EXIT };
 
-  NdbJitArena *arena = ndb_jit_arena_create(4096);
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
   if (arena == NULL) {
     mark_fail("T11 filter_reject_exit_sets_state", "arena_create failed");
     return;
@@ -527,7 +528,7 @@ static void test_filter_reject_exit_sets_state(void) {
   if (jp == NULL) {
     mark_fail("T11 filter_reject_exit_sets_state",
               "jit1_compile failed (errno=%d)", errno);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
   JitState s;
@@ -537,10 +538,10 @@ static void test_filter_reject_exit_sets_state(void) {
     mark_fail("T11 filter_reject_exit_sets_state",
               "row_filter_rejected=%u row_overflowed=%u, want 1/0",
               s.row_filter_rejected, s.row_overflowed);
-    ndb_jit_arena_destroy(arena);
+    ndb_jit_codemem_destroy(arena);
     return;
   }
-  ndb_jit_arena_destroy(arena);
+  ndb_jit_codemem_destroy(arena);
   mark_pass("T11 filter_reject_exit_sets_state");
 }
 

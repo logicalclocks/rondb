@@ -291,7 +291,10 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
             ndb_jit_bridge_translate(agg_prog + bc_off, prog_len - bc_off,
                                       &p, &berr);
         if (brc == JIT_BRIDGE_OK) {
-          Jit1Prog *jp = jit1_compile(jit_arena, &p, /*timing=*/nullptr);
+          /* Slice 2: node-global code-memory manager (the jit_arena
+           * parameter is superseded; removed in Slice 3). */
+          Jit1Prog *jp =
+              jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
           if (jp != nullptr) {
             result.agg->setJitEntry(jit1_entry(jp));
           }

@@ -111,6 +111,8 @@ typedef struct {
 struct Jit1Prog {
   const uint8_t *rx_entry;      /* RX-mapping pointer to start of compiled blob */
   size_t         emitted;       /* total bytes emitted */
+  NdbJitCodeMem *mem;           /* manager the slot came from (for jit1_free) */
+  NdbJitCodeSlot slot;          /* code-memory slot backing the blob */
 };
 
 /* ------------------------------------------------------------------ */
@@ -407,12 +409,12 @@ static Jit1AdmitReason admit_program(const Program *prog) {
 /* Compile — entry point.                                             */
 /* ------------------------------------------------------------------ */
 
-Jit1Prog *jit1_compile(NdbJitArena *arena,
+Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
                        const Program *prog,
                        Jit1Timing *out_timing) {
   if (out_timing) memset(out_timing, 0, sizeof(*out_timing));
 
-  if (!arena || !prog) {
+  if (!mem || !prog) {
     /* Null inputs aren't an admission rubric mismatch; leave the
      * sidecar untouched so a prior reason isn't overwritten by a
      * less informative result. */
@@ -464,17 +466,18 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
   if (out_timing) t_pass1_end = j1_now_ns();
 
   /* ---------------------------------------------------------------- */
-  /* Allocate space in the arena: blob bytes + the Jit1Prog handle.  */
-  /* The handle is allocated separately (via malloc) because it must  */
-  /* outlive the arena's RW/RX lifecycle in a way that's independent  */
-  /* of seal — only the *bytes* live in the arena.                    */
+  /* Reserve a code-memory slot for the blob bytes. The slot carries   */
+  /* both its writable base (emit here) and its executable alias       */
+  /* (callable after seal); the Jit1Prog handle is malloc'd separately */
+  /* and records the slot so jit1_free() can return it to the manager. */
   /* ---------------------------------------------------------------- */
 
-  uint8_t *blob_rw = (uint8_t *)ndb_jit_arena_alloc(arena, total, 16);
-  if (!blob_rw) {
-    errno = ENOMEM;
+  NdbJitCodeSlot slot;
+  if (ndb_jit_codemem_alloc(mem, total, &slot) != 0) {
+    errno = ENOMEM;   /* cap reached, or blob > largest size class */
     return NULL;
   }
+  uint8_t *blob_rw = (uint8_t *)slot.rw;
 
   if (out_timing) t_alloc_end = j1_now_ns();
 
@@ -566,12 +569,12 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
            * its RW address. */
           if (hole->helper_name == NULL) {
             errno = EINVAL;   /* extractor bug — HK_COLDCALL without name */
-            return NULL;
+            goto fail;
           }
           JitHelperFn helper = jit1_lookup_helper(hole->helper_name);
           if (helper == NULL) {
             errno = ENOENT;   /* helper not registered before compile */
-            return NULL;
+            goto fail;
           }
 #if defined(__x86_64__)
           if (hole->width == 8) {
@@ -579,21 +582,19 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
              *   movabs rax, imm64
              *   call   rax
              *
-             * Linux can map the RX arena far away from the main
+             * Linux can map the RX code memory far away from the main
              * executable, so a rel32 call is not generally safe. */
             put_u64_le(patch, (uint64_t)(uintptr_t)helper);
           } else {
             errno = EINVAL;
-            return NULL;
+            goto fail;
           }
 #else
           uint32_t patch_site_off = this_off + hole->byte_offset;
-          const void *rx_site =
-              ndb_jit_arena_exec_addr(arena, blob_rw + patch_site_off);
-          if (rx_site == NULL) {
-            errno = EFAULT;
-            return NULL;
-          }
+          /* The patch site's executable address is the slot's rx base
+           * plus the same offset (the slot's rw and rx views are
+           * offset-aliased), known before seal. */
+          const void *rx_site = (const uint8_t *)slot.rx + patch_site_off;
           int64_t byte_disp = (int64_t)(intptr_t)helper -
                                (int64_t)(uintptr_t)rx_site;
           patch_branch_disp(patch, (int32_t)byte_disp);
@@ -608,7 +609,7 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
           assert(op->c > pc && op->c < prog->n_ops);
           if (n_fixups >= J1_MAX_FIXUPS) {
             errno = ENOSPC;
-            return NULL;
+            goto fail;
           }
           fixups[n_fixups++] = (Fixup){
             .target_pc = op->c,
@@ -623,7 +624,7 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
           assert(op->d > pc && op->d < prog->n_ops);
           if (n_fixups >= J1_MAX_FIXUPS) {
             errno = ENOSPC;
-            return NULL;
+            goto fail;
           }
           fixups[n_fixups++] = (Fixup){
             .target_pc = op->d,
@@ -633,7 +634,7 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
         }
         default:
           errno = EINVAL;
-          return NULL;
+          goto fail;
       }
     }
 
@@ -656,30 +657,33 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
 
   if (n_fixups != 0) {
     errno = EINVAL;     /* a branch target was never reached */
-    return NULL;
+    goto fail;
   }
 
   if (out_timing) t_emit_end = j1_now_ns();
 
   /* ---------------------------------------------------------------- */
-  /* Seal the arena range and obtain the RX-mapping pointer.          */
+  /* Seal the slot and obtain the RX-mapping (callable) pointer.      */
   /* ---------------------------------------------------------------- */
 
-  const void *rx = ndb_jit_arena_seal(arena, blob_rw, total);
-  if (!rx) {
+  slot.length = total;
+  if (ndb_jit_codemem_seal(mem, &slot) != 0) {
     errno = EFAULT;
-    return NULL;
+    goto fail;
   }
+  const void *rx = slot.rx;
 
   if (out_timing) t_seal_end = j1_now_ns();
 
   Jit1Prog *handle = (Jit1Prog *)calloc(1, sizeof(*handle));
   if (!handle) {
     errno = ENOMEM;
-    return NULL;
+    goto fail;
   }
   handle->rx_entry = (const uint8_t *)rx;
   handle->emitted  = total;
+  handle->mem      = mem;
+  handle->slot     = slot;
 
   if (out_timing) {
     t_handle_end = j1_now_ns();
@@ -692,6 +696,16 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
   }
 
   return handle;
+
+fail:
+  /* Any failure after the slot was reserved returns it to the manager
+   * so a compile error never leaks code memory. errno is preserved. */
+  {
+    int saved = errno;
+    ndb_jit_codemem_free(mem, &slot);
+    errno = saved;
+  }
+  return NULL;
 }
 
 JitEntry jit1_entry(const Jit1Prog *prog) {
@@ -704,4 +718,12 @@ JitEntry jit1_entry(const Jit1Prog *prog) {
 
 size_t jit1_emitted_size(const Jit1Prog *prog) {
   return prog ? prog->emitted : 0;
+}
+
+void jit1_free(Jit1Prog *prog) {
+  if (prog == NULL) return;
+  /* Return the code-memory slot to its manager, then free the handle.
+   * After this the entry pointer is dangling — the slot may be reused. */
+  ndb_jit_codemem_free(prog->mem, &prog->slot);
+  free(prog);
 }
