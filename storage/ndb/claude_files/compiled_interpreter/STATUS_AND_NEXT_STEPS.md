@@ -39,11 +39,16 @@ Recommended order:
      `test/jit_proto/codemem_tests.c` (class selection, alloc/seal/execute,
      reuse-after-free, accounting, cap OOM, validation, global singleton).
      **NOT yet wired into `jit1_compile` or DBTUP.**
-   - **Slice 1b — `jit_progcache.{h,c}` (next).** Sharded refcounted hash
-     keyed on exact bytecode words → identical programs share one blob
-     (sound: blob is pure fn of bytecode; OP_PARAM binds read per-row via
-     `param_buf`). `acquire(bytecode,…,pinned)` / `release` with a `pinned`
-     hint = the RonSQL **PREPARE** reuse hook. Mock-compiler host tests.
+   - **Slice 1b — `jit_progcache.{h,c}` DONE (inert, host-tested).** Sharded
+     refcounted hash keyed on exact bytecode words (16 shards × 64 buckets,
+     striped mutexes, hash+memcmp so no false reuse) → identical programs
+     share one blob (sound: blob is pure fn of bytecode; OP_PARAM binds read
+     per-row via `param_buf`). `acquire(key,len,pinned,&item)` / `release`
+     with a `pinned` retain-at-refcount-0 hint = the RonSQL **PREPARE** reuse
+     hook. Decoupled from codemem/NDB via compile/destroy callbacks.
+     Diagnostics: live/compiles/hits. Test `progcache_tests.c` (mock-compiler
+     cases + a capstone integration test on the real `codemem`: reuse → one
+     slot, release-to-zero → slot freed). **NOT yet wired into DBTUP.**
    - **Slice 2** — `jit1_compile` allocates from `codemem` (record the slot
      handle in `Jit1Prog`) + `jit1_free`; stop leaking `Jit1Prog*`.
    - **Slice 3** — DBTUP/agg switch to `progcache` acquire/release; wire

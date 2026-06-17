@@ -1,8 +1,9 @@
 # Phase 8 — JIT code-memory manager + compiled-program cache
 
-**Status: Slice 1a (code-memory manager) implemented, host-testable, inert
-in the kernel (2026-06-17).** The remaining slices (1b cache, 2 jit1 wiring,
-3 DBTUP/agg wiring, 4 RonSQL PREPARE) are designed below but not yet built.
+**Status: Slices 1a (code-memory manager) + 1b (program reuse cache)
+implemented, host-testable, inert in the kernel (2026-06-17).** The
+remaining slices (2 jit1 wiring, 3 DBTUP/agg wiring, 4 RonSQL PREPARE) are
+designed below but not yet built.
 
 This is Phase 8 item #1 from `plan.md` §14 — *the* ship blocker. Before
 this, JIT code memory was a per-block monotonic bump arena
@@ -73,33 +74,50 @@ unchanged, recycled `rw` from the freed set), reserved/in-use/live
 accounting, the cap OOM path (`-1` past cap, succeeds again after a free),
 `> MAX_BLOB` / zero rejection, seal validation, global singleton.
 
-### Layer 2 — compiled-program cache (`jit_progcache.{h,c}`)  ← Slice 1b, TODO
+### Layer 2 — compiled-program cache (`jit_progcache.{h,c}`)  ← Slice 1b, DONE
 
 Sharded refcounted hash so identical bytecode reuses one compiled blob.
 
-- **Key = exact bytecode words** (length + content). Reuse is sound because
-  the compiled blob is a pure function of the bytecode: stencils are static,
+- **Key = exact bytecode words** (length + content; `hash` + `memcmp`, so a
+  hash collision never causes false reuse). Reuse is sound because the
+  compiled blob is a pure function of the bytecode: stencils are static,
   helpers resolve by global name, and runtime operands (OP_PARAM bind
   values) are read per-row via `param_buf` — *not* baked into the code. So
   two `EXECUTE`s with different bind values share one blob.
-- **Sharded hash, striped mutexes:** `hash(bytecode) → shard`; lookup/insert
-  lock only that shard. On miss, compile under the shard lock (≈µs, off the
-  per-row path) → insert. Hit bumps refcount.
-- **Refcount + create/destroy API:** `acquire(bytecode, len, compile_cb,
-  pinned) → handle` (hit: refcount++, return shared; miss: compile + insert,
-  refcount = 1). `release(handle)`: refcount−−; at 0, evict from the hash
-  and `ndb_jit_codemem_free` the slot. `compile_cb` keeps the cache
-  NDB-agnostic — the caller supplies bridge-translate + `jit1_compile`.
-- **`pinned` / reusable hint:** the **RonSQL PREPARE** use case — `acquire`
-  pinned at prepare (held across every `EXECUTE`), `release` at deallocate.
-  A one-off scan acquires unpinned and may free its slot when the scan ends.
-- Tested with a **mock compiler** on the host: hit/miss, refcount,
-  release→evict→slot-freed (assert via `codemem` `live_slots`), sharding.
+- **Sharded hash, striped mutexes:** `NJP_N_SHARDS = 16` independent
+  sections, each a `NJP_N_BUCKETS = 64` bucket array + its own mutex
+  (FNV-1a hash; shard = low bits, bucket = next bits). A lookup/insert locks
+  only one shard. On miss, compile under the shard lock (≈µs, off the
+  per-row path; serializes only that 1/16 section and guarantees no
+  duplicate compile of the same program) → insert.
+- **Refcount + create/destroy API:** `acquire(key, len, pinned, &item) →
+  handle` (hit: refcount++, return shared entry; miss: run compile_cb +
+  insert, refcount = 1; refuse: return NULL → caller falls back).
+  `release(handle)`: refcount−−; at 0, a non-pinned entry is evicted and its
+  destroy_cb runs. **Decoupled from `codemem` and NDB via callbacks** —
+  `NjpCompileFn` (caller does bridge-translate + `jit1_compile` into a
+  codemem slot) and `NjpDestroyFn` (caller frees the slot); the cache owns
+  only the hash, key copies, and refcounts.
+- **`pinned` / reusable hint:** a pinned entry is **retained at refcount 0**
+  (not evicted) for future reuse, and reclaimed only at cache teardown (or a
+  future memory-pressure sweep) — the **RonSQL PREPARE** use case
+  (`acquire` pinned at prepare; the prepared statement also holds a ref
+  across every `EXECUTE`). A one-off scan acquires unpinned and frees its
+  slot when its last reference releases. `acquire` upgrades an entry to
+  pinned (sticky); never downgrades.
+- **Diagnostics:** `live_count` / `compile_count` (misses) / `hit_count`
+  (reuses) — feed NDBINFO "compiles"/"reuses" later.
+- Tested on the host (`test/jit_proto/progcache_tests.c`): mock-compiler
+  cases (miss-compiles-once/hit-reuses, refcount eviction, distinct keys,
+  exact-key no-false-reuse, pinned-survives-refcount-0, compile-refuse,
+  diagnostics, destroy-frees-live) **plus a capstone integration test on the
+  real `codemem`** — same bytecode → one slot, the stub executes, and
+  release-to-zero frees the slot (asserted via `codemem` `live_slots`).
 
 ## Staging
 
 - **1a — `jit_codemem` + tests.** ✅ implemented, inert in kernel.
-- **1b — `jit_progcache`** sharded refcounted hash + mock-compiler tests.
+- **1b — `jit_progcache` + tests.** ✅ implemented, inert in kernel.
 - **2 — `jit1_compile`** gains a `codemem`-backed allocation path
   (`Jit1Prog` records the `NdbJitCodeSlot` handle) + `jit1_free(prog)`;
   callers stop leaking the `Jit1Prog*`.
@@ -122,7 +140,9 @@ caches are coherent).
 ## Files
 
 - `src/kernel/blocks/dbtup/jit/jit_codemem.{h,c}` — the manager (Slice 1a).
+- `src/kernel/blocks/dbtup/jit/jit_progcache.{h,c}` — the reuse cache (Slice 1b).
 - `src/kernel/blocks/dbtup/jit/jit_arena.{h,c}` — `+ndb_jit_arena_prepare_write`.
 - `src/kernel/blocks/dbtup/jit/CMakeLists.txt` — `jit_codemem.c` into
-  `ndb_jit_arena`; link `Threads::Threads` on all platforms.
-- `test/jit_proto/codemem_tests.c` + `CMakeLists.txt` — host unit tests.
+  `ndb_jit_arena`; new `ndb_jit_progcache` lib; `Threads::Threads` linked.
+- `test/jit_proto/codemem_tests.c`, `progcache_tests.c` + `CMakeLists.txt` —
+  host unit tests.

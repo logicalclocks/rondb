@@ -198,3 +198,26 @@ SET_TARGET_PROPERTIES(codemem_tests PROPERTIES
 TARGET_LINK_LIBRARIES(codemem_tests PRIVATE
   ndb_jit_arena
 )
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 8: progcache_tests — compiled-program reuse cache
+# unit tests.
+#
+# Mock-compiler cases (miss/hit, refcount eviction, distinct keys,
+# exact-key no-false-reuse, pinned-survives-zero, compile-refuse,
+# diagnostics, destroy-frees-live) plus a capstone integration test that
+# wires the cache to the real jit_codemem manager (reuse -> one slot,
+# release-to-zero -> slot freed, stub executes). Links the cache lib and
+# the arena/codemem lib.
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(progcache_tests progcache_tests.c)
+SET_TARGET_PROPERTIES(progcache_tests PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(progcache_tests PRIVATE
+  ndb_jit_progcache
+  ndb_jit_arena
+)

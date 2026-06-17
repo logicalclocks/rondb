@@ -85,6 +85,29 @@ TARGET_INCLUDE_DIRECTORIES(ndb_jit1 PUBLIC
 TARGET_LINK_LIBRARIES(ndb_jit1 PUBLIC ndb_jit_arena)
 
 # ---------------------------------------------------------------------------
+# RONDB-1056 Phase 8: compiled-program reuse cache.
+#
+# Sharded refcounted hash keyed on bytecode words — identical programs
+# share one compiled blob (e.g. a prepared statement re-EXECUTEd).
+# Decoupled from the code-memory manager and from NDB via compile/destroy
+# callbacks, so it depends only on libc + pthreads.
+# ---------------------------------------------------------------------------
+
+ADD_LIBRARY(ndb_jit_progcache STATIC
+  jit_progcache.c
+)
+SET_TARGET_PROPERTIES(ndb_jit_progcache PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_INCLUDE_DIRECTORIES(ndb_jit_progcache PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+FIND_PACKAGE(Threads REQUIRED)
+TARGET_LINK_LIBRARIES(ndb_jit_progcache PUBLIC Threads::Threads)
+
+# ---------------------------------------------------------------------------
 # RONDB-1056 Phase 4: NDB aggregation bytecode bridge.
 #
 # Translates an NDB Uint32-word aggregation program into our internal
