@@ -9010,7 +9010,14 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   case NdbDictionary::Column::Type::Longvarchar:
     tk = STR; maxlen = 65535; lenbytes = 2; break;
   case NdbDictionary::Column::Type::Date:
-    tk = TIME; binlen = 4; timetype = MYSQL_TIMESTAMP_DATE; break;
+    // NDB DATE is 3 bytes (uint3korr); my_date_to_binary writes exactly 3
+    // (int3store, same packing as NDB pack_date).  binlen must be 3 — the
+    // length flows to qb->constValue(rv.val, rv.len) for CTE-body index
+    // bounds (D9); a 4-byte operand made scanIndex reject the 3-byte DATE
+    // index column ("Failed to create CTE body index-scan root").  The
+    // main-query path uses setBound(col, bt, val) which derives the length
+    // from the column, so it tolerated the old over-long value.
+    tk = TIME; binlen = 3; timetype = MYSQL_TIMESTAMP_DATE; break;
   case NdbDictionary::Column::Type::Datetime2:
     tk = TIME; binlen = 8; timetype = MYSQL_TIMESTAMP_DATETIME; break;
   case NdbDictionary::Column::Type::Timestamp2:

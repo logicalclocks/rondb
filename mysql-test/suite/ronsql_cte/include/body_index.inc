@@ -109,11 +109,67 @@ WITH ps AS (SELECT p_size AS k, COUNT(*) AS n
 SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM ps|
 
 # ------------------------------------------------------------
-# index-4 / index-5: DISABLED (D9) — CTE-body index-scan root on a DATE bound.
-# Recording pass: "Failed to create CTE body index-scan root".  Genuinely
-# unsupported index-scan-root shape.  index-4 is kept as the documented
-# probe below (NEXT-PHASE); index-5 collapses into the same finding.
+# index-4 / index-5 (D9 FIXED): CTE-body INDEX_SCAN root on a DATE bound.
+# encode_constant returned binlen=4 for a 3-byte DATE, so the CTE-body
+# constValue(rv.val, rv.len) made scanIndex reject the bound.  Now binlen=3.
+# Combines with D17 (MIN/MAX over the DATE group key in the main query).
 # ------------------------------------------------------------
+
+--echo
+--echo === index-4 (D9): CTE body DATE equality bound on idx_o_orderdate ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_4.sql
+--write_file $QUERY_FILE
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_index_4.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_4e.sql
+--write_file $QUERY_FILE
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_o_orderdate' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od|
+
+--echo
+--echo === index-5 (D9): CTE body DATE range bound on idx_o_orderdate ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_5.sql
+--write_file $QUERY_FILE
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+            FROM orders
+            WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_index_5.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_5e.sql
+--write_file $QUERY_FILE
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+            FROM orders
+            WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_o_orderdate' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+            FROM orders
+            WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od|
 
 --echo
 --echo === index-6: CTE body equality CHAR bound on idx_p_brand ===
@@ -171,25 +227,76 @@ WITH os AS (SELECT o_orderstatus AS s, COUNT(*) AS n
 SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM os|
 
 # ------------------------------------------------------------
-# index-8: DISABLED (D9) — composite leading-eq + DATE range index-scan root.
-# Recording pass: "Failed to create CTE body index-scan root".  Genuinely
-# unsupported index-scan-root shape (composite idx_o_status_date with a DATE
-# range bound).  Recorded as a NEXT-PHASE probe below.
+# index-8 / index-9 (D9 FIXED): composite idx_o_status_date INDEX_SCAN root —
+# leading CHAR equality + a DATE range on the second column (index-9 also adds
+# a residual filter on a third, non-indexed column).  Same binlen=4->3 DATE
+# fix as index-4/5; combines with D17 (MIN/MAX over the DATE group key).
 # ------------------------------------------------------------
 
-# NEXT-PHASE (DISABLED — D9, index-scan root over a DATE bound): was index-9.
-# The D17 part (MIN/MAX over a DATE column) is now FIXED — see agg-d17a/b/c in
-# body_agg.inc, which cover DATE MIN/MAX re-aggregation and GROUP-BY-over-DATE.
-# What remains unsupported here is the *index-scan root* on the composite
-# idx_o_status_date with a DATE range bound (the same D9 limitation as
-# index-4/5/8): the planner cannot build the CTE-body INDEX_SCAN root.
-#   WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
-#               FROM orders
-#               WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
-#                     AND o_shippriority < 3
-#               GROUP BY o_orderdate)
-#   SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
-# See findings/_discovery_log.md (D17 fixed; index-scan-root residual = D9).
+--echo
+--echo === index-8 (D9): composite status-eq + DATE range on idx_o_status_date ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_8.sql
+--write_file $QUERY_FILE
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders
+            WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_index_8.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_8e.sql
+--write_file $QUERY_FILE
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders
+            WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_o_status_date' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders
+            WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os|
+
+--echo
+--echo === index-9 (D9+D17): composite eq + half-open DATE + residual; MIN/MAX over DATE key ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_9.sql
+--write_file $QUERY_FILE
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders
+            WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_index_9.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_index_9e.sql
+--write_file $QUERY_FILE
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders
+            WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_o_status_date' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders
+            WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
 
 # ============================================================
 # MAIN cases: scalar MIN/MAX via ordered index + maxRows=1
@@ -385,34 +492,9 @@ DELIMITER ;|
 # PROBES (form 2): genuine-gap / uncertain — recorded, NOT executed.
 # ============================================================
 
-# NEXT-PHASE: CTE-body index-scan root on a DATE bound (D9) — was index-4/5.
-#   The recording pass errored "Failed to create CTE body index-scan root".
-#   A CTE body whose root scan would be an INDEX_SCAN bounded by a DATE
-#   column (idx_o_orderdate) is not yet supported; the planner cannot build
-#   the index-scan root for it.  Probe (kept as the documented index-4 case):
-#   WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
-#               FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
-#   SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od;
-#     -- want: Body root: INDEX_SCAN using idx_o_orderdate
-#     -- got:  ERROR "Failed to create CTE body index-scan root"
-#   Range-bound DATE variant (was index-5) collapses into the same finding:
-#   WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
-#               FROM orders
-#               WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
-#               GROUP BY o_orderdate)
-#   SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od;
-
-# NEXT-PHASE: composite index-scan root with a DATE range bound (D9) — was
-#   index-8.  Same "Failed to create CTE body index-scan root" error: a CTE
-#   body rooting on idx_o_status_date with leading-eq + a DATE range on the
-#   second column does not build an index-scan root.  Probe:
-#   WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
-#               FROM orders
-#               WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
-#               GROUP BY o_orderdate)
-#   SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os;
-#     -- want: Body root: INDEX_SCAN using idx_o_status_date
-#     -- got:  ERROR "Failed to create CTE body index-scan root"
+# D9 (CTE-body INDEX_SCAN root on a DATE bound) is FIXED and now executed —
+# see index-4/5 (idx_o_orderdate) and index-8/9 (composite idx_o_status_date)
+# above.  Root cause was encode_constant returning binlen=4 for a 3-byte DATE.
 
 # NEXT-PHASE: nullable MIN/MAX via index — EXPLAIN plan gap (capability matrix:
 #   "MIN/MAX-via-index on a NULLABLE column falls back to TABLE_SCAN; VALUES

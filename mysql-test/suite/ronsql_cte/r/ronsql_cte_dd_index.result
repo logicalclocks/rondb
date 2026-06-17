@@ -66,6 +66,52 @@ SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM ps|
 mnk	mxk	sn	g
 31	50	40	20
 
+=== index-4 (D9): CTE body DATE equality bound on idx_o_orderdate ===
+== Query ==
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od|
+mnd	mxd	sn	g
+1995-06-15	1995-06-15	2	1
+
+=== index-5 (D9): CTE body DATE range bound on idx_o_orderdate ===
+== Query ==
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+            FROM orders
+            WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+FROM orders
+WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od|
+mnd	mxd	sp	g
+1995-06-01	1995-06-30	120	30
+
 === index-6: CTE body equality CHAR bound on idx_p_brand ===
 == Query ==
 WITH pb AS (SELECT p_brand AS b, COUNT(*) AS n, SUM(p_size) AS sz
@@ -107,6 +153,58 @@ FROM orders WHERE o_orderstatus = 'O' GROUP BY o_orderstatus)
 SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM os|
 mns	mxs	sn	g
 O	O	500	1
+
+=== index-8 (D9): composite status-eq + DATE range on idx_o_status_date ===
+== Query ==
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders
+            WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+FROM orders
+WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os|
+mnd	mxd	sn	g
+1995-06-02	1997-09-26	400	400
+
+=== index-9 (D9+D17): composite eq + half-open DATE + residual; MIN/MAX over DATE key ===
+== Query ==
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders
+            WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+FROM orders
+WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
+mnd	mxd	st	g
+1995-03-02	1997-09-24	276	276
 
 === index-10: scalar MAX(p_size) via idx_p_size DESC maxRows=1 ===
 == Query ==

@@ -361,10 +361,20 @@ Lower priority; some may be intentional scope limits — confirm before building
   like `MEDIUMUNSIGNED` (AlignedType→BIGINT, `is_unsigned`), and GROUP-BY-over-
   DATE needed no kernel change (initGBTypes is type-generic; `cmpDate`).  The
   result returns as Bigunsigned (no new wire format); RonSQL tags the output
-  via `ColumnMetadata::is_date` and unpacks `w`→`YYYY-MM-DD`.  index-9 stays
-  disabled but is re-tagged D9 (its residual is the DATE index-scan root, not
-  D17).  See `cte_date_minmax_plan.md` for the as-shipped notes.  Historical
-  investigation (now superseded) follows:
+  via `ColumnMetadata::is_date` and unpacks `w`→`YYYY-MM-DD`.  See
+  `cte_date_minmax_plan.md` for the as-shipped notes.
+  **D9 (CTE-body INDEX_SCAN root on a DATE bound) — FIXED** (follow-up after
+  D17): the body_index.inc "D9" cases (index-4/5 idx_o_orderdate, index-8/9
+  composite idx_o_status_date) errored "Failed to create CTE body index-scan
+  root" because `encode_constant` returned `binlen=4` for a 3-byte NDB DATE, so
+  the CTE-body `qb->constValue(rv.val, rv.len)` made `scanIndex` reject the
+  oversized bound operand.  (The main-query path uses `setBound(col, bt, val)`,
+  which derives the length from the column, so it was unaffected.)  Fixed by
+  setting `binlen = 3` for Date (`my_date_to_binary` writes exactly 3 via
+  int3store, byte-identical to NDB `pack_date`).  index-4/5/8/9 re-enabled
+  (value + EXPLAIN INDEX_SCAN), green ×5 topologies.  Distinct from the retired
+  discovery-phase "D7–D9" SUM-over-DECIMAL symptoms — this is the body_index
+  local tag.  Historical D17 investigation (now superseded) follows:
     - Kernel `AggInterpreterBase::loadColumnTypedFromBuf` has no `NDB_TYPE_DATE`
       arm → returns `ZAGG_LOAD_COL_WRONG_TYPE`; `AlignedType` has no Date mapping.
     - `NdbAggregator::TypeSupported` rejects `Date` → `LoadColumn` returns false →
