@@ -588,3 +588,103 @@ FROM orders GROUP BY o_orderdate)
 SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
 mnd	mxd	st	g
 1995-01-01	1997-09-26	3000	1000
+
+=== agg-d17d (temporal): MIN/MAX over YEAR (evlog.e_year) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_year) AS mn, MAX(e_year) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_year) AS mn, MAX(e_year) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+1990	2029	60
+
+=== agg-d17e (temporal): MIN/MAX over DATETIME fsp=0 (evlog.e_modified) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_modified) AS mn, MAX(e_modified) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_modified) AS mn, MAX(e_modified) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+2001-01-01 02:17:00	2001-01-29 13:00:00	60
+
+=== agg-d17f (temporal): MIN/MAX over DATETIME(6) fractional (evlog.e_logged) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_logged) AS mn, MAX(e_logged) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_logged) AS mn, MAX(e_logged) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+2001-06-15 12:01:29.123457	2001-06-15 19:25:00.037100	60
+
+=== agg-d17g (temporal): MIN/MAX over TIME fsp=0 (evlog.e_elapsed) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_elapsed) AS mn, MAX(e_elapsed) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_elapsed) AS mn, MAX(e_elapsed) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+00:04:31	22:35:00	60
+
+=== agg-d17h (temporal): MIN/MAX over TIME(3) fractional (evlog.e_split) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_split) AS mn, MAX(e_split) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_split) AS mn, MAX(e_split) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+00:05:22.414	23:59:51.317	60

@@ -90,5 +90,23 @@ CREATE TABLE lineitem (
 CREATE INDEX idx_l_partkey ON lineitem (l_partkey);
 CREATE INDEX idx_l_shipdate ON lineitem (l_shipdate);
 
+# Temporal-type coverage for MIN/MAX pushdown (D17 + temporal extension):
+# YEAR, DATETIME (fsp 0), DATETIME(6) (max fractional width), TIME (fsp 0),
+# TIME(3) (fractional).  Dedicated table so the shared orders/lineitem stay
+# untouched.  e_group (60 distinct) is the CTE GROUP BY key.  TIMESTAMP is
+# intentionally absent — TIMESTAMP2 MIN/MAX is deferred (timezone semantics).
+# Named evlog (not "events" — EVENTS is a reserved keyword in RonSQL).
+CREATE TABLE evlog (
+  e_id       INT NOT NULL,
+  e_group    INT NOT NULL,
+  e_year     YEAR NOT NULL,
+  e_modified DATETIME NOT NULL,
+  e_logged   DATETIME(6) NOT NULL,
+  e_elapsed  TIME NOT NULL,
+  e_split    TIME(3) NOT NULL,
+  PRIMARY KEY USING HASH (e_id)
+) ENGINE=NDB;
+CREATE INDEX idx_e_group ON evlog (e_group);
+
 --enable_warnings
 --enable_query_log

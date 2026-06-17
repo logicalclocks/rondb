@@ -504,6 +504,79 @@ WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
             FROM orders GROUP BY o_orderdate)
 SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
 
+# =====================================================================
+# Temporal extension — MIN/MAX over YEAR / DATETIME / TIME (evlog table).
+# Re-aggregated over a CTE_SCAN root: CTE body MIN/MAX(<temporal>) →
+# Bigunsigned virt column → main MIN/MAX re-aggregation → temporal display.
+# DATETIME(6) / TIME(3) exercise the fsp>0 big-endian width handling.
+# (TIMESTAMP MIN/MAX is intentionally not covered — deferred, timezone.)
+# =====================================================================
+
+--echo
+--echo === agg-d17d (temporal): MIN/MAX over YEAR (evlog.e_year) ===
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_year) AS mn, MAX(e_year) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_year) AS mn, MAX(e_year) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
+--echo
+--echo === agg-d17e (temporal): MIN/MAX over DATETIME fsp=0 (evlog.e_modified) ===
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_modified) AS mn, MAX(e_modified) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_modified) AS mn, MAX(e_modified) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
+--echo
+--echo === agg-d17f (temporal): MIN/MAX over DATETIME(6) fractional (evlog.e_logged) ===
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_logged) AS mn, MAX(e_logged) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_logged) AS mn, MAX(e_logged) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
+--echo
+--echo === agg-d17g (temporal): MIN/MAX over TIME fsp=0 (evlog.e_elapsed) ===
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_elapsed) AS mn, MAX(e_elapsed) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_elapsed) AS mn, MAX(e_elapsed) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
+--echo
+--echo === agg-d17h (temporal): MIN/MAX over TIME(3) fractional (evlog.e_split) ===
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_split) AS mn, MAX(e_split) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_split) AS mn, MAX(e_split) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
 # NEXT-PHASE: GROUP BY an expression — matrix "NOT SUPPORTED" (GROUP BY expression).
 #   Only direct columns are allowed in a CTE-body GROUP BY.
 #   WITH x AS (SELECT (o_custkey % 10) AS bucket, COUNT(*) AS n

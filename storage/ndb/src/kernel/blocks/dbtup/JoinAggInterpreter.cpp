@@ -152,7 +152,7 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
           break;
         }
         case kOpLoadCol: {
-          Uint32 type = (word & 0x03E00000) >> 21;
+          Uint32 type = decodeLoadColType(word);
           if (type == NDB_TYPE_DECIMAL ||
               type == NDB_TYPE_DECIMALUNSIGNED) scan_pos++;
           break;
@@ -256,7 +256,7 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
           if (agg_index < m_n_agg_results) m_cached_agg_ops[agg_index] = op;
           break;
         case kOpLoadCol: {
-          Uint32 type = (value & 0x03E00000) >> 21;
+          Uint32 type = decodeLoadColType(value);
           if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED)
             exec_pos++;
           break;
@@ -504,7 +504,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
     switch (op) {
       case kOpLoadCol: {
-        type = (value & 0x03E00000) >> 21;
+        type = decodeLoadColType(value);
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
         linked_word0 = 0;
@@ -1036,7 +1036,7 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
         if (agg_index < n_agg_results) agg_ops[agg_index] = op;
         break;
       case kOpLoadCol: {
-        Uint32 type = (value & 0x03E00000) >> 21;
+        Uint32 type = AggInterpreterBase::decodeLoadColType(value);
         if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED)
           exec_pos++;
         break;

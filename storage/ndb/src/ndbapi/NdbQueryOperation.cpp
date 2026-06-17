@@ -4461,6 +4461,17 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
         setErrorCode(Err_FunctionNotImplemented);
         return -1;
       }
+      // An aggregation program that loads a DATETIME2 / TIMESTAMP2 column
+      // sets bit 20 in its kOpLoadCol type field (6-bit type).  A data node
+      // that decodes only the legacy 5 bits would misread it, so refuse to
+      // push such a program to a node that doesn't advertise wide-type
+      // support.  Other temporal types (DATE/YEAR/TIME2) are <= 31 and need
+      // no gate.
+      if (m_aggregator != nullptr && m_aggregator->uses_wide_type() &&
+          !ndbd_support_agg_wide_type(ndb.getMinDbNodeVersion())) {
+        setErrorCode(Err_FunctionNotImplemented);
+        return -1;
+      }
       ScanTabReq::setJoinAggFlag(reqInfo, 1);
       scanTabReq->scanParallelism = m_workerCount * m_fragsPerWorker;
       tSignal.setLength(ScanTabReq::StaticLength + 5);

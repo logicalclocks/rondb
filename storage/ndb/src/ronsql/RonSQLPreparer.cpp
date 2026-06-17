@@ -5038,7 +5038,9 @@ RonSQLPreparer::compile()
       column_metadata[col_idx].precision = 0;
       column_metadata[col_idx].scale = 0;
       column_metadata[col_idx].has_metadata = false;
-      column_metadata[col_idx].is_date = false;
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::NONE;
+      column_metadata[col_idx].temporal_fsp = 0;
       if (m_main_scope.resolved_columns == NULL) continue;
       const QueryScope::ResolvedColumnRef& ref =
           m_main_scope.resolved_columns[col_idx];
@@ -5048,12 +5050,33 @@ RonSQLPreparer::compile()
       column_metadata[col_idx].precision = col->getPrecision();
       column_metadata[col_idx].scale = col->getScale();
       column_metadata[col_idx].has_metadata = true;
-      // D17: resolve_cte_output_columns_for_scope plumbs ref.dict_column back
-      // to the original source column even through a CTE MIN/MAX, so for
-      // MIN(date) / MAX(date) this is the DATE column itself.  Tag it so the
-      // printer unpacks the Bigunsigned packed value to YYYY-MM-DD.
-      column_metadata[col_idx].is_date =
-          (col->getType() == NdbDictionary::Column::Date);
+      // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
+      // ref.dict_column back to the original source column even through a CTE
+      // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal
+      // column itself.  Tag it so the printer decodes the Bigunsigned packed
+      // value back to its text form.
+      switch (col->getType()) {
+      case NdbDictionary::Column::Date:
+        column_metadata[col_idx].temporal =
+            ResultPrinter::TemporalDisplay::DATE;
+        break;
+      case NdbDictionary::Column::Year:
+        column_metadata[col_idx].temporal =
+            ResultPrinter::TemporalDisplay::YEAR;
+        break;
+      case NdbDictionary::Column::Datetime2:
+        column_metadata[col_idx].temporal =
+            ResultPrinter::TemporalDisplay::DATETIME2;
+        column_metadata[col_idx].temporal_fsp = col->getPrecision();
+        break;
+      case NdbDictionary::Column::Time2:
+        column_metadata[col_idx].temporal =
+            ResultPrinter::TemporalDisplay::TIME2;
+        column_metadata[col_idx].temporal_fsp = col->getPrecision();
+        break;
+      default:
+        break;
+      }
     }
     m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
       ResultPrinter(m_amalloc,
@@ -7130,10 +7153,14 @@ RonSQLPreparer::resolve_chained_column_type(
           out_precision = arg_precision;
           return true;
         case NdbDictionary::Column::Date:
-          // D17: MIN/MAX over DATE widens to Bigunsigned (8-byte packed
-          // value) on the wire — mirror build_cte_virtual_tables so chained
-          // CTE layers see the same type.  (Date display is only recovered
-          // at the top level for a single-CTE MIN/MAX today.)
+        case NdbDictionary::Column::Year:
+        case NdbDictionary::Column::Datetime2:
+        case NdbDictionary::Column::Time2:
+          // D17 + temporal: MIN/MAX over a temporal column widens to
+          // Bigunsigned (8-byte packed value) on the wire — mirror
+          // build_cte_virtual_tables so chained CTE layers see the same
+          // type.  (Temporal display is only recovered at the top level for
+          // a single-CTE MIN/MAX today.)
           out_type = NdbDictionary::Column::Bigunsigned;
           out_length = 1;
           out_cs = NULL;
@@ -7396,15 +7423,19 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               derived_cs = src_cs;
               break;
             case NdbDictionary::Column::Date:
-              // D17: kernel reads the DATE column's 3-byte packed value as
-              // an unsigned integer and emits an 8-byte Bigunsigned MIN/MAX
-              // result (see AggInterpreterBase NDB_TYPE_DATE arms).  The
+            case NdbDictionary::Column::Year:
+            case NdbDictionary::Column::Datetime2:
+            case NdbDictionary::Column::Time2:
+              // D17 + temporal: the kernel reads the temporal column's native
+              // packed value as an unsigned integer and emits an 8-byte
+              // Bigunsigned MIN/MAX result (see AggInterpreterBase).  The
               // virt-table column type MUST be Bigunsigned (8 bytes) to
-              // match the wire format, not Date (3 bytes) — re-aggregation
-              // and the inline-type filter opcode rely on consistent
-              // metadata.  The DATE *display* is recovered at the top level
-              // via ColumnMetadata::is_date (resolve_cte_output_columns_for_scope
-              // plumbs the source DATE column back through the CTE MIN/MAX).
+              // match the wire format, not the source temporal type — re-
+              // aggregation and the inline-type filter opcode rely on
+              // consistent metadata.  The temporal *display* is recovered at
+              // the top level via ColumnMetadata::temporal
+              // (resolve_cte_output_columns_for_scope plumbs the source
+              // temporal column back through the CTE MIN/MAX).
               derived_type = NdbDictionary::Column::Bigunsigned;
               derived_length = 1;
               break;

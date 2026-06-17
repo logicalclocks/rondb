@@ -54,6 +54,54 @@ either; no recorded D17 shape needs it.
 - `body_index.inc` **index-9** stays disabled but **re-tagged D9** (the
   residual is the DATE *index-scan root*, not D17).
 
+## Temporal extension — YEAR + DATETIME2 + TIME2 (shipped with D17)
+
+Follow-up after D17/DATE, per the temporal-coverage decision (TIMESTAMP2
+deferred — timezone semantics).  Same integer-monotonic shortcut: each type
+reduces to an unsigned value the kernel MIN/MAXes, returned as Bigunsigned and
+decoded for display by RonSQL.
+
+- **YEAR (26)** — 1-byte unsigned (like TINYUNSIGNED); display `v+1900`,
+  `0 → 0000`.
+- **TIME2 (31) / DATETIME2 (32)** — big-endian, memcmp-comparable MySQL packed
+  binary, width `3+flen` / `5+flen` with `flen=(1+fsp)/2`.  The kernel reads
+  `header->getByteSize()` bytes **MSB-first** into the register (unsigned
+  compare == memcmp == chronological).  RonSQL reconstructs the bytes from the
+  Bigunsigned value + the source column's fsp and decodes with MySQL's own
+  `my_{datetime,time}_packed_from_binary` + `my_TIME_to_str`, so the string
+  matches MySQL exactly (NDB stores MySQL-compatible binary — proven by the
+  existing WHERE-encode path).
+
+### Opcode change — 6-bit kOpLoadCol type field (backward compatible)
+The `kOpLoadCol` aggregation instruction encoded the column type in **5 bits**
+(bits 21-25), max 31.  `DATETIME2=32` / `TIMESTAMP2=33` overflow it.  Fix: the
+type is now **6 bits** — low 5 bits stay at bits 21-25, the most-significant
+6th bit goes in the previously-unused **bit 20**.  Every prior type is <=31, so
+bit 20 = 0 and the encoding is **byte-identical** to before (an old kernel
+decodes existing programs unchanged; only DATETIME2/TIMESTAMP2 set bit 20).
+Helpers: `AggInterpreterBase::decodeLoadColType` (kernel, all 6 kOpLoadCol
+decode sites + PushdownInterpreter optimize pass) and `encodeLoadColType`
+(NdbAggregator, 3 encode sites).  `kOpLoadConst` stays 5-bit (its types are
+always <=31).
+
+### Version gate (rolling upgrade)
+A program that loads DATETIME2/TIMESTAMP2 (bit 20 set) must not reach a data
+node that decodes only 5 bits.  `NdbAggregator::uses_wide_type()` records when
+any `LoadColumn` type > 31; `NdbQueryImpl::doSend` refuses to push such a
+program unless `ndbd_support_agg_wide_type(getMinDbNodeVersion())`.  Floor set
+to 26.04.1 — the same in-development release as `ndbd_support_pushdown_join_agg`
+(the whole pushed-agg feature is INNOVATION-maturity, not yet released, so
+wide-type ships with it).  **Maintainer note:** bump that floor if wide-type
+actually lands in a later release than the base pushed-agg feature.
+
+### MTR (evlog table, body_agg.inc)
+New dedicated `evlog` table (YEAR, DATETIME(0), DATETIME(6), TIME(0), TIME(3);
+named evlog because EVENTS is a reserved keyword in RonSQL)
+so the shared orders/lineitem stay untouched.  Cases **agg-d17d** (YEAR),
+**agg-d17e** (DATETIME fsp 0), **agg-d17f** (DATETIME(6) fractional),
+**agg-d17g** (TIME fsp 0), **agg-d17h** (TIME(3) fractional) — all CTE_SCAN-root
+scalar re-aggregation.  Record ×5 topologies.
+
 ### Original (now historical) plan follows.
 
 ## Goal & scope

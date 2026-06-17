@@ -1,6 +1,7 @@
 # Teardown for the data-driven CTE suite schema (see cte_schema.inc).
 --disable_query_log
 --disable_warnings
+DROP TABLE IF EXISTS evlog;
 DROP TABLE IF EXISTS lineitem;
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS part;

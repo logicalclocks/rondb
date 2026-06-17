@@ -378,6 +378,22 @@ class AggInterpreterBase : public PushdownInterpreter {
    */
   static bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 
+ public:
+  /* Decode the column type from a kOpLoadCol instruction word.
+   * The type is 6 bits: the low 5 bits live in the historical position
+   * (instruction bits 21-25), and the most-significant 6th bit lives in
+   * bit 20 (previously unused, between the reg-id and type fields).
+   * Every NDB type that existed before DATETIME2 (32) / TIMESTAMP2 (33)
+   * is <= 31, so its bit 20 is 0 and the encoding is byte-identical to
+   * the old 5-bit form — a kOpLoadCol built by any prior version decodes
+   * unchanged here, and only DATETIME2/TIMESTAMP2 set bit 20.  The API
+   * encoder (NdbAggregator) mirrors this layout.  Public + static so the
+   * PushdownInterpreter optimize pass and file-static helpers can share it. */
+  static inline Uint32 decodeLoadColType(Uint32 word) {
+    return ((word >> 21) & 0x1F) | (((word >> 20) & 0x1) << 5);
+  }
+
+ protected:
   /* Shared aggregation kernels — definitions in AggInterpreterBase.cpp.
    * `print` is consumed only inside DEBUG_PA_INTERP debug-trace blocks. */
   static bool TypeSupported(DataType type);

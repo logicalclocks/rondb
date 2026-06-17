@@ -225,6 +225,37 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
                       "Load NDB_TYPE_DATE %llu",
                       m_registers[reg_index].value.val_uint64);
       return 0;
+    case NDB_TYPE_YEAR:
+      // Temporal: YEAR is a single unsigned byte (year - 1900, 0 = 0000).
+      // Identical to TINYUNSIGNED; RonSQL adds the 1900 offset for display.
+      m_registers[reg_index].value.val_uint64 =
+          *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_YEAR %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2: {
+      // Temporal: DATETIME2 (5+flen bytes) and TIME2 (3+flen bytes) are
+      // stored big-endian in MySQL's memcmp-comparable packed binary, where
+      // flen = (1+precision)/2.  Read the column's exact byte width (from the
+      // AttributeHeader — no padding, getByteSize == 5+flen / 3+flen) MSB-first
+      // into the register so the unsigned compare reproduces memcmp order
+      // (== chronological order).  RonSQL reconstructs the bytes from this
+      // value and decodes via my_*_packed_from_binary for display.
+      const unsigned char* src = reinterpret_cast<const unsigned char*>(
+          &m_attr_read_buf[m_attr_read_pos + 1]);
+      const Uint32 nbytes = header->getByteSize();
+      Uint64 v = 0;
+      for (Uint32 i = 0; i < nbytes; i++) {
+        v = (v << 8) | static_cast<Uint64>(src[i]);
+      }
+      m_registers[reg_index].value.val_uint64 = v;
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_DATETIME2/TIME2 (%u bytes) %llu",
+                      nbytes, m_registers[reg_index].value.val_uint64);
+      return 0;
+    }
     case NDB_TYPE_UNSIGNED:
       m_registers[reg_index].value.val_uint64 =
           uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
@@ -566,7 +597,7 @@ bool AggInterpreterBase::scanAndValidateEmbeddedPrograms(
     } else if (op == kOpLoadConst) {
       scan_pos += 3;  /* header + 2 constant value words */
     } else if (op == kOpLoadCol) {
-      Uint32 type = (w & 0x03E00000) >> 21;
+      Uint32 type = decodeLoadColType(w);
       scan_pos += (type == NDB_TYPE_DECIMAL ||
                    type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
     } else {
@@ -732,6 +763,16 @@ bool AggInterpreterBase::TypeSupported(DataType type) {
     // (meaningless); see cte_date_minmax_plan.md.
     case NDB_TYPE_DATE:
 
+    // Temporal extension: YEAR (1-byte unsigned, like TINYUNSIGNED),
+    // and DATETIME2 / TIME2 (big-endian memcmp-comparable packed bytes,
+    // read MSB-first into the register so unsigned compare == memcmp ==
+    // chronological order).  All three reduce to an unsigned integer for
+    // MIN/MAX; RonSQL decodes the result for display.  Sum/Avg rejected.
+    // TIMESTAMP2 is deferred (timezone semantics).
+    case NDB_TYPE_YEAR:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
+
     // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
     // Sum is rejected separately (see Sum()).  Count is
     // type-agnostic and works for any column type.  String
@@ -759,6 +800,11 @@ bool AggInterpreterBase::IsUnsigned(DataType type) {
     // unsigned compare path (val_uint64) sorts 0000-00-00 (w=0)
     // lowest, as MySQL DATE MIN/MAX requires.
     case NDB_TYPE_DATE:
+    // Temporal extension: YEAR / DATETIME2 / TIME2 all compare as
+    // unsigned (big-endian memcmp order for the "2" types).
+    case NDB_TYPE_YEAR:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
       return true;
     default:
       return false;
@@ -783,6 +829,11 @@ DataType AggInterpreterBase::AlignedType(DataType type, int scale) {
     // D17: DATE is held as the unsigned 3-byte packed value in a
     // BIGINT register (is_unsigned set via IsUnsigned).
     case NDB_TYPE_DATE:
+    // Temporal extension: YEAR (1 byte) and DATETIME2 / TIME2 (big-endian
+    // packed value) are likewise held as an unsigned BIGINT.
+    case NDB_TYPE_YEAR:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
 
       return NDB_TYPE_BIGINT;
     case NDB_TYPE_FLOAT:

@@ -56,7 +56,7 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
 
     switch (op) {
       case kOpLoadCol:
-        type = (value & 0x03E00000) >> 21;
+        type = AggInterpreterBase::decodeLoadColType(value);
         reg_index = (value & 0x000F0000) >> 16;
         if (type == NDB_TYPE_FLOAT || type == NDB_TYPE_DOUBLE) {
           reg_types[reg_index] = NDB_TYPE_DOUBLE;

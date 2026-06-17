@@ -467,8 +467,13 @@ ResultPrinter::compile()
           int pr = aggregate_arg_precision(o);
           cmd.print_aggregate.scale = (pr > 0 && pr <= 15) ? sc : 0;
         }
-        // D17: MIN/MAX over a DATE → unpack the Bigunsigned packed value.
-        cmd.print_aggregate.is_date = aggregate_arg_is_date(o);
+        // D17 + temporal: MIN/MAX over a temporal column → decode the
+        // Bigunsigned packed value back to its text form.
+        {
+          int fsp = 0;
+          cmd.print_aggregate.temporal = aggregate_arg_temporal(o, fsp);
+          cmd.print_aggregate.temporal_fsp = fsp;
+        }
         m_program.push(cmd);
         break;
       }
@@ -809,7 +814,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
                                cmd.print_aggregate.scale,
-                               cmd.print_aggregate.is_date);
+                               cmd.print_aggregate.temporal,
+                               cmd.print_aggregate.temporal_fsp);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1608,7 +1614,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
                                cmd.print_aggregate.scale,
-                               cmd.print_aggregate.is_date);
+                               cmd.print_aggregate.temporal,
+                               cmd.print_aggregate.temporal_fsp);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -2021,28 +2028,31 @@ ResultPrinter::aggregate_arg_precision(const Outputs* out) const
   return m_column_metadata[col_idx].precision;
 }
 
-// D17: is the MIN/MAX argument column a DATE?  The kernel returns DATE
-// MIN/MAX as a Bigunsigned packed value; this drives the printer to unpack
-// it to YYYY-MM-DD.  Mirrors aggregate_arg_scale's column-metadata walk.
-bool
-ResultPrinter::aggregate_arg_is_date(const Outputs* out) const
+// D17 + temporal extension: which temporal decode (if any) applies to a
+// MIN/MAX aggregate's source column.  The kernel returns a temporal MIN/MAX
+// as a Bigunsigned packed value; this drives the printer to unpack it.
+// Mirrors aggregate_arg_scale's column-metadata walk.
+ResultPrinter::TemporalDisplay
+ResultPrinter::aggregate_arg_temporal(const Outputs* out, int& fsp) const
 {
+  fsp = 0;
   if (out == NULL || out->type != Outputs::Type::AGGREGATE)
-    return false;
+    return TemporalDisplay::NONE;
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
-    return false;
+    return TemporalDisplay::NONE;
   AggregationAPICompiler::Expr* arg = out->aggregate.arg;
   if (arg == NULL || !arg->isLoad())
-    return false;
+    return TemporalDisplay::NONE;
   Uint32 col_idx = arg->getLoadIdx();
   if (m_column_names == NULL || col_idx >= m_column_names->size())
-    return false;
+    return TemporalDisplay::NONE;
   if (m_column_metadata == NULL ||
       !m_column_metadata[col_idx].has_metadata)
   {
-    return false;
+    return TemporalDisplay::NONE;
   }
-  return m_column_metadata[col_idx].is_date;
+  fsp = m_column_metadata[col_idx].temporal_fsp;
+  return m_column_metadata[col_idx].temporal;
 }
 
 void
@@ -2050,7 +2060,8 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
                                       NdbAggregator::Result result,
                                       CHARSET_INFO* charset,
                                       int scale,
-                                      bool is_date)
+                                      TemporalDisplay temporal,
+                                      int temporal_fsp)
 {
   if (result.is_null())
   {
@@ -2058,17 +2069,69 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
     return;
   }
 
-  // D17: MIN/MAX over a DATE comes back as the Bigunsigned 3-byte packed
-  // value w = (year<<9)|(month<<5)|day.  Unpack and print as YYYY-MM-DD
-  // (w==0 → 0000-00-00, matching MySQL's zero date).
-  if (is_date && result.type() == NdbDictionary::Column::Bigunsigned)
+  // D17 + temporal extension: MIN/MAX over a temporal column comes back as a
+  // Bigunsigned holding the column's native packed value (the kernel reads
+  // the on-disk bytes in their native order — little-endian for DATE/YEAR,
+  // big-endian for DATETIME2/TIME2 — into the register, which is monotonic
+  // with chronological order so MIN/MAX is exact).  Decode it back here.
+  if (temporal != TemporalDisplay::NONE &&
+      result.type() == NdbDictionary::Column::Bigunsigned)
   {
     Uint64 w = result.data_uint64();
-    unsigned day = (unsigned)(w & 31);
-    unsigned month = (unsigned)((w >> 5) & 15);
-    unsigned year = (unsigned)(w >> 9);
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
+    char buf[64];
+    switch (temporal)
+    {
+    case TemporalDisplay::DATE:
+    {
+      // w = (year<<9)|(month<<5)|day; w==0 → 0000-00-00 (MySQL zero date).
+      Uint32 day = (Uint32)(w & 31);
+      Uint32 month = (Uint32)((w >> 5) & 15);
+      Uint32 year = (Uint32)(w >> 9);
+      snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
+      break;
+    }
+    case TemporalDisplay::YEAR:
+    {
+      // 1-byte YEAR: 0 → 0000, else stored value + 1900.
+      if (w == 0)
+        snprintf(buf, sizeof(buf), "0000");
+      else
+        snprintf(buf, sizeof(buf), "%04u", (Uint32)(w + 1900));
+      break;
+    }
+    case TemporalDisplay::DATETIME2:
+    {
+      // NDB stores DATETIME2 in MySQL's big-endian packed binary (proven by
+      // the encode path's my_datetime_packed_to_binary).  Reconstruct the
+      // n = 5+flen on-disk bytes from the big-endian value the kernel loaded,
+      // then decode with MySQL's own codec so the string matches exactly.
+      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
+      Uint32 n = 5u + flen;
+      Uint8 bytes[8];
+      for (Uint32 i = 0; i < n; i++)
+        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+      Int64 packed = my_datetime_packed_from_binary(bytes, temporal_fsp);
+      MYSQL_TIME mt;
+      TIME_from_longlong_datetime_packed(&mt, packed);
+      my_TIME_to_str(mt, buf, temporal_fsp);
+      break;
+    }
+    case TemporalDisplay::TIME2:
+    {
+      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
+      Uint32 n = 3u + flen;
+      Uint8 bytes[8];
+      for (Uint32 i = 0; i < n; i++)
+        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+      Int64 packed = my_time_packed_from_binary(bytes, temporal_fsp);
+      MYSQL_TIME mt;
+      TIME_from_longlong_time_packed(&mt, packed);
+      my_TIME_to_str(mt, buf, temporal_fsp);
+      break;
+    }
+    case TemporalDisplay::NONE:
+      break; // unreachable (guarded above)
+    }
     out << buf;
     return;
   }

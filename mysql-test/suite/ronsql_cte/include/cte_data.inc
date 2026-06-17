@@ -64,6 +64,22 @@ INSERT INTO lineitem
          ELT(MOD(o.o_orderkey + ln.k, 3)+1,'N','R','A')
   FROM orders o JOIN (SELECT 1 AS k UNION ALL SELECT 2 AS k) ln;
 
+# --- temporal coverage (evlog): 300 rows, 60 groups (e_group = MOD(n,60)).
+# All values computed deterministically from n with well-spread temporal
+# ranges so MIN/MAX is non-trivial; e_logged / e_split carry sub-second
+# fractions to exercise fsp>0 width handling.  Both engines read the same
+# stored NDB bytes, so the RonSQL-vs-MySQL diff is self-consistent. ---
+INSERT INTO evlog
+  SELECT n,
+         MOD(n,60),
+         1990 + MOD(n*7,40),
+         DATE_ADD('2001-01-01 00:00:00', INTERVAL n*137 MINUTE),
+         DATE_ADD(DATE_ADD('2001-06-15 12:00:00', INTERVAL n*89 SECOND),
+                  INTERVAL MOD(n*123457,1000000) MICROSECOND),
+         SEC_TO_TIME(MOD(n*271,86400)),
+         SEC_TO_TIME(MOD(n*331,86400) + MOD(n*97,1000)*0.001)
+  FROM _seq WHERE n <= 300;
+
 DROP TABLE _seq;
 DROP TABLE _d;
 

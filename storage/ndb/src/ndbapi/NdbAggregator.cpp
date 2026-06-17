@@ -49,6 +49,17 @@
 #define RESULT_HEADER_SIZE 3
 #define RESULT_ITEM_HEADER_SIZE 1
 
+// Encode a column type into a kOpLoadCol instruction word's type field.
+// The type is 6 bits: the low 5 bits sit at instruction bits 21-25 (the
+// historical position), and the most-significant 6th bit sits at bit 20
+// (previously unused).  Every type that existed before DATETIME2 (32) /
+// TIMESTAMP2 (33) is <= 31, so its bit 20 is 0 and the word is byte-identical
+// to the old 5-bit encoding — backward compatible.  Mirrors the kernel's
+// AggInterpreterBase::decodeLoadColType.
+static inline Uint32 encodeLoadColType(Uint32 type) {
+  return ((type & 0x1F) << 21) | (((type >> 5) & 0x1) << 20);
+}
+
 bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
                            const GBHashEntry &n2) const {
@@ -112,6 +123,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   result_size_est_(RESULT_HEADER_SIZE * sizeof(Uint32) +
                RESULT_ITEM_HEADER_SIZE * sizeof(Uint32)),
   disk_columns_(false),
+  uses_wide_type_(false),
   vec_top_n_(0), vec_result_(nullptr),
   userAttrs_(nullptr), n_userAttrs_(0),
   results_prepared_(false), results_left_(0),
@@ -261,8 +273,11 @@ bool NdbAggregator::isStringType(Uint32 type) const {
          type == NDB_TYPE_LONGVARCHAR;
 }
 
-bool NdbAggregator::isDateType(Uint32 type) const {
-  return type == NDB_TYPE_DATE;
+bool NdbAggregator::isTemporalType(Uint32 type) const {
+  return type == NDB_TYPE_DATE ||
+         type == NDB_TYPE_YEAR ||
+         type == NDB_TYPE_DATETIME2 ||
+         type == NDB_TYPE_TIME2;
 }
 
 void NdbAggregator::clearStringSlot(AggResItem *slot) const {
@@ -769,11 +784,16 @@ bool NdbAggregator::TypeSupported(NdbDictionary::Column::Type type) {
     case NdbDictionary::Column::Char:
     case NdbDictionary::Column::Varchar:
     case NdbDictionary::Column::Longvarchar:
-    // D17: MIN/MAX over DATE.  The kernel reads the 3-byte packed
-    // value as an unsigned integer and returns a Bigunsigned result
-    // (see AggInterpreterBase NDB_TYPE_DATE arms); RonSQL unpacks it
-    // to YYYY-MM-DD.  Sum over DATE is rejected separately (see Sum()).
+    // D17 + temporal extension: MIN/MAX over DATE / YEAR / DATETIME2 /
+    // TIME2.  The kernel reads each column's native packed value as an
+    // unsigned integer and returns a Bigunsigned result (see
+    // AggInterpreterBase); RonSQL decodes it for display.  SUM/AVG over
+    // these is rejected separately (see Sum()).  TIMESTAMP2 is deferred
+    // (timezone semantics).
     case NdbDictionary::Column::Date:
+    case NdbDictionary::Column::Year:
+    case NdbDictionary::Column::Datetime2:
+    case NdbDictionary::Column::Time2:
       return true;
     default:
       return false;
@@ -807,11 +827,14 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
   assert((col_id & 0xFFFFFF00) == 0);
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
-    (type & 0x1F) << 21 |
+    encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
+  // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
+  // gates emission on ndbd_support_agg_wide_type.
+  if (((Uint32)type) > 0x1F) uses_wide_type_ = true;
 
   /*
    * For decimal, use 1 more byte to take precision/scale
@@ -853,11 +876,14 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
   assert((col_id & 0xFFFFFF00) == 0);
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
-    (type & 0x1F) << 21 |
+    encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
+  // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
+  // gates emission on ndbd_support_agg_wide_type.
+  if (((Uint32)type) > 0x1F) uses_wide_type_ = true;
   /*
    * For decimal, use 1 more byte to take precision/scale
    * info.
@@ -895,11 +921,14 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
   Uint32 col_id = AGG_LINKED_COL_FLAG | position;
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
-    (type & 0x1F) << 21 |
+    encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
+  // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
+  // gates emission on ndbd_support_agg_wide_type.
+  if (((Uint32)type) > 0x1F) uses_wide_type_ = true;
 
   if (type == NdbDictionary::Column::Decimal ||
       type == NdbDictionary::Column::Decimalunsigned) {
@@ -1074,9 +1103,10 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
     SetError(kErrUnsupportedStringOperation);
     return false;
   }
-  // D17: SUM/AVG over DATE is meaningless — only MIN/MAX/COUNT.
-  if (isDateType(reg_types_[reg_id])) {
-    SetError(kErrUnsupportedDateOperation);
+  // D17 + temporal: SUM/AVG over DATE/YEAR/DATETIME/TIME is meaningless —
+  // only MIN/MAX/COUNT.
+  if (isTemporalType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedTemporalOperation);
     return false;
   }
 

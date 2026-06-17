@@ -267,7 +267,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
     switch (op) {
       case kOpLoadCol: {
-        type = (value & 0x03E00000) >> 21;
+        type = decodeLoadColType(value);
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
         const Uint32 col_id = value & 0x0000FFFF;
