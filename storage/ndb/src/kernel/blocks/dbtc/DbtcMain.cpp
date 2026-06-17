@@ -78,6 +78,7 @@
 #include <signaldata/SetDomainId.hpp>
 #include <signaldata/CteScan.hpp>
 #include <signaldata/DeadlockWaitfor.hpp>
+#include <signaldata/TcDeadlockRep.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include <signaldata/QueryTree.hpp>
 #include "NdbAggregationCommon.hpp"
@@ -11382,14 +11383,23 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
       collectorIsWaiter ? rep->ownerTransId1 : rep->waiterTransId1;
   const Uint32 otherT2 =
       collectorIsWaiter ? rep->ownerTransId2 : rep->waiterTransId2;
+  /* RONDB-1062 Phase A: the table both endpoints contend on (same row, same
+   * table); stored per edge for later API reporting.  Older DBACC senders omit
+   * it (shorter signal) - treat a missing word as "unknown" (RNIL). */
+  const Uint32 contendedTableId =
+      (signal->getLength() >= DeadlockWaitforRep::SignalLength)
+          ? rep->contendedTableId
+          : RNIL;
 
   DEB_DEADLOCK(("(%u) recv DBACC_WAITFOR_REP from 0x%x: waiter trans(%u,%u)"
                 " owner trans(%u,%u), collectorIsWaiter=%u collectorIsScan=%u"
-                " collector trans(%u,%u) tcOprec=%u other trans(%u,%u)",
+                " collector trans(%u,%u) tcOprec=%u other trans(%u,%u)"
+                " contendedTable=%u",
                 instance(), rep->senderRef, rep->waiterTransId1,
                 rep->waiterTransId2, rep->ownerTransId1, rep->ownerTransId2,
                 (Uint32)collectorIsWaiter, (Uint32)collectorIsScan, collectorT1,
-                collectorT2, collectorTcOprec, otherT1, otherT2));
+                collectorT2, collectorTcOprec, otherT1, otherT2,
+                contendedTableId));
 
   /* Resolve the collector to the ApiConnectRecord on which its deadlock edges
    * accumulate, and decide how to abort it.  A key-op collector resolves via
@@ -11406,6 +11416,12 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = RNIL;
   bool abortAsScan = false;
+  /* The collector's own operation pointer (TcConnectRecord::clientData, i.e.
+   * the API operation handle).  Meaningful for a key-op collector; for a scan
+   * collector there is no single key op (RNIL).  recordDeadlockEdge stores it
+   * only on the WAITS_ON direction (where the collector is the waiter), so it
+   * becomes the deadlocking-op handle reported to the API. */
+  Uint32 collectorClientData = RNIL;
   if (collectorIsScan) {
     ScanFragRecPtr scanFragPtr;
     scanFragPtr.i = collectorTcOprec;  // tcOprec is the TC ScanFragRec id
@@ -11465,6 +11481,7 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
                     instance(), collectorTcOprec));
       return;
     }
+    collectorClientData = localTcPtr.p->clientData;  // API op handle of victim
   }
   /* apiConnectptr is now validated on every path: the scan branch validates the
    * scan record (and the buddy, when canonicalised) above; the key-op branch
@@ -11512,25 +11529,41 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
 
   const Uint32 dir = collectorIsWaiter ? ApiConnectRecord::DLD_WAITS_ON
                                        : ApiConnectRecord::DLD_WAITED_BY;
-  const bool cycle =
-      recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir);
+  const Uint32 slot = recordDeadlockEdge(apiConnectptr.p, otherT1, otherT2, dir,
+                                         contendedTableId, collectorClientData);
+  const ApiConnectRecord::DeadlockEdge &edge =
+      apiConnectptr.p->m_deadlock_edges[slot];
+  const Uint32 bothDirs =
+      ApiConnectRecord::DLD_WAITS_ON | ApiConnectRecord::DLD_WAITED_BY;
+  const bool cycle = (edge.direction == bothDirs);
   DEB_DEADLOCK(("(%u) recorded edge dir=%u on victim trans(%u,%u) abortAsScan=%u"
-                " vs other trans(%u,%u): cycle=%u", instance(), dir,
+                " vs other trans(%u,%u): slot=%u cycle=%u", instance(), dir,
                 collectorT1, collectorT2, (Uint32)abortAsScan, otherT1,
-                otherT2, (Uint32)cycle));
+                otherT2, slot, (Uint32)cycle));
   if (cycle) {
     jam();
-    /* 2-cycle: the collector (local, smaller-hash transaction) is the victim. */
+    /* 2-cycle: the collector (local, smaller-hash transaction) is the victim.
+     * The two directions give the tables involved; the WAITS_ON direction also
+     * carries the victim's deadlocking op.  Report this detail to the API node
+     * (version-gated) just before the abort, then abort with the unchanged
+     * error code. */
+    const Uint32 tableId1 = edge.tableIdWaitsOn;
+    const Uint32 tableId2 = edge.tableIdWaitedBy;
+    const Uint32 victimOpRef = edge.victimOpRef;
+    sendDeadlockDetailRep(signal, apiConnectptr, tableId1, tableId2,
+                          victimOpRef);
     if (abortAsScan) {
       DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting scan victim trans(%u,%u)"
-                    " (scanRec %u) with error %u", instance(), collectorT1,
-                    collectorT2, scanptr.i, ZSCANTIME_OUT_ERROR));
+                    " (scanRec %u) with error %u, tables(%u,%u) victimOp=%u",
+                    instance(), collectorT1, collectorT2, scanptr.i,
+                    ZSCANTIME_OUT_ERROR, tableId1, tableId2, victimOpRef));
       scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
     } else {
       DEB_DEADLOCK(("(%u) DEADLOCK detected, aborting key-op victim"
-                    " trans(%u,%u) (apiConnectptr %u) with error %u",
+                    " trans(%u,%u) (apiConnectptr %u) with error %u,"
+                    " tables(%u,%u) victimOp=%u",
                     instance(), collectorT1, collectorT2, apiConnectptr.i,
-                    ZTIME_OUT_ERROR));
+                    ZTIME_OUT_ERROR, tableId1, tableId2, victimOpRef));
       timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR);
     }
   }
@@ -11538,19 +11571,23 @@ void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
 
 /**
  * Record a wait-for edge to/from another transaction on this collector's
- * ApiConnectRecord.  Returns true iff this closes a fresh 2-cycle, i.e. the
- * same other transaction is now recorded in both directions (this txn waits
- * on it AND it waits on this txn) within the freshness window.
+ * ApiConnectRecord, and return the index of the slot it landed in.  The caller
+ * inspects that slot: a fresh 2-cycle is closed iff its direction now has both
+ * bits set (this txn waits on the other AND the other waits on this txn) within
+ * the freshness window; the slot also holds the contended table id per
+ * direction and the victim op handle (captured on the WAITS_ON direction) for
+ * the deadlock detail report.  contendedTableId / victimOpRef describe this
+ * edge's direction (victimOpRef is stored only on WAITS_ON).
  */
-bool Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
-                              Uint32 otherTransId2, Uint32 direction) {
+Uint32 Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr,
+                                Uint32 otherTransId1, Uint32 otherTransId2,
+                                Uint32 direction, Uint32 contendedTableId,
+                                Uint32 victimOpRef) {
   const Uint32 now = ctcTimer;
   const Uint32 window = ctimeOutValue;  // freshness window (10ms ticks)
   Int32 freeSlot = -1;
   Int32 oldestSlot = -1;
   Uint32 oldestTimer = 0;
-  const Uint32 bothDirs =
-      ApiConnectRecord::DLD_WAITS_ON | ApiConnectRecord::DLD_WAITED_BY;
 
   for (Uint32 i = 0; i < ApiConnectRecord::MAX_DEADLOCK_EDGES; i++) {
     ApiConnectRecord::DeadlockEdge &e = regApiPtr->m_deadlock_edges[i];
@@ -11563,13 +11600,24 @@ bool Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
       if ((Uint32)(now - e.timer) > window) {
         /* The prior observation has expired; start over from this one. */
         e.direction = 0;
+        e.tableIdWaitsOn = RNIL;
+        e.tableIdWaitedBy = RNIL;
+        e.victimOpRef = RNIL;
       }
       e.direction |= direction;
       e.timer = now;
+      if (direction == ApiConnectRecord::DLD_WAITS_ON) {
+        e.tableIdWaitsOn = contendedTableId;
+        e.victimOpRef = victimOpRef;  // collector is the waiter on this edge
+      } else {
+        e.tableIdWaitedBy = contendedTableId;
+      }
       DEB_DEADLOCK(("(%u) edge vs other trans(%u,%u): direction now %u"
-                    " (WAITS_ON=1 WAITED_BY=2; cycle when 3)", instance(),
-                    otherTransId1, otherTransId2, e.direction));
-      return e.direction == bothDirs;
+                    " (WAITS_ON=1 WAITED_BY=2; cycle when 3),"
+                    " tables waits_on=%u waited_by=%u victimOp=%u", instance(),
+                    otherTransId1, otherTransId2, e.direction,
+                    e.tableIdWaitsOn, e.tableIdWaitedBy, e.victimOpRef));
+      return i;
     }
     /* Track the oldest occupied slot for eviction (signed diff handles wrap). */
     if (oldestSlot < 0 || (Int32)(e.timer - oldestTimer) < 0) {
@@ -11585,9 +11633,57 @@ bool Dbtc::recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
   e.transId2 = otherTransId2;
   e.direction = direction;
   e.timer = now;
-  DEB_DEADLOCK(("(%u) new edge slot %u vs other trans(%u,%u): direction %u",
-                instance(), slot, otherTransId1, otherTransId2, direction));
-  return false;
+  e.tableIdWaitsOn =
+      (direction == ApiConnectRecord::DLD_WAITS_ON) ? contendedTableId : RNIL;
+  e.tableIdWaitedBy =
+      (direction == ApiConnectRecord::DLD_WAITED_BY) ? contendedTableId : RNIL;
+  e.victimOpRef =
+      (direction == ApiConnectRecord::DLD_WAITS_ON) ? victimOpRef : RNIL;
+  DEB_DEADLOCK(("(%u) new edge slot %u vs other trans(%u,%u): direction %u"
+                " contendedTable=%u victimOp=%u", instance(), slot,
+                otherTransId1, otherTransId2, direction, contendedTableId,
+                victimOpRef));
+  return slot;
+}
+
+/**
+ * RONDB-1062: send the version-gated deadlock detail report to the victim's
+ * API node, just before the abort.  No-op if the API node is too old to
+ * understand GSN_TC_DEADLOCK_REP, so the visible abort (266/296) is unchanged
+ * for everyone; this only enriches what a new API can expose.  Reuses
+ * signal->theData (the incoming DBACC_WAITFOR_REP is fully consumed by now and
+ * the subsequent abort rebuilds the signal).
+ */
+void Dbtc::sendDeadlockDetailRep(Signal *signal,
+                                 ApiConnectRecordPtr apiConnectptr,
+                                 Uint32 tableId1, Uint32 tableId2,
+                                 Uint32 victimOpRef) {
+  const BlockReference apiRef = apiConnectptr.p->ndbapiBlockref;
+  const NodeId apiNode = refToNode(apiRef);
+  const NodeInfo &nodeInfo = getNodeInfo(apiNode);
+  if (nodeInfo.getType() != NodeInfo::API ||
+      !ndbd_deadlock_detail_supported(nodeInfo.m_version)) {
+    jam();
+    DEB_DEADLOCK(("(%u) skip TC_DEADLOCK_REP: api node %u type=%u version=0x%x"
+                  " unsupported", instance(), apiNode,
+                  (Uint32)nodeInfo.getType(), nodeInfo.m_version));
+    return;
+  }
+  jam();
+  TcDeadlockRep *const rep =
+      reinterpret_cast<TcDeadlockRep *>(signal->getDataPtrSend());
+  rep->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
+  rep->transId1 = apiConnectptr.p->transid[0];
+  rep->transId2 = apiConnectptr.p->transid[1];
+  rep->deadlockReason = TcDeadlockRep::RealDeadlock;
+  rep->tableId1 = tableId1;
+  rep->tableId2 = tableId2;
+  rep->victimOpRef = victimOpRef;
+  DEB_DEADLOCK(("(%u) send TC_DEADLOCK_REP to api 0x%x (node %u): trans(%u,%u)"
+                " tables(%u,%u) victimOp=%u", instance(), apiRef, apiNode,
+                rep->transId1, rep->transId2, tableId1, tableId2, victimOpRef));
+  sendSignal(apiRef, GSN_TC_DEADLOCK_REP, signal, TcDeadlockRep::SignalLength,
+             JBB);
 }
 
 void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {

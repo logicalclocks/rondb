@@ -1,10 +1,80 @@
 # RONDB-1062 — Deadlock error enrichment (plan)
 
-Status: **PLAN ONLY — not started.** Resume here after compaction.
+Status: **Phases A + B DONE (2026-06).** Resume at **Phase C** (API receive + cache +
+accessors).
 
 **Decisions locked (2026-06):** transport = **Option B** (new version-gated signal
 `GSN_TC_DEADLOCK_REP`); API exposure = **additive accessors** (no new `NdbError`
-members, no `details`-string hack). Phase A is the starting point.
+members, no `details`-string hack).
+
+## Phase A — DONE (DBACC→DBTC contended table id; no API change)
+
+The contended table now flows from the lock manager to the collector and is stored
+per direction, ready for Phase B to assemble on a detected cycle:
+
+- **`signaldata/DeadlockWaitfor.hpp`** — added `Uint32 contendedTableId`;
+  `SignalLength` 10 → 11.
+- **DBACC** (`DbaccMain.cpp`) — `accIsLockedLab` captures `fragrecptr.p->myTableId`
+  into a local under the fragment mutex (`dl_table`) and passes it to
+  `send_deadlock_waitfor(signal, waiter, owner, contendedTableId)`, which sets
+  `rep->contendedTableId` and logs it. Decl updated in `Dbacc.hpp`.
+- **DBTC** (`DbtcMain.cpp`) — `execDBACC_WAITFOR_REP` reads `rep->contendedTableId`
+  **gated on `signal->getLength() >= SignalLength`** (rolling-upgrade safe: an old
+  DBACC sends the 10-word signal → table id treated as `RNIL`). It passes the id to
+  `recordDeadlockEdge(..., contendedTableId)`.
+- **`DeadlockEdge`** (`Dbtc.hpp`) — added `tableIdWaitsOn` / `tableIdWaitedBy`
+  (one per direction, since the two directions of a 2-cycle may contend on different
+  tables). `recordDeadlockEdge` stores into the direction-matching field, clears both
+  on freshness expiry, and logs both. (The slot-init loops still reset only
+  `direction`, the validity gate — consistent with existing code; the table ids are
+  fully (re)written when a slot is claimed.)
+
+Verify with `DEB_DEADLOCK` logs: the `send`, `recv`, and `edge` lines now carry
+`contendedTable=` / `tables waits_on=.. waited_by=..`.
+
+## Phase B — DONE (DBTC assemble + transport to API; benign API stub)
+
+On a detected cycle DBTC now assembles the detail and sends the new version-gated
+signal to the victim's API node, just before the abort. The visible error (266/296)
+is unchanged.
+
+- **`recordDeadlockEdge` now returns the slot index** (was `bool`). The caller reads
+  the slot's `direction` to test the 2-cycle (`== WAITS_ON|WAITED_BY`) and reads the
+  stored `tableIdWaitsOn`/`tableIdWaitedBy`/`victimOpRef` from it. Decl + def + the one
+  call site updated; the now-unused local `bothDirs` was removed from the function.
+- **Victim op handle.** `DeadlockEdge` gained `victimOpRef` — the collector's own
+  deadlocking op as the API operation pointer (`TcConnectRecord::clientData`). It is
+  captured in `execDBACC_WAITFOR_REP` (key-op branch: `localTcPtr.p->clientData` →
+  `collectorClientData`) and stored **only on the WAITS_ON direction** (where the
+  collector is the waiter), so it survives even when the cycle is closed by the
+  WAITED_BY report. RNIL for a scan/takeover victim (refinement deferred — see open Q2).
+- **New signal `GSN_TC_DEADLOCK_REP` (980)** — `signaldata/TcDeadlockRep.hpp`
+  (`apiConnectPtr, transId[2], deadlockReason{RealDeadlock bit}, tableId1, tableId2,
+  victimOpRef`, `SignalLength=7`). Registered in `GlobalSignalNumbers.h` (define + bump
+  `MAX_GSN` 979→980) and `SignalNames.cpp`. No printer (consistent with
+  `DBACC_WAITFOR_REP`).
+- **Version gate** `NDBD_DEADLOCK_DETAIL_VERSION = NDB_MAKE_VERSION(26,4,1)` +
+  `ndbd_deadlock_detail_supported()` in `ndb_version.h.in` (this build's own version,
+  so a same-build API receives it; older APIs never do).
+- **`Dbtc::sendDeadlockDetailRep`** (DbtcMain.cpp) — gates on
+  `getNodeInfo(apiNode).getType()==API && ndbd_deadlock_detail_supported(version)`,
+  fills the signal (`apiConnectPtr = ndbapiConnect`, transid for validation), logs, and
+  `sendSignal(ndbapiBlockref, GSN_TC_DEADLOCK_REP, …)`. Reuses `signal->theData` (the
+  incoming DBACC_WAITFOR_REP is fully consumed; the following abort rebuilds it).
+- **API stub** — `Ndbif.cpp trp_deliver_signal` has a `case GSN_TC_DEADLOCK_REP: break;`
+  so a same-version API **silently ignores** it (no `InvalidSignal` warning / drop).
+  Phase C replaces the stub with caching + accessors.
+
+Verify with DBTC `DEB_DEADLOCK` logs: a detected cycle now logs
+`send TC_DEADLOCK_REP to api … tables(t1,t2) victimOp=…` (or `skip … unsupported`
+when the API is too old) immediately before the abort line.
+
+**Remaining for Phase C:** make the API actually use the report (cache on
+`NdbTransaction`, validate by transid, clear on reset/close) and expose it via the
+additive accessors `wasDeadlock()` / `getDeadlockTableIds(out[2])` /
+`getDeadlockOperation()` (resolve `victimOpRef`/`apiConnectPtr` back through
+`void2con`). The signal carries `apiConnectPtr == ApiConnectRecord::ndbapiConnect`, so
+the API resolves the txn the same way other TC→API signals do.
 
 ## Goal
 
@@ -108,28 +178,44 @@ populated after a 266/296 abort from a *proactively detected* deadlock.
 
 ## Phasing
 
-- **A.** Carry `contendedTableId` DBACC→DBTC (extend `DeadlockWaitforRep`; store in
-  `DeadlockEdge`). Verify with `DEB_DEADLOCK` logs; no API change.
-- **B.** In DBTC, on cycle assemble `{deadlockCode, table1, table2, victimOpRef}`; implement
-  the chosen transport to the API node.
-- **C.** API receive + expose (accessors and/or details).
+- **A. DONE.** Carry `contendedTableId` DBACC→DBTC (extended `DeadlockWaitforRep`; stored
+  per direction in `DeadlockEdge` as `tableIdWaitsOn`/`tableIdWaitedBy`). Verified with
+  `DEB_DEADLOCK` logs; no API change. See the "Phase A — DONE" section above.
+- **B. DONE.** In DBTC `execDBACC_WAITFOR_REP`, on a detected cycle read the two table
+  ids + victim op back from the cycle slot and send `GSN_TC_DEADLOCK_REP` (version-gated)
+  to the API node just before the abort. `recordDeadlockEdge` now **returns the slot
+  index**; `DeadlockEdge` gained `victimOpRef` (captured on WAITS_ON). New signal/GSN/
+  version defined; API has a benign ignore stub. See the "Phase B — DONE" section above.
+- **C.** API receive + expose. Replace the `Ndbif.cpp` stub (`case GSN_TC_DEADLOCK_REP`)
+  with: resolve the txn (`void2con(rep->apiConnectPtr)`, validate `transId[2]`), cache
+  `{reason, tableId1, tableId2, victimOpRef}` on `NdbTransaction`, and clear it on
+  txn reset/close. Add the additive accessors (next section). Dedup tables when equal;
+  resolve `victimOpRef` to an `NdbOperation*` (validate it belongs to the txn).
 - **D.** ha_ndbcluster (mysqld): surface in the `ER_LOCK_WAIT_TIMEOUT` warning/diagnostic
   (map tableId→name) — optional.
 - **E.** Tests: extend `ndb_deadlock_*` and `testDeadlock` to assert the real-deadlock flag,
   correct table ids, and victim-op identification; for the mysqld path check SHOW WARNINGS.
 
-## Open questions (transport + exposure now DECIDED — see above)
+## Open questions
 
-1. Tables: just the two contended tables, or also fragment/row? Dedupe when equal.
+1. ~~Tables: just the two contended tables, or also fragment/row?~~ DONE: the signal
+   carries the two contended table ids only (`tableId1`/`tableId2`); Phase C dedups when
+   equal. Fragment/row not carried.
 2. Scan victim: `getDeadlockOperation()` returns nullptr (no single key op); is reporting the
    `NdbScanOperation` worth it? Takeover victim → report the buddy key op (its `clientData`).
+   **Phase B leaves `victimOpRef = RNIL` for scan/takeover victims** (only the plain key-op
+   waiter captures it); revisit in Phase C/E if scan/takeover op reporting is wanted.
 3. mysqld: does ha_ndbcluster want table *names* in the warning (Phase D)?
 4. The `wasDeadlock()` flag is set only on the **proactive** path (a `GSN_TC_DEADLOCK_REP`
    arrived); the plain timeout backstop does not set it — confirm that's the desired semantics.
-5. `NDBD_DEADLOCK_DETAIL_VERSION` value — pick when implementing Phase B/C.
+5. ~~`NDBD_DEADLOCK_DETAIL_VERSION` value~~ DONE: `NDB_MAKE_VERSION(26,4,1)` (this build's
+   own version). If Phase C ships in a later build, bump to that build's version so the gate
+   matches the build that first understands the signal.
 
 ## Resume note
 
-Nothing implemented yet. Start at Phase A (DBACC→DBTC table id) — it is self-contained and
-verifiable by logs before touching the API. The detection/abort machinery this builds on is
-described in `design.md` (sections 14–16).
+Phases A + B implemented. **Resume at Phase C** (API side): replace the benign
+`case GSN_TC_DEADLOCK_REP` stub in `Ndbif.cpp::trp_deliver_signal` with txn resolution +
+caching on `NdbTransaction`, and add the additive accessors. The kernel already sends the
+fully-populated signal on every detected cycle (gated on the API node version). The
+detection/abort machinery this builds on is described in `design.md` (sections 14–16).

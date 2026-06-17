@@ -66,7 +66,14 @@ struct DeadlockWaitforRep {
   Uint32 ownerTcRef;      // TC block reference owning the lock owner
   Uint32 ownerTcOprec;    // owner's TcConnectRecord i-value in that TC
 
-  static constexpr Uint32 SignalLength = 10;
+  // RONDB-1062 deadlock enrichment (Phase A): the table the waiter and owner
+  // contend on (both endpoints want a lock on the same row, hence the same
+  // table/fragment).  Carried so DBTC can later report the tables involved in a
+  // detected deadlock to the NDB API without changing the error code.  RNIL if
+  // the reporter could not supply it.
+  Uint32 contendedTableId;
+
+  static constexpr Uint32 SignalLength = 11;
 
   enum Flags {
     CollectorIsWaiter = 0x1,  // collector == waiter (else collector == owner)

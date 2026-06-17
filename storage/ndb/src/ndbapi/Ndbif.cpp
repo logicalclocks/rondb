@@ -1325,6 +1325,21 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       break;
     }
 
+    case GSN_TC_DEADLOCK_REP:
+    {
+      /**
+       * RONDB-1062 proactive deadlock discovery: optional, version-gated detail
+       * about a deadlock the data node detected.  The abort itself still
+       * arrives via TCROLLBACKREP (266) / SCAN_TABREF (296) as before; this
+       * report only carries the involved tables and deadlocking operation.
+       * Phase C will cache it on the matching NdbTransaction and expose it via
+       * accessors; for now it is safely ignored (it is never sent to an API
+       * that predates GSN_TC_DEADLOCK_REP, so this case only fires for nodes
+       * that opted in by version).
+       */
+      break;
+    }
+
     default: {
       tFirstDataPtr = nullptr;
       goto InvalidSignal;

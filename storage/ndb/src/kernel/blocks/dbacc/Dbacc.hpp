@@ -1049,7 +1049,8 @@ private:
    * with an unresolved collector (tcRef == 0) is dropped.  Reuses
    * signal->theData. */
   void send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &waiter,
-                             const DeadlockEndpoint &owner);
+                             const DeadlockEndpoint &owner,
+                             Uint32 contendedTableId);
   void abortSerieQueueOperation(Signal* signal,
                                 OperationrecPtr op,
                                 Uint32 hash);

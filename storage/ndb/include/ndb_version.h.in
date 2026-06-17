@@ -949,6 +949,22 @@ ndbd_pushdown_aggregation_supported(Uint32 v)
   return v >= NDBD_PUSHDOWN_AGGREGATION;
 }
 
+/*
+ * RONDB-1062 proactive deadlock discovery: when a deadlock is detected, DBTC
+ * sends a version-gated GSN_TC_DEADLOCK_REP to the victim's API node carrying
+ * the involved table ids and the deadlocking operation, just before the abort
+ * signal.  Only sent to API nodes that understand the new signal; the visible
+ * error code (266/296) is unchanged for everyone.
+ */
+#define NDBD_DEADLOCK_DETAIL_VERSION NDB_MAKE_VERSION(26, 4, 1)
+static
+inline
+bool
+ndbd_deadlock_detail_supported(Uint32 v)
+{
+  return v >= NDBD_DEADLOCK_DETAIL_VERSION;
+}
+
 #define NDBD_PARTIAL_UPDATE NDB_MAKE_VERSION(24, 10, 0)
 static
 inline

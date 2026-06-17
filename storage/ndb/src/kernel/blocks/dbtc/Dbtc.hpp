@@ -1302,6 +1302,20 @@ class Dbtc : public SimulatedBlock {
       Uint32 transId2;
       Uint32 timer;      // ctcTimer at last update (freshness)
       Uint32 direction;  // bitmask of DeadlockDir; 0 == empty slot
+      /* RONDB-1062 deadlock enrichment (Phase A): the table contended on in
+       * each direction.  WAITS_ON: the table this txn's blocked op wanted (the
+       * other txn held it); WAITED_BY: the table the other txn's blocked op
+       * wanted (this txn held it).  RNIL until that direction is reported.  On
+       * a detected 2-cycle these two give the table(s) involved (dedup when
+       * equal) for later reporting to the NDB API. */
+      Uint32 tableIdWaitsOn;
+      Uint32 tableIdWaitedBy;
+      /* RONDB-1062 (Phase B): this collector's deadlocking operation, as the
+       * API operation pointer (TcConnectRecord::clientData of the collector's
+       * own waiting key op).  Captured on the WAITS_ON direction (the collector
+       * is the waiter there) so it survives even when the cycle is closed by
+       * the WAITED_BY report.  RNIL for a scan/takeover victim or if unknown. */
+      Uint32 victimOpRef;
     };
     DeadlockEdge m_deadlock_edges[MAX_DEADLOCK_EDGES];
 
@@ -2299,8 +2313,19 @@ class Dbtc : public SimulatedBlock {
 
   /* RONDB-1062 proactive deadlock discovery (DBACC wait-for edge). */
   void execDBACC_WAITFOR_REP(Signal *signal);
-  bool recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
-                          Uint32 otherTransId2, Uint32 direction);
+  /* Record a wait-for edge and return the index of the slot it landed in (the
+   * caller reads that slot's direction to test for a 2-cycle and its stored
+   * table ids / victim op for the deadlock detail report).  victimOpRef is the
+   * collector's deadlocking op (clientData), stored only on the WAITS_ON
+   * direction. */
+  Uint32 recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
+                            Uint32 otherTransId2, Uint32 direction,
+                            Uint32 contendedTableId, Uint32 victimOpRef);
+  /* Send the version-gated GSN_TC_DEADLOCK_REP to the victim's API node just
+   * before aborting it (no-op if the API node is too old to understand it). */
+  void sendDeadlockDetailRep(Signal *signal, ApiConnectRecordPtr apiConnectptr,
+                             Uint32 tableId1, Uint32 tableId2,
+                             Uint32 victimOpRef);
 
   /* Phase L (C): allocate / look up / release aggregation completion
    * records.  Records are linked into ScanRecord::m_aggRecordsHead and

@@ -2191,11 +2191,14 @@ void Dbacc::describe_deadlock_endpoint(const Operationrec *opP,
  * the collector endpoint needs (scan vs key op); DBTC further canonicalises a
  * taken-over scan to its lock-holding buddy.  An edge is dropped only if the
  * collector's TC ref could not be resolved locally (e.g. a query-thread scan).
+ * contendedTableId is the table both endpoints contend on (RONDB-1062 Phase A
+ * enrichment, carried to DBTC for later reporting to the API; RNIL if unknown).
  * NOTE: reuses signal->theData, so callers needing the signal contents must
  * rebuild them afterwards.
  */
 void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
-                                  const DeadlockEndpoint &o)
+                                  const DeadlockEndpoint &o,
+                                  Uint32 contendedTableId)
 {
   const bool collectorIsWaiter =
       deadlock_a_is_collector(w.transId1, w.transId2, o.transId1, o.transId2);
@@ -2214,11 +2217,12 @@ void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
   }
   DEB_DEADLOCK(("(%u) send DBACC_WAITFOR_REP: waiter trans(%u,%u) scan=%u"
                 " tc(0x%x,%u) -> owner trans(%u,%u) scan=%u tc(0x%x,%u),"
-                " collectorIsWaiter=%u collectorIsScan=%u dst=0x%x",
+                " collectorIsWaiter=%u collectorIsScan=%u contendedTable=%u"
+                " dst=0x%x",
                 instance(), w.transId1, w.transId2, (Uint32)w.isScan, w.tcRef,
                 w.tcOprec, o.transId1, o.transId2, (Uint32)o.isScan, o.tcRef,
                 o.tcOprec, (Uint32)collectorIsWaiter, (Uint32)collector.isScan,
-                dstRef));
+                contendedTableId, dstRef));
   DeadlockWaitforRep *const rep =
       reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
   rep->senderRef = reference();
@@ -2233,6 +2237,7 @@ void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
   rep->ownerTransId2 = o.transId2;
   rep->ownerTcRef = o.tcRef;
   rep->ownerTcOprec = o.tcOprec;
+  rep->contendedTableId = contendedTableId;
   sendSignal(dstRef, GSN_DBACC_WAITFOR_REP, signal,
              DeadlockWaitforRep::SignalLength, JBB);
 }
@@ -2341,8 +2346,13 @@ Dbacc::accIsLockedLab(Signal* signal,
     const Uint32 DL_MAX_OWNERS = 8;
     DeadlockEndpoint dl_owners[DL_MAX_OWNERS];
     Uint32 dl_num = 0;
+    /* The contended lock's table (waiter and all owners contend on this same
+     * row, hence the same table); carried to DBTC for deadlock enrichment.
+     * Captured under the fragment mutex with the rest of the edge data. */
+    Uint32 dl_table = RNIL;
     if (return_result == ZSERIAL_QUEUE)
     {
+      dl_table = fragrecptr.p->myTableId;
       describe_deadlock_endpoint(operationRecPtr.p, dl_waiter);
       OperationrecPtr loopPtr = lockOwnerPtr;
       while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
@@ -2419,7 +2429,7 @@ Dbacc::accIsLockedLab(Signal* signal,
       for (Uint32 i = 0; i < dl_num; i++)
       {
         jam();
-        send_deadlock_waitfor(signal, dl_waiter, dl_owners[i]);
+        send_deadlock_waitfor(signal, dl_waiter, dl_owners[i], dl_table);
       }
       signal->theData[0] = RNIL;
       return;
