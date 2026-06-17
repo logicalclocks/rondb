@@ -40,6 +40,7 @@
 #include <signaldata/TcIndx.hpp>
 #include <signaldata/TcKeyConf.hpp>
 #include <signaldata/TcKeyFailConf.hpp>
+#include <signaldata/TcDeadlockRep.hpp>
 #include <signaldata/TestOrd.hpp>
 #include <signaldata/TransIdAI.hpp>
 
@@ -1331,12 +1332,20 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
        * RONDB-1062 proactive deadlock discovery: optional, version-gated detail
        * about a deadlock the data node detected.  The abort itself still
        * arrives via TCROLLBACKREP (266) / SCAN_TABREF (296) as before; this
-       * report only carries the involved tables and deadlocking operation.
-       * Phase C will cache it on the matching NdbTransaction and expose it via
-       * accessors; for now it is safely ignored (it is never sent to an API
-       * that predates GSN_TC_DEADLOCK_REP, so this case only fires for nodes
-       * that opted in by version).
+       * report (sent just before it) only carries the involved tables and the
+       * deadlocking operation.  Cache it on the matching transaction, validated
+       * by transaction id, for the wasDeadlock()/getDeadlockTableIds()/
+       * getDeadlockOperation() accessors.  theData[0] is the API connection id,
+       * resolved the same way as the other TC->API signals.
        */
+      if (tFirstDataPtr != nullptr) {
+        tCon = void2con(tFirstDataPtr);
+        if (tCon->checkMagicNumber() == 0) {
+          const TcDeadlockRep *const rep =
+              CAST_CONSTPTR(TcDeadlockRep, aSignal->getDataPtr());
+          tCon->receiveTcDeadlockRep(rep);
+        }
+      }
       break;
     }
 

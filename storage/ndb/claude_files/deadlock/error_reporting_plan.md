@@ -1,7 +1,8 @@
 # RONDB-1062 — Deadlock error enrichment (plan)
 
-Status: **Phases A + B DONE (2026-06).** Resume at **Phase C** (API receive + cache +
-accessors).
+Status: **Phases A + B + C DONE (2026-06).** Core feature complete end-to-end
+(DBACC → DBTC → NDB API). Remaining: **Phase D** (mysqld/ha_ndbcluster warning,
+optional) and **Phase E** (tests).
 
 **Decisions locked (2026-06):** transport = **Option B** (new version-gated signal
 `GSN_TC_DEADLOCK_REP`); API exposure = **additive accessors** (no new `NdbError`
@@ -69,12 +70,35 @@ Verify with DBTC `DEB_DEADLOCK` logs: a detected cycle now logs
 `send TC_DEADLOCK_REP to api … tables(t1,t2) victimOp=…` (or `skip … unsupported`
 when the API is too old) immediately before the abort line.
 
-**Remaining for Phase C:** make the API actually use the report (cache on
-`NdbTransaction`, validate by transid, clear on reset/close) and expose it via the
-additive accessors `wasDeadlock()` / `getDeadlockTableIds(out[2])` /
-`getDeadlockOperation()` (resolve `victimOpRef`/`apiConnectPtr` back through
-`void2con`). The signal carries `apiConnectPtr == ApiConnectRecord::ndbapiConnect`, so
-the API resolves the txn the same way other TC→API signals do.
+## Phase C — DONE (API receive + cache + additive accessors)
+
+The NDB API now consumes the report and exposes it through new `NdbTransaction`
+methods. No `NdbError`/`details` change; fully additive.
+
+- **Receive** — `Ndbif.cpp::trp_deliver_signal` `case GSN_TC_DEADLOCK_REP` (was the
+  benign stub) resolves the txn via `void2con(int2void(theData[0]))`
+  (`theData[0] == apiConnectPtr == ndbapiConnect == NdbTransaction::theId`, exactly
+  like other TC→API signals), guards `checkMagicNumber()==0`, and calls
+  `tCon->receiveTcDeadlockRep(rep)`.
+- **Cache + resolve** — `NdbTransaction::receiveTcDeadlockRep` validates by full
+  transid (`theTransactionId == (transId2<<32)|transId1`; the report arrives *before*
+  the abort invalidates it), then caches `theDeadlockDetailValid` (the `RealDeadlock`
+  bit), `theDeadlockTableId1/2`, and resolves `victimOpRef`. `victimOpRef` is the op's
+  **NdbReceiver object-map id** (`NdbOperation::ptr2int() == theReceiver.getId()`), so
+  `int2void → void2rec → NdbReceiver`, validated by `checkMagicNumber()`, type
+  (`NDB_OPERATION`/`NDB_INDEX_OPERATION`), and `getTransaction()==this`, then
+  `getOwner()` → the `NdbOperation*`. Resolved at receive time while the op is live;
+  cleared in the ctor and `init()` (so it never dangles across object reuse).
+- **Accessors** (`NdbTransaction.hpp`/`.cpp`, public, additive):
+  - `bool wasDeadlock() const` — true iff a real-deadlock report arrived (the
+    indicator; false for the plain timeout backstop or an old data node).
+  - `int getDeadlockTableIds(Uint32 out[2]) const` — up to two **deduped** table ids,
+    returns the count (0/1/2).
+  - `const NdbOperation *getDeadlockOperation() const` — the victim's deadlocking op,
+    or `nullptr` (scan/takeover victim, unresolvable, or no report).
+- **Compat** — gated end to end on `NDBD_DEADLOCK_DETAIL_VERSION`: an old API never
+  receives the signal; a new API talking to an old data node simply never caches
+  anything, so `wasDeadlock()` returns false and the others return empty.
 
 ## Goal
 
@@ -186,11 +210,9 @@ populated after a 266/296 abort from a *proactively detected* deadlock.
   to the API node just before the abort. `recordDeadlockEdge` now **returns the slot
   index**; `DeadlockEdge` gained `victimOpRef` (captured on WAITS_ON). New signal/GSN/
   version defined; API has a benign ignore stub. See the "Phase B — DONE" section above.
-- **C.** API receive + expose. Replace the `Ndbif.cpp` stub (`case GSN_TC_DEADLOCK_REP`)
-  with: resolve the txn (`void2con(rep->apiConnectPtr)`, validate `transId[2]`), cache
-  `{reason, tableId1, tableId2, victimOpRef}` on `NdbTransaction`, and clear it on
-  txn reset/close. Add the additive accessors (next section). Dedup tables when equal;
-  resolve `victimOpRef` to an `NdbOperation*` (validate it belongs to the txn).
+- **C. DONE.** API receive + cache + additive accessors (`wasDeadlock()`,
+  `getDeadlockTableIds()`, `getDeadlockOperation()`). See the "Phase C — DONE" section
+  above.
 - **D.** ha_ndbcluster (mysqld): surface in the `ER_LOCK_WAIT_TIMEOUT` warning/diagnostic
   (map tableId→name) — optional.
 - **E.** Tests: extend `ndb_deadlock_*` and `testDeadlock` to assert the real-deadlock flag,
@@ -214,8 +236,18 @@ populated after a 266/296 abort from a *proactively detected* deadlock.
 
 ## Resume note
 
-Phases A + B implemented. **Resume at Phase C** (API side): replace the benign
-`case GSN_TC_DEADLOCK_REP` stub in `Ndbif.cpp::trp_deliver_signal` with txn resolution +
-caching on `NdbTransaction`, and add the additive accessors. The kernel already sends the
-fully-populated signal on every detected cycle (gated on the API node version). The
-detection/abort machinery this builds on is described in `design.md` (sections 14–16).
+Phases A + B + C implemented — the feature works end to end (DBACC detects the
+contended table → DBTC assembles + sends `GSN_TC_DEADLOCK_REP` → the NDB API caches it
+and exposes `wasDeadlock()` / `getDeadlockTableIds()` / `getDeadlockOperation()`).
+
+**Remaining (optional, not started):**
+- **Phase D** — ha_ndbcluster (mysqld): surface the detail in the
+  `ER_LOCK_WAIT_TIMEOUT` warning (map tableId→name via the dictionary). Entry point:
+  where ha_ndbcluster maps NDB error 266/296 to the MySQL error / pushes a warning;
+  call the new `NdbTransaction` accessors there.
+- **Phase E** — tests: extend `ndb_deadlock_*` (mysqld path: SHOW WARNINGS) and
+  `testDeadlock` (NDB-API path: assert `wasDeadlock()`, table ids, and victim-op
+  identification). The deterministic scan↔scan and key-op recipes already exist.
+
+The detection/abort machinery this builds on is described in `design.md` (sections
+14–16).
