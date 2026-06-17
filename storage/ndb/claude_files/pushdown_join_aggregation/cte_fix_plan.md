@@ -354,9 +354,17 @@ Lower priority; some may be intentional scope limits — confirm before building
   filter-14 (GREATEST `>`, OR + const fold), filter-14b (GREATEST `<=`, AND,
   3-arg), filter-15 (LEAST `<`, OR, two cols), filter-15b (LEAST `>`, AND,
   3-arg); recorded green ×5 topologies.
-- **E4 — D17: `MIN`/`MAX` over a DATE column in a CTE — DEFERRED to its own
-  phase (NOT contained).**  Investigation (2026-06) found DATE is unsupported at
-  *every* layer, not just the agg-program writer:
+- **E4 — D17: `MIN`/`MAX` over a DATE column in a CTE — FIXED.**  Shipped via
+  the integer-day shortcut across kernel + NDB API + RonSQL; agg-d17a/b/c green
+  ×5 topologies (incl. GROUP-BY-over-DATE redistribution on ng2r2/ng2r3/ng4r2).
+  Two original-investigation simplifications: the kernel treats DATE exactly
+  like `MEDIUMUNSIGNED` (AlignedType→BIGINT, `is_unsigned`), and GROUP-BY-over-
+  DATE needed no kernel change (initGBTypes is type-generic; `cmpDate`).  The
+  result returns as Bigunsigned (no new wire format); RonSQL tags the output
+  via `ColumnMetadata::is_date` and unpacks `w`→`YYYY-MM-DD`.  index-9 stays
+  disabled but is re-tagged D9 (its residual is the DATE index-scan root, not
+  D17).  See `cte_date_minmax_plan.md` for the as-shipped notes.  Historical
+  investigation (now superseded) follows:
     - Kernel `AggInterpreterBase::loadColumnTypedFromBuf` has no `NDB_TYPE_DATE`
       arm → returns `ZAGG_LOAD_COL_WRONG_TYPE`; `AlignedType` has no Date mapping.
     - `NdbAggregator::TypeSupported` rejects `Date` → `LoadColumn` returns false →

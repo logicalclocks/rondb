@@ -213,6 +213,18 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
                       "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
                       m_registers[reg_index].value.val_uint64);
       return 0;
+    case NDB_TYPE_DATE:
+      // D17: identical to MEDIUMUNSIGNED — a DATE is stored as the
+      // 3-byte little-endian packed value w = (year<<9)|(month<<5)|day.
+      // Register type is BIGINT (AlignedType) with is_unsigned set, so
+      // unsigned MIN/MAX over w == DATE MIN/MAX.  RonSQL unpacks the
+      // resulting w back to YYYY-MM-DD for display.
+      m_registers[reg_index].value.val_uint64 =
+          uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_DATE %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
     case NDB_TYPE_UNSIGNED:
       m_registers[reg_index].value.val_uint64 =
           uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
@@ -711,6 +723,15 @@ bool AggInterpreterBase::TypeSupported(DataType type) {
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
 
+    // D17: MIN/MAX over DATE.  A DATE is a 3-byte little-endian
+    // uint3korr packed value (w = (year<<9)|(month<<5)|day) that is
+    // monotonic with chronological order, so it is handled exactly
+    // like NDB_TYPE_MEDIUMUNSIGNED at the numeric level (unsigned,
+    // AlignedType → BIGINT).  Only the result *display* differs —
+    // RonSQL unpacks w → YYYY-MM-DD.  Sum/Avg over DATE stay rejected
+    // (meaningless); see cte_date_minmax_plan.md.
+    case NDB_TYPE_DATE:
+
     // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
     // Sum is rejected separately (see Sum()).  Count is
     // type-agnostic and works for any column type.  String
@@ -734,6 +755,10 @@ bool AggInterpreterBase::IsUnsigned(DataType type) {
     case NDB_TYPE_UNSIGNED:
     case NDB_TYPE_BIGUNSIGNED:
     case NDB_TYPE_DECIMALUNSIGNED:
+    // D17: DATE packed value is an unsigned 3-byte integer; the
+    // unsigned compare path (val_uint64) sorts 0000-00-00 (w=0)
+    // lowest, as MySQL DATE MIN/MAX requires.
+    case NDB_TYPE_DATE:
       return true;
     default:
       return false;
@@ -754,6 +779,10 @@ DataType AggInterpreterBase::AlignedType(DataType type, int scale) {
     case NDB_TYPE_MEDIUMUNSIGNED:
     case NDB_TYPE_UNSIGNED:
     case NDB_TYPE_BIGUNSIGNED:
+
+    // D17: DATE is held as the unsigned 3-byte packed value in a
+    // BIGINT register (is_unsigned set via IsUnsigned).
+    case NDB_TYPE_DATE:
 
       return NDB_TYPE_BIGINT;
     case NDB_TYPE_FLOAT:

@@ -55,6 +55,7 @@ enum NdbAggregatorError {
   kErrEmptyAggResult,
   kErrTooManyAggResult,
   kErrUnsupportedStringOperation,
+  kErrUnsupportedDateOperation,
   kErrMaxErrno
 };
 
@@ -73,6 +74,7 @@ static AggregationError g_errors_[] = {
   {kErrEmptyAggResult, "Empty aggregation"},
   {kErrTooManyAggResult, "Number of aggregation results should be less than 256"},
   {kErrUnsupportedStringOperation, "String columns are only supported for MIN/MAX"},
+  {kErrUnsupportedDateOperation, "Date columns are only supported for MIN/MAX"},
   {kErrMaxErrno, ""}
 };
 
@@ -387,6 +389,7 @@ class NdbAggregator {
  private:
   bool TypeSupported(NdbDictionary::Column::Type type);
   bool isStringType(Uint32 type) const;
+  bool isDateType(Uint32 type) const;
   void clearStringSlot(AggResItem *slot) const;
   void assignStringSlot(AggResItem *dst, const AggResItem *src) const;
   int compareStringSlots(const AggResItem *lhs,

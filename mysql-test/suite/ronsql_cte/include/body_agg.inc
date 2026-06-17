@@ -24,10 +24,11 @@
 # INT, BIGINT UNSIGNED), DECIMAL scale-2 and scale-0, and CHAR / VARCHAR.
 # GROUP BY a single column and GROUP BY multiple columns.
 #
-# Probes (projection-only-over-CTE_LOOKUP hang, COUNT(col) hang, SUM(decimal)
-# error, the l_orderkey-under-orders crash, AVG, COUNT(DISTINCT), DATE MIN/MAX,
-# GROUP BY expression, post-aggregation SELECT expressions, FLOAT/DOUBLE SUM)
-# are recorded below as NEXT-PHASE-disabled comment blocks and in
+# MIN/MAX over DATE (o_orderdate / l_shipdate) is now SUPPORTED (D17, see
+# agg-d17a/b below).  Probes (projection-only-over-CTE_LOOKUP hang, COUNT(col)
+# hang, the l_orderkey-under-orders crash, AVG, COUNT(DISTINCT), GROUP BY
+# expression, post-aggregation SELECT expressions, FLOAT/DOUBLE SUM) are
+# recorded below as NEXT-PHASE-disabled comment blocks and in
 # findings/agg.md — they do NOT run.
 
 --source include/have_ndb.inc
@@ -445,11 +446,63 @@ FROM nation AS nat JOIN x ON x.k = nat.n_nationkey GROUP BY nat.n_name|
 #              FROM orders GROUP BY o_orderstatus)
 #   SELECT x.st, x.d FROM x;
 
-# NEXT-PHASE: MIN/MAX over DATE column (orders.o_orderdate) — matrix UNCERTAIN (DATE MIN/MAX).
-#   Orchestrator may enable if the DATE wire format round-trips correctly.
-#   WITH x AS (SELECT o_custkey AS k, MIN(o_orderdate) AS mn, MAX(o_orderdate) AS mx
-#              FROM orders GROUP BY o_custkey)
-#   SELECT MIN(x.mn), MAX(x.mx) FROM customer AS c JOIN x ON x.k = c.c_custkey;
+# D17 (MIN/MAX over a DATE column) is FIXED — the kernel reads DATE as its
+# 3-byte packed value (handled like MEDIUMUNSIGNED, AlignedType -> BIGINT) and
+# returns a Bigunsigned result; RonSQL tags the output column is_date and the
+# ResultPrinter unpacks w -> YYYY-MM-DD.  See cte_date_minmax_plan.md.
+
+--echo
+--echo === agg-d17a (D17): MIN/MAX over DATE (orders.o_orderdate) re-aggregated through CTE_LOOKUP ===
+let $QUERY=
+WITH x AS (
+  SELECT o_custkey AS k, MIN(o_orderdate) AS mn, MAX(o_orderdate) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx
+FROM customer AS c
+JOIN x ON x.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (
+  SELECT o_custkey AS k, MIN(o_orderdate) AS mn, MAX(o_orderdate) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx
+FROM customer AS c
+JOIN x ON x.k = c.c_custkey|
+
+--echo
+--echo === agg-d17b (D17): MIN/MAX over DATE (lineitem.l_shipdate) re-aggregated over a CTE_SCAN root ===
+let $QUERY=
+WITH x AS (
+  SELECT l_orderkey AS k, MIN(l_shipdate) AS mn, MAX(l_shipdate) AS mx
+  FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS g FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (
+  SELECT l_orderkey AS k, MIN(l_shipdate) AS mn, MAX(l_shipdate) AS mx
+  FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS g FROM x|
+
+--echo
+--echo === agg-d17c (D17): CTE body GROUP BY a DATE column (o_orderdate), scalar main re-aggregation ===
+# Shape B core: the CTE GROUP BY key is itself a DATE; the main query MIN/MAX's
+# the DATE virt-column.  GROUP-BY-over-DATE works generically in the kernel
+# (initGBTypes reads cmpDate / no charset for a local DATE col); MIN/MAX over
+# the DATE group key re-reads it via the DATE load arm.  No WHERE literals here
+# so the standard $QUERY path applies (the index-scan-root + literal variant is
+# tracked separately under D9).
+let $QUERY=
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
 
 # NEXT-PHASE: GROUP BY an expression — matrix "NOT SUPPORTED" (GROUP BY expression).
 #   Only direct columns are allowed in a CTE-body GROUP BY.

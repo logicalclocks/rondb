@@ -177,16 +177,19 @@ SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM os|
 # range bound).  Recorded as a NEXT-PHASE probe below.
 # ------------------------------------------------------------
 
-# NEXT-PHASE (DISABLED — ERROR "Failed writing aggregation program. Please report
-# a bug.", D17): MIN/MAX over a DATE column (o_orderdate) in a CTE. (was index-9 —
-# composite eq + half-open 2nd col + residual on 3rd table col)
+# NEXT-PHASE (DISABLED — D9, index-scan root over a DATE bound): was index-9.
+# The D17 part (MIN/MAX over a DATE column) is now FIXED — see agg-d17a/b/c in
+# body_agg.inc, which cover DATE MIN/MAX re-aggregation and GROUP-BY-over-DATE.
+# What remains unsupported here is the *index-scan root* on the composite
+# idx_o_status_date with a DATE range bound (the same D9 limitation as
+# index-4/5/8): the planner cannot build the CTE-body INDEX_SCAN root.
 #   WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
 #               FROM orders
 #               WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
 #                     AND o_shippriority < 3
 #               GROUP BY o_orderdate)
 #   SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
-# See findings/_discovery_log.md (D17).
+# See findings/_discovery_log.md (D17 fixed; index-scan-root residual = D9).
 
 # ============================================================
 # MAIN cases: scalar MIN/MAX via ordered index + maxRows=1

@@ -41,6 +41,10 @@ public:
     int precision;
     int scale;
     bool has_metadata;
+    // D17: the source column is a DATE.  MIN/MAX over a DATE is computed
+    // in the kernel as an unsigned 3-byte packed integer and returned as
+    // Bigunsigned; this flag tells the printer to unpack w → YYYY-MM-DD.
+    bool is_date;
   };
 
 private:
@@ -93,6 +97,7 @@ private:
         Uint32 reg_a;
         CHARSET_INFO* charset;
         int scale;   // source DECIMAL scale for MIN/MAX (0 = none/compact)
+        bool is_date; // D17: MIN/MAX over DATE → unpack w → YYYY-MM-DD
       } print_aggregate;
       struct
       {
@@ -159,10 +164,12 @@ private:
   void print_aggregate_result(std::ostream& out,
                               NdbAggregator::Result result,
                               CHARSET_INFO* charset,
-                              int scale);
+                              int scale,
+                              bool is_date);
   CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
   int aggregate_arg_scale(const Outputs* out) const;
   int aggregate_arg_precision(const Outputs* out) const;
+  bool aggregate_arg_is_date(const Outputs* out) const;
   bool evaluate_having(const ConditionalExpression* expr);
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,

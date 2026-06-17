@@ -520,3 +520,71 @@ NATION6	111
 NATION7	117
 NATION8	123
 NATION9	129
+
+=== agg-d17a (D17): MIN/MAX over DATE (orders.o_orderdate) re-aggregated through CTE_LOOKUP ===
+== Query ==
+WITH x AS (
+SELECT o_custkey AS k, MIN(o_orderdate) AS mn, MAX(o_orderdate) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx
+FROM customer AS c
+JOIN x ON x.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (
+SELECT o_custkey AS k, MIN(o_orderdate) AS mn, MAX(o_orderdate) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx
+FROM customer AS c
+JOIN x ON x.k = c.c_custkey|
+mmn	mmx
+1995-01-01	1997-09-26
+
+=== agg-d17b (D17): MIN/MAX over DATE (lineitem.l_shipdate) re-aggregated over a CTE_SCAN root ===
+== Query ==
+WITH x AS (
+SELECT l_orderkey AS k, MIN(l_shipdate) AS mn, MAX(l_shipdate) AS mx
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS g FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (
+SELECT l_orderkey AS k, MIN(l_shipdate) AS mn, MAX(l_shipdate) AS mx
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS g FROM x|
+mmn	mmx	g
+1995-01-02	1997-09-27	1500
+
+=== agg-d17c (D17): CTE body GROUP BY a DATE column (o_orderdate), scalar main re-aggregation ===
+== Query ==
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
+mnd	mxd	st	g
+1995-01-01	1997-09-26	3000	1000

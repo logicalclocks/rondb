@@ -261,6 +261,10 @@ bool NdbAggregator::isStringType(Uint32 type) const {
          type == NDB_TYPE_LONGVARCHAR;
 }
 
+bool NdbAggregator::isDateType(Uint32 type) const {
+  return type == NDB_TYPE_DATE;
+}
+
 void NdbAggregator::clearStringSlot(AggResItem *slot) const {
   if (slot != nullptr && isStringType(slot->type) &&
       slot->value.val_ptr != nullptr) {
@@ -765,6 +769,11 @@ bool NdbAggregator::TypeSupported(NdbDictionary::Column::Type type) {
     case NdbDictionary::Column::Char:
     case NdbDictionary::Column::Varchar:
     case NdbDictionary::Column::Longvarchar:
+    // D17: MIN/MAX over DATE.  The kernel reads the 3-byte packed
+    // value as an unsigned integer and returns a Bigunsigned result
+    // (see AggInterpreterBase NDB_TYPE_DATE arms); RonSQL unpacks it
+    // to YYYY-MM-DD.  Sum over DATE is rejected separately (see Sum()).
+    case NdbDictionary::Column::Date:
       return true;
     default:
       return false;
@@ -1063,6 +1072,11 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
   }
   if (isStringType(reg_types_[reg_id])) {
     SetError(kErrUnsupportedStringOperation);
+    return false;
+  }
+  // D17: SUM/AVG over DATE is meaningless — only MIN/MAX/COUNT.
+  if (isDateType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedDateOperation);
     return false;
   }
 

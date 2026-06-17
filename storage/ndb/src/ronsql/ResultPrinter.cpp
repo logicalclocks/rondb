@@ -467,6 +467,8 @@ ResultPrinter::compile()
           int pr = aggregate_arg_precision(o);
           cmd.print_aggregate.scale = (pr > 0 && pr <= 15) ? sc : 0;
         }
+        // D17: MIN/MAX over a DATE → unpack the Bigunsigned packed value.
+        cmd.print_aggregate.is_date = aggregate_arg_is_date(o);
         m_program.push(cmd);
         break;
       }
@@ -806,7 +808,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
-                               cmd.print_aggregate.scale);
+                               cmd.print_aggregate.scale,
+                               cmd.print_aggregate.is_date);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1604,7 +1607,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
-                               cmd.print_aggregate.scale);
+                               cmd.print_aggregate.scale,
+                               cmd.print_aggregate.is_date);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -2017,15 +2021,55 @@ ResultPrinter::aggregate_arg_precision(const Outputs* out) const
   return m_column_metadata[col_idx].precision;
 }
 
+// D17: is the MIN/MAX argument column a DATE?  The kernel returns DATE
+// MIN/MAX as a Bigunsigned packed value; this drives the printer to unpack
+// it to YYYY-MM-DD.  Mirrors aggregate_arg_scale's column-metadata walk.
+bool
+ResultPrinter::aggregate_arg_is_date(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return false;
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+    return false;
+  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg == NULL || !arg->isLoad())
+    return false;
+  Uint32 col_idx = arg->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return false;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return false;
+  }
+  return m_column_metadata[col_idx].is_date;
+}
+
 void
 ResultPrinter::print_aggregate_result(std::ostream& out,
                                       NdbAggregator::Result result,
                                       CHARSET_INFO* charset,
-                                      int scale)
+                                      int scale,
+                                      bool is_date)
 {
   if (result.is_null())
   {
     out << m_null_representation;
+    return;
+  }
+
+  // D17: MIN/MAX over a DATE comes back as the Bigunsigned 3-byte packed
+  // value w = (year<<9)|(month<<5)|day.  Unpack and print as YYYY-MM-DD
+  // (w==0 → 0000-00-00, matching MySQL's zero date).
+  if (is_date && result.type() == NdbDictionary::Column::Bigunsigned)
+  {
+    Uint64 w = result.data_uint64();
+    unsigned day = (unsigned)(w & 31);
+    unsigned month = (unsigned)((w >> 5) & 15);
+    unsigned year = (unsigned)(w >> 9);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
+    out << buf;
     return;
   }
 

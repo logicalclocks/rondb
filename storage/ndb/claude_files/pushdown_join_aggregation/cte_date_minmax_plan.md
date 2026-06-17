@@ -1,7 +1,60 @@
 # D17 — MIN/MAX over a DATE column in a CTE (integer-day plan)
 
-Status: **PLANNED** (deferred from the test-driven CTE phase; see
-`cte_fix_plan.md` E4 and `cte_test_driven_findings.md` D17).
+Status: **IMPLEMENTED — awaiting build + 5-topology record** (Phases 1-4
+coded; Phase 5 reassessed as needing no kernel change; Phase 6 = record).
+See `cte_fix_plan.md` E4 and `cte_test_driven_findings.md` D17.
+
+## Implementation notes (what actually shipped vs the original plan)
+
+The plan over-specified.  Two simplifications fell out during coding:
+
+1. **DATE == MEDIUMUNSIGNED at the numeric level.**  A DATE is a 3-byte
+   `uint3korr` unsigned value, monotonic with chronological order — exactly
+   like `NDB_TYPE_MEDIUMUNSIGNED`.  So the kernel work (Phase 1) is four tiny
+   additions in `AggInterpreterBase.cpp`: `TypeSupported` (+DATE),
+   `IsUnsigned` (+DATE → true), `AlignedType` (+DATE → BIGINT, sign carried by
+   `is_unsigned`), and `loadColumnTypedFromBuf` (+DATE arm = the MEDIUMUNSIGNED
+   arm).  MIN/MAX over an unsigned BIGINT register already exists; the result
+   comes back as **Bigunsigned**, so the NDB API result-parse path is
+   unchanged (no new wire format / `AggResItem` change — contrast string
+   MIN/MAX).  AlignedType returns BIGINT (not BIGUNSIGNED — there is no such
+   aligned type; the register's `is_unsigned` flag carries signedness).
+
+2. **Phase 5 (GROUP-BY-over-DATE) needs NO kernel change.**  `initGBTypes`'s
+   local-column path reads `typeId` / `maxBytes` / `cs` / `cmpFn` generically
+   from the AttributeDescriptor — for DATE that yields `cmpFn = cmpDate`,
+   `cs = nullptr`.  `GBHashTable::hashKeyFull` then hashes the raw 3 bytes
+   (`rondb_xxhash_std`, deterministic across nodes — low redistribution risk,
+   unlike the D26 charset case) and `findInBucket` compares via `cmpDate`.
+   Shape B's recorded "Failed writing aggregation program" was the **same**
+   `NdbAggregator::TypeSupported(Date)` gate fixed in Phase 2, not a GROUP BY
+   gap.  So Shape B is expected to work on Phases 1-4 alone; the explicit GB
+   DATE arm is only added if the 5-topology record shows a failure.
+
+Display tag (Phases 3-4): the virt-table MIN/MAX-of-DATE column is typed
+**Bigunsigned** on the wire (8 bytes — matches the kernel emit and re-agg);
+the DATE *display* is recovered at the top level via
+`ResultPrinter::ColumnMetadata::is_date`, derived from the source column the
+existing `resolve_cte_output_columns_for_scope` already plumbs back through
+the CTE MIN/MAX (`orders.o_orderdate`).  The printer unpacks the Bigunsigned
+`w` → `YYYY-MM-DD`.  Limitation: only a single-CTE MIN/MAX recovers the date
+tag (a chained CTE-of-CTE re-aggregation resolves the source as Bigunsigned,
+losing the tag — acceptable for v1).  A directly *projected* DATE virt-column
+(non-aggregate passthrough / GROUP-BY-key projection) is not date-tagged yet
+either; no recorded D17 shape needs it.
+
+### MTR cases re-enabled (Phase 6)
+- `body_agg.inc` **agg-d17a** — Shape A: `MIN/MAX(o_orderdate)` re-aggregated
+  through CTE_LOOKUP (the recorded shape).
+- `body_agg.inc` **agg-d17b** — `MIN/MAX(l_shipdate)` re-aggregated over a
+  CTE_SCAN root.
+- `body_agg.inc` **agg-d17c** — Shape B core: CTE body `GROUP BY o_orderdate`
+  (DATE group key, ~1000 groups → crosses the 256-row batch boundary),
+  scalar main `MIN(d)/MAX(d)/SUM(t)/COUNT(*)`.
+- `body_index.inc` **index-9** stays disabled but **re-tagged D9** (the
+  residual is the DATE *index-scan root*, not D17).
+
+### Original (now historical) plan follows.
 
 ## Goal & scope
 
