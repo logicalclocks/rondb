@@ -5723,3 +5723,38 @@ JOIN sums ON sums.k = c.c_custkey
 WHERE sums.k >= 100 AND sums.t > 50000
 GROUP BY sums.k|
 k	SUM(sums.t)
+
+=== filter-like (probe): LIKE on VARCHAR c_mktsegment in CTE-body WHERE ===
+== Query ==
+WITH segs AS (
+  SELECT c_nationkey AS k, COUNT(*) AS n
+  FROM customer WHERE c_mktsegment LIKE 'A%' GROUP BY c_nationkey)
+SELECT segs.k, SUM(segs.n) AS sn
+FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH segs AS (
+SELECT c_nationkey AS k, COUNT(*) AS n
+FROM customer WHERE c_mktsegment LIKE 'A%' GROUP BY c_nationkey)
+SELECT segs.k, SUM(segs.n) AS sn
+FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k|
+k	sn
+0	12
+10	12
+15	12
+20	12
+5	12
+
+=== filter-between (probe): BETWEEN in CTE-body WHERE is rejected ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> WITH sums AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders WHERE o_totalprice BETWEEN 5000 AND 6000 GROUP BY o_custkey) SELECT sums.k, SUM(sums.t) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+!                                                                                              ^^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.

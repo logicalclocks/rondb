@@ -815,26 +815,45 @@ GROUP BY sums.k|
 # See findings/filter.md.
 # =====================================================================
 
-# NEXT-PHASE: BETWEEN in CTE-body WHERE — UNCERTAIN (matrix: BETWEEN is a probe).
-#   WITH sums AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#     FROM orders WHERE o_totalprice BETWEEN 5000 AND 6000 GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.t)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+# filter-like (probe→SUPPORTED): LIKE on VARCHAR in a CTE-body WHERE.
+# apply_filter routes T_LIKE → apply_filter_like (NdbScanFilter COND_LIKE), so
+# this works end-to-end.  'A%' matches 'AUTOMOBILE'.  QUERY_FILE (string literal).
+--echo
+--echo === filter-like (probe): LIKE on VARCHAR c_mktsegment in CTE-body WHERE ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_filter_like.sql
+--write_file $QUERY_FILE
+WITH segs AS (
+  SELECT c_nationkey AS k, COUNT(*) AS n
+  FROM customer WHERE c_mktsegment LIKE 'A%' GROUP BY c_nationkey)
+SELECT segs.k, SUM(segs.n) AS sn
+FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH segs AS (
+  SELECT c_nationkey AS k, COUNT(*) AS n
+  FROM customer WHERE c_mktsegment LIKE 'A%' GROUP BY c_nationkey)
+SELECT segs.k, SUM(segs.n) AS sn
+FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k|
 
-# NEXT-PHASE: IN-list in CTE-body WHERE — UNCERTAIN (matrix: IN(...) is a probe).
+# filter-between (probe→REJECTED): BETWEEN is a reserved keyword in RonSQL with
+# no grammar rule, so it cleanly rejects with a syntax error.  Rejection-assert.
+--echo
+--echo === filter-between (probe): BETWEEN in CTE-body WHERE is rejected ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders WHERE o_totalprice BETWEEN 5000 AND 6000 GROUP BY o_custkey) SELECT sums.k, SUM(sums.t) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
+
+# NEXT-PHASE: IN-list in CTE-body WHERE — needs feature work, not cheap.
+#   apply_filter has no T_IN case and simplify_ce does not expand IN→OR, so
+#   `col IN (a,b,c)` in a CTE-body WHERE is not handled.  To support: expand
+#   T_IN to an OR-chain of equalities in simplify_ce (then apply_filter's
+#   existing T_OR/T_EQUALS handle it).
 #   WITH sums AS (
 #     SELECT o_custkey AS k, COUNT(*) AS n
 #     FROM orders WHERE o_shippriority IN (0,2,4) GROUP BY o_custkey)
 #   SELECT sums.k, SUM(sums.n)
 #   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
-
-# NEXT-PHASE: LIKE on VARCHAR in CTE-body WHERE — UNCERTAIN (matrix: LIKE is a probe).
-#   WITH segs AS (
-#     SELECT c_nationkey AS k, COUNT(*) AS n
-#     FROM customer WHERE c_mktsegment LIKE 'A%' GROUP BY c_nationkey)
-#   SELECT segs.k, SUM(segs.n)
-#   FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k;
 
 # NEXT-PHASE: string column-vs-column in CTE-body WHERE — only signed-int
 #   col-vs-col is supported (matrix).  Two CHAR cols compared:

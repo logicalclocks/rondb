@@ -18,18 +18,19 @@
 #   scan CRASHES (D6) and is NEVER used as a CTE_LOOKUP child — lineitem
 #   aggregates are exercised via the CTE_SCAN root form instead.
 #
-# Aggregates exercised: COUNT(*) (NOT COUNT(<col>) — hangs, D2); SUM over
-# INTEGER columns only (o_shippriority, l_quantity, s_nationkey — NOT DECIMAL,
-# D1); MIN/MAX over every named width (TINYINT, SMALLINT UNSIGNED, MEDIUMINT,
-# INT, BIGINT UNSIGNED), DECIMAL scale-2 and scale-0, and CHAR / VARCHAR.
-# GROUP BY a single column and GROUP BY multiple columns.
+# Aggregates exercised: COUNT(*) and COUNT(<col>) (D2 verified — see agg-d2);
+# SUM over INTEGER columns (o_shippriority, l_quantity, s_nationkey) and over
+# DECIMAL (D1); MIN/MAX over every named width (TINYINT, SMALLINT UNSIGNED,
+# MEDIUMINT, INT, BIGINT UNSIGNED), DECIMAL scale-2 and scale-0, CHAR / VARCHAR,
+# and temporal DATE / YEAR / DATETIME / TIME (D17 + temporal, agg-d17a..h).
+# GROUP BY a single column and GROUP BY multiple columns.  Projection-only main
+# SELECT over a CTE_LOOKUP child also works now (D3 verified — see agg-d3).
 #
-# MIN/MAX over DATE (o_orderdate / l_shipdate) is now SUPPORTED (D17, see
-# agg-d17a/b below).  Probes (projection-only-over-CTE_LOOKUP hang, COUNT(col)
-# hang, the l_orderkey-under-orders crash, AVG, COUNT(DISTINCT), GROUP BY
-# expression, post-aggregation SELECT expressions, FLOAT/DOUBLE SUM) are
-# recorded below as NEXT-PHASE-disabled comment blocks and in
-# findings/agg.md — they do NOT run.
+# Probes recorded as NEXT-PHASE-disabled comment blocks (do NOT run): the
+# l_orderkey-under-orders crash, AVG, COUNT(DISTINCT), GROUP BY expression,
+# post-aggregation SELECT expressions, and SUM over FLOAT/DOUBLE (verified
+# not strict-diff-testable — floating-point summation is non-associative, so
+# RonSQL's partial-sum order yields different low-order ULPs than mysql).
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -56,13 +57,25 @@ DELIMITER |;
 # separate D1 limitation (SUM over DECIMAL not yet supported); its MIN/MAX
 # coverage is agg-08/09.  See findings/_discovery_log.md (D15, D1).
 
-# NEXT-PHASE (DISABLED — HANG, D2): COUNT(<column>) (here the nullable o_clerk)
-# in a CTE body HANGS RonSQL/RDRS (never returns).  COUNT(*) in the same shape
-# is fine.  Disabled so the suite stays runnable.  See findings/agg.md (agg-02).
-# Repro:
-#   WITH ord AS (SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
-#                FROM orders GROUP BY o_custkey)
-#   SELECT SUM(ord.n_all), SUM(ord.n_clerk) FROM customer AS c JOIN ord ON ord.k = c.c_custkey;
+# agg-d2 (D2 verify): COUNT(<column>) in a CTE body, here the nullable o_clerk.
+# Recorded as a HANG during the original parallel discovery (against a stale
+# rdrs2/ndbmtd, same class as D19/D20 which re-verified green).  Re-enabled to
+# verify on fresh binaries.  COUNT(col) skips NULLs (kernel Count checks
+# is_null); COUNT(*) counts all rows.
+--echo
+--echo === agg-d2 (D2): COUNT(*) + COUNT(nullable col) in CTE body, re-aggregated ===
+let $QUERY=
+WITH ord AS (SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+             FROM orders GROUP BY o_custkey)
+SELECT SUM(ord.n_all) AS sa, SUM(ord.n_clerk) AS sc
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ord AS (SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+             FROM orders GROUP BY o_custkey)
+SELECT SUM(ord.n_all) AS sa, SUM(ord.n_clerk) AS sc
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey|
 
 # =====================================================================
 # MIN/MAX type coverage — one CTE per width, joined to its SMALL parent so the
@@ -380,14 +393,26 @@ SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li;|
 WITH li AS (SELECT l_partkey AS k, SUM(l_quantity) AS sq, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx
             FROM lineitem GROUP BY l_partkey)
 SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li|
-# NEXT-PHASE (DISABLED — HANG, D3): projection-only main SELECT over a CTE_LOOKUP
-# child (selecting CTE columns without wrapping them in a main aggregate) HANGS
-# RonSQL/RDRS (never returns).  Same class as the COUNT(col) hang (D2).  Every
-# type-coverage case above was converted to an AGGREGATING main; this one probe
-# documents the gap.  See findings/_discovery_log.md (D3).
-#   WITH nat AS (SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
-#                FROM nation GROUP BY n_regionkey)
-#   SELECT nat.rk, nat.mn, nat.mx, nat.n FROM region AS r JOIN nat ON nat.rk = r.r_regionkey;
+# agg-d3 (D3 verify): projection-only main SELECT over a CTE_LOOKUP child
+# (selecting CTE columns without wrapping them in a main aggregate).  Recorded
+# as a HANG during the original parallel discovery; Phase I.8 since added
+# non-aggregating real_table JOIN cte projection support, so re-verify.
+--echo
+--echo === agg-d3 (D3): projection-only main SELECT over a CTE_LOOKUP child ===
+let $QUERY=
+WITH nat AS (SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn,
+                    MAX(n_nationkey) AS mx, COUNT(*) AS n
+             FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r JOIN nat ON nat.rk = r.r_regionkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH nat AS (SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn,
+                    MAX(n_nationkey) AS mx, COUNT(*) AS n
+             FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r JOIN nat ON nat.rk = r.r_regionkey|
 
 # D1 (SUM over a DECIMAL column in a CTE body) is now supported.  The kernel
 # widens DECIMAL -> BIGINT (scale==0) or DOUBLE (scale>0) on load via
@@ -589,17 +614,21 @@ SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
 #              FROM orders GROUP BY o_custkey)
 #   SELECT x.k, SUM(x.t) + 1 FROM x GROUP BY x.k;
 
-# NEXT-PHASE: SUM over FLOAT (lineitem.l_discount) — matrix UNCERTAIN (FLOAT SUM
-#   may format differently between engines).  MIGHT pass; orchestrator verifies.
+# NEXT-PHASE (probe VERIFIED — not strict-diff testable): SUM over FLOAT /
+# DOUBLE.  Floating-point addition is non-associative, and RonSQL re-sums
+# per-node partial sums in a different order than the mysql server's row-by-row
+# SUM, so the low-order ULPs differ across engines (and across topologies, as
+# fragment/partial-sum order changes).  Verified: SUM(l_tax DOUBLE) gave
+# 104.92000000000027 (mysql) vs 104.92000000000006 (RonSQL); SUM(l_discount
+# FLOAT) happened to match on the base topology but is equally fragile.  This
+# is correct arithmetic on both sides — just not bit-identical — so it can't be
+# a strict-diff value test.  Left disabled (would need a tolerant/ROUND compare).
 #   WITH x AS (SELECT l_orderkey AS k, SUM(l_discount) AS sd
 #              FROM lineitem GROUP BY l_orderkey)
-#   SELECT SUM(x.sd) FROM x;
-
-# NEXT-PHASE: SUM over DOUBLE (lineitem.l_tax) — matrix UNCERTAIN (DOUBLE SUM
-#   may format differently between engines).  MIGHT pass; orchestrator verifies.
+#   SELECT SUM(x.sd) AS ssd FROM x;
 #   WITH x AS (SELECT l_orderkey AS k, SUM(l_tax) AS stx
 #              FROM lineitem GROUP BY l_orderkey)
-#   SELECT SUM(x.stx) FROM x;
+#   SELECT SUM(x.stx) AS sstx FROM x;
 
 DELIMITER ;|
 

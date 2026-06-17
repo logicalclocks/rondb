@@ -1,6 +1,28 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
+=== agg-d2 (D2): COUNT(*) + COUNT(nullable col) in CTE body, re-aggregated ===
+== Query ==
+WITH ord AS (SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+FROM orders GROUP BY o_custkey)
+SELECT SUM(ord.n_all) AS sa, SUM(ord.n_clerk) AS sc
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ord AS (SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+FROM orders GROUP BY o_custkey)
+SELECT SUM(ord.n_all) AS sa, SUM(ord.n_clerk) AS sc
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey|
+sa	sc
+1500	1286
+
 === agg-03: MIN/MAX over TINYINT (nation.n_nationkey), grouped by region ===
 == Query ==
 WITH nat AS (
@@ -412,6 +434,34 @@ FROM lineitem GROUP BY l_partkey)
 SELECT COUNT(*), SUM(li.sq), MIN(li.mn), MAX(li.mx) FROM li|
 COUNT(*)	SUM(li.sq)	MIN(li.mn)	MAX(li.mx)
 100	76500	1	50
+
+=== agg-d3 (D3): projection-only main SELECT over a CTE_LOOKUP child ===
+== Query ==
+WITH nat AS (SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn,
+MAX(n_nationkey) AS mx, COUNT(*) AS n
+FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r JOIN nat ON nat.rk = r.r_regionkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH nat AS (SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn,
+MAX(n_nationkey) AS mx, COUNT(*) AS n
+FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r JOIN nat ON nat.rk = r.r_regionkey|
+rk	mn	mx	n
+0	0	20	5
+1	1	21	5
+2	2	22	5
+3	3	23	5
+4	4	24	5
 
 === agg-d1a (D1): SUM over scale-2 DECIMAL (o_totalprice) re-aggregated through CTE_LOOKUP ===
 == Query ==
