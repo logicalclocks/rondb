@@ -1,8 +1,7 @@
 # RONDB-1062 — Deadlock error enrichment (plan)
 
-Status: **Phases A + B + C DONE (2026-06).** Core feature complete end-to-end
-(DBACC → DBTC → NDB API). Remaining: **Phase D** (mysqld/ha_ndbcluster warning,
-optional) and **Phase E** (tests).
+Status: **Phases A + B + C + D DONE (2026-06).** Feature complete end-to-end
+(DBACC → DBTC → NDB API → mysqld SHOW WARNINGS). Remaining: **Phase E** (tests).
 
 **Decisions locked (2026-06):** transport = **Option B** (new version-gated signal
 `GSN_TC_DEADLOCK_REP`); API exposure = **additive accessors** (no new `NdbError`
@@ -99,6 +98,25 @@ methods. No `NdbError`/`details` change; fully additive.
 - **Compat** — gated end to end on `NDBD_DEADLOCK_DETAIL_VERSION`: an old API never
   receives the signal; a new API talking to an old data node simply never caches
   anything, so `wasDeadlock()` returns false and the others return empty.
+
+## Phase D — DONE (mysqld SHOW WARNINGS)
+
+ha_ndbcluster now surfaces the detail in `SHOW WARNINGS` alongside the existing 1205
+(`ER_LOCK_WAIT_TIMEOUT`) error, without changing the error itself.
+
+- **`ndb_push_deadlock_warning(THD*, NdbTransaction*)`** (static helper in
+  `ha_ndbcluster.cc`, right after `ndb_to_mysql_error`) — no-op unless
+  `trans->wasDeadlock()`. Builds a message from `getDeadlockOperation()->getTableName()`
+  (the victim op's table, the readable bit — no fragile id→name lookup needed) plus the
+  deduped table ids from `getDeadlockTableIds()`, and pushes it via
+  `push_warning_printf(... ER_GET_TEMPORARY_ERRMSG ...)` carrying the NDB error code
+  (266/296). Example: *"Got temporary error 266 'Deadlock detected by NDB; victim
+  operation on table 't1'; tables involved (id): 12, 15' from NDB"*.
+- **Hook** — called from `ha_ndbcluster::ndb_err(trans)` guarded by
+  `res == HA_ERR_LOCK_WAIT_TIMEOUT`. `ndb_err` is the central transaction-error
+  translator (~25 call sites incl. the scan/next-result read paths), so **both** the
+  key-op (266) and scan (296) deadlock cases are covered. A plain lock-wait timeout
+  pushes nothing (`wasDeadlock()` false).
 
 ## Goal
 
@@ -213,8 +231,9 @@ populated after a 266/296 abort from a *proactively detected* deadlock.
 - **C. DONE.** API receive + cache + additive accessors (`wasDeadlock()`,
   `getDeadlockTableIds()`, `getDeadlockOperation()`). See the "Phase C — DONE" section
   above.
-- **D.** ha_ndbcluster (mysqld): surface in the `ER_LOCK_WAIT_TIMEOUT` warning/diagnostic
-  (map tableId→name) — optional.
+- **D. DONE.** ha_ndbcluster (mysqld): `ndb_push_deadlock_warning` pushes the detail to
+  SHOW WARNINGS from `ndb_err` (covers key-op + scan). Uses the victim op's table name
+  + raw table ids. See the "Phase D — DONE" section above.
 - **E.** Tests: extend `ndb_deadlock_*` and `testDeadlock` to assert the real-deadlock flag,
   correct table ids, and victim-op identification; for the mysqld path check SHOW WARNINGS.
 
@@ -236,18 +255,17 @@ populated after a 266/296 abort from a *proactively detected* deadlock.
 
 ## Resume note
 
-Phases A + B + C implemented — the feature works end to end (DBACC detects the
+Phases A + B + C + D implemented — the feature works end to end (DBACC detects the
 contended table → DBTC assembles + sends `GSN_TC_DEADLOCK_REP` → the NDB API caches it
-and exposes `wasDeadlock()` / `getDeadlockTableIds()` / `getDeadlockOperation()`).
+and exposes `wasDeadlock()` / `getDeadlockTableIds()` / `getDeadlockOperation()` →
+ha_ndbcluster surfaces it in SHOW WARNINGS).
 
 **Remaining (optional, not started):**
-- **Phase D** — ha_ndbcluster (mysqld): surface the detail in the
-  `ER_LOCK_WAIT_TIMEOUT` warning (map tableId→name via the dictionary). Entry point:
-  where ha_ndbcluster maps NDB error 266/296 to the MySQL error / pushes a warning;
-  call the new `NdbTransaction` accessors there.
-- **Phase E** — tests: extend `ndb_deadlock_*` (mysqld path: SHOW WARNINGS) and
-  `testDeadlock` (NDB-API path: assert `wasDeadlock()`, table ids, and victim-op
-  identification). The deterministic scan↔scan and key-op recipes already exist.
+- **Phase E** — tests: extend `ndb_deadlock_*` (mysqld path: assert SHOW WARNINGS shows
+  the "Deadlock detected by NDB …" line) and `testDeadlock` (NDB-API path: assert
+  `wasDeadlock()`, table ids, and victim-op identification). The deterministic scan↔scan
+  and key-op recipes already exist; the data node must be built with the new version so
+  the gate (`NDBD_DEADLOCK_DETAIL_VERSION`) opens.
 
 The detection/abort machinery this builds on is described in `design.md` (sections
 14–16).
