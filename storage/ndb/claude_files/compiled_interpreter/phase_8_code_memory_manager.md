@@ -134,11 +134,25 @@ Sharded refcounted hash so identical bytecode reuses one compiled blob.
   per-program lifecycle (which frees, and the `progcache` acquire/release)
   is Slice 3, so production code memory still accumulates until then (now
   in the shared 16 MB pool rather than per-block 1 MB).
-- **3 — DBTUP / agg** switch their compiles to `progcache` acquire/release
-  and wire the program-death sites: scan filter `storedProc`
-  (`DbtupExecQuery.cpp:1106` set / `DbtupStoredProcDef.cpp:188` reset), agg
-  `setJitEntry` on `AggInterpreter` / `JoinAggInterpreter` /
-  `DblqhProxy::m_leaf_programs[i]`. Drop the per-block `m_jit_arena`s.
+- **3a — scan filter through `progcache`.** ✅ done — the first path that
+  actually reclaims code memory. `DbtupJitGlue` owns a node-global
+  scan-filter cache (compile cb = `bridge_translate_scan_filter` +
+  `jit1_compile`; destroy cb = `jit1_free`; the product carries the
+  program's `reject_code`, read on every use). `dbtup_jit_compile_scan_filter`
+  now `acquire`s (keyed on the exact filter bytecode words — identical
+  filters share one blob), dropped its `arena` param, and returns the cache
+  handle; `dbtup_jit_release_scan_filter` releases it. `storedProc` gains
+  `m_jit_filter_cache_handle`, set at compile (`DbtupExecQuery`), reset at
+  `scanProcedure` init, and **released at `deleteScanProcedure`** (the scan
+  has finished — no row is mid-execution on the blob). `ndb_jit_progcache`
+  linked into `ndbblocks`. Tested via `rondb_jit_scan_filter_canary`.
+- **3b — agg paths through `progcache`** (join-agg `DblqhProxy`
+  `m_leaf_programs[i]`, standalone `PushdownInterpreter` →
+  `AggInterpreter`): acquire/release + store the handle on the owner,
+  release at teardown. Pending.
+- **3c — remove dead per-block `m_jit_arena`s** (`DbtupGen.cpp`, `DblqhProxy`
+  ctor/dtor, `getJitArena`) + unused `arena` params / `NdbJitArena`
+  fwd-decls. Pending.
 - **4 — RonSQL PREPARE** pinned acquire at prepare / release at deallocate.
 
 ## Cross-thread publication (orthogonal, pre-existing)

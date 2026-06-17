@@ -65,6 +65,11 @@ ENDIF()
 IF(TARGET ndb_jit_arena)
   list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_arena)
 ENDIF()
+# RONDB-1056 Phase 8: program-reuse cache (DbtupJitGlue acquires/releases
+# compiled scan filters through it).
+IF(TARGET ndb_jit_progcache)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_progcache)
+ENDIF()
 
 ADD_STATIC_LIBRARY(ndbblocks
   LocalProxy.cpp

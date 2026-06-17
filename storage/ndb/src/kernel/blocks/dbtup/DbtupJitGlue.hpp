@@ -165,25 +165,37 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
                        Uint32              n_agg_results,
                        JoinAggInterpreter *join_agg = nullptr);
 
-/* RONDB-1056 Phase 7 — SCAN_FRAGREQ scan-filter compile + invoke.
+/* RONDB-1056 Phase 7/8 — SCAN_FRAGREQ scan-filter compile + invoke.
  *
- * dbtup_jit_compile_scan_filter translates a scan-filter interpreter
- * program (NDB wire format — the RexecRegionLen region of a scan's
- * interpreted program) via ndb_jit_bridge_translate_scan_filter and
- * compiles it with jit1_compile. Returns the JIT entry as a void*
- * (the caller casts to JitEntry), or nullptr if the program is not
- * JIT-eligible or compilation failed — in which case the caller runs
- * the interpreter (interpreterNextLab) as before. Called once per
- * prepared scan program at scan setup.
+ * dbtup_jit_compile_scan_filter acquires the compiled form of a
+ * scan-filter interpreter program (NDB wire format — the RexecRegionLen
+ * region) from the node-global program-reuse cache, keyed on the exact
+ * bytecode words: identical filters share one compiled blob. On a miss
+ * the cache translates via ndb_jit_bridge_translate_scan_filter and
+ * compiles with jit1_compile into the code-memory manager. Returns the
+ * JIT entry as a void* (the caller casts to JitEntry), or nullptr if the
+ * program is not JIT-eligible / compilation failed / OOM — in which case
+ * the caller runs the interpreter (interpreterNextLab) as before. Called
+ * once per stored procedure at scan setup.
  *
  * out_reject_code (nullable) receives the program's EXIT_REFUSE code so
  * the per-row path can TUPKEY_abort with the program's actual code
  * instead of a hardcoded one (matching the interpreter). Set to 0 on any
- * failure/early return, or for a filter with no reject path. */
-void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
-                                    const Uint32 *filter_prog,
+ * failure/early return, or for a filter with no reject path.
+ *
+ * out_cache_handle (nullable) receives the opaque cache handle (NjpEntry*)
+ * the caller must pass to dbtup_jit_release_scan_filter when the stored
+ * procedure is freed. Set to nullptr on failure. */
+void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
                                     Uint32        n_words,
-                                    Uint32       *out_reject_code);
+                                    Uint32       *out_reject_code,
+                                    void        **out_cache_handle);
+
+/* Release a scan-filter program acquired by dbtup_jit_compile_scan_filter.
+ * Drops the program's reuse-cache refcount; the compiled blob and its
+ * code-memory slot are freed when the last holder releases. Safe with
+ * nullptr. */
+void dbtup_jit_release_scan_filter(void *cache_handle);
 
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The

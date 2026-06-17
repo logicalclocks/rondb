@@ -61,11 +61,21 @@ Recommended order:
      by the kernel** → programs still accumulate (in the shared 16 MB pool)
      until Slice 3 wires the lifecycle. Regression net: existing
      `coldcall_tests`/`admission_tests`/`bridge_tests`.
-   - **Slice 3** — DBTUP/agg switch to `progcache` acquire/release; wire
-     the program-death sites (scan filter `storedProc` set
-     `DbtupExecQuery.cpp:1106` / reset `DbtupStoredProcDef.cpp:188`; agg
-     `setJitEntry` on `AggInterpreter`/`JoinAggInterpreter`/
-     `DblqhProxy::m_leaf_programs[i]`); drop the per-block `m_jit_arena`s.
+   - **Slice 3a — scan filter through `progcache` DONE (first path that
+     frees code memory).** `DbtupJitGlue` owns a node-global scan-filter
+     cache (compile cb = bridge translate + `jit1_compile`; destroy cb =
+     `jit1_free`; product carries `reject_code`). `dbtup_jit_compile_scan_filter`
+     `acquire`s (keyed on filter bytecode words, identical filters dedup),
+     dropped its `arena` param, returns the handle;
+     `dbtup_jit_release_scan_filter` releases. `storedProc.m_jit_filter_cache_handle`
+     set at compile, reset at `scanProcedure`, **released at
+     `deleteScanProcedure`** (scan finished). `ndb_jit_progcache` linked into
+     `ndbblocks`. Test: `rondb_jit_scan_filter_canary`.
+   - **Slice 3b** — agg paths (join-agg `DblqhProxy::m_leaf_programs[i]`,
+     standalone `PushdownInterpreter`→`AggInterpreter`) through `progcache`:
+     acquire/release + store handle on owner + release at teardown.
+   - **Slice 3c** — remove dead per-block `m_jit_arena`s (`DbtupGen.cpp`,
+     `DblqhProxy` ctor/dtor, `getJitArena`) + unused `arena` params.
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
    always-on-if-eligible — no off switch; operability blocker).

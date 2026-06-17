@@ -1081,7 +1081,7 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
            * successful compile, so we never re-attempt per batch. */
           storedPtr.p->m_jit_filter_state = JIT_FILTER_INELIGIBLE;
           const Uint32 *cache = storedPtr.p->cachedLinearAttrInfo;
-          if (cache != nullptr && getJitArena() != nullptr) {
+          if (cache != nullptr) {
             const Uint32 rinit = cache[0];   // RinitReadLen
             const Uint32 rexec = cache[1];   // RexecRegionLen (the filter)
             const Uint32 rfupd = cache[2];   // RfinalUpdateLen
@@ -1101,11 +1101,13 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
             if (rexec > 0 && rfupd == 0 &&
                 (Uint64(5) + rinit + rexec) <= storedPtr.p->cachedLinearLen) {
               Uint32 reject_code = 0;
+              void *cache_handle = nullptr;
               void *entry = dbtup_jit_compile_scan_filter(
-                  getJitArena(), &cache[5 + rinit], rexec, &reject_code);
+                  &cache[5 + rinit], rexec, &reject_code, &cache_handle);
               if (entry != nullptr) {
                 jam();
                 storedPtr.p->m_jit_filter_entry = entry;
+                storedPtr.p->m_jit_filter_cache_handle = cache_handle;
                 /* The program's EXIT_REFUSE code (theInstruction >> 16,
                  * captured by the bridge). If the filter had no reject path
                  * the bridge returns 0, which is unused (no row rejects). */

@@ -30,6 +30,7 @@
 #include <RefConvert.hpp>
 #include <pc.hpp>
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"   /* dbtup_jit_release_scan_filter (Phase 8) */
 #include "AggInterpreter.hpp"
 #include "include/my_byteorder.h"
 
@@ -132,6 +133,17 @@ void Dbtup::deleteScanProcedure(Signal *signal, Operationrec *regOperPtr) {
       releaseCopyProcedure(storedPtr);
     } else {
       /* ZSCAN_PROCEDURE */
+      /* RONDB-1056 Phase 8: release this stored procedure's reference to
+       * its compiled scan filter. Drops the reuse-cache refcount; the
+       * code-memory slot is reclaimed when the last holder releases. The
+       * scan has finished by the time a stored procedure is deleted, so no
+       * row is executing the compiled blob here. */
+      if (storedPtr.p->m_jit_filter_cache_handle != nullptr) {
+        dbtup_jit_release_scan_filter(storedPtr.p->m_jit_filter_cache_handle);
+        storedPtr.p->m_jit_filter_cache_handle = nullptr;
+        storedPtr.p->m_jit_filter_entry = nullptr;
+        storedPtr.p->m_jit_filter_state = JIT_FILTER_UNTRIED;
+      }
       if (storedPtr.p->cachedLinearAttrInfo != nullptr) {
         lc_ndbd_pool_free(storedPtr.p->cachedLinearAttrInfo);
         storedPtr.p->cachedLinearAttrInfo = nullptr;
@@ -186,6 +198,7 @@ void Dbtup::scanProcedure(Signal* signal,
    * a new scan procedure is (re)initialised. */
   storedPtr.p->m_jit_filter_state = JIT_FILTER_UNTRIED;
   storedPtr.p->m_jit_filter_entry = nullptr;
+  storedPtr.p->m_jit_filter_cache_handle = nullptr;
   storedPtr.p->m_jit_filter_reject_code = 0;
 
   set_trans_state(regOperPtr, TRANS_IDLE);

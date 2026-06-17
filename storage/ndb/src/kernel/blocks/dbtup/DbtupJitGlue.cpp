@@ -22,10 +22,12 @@
 #include <ndb_global.h>
 #include <my_byteorder.h>      /* sint8korr */
 
+#include <cstdlib>             /* malloc / free for cache products */
 #include <cstring>
 
 extern "C" {
 #include "jit/ndb_jit_bridge.h"   /* ndb_jit_bridge_translate_scan_filter */
+#include "jit/jit_progcache.h"    /* program-reuse cache (Phase 8 Slice 3) */
 }
 
 #ifndef ZAGG_MATH_OVERFLOW
@@ -417,47 +419,119 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
 }
 
 /* ------------------------------------------------------------------ */
-/* Phase 7 — scan-filter compile + per-row invoke.                    */
+/* Phase 7/8 — scan-filter compile (reuse cache) + per-row invoke.    */
 /* ------------------------------------------------------------------ */
 
-void *dbtup_jit_compile_scan_filter(NdbJitArena *arena,
-                                    const Uint32 *filter_prog,
-                                    Uint32        n_words,
-                                    Uint32       *out_reject_code) {
-  if (out_reject_code != nullptr) {
-    *out_reject_code = 0;
-  }
-  if (arena == nullptr || filter_prog == nullptr || n_words == 0) {
-    return nullptr;
-  }
+/* A compiled scan filter's product carried by the reuse cache: the
+ * jit1 handle (freed on eviction) plus the program's EXIT_REFUSE reject
+ * code, which the per-row reject path needs on every use (hit or miss). */
+struct ScanFilterProduct {
+  Jit1Prog *jp;
+  Uint32    reject_code;
+};
 
-  /* Stage 1: NDB scan-filter wire format -> normalized Program. The
-   * scan-filter bridge admits only the embedded attr-NULL-branch subset
-   * (BRANCH_ATTR_*_NULL / EXIT_OK / EXIT_REFUSE); linked ops and anything
-   * else return != JIT_BRIDGE_OK and we leave the scan on the interpreter.
-   * reject_code captures the program's EXIT_REFUSE code so the caller can
-   * TUPKEY_abort with the program's actual code, not a hardcoded one. */
+/* Reuse-cache compile callback (a cache MISS). Translates the NDB
+ * scan-filter wire format and compiles into the code-memory manager.
+ * The bridge admits only the supported subset (BRANCH_ATTR_* /
+ * comparison predicates / EXIT_OK / EXIT_REFUSE); anything else returns
+ * != JIT_BRIDGE_OK and we refuse (-1) so the scan stays on the
+ * interpreter. Returns 0 and fills *out on success. */
+static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
+                                  uint32_t key_len, NdbJitProgItem *out) {
+  (void)ctx;
+  const Uint32 *prog = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 n_words = key_len / (Uint32)sizeof(Uint32);
   Program p;
   JitBridgeError berr;
   Uint32 reject_code = 0;
-  JitBridgeReason brc = ndb_jit_bridge_translate_scan_filter(
-      filter_prog, n_words, &p, &berr, &reject_code);
-  if (brc != JIT_BRIDGE_OK) {
+  if (ndb_jit_bridge_translate_scan_filter(prog, n_words, &p, &berr,
+                                           &reject_code) != JIT_BRIDGE_OK) {
+    return -1;
+  }
+  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
+  if (jp == nullptr) {
+    return -1;
+  }
+  ScanFilterProduct *sfp =
+      static_cast<ScanFilterProduct *>(malloc(sizeof(ScanFilterProduct)));
+  if (sfp == nullptr) {
+    jit1_free(jp);
+    return -1;
+  }
+  sfp->jp = jp;
+  sfp->reject_code = reject_code;
+  out->entry_fn = reinterpret_cast<void *>(jit1_entry(jp));
+  out->user = sfp;
+  return 0;
+}
+
+/* Reuse-cache destroy callback (last release of an entry): free the
+ * compiled blob's code-memory slot and the product. */
+static void scan_filter_destroy_cb(void *ctx, NdbJitProgItem *item) {
+  (void)ctx;
+  ScanFilterProduct *sfp = static_cast<ScanFilterProduct *>(item->user);
+  if (sfp != nullptr) {
+    jit1_free(sfp->jp);
+    free(sfp);
+  }
+}
+
+/* Node-global scan-filter reuse cache. Lazily created; C++11 magic-static
+ * init is thread-safe across LDM threads. Never destroyed (node-lived),
+ * matching the code-memory manager. */
+static NdbJitProgCache *scan_filter_cache() {
+  static NdbJitProgCache *cache = ndb_jit_progcache_create(
+      scan_filter_compile_cb, scan_filter_destroy_cb, /*cb_ctx=*/nullptr);
+  return cache;
+}
+
+void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
+                                    Uint32        n_words,
+                                    Uint32       *out_reject_code,
+                                    void        **out_cache_handle) {
+  if (out_reject_code != nullptr) {
+    *out_reject_code = 0;
+  }
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = nullptr;
+  }
+  if (filter_prog == nullptr || n_words == 0) {
+    return nullptr;
+  }
+  NdbJitProgCache *cache = scan_filter_cache();
+  if (cache == nullptr) {
     return nullptr;
   }
 
-  /* Stage 2: NDB-agnostic compile into the node-global code-memory
-   * manager (Slice 2 — the per-DBTUP arena is superseded; the `arena`
-   * parameter and its null-guard above are removed in Slice 3). */
-  Jit1Prog *jp =
-      jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
-  if (jp == nullptr) {
+  /* Acquire the compiled form, keyed on the exact bytecode words. On a
+   * hit this bumps the refcount and returns the shared blob; on a miss
+   * scan_filter_compile_cb translates + compiles. nullptr => not
+   * JIT-eligible / OOM => caller runs the interpreter. */
+  NdbJitProgItem item;
+  NjpEntry *handle = ndb_jit_progcache_acquire(
+      cache, reinterpret_cast<const uint8_t *>(filter_prog),
+      n_words * (Uint32)sizeof(Uint32), /*pinned=*/0, &item);
+  if (handle == nullptr) {
     return nullptr;
   }
+
+  const ScanFilterProduct *sfp =
+      static_cast<const ScanFilterProduct *>(item.user);
   if (out_reject_code != nullptr) {
-    *out_reject_code = reject_code;
+    *out_reject_code = sfp->reject_code;
   }
-  return reinterpret_cast<void *>(jit1_entry(jp));
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = handle;
+  }
+  return item.entry_fn;
+}
+
+void dbtup_jit_release_scan_filter(void *cache_handle) {
+  if (cache_handle == nullptr) {
+    return;
+  }
+  ndb_jit_progcache_release(scan_filter_cache(),
+                            static_cast<NjpEntry *>(cache_handle));
 }
 
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,

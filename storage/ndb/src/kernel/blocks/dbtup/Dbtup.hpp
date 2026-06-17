@@ -1757,6 +1757,12 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint8 m_jit_filter_state;
     Uint16 m_jit_filter_reject_code;
     void* m_jit_filter_entry;    // JitEntry, or nullptr
+    /* RONDB-1056 Phase 8: opaque program-reuse-cache handle (NjpEntry*)
+     * for the compiled filter. Held for this stored procedure's life and
+     * released in deleteScanProcedure, dropping the cache refcount (the
+     * code-memory slot is freed when the last holder releases). Adjacent
+     * to m_jit_filter_entry so the two pointers share alignment. */
+    void* m_jit_filter_cache_handle;  // NjpEntry*, or nullptr
     union {
       Uint32 nextPool;
       Uint32 nextList;
