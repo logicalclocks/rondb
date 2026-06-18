@@ -1,28 +1,31 @@
 #
 # Test 1: Tier B injection (vtype=5 = KEYINFO_SIGNAL_LENGTH) against
-#   API NodeId 192. Tier B is log-only - counters increment, no disconnect.
+#   API NodeId 192. Tier B is log-only - counter increments, no disconnect.
 #
-SELECT reporting_node_id, node_id, total_tier_a, total_tier_b,
-total_disconnects, current_window_count, last_violation,
-last_source_line
-FROM `ndbinfo`.`ndb$security_events`
-WHERE reporting_node_id=1 AND node_id=192;
-reporting_node_id	node_id	total_tier_a	total_tier_b	total_disconnects	current_window_count	last_violation	last_source_line
-1	192	0	1	0	1	keyinfo_signal_length_mismatch	0
+SELECT reporting_node_id, violation_id, count
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=5;
+reporting_node_id	violation_id	count
+1	5	1
 #
 # Test 2: Observation mode + Tier A injection (vtype=0 = UNEXPECTED_API_STATE).
 #   With the kill switch off, even a Tier A violation is counted and logged
-#   but produces no disconnect (total_disconnects stays 0).
+#   but produces no disconnect.
 #
-SELECT reporting_node_id, node_id, total_tier_a, total_tier_b,
-total_disconnects, current_window_count, last_violation,
-last_source_line
-FROM `ndbinfo`.`ndb$security_events`
-WHERE reporting_node_id=1 AND node_id=228;
-reporting_node_id	node_id	total_tier_a	total_tier_b	total_disconnects	current_window_count	last_violation	last_source_line
-1	228	1	0	0	1	unexpected_api_state	0
+SELECT reporting_node_id, violation_id, count
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=0;
+reporting_node_id	violation_id	count
+1	0	1
 #
-# Sanity: mysqld is still connected after both injections.
+# Test 3: Verify static violation catalog is queryable.
+#
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE violation_id=5;
+violation_id	tier	reason
+5	B	keyinfo_signal_length_mismatch
+#
+# Sanity: mysqld is still connected after all injections.
 #
 SELECT 1 AS still_connected;
 still_connected

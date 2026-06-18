@@ -49,6 +49,7 @@
 #include "../ndbcntr/Ndbcntr.hpp"
 
 #include "timer.hpp"
+#include <kernel/ViolationType.hpp>
 
 #define JAM_FILE_ID 362
 
@@ -660,80 +661,24 @@ class Qmgr : public SimulatedBlock {
 
   /**
    * Data node security (tiered_response_policy.md): QMGR receives malicious-
-   * signal reports from any block and owns the per-node counter state and the
+   * signal reports from any block and owns the per-violation counters and the
    * disconnect decision. Tier A → disconnect (gated by the kill switch); Tier B
-   * → count only (observability added in Phase 2). A Tier B report from a
-   * data-node sender is escalated to Tier A (override rule).
+   * → count and log only. A Tier B report from a data-node sender is escalated
+   * to Tier A (override rule). Time-series analysis is handled externally
+   * (Prometheus); no windowing or throttling state is kept here.
    */
   void execMALICIOUS_SIGNAL_REPORT(Signal *signal);
   void securityDisconnectNode(Signal *signal, Uint32 nodeId);
 
-  // Per-node sliding window: a single ring shared across all violation types
-  // (NOT per-type — that would multiply memory by the size of the violation
-  // catalog, which grows over time). 10 buckets x 30 s = 5 minute window.
-  static constexpr Uint32 NUM_SEC_WINDOW_BUCKETS = 10;
-  static constexpr Uint32 SEC_WINDOW_BUCKET_SECONDS = 30;
-
-  // Cluster-log emission throttle: at most one SECURITY_EVENT log line per node
-  // per this interval (Tier A always logs). Counters and the disconnect decision
-  // are NEVER throttled — only the log line, to prevent a Tier B flood from
-  // spamming the cluster log. Suppressed strikes are still reflected in the
-  // total/window counts of the next emitted line.
-  static constexpr Uint64 SEC_LOG_SUPPRESS_MS = 100;
-
-  // Per-node security state, indexed directly by node id. ~128 bytes/node.
-  // MAX_NODES_ID is the compile-time node-id ceiling (MAX_NODES itself is a
-  // runtime value and cannot size a member array). QMGR is a singleton, so this
-  // fixed array (~260 KB) is allocated once — no lazy/sparse allocation and thus
-  // no allocation-failure path. Per-violation-type detail is preserved in the
-  // cumulative counters and the SECURITY_EVENT cluster log, not the live window.
-  struct NodeSecurityState {
-    Uint64 totalTierA;          // cumulative Tier A strikes
-    Uint64 totalTierB;          // cumulative Tier B strikes
-    Uint64 totalDisconnects;    // times disconnected for a Tier A violation
-    Uint32 lastViolationType;   // ViolationType of most recent strike
-    Uint32 lastSourceLine;      // detection __LINE__ of most recent strike
-    NDB_TICKS lastStrikeTime;   // time of most recent strike
-    Uint32 windowCount[NUM_SEC_WINDOW_BUCKETS];  // strikes per 30 s slice
-    Uint32 windowEpoch[NUM_SEC_WINDOW_BUCKETS];  // epoch (sec-since-start/30) per slice
-    NDB_TICKS lastLogTicks;     // time the last SECURITY_EVENT line was emitted
-  };
-  NodeSecurityState m_nodeSecurity[MAX_NODES_ID + 1];
-
-  // Reference point for window epochs (set at construction). epoch =
-  // elapsed-seconds-since-start / SEC_WINDOW_BUCKET_SECONDS.
-  NDB_TICKS m_securityStartTicks;
+  // Per-violation-type cumulative strike counters. One Uint64 per catalog entry;
+  // ~240 bytes total. Zero-initialised at construction; never reset at runtime.
+  // Indexed by ViolationType enum value; out-of-range → VT_UNKNOWN bucket.
+  // Exposed via ndbinfo.security_violation_counts for Prometheus scraping.
+  Uint64 m_violationCounts[NUM_VIOLATION_TYPES];
 
   // Master kill switch (config EnableSecurityDisconnect). When false the cluster
   // is in observation mode: count/log everything, disconnect nothing.
   bool m_enableSecurityDisconnect;
-
-  // Tier C cluster-side safety net: per-API-node overload-count delta sampled
-  // ~once per second. If the delta exceeds the configured threshold, QMGR
-  // reports a Tier A VT_RATE_LIMIT_EXCEEDED against the offender. Detection uses
-  // `globalTransporterRegistry.get_overload_count(NodeId)` — a per-NodeId stress
-  // signal that increments when the receiver feels buffer pressure from that
-  // node. Applied to API/MGM senders only; data-node senders are excluded to
-  // avoid false-positive disconnects on legitimate replica-sync spikes.
-  static constexpr Uint64 SEC_RATE_CHECK_INTERVAL_MS = 1000;
-  Uint32 m_securityRateLimitOverloadsPerSec;  // 0 = Tier C disabled
-  NDB_TICKS m_lastRateCheckTicks;             // last per-second sample tick
-  // Last sampled cumulative overload_count per node. 0 means "not yet sampled"
-  // (delta-check is skipped on the first reading after init / reconnect).
-  Uint32 m_nodeOverloadSample[MAX_NODES_ID + 1];
-
-  // Sliding-window helpers (QmgrMain.cpp). recordWindowStrike adds 'strikes' to
-  // the current 30 s slice; currentWindowCount sums slices within the window.
-  Uint32 securityWindowEpoch(NDB_TICKS now) const;
-  void securityRecordWindowStrike(NodeSecurityState &s, Uint32 strikes,
-                                  NDB_TICKS now);
-  Uint32 securityCurrentWindowCount(const NodeSecurityState &s,
-                                    NDB_TICKS now) const;
-
-  // Tier C rate-check: invoked from timerHandlingLab when enough time has
-  // elapsed since the last sample (SEC_RATE_CHECK_INTERVAL_MS). No-op if the
-  // threshold (m_securityRateLimitOverloadsPerSec) is 0.
-  void securityRateCheck(Signal *signal, NDB_TICKS now);
   void checkStartInterface(Signal *signal, NDB_TICKS now);
   void failReport(Signal *signal, Uint16 aFailedNode, UintR aSendFailRep,
                   FailRep::FailCause failCause, Uint16 sourceNode);

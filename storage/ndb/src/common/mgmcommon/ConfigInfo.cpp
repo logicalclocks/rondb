@@ -912,15 +912,6 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "violations are counted and logged but no node is disconnected.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "true", "false", "true"},
 
-    {CFG_DB_SECURITY_RATE_LIMIT_OVERLOADS_PER_SEC,
-     "SecurityRateLimitClusterOverloadsPerSec", DB_TOKEN,
-     "Data node security (Tier C): per-API-node receive-overload events per "
-     "second that classify as a volumetric attack. Set to ~10x the empirical "
-     "peak observed in healthy operation. 0 (default) disables the safety net; "
-     "the primary Tier C defense is upstream rate-limits at the API node.",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
-     STR_VALUE(MAX_INT_RNIL)},
-
     /* End RonDB additions */
 
     {CFG_DB_TRANSACTION_MEM, "TransactionMemory", DB_TOKEN,

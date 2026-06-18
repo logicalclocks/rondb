@@ -9,43 +9,42 @@
 #   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious-signal report
 #   DUMP 9101 <0|1>                              - toggle EnableSecurityDisconnect
 #
-# We dump to data node 1 only, so the cluster-aggregated SQL view sums to a
-# deterministic 1 per strike.
+# We dump to data node 1 only, so per-violation counts are deterministic on node 1.
 #
 
 --echo #
 --echo # Test 1: Tier B injection (vtype=5 = KEYINFO_SIGNAL_LENGTH) against
---echo #   API NodeId 192. Tier B is log-only - counters increment, no disconnect.
+--echo #   API NodeId 192. Tier B is log-only - counter increments, no disconnect.
 --echo #
 --exec $NDB_MGM -e "1 dump 9100 192 5" >> $NDB_TOOLS_OUTPUT
 --sleep 1
 
-# Query the base table (ndb$security_events) — it carries last_violation /
-# last_source_line, which the aggregating SQL view drops (can't argmax under
-# GROUP BY). Filter by reporting_node_id=1 since we dumped only there.
-SELECT reporting_node_id, node_id, total_tier_a, total_tier_b,
-       total_disconnects, current_window_count, last_violation,
-       last_source_line
-FROM `ndbinfo`.`ndb$security_events`
-WHERE reporting_node_id=1 AND node_id=192;
+# Query the base table (ndb$security_violation_counts) for the injected violation.
+SELECT reporting_node_id, violation_id, count
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=5;
 
 --echo #
 --echo # Test 2: Observation mode + Tier A injection (vtype=0 = UNEXPECTED_API_STATE).
 --echo #   With the kill switch off, even a Tier A violation is counted and logged
---echo #   but produces no disconnect (total_disconnects stays 0).
+--echo #   but produces no disconnect.
 --echo #
 --exec $NDB_MGM -e "1 dump 9101 0" >> $NDB_TOOLS_OUTPUT
 --exec $NDB_MGM -e "1 dump 9100 228 0" >> $NDB_TOOLS_OUTPUT
 --sleep 1
 
-SELECT reporting_node_id, node_id, total_tier_a, total_tier_b,
-       total_disconnects, current_window_count, last_violation,
-       last_source_line
-FROM `ndbinfo`.`ndb$security_events`
-WHERE reporting_node_id=1 AND node_id=228;
+SELECT reporting_node_id, violation_id, count
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=0;
 
 --echo #
---echo # Sanity: mysqld is still connected after both injections.
+--echo # Test 3: Verify static violation catalog is queryable.
+--echo #
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE violation_id=5;
+
+--echo #
+--echo # Sanity: mysqld is still connected after all injections.
 --echo #
 SELECT 1 AS still_connected;
 

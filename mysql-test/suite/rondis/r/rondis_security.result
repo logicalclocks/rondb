@@ -10,7 +10,7 @@
 #
 # Test 2: SET value one byte over the limit (512001 bytes) must be rejected
 #
--ERR value too large (512000 bytes max)
+-ERR value too large
 #
 # Test 3: Server stays alive after rejected oversized SET
 #
@@ -27,11 +27,11 @@ PONG
 #
 # Test 5: SELECT 999 (out of range) must be rejected
 #
--ERR The database selected doesn't exist
+-ERR DB index is out of range
 #
 # Test 6: SELECT -1 (negative index) must be rejected
 #
--ERR The database selected doesn't exist
+-ERR DB index is out of range
 #
 # Test 7: SELECT non-integer argument must be rejected
 #

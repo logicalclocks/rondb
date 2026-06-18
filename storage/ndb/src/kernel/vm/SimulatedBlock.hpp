@@ -1233,20 +1233,18 @@ class alignas(NDB_CL) SimulatedBlock
                               const char *check = "") const;
 
   /**
-   * Data node security: report a detected malformed/malicious signal to QMGR
-   * instead of acting on it locally. QMGR owns all per-node security state and
-   * the disconnect decision (Tier A) or log-only handling (Tier B). The tier is
-   * derived here from the violation type (ViolationType.hpp) and travels in the
-   * report so rolling upgrades remain safe.
+   * Data node security: report a detected malformed/malicious signal to QMGR.
+   * QMGR owns the per-violation counters and the disconnect decision (Tier A)
+   * or log-only handling (Tier B). The violation type is the location key —
+   * grep VT_X to find the detection site; no line number is stored.
    *
-   * Contract: the caller MUST return immediately after this call — it reuses the
-   * passed signal's data buffer. Use the REPORT_MALICIOUS_SIGNAL macro so the
-   * detection line number is captured automatically.
+   * Contract: the caller MUST return immediately after this call — it reuses
+   * the passed signal's data buffer.
    *
    * Design reference: claude_files/data_node_security/tiered_response_policy.md
    */
   void reportMaliciousSignal(Signal *signal, NodeId offendingNodeId,
-                             Uint32 violationType, Uint32 sourceLine);
+                             Uint32 violationType);
 
  private:
   [[noreturn]] void signal_error(Uint32, Uint32, Uint32, const char *,
@@ -2915,14 +2913,6 @@ class SegmentedSectionGuard {
 
   ~SegmentedSectionGuard() { release(); }
 };
-
-/**
- * Data node security: report a malformed/malicious signal to QMGR, capturing the
- * detection line number automatically. The caller MUST return immediately after.
- * See SimulatedBlock::reportMaliciousSignal() and kernel/ViolationType.hpp.
- */
-#define REPORT_MALICIOUS_SIGNAL(signal, offendingNodeId, violationType) \
-  reportMaliciousSignal((signal), (offendingNodeId), (violationType), __LINE__)
 
 #undef JAM_FILE_ID
 

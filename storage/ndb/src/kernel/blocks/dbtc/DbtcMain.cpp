@@ -2463,7 +2463,7 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
       apiConnectptr.p->apiConnectstate);
 
   /* Disconnect signal sender — handles both API and data nodes */
-  REPORT_MALICIOUS_SIGNAL(signal, signalNodeId, VT_UNEXPECTED_API_STATE);
+  reportMaliciousSignal(signal, signalNodeId, VT_UNEXPECTED_API_STATE);
 
   /* Handle record owner */
   if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED &&
@@ -2489,7 +2489,7 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
         signalNodeId, acrOwnerNodeId);
 
     /* Disconnect record owner — handles both API and data nodes */
-    REPORT_MALICIOUS_SIGNAL(signal, acrOwnerNodeId, VT_APICONNECT_OWNERSHIP);
+    reportMaliciousSignal(signal, acrOwnerNodeId, VT_APICONNECT_OWNERSHIP);
   }
 #ifdef VM_TRACE
   dump_scan_state(apiConnectptr);
@@ -2634,7 +2634,7 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
      * Disconnect the offending node.
      */
     NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_START_FLAG_DURING_ABORT);
+    reportMaliciousSignal(signal, senderNodeId, VT_START_FLAG_DURING_ABORT);
     return;
   }
   case 3:
@@ -2858,7 +2858,7 @@ void Dbtc::execKEYINFO(Signal *signal) {
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
     NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_KEYINFO_INVALID_APICONNECT);
+    reportMaliciousSignal(signal, senderNodeId, VT_KEYINFO_INVALID_APICONNECT);
     return;
   }  // if
 
@@ -2869,7 +2869,7 @@ void Dbtc::execKEYINFO(Signal *signal) {
       NodeId ownerNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
       if (unlikely(senderNodeId != ownerNodeId)) {
         jam();
-        REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_KEYINFO_OWNERSHIP);
+        reportMaliciousSignal(signal, senderNodeId, VT_KEYINFO_OWNERSHIP);
         return;
       }
     }
@@ -2963,7 +2963,7 @@ void Dbtc::tckeyreq020Lab(Signal *signal, CacheRecordPtr const cachePtr,
   if (unlikely(signal->getLength() != KeyInfo::HeaderLength + wordsInSignal)) {
     jam();
     NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_KEYINFO_SIGNAL_LENGTH);
+    reportMaliciousSignal(signal, senderNodeId, VT_KEYINFO_SIGNAL_LENGTH);
     terrorCode = ZSIGNAL_ERROR;
     abortErrorLab(signal, apiConnectptr);
     return;
@@ -3009,7 +3009,7 @@ void Dbtc::execATTRINFO(Signal *signal) {
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
     NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_ATTRINFO_INVALID_APICONNECT);
+    reportMaliciousSignal(signal, senderNodeId, VT_ATTRINFO_INVALID_APICONNECT);
     return;
   }  // if
 
@@ -3022,7 +3022,7 @@ void Dbtc::execATTRINFO(Signal *signal) {
       NodeId ownerNodeId = refToNode(regApiPtr->ndbapiBlockref);
       if (unlikely(senderNodeId != ownerNodeId)) {
         jam();
-        REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_ATTRINFO_OWNERSHIP);
+        reportMaliciousSignal(signal, senderNodeId, VT_ATTRINFO_OWNERSHIP);
         return;
       }
     }
@@ -3045,7 +3045,7 @@ void Dbtc::execATTRINFO(Signal *signal) {
   if (unlikely(Tlength < 4)) {
     jam();
     NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_ATTRINFO_SIGNAL_TOO_SHORT);
+    reportMaliciousSignal(signal, senderNodeId, VT_ATTRINFO_SIGNAL_TOO_SHORT);
     return;
   }
   Tlength -= AttrInfo::HeaderLength;
@@ -3593,7 +3593,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     jam();
     releaseSections(handle);
     NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_TCKEYREQ_SIGNAL_TOO_SHORT);
+    reportMaliciousSignal(signal, senderNodeId, VT_TCKEYREQ_SIGNAL_TOO_SHORT);
     return;
   }
 
@@ -3609,7 +3609,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         releaseSections(handle);
         NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
-        REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_TCKEYREQ_KEYINFO_TOO_LARGE);
+        reportMaliciousSignal(signal, senderNodeId, VT_TCKEYREQ_KEYINFO_TOO_LARGE);
         return;
       }
     }
@@ -3618,7 +3618,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         releaseSections(handle);
         NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
-        REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_TCKEYREQ_ATTRINFO_TOO_LARGE);
+        reportMaliciousSignal(signal, senderNodeId, VT_TCKEYREQ_ATTRINFO_TOO_LARGE);
         return;
       }
     }
@@ -3648,7 +3648,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       ndbrequire(false);
     }
     releaseSections(handle);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_TCKEYREQ_INVALID_APICONNECT);
+    reportMaliciousSignal(signal, senderNodeId, VT_TCKEYREQ_INVALID_APICONNECT);
     return;
   }//if
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
@@ -3667,7 +3667,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       if (unlikely(signalSenderNodeId != ownerNodeId)) {
         jam();
         releaseSections(handle);
-        REPORT_MALICIOUS_SIGNAL(signal, signalSenderNodeId, VT_TCKEYREQ_OWNERSHIP);
+        reportMaliciousSignal(signal, signalSenderNodeId, VT_TCKEYREQ_OWNERSHIP);
         return;
       }
     }
@@ -3699,7 +3699,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       ndbrequire(false);
     }
     releaseSections(handle);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_TCKEYREQ_TABLE_OUT_OF_BOUNDS);
+    reportMaliciousSignal(signal, senderNodeId, VT_TCKEYREQ_TABLE_OUT_OF_BOUNDS);
     return;
   }
   localTabptr.p = &tableRecord[TtabIndex];
@@ -4410,7 +4410,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       jam();
       terrorCode = ZSIGNAL_ERROR;
       NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-      REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_REORG_INVALID_OP_TYPE);
+      reportMaliciousSignal(signal, senderNodeId, VT_REORG_INVALID_OP_TYPE);
       releaseAtErrorLab(signal, apiConnectptr);
       return;
     }
@@ -4462,7 +4462,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         terrorCode = ZSIGNAL_ERROR;
         NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-        REPORT_MALICIOUS_SIGNAL(signal, senderNodeId,
+        reportMaliciousSignal(signal, senderNodeId,
                                 VT_TCKEYREQ_LONG_SIGNAL_LENGTH);
         releaseAtErrorLab(signal, apiConnectptr);
         return;
@@ -4480,7 +4480,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         terrorCode = ZSIGNAL_ERROR;
         NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-        REPORT_MALICIOUS_SIGNAL(signal, senderNodeId,
+        reportMaliciousSignal(signal, senderNodeId,
                                 VT_TCKEYREQ_SHORT_SIGNAL_LENGTH);
         releaseAtErrorLab(signal, apiConnectptr);
         return;
@@ -4497,7 +4497,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       jam();
       terrorCode = ZSIGNAL_ERROR;
       NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-      REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_UNLOCK_WITHOUT_DISTKEY);
+      reportMaliciousSignal(signal, senderNodeId, VT_UNLOCK_WITHOUT_DISTKEY);
       releaseAtErrorLab(signal, apiConnectptr);
       return;
     }
@@ -4764,7 +4764,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       jam();
       terrorCode = ZSIGNAL_ERROR;
       NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-      REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_COMMIT_WITHOUT_EXEC);
+      reportMaliciousSignal(signal, senderNodeId, VT_COMMIT_WITHOUT_EXEC);
       releaseAtErrorLab(signal, apiConnectptr);
       return;
     }
@@ -4880,7 +4880,7 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
     jam();
     terrorCode = ZSIGNAL_ERROR;
     NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_KEY_LENGTH_EXCEEDED);
+    reportMaliciousSignal(signal, senderNodeId, VT_KEY_LENGTH_EXCEEDED);
     releaseAtErrorLab(signal, apiConnectptr);
     return;
   }
@@ -15876,7 +15876,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     jam();
     releaseSections(handle);
     NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_SCANTABREQ_MISSING_SECTION);
+    reportMaliciousSignal(signal, senderNodeId, VT_SCANTABREQ_MISSING_SECTION);
     return;
   }
 
@@ -15929,7 +15929,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     jam();
     ndbrequire(!passQueueingFlag);
     releaseSections(handle);
-    REPORT_MALICIOUS_SIGNAL(signal, senderNodeId, VT_SCANTABREQ_INVALID_APICONNECT);
+    reportMaliciousSignal(signal, refToNode(signal->getSendersBlockRef()), VT_SCANTABREQ_INVALID_APICONNECT);
     return;
   }  // if
 

@@ -14,13 +14,21 @@ with no protocol change:
 ## Phase 1b: Security-system integration
 
 The `sectionNo >= 3` drop paths in `assembleFragmentsSlow` now also report a
-`MALICIOUS_SIGNAL_REPORT` to QMGR via `REPORT_MALICIOUS_SIGNAL`, using the new
+`GSN_MALICIOUS_SIGNAL_REPORT` to QMGR via `reportMaliciousSignal()`, using the
 `VT_FRAGMENT_INVALID_SECTION_NO` violation type. This is **Tier A**: a section
 number outside `[0,2]` is a transporter-framing detail that no SQL/HTTP/REST/Redis
 user input can influence (categorization rule, `tiered_response_policy.md` §6), so
-it is user-untriggerable and listed as a Tier A example there. Sections are
-released before the report (the report reuses the signal buffer and the caller
-returns immediately).
+it is user-untriggerable.
+
+Call site pattern (SimulatedBlock.cpp):
+
+```cpp
+reportMaliciousSignal(signal, offendingNodeId,
+                      ViolationType::VT_FRAGMENT_INVALID_SECTION_NO);
+```
+
+Sections are released before the report (the report reuses the signal buffer and
+the caller returns immediately).
 
 The **hash-full** and **fragment-not-found** drops are deliberately NOT reported:
 a full hash can be caused by aggregate load, and a "not found" fragment can be the

@@ -865,11 +865,6 @@ struct ndb_logevent_SecurityEvent {
   unsigned node_id;
   unsigned node_type;
   unsigned violation_type;
-  unsigned source_block;
-  unsigned source_line;
-  unsigned window_count;
-  unsigned total_count_l;
-  unsigned total_count_h;
 };
 #if defined(__clang__)
 // workaround false positive warning about @see @ref with clang and

@@ -2483,33 +2483,14 @@ void SimulatedBlock::infoEvent(const char *msg, ...) const {
 
 void SimulatedBlock::reportMaliciousSignal(Signal *signal,
                                            NodeId offendingNodeId,
-                                           Uint32 violationType,
-                                           Uint32 sourceLine) {
+                                           Uint32 violationType) {
   jam();
-  /**
-   * Build and send a GSN_MALICIOUS_SIGNAL_REPORT to QMGR, which owns all
-   * per-node security state and the Tier A (disconnect) / Tier B (log-only)
-   * decision. The tier is derived from the violation type here so it travels
-   * with the report — an older QMGR that does not recognise a newer violation
-   * type still receives a usable tier (rolling-upgrade safety).
-   *
-   * The caller is contractually required to return immediately after this call;
-   * we reuse the passed signal's data buffer, matching the established
-   * malformed-signal handling convention (see also DbtcMain disconnect path).
-   *
-   * NOTE: per-NodeId report-rate suppression (tiered_response_policy.md §8.3) is
-   * added before call sites go live in Phase 3; until then suppressedCount = 0.
-   */
   MaliciousSignalReport *rep =
       CAST_PTR(MaliciousSignalReport, signal->getDataPtrSend());
   rep->offendingNodeId = offendingNodeId;
-  rep->tier = violation_tier(violationType);
   rep->violationType = violationType;
-  rep->sourceBlockRef = reference();
-  rep->sourceLine = sourceLine;
-  rep->suppressedCount = 0;
   sendSignal(QMGR_REF, GSN_MALICIOUS_SIGNAL_REPORT, signal,
-             MaliciousSignalReport::SignalLength, JBA);
+             MaliciousSignalReport::SignalLength, JBB);
 }
 
 void SimulatedBlock::warningEvent(const char *msg, ...) {
@@ -3106,7 +3087,7 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
          * Invalid sectionNo — would write out of bounds into
          * m_sectionPtrI[]. A section number outside [0,2] is structurally
          * impossible from honest code, so report it to the security system
-         * before dropping. Release all sections first: REPORT_MALICIOUS_SIGNAL
+         * before dropping. Release all sections first: reportMaliciousSignal
          * reuses the signal buffer and requires an immediate return, so no
          * further header writes are performed after the report.
          */
@@ -3117,8 +3098,8 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         fragPtr.p->m_sectionPtrI[0] = RNIL;
         fragPtr.p->m_sectionPtrI[1] = RNIL;
         fragPtr.p->m_sectionPtrI[2] = RNIL;
-        REPORT_MALICIOUS_SIGNAL(signal, refToNode(senderRef),
-                                VT_FRAGMENT_INVALID_SECTION_NO);
+        reportMaliciousSignal(signal, refToNode(senderRef),
+                              VT_FRAGMENT_INVALID_SECTION_NO);
         return false;
       }
       fragPtr.p->m_sectionPtrI[sectionNo] = sectionPtr[i];
@@ -3150,7 +3131,7 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
            * outside [0,2] is structurally impossible from honest code, so
            * report it to the security system before dropping. Release both the
            * incoming sections and the partially accumulated ones first:
-           * REPORT_MALICIOUS_SIGNAL reuses the signal buffer and requires an
+           * reportMaliciousSignal reuses the signal buffer and requires an
            * immediate return, so no further header writes are performed after
            * the report.
            */
@@ -3164,8 +3145,8 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
               fragPtr.p->m_sectionPtrI[s] = RNIL;
             }
           }
-          REPORT_MALICIOUS_SIGNAL(signal, refToNode(senderRef),
-                                  VT_FRAGMENT_INVALID_SECTION_NO);
+          reportMaliciousSignal(signal, refToNode(senderRef),
+                                VT_FRAGMENT_INVALID_SECTION_NO);
           return false;
         }
         Uint32 sectionPtrI = sectionPtr[i];

@@ -33,12 +33,10 @@
  *
  * A violation type is the single source of truth for how a malformed signal is
  * handled. Each type maps to exactly one tier and one human-readable reason
- * string (see g_violation_info[] below). Blocks report a ViolationType; the
- * sender derives the tier from the table and includes it in the signal, so an
- * older QMGR that does not recognise a newer violation type still receives a
- * usable tier (rolling-upgrade safety). QMGR uses the violation type only to
- * resolve the reason string for logging, falling back to VT_UNKNOWN when the
- * value is outside its known range.
+ * string (see g_violation_info[] below). Blocks report a ViolationType; QMGR
+ * derives the tier locally from g_violation_info[] and uses the type to resolve
+ * the reason string for logging, falling back to VT_UNKNOWN when the value is
+ * outside its known range.
  *
  * Design reference: claude_files/data_node_security/tiered_response_policy.md
  *
@@ -48,8 +46,13 @@
  *   3. For a Tier A type, verify it is impossible to trigger via valid SQL /
  *      HTTP / REST / Redis user inputs (the categorization rule). Misclassifying
  *      a user-triggerable violation as Tier A reintroduces punishment laundering.
- * Never renumber existing values: the integer travels on the wire and old
- * receivers index this table by it.
+ * Never renumber existing values. The MaliciousSignalReport signal is delivered
+ * to the local node's QMGR (QMGR_REF = numberToRef(QMGR, 0)), so the type
+ * integer does not cross the network and there is no cross-version wire concern
+ * for the signal itself. The reason it is still fixed: the same integer is
+ * published as ndbinfo.security_violations.violation_id, a stable external
+ * contract that monitoring (Prometheus/Grafana dashboards, the static catalog)
+ * indexes by value. Renumbering would silently corrupt historical metrics.
  */
 
 enum ViolationTier : Uint32 {
@@ -88,9 +91,6 @@ enum ViolationType : Uint32 {
   VT_RONDIS_SELECT_OUT_OF_RANGE,   // B: SELECT db index out of range
 
   // ---- Framework-internal ----
-  VT_RATE_LIMIT_EXCEEDED,          // A: Tier C cluster-side safety net breach
-  VT_WRONG_SENDER_TYPE_FOR_GSN,    // A: internal-only signal from an API node (scaffold)
-  VT_COUNTER_RESET,                // B: operator cleared a node's counters (audit)
   VT_FRAGMENT_INVALID_SECTION_NO,  // A: fragmented signal carried a section number >= 3
 
   VT_UNKNOWN,                      // fallback for out-of-range/rolling-upgrade values
@@ -138,9 +138,6 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {TIER_A, "scantabreq_invalid_apiconnect"},// VT_SCANTABREQ_INVALID_APICONNECT
     {TIER_B, "rondis_oversize_value"},        // VT_RONDIS_OVERSIZE_VALUE
     {TIER_B, "rondis_select_out_of_range"},   // VT_RONDIS_SELECT_OUT_OF_RANGE
-    {TIER_A, "rate_limit_exceeded"},          // VT_RATE_LIMIT_EXCEEDED
-    {TIER_A, "wrong_sender_type_for_gsn"},    // VT_WRONG_SENDER_TYPE_FOR_GSN
-    {TIER_B, "counter_reset"},                // VT_COUNTER_RESET
     {TIER_A, "fragment_invalid_section_no"},  // VT_FRAGMENT_INVALID_SECTION_NO
     {TIER_A, "unknown_violation_type"},       // VT_UNKNOWN
 };

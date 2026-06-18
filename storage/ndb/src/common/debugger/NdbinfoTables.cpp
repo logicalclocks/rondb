@@ -1271,24 +1271,20 @@ DECLARE_NDBINFO_TABLE(TRANSACTIONS_FULL, 11) = {
         {"timer", Ndbinfo::Number, "Timer (seconds)"},
     }};
 
-DECLARE_NDBINFO_TABLE(SECURITY_EVENTS, 10) = {
-    {"security_events", 10, 0, [](const Ndbinfo::Counts &) { return 0; },
-     "Per-node malicious-signal counters (data node security)"},
+DECLARE_NDBINFO_TABLE(SECURITY_VIOLATIONS, 3) = {
+    {"security_violations", 3, 0, [](const Ndbinfo::Counts &) { return 0; },
+     "Static catalog of data node security violation types (data node security)"},
+    {{"violation_id", Ndbinfo::Number, "ViolationType enum value"},
+     {"tier", Ndbinfo::Number, "0 = Tier A (disconnect), 1 = Tier B (log-only)"},
+     {"reason", Ndbinfo::String, "Short lowercase reason string"}}};
+
+DECLARE_NDBINFO_TABLE(SECURITY_VIOLATION_COUNTS, 3) = {
+    {"security_violation_counts", 3, 0,
+     [](const Ndbinfo::Counts &) { return 0; },
+     "Per-violation-type strike counters (data node security)"},
     {{"reporting_node_id", Ndbinfo::Number, "Reporting data node ID"},
-     {"node_id", Ndbinfo::Number, "Offending node ID"},
-     {"node_type", Ndbinfo::Number, "Type of offending node"},
-     {"total_tier_a", Ndbinfo::Number64, "Cumulative Tier A strikes"},
-     {"total_tier_b", Ndbinfo::Number64, "Cumulative Tier B strikes"},
-     {"total_disconnects", Ndbinfo::Number64,
-      "Times this node was disconnected for a Tier A violation"},
-     {"current_window_count", Ndbinfo::Number,
-      "Strikes in the active 5-minute window"},
-     {"last_violation", Ndbinfo::String,
-      "Reason string of the most recent strike"},
-     {"last_source_line", Ndbinfo::Number,
-      "Source line of the most recent strike"},
-     {"last_strike_seconds_ago", Ndbinfo::Number,
-      "Age in seconds of the most recent strike"}}};
+     {"violation_id", Ndbinfo::Number, "ViolationType enum value"},
+     {"count", Ndbinfo::Number64, "Cumulative strikes since node start"}}};
 
 #define DBINFOTBL(x) \
   { Ndbinfo::x##_TABLEID, (const Ndbinfo::Table *)&ndbinfo_##x }
@@ -1357,7 +1353,8 @@ static struct ndbinfo_table_list_entry {
     DBINFOTBL(THREADBLOCK_DETAILS),
     DBINFOTBL(TRANSPORTER_DETAILS),
     DBINFOTBL(TRANSACTIONS_FULL),
-    DBINFOTBL(SECURITY_EVENTS)};
+    DBINFOTBL(SECURITY_VIOLATIONS),
+    DBINFOTBL(SECURITY_VIOLATION_COUNTS)};
 
 static int no_ndbinfo_tables =
     sizeof(ndbinfo_tables) / sizeof(ndbinfo_tables[0]);

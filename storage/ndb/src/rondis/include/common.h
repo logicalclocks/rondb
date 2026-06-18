@@ -139,15 +139,11 @@ Uint32 get_length(char* buf);
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"
 #define REDIS_WRONG_NUMBER_OF_ARGS "wrong number of arguments for '%s' command"
 #define REDIS_NO_SUCH_KEY "$-1\r\n"
-<<<<<<< HEAD
-#define REDIS_KEY_TOO_LARGE "key is too large (3000 bytes max)"
-=======
 // Note: error strings deliberately omit the exact limit so the wire response
 // does not disclose the internal threshold to clients (security finding 2).
 #define REDIS_KEY_TOO_LARGE "key too large"
 #define REDIS_MAX_VALUE_LEN 512000
 #define REDIS_VALUE_TOO_LARGE "value too large"
->>>>>>> 26fd8a0ecc2 (Security System v1.1)
 #define REDIS_SYNTAX_ERROR "syntax error"
 #define REDIS_INVALID_INTEGER "value is not an integer or out of range"
 #define REDIS_OFFSET_OUT_OF_RANGE "offset is out of range"
@@ -160,26 +156,26 @@ Uint32 get_length(char* buf);
  *
  * RONDIS is architecturally separate from the NDB transporter and does not
  * route through QMGR — it writes directly to its own stdout (the established
- * RONDIS logging mechanism). Per-connection persistent counters are out of v1
- * scope (Redis connections are typically short-lived; the cluster log is the
- * audit trail), so window_count/total_count are 0 here. `node_id=0` indicates
- * "no NDB NodeId at this granularity"; source_block=RONDIS distinguishes the
- * source. All RONDIS violations are Tier B (log-only) per the policy doc.
+ * RONDIS logging mechanism). `node_id=0` indicates "no NDB NodeId at this
+ * granularity"; all RONDIS violations are Tier B (log-only) per the policy doc.
  *
- * `client=<ip:port>` and `worker=<id>` attribute the event to the specific
- * Redis connection (set by RondisConn::DealMessage / rondb_redis_handler), so
- * the forensic trail names *who* triggered it rather than only *that* it
- * happened. client= is empty when there is no connection context.
+ * The leading four fields (tier, node_id, node_type, violation) are byte-for-
+ * byte identical to the kernel SECURITY_EVENT line (EventLogger.cpp), so a
+ * single parser keyed on those fields handles both streams. RONDIS appends two
+ * extra attribution fields the kernel path has no equivalent for:
+ * `client=<ip:port>` and `worker=<id>` name the specific Redis connection (set
+ * by RondisConn::DealMessage / rondb_redis_handler). For RONDIS the client
+ * attribution IS the forensic signal — there is no node-level disconnect — so
+ * it names *who* triggered it, not just *that* it happened. client= is empty
+ * when there is no connection context.
  *
  * Usage: RONDIS_SECURITY_EVENT("rondis_oversize_value");
  */
 #define RONDIS_SECURITY_EVENT(violation)                                  \
   do {                                                                    \
     printf("SECURITY_EVENT: tier=B node_id=0 node_type=API "              \
-           "client=%s worker=%d "                                         \
-           "violation=" violation " source_block=RONDIS source_line=%d "  \
-           "window_count=0 total_count=0\n",                              \
-           g_client_ip_port.c_str(), g_dbg_worker_id, __LINE__);          \
+           "violation=" violation " client=%s worker=%d\n",              \
+           g_client_ip_port.c_str(), g_dbg_worker_id);                    \
   } while (0)
 
 #endif

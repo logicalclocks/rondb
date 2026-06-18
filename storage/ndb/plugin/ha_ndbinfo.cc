@@ -483,7 +483,7 @@ int ha_ndbinfo::close(void) {
 */
 static bool ndbinfo_table_requires_process_acl(const char *table_name) {
   return table_name != nullptr &&
-         native_strcasecmp(table_name, "security_events") == 0;
+         native_strcasecmp(table_name, "security_violation_counts") == 0;
 }
 
 int ha_ndbinfo::rnd_init(bool scan) {
@@ -589,14 +589,10 @@ int ha_ndbinfo::rnd_init(bool scan) {
   THD *thd = current_thd;
 
   /*
-    Data node security: a few ndbinfo tables expose sensitive operational
-    state and must be gated behind a privilege rather than being readable by
-    any account with SELECT on ndbinfo.*. ndbinfo.security_events exposes
-    per-NodeId malicious-signal activity which, on a shared (multi-tenant)
-    mysqld, would let one tenant infer another's query patterns. Gate it
-    behind PROCESS, the same privilege SHOW PROCESSLIST and
-    ndb_transid_mysql_connection_map use. The security_events view is
-    SQL SECURITY INVOKER, so this check runs against the querying user.
+    Data node security: ndbinfo.security_violation_counts exposes cumulative
+    per-violation-type strike counts. Gate it behind PROCESS, the same
+    privilege SHOW PROCESSLIST and ndb_transid_mysql_connection_map use.
+    The static security_violations catalog table is public (no sensitive state).
     check_global_access() raises ER_SPECIFIC_ACCESS_DENIED_ERROR on denial.
   */
   if (ndbinfo_table_requires_process_acl(m_impl.m_table->getName()) &&

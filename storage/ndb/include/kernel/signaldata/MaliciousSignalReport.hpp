@@ -32,25 +32,20 @@
 
 /**
  * Data node security: a kernel block reports a detected malformed/malicious
- * signal to QMGR, which owns all per-node security state and disconnect
+ * signal to QMGR, which owns the per-violation counters and disconnect
  * decisions. Blocks never disconnect directly — they report.
  *
- * Sent JBA to QMGR_REF via SimulatedBlock::reportMaliciousSignal(). The tier is
- * derived by the sender from g_violation_info[violationType] (ViolationType.hpp)
- * so a newer sender's tier interpretation travels even if the receiving QMGR was
- * built without the corresponding violation type.
+ * Sent JBB to QMGR_REF via SimulatedBlock::reportMaliciousSignal(). QMGR
+ * derives the tier from g_violation_info[violationType] (ViolationType.hpp).
+ * The violation type is the location key: grep VT_X to find the call site.
  *
- * Design reference: claude_files/data_node_security/tiered_response_policy.md §8.2
+ * Design reference: claude_files/data_node_security/tiered_response_policy.md
  */
 struct MaliciousSignalReport {
-  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 SignalLength = 2;
 
   Uint32 offendingNodeId;  // node that sent the offending signal
-  Uint32 tier;             // ViolationTier (0 = A immediate disconnect, 1 = B log-only)
-  Uint32 violationType;    // ViolationType enum; resolves reason string at QMGR
-  Uint32 sourceBlockRef;   // reporting block reference, for forensics
-  Uint32 sourceLine;       // __LINE__ at the detection site, for forensics
-  Uint32 suppressedCount;  // reports batched since last send (report-rate limiting)
+  Uint32 violationType;    // ViolationType enum; QMGR resolves tier + reason
 };
 
 DECLARE_SIGNAL_SCOPE(GSN_MALICIOUS_SIGNAL_REPORT, Local);

@@ -35,6 +35,7 @@
 #include <version.h>
 #include <NodeState.hpp>
 #include <kernel/ViolationType.hpp>
+#include <mgmapi_config_parameters.h>  // NODE_TYPE_* for SECURITY_EVENT rendering
 #include <signaldata/ArbitSignalData.hpp>
 #include <signaldata/FailRep.hpp>
 
@@ -680,17 +681,21 @@ void getTextDeadDueToHeartbeat(char *m_text, size_t m_text_len,
 }
 void getTextSecurityEvent(char *m_text, size_t m_text_len, const Uint32 *theData,
                           Uint32 /*len*/) {
-  /* theData layout set by Qmgr::execMALICIOUS_SIGNAL_REPORT. The violation type
-   * is resolved to its reason string here (single source of truth). total_count
-   * is a Uint64 carried as two words (low in [8], high in [9]). */
-  const Uint64 totalCount = ((Uint64)theData[9] << 32) | theData[8];
+  /* theData layout set by Qmgr::execMALICIOUS_SIGNAL_REPORT:
+   * [1]=tier [2]=node_id [3]=node_type [4]=violation_type.
+   * node_type and violation_type are rendered human-readable here. */
+  const char *node_type;
+  switch (theData[3]) {
+    case NODE_TYPE_DB:  node_type = "DB";  break;
+    case NODE_TYPE_API: node_type = "API"; break;
+    case NODE_TYPE_MGM: node_type = "MGM"; break;
+    default:            node_type = "UNKNOWN"; break;
+  }
   BaseString::snprintf(
       m_text, m_text_len,
-      "SECURITY_EVENT: tier=%s node_id=%u node_type=%u violation=%s "
-      "source_block=%u source_line=%u window_count=%u total_count=%llu",
-      (theData[1] == TIER_A) ? "A" : "B", theData[2], theData[3],
-      violation_reason(theData[4]), theData[5], theData[6], theData[7],
-      (unsigned long long)totalCount);
+      "SECURITY_EVENT: tier=%s node_id=%u node_type=%s violation=%s",
+      (theData[1] == TIER_A) ? "A" : "B", theData[2], node_type,
+      violation_reason(theData[4]));
 }
 void getTextJobStatistic(char *m_text, size_t m_text_len, const Uint32 *theData,
                          Uint32 /*len*/) {
