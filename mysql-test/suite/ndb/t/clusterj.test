@@ -113,4 +113,8 @@ DROP DATABASE IF EXISTS test2;
 DROP TABLE IF EXISTS test3.t_basic3;
 DROP DATABASE IF EXISTS test3;
 DROP TABLE same_table;
+# RingBufferTest creates these at runtime (ring_buffer_sensor is also in
+# schema.sql); IF EXISTS since they are only present when that test ran.
+DROP TABLE IF EXISTS ring_buffer_sensor;
+DROP TABLE IF EXISTS ring_buffer_notnull;
 
