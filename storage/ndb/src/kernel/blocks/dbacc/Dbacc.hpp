@@ -1051,6 +1051,10 @@ private:
   void send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &waiter,
                              const DeadlockEndpoint &owner,
                              Uint32 contendedTableId);
+  /* RONDB-1062: when false (config EnableProactiveDeadlockDetection=false), do
+   * not capture or send wait-for edges; the DBTC timeout backstop resolves
+   * deadlocks.  Read from config in execREAD_CONFIG_REQ (default false). */
+  bool c_proactive_deadlock_detect = false;
   void abortSerieQueueOperation(Signal* signal,
                                 OperationrecPtr op,
                                 Uint32 hash);

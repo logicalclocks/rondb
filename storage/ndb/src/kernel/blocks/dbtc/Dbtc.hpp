@@ -3657,6 +3657,10 @@ class Dbtc : public SimulatedBlock {
   Uint32 m_max_writes_per_trans;
   Uint32 c_trans_error_loglevel;
   Uint32 m_take_over_operations;
+  // RONDB-1062: when false, ignore DBACC wait-for edges (no proactive deadlock
+  // detection); only the timeout backstop resolves deadlocks.  Config:
+  // EnableProactiveDeadlockDetection (default false; MTR enables it).
+  bool c_proactive_deadlock_detect = false;
 
   bool m_dbinfo_full_apiconnectrecord;
 

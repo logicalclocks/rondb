@@ -488,6 +488,12 @@ void Dbacc::execREAD_CONFIG_REQ(Signal *signal) {
   ndbrequire(p != 0);
   
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_ACC_TABLE, &ctablesize));
+  // RONDB-1062: proactive deadlock discovery on/off (default off in production;
+  // MTR enables it via default_ndbd.cnf).  When off, skip capturing/sending
+  // DBACC wait-for edges entirely.
+  Uint32 dl = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION, &dl);
+  c_proactive_deadlock_detect = (dl != 0);
   initRecords(p);
 
   initialiseRecordsLab(signal, 0, ref, senderData);
@@ -2350,7 +2356,7 @@ Dbacc::accIsLockedLab(Signal* signal,
      * row, hence the same table); carried to DBTC for deadlock enrichment.
      * Captured under the fragment mutex with the rest of the edge data. */
     Uint32 dl_table = RNIL;
-    if (return_result == ZSERIAL_QUEUE)
+    if (c_proactive_deadlock_detect && return_result == ZSERIAL_QUEUE)
     {
       dl_table = fragrecptr.p->myTableId;
       describe_deadlock_endpoint(operationRecPtr.p, dl_waiter);

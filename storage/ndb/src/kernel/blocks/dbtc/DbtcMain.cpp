@@ -1496,6 +1496,12 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_TRANSACTION_DEADLOCK_TIMEOUT, &val);
   set_timeout_value(val);
 
+  // RONDB-1062: proactive deadlock discovery on/off (default off in production;
+  // MTR enables it via default_ndbd.cnf).
+  val = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION, &val);
+  c_proactive_deadlock_detect = (val != 0);
+
   val = 1500;
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &val);
   cDbHbInterval = (val < 10) ? 10 : val;
@@ -11366,6 +11372,13 @@ void Dbtc::periodicLogOddTimeoutAndResetTimer(ApiConnectRecordPtr apiPtr) {
  */
 void Dbtc::execDBACC_WAITFOR_REP(Signal *signal) {
   jamEntry();
+  if (!c_proactive_deadlock_detect) {
+    /* RONDB-1062 proactive deadlock discovery disabled by config
+     * (EnableProactiveDeadlockDetection=false): drop the wait-for edge and let
+     * the TransactionDeadlockDetectionTimeout backstop resolve deadlocks. */
+    jam();
+    return;
+  }
   const DeadlockWaitforRep *const rep =
       reinterpret_cast<const DeadlockWaitforRep *>(signal->getDataPtr());
 
