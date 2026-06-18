@@ -88,8 +88,9 @@ struct LeafProgram {
    *
    * When set, every JoinAggInterpreter that runs this leaf reads
    * m_jit_entry once at Init and dispatches via it in ProcessRec.
-   * Workers hold borrowed pointers — DblqhProxy's m_jit_arena owns
-   * the underlying memory. */
+   * Workers hold borrowed pointers; the proxy owns m_jit_prog and frees
+   * it with jit1_free() at JOIN_AGG teardown (which returns the blob's
+   * code-memory slot to the node-global manager — Phase 8). */
   Jit1Prog *m_jit_prog;
   JitEntry  m_jit_entry;
 };

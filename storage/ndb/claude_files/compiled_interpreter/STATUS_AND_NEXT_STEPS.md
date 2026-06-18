@@ -71,10 +71,16 @@ Recommended order:
      set at compile, reset at `scanProcedure`, **released at
      `deleteScanProcedure`** (scan finished). `ndb_jit_progcache` linked into
      `ndbblocks`. Test: `rondb_jit_scan_filter_canary`.
-   - **Slice 3b** — agg paths (join-agg `DblqhProxy::m_leaf_programs[i]`,
-     standalone `PushdownInterpreter`→`AggInterpreter`) through `progcache`:
-     acquire/release + store handle on owner + release at teardown.
-   - **Slice 3c** — remove dead per-block `m_jit_arena`s (`DbtupGen.cpp`,
+   - **Slice 3b — free join-agg leaf programs DONE.** `DblqhProxy`
+     `jit1_free`s each `LeafProgram::m_jit_prog` at both `m_leaf_programs`
+     free sites (setup-error + RELEASE), iterating `m_num_leaves`. No
+     progcache (the proxy already dedups by `aggStateKey`); the win is
+     freeing. Workers are done by RELEASE so no blob is executing.
+   - **Slice 3c** — standalone agg (`PushdownInterpreter`→`AggInterpreter`)
+     through `progcache`: handle field on `AggInterpreterBase`, acquire in
+     `Create`, release in `PushdownInterpreter::Destruct` (the fast
+     empty-`gb_map` teardown from `Dblqh::releaseScanInterpreters`).
+   - **Slice 3d** — remove dead per-block `m_jit_arena`s (`DbtupGen.cpp`,
      `DblqhProxy` ctor/dtor, `getJitArena`) + unused `arena` params.
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently

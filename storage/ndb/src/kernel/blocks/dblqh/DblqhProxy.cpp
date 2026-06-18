@@ -2365,6 +2365,13 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         lc_ndbd_pool_free(state->m_column_meta_buf);
       }
       if (state->m_leaf_programs != nullptr) {
+        /* RONDB-1056 Phase 8: return each leaf's compiled JIT program to
+         * the code-memory manager before releasing the descriptor array.
+         * jit1_free(nullptr) is a no-op, so uncompiled leaves are fine. */
+        for (Uint32 i = 0; i < state->m_num_leaves; i++) {
+          jit1_free(state->m_leaf_programs[i].m_jit_prog);
+          state->m_leaf_programs[i].m_jit_prog = nullptr;
+        }
         lc_ndbd_pool_free(state->m_leaf_programs);
       }
       if (state->m_receiverIds != nullptr) {
@@ -3165,6 +3172,14 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_column_meta_len = 0;
     }
     if (state->m_leaf_programs != nullptr) {
+      /* RONDB-1056 Phase 8: free each leaf's compiled JIT program back to
+       * the code-memory manager before releasing the descriptor array.
+       * All workers have finished by the RELEASE phase, so no row is
+       * executing the blob; the loop runs before m_num_leaves is zeroed. */
+      for (Uint32 i = 0; i < state->m_num_leaves; i++) {
+        jit1_free(state->m_leaf_programs[i].m_jit_prog);
+        state->m_leaf_programs[i].m_jit_prog = nullptr;
+      }
       lc_ndbd_pool_free(state->m_leaf_programs);
       state->m_leaf_programs = nullptr;
       state->m_num_leaves = 0;

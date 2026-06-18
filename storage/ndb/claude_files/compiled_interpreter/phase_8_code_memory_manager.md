@@ -146,11 +146,24 @@ Sharded refcounted hash so identical bytecode reuses one compiled blob.
   `scanProcedure` init, and **released at `deleteScanProcedure`** (the scan
   has finished — no row is mid-execution on the blob). `ndb_jit_progcache`
   linked into `ndbblocks`. Tested via `rondb_jit_scan_filter_canary`.
-- **3b — agg paths through `progcache`** (join-agg `DblqhProxy`
-  `m_leaf_programs[i]`, standalone `PushdownInterpreter` →
-  `AggInterpreter`): acquire/release + store the handle on the owner,
-  release at teardown. Pending.
-- **3c — remove dead per-block `m_jit_arena`s** (`DbtupGen.cpp`, `DblqhProxy`
+- **3b — free join-agg leaf programs at teardown.** ✅ done. `DblqhProxy`
+  `jit1_free`s each `LeafProgram::m_jit_prog` at both `m_leaf_programs`
+  free sites (setup-error cleanup + normal RELEASE), iterating
+  `m_num_leaves` before `lc_ndbd_pool_free` and nulling each handle. No
+  `progcache` here on purpose: the proxy already dedups identical join-agg
+  programs by `aggStateKey` (one compile per distinct query), so the win
+  is purely freeing. By the RELEASE phase all workers have finished, so no
+  row is executing the blob. `jit1_free(nullptr)` is a no-op so uncompiled
+  / rejected leaves are safe.
+- **3c — standalone agg through `progcache`.** Pending. `PushdownInterpreter`
+  per-scan compile → reuse helps. Add a handle field to `AggInterpreterBase`,
+  acquire in `PushdownInterpreterFactory::Create`, release in
+  `PushdownInterpreter::Destruct` (the empty-`gb_map` teardown reached from
+  `Dblqh::releaseScanInterpreters`, DblqhMain.cpp:24393 — the JIT case is
+  `m_n_gb_cols == 0` ⇒ empty map ⇒ fast `Destruct`). Confirm Create only
+  compiles when `n_gb_cols == 0` so no GROUP-BY handle escapes to the
+  chunked path.
+- **3d — remove dead per-block `m_jit_arena`s** (`DbtupGen.cpp`, `DblqhProxy`
   ctor/dtor, `getJitArena`) + unused `arena` params / `NdbJitArena`
   fwd-decls. Pending.
 - **4 — RonSQL PREPARE** pinned acquire at prepare / release at deallocate.
