@@ -494,6 +494,13 @@ static const Uint32 ss_valB[2] = {10, 20};
 static Uint32 ss_bufA[2] = {~0u, ~0u};  // per-thread scan read buffer
 static int ss_outcome[2] = {-1, -1};    // per-thread: 0 survived, else err code
 static NDB_TICKS ss_t0, ss_t1;
+// RONDB-1062 deadlock error enrichment: per-thread detail read back from the
+// victim transaction via the new NdbTransaction accessors (Phase C).
+static bool ss_was_deadlock[2] = {false, false};
+static int ss_dl_ntables[2] = {0, 0};
+static Uint32 ss_dl_table[2][2] = {{~0u, ~0u}, {~0u, ~0u}};
+static bool ss_dl_has_op[2] = {false, false};
+static int ss_table_id = -1;  // T's NDB table id (captured in ss_main)
 
 static int ss_createtable(Ndb *ndb) {
   require(ndb != 0);
@@ -591,8 +598,17 @@ static int ss_run_scan(Thr &thr) {
     DBG(thr << " scan got row A=" << ss_bufA[thr.m_no - 1]);
   }
   if (ret < 0) {
-    ss_outcome[thr.m_no - 1] = con->getNdbError().code;
-    DBG(thr << " scan aborted, error " << ss_outcome[thr.m_no - 1]);
+    const int idx = thr.m_no - 1;
+    ss_outcome[idx] = con->getNdbError().code;
+    // RONDB-1062: read back the deadlock detail reported to this (victim) txn.
+    // For a scan victim getDeadlockOperation() is null (no single key op); the
+    // contended table id(s) identify table T.  con is still open here.
+    ss_was_deadlock[idx] = con->wasDeadlock();
+    ss_dl_ntables[idx] = con->getDeadlockTableIds(ss_dl_table[idx]);
+    ss_dl_has_op[idx] = (con->getDeadlockOperation() != nullptr);
+    DBG(thr << " scan aborted, error " << ss_outcome[idx] << ", wasDeadlock="
+            << ss_was_deadlock[idx] << " ntables=" << ss_dl_ntables[idx]
+            << " hasOp=" << ss_dl_has_op[idx]);
   } else {
     ss_outcome[thr.m_no - 1] = 0;  // ret == 1: end of scan, survived
     DBG(thr << " scan completed (survivor)");
@@ -617,6 +633,22 @@ static int ss_verify(Thr &thr) {
   }
   CHK(victims == 1 && survivors == 1);
   DBG("ss scan<->scan deadlock resolved: 1 victim, 1 survivor");
+
+  // RONDB-1062 deadlock error enrichment: the victim must carry the
+  // proactively-detected detail (the timing assertion below proves it was
+  // proactive, so the report must have arrived).  A scan victim has no single
+  // deadlocking key op, and the contended table is T.
+  for (int i = 0; i < 2; i++) {
+    if (ss_outcome[i] == 0) continue;  // survivor carries no detail
+    CHK(ss_was_deadlock[i]);           // a real-deadlock report was received
+    CHK(ss_dl_ntables[i] >= 1);        // at least one contended table reported
+    bool is_T = false;
+    for (int j = 0; j < ss_dl_ntables[i]; j++)
+      if ((int)ss_dl_table[i][j] == ss_table_id) is_T = true;
+    CHK(is_T);                  // and it is table T
+    CHK(!ss_dl_has_op[i]);      // scan victim => getDeadlockOperation() is null
+    DBG("ss victim detail ok: wasDeadlock, table T reported, no key op");
+  }
   return 0;
 }
 
@@ -655,6 +687,14 @@ static int ss_main() {
        ss_do(t1, runstep_connect) != 0 || ss_do(t2, runstep_connect) != 0 ||
        ss_do(t1, runstep_starttx) != 0 || ss_do(t2, runstep_starttx) != 0)) {
     rc = -1;
+  }
+
+  // Remember T's table id so ss_verify can match it against the contended
+  // table id reported in the deadlock detail (RONDB-1062).
+  if (rc == 0) {
+    const NdbDictionary::Table *t =
+        mgmt.getDictionary()->getTable(g_opt.m_tname);
+    if (t != nullptr) ss_table_id = t->getObjectId();
   }
 
   // Arm the deterministic stall (DBTUX error insert 12010) and run both scans

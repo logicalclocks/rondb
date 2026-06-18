@@ -1,0 +1,84 @@
+--source include/have_ndb.inc
+
+--echo # RONDB-1062: a proactively detected deadlock is surfaced in SHOW WARNINGS
+--echo # (in addition to the unchanged 1205 / ER_LOCK_WAIT_TIMEOUT error).
+--echo # con1 holds row 1 and wants row 2; con2 holds row 2 and wants row 1, a
+--echo # true 2-cycle on table t1.  Exactly one transaction is aborted with 1205;
+--echo # on that connection SHOW WARNINGS carries the "Deadlock detected by NDB"
+--echo # detail line - the victim operation's table name and the contended table
+--echo # id (masked below as it is not stable across runs).
+
+# The victim is chosen by hash(transid) and so is non-deterministic; keep the
+# choreography out of the result log and only assert the warning text.
+--disable_query_log
+--disable_result_log
+
+connect (con1,localhost,root,,test);
+connect (con2,localhost,root,,test);
+
+connection default;
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20);
+
+connection con1;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+connection con2;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 2;
+connection con1;
+--send UPDATE t1 SET b = b + 1 WHERE a = 2
+connection con2;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+
+connection con1;
+--error 0,1205,1213
+--reap
+--let $c1_err = $mysql_errno
+connection con2;
+--error 0,1205,1213
+--reap
+--let $c2_err = $mysql_errno
+
+# Evaluate the victim count on the default connection so the SELECT does not
+# clear the victim connection's diagnostics area (SHOW WARNINGS reads it below).
+# A proactively detected key-op deadlock victim is aborted with 266 -> 1205, so
+# exactly one of the two connections must be that victim.
+connection default;
+if (`SELECT ($c1_err = 1205) + ($c2_err = 1205) <> 1`)
+{
+  --die Expected exactly one deadlock victim with ER_LOCK_WAIT_TIMEOUT (1205)
+}
+
+--echo # SHOW WARNINGS on the victim connection (contended table id masked).  It
+--echo # carries the standard temporary-error warning, the RONDB-1062 deadlock
+--echo # detail, and the unchanged 1205 error.  (SHOW WARNINGS does not clear the
+--echo # diagnostics area, so the victim's warnings are still present here.)
+--enable_result_log
+
+if ($c1_err == 1205)
+{
+  connection con1;
+  --replace_regex /\(id\): [0-9]+/(id): #/
+  SHOW WARNINGS;
+}
+if ($c2_err == 1205)
+{
+  connection con2;
+  --replace_regex /\(id\): [0-9]+/(id): #/
+  SHOW WARNINGS;
+}
+
+--disable_result_log
+
+# Clean up (the victim is already aborted; roll back both to be safe).
+connection con1;
+rollback;
+connection con2;
+rollback;
+connection default;
+DROP TABLE t1;
+disconnect con1;
+disconnect con2;
+--enable_result_log
+--enable_query_log
