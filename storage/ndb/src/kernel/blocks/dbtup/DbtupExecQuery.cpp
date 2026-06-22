@@ -1063,8 +1063,7 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
             prepare_fragptr.p->fragmentId,
-            getThreadId(),
-            getJitArena());
+            getThreadId());
         ndbrequire(result.agg != nullptr || result.vs != nullptr);
         scan_rec_ptr->m_agg_interpreter = result.agg;
         scan_rec_ptr->m_vs_interpreter = result.vs;

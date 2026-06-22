@@ -81,8 +81,9 @@ struct LeafProgram {
    *   - The bridge rejects (unsupported opcode like kOpEmbeddedInterp,
    *     non-bigint type, malformed bytecode, etc.).
    *   - jit1_compile rejects via the admission walk.
-   *   - DblqhProxy::m_jit_arena was not created (mmap failure on
-   *     a hardened kernel).
+   *   - The code-memory manager is out of memory (cap reached / mmap
+   *     failure on a hardened kernel); jit1_compile returns NULL and the
+   *     leaf falls back to the interpreter.
    *   - Multi-leaf programs in Phase 4 (only m_num_leaves == 1
    *     is JIT-eligible; multi-leaf is Phase 5 territory).
    *

@@ -263,8 +263,7 @@ PushdownInterpreterFactory::DetectType(const Uint32* prog, Uint32 prog_len) {
 PushdownCreateResult
 PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                    Int64 table_id, Int64 frag_id,
-                                   Uint32 thread_id,
-                                   NdbJitArena *jit_arena) {
+                                   Uint32 thread_id) {
   PushdownCreateResult result = {nullptr, nullptr};
   PushdownType type = DetectType(prog, prog_len);
 
@@ -285,8 +284,7 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
      * the JIT entry only when m_n_gb_cols == 0, so a GROUP-BY program's
      * blob would never be used. Acquire from the node-global agg reuse
      * cache (identical scalar aggregations share one blob); the handle is
-     * released in ~AggInterpreterBase. The jit_arena parameter is
-     * superseded by the code-memory manager and removed in Slice 3d. */
+     * released in ~AggInterpreterBase. */
     if (result.agg->n_gb_cols() == 0) {
       const Uint32 *agg_prog = result.agg->agg_program();
       const Uint32 bc_off = result.agg->agg_prog_start_pos();

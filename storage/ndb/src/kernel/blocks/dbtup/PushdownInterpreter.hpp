@@ -29,7 +29,6 @@
 class AggInterpreter;
 class JoinAggInterpreter;
 class VecSearchInterpreter;
-struct NdbJitArena;
 
 enum class PushdownType : Uint32 {
   AGGREGATION = 0,
@@ -120,8 +119,7 @@ class PushdownInterpreterFactory {
   static PushdownType DetectType(const Uint32* prog, Uint32 prog_len);
   static PushdownCreateResult Create(const Uint32* prog, Uint32 prog_len,
                                      Int64 table_id, Int64 frag_id,
-                                     Uint32 thread_id,
-                                     NdbJitArena *jit_arena);
+                                     Uint32 thread_id);
 };
 
 #endif  // PUSHDOWNINTERPRETER_H_

@@ -1,10 +1,12 @@
 # Phase 8 — JIT code-memory manager + compiled-program cache
 
-**Status: Slices 1a (code-memory manager) + 1b (program reuse cache) +
-2 (`jit1_compile` on codemem) implemented & host-tested (2026-06-17).**
-Slice 2 is the first to touch the live JIT path. The remaining slices
-(3 DBTUP/agg lifecycle, 4 RonSQL PREPARE) are designed below but not yet
-built.
+**Status: Phase 8 item #1 (the node-global code-memory manager) COMPLETE
+(2026-06-22).** Slices 1a (manager) + 1b (reuse cache) + 2 (`jit1_compile`
+on codemem) + 3a/3b/3c (all three compile paths reuse + free) + 3d (dead
+per-block arenas removed) are implemented and tested. The ship blocker is
+resolved: every compiled program is freed when it dies, in a node-global
+free-capable pool. Slice 4 (RonSQL PREPARE pinned reuse) is an optional
+enhancement, designed below but not built.
 
 This is Phase 8 item #1 from `plan.md` §14 — *the* ship blocker. Before
 this, JIT code memory was a per-block monotonic bump arena
@@ -169,9 +171,19 @@ Sharded refcounted hash so identical bytecode reuses one compiled blob.
   the virtual destructor). The handle stays `nullptr` for join aggregation
   (proxy-owned leaf, borrowed `m_jit_entry`), so its destructor release is a
   no-op — no double free with 3b. Tested via `rondb_jit_standalone_canary`.
-- **3d — remove dead per-block `m_jit_arena`s** (`DbtupGen.cpp`, `DblqhProxy`
-  ctor/dtor, `getJitArena`) + unused `arena` params / `NdbJitArena`
-  fwd-decls. Pending.
+- **3d — remove dead per-block `m_jit_arena`s.** ✅ done. Deleted
+  `Dbtup::m_jit_arena` + `getJitArena()` (`Dbtup.hpp`, `DbtupGen.cpp`
+  ctor/dtor + include), `DblqhProxy::m_jit_arena` (`DblqhProxy.{hpp,cpp}`
+  ctor/dtor/include), and the `jit_arena` param on
+  `PushdownInterpreterFactory::Create` (`.hpp`/`.cpp` + the `DbtupExecQuery`
+  call site) plus the `NdbJitArena` forward-decls. Join-agg's JIT gate
+  simplified from `m_jit_arena != nullptr && m_num_leaves == 1` to
+  `m_num_leaves == 1` (with the dead `arena == nullptr` fallback branch
+  removed); `dbtup_jit_register_helpers()` stays in both ctors. The
+  `ndb_jit_arena` **library** remains linked — it's the executable-memory
+  substrate under the code-memory manager (`jit_codemem` lives in it) —
+  only the per-block *instances* are gone. Pure deletion, no behavior
+  change. **Phase 8 item #1 (code-memory manager) is complete.**
 - **4 — RonSQL PREPARE** pinned acquire at prepare / release at deallocate.
 
 ## Cross-thread publication (orthogonal, pre-existing)

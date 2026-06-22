@@ -29,7 +29,6 @@
 #include "dbtup/JoinAggInterpreter.hpp"
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include "dbtup/DbtupJitGlue.hpp"
-#include "dbtup/jit/jit_arena.h"
 #include "dbtup/jit/jit1.h"
 #include "dbtup/jit/ndb_jit_bridge.h"
 
@@ -106,29 +105,17 @@ static void ndb_jit_event_logger(void *, const char *line) {
 #endif
 
 DblqhProxy::DblqhProxy(Block_context &ctx)
-    : LocalProxy(DBLQH, ctx), c_tableRecSize(0), c_tableRec(0),
-      m_jit_arena(nullptr) {
+    : LocalProxy(DBLQH, ctx), c_tableRecSize(0), c_tableRec(0) {
   m_received_wait_all = false;
   m_lcp_started = false;
   m_outstanding_wait_lcp = 0;
   m_outstanding_start_node_lcp_req = 0;
 
-  /* Phase 4 RONDB-1056: per-node JIT compile arena.
-   *
-   * 1 MB initial. Holds ~500 typical aggregation programs (each
-   * ~2KB on aarch64, ~600B on x86_64). If creation fails (mmap
-   * rejected on hardened kernels — see jit_arena_linux.inc.c for
-   * the W^X fallback path), the pointer stays NULL and the
-   * proxy operates with JIT disabled — interpreter handles
-   * every program, same as before Phase 4. */
-  m_jit_arena = ndb_jit_arena_create(1024 * 1024);
-
-  /* Register all Phase 4 cold-call helpers with the JIT engine.
+  /* Register all RONDB-1056 cold-call helpers with the JIT engine.
    * Idempotent: if multiple DblqhProxy instances ever exist (e.g.,
-   * tests), re-registering the same helpers is a no-op. Done
-   * unconditionally — even if m_jit_arena failed, the helpers
-   * stay registered and become useful as soon as a working arena
-   * appears. */
+   * tests), re-registering the same helpers is a no-op. Compiled
+   * programs live in the node-global code-memory manager (Phase 8) —
+   * this block no longer owns a per-proxy JIT arena. */
   dbtup_jit_register_helpers();
 
   // GSN_CREATE_TAB_REQ
@@ -268,13 +255,9 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
 }
 
 DblqhProxy::~DblqhProxy() {
-  /* Phase 4: tear down the JIT arena. Workers should not hold any
-   * Jit1Prog* references at this point — DblqhProxy outlives every
-   * JoinAggregationState by NDB block-lifecycle invariants. */
-  if (m_jit_arena != nullptr) {
-    ndb_jit_arena_destroy(m_jit_arena);
-    m_jit_arena = nullptr;
-  }
+  /* RONDB-1056 Phase 8: nothing JIT to tear down here. Compiled leaf
+   * programs are freed at JOIN_AGG teardown (jit1_free) and the code
+   * memory they use belongs to the node-global manager, not this block. */
 }
 
 SimulatedBlock *DblqhProxy::newWorker(Uint32 instanceNo) {
@@ -2852,7 +2835,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 #else
   const bool fatal_compile_failure = false;
 #endif
-  if (m_jit_arena != nullptr && state->m_num_leaves == 1) {
+  if (state->m_num_leaves == 1) {
     jam();
     LeafProgram &lp = state->m_leaf_programs[0];
     Uint32 bc_off = lp.m_agg_prog_start_pos;
@@ -2901,9 +2884,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
         }
 #endif
-        /* Slice 2: compile into the node-global code-memory manager
-         * (free-capable, shared) rather than the per-block bump arena.
-         * The per-block m_jit_arena is removed in Slice 3. */
+        /* Compile into the node-global code-memory manager (free-capable,
+         * shared). Freed by jit1_free at JOIN_AGG teardown (Slice 3b). */
         Jit1Prog *jp =
             jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
         if (jp != nullptr) {
@@ -2974,16 +2956,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           "ERROR_INSERT 4062: JIT setup found no aggregation bytecode "
           "for key=%u (start=%u len=%u). Aborting.",
           key, (unsigned)bc_off, (unsigned)lp.m_agg_program_len);
-      abort();
-    }
-  } else if (m_jit_arena == nullptr) {
-    DEB_JIT_IF(log_jit_decision,
-               ("[RONDB-1056] JIT disabled (arena unavailable) "
-                "key=%u — interpreter fallback", key));
-    if (fatal_compile_failure) {
-      g_eventLogger->error(
-          "ERROR_INSERT 4062: JIT arena unavailable for key=%u. Aborting.",
-          key);
       abort();
     }
   } else {

@@ -83,10 +83,12 @@ Recommended order:
      via `AggInterpreterBase::setJitCacheHandle`, released in
      `~AggInterpreterBase` (runs on both fast + chunked teardown). nullptr
      for join-agg → no double-free with 3b. Test: `rondb_jit_standalone_canary`.
-   - **Slice 3d** — remove dead per-block `m_jit_arena`s (`DbtupGen.cpp`,
-     `DblqhProxy` ctor/dtor, `getJitArena`) + unused `arena` params.
-     **All three compile paths now free their code memory — the ship
-     blocker is closed; 3d is cleanup.**
+   - **Slice 3d — remove dead per-block `m_jit_arena`s DONE.** Deleted
+     `Dbtup::m_jit_arena`/`getJitArena`, `DblqhProxy::m_jit_arena`, the
+     `Create` `jit_arena` param + the `NdbJitArena` fwd-decls; join-agg gate
+     simplified to `m_num_leaves == 1`. The `ndb_jit_arena` *library* stays
+     (substrate under `jit_codemem`); only per-block instances are gone.
+     **Phase 8 item #1 COMPLETE — the ship blocker is fully resolved.**
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
    always-on-if-eligible — no off switch; operability blocker).

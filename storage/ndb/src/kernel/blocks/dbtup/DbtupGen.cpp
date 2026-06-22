@@ -43,7 +43,6 @@
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
 #include "DbtupJitGlue.hpp"
-#include "jit/jit_arena.h"
 #include "util/require.h"
 
 #include <IntrusiveList.hpp>
@@ -117,7 +116,6 @@ Dbtup::Dbtup(Block_context& ctx,
     c_pending_undo_page_hash(c_pending_undo_page_pool),
     f_undo_done(true)
 {
-  m_jit_arena = nullptr;
   BLOCK_CONSTRUCTOR(Dbtup);
 
   NdbTick_Invalidate(&m_rowid_899_window_start);
@@ -266,20 +264,13 @@ Dbtup::Dbtup(Block_context& ctx,
   static_assert(c_transient_pool_count == 4);
   c_transient_pools_shrinking.clear();
 
-  /* Phase 6.5 RONDB-1056: temporary per-DBTUP-instance JIT arena for
-   * standalone pushed aggregation programs. Join aggregation still
-   * compiles in DblqhProxy's arena. Phase 8 replaces both with the
-   * planned node-global code-memory manager. */
-  m_jit_arena = ndb_jit_arena_create(1024 * 1024);
+  /* RONDB-1056: register JIT cold-call helpers (idempotent). Compiled
+   * programs live in the node-global code-memory manager (Phase 8); this
+   * block no longer owns a per-instance JIT arena. */
   dbtup_jit_register_helpers();
 }  // Dbtup::Dbtup()
 
 Dbtup::~Dbtup() {
-  if (m_jit_arena != nullptr) {
-    ndb_jit_arena_destroy(m_jit_arena);
-    m_jit_arena = nullptr;
-  }
-
   /* Free Fragment Copy Procedure info */
   freeCopyProcedure();
 
