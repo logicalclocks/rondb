@@ -277,7 +277,8 @@ bool NdbAggregator::isTemporalType(Uint32 type) const {
   return type == NDB_TYPE_DATE ||
          type == NDB_TYPE_YEAR ||
          type == NDB_TYPE_DATETIME2 ||
-         type == NDB_TYPE_TIME2;
+         type == NDB_TYPE_TIME2 ||
+         type == NDB_TYPE_TIMESTAMP2;
 }
 
 void NdbAggregator::clearStringSlot(AggResItem *slot) const {
@@ -788,12 +789,14 @@ bool NdbAggregator::TypeSupported(NdbDictionary::Column::Type type) {
     // TIME2.  The kernel reads each column's native packed value as an
     // unsigned integer and returns a Bigunsigned result (see
     // AggInterpreterBase); RonSQL decodes it for display.  SUM/AVG over
-    // these is rejected separately (see Sum()).  TIMESTAMP2 is deferred
-    // (timezone semantics).
+    // these is rejected separately (see Sum()).  TIMESTAMP2's epoch ordering
+    // is absolute, so MIN/MAX is exact; RonSQL applies the session timezone
+    // (UTC) at display.
     case NdbDictionary::Column::Date:
     case NdbDictionary::Column::Year:
     case NdbDictionary::Column::Datetime2:
     case NdbDictionary::Column::Time2:
+    case NdbDictionary::Column::Timestamp2:
       return true;
     default:
       return false;

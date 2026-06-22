@@ -13,6 +13,12 @@
 --disable_query_log
 --disable_warnings
 
+# Load with a fixed UTC session so TIMESTAMP storage (evlog.e_stamp /
+# e_stamp6) is deterministic across machines — TIMESTAMP literals are
+# converted from the session time zone to UTC at store time.  DATE / DATETIME
+# / TIME are timezone-independent, so this does not affect the other columns.
+SET time_zone = '+00:00';
+
 # --- deterministic numbers helper (non-NDB, dropped at end of load) ---
 CREATE TABLE _d (d INT) ENGINE=MEMORY;
 INSERT INTO _d VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
@@ -77,7 +83,10 @@ INSERT INTO evlog
          DATE_ADD(DATE_ADD('2001-06-15 12:00:00', INTERVAL n*89 SECOND),
                   INTERVAL MOD(n*123457,1000000) MICROSECOND),
          SEC_TO_TIME(MOD(n*271,86400)),
-         SEC_TO_TIME(MOD(n*331,86400) + MOD(n*97,1000)*0.001)
+         SEC_TO_TIME(MOD(n*331,86400) + MOD(n*97,1000)*0.001),
+         DATE_ADD('2001-01-01 00:00:00', INTERVAL n*157 MINUTE),
+         DATE_ADD(DATE_ADD('2001-03-10 08:00:00', INTERVAL n*53 SECOND),
+                  INTERVAL MOD(n*98765,1000000) MICROSECOND)
   FROM _seq WHERE n <= 300;
 
 DROP TABLE _seq;

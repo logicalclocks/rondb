@@ -54,15 +54,26 @@ either; no recorded D17 shape needs it.
 - `body_index.inc` **index-9** stays disabled but **re-tagged D9** (the
   residual is the DATE *index-scan root*, not D17).
 
-## Temporal extension — YEAR + DATETIME2 + TIME2 (shipped with D17)
+## Temporal extension — YEAR + DATETIME2 + TIME2 + TIMESTAMP2 (shipped with D17)
 
-Follow-up after D17/DATE, per the temporal-coverage decision (TIMESTAMP2
-deferred — timezone semantics).  Same integer-monotonic shortcut: each type
-reduces to an unsigned value the kernel MIN/MAXes, returned as Bigunsigned and
-decoded for display by RonSQL.
+Follow-up after D17/DATE.  Same integer-monotonic shortcut: each type reduces
+to an unsigned value the kernel MIN/MAXes, returned as Bigunsigned and decoded
+for display by RonSQL.  (TIMESTAMP2 was initially deferred for timezone
+semantics, then shipped — see the TIMESTAMP2 note below.)
 
 - **YEAR (26)** — 1-byte unsigned (like TINYUNSIGNED); display `v+1900`,
   `0 → 0000`.
+- **TIMESTAMP2 (33)** — big-endian, memcmp-comparable, width `4+flen`.  Same
+  kernel big-endian load as DATETIME2/TIME2.  Its on-disk value is the UTC
+  epoch; **epoch order is absolute, so MIN/MAX is timezone-independent** and
+  needs no special kernel handling.  Display: RonSQL reconstructs the bytes,
+  `my_timestamp_from_binary` → `my_timeval{epoch, usec}`, then breaks the epoch
+  down in **UTC** via the lock-free `ronsql_utc_sec_to_TIME` (`get_date_from_daynr`,
+  no glibc `tzset_lock` — mirrors the kernel's `ttl_utc_sec_to_TIME`, commit
+  `808bb79ce23`), and `my_TIME_to_str`.  The MTR suite loads + compares under
+  `time_zone='+00:00'` so storage and display are deterministic.  The existing
+  ResultPrinter passthrough Timestamp2 decode was also switched off `gmtime()`
+  to the same helper.
 - **TIME2 (31) / DATETIME2 (32)** — big-endian, memcmp-comparable MySQL packed
   binary, width `3+flen` / `5+flen` with `flen=(1+fsp)/2`.  The kernel reads
   `header->getByteSize()` bytes **MSB-first** into the register (unsigned

@@ -738,3 +738,43 @@ FROM evlog GROUP BY e_group)
 SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
 mmn	mmx	c
 00:05:22.414	23:59:51.317	60
+
+=== agg-d17i (temporal): MIN/MAX over TIMESTAMP fsp=0 (evlog.e_stamp) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_stamp) AS mn, MAX(e_stamp) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_stamp) AS mn, MAX(e_stamp) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+2001-01-01 02:37:00	2001-02-02 17:00:00	60
+
+=== agg-d17j (temporal): MIN/MAX over TIMESTAMP(6) fractional (evlog.e_stamp6) ===
+== Query ==
+WITH x AS (SELECT e_group AS g, MIN(e_stamp6) AS mn, MAX(e_stamp6) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT e_group AS g, MIN(e_stamp6) AS mn, MAX(e_stamp6) AS mx
+FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+mmn	mmx	c
+2001-03-10 08:00:53.098765	2001-03-10 12:25:00.629500	60

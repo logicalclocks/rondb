@@ -22,7 +22,8 @@
 # SUM over INTEGER columns (o_shippriority, l_quantity, s_nationkey) and over
 # DECIMAL (D1); MIN/MAX over every named width (TINYINT, SMALLINT UNSIGNED,
 # MEDIUMINT, INT, BIGINT UNSIGNED), DECIMAL scale-2 and scale-0, CHAR / VARCHAR,
-# and temporal DATE / YEAR / DATETIME / TIME (D17 + temporal, agg-d17a..h).
+# and temporal DATE / YEAR / DATETIME / TIME / TIMESTAMP (D17 + temporal,
+# agg-d17a..j; TIMESTAMP epoch is TZ-independent for MIN/MAX, UTC display).
 # GROUP BY a single column and GROUP BY multiple columns.  Projection-only main
 # SELECT over a CTE_LOOKUP child also works now (D3 verified — see agg-d3).
 #
@@ -599,6 +600,35 @@ SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
 --echo == Expected result ==
 --sorted_result
 WITH x AS (SELECT e_group AS g, MIN(e_split) AS mn, MAX(e_split) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
+--echo
+--echo === agg-d17i (temporal): MIN/MAX over TIMESTAMP fsp=0 (evlog.e_stamp) ===
+# TIMESTAMP epoch ordering is absolute (TZ-independent), so MIN/MAX is exact;
+# RonSQL displays in UTC (the load + test connection + mysql baseline all run
+# with time_zone='+00:00').
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_stamp) AS mn, MAX(e_stamp) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_stamp) AS mn, MAX(e_stamp) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
+
+--echo
+--echo === agg-d17j (temporal): MIN/MAX over TIMESTAMP(6) fractional (evlog.e_stamp6) ===
+let $QUERY=
+WITH x AS (SELECT e_group AS g, MIN(e_stamp6) AS mn, MAX(e_stamp6) AS mx
+           FROM evlog GROUP BY e_group)
+SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH x AS (SELECT e_group AS g, MIN(e_stamp6) AS mn, MAX(e_stamp6) AS mx
            FROM evlog GROUP BY e_group)
 SELECT MIN(x.mn) AS mmn, MAX(x.mx) AS mmx, COUNT(*) AS c FROM x|
 

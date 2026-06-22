@@ -5074,6 +5074,11 @@ RonSQLPreparer::compile()
             ResultPrinter::TemporalDisplay::TIME2;
         column_metadata[col_idx].temporal_fsp = col->getPrecision();
         break;
+      case NdbDictionary::Column::Timestamp2:
+        column_metadata[col_idx].temporal =
+            ResultPrinter::TemporalDisplay::TIMESTAMP2;
+        column_metadata[col_idx].temporal_fsp = col->getPrecision();
+        break;
       default:
         break;
       }
@@ -7181,6 +7186,7 @@ RonSQLPreparer::resolve_chained_column_type(
         case NdbDictionary::Column::Year:
         case NdbDictionary::Column::Datetime2:
         case NdbDictionary::Column::Time2:
+        case NdbDictionary::Column::Timestamp2:
           // D17 + temporal: MIN/MAX over a temporal column widens to
           // Bigunsigned (8-byte packed value) on the wire — mirror
           // build_cte_virtual_tables so chained CTE layers see the same
@@ -7451,6 +7457,7 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
             case NdbDictionary::Column::Year:
             case NdbDictionary::Column::Datetime2:
             case NdbDictionary::Column::Time2:
+            case NdbDictionary::Column::Timestamp2:
               // D17 + temporal: the kernel reads the temporal column's native
               // packed value as an unsigned integer and emits an 8-byte
               // Bigunsigned MIN/MAX result (see AggInterpreterBase).  The

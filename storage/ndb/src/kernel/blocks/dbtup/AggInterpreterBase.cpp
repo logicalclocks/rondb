@@ -235,8 +235,10 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
                       m_registers[reg_index].value.val_uint64);
       return 0;
     case NDB_TYPE_DATETIME2:
-    case NDB_TYPE_TIME2: {
-      // Temporal: DATETIME2 (5+flen bytes) and TIME2 (3+flen bytes) are
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2: {
+      // Temporal: DATETIME2 (5+flen bytes), TIME2 (3+flen bytes) and
+      // TIMESTAMP2 (4+flen bytes) are
       // stored big-endian in MySQL's memcmp-comparable packed binary, where
       // flen = (1+precision)/2.  Read the column's exact byte width (from the
       // AttributeHeader — no padding, getByteSize == 5+flen / 3+flen) MSB-first
@@ -768,10 +770,13 @@ bool AggInterpreterBase::TypeSupported(DataType type) {
     // read MSB-first into the register so unsigned compare == memcmp ==
     // chronological order).  All three reduce to an unsigned integer for
     // MIN/MAX; RonSQL decodes the result for display.  Sum/Avg rejected.
-    // TIMESTAMP2 is deferred (timezone semantics).
+    // TIMESTAMP2 is also big-endian memcmp-comparable; its on-disk epoch
+    // ordering is absolute (timezone-independent), so MIN/MAX is exact and
+    // TZ only matters at display time (handled in RonSQL).
     case NDB_TYPE_YEAR:
     case NDB_TYPE_DATETIME2:
     case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2:
 
     // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
     // Sum is rejected separately (see Sum()).  Count is
@@ -800,11 +805,12 @@ bool AggInterpreterBase::IsUnsigned(DataType type) {
     // unsigned compare path (val_uint64) sorts 0000-00-00 (w=0)
     // lowest, as MySQL DATE MIN/MAX requires.
     case NDB_TYPE_DATE:
-    // Temporal extension: YEAR / DATETIME2 / TIME2 all compare as
-    // unsigned (big-endian memcmp order for the "2" types).
+    // Temporal extension: YEAR / DATETIME2 / TIME2 / TIMESTAMP2 all compare
+    // as unsigned (big-endian memcmp order for the "2" types).
     case NDB_TYPE_YEAR:
     case NDB_TYPE_DATETIME2:
     case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2:
       return true;
     default:
       return false;
@@ -829,11 +835,12 @@ DataType AggInterpreterBase::AlignedType(DataType type, int scale) {
     // D17: DATE is held as the unsigned 3-byte packed value in a
     // BIGINT register (is_unsigned set via IsUnsigned).
     case NDB_TYPE_DATE:
-    // Temporal extension: YEAR (1 byte) and DATETIME2 / TIME2 (big-endian
-    // packed value) are likewise held as an unsigned BIGINT.
+    // Temporal extension: YEAR (1 byte) and DATETIME2 / TIME2 / TIMESTAMP2
+    // (big-endian packed value) are likewise held as an unsigned BIGINT.
     case NDB_TYPE_YEAR:
     case NDB_TYPE_DATETIME2:
     case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2:
 
       return NDB_TYPE_BIGINT;
     case NDB_TYPE_FLOAT:

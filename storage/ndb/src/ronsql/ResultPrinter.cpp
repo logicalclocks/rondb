@@ -53,6 +53,41 @@
 using std::endl;
 using std::max;
 
+/*
+ * Lock-free UTC epoch-seconds -> broken-down MYSQL_TIME, for displaying
+ * TIMESTAMP (Timestamp2) results.  glibc gmtime_r()/gmtime() funnel through
+ * __tz_convert(), which takes the process-global tzset_lock on every call even
+ * for UTC, serializing concurrent RDRS request threads.  This uses only the
+ * in-tree calendar arithmetic (get_date_from_daynr, mysys/my_time.cc), so it
+ * touches no glibc lock.  Field-for-field equivalent to MySQL's
+ * sec_to_TIME(out, t, 0) (the my_tz_OFFSET0 path); mirrors the kernel's
+ * ttl_utc_sec_to_TIME from commit 808bb79ce23 (Avoid glibc tzset_lock on TTL
+ * hot paths).  Leaves second_part to the caller (fractional seconds).
+ */
+static inline void ronsql_utc_sec_to_TIME(time_t t, MYSQL_TIME *out)
+{
+  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch). */
+  const int64_t EPOCH_DAYNR = 719528;
+  int64_t days = (int64_t)t / 86400;
+  int32_t secs = (int32_t)((int64_t)t % 86400);
+  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
+    secs += 86400;
+    days -= 1;
+  }
+  unsigned int year, month, day;
+  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
+  out->neg = false;
+  out->second_part = 0;
+  out->year = year;
+  out->month = month;
+  out->day = day;
+  out->hour = secs / 3600;
+  out->minute = (secs % 3600) / 60;
+  out->second = secs % 60;
+  out->time_zone_displacement = 0;
+  out->time_type = MYSQL_TIMESTAMP_DATETIME;
+}
+
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 #define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
@@ -787,18 +822,10 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            Int64 epochIn = myTV.m_tv_sec;
-            time_t stdtime(epochIn);
-            struct tm *time_info = gmtime(&stdtime);
-            MYSQL_TIME lTime  = {};
-            lTime.year        = time_info->tm_year + 1900;
-            lTime.month       = time_info->tm_mon +1;
-            lTime.day         = time_info->tm_mday;
-            lTime.hour        = time_info->tm_hour;
-            lTime.minute      = time_info->tm_min;
-            lTime.second      = time_info->tm_sec;
+            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
+            MYSQL_TIME lTime;
+            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
             lTime.second_part = myTV.m_tv_usec;
-            lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -1587,18 +1614,10 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            Int64 epochIn = myTV.m_tv_sec;
-            time_t stdtime(epochIn);
-            struct tm *time_info = gmtime(&stdtime);
-            MYSQL_TIME lTime  = {};
-            lTime.year        = time_info->tm_year + 1900;
-            lTime.month       = time_info->tm_mon +1;
-            lTime.day         = time_info->tm_mday;
-            lTime.hour        = time_info->tm_hour;
-            lTime.minute      = time_info->tm_min;
-            lTime.second      = time_info->tm_sec;
+            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
+            MYSQL_TIME lTime;
+            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
             lTime.second_part = myTV.m_tv_usec;
-            lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -2151,6 +2170,26 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
       Int64 packed = my_time_packed_from_binary(bytes, temporal_fsp);
       MYSQL_TIME mt;
       TIME_from_longlong_time_packed(&mt, packed);
+      my_TIME_to_str(mt, buf, temporal_fsp);
+      break;
+    }
+    case TemporalDisplay::TIMESTAMP2:
+    {
+      // TIMESTAMP2 stores the UTC epoch (4+flen bytes, big-endian); decode the
+      // reconstructed bytes to a my_timeval and break the epoch down in UTC
+      // (RonSQL/RDRS treat the server as UTC; the mysql baseline runs with
+      // time_zone='+00:00').  Uses the lock-free ronsql_utc_sec_to_TIME, not
+      // gmtime_r.  Mirrors the passthrough decode below.
+      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
+      Uint32 n = 4u + flen;
+      Uint8 bytes[8];
+      for (Uint32 i = 0; i < n; i++)
+        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+      my_timeval tv{};
+      my_timestamp_from_binary(&tv, bytes, temporal_fsp);
+      MYSQL_TIME mt;
+      ronsql_utc_sec_to_TIME((time_t)tv.m_tv_sec, &mt);
+      mt.second_part = (unsigned long)tv.m_tv_usec;
       my_TIME_to_str(mt, buf, temporal_fsp);
       break;
     }

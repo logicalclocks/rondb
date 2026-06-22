@@ -45,7 +45,8 @@ public:
     DATE,        // 3-byte little-endian uint3korr → YYYY-MM-DD
     YEAR,        // 1 byte → YYYY (v+1900, 0→0000)
     DATETIME2,   // big-endian 5+flen bytes → YYYY-MM-DD HH:MM:SS[.frac]
-    TIME2        // big-endian 3+flen bytes → [-]HH:MM:SS[.frac]
+    TIME2,       // big-endian 3+flen bytes → [-]HH:MM:SS[.frac]
+    TIMESTAMP2   // big-endian 4+flen bytes (UTC epoch) → YYYY-MM-DD HH:MM:SS[.frac]
   };
   struct ColumnMetadata {
     CHARSET_INFO* charset;
