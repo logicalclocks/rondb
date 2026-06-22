@@ -234,6 +234,14 @@ struct NdbJitStats {
  * managers' locks briefly); for NDBINFO reporting, not the per-row path. */
 void dbtup_jit_get_stats(NdbJitStats *out);
 
+/* RONDB-1056 Phase 8 — CompiledInterpreter config gate (node-global).
+ * dbtup_jit_set_mode is called once at config read with the
+ * NDB_COMPILED_INTERPRETER_* value; every compile site consults
+ * dbtup_jit_enabled() and produces no JIT program when the mode is OFF
+ * (so the program runs on the interpreter). Default is enabled (AUTO). */
+void dbtup_jit_set_mode(Uint32 mode);
+bool dbtup_jit_enabled();
+
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The
  * caller maps a rejected row to TUPKEY_abort with

@@ -309,6 +309,13 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
                             &joinAggPoolSize);
   initJoinAggStatePool(joinAggPoolSize);
 
+  /* RONDB-1056 Phase 8: CompiledInterpreter (JIT) mode. Node-global; set
+   * here once (before any scan/aggregation traffic) and consulted at every
+   * JIT compile site. Default AUTO (enabled) if unset. */
+  Uint32 jitMode = NDB_COMPILED_INTERPRETER_AUTO;
+  ndb_mgm_get_int_parameter(p, CFG_DB_COMPILED_INTERPRETER, &jitMode);
+  dbtup_jit_set_mode(jitMode);
+
   backREAD_CONFIG_REQ(signal);
 }
 
@@ -2835,7 +2842,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 #else
   const bool fatal_compile_failure = false;
 #endif
-  if (state->m_num_leaves == 1) {
+  if (dbtup_jit_enabled() && state->m_num_leaves == 1) {
     jam();
     LeafProgram &lp = state->m_leaf_programs[0];
     Uint32 bc_off = lp.m_agg_prog_start_pos;

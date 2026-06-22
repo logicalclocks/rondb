@@ -248,6 +248,15 @@ static const ConfigInfo::Typelib arbit_method_typelib[] = {
     {"WaitExternal", ARBIT_METHOD_WAITEXTERNAL},
     {nullptr, 0}};
 
+/* RONDB-1056: CompiledInterpreter (JIT) mode for pushed-down interpreted
+ * programs. OFF disables the JIT; AUTO (default) compiles every eligible
+ * program; ON is reserved (treated as AUTO today). */
+static const ConfigInfo::Typelib compiled_interpreter_typelib[] = {
+    {"OFF", NDB_COMPILED_INTERPRETER_OFF},
+    {"AUTO", NDB_COMPILED_INTERPRETER_AUTO},
+    {"ON", NDB_COMPILED_INTERPRETER_ON},
+    {nullptr, 0}};
+
 static const ConfigInfo::Typelib
     default_operation_redo_problem_action_typelib[] = {
         {"abort", OPERATION_REDO_PROBLEM_ACTION_ABORT},
@@ -936,6 +945,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "256",
     "1",
     "4096" },
+
+  {
+    CFG_DB_COMPILED_INTERPRETER,
+    "CompiledInterpreter",
+    DB_TOKEN,
+    "RONDB-1056 JIT for pushed-down interpreted programs (scan filters and "
+    "aggregation): OFF = interpreter only; AUTO (default) = JIT every "
+    "eligible program; ON = force JIT (reserved, same as AUTO today)",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_ENUM,
+    "AUTO",   /* default */
+    compiled_interpreter_typelib },
 
     /* End RonDB additions */
 

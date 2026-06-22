@@ -90,8 +90,21 @@ Recommended order:
      (substrate under `jit_codemem`); only per-block instances are gone.
      **Phase 8 item #1 COMPLETE — the ship blocker is fully resolved.**
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
-2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
-   always-on-if-eligible — no off switch; operability blocker).
+2. **Config param `CompiledInterpreter` — DONE (2026-06-22).** New
+   `[DB]` config.ini parameter `CompiledInterpreter` (`CI_ENUM`,
+   `CFG_DB_COMPILED_INTERPRETER=705`): **OFF** = interpreter only;
+   **AUTO** (default) = JIT every eligible program (current behaviour);
+   **ON** = reserved (== AUTO today). Named `CompiledInterpreter` (not the
+   plan's `JoinAggCompiledInterpreter`) since the JIT now covers scan
+   filters + standalone + join aggregation. `dbtup_jit_set_mode` /
+   `dbtup_jit_enabled` (node-global flag in `DbtupJitGlue`, default AUTO)
+   read once in `DblqhProxy::execREAD_CONFIG_REQ`; all three compile sites
+   (scan filter, standalone agg, join agg) return no JIT program when OFF
+   → interpreter. Startup param (effective at node start; no runtime MGM
+   SET wired). typelib + def in `ConfigInfo.cpp`, key + value `#define`s in
+   `mgmapi_config_parameters.h`. **NOTE:** config-enumeration tests
+   (`ndb_config` / config-defaults `.result`) need `--record` (one new
+   param). Default AUTO keeps the existing JIT canaries green.
 3. **NDBINFO counters — DONE (2026-06-22).** New node-global ndbinfo table
    `ndbinfo.jit` (kernel `JIT_TABLEID=55`), one row per data node:
    `code_reserved_bytes`, `code_used_bytes`, `code_slots_live` (from the

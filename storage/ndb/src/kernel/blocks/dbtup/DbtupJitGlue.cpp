@@ -34,6 +34,21 @@ extern "C" {
 #define ZAGG_MATH_OVERFLOW 1860
 #endif
 
+/* ------------------------------------------------------------------ */
+/* RONDB-1056 Phase 8 — CompiledInterpreter config gate.              */
+/*                                                                    */
+/* Node-global JIT mode from the CompiledInterpreter config param. Set */
+/* once at config read (DblqhProxy::execREAD_CONFIG_REQ) before any    */
+/* scan/aggregation traffic, then only read on the compile path — so a */
+/* plain word needs no synchronisation. Defaults to enabled (AUTO) so  */
+/* a compile before config read (none expected) still works. 0 is OFF  */
+/* (NDB_COMPILED_INTERPRETER_OFF); AUTO/ON are enabled.                */
+static Uint32 g_jit_mode = 1 /* NDB_COMPILED_INTERPRETER_AUTO */;
+
+void dbtup_jit_set_mode(Uint32 mode) { g_jit_mode = mode; }
+
+bool dbtup_jit_enabled() { return g_jit_mode != 0 /* != OFF */; }
+
 #ifdef ERROR_INSERT
 static bool dbtup_jit_trace_start(AggInterpreterBase *agg,
                                   Dbtup *block_tup,
@@ -495,6 +510,9 @@ void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
   if (out_cache_handle != nullptr) {
     *out_cache_handle = nullptr;
   }
+  if (!dbtup_jit_enabled()) {
+    return nullptr;   /* CompiledInterpreter=OFF -> run on the interpreter */
+  }
   if (filter_prog == nullptr || n_words == 0) {
     return nullptr;
   }
@@ -576,6 +594,9 @@ void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
                             void **out_cache_handle) {
   if (out_cache_handle != nullptr) {
     *out_cache_handle = nullptr;
+  }
+  if (!dbtup_jit_enabled()) {
+    return nullptr;   /* CompiledInterpreter=OFF -> run on the interpreter */
   }
   if (agg_prog == nullptr || n_words == 0) {
     return nullptr;
