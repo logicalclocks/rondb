@@ -605,6 +605,30 @@ void dbtup_jit_release_agg(void *cache_handle) {
                             static_cast<NjpEntry *>(cache_handle));
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 8 — node-global JIT statistics (NDBINFO).                    */
+/* ------------------------------------------------------------------ */
+
+void dbtup_jit_get_stats(NdbJitStats *out) {
+  if (out == nullptr) {
+    return;
+  }
+  NdbJitCodeMem *mem = ndb_jit_codemem_global();
+  out->code_reserved_bytes = ndb_jit_codemem_reserved_bytes(mem);
+  out->code_used_bytes = ndb_jit_codemem_inuse_bytes(mem);
+  out->code_slots_live = ndb_jit_codemem_live_slots(mem);
+
+  /* Sum across both reuse caches (scan filters + aggregation). */
+  NdbJitProgCache *sf = scan_filter_cache();
+  NdbJitProgCache *ag = agg_cache();
+  out->programs_compiled = ndb_jit_progcache_compile_count(sf) +
+                           ndb_jit_progcache_compile_count(ag);
+  out->programs_reused = ndb_jit_progcache_hit_count(sf) +
+                         ndb_jit_progcache_hit_count(ag);
+  out->programs_cached = ndb_jit_progcache_live_count(sf) +
+                         ndb_jit_progcache_live_count(ag);
+}
+
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
                                   JitEntry             entry_fn,

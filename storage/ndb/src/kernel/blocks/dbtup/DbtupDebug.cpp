@@ -34,6 +34,7 @@
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/EventReport.hpp>
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"   /* NdbJitStats / dbtup_jit_get_stats (Phase 8) */
 
 #include <signaldata/DbinfoScan.hpp>
 #include <signaldata/TransIdAI.hpp>
@@ -221,6 +222,28 @@ void Dbtup::execDBINFO_SCANREQ(Signal *signal) {
           ndbinfo_send_scan_break(signal, req, rl, counter);
           return;
         }
+      }
+      break;
+    }
+    case Ndbinfo::JIT_TABLEID: {
+      jam();
+      /* The JIT code-memory manager and program reuse caches are
+       * node-global (shared across all LDM DBTUP instances), so emit
+       * exactly one row per node from the first LDM worker rather than
+       * one identical row per instance. */
+      if (instance() == 1) {
+        jam();
+        NdbJitStats s;
+        dbtup_jit_get_stats(&s);
+        Ndbinfo::Row row(signal, req);
+        row.write_uint32(getOwnNodeId());            // node_id
+        row.write_uint64(s.code_reserved_bytes);     // code_reserved_bytes
+        row.write_uint64(s.code_used_bytes);         // code_used_bytes
+        row.write_uint32(s.code_slots_live);         // code_slots_live
+        row.write_uint64(s.programs_compiled);       // programs_compiled
+        row.write_uint64(s.programs_reused);         // programs_reused
+        row.write_uint32(s.programs_cached);         // programs_cached
+        ndbinfo_send_row(signal, req, row, rl);
       }
       break;
     }

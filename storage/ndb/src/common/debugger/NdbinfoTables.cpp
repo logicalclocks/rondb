@@ -1340,6 +1340,25 @@ DECLARE_NDBINFO_TABLE(SECURITY_VIOLATION_COUNTS, 3) = {
      {"violation_id", Ndbinfo::Number, "ViolationType enum value"},
      {"count", Ndbinfo::Number64, "Cumulative strikes since node start"}}};
 
+DECLARE_NDBINFO_TABLE(JIT, 7) = {
+    {"jit", 7, 0, [](const Ndbinfo::Counts &c) { return c.data_nodes; },
+     "RONDB-1056 JIT code-memory and program-reuse statistics "
+     "(one row per data node)"},
+    {{"node_id", Ndbinfo::Number, "Node ID"},
+
+     {"code_reserved_bytes", Ndbinfo::Number64,
+      "Executable memory reserved by the JIT code-memory manager"},
+     {"code_used_bytes", Ndbinfo::Number64,
+      "Executable memory currently allocated to compiled programs"},
+     {"code_slots_live", Ndbinfo::Number,
+      "Compiled-program slots currently in use"},
+     {"programs_compiled", Ndbinfo::Number64,
+      "Programs compiled (reuse-cache misses) since node start"},
+     {"programs_reused", Ndbinfo::Number64,
+      "Reuse-cache hits (compilations avoided) since node start"},
+     {"programs_cached", Ndbinfo::Number,
+      "Compiled programs currently held in the reuse cache"}}};
+
 #define DBINFOTBL(x) \
   { Ndbinfo::x##_TABLEID, (const Ndbinfo::Table *)&ndbinfo_##x }
 
@@ -1407,10 +1426,14 @@ static struct ndbinfo_table_list_entry {
     DBINFOTBL(THREADBLOCK_DETAILS),
     DBINFOTBL(TRANSPORTER_DETAILS),
     DBINFOTBL(TRANSACTIONS_FULL),
+<<<<<<< HEAD
     DBINFOTBL(TRANSPORTER_ACTIVITY),
     DBINFOTBL(RDMA_TRANSPORTERS),
     DBINFOTBL(SECURITY_VIOLATIONS),
     DBINFOTBL(SECURITY_VIOLATION_COUNTS)};
+=======
+    DBINFOTBL(JIT)};
+>>>>>>> 5c6ecec26ee (RONDB-1056 Add ndbinfo.jit counters table)
 
 static int no_ndbinfo_tables =
     sizeof(ndbinfo_tables) / sizeof(ndbinfo_tables[0]);

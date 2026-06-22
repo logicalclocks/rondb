@@ -218,6 +218,22 @@ void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
  * last holder releases. Safe with nullptr. */
 void dbtup_jit_release_agg(void *cache_handle);
 
+/* RONDB-1056 Phase 8 — node-global JIT statistics for NDBINFO.
+ * A snapshot of the (node-global) code-memory manager + both program
+ * reuse caches; identical from any block instance on the node. */
+struct NdbJitStats {
+  Uint64 code_reserved_bytes;  // executable memory mmap'd by the manager
+  Uint64 code_used_bytes;      // memory held by live compiled-program slots
+  Uint32 code_slots_live;      // live code-memory slots
+  Uint64 programs_compiled;    // total compiles (scan-filter + agg misses)
+  Uint64 programs_reused;      // total reuse-cache hits (compiles avoided)
+  Uint32 programs_cached;      // compiled programs currently cached
+};
+
+/* Fill *out with a node-global JIT stats snapshot. Cheap (takes the
+ * managers' locks briefly); for NDBINFO reporting, not the per-row path. */
+void dbtup_jit_get_stats(NdbJitStats *out);
+
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The
  * caller maps a rejected row to TUPKEY_abort with

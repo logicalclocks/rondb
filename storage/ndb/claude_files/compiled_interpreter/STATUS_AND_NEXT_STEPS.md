@@ -92,8 +92,19 @@ Recommended order:
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
    always-on-if-eligible — no off switch; operability blocker).
-3. **NDBINFO counters** — compiles / runs / fallbacks / compile-ns /
-   arena-bytes (observability).
+3. **NDBINFO counters — DONE (2026-06-22).** New node-global ndbinfo table
+   `ndbinfo.jit` (kernel `JIT_TABLEID=55`), one row per data node:
+   `code_reserved_bytes`, `code_used_bytes`, `code_slots_live` (from the
+   code-memory manager) + `programs_compiled`, `programs_reused`,
+   `programs_cached` (summed over the scan-filter + agg reuse caches). New
+   `dbtup_jit_get_stats(NdbJitStats*)` in `DbtupJitGlue` reads the node-
+   global codemem/progcache diagnostics; emitted from
+   `Dbtup::execDBINFO_SCANREQ` (`DbtupDebug.cpp`) gated to `instance()==1`
+   (one row/node). Table def + array entry in `NdbinfoTables.cpp`; enum in
+   `Ndbinfo.hpp`. The SQL view is auto-generated (no hardcoded view list).
+   **NOTE:** ndbinfo metadata MTR tests that enumerate all tables/columns
+   need `--record` (one new table). Not yet wired: `runs` / `fallbacks` /
+   `compile-ns` (need per-row + compile-time instrumentation; deferred).
 4. **SIGSEGV sidecar** — JIT'd code has no symbols; keep bytecode +
    stencil-IDs on the writable side for post-mortem of a crash in a blob.
 5. **GROUP BY gate lift** (big coverage, hard; arguably its own phase) —
