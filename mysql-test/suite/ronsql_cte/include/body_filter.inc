@@ -844,16 +844,26 @@ FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders WHERE o_totalprice BETWEEN 5000 AND 6000 GROUP BY o_custkey) SELECT sums.k, SUM(sums.t) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
 
-# NEXT-PHASE: IN-list in CTE-body WHERE — needs feature work, not cheap.
-#   apply_filter has no T_IN case and simplify_ce does not expand IN→OR, so
-#   `col IN (a,b,c)` in a CTE-body WHERE is not handled.  To support: expand
-#   T_IN to an OR-chain of equalities in simplify_ce (then apply_filter's
-#   existing T_OR/T_EQUALS handle it).
-#   WITH sums AS (
-#     SELECT o_custkey AS k, COUNT(*) AS n
-#     FROM orders WHERE o_shippriority IN (0,2,4) GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.n)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+# filter-in (probe→SUPPORTED): IN-list in a CTE-body WHERE.  The grammar
+# expands `col IN (a,b,c)` to `col = a OR col = b OR col = c` at parse time
+# (RonSQLParser.y), so apply_filter's existing T_OR/T_EQUALS handle it — no
+# kernel/preparer change needed.
+--echo
+--echo === filter-in (probe): IN-list (o_shippriority IN (0,2,4)) in CTE-body WHERE ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_shippriority IN (0,2,4) GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n) AS sn
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_shippriority IN (0,2,4) GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n) AS sn
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
 
 # NEXT-PHASE: string column-vs-column in CTE-body WHERE — only signed-int
 #   col-vs-col is supported (matrix).  Two CHAR cols compared:
@@ -863,16 +873,55 @@ FROM nation AS n JOIN segs ON segs.k = n.n_nationkey GROUP BY segs.k|
 #   SELECT o.o_custkey, SUM(liq.n)
 #   FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;
 
-# NEXT-PHASE: OR combining predicates in the MAIN-query CTE filter — UNCERTAIN.
-#   emit_cte_lookup_filter accepts top-level AND conjuncts; top-level OR across
-#   key + aggregate-output predicates is not yet exercised from SQL.
-#   WITH sums AS (
-#     SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#     FROM orders GROUP BY o_custkey)
-#   SELECT sums.k, SUM(sums.t)
-#   FROM customer AS c JOIN sums ON sums.k = c.c_custkey
-#   WHERE sums.k = 100 OR sums.t > 50000
-#   GROUP BY sums.k;
+# filter-or-main (probe→SUPPORTED): top-level OR in the MAIN-query CTE filter,
+# across the CTE key (sums.k) and an aggregate output (sums.t).
+# emit_cte_lookup_filter flattens top-level OR into DNF disjuncts (Phase I.2)
+# and emits a per-disjunct fail-label chain, so this works — no code change.
+--echo
+--echo === filter-or-main (probe): OR across CTE key + aggregate output in main WHERE ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k = 100 OR sums.t > 50000
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k = 100 OR sums.t > 50000
+GROUP BY sums.k|
+
+# filter-in-main (probe→SUPPORTED): IN-list in the MAIN-query CTE filter.
+# Completes the IN/OR x body/main matrix: the grammar expands sums.k IN (...)
+# to sums.k = 50 OR sums.k = 100 OR sums.k = 150, which emit_cte_lookup_filter
+# handles as DNF disjuncts (same path as filter-or-main) — no code change.
+--echo
+--echo === filter-in-main (probe): IN-list on a CTE key in the main WHERE ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k IN (50, 100, 150)
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k IN (50, 100, 150)
+GROUP BY sums.k|
 
 # NEXT-PHASE: CASE condition over a CTE AGGREGATE output — NOT supported
 #   (matrix: CASE over a CTE COLUMN projection is supported, over an aggregate

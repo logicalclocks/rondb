@@ -5758,3 +5758,264 @@ Syntax error in SQL statement: Unimplemented keyword. If this was intended as an
 !                                                                                              ^^^^^^^
 Error handling: RPE
 ronsql_cli caught exception: Syntax error.
+
+=== filter-in (probe): IN-list (o_shippriority IN (0,2,4)) in CTE-body WHERE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority IN (0,2,4) GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n) AS sn
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;
+
+Number of output lines, including header: 181
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_shippriority IN (0,2,4) GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n) AS sn
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
+k	sn
+10	5
+100	5
+102	5
+104	5
+105	5
+107	5
+109	5
+110	5
+112	5
+114	5
+115	5
+117	5
+119	5
+12	5
+120	5
+122	5
+124	5
+125	5
+127	5
+129	5
+130	5
+132	5
+134	5
+135	5
+137	5
+139	5
+14	5
+140	5
+142	5
+144	5
+145	5
+147	5
+149	5
+15	5
+150	5
+152	5
+154	5
+155	5
+157	5
+159	5
+160	5
+162	5
+164	5
+165	5
+167	5
+169	5
+17	5
+170	5
+172	5
+174	5
+175	5
+177	5
+179	5
+180	5
+182	5
+184	5
+185	5
+187	5
+189	5
+19	5
+190	5
+192	5
+194	5
+195	5
+197	5
+199	5
+2	5
+20	5
+200	5
+202	5
+204	5
+205	5
+207	5
+209	5
+210	5
+212	5
+214	5
+215	5
+217	5
+219	5
+22	5
+220	5
+222	5
+224	5
+225	5
+227	5
+229	5
+230	5
+232	5
+234	5
+235	5
+237	5
+239	5
+24	5
+240	5
+242	5
+244	5
+245	5
+247	5
+249	5
+25	5
+250	5
+252	5
+254	5
+255	5
+257	5
+259	5
+260	5
+262	5
+264	5
+265	5
+267	5
+269	5
+27	5
+270	5
+272	5
+274	5
+275	5
+277	5
+279	5
+280	5
+282	5
+284	5
+285	5
+287	5
+289	5
+29	5
+290	5
+292	5
+294	5
+295	5
+297	5
+299	5
+30	5
+300	5
+32	5
+34	5
+35	5
+37	5
+39	5
+4	5
+40	5
+42	5
+44	5
+45	5
+47	5
+49	5
+5	5
+50	5
+52	5
+54	5
+55	5
+57	5
+59	5
+60	5
+62	5
+64	5
+65	5
+67	5
+69	5
+7	5
+70	5
+72	5
+74	5
+75	5
+77	5
+79	5
+80	5
+82	5
+84	5
+85	5
+87	5
+89	5
+9	5
+90	5
+92	5
+94	5
+95	5
+97	5
+99	5
+
+=== filter-or-main (probe): OR across CTE key + aggregate output in main WHERE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k = 100 OR sums.t > 50000
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k = 100 OR sums.t > 50000
+GROUP BY sums.k|
+k	st
+100	0
+
+=== filter-in-main (probe): IN-list on a CTE key in the main WHERE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k IN (50, 100, 150)
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t) AS st
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE sums.k IN (50, 100, 150)
+GROUP BY sums.k|
+k	st
+100	0
+150	0
+50	0
