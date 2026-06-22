@@ -534,6 +534,77 @@ void dbtup_jit_release_scan_filter(void *cache_handle) {
                             static_cast<NjpEntry *>(cache_handle));
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 8 Slice 3c — standalone aggregation reuse cache.             */
+/* ------------------------------------------------------------------ */
+
+/* Agg programs need no per-row reject code, so the product is just the
+ * jit1 handle (freed on eviction). */
+static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
+                          NdbJitProgItem *out) {
+  (void)ctx;
+  const Uint32 *prog = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 n_words = key_len / (Uint32)sizeof(Uint32);
+  Program p;
+  JitBridgeError berr;
+  if (ndb_jit_bridge_translate(prog, n_words, &p, &berr) != JIT_BRIDGE_OK) {
+    return -1;
+  }
+  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
+  if (jp == nullptr) {
+    return -1;
+  }
+  out->entry_fn = reinterpret_cast<void *>(jit1_entry(jp));
+  out->user = jp;   /* Jit1Prog* directly; jit1_free on destroy */
+  return 0;
+}
+
+static void agg_destroy_cb(void *ctx, NdbJitProgItem *item) {
+  (void)ctx;
+  jit1_free(static_cast<Jit1Prog *>(item->user));
+}
+
+/* Node-global aggregation reuse cache (separate from the scan-filter
+ * cache — different bytecode format). Lazy magic-static init; node-lived. */
+static NdbJitProgCache *agg_cache() {
+  static NdbJitProgCache *cache = ndb_jit_progcache_create(
+      agg_compile_cb, agg_destroy_cb, /*cb_ctx=*/nullptr);
+  return cache;
+}
+
+void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
+                            void **out_cache_handle) {
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = nullptr;
+  }
+  if (agg_prog == nullptr || n_words == 0) {
+    return nullptr;
+  }
+  NdbJitProgCache *cache = agg_cache();
+  if (cache == nullptr) {
+    return nullptr;
+  }
+  NdbJitProgItem item;
+  NjpEntry *handle = ndb_jit_progcache_acquire(
+      cache, reinterpret_cast<const uint8_t *>(agg_prog),
+      n_words * (Uint32)sizeof(Uint32), /*pinned=*/0, &item);
+  if (handle == nullptr) {
+    return nullptr;
+  }
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = handle;
+  }
+  return item.entry_fn;
+}
+
+void dbtup_jit_release_agg(void *cache_handle) {
+  if (cache_handle == nullptr) {
+    return;
+  }
+  ndb_jit_progcache_release(agg_cache(),
+                            static_cast<NjpEntry *>(cache_handle));
+}
+
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
                                   JitEntry             entry_fn,

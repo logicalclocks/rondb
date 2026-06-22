@@ -307,6 +307,12 @@ class AggInterpreterBase : public PushdownInterpreter {
    * use the same per-row dispatch glue once their setup path has
    * published a compiled entry. */
   void setJitEntry(JitEntry e) { m_jit_entry = e; }
+  /* Phase 8 RONDB-1056: opaque reuse-cache handle (NjpEntry*) for a
+   * standalone aggregation program this interpreter OWNS. Set by
+   * PushdownInterpreterFactory::Create; released in ~AggInterpreterBase.
+   * Stays nullptr for join aggregation, where the proxy owns the leaf
+   * program and m_jit_entry is a borrowed pointer (no double free). */
+  void setJitCacheHandle(void *h) { m_jit_cache_handle = h; }
   const Uint32* agg_program() const { return m_prog; }
   Uint32 agg_prog_start_pos() const { return m_agg_prog_start_pos; }
 
@@ -464,6 +470,11 @@ class AggInterpreterBase : public PushdownInterpreter {
    * field existed). Set by DblqhProxy via setJitEntry(); read
    * once at the top of ProcessRec. */
   JitEntry m_jit_entry = nullptr;
+
+  /* Phase 8 RONDB-1056: reuse-cache handle for an OWNED standalone agg
+   * program (nullptr otherwise — see setJitCacheHandle). Released in
+   * ~AggInterpreterBase via dbtup_jit_release_agg. */
+  void *m_jit_cache_handle = nullptr;
 
   /* Fields lifted from the subclasses in Step 1.2 to support the shared
    * OptimizeProgram — same fields, moved up the class hierarchy.  (The

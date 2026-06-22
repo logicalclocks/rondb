@@ -29,10 +29,9 @@
 #include "NdbAggregationCommon.hpp"
 #include "util/require.h"
 
-extern "C" {
-#include "jit/jit1.h"
-#include "jit/ndb_jit_bridge.h"
-}
+/* Phase 8 RONDB-1056: standalone agg compiles go through the reuse cache
+ * (DbtupJitGlue), which owns the bridge-translate + jit1_compile path. */
+#include "DbtupJitGlue.hpp"
 
 void PushdownInterpreter::Destruct(PushdownInterpreter* ptr) {
   if (ptr == nullptr) {
@@ -281,23 +280,23 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                               thread_id);
     require(result.agg->Init(prog));
     require(result.agg->OptimizeProgram());
-    if (jit_arena != nullptr) {
+    /* Phase 8 Slice 3c: JIT-compile the per-row aggregation only for
+     * scalar (non-GROUP-BY) programs — ProcessRec's dispatch gate runs
+     * the JIT entry only when m_n_gb_cols == 0, so a GROUP-BY program's
+     * blob would never be used. Acquire from the node-global agg reuse
+     * cache (identical scalar aggregations share one blob); the handle is
+     * released in ~AggInterpreterBase. The jit_arena parameter is
+     * superseded by the code-memory manager and removed in Slice 3d. */
+    if (result.agg->n_gb_cols() == 0) {
       const Uint32 *agg_prog = result.agg->agg_program();
       const Uint32 bc_off = result.agg->agg_prog_start_pos();
       if (bc_off < prog_len) {
-        Program p;
-        JitBridgeError berr;
-        JitBridgeReason brc =
-            ndb_jit_bridge_translate(agg_prog + bc_off, prog_len - bc_off,
-                                      &p, &berr);
-        if (brc == JIT_BRIDGE_OK) {
-          /* Slice 2: node-global code-memory manager (the jit_arena
-           * parameter is superseded; removed in Slice 3). */
-          Jit1Prog *jp =
-              jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
-          if (jp != nullptr) {
-            result.agg->setJitEntry(jit1_entry(jp));
-          }
+        void *handle = nullptr;
+        void *entry = dbtup_jit_compile_agg(agg_prog + bc_off,
+                                            prog_len - bc_off, &handle);
+        if (entry != nullptr) {
+          result.agg->setJitEntry(reinterpret_cast<JitEntry>(entry));
+          result.agg->setJitCacheHandle(handle);
         }
       }
     }

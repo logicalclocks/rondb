@@ -49,6 +49,7 @@
 #include "include/my_byteorder.h"
 #include "AggInterpreterBase.hpp"
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"   /* dbtup_jit_release_agg (Phase 8 Slice 3c) */
 #include "InterpreterCommonOp.hpp"
 #include "util/require.h"
 #include "decimal.h"
@@ -2909,10 +2910,21 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
 AggInterpreterBase::~AggInterpreterBase() {
   ndbrequire(m_gb_map == nullptr || m_gb_map->empty());
   ndbrequire(m_chunks == nullptr);
+
   /* m_string_results may be present; O(1).  release_string_results' scalar
    * slot walk is bounded by m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also
    * O(1).  D26: m_xfrm_buf removed (group-key hash uses a per-LDM-thread
    * Dbtup scratch), so nothing to free for it. */
+
+  /* RONDB-1056 Phase 8: release an OWNED standalone agg program back to
+   * the reuse cache (drops its refcount; the code-memory slot is freed
+   * when the last holder releases). nullptr for join aggregation (the
+   * proxy owns the leaf program) — a no-op, so no double free. */
+  dbtup_jit_release_agg(m_jit_cache_handle);
+  m_jit_cache_handle = nullptr;
+  /* m_string_results / m_xfrm_buf may be present; both are O(1).
+   * release_string_results' scalar slot walk is bounded by
+   * m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also O(1). */
   release_string_results();
   if (m_load_column_meta != nullptr) {
     lc_ndbd_pool_free(m_load_column_meta);

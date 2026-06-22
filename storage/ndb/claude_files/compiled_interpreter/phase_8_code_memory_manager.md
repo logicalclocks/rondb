@@ -155,14 +155,20 @@ Sharded refcounted hash so identical bytecode reuses one compiled blob.
   is purely freeing. By the RELEASE phase all workers have finished, so no
   row is executing the blob. `jit1_free(nullptr)` is a no-op so uncompiled
   / rejected leaves are safe.
-- **3c — standalone agg through `progcache`.** Pending. `PushdownInterpreter`
-  per-scan compile → reuse helps. Add a handle field to `AggInterpreterBase`,
-  acquire in `PushdownInterpreterFactory::Create`, release in
-  `PushdownInterpreter::Destruct` (the empty-`gb_map` teardown reached from
-  `Dblqh::releaseScanInterpreters`, DblqhMain.cpp:24393 — the JIT case is
-  `m_n_gb_cols == 0` ⇒ empty map ⇒ fast `Destruct`). Confirm Create only
-  compiles when `n_gb_cols == 0` so no GROUP-BY handle escapes to the
-  chunked path.
+- **3c — standalone agg through `progcache`.** ✅ done — the last leaking
+  path now reclaims code memory. `DbtupJitGlue` owns a second node-global
+  cache (`agg_cache`, compile cb = `ndb_jit_bridge_translate` +
+  `jit1_compile`; destroy cb = `jit1_free`; product = the `Jit1Prog*`
+  directly). `dbtup_jit_compile_agg`/`dbtup_jit_release_agg` acquire/release
+  keyed on the agg bytecode words. `PushdownInterpreterFactory::Create` now
+  acquires (only when `n_gb_cols() == 0` — the dispatch gate never runs the
+  JIT entry for GROUP BY, so compiling it would waste a slot) and stores
+  the handle via `AggInterpreterBase::setJitCacheHandle`. Released in
+  `~AggInterpreterBase` (`dbtup_jit_release_agg`), which runs on every
+  teardown path (fast `Destruct` and the chunked CONTINUEB path both end in
+  the virtual destructor). The handle stays `nullptr` for join aggregation
+  (proxy-owned leaf, borrowed `m_jit_entry`), so its destructor release is a
+  no-op — no double free with 3b. Tested via `rondb_jit_standalone_canary`.
 - **3d — remove dead per-block `m_jit_arena`s** (`DbtupGen.cpp`, `DblqhProxy`
   ctor/dtor, `getJitArena`) + unused `arena` params / `NdbJitArena`
   fwd-decls. Pending.

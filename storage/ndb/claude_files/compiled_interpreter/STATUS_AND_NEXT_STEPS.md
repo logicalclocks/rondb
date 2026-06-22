@@ -76,12 +76,17 @@ Recommended order:
      free sites (setup-error + RELEASE), iterating `m_num_leaves`. No
      progcache (the proxy already dedups by `aggStateKey`); the win is
      freeing. Workers are done by RELEASE so no blob is executing.
-   - **Slice 3c** — standalone agg (`PushdownInterpreter`→`AggInterpreter`)
-     through `progcache`: handle field on `AggInterpreterBase`, acquire in
-     `Create`, release in `PushdownInterpreter::Destruct` (the fast
-     empty-`gb_map` teardown from `Dblqh::releaseScanInterpreters`).
+   - **Slice 3c — standalone agg through `progcache` DONE (last leaking
+     path closed).** Second node-global cache (`agg_cache`) in `DbtupJitGlue`
+     (`dbtup_jit_compile_agg`/`_release_agg`). `Create` acquires only when
+     `n_gb_cols()==0` (GROUP BY never uses the JIT entry), stores the handle
+     via `AggInterpreterBase::setJitCacheHandle`, released in
+     `~AggInterpreterBase` (runs on both fast + chunked teardown). nullptr
+     for join-agg → no double-free with 3b. Test: `rondb_jit_standalone_canary`.
    - **Slice 3d** — remove dead per-block `m_jit_arena`s (`DbtupGen.cpp`,
      `DblqhProxy` ctor/dtor, `getJitArena`) + unused `arena` params.
+     **All three compile paths now free their code memory — the ship
+     blocker is closed; 3d is cleanup.**
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param** `JoinAggCompiledInterpreter` OFF/AUTO/ON (currently
    always-on-if-eligible — no off switch; operability blocker).

@@ -197,6 +197,27 @@ void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
  * nullptr. */
 void dbtup_jit_release_scan_filter(void *cache_handle);
 
+/* RONDB-1056 Phase 8 — standalone aggregation program reuse.
+ *
+ * dbtup_jit_compile_agg acquires the compiled form of a per-row
+ * aggregation program (NDB wire format) from the node-global agg
+ * reuse cache, keyed on the exact bytecode words: identical scalar
+ * aggregations across scans share one compiled blob. On a miss the
+ * cache translates via ndb_jit_bridge_translate and compiles with
+ * jit1_compile into the code-memory manager. Returns the JIT entry as a
+ * void* (cast to JitEntry), or nullptr if not JIT-eligible / OOM.
+ * out_cache_handle (nullable) receives the handle to pass to
+ * dbtup_jit_release_agg when the interpreter is torn down. Used only for
+ * scalar (n_gb_cols == 0) programs — the dispatch gate never runs the
+ * JIT entry for GROUP BY. */
+void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
+                            void **out_cache_handle);
+
+/* Release an agg program acquired by dbtup_jit_compile_agg. Drops the
+ * reuse-cache refcount; the blob + code-memory slot are freed when the
+ * last holder releases. Safe with nullptr. */
+void dbtup_jit_release_agg(void *cache_handle);
+
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The
  * caller maps a rejected row to TUPKEY_abort with
