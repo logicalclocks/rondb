@@ -1153,6 +1153,46 @@ SELECT n FROM x|
 n
 0
 
+=== cs14 (D8): watermark GREATEST over two scalar CTE outputs (comma cross-join) ===
+== Query ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT GREATEST(a.m, b.n) AS biggest FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT GREATEST(a.m, b.n) AS biggest FROM a, b|
+biggest
+20055.00
+
+=== cs15 (D8): watermark LEAST over two scalar CTE outputs (comma cross-join) ===
+== Query ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT LEAST(a.m, b.n) AS smallest FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT LEAST(a.m, b.n) AS smallest FROM a, b|
+smallest
+13.37
+
 
 === cs16: main GROUP BY on a CTE_SCAN root col + agg (300 groups) ===
 == Query ==

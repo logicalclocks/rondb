@@ -6475,6 +6475,16 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
             keyLenBytes, nGbCols);
         const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
         targetNodeId = m_dataNodeList[ownerIdx];
+      } else {
+        jam();
+        /* D8: scalar CTE (no GROUP BY) cross-join child.  Its cluster-wide
+         * merged m_agg_results lives ONLY at the redistribute owner, which
+         * DBLQH continueJoinAggRedistribute sets to the coordinating DBTC node
+         * (owner = refToNode(state->m_senderRef)); non-owner nodes keep only
+         * their local partial.  Route the lookup to that same owner —
+         * getOwnNodeId() would read this node's un-merged partial (e.g. a
+         * per-fragment MIN), which is wrong on multi-node topologies. */
+        targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
     }
     Uint32 targetAggKey =

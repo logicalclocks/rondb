@@ -1969,6 +1969,27 @@ ResultPrinter::aggregate_arg_charset(const Outputs* out) const
   return m_column_metadata[col_idx].charset;
 }
 
+// D8: a watermark GREATEST/LEAST over scalar-CTE outputs reaches the printer
+// as the arg of the implicit-MAX wrapper — a Greatest2/Least2 expression, not
+// a direct Load.  Walk the binary tree to its first Load operand so the source
+// DECIMAL scale/precision (carried on that column's metadata) can format the
+// result like a direct MIN/MAX.  A watermark's operands share the source
+// column, so the first load's scale is representative.
+static const AggregationAPICompiler::Expr*
+ronsql_first_load_in_expr(const AggregationAPICompiler::Expr* e)
+{
+  if (e == NULL) return NULL;
+  if (e->isLoad()) return e;
+  if (e->isGreatest2() || e->isLeast2())
+  {
+    const AggregationAPICompiler::Expr* l =
+        ronsql_first_load_in_expr(e->getLeft());
+    if (l != NULL) return l;
+    return ronsql_first_load_in_expr(e->getRight());
+  }
+  return NULL;
+}
+
 // Source DECIMAL scale of a MIN/MAX aggregate's argument column, so the
 // printer can format the (DOUBLE-widened) result with a fixed scale to match
 // MySQL's DECIMAL output (e.g. 20055.00, not 20055).  Returns 0 when the
@@ -1986,10 +2007,12 @@ ResultPrinter::aggregate_arg_scale(const Outputs* out) const
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
       out->aggregate.fun != T_SUM)
     return 0;
-  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
-  if (arg == NULL || !arg->isLoad())
+  // D8: handle a direct Load or a Greatest2/Least2 watermark over Loads.
+  const AggregationAPICompiler::Expr* loadExpr =
+      ronsql_first_load_in_expr(out->aggregate.arg);
+  if (loadExpr == NULL)
     return 0;
-  Uint32 col_idx = arg->getLoadIdx();
+  Uint32 col_idx = loadExpr->getLoadIdx();
   if (m_column_names == NULL || col_idx >= m_column_names->size())
     return 0;
   if (m_column_metadata == NULL ||
@@ -2014,10 +2037,12 @@ ResultPrinter::aggregate_arg_precision(const Outputs* out) const
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
       out->aggregate.fun != T_SUM)
     return 0;
-  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
-  if (arg == NULL || !arg->isLoad())
+  // D8: handle a direct Load or a Greatest2/Least2 watermark over Loads.
+  const AggregationAPICompiler::Expr* loadExpr =
+      ronsql_first_load_in_expr(out->aggregate.arg);
+  if (loadExpr == NULL)
     return 0;
-  Uint32 col_idx = arg->getLoadIdx();
+  Uint32 col_idx = loadExpr->getLoadIdx();
   if (m_column_names == NULL || col_idx >= m_column_names->size())
     return 0;
   if (m_column_metadata == NULL ||

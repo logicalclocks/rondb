@@ -6726,8 +6726,33 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         require_run(rootOpts.setAggregation(*singleAgg) == 0,
                     "Failed to set aggregation on scalar CTE root.");
       }
+      // D8: dummy key must match the scalar virt PK column type (its first
+      // output column), else lookupCte rejects it for a non-Bigint PK (e.g.
+      // a Double from a scale>0 DECIMAL / FLOAT / DOUBLE aggregate).  Value
+      // is ignored by the kernel for scalar CTEs.
+      const NdbDictionary::Column* root_pkc =
+          cteVirtualTables[0]->getColumn(0);
+      require_run(root_pkc != NULL,
+                  "Scalar CTE root virtual table has no primary-key column.");
       const NdbQueryOperand* scalar_keys[2];
-      scalar_keys[0] = qb->constValue((Int64)0);
+      switch (root_pkc->getType()) {
+      case NdbDictionary::Column::Bigint:
+        scalar_keys[0] = qb->constValue((Int64)0);
+        break;
+      case NdbDictionary::Column::Bigunsigned:
+        scalar_keys[0] = qb->constValue((Uint64)0);
+        break;
+      case NdbDictionary::Column::Double:
+        scalar_keys[0] = qb->constValue((double)0);
+        break;
+      default: {
+        const Uint32 rpksz = root_pkc->getSizeInBytes();
+        Uint8* rzero = m_amalloc->alloc_exc<Uint8>(rpksz == 0 ? 1 : rpksz);
+        memset(rzero, 0, rpksz);
+        scalar_keys[0] = qb->constValue(static_cast<const void*>(rzero), rpksz);
+        break;
+      }
+      }
       require_run(scalar_keys[0] != NULL,
                   "Failed to create dummy scalar CTE root lookup key.");
       scalar_keys[1] = nullptr;
@@ -8378,7 +8403,38 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       if (coverage.state == CteKeyCoverage::ScalarDummy) {
         require_run(opts.setParent(opDefs[op.parent_op_idx]) == 0,
                     "Failed to set parent for scalar CTE cross-join.");
-        effective_keys[0] = qb->constValue((Int64)0);
+        // D8: the scalar CTE's virtual PK is its FIRST output column (I.21),
+        // whose type is the derived aggregate type — Bigint, Bigunsigned,
+        // Double (e.g. MIN/MAX over a scale>0 DECIMAL or FLOAT/DOUBLE widens to
+        // Double), or a string.  lookupCte type-checks the key operand against
+        // that PK column, so a fixed Int64 zero fails for a non-Bigint PK
+        // (returns NULL with no NDB error -> "Failed to create child
+        // operation").  The kernel ignores the key value for a scalar CTE, so
+        // only the type/size must match — build a zero of the PK column type.
+        const NdbDictionary::Column* pkc = cteVirtualTables[i]->getColumn(0);
+        require_run(pkc != NULL,
+                    "Scalar CTE virtual table has no primary-key column.");
+        switch (pkc->getType()) {
+        case NdbDictionary::Column::Bigint:
+          effective_keys[0] = qb->constValue((Int64)0);
+          break;
+        case NdbDictionary::Column::Bigunsigned:
+          effective_keys[0] = qb->constValue((Uint64)0);
+          break;
+        case NdbDictionary::Column::Double:
+          effective_keys[0] = qb->constValue((double)0);
+          break;
+        default: {
+          // String (Char/Varchar/Longvarchar) or any other PK type: a
+          // zero buffer sized to the PK column (value ignored by the kernel).
+          const Uint32 pksz = pkc->getSizeInBytes();
+          Uint8* zero = m_amalloc->alloc_exc<Uint8>(pksz == 0 ? 1 : pksz);
+          memset(zero, 0, pksz);
+          effective_keys[0] =
+              qb->constValue(static_cast<const void*>(zero), pksz);
+          break;
+        }
+        }
         require_run(effective_keys[0] != NULL,
                     "Failed to create dummy scalar-CTE lookup key.");
         effective_keys[1] = nullptr;

@@ -14,9 +14,11 @@
 # (scalar aggregate or GROUP BY + aggregate) — projection-only main
 # SELECTs over a CTE_LOOKUP/CTE_SCAN HANG and are never kept enabled.
 # A scalar CTE consumed by a SINGLE-table main (project or aggregate its
-# scalar output) is GREEN; scalar-CTE comma cross-join / watermark
-# GREATEST over two scalar CTEs is NOT supported (D8, "Failed to create
-# child operation") and is recorded as a disabled probe.
+# scalar output) is GREEN.  Watermark GREATEST/LEAST over two scalar CTEs
+# comma cross-joined is now SUPPORTED (D8 FIXED — see cs14/cs15; the scalar
+# cross-join dummy key now matches the virt PK column type).  The project-both
+# form (SELECT a.m, b.n FROM a, b) is still rejected at the non-aggregate gate
+# ("Not an aggregate query") and stays a documented probe (cs-probe-7).
 --source include/have_ndb.inc
 --disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
@@ -225,13 +227,14 @@ JOIN sums ON sums.k = c.c_custkey
 JOIN cnts ON cnts.k = c.c_custkey
 GROUP BY c.c_nationkey|
 
-# cs08: sibling scalar CTEs cross-joined (comma form) — DISABLED.
-# Two scalar CTEs comma cross-joined (testCteNdbApi.cpp Test 20 pattern:
-# lookupCte dummy-key + setParent) errored "Not an aggregate query" at
-# record time, and the broader scalar comma cross-join shape is the D8
-# "Failed to create child operation" gap.  Recorded as a disabled probe;
-# see cs-probe-7.  A scalar CTE consumed by a SINGLE-table main (no
-# cross-join) is covered GREEN by cs09-cs13.
+# cs08: sibling scalar CTEs comma cross-joined, PROJECTING BOTH outputs
+# (SELECT a.m, b.n FROM a, b) — still DISABLED.  This is the projection-only
+# form; it is rejected at the non-aggregate front-end gate ("Not an aggregate
+# query") because a comma cross-join of two scalar CTEs is not (yet) a
+# recognized projection-only shape.  Distinct from the watermark form (cs14/
+# cs15, now GREEN): those wrap the two outputs in GREATEST/LEAST, so the
+# implicit-MAX makes them aggregate queries that pass the gate.  See
+# cs-probe-7.  Single-table scalar-CTE main is GREEN (cs09-cs13).
 
 # ===========================================================================
 # Scalar CTEs (no GROUP BY) — single virtual-table row, SINGLE-table main
@@ -311,10 +314,37 @@ SELECT n FROM x;|
 WITH x AS (SELECT COUNT(*) AS n FROM orders WHERE o_custkey = 999999)
 SELECT n FROM x|
 
-# cs14 / cs15: watermark GREATEST / LEAST over two scalar CTE outputs —
-# DISABLED.  Both shapes comma cross-join two scalar CTEs and errored
-# "Failed to create child operation" at record time (D8).  Recorded as
-# disabled probes; see cs-probe-8 and cs-probe-9.
+# cs14 / cs15 (D8 verify): watermark GREATEST / LEAST over two scalar CTE
+# outputs, comma cross-joined.  Recorded as a "Failed to create child
+# operation" error during the original parallel discovery; Phase I.17 since
+# added the scalar comma cross-join (Test 20 lookupCte dummy-key + setParent),
+# so re-verify.  Top-level GREATEST/LEAST is wrapped in an implicit MAX, so
+# these are aggregate queries.
+--echo
+--echo === cs14 (D8): watermark GREATEST over two scalar CTE outputs (comma cross-join) ===
+let $QUERY=
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+     b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT GREATEST(a.m, b.n) AS biggest FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+     b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT GREATEST(a.m, b.n) AS biggest FROM a, b|
+
+--echo
+--echo === cs15 (D8): watermark LEAST over two scalar CTE outputs (comma cross-join) ===
+let $QUERY=
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+     b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT LEAST(a.m, b.n) AS smallest FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+     b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT LEAST(a.m, b.n) AS smallest FROM a, b|
 
 # ===========================================================================
 # Main aggregation over a CTE_SCAN root with >256 groups (multi-batch)
@@ -479,33 +509,21 @@ SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b|
 #   WITH x AS (SELECT AVG(o_totalprice) AS a FROM orders)
 #   SELECT a FROM x;
 
-# cs-probe-7: sibling scalar CTEs comma cross-joined (cs08, was MAIN).
-# Two scalar CTEs comma cross-joined, projecting both outputs, errored
-# "Not an aggregate query" at record time; the scalar comma cross-join
-# shape is the D8 "Failed to create child operation" gap.  Disabled.
-# NEXT-PHASE: scalar-CTE comma cross-join (project both outputs) — D8
-#   "Failed to create child operation" / "Not an aggregate query".
+# cs-probe-7: scalar-CTE comma cross-join PROJECTING BOTH outputs (cs08).
+# Still disabled — rejected at the non-aggregate front-end gate ("Not an
+# aggregate query").  The watermark forms (GREATEST/LEAST) are now GREEN
+# (cs14/cs15); only the projection-only form needs the gate extended to treat
+# a scalar-CTE comma cross-join as a supported projection-only shape.
+# NEXT-PHASE: scalar-CTE comma cross-join, project both outputs — non-aggregate
+#   gate does not yet accept a scalar-CTE cross-join projection.
 #   WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
 #        b AS (SELECT MIN(o_totalprice) AS n FROM orders)
 #   SELECT a.m, b.n FROM a, b;
 
-# cs-probe-8: watermark GREATEST over two scalar CTE outputs (cs14, was MAIN).
-# Top-level GREATEST over a comma cross-join of two scalar CTEs errored
-# "Failed to create child operation" at record time (D8).  Disabled.
-# NEXT-PHASE: watermark GREATEST over two scalar CTE outputs — D8
-#   scalar comma cross-join "Failed to create child operation".
-#   WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
-#        b AS (SELECT MIN(o_totalprice) AS n FROM orders)
-#   SELECT GREATEST(a.m, b.n) AS biggest FROM a, b;
-
-# cs-probe-9: watermark LEAST over two scalar CTE outputs (cs15, was MAIN).
-# Top-level LEAST over a comma cross-join of two scalar CTEs errored
-# "Failed to create child operation" at record time (D8).  Disabled.
-# NEXT-PHASE: watermark LEAST over two scalar CTE outputs — D8
-#   scalar comma cross-join "Failed to create child operation".
-#   WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
-#        b AS (SELECT MIN(o_totalprice) AS n FROM orders)
-#   SELECT LEAST(a.m, b.n) AS smallest FROM a, b;
+# cs-probe-8 / cs-probe-9: watermark GREATEST / LEAST over two scalar CTE
+# outputs are now ENABLED as cs14 / cs15 (D8 FIXED — the scalar cross-join
+# dummy key matches the virt PK column type, and the result carries the source
+# DECIMAL scale).
 
 # cs-probe-5 (rejection-assert): scalar CTE projecting a non-aggregate
 # column with no GROUP BY.  RonSQL does not pass through CTE bodies, so a
