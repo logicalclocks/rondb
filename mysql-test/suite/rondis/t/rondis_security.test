@@ -10,6 +10,9 @@
 # Both test groups use direct Python socket connections because rondb-cli
 # routes SELECT to MySQL and cannot pass >33 KB values through shell args.
 #
+# Each one-liner uses makefile('rb').readline() instead of sleep+recv to
+# block until a complete RESP line arrives, avoiding CI timing flakiness.
+#
 
 if (!$RONDB_CLI) {
   --skip rondb-cli binary not found - build with Go installed
@@ -29,13 +32,13 @@ if (!$RONDB_CLI) {
 --echo # Test 1: SET value at the limit (512000 bytes) must succeed
 --echo #
 
---exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); v=b'x'*512000; msg=f'*3\r\n{d}3\r\nSET\r\n{d}7\r\nseckey1\r\n{d}{len(v)}\r\n'.encode()+v+b'\r\n'; s.sendall(msg); time.sleep(0.2); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+--exec python3 -c "import socket; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); v=b'x'*512000; msg=f'*3\r\n{d}3\r\nSET\r\n{d}7\r\nseckey1\r\n{d}{len(v)}\r\n'.encode()+v+b'\r\n'; s.sendall(msg); print(s.makefile('rb').readline().decode(errors='replace').strip()); s.close()"
 
 --echo #
 --echo # Test 2: SET value one byte over the limit (512001 bytes) must be rejected
 --echo #
 
---exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); v=b'x'*512001; msg=f'*3\r\n{d}3\r\nSET\r\n{d}7\r\nseckey1\r\n{d}{len(v)}\r\n'.encode()+v+b'\r\n'; s.sendall(msg); time.sleep(0.2); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+--exec python3 -c "import socket; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); v=b'x'*512001; msg=f'*3\r\n{d}3\r\nSET\r\n{d}7\r\nseckey1\r\n{d}{len(v)}\r\n'.encode()+v+b'\r\n'; s.sendall(msg); print(s.makefile('rb').readline().decode(errors='replace').strip()); s.close()"
 
 --echo #
 --echo # Test 3: Server stays alive after rejected oversized SET
@@ -53,25 +56,25 @@ if (!$RONDB_CLI) {
 --echo # Test 4: SELECT 0 (valid database) must succeed
 --echo #
 
---exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}1\r\n0\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+--exec python3 -c "import socket; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}1\r\n0\r\n'.encode()); print(s.makefile('rb').readline().decode(errors='replace').strip()); s.close()"
 
 --echo #
 --echo # Test 5: SELECT 999 (out of range) must be rejected
 --echo #
 
---exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}3\r\n999\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+--exec python3 -c "import socket; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}3\r\n999\r\n'.encode()); print(s.makefile('rb').readline().decode(errors='replace').strip()); s.close()"
 
 --echo #
 --echo # Test 6: SELECT -1 (negative index) must be rejected
 --echo #
 
---exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}2\r\n-1\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+--exec python3 -c "import socket; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}2\r\n-1\r\n'.encode()); print(s.makefile('rb').readline().decode(errors='replace').strip()); s.close()"
 
 --echo #
 --echo # Test 7: SELECT non-integer argument must be rejected
 --echo #
 
---exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}3\r\nabc\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+--exec python3 -c "import socket; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}3\r\nabc\r\n'.encode()); print(s.makefile('rb').readline().decode(errors='replace').strip()); s.close()"
 
 --echo #
 --echo # Test 8: Server stays alive after all out-of-bounds SELECT commands

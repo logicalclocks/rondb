@@ -73,9 +73,9 @@ SELECT * FROM ndbinfo.security_violation_counts;
 | `violation_id` | int | Violation type (FK into security_violations) |
 | `tier` | char(1) | `A` or `B` (denormalized from catalog for convenience) |
 | `reason` | varchar | Reason string (denormalized) |
-| `total_count` | bigint | Cumulative count since cluster start |
+| `total_count` | bigint | Cumulative count on this data node since cluster start |
 
-One row per (reporting_node_id, violation_id) with a non-zero count. Zero-count pairs are omitted. Aggregate across all data nodes with `SUM(total_count) GROUP BY violation_id` for cluster-wide totals:
+One row per (reporting_node_id, violation_id) with a non-zero count. Zero-count pairs are omitted. **RONDIS violation types (ids 23–24, `rondis_oversize_value` and `rondis_select_out_of_range`) never appear here** — RONDIS bypasses QMGR and never increments `m_violationCounts[]`. They appear only in `security_violations` (the static catalog). Aggregate kernel violations across all data nodes with `SUM(total_count) GROUP BY violation_id`:
 
 ```sql
 SELECT reason, tier, SUM(total_count) AS cluster_total
@@ -187,7 +187,7 @@ ndb_security_violation_counts:
         description: Cumulative count since cluster start
 ```
 
-Scrape interval: 30–60 s. The counter is cluster-lifetime cumulative; use Prometheus `increase()` or `rate()` to detect new activity. Requires `PROCESS` privilege on the scraping MySQL user.
+Scrape interval: 30–60 s. The counter is cluster-lifetime cumulative; use Prometheus `increase()` or `rate()` to detect new activity. The scraping MySQL user needs both `SELECT` on `ndbinfo.*` AND `PROCESS` privilege (required for `security_violation_counts`).
 
 ### Example Prometheus alert rules
 

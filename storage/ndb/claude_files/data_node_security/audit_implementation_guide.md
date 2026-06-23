@@ -236,10 +236,18 @@ All 25 currently-known sites. Use as examples of correctly-categorized violation
 
 ### RONDIS (separate path — no QMGR signal)
 
-| File | Violation | Tier | Notes |
-|---|---|---|---|
-| commands.cc | Oversize SET value (> REDIS_MAX_VALUE_LEN) | B | Reachable from any Redis client |
-| rondb.cc | SELECT db index < 0 or >= g_num_databases | B | Reachable from any Redis client |
+| ID | File | Violation | Tier | Notes |
+|---|---|---|---|---|
+| 23 | commands.cc | Oversize SET value (> REDIS_MAX_VALUE_LEN) | B | Reachable from any Redis client |
+| 24 | rondb.cc | SELECT db index < 0 or >= g_num_databases | B | Reachable from any Redis client |
+
+RONDIS types appear in `ndbinfo.security_violations` (static catalog, from `g_violation_info[]`) but NOT in `ndbinfo.security_violation_counts` — RONDIS bypasses QMGR.
+
+### SimulatedBlock (fragment assembly — SimulatedBlock.cpp)
+
+| ID | Location | Violation | Tier | Notes |
+|---|---|---|---|---|
+| 25 | SimulatedBlock.cpp `assembleFragmentsSlow` | `sectionNo >= 3` in fragmented signal | A | Transporter-framing detail; user-untriggerable |
 
 RONDIS violations use `RONDIS_SECURITY_EVENT("reason_string")` from `storage/ndb/src/rondis/include/common.h`. Do **not** call `reportMaliciousSignal` from RONDIS — that is for NDB kernel blocks only.
 

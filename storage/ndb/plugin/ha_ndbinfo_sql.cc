@@ -607,15 +607,15 @@ static struct view {
      "SELECT * "
      "FROM `ndbinfo`.`ndb$restart_info`"},
     {"ndbinfo", "security_violation_counts",
-     "SELECT v.violation_id, "
+     "SELECT c.reporting_node_id, "
+     "v.violation_id, "
      "CASE v.tier WHEN 0 THEN 'A' WHEN 1 THEN 'B' ELSE NULL END AS tier, "
      "v.reason, "
-     "SUM(c.count) AS total_count "
+     "c.count AS total_count "
      "FROM `ndbinfo`.`ndb$security_violation_counts` c "
      "JOIN `ndbinfo`.`ndb$security_violations` v "
      "  ON c.violation_id = v.violation_id "
-     "GROUP BY v.violation_id, v.tier, v.reason "
-     "ORDER BY v.violation_id"},
+     "ORDER BY c.reporting_node_id, v.violation_id"},
     {"ndbinfo", "security_violations",
      "SELECT DISTINCT violation_id, "
      "CASE tier WHEN 0 THEN 'A' WHEN 1 THEN 'B' ELSE NULL END AS tier, "

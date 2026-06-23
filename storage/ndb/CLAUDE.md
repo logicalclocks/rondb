@@ -20,6 +20,5 @@ Detailed documentation is organized by topic in `claude_files/`. Read the releva
 - `tiered_response_policy.md` — Two-tier response policy, full design (v2, FINAL)
 - `audit_implementation_guide.md` — Step-by-step for adding new violation sites; API reference and pre-commit checklist
 - `monitoring.md` — Prometheus scrape config, Loki/Splunk filters, alerting recommendations
-- `team_briefing.md` — What was built, key decisions, and why
 - `fragmented_signal_security.md` — Phase 1 hardening (done) + Phase 2 protocol extension (planned)
 - `tckeyreq_security.md` — Historical plan for TCKEYREQ/KEYINFO/ATTRINFO hardening (implemented)

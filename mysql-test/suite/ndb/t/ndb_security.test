@@ -17,7 +17,11 @@
 --echo #   API NodeId 192. Tier B is log-only - counter increments, no disconnect.
 --echo #
 --exec $NDB_MGM -e "1 dump 9100 192 5" >> $NDB_TOOLS_OUTPUT
---sleep 1
+
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM `ndbinfo`.`ndb$security_violation_counts`
+  WHERE reporting_node_id=1 AND violation_id=5 AND count >= 1;
+--source include/wait_condition.inc
 
 # Query the base table (ndb$security_violation_counts) for the injected violation.
 SELECT reporting_node_id, violation_id, count
@@ -29,9 +33,19 @@ WHERE reporting_node_id=1 AND violation_id=5;
 --echo #   With the kill switch off, even a Tier A violation is counted and logged
 --echo #   but produces no disconnect.
 --echo #
+
+--echo # Baseline: violation_id=0 counter must be zero before injection.
+SELECT COUNT(*) = 0 AS baseline_is_zero
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=0;
+
 --exec $NDB_MGM -e "1 dump 9101 0" >> $NDB_TOOLS_OUTPUT
 --exec $NDB_MGM -e "1 dump 9100 228 0" >> $NDB_TOOLS_OUTPUT
---sleep 1
+
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM `ndbinfo`.`ndb$security_violation_counts`
+  WHERE reporting_node_id=1 AND violation_id=0 AND count >= 1;
+--source include/wait_condition.inc
 
 SELECT reporting_node_id, violation_id, count
 FROM `ndbinfo`.`ndb$security_violation_counts`
@@ -42,6 +56,16 @@ WHERE reporting_node_id=1 AND violation_id=0;
 --echo #
 SELECT violation_id, tier, reason FROM ndbinfo.security_violations
 WHERE violation_id=5;
+
+--echo #
+--echo # Test 4: Public view (ndbinfo.security_violation_counts) exposes
+--echo #   reporting_node_id so Prometheus can label counts per data node.
+--echo #   This is the query that mysqld_exporter runs for Prometheus scraping.
+--echo #
+SELECT reporting_node_id, violation_id, tier, reason,
+       total_count > 0 AS has_count
+FROM ndbinfo.security_violation_counts
+WHERE reporting_node_id=1 AND violation_id=5;
 
 --echo #
 --echo # Sanity: mysqld is still connected after all injections.
