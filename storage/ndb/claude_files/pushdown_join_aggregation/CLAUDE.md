@@ -135,6 +135,7 @@ All tests in `storage/ndb/block_unit_test/`. Build from debug_build, run with
 | bench_q12_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q12 through full orchestration |
 | bench_q9_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q9: 6-table join, multi-level linked attrs |
 | load_tpch | — | TPC-H data loader for bench_q9_dbtc |
+| load_ronsql_large | — | Large-data loader (lg_cust/lg_orders) for the `ronsql_large` MTR suite; reachable from the test as `$NDB_PUSH_AGG_DIR/load_ronsql_large` |
 
 Build all: `make -j$(sysctl -n hw.ncpu) testJoinAgg testJoinAggSpj testJoinAggNdbApi`
 

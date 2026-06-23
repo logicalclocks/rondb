@@ -24,6 +24,16 @@ what works; this doc is the prioritized backlog for the next development phase.
 - `ronsql_cte_ng1r3` (3 nodes, 1 NG×3 rep), `ronsql_cte_ng2r2` (4, 2×2),
   `ronsql_cte_ng2r3` (6, 2×3), `ronsql_cte_ng4r2` (8, 4×2) — identical wrappers +
   results, sourcing the base body includes; only `my.cnf` topology differs.
+- `mysql-test/suite/ronsql_large/` — large-volume companion (4 data nodes,
+  2 NG × 2 rep). Data (20000 customers, 100000 orders) is bulk-loaded by the
+  deterministic `storage/ndb/block_unit_test/load_ronsql_large.cpp` program
+  (NDB-API batch inserts into MySQL-created `ENGINE=NDB` tables `lg_cust` /
+  `lg_orders`), reachable from the test as `$NDB_PUSH_AGG_DIR/load_ronsql_large`.
+  `t/ronsql_large_cte.test` runs five heavy aggregating-CTE queries through the
+  same `ronsql_compare.inc` differential harness — 20000-key CTE GROUP BYs
+  (multi-batch) and a 60000-key multi-column GROUP BY exercise cross-NG
+  redistribution at scale. Aggregates are restricted to INTEGER / DECIMAL / DATE
+  (no FLOAT/DOUBLE SUM, which is non-associative and not strict-diff-testable).
 - Six families: **agg** (aggregate×type matrix), **filter** (WHERE matrix),
   **index** (CTE-body index usage + EXPLAIN), **joins** (join shapes),
   **chain_scalar** (chained + scalar CTEs), **mainmode** (projection vs
