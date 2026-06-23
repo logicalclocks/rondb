@@ -991,7 +991,6 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
 }
 
 /**
-/**
  * True for temporal field types (DATE / DATETIME / TIMESTAMP / TIME / YEAR,
  * incl. the internal NEWDATE / *2 storage variants).
  *
