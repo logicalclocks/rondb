@@ -55,6 +55,7 @@ enum NdbAggregatorError {
   kErrEmptyAggResult,
   kErrTooManyAggResult,
   kErrUnsupportedStringOperation,
+  kErrUnsupportedTemporalOperation,
   kErrMaxErrno
 };
 
@@ -73,6 +74,7 @@ static AggregationError g_errors_[] = {
   {kErrEmptyAggResult, "Empty aggregation"},
   {kErrTooManyAggResult, "Number of aggregation results should be less than 256"},
   {kErrUnsupportedStringOperation, "String columns are only supported for MIN/MAX"},
+  {kErrUnsupportedTemporalOperation, "Temporal (DATE/YEAR/DATETIME/TIME) columns are only supported for MIN/MAX/COUNT"},
   {kErrMaxErrno, ""}
 };
 
@@ -268,6 +270,13 @@ class NdbAggregator {
   bool disk_columns() const {
     return disk_columns_;
   }
+  // True if any LoadColumn encoded a column type > 31 (DATETIME2 /
+  // TIMESTAMP2), which sets bit 20 in the kOpLoadCol instruction.  Such a
+  // program must only be sent to data nodes that decode the 6-bit type field
+  // (ndbd_support_agg_wide_type); the scan-send path checks this.
+  bool uses_wide_type() const {
+    return uses_wide_type_;
+  }
 
   /**
    * Initialize this aggregator for receiving results, given a program buffer.
@@ -387,6 +396,7 @@ class NdbAggregator {
  private:
   bool TypeSupported(NdbDictionary::Column::Type type);
   bool isStringType(Uint32 type) const;
+  bool isTemporalType(Uint32 type) const;
   void clearStringSlot(AggResItem *slot) const;
   void assignStringSlot(AggResItem *dst, const AggResItem *src) const;
   int compareStringSlots(const AggResItem *lhs,
@@ -448,6 +458,7 @@ class NdbAggregator {
   bool result_record_fetched_;
   Uint32 result_size_est_;
   bool disk_columns_;
+  bool uses_wide_type_;   // any LoadColumn type > 31 (DATETIME2/TIMESTAMP2)
 
   // Vector Search
   Uint32 vec_top_n_;

@@ -37,6 +37,7 @@ SET(BLOCK_UNIT_TEST_TARGETS
   testJoinAggSpj
   bench_q12_dbtc
   load_tpch
+  load_ronsql_large
   bench_q9_dbtc
 )
 
@@ -52,6 +53,8 @@ NDB_ADD_EXECUTABLE(testOuterJoinAgg testOuterJoinAgg.cpp NDBTEST NDBCLIENT MYSQL
 NDB_ADD_EXECUTABLE(bench_q12_dbtc bench_q12_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(load_tpch load_tpch.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 TARGET_LINK_LIBRARIES(load_tpch ndbgeneral)
+NDB_ADD_EXECUTABLE(load_ronsql_large load_ronsql_large.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
+TARGET_LINK_LIBRARIES(load_ronsql_large ndbgeneral)
 NDB_ADD_EXECUTABLE(bench_q9_dbtc bench_q9_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 
 # testJoinAggNdbApi needs NdbQueryBuilder.hpp from src/ndbapi

@@ -36,11 +36,25 @@
 class ResultPrinter
 {
 public:
+  // D17 + temporal extension: a MIN/MAX over a temporal column is computed
+  // in the kernel as an unsigned integer (the column's native packed bytes)
+  // and returned as Bigunsigned.  This tells the printer which temporal
+  // decode to apply to that Bigunsigned value.  NONE = not temporal.
+  enum class TemporalDisplay : int {
+    NONE = 0,
+    DATE,        // 3-byte little-endian uint3korr → YYYY-MM-DD
+    YEAR,        // 1 byte → YYYY (v+1900, 0→0000)
+    DATETIME2,   // big-endian 5+flen bytes → YYYY-MM-DD HH:MM:SS[.frac]
+    TIME2,       // big-endian 3+flen bytes → [-]HH:MM:SS[.frac]
+    TIMESTAMP2   // big-endian 4+flen bytes (UTC epoch) → YYYY-MM-DD HH:MM:SS[.frac]
+  };
   struct ColumnMetadata {
     CHARSET_INFO* charset;
     int precision;
     int scale;
     bool has_metadata;
+    TemporalDisplay temporal;
+    int temporal_fsp;   // fractional-seconds precision (DATETIME2 / TIME2)
   };
 
 private:
@@ -92,6 +106,9 @@ private:
       {
         Uint32 reg_a;
         CHARSET_INFO* charset;
+        int scale;   // source DECIMAL scale for MIN/MAX (0 = none/compact)
+        TemporalDisplay temporal; // D17+: temporal decode for the result
+        int temporal_fsp;         // fractional-seconds precision (DATETIME2/TIME2)
       } print_aggregate;
       struct
       {
@@ -157,8 +174,18 @@ private:
   void print_float_or_double(std::ostream& out, double value);
   void print_aggregate_result(std::ostream& out,
                               NdbAggregator::Result result,
-                              CHARSET_INFO* charset);
+                              CHARSET_INFO* charset,
+                              int scale,
+                              TemporalDisplay temporal,
+                              int temporal_fsp);
   CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
+  int aggregate_arg_scale(const Outputs* out) const;
+  int aggregate_arg_precision(const Outputs* out) const;
+  // Returns the temporal decode for a MIN/MAX aggregate's source column
+  // (NONE if not temporal); sets fsp to the source column's fractional
+  // precision for DATETIME2 / TIME2.
+  TemporalDisplay aggregate_arg_temporal(const Outputs* out,
+                                         int& fsp) const;
   bool evaluate_having(const ConditionalExpression* expr);
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,

@@ -49,6 +49,17 @@
 #define RESULT_HEADER_SIZE 3
 #define RESULT_ITEM_HEADER_SIZE 1
 
+// Encode a column type into a kOpLoadCol instruction word's type field.
+// The type is 6 bits: the low 5 bits sit at instruction bits 21-25 (the
+// historical position), and the most-significant 6th bit sits at bit 20
+// (previously unused).  Every type that existed before DATETIME2 (32) /
+// TIMESTAMP2 (33) is <= 31, so its bit 20 is 0 and the word is byte-identical
+// to the old 5-bit encoding — backward compatible.  Mirrors the kernel's
+// AggInterpreterBase::decodeLoadColType.
+static inline Uint32 encodeLoadColType(Uint32 type) {
+  return ((type & 0x1F) << 21) | (((type >> 5) & 0x1) << 20);
+}
+
 bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
                            const GBHashEntry &n2) const {
@@ -112,6 +123,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   result_size_est_(RESULT_HEADER_SIZE * sizeof(Uint32) +
                RESULT_ITEM_HEADER_SIZE * sizeof(Uint32)),
   disk_columns_(false),
+  uses_wide_type_(false),
   vec_top_n_(0), vec_result_(nullptr),
   userAttrs_(nullptr), n_userAttrs_(0),
   results_prepared_(false), results_left_(0),
@@ -259,6 +271,14 @@ bool NdbAggregator::isStringType(Uint32 type) const {
   return type == NDB_TYPE_CHAR ||
          type == NDB_TYPE_VARCHAR ||
          type == NDB_TYPE_LONGVARCHAR;
+}
+
+bool NdbAggregator::isTemporalType(Uint32 type) const {
+  return type == NDB_TYPE_DATE ||
+         type == NDB_TYPE_YEAR ||
+         type == NDB_TYPE_DATETIME2 ||
+         type == NDB_TYPE_TIME2 ||
+         type == NDB_TYPE_TIMESTAMP2;
 }
 
 void NdbAggregator::clearStringSlot(AggResItem *slot) const {
@@ -765,6 +785,18 @@ bool NdbAggregator::TypeSupported(NdbDictionary::Column::Type type) {
     case NdbDictionary::Column::Char:
     case NdbDictionary::Column::Varchar:
     case NdbDictionary::Column::Longvarchar:
+    // D17 + temporal extension: MIN/MAX over DATE / YEAR / DATETIME2 /
+    // TIME2.  The kernel reads each column's native packed value as an
+    // unsigned integer and returns a Bigunsigned result (see
+    // AggInterpreterBase); RonSQL decodes it for display.  SUM/AVG over
+    // these is rejected separately (see Sum()).  TIMESTAMP2's epoch ordering
+    // is absolute, so MIN/MAX is exact; RonSQL applies the session timezone
+    // (UTC) at display.
+    case NdbDictionary::Column::Date:
+    case NdbDictionary::Column::Year:
+    case NdbDictionary::Column::Datetime2:
+    case NdbDictionary::Column::Time2:
+    case NdbDictionary::Column::Timestamp2:
       return true;
     default:
       return false;
@@ -798,11 +830,14 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
   assert((col_id & 0xFFFFFF00) == 0);
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
-    (type & 0x1F) << 21 |
+    encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
+  // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
+  // gates emission on ndbd_support_agg_wide_type.
+  if (((Uint32)type) > 0x1F) uses_wide_type_ = true;
 
   /*
    * For decimal, use 1 more byte to take precision/scale
@@ -844,11 +879,14 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
   assert((col_id & 0xFFFFFF00) == 0);
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
-    (type & 0x1F) << 21 |
+    encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
+  // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
+  // gates emission on ndbd_support_agg_wide_type.
+  if (((Uint32)type) > 0x1F) uses_wide_type_ = true;
   /*
    * For decimal, use 1 more byte to take precision/scale
    * info.
@@ -886,11 +924,14 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
   Uint32 col_id = AGG_LINKED_COL_FLAG | position;
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
-    (type & 0x1F) << 21 |
+    encodeLoadColType(type) |
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
   reg_types_[reg_id] = type;
+  // Wide (6-bit) column type → kOpLoadCol sets bit 20; the scan-send path
+  // gates emission on ndbd_support_agg_wide_type.
+  if (((Uint32)type) > 0x1F) uses_wide_type_ = true;
 
   if (type == NdbDictionary::Column::Decimal ||
       type == NdbDictionary::Column::Decimalunsigned) {
@@ -1065,6 +1106,12 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
     SetError(kErrUnsupportedStringOperation);
     return false;
   }
+  // D17 + temporal: SUM/AVG over DATE/YEAR/DATETIME/TIME is meaningless —
+  // only MIN/MAX/COUNT.
+  if (isTemporalType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedTemporalOperation);
+    return false;
+  }
 
   buffer_[curr_prog_pos_++] =
     (kOpSum) << 26 |
@@ -1072,6 +1119,7 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpSum;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
@@ -1122,6 +1170,7 @@ bool NdbAggregator::Count(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpCount;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
@@ -1161,15 +1210,14 @@ bool NdbAggregator::GroupBy(const char* name) {
 }
 
 bool NdbAggregator::GroupBy(Int32 col_id) {
-  // AGG_LINKED_COL_FLAG (bit 15): column is from parent table in a pushed join.
-  // Strip for table lookup but preserve in the program buffer.
+  if (col_id & AGG_LINKED_COL_FLAG) {
+    SetError(kErrInvalidColumnId);
+    return false;
+  }
   const Int32 raw_col_id = col_id & ~AGG_LINKED_COL_FLAG;
-  const bool is_linked = (col_id & AGG_LINKED_COL_FLAG) != 0;
 
   const NdbDictionary::Column* col = table_impl_->getColumn(raw_col_id);
-  if (col == nullptr && !is_linked) {
-    // For linked (parent) columns, the column may not exist in the child table.
-    // We cannot validate it here — the kernel will validate at execution time.
+  if (col == nullptr) {
     SetError(kErrInvalidColumnId);
     return false;
   }
@@ -1182,21 +1230,15 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     }
   }
 
-  buffer_[curr_prog_pos_++] = col_id << 16;
+  buffer_[curr_prog_pos_++] = raw_col_id << 16;
 
-  if (col != nullptr) {
-    result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
-    if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
-      disk_columns_ = true;
-    }
-  } else {
-    // Linked column: estimate 8 bytes (bigint) for size estimation
-    result_size_est_ += (sizeof(AttributeHeader) + 8);
+  result_size_est_ +=
+      (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+  if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
+    disk_columns_ = true;
   }
 
-  /* For non-linked columns store the column definition; for linked columns
-     the caller should use GroupByLinked() to supply the parent column. */
-  gb_columns_[n_gb_cols_] = is_linked ? nullptr : col;
+  gb_columns_[n_gb_cols_] = col;
   n_gb_cols_++;
 
   return true;
@@ -1366,6 +1408,26 @@ bool NdbAggregator::Finalize() {
 void NdbAggregator::PrepareResults() {
   if (n_gb_cols_) {
     iter_ = gb_map_->begin();
+  } else if (agg_results_ != nullptr) {
+    // RONDB-831 (scalar analog): COUNT() over zero rows must read 0, not
+    // NULL.  The GROUP BY path applies this fixup at group-insert time
+    // (see the "RONDB-831" block in iterate()); the scalar (no-GROUP-BY)
+    // result record is simply the pre-initialised agg_results_ array,
+    // whose every slot starts is_null=true.  When the kernel sends no
+    // scalar group at all — e.g. a main scalar aggregation reading an
+    // EMPTY CTE_SCAN that materialised to zero rows (D16) — that NULL
+    // state survives to FetchResultRecord.  SUM / MIN / MAX correctly
+    // surface NULL on empty input, but COUNT must surface 0.
+    for (Uint32 i = 0; i < n_agg_results_; i++) {
+      if (agg_ops_[i] == kOpCount &&
+          (agg_results_[i].is_null ||
+           agg_results_[i].type == NDB_TYPE_UNDEFINED)) {
+        agg_results_[i].type = NDB_TYPE_BIGINT;
+        agg_results_[i].is_unsigned = 1;
+        agg_results_[i].is_null = false;
+        agg_results_[i].value.val_uint64 = 0;
+      }
+    }
   }
   finished_ = true;
 }

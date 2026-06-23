@@ -188,6 +188,38 @@ buildAggProgram_GroupByCountSum(Uint32 linkedGrpIdx, Uint32 childValAttrId)
   return prog;
 }
 
+static std::vector<Uint32>
+buildJoinAggMetadata_GroupByParentGrp(const TableMeta &parent)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(1);  /* one GROUP BY metadata entry */
+
+  block.push_back(JOIN_AGG_META_SOURCE_LINKED_COLUMN);
+  block.push_back(0);  /* linked position 0 in child attrinfo = parent.grp */
+  block.push_back(8);  /* GROUP BY program word */
+  block.push_back(0);  /* GROUP BY slot */
+  block.push_back(parent.tableId);
+  block.push_back(parent.schemaVersion);
+  block.push_back(parent.attrIdCol2);
+  block.push_back(COL_TYPE_BIGINT);
+  block.push_back(8);
+  block.push_back(0);  /* charset */
+  block.push_back(0);  /* precision/scale */
+  block.push_back(JOIN_AGG_META_FLAG_GROUP_BY);
+
+  std::vector<Uint32> container;
+  container.push_back(JOIN_AGG_META_MARKER);
+  container.push_back(JOIN_AGG_META_VERSION);
+  container.push_back(1);  /* one metadata block */
+  container.push_back(JOIN_AGG_META_KIND_MAIN);
+  container.push_back(RNIL);
+  container.push_back((Uint32)block.size());
+  container.insert(container.end(), block.begin(), block.end());
+  return container;
+}
+
 /* ------------------------------------------------------------------ */
 /* QueryTree builder for outer join                                    */
 /* ------------------------------------------------------------------ */
@@ -466,7 +498,8 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
                const TableMeta &parentMeta,
                const std::vector<Uint32> &queryTree,
                const std::vector<Uint32> &aggProgram,
-               Uint32 receiverId)
+               Uint32 receiverId,
+               const std::vector<Uint32> *columnMeta = nullptr)
 {
   V("SCAN_TABREQ → node %u, table=%u\n", nodeId, parentMeta.tableId);
 
@@ -495,6 +528,9 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back(0);  /* boundsLen = 0 */
   aggSection.push_back(receiverId);
   aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
+  if (columnMeta != nullptr) {
+    aggSection.insert(aggSection.end(), columnMeta->begin(), columnMeta->end());
+  }
 
   ssig.header.m_noOfSections = 3;
   Uint32 dummyReceiverId = 0;
@@ -1191,9 +1227,12 @@ testPartialMatchGroupBy(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
   /* GROUP BY linked col 1 (parent.grp), COUNT(*) → agg[0], SUM(child.val) → agg[1] */
   std::vector<Uint32> aggProgram =
     buildAggProgram_GroupByCountSum(0, childMeta.attrIdCol2);
+  std::vector<Uint32> columnMeta =
+    buildJoinAggMetadata_GroupByParentGrp(parentMeta);
 
   rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
-                      parentMeta, queryTree, aggProgram, receiverId);
+                      parentMeta, queryTree, aggProgram, receiverId,
+                      &columnMeta);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
     ss.unlock(); dropTables(conn); ss.lock();

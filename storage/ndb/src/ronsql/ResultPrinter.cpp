@@ -53,6 +53,41 @@
 using std::endl;
 using std::max;
 
+/*
+ * Lock-free UTC epoch-seconds -> broken-down MYSQL_TIME, for displaying
+ * TIMESTAMP (Timestamp2) results.  glibc gmtime_r()/gmtime() funnel through
+ * __tz_convert(), which takes the process-global tzset_lock on every call even
+ * for UTC, serializing concurrent RDRS request threads.  This uses only the
+ * in-tree calendar arithmetic (get_date_from_daynr, mysys/my_time.cc), so it
+ * touches no glibc lock.  Field-for-field equivalent to MySQL's
+ * sec_to_TIME(out, t, 0) (the my_tz_OFFSET0 path); mirrors the kernel's
+ * ttl_utc_sec_to_TIME from commit 808bb79ce23 (Avoid glibc tzset_lock on TTL
+ * hot paths).  Leaves second_part to the caller (fractional seconds).
+ */
+static inline void ronsql_utc_sec_to_TIME(time_t t, MYSQL_TIME *out)
+{
+  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch). */
+  const int64_t EPOCH_DAYNR = 719528;
+  int64_t days = (int64_t)t / 86400;
+  int32_t secs = (int32_t)((int64_t)t % 86400);
+  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
+    secs += 86400;
+    days -= 1;
+  }
+  unsigned int year, month, day;
+  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
+  out->neg = false;
+  out->second_part = 0;
+  out->year = year;
+  out->month = month;
+  out->day = day;
+  out->hour = secs / 3600;
+  out->minute = (secs % 3600) / 60;
+  out->second = secs % 60;
+  out->time_zone_displacement = 0;
+  out->time_type = MYSQL_TIMESTAMP_DATETIME;
+}
+
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 #define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
@@ -459,6 +494,21 @@ ResultPrinter::compile()
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
         cmd.print_aggregate.charset = aggregate_arg_charset(o);
+        {
+          // D15: only format with fixed scale when the source DECIMAL is within
+          // DOUBLE's exact range (precision <= 15); wider DECIMALs keep compact
+          // formatting (the value is already a lossy DOUBLE).
+          int sc = aggregate_arg_scale(o);
+          int pr = aggregate_arg_precision(o);
+          cmd.print_aggregate.scale = (pr > 0 && pr <= 15) ? sc : 0;
+        }
+        // D17 + temporal: MIN/MAX over a temporal column → decode the
+        // Bigunsigned packed value back to its text form.
+        {
+          int fsp = 0;
+          cmd.print_aggregate.temporal = aggregate_arg_temporal(o, fsp);
+          cmd.print_aggregate.temporal_fsp = fsp;
+        }
         m_program.push(cmd);
         break;
       }
@@ -772,18 +822,10 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            Int64 epochIn = myTV.m_tv_sec;
-            time_t stdtime(epochIn);
-            struct tm *time_info = gmtime(&stdtime);
-            MYSQL_TIME lTime  = {};
-            lTime.year        = time_info->tm_year + 1900;
-            lTime.month       = time_info->tm_mon +1;
-            lTime.day         = time_info->tm_mday;
-            lTime.hour        = time_info->tm_hour;
-            lTime.minute      = time_info->tm_min;
-            lTime.second      = time_info->tm_sec;
+            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
+            MYSQL_TIME lTime;
+            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
             lTime.second_part = myTV.m_tv_usec;
-            lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -797,7 +839,10 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        print_aggregate_result(out, result, cmd.print_aggregate.charset);
+        print_aggregate_result(out, result, cmd.print_aggregate.charset,
+                               cmd.print_aggregate.scale,
+                               cmd.print_aggregate.temporal,
+                               cmd.print_aggregate.temporal_fsp);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1133,7 +1178,23 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   case NdbDictionary::Column::Float:
     print_float_or_double(out, (double)attr->float_value()); break;
   case NdbDictionary::Column::Double:
-    print_float_or_double(out, attr->double_value()); break;
+    {
+      // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
+      // scale (set on the virt column via setScale) to match MySQL — but only
+      // within DOUBLE's exact range (precision <= 15).  True DOUBLE columns
+      // have scale 0; wider DECIMALs keep the compact formatting.
+      const NdbDictionary::Column* col = attr->getColumn();
+      int sc = (col != nullptr) ? col->getScale() : 0;
+      int pr = (col != nullptr) ? col->getPrecision() : 0;
+      if (sc > 0 && pr > 0 && pr <= 15) {
+        char buf[FLOATING_POINT_BUFFER];
+        snprintf(buf, sizeof(buf), "%.*f", sc, attr->double_value());
+        out << buf;
+      } else {
+        print_float_or_double(out, attr->double_value());
+      }
+    }
+    break;
   case NdbDictionary::Column::Char:
     {
       const NdbDictionary::Column* col = attr->getColumn();
@@ -1553,18 +1614,10 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            Int64 epochIn = myTV.m_tv_sec;
-            time_t stdtime(epochIn);
-            struct tm *time_info = gmtime(&stdtime);
-            MYSQL_TIME lTime  = {};
-            lTime.year        = time_info->tm_year + 1900;
-            lTime.month       = time_info->tm_mon +1;
-            lTime.day         = time_info->tm_mday;
-            lTime.hour        = time_info->tm_hour;
-            lTime.minute      = time_info->tm_min;
-            lTime.second      = time_info->tm_sec;
+            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
+            MYSQL_TIME lTime;
+            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
             lTime.second_part = myTV.m_tv_usec;
-            lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -1578,7 +1631,10 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        print_aggregate_result(out, result, cmd.print_aggregate.charset);
+        print_aggregate_result(out, result, cmd.print_aggregate.charset,
+                               cmd.print_aggregate.scale,
+                               cmd.print_aggregate.temporal,
+                               cmd.print_aggregate.temporal_fsp);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1932,14 +1988,215 @@ ResultPrinter::aggregate_arg_charset(const Outputs* out) const
   return m_column_metadata[col_idx].charset;
 }
 
+// D8: a watermark GREATEST/LEAST over scalar-CTE outputs reaches the printer
+// as the arg of the implicit-MAX wrapper — a Greatest2/Least2 expression, not
+// a direct Load.  Walk the binary tree to its first Load operand so the source
+// DECIMAL scale/precision (carried on that column's metadata) can format the
+// result like a direct MIN/MAX.  A watermark's operands share the source
+// column, so the first load's scale is representative.
+static const AggregationAPICompiler::Expr*
+ronsql_first_load_in_expr(const AggregationAPICompiler::Expr* e)
+{
+  if (e == NULL) return NULL;
+  if (e->isLoad()) return e;
+  if (e->isGreatest2() || e->isLeast2())
+  {
+    const AggregationAPICompiler::Expr* l =
+        ronsql_first_load_in_expr(e->getLeft());
+    if (l != NULL) return l;
+    return ronsql_first_load_in_expr(e->getRight());
+  }
+  return NULL;
+}
+
+// Source DECIMAL scale of a MIN/MAX aggregate's argument column, so the
+// printer can format the (DOUBLE-widened) result with a fixed scale to match
+// MySQL's DECIMAL output (e.g. 20055.00, not 20055).  Returns 0 when the
+// argument is not a scaled column — true DOUBLE/FLOAT and integer results then
+// keep their compact (my_fcvt_compact) formatting unchanged.
+int
+ResultPrinter::aggregate_arg_scale(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return 0;
+  // D15: MIN/MAX over a scale-bearing DECIMAL-derived column.  D1: SUM over
+  // the same — SUM over a scale>0 DECIMAL widens to DOUBLE in the kernel and
+  // must print with the source scale (e.g. 15051277.50) like MySQL's exact
+  // DECIMAL sum, instead of the compact full-precision DOUBLE form.
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
+      out->aggregate.fun != T_SUM)
+    return 0;
+  // D8: handle a direct Load or a Greatest2/Least2 watermark over Loads.
+  const AggregationAPICompiler::Expr* loadExpr =
+      ronsql_first_load_in_expr(out->aggregate.arg);
+  if (loadExpr == NULL)
+    return 0;
+  Uint32 col_idx = loadExpr->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return 0;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return 0;
+  }
+  return m_column_metadata[col_idx].scale;
+}
+
+// Source DECIMAL precision of a MIN/MAX aggregate's argument column.  Used to
+// gate scale-formatting to the DOUBLE-exact range (precision <= 15): wider
+// DECIMALs are unrepresentable as DOUBLE, so fixed-scale formatting would
+// expose mantissa noise — those keep the compact my_fcvt_compact form.
+int
+ResultPrinter::aggregate_arg_precision(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return 0;
+  // D15 (MIN/MAX) + D1 (SUM): see aggregate_arg_scale.  The precision gate
+  // keeps fixed-scale formatting within the DOUBLE-exact range (<= 15).
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
+      out->aggregate.fun != T_SUM)
+    return 0;
+  // D8: handle a direct Load or a Greatest2/Least2 watermark over Loads.
+  const AggregationAPICompiler::Expr* loadExpr =
+      ronsql_first_load_in_expr(out->aggregate.arg);
+  if (loadExpr == NULL)
+    return 0;
+  Uint32 col_idx = loadExpr->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return 0;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return 0;
+  }
+  return m_column_metadata[col_idx].precision;
+}
+
+// D17 + temporal extension: which temporal decode (if any) applies to a
+// MIN/MAX aggregate's source column.  The kernel returns a temporal MIN/MAX
+// as a Bigunsigned packed value; this drives the printer to unpack it.
+// Mirrors aggregate_arg_scale's column-metadata walk.
+ResultPrinter::TemporalDisplay
+ResultPrinter::aggregate_arg_temporal(const Outputs* out, int& fsp) const
+{
+  fsp = 0;
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return TemporalDisplay::NONE;
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+    return TemporalDisplay::NONE;
+  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg == NULL || !arg->isLoad())
+    return TemporalDisplay::NONE;
+  Uint32 col_idx = arg->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return TemporalDisplay::NONE;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return TemporalDisplay::NONE;
+  }
+  fsp = m_column_metadata[col_idx].temporal_fsp;
+  return m_column_metadata[col_idx].temporal;
+}
+
 void
 ResultPrinter::print_aggregate_result(std::ostream& out,
                                       NdbAggregator::Result result,
-                                      CHARSET_INFO* charset)
+                                      CHARSET_INFO* charset,
+                                      int scale,
+                                      TemporalDisplay temporal,
+                                      int temporal_fsp)
 {
   if (result.is_null())
   {
     out << m_null_representation;
+    return;
+  }
+
+  // D17 + temporal extension: MIN/MAX over a temporal column comes back as a
+  // Bigunsigned holding the column's native packed value (the kernel reads
+  // the on-disk bytes in their native order — little-endian for DATE/YEAR,
+  // big-endian for DATETIME2/TIME2 — into the register, which is monotonic
+  // with chronological order so MIN/MAX is exact).  Decode it back here.
+  if (temporal != TemporalDisplay::NONE &&
+      result.type() == NdbDictionary::Column::Bigunsigned)
+  {
+    Uint64 w = result.data_uint64();
+    char buf[64];
+    switch (temporal)
+    {
+    case TemporalDisplay::DATE:
+    {
+      // w = (year<<9)|(month<<5)|day; w==0 → 0000-00-00 (MySQL zero date).
+      Uint32 day = (Uint32)(w & 31);
+      Uint32 month = (Uint32)((w >> 5) & 15);
+      Uint32 year = (Uint32)(w >> 9);
+      snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
+      break;
+    }
+    case TemporalDisplay::YEAR:
+    {
+      // 1-byte YEAR: 0 → 0000, else stored value + 1900.
+      if (w == 0)
+        snprintf(buf, sizeof(buf), "0000");
+      else
+        snprintf(buf, sizeof(buf), "%04u", (Uint32)(w + 1900));
+      break;
+    }
+    case TemporalDisplay::DATETIME2:
+    {
+      // NDB stores DATETIME2 in MySQL's big-endian packed binary (proven by
+      // the encode path's my_datetime_packed_to_binary).  Reconstruct the
+      // n = 5+flen on-disk bytes from the big-endian value the kernel loaded,
+      // then decode with MySQL's own codec so the string matches exactly.
+      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
+      Uint32 n = 5u + flen;
+      Uint8 bytes[8];
+      for (Uint32 i = 0; i < n; i++)
+        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+      Int64 packed = my_datetime_packed_from_binary(bytes, temporal_fsp);
+      MYSQL_TIME mt;
+      TIME_from_longlong_datetime_packed(&mt, packed);
+      my_TIME_to_str(mt, buf, temporal_fsp);
+      break;
+    }
+    case TemporalDisplay::TIME2:
+    {
+      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
+      Uint32 n = 3u + flen;
+      Uint8 bytes[8];
+      for (Uint32 i = 0; i < n; i++)
+        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+      Int64 packed = my_time_packed_from_binary(bytes, temporal_fsp);
+      MYSQL_TIME mt;
+      TIME_from_longlong_time_packed(&mt, packed);
+      my_TIME_to_str(mt, buf, temporal_fsp);
+      break;
+    }
+    case TemporalDisplay::TIMESTAMP2:
+    {
+      // TIMESTAMP2 stores the UTC epoch (4+flen bytes, big-endian); decode the
+      // reconstructed bytes to a my_timeval and break the epoch down in UTC
+      // (RonSQL/RDRS treat the server as UTC; the mysql baseline runs with
+      // time_zone='+00:00').  Uses the lock-free ronsql_utc_sec_to_TIME, not
+      // gmtime_r.  Mirrors the passthrough decode below.
+      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
+      Uint32 n = 4u + flen;
+      Uint8 bytes[8];
+      for (Uint32 i = 0; i < n; i++)
+        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+      my_timeval tv{};
+      my_timestamp_from_binary(&tv, bytes, temporal_fsp);
+      MYSQL_TIME mt;
+      ronsql_utc_sec_to_TIME((time_t)tv.m_tv_sec, &mt);
+      mt.second_part = (unsigned long)tv.m_tv_usec;
+      my_TIME_to_str(mt, buf, temporal_fsp);
+      break;
+    }
+    case TemporalDisplay::NONE:
+      break; // unreachable (guarded above)
+    }
+    out << buf;
     return;
   }
 
@@ -1952,7 +2209,20 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
     out << result.data_uint64();
     break;
   case NdbDictionary::Column::Double:
-    print_float_or_double(out, result.data_double());
+    if (scale > 0)
+    {
+      // MIN/MAX over a DECIMAL(_, scale) is widened to DOUBLE in the kernel,
+      // but MySQL prints it with the source scale (e.g. 20055.00).  Format
+      // with fixed scale so the output matches; true DOUBLE/FLOAT results
+      // pass scale == 0 and keep the compact my_fcvt_compact formatting.
+      char buf[FLOATING_POINT_BUFFER];
+      snprintf(buf, sizeof(buf), "%.*f", scale, result.data_double());
+      out << buf;
+    }
+    else
+    {
+      print_float_or_double(out, result.data_double());
+    }
     break;
   case NdbDictionary::Column::Char:
   case NdbDictionary::Column::Varchar:

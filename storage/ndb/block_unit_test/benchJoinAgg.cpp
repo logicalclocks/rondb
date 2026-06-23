@@ -77,6 +77,7 @@
 #include <chrono>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 /* ------------------------------------------------------------------ */
@@ -174,6 +175,9 @@ struct TableMeta {
   std::vector<Uint32> fragNodes;
   std::vector<Uint32> fragInstances;
   std::map<std::string, Uint32> attrIds;
+  std::map<std::string, Uint32> types;
+  std::map<std::string, Uint32> maxBytes;
+  std::map<std::string, Uint32> charsetNumbers;
 };
 
 /* ------------------------------------------------------------------ */
@@ -224,6 +228,62 @@ buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
   prog[10] = (kOpSum << 26) | (0 << 16) | 0;
 
   return prog;
+}
+
+static void
+appendJoinAggMetaEntry(std::vector<Uint32> &meta,
+                       Uint32 sourceKind,
+                       Uint32 sourceId,
+                       Uint32 programOffset,
+                       Uint32 slotIndex,
+                       const TableMeta &tableMeta,
+                       const char *columnName,
+                       Uint32 flags)
+{
+  meta.push_back(sourceKind);
+  meta.push_back(sourceId);
+  meta.push_back(programOffset);
+  meta.push_back(slotIndex);
+  meta.push_back(tableMeta.tableId);
+  meta.push_back(tableMeta.schemaVersion);
+  meta.push_back(tableMeta.attrIds.at(columnName));
+  meta.push_back(tableMeta.types.at(columnName));
+  meta.push_back(tableMeta.maxBytes.at(columnName));
+  meta.push_back(tableMeta.charsetNumbers.at(columnName));
+  meta.push_back(0);  /* precision/scale not needed by these tests */
+  meta.push_back(flags);
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadata_Q12(const TableMeta &lineitemMeta,
+                         const TableMeta &ordersMeta)
+{
+  std::vector<Uint32> meta;
+  meta.push_back(JOIN_AGG_META_MARKER);
+  meta.push_back(JOIN_AGG_META_VERSION);
+  meta.push_back(0);  /* patched below */
+
+  Uint32 entryCount = 0;
+  appendJoinAggMetaEntry(meta,
+                         JOIN_AGG_META_SOURCE_LINKED_COLUMN,
+                         0,
+                         8,
+                         0,
+                         lineitemMeta,
+                         "l_shipmode",
+                         JOIN_AGG_META_FLAG_GROUP_BY);
+  entryCount++;
+  appendJoinAggMetaEntry(meta,
+                         JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+                         ordersMeta.attrIds.at("o_orderpriority"),
+                         9,
+                         0,
+                         ordersMeta,
+                         "o_orderpriority",
+                         JOIN_AGG_META_FLAG_LOAD_COLUMN);
+  entryCount++;
+  meta[2] = entryCount;
+  return meta;
 }
 
 /* ------------------------------------------------------------------ */
@@ -325,6 +385,10 @@ loadTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta)
   for (int i = 0; i < ptab->getNoOfColumns(); i++) {
     const NdbDictionary::Column *col = ptab->getColumn(i);
     meta.attrIds[col->getName()] = col->getAttrId();
+    meta.types[col->getName()] = col->getType();
+    meta.maxBytes[col->getName()] = col->getSizeInBytes();
+    meta.charsetNumbers[col->getName()] =
+        col->getCharset() != nullptr ? col->getCharsetNumber() : 0;
   }
 
   meta.fragNodes.resize(meta.fragCount);
@@ -602,6 +666,7 @@ static int getGsn(const SimpleSignal *sig) {
 static int
 sendSetupReq(SignalSender &ss, Uint32 nodeId,
              const std::vector<Uint32> &aggProgram,
+             const std::vector<Uint32> &columnMeta,
              const TableMeta &leafMeta, Uint32 strategy,
              Uint32 &aggStateKeyOut)
 {
@@ -627,11 +692,15 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);
   Uint32 receiverId = FAKE_SENDER_DATA;
-  ssig.header.m_noOfSections = 2;
+  ssig.header.m_noOfSections = columnMeta.empty() ? 2 : 3;
   ssig.ptr[0].p = aggProgram.data();
   ssig.ptr[0].sz = (Uint32)aggProgram.size();
   ssig.ptr[1].p = &receiverId;
   ssig.ptr[1].sz = 1;
+  if (!columnMeta.empty()) {
+    ssig.ptr[2].p = columnMeta.data();
+    ssig.ptr[2].sz = (Uint32)columnMeta.size();
+  }
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SETUP_REQ failed\n");
@@ -1021,6 +1090,7 @@ runBenchmark(SignalSender &ss,
 
   auto aggProg = buildAggProgram_Q12(linkedShipmodeAttrId,
                                       localPriorityAttrId);
+  auto columnMeta = buildJoinAggMetadata_Q12(lineitemMeta, ordersMeta);
 
   /* ---- Phase 1: Setup ---- */
   auto t0 = Clock::now();
@@ -1028,7 +1098,7 @@ runBenchmark(SignalSender &ss,
   std::map<Uint32, Uint32> aggStateKeys;
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
-    if (sendSetupReq(ss, nd, aggProg, ordersMeta, strategy, key) != 0)
+    if (sendSetupReq(ss, nd, aggProg, columnMeta, ordersMeta, strategy, key) != 0)
       return -1;
     aggStateKeys[nd] = key;
   }

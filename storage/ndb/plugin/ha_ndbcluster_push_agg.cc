@@ -991,6 +991,38 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
 }
 
 /**
+/**
+ * True for temporal field types (DATE / DATETIME / TIMESTAMP / TIME / YEAR,
+ * incl. the internal NEWDATE / *2 storage variants).
+ *
+ * MIN/MAX over a temporal column IS computed correctly by the data node (the
+ * kernel returns the column's native packed value as a Bigunsigned), but the
+ * handler's aggregate-result consumption path does not yet decode that packed
+ * value back into a temporal MySQL Field.  Pushing it would store the raw
+ * packed integer (e.g. 1036335 for 2024-01-15) → "Incorrect date value".  So
+ * the handler declines to push temporal MIN/MAX/SUM and lets the server
+ * compute them; RonSQL has the decode and still pushes.  (COUNT over a
+ * temporal column and GROUP BY a temporal column are unaffected — they don't
+ * route a temporal value through the aggregate-result path.)
+ */
+static bool is_temporal_field_type(enum_field_types t) {
+  switch (t) {
+    case MYSQL_TYPE_DATE:
+    case MYSQL_TYPE_NEWDATE:
+    case MYSQL_TYPE_DATETIME:
+    case MYSQL_TYPE_DATETIME2:
+    case MYSQL_TYPE_TIMESTAMP:
+    case MYSQL_TYPE_TIMESTAMP2:
+    case MYSQL_TYPE_TIME:
+    case MYSQL_TYPE_TIME2:
+    case MYSQL_TYPE_YEAR:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
  * Check if the aggregate functions and GROUP BY in a JOIN are pushable.
  *
  * Validates:
@@ -1046,6 +1078,11 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
           const auto *field_item = down_cast<const Item_field *>(arg);
           if (field_item->field->table->file->member_of_pushed_join() ==
               nullptr) {
+            return false;
+          }
+          // Temporal SUM/MIN/MAX: the handler can't decode the kernel's packed
+          // result into a temporal Field — let the server compute it.
+          if (is_temporal_field_type(field_item->field->type())) {
             return false;
           }
         } else if (arg->type() == Item::FUNC_ITEM) {
@@ -1902,6 +1939,11 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
         if (arg->type() == Item::FIELD_ITEM) {
           const auto *field_item = down_cast<const Item_field *>(arg);
           if (field_item->field->table != table) {
+            return false;
+          }
+          // Temporal SUM/MIN/MAX: the handler can't decode the kernel's packed
+          // result into a temporal Field — let the server compute it.
+          if (is_temporal_field_type(field_item->field->type())) {
             return false;
           }
         } else if (arg->type() == Item::FUNC_ITEM) {

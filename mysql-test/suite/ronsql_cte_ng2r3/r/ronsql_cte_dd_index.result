@@ -1,0 +1,376 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== index-1: CTE body equality bound on idx_c_nationkey ===
+== Query ==
+WITH cn AS (SELECT c_nationkey AS k, COUNT(*) AS n
+FROM customer WHERE c_nationkey = 7 GROUP BY c_nationkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM cn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cn AS (SELECT c_nationkey AS k, COUNT(*) AS n
+FROM customer WHERE c_nationkey = 7 GROUP BY c_nationkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM cn|
+mnk	mxk	sn	g
+7	7	12	1
+
+=== index-2: CTE body range bound on idx_l_partkey ===
+== Query ==
+WITH lp AS (SELECT l_partkey AS k, SUM(l_quantity) AS q
+FROM lineitem WHERE l_partkey >= 40 AND l_partkey <= 60
+GROUP BY l_partkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(q) AS sq, COUNT(*) AS g FROM lp;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH lp AS (SELECT l_partkey AS k, SUM(l_quantity) AS q
+FROM lineitem WHERE l_partkey >= 40 AND l_partkey <= 60
+GROUP BY l_partkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(q) AS sq, COUNT(*) AS g FROM lp|
+mnk	mxk	sq	g
+40	60	14850	21
+
+=== index-3: CTE body half-open bound on idx_p_size ===
+== Query ==
+WITH ps AS (SELECT p_size AS k, COUNT(*) AS n
+FROM part WHERE p_size > 30 GROUP BY p_size)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM ps;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH ps AS (SELECT p_size AS k, COUNT(*) AS n
+FROM part WHERE p_size > 30 GROUP BY p_size)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM ps|
+mnk	mxk	sn	g
+31	50	40	20
+
+=== index-4 (D9): CTE body DATE equality bound on idx_o_orderdate ===
+== Query ==
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH od AS (SELECT o_orderdate AS d, COUNT(*) AS n
+FROM orders WHERE o_orderdate = '1995-06-15' GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM od|
+mnd	mxd	sn	g
+1995-06-15	1995-06-15	2	1
+
+=== index-5 (D9): CTE body DATE range bound on idx_o_orderdate ===
+== Query ==
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+            FROM orders
+            WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH od AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS prio
+FROM orders
+WHERE o_orderdate >= '1995-06-01' AND o_orderdate <= '1995-06-30'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(prio) AS sp, COUNT(*) AS g FROM od|
+mnd	mxd	sp	g
+1995-06-01	1995-06-30	120	30
+
+=== index-6: CTE body equality CHAR bound on idx_p_brand ===
+== Query ==
+WITH pb AS (SELECT p_brand AS b, COUNT(*) AS n, SUM(p_size) AS sz
+            FROM part WHERE p_brand = 'BRAND#33' GROUP BY p_brand)
+SELECT MIN(b) AS mnb, MAX(b) AS mxb, SUM(n) AS sn, SUM(sz) AS ssz, COUNT(*) AS g FROM pb;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH pb AS (SELECT p_brand AS b, COUNT(*) AS n, SUM(p_size) AS sz
+FROM part WHERE p_brand = 'BRAND#33' GROUP BY p_brand)
+SELECT MIN(b) AS mnb, MAX(b) AS mxb, SUM(n) AS sn, SUM(sz) AS ssz, COUNT(*) AS g FROM pb|
+mnb	mxb	sn	ssz	g
+BRAND#33	BRAND#33	20	510	1
+
+=== index-7: composite leading-equality only (o_orderstatus = 'O') ===
+== Query ==
+WITH os AS (SELECT o_orderstatus AS s, COUNT(*) AS n
+            FROM orders WHERE o_orderstatus = 'O' GROUP BY o_orderstatus)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM os;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH os AS (SELECT o_orderstatus AS s, COUNT(*) AS n
+FROM orders WHERE o_orderstatus = 'O' GROUP BY o_orderstatus)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM os|
+mns	mxs	sn	g
+O	O	500	1
+
+=== index-8 (D9): composite status-eq + DATE range on idx_o_status_date ===
+== Query ==
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+            FROM orders
+            WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH os AS (SELECT o_orderdate AS d, COUNT(*) AS n
+FROM orders
+WHERE o_orderstatus = 'O' AND o_orderdate > '1995-06-01'
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(n) AS sn, COUNT(*) AS g FROM os|
+mnd	mxd	sn	g
+1995-06-02	1997-09-26	400	400
+
+=== index-9 (D9+D17): composite eq + half-open DATE + residual; MIN/MAX over DATE key ===
+== Query ==
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+            FROM orders
+            WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+            GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t
+FROM orders
+WHERE o_orderstatus = 'F' AND o_orderdate >= '1995-03-01'
+                  AND o_shippriority < 3
+GROUP BY o_orderdate)
+SELECT MIN(d) AS mnd, MAX(d) AS mxd, SUM(t) AS st, COUNT(*) AS g FROM os|
+mnd	mxd	st	g
+1995-03-02	1997-09-24	276	276
+
+=== index-10: scalar MAX(p_size) via idx_p_size DESC maxRows=1 ===
+== Query ==
+WITH mx AS (SELECT MAX(p_size) AS m FROM part)
+SELECT MAX(m) AS mm FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mx AS (SELECT MAX(p_size) AS m FROM part)
+SELECT MAX(m) AS mm FROM mx|
+mm
+50
+
+=== index-11: scalar MIN(p_size) via idx_p_size ASC maxRows=1 ===
+== Query ==
+WITH mn AS (SELECT MIN(p_size) AS m FROM part)
+SELECT MIN(m) AS mm FROM mn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mn AS (SELECT MIN(p_size) AS m FROM part)
+SELECT MIN(m) AS mm FROM mn|
+mm
+1
+
+=== index-12: scalar MAX(o_custkey) via idx_o_custkey DESC maxRows=1 ===
+== Query ==
+WITH mx AS (SELECT MAX(o_custkey) AS m FROM orders)
+SELECT MAX(m) AS mm FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mx AS (SELECT MAX(o_custkey) AS m FROM orders)
+SELECT MAX(m) AS mm FROM mx|
+mm
+300
+
+=== index-13: scalar MIN(o_custkey) via idx_o_custkey ASC maxRows=1 ===
+== Query ==
+WITH mn AS (SELECT MIN(o_custkey) AS m FROM orders)
+SELECT MIN(m) AS mm FROM mn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mn AS (SELECT MIN(o_custkey) AS m FROM orders)
+SELECT MIN(m) AS mm FROM mn|
+mm
+1
+
+=== index-14: scalar MAX(o_clerk) over nullable col -> TABLE_SCAN fallback ===
+== Query ==
+WITH mx AS (SELECT MAX(o_clerk) AS m FROM orders)
+SELECT MAX(m) AS mm FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mx AS (SELECT MAX(o_clerk) AS m FROM orders)
+SELECT MAX(m) AS mm FROM mx|
+mm
+40
+
+=== index-15: CTE-body FORCE INDEX (idx_o_custkey) ===
+== Query ==
+WITH x AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders FORCE INDEX (idx_o_custkey)
+WHERE o_custkey > 100 GROUP BY o_custkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(t) AS st, COUNT(*) AS g FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH x AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders FORCE INDEX (idx_o_custkey)
+WHERE o_custkey > 100 GROUP BY o_custkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(t) AS st, COUNT(*) AS g FROM x|
+mnk	mxk	st	g
+101	300	2000	200
+
+=== index-16: CTE-body USE INDEX (idx_c_nationkey) ===
+== Query ==
+WITH x AS (SELECT c_nationkey AS k, COUNT(*) AS n
+FROM customer USE INDEX (idx_c_nationkey)
+WHERE c_nationkey >= 5 GROUP BY c_nationkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH x AS (SELECT c_nationkey AS k, COUNT(*) AS n
+FROM customer USE INDEX (idx_c_nationkey)
+WHERE c_nationkey >= 5 GROUP BY c_nationkey)
+SELECT MIN(k) AS mnk, MAX(k) AS mxk, SUM(n) AS sn, COUNT(*) AS g FROM x|
+mnk	mxk	sn	g
+5	24	240	20
+
+=== index-17: scalar agg over an EMPTY grouped CTE — COUNT(*)=0, others NULL (D16) ===
+== Query ==
+WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
+           FROM customer IGNORE INDEX (idx_c_nationkey)
+           WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
+           GROUP BY c_mktsegment)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT c_mktsegment AS s, COUNT(*) AS n
+FROM customer IGNORE INDEX (idx_c_nationkey)
+WHERE c_nationkey = 4 AND c_mktsegment = 'BUILDING'
+           GROUP BY c_mktsegment)
+SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x|
+mns	mxs	sn	g
+NULL	NULL	NULL	0
+
+=== index-P1 (rejection): index hint on a JOINED (non-root) table ===
+Error handling: RPE
+ronsql_cli caught exception: Index hints (FORCE/USE/IGNORE INDEX) are only supported on the root table of a query or CTE body, not on a joined table.

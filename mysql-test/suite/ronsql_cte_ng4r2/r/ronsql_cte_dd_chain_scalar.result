@@ -1,0 +1,1636 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cs01: 2-level chained CTE (a -> b), main scalar-aggregates b (300-group base) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a GROUP BY k)
+SELECT MAX(m) AS mx, MIN(m) AS mn, SUM(m) AS st, COUNT(*) AS n FROM b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a GROUP BY k)
+SELECT MAX(m) AS mx, MIN(m) AS mn, SUM(m) AS st, COUNT(*) AS n FROM b|
+mx	mn	st	n
+20	0	3000	300
+
+
+=== cs02: 2-level chained CTE (a -> b), both grouped, main grouped ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+k	SUM(m)
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+
+=== cs03: 3-level chained CTE (a -> b -> c), main scalar-aggregates c ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a GROUP BY k),
+c AS (
+SELECT k, MIN(m) AS mn
+FROM b GROUP BY k)
+SELECT SUM(mn) AS gt, COUNT(*) AS ng FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a GROUP BY k),
+c AS (
+SELECT k, MIN(m) AS mn
+FROM b GROUP BY k)
+SELECT SUM(mn) AS gt, COUNT(*) AS ng FROM c|
+gt	ng
+3000	300
+
+
+=== cs04: 3-level chained CTE (a -> b -> c), all grouped, main grouped ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k),
+c AS (
+SELECT k, MIN(m) AS mn
+FROM b GROUP BY k)
+SELECT k, SUM(mn) FROM c GROUP BY k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k),
+c AS (
+SELECT k, MIN(m) AS mn
+FROM b GROUP BY k)
+SELECT k, SUM(mn) FROM c GROUP BY k|
+k	SUM(mn)
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+
+=== cs05: chained CTE with WHERE filter on the intermediate ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a WHERE t > 8 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;
+
+Number of output lines, including header: 181
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(t) AS m
+FROM a WHERE t > 8 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+k	SUM(m)
+102	10
+103	15
+104	20
+107	10
+108	15
+109	20
+112	10
+113	15
+114	20
+117	10
+118	15
+119	20
+12	10
+122	10
+123	15
+124	20
+127	10
+128	15
+129	20
+13	15
+132	10
+133	15
+134	20
+137	10
+138	15
+139	20
+14	20
+142	10
+143	15
+144	20
+147	10
+148	15
+149	20
+152	10
+153	15
+154	20
+157	10
+158	15
+159	20
+162	10
+163	15
+164	20
+167	10
+168	15
+169	20
+17	10
+172	10
+173	15
+174	20
+177	10
+178	15
+179	20
+18	15
+182	10
+183	15
+184	20
+187	10
+188	15
+189	20
+19	20
+192	10
+193	15
+194	20
+197	10
+198	15
+199	20
+2	10
+202	10
+203	15
+204	20
+207	10
+208	15
+209	20
+212	10
+213	15
+214	20
+217	10
+218	15
+219	20
+22	10
+222	10
+223	15
+224	20
+227	10
+228	15
+229	20
+23	15
+232	10
+233	15
+234	20
+237	10
+238	15
+239	20
+24	20
+242	10
+243	15
+244	20
+247	10
+248	15
+249	20
+252	10
+253	15
+254	20
+257	10
+258	15
+259	20
+262	10
+263	15
+264	20
+267	10
+268	15
+269	20
+27	10
+272	10
+273	15
+274	20
+277	10
+278	15
+279	20
+28	15
+282	10
+283	15
+284	20
+287	10
+288	15
+289	20
+29	20
+292	10
+293	15
+294	20
+297	10
+298	15
+299	20
+3	15
+32	10
+33	15
+34	20
+37	10
+38	15
+39	20
+4	20
+42	10
+43	15
+44	20
+47	10
+48	15
+49	20
+52	10
+53	15
+54	20
+57	10
+58	15
+59	20
+62	10
+63	15
+64	20
+67	10
+68	15
+69	20
+7	10
+72	10
+73	15
+74	20
+77	10
+78	15
+79	20
+8	15
+82	10
+83	15
+84	20
+87	10
+88	15
+89	20
+9	20
+92	10
+93	15
+94	20
+97	10
+98	15
+99	20
+
+
+=== cs06: chained CTE feeding a real-table join in the outer SELECT ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT c.c_nationkey, SUM(b.m)
+FROM customer AS c JOIN b ON b.k = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT c.c_nationkey, SUM(b.m)
+FROM customer AS c JOIN b ON b.k = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	SUM(b.m)
+0	0
+1	60
+10	0
+11	60
+12	120
+13	180
+14	240
+15	0
+16	60
+17	120
+18	180
+19	240
+2	120
+20	0
+21	60
+22	120
+23	180
+24	240
+3	180
+4	240
+5	0
+6	60
+7	120
+8	180
+9	240
+
+
+=== cs07: sibling CTEs, both joined to a parent table ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+cnts AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(sums.s), SUM(cnts.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+JOIN cnts ON cnts.k = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+cnts AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(sums.s), SUM(cnts.n)
+FROM customer AS c
+JOIN sums ON sums.k = c.c_custkey
+JOIN cnts ON cnts.k = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	SUM(sums.s)	SUM(cnts.n)
+0	0	60
+1	60	60
+10	0	60
+11	60	60
+12	120	60
+13	180	60
+14	240	60
+15	0	60
+16	60	60
+17	120	60
+18	180	60
+19	240	60
+2	120	60
+20	0	60
+21	60	60
+22	120	60
+23	180	60
+24	240	60
+3	180	60
+4	240	60
+5	0	60
+6	60	60
+7	120	60
+8	180	60
+9	240	60
+
+
+
+=== cs09: scalar CTE MAX(o_totalprice) projected directly (pass-through) ===
+== Query ==
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders) SELECT m FROM x|
+m
+20055.00
+
+
+=== cs10: scalar CTE COUNT/SUM/MIN variants over a populated table ===
+== Query ==
+WITH x AS (SELECT COUNT(*) AS n, SUM(o_shippriority) AS s, MIN(o_totalprice) AS lo
+FROM orders)
+SELECT n, s, lo FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT COUNT(*) AS n, SUM(o_shippriority) AS s, MIN(o_totalprice) AS lo
+FROM orders)
+SELECT n, s, lo FROM x|
+n	s	lo
+1500	3000	13.37
+
+
+
+=== cs11: scalar CTE multiple aggregates projected together (pass-through) ===
+== Query ==
+WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
+SUM(o_shippriority) AS total, COUNT(*) AS n
+FROM orders)
+SELECT lo, hi, total, n FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT MIN(o_totalprice) AS lo, MAX(o_totalprice) AS hi,
+SUM(o_shippriority) AS total, COUNT(*) AS n
+FROM orders)
+SELECT lo, hi, total, n FROM x|
+lo	hi	total	n
+13.37	20055.00	3000	1500
+
+
+=== cs12: scalar CTE MAX over EMPTY input — returns NULL ===
+== Query ==
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders WHERE o_custkey = 999999)
+SELECT m FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT MAX(o_totalprice) AS m FROM orders WHERE o_custkey = 999999)
+SELECT m FROM x|
+m
+NULL
+
+
+=== cs13: scalar CTE COUNT(*) over EMPTY input — returns 0 ===
+== Query ==
+WITH x AS (SELECT COUNT(*) AS n FROM orders WHERE o_custkey = 999999)
+SELECT n FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (SELECT COUNT(*) AS n FROM orders WHERE o_custkey = 999999)
+SELECT n FROM x|
+n
+0
+
+=== cs14 (D8): watermark GREATEST over two scalar CTE outputs (comma cross-join) ===
+== Query ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT GREATEST(a.m, b.n) AS biggest FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT GREATEST(a.m, b.n) AS biggest FROM a, b|
+biggest
+20055.00
+
+=== cs15 (D8): watermark LEAST over two scalar CTE outputs (comma cross-join) ===
+== Query ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT LEAST(a.m, b.n) AS smallest FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(o_totalprice) AS m FROM orders),
+b AS (SELECT MIN(o_totalprice) AS n FROM orders)
+SELECT LEAST(a.m, b.n) AS smallest FROM a, b|
+smallest
+13.37
+
+
+=== cs16: main GROUP BY on a CTE_SCAN root col + agg (300 groups) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums GROUP BY k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums GROUP BY k|
+k	SUM(t)
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+
+=== cs17: main scalar agg over a CTE_SCAN root (300 groups -> 1 row) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT SUM(t) AS gt, COUNT(*) AS ng FROM sums;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT SUM(t) AS gt, COUNT(*) AS ng FROM sums|
+gt	ng
+3000	300
+
+
+=== cs18: skewed CTE — WHERE narrows to a single group ===
+== Query ==
+WITH skew AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_custkey = 100 GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(skew.s)
+FROM customer AS c JOIN skew ON skew.k = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH skew AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_custkey = 100 GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(skew.s)
+FROM customer AS c JOIN skew ON skew.k = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	SUM(skew.s)
+0	0
+
+
+=== cs19: empty-intermediate chain (a always empty -> b empty) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+k	SUM(m)
+
+
+
+
+=== cs20: scalar agg over an EMPTY chained CTE — SUM=NULL, COUNT(*)=0 (D16) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS s
+FROM orders WHERE o_totalprice < 0 GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT SUM(m) AS gt, COUNT(*) AS ng FROM b|
+gt	ng
+NULL	0
+
+
+=== cs-probe-5 (rejection): non-aggregate col in a scalar CTE body ===
+CTE 'x' has non-aggregate output columns and must contain GROUP BY.
+Error handling: RPE
+ronsql_cli caught exception: CTE has non-aggregate columns without GROUP BY.
+
+
+=== cs-probe-6 (rejection): top-level GREATEST over an ordinary column ===
+Error handling: RPE
+ronsql_cli caught exception: GREATEST/LEAST column operand must be an integer type.  Float / Decimal / VARCHAR operands are not yet supported (deferred to I.5 v3 / I.6).

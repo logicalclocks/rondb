@@ -4530,6 +4530,27 @@ private:
   Uint32* getAggAttrReadBuf() { return m_agg_attr_read_buf; }
   static constexpr Uint32 AGG_ATTR_READ_BUF_WORD_SIZE =
       MAX_TUPLE_SIZE_IN_WORDS;
+
+  /* D26: per-LDM-thread scratch buffer for the strnxfrm_hash computation in
+   * AggHashTable::hashKeyFull on the CTE lookup/find path.  The CTE
+   * JoinAggInterpreter (and its single AggHashTable) is shared across LDM
+   * threads, so the interpreter's own m_xfrm_buf must NOT be used by the
+   * mutex-free lookup path — concurrent strnxfrm_hash calls from different
+   * threads would overwrite one scratch buffer mid-computation, corrupt the
+   * hash, route to the wrong bucket and spuriously miss an existing group.
+   * Dbtup is a per-LDM-thread block instance, so this buffer is automatically
+   * per-thread without locking (the same rationale as m_agg_attr_read_buf and
+   * Dbspj::cte_lookup_hash_key's m_buffer0).  Sized to the worst-case
+   * strnxfrm_hash output of a single GROUP BY key column: a column is bounded
+   * by MAX_KEY_SIZE_IN_WORDS words and strnxfrm_hash_len() expands by at most
+   * strxfrm_multiply (<= 8), so 8 * MAX_KEY_SIZE_IN_WORDS words is always
+   * large enough for any pushed-down GROUP BY key.  Accessed cross-block by
+   * Dblqh via c_tup on the same thread. */
+  Uint32 m_agg_xfrm_buf[8 * MAX_KEY_SIZE_IN_WORDS];
+  static constexpr Uint32 AGG_XFRM_BUF_BYTE_SIZE =
+      8 * MAX_KEY_SIZE_IN_WORDS * 4;
+  uchar* getAggXfrmBuf() { return reinterpret_cast<uchar*>(m_agg_xfrm_buf); }
+  Uint32 getAggXfrmBufLen() { return AGG_XFRM_BUF_BYTE_SIZE; }
  private:
 
   /*

@@ -1,0 +1,156 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Bulk-load large dataset (20000 cust, 100000 orders) ===
+PASSED
+
+=== Row-count sanity ===
+SELECT COUNT(*) AS lg_cust   FROM lg_cust;
+lg_cust
+20000
+SELECT COUNT(*) AS lg_orders FROM lg_orders;
+lg_orders
+100000
+SELECT COUNT(DISTINCT lg_cust) AS distinct_custs FROM lg_orders;
+distinct_custs
+20000
+
+=== Q1 (form B): high-cardinality CTE GROUP BY (20000 groups), scalar
+===     reduce over CTE_SCAN root — multi-batch + cross-NG redistribution ===
+== Query ==
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust)
+SELECT SUM(s) AS total_amount, SUM(c) AS total_rows, COUNT(*) AS group_count
+FROM per_cust;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust)
+SELECT SUM(s) AS total_amount, SUM(c) AS total_rows, COUNT(*) AS group_count
+FROM per_cust|
+total_amount	total_rows	group_count
+499333449.41	100000	20000
+
+=== Q2 (form A): high-cardinality CTE complete-key lookup leaf (20000
+===     lookups) joined to a real table, main re-aggregation GROUP BY
+===     region (per-region MIN/MAX over DECIMAL + SUM + COUNT) ===
+== Query ==
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, MIN(lg_amount) AS mn,
+MAX(lg_amount) AS mx, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, SUM(per_cust.s) AS region_total, MIN(per_cust.mn) AS region_min,
+MAX(per_cust.mx) AS region_max, SUM(per_cust.c) AS region_rows
+FROM lg_cust AS c JOIN per_cust ON per_cust.k = c.lc_id
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, MIN(lg_amount) AS mn,
+MAX(lg_amount) AS mx, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, SUM(per_cust.s) AS region_total, MIN(per_cust.mn) AS region_min,
+MAX(per_cust.mx) AS region_max, SUM(per_cust.c) AS region_rows
+FROM lg_cust AS c JOIN per_cust ON per_cust.k = c.lc_id
+GROUP BY c.lc_region|
+lc_region	region_total	region_min	region_max	region_rows
+0	100369191.09	0.79	9999.34	20000
+1	100525897.03	0.19	9999.94	20000
+2	99735041.05	0.04	9999.99	20000
+3	99271451.93	0.27	9999.85	20000
+4	99431868.31	0.22	9999.76	20000
+
+=== Q3 (form B): filtered CTE body (WHERE lg_status='O') + high-cardinality
+===     GROUP BY, scalar reduce ===
+== Query ==
+WITH open_orders AS (
+  SELECT lg_cust AS k, COUNT(*) AS c, SUM(lg_qty) AS q
+  FROM lg_orders WHERE lg_status = 'O' GROUP BY lg_cust)
+SELECT COUNT(*) AS active_custs, SUM(c) AS active_orders, SUM(q) AS total_qty
+FROM open_orders;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH open_orders AS (
+SELECT lg_cust AS k, COUNT(*) AS c, SUM(lg_qty) AS q
+FROM lg_orders WHERE lg_status = 'O' GROUP BY lg_cust)
+SELECT COUNT(*) AS active_custs, SUM(c) AS active_orders, SUM(q) AS total_qty
+FROM open_orders|
+active_custs	active_orders	total_qty
+20000	33333	1682742
+
+=== Q4 (form B): multi-column GROUP BY (lg_cust, lg_status) — up to 60000
+===     groups, heavy redistribution, scalar reduce ===
+== Query ==
+WITH g AS (
+SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust, lg_status)
+SELECT COUNT(*) AS group_count, SUM(q) AS total_qty, SUM(c) AS total_rows
+FROM g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (
+SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust, lg_status)
+SELECT COUNT(*) AS group_count, SUM(q) AS total_qty, SUM(c) AS total_rows
+FROM g|
+group_count	total_qty	total_rows
+60000	5034249	100000
+
+=== Q5 (form B): temporal MIN/MAX (DATE) over a high-cardinality CTE,
+===     re-aggregated over a CTE_SCAN root ===
+== Query ==
+WITH per_cust AS (
+SELECT lg_cust AS k, MIN(lg_date) AS mn, MAX(lg_date) AS mx, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust)
+SELECT MIN(mn) AS first_d, MAX(mx) AS last_d, SUM(c) AS total_rows,
+COUNT(*) AS group_count
+FROM per_cust;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH per_cust AS (
+SELECT lg_cust AS k, MIN(lg_date) AS mn, MAX(lg_date) AS mx, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust)
+SELECT MIN(mn) AS first_d, MAX(mx) AS last_d, SUM(c) AS total_rows,
+COUNT(*) AS group_count
+FROM per_cust|
+first_d	last_d	total_rows	group_count
+2018-01-01	2022-12-28	100000	20000
+
+=== Drop large dataset ===
+PASSED

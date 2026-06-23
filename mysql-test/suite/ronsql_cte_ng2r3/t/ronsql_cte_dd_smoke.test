@@ -1,0 +1,52 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
+# dictionary cache for join queries, so we compare the mysql client against
+# RDRS only (matching the ronsql suite's CTE convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === Smoke 1: row counts (sanity) ===
+SELECT COUNT(*) AS region   FROM region;
+SELECT COUNT(*) AS nation   FROM nation;
+SELECT COUNT(*) AS customer FROM customer;
+SELECT COUNT(*) AS supplier FROM supplier;
+SELECT COUNT(*) AS part     FROM part;
+SELECT COUNT(*) AS orders   FROM orders;
+SELECT COUNT(*) AS lineitem FROM lineitem;
+SELECT COUNT(DISTINCT o_custkey) AS distinct_custkeys FROM orders;
+
+--echo
+--echo === Smoke 2: CTE agg by custkey (300 groups, crosses batch boundary),
+--echo ===          main agg by mktsegment ===
+
+DELIMITER |;
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

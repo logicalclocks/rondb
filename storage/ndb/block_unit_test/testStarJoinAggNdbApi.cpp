@@ -458,7 +458,7 @@ test2LeafSumGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Leaf A: GROUP BY grp (linked pos 0), SUM(val_a) */
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) ||
       !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
@@ -474,7 +474,7 @@ test2LeafSumGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Leaf B: GROUP BY grp (linked pos 0), SUM(val_b) */
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) ||
       !aggB.Sum(0, 0) ||
       !aggB.Finalize()) {
@@ -860,7 +860,7 @@ test3LeafMixedAgg(
 
   /* Leaf A: GROUP BY grp (linked pos 0), SUM(val_a) */
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) ||
       !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
@@ -870,7 +870,7 @@ test3LeafMixedAgg(
 
   /* Leaf B: GROUP BY grp (linked pos 0), COUNT(val_b) */
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) ||
       !aggB.Count(0, 0) ||
       !aggB.Finalize()) {
@@ -880,7 +880,7 @@ test3LeafMixedAgg(
 
   /* Leaf C: GROUP BY grp (linked pos 0), MAX(val_c) */
   NdbAggregator aggC(leafCTab);
-  if (!aggC.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggC.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggC.LoadColumn("val_c", 0) ||
       !aggC.Max(0, 0) ||
       !aggC.Finalize()) {
@@ -1093,7 +1093,7 @@ test2LeafCountSum(Ndb *ndb, MYSQL *conn,
 
   /* Leaf A: GROUP BY grp, COUNT(*) */
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) ||
       !aggA.Count(0, 0) ||
       !aggA.Finalize()) {
@@ -1103,7 +1103,7 @@ test2LeafCountSum(Ndb *ndb, MYSQL *conn,
 
   /* Leaf B: GROUP BY grp, SUM(val_b) */
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) ||
       !aggB.Sum(0, 0) ||
       !aggB.Finalize()) {
@@ -1259,7 +1259,7 @@ test2LeafMinMax(Ndb *ndb, MYSQL *conn,
 
   /* Leaf A: GROUP BY grp, MIN(val_a) */
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) ||
       !aggA.Min(0, 0) ||
       !aggA.Finalize()) {
@@ -1269,7 +1269,7 @@ test2LeafMinMax(Ndb *ndb, MYSQL *conn,
 
   /* Leaf B: GROUP BY grp, MAX(val_b) */
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) ||
       !aggB.Max(0, 0) ||
       !aggB.Finalize()) {
@@ -1543,7 +1543,7 @@ testTsSumCountGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Leaf measures: GROUP BY grp (linked pos 0), SUM(val) */
   NdbAggregator aggM(measTab);
-  if (!aggM.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggM.GroupByLinked(0, entityTab->getColumn("grp")) ||
       !aggM.LoadColumn("val", 0) ||
       !aggM.Sum(0, 0) ||
       !aggM.Finalize()) {
@@ -1553,7 +1553,7 @@ testTsSumCountGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Leaf events: GROUP BY grp (linked pos 0), COUNT(event_type) */
   NdbAggregator aggE(evtTab);
-  if (!aggE.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggE.GroupByLinked(0, entityTab->getColumn("grp")) ||
       !aggE.LoadColumn("event_type", 0) ||
       !aggE.Count(0, 0) ||
       !aggE.Finalize()) {
@@ -1933,7 +1933,7 @@ testTsSumMaxGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Leaf measures: GROUP BY grp (linked pos 0), SUM(val) */
   NdbAggregator aggM(measTab);
-  if (!aggM.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggM.GroupByLinked(0, entityTab->getColumn("grp")) ||
       !aggM.LoadColumn("val", 0) ||
       !aggM.Sum(0, 0) ||
       !aggM.Finalize()) {
@@ -1943,7 +1943,7 @@ testTsSumMaxGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Leaf events: GROUP BY grp (linked pos 0), MAX(event_type) */
   NdbAggregator aggE(evtTab);
-  if (!aggE.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggE.GroupByLinked(0, entityTab->getColumn("grp")) ||
       !aggE.LoadColumn("event_type", 0) ||
       !aggE.Max(0, 0) ||
       !aggE.Finalize()) {
@@ -2178,14 +2178,14 @@ testMultiFragStar(Ndb *ndb, MYSQL * /*conn*/)
   }
 
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
     printf("FAILED (aggA)\n"); return -1;
   }
 
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
       !aggB.Finalize()) {
     printf("FAILED (aggB)\n"); return -1;
@@ -2297,14 +2297,14 @@ testEmptyLeafTable(Ndb *ndb, MYSQL *conn)
   }
 
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
     printf("FAILED (aggA)\n"); return -1;
   }
 
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
       !aggB.Finalize()) {
     printf("FAILED (aggB)\n"); return -1;
@@ -2423,14 +2423,14 @@ testSingleRowResult(Ndb *ndb, MYSQL *conn)
   }
 
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
     printf("FAILED (aggA)\n"); return -1;
   }
 
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
       !aggB.Finalize()) {
     printf("FAILED (aggB)\n"); return -1;
@@ -2539,7 +2539,7 @@ testMixedTopology(Ndb *ndb, MYSQL * /*conn*/)
 
   /* Leaf A (PK lookup): SUM(val_a) GROUP BY grp */
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
     printf("FAILED (aggA)\n"); return -1;
@@ -2547,7 +2547,7 @@ testMixedTopology(Ndb *ndb, MYSQL * /*conn*/)
 
   /* Leaf M (index scan): COUNT(val) GROUP BY grp */
   NdbAggregator aggM(measTab);
-  if (!aggM.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggM.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggM.LoadColumn("val", 0) || !aggM.Count(0, 0) ||
       !aggM.Finalize()) {
     printf("FAILED (aggM)\n"); return -1;
@@ -2670,7 +2670,7 @@ testRejectAggOnRoot(Ndb *ndb, MYSQL * /*conn*/)
   }
 
   NdbAggregator agg(rootTab);
-  if (!agg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!agg.GroupBy("grp") ||
       !agg.LoadColumn("grp", 0) || !agg.Sum(0, 0) ||
       !agg.Finalize()) {
     printf("FAILED (agg program)\n"); return -1;
@@ -2748,7 +2748,7 @@ testEvictionMultiLeaf(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   }
 
   NdbAggregator aggA(leafATab);
-  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
       !aggA.Finalize()) {
     printf("FAILED (aggA)\n");
@@ -2756,7 +2756,7 @@ testEvictionMultiLeaf(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   }
 
   NdbAggregator aggB(leafBTab);
-  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
       !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
       !aggB.Finalize()) {
     printf("FAILED (aggB)\n");

@@ -34,6 +34,7 @@
 #include <CteLinkedAttr.hpp>
 #include <Interpreter.hpp>
 #include <KeyDescriptor.hpp>
+#include <NdbSqlUtil.hpp>
 #include <SectionReader.hpp>
 #include <cstring>
 #include <signaldata/AlterTab.hpp>
@@ -117,8 +118,21 @@
  * which TreeNodes are still TN_ACTIVE.  That identifies the path that
  * incremented but never decremented without slowing the race window
  * enough to mask the bug. */
+#ifdef DEBUG_CNT_ACTIVE
+/* Verbose counter trace: log every m_cnt_active mutation with its site label,
+ * node number, and the resulting m_cnt_active / m_outstanding.  Used to chase
+ * CTE hangs (a counter that never returns to 0 → checkBatchComplete never
+ * trips → no terminal SCAN_FRAGCONF).  Debug/ERROR_INSERT builds only. */
+#define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; \
+  g_eventLogger->info("(%u) INC_CNT_ACTIVE[%s] node=%u -> cnt_active=%u outstanding=%u", \
+    instance(), (site), (Uint32)(nodeNo), (reqP)->m_cnt_active, (reqP)->m_outstanding); } while (0)
+#define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; \
+  g_eventLogger->info("(%u) DEC_CNT_ACTIVE[%s] node=%u -> cnt_active=%u outstanding=%u", \
+    instance(), (site), (Uint32)(nodeNo), (reqP)->m_cnt_active, (reqP)->m_outstanding); } while (0)
+#else
 #define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; } while (0)
 #define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; } while (0)
+#endif
 
 #ifdef DEBUG_CTE_BUILD
 #define DEB_CTE_BUILD(arglist) \
@@ -3453,6 +3467,20 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
  * execution, *must* call ::checkBatchComplete() before returning.
  */
 void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
+  /* Unconditional counter trace: logged on EVERY reply handler's tail, so a
+   * hang shows exactly which value m_outstanding sticks at (and which handler
+   * stopped decrementing it).  The DEB_CTE below only fires once outstanding
+   * already reached 0, which is useless when it never does. */
+  DEB_CTE(("(%u) checkBatchComplete: outstanding=%u cnt_active=%u "
+           "CTE_PHASE=%d state=0x%x completed=0x%x active=0x%x suspended=0x%x",
+           instance(),
+           requestPtr.p->m_outstanding,
+           requestPtr.p->m_cnt_active,
+           !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+           requestPtr.p->m_state,
+           requestPtr.p->m_completed_tree_nodes.rep.data[0],
+           requestPtr.p->m_active_tree_nodes.rep.data[0],
+           requestPtr.p->m_suspended_tree_nodes.rep.data[0]));
   if (unlikely(requestPtr.p->m_outstanding == 0)) {
     jam();
     DEB_CTE(("(%u) checkBatchComplete: outstanding=0, "
@@ -3485,6 +3513,28 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
    */
   if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
     jam();
+    /**
+     * Report CTE-phase completion only after the materialisation scan has
+     * genuinely finished (EndOfData).  A multi-batch CTE scan reaches
+     * m_outstanding==0 at every batch boundary while its scan node is still
+     * TN_ACTIVE (m_cnt_active != 0).  CTE materialisation rows are fed to the
+     * DBLQH aggregator, never sent to the API, so there is no API round-trip
+     * to drive the next batch.  Instead of consulting DBTC per batch (high
+     * latency, and the SCAN_FRAGCONF→SCAN_NEXTREQ continuation is suppressed
+     * for CTE scans), restart the next batch directly here via
+     * handleCtePhaseNextBatch() — the CTE-phase analogue of the JoinAgg
+     * no-rows-to-API continuation.
+     */
+    if (requestPtr.p->m_cnt_active != 0) {
+      jam();
+      DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE more batches, "
+               "cnt_active=%u rows=%u -> restart next batch in DBSPJ",
+               instance(),
+               requestPtr.p->m_cnt_active,
+               requestPtr.p->m_rows));
+      handleCtePhaseNextBatch(signal, requestPtr);
+      return;
+    }
     DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE set, "
              "outstanding=%u cnt_active=%u rows=%u",
              instance(),
@@ -3648,6 +3698,44 @@ Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
     }
   }
   ndbassert(requestPtr.p->m_outstanding > 0);
+}
+
+/**
+ * Restart the next batch of a multi-batch CTE materialisation scan directly
+ * in DBSPJ (no DBTC / API round-trip).  Used from batchComplete() when a CTE
+ * phase reaches m_outstanding==0 at a batch boundary while its scan node is
+ * still TN_ACTIVE.
+ *
+ * Unlike the main-query path we must NOT use prepareNextBatch(): its
+ * RT_REPEAT_SCAN_RESULT branch invokes scanFrag_parent_batch_repeat() on scan
+ * nodes positioned after the active node, which ndbasserts m_parentPtrI !=
+ * RNIL.  During a CTE phase the m_nodes list also holds *inactive* root scan
+ * nodes belonging to other phases (the main-query root, sibling CTE
+ * materialisation roots), so that assert fires.  Here we only need to continue
+ * the currently-active scan node(s), so we register them as cursor nodes
+ * directly — mirroring prepareNextBatch()'s non-REPEAT registration, which
+ * never calls parent_batch_repeat — and then drive SCAN_NEXTREQ via
+ * handleJoinAggNextBatch().
+ */
+void
+Dbspj::handleCtePhaseNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  ndbassert(requestPtr.p->m_suspended_tree_nodes.isclear());
+  requestPtr.p->m_cursor_nodes.init();
+  requestPtr.p->m_active_tree_nodes.clear();
+  requestPtr.p->m_suspended_tree_nodes.clear();
+
+  Ptr<TreeNode> nodePtr;
+  Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+  TreeNodeBitMask predecessors_of_active;
+  for (list.last(nodePtr); !nodePtr.isNull(); list.prev(nodePtr)) {
+    if (nodePtr.p->m_state == TreeNode::TN_ACTIVE &&
+        !predecessors_of_active.get(nodePtr.p->m_node_no)) {
+      jam();
+      registerActiveCursor(requestPtr, nodePtr);
+      predecessors_of_active.bitOR(nodePtr.p->m_predecessors);
+    }
+  }
+  handleJoinAggNextBatch(signal, requestPtr);
 }
 
 /**
@@ -6165,6 +6253,17 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
     // CTE not ready — queue this lookup for later.
     // When the CTE transitions to READY, all pending lookups will be flushed.
     treeNodePtr.p->m_cteLookup_data.m_pendingCount++;
+    // Hang diagnostic: parked rows must later be flushed (and turned into
+    // outstanding lookups) when the CTE reaches READY.  If pendingCount keeps
+    // climbing and is never drained, request m_outstanding never returns to 0
+    // and checkBatchComplete never fires → hang.  Watch this vs the flush site.
+    DEB_CTE(("(%u) cte_lookup_parent_row: PARKED (cte_state=%u) "
+             "pendingCount=%u node_outstanding=%u req_outstanding=%u cnt_active=%u",
+             instance(), cteCtx->m_state,
+             treeNodePtr.p->m_cteLookup_data.m_pendingCount,
+             treeNodePtr.p->m_cteLookup_data.m_outstanding,
+             requestPtr.p->m_outstanding,
+             requestPtr.p->m_cnt_active));
     break;
 
   case CteContext::CTE_FAILED:
@@ -6206,6 +6305,68 @@ void Dbspj::cte_lookup_serve_cached_row(Signal *signal,
   lsp[0].sz = cteCtx.m_cachedRowLen;
   sendSignal(reference(), GSN_TRANSID_AI, signal,
              TransIdAI::HeaderLength, JBB, lsp, 1);
+}
+
+Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
+                                  const char *key,
+                                  Uint32 keyLen,
+                                  Uint32 nGbCols) {
+  const GBColTypeInfo *colTypes = interp->gb_types();
+  if (colTypes == nullptr) {
+    return rondb_xxhash_std(key, keyLen);
+  }
+
+  bool hasCharset = false;
+  for (Uint32 i = 0; i < nGbCols; i++) {
+    if (colTypes[i].cs != nullptr) {
+      hasCharset = true;
+      break;
+    }
+  }
+  if (!hasCharset) {
+    return rondb_xxhash_std(key, keyLen);
+  }
+
+  uchar *xfrmBuf = reinterpret_cast<uchar *>(m_buffer0);
+  const Uint32 xfrmBufLen = sizeof(m_buffer0);
+  Uint64 hash = 0;
+  const Uint32 *p = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 *end = reinterpret_cast<const Uint32 *>(key + keyLen);
+  for (Uint32 i = 0; i < nGbCols && p < end; i++) {
+    AttributeHeader ah(*p);
+    const Uint32 dataSize = ah.getDataSize();
+    if (colTypes[i].cs != nullptr && dataSize > 0) {
+      const uchar *src = reinterpret_cast<const uchar *>(p + 1);
+      const Uint32 byteSize = ah.getByteSize();
+      Uint32 lb, srcLen;
+      NdbSqlUtil::get_var_length(colTypes[i].typeId, src, byteSize,
+                                 lb, srcLen);
+      const Uint32 maxBytes = colTypes[i].maxBytes;
+      ndbrequire(maxBytes >= lb);
+      const Uint32 defLen = maxBytes - lb;
+      ndbrequire(NdbSqlUtil::strnxfrm_hash_len(colTypes[i].cs, defLen) <=
+                 xfrmBufLen);
+      const int n = NdbSqlUtil::strnxfrm_hash(colTypes[i].cs,
+                                              colTypes[i].typeId,
+                                              xfrmBuf, xfrmBufLen,
+                                              src + lb, srcLen, defLen);
+      if (n > 0) {
+        const Uint64 colHash =
+            rondb_xxhash_std(reinterpret_cast<const char *>(xfrmBuf), n);
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      }
+    } else if (dataSize > 0) {
+      const Uint32 byteSize = ah.getByteSize();
+      const Uint64 colHash =
+          rondb_xxhash_std(reinterpret_cast<const char *>(p + 1), byteSize);
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    } else {
+      const Uint64 colHash = 0xDEADBEEFDEADBEEFULL;
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    }
+    p += 1 + dataSize;
+  }
+  return hash;
 }
 
 /**
@@ -6309,21 +6470,26 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
           kp += 1 + dataSize;
         }
-        const Uint64 h = localCteInterp->hashGroupKey(
-            reinterpret_cast<const char *>(keyBuf), keyLenBytes);
+        const Uint64 h = cte_lookup_hash_key(
+            localCteInterp, reinterpret_cast<const char *>(keyBuf),
+            keyLenBytes, nGbCols);
         const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
         targetNodeId = m_dataNodeList[ownerIdx];
+      } else {
+        jam();
+        /* D8: scalar CTE (no GROUP BY) cross-join child.  Its cluster-wide
+         * merged m_agg_results lives ONLY at the redistribute owner, which
+         * DBLQH continueJoinAggRedistribute sets to the coordinating DBTC node
+         * (owner = refToNode(state->m_senderRef)); non-owner nodes keep only
+         * their local partial.  Route the lookup to that same owner —
+         * getOwnNodeId() would read this node's un-merged partial (e.g. a
+         * per-fragment MIN), which is wrong on multi-node topologies. */
+        targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
     }
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
     Uint32 lookupFlags = 0;
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
-    /* Production sends directly to the CTE hash owner.  Keep the old
-     * DBLQH re-route path reachable in debug builds as a diagnostic
-     * fallback if DBSPJ ever computes the wrong owner. */
-    lookupFlags |= CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
-#endif
 
     /* Anti-join: parseDA sets T_FIRST_MATCH from NI_ANTI_JOIN, but
      * SEMI_JOIN (FirstMatch over INNER) sets both T_FIRST_MATCH and
@@ -9738,10 +9904,17 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   if (treeNodePtr.p->m_info == &g_CteLookupOpInfo) {
     jam();
     const Uint32 nCols = treeNodePtr.p->m_cteLookup_data.m_numResultCols;
+    const Uint32 *virtTypeInfo =
+        treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo;
+    if (unlikely(nCols > 0 && virtTypeInfo == nullptr)) {
+      jam();
+      releaseSection(linkedPtrI);
+      return DbspjErr::InvalidTreeNodeSpecification;
+    }
     for (Uint32 i = 0; i < nCols; i++) {
       Uint32 entry[3];
-      entry[0] = 0;  // tableId
-      entry[1] = 0;  // schemaVersion
+      entry[0] = virtTypeInfo[i * 2];
+      entry[1] = virtTypeInfo[i * 2 + 1];
       AttributeHeader::init(&entry[2], i, 0);  // byteSize=0 → NULL
       if (unlikely(!appendToSection(linkedPtrI, entry, 3))) {
         jam();
@@ -14009,34 +14182,18 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
 /**
  * emitNullAttrinfo
  *
- * Emit a NULL attribute for a given attrId: optional table metadata
- * (2 prefix words) followed by an AttributeHeader with length 0.
- *
- * Default (cteOrigin = true): emit a CTE-marker prefix encoding a
- * neutral inline type (NDB_TYPE_BIGINT / 8 bytes / no charset).  A
- * NULL entry has no payload, so the choice of typeId is metadata-
- * only — BIGINT gives the receiver a non-null cmpFn fallback if
- * initGBTypes ever caches type info from this entry.  Both
- * JoinAggInterpreter::initGBTypes and initGBTypesForNullLocal decode
- * the CTE branch cleanly.
- *
- * Legacy mode (cteOrigin = false): emit `[0][0]` — produces a
- * tableId=0 prefix that initGBTypes rejects with require(tableId !=
- * 0).  Retained for callers that explicitly opt out (none today);
- * the chained-outer-join null path picks up the safe default.  See
- * cte_filter_phase_e1k_site4.md.
+ * Emit a synthetic NULL attribute for a given attrId: optional
+ * CteLinkedAttr typed prefix followed by an AttributeHeader with length 0.
+ * Synthetic NULL linked columns must be distinguishable from real table
+ * linked columns, so they never use a raw [0][0] metadata prefix.
  */
 Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                                bool &hasNull, bool addTableMeta,
-                                bool cteOrigin) {
+                                bool &hasNull, bool addTableMeta) {
   jam();
   if (addTableMeta) {
-    Uint32 meta[2] = {0, 0};
-    if (cteOrigin) {
-      jam();
-      meta[0] = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
-      meta[1] = CteLinkedAttr::encodeWord1(0);
-    }
+    Uint32 meta[2];
+    meta[0] = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    meta[1] = CteLinkedAttr::encodeWord1(0);
     if (unlikely(!appendToSection(dst, meta, 2)))
       return DbspjErr::OutOfSectionMemory;
   }
@@ -14058,7 +14215,7 @@ Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
 Uint32 Dbspj::emitNullFromParent(
     Uint32 &dst, Local_pattern_store &pattern,
     Local_pattern_store::ConstDataBufferIterator &it,
-    bool &hasNull, bool addTableMeta, bool cteOrigin) {
+    bool &hasNull, bool addTableMeta) {
   jam();
   if (unlikely(it.isNull())) {
     DEBUG_CRASH();
@@ -14070,7 +14227,7 @@ Uint32 Dbspj::emitNullFromParent(
   pattern.next(it);
 
   if (subType == QueryPattern::P_ATTRINFO) {
-    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta, cteOrigin);
+    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta);
   }
   if (subType == QueryPattern::P_COL) {
     hasNull = true;
@@ -14312,11 +14469,11 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
           /**
            * Null propagation path: direct P_ATTRINFO references the leaf's
            * parent, but rowRef is from the scan ancestor. The leaf's parent
-           * is an unmatched or unreachable intermediate whose columns
-           * should be NULL.  emitNullAttrinfo's default cteOrigin=true now
-           * emits a safe CTE-marker prefix with a neutral inline type, so
-           * both real-table and CTE-virt-col intermediates are handled
-           * correctly.  See cte_filter_phase_e1k_site4.md.
+           * is an unmatched or unreachable intermediate whose columns should
+           * be NULL.  emitNullAttrinfo emits a distinct typed synthetic NULL
+           * marker rather than the legacy 0/0 prefix.  The marker uses a
+           * neutral BIGINT type because this path does not currently carry
+           * enough source-node metadata to recover the exact column type.
            */
           err = emitNullAttrinfo(dst, val, hasNull, addTableMeta);
         } else if (addTableMeta) {

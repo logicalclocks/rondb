@@ -111,6 +111,64 @@ struct TableMeta {
   Uint32 numCols;
 };
 
+static void
+appendLocalBigintMetaEntry(std::vector<Uint32> &meta,
+                           const TableMeta &tableMeta,
+                           Uint32 columnId,
+                           Uint32 programOffset,
+                           Uint32 slotIndex,
+                           Uint32 flags)
+{
+  meta.push_back(JOIN_AGG_META_SOURCE_LOCAL_COLUMN);
+  meta.push_back(columnId);
+  meta.push_back(programOffset);
+  meta.push_back(slotIndex);
+  meta.push_back(tableMeta.tableId);
+  meta.push_back(tableMeta.schemaVersion);
+  meta.push_back(columnId);
+  meta.push_back(COL_TYPE_BIGINT);
+  meta.push_back(8);
+  meta.push_back(0);
+  meta.push_back(0);
+  meta.push_back(flags);
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadata(const std::vector<Uint32> &aggProg,
+                     const TableMeta &tableMeta)
+{
+  std::vector<Uint32> meta;
+  meta.push_back(JOIN_AGG_META_MARKER);
+  meta.push_back(JOIN_AGG_META_VERSION);
+  meta.push_back(0);
+
+  if (aggProg.size() < 8 || (aggProg[0] >> 16) != AGG_MAGIC) {
+    return meta;
+  }
+
+  Uint32 entryCount = 0;
+  const Uint32 nGbCols = aggProg[1] >> 16;
+  for (Uint32 i = 0; i < nGbCols && (8 + i) < aggProg.size(); i++) {
+    const Uint32 programOffset = 8 + i;
+    const Uint32 columnId = (aggProg[programOffset] >> 16) & 0xFFFF;
+    appendLocalBigintMetaEntry(meta, tableMeta, columnId, programOffset, i,
+                               JOIN_AGG_META_FLAG_GROUP_BY);
+    entryCount++;
+  }
+
+  for (Uint32 i = 8 + nGbCols; i < aggProg.size(); i++) {
+    const Uint32 op = (aggProg[i] >> 26) & 0x3F;
+    if (op != kOpLoadCol) continue;
+    const Uint32 columnId = aggProg[i] & 0xFFFF;
+    appendLocalBigintMetaEntry(meta, tableMeta, columnId, i, RNIL,
+                               JOIN_AGG_META_FLAG_LOAD_COLUMN);
+    entryCount++;
+  }
+
+  meta[2] = entryCount;
+  return meta;
+}
+
 /* ------------------------------------------------------------------ */
 /* Aggregation program builders                                        */
 /* ------------------------------------------------------------------ */
@@ -365,11 +423,14 @@ sendSetupReq(
 
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);
-  ssig.header.m_noOfSections = 2;
+  const std::vector<Uint32> metadata = buildJoinAggMetadata(aggProg, meta);
+  ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = const_cast<Uint32*>(aggProg.data());
   ssig.ptr[0].sz = (Uint32)aggProg.size();
   ssig.ptr[1].p = &receiverId;
   ssig.ptr[1].sz = 1;
+  ssig.ptr[2].p = const_cast<Uint32*>(metadata.data());
+  ssig.ptr[2].sz = (Uint32)metadata.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SETUP_REQ failed\n");

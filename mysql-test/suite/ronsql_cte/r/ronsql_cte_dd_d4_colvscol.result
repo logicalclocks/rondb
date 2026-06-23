@@ -1,0 +1,10 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== D4a/D12: CTE-body col-vs-col on orders (o_custkey < o_orderkey, indexed left) — permanent rejection ===
+Error handling: RPE
+ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause is not yet supported. Compare a column to a constant instead.
+
+=== D4b/D4: CTE-body col-vs-col on lineitem (l_quantity < l_partkey, non-indexed left) — permanent rejection ===
+Error handling: RPE
+ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause is not yet supported. Compare a column to a constant instead.

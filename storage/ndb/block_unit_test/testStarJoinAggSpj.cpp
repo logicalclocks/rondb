@@ -428,6 +428,137 @@ struct TableMeta {
   std::vector<Uint32> fragNodes;
 };
 
+static void
+appendBigintMetaEntry(std::vector<Uint32> &block,
+                      const TableMeta &tableMeta,
+                      Uint32 sourceKind,
+                      Uint32 sourceId,
+                      Uint32 programOffset,
+                      Uint32 slotIndex,
+                      Uint32 columnId,
+                      Uint32 flags)
+{
+  block.push_back(sourceKind);
+  block.push_back(sourceId);
+  block.push_back(programOffset);
+  block.push_back(slotIndex);
+  block.push_back(tableMeta.tableId);
+  block.push_back(tableMeta.schemaVersion);
+  block.push_back(columnId);
+  block.push_back(COL_TYPE_BIGINT);
+  block.push_back(8);
+  block.push_back(0);
+  block.push_back(0);
+  block.push_back(flags);
+}
+
+static Uint32
+realColumnForGroupByWord(Uint32 gbWord, const TableMeta &tableMeta)
+{
+  if ((gbWord & 0x80000000) != 0) {
+    const Uint32 linkedPosition = (gbWord >> 16) & 0x7FFF;
+    return linkedPosition == 0 ? tableMeta.attrIdA : RNIL;
+  }
+  return (gbWord >> 16) & 0xFFFF;
+}
+
+static void
+appendProgramMetadata(std::vector<Uint32> &block,
+                      Uint32 &entryCount,
+                      const TableMeta &tableMeta,
+                      const Uint32 *program,
+                      Uint32 programLen,
+                      Uint32 accOffset,
+                      bool includeGroupBy)
+{
+  if (programLen < 8 || (program[0] >> 16) != AGG_MAGIC) {
+    return;
+  }
+
+  const Uint32 nGbCols = program[1] >> 16;
+  if (includeGroupBy) {
+    for (Uint32 i = 0; i < nGbCols && (8 + i) < programLen; i++) {
+      const Uint32 programOffset = 8 + i;
+      const Uint32 gbWord = program[programOffset];
+      const bool isLinked = (gbWord & 0x80000000) != 0;
+      const Uint32 sourceId = isLinked ? ((gbWord >> 16) & 0x7FFF)
+                                       : ((gbWord >> 16) & 0xFFFF);
+      const Uint32 columnId = realColumnForGroupByWord(gbWord, tableMeta);
+      if (columnId == RNIL) continue;
+      appendBigintMetaEntry(block, tableMeta,
+                            isLinked ? JOIN_AGG_META_SOURCE_LINKED_COLUMN
+                                     : JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+                            sourceId, programOffset, i, columnId,
+                            JOIN_AGG_META_FLAG_GROUP_BY);
+      entryCount++;
+    }
+  }
+
+  for (Uint32 i = 8 + nGbCols; i < programLen; i++) {
+    const Uint32 op = (program[i] >> 26) & 0x3F;
+    if (op != kOpLoadCol) continue;
+    const Uint32 columnId = program[i] & 0xFFFF;
+    const Uint32 programOffset = ((accOffset & 0xFFFF) << 16) | (i & 0xFFFF);
+    appendBigintMetaEntry(block, tableMeta, JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+                          columnId, programOffset, RNIL, columnId,
+                          JOIN_AGG_META_FLAG_LOAD_COLUMN);
+    entryCount++;
+  }
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadataBlock(const std::vector<Uint32> &aggSection,
+                          const TableMeta &tableMeta)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(0);
+
+  if (aggSection.size() < 3) {
+    return block;
+  }
+
+  Uint32 entryCount = 0;
+  const Uint32 *programWords = &aggSection[2];
+  const Uint32 programWordsLen = static_cast<Uint32>(aggSection.size() - 2);
+  const Uint32 firstWord = programWords[0];
+  if ((firstWord >> 16) == AGG_MAGIC) {
+    appendProgramMetadata(block, entryCount, tableMeta, programWords,
+                          programWordsLen, 0, true);
+  } else if ((firstWord >> 16) == 0x0722) {
+    const Uint32 numLeaves = firstWord & 0xFFFF;
+    Uint32 pos = 1;
+    Uint32 accOffset = 0;
+    for (Uint32 leaf = 0; leaf < numLeaves && pos < programWordsLen; leaf++) {
+      const Uint32 programLen = programWords[pos++];
+      if (pos + programLen > programWordsLen) break;
+      appendProgramMetadata(block, entryCount, tableMeta, &programWords[pos],
+                            programLen, accOffset, leaf == 0);
+      if (programLen >= 2) {
+        accOffset += programWords[pos + 1] & 0xFFFF;
+      }
+      pos += programLen;
+    }
+  }
+
+  block[2] = entryCount;
+  return block;
+}
+
+static void
+appendJoinAggMetadataContainer(std::vector<Uint32> &section,
+                               const std::vector<Uint32> &block)
+{
+  section.push_back(JOIN_AGG_META_MARKER);
+  section.push_back(JOIN_AGG_META_VERSION);
+  section.push_back(1);
+  section.push_back(JOIN_AGG_META_KIND_MAIN);
+  section.push_back(RNIL);
+  section.push_back(static_cast<Uint32>(block.size()));
+  section.insert(section.end(), block.begin(), block.end());
+}
+
 static int
 sqlExec(MYSQL *conn, const char *query)
 {
@@ -887,6 +1018,11 @@ sendStarScanTabReq(SignalSender &ss, Uint32 nodeId,
 
   ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
 
+  std::vector<Uint32> aggSectionWithMeta = multiLeafAggSection;
+  const std::vector<Uint32> metadataBlock =
+    buildJoinAggMetadataBlock(aggSectionWithMeta, meta);
+  appendJoinAggMetadataContainer(aggSectionWithMeta, metadataBlock);
+
   ssig.header.m_noOfSections = 3;
   /* Section 0: single dummy receiver ID */
   Uint32 dummyReceiverId = 0;
@@ -896,8 +1032,8 @@ sendStarScanTabReq(SignalSender &ss, Uint32 nodeId,
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();
   /* Section 2: Multi-leaf agg section (KeyInfo) */
-  ssig.ptr[2].p = multiLeafAggSection.data();
-  ssig.ptr[2].sz = (Uint32)multiLeafAggSection.size();
+  ssig.ptr[2].p = aggSectionWithMeta.data();
+  ssig.ptr[2].sz = (Uint32)aggSectionWithMeta.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SCAN_TABREQ failed\n");
@@ -906,7 +1042,7 @@ sendStarScanTabReq(SignalSender &ss, Uint32 nodeId,
 
   V("  Sent SCAN_TABREQ: requestInfo=0x%08x, queryTree=%zu words, "
     "aggSection=%zu words\n",
-    requestInfo, queryTree.size(), multiLeafAggSection.size());
+    requestInfo, queryTree.size(), aggSectionWithMeta.size());
   return 0;
 }
 
