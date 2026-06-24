@@ -1,0 +1,261 @@
+# D17 — MIN/MAX over a DATE column in a CTE (integer-day plan)
+
+Status: **IMPLEMENTED — awaiting build + 5-topology record** (Phases 1-4
+coded; Phase 5 reassessed as needing no kernel change; Phase 6 = record).
+See `cte_fix_plan.md` E4 and `cte_test_driven_findings.md` D17.
+
+## Implementation notes (what actually shipped vs the original plan)
+
+The plan over-specified.  Two simplifications fell out during coding:
+
+1. **DATE == MEDIUMUNSIGNED at the numeric level.**  A DATE is a 3-byte
+   `uint3korr` unsigned value, monotonic with chronological order — exactly
+   like `NDB_TYPE_MEDIUMUNSIGNED`.  So the kernel work (Phase 1) is four tiny
+   additions in `AggInterpreterBase.cpp`: `TypeSupported` (+DATE),
+   `IsUnsigned` (+DATE → true), `AlignedType` (+DATE → BIGINT, sign carried by
+   `is_unsigned`), and `loadColumnTypedFromBuf` (+DATE arm = the MEDIUMUNSIGNED
+   arm).  MIN/MAX over an unsigned BIGINT register already exists; the result
+   comes back as **Bigunsigned**, so the NDB API result-parse path is
+   unchanged (no new wire format / `AggResItem` change — contrast string
+   MIN/MAX).  AlignedType returns BIGINT (not BIGUNSIGNED — there is no such
+   aligned type; the register's `is_unsigned` flag carries signedness).
+
+2. **Phase 5 (GROUP-BY-over-DATE) needs NO kernel change.**  `initGBTypes`'s
+   local-column path reads `typeId` / `maxBytes` / `cs` / `cmpFn` generically
+   from the AttributeDescriptor — for DATE that yields `cmpFn = cmpDate`,
+   `cs = nullptr`.  `GBHashTable::hashKeyFull` then hashes the raw 3 bytes
+   (`rondb_xxhash_std`, deterministic across nodes — low redistribution risk,
+   unlike the D26 charset case) and `findInBucket` compares via `cmpDate`.
+   Shape B's recorded "Failed writing aggregation program" was the **same**
+   `NdbAggregator::TypeSupported(Date)` gate fixed in Phase 2, not a GROUP BY
+   gap.  So Shape B is expected to work on Phases 1-4 alone; the explicit GB
+   DATE arm is only added if the 5-topology record shows a failure.
+
+Display tag (Phases 3-4): the virt-table MIN/MAX-of-DATE column is typed
+**Bigunsigned** on the wire (8 bytes — matches the kernel emit and re-agg);
+the DATE *display* is recovered at the top level via
+`ResultPrinter::ColumnMetadata::is_date`, derived from the source column the
+existing `resolve_cte_output_columns_for_scope` already plumbs back through
+the CTE MIN/MAX (`orders.o_orderdate`).  The printer unpacks the Bigunsigned
+`w` → `YYYY-MM-DD`.  Limitation: only a single-CTE MIN/MAX recovers the date
+tag (a chained CTE-of-CTE re-aggregation resolves the source as Bigunsigned,
+losing the tag — acceptable for v1).  A directly *projected* DATE virt-column
+(non-aggregate passthrough / GROUP-BY-key projection) is not date-tagged yet
+either; no recorded D17 shape needs it.
+
+### MTR cases re-enabled (Phase 6)
+- `body_agg.inc` **agg-d17a** — Shape A: `MIN/MAX(o_orderdate)` re-aggregated
+  through CTE_LOOKUP (the recorded shape).
+- `body_agg.inc` **agg-d17b** — `MIN/MAX(l_shipdate)` re-aggregated over a
+  CTE_SCAN root.
+- `body_agg.inc` **agg-d17c** — Shape B core: CTE body `GROUP BY o_orderdate`
+  (DATE group key, ~1000 groups → crosses the 256-row batch boundary),
+  scalar main `MIN(d)/MAX(d)/SUM(t)/COUNT(*)`.
+- `body_index.inc` **index-9** stays disabled but **re-tagged D9** (the
+  residual is the DATE *index-scan root*, not D17).
+
+## Temporal extension — YEAR + DATETIME2 + TIME2 + TIMESTAMP2 (shipped with D17)
+
+Follow-up after D17/DATE.  Same integer-monotonic shortcut: each type reduces
+to an unsigned value the kernel MIN/MAXes, returned as Bigunsigned and decoded
+for display by RonSQL.  (TIMESTAMP2 was initially deferred for timezone
+semantics, then shipped — see the TIMESTAMP2 note below.)
+
+- **YEAR (26)** — 1-byte unsigned (like TINYUNSIGNED); display `v+1900`,
+  `0 → 0000`.
+- **TIMESTAMP2 (33)** — big-endian, memcmp-comparable, width `4+flen`.  Same
+  kernel big-endian load as DATETIME2/TIME2.  Its on-disk value is the UTC
+  epoch; **epoch order is absolute, so MIN/MAX is timezone-independent** and
+  needs no special kernel handling.  Display: RonSQL reconstructs the bytes,
+  `my_timestamp_from_binary` → `my_timeval{epoch, usec}`, then breaks the epoch
+  down in **UTC** via the lock-free `ronsql_utc_sec_to_TIME` (`get_date_from_daynr`,
+  no glibc `tzset_lock` — mirrors the kernel's `ttl_utc_sec_to_TIME`, commit
+  `808bb79ce23`), and `my_TIME_to_str`.  The MTR suite loads + compares under
+  `time_zone='+00:00'` so storage and display are deterministic.  The existing
+  ResultPrinter passthrough Timestamp2 decode was also switched off `gmtime()`
+  to the same helper.
+- **TIME2 (31) / DATETIME2 (32)** — big-endian, memcmp-comparable MySQL packed
+  binary, width `3+flen` / `5+flen` with `flen=(1+fsp)/2`.  The kernel reads
+  `header->getByteSize()` bytes **MSB-first** into the register (unsigned
+  compare == memcmp == chronological).  RonSQL reconstructs the bytes from the
+  Bigunsigned value + the source column's fsp and decodes with MySQL's own
+  `my_{datetime,time}_packed_from_binary` + `my_TIME_to_str`, so the string
+  matches MySQL exactly (NDB stores MySQL-compatible binary — proven by the
+  existing WHERE-encode path).
+
+### Opcode change — 6-bit kOpLoadCol type field (backward compatible)
+The `kOpLoadCol` aggregation instruction encoded the column type in **5 bits**
+(bits 21-25), max 31.  `DATETIME2=32` / `TIMESTAMP2=33` overflow it.  Fix: the
+type is now **6 bits** — low 5 bits stay at bits 21-25, the most-significant
+6th bit goes in the previously-unused **bit 20**.  Every prior type is <=31, so
+bit 20 = 0 and the encoding is **byte-identical** to before (an old kernel
+decodes existing programs unchanged; only DATETIME2/TIMESTAMP2 set bit 20).
+Helpers: `AggInterpreterBase::decodeLoadColType` (kernel, all 6 kOpLoadCol
+decode sites + PushdownInterpreter optimize pass) and `encodeLoadColType`
+(NdbAggregator, 3 encode sites).  `kOpLoadConst` stays 5-bit (its types are
+always <=31).
+
+### Version gate (rolling upgrade)
+A program that loads DATETIME2/TIMESTAMP2 (bit 20 set) must not reach a data
+node that decodes only 5 bits.  `NdbAggregator::uses_wide_type()` records when
+any `LoadColumn` type > 31; `NdbQueryImpl::doSend` refuses to push such a
+program unless `ndbd_support_agg_wide_type(getMinDbNodeVersion())`.  Floor set
+to 26.04.1 — the same in-development release as `ndbd_support_pushdown_join_agg`
+(the whole pushed-agg feature is INNOVATION-maturity, not yet released, so
+wide-type ships with it).  **Maintainer note:** bump that floor if wide-type
+actually lands in a later release than the base pushed-agg feature.
+
+### MTR (evlog table, body_agg.inc)
+New dedicated `evlog` table (YEAR, DATETIME(0), DATETIME(6), TIME(0), TIME(3);
+named evlog because EVENTS is a reserved keyword in RonSQL)
+so the shared orders/lineitem stay untouched.  Cases **agg-d17d** (YEAR),
+**agg-d17e** (DATETIME fsp 0), **agg-d17f** (DATETIME(6) fractional),
+**agg-d17g** (TIME fsp 0), **agg-d17h** (TIME(3) fractional) — all CTE_SCAN-root
+scalar re-aggregation.  Record ×5 topologies.
+
+### Original (now historical) plan follows.
+
+## Goal & scope
+
+Support `MIN(date)` / `MAX(date)` over a `DATE` column in a CTE, end-to-end
+through RonSQL (RDRS + ronsql_cli), for the two recorded shapes:
+
+- **Shape A — DATE as a MIN/MAX aggregate input** (`body_agg.inc` probe):
+  `WITH x AS (SELECT o_custkey AS k, MIN(o_orderdate) AS mn, MAX(o_orderdate) AS mx
+  FROM orders GROUP BY o_custkey) SELECT MIN(x.mn), MAX(x.mx) FROM customer AS c
+  JOIN x ON x.k = c.c_custkey;` — DATE MIN/MAX in the CTE body, re-aggregated in
+  the main query. GROUP BY is over an INT key.
+- **Shape B — GROUP BY a DATE column** (`body_index.inc` index-9):
+  `WITH os AS (SELECT o_orderdate AS d, SUM(o_shippriority) AS t FROM orders
+  WHERE ... GROUP BY o_orderdate) SELECT MIN(d), MAX(d), SUM(t), COUNT(*) FROM os;`
+  — the CTE GROUP BY key is a DATE; the main query MIN/MAX's the DATE virt-column.
+  This additionally needs **GROUP-BY-over-DATE** support.
+
+**Approach (integer-day shortcut, chosen over native DATE):** treat a `DATE`
+as its 3-byte packed value and reuse the existing Bigunsigned MIN/MAX + wire
+path; RonSQL tags the result column as a date and unpacks it for display. No
+new aggregate wire format (contrast the string MIN/MAX phase, I.6, which needed
+`AGG_CHAR_RESULT`).
+
+**Out of scope:** DATETIME / TIMESTAMP / TIME (kernel `TypeSupported` keeps
+rejecting them); SUM / AVG over DATE (meaningless — stay rejected); exact date
+arithmetic. COUNT(date) already works (COUNT never loads the value).
+
+## DATE encoding (confirmed)
+
+NDB stores `DATE` as a 3-byte little-endian `uint3korr` value
+(`NdbSqlUtil::pack_date` / `unpack_date`, `cmpDate`):
+
+```
+w = (year << 9) | (month << 5) | day      // 3 bytes, little-endian
+day   = w & 31
+month = (w >> 5) & 15
+year  = w >> 9
+```
+
+`w` is **monotonic** with chronological order (`cmpDate` just compares the two
+`uint3korr` values), so integer MIN/MAX over `w` is exactly DATE MIN/MAX. Zero
+date `0000-00-00` is `w == 0`.
+
+## Current gaps (investigated)
+
+| Layer | File | Gap |
+|-------|------|-----|
+| Kernel load | `AggInterpreterBase.cpp` `loadColumnTypedFromBuf` | no `NDB_TYPE_DATE` arm → `ZAGG_LOAD_COL_WRONG_TYPE` (line ~446) |
+| Kernel type | `AggInterpreterBase.cpp` `AlignedType` | no `NDB_TYPE_DATE` mapping |
+| Kernel GB types | `AggInterpreterBase.cpp` GB type switch (~746-770) | no `NDB_TYPE_DATE` arm (blocks Shape B GROUP BY date) |
+| API | `NdbAggregator.cpp` `TypeSupported` | rejects `Date` → `LoadColumn` fails → "Failed writing aggregation program" |
+| RonSQL type | `RonSQLPreparer.cpp` `build_cte_virtual_tables` / `resolve_chained_column_type` MIN/MAX arms | no Date case (default best-effort passthrough, not wired) |
+| RonSQL display | `ResultPrinter.cpp` | no DATE unpacking → would print the raw packed integer |
+
+## Phases
+
+### Phase 1 — Kernel: DATE as a MIN/MAX aggregate input
+`storage/ndb/src/kernel/blocks/dbtup/AggInterpreterBase.{hpp,cpp}`
+- `AlignedType(NDB_TYPE_DATE, _) → NDB_TYPE_BIGUNSIGNED` (the register holds the
+  packed `w` as an unsigned 64-bit value).
+- `loadColumnTypedFromBuf`: add `case NDB_TYPE_DATE:` →
+  `val.val_uint64 = uint3korr(&m_attr_read_buf[m_attr_read_pos + 1]); return 0;`
+  (mirror the `NDB_TYPE_MEDIUMUNSIGNED` arm; register type already set to
+  Bigunsigned by `AlignedType`).
+- Column word-advance / skip logic: ensure `NDB_TYPE_DATE` counts as 3 bytes
+  (1 word) wherever a per-column size switch advances `m_attr_read_pos`.
+- MIN/MAX over Bigunsigned already exists — confirm the **unsigned** compare
+  path (`val_uint64`) is used (not signed), so `0000-00-00` (w=0) sorts lowest.
+- Block coverage: `testJoinAgg` / `testCaseAgg` with a DATE column (MIN/MAX,
+  grouped + scalar, empty input → NULL).
+
+### Phase 2 — NDB API: accept DATE
+`storage/ndb/src/ndbapi/NdbAggregator.cpp`
+- `TypeSupported`: add `case NdbDictionary::Column::Date: return true;`.
+- `LoadColumn` already emits the column's type bits; the kernel's new Date arm
+  reads it and the result returns as **Bigunsigned** (kernel-converted) — so the
+  API result-parse path is unchanged (existing Bigunsigned handling). No new
+  wire format, no `AggResItem` changes.
+- Keep `Sum`/`Add`/… over a Date register rejected kernel-side (as for strings).
+- Coverage: `testJoinAggNdbApi` / `testCteNdbApi` DATE MIN/MAX.
+
+### Phase 3 — RonSQL: virt-column typing + date display tag
+`storage/ndb/src/ronsql/RonSQLPreparer.{cpp,hpp}`, `ResultPrinter.hpp`
+- `build_cte_virtual_tables` MIN/MAX arm: `case Date:` → `derived_type =
+  Bigunsigned` (8-byte agg-slot wire layout), `derived_length = 1`, and carry a
+  **date display tag** onto the virt column / `ColumnMetadata` (analogous to
+  D15's scale carry). The wire type is Bigunsigned; the *display* type is DATE.
+- `resolve_chained_column_type` MIN/MAX arm: same, for chained CTEs.
+- `resolve_cte_output_columns_for_scope`: MIN/MAX already plumbs the source
+  `dict_column`; for a DATE source that gives `ColumnMetadata` a Date-typed
+  source column — derive `is_date` from `dict_column->getType() == Date`.
+- `ResultPrinter::ColumnMetadata`: add `bool is_date` (or store the source NDB
+  type) so the printer knows to unpack.
+
+### Phase 4 — RonSQL ResultPrinter: DATE formatting
+`storage/ndb/src/ronsql/ResultPrinter.{cpp,hpp}`
+- New `aggregate_arg_is_date(out)` helper (mirror `aggregate_arg_scale`) →
+  drives a `cmd.print_aggregate.is_date` flag at compile().
+- `print_aggregate_result`: when the result is Bigunsigned **and** date-tagged,
+  unpack and `snprintf(buf, "%04u-%02u-%02u", w>>9, (w>>5)&15, w&31)`; else
+  existing. NULL → existing null path; `w==0` → `0000-00-00` (matches MySQL).
+- `print_passthrough_value`: same DATE unpacking for a pass-through DATE
+  virt-column (Shape B's GROUP BY date key projected, or scanCte passthrough).
+
+### Phase 5 — GROUP-BY-over-DATE (Shape B prerequisite)
+`storage/ndb/src/kernel/blocks/dbtup/AggInterpreterBase.cpp`, `RonSQLPreparer.cpp`
+- GB type switch (`initGBTypes` / `publishGBTypes`, ~746-770): add
+  `NDB_TYPE_DATE` as a fixed 3-byte non-charset key (`maxBytes = 3`, `cs =
+  nullptr`). Grouping needs only **equality**, so `hashGroupKey` uses the raw
+  `rondb_xxhash_std` over the 3 bytes (no `strnxfrm` — Date is not a charset
+  type) and the bucket compare is a 3-byte memcmp. Deterministic across nodes
+  (unlike the D26 charset case), so cross-node redistribution is low-risk —
+  still verify on ng2r2/ng2r3/ng4r2.
+- The DATE GROUP BY key virt-column (a PK col) is typed for the wire and gets
+  the date display tag (Phase 3/4) so the projected key prints as `YYYY-MM-DD`.
+- DBSPJ `cte_lookup_hash_key`: a DATE GB key routes via the same raw hash —
+  confirm consistency (no per-thread strnxfrm buffer involved for non-charset).
+
+### Phase 6 — MTR coverage + re-enable
+- Re-enable `body_agg.inc` DATE MIN/MAX probe (Shape A) and `body_index.inc`
+  index-9 (Shape B); add: direct-column DATE MIN/MAX, re-aggregated DATE
+  MIN/MAX through CTE_LOOKUP, GROUP BY date, empty-input (NULL), and a
+  `WHERE date >= '...'`-filtered variant.
+- Record all 5 topologies (base + ng1r3/ng2r2/ng2r3/ng4r2). The multi-node
+  runs are the GROUP-BY-date redistribution check.
+- Regression: `--suite=ronsql` unchanged-green.
+
+## Risks / edge cases
+- **Signed vs unsigned MIN/MAX:** must use the unsigned path (`val_uint64`)
+  since `AlignedType→Bigunsigned`; otherwise `w` near 2^23 could misorder.
+- **Zero date** `0000-00-00` (w=0) and **NULL** date — verify both round-trip.
+- **Type confusion:** the virt-column is Bigunsigned on the wire but DATE for
+  display — the tag must not leak into arithmetic/filter paths (a DATE
+  MIN/MAX output used in a WHERE/CASE is a follow-up, not v1).
+- **DATETIME/TIMESTAMP/TIME** remain unsupported and must still reject cleanly
+  (kernel `TypeSupported` + RonSQL).
+- **Build:** kernel change ⇒ **ndbmtd rebuild** (not just ronsql_cli/rdrs2) +
+  full 5-topology record.
+
+## Effort
+Medium, multi-layer: ~6 source files (kernel + NDB API + RonSQL preparer +
+result printer), 6 phases, one kernel rebuild, 5-topology record. Smaller than
+full native DATE (no new wire format — reuses the Bigunsigned path), but touches
+every layer. Sequence Phases 1→4 first (Shape A, the core), then Phase 5 (Shape
+B / GROUP BY date), then Phase 6.

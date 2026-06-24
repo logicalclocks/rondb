@@ -259,6 +259,112 @@ struct TableMeta {
   std::vector<Uint32> fragInstances;  /* LDM instance for each fragment */
 };
 
+static void
+appendLocalBigintMetaEntry(std::vector<Uint32> &meta,
+                           const TableMeta &tableMeta,
+                           Uint32 columnId,
+                           Uint32 programOffset,
+                           Uint32 slotIndex,
+                           Uint32 flags)
+{
+  meta.push_back(JOIN_AGG_META_SOURCE_LOCAL_COLUMN);
+  meta.push_back(columnId);
+  meta.push_back(programOffset);
+  meta.push_back(slotIndex);
+  meta.push_back(tableMeta.tableId);
+  meta.push_back(tableMeta.schemaVersion);
+  meta.push_back(columnId);
+  meta.push_back(COL_TYPE_BIGINT);
+  meta.push_back(8);
+  meta.push_back(0);
+  meta.push_back(0);
+  meta.push_back(flags);
+}
+
+static void
+appendProgramMetadata(std::vector<Uint32> &meta,
+                      Uint32 &entryCount,
+                      const TableMeta &tableMeta,
+                      const Uint32 *program,
+                      Uint32 programLen,
+                      Uint32 accOffset,
+                      bool includeGroupBy)
+{
+  if (programLen < 8 || (program[0] >> 16) != AGG_MAGIC) {
+    return;
+  }
+
+  const Uint32 nGbCols = program[1] >> 16;
+  if (includeGroupBy) {
+    for (Uint32 i = 0; i < nGbCols && (8 + i) < programLen; i++) {
+      const Uint32 programOffset = 8 + i;
+      const Uint32 columnId = (program[programOffset] >> 16) & 0xFFFF;
+      appendLocalBigintMetaEntry(meta, tableMeta, columnId, programOffset, i,
+                                 JOIN_AGG_META_FLAG_GROUP_BY);
+      entryCount++;
+    }
+  }
+
+  for (Uint32 i = 8 + nGbCols; i < programLen; i++) {
+    const Uint32 op = (program[i] >> 26) & 0x3F;
+    if (op != kOpLoadCol) continue;
+    const Uint32 columnId = program[i] & 0xFFFF;
+    const Uint32 programOffset = ((accOffset & 0xFFFF) << 16) | (i & 0xFFFF);
+    appendLocalBigintMetaEntry(meta, tableMeta, columnId, programOffset, RNIL,
+                               JOIN_AGG_META_FLAG_LOAD_COLUMN);
+    entryCount++;
+  }
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadata(const std::vector<Uint32> &multiLeafSection,
+                     const TableMeta &tableMeta)
+{
+  std::vector<Uint32> meta;
+  meta.push_back(JOIN_AGG_META_MARKER);
+  meta.push_back(JOIN_AGG_META_VERSION);
+  meta.push_back(0);
+
+  if (multiLeafSection.empty()) {
+    return meta;
+  }
+
+  Uint32 entryCount = 0;
+  if ((multiLeafSection[0] >> 16) == AGG_MAGIC) {
+    appendProgramMetadata(meta, entryCount, tableMeta,
+                          multiLeafSection.data(),
+                          static_cast<Uint32>(multiLeafSection.size()), 0,
+                          true);
+    meta[2] = entryCount;
+    return meta;
+  }
+
+  if ((multiLeafSection[0] >> 16) != 0x0722) {
+    return meta;
+  }
+
+  const Uint32 numLeaves = multiLeafSection[0] & 0xFFFF;
+  Uint32 pos = 1;
+  Uint32 accOffset = 0;
+  for (Uint32 leaf = 0; leaf < numLeaves && pos < multiLeafSection.size();
+       leaf++) {
+    const Uint32 programLen = multiLeafSection[pos++];
+    if (pos + programLen > multiLeafSection.size()) {
+      break;
+    }
+    appendProgramMetadata(meta, entryCount, tableMeta,
+                          &multiLeafSection[pos], programLen, accOffset,
+                          leaf == 0);
+    if (programLen >= 2) {
+      accOffset += multiLeafSection[pos + 1] & 0xFFFF;
+    }
+    pos += programLen;
+  }
+
+  meta[2] = entryCount;
+  return meta;
+}
+
 static int
 sqlExec(MYSQL *conn, const char *query)
 {
@@ -516,11 +622,15 @@ sendMultiLeafSetupReq(SignalSender &ss, Uint32 nodeId,
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);
   Uint32 receiverId = FAKE_SENDER_DATA;
-  ssig.header.m_noOfSections = 2;
+  const std::vector<Uint32> metadata =
+    buildJoinAggMetadata(multiLeafSection, meta);
+  ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = multiLeafSection.data();
   ssig.ptr[0].sz = (Uint32)multiLeafSection.size();
   ssig.ptr[1].p = &receiverId;
   ssig.ptr[1].sz = 1;
+  ssig.ptr[2].p = metadata.data();
+  ssig.ptr[2].sz = (Uint32)metadata.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SETUP_REQ failed\n");

@@ -3366,6 +3366,8 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void sendJoinAggCompleteHeartbeat(Signal* signal,
+                                    JoinAggregationState *state);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
@@ -3380,7 +3382,8 @@ private:
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
-   * Each entry is [tableId=0][schemaVersion=0][AttrHeader][data...].
+   * CTE result entries use the CteLinkedAttr typed 2-word header followed
+   * by [AttrHeader][data...].
    * Shared by cteLookupAggFeed (downstream agg feed) and the filter
    * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
   void buildCteLinkedBuffer(const JoinAggInterpreter *interp,
@@ -3473,7 +3476,8 @@ private:
   void sendScalarRedistributeReq(Signal* signal,
                                   JoinAggregationState* state,
                                   JoinAggInterpreter* interp,
-                                  Uint32 ownerNode);
+                                  Uint32 ownerNode,
+                                  Uint32 senderAggStateKey);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);

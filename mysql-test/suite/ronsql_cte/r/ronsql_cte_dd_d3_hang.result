@@ -1,0 +1,32 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== D3: projection-only main SELECT over a CTE_LOOKUP child (was a hang) ===
+== Query ==
+WITH nat AS (
+SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
+FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r
+JOIN nat ON nat.rk = r.r_regionkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH nat AS (
+SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
+FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r
+JOIN nat ON nat.rk = r.r_regionkey|
+rk	mn	mx	n
+0	0	5	2
+1	1	6	2
+2	2	7	2
+3	3	8	2
+4	4	9	2

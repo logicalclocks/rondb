@@ -152,7 +152,7 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
           break;
         }
         case kOpLoadCol: {
-          Uint32 type = (word & 0x03E00000) >> 21;
+          Uint32 type = decodeLoadColType(word);
           if (type == NDB_TYPE_DECIMAL ||
               type == NDB_TYPE_DECIMALUNSIGNED) scan_pos++;
           break;
@@ -256,7 +256,7 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
           if (agg_index < m_n_agg_results) m_cached_agg_ops[agg_index] = op;
           break;
         case kOpLoadCol: {
-          Uint32 type = (value & 0x03E00000) >> 21;
+          Uint32 type = decodeLoadColType(value);
           if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED)
             exec_pos++;
           break;
@@ -286,14 +286,21 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id,
-        EmulatedJamBuffer *jamBuf) {
+        EmulatedJamBuffer *jamBuf,
+        uchar* xfrm_buf,
+        Uint32 xfrm_buf_len,
+        Uint32* attr_read_buf) {
   m_current_thread_id = thread_id;
-  /* Step 3 Cand-C: bind m_attr_read_buf to the calling LDM thread's
-   * Dbtup scratch buffer.  processNullExtendedRow / processRecWithLinkedAttrs
-   * both pass block_tup; the buffer is per-thread so MUTEX_BASED's
-   * shared interpreter sees the calling thread's buffer on each entry. */
-  require(block_tup != nullptr);
-  m_attr_read_buf = block_tup->getAggAttrReadBuf();
+  /*
+   * Normal row processing binds m_attr_read_buf from DBTUP.  Null-extended
+   * rows have no tuple to read and pass the per-LDM scratch buffer directly.
+   */
+  if (attr_read_buf != nullptr) {
+    m_attr_read_buf = attr_read_buf;
+  } else {
+    require(block_tup != nullptr);
+    m_attr_read_buf = block_tup->getAggAttrReadBuf();
+  }
   if (!m_inited) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: not inited");
     return ZAGG_OTHER_ERROR;
@@ -312,13 +319,15 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     if (!m_gb_types_inited) {
       if (m_null_local_columns) {
         thrjam(jamBuf);
-        initGBTypesForNullLocal(block_tup, jamBuf);
+        Int32 err = initGBTypesForNullLocal(jamBuf);
+        if (unlikely(err != 0)) return err;
       } else {
         thrjam(jamBuf);
         Int32 err = initGBTypes(block_tup,
                                 req_struct,
                                 m_linked_attr_data,
                                 m_linked_attr_len,
+                                /*requireMetadata=*/true,
                                 jamBuf);
         if (unlikely(err != 0)) return err;
       }
@@ -424,7 +433,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
-    char* found = m_gb_map->find(reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
+    char* found = m_gb_map->find(reinterpret_cast<char*>(m_attr_read_buf),
+                                 len_in_char, xfrm_buf, xfrm_buf_len);
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
@@ -450,7 +460,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                         m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
 
-      m_gb_map->insert(agg_rec, len_in_char);
+      m_gb_map->insert(agg_rec, len_in_char, xfrm_buf, xfrm_buf_len);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
@@ -484,6 +494,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
   while (exec_pos < m_prog_len) {
+    const Uint32 load_program_offset =
+        ((m_acc_offset & 0xFFFF) << 16) | (exec_pos & 0xFFFF);
     value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;
@@ -492,7 +504,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
     switch (op) {
       case kOpLoadCol: {
-        type = (value & 0x03E00000) >> 21;
+        type = decodeLoadColType(value);
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
         linked_word0 = 0;
@@ -510,7 +522,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             p += 1 + AttributeHeader::getDataSize(*p);
             pos_count++;
           }
-          if (p >= p_end) {
+          if (p + 2 >= p_end) {
             g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
                 "kOpLoadCol linked position %u not found in buffer "
                 "(linked_len=%u)", position, m_linked_attr_len);
@@ -519,6 +531,30 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           linked_word0 = p[0];
           linked_word1 = p[1];
           linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
+          if (!linked_cte_attr) {
+            const Uint32 linked_attr_id =
+                AttributeHeader(p[2]).getAttributeId();
+            const ColumnMeta *column_meta =
+                findColumnMeta(linked_word0, linked_word1, linked_attr_id);
+            if (column_meta != nullptr) {
+              linked_word0 = CteLinkedAttr::encodeWord0(column_meta->typeId,
+                                                        column_meta->maxBytes);
+              linked_word1 = CteLinkedAttr::encodeWord1(column_meta->csNumber);
+              linked_cte_attr = true;
+            } else {
+              const LoadColumnMeta *meta =
+                  findLoadColumnMeta(load_program_offset);
+              if (meta != nullptr) {
+                linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                          meta->maxBytes);
+                linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+                linked_cte_attr = true;
+              }
+            }
+            if (!linked_cte_attr) {
+              return ZAGG_OTHER_ERROR;
+            }
+          }
           p += 2;
           Uint32 words = 1 + AttributeHeader::getDataSize(*p);
           memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
@@ -531,16 +567,20 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
               m_attr_read_buf + m_attr_read_pos);
           attrDescriptor = nullptr;
         } else {
-          /* Normal (non-linked) column load.  A CTE agg feed has no scanned
-           * table (tablePtrP == nullptr); reaching here means the
-           * aggregation program references a table column that cannot be
-           * supplied — abort cleanly (see initGBTypes). */
+          /* Normal (non-linked) column load.  The value still comes from the
+           * scanned tuple, but type/charset metadata must come from the
+           * JOIN_AGG_SETUP_REQ metadata cache. */
+          const LoadColumnMeta *meta =
+              findLoadColumnMeta(load_program_offset);
+          if (unlikely(meta == nullptr)) {
+            return ZAGG_OTHER_ERROR;
+          }
+          linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                    meta->maxBytes);
+          linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+          linked_cte_attr = true;
           if (unlikely(req_struct == nullptr ||
                        req_struct->tablePtrP == nullptr)) {
-            g_eventLogger->debug(
-                "JoinAggInterpreter::ProcessRec kOpLoadCol: normal column %u "
-                "referenced in a CTE agg-feed with no scanned table — "
-                "aborting query", col_id_raw);
             return ZAGG_OTHER_ERROR;
           }
           ret = block_tup->readSingleAttribute(
@@ -552,10 +592,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             return -ret;
           }
           header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-          attrDescriptor =
-              req_struct->tablePtrP->tabDescriptor + (col_id_raw * ZAD_SIZE);
+          attrDescriptor = nullptr;
           assert(header->getAttributeId() == col_id_raw);
-          assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         }
         Int32 lret = loadColumnTypedFromBuf(
             type, is_unsigned, reg_index, header, attrDescriptor,
@@ -663,7 +701,11 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     m_null_local_columns = true;
   }
 
-  Int32 ret = ProcessRec(block_tup, req_struct, thread_id, jamBuf);
+  // D26: the build path runs on this LDM thread (block_tup is its own Dbtup),
+  // so the group-key hash uses that thread's private xfrm scratch.
+  Int32 ret = ProcessRec(block_tup, req_struct, thread_id, jamBuf,
+                         block_tup->getAggXfrmBuf(),
+                         block_tup->getAggXfrmBufLen());
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
@@ -672,7 +714,9 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
 }
 
 Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
-                                         Uint32* words_written) {
+                                         Uint32* words_written,
+                                         uchar* xfrm_buf,
+                                         Uint32 xfrm_buf_len) {
   if (m_gb_map == nullptr || m_gb_map->empty()) {
     return -1;
   }
@@ -734,7 +778,7 @@ Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   // wire-format emit has already substituted payload into the
   // outbound packet above, so val_ptr is safe to free here.
   freeGroupStringSlots(slots);
-  m_gb_map->erase(data_ptr, key_len);
+  m_gb_map->erase(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
   freeGroupData(data_ptr);
 
   return 0;
@@ -992,7 +1036,7 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
         if (agg_index < n_agg_results) agg_ops[agg_index] = op;
         break;
       case kOpLoadCol: {
-        Uint32 type = (value & 0x03E00000) >> 21;
+        Uint32 type = AggInterpreterBase::decodeLoadColType(value);
         if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED)
           exec_pos++;
         break;
@@ -1015,7 +1059,9 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
 }
 
 Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
-                                      Uint32 max_groups) {
+                                      Uint32 max_groups,
+                                      uchar* xfrm_buf,
+                                      Uint32 xfrm_buf_len) {
   assert(other != nullptr);
   assert(m_n_agg_results == other->m_n_agg_results);
 
@@ -1080,7 +1126,7 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
         }
         other->freeGroupData(other_data);
       } else {
-        m_gb_map->insertRaw(other_data);
+        m_gb_map->insertRaw(other_data, xfrm_buf, xfrm_buf_len);
         m_result_size += other_key_len + v_len;
       }
       count++;
@@ -1118,7 +1164,9 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
 Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
                                          const char* accumulators,
-                                         Uint32 accLen) {
+                                         Uint32 accLen,
+                                         uchar* xfrm_buf,
+                                         Uint32 xfrm_buf_len) {
   /* Phase I.17e: scalar (no GROUP BY) redistribute reuses this entry
    * point with keyLen == 0 — dispatch to the accumulator-only merge. */
   if (keyLen == 0) {
@@ -1159,7 +1207,7 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
   }
 
   /* Look up key in local hash table */
-  char* found = m_gb_map->find(key, keyLen);
+  char* found = m_gb_map->find(key, keyLen, xfrm_buf, xfrm_buf_len);
 
   if (found != nullptr) {
     /* Key exists — merge accumulators */
@@ -1218,7 +1266,7 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
       memcpy(new_group + keyLen, accumulators, v_len);
     }
 
-    m_gb_map->insert(new_group, keyLen);
+    m_gb_map->insert(new_group, keyLen, xfrm_buf, xfrm_buf_len);
     m_n_groups = m_gb_map->size();
     m_result_size += keyLen + v_len;
   }
@@ -1278,14 +1326,12 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
   }
   return ret;
 }
-void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
-                                                 EmulatedJamBuffer *jamBuf) {
+Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
   /*
    * Called when the first row is a null-extended row (m_null_local_columns).
-   * Linked columns: resolve type from DBTUP tablerec (same as initGBTypes).
-   * Local columns: use NDB_TYPE_UNSIGNED as placeholder — all values will
-   * be NULL (data size 0), so the actual type doesn't affect comparison.
-   * If a matched row arrives later, types are already initialized.
+   * JOIN_AGG_SETUP_REQ normally initializes GROUP BY metadata before any row
+   * is processed.  This fallback only handles typed linked data that arrives
+   * in the NULL-row request itself; otherwise metadata must already be cached.
    */
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     Uint32 attr_id = m_gb_cols[i] >> 16;
@@ -1293,8 +1339,11 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
     thrjamDataDebug(jamBuf, attr_id);
     GBColTypeInfo &info = m_gb_types[i];
 
-    if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+    if ((attr_id & 0x8000) != 0) {
       thrjamDebug(jamBuf);
+      if (unlikely(m_linked_attr_data == nullptr)) {
+        return ZAGG_OTHER_ERROR;
+      }
       Uint32 position = attr_id & 0x7FFF;
       const Uint32* p = m_linked_attr_data;
       const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
@@ -1315,62 +1364,62 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup,
           Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
           if (csNumber != 0) {
             thrjamDebug(jamBuf);
-            info.cs = all_charsets[csNumber];
-          }
-        } else if (block_tup != nullptr) {
-          thrjamDebug(jamBuf);
-          Uint32 tableId = word0;
-          if (tableId != 0 && tableId < block_tup->cnoOfTablerec) {
-            thrjamDebug(jamBuf);
-            Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-            Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
-            const Uint32* attrDesc = tab->tabDescriptor +
-                linkedAttrId * ZAD_SIZE;
-            info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-            info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
-            info.cs = nullptr;
-            if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-              thrjamDebug(jamBuf);
-              Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-              info.cs = tab->charsetArray[csPos];
+            if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                         all_charsets[csNumber] == nullptr)) {
+              return ZAGG_OTHER_ERROR;
             }
-          } else {
-            thrjamDebug(jamBuf);
-            info.typeId = NDB_TYPE_UNSIGNED;
-            info.maxBytes = 4;
-            info.cs = nullptr;
+            info.cs = all_charsets[csNumber];
           }
         } else {
           thrjamDebug(jamBuf);
-          info.typeId = NDB_TYPE_UNSIGNED;
-          info.maxBytes = 4;
-          info.cs = nullptr;
+          Uint32 tableId = word0;
+          Uint32 tableVersion = word1;
+          Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+          if (unlikely(tableId == 0 || tableId == RNIL)) {
+            g_eventLogger->debug("initGBTypesForNullLocal: linked GROUP BY "
+                "column has untyped synthetic metadata prefix tableId=%u "
+                "schemaVersion=%u", tableId, tableVersion);
+            return ZAGG_OTHER_ERROR;
+          }
+          const ColumnMeta *meta =
+              findColumnMeta(tableId, tableVersion, linkedAttrId);
+          if (meta != nullptr) {
+            info.typeId = meta->typeId;
+            info.maxBytes = meta->maxBytes;
+            info.cs = nullptr;
+            if (meta->csNumber != 0) {
+              thrjamDebug(jamBuf);
+              info.cs = all_charsets[meta->csNumber];
+            }
+          } else {
+            g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "
+                "for linked GROUP BY column tableId=%u schemaVersion=%u "
+                "columnId=%u", tableId, tableVersion, linkedAttrId);
+            return ZAGG_OTHER_ERROR;
+          }
         }
       } else {
-        thrjamDebug(jamBuf);
-        info.typeId = NDB_TYPE_UNSIGNED;
-        info.maxBytes = 4;
-        info.cs = nullptr;
+        return ZAGG_OTHER_ERROR;
       }
     } else {
-      thrjamDebug(jamBuf);
-      info.typeId = NDB_TYPE_UNSIGNED;
-      info.maxBytes = 4;
-      info.cs = nullptr;
+      g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "
+          "for local GROUP BY column attr_id=%u", attr_id);
+      return ZAGG_OTHER_ERROR;
     }
     const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
     info.cmpFn = sqlType.m_cmp;
   }
-  m_gb_types_inited = true;
-  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  return publishGBTypes(jamBuf);
 }
 
 Int32 JoinAggInterpreter::processNullExtendedRow(
-    Dbtup* block_tup,
+    Uint32* attr_read_buf,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
     Uint32 thread_id,
     EmulatedJamBuffer *jamBuf,
+    uchar* xfrm_buf,
+    Uint32 xfrm_buf_len,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
@@ -1387,12 +1436,12 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_len = linked_attr_len;
   m_null_local_columns = true;
 
-  /* Step 3 Cand-C: block_tup is needed inside ProcessRec to bind
-   * m_attr_read_buf to the per-LDM-thread scratch on Dbtup.  The
-   * null-extended row path still passes req_struct=nullptr (no row
-   * data to read) — m_null_local_columns drives kOpLoadCol to
-   * synthesise NULL AttributeHeaders into m_attr_read_buf instead. */
-  Int32 ret = ProcessRec(block_tup, nullptr, thread_id, jamBuf);
+  /*
+   * Null-extended rows have no local tuple to read.  m_null_local_columns
+   * drives kOpLoadCol to synthesize NULL AttributeHeaders into attr_read_buf.
+   */
+  Int32 ret = ProcessRec(nullptr, nullptr, thread_id, jamBuf,
+                         xfrm_buf, xfrm_buf_len, attr_read_buf);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
@@ -1466,5 +1515,3 @@ Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
   }
   return 0;
 }
-
-

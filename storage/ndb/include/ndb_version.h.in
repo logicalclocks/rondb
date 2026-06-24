@@ -1206,4 +1206,35 @@ ndbd_support_pushdown_join_agg(Uint32 x) {
   }
   return false;
 }
+
+/*
+ * Pushed-aggregation wide column-type support.  The kOpLoadCol aggregation
+ * instruction originally encoded the column type in 5 bits (NDB types 0-31).
+ * DATETIME2 (32) and TIMESTAMP2 (33) need a 6th bit, carried in the
+ * previously-unused bit 20 (see AggInterpreterBase::decodeLoadColType /
+ * NdbAggregator's encodeLoadColType).  Types <= 31 are encoded identically to
+ * before, so this is backward compatible; only an aggregation program that
+ * loads a DATETIME2/TIMESTAMP2 column sets bit 20.  Such a program must not be
+ * sent to a data node that decodes only 5 bits, so the API gates emission on
+ * this support.  Ships together with pushdown_join_agg in 26.04.1 (the feature
+ * is still in development) -- bump the floor here if wide-type lands later.
+ */
+static inline
+bool
+ndbd_support_agg_wide_type(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+
+  if (major > 26) {
+    return true;
+  }
+  if ((major == 26) && (minor > 5)) {
+    return true;
+  }
+  if ((major == 26) && (minor == 04) && (rel >= 1)) {
+    return true;
+  }
+  return false;
+}
 #endif

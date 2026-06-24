@@ -30,6 +30,7 @@
 #include <kernel_types.h>
 #include <kernel/NodeBitmask.hpp>
 #include <kernel/ndb_limits.h>
+#include <portlib/NdbTick.h>
 
 #define JAM_FILE_ID 570
 
@@ -147,6 +148,8 @@ struct JoinAggregationState {
   Uint32       m_total_agg_results; // Sum of all leaf m_n_agg_results
   Uint32*      m_all_programs_buf;  // Single allocation holding all leaf programs
                                     // LeafProgram::m_agg_program points into this
+  Uint32*      m_column_meta_buf;   // Optional setup-time column metadata cache
+  Uint32       m_column_meta_len;   // Length of m_column_meta_buf in words
 
   //------------------------------------------------------------------
   // Concurrency Strategy (immutable after creation)
@@ -289,6 +292,9 @@ struct JoinAggregationState {
   Uint32 m_cte_complete_senderRef;
   Uint32 m_cte_complete_senderData;
   Uint32 m_cte_complete_requestId;
+  Uint32 m_cte_complete_transid[2];
+  Uint32 m_cte_complete_hb_scanFragPtrI;
+  NDB_TICKS m_cte_complete_last_hb_time;
 
   //------------------------------------------------------------------
   // CTE Scan State (for CTE_SCAN_REQ iteration)
@@ -329,6 +335,8 @@ struct JoinAggregationState {
     m_leaf_programs(nullptr),
     m_total_agg_results(0),
     m_all_programs_buf(nullptr),
+    m_column_meta_buf(nullptr),
+    m_column_meta_len(0),
     m_strategy(MUTEX_BASED),
     m_num_threads(0),
     m_agg_interpreter(nullptr),
@@ -364,6 +372,8 @@ struct JoinAggregationState {
     m_cte_complete_senderRef(0),
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),
+    m_cte_complete_hb_scanFragPtrI(RNIL),
+    m_cte_complete_last_hb_time(),
     m_cteScan_groupsSent(0),
     m_cteScan_iterBucket(0),
     m_cteScan_iterRaw(nullptr),
@@ -375,6 +385,8 @@ struct JoinAggregationState {
   {
     m_transid[0] = 0;
     m_transid[1] = 0;
+    m_cte_complete_transid[0] = 0;
+    m_cte_complete_transid[1] = 0;
   }
 
   ~JoinAggregationState() {

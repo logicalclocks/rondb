@@ -12095,9 +12095,15 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
   jamEntry();
 
   BlockReference senderRef = signal->senderBlockRef();
+  const bool joinAggCompleteHb =
+      signal->getLength() >= 4 &&
+      isAggCompleteRequestId(signal->theData[3]);
   scanFragptr.i = signal->theData[0];
   if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragptr))) {
     jam();
+    if (joinAggCompleteHb) {
+      return;
+    }
     warningHandlerLab(signal, __LINE__);
     return;
   }
@@ -12106,6 +12112,10 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     case ScanFragRec::LQH_ACTIVE:
       break;
     default:
+      if (joinAggCompleteHb) {
+        jam();
+        return;
+      }
       DEBUG("execSCAN_HBREP: scanFragState=" << scanFragptr.p->scanFragState);
       systemErrorLab(signal, __LINE__);
       break;
@@ -12126,6 +12136,9 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
   ndbrequire(Magic::check_ptr(apiConnectptr.p));
   if (unlikely(compare_transid1 != 0 || compare_transid2 != 0)) {
     jam();
+    if (joinAggCompleteHb) {
+      return;
+    }
     /**
      * Send signal back to sender so that the crash occurs there
      */
@@ -12142,7 +12155,8 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     return;
   }  // if
 
-  if (refToMain(scanFragptr.p->lqhBlockref) == V_QUERY) {
+  if (refToMain(scanFragptr.p->lqhBlockref) == V_QUERY &&
+      !joinAggCompleteHb) {
     jam();
     check_blockref(senderRef);
     scanFragptr.p->lqhBlockref = senderRef;
@@ -12160,6 +12174,10 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     updateBuddyTimer(apiConnectptr);
     scanFragptr.p->startFragTimer(ctcTimer);
   } else {
+    if (joinAggCompleteHb) {
+      jam();
+      return;
+    }
     ndbassert(false);
     DEBUG("SCAN_HBREP when scanFragTimer was turned off");
   }
@@ -16897,6 +16915,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_scan_dist_key_flag = 0;
   scanptr.p->m_start_ticks = getHighResTimer();
   scanptr.p->m_aggProgramPtrI = RNIL;
+  scanptr.p->m_aggColumnMeta = nullptr;
+  scanptr.p->m_aggColumnMetaLen = 0;
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
   scanptr.p->m_aggReceiverId = RNIL;
   scanptr.p->m_joinAgg = false;
@@ -18197,7 +18217,8 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
     return;
   }
 
-  ndbrequire(scanP->scanState == ScanRecord::RUNNING);
+  ndbrequire(scanP->scanState == ScanRecord::RUNNING ||
+             scanP->scanState == ScanRecord::WAIT_CTE_COMPLETE);
 
   /**
    * Close scan wo/ having received an order to do so
@@ -18428,7 +18449,9 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
     /* During CTE phase, suppress SCAN_TABCONF entirely — CTE scans
-     * don't participate in the fragment delivery lifecycle. */
+     * don't participate in the fragment delivery lifecycle.  The per-batch
+     * SCAN_NEXTREQ continuation is driven directly by DBSPJ (batchComplete),
+     * so DBTC never needs to act on these CTE-phase SCAN_FRAGCONFs. */
     if (scanptr.p->m_numCtes > 0 &&
         scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
       jam();
@@ -29105,6 +29128,8 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   scanptr.p->m_joinAgg = true;
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->m_aggProgramPtrI = RNIL;
+  scanptr.p->m_aggColumnMeta = nullptr;
+  scanptr.p->m_aggColumnMetaLen = 0;
 
   /* Allocate per-node join agg state sized to MAX_NDB_NODES.
    * Phase L (E.1): tail buffer holds two parallel arrays —
@@ -29160,6 +29185,22 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
    */
   const Uint32 totalRemaining = keyLen - 2 - boundsLen;
   Uint32 consumed = 0;
+  auto abortInvalidJoinAggKey = [&]() -> int {
+    jam();
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
+    return -1;
+  };
+  auto abortJoinAggMemory = [&]() -> int {
+    jam();
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
+    return -1;
+  };
 
   /* Linearize remaining KeyInfo data into a stack buffer for
    * easier parsing of agg program + optional CTE definitions. */
@@ -29253,6 +29294,8 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
           (ScanRecord::JoinAggNodeState **)(mem + infoSize);
       for (Uint32 c = 0; c < numCtes; c++) {
         scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+        scanptr.p->m_cteInfos[c].columnMeta = nullptr;
+        scanptr.p->m_cteInfos[c].columnMetaLen = 0;
         scanptr.p->m_cteInfos[c].depMask = 0;
         scanptr.p->m_cteInfos[c].phase = 0;
         scanptr.p->m_cteInfos[c].m_flags = 0;
@@ -29273,6 +29316,8 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       Uint32 cteProgLen = linBuf[consumed++];
 
       scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+      scanptr.p->m_cteInfos[c].columnMeta = nullptr;
+      scanptr.p->m_cteInfos[c].columnMetaLen = 0;
       if (cteProgLen > 0) {
         ndbrequire(consumed + cteProgLen <= totalRemaining);
         ndbrequire(appendToSection(
@@ -29305,15 +29350,68 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     }
     scanptr.p->m_ctePhaseCount = maxPhase + 1;
     } // if (CTE_DEFS_MARKER)
-    else if (consumed < totalRemaining) {
+    if (consumed < totalRemaining &&
+        linBuf[consumed] == JOIN_AGG_META_MARKER) {
+      jam();
+      consumed++; // skip marker
+      if (unlikely(consumed + 2 > totalRemaining)) {
+        return abortInvalidJoinAggKey();
+      }
+
+      Uint32 version = linBuf[consumed++];
+      Uint32 blockCount = linBuf[consumed++];
+      if (unlikely(version != JOIN_AGG_META_VERSION ||
+                   blockCount > 1 + scanptr.p->m_numCtes)) {
+        return abortInvalidJoinAggKey();
+      }
+
+      for (Uint32 b = 0; b < blockCount; b++) {
+        if (unlikely(consumed + 3 > totalRemaining)) {
+          return abortInvalidJoinAggKey();
+        }
+
+        Uint32 aggKind = linBuf[consumed++];
+        Uint32 cteIndex = linBuf[consumed++];
+        Uint32 blockLen = linBuf[consumed++];
+        if (unlikely(blockLen == 0 ||
+                     consumed + blockLen > totalRemaining)) {
+          return abortInvalidJoinAggKey();
+        }
+
+        Uint32 **target = nullptr;
+        Uint32 *targetLen = nullptr;
+        if (aggKind == JOIN_AGG_META_KIND_MAIN && cteIndex == RNIL) {
+          target = &scanptr.p->m_aggColumnMeta;
+          targetLen = &scanptr.p->m_aggColumnMetaLen;
+        } else if (aggKind == JOIN_AGG_META_KIND_CTE &&
+                   cteIndex < scanptr.p->m_numCtes) {
+          target = &scanptr.p->m_cteInfos[cteIndex].columnMeta;
+          targetLen = &scanptr.p->m_cteInfos[cteIndex].columnMetaLen;
+        } else {
+          return abortInvalidJoinAggKey();
+        }
+
+        if (unlikely(*target != nullptr || *targetLen != 0)) {
+          return abortInvalidJoinAggKey();
+        }
+        if (blockLen > 0) {
+          Uint32 *copyBuf = static_cast<Uint32 *>(
+              lc_ndbd_pool_malloc(blockLen * sizeof(Uint32), RG_QUERY_MEMORY,
+                                  getThreadId(), false));
+          if (unlikely(copyBuf == nullptr)) {
+            return abortJoinAggMemory();
+          }
+          memcpy(copyBuf, linBuf + consumed, blockLen * sizeof(Uint32));
+          *target = copyBuf;
+          *targetLen = blockLen;
+        }
+        consumed += blockLen;
+      }
+    }
+    if (consumed < totalRemaining) {
       /* Unconsumed trailing data that is not a CTE_DEFS_MARKER.
        * Reject — malformed KeyInfo section. */
-      jam();
-      ApiConnectRecordPtr apiConnectptr;
-      apiConnectptr.i = scanptr.p->scanApiRec;
-      c_apiConnectRecordPool.getPtr(apiConnectptr);
-      abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
-      return -1;
+      return abortInvalidJoinAggKey();
     }
   } // if (totalRemaining > 0)
 
@@ -29375,6 +29473,11 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
     releaseSection(scanPtr.p->m_aggProgramPtrI);
     scanPtr.p->m_aggProgramPtrI = RNIL;
   }
+  if (scanPtr.p->m_aggColumnMeta != nullptr) {
+    lc_ndbd_pool_free(scanPtr.p->m_aggColumnMeta);
+    scanPtr.p->m_aggColumnMeta = nullptr;
+    scanPtr.p->m_aggColumnMetaLen = 0;
+  }
   if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
     releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
     scanPtr.p->m_aggKeysSectionPtrI = RNIL;
@@ -29420,6 +29523,11 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
     if (scanPtr.p->m_cteInfos[c].aggProgramPtrI != RNIL) {
       releaseSection(scanPtr.p->m_cteInfos[c].aggProgramPtrI);
       scanPtr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+    }
+    if (scanPtr.p->m_cteInfos[c].columnMeta != nullptr) {
+      lc_ndbd_pool_free(scanPtr.p->m_cteInfos[c].columnMeta);
+      scanPtr.p->m_cteInfos[c].columnMeta = nullptr;
+      scanPtr.p->m_cteInfos[c].columnMetaLen = 0;
     }
     if (scanPtr.p->m_cteAggNodeState[c] != nullptr) {
       auto *cteNodes = scanPtr.p->m_cteAggNodeState[c];
@@ -29578,6 +29686,20 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
       getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
       handle.m_cnt = 2;
+      if (scanptr.p->m_aggColumnMeta != nullptr) {
+        Uint32 metaPtrI = RNIL;
+        if (unlikely(!appendToSection(metaPtrI, scanptr.p->m_aggColumnMeta,
+                                      scanptr.p->m_aggColumnMetaLen))) {
+          jam();
+          scanptr.p->m_aggPhaseFailed = true;
+          scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+          releaseSections(handle);
+          break;
+        }
+        getSection(handle.m_ptr[JoinAggSetupReq::ColumnMetaSectionNum],
+                   metaPtrI);
+        handle.m_cnt = 3;
+      }
 
 #ifdef DEBUG_JOIN_AGG_TRACE
       DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReq → node %u: "
@@ -29668,6 +29790,21 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum],
                    rcvPtrI);
         handle.m_cnt = 2;
+        if (scanptr.p->m_cteInfos[c].columnMeta != nullptr) {
+          Uint32 metaPtrI = RNIL;
+          if (unlikely(!appendToSection(metaPtrI,
+                                        scanptr.p->m_cteInfos[c].columnMeta,
+                                        scanptr.p->m_cteInfos[c].columnMetaLen))) {
+            jam();
+            scanptr.p->m_aggPhaseFailed = true;
+            scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+            releaseSections(handle);
+            break;
+          }
+          getSection(handle.m_ptr[JoinAggSetupReq::ColumnMetaSectionNum],
+                     metaPtrI);
+          handle.m_cnt = 3;
+        }
 
         Uint32 ref = numberToRef(DBLQH, nodeId);
         sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
@@ -29779,6 +29916,12 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       releaseSection(scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI);
       scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI = RNIL;
     }
+    if (scanptr.p->m_cteInfos[cteIndex].columnMeta != nullptr &&
+        cteNodes->m_aggNodesPending.isclear()) {
+      lc_ndbd_pool_free(scanptr.p->m_cteInfos[cteIndex].columnMeta);
+      scanptr.p->m_cteInfos[cteIndex].columnMeta = nullptr;
+      scanptr.p->m_cteInfos[cteIndex].columnMetaLen = 0;
+    }
   } else {
     /* Main aggregation SETUP_CONF.  Phase L (E.1): same owner-routing
      * rule as CTE — store the owner LDM instance for every node so
@@ -29798,6 +29941,11 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     if (scanptr.p->m_aggProgramPtrI != RNIL) {
       releaseSection(scanptr.p->m_aggProgramPtrI);
       scanptr.p->m_aggProgramPtrI = RNIL;
+    }
+    if (scanptr.p->m_aggColumnMeta != nullptr) {
+      lc_ndbd_pool_free(scanptr.p->m_aggColumnMeta);
+      scanptr.p->m_aggColumnMeta = nullptr;
+      scanptr.p->m_aggColumnMetaLen = 0;
     }
   }
 
@@ -30326,6 +30474,22 @@ void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
   execCTE_PHASE_COMPLETE_REP(signal);
 }
 
+Uint32
+Dbtc::findJoinAggHeartbeatScanFrag(ScanRecordPtr scanptr, Uint32 nodeId) {
+  Local_ScanFragRec_dllist list(c_scan_frag_pool,
+                                scanptr.p->m_running_scan_frags);
+  ScanFragRecPtr scanFragPtr;
+  for (list.first(scanFragPtr); !scanFragPtr.isNull();
+       list.next(scanFragPtr)) {
+    if (scanFragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE &&
+        refToNode(scanFragPtr.p->lqhBlockref) == nodeId) {
+      jam();
+      return scanFragPtr.i;
+    }
+  }
+  return RNIL;
+}
+
 /**
  * Send JOIN_AGG_COMPLETE_REQ for CTEs in the specified phase.
  * This triggers hash table redistribution on multi-node clusters.
@@ -30431,6 +30595,8 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       req->transid[1] = apiPtr.p->transid[1];
       req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
       req->maxBatchRows = 256;
+      req->heartbeatScanFragPtrI =
+          findJoinAggHeartbeatScanFrag(scanptr, nodeId);
       DEB_JOIN_AGG(("(%u) send JOIN_AGG_COMPLETE_REQ aggKey=%u node=%u "
                     "recI=%u",
         instance(), cteNodes->m_aggStateKeys[nodeId], nodeId, cteRec.i));
@@ -30654,6 +30820,8 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
+    req->heartbeatScanFragPtrI =
+        findJoinAggHeartbeatScanFrag(scanptr, nodeId);
     DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_COMPLETE_REQ: "
                   "nodeId=%u aggStateKey=%u scanPtr.i=%u recI=%u",
                   instance(), nodeId,

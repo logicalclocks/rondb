@@ -177,6 +177,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       Int32 err = initGBTypes(block_tup, req_struct,
                               /*linked_attr_data=*/nullptr,
                               /*linked_attr_len=*/0,
+                              /*requireMetadata=*/false,
                               jamBuf);
       if (unlikely(err != 0)) return err;
     }
@@ -200,8 +201,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
      * mirroring JoinAggInterpreter's group prologue minus the linked /
      * CTE / multi-leaf branches. */
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
+    /* D26: hash into this LDM thread's private xfrm scratch (block_tup is this
+     * thread's Dbtup, required non-null above), never a shared buffer. */
+    uchar* gb_xfrm_buf = block_tup->getAggXfrmBuf();
+    Uint32 gb_xfrm_buf_len = block_tup->getAggXfrmBufLen();
     char* found = m_gb_map->find(
-        reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
+        reinterpret_cast<char*>(m_attr_read_buf), len_in_char,
+        gb_xfrm_buf, gb_xfrm_buf_len);
     if (found != nullptr) {
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
       PA_INTERP_TRACE(m_frag_id,
@@ -222,7 +228,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       }
       memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
-      m_gb_map->insert(agg_rec, len_in_char);
+      m_gb_map->insert(agg_rec, len_in_char, gb_xfrm_buf, gb_xfrm_buf_len);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
@@ -261,7 +267,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
     switch (op) {
       case kOpLoadCol: {
-        type = (value & 0x03E00000) >> 21;
+        type = decodeLoadColType(value);
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
         const Uint32 col_id = value & 0x0000FFFF;
@@ -591,4 +597,3 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
 }
 
 // release_string_results body lifted to AggInterpreterBase in Step 3a-A.
-

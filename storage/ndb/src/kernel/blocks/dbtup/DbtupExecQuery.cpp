@@ -2955,6 +2955,48 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
 
 #define MAX_READ 524288
 
+/*
+ * TTL related
+ * Lock-free replacement for gmtime_r() on the TTL hot path.
+ *
+ * glibc's gmtime_r()/localtime_r() funnel through __tz_convert(), which
+ * unconditionally takes the process-global tzset_lock (a private futex) even
+ * for the UTC case. Under concurrent TTL purge scans every LDM thread hits
+ * that single lock per row, serializing in the kernel futex path. This routine
+ * converts UTC epoch seconds to a broken-down MYSQL_TIME using only the
+ * in-tree calendar arithmetic (get_date_from_daynr), so it touches no glibc
+ * lock.
+ *
+ * It is field-for-field equivalent to MySQL's sec_to_TIME(out, t, 0) -- the
+ * lock-free Time_zone_offset / my_tz_OFFSET0 path in sql/tztime.cc -- and is
+ * reimplemented here because tztime.cc is part of the mysqld server and is not
+ * linked into ndbmtd (get_date_from_daynr lives in mysys/my_time.cc, which is).
+ * The gmtime_r() path this replaces was a copy of the locking Time_zone_utc
+ * variant of the very same UTC conversion.
+ */
+static inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
+  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
+  const int64_t EPOCH_DAYNR = 719528;
+  int64_t days = t / 86400;
+  int32_t secs = static_cast<int32_t>(t % 86400);
+  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
+    secs += 86400;
+    days -= 1;
+  }
+  unsigned int year, month, day;
+  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
+  out->neg = false;
+  out->second_part = 0;
+  out->year = year;
+  out->month = month;
+  out->day = day;
+  out->hour = secs / 3600;
+  out->minute = (secs % 3600) / 60;
+  out->second = secs % 60;
+  out->time_zone_displacement = 0;
+  out->time_type = MYSQL_TIMESTAMP_DATETIME;
+}
+
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,
                     bool* has_error,
@@ -3015,26 +3057,13 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
         my_timestamp_from_binary(&timeval,
             reinterpret_cast<const unsigned char*>(
               ahOut->getDataPtr()), 0);
-        struct tm tmp_tm;
+        /*
+         * TTL related
+         * Lock-free UTC conversion: avoids glibc gmtime_r()'s tzset_lock,
+         * which serializes all LDM threads on the TTL purge hot path.
+         */
         const time_t tmp_t = (time_t)timeval.m_tv_sec;
-        gmtime_r(&tmp_t, &tmp_tm);
-        // gmt_sec_to_TIME
-        if (tmp_tm.tm_year <= 0) {  // Windows sets -1 if timestamp is too high.
-          dt.year = 0;
-          dt.month = 0;
-          dt.day = 0;
-          dt.hour = 0;
-          dt.minute = 0;
-          dt.second = 0;
-          dt.second_part = 0;
-          dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-        } else {
-          localtime_to_TIME(&dt, &tmp_tm);
-          dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-          if (dt.second == 60 || dt.second == 61) {
-            dt.second = 59;
-          }
-        }
+        ttl_utc_sec_to_TIME(tmp_t, &dt);
       } else {
         int64_t dt_bin = my_datetime_packed_from_binary(
             reinterpret_cast<const unsigned char*>(
@@ -3067,22 +3096,13 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
          * Get current utc time
          */
         MYSQL_TIME curr_dt;
-        struct tm tmp_tm;
         time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-        gmtime_r(&t_now, &tmp_tm);
-        curr_dt.neg = false;
-        curr_dt.second_part = 0;
-        curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
-        curr_dt.month = tmp_tm.tm_mon + 1;
-        curr_dt.day = tmp_tm.tm_mday;
-        curr_dt.hour = tmp_tm.tm_hour;
-        curr_dt.minute = tmp_tm.tm_min;
-        curr_dt.second = tmp_tm.tm_sec;
-        curr_dt.time_zone_displacement = 0;
-        curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-        if (curr_dt.second == 60 || curr_dt.second == 61) {
-          curr_dt.second = 59;
-        }
+        /*
+         * TTL related
+         * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) to keep the TTL
+         * purge hot path off glibc's global tzset_lock.
+         */
+        ttl_utc_sec_to_TIME(t_now, &curr_dt);
 
         /*
          * TTL related

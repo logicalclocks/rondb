@@ -4,11 +4,8 @@ Found Java
 Found clusterj.jar
 Found clusterj_test jar
 Found ndbclient library
-WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
-WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
-WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
-Java 1.8.0_442
-Running named tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-26.02.2.jar'
+Java VERSION
+Running named tests in 'CLUSTERJ_TEST_JAR'
 Found 2 test classes.
 1: testsuite.clusterj.ClearSmokeTest.test running...testsuite.clusterj.ClearSmokeTest
 Test schema failed (normal) select id from t_basic where id = 9999
@@ -48,7 +45,7 @@ Successfully initialized schema.
 [DIAG-MYSQLD2] totalRows=6 metaRowFound=true
 
 All tests succeeded.
-Finished running tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-26.02.2.jar'
+Finished running tests in 'CLUSTERJ_TEST_JAR'
 # DIAG: Full table scan with show_meta
 SET ndb_ring_buffer_show_meta = ON;
 SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor

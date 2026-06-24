@@ -338,8 +338,15 @@ foreach my $type (@data_types) {
   }
 
   l "--echo $disp: Add indexes";
+  # Suppress query-level warnings on the index DDL: large-key types emit a
+  # deterministic "key too long" note, and schema distribution can emit a
+  # transient "Participant timeout" warning — neither is what this test checks
+  # (it verifies RonSQL-vs-MySQL query results), and the transient one makes
+  # the recorded baseline flaky.
+  l "--disable_warnings";
   l "ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);";
   l "ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);";
+  l "--enable_warnings";
 
   l "--echo $disp: Index scan equality. Expect INDEX SCAN on idx_val_foo.";
   go("SELECT COUNT(*) as cnt FROM tbl WHERE " . $type->{eq} . ";",

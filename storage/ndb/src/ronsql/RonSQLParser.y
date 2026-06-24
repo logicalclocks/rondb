@@ -655,6 +655,15 @@ cond_expr:
   }
 | cond_expr T_IS T_NULL                 { initptr($$); $$->op = T_IS; $$->is.arg = $1; $$->is.null = true; }
 | cond_expr T_IS T_NOT T_NULL           { initptr($$); $$->op = T_IS; $$->is.arg = $1; $$->is.null = false; }
+/* D11: GREATEST / LEAST in a WHERE conditional expression.  Parsed as a
+ * generic n-ary node (arg list reused from the IN-list rule); the
+ * comparison wrapping it is lowered to a boolean OR/AND of per-arg
+ * comparisons in RonSQLPreparer::simplify_ce (so the rest of the
+ * pipeline never sees a T_GREATEST / T_LEAST node).  Distinct from the
+ * arith_expr GREATEST/LEAST rules, which build aggregation-program
+ * nodes for the SELECT scalar position. */
+| T_GREATEST T_LEFT in_list T_RIGHT     { init_cond($$, $3, T_GREATEST, NULL); }
+| T_LEAST T_LEFT in_list T_RIGHT        { init_cond($$, $3, T_LEAST, NULL); }
 | cond_expr T_BITWISE_OR cond_expr      { init_cond($$, $1, T_BITWISE_OR, $3); }
 | cond_expr T_BITWISE_AND cond_expr     { init_cond($$, $1, T_BITWISE_AND, $3); }
 | cond_expr T_BITSHIFT_LEFT cond_expr   { init_cond($$, $1, T_BITSHIFT_LEFT, $3); }

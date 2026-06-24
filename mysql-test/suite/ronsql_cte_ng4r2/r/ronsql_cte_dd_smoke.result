@@ -1,0 +1,59 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Smoke 1: row counts (sanity) ===
+SELECT COUNT(*) AS region   FROM region;
+region
+5
+SELECT COUNT(*) AS nation   FROM nation;
+nation
+25
+SELECT COUNT(*) AS customer FROM customer;
+customer
+300
+SELECT COUNT(*) AS supplier FROM supplier;
+supplier
+50
+SELECT COUNT(*) AS part     FROM part;
+part
+100
+SELECT COUNT(*) AS orders   FROM orders;
+orders
+1500
+SELECT COUNT(*) AS lineitem FROM lineitem;
+lineitem
+3000
+SELECT COUNT(DISTINCT o_custkey) AS distinct_custkeys FROM orders;
+distinct_custkeys
+300
+
+=== Smoke 2: CTE agg by custkey (300 groups, crosses batch boundary),
+===          main agg by mktsegment ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+c_mktsegment	SUM(cust.norders)	SUM(cust.prio)
+AUTOMOBILE	300	0
+BUILDING	300	300
+FURNITURE	300	600
+HOUSEHOLD	300	900
+MACHINERY	300	1200

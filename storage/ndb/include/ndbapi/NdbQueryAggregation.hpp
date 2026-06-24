@@ -73,16 +73,15 @@
  *   to compute. Columns referenced via LoadColumn() refer to the child
  *   (leaf) table. To group by or aggregate a column from the parent table,
  *   use addLinkedProjection() to ensure it is projected through the join,
- *   then reference it with the LINKED_COL_FLAG (bit 15) in LoadColumn().
+ *   then reference it by linked projection position.
  *
  *   const NdbDictionary::Table *lineitemTab = dict->getTable("lineitem");
  *   const NdbDictionary::Table *ordersTab = dict->getTable("orders");
  *
  *   NdbAggregator agg(lineitemTab);
  *
- *   // GROUP BY o_custkey (parent column — use LINKED_COL_FLAG)
- *   // Column ID with bit 15 set indicates a linked (parent) column
- *   agg.GroupBy(ordersTab->getColumn("o_custkey")->getColumnNo() | 0x8000);
+ *   // GROUP BY o_custkey (parent column at linked projection position 0)
+ *   agg.GroupByLinked(0, ordersTab->getColumn("o_custkey"));
  *
  *   // SUM(l_quantity) — child column, direct reference
  *   agg.LoadColumn("l_quantity", kReg1);
@@ -212,8 +211,8 @@
  * builder interface and the result retrieval interface.
  *
  * Program Building:
- *   - GroupBy(col_id)           Group by a column (use col_id | 0x8000
- *                               for linked parent columns)
+ *   - GroupBy(col_id)           Group by a local column
+ *   - GroupByLinked(pos, col)   Group by a linked parent column
  *   - LoadColumn(col_id, reg)   Load column value into register
  *   - LoadUint64(val, reg)      Load constant into register
  *   - Sum(agg_id, reg)          Accumulate sum from register
@@ -240,12 +239,12 @@
  * 1. addLinkedProjection(): Tells SPJ to include the parent column in
  *    the data sent to the child operation at the data node level.
  *
- * 2. LINKED_COL_FLAG (0x8000): When calling GroupBy() or LoadColumn()
- *    with a column ID, set bit 15 to indicate the column comes from the
- *    parent's projected data rather than the child's own columns.
+ * 2. Linked projection position: Use GroupByLinked() for parent columns
+ *    used as grouping keys.  Use LINKED_COL_FLAG (0x8000) with
+ *    LoadColumn() for linked parent columns used as expression inputs.
  *
- *    agg.GroupBy(parent_col_id | 0x8000);   // Group by parent column
- *    agg.LoadColumn(parent_col_id | 0x8000, kReg1);  // Load parent column
+ *    agg.GroupByLinked(0, parent_col);      // Group by parent column
+ *    agg.LoadColumn(0 | 0x8000, kReg1);     // Load parent linked slot 0
  *
  *
  * == MULTIPLE RECEIVERS (HASH-PARTITIONED ROUTING) ==
@@ -344,8 +343,7 @@
  *
  *   // 1. Build aggregation program
  *   NdbAggregator agg(lineitemTab);
- *   int custkey_col = ordersTab->getColumn("o_custkey")->getColumnNo();
- *   agg.GroupBy(custkey_col | 0x8000);  // GROUP BY parent column
+ *   agg.GroupByLinked(0, ordersTab->getColumn("o_custkey"));
  *   agg.LoadColumn("l_quantity", kReg1);
  *   agg.Sum(0, kReg1);                 // SUM(l_quantity)
  *   agg.Finalize();
