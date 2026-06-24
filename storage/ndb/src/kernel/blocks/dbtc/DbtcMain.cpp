@@ -29599,9 +29599,9 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     const Uint32 maxNodes = MAX_NDB_NODES;
     const Uint32 numCtes = scanptr.p->m_numCtes;
     /* Per CTE: cteId(1) + depMask(2) + flags(1) + phase(1)
-     *           + nodeCount(1) + nodes(maxNodes*2) */
+     *           + nodeCount(1) + nodes(maxNodes*3) */
     const Uint32 keyDataSize = maxNodes * 2 + 3 +
-        numCtes * (6 + maxNodes * 2);
+        numCtes * (6 + maxNodes * 3);
     Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
         keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
         getThreadId(), true);
@@ -29674,6 +29674,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
              nid = cNodes.find_next(nid + 1)) {
           keyData[idx++] = nid;
           keyData[idx++] = cteNodes->m_aggStateKeys[nid];
+          keyData[idx++] = cteNodes->m_aggOwnerInstances[nid];
         }
       }
     }

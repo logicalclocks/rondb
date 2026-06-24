@@ -19857,6 +19857,8 @@ bool Dblqh::routeCteLookup(Signal *signal,
   }
   jam();
   Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
+  Uint32 remoteOwner = state->m_cte_remote_ownerInstances[ownerNode];
+  ndbrequire(remoteOwner > 0);
   DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
            "(hash=0x%llx ownerIdx=%u)",
            instance(), ownerNode, remoteAggKey,
@@ -19894,7 +19896,7 @@ bool Dblqh::routeCteLookup(Signal *signal,
     fwdHandle.m_cnt = 2;
   }
 
-  Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
+  Uint32 ref = numberToRef(DBLQH, remoteOwner, ownerNode);
   sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
              CteLookupReq::SignalLength, JBB, &fwdHandle);
   return true;
