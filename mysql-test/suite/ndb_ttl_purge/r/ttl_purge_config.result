@@ -318,7 +318,6 @@ INSERT INTO ttl_config.disable_test (id, ttl_col, data) VALUES (197, DATE_SUB(NO
 INSERT INTO ttl_config.disable_test (id, ttl_col, data) VALUES (198, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_198');
 INSERT INTO ttl_config.disable_test (id, ttl_col, data) VALUES (199, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_199');
 INSERT INTO ttl_config.disable_test (id, ttl_col, data) VALUES (200, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_200');
-include/assert.inc [Purge state should be disabled]
 include/assert.inc [All 200 rows should be purged after re-enable]
 DROP DATABASE ttl_config;
 #
