@@ -11786,7 +11786,8 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     return;
   }  // if
 
-  if (refToMain(scanFragptr.p->lqhBlockref) == V_QUERY) {
+  if (refToMain(scanFragptr.p->lqhBlockref) == V_QUERY &&
+      !joinAggCompleteHb) {
     jam();
     check_blockref(senderRef);
     scanFragptr.p->lqhBlockref = senderRef;
@@ -17847,7 +17848,8 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
     return;
   }
 
-  ndbrequire(scanP->scanState == ScanRecord::RUNNING);
+  ndbrequire(scanP->scanState == ScanRecord::RUNNING ||
+             scanP->scanState == ScanRecord::WAIT_CTE_COMPLETE);
 
   /**
    * Close scan wo/ having received an order to do so

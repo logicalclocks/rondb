@@ -2460,7 +2460,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_complete_transid[0] = 0;
     state->m_cte_complete_transid[1] = 0;
     state->m_cte_complete_hb_scanFragPtrI = RNIL;
-    state->m_cte_complete_last_hb_time = 0;
+    state->m_cte_complete_last_hb_time = NDB_TICKS();
     state->m_cteScan_transId[0] = 0;
     state->m_cteScan_transId[1] = 0;
     state->m_cteScan_groupsSent = 0;

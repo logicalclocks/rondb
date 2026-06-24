@@ -18448,14 +18448,10 @@ Dblqh::sendJoinAggCompleteHeartbeat(Signal *signal,
     return;
   }
 
-  const Uint32 now = cLqhTimeOutCount;
-  const Uint32 last = state->m_cte_complete_last_hb_time;
-  const Uint32 timeout = cTransactionDeadlockDetectionTimeout;
-  const Uint32 limit = timeout / 16;
-  const Uint32 time_waiting = (now - last) * 10;
-
-  ndbassert(limit > 0);
-  if (time_waiting <= limit) {
+  const NDB_TICKS now = getHighResTimer();
+  const NDB_TICKS last = state->m_cte_complete_last_hb_time;
+  if (last.getUint64() != 0 &&
+      NdbTick_Elapsed(last, now).milliSec() < 20) {
     return;
   }
 
@@ -18649,10 +18645,14 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   state->m_max_batch_rows = maxBatchRows;
   state->m_cte_complete_transid[0] = req->transid[0];
   state->m_cte_complete_transid[1] = req->transid[1];
+  state->m_cte_complete_senderRef = senderRef;
+  state->m_cte_complete_senderData = senderData;
+  state->m_cte_complete_requestId = requestId;
   state->m_cte_complete_hb_scanFragPtrI =
       ((requestId & 0x80000000) != 0)
           ? req->heartbeatScanFragPtrI
           : RNIL;
+  state->m_cte_complete_last_hb_time = NDB_TICKS();
   state->m_state.store(JoinAggregationState::FINALIZING);
 
   /*
@@ -18827,6 +18827,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
+  sendJoinAggCompleteHeartbeat(signal, state);
 
   /*
    * MUTEX_FREE merge phase: merge per-thread interpreters into [0].
@@ -18845,6 +18846,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
     while (merge_idx < num_threads) {
       jam();
+      sendJoinAggCompleteHeartbeat(signal, state);
       if (interps[merge_idx] != nullptr) {
         const auto *other_map = interps[merge_idx]->gb_map();
         Uint32 other_size = (other_map != nullptr) ? other_map->size() : 0;
@@ -18929,11 +18931,6 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       DEB_CTE(("(%u) CTE COMPLETE: multi-node redistribution starting, "
                "aggStateKey=%u cte_num_nodes=%u",
                instance(), aggStateKey, state->m_cte_num_nodes));
-      state->m_cte_complete_senderRef = senderRef;
-      state->m_cte_complete_senderData = senderData;
-      state->m_cte_complete_requestId = requestId;
-      state->m_cte_complete_last_hb_time = cLqhTimeOutCount;
-
       /* Check for node failure since SETUP */
       if (JoinAggregationState::s_node_fail_count.load(
               std::memory_order_relaxed) != state->m_cte_node_fail_count) {
@@ -19064,6 +19061,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
+  sendJoinAggCompleteHeartbeat(signal, state);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
@@ -19082,6 +19080,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   if (gb_map != nullptr) {
     for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
+      sendJoinAggCompleteHeartbeat(signal, state);
       const Uint32 key_len = iter.keyLen();
       AggResItem* slots = reinterpret_cast<AggResItem*>(
           iter.data() + key_len);
