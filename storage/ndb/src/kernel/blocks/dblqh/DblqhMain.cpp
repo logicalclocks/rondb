@@ -19117,12 +19117,33 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       ptr[0].p = buf;
       ptr[0].sz = pos;
 
+#ifdef DEBUG_JOIN_AGG
+      const Uint32 keyWordsForDebug = (key_len + 3) >> 2;
+      const Uint32 *keyBufForDebug =
+          reinterpret_cast<const Uint32*>(iter.data());
+      const Uint32 key0ForDebug =
+          keyWordsForDebug > 0 ? keyBufForDebug[0] : 0;
+      const Uint32 key1ForDebug =
+          keyWordsForDebug > 1 ? keyBufForDebug[1] : 0;
+#endif
+
       DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
-                    " size: %u",
+                    " size: %u aggStateKey=%u keyLen=%u keyWords=%u"
+                    " key[0]=0x%x key[1]=0x%x rowNo=%u totalBytes=%u"
+                    " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
         transIdAI->connectPtr,
-        pos));
+        pos,
+        aggStateKey,
+        key_len,
+        keyWordsForDebug,
+        key0ForDebug,
+        key1ForDebug,
+        num_result_rows,
+        total_bytes,
+        interp->processed_rows(),
+        gb_map->size()));
 
       sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength, JBB, ptr, 1);
