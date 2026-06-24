@@ -4959,6 +4959,49 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   }
   jamDataDebug(linearPtr.sz);
 
+#ifdef DEBUG_TRANSID_AI
+  if (linearPtr.sz >= 4) {
+    const Uint32 markerId = linearPtr.p[0] >> 16;
+    if (markerId == AttributeHeader::AGG_RESULT ||
+        markerId == AttributeHeader::AGG_CHAR_RESULT) {
+      const Uint32 nGbCols = linearPtr.p[1] >> 16;
+      const Uint32 nAggResults = linearPtr.p[1] & 0xFFFF;
+      const Uint32 nRows = linearPtr.p[2];
+      const Uint32 keyLen = linearPtr.p[3] >> 16;
+      const Uint32 valLen = linearPtr.p[3] & 0xFFFF;
+      const Uint32 keyWords = (keyLen + 3) >> 2;
+      const Uint32 key0 =
+          (keyWords > 0 && linearPtr.sz > 4) ? linearPtr.p[4] : 0;
+      const Uint32 key1 =
+          (keyWords > 1 && linearPtr.sz > 5) ? linearPtr.p[5] : 0;
+
+      DEB_TRANSID_AI(("(%u) DBSPJ recv AGG TRANSID_AI: senderRef=0x%x "
+                      "connectPtr=%u node=%u requestPtrI=%u marker=%u "
+                      "nRows=%u nGbCols=%u nAggResults=%u keyLen=%u "
+                      "valLen=%u keyWords=%u key[0]=0x%x key[1]=0x%x "
+                      "state=%u outstanding=%u completed=0x%x bits=0x%x",
+        instance(),
+        signal->getSendersBlockRef(),
+        ptrI,
+        treeNodePtr.p->m_node_no,
+        requestPtr.i,
+        markerId,
+        nRows,
+        nGbCols,
+        nAggResults,
+        keyLen,
+        valLen,
+        keyWords,
+        key0,
+        key1,
+        requestPtr.p->m_state,
+        requestPtr.p->m_outstanding,
+        requestPtr.p->m_completed_tree_nodes.rep.data[0],
+        treeNodePtr.p->m_bits));
+    }
+  }
+#endif
+
 #if defined(DEBUG_LQHKEYREQ) || defined(DEBUG_SCAN_FRAGREQ)
   printf("execTRANSID_AI: ");
   for (Uint32 i = 0; i < linearPtr.sz; i++) printf("0x%.8x ", linearPtr.p[i]);
