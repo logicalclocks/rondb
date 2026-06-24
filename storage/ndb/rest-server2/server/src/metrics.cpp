@@ -339,7 +339,7 @@ static Uint32 calculate_ronsql_index(Uint64 micros) {
     return ((micros - Uint64(1000)) / Uint64(200)) + 10;
   } else if (micros < Uint64(8000)) {
     return ((micros - Uint64(3000)) / Uint64(500)) + 20;
-  } else if (micros < Uint64(48000)) {
+  } else if (micros < Uint64(28000)) {
     return ((micros - Uint64(8000)) / Uint64(2000)) + 30;
   } else {
     for (Uint32 i = 40; i < 60; i++) {
@@ -357,7 +357,7 @@ static Uint32 calculate_index_scan_index(Uint64 micros) {
     return ((micros - Uint64(1000)) / Uint64(200)) + 10;
   } else if (micros < Uint64(8000)) {
     return ((micros - Uint64(3000)) / Uint64(500)) + 20;
-  } else if (micros < Uint64(48000)) {
+  } else if (micros < Uint64(28000)) {
     return ((micros - Uint64(8000)) / Uint64(2000)) + 30;
   } else {
     for (Uint32 i = 40; i < 60; i++) {

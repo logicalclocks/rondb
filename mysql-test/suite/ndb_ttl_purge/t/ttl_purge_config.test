@@ -62,28 +62,15 @@ DROP DATABASE ttl_config;
 
 # Disable purge
 --exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
---sleep 3
 
-# Check status is disabled
---exec $ttl_purge_get_status > $MYSQL_TMP_DIR/cfg_disabled.json 2>/dev/null
---let $json_file = $MYSQL_TMP_DIR/cfg_disabled.json
---let $json_field = state
---source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
-
---exec echo '$json_value' > $MYSQL_TMP_DIR/_cfg_state.txt
---perl
-my $tmp = $ENV{MYSQL_TMP_DIR};
-open my $f, '<', "$tmp/_cfg_state.txt" or die;
-my $val = <$f>; chomp $val; close $f;
-open my $o, '>', "$tmp/_cfg_state_check.inc" or die;
-print $o "--let \$state_is_disabled = " . ($val eq 'disabled' ? 1 : 0) . "\n";
-close $o;
-EOF
---source $MYSQL_TMP_DIR/_cfg_state_check.inc
-
---let $assert_text = Purge state should be disabled
---let $assert_cond = $state_is_disabled = 1
---source include/assert.inc
+# Poll until the worker reports 'disabled' instead of waiting a fixed time:
+# the reported state only flips at the next round boundary, so a hard --sleep
+# races with the worker and flakes under load (ASan / parallel MTR). The poll
+# asserts the transition deterministically and --die's with context on a real
+# failure.
+--let $wait_state_target = disabled
+--let $wait_state_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
 
 # Re-enable purge
 --exec $ttl_purge_put_config '{"enabled":true}' > /dev/null 2>&1
