@@ -1,0 +1,218 @@
+--source include/have_ndb.inc
+
+--echo # RONDB-1062: additional proactive deadlock-discovery cases.
+--echo # TransactionDeadlockDetectionTimeout is 60s (see .cnf), so a deadlock
+--echo # resolved in well under that proves proactive detection fired.
+
+# The victim of each real deadlock is chosen by hash and is non-deterministic,
+# so the query/result logs are disabled around the choreography.  Correctness
+# is asserted by: no hang, fast resolution (timing --die guards), data
+# consistency (--die on a SELECT), and — for the negative case — strict reaps
+# (an unexpected ER_LOCK_WAIT_TIMEOUT aborts the test).
+--disable_query_log
+--disable_result_log
+
+connect (c1,localhost,root,,test);
+connect (c2,localhost,root,,test);
+connect (c3,localhost,root,,test);
+connect (c4,localhost,root,,test);
+connect (c5,localhost,root,,test);
+connect (c6,localhost,root,,test);
+
+connection default;
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20),(3,30),(4,40),(5,50),(6,60);
+
+# ==========================================================================
+# Scenario A (negative): heavy contention on one row with NO cycle.  Three
+# transactions queue behind a holder; none may be aborted as a deadlock.
+# The reaps are strict (no --error), so a spurious 1205 aborts the test.
+# ==========================================================================
+connection c1;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+# The three waiters run in AUTOCOMMIT so each releases row 1 the instant it
+# acquires and updates it.  The queue therefore drains in NDB's (non-
+# deterministic) promotion order no matter which order we reap them, avoiding
+# a self-deadlock in the test itself.  Strict reaps (no --error) mean a
+# spurious deadlock abort of any waiter still fails the test.
+connection c2;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+connection c3;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+connection c4;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+connection default;
+let $wait_condition=
+  SELECT COUNT(*) >= 3 FROM ndbinfo.cluster_locks WHERE state = 'W';
+--source include/wait_condition.inc
+connection c1;
+COMMIT;
+connection c2;
+--reap
+connection c3;
+--reap
+connection c4;
+--reap
+# Row 1 received four committed increments (10 -> 14); a false deadlock would
+# have aborted one of the waiters and left a smaller value.
+if (`SELECT b <> 14 FROM t1 WHERE a = 1`)
+{
+  --die Scenario A: row 1 not 14 - a non-deadlocked waiter was aborted
+}
+
+# ==========================================================================
+# Scenario B: three independent 2-cycles resolve concurrently and quickly.
+# Pairs on rows (1,2), (3,4), (5,6).
+# ==========================================================================
+connection c1;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+connection c2;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 2;
+connection c3;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 3;
+connection c4;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 4;
+connection c5;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 5;
+connection c6;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 6;
+connection c1;
+--send UPDATE t1 SET b = b + 1 WHERE a = 2
+connection c2;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+connection c3;
+--send UPDATE t1 SET b = b + 1 WHERE a = 4
+connection c4;
+--send UPDATE t1 SET b = b + 1 WHERE a = 3
+connection c5;
+--send UPDATE t1 SET b = b + 1 WHERE a = 6
+connection c6;
+--send UPDATE t1 SET b = b + 1 WHERE a = 5
+connection default;
+SET @t0 = NOW(6);
+connection c1;
+--error 0,1205,1213
+--reap
+connection c2;
+--error 0,1205,1213
+--reap
+connection c3;
+--error 0,1205,1213
+--reap
+connection c4;
+--error 0,1205,1213
+--reap
+connection c5;
+--error 0,1205,1213
+--reap
+connection c6;
+--error 0,1205,1213
+--reap
+connection default;
+SET @t1 = NOW(6);
+if (`SELECT TIMESTAMPDIFF(SECOND, @t0, @t1) >= 20`)
+{
+  --die Scenario B: concurrent deadlocks not resolved promptly
+}
+connection c1;
+rollback;
+connection c2;
+rollback;
+connection c3;
+rollback;
+connection c4;
+rollback;
+connection c5;
+rollback;
+connection c6;
+rollback;
+
+# ==========================================================================
+# Scenario C1: mixed operation types (DELETE vs UPDATE) cross-cycle.
+# ==========================================================================
+connection c1;
+BEGIN;
+DELETE FROM t1 WHERE a = 1;
+connection c2;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 2;
+connection c1;
+--send UPDATE t1 SET b = b + 1 WHERE a = 2
+connection c2;
+--send DELETE FROM t1 WHERE a = 1
+connection default;
+SET @t0 = NOW(6);
+connection c1;
+--error 0,1205,1213
+--reap
+connection c2;
+--error 0,1205,1213
+--reap
+connection default;
+SET @t1 = NOW(6);
+if (`SELECT TIMESTAMPDIFF(SECOND, @t0, @t1) >= 20`)
+{
+  --die Scenario C1 (DELETE/UPDATE): not resolved promptly
+}
+connection c1;
+rollback;
+connection c2;
+rollback;
+
+# ==========================================================================
+# Scenario C2: unique-index access vs primary-key access cross-cycle.  The
+# two transactions block each other on different tables/rows (base row vs
+# unique-index entry); transaction-level detection still finds the cycle.
+# ==========================================================================
+connection default;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT, c INT,
+                 UNIQUE KEY ub (b)) ENGINE=NDB;
+INSERT INTO t2 VALUES (1,10,100),(2,20,200);
+connection c1;
+BEGIN;
+UPDATE t2 SET c = c + 1 WHERE a = 1;     # by primary key -> base row 1
+connection c2;
+BEGIN;
+UPDATE t2 SET c = c + 1 WHERE b = 20;    # by unique key -> base row 2
+connection c1;
+--send UPDATE t2 SET c = c + 1 WHERE b = 20
+connection c2;
+--send UPDATE t2 SET c = c + 1 WHERE a = 1
+connection default;
+SET @t0 = NOW(6);
+connection c1;
+--error 0,1205,1213
+--reap
+connection c2;
+--error 0,1205,1213
+--reap
+connection default;
+SET @t1 = NOW(6);
+if (`SELECT TIMESTAMPDIFF(SECOND, @t0, @t1) >= 20`)
+{
+  --die Scenario C2 (unique index): not resolved promptly
+}
+connection c1;
+rollback;
+connection c2;
+rollback;
+
+connection default;
+DROP TABLE t1, t2;
+disconnect c1;
+disconnect c2;
+disconnect c3;
+disconnect c4;
+disconnect c5;
+disconnect c6;
+--enable_result_log
+--enable_query_log
+
+--echo # ndb_deadlock_more: all scenarios resolved as expected.

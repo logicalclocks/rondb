@@ -1,0 +1,8 @@
+# RONDB-1062: scan vs key-op deadlock discovery (lock takeover).
+# A locking range scan (FOR UPDATE takes its row locks over to commit on
+# a buddy key-op connection) deadlocked with a key operation must be
+# resolved proactively - exactly one transaction aborted (the victim is
+# the smaller transaction-id hash, either side), promptly, with
+# TransactionDeadlockDetectionTimeout set to 60s (see .cnf).
+# ndb_deadlock_scan: scan vs key-op (takeover) deadlock resolved
+# proactively - exactly one transaction aborted.

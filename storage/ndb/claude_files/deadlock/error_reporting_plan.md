@@ -1,0 +1,295 @@
+# RONDB-1062 — Deadlock error enrichment (plan)
+
+Status: **Phases A–E DONE (2026-06).** Feature complete and tested end-to-end
+(DBACC → DBTC → NDB API → mysqld SHOW WARNINGS, with MTR + NDB-API tests).
+
+**Decisions locked (2026-06):** transport = **Option B** (new version-gated signal
+`GSN_TC_DEADLOCK_REP`); API exposure = **additive accessors** (no new `NdbError`
+members, no `details`-string hack).
+
+## Phase A — DONE (DBACC→DBTC contended table id; no API change)
+
+The contended table now flows from the lock manager to the collector and is stored
+per direction, ready for Phase B to assemble on a detected cycle:
+
+- **`signaldata/DeadlockWaitfor.hpp`** — added `Uint32 contendedTableId`;
+  `SignalLength` 10 → 11.
+- **DBACC** (`DbaccMain.cpp`) — `accIsLockedLab` captures `fragrecptr.p->myTableId`
+  into a local under the fragment mutex (`dl_table`) and passes it to
+  `send_deadlock_waitfor(signal, waiter, owner, contendedTableId)`, which sets
+  `rep->contendedTableId` and logs it. Decl updated in `Dbacc.hpp`.
+- **DBTC** (`DbtcMain.cpp`) — `execDBACC_WAITFOR_REP` reads `rep->contendedTableId`
+  **gated on `signal->getLength() >= SignalLength`** (rolling-upgrade safe: an old
+  DBACC sends the 10-word signal → table id treated as `RNIL`). It passes the id to
+  `recordDeadlockEdge(..., contendedTableId)`.
+- **`DeadlockEdge`** (`Dbtc.hpp`) — added `tableIdWaitsOn` / `tableIdWaitedBy`
+  (one per direction, since the two directions of a 2-cycle may contend on different
+  tables). `recordDeadlockEdge` stores into the direction-matching field, clears both
+  on freshness expiry, and logs both. (The slot-init loops still reset only
+  `direction`, the validity gate — consistent with existing code; the table ids are
+  fully (re)written when a slot is claimed.)
+
+Verify with `DEB_DEADLOCK` logs: the `send`, `recv`, and `edge` lines now carry
+`contendedTable=` / `tables waits_on=.. waited_by=..`.
+
+## Phase B — DONE (DBTC assemble + transport to API; benign API stub)
+
+On a detected cycle DBTC now assembles the detail and sends the new version-gated
+signal to the victim's API node, just before the abort. The visible error (266/296)
+is unchanged.
+
+- **`recordDeadlockEdge` now returns the slot index** (was `bool`). The caller reads
+  the slot's `direction` to test the 2-cycle (`== WAITS_ON|WAITED_BY`) and reads the
+  stored `tableIdWaitsOn`/`tableIdWaitedBy`/`victimOpRef` from it. Decl + def + the one
+  call site updated; the now-unused local `bothDirs` was removed from the function.
+- **Victim op handle.** `DeadlockEdge` gained `victimOpRef` — the collector's own
+  deadlocking op as the API operation pointer (`TcConnectRecord::clientData`). It is
+  captured in `execDBACC_WAITFOR_REP` (key-op branch: `localTcPtr.p->clientData` →
+  `collectorClientData`) and stored **only on the WAITS_ON direction** (where the
+  collector is the waiter), so it survives even when the cycle is closed by the
+  WAITED_BY report. RNIL for a scan/takeover victim (refinement deferred — see open Q2).
+- **New signal `GSN_TC_DEADLOCK_REP` (980)** — `signaldata/TcDeadlockRep.hpp`
+  (`apiConnectPtr, transId[2], deadlockReason{RealDeadlock bit}, tableId1, tableId2,
+  victimOpRef`, `SignalLength=7`). Registered in `GlobalSignalNumbers.h` (define + bump
+  `MAX_GSN` 979→980) and `SignalNames.cpp`. No printer (consistent with
+  `DBACC_WAITFOR_REP`).
+- **Version gate** `NDBD_DEADLOCK_DETAIL_VERSION = NDB_MAKE_VERSION(26,4,1)` +
+  `ndbd_deadlock_detail_supported()` in `ndb_version.h.in` (this build's own version,
+  so a same-build API receives it; older APIs never do).
+- **`Dbtc::sendDeadlockDetailRep`** (DbtcMain.cpp) — gates on
+  `getNodeInfo(apiNode).getType()==API && ndbd_deadlock_detail_supported(version)`,
+  fills the signal (`apiConnectPtr = ndbapiConnect`, transid for validation), logs, and
+  `sendSignal(ndbapiBlockref, GSN_TC_DEADLOCK_REP, …)`. Reuses `signal->theData` (the
+  incoming DBACC_WAITFOR_REP is fully consumed; the following abort rebuilds it).
+- **API stub** — `Ndbif.cpp trp_deliver_signal` has a `case GSN_TC_DEADLOCK_REP: break;`
+  so a same-version API **silently ignores** it (no `InvalidSignal` warning / drop).
+  Phase C replaces the stub with caching + accessors.
+
+Verify with DBTC `DEB_DEADLOCK` logs: a detected cycle now logs
+`send TC_DEADLOCK_REP to api … tables(t1,t2) victimOp=…` (or `skip … unsupported`
+when the API is too old) immediately before the abort line.
+
+## Phase C — DONE (API receive + cache + additive accessors)
+
+The NDB API now consumes the report and exposes it through new `NdbTransaction`
+methods. No `NdbError`/`details` change; fully additive.
+
+- **Receive** — `Ndbif.cpp::trp_deliver_signal` `case GSN_TC_DEADLOCK_REP` (was the
+  benign stub) resolves the txn via `void2con(int2void(theData[0]))`
+  (`theData[0] == apiConnectPtr == ndbapiConnect == NdbTransaction::theId`, exactly
+  like other TC→API signals), guards `checkMagicNumber()==0`, and calls
+  `tCon->receiveTcDeadlockRep(rep)`.
+- **Cache + resolve** — `NdbTransaction::receiveTcDeadlockRep` validates by full
+  transid (`theTransactionId == (transId2<<32)|transId1`; the report arrives *before*
+  the abort invalidates it), then caches `theDeadlockDetailValid` (the `RealDeadlock`
+  bit), `theDeadlockTableId1/2`, and resolves `victimOpRef`. `victimOpRef` is the op's
+  **NdbReceiver object-map id** (`NdbOperation::ptr2int() == theReceiver.getId()`), so
+  `int2void → void2rec → NdbReceiver`, validated by `checkMagicNumber()`, type
+  (`NDB_OPERATION`/`NDB_INDEX_OPERATION`), and `getTransaction()==this`, then
+  `getOwner()` → the `NdbOperation*`. Resolved at receive time while the op is live;
+  cleared in the ctor and `init()` (so it never dangles across object reuse).
+- **Accessors** (`NdbTransaction.hpp`/`.cpp`, public, additive):
+  - `bool wasDeadlock() const` — true iff a real-deadlock report arrived (the
+    indicator; false for the plain timeout backstop or an old data node).
+  - `int getDeadlockTableIds(Uint32 out[2]) const` — up to two **deduped** table ids,
+    returns the count (0/1/2).
+  - `const NdbOperation *getDeadlockOperation() const` — the victim's deadlocking op,
+    or `nullptr` (scan/takeover victim, unresolvable, or no report).
+- **Compat** — gated end to end on `NDBD_DEADLOCK_DETAIL_VERSION`: an old API never
+  receives the signal; a new API talking to an old data node simply never caches
+  anything, so `wasDeadlock()` returns false and the others return empty.
+
+## Phase D — DONE (mysqld SHOW WARNINGS)
+
+ha_ndbcluster now surfaces the detail in `SHOW WARNINGS` alongside the existing 1205
+(`ER_LOCK_WAIT_TIMEOUT`) error, without changing the error itself.
+
+- **`ndb_push_deadlock_warning(THD*, NdbTransaction*)`** (static helper in
+  `ha_ndbcluster.cc`, right after `ndb_to_mysql_error`) — no-op unless
+  `trans->wasDeadlock()`. Builds a message from `getDeadlockOperation()->getTableName()`
+  (the victim op's table, the readable bit — no fragile id→name lookup needed) plus the
+  deduped table ids from `getDeadlockTableIds()`, and pushes it via
+  `push_warning_printf(... ER_GET_TEMPORARY_ERRMSG ...)` carrying the NDB error code
+  (266/296). Example: *"Got temporary error 266 'Deadlock detected by NDB; victim
+  operation on table 't1'; tables involved (id): 12, 15' from NDB"*.
+- **Hook** — called from `ha_ndbcluster::ndb_err(trans)` guarded by
+  `res == HA_ERR_LOCK_WAIT_TIMEOUT`. `ndb_err` is the central transaction-error
+  translator (~25 call sites incl. the scan/next-result read paths), so **both** the
+  key-op (266) and scan (296) deadlock cases are covered. A plain lock-wait timeout
+  pushes nothing (`wasDeadlock()` false).
+
+## Phase E — DONE (tests)
+
+Both API surfaces are exercised; the data node must be built at the new version for the
+gate (`NDBD_DEADLOCK_DETAIL_VERSION`) to open (it is, when built from this tree).
+
+- **NDB-API accessors** — `testDeadlock.cpp` (`-scan s`, the scan↔scan recipe) now reads
+  back the victim's detail and asserts in `ss_verify`: `wasDeadlock()` is true,
+  `getDeadlockTableIds()` reports table `T` (matched against its `getObjectId()`), and
+  `getDeadlockOperation()` is **null** (a scan victim has no single key op). Exercised by
+  the existing `ndb_deadlock_scan_scan.test`; the program's exit code is the pass/fail
+  signal. This covers the scan path and the `op == nullptr` case.
+- **mysqld SHOW WARNINGS** — new `ndb_deadlock_warning.test` (+ `.cnf` with the 60s
+  timeout, + `.result`): a key-op 2-cycle on `t1`; exactly one connection is aborted with
+  1205; on that connection `SHOW WARNINGS` shows the standard temp-error warning, the
+  RONDB-1062 *"Deadlock detected by NDB; victim operation on table 't1'; table involved
+  (id): #"* line (the op-table name implicitly verifies `getDeadlockOperation()` resolves
+  a key op), and the unchanged 1205 error. The contended table id is masked via
+  `--replace_regex` (not stable across runs); victim selection is non-deterministic so the
+  victim-count check runs on the `default` connection (avoids clearing the victim's
+  diagnostics area) and the connection-agnostic `SHOW WARNINGS` is gated on the captured
+  errno. This covers the key-op path and the `op != nullptr` case.
+
+Note: the `.result` was authored by hand (build/run is the maintainer's); if the exact
+warning rows differ, re-record with `./mtr --record --suite=ndb ndb_deadlock_warning`.
+
+## Goal
+
+When a transaction is aborted as a *proactively detected* deadlock victim, let the
+NDB API retrieve more about the error **without changing the externally visible
+error code** (266 key-op / 296 scan → `HA_ERR_LOCK_WAIT_TIMEOUT` → 1205) and
+without affecting existing retry logic. Add **optional** extra information:
+
+1. **Real-deadlock indicator** — distinguish a detected cycle from a plain
+   lock-wait timeout (both report 266/296 today).
+2. **Tables involved** in the deadlock cycle.
+3. **The deadlocking operation object** of the aborted victim, if available.
+
+Hard constraints: primary code unchanged; old API ↔ new TC and new API ↔ old TC
+both work (version/length gated); extra info is opt-in.
+
+## Current error path (anchors, verified 2026-06; function names are the durable anchors, line numbers may drift)
+
+- **Victim abort (set in `Dbtc::execDBACC_WAITFOR_REP`, DbtcMain.cpp ~11366–11535):**
+  - key op / takeover buddy: `timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR=266)`
+    → `returnsignal = RS_TCROLLBACKREP` (DbtcMain.cpp:10454) → GSN_TCROLLBACKREP sent at
+    DbtcMain.cpp:20075–20087.
+  - scan (batch, no buddy): `scanError(signal, scanptr, ZSCANTIME_OUT_ERROR=296)`
+    → GSN_SCAN_TABREF (DbtcMain.cpp:6471–6479).
+- **`TcRollbackRep`** (signaldata/TcRollbackRep.hpp): `connectPtr, transId[2], returnCode,
+  errorData`; `SignalLength=5`. `errorData = apiConnectptr.p->errorData` (DbtcMain.cpp:20085);
+  today used for indexId/fkId on constraint errors (9443/9498/9606), 0 for a deadlock.
+- **`TcKeyRef`** (signaldata/TcKeyRef.hpp): `connectPtr` (= the API operation pointer),
+  `transId[2], errorCode, errorData`; `SignalLength=5`. (Op-level error channel.)
+- **API receive `NdbTransaction::receiveTCROLLBACKREP`** (NdbTransaction.cpp:2628):
+  `theError.code = returnCode`; **iff `aSignal->getLength() == TcRollbackRep::SignalLength`**
+  reads `theError.details = (char*)UintPtr(errorData)`. ⚠ the `==` check means naively
+  growing TcRollbackRep silently drops `errorData` on old APIs — relax to `>=` carefully if
+  extending.
+- **`NdbError`** (ndbapi/NdbError.hpp): `classification, status, code, mysql_code,
+  message, details(char*)`.
+- **Edge signal `DeadlockWaitforRep`** (signaldata/DeadlockWaitfor.hpp): waiter/owner
+  `{transId1,transId2,tcRef,tcOprec}` + `flags{CollectorIsWaiter,CollectorIsScan}`;
+  `SignalLength=10`. **No table id yet.**
+- **DBTC deadlock state:** `ApiConnectRecord::m_deadlock_edges[MAX_DEADLOCK_EDGES=4]`,
+  `struct DeadlockEdge` (Dbtc.hpp:1300), `recordDeadlockEdge()` (Dbtc.hpp:2302 / def in
+  DbtcMain.cpp ~11540), dirs `DLD_WAITS_ON=1 / DLD_WAITED_BY=2`.
+- **Handles:** victim op's API pointer = `TcConnectRecord::clientData` ("SENDERS OPERATION
+  POINTER", Dbtc.hpp:959); API node block ref = `ApiConnectRecord::ndbapiBlockref`
+  (Dbtc.hpp:1170); txn API handle = `ApiConnectRecord::clientData` (Dbtc.hpp:1269).
+- **ndberror:** 266/296 are class TO → TemporaryError → 1205 (ndberror.cpp). Keep as-is.
+
+## Data to add per layer
+
+1. **DBACC** (`accIsLockedLab` fan-out ~DbaccMain.cpp:2340; `describe_deadlock_endpoint`
+   ~2123): the contended lock's table = `fragrecptr.p->myTableId`. Add **`contendedTableId`**
+   to `DeadlockWaitforRep` (one per edge — the table the waiter and owner contend on; bump
+   `SignalLength`). Optionally also fragId.
+2. **DBTC** (`execDBACC_WAITFOR_REP` / `recordDeadlockEdge`): store `contendedTableId` (and
+   the victim op handle) per recorded edge in `DeadlockEdge`. On cycle, the two matching
+   edges (WAITS_ON + WAITED_BY for the same other-txn) give the **two involved tables**
+   (dedupe if equal). The **victim deadlocking op** = the collector's waiting op in its
+   WAITS_ON edge: for a key op that is `collectorTcOprec`'s `TcConnectRecord::clientData`;
+   for a scan victim, report the scan (no single key op); for the takeover/buddy case the op
+   is the buddy key op. Capture `clientData` at record time (store in the edge) since the
+   triggering edge may be the other direction.
+3. **Transport DBTC→API:** see options.
+4. **NDB API:** receive + expose.
+
+## Transport — DECIDED: Option B (new version-gated signal `GSN_TC_DEADLOCK_REP`)
+
+DBTC sends `GSN_TC_DEADLOCK_REP` to the victim's API node (`ndbapiBlockref`)
+*immediately before* the abort signal (TCROLLBACKREP / SCAN_TABREF), carrying:
+`transId[2], deadlockCode (real-deadlock + reason bits), tableId1, tableId2,
+victimApiOpRef (= the victim waiting op's `TcConnectRecord::clientData`; RNIL for a
+pure scan victim)`.
+
+- **Gate on the API node version** so old APIs never receive it:
+  `getNodeInfo(refToNode(ndbapiBlockref)).m_version >= NDBD_DEADLOCK_DETAIL_VERSION`
+  (define a new `NDBD_DEADLOCK_DETAIL_VERSION` in ndb_version.h). New TC ↔ old API: not
+  sent. Old TC ↔ new API: never arrives — accessors return "no info". Both safe.
+- **API side:** handle the new GSN (Ndbif.cpp dispatch), cache the payload on the matching
+  `NdbTransaction` (validate by transid). The subsequent TCROLLBACKREP/SCAN_TABREF carrying
+  266/296 is what the app observes; the cached detail is exposed via the accessors below.
+  Clear the cache on transaction reset/close so it can't leak across reuse.
+- **New-GSN checklist:** `GlobalSignalNumbers.h` (define GSN + bump `MAX_GSN`),
+  `SignalNames.cpp`, new `signaldata/TcDeadlockRep.hpp` (+ a printer if other _REP have
+  one), API dispatch in `Ndbif.cpp`, kernel send in `Dbtc` (DbtcInit registers no exec —
+  it's send-only from TC to API). Closest template: the `DeadlockWaitforRep` addition (DBACC
+  → DBTC) done earlier.
+
+## API exposure — DECIDED: additive accessors (no new `NdbError` members)
+
+Add to `NdbTransaction` (and keep `NdbError`/`details` untouched):
+- `bool NdbTransaction::wasDeadlock() const` — true iff a `GSN_TC_DEADLOCK_REP` was received
+  for this txn (the "real deadlock" indicator; absent on the plain timeout backstop).
+- `int NdbTransaction::getDeadlockTableIds(Uint32 out[2]) const` — returns count (0/1/2),
+  dedup'd; table ids (caller maps to names via the dictionary if desired).
+- `const NdbOperation* NdbTransaction::getDeadlockOperation() const` — maps the carried
+  `clientData` back to one of this txn's operations (validate it still belongs to the txn);
+  returns `nullptr` for a pure scan victim or if not resolvable.
+- Optionally a reason enum accessor if `deadlockCode` carries more than a single bit.
+
+All additive (new methods only) → no ABI break, fully opt-in. Document that they are only
+populated after a 266/296 abort from a *proactively detected* deadlock.
+
+## Phasing
+
+- **A. DONE.** Carry `contendedTableId` DBACC→DBTC (extended `DeadlockWaitforRep`; stored
+  per direction in `DeadlockEdge` as `tableIdWaitsOn`/`tableIdWaitedBy`). Verified with
+  `DEB_DEADLOCK` logs; no API change. See the "Phase A — DONE" section above.
+- **B. DONE.** In DBTC `execDBACC_WAITFOR_REP`, on a detected cycle read the two table
+  ids + victim op back from the cycle slot and send `GSN_TC_DEADLOCK_REP` (version-gated)
+  to the API node just before the abort. `recordDeadlockEdge` now **returns the slot
+  index**; `DeadlockEdge` gained `victimOpRef` (captured on WAITS_ON). New signal/GSN/
+  version defined; API has a benign ignore stub. See the "Phase B — DONE" section above.
+- **C. DONE.** API receive + cache + additive accessors (`wasDeadlock()`,
+  `getDeadlockTableIds()`, `getDeadlockOperation()`). See the "Phase C — DONE" section
+  above.
+- **D. DONE.** ha_ndbcluster (mysqld): `ndb_push_deadlock_warning` pushes the detail to
+  SHOW WARNINGS from `ndb_err` (covers key-op + scan). Uses the victim op's table name
+  + raw table ids. See the "Phase D — DONE" section above.
+- **E. DONE.** Tests: `testDeadlock` (`-scan s`) asserts the flag / table id / null op for a
+  scan victim; new `ndb_deadlock_warning.test` asserts the SHOW WARNINGS detail for a key-op
+  victim. See the "Phase E — DONE" section above.
+
+## Open questions
+
+1. ~~Tables: just the two contended tables, or also fragment/row?~~ DONE: the signal
+   carries the two contended table ids only (`tableId1`/`tableId2`); Phase C dedups when
+   equal. Fragment/row not carried.
+2. Scan victim: `getDeadlockOperation()` returns nullptr (no single key op); is reporting the
+   `NdbScanOperation` worth it? Takeover victim → report the buddy key op (its `clientData`).
+   **Phase B leaves `victimOpRef = RNIL` for scan/takeover victims** (only the plain key-op
+   waiter captures it); revisit in Phase C/E if scan/takeover op reporting is wanted.
+3. mysqld: does ha_ndbcluster want table *names* in the warning (Phase D)?
+4. The `wasDeadlock()` flag is set only on the **proactive** path (a `GSN_TC_DEADLOCK_REP`
+   arrived); the plain timeout backstop does not set it — confirm that's the desired semantics.
+5. ~~`NDBD_DEADLOCK_DETAIL_VERSION` value~~ DONE: `NDB_MAKE_VERSION(26,4,1)` (this build's
+   own version). If Phase C ships in a later build, bump to that build's version so the gate
+   matches the build that first understands the signal.
+
+## Resume note
+
+All phases (A–E) implemented — the feature works end to end and is tested: DBACC detects
+the contended table → DBTC assembles + sends `GSN_TC_DEADLOCK_REP` → the NDB API caches it
+and exposes `wasDeadlock()` / `getDeadlockTableIds()` / `getDeadlockOperation()` →
+ha_ndbcluster surfaces it in SHOW WARNINGS; `testDeadlock` (scan path) and
+`ndb_deadlock_warning.test` (key-op path) assert it.
+
+**Nothing outstanding.** Possible future refinements (open questions below): report the
+victim op for scan/takeover victims (Q2), and add table *names* (not just ids) to the
+mysqld warning's second table (Q3) if a robust id→name lookup is wanted.
+
+The detection/abort machinery this builds on is described in `design.md` (sections
+14–16).

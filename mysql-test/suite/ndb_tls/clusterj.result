@@ -72,3 +72,5 @@ DROP DATABASE IF EXISTS test2;
 DROP TABLE IF EXISTS test3.t_basic3;
 DROP DATABASE IF EXISTS test3;
 DROP TABLE same_table;
+DROP TABLE IF EXISTS ring_buffer_sensor;
+DROP TABLE IF EXISTS ring_buffer_notnull;
