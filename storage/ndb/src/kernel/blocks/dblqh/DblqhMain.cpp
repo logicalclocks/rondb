@@ -20044,6 +20044,12 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
    * or linkedValues (source attrId), so incoming keys are inconsistent.
    * Matches the insertion-time normalization in JoinAggInterpreter
    * when m_cte_mode is set. Preserves byteSize + NULL bit (low 16). */
+#ifdef DEBUG_JOIN_AGG
+  const Uint32 keyWordsForDebug = (req.keyLen + 3) >> 2;
+  const Uint32 rawKey0ForDebug = keyWordsForDebug > 0 ? keyBuf[0] : 0;
+  const Uint32 rawKey1ForDebug = keyWordsForDebug > 1 ? keyBuf[1] : 0;
+#endif
+
   {
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 keyWords = (req.keyLen + 3) >> 2;
@@ -20081,9 +20087,21 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
         c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
-           instance(), keyBuf[0], req.keyLen,
-           groupData ? "FOUND" : "NOT_FOUND"));
+#ifdef DEBUG_JOIN_AGG
+  DEB_JOIN_AGG(("(%u) DBLQH CTE_LOOKUP result: "
+                "aggStateKey=%u state=%u keyLen=%u keyWords=%u "
+                "rawKey[0]=0x%x rawKey[1]=0x%x "
+                "normKey[0]=0x%x normKey[1]=0x%x result=%s "
+                "joinAgg=%u flags=0x%x corr=0x%x senderRef=0x%x",
+                instance(), req.aggStateKey,
+                (Uint32)state->m_state.load(), req.keyLen,
+                keyWordsForDebug, rawKey0ForDebug, rawKey1ForDebug,
+                keyWordsForDebug > 0 ? keyBuf[0] : 0,
+                keyWordsForDebug > 1 ? keyBuf[1] : 0,
+                groupData ? "FOUND" : "NOT_FOUND",
+                req.joinAggStateKey, req.flags, req.correlation,
+                req.senderRef));
+#endif
 
   if (groupData == nullptr) {
     jam();
