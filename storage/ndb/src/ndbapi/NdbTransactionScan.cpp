@@ -38,12 +38,25 @@
 //#define DEBUG_CTE_API 1
 #endif
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define DEBUG_JOIN_AGG_API 1
+#endif
+
 #ifdef DEBUG_CTE_API
 #define DEB_CTE_API(...) fprintf(stderr, "[CTE_API] " __VA_ARGS__)
 #else
 #define DEB_CTE_API(...) \
   do {                   \
   } while (0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_API
+#define DEB_JOIN_AGG_API(...) do {      \
+  fprintf(stderr, __VA_ARGS__);         \
+  fflush(stderr);                       \
+} while (0)
+#else
+#define DEB_JOIN_AGG_API(...) do { } while (0)
 #endif
 
 /***************************************************************************
@@ -165,6 +178,42 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
           if (queryOp->execSCAN_TABCONF(tcPtrI, rowCount, moreMask, activeMask,
                                         tOp))
             retVal = 0;  // We have result data, wakeup receiver
+        } else if (tOp->getType() == NdbReceiver::NDB_AGG_RECEIVER) {
+          /*
+           * Aggregate receivers are used by pushed join aggregation and are
+           * owned by NdbQueryImpl. Their SCAN_TABCONF op-data follows the
+           * query/SPJ layout, not the legacy scan receiver rows|len layout.
+           */
+#ifdef DEBUG_JOIN_AGG_API
+          const Uint32 rowCount = *ops++;
+          const Uint32 moreMask = *ops++;
+          const Uint32 tcNodeId = getConnectedNodeId();
+          const Uint32 nodeVersion =
+              theNdb->theImpl->getNodeNdbVersion(tcNodeId);
+          assert(nodeVersion != 0);
+          const Uint32 activeMask =
+              ndbd_send_active_bitmask(nodeVersion) ? *ops++ : 0;
+
+          NdbQueryImpl *query = (NdbQueryImpl *)tOp->m_owner;
+          DEB_JOIN_AGG_API("[AGG_API] receiveSCAN_TABCONF agg: "
+                           "tcPtrI=0x%x rowCount=%u moreMask=0x%x "
+                           "activeMask=0x%x recvId=0x%x query=%p "
+                           "isEod=%u\n",
+                           tcPtrI, rowCount, moreMask, activeMask,
+                           tOp->getId(), static_cast<void*>(query),
+                           tcPtrI == RNIL ? 1 : 0);
+#else
+          ops += 2;  // rowCount, moreMask
+          const Uint32 tcNodeId = getConnectedNodeId();
+          const Uint32 nodeVersion =
+              theNdb->theImpl->getNodeNdbVersion(tcNodeId);
+          assert(nodeVersion != 0);
+          if (ndbd_send_active_bitmask(nodeVersion)) {
+            ops++;  // activeMask
+          }
+#endif
+
+          retVal = 0;
         } else {
           const Uint32 info = *ops++;
           Uint32 opCount = ScanTabConf::getRows(info);
