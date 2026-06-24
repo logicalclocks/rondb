@@ -20393,6 +20393,19 @@ void Dbtc::execDUMP_STATE_ORD(Signal *signal) {
     Uint32 val = dumpState->args[1];
     m_rr_load_refresh_count = val;
     return;
+  } else if (dumpState->args[0] == DumpStateOrd::DeadlockDetection) {
+    // RONDB-1062: runtime enable/disable of proactive deadlock discovery.
+    //   ALL DUMP 16000 1  -> enable, ALL DUMP 16000 0 -> disable
+    // (also handled by DBACC, which gates the wait-for edge capture).
+    jam();
+    if (signal->getLength() >= 2) {
+      c_proactive_deadlock_detect = (dumpState->args[1] != 0);
+      g_eventLogger->info(
+          "TC %u: proactive deadlock discovery %s by DUMP %u", instance(),
+          c_proactive_deadlock_detect ? "ENABLED" : "DISABLED",
+          (Uint32)DumpStateOrd::DeadlockDetection);
+    }
+    return;
   } else if (dumpState->args[0] == DumpStateOrd::TcDumpSetOfScanFragRec) {
     /**
      * DUMP 2500 12 10 1 1

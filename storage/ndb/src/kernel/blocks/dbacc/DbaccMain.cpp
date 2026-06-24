@@ -10478,6 +10478,20 @@ bool Dbacc::getNextOpRec(Uint32 &next, OperationrecPtr &loc_opptr,
 
 void Dbacc::execDUMP_STATE_ORD(Signal *signal) {
   DumpStateOrd *const dumpState = (DumpStateOrd *)&signal->theData[0];
+  if (dumpState->args[0] == DumpStateOrd::DeadlockDetection) {
+    // RONDB-1062: runtime enable/disable of proactive deadlock discovery; this
+    // gates the wait-for edge capture in accIsLockedLab.  ALL DUMP 16000 1
+    // enables, ALL DUMP 16000 0 disables (also handled by DBTC).
+    jam();
+    if (signal->length() >= 2) {
+      c_proactive_deadlock_detect = (dumpState->args[1] != 0);
+      g_eventLogger->info(
+          "ACC %u: proactive deadlock discovery %s by DUMP %u", instance(),
+          c_proactive_deadlock_detect ? "ENABLED" : "DISABLED",
+          (Uint32)DumpStateOrd::DeadlockDetection);
+    }
+    return;
+  }
   if (dumpState->args[0] == DumpStateOrd::AccDumpOneScanRec) {
     ScanRecPtr scanPtr;
     Uint32 recordNo = RNIL;
