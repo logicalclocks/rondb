@@ -281,16 +281,25 @@ class NdbQueryImpl {
    */
   NdbAggregator *getAggregator() const { return m_aggregator; }
 
+  /** Process SCAN_TABCONF for NDB_AGG_RECEIVER.
+   *  Aggregate result data may arrive before the matching SCAN_TABCONF, so
+   *  completion accounting keeps independent expected/received counters.
+   */
+  bool execAggSCAN_TABCONF(Uint32 tcPtrI,
+                           Uint32 rowCount,
+                           const NdbReceiver *receiver);
+
   /** Called from Ndbif.cpp TRANSID_AI dispatch for NDB_AGG_RECEIVER.
    *  Stores raw aggregation result data for later processing.
    *  Non-fragmented variant: records batch offset and copies data.
+   *  Returns true when aggregate receive is complete.
    */
-  void execAggTRANSID_AI(const Uint32 *data, Uint32 len);
+  bool execAggTRANSID_AI(const Uint32 *data, Uint32 len);
 
   /** Fragmented variant: accumulates fragment data.
    *  Records batch offset only on first fragment (fragInfo==1).
    */
-  void execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+  bool execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
                                Uint32 fragInfo);
 
   /** Process all accumulated aggregation results through NdbAggregator.
@@ -298,6 +307,9 @@ class NdbQueryImpl {
    *  (skipping the AttributeHeader word), then calls PrepareResults().
    */
   int processAggResults();
+
+  /** True when all aggregate receiver rows promised by SCAN_TABCONF arrived. */
+  bool isAggReceiveComplete() const;
 
  private:
   /** Possible return values from NdbQueryImpl::awaitMoreResults.
@@ -573,6 +585,20 @@ class NdbQueryImpl {
    */
   Uint32Buffer m_aggResultData;
   Uint32Buffer m_aggResultOffsets;
+
+  /** Number of aggregate TRANSID_AI rows promised by SCAN_TABCONF. */
+  Uint32 m_aggExpectedResults;
+
+  /** Number of complete aggregate TRANSID_AI rows received. */
+  Uint32 m_aggReceivedResults;
+
+  /** Number of aggregate receivers that have sent final SCAN_TABCONF. */
+  Uint32 m_aggFinalConfs;
+
+  /** Record one complete aggregate TRANSID_AI row.
+   *  Returns true when aggregate receive is complete.
+   */
+  bool noteAggResultReceived();
 
   /** True if this query starts a new transaction. */
   bool m_startIndicator;

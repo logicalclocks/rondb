@@ -2249,8 +2249,50 @@ NdbAggregator *NdbQuery::getAggregator() const {
   return m_impl.getAggregator();
 }
 
-void NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
-  if (len == 0) return;
+bool NdbQueryImpl::isAggReceiveComplete() const {
+  if (!m_hasAggregation || m_aggregator == nullptr) {
+    return true;
+  }
+
+  return m_aggFinalConfs >= m_numAggReceivers &&
+         m_aggReceivedResults >= m_aggExpectedResults;
+}
+
+bool NdbQueryImpl::execAggSCAN_TABCONF(Uint32 tcPtrI,
+                                       Uint32 rowCount,
+                                       const NdbReceiver *receiver) {
+  assert(m_hasAggregation);
+  assert(m_aggregator != nullptr);
+  assert(receiver != nullptr);
+
+  m_aggExpectedResults += rowCount;
+  if (tcPtrI == RNIL) {
+    m_aggFinalConfs++;
+  }
+
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] execAggSCAN_TABCONF: recvId=0x%x "
+                   "tcPtrI=0x%x rowCount=%u expected=%u received=%u "
+                   "finalConfs=%u numAggReceivers=%u complete=%u\n",
+                   receiver->getId(), tcPtrI, rowCount,
+                   m_aggExpectedResults, m_aggReceivedResults,
+                   m_aggFinalConfs, m_numAggReceivers,
+                   isAggReceiveComplete() ? 1 : 0);
+#endif
+
+  return isAggReceiveComplete();
+}
+
+bool NdbQueryImpl::noteAggResultReceived() {
+  assert(m_hasAggregation);
+  assert(m_aggregator != nullptr);
+
+  m_aggReceivedResults++;
+  return isAggReceiveComplete();
+}
+
+bool NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
+  if (len == 0) return false;
   const Uint32 offset = m_aggResultData.getSize();
   m_aggResultOffsets.append(offset);
 #ifdef DEBUG_JOIN_AGG_API
@@ -2267,17 +2309,19 @@ void NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
   Uint32 *dst = m_aggResultData.alloc(len);
   if (likely(dst != nullptr)) {
     memcpy(dst, data, len * sizeof(Uint32));
+    return noteAggResultReceived();
 #ifdef DEBUG_JOIN_AGG_API
   } else {
     DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI: alloc failed "
                      "len=%u offset=%u\n", len, offset);
 #endif
   }
+  return false;
 }
 
-void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+bool NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
                                            Uint32 fragInfo) {
-  if (len == 0) return;
+  if (len == 0) return false;
   const Uint32 offset = m_aggResultData.getSize();
   if (fragInfo == 1) {
     // First fragment: record batch offset
@@ -2297,6 +2341,7 @@ void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
   Uint32 *dst = m_aggResultData.alloc(len);
   if (likely(dst != nullptr)) {
     memcpy(dst, data, len * sizeof(Uint32));
+    return fragInfo == 3 ? noteAggResultReceived() : false;
 #ifdef DEBUG_JOIN_AGG_API
   } else {
     DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: alloc failed "
@@ -2304,6 +2349,7 @@ void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
                      len, offset, fragInfo);
 #endif
   }
+  return false;
 }
 
 int NdbQueryImpl::processAggResults() {
@@ -2693,6 +2739,9 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_numAggReceivers(0),
       m_aggResultData(),
       m_aggResultOffsets(),
+      m_aggExpectedResults(0),
+      m_aggReceivedResults(0),
+      m_aggFinalConfs(0),
       m_startIndicator(false),
       m_commitIndicator(false),
       m_prunability(Prune_No),
@@ -2782,6 +2831,9 @@ void NdbQueryImpl::postFetchRelease() {
   // after scan completes. It is deleted in close().
   m_aggResultData.releaseExtend();
   m_aggResultOffsets.releaseExtend();
+  m_aggExpectedResults = 0;
+  m_aggReceivedResults = 0;
+  m_aggFinalConfs = 0;
 
   m_rowBufferAlloc.reset();
   m_tupleSetAlloc.reset();
@@ -3244,9 +3296,16 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
          */
         if (m_pendingWorkers == 0) {
           // 'No more *pending* results', ::sendFetchMore() may make more
-          // available
-          return (m_finalWorkers < getWorkerCount()) ? FetchResult_noMoreCache
-                                                     : FetchResult_noMoreData;
+          // available. For pushed aggregation, the aggregate receiver has its
+          // own result stream and may still receive TRANSID_AI after the normal
+          // SPJ workers have delivered their final batch.
+          if (m_finalWorkers < getWorkerCount()) {
+            return FetchResult_noMoreCache;
+          }
+          if (isAggReceiveComplete()) {
+            return FetchResult_noMoreData;
+          }
+          return FetchResult_noMoreCache;
         }
 
         const Uint32 timeout = ndb->get_waitfor_timeout();

@@ -35,7 +35,7 @@
 #include <NdbQueryOperationImpl.hpp>
 
 #ifdef VM_TRACE
-//#define DEBUG_CTE_API 1
+#define DEBUG_CTE_API 1
 #endif
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -184,17 +184,18 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
            * owned by NdbQueryImpl. Their SCAN_TABCONF op-data follows the
            * query/SPJ layout, not the legacy scan receiver rows|len layout.
            */
-#ifdef DEBUG_JOIN_AGG_API
           const Uint32 rowCount = *ops++;
-          const Uint32 moreMask = *ops++;
+          const Uint32 moreMask =
+              *ops++;  // consumed for query/SPJ SCAN_TABCONF layout
           const Uint32 tcNodeId = getConnectedNodeId();
           const Uint32 nodeVersion =
               theNdb->theImpl->getNodeNdbVersion(tcNodeId);
           assert(nodeVersion != 0);
-          const Uint32 activeMask =
-              ndbd_send_active_bitmask(nodeVersion) ? *ops++ : 0;
+          const bool hasActiveMask = ndbd_send_active_bitmask(nodeVersion);
+          const Uint32 activeMask = hasActiveMask ? *ops++ : 0;
 
           NdbQueryImpl *query = (NdbQueryImpl *)tOp->m_owner;
+#ifdef DEBUG_JOIN_AGG_API
           DEB_JOIN_AGG_API("[AGG_API] receiveSCAN_TABCONF agg: "
                            "tcPtrI=0x%x rowCount=%u moreMask=0x%x "
                            "activeMask=0x%x recvId=0x%x query=%p "
@@ -203,17 +204,12 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
                            tOp->getId(), static_cast<void*>(query),
                            tcPtrI == RNIL ? 1 : 0);
 #else
-          ops += 2;  // rowCount, moreMask
-          const Uint32 tcNodeId = getConnectedNodeId();
-          const Uint32 nodeVersion =
-              theNdb->theImpl->getNodeNdbVersion(tcNodeId);
-          assert(nodeVersion != 0);
-          if (ndbd_send_active_bitmask(nodeVersion)) {
-            ops++;  // activeMask
-          }
+          (void)moreMask;
+          (void)activeMask;
 #endif
 
-          retVal = 0;
+          if (query->execAggSCAN_TABCONF(tcPtrI, rowCount, tOp))
+            retVal = 0;
         } else {
           const Uint32 info = *ops++;
           Uint32 opCount = ScanTabConf::getRows(info);
