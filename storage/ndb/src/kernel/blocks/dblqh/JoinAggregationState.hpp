@@ -30,6 +30,7 @@
 #include <kernel_types.h>
 #include <kernel/NodeBitmask.hpp>
 #include <kernel/ndb_limits.h>
+#include <portlib/NdbTick.h>
 
 #define JAM_FILE_ID 570
 
@@ -293,7 +294,7 @@ struct JoinAggregationState {
   Uint32 m_cte_complete_requestId;
   Uint32 m_cte_complete_transid[2];
   Uint32 m_cte_complete_hb_scanFragPtrI;
-  Uint32 m_cte_complete_last_hb_time;
+  NDB_TICKS m_cte_complete_last_hb_time;
 
   //------------------------------------------------------------------
   // CTE Scan State (for CTE_SCAN_REQ iteration)
@@ -372,7 +373,7 @@ struct JoinAggregationState {
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),
     m_cte_complete_hb_scanFragPtrI(RNIL),
-    m_cte_complete_last_hb_time(0),
+    m_cte_complete_last_hb_time(),
     m_cteScan_groupsSent(0),
     m_cteScan_iterBucket(0),
     m_cteScan_iterRaw(nullptr),

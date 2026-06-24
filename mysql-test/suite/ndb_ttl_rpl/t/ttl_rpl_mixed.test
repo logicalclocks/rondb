@@ -175,6 +175,8 @@ INSERT INTO test.sz VALUES
 sleep 11;
 
 # FOR UPDATE: lock rows with col_c >= 7 (rows 7,8,9,10)
+# ORDER BY col_a: NDB returns rows in an unspecified order, so order
+# explicitly to keep the result deterministic (otherwise this flakes).
 SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 ORDER BY col_a FOR UPDATE;
 
 # UPDATE: set col_c = 100 where col_c <= 3 (rows 1,2,3)

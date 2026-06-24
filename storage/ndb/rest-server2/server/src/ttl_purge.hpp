@@ -198,7 +198,10 @@ class TTLPurger {
 
   bool GetShard(Int32* shard, Int32* n_purge_nodes, bool update_objects);
   bool GetPurgeWindow(Uint32* purge_window, bool update_objects);
-  static Int64 GetNow(unsigned char* encoded_now, bool timestamp);
+  // minus_sec lets callers encode a past instant (now - minus_sec). The TTL
+  // purge scan passes ttl_sec + purge_window to obtain the expiry threshold.
+  static Int64 GetNow(unsigned char* encoded_now, bool timestamp,
+                      Uint32 minus_sec = 0);
   bool UpdateLease(const unsigned char* encoded_now);
   bool IsNodeAlive(const unsigned char* encoded_last_active);
   Uint32 AdjustBatchSize(Uint32 curr_batch_size,

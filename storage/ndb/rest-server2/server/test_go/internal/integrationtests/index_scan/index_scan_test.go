@@ -596,6 +596,7 @@ func Test_SchemaVersionChangeConcurrent(t *testing.T) {
 	type workerStats struct {
 		successes int
 		failures  int
+		zeroRows  int
 	}
 	done := make(chan workerStats, numWorkers)
 
@@ -647,6 +648,17 @@ func Test_SchemaVersionChangeConcurrent(t *testing.T) {
 						stats.failures++
 						continue
 					}
+					// During the schema change, DB025-Update.sql runs DROP/CREATE/INSERT
+					// as separate autocommit statements. A scan landing in the committed
+					// window between CREATE TABLE and INSERT correctly sees an empty table
+					// (HTTP 200 + 0 rows). Tolerate that transient like the non-200 window
+					// below; only > 1 row is genuinely wrong. Tracked separately so a
+					// regression that makes scans *always* return empty (e.g. broken
+					// filter compilation) can't hide inside this tolerance.
+					if len(scanResp.Data) == 0 {
+						stats.zeroRows++
+						continue
+					}
 					if len(scanResp.Data) != 1 {
 						t.Errorf("worker %d: wrong data read. Expecting 1 row, got: %d rows", workerID, len(scanResp.Data))
 						stats.failures++
@@ -682,16 +694,29 @@ func Test_SchemaVersionChangeConcurrent(t *testing.T) {
 	// Wait for all workers and collect stats
 	totalSuccesses := 0
 	totalFailures := 0
+	totalZeroRows := 0
 	for i := 0; i < numWorkers; i++ {
 		stats := <-done
 		totalSuccesses += stats.successes
 		totalFailures += stats.failures
+		totalZeroRows += stats.zeroRows
 	}
-	t.Logf("Total operations: successes=%d, failures=%d", totalSuccesses, totalFailures)
+	t.Logf("Total operations: successes=%d, failures=%d, zeroRows=%d", totalSuccesses, totalFailures, totalZeroRows)
 
 	// Verify we had some successful operations (test was actually running)
 	if totalSuccesses == 0 {
 		t.Fatalf("No successful operations - test may not have been working correctly")
+	}
+
+	// The empty-table window is only the brief committed gap between CREATE TABLE
+	// and INSERT during the schema change (<1s) within a 4s run, so legitimate
+	// zero-row responses should be a small minority. A high zero-row rate means
+	// scans are returning empty outside that window - a real server regression,
+	// not the tolerated transient - so fail loudly instead of swallowing it.
+	totalOps := totalSuccesses + totalFailures + totalZeroRows
+	if zeroRowRate := float64(totalZeroRows) / float64(totalOps); zeroRowRate > 0.5 {
+		t.Errorf("Too many zero-row 200 responses (%d/%d = %.1f%%) - possible server regression",
+			totalZeroRows, totalOps, zeroRowRate*100)
 	}
 
 	// Verify final state - requests should work after schema change
