@@ -2254,7 +2254,7 @@ bool NdbQueryImpl::isAggReceiveComplete() const {
     return true;
   }
 
-  return m_aggFinalConfs >= m_numAggReceivers &&
+  return m_aggFinalConfs > 0 &&
          m_aggReceivedResults >= m_aggExpectedResults;
 }
 

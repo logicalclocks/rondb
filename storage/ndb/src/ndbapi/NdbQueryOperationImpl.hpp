@@ -592,7 +592,7 @@ class NdbQueryImpl {
   /** Number of complete aggregate TRANSID_AI rows received. */
   Uint32 m_aggReceivedResults;
 
-  /** Number of aggregate receivers that have sent final SCAN_TABCONF. */
+  /** Number of final aggregate receiver SCAN_TABCONFs received. */
   Uint32 m_aggFinalConfs;
 
   /** Record one complete aggregate TRANSID_AI row.
