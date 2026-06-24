@@ -21496,8 +21496,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     entry->next = nullptr;
     entry->keyLen = keyLen;
     entry->valueLen = valueLen;
-    memcpy(entry->data, keyBuf, keySection.sz);
-    memcpy(entry->data + keyWords, valBuf, valueSection.sz);
+    memcpy(entry->data, keyBuf, keyWords * sizeof(Uint32));
+    memcpy(entry->data + keyWords, valBuf, valWords * sizeof(Uint32));
     if (state->m_redist_queue_tail != nullptr)
       state->m_redist_queue_tail->next = entry;
     else

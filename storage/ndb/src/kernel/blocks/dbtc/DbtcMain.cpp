@@ -30097,15 +30097,21 @@ Dbtc::findJoinAggHeartbeatScanFrag(ScanRecordPtr scanptr, Uint32 nodeId) {
   Local_ScanFragRec_dllist list(c_scan_frag_pool,
                                 scanptr.p->m_running_scan_frags);
   ScanFragRecPtr scanFragPtr;
+  Uint32 fallback = RNIL;
   for (list.first(scanFragPtr); !scanFragPtr.isNull();
        list.next(scanFragPtr)) {
-    if (scanFragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE &&
-        refToNode(scanFragPtr.p->lqhBlockref) == nodeId) {
+    if (scanFragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE) {
       jam();
-      return scanFragPtr.i;
+      if (fallback == RNIL) {
+        fallback = scanFragPtr.i;
+      }
+      if (refToNode(scanFragPtr.p->lqhBlockref) == nodeId) {
+        jam();
+        return scanFragPtr.i;
+      }
     }
   }
-  return RNIL;
+  return fallback;
 }
 
 /**
