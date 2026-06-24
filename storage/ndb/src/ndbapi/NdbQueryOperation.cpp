@@ -62,6 +62,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
 #endif
 
@@ -82,6 +83,26 @@ static void dumpJoinAggHex(const char *label, const Uint32 *buf, Uint32 len) {
 #define DEB_JOIN_AGG(label, buf, len) dumpJoinAggHex(label, buf, len)
 #else
 #define DEB_JOIN_AGG(label, buf, len) do {} while(0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_API
+#define DEB_JOIN_AGG_API(...) do {      \
+  fprintf(stderr, __VA_ARGS__);         \
+  fflush(stderr);                       \
+} while (0)
+
+static void dumpAggApiWords(const char *label, const Uint32 *buf, Uint32 len) {
+  fprintf(stderr, "[AGG_API] %s len=%u words:", label, len);
+  const Uint32 dump_len = len < 12 ? len : 12;
+  for (Uint32 i = 0; i < dump_len; i++) {
+    fprintf(stderr, " %08x", buf[i]);
+  }
+  fprintf(stderr, "\n");
+  fflush(stderr);
+}
+#else
+#define DEB_JOIN_AGG_API(...) do { } while (0)
+static void dumpAggApiWords(const char *, const Uint32 *, Uint32) {}
 #endif
 
 /** To prevent compiler warnings about variables that are only used in asserts
@@ -2230,23 +2251,58 @@ NdbAggregator *NdbQuery::getAggregator() const {
 
 void NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
   if (len == 0) return;
-  m_aggResultOffsets.append(m_aggResultData.getSize());
+  const Uint32 offset = m_aggResultData.getSize();
+  m_aggResultOffsets.append(offset);
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI: len=%u offset=%u "
+                   "numOffsets=%u marker=0x%x header=0x%x nRows=%u "
+                   "lenWord=0x%x\n",
+                   len, offset, m_aggResultOffsets.getSize(),
+                   len > 0 ? AttributeHeader(data[0]).getAttributeId() : 0,
+                   len > 1 ? data[1] : 0,
+                   len > 2 ? data[2] : 0,
+                   len > 3 ? data[3] : 0);
+  dumpAggApiWords("execAggTRANSID_AI", data, len);
+#endif
   Uint32 *dst = m_aggResultData.alloc(len);
   if (likely(dst != nullptr)) {
     memcpy(dst, data, len * sizeof(Uint32));
+#ifdef DEBUG_JOIN_AGG_API
+  } else {
+    DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI: alloc failed "
+                     "len=%u offset=%u\n", len, offset);
+#endif
   }
 }
 
 void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
                                            Uint32 fragInfo) {
   if (len == 0) return;
+  const Uint32 offset = m_aggResultData.getSize();
   if (fragInfo == 1) {
     // First fragment: record batch offset
-    m_aggResultOffsets.append(m_aggResultData.getSize());
+    m_aggResultOffsets.append(offset);
   }
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: len=%u offset=%u "
+                   "fragInfo=%u numOffsets=%u first_words=0x%x 0x%x "
+                   "0x%x 0x%x\n",
+                   len, offset, fragInfo, m_aggResultOffsets.getSize(),
+                   len > 0 ? data[0] : 0,
+                   len > 1 ? data[1] : 0,
+                   len > 2 ? data[2] : 0,
+                   len > 3 ? data[3] : 0);
+  dumpAggApiWords("execAggTRANSID_AI_frag", data, len);
+#endif
   Uint32 *dst = m_aggResultData.alloc(len);
   if (likely(dst != nullptr)) {
     memcpy(dst, data, len * sizeof(Uint32));
+#ifdef DEBUG_JOIN_AGG_API
+  } else {
+    DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: alloc failed "
+                     "len=%u offset=%u fragInfo=%u\n",
+                     len, offset, fragInfo);
+#endif
   }
 }
 
@@ -2254,6 +2310,10 @@ int NdbQueryImpl::processAggResults() {
   if (!m_hasAggregation || m_aggregator == nullptr) return 0;
 
   const Uint32 numBatches = m_aggResultOffsets.getSize();
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] processAggResults: batches=%u totalWords=%u\n",
+                   numBatches, m_aggResultData.getSize());
+#endif
 #ifdef DEBUG_JOIN_AGG_TRACE
   const Uint32 totalWords = m_aggResultData.getSize();
   fprintf(stderr, "[AGG] processAggResults: %u batches, %u total words\n",
@@ -2266,6 +2326,13 @@ int NdbQueryImpl::processAggResults() {
                                   : m_aggResultData.getSize();
     const Uint32 batchLen = nextOffset - offset;
     const Uint32 *batchData = m_aggResultData.addr() + offset;
+
+#ifdef DEBUG_JOIN_AGG_API
+    DEB_JOIN_AGG_API("[AGG_API] processAggResults batch: batch=%u "
+                     "offset=%u nextOffset=%u len=%u\n",
+                     i, offset, nextOffset, batchLen);
+    dumpAggApiWords("processAggResults batch", batchData, batchLen);
+#endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
     fprintf(stderr, "[AGG]   batch %u: offset=%u len=%u words:", i, offset, batchLen);

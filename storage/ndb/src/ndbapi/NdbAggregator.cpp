@@ -29,6 +29,16 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_NDBAGGREGATOR 1
+#define DEBUG_JOIN_AGG_API 1
+#endif
+
+#ifdef DEBUG_JOIN_AGG_API
+#define DEB_JOIN_AGG_API(...) do {      \
+  fprintf(stderr, __VA_ARGS__);         \
+  fflush(stderr);                       \
+} while (0)
+#else
+#define DEB_JOIN_AGG_API(...) do { } while (0)
 #endif
 
 #ifdef DEBUG_NDBAGGREGATOR
@@ -377,6 +387,13 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
   const bool wire_has_strings =
       (marker_id == AttributeHeader::AGG_CHAR_RESULT);
 
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] ProcessRes begin: marker=0x%x "
+                   "wire_has_strings=%u first_words=0x%x 0x%x 0x%x 0x%x\n",
+                   marker_id, wire_has_strings ? 1 : 0,
+                   data_buf[0], data_buf[1], data_buf[2], data_buf[3]);
+#endif
+
   Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
   Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
   assert(n_gb_cols == n_gb_cols_);
@@ -389,7 +406,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
     DEB_TRACE();
     char* agg_rec = nullptr;
     // const AttributeHeader* header = nullptr;
-    for (Uint32 i = 0; i < n_res_items; i++) {
+    for (Uint32 rowNo = 0; rowNo < n_res_items; rowNo++) {
       DEB_TRACE();
       bool need_merge = false;
       Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
@@ -399,6 +416,27 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           reinterpret_cast<const char*>(&data_buf[parse_pos])),
                   gb_cols_len};
       auto iter = gb_map_->find(entry);
+#ifdef DEBUG_JOIN_AGG_API
+      const Uint32 key_words = (gb_cols_len + 3) >> 2;
+      const Uint32 key0 = key_words > 0 ? data_buf[parse_pos] : 0;
+      const Uint32 key1 = key_words > 1 ? data_buf[parse_pos + 1] : 0;
+      const AggResItem* wire_res = reinterpret_cast<const AggResItem*>(
+          &data_buf[parse_pos + (gb_cols_len >> 2)]);
+      const AggResItem& agg0 = wire_res[0];
+
+      DEB_JOIN_AGG_API("[AGG_API] ProcessRes row: rowNo=%u parse_pos=%u "
+                       "gb_cols_len=%u agg_res_len=%u key_words=%u "
+                       "key[0]=0x%x key[1]=0x%x action=%s "
+                       "agg0_type=%u agg0_unsigned=%u agg0_null=%u "
+                       "agg0_i64=%lld agg0_u64=%llu gb_map_size=%zu\n",
+                       rowNo, parse_pos, gb_cols_len, agg_res_len,
+                       key_words, key0, key1,
+                       iter != gb_map_->end() ? "merge" : "insert",
+                       agg0.type, agg0.is_unsigned, agg0.is_null,
+                       (long long)agg0.value.val_int64,
+                       (unsigned long long)agg0.value.val_uint64,
+                       gb_map_->size());
+#endif
       if (iter != gb_map_->end()) {
         // header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
         agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
@@ -407,6 +445,11 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         //     header->getAttributeId(), header->getByteSize(),
         //     header->getDataSize(), header->isNULL());
         need_merge = true;
+#ifdef DEBUG_JOIN_AGG_API
+        DEB_JOIN_AGG_API("[AGG_API] ProcessRes merging: rowNo=%u "
+                         "key[0]=0x%x key[1]=0x%x agg_ptr=%p\n",
+                         rowNo, key0, key1, static_cast<void*>(agg_res_ptr));
+#endif
       } else {
         // For AGG_CHAR_RESULT, agg_res_len includes both the
         // AggResItem array and the appended string-payload region.
@@ -447,6 +490,13 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
               new_entry, new_aggs));
         agg_res_ptr = reinterpret_cast<AggResItem*>(new_aggs.ptr);
+#ifdef DEBUG_JOIN_AGG_API
+        DEB_JOIN_AGG_API("[AGG_API] ProcessRes inserted: rowNo=%u "
+                         "key[0]=0x%x key[1]=0x%x gb_map_size=%zu "
+                         "agg_ptr=%p\n",
+                         rowNo, key0, key1, gb_map_->size(),
+                         static_cast<void*>(agg_res_ptr));
+#endif
       }
       DEB_TRACE();
 
@@ -609,6 +659,11 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       }
 #endif // PA_CHECK && !NDEBUG
       parse_pos += ((gb_cols_len + agg_res_len) >> 2);
+#ifdef DEBUG_JOIN_AGG_API
+      DEB_JOIN_AGG_API("[AGG_API] ProcessRes row done: rowNo=%u "
+                       "next_parse_pos=%u key[0]=0x%x key[1]=0x%x\n",
+                       rowNo, parse_pos, key0, key1);
+#endif
     }
   } else {
     DEB_TRACE();
@@ -758,6 +813,11 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
     parse_pos += ((/*gb_cols_len + */agg_res_len) >> 2);
   }
   DEB_TRACE();
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] ProcessRes end: final_parse_pos=%u "
+                   "n_res_items=%u n_gb_cols=%u n_agg_results=%u\n",
+                   parse_pos, n_res_items, n_gb_cols, n_agg_results);
+#endif
   return parse_pos;
 }
 

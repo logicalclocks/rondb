@@ -71,12 +71,12 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 #define DEBUG_TRANSID_AI 1
-#define DEBUG_AGGREGATION 1
-#define DEBUG_STAR_AGG 1
-#define DEBUG_JOIN_AGG_TRACE 1
-#define DEBUG_MATCH 1
-#define DEBUG_SCAN_PARENT_ROW 1
-#define DEBUG_CTE 1
+//#define DEBUG_AGGREGATION 1
+//#define DEBUG_STAR_AGG 1
+//#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_MATCH 1
+//#define DEBUG_SCAN_PARENT_ROW 1
+//#define DEBUG_CTE 1
 /* DEBUG_CTE_BUILD: per-node flag dump emitted at the end of each
  * TreeNode build (typed name, m_cteId, m_bits with named flags).
  * Very verbose — one line per built node per incoming SCAN_FRAGREQ —
@@ -87,7 +87,7 @@
  * Logs bound expansion, fixup, stored range count, and SCAN_FRAGREQ
  * send state.  Enable when debugging scanCte parent + scanIndex child
  * paths such as Phase N.1. */
-#define DEBUG_CTE_INDEX 1
+//#define DEBUG_CTE_INDEX 1
 #endif
 
 #ifdef DEBUG_CTE
