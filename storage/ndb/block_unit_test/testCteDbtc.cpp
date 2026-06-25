@@ -636,18 +636,28 @@ seizeTcConnect(SignalSender &ss, Uint32 nodeId,
     fprintf(stderr, "sendSignal TCSEIZEREQ failed\n");
     return -1;
   }
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCSEIZECONF");
-  if (resp == nullptr) return -1;
-  int gsn = getGsn(resp);
-  if (gsn == GSN_TCSEIZECONF) {
-    apiConnectPtrOut = resp->getDataPtr()[1];
-    tcRefOut = resp->getDataPtr()[2];
-    V("TCSEIZECONF: apiConnectPtr=%u tcRef=0x%08x\n",
-      apiConnectPtrOut, tcRefOut);
-    return 0;
+
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCSEIZECONF");
+    if (resp == nullptr) return -1;
+
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TCSEIZECONF) {
+      apiConnectPtrOut = resp->getDataPtr()[1];
+      tcRefOut = resp->getDataPtr()[2];
+      V("TCSEIZECONF: apiConnectPtr=%u tcRef=0x%08x\n",
+        apiConnectPtrOut, tcRefOut);
+      return 0;
+    }
+    if (gsn == GSN_TCSEIZEREF) {
+      fprintf(stderr, "TCSEIZEREF: errorCode=%u\n",
+              resp->getDataPtr()[1]);
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCSEIZECONF\n", gsn);
   }
-  fprintf(stderr, "Unexpected GSN %d waiting for TCSEIZECONF\n", gsn);
-  return -1;
 }
 
 static int
@@ -661,9 +671,22 @@ releaseTcConnect(SignalSender &ss, Uint32 nodeId,
   data[2] = 0;
   ssig.set(ss, 0, refToBlock(tcRef), GSN_TCRELEASEREQ, 3);
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) return -1;
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCRELEASECONF");
-  if (resp == nullptr) return -1;
-  return (getGsn(resp) == GSN_TCRELEASECONF) ? 0 : -1;
+
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCRELEASECONF");
+    if (resp == nullptr) return -1;
+
+    const int gsn = getGsn(resp);
+    if (gsn == GSN_TCRELEASECONF) {
+      return 0;
+    }
+    if (gsn == GSN_TCRELEASEREF) {
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCRELEASECONF\n", gsn);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2932,7 +2955,8 @@ int main(int argc, char *argv[])
   ndb_end(0);
 
   if (result == 0) {
-    write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) result = 1;
   }
   close(mtr_fd);
 

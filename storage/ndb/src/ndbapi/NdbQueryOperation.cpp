@@ -62,6 +62,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
 #endif
 
@@ -82,6 +83,25 @@ static void dumpJoinAggHex(const char *label, const Uint32 *buf, Uint32 len) {
 #define DEB_JOIN_AGG(label, buf, len) dumpJoinAggHex(label, buf, len)
 #else
 #define DEB_JOIN_AGG(label, buf, len) do {} while(0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_API
+#define DEB_JOIN_AGG_API(...) do {      \
+  fprintf(stderr, __VA_ARGS__);         \
+  fflush(stderr);                       \
+} while (0)
+
+static void dumpAggApiWords(const char *label, const Uint32 *buf, Uint32 len) {
+  fprintf(stderr, "[AGG_API] %s len=%u words:", label, len);
+  const Uint32 dump_len = len < 12 ? len : 12;
+  for (Uint32 i = 0; i < dump_len; i++) {
+    fprintf(stderr, " %08x", buf[i]);
+  }
+  fprintf(stderr, "\n");
+  fflush(stderr);
+}
+#else
+#define DEB_JOIN_AGG_API(...) do { } while (0)
 #endif
 
 /** To prevent compiler warnings about variables that are only used in asserts
@@ -2228,32 +2248,118 @@ NdbAggregator *NdbQuery::getAggregator() const {
   return m_impl.getAggregator();
 }
 
-void NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
-  if (len == 0) return;
-  m_aggResultOffsets.append(m_aggResultData.getSize());
-  Uint32 *dst = m_aggResultData.alloc(len);
-  if (likely(dst != nullptr)) {
-    memcpy(dst, data, len * sizeof(Uint32));
+bool NdbQueryImpl::isAggReceiveComplete() const {
+  if (!m_hasAggregation || m_aggregator == nullptr) {
+    return true;
   }
+
+  return m_aggFinalConfs > 0 &&
+         m_aggReceivedResults >= m_aggExpectedResults;
 }
 
-void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
-                                           Uint32 fragInfo) {
-  if (len == 0) return;
-  if (fragInfo == 1) {
-    // First fragment: record batch offset
-    m_aggResultOffsets.append(m_aggResultData.getSize());
+bool NdbQueryImpl::execAggSCAN_TABCONF(Uint32 tcPtrI,
+                                       Uint32 rowCount,
+                                       const NdbReceiver *receiver) {
+  assert(m_hasAggregation);
+  assert(m_aggregator != nullptr);
+  assert(receiver != nullptr);
+  (void)receiver;
+
+  m_aggExpectedResults += rowCount;
+  if (tcPtrI == RNIL) {
+    m_aggFinalConfs++;
   }
+
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] execAggSCAN_TABCONF: recvId=0x%x "
+                   "tcPtrI=0x%x rowCount=%u expected=%u received=%u "
+                   "finalConfs=%u numAggReceivers=%u complete=%u\n",
+                   receiver->getId(), tcPtrI, rowCount,
+                   m_aggExpectedResults, m_aggReceivedResults,
+                   m_aggFinalConfs, m_numAggReceivers,
+                   isAggReceiveComplete() ? 1 : 0);
+#endif
+
+  return isAggReceiveComplete();
+}
+
+bool NdbQueryImpl::noteAggResultReceived() {
+  assert(m_hasAggregation);
+  assert(m_aggregator != nullptr);
+
+  m_aggReceivedResults++;
+  return isAggReceiveComplete();
+}
+
+bool NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
+  if (len == 0) return false;
+  const Uint32 offset = m_aggResultData.getSize();
+  m_aggResultOffsets.append(offset);
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI: len=%u offset=%u "
+                   "numOffsets=%u marker=0x%x header=0x%x nRows=%u "
+                   "lenWord=0x%x\n",
+                   len, offset, m_aggResultOffsets.getSize(),
+                   len > 0 ? AttributeHeader(data[0]).getAttributeId() : 0,
+                   len > 1 ? data[1] : 0,
+                   len > 2 ? data[2] : 0,
+                   len > 3 ? data[3] : 0);
+  dumpAggApiWords("execAggTRANSID_AI", data, len);
+#endif
   Uint32 *dst = m_aggResultData.alloc(len);
   if (likely(dst != nullptr)) {
     memcpy(dst, data, len * sizeof(Uint32));
+    return noteAggResultReceived();
+#ifdef DEBUG_JOIN_AGG_API
+  } else {
+    DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI: alloc failed "
+                     "len=%u offset=%u\n", len, offset);
+#endif
   }
+  return false;
+}
+
+bool NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+                                           Uint32 fragInfo) {
+  if (len == 0) return false;
+  const Uint32 offset = m_aggResultData.getSize();
+  if (fragInfo == 1) {
+    // First fragment: record batch offset
+    m_aggResultOffsets.append(offset);
+  }
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: len=%u offset=%u "
+                   "fragInfo=%u numOffsets=%u first_words=0x%x 0x%x "
+                   "0x%x 0x%x\n",
+                   len, offset, fragInfo, m_aggResultOffsets.getSize(),
+                   len > 0 ? data[0] : 0,
+                   len > 1 ? data[1] : 0,
+                   len > 2 ? data[2] : 0,
+                   len > 3 ? data[3] : 0);
+  dumpAggApiWords("execAggTRANSID_AI_frag", data, len);
+#endif
+  Uint32 *dst = m_aggResultData.alloc(len);
+  if (likely(dst != nullptr)) {
+    memcpy(dst, data, len * sizeof(Uint32));
+    return fragInfo == 3 ? noteAggResultReceived() : false;
+#ifdef DEBUG_JOIN_AGG_API
+  } else {
+    DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: alloc failed "
+                     "len=%u offset=%u fragInfo=%u\n",
+                     len, offset, fragInfo);
+#endif
+  }
+  return false;
 }
 
 int NdbQueryImpl::processAggResults() {
   if (!m_hasAggregation || m_aggregator == nullptr) return 0;
 
   const Uint32 numBatches = m_aggResultOffsets.getSize();
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] processAggResults: batches=%u totalWords=%u\n",
+                   numBatches, m_aggResultData.getSize());
+#endif
 #ifdef DEBUG_JOIN_AGG_TRACE
   const Uint32 totalWords = m_aggResultData.getSize();
   fprintf(stderr, "[AGG] processAggResults: %u batches, %u total words\n",
@@ -2266,6 +2372,13 @@ int NdbQueryImpl::processAggResults() {
                                   : m_aggResultData.getSize();
     const Uint32 batchLen = nextOffset - offset;
     const Uint32 *batchData = m_aggResultData.addr() + offset;
+
+#ifdef DEBUG_JOIN_AGG_API
+    DEB_JOIN_AGG_API("[AGG_API] processAggResults batch: batch=%u "
+                     "offset=%u nextOffset=%u len=%u\n",
+                     i, offset, nextOffset, batchLen);
+    dumpAggApiWords("processAggResults batch", batchData, batchLen);
+#endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
     fprintf(stderr, "[AGG]   batch %u: offset=%u len=%u words:", i, offset, batchLen);
@@ -2626,6 +2739,9 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_numAggReceivers(0),
       m_aggResultData(),
       m_aggResultOffsets(),
+      m_aggExpectedResults(0),
+      m_aggReceivedResults(0),
+      m_aggFinalConfs(0),
       m_startIndicator(false),
       m_commitIndicator(false),
       m_prunability(Prune_No),
@@ -2715,6 +2831,9 @@ void NdbQueryImpl::postFetchRelease() {
   // after scan completes. It is deleted in close().
   m_aggResultData.releaseExtend();
   m_aggResultOffsets.releaseExtend();
+  m_aggExpectedResults = 0;
+  m_aggReceivedResults = 0;
+  m_aggFinalConfs = 0;
 
   m_rowBufferAlloc.reset();
   m_tupleSetAlloc.reset();
@@ -3177,9 +3296,16 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
          */
         if (m_pendingWorkers == 0) {
           // 'No more *pending* results', ::sendFetchMore() may make more
-          // available
-          return (m_finalWorkers < getWorkerCount()) ? FetchResult_noMoreCache
-                                                     : FetchResult_noMoreData;
+          // available. For pushed aggregation, the aggregate receiver has its
+          // own result stream and may still receive TRANSID_AI after the normal
+          // SPJ workers have delivered their final batch.
+          if (m_finalWorkers < getWorkerCount()) {
+            return FetchResult_noMoreCache;
+          }
+          if (isAggReceiveComplete()) {
+            return FetchResult_noMoreData;
+          }
+          return FetchResult_noMoreCache;
         }
 
         const Uint32 timeout = ndb->get_waitfor_timeout();

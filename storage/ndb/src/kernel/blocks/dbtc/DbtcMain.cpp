@@ -16919,6 +16919,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggColumnMetaLen = 0;
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
   scanptr.p->m_aggReceiverId = RNIL;
+  scanptr.p->m_aggResultRows = 0;
   scanptr.p->m_joinAgg = false;
   scanptr.p->m_hasMainAggProgram = false;
   scanptr.p->m_aggPhaseFailed = false;
@@ -29981,9 +29982,9 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     const Uint32 maxNodes = MAX_NDB_NODES;
     const Uint32 numCtes = scanptr.p->m_numCtes;
     /* Per CTE: cteId(1) + depMask(2) + flags(1) + phase(1)
-     *           + nodeCount(1) + nodes(maxNodes*2) */
+     *           + nodeCount(1) + nodes(maxNodes*3) */
     const Uint32 keyDataSize = maxNodes * 2 + 3 +
-        numCtes * (6 + maxNodes * 2);
+        numCtes * (6 + maxNodes * 3);
     Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
         keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
         getThreadId(), true);
@@ -30056,6 +30057,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
              nid = cNodes.find_next(nid + 1)) {
           keyData[idx++] = nid;
           keyData[idx++] = cteNodes->m_aggStateKeys[nid];
+          keyData[idx++] = cteNodes->m_aggOwnerInstances[nid];
         }
       }
     }
@@ -30195,6 +30197,7 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
     ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
     scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
+    scanptr.p->m_aggResultRows += conf->numResultRows;
     scanptr.p->m_aggNodesOutstanding--;
   }
 
@@ -30225,6 +30228,10 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
       jam();
       scanptr.p->m_aggPhaseFailed = false;
     }
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    sendJoinAggScanTabConf(signal, scanptr, apiConnectptr);
     sendJoinAggReleaseReqs(signal, scanptr);
   }
 }
@@ -30479,15 +30486,21 @@ Dbtc::findJoinAggHeartbeatScanFrag(ScanRecordPtr scanptr, Uint32 nodeId) {
   Local_ScanFragRec_dllist list(c_scan_frag_pool,
                                 scanptr.p->m_running_scan_frags);
   ScanFragRecPtr scanFragPtr;
+  Uint32 fallback = RNIL;
   for (list.first(scanFragPtr); !scanFragPtr.isNull();
        list.next(scanFragPtr)) {
-    if (scanFragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE &&
-        refToNode(scanFragPtr.p->lqhBlockref) == nodeId) {
+    if (scanFragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE) {
       jam();
-      return scanFragPtr.i;
+      if (fallback == RNIL) {
+        fallback = scanFragPtr.i;
+      }
+      if (refToNode(scanFragPtr.p->lqhBlockref) == nodeId) {
+        jam();
+        return scanFragPtr.i;
+      }
     }
   }
-  return RNIL;
+  return fallback;
 }
 
 /**
@@ -30849,6 +30862,47 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
      */
     sendJoinAggReleaseReqs(signal, scanptr);
   }
+}
+
+void Dbtc::sendJoinAggScanTabConf(Signal *signal,
+                                  ScanRecordPtr scanptr,
+                                  ApiConnectRecordPtr apiConnectptr) {
+  jam();
+
+  const Uint32 ref = apiConnectptr.p->ndbapiBlockref;
+  if (ref == 0 ||
+      apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK ||
+      scanptr.p->m_aggReceiverId == RNIL) {
+    jam();
+    return;
+  }
+
+  const Uint32 apiVersion = getNodeInfo(refToNode(ref)).m_version;
+  ndbassert(apiVersion != 0);
+  const bool sendActiveMask = ndbd_send_active_bitmask(apiVersion);
+
+  ScanTabConf *conf = (ScanTabConf *)&signal->theData[0];
+  conf->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
+  conf->requestInfo = ScanTabConf::EndOfData | 1;
+  conf->transId1 = apiConnectptr.p->transid[0];
+  conf->transId2 = apiConnectptr.p->transid[1];
+
+  Uint32 *ops = signal->getDataPtrSend() + ScanTabConf::SignalLength;
+  *ops++ = scanptr.p->m_aggReceiverId;
+  *ops++ = RNIL;
+  *ops++ = scanptr.p->m_aggResultRows;
+  *ops++ = 0;  // moreMask
+  if (sendActiveMask) {
+    *ops++ = 0;  // activeMask
+  }
+
+  if (refToNode(ref) != getOwnNodeId()) {
+    signal->m_send_wakeups++;
+  }
+
+  const Uint32 sigLen =
+      ScanTabConf::SignalLength + (sendActiveMask ? 5 : 4);
+  sendSignal(ref, GSN_SCAN_TABCONF, signal, sigLen, JBB);
 }
 
 void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {

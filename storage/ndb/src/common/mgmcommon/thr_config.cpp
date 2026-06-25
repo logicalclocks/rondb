@@ -767,7 +767,7 @@ THRConfig::do_parse_auto(unsigned realtime,
      * loop (same start CPU, same "only LDM" prefix, same even-position LDM
      * rule), so any change to the loop must be mirrored here.
      */
-    Uint32 ldm_slot_rr_group[MAX_NDBMT_LQH_WORKERS];
+    Uint32 ldm_slot_rr_group[MAX_NDBMT_LQH_WORKERS] = {};
     Uint32 num_ldm_slots = 0;
     {
       Uint32 walk_cpu_id = next_cpu_id;

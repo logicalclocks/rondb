@@ -167,9 +167,9 @@
 //#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
-//#define DEBUG_JOIN_AGG 1
-#define DEBUG_MATCH 1
-#define DEBUG_CTE 1
+#define DEBUG_JOIN_AGG 1
+//#define DEBUG_MATCH 1
+//#define DEBUG_CTE 1
 #endif
 
 #ifdef DEBUG_CTE
@@ -19117,12 +19117,33 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       ptr[0].p = buf;
       ptr[0].sz = pos;
 
+#ifdef DEBUG_JOIN_AGG
+      const Uint32 keyWordsForDebug = (key_len + 3) >> 2;
+      const Uint32 *keyBufForDebug =
+          reinterpret_cast<const Uint32*>(iter.data());
+      const Uint32 key0ForDebug =
+          keyWordsForDebug > 0 ? keyBufForDebug[0] : 0;
+      const Uint32 key1ForDebug =
+          keyWordsForDebug > 1 ? keyBufForDebug[1] : 0;
+#endif
+
       DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
-                    " size: %u",
+                    " size: %u aggStateKey=%u keyLen=%u keyWords=%u"
+                    " key[0]=0x%x key[1]=0x%x rowNo=%u totalBytes=%u"
+                    " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
         transIdAI->connectPtr,
-        pos));
+        pos,
+        aggStateKey,
+        key_len,
+        keyWordsForDebug,
+        key0ForDebug,
+        key1ForDebug,
+        num_result_rows,
+        total_bytes,
+        interp->processed_rows(),
+        gb_map->size()));
 
       sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength, JBB, ptr, 1);
@@ -19857,6 +19878,8 @@ bool Dblqh::routeCteLookup(Signal *signal,
   }
   jam();
   Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
+  Uint32 remoteOwner = state->m_cte_remote_ownerInstances[ownerNode];
+  ndbrequire(remoteOwner > 0);
   DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
            "(hash=0x%llx ownerIdx=%u)",
            instance(), ownerNode, remoteAggKey,
@@ -19894,7 +19917,7 @@ bool Dblqh::routeCteLookup(Signal *signal,
     fwdHandle.m_cnt = 2;
   }
 
-  Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
+  Uint32 ref = numberToRef(DBLQH, remoteOwner, ownerNode);
   sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
              CteLookupReq::SignalLength, JBB, &fwdHandle);
   return true;
@@ -20042,6 +20065,12 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
    * or linkedValues (source attrId), so incoming keys are inconsistent.
    * Matches the insertion-time normalization in JoinAggInterpreter
    * when m_cte_mode is set. Preserves byteSize + NULL bit (low 16). */
+#ifdef DEBUG_JOIN_AGG
+  const Uint32 keyWordsForDebug = (req.keyLen + 3) >> 2;
+  const Uint32 rawKey0ForDebug = keyWordsForDebug > 0 ? keyBuf[0] : 0;
+  const Uint32 rawKey1ForDebug = keyWordsForDebug > 1 ? keyBuf[1] : 0;
+#endif
+
   {
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 keyWords = (req.keyLen + 3) >> 2;
@@ -20079,9 +20108,21 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
         c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
-           instance(), keyBuf[0], req.keyLen,
-           groupData ? "FOUND" : "NOT_FOUND"));
+#ifdef DEBUG_JOIN_AGG
+  DEB_JOIN_AGG(("(%u) DBLQH CTE_LOOKUP result: "
+                "aggStateKey=%u state=%u keyLen=%u keyWords=%u "
+                "rawKey[0]=0x%x rawKey[1]=0x%x "
+                "normKey[0]=0x%x normKey[1]=0x%x result=%s "
+                "joinAgg=%u flags=0x%x corr=0x%x senderRef=0x%x",
+                instance(), req.aggStateKey,
+                (Uint32)state->m_state.load(), req.keyLen,
+                keyWordsForDebug, rawKey0ForDebug, rawKey1ForDebug,
+                keyWordsForDebug > 0 ? keyBuf[0] : 0,
+                keyWordsForDebug > 1 ? keyBuf[1] : 0,
+                groupData ? "FOUND" : "NOT_FOUND",
+                req.joinAggStateKey, req.flags, req.correlation,
+                req.senderRef));
+#endif
 
   if (groupData == nullptr) {
     jam();
@@ -21324,6 +21365,12 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       lsp[1].sz = (valLen + 3) >> 2;
 
       BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
+      DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ send: "
+                    "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u "
+                    "dstOwner=%u keyLen=%u valueLen=%u needConf=%u "
+                    "batchBytes=%u sigBytes=%u",
+                    instance(), aggStateKey, dstKey, ownerNode, dstOwner,
+                    keyLen, valLen, needConf, batch_bytes, sigBytes));
       sendBatchedFragmentedSignal(remoteRef,
                                   GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
                                   JoinAggRedistributeReq::SignalLength,
@@ -21372,6 +21419,11 @@ redistribution_done:
           (JoinAggFinalRep *)signal->getDataPtrSend();
         rep->aggStateKey = dstKey;
         rep->senderNodeId = ownNodeId;
+
+        DEB_JOIN_AGG(("(%u) DBLQH FINAL_REP send: "
+                      "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u "
+                      "dstOwner=%u",
+                      instance(), aggStateKey, dstKey, dstNode, dstOwner));
 
         BlockReference remoteRef = numberToRef(DBLQH, dstOwner, dstNode);
         sendSignal(remoteRef, GSN_JOIN_AGG_FINAL_REP, signal,
@@ -21438,6 +21490,19 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   copy(valBuf, valueSection);
   releaseSections(handle);
 
+  JoinAggregationState::State curState = state->m_state.load();
+  DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ recv: "
+                "aggStateKey=%u senderAggStateKey=%u senderNode=%u "
+                "senderRef=0x%x state=%u keyLen=%u valueLen=%u "
+                "keyWords=%u valueWords=%u needConf=%u queueCount=%u "
+                "redistDone=%u",
+                instance(), aggStateKey, senderAggStateKey,
+                refToNode(signal->getSendersBlockRef()),
+                signal->getSendersBlockRef(), (Uint32)curState, keyLen,
+                valueLen, keySection.sz, valueSection.sz, needConf,
+                state->m_redist_queue_count,
+                state->m_cte_redistribution_done));
+
   /* Send CONF immediately if requested so the sender can resume
    * without waiting for our merge to complete. */
   if (needConf) {
@@ -21450,8 +21515,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_CONF,
                signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
-
-  JoinAggregationState::State curState = state->m_state.load();
 
   /* If in ERROR state, send REF */
   if (curState == JoinAggregationState::ERROR ||
@@ -21496,14 +21559,20 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     entry->next = nullptr;
     entry->keyLen = keyLen;
     entry->valueLen = valueLen;
-    memcpy(entry->data, keyBuf, keySection.sz);
-    memcpy(entry->data + keyWords, valBuf, valueSection.sz);
+    memcpy(entry->data, keyBuf, keyWords * sizeof(Uint32));
+    memcpy(entry->data + keyWords, valBuf, valWords * sizeof(Uint32));
     if (state->m_redist_queue_tail != nullptr)
       state->m_redist_queue_tail->next = entry;
     else
       state->m_redist_queue_head = entry;
     state->m_redist_queue_tail = entry;
     state->m_redist_queue_count++;
+    DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ queued: "
+                  "aggStateKey=%u senderAggStateKey=%u state=%u "
+                  "keyLen=%u valueLen=%u queueCount=%u",
+                  instance(), aggStateKey, senderAggStateKey,
+                  (Uint32)curState, keyLen, valueLen,
+                  state->m_redist_queue_count));
     return;
   }
   /* Process immediately: merge into local hash table */
@@ -21527,6 +21596,12 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
   }
+  DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ merged: "
+                "aggStateKey=%u senderAggStateKey=%u state=%u "
+                "keyLen=%u valueLen=%u queueCount=%u redistDone=%u",
+                instance(), aggStateKey, senderAggStateKey,
+                (Uint32)curState, keyLen, valueLen,
+                state->m_redist_queue_count, state->m_cte_redistribution_done));
 }
 
 /**
@@ -21713,6 +21788,12 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
   ndbassert(state->m_owner_instance == instance());
 
   state->m_cte_nodes_finalized.set(senderNodeId);
+  DEB_JOIN_AGG(("(%u) DBLQH FINAL_REP recv: "
+                "aggStateKey=%u senderNode=%u state=%u "
+                "queueCount=%u redistDone=%u",
+                instance(), aggStateKey, senderNodeId,
+                (Uint32)state->m_state.load(), state->m_redist_queue_count,
+                state->m_cte_redistribution_done));
   checkCteReady(signal, state);
 }
 
@@ -21740,6 +21821,11 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
     ndbassert(false);
     return;
   }
+  DEB_JOIN_AGG(("(%u) DBLQH checkCteReady: state=%u "
+                "redistributionDone=%u queueCount=%u numNodes=%u",
+                instance(), (Uint32)state->m_state.load(),
+                state->m_cte_redistribution_done,
+                state->m_redist_queue_count, state->m_cte_num_nodes));
   DEB_CTE(("(%u) checkCteReady: redistribution_done=%u",
            instance(), state->m_cte_redistribution_done));
   if (!state->m_cte_redistribution_done) {
@@ -21752,6 +21838,10 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
     if (state->m_cte_node_list[i] != ownNodeId &&
         !state->m_cte_nodes_finalized.get(state->m_cte_node_list[i])) {
       jam();
+      DEB_JOIN_AGG(("(%u) DBLQH checkCteReady: "
+                    "waiting for node %u ownNode=%u",
+                    instance(), state->m_cte_node_list[i],
+                    ownNodeId));
       DEB_CTE(("(%u) checkCteReady: waiting for node %u",
                instance(), state->m_cte_node_list[i]));
       return;
@@ -21760,6 +21850,9 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
 
   /* All done — transition to CTE_READY and send COMPLETE_CONF */
   jam();
+  DEB_JOIN_AGG(("(%u) DBLQH checkCteReady: "
+                "all nodes done, transition to CTE_READY queueCount=%u",
+                instance(), state->m_redist_queue_count));
   DEB_CTE(("(%u) checkCteReady: all nodes done → CTE_READY", instance()));
   state->m_state.store(JoinAggregationState::CTE_READY);
 

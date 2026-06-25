@@ -697,6 +697,7 @@ class Dbspj : public SimulatedBlock {
      * Slots are compact: m_numNodeSlots in [0, MAX_CTE_SCAN_NODE_SLOTS]. */
     struct NodeSlot {
       Uint32 m_sourceNodeId;   // DBLQH nodeId this slot tracks
+      Uint32 m_ownerInstance;  // DBLQH instance that owns scanIterI
       Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
                                // first REQ and after EndOfData CONF
       bool m_endOfData;        // Final CONF seen from this node
@@ -1491,6 +1492,7 @@ class Dbspj : public SimulatedBlock {
      * when CTE keys are parsed from the aggKeys section.
      */
     Uint32 *m_cteAggStateKeys;
+    Uint32 *m_cteAggOwnerInstances;
 
     ArenaHead m_arena;
 
@@ -1941,7 +1943,8 @@ class Dbspj : public SimulatedBlock {
   void cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
                         Ptr<TreeNode> treeNodePtr,
                         Uint32 sourceNodeId, Uint32 aggStateKey,
-                        Uint32 joinAggStateKey, Uint32 scanIterI);
+                        Uint32 ownerInstance, Uint32 joinAggStateKey,
+                        Uint32 scanIterI);
 
   /* Round-trip close REQ: tells DBLQH to free the CteScanIterState
    * pool record for scanIterI and reply with an EndOfData CONF.
@@ -1949,7 +1952,8 @@ class Dbspj : public SimulatedBlock {
    * close CONF drains them via the normal execCTE_SCAN_CONF path. */
   void cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr,
-                             Uint32 sourceNodeId, Uint32 scanIterI);
+                             Uint32 sourceNodeId, Uint32 ownerInstance,
+                             Uint32 scanIterI);
 
   /* Abort handler: tears down any CteScanIterState pool records held
    * by DBLQH for open slots (scanIterI != RNIL, !m_endOfData). */

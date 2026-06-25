@@ -2051,6 +2051,7 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggColumnMetaLen;
     Uint32 m_aggKeysSectionPtrI;
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
+    Uint32 m_aggResultRows;  // Total main aggregate rows reported by DBLQH
     Uint32 m_aggNodesOutstanding;
     bool m_joinAgg;
     bool m_hasMainAggProgram;      // True if main query has an agg program
@@ -2549,6 +2550,9 @@ class Dbtc : public SimulatedBlock {
   void sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
   Uint32 findJoinAggHeartbeatScanFrag(ScanRecordPtr, Uint32 nodeId);
   void sendJoinAggCompleteReqs(Signal *, ScanRecordPtr);
+  void sendJoinAggScanTabConf(Signal *,
+                              ScanRecordPtr,
+                              ApiConnectRecordPtr);
   void sendJoinAggReleaseReqs(Signal *, ScanRecordPtr);
   void joinAggAbortAfterRelease(Signal *, ScanRecordPtr);
 
