@@ -1643,6 +1643,9 @@ class Dbtc : public SimulatedBlock {
     TableRecord()
     {
       databaseRecord = RNIL64;
+      m_partition_hash_base_key_count = 0;
+      m_partition_hash_detail_key_count = 0;
+      m_partition_hash_fanout = 1;
     }
     Uint64 databaseRecord;
     Uint32 currentSchemaVersion;
@@ -1693,6 +1696,9 @@ class Dbtc : public SimulatedBlock {
     Uint8 noOfDistrKeys;
     Uint8 hasVarKeys;
     Uint8 m_disk_based;
+    Uint8 m_partition_hash_base_key_count;
+    Uint8 m_partition_hash_detail_key_count;
+    Uint16 m_partition_hash_fanout;
     Uint32 m_ttl_sec;
     Uint32 m_ttl_col_no;
     Uint32 m_primary_table_id;
@@ -1939,6 +1945,15 @@ class Dbtc : public SimulatedBlock {
     // Id of the next fragment to be scanned. Used by scan fragment
     // processes when they are ready for the next fragment
     Uint32 scanNextFragId;
+
+    /*
+     * For partition-hash fanout pruning this is the first raw hash value in
+     * the fanout interval. scanNextFragId remains a relative interval offset.
+     * DBTC sends firstHash + offset to DIH with distr_key_indicator = 0 so DIH
+     * applies the current table distribution mapping. This intentionally does
+     * not assume that fanout divides the current fragment count.
+     */
+    Uint32 scanFirstHashValue;
 
     // Total number of fragments in the table we are scanning
     Uint32 scanNoFrag;
@@ -2326,6 +2341,12 @@ class Dbtc : public SimulatedBlock {
                            const Uint32 tabPtrI,
                            bool distr,
                            bool use_new_hash_function);
+  bool handle_partition_hash(Uint32 dstHash[4],
+                             const Uint32 *src,
+                             Uint32 srcLen,
+                             const Uint32 tabPtrI,
+                             const Uint32 *keyPartLen,
+                             bool use_new_hash_function);
   
   void initApiConnect(Signal* signal);
   void initApiConnectRec(Signal* signal, 

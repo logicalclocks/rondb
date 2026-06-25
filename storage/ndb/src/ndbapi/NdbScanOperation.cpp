@@ -26,6 +26,7 @@
 
 #include "API.hpp"
 #include "util/require.h"
+#include <util/rondb_hash.hpp>
 
 #include <AttributeHeader.hpp>
 #include <NdbSqlUtil.hpp>
@@ -858,6 +859,140 @@ int NdbIndexScanOperation::getDistKeyFromRange(const NdbRecord *key_record,
   }
 }
 
+static bool index_has_base_partition_prefix(const NdbRecord *key_record,
+                                            const NdbRecord *result_record,
+                                            Uint32 base_key_count) {
+  if (key_record->key_index_length < base_key_count ||
+      result_record->key_index_length < base_key_count) {
+    return false;
+  }
+  for (Uint32 i = 0; i < base_key_count; i++) {
+    const Uint32 index_col = key_record->key_indexes[i];
+    const Uint32 table_col = result_record->key_indexes[i];
+    if (key_record->columns[index_col].attrId !=
+        result_record->columns[table_col].attrId) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static int compute_base_hash_from_key_parts(const NdbTableImpl *impl,
+                                            const Ndb::Key_part_ptr *keyData,
+                                            Uint32 parts, void *buf,
+                                            Uint32 bufLen, Uint32 *baseHash) {
+  const NdbColumnImpl *const *cols = impl->m_columns.getBase();
+  const Uint32 colcnt = impl->m_columns.size();
+  const NdbColumnImpl *partcols[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  Uint32 j = 0;
+
+  for (Uint32 i = 0; i < colcnt && j < parts; i++) {
+    if (cols[i]->m_pk && cols[i]->m_keyInfoPos < parts) {
+      partcols[cols[i]->m_keyInfoPos] = cols[i];
+      j++;
+    }
+  }
+  assert(j == parts);
+
+  Uint32 sumlen = 0;
+  for (Uint32 i = 0; i < parts; i++) {
+    Uint32 lb, len;
+    if (unlikely(keyData[i].ptr == nullptr)) return 4316;
+    if (unlikely(!NdbSqlUtil::get_var_length(
+            partcols[i]->m_type, keyData[i].ptr, keyData[i].len, lb, len))) {
+      return 4280;
+    }
+    if (unlikely(keyData[i].len < (lb + len))) return 4277;
+
+    const Uint32 maxlen = partcols[i]->m_attrSize * partcols[i]->m_arraySize;
+    if (unlikely(lb == 0 && keyData[i].len != maxlen)) return 4280;
+
+    if (partcols[i]->m_cs != nullptr) {
+      len = NdbSqlUtil::strnxfrm_hash_len(partcols[i]->m_cs, maxlen - lb);
+    }
+    sumlen += (lb + len + 3) & ~(Uint32)3;
+  }
+
+  if (unlikely(sumlen > bufLen)) return 4278;
+
+  unsigned char *pos = (unsigned char *)buf;
+  unsigned char *bufEnd = pos + bufLen;
+  for (Uint32 i = 0; i < parts; i++) {
+    Uint32 lb, len;
+    NdbSqlUtil::get_var_length(partcols[i]->m_type, keyData[i].ptr,
+                               keyData[i].len, lb, len);
+    CHARSET_INFO *cs = partcols[i]->m_cs;
+    if (cs != nullptr) {
+      const Uint32 maxlen =
+          (partcols[i]->m_attrSize * partcols[i]->m_arraySize) - lb;
+      int n = NdbSqlUtil::strnxfrm_hash(
+          cs, partcols[i]->m_type, pos, bufEnd - pos,
+          ((const uchar *)keyData[i].ptr) + lb, len, maxlen);
+      if (unlikely(n == -1)) return 4279;
+      while ((n & 3) != 0) {
+        pos[n++] = 0;
+      }
+      pos += n;
+    } else {
+      len += lb;
+      memcpy(pos, keyData[i].ptr, len);
+      while (len & 3) {
+        *(pos + len++) = 0;
+      }
+      pos += len;
+    }
+  }
+
+  Uint32 values[4];
+  const Uint32 words = Uint32(UintPtr(pos) - UintPtr(buf)) >> 2;
+  rondb_calc_hash(values, (const char *)buf, words,
+                  impl->m_use_new_hash_function);
+  *baseHash = values[1];
+  return 0;
+}
+
+int NdbIndexScanOperation::getPartitionHashBaseHashFromRange(
+    const NdbRecord *key_record, const NdbRecord *result_record,
+    const char *row, Uint32 *baseHash) {
+  Uint32 xfrmbuf[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
+  char shrinkbuf[NDB_MAX_KEY_SIZE];
+  char *tmpshrink = shrinkbuf;
+  Ndb::Key_part_ptr ptrs[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+  const Uint32 base_key_count =
+      result_record->table->m_base_partition_key_count;
+
+  for (Uint32 i = 0; i < base_key_count; i++) {
+    const NdbRecord::Attr *col =
+        &key_record->columns[key_record->key_indexes[i]];
+    if (col->flags & NdbRecord::IsMysqldShrinkVarchar) {
+      Uint32 len;
+      if (!col->shrink_varchar(row, len, tmpshrink)) {
+        setErrorCodeAbort(4209);
+        return -1;
+      }
+      ptrs[i].ptr = tmpshrink;
+      tmpshrink += len;
+    } else {
+      ptrs[i].ptr = row + col->offset;
+    }
+    ptrs[i].len = col->maxSize;
+  }
+  ptrs[base_key_count].ptr = nullptr;
+
+  Uint32 hashValue;
+  const int ret = compute_base_hash_from_key_parts(
+      result_record->table, ptrs, base_key_count, xfrmbuf, sizeof(xfrmbuf),
+      &hashValue);
+  if (ret != 0) {
+    setErrorCodeAbort(ret);
+    return -1;
+  }
+
+  const Uint32 fanout = result_record->table->m_base_partition_fanout;
+  *baseHash = (hashValue / fanout) * fanout;
+  return 0;
+}
+
 int NdbScanOperation::validatePartInfoPtr(const Ndb::PartitionSpec *&partInfo,
                                           Uint32 sizeOfPartInfo,
                                           Ndb::PartitionSpec &tmpSpec) {
@@ -1104,6 +1239,8 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
         return -1;
       }
     } else {
+      const bool tabHasPartitionHashFanout =
+          m_attribute_record->table->m_base_partition_fanout > 1;
       if (likely(!tabHasUserDefPartitioning)) {
         /* Attempt to get implicit partitioning info from range bounds -
          * only possible if they are present and bound a single value
@@ -1112,7 +1249,8 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
         Uint32 index_distkeys = key_record->m_no_of_distribution_keys;
         Uint32 table_distkeys = m_attribute_record->m_no_of_distribution_keys;
         Uint32 distkey_min = key_record->m_min_distkey_prefix_length;
-        if (index_distkeys ==
+        if (!tabHasPartitionHashFanout &&
+            index_distkeys ==
                 table_distkeys &&  // Index has all base table d-keys
             common_key_count >= distkey_min &&  // Bounds have all d-keys
             bound.low_key &&                    // Have both bounds
@@ -1125,6 +1263,34 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
           if (getDistKeyFromRange(key_record, m_attribute_record, bound.low_key,
                                   &currRangePartValue))
             return -1;
+        }
+
+        /*
+         * Current fanout pruning only recognises ordered indexes whose first
+         * key columns are the base primary-key columns in primary-key order.
+         * The hash scheme itself only requires equality on the base key; this
+         * limitation can be removed later by gathering base key values from
+         * arbitrary index positions.
+         */
+        if (tabHasPartitionHashFanout &&
+            ndbd_support_partition_hash_fanout(
+                theNdb->getMinDbNodeVersion())) {
+          const Uint32 base_key_count =
+              m_attribute_record->table->m_base_partition_key_count;
+          if (index_has_base_partition_prefix(key_record, m_attribute_record,
+                                              base_key_count) &&
+              common_key_count >= base_key_count &&
+              bound.low_key &&
+              bound.high_key &&
+              0 == compare_index_row_prefix(key_record, bound.low_key,
+                                            bound.high_key, base_key_count)) {
+            assert(!openRange);
+            currRangeHasOnePartVal = true;
+            if (getPartitionHashBaseHashFromRange(
+                    key_record, m_attribute_record, bound.low_key,
+                    &currRangePartValue))
+              return -1;
+          }
         }
       }
     }

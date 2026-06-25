@@ -297,6 +297,43 @@ ndbd_support_fully_replicated(Uint32 x)
 }
 
 /**
+ * Support for NDB_TABLE=PARTITION_HASH=...
+ */
+#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_25_10 NDB_MAKE_VERSION(25,10,14)
+#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_02 NDB_MAKE_VERSION(26,2,6)
+#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_05 NDB_MAKE_VERSION(26,5,0)
+
+static
+inline
+int
+ndbd_support_partition_hash_fanout(Uint32 x)
+{
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major < 25)
+  {
+    return 0;
+  }
+  if (major == 25)
+  {
+    return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_25_10;
+  }
+  if (major == 26)
+  {
+    if (minor == 2)
+    {
+      return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_02;
+    }
+    if (minor >= 5)
+    {
+      return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_05;
+    }
+    return 0;
+  }
+  return 1;
+}
+
+/**
  * Uses new Partial LCP format for LCPs
  */
 #define NDBD_USE_PARTIAL_LCP_v1 NDB_MAKE_VERSION(7,6,3)

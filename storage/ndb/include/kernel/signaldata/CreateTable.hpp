@@ -97,6 +97,7 @@ struct CreateTableRef {
     WrongPartitionBalanceFullyReplicated = 797,
     NoLoggingDiskTable = 798,
     NonDefaultPartitioningWithNoPartitions = 799,
+    InvalidPartitionHash = 800,
     TooManyFragments = 1224,
     CreateDbNoAvailableRates = 1235,
     AlterDbNoAvailableRates = 1236,

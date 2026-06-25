@@ -200,6 +200,11 @@ class NdbTableImpl : public NdbDictionary::Table, public NdbDictObjectImpl {
   void setFragmentCount(Uint32 count);
   Uint32 getFragmentCount() const;
   Uint32 getPartitionCount() const;
+  void setPartitionHash(Uint32 base_key_count, Uint32 detail_key_count,
+                        Uint32 fanout);
+  Uint32 getPartitionHashBaseKeyCount() const;
+  Uint32 getPartitionHashDetailKeyCount() const;
+  Uint32 getPartitionHashFanout() const;
   int setFrm(const void *data, Uint32 len);
   const void *getFrmData() const;
   Uint32 getFrmLength() const;
@@ -314,6 +319,9 @@ class NdbTableImpl : public NdbDictionary::Table, public NdbDictObjectImpl {
   Uint16 m_keyLenInWords;
   Uint16 m_partitionCount;
   Uint16 m_fragmentCount;
+  Uint32 m_base_partition_key_count;
+  Uint32 m_detail_partition_key_count;
+  Uint32 m_base_partition_fanout;
   NdbDictionary::Object::PartitionBalance m_partitionBalance;
   Uint8 m_single_user_mode;
   Uint8 m_storageType;  // NDB_STORAGETYPE_MEMORY or _DISK or DEFAULT

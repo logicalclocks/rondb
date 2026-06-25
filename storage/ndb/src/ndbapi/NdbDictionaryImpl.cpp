@@ -966,6 +966,9 @@ void NdbTableImpl::init() {
   m_partitionBalance = NdbDictionary::Object::PartitionBalance_ForRPByLDM;
   m_fragmentCount = 0;
   m_partitionCount = 0;
+  m_base_partition_key_count = 0;
+  m_detail_partition_key_count = 0;
+  m_base_partition_fanout = 1;
   m_index = nullptr;
   m_indexType = NdbDictionary::Object::TypeUndefined;
   m_noOfKeys = 0;
@@ -1202,6 +1205,19 @@ bool NdbTableImpl::equal(const NdbTableImpl &obj) const {
     DBUG_RETURN(false);
   }
 
+  if (m_base_partition_key_count != obj.m_base_partition_key_count)
+  {
+    DBUG_RETURN(false);
+  }
+  if (m_detail_partition_key_count != obj.m_detail_partition_key_count)
+  {
+    DBUG_RETURN(false);
+  }
+  if (m_base_partition_fanout != obj.m_base_partition_fanout)
+  {
+    DBUG_RETURN(false);
+  }
+
   if (m_ttl_sec != obj.m_ttl_sec)
   {
     DBUG_RETURN(false);
@@ -1275,6 +1291,9 @@ int NdbTableImpl::assign(const NdbTableImpl &org) {
   m_keyLenInWords = org.m_keyLenInWords;
   m_fragmentCount = org.m_fragmentCount;
   m_partitionCount = org.m_partitionCount;
+  m_base_partition_key_count = org.m_base_partition_key_count;
+  m_detail_partition_key_count = org.m_detail_partition_key_count;
+  m_base_partition_fanout = org.m_base_partition_fanout;
   m_partitionBalance = org.m_partitionBalance;
   m_single_user_mode = org.m_single_user_mode;
   m_extra_row_gci_bits = org.m_extra_row_gci_bits;
@@ -1450,6 +1469,15 @@ void NdbTableImpl::computeAggregates() {
       n--;
     }
   }
+
+  if (m_base_partition_key_count == 0 &&
+      m_detail_partition_key_count == 0 &&
+      m_base_partition_fanout == 1) {
+    const Uint32 base_key_count =
+        (m_noOfDistributionKeys == 0) ? m_noOfKeys : m_noOfDistributionKeys;
+    m_base_partition_key_count = base_key_count;
+    m_detail_partition_key_count = m_noOfKeys - base_key_count;
+  }
 }
 
 // TODO add error checks
@@ -1468,6 +1496,25 @@ void NdbTableImpl::setFragmentCount(Uint32 count) { m_fragmentCount = count; }
 Uint32 NdbTableImpl::getFragmentCount() const { return m_fragmentCount; }
 
 Uint32 NdbTableImpl::getPartitionCount() const { return m_partitionCount; }
+
+void NdbTableImpl::setPartitionHash(Uint32 base_key_count,
+                                    Uint32 detail_key_count, Uint32 fanout) {
+  m_base_partition_key_count = base_key_count;
+  m_detail_partition_key_count = detail_key_count;
+  m_base_partition_fanout = fanout;
+}
+
+Uint32 NdbTableImpl::getPartitionHashBaseKeyCount() const {
+  return m_base_partition_key_count;
+}
+
+Uint32 NdbTableImpl::getPartitionHashDetailKeyCount() const {
+  return m_detail_partition_key_count;
+}
+
+Uint32 NdbTableImpl::getPartitionHashFanout() const {
+  return m_base_partition_fanout;
+}
 
 int NdbTableImpl::setFrm(const void *data, Uint32 len) {
   return m_frm.assign(data, len);
@@ -3842,6 +3889,9 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
       (NdbDictionary::Object::PartitionBalance)tableDesc->PartitionBalance;
   impl->m_read_backup = tableDesc->ReadBackupFlag == 0 ? false : true;
   impl->m_partitionCount = tableDesc->PartitionCount;
+  impl->setPartitionHash(tableDesc->PartitionHashBaseKeyCount,
+                         tableDesc->PartitionHashDetailKeyCount,
+                         tableDesc->PartitionHashFanout);
   impl->m_fully_replicated =
     tableDesc->FullyReplicatedFlag == 0 ? false : true;
   impl->m_use_varsized_disk_data =
@@ -4232,6 +4282,21 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
         req_type |= CreateHashMapReq::CreateForOneNodegroup;
       }
       assert(partitionBalance_Count != 0);
+      const Uint32 partition_hash_fanout = impl.getPartitionHashFanout();
+      if (partition_hash_fanout == 0) {
+        m_error.code = CreateTableRef::InvalidPartitionHash;
+        DBUG_RETURN(-1);
+      }
+      if (partition_hash_fanout > 1) {
+        if (impl.getFullyReplicated()) {
+          m_error.code = 797;  // WrongPartitionBalanceFullyReplicated
+          DBUG_RETURN(-1);
+        }
+        if ((partitionBalance_Count % partition_hash_fanout) != 0) {
+          m_error.code = CreateTableRef::InvalidPartitionHash;
+          DBUG_RETURN(-1);
+        }
+      }
       DBUG_PRINT("info", ("PartitionBalance: create_hashmap: %x",
                           partitionBalance_Count));
       NdbHashMapImpl hashmap;
@@ -4734,6 +4799,9 @@ int NdbDictInterface::serializeTableDesc(NdbTableImpl &impl,
   tmpTab->PartitionBalance = (Uint32)impl.m_partitionBalance;
   tmpTab->FragmentCount = impl.m_fragmentCount;
   tmpTab->PartitionCount = impl.m_partitionCount;
+  tmpTab->PartitionHashBaseKeyCount = impl.m_base_partition_key_count;
+  tmpTab->PartitionHashDetailKeyCount = impl.m_detail_partition_key_count;
+  tmpTab->PartitionHashFanout = impl.m_base_partition_fanout;
   tmpTab->TableLoggedFlag = impl.m_logging;
   tmpTab->TableTemporaryFlag = impl.m_temporary;
   tmpTab->RowGCIFlag = impl.m_row_gci;

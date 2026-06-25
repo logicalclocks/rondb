@@ -29,6 +29,7 @@
 #include <NdbDictionary.hpp>
 #include <NdbOut.hpp>
 #include <signaldata/CreateHashMap.hpp>
+#include <signaldata/CreateTable.hpp>
 #include "NdbDictionaryImpl.hpp"
 #include "decimal.h"
 #include "mysql/strings/m_ctype.h"
@@ -514,6 +515,24 @@ Uint32 NdbDictionary::Table::getFragmentCount() const {
 
 Uint32 NdbDictionary::Table::getPartitionCount() const {
   return m_impl.getPartitionCount();
+}
+
+void NdbDictionary::Table::setPartitionHash(Uint32 base_key_count,
+                                            Uint32 detail_key_count,
+                                            Uint32 fanout) {
+  m_impl.setPartitionHash(base_key_count, detail_key_count, fanout);
+}
+
+Uint32 NdbDictionary::Table::getPartitionHashBaseKeyCount() const {
+  return m_impl.getPartitionHashBaseKeyCount();
+}
+
+Uint32 NdbDictionary::Table::getPartitionHashDetailKeyCount() const {
+  return m_impl.getPartitionHashDetailKeyCount();
+}
+
+Uint32 NdbDictionary::Table::getPartitionHashFanout() const {
+  return m_impl.getPartitionHashFanout();
 }
 
 void NdbDictionary::Table::setPartitionBalance(
@@ -1637,6 +1656,22 @@ int NdbDictionary::Dictionary::prepareHashMap(const Table &oldTableF,
         assert(newTable.getFragmentCount() == 0);
       }
       DBUG_PRINT("info", ("prepareHashMap: New frag count: %u", newcnt));
+    }
+
+    const Uint32 partition_hash_fanout = newTable.getPartitionHashFanout();
+    if (partition_hash_fanout == 0) {
+      m_impl.m_error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    if (partition_hash_fanout > 1) {
+      if (newTable.getFullyReplicated()) {
+        m_impl.m_error.code = 797; // WrongPartitionBalanceFullyReplicated
+        return -1;
+      }
+      if ((newcnt % partition_hash_fanout) != 0) {
+        m_impl.m_error.code = CreateTableRef::InvalidPartitionHash;
+        return -1;
+      }
     }
 
     /*

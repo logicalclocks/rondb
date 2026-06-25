@@ -1076,6 +1076,12 @@ void Dbdict::packTableIntoPages(SimpleProperties::Writer &w,
         !!(tablePtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData));
   w.add(DictTabInfo::HashFunctionFlag,
         ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0));
+  w.add(DictTabInfo::PartitionHashBaseKeyCount,
+        tablePtr.p->partitionHashBaseKeyCount);
+  w.add(DictTabInfo::PartitionHashDetailKeyCount,
+        tablePtr.p->partitionHashDetailKeyCount);
+  w.add(DictTabInfo::PartitionHashFanout,
+        tablePtr.p->partitionHashFanout);
 
   DEB_HASH(("1: dict_tab(%u) HashFunctionFlag: %u",
             tablePtr.p->tableId,
@@ -6064,6 +6070,11 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
 
   tablePtr.p->ttlSec = c_tableDesc.TTLSec;
   tablePtr.p->ttlColumnNo = c_tableDesc.TTLColumnNo;
+  tablePtr.p->partitionHashBaseKeyCount =
+      (Uint8)c_tableDesc.PartitionHashBaseKeyCount;
+  tablePtr.p->partitionHashDetailKeyCount =
+      (Uint8)c_tableDesc.PartitionHashDetailKeyCount;
+  tablePtr.p->partitionHashFanout = (Uint16)c_tableDesc.PartitionHashFanout;
 
   g_eventLogger->info("[DICT]s< parsed c_tableDesc , table_id: %u, "
                       "TTL sec: %u, TTL column no: %u",
@@ -7356,6 +7367,9 @@ void Dbdict::createTab_local(Signal *signal, SchemaOpPtr op_ptr,
     KeyDescriptor *desc =
         g_key_descriptor_pool.getPtr(createTabPtr.p->m_request.tableId);
     new (desc) KeyDescriptor();
+    desc->partitionHashBaseKeyCount = tabPtr.p->partitionHashBaseKeyCount;
+    desc->partitionHashDetailKeyCount = tabPtr.p->partitionHashDetailKeyCount;
+    desc->partitionHashFanout = tabPtr.p->partitionHashFanout;
 
     if (tabPtr.p->primaryTableId == RNIL) {
       jam();
@@ -7912,6 +7926,10 @@ void Dbdict::execTAB_COMMITCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->partitionHash =
+        packPartitionHash(tabPtr.p->partitionHashBaseKeyCount,
+                          tabPtr.p->partitionHashDetailKeyCount,
+                          tabPtr.p->partitionHashFanout);
     req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("3: dict_tab(%u) HashFunctionFlag: %u",
@@ -8177,6 +8195,10 @@ void Dbdict::execTC_SCHVERCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->partitionHash =
+        packPartitionHash(tabPtr.p->partitionHashBaseKeyCount,
+                          tabPtr.p->partitionHashDetailKeyCount,
+                          tabPtr.p->partitionHashFanout);
     req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("4: dict_tab(%u) HashFunctionFlag: %u",
@@ -34709,4 +34731,3 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
              ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
 }
-

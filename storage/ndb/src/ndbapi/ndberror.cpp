@@ -694,6 +694,7 @@ ErrorBundle ErrorCodes[] = {
   { 796,  DMEC, SE, "Out of schema transaction memory" },
   { 798,  DMEC, AE, "A disk table must not be specified as no logging" },
   { 799,  HA_WRONG_CREATE_OPTION, SE, "Non default partitioning without partitions" },
+  { 800,  HA_WRONG_CREATE_OPTION, SE, "Invalid partition hash definition" },
   { 4377, DMEC, AE, "Database and schema name must be set on Ndb object"},
 
   /**

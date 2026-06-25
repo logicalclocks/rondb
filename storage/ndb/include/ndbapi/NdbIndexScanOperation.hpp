@@ -317,6 +317,9 @@ class NdbIndexScanOperation : public NdbScanOperation {
   int getDistKeyFromRange(const NdbRecord *key_record,
                           const NdbRecord *result_record, const char *row,
                           Uint32 *distKey);
+  int getPartitionHashBaseHashFromRange(const NdbRecord *key_record,
+                                        const NdbRecord *result_record,
+                                        const char *row, Uint32 *baseHash);
   void fix_get_values();
   int next_result_ordered(bool fetchAllowed, bool forceSend = false);
   int next_result_ord_ndbrecord(const char *&out_row, bool fetchAllowed,

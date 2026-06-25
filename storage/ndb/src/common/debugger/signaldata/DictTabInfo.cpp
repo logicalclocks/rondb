@@ -95,6 +95,9 @@ DictTabInfo::TableMapping[] = {
   DTI_MAP_INT(Table, HashFunctionFlag, HashFunctionFlag),
   DTI_MAP_INT(Table, TTLSec, TTLSec),
   DTI_MAP_INT(Table, TTLColumnNo, TTLColumnNo),
+  DTI_MAP_INT(Table, PartitionHashBaseKeyCount, PartitionHashBaseKeyCount),
+  DTI_MAP_INT(Table, PartitionHashDetailKeyCount, PartitionHashDetailKeyCount),
+  DTI_MAP_INT(Table, PartitionHashFanout, PartitionHashFanout),
   DTIBREAK(AttributeName)
 };
 
@@ -216,6 +219,10 @@ void DictTabInfo::Table::init() {
 
   TTLSec = RNIL;
   TTLColumnNo = RNIL;
+
+  PartitionHashBaseKeyCount = 0;
+  PartitionHashDetailKeyCount = 0;
+  PartitionHashFanout = 1;
 }
 
 void DictTabInfo::Attribute::init() {
