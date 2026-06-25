@@ -1508,7 +1508,8 @@ done:
   ndb_end(0);
 
   if (result == 0) {
-    (void)write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) result = 1;
   }
   close(mtr_fd);
 

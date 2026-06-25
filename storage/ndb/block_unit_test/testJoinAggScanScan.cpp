@@ -2383,7 +2383,8 @@ int main(int argc, char **argv)
   ndb_end(0);
 
   if (exitCode == 0) {
-    (void)write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) exitCode = 1;
   }
   close(mtr_fd);
 

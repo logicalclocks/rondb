@@ -568,7 +568,8 @@ cleanup:
   mysql_library_end();
   ndb_end(0);
   if (rc == 0) {
-    (void)write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) rc = 1;
   }
   close(mtr_fd);
   return rc;
