@@ -61,6 +61,11 @@ intervals aligned and avoids relying on partially understood hash-map behavior
 during reorg and partition-balance changes. This restriction can be relaxed
 later after DIH/hash-map behavior is explicitly tested.
 
+Index table descriptors should keep persistent copies of the partition hash
+metadata when they inherit the base table's partitioning metadata. This matches
+the existing index-table model for hash-map and partition-count metadata, and
+keeps DBTC/DBSPJ table-record lookup local during ordered-index scans.
+
 ## Syntax
 
 Use `NDB_TABLE` comment syntax. The existing parser supports bool modifiers and
@@ -99,11 +104,19 @@ Validation:
 * `fanout <= partition_count`
 * `partition_count % fanout == 0`
 * all fields fit in `Uint32`
+* persisted compact metadata fits in the kernel signal format:
+  `base_pk_columns <= 255`, `detail_pk_columns <= 255`, `fanout <= 65535`
 * reject malformed strings, missing values, negative values, and extra fields
 * reject use on user-defined partitioning
 * reject use on fully replicated tables in the first implementation
 * reject changing these values through online alter in the first version
 * reject alters that would make `partition_count % fanout != 0`
+
+Validation must exist below the SQL layer as well as in `ha_ndbcluster.cc`. The
+public NDB API setter must not let direct
+`NdbDictionary::Dictionary::createTable()` or `alterTable()` callers bypass the
+SQL checks. DBDICT parse should also reject values that would truncate when
+stored in `Uint8`/`Uint16` table records or packed into `TcSchVerReq`.
 
 Comment parsing is anchored in:
 
@@ -151,6 +164,8 @@ Add to:
 * `storage/ndb/src/kernel/blocks/dbdict/Dbdict.cpp`
   * receive and store values in dictionary table records
   * build key descriptors with new hash-spec metadata
+  * persistently copy base-table partition hash metadata into ordered-index
+    table descriptors when the index inherits base-table partitioning
 * `storage/ndb/include/ndb_version.h.in`
   * feature version gate
 
@@ -298,6 +313,35 @@ or add a new request-info mode where the existing `distributionKey` carries the
 base hash and another optional word carries the fanout. The signal format must
 remain version-gated.
 
+Do not reinterpret every existing `distributionKey` scan as a fanout interval.
+Existing explicit scan partitioning APIs must keep their current one-fragment
+meaning, or be rejected for fanout tables until a non-ambiguous signal mode is
+available. Examples of these explicit APIs are:
+
+```
+ScanOptions::SO_PART_INFO
+  PartitionSpec::PS_DISTR_KEY_PART_PTR
+  PartitionSpec::PS_DISTR_KEY_RECORD
+
+ScanOptions::SO_PARTITION_ID
+
+NdbOperation::setPartitionId(partitionId)
+```
+
+For example, an application can pass `SO_PART_INFO` with
+`PS_DISTR_KEY_PART_PTR`; `NdbScanOperation::getPartValueFromInfo()` computes a
+raw distribution hash and stores it in `ScanTabReq::distributionKey`. That is
+not the same value as the grouped base hash used by fanout base-key pruning. The
+internal fanout pruning path therefore needs a distinct signal flag or prune
+type, such as:
+
+```
+scan_prune_type = none | one_fragment | base_hash_interval
+distributionKey = raw_hash_or_fragment for one_fragment
+distributionKey = grouped_base_hash for base_hash_interval
+interval_count = fanout for base_hash_interval
+```
+
 ### DBTC Scans
 
 Current DBTC scan anchors:
@@ -330,6 +374,10 @@ For `fragment_interval`:
 * for user-defined partitioning, keep the old exact-fragment path and reject
   interval pruning in the first implementation
 * reuse the existing fragment-location list and MultiFrag grouping logic
+
+DBTC must only enter the interval path when the new interval prune type or flag
+is set. A normal explicit scan partition value must continue to resolve one
+fragment, even when the table has `fanout > 1`.
 
 The existing MultiFrag path can already group multiple fragment ids into
 `SCAN_FRAGREQ`; the main work is getting the correct list of fragments instead
@@ -372,6 +420,10 @@ scan pruning is stable.
 * Add comment preservation on alter.
 * Check `partition_count % fanout == 0` both at create time and for alter paths
   that can change partition count or `PARTITION_HASH`.
+* Add lower-layer validation in NDB API dictionary create/alter and DBDICT
+  parse so direct API callers cannot bypass SQL validation.
+* Persistently copy partition hash metadata to ordered-index table descriptors
+  when index partitioning metadata is inherited from the base table.
 * Reject online changes to the metadata.
 * Add dictionary serialization/deserialization tests.
 
@@ -412,6 +464,8 @@ Exit criteria:
 ### Phase 4: DBTC Scan Interval Pruning
 
 * Extend `ScanTabReq` or add versioned optional words for interval pruning.
+* Add an explicit scan prune type so existing explicit scan partitioning APIs
+  are not mistaken for fanout base-key interval pruning.
 * Extend API scan-pruning state.
 * Extend DBTC scan state and DIH fragment resolution loop.
 * Reuse existing MultiFrag scan grouping.
@@ -419,6 +473,8 @@ Exit criteria:
 Exit criteria:
 
 * equality on base key scans exactly `fanout` fragments
+* explicit one-fragment scan partitioning still scans one fragment or is
+  rejected clearly if unsupported for fanout tables
 * `fanout = 1` is equivalent to current one-partition pruning
 * no rows are missed or duplicated
 
@@ -478,6 +534,11 @@ Metadata tests:
 * implicit default metadata is not rendered as a generated table comment
 * table equality and assign include the new fields
 * index table metadata inherits the base-table hash spec where needed
+* direct NDB API create rejects invalid partition hash metadata
+* DBDICT rejects compact metadata overflow instead of truncating it
+* direct NDB API alter rejects changing partition hash metadata
+* direct NDB API alter rejects partition-count changes where
+  `partition_count % fanout != 0`
 
 ### DDL and SQL Tests
 
@@ -589,6 +650,10 @@ NDB API ordered-index and table scans:
 * range bounds equal on first `x` columns but open on detail columns
 * range bounds not equal on first `x` columns
 * equality only on detail-key columns
+* `ScanOptions::SO_PART_INFO` with `PS_DISTR_KEY_PART_PTR`
+* `ScanOptions::SO_PART_INFO` with `PS_DISTR_KEY_RECORD`
+* `ScanOptions::SO_PARTITION_ID`
+* old API `setPartitionId()`
 
 Checks:
 
@@ -596,6 +661,9 @@ Checks:
 * different intervals fall back or are represented safely
 * mixed prunable/non-prunable falls back to all partitions
 * equality only on detail-key columns does not trigger first-version pruning
+* explicit scan partitioning APIs keep one-fragment semantics or fail with a
+  clear unsupported error on fanout tables
+* fanout interval pruning uses only the new interval prune type or flag
 * `fanout = 1` keeps current one-partition behavior
 
 ### DBTC Kernel Tests
