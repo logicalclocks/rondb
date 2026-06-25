@@ -23007,6 +23007,16 @@ void Dblqh::initCopyTc(Signal *signal, Operation_t op,
   LqhKeyReq::setNrCopyFlag(reqinfo, 1);
   /* AILen in LQHKEYREQ  IS ZERO */
   regTcPtr->reqinfo = reqinfo;
+  /*
+   * TTL related
+   * A copy-fragment op physically replicates the live node's row (including
+   * expired-but-not-yet-purged TTL rows). It must NOT re-apply TTL expiry on the
+   * starting node, otherwise the converted copy ZUPDATE / delete-by-rowid ZDELETE
+   * hits checkTTL -> 626 -> COPY_FRAGREF -> the starting node is shut down in
+   * start phase 5 (error 2303). Inherit the copy scan's TTL-ignore intent (set to
+   * 1 in execCOPY_FRAGREQ); packLqhkeyreqLab serializes it to the starting node.
+   */
+  regTcPtr->ttl_ignore = scanptr.p->m_ttl_ignore;
   /* ------------------------------------------------------------------------ */
   /* THE RECEIVING NODE WILL EXPECT THAT IT IS THE LAST NODE AND WILL         */
   /* SEND COMPLETED AS THE RESPONSE SIGNAL SINCE DIRTY_OP BIT IS SET.         */
