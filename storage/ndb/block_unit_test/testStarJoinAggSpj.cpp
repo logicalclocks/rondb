@@ -910,22 +910,25 @@ seizeTcConnect(SignalSender &ss, Uint32 nodeId,
     return -1;
   }
 
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCSEIZECONF");
-  if (resp == nullptr) return -1;
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCSEIZECONF");
+    if (resp == nullptr) return -1;
 
-  int gsn = getGsn(resp);
-  if (gsn == GSN_TCSEIZECONF) {
-    apiConnectPtrOut = resp->getDataPtr()[1];
-    tcRefOut = resp->getDataPtr()[2];
-    V("TCSEIZECONF: apiConnectPtr=%u tcRef=0x%08x\n",
-      apiConnectPtrOut, tcRefOut);
-    return 0;
-  } else if (gsn == GSN_TCSEIZEREF) {
-    fprintf(stderr, "TCSEIZEREF: errorCode=%u\n", resp->getDataPtr()[1]);
-    return -1;
-  } else {
-    fprintf(stderr, "Unexpected GSN %d waiting for TCSEIZECONF\n", gsn);
-    return -1;
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TCSEIZECONF) {
+      apiConnectPtrOut = resp->getDataPtr()[1];
+      tcRefOut = resp->getDataPtr()[2];
+      V("TCSEIZECONF: apiConnectPtr=%u tcRef=0x%08x\n",
+        apiConnectPtrOut, tcRefOut);
+      return 0;
+    } else if (gsn == GSN_TCSEIZEREF) {
+      fprintf(stderr, "TCSEIZEREF: errorCode=%u\n",
+              resp->getDataPtr()[1]);
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCSEIZECONF\n", gsn);
   }
 }
 
@@ -948,19 +951,22 @@ releaseTcConnect(SignalSender &ss, Uint32 nodeId,
     return -1;
   }
 
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCRELEASECONF");
-  if (resp == nullptr) return -1;
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCRELEASECONF");
+    if (resp == nullptr) return -1;
 
-  int gsn = getGsn(resp);
-  if (gsn == GSN_TCRELEASECONF) {
-    V("TCRELEASECONF received\n");
-    return 0;
-  } else if (gsn == GSN_TCRELEASEREF) {
-    fprintf(stderr, "TCRELEASEREF: errorCode=%u\n", resp->getDataPtr()[1]);
-    return -1;
-  } else {
-    fprintf(stderr, "Unexpected GSN %d waiting for TCRELEASECONF\n", gsn);
-    return -1;
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TCRELEASECONF) {
+      V("TCRELEASECONF received\n");
+      return 0;
+    } else if (gsn == GSN_TCRELEASEREF) {
+      fprintf(stderr, "TCRELEASEREF: errorCode=%u\n",
+              resp->getDataPtr()[1]);
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCRELEASECONF\n", gsn);
   }
 }
 
