@@ -553,7 +553,7 @@ int main(int argc, char **argv)
   ndb_end(0);
 
   if (result == 0) {
-    write(mtr_fd, "PASSED\n", 7);
+    (void)write(mtr_fd, "PASSED\n", 7);
   }
   close(mtr_fd);
 

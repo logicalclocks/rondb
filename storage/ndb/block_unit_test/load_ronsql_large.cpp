@@ -415,9 +415,9 @@ int main(int argc, char **argv)
   /* Emit the MTR pass/fail token directly to the saved real-stdout fd
      (matches load_tpch — avoids stdio buffering across the dup2 restore). */
   if (result == 0)
-    write(mtr_fd, "PASSED\n", 7);
+    (void)write(mtr_fd, "PASSED\n", 7);
   else
-    write(mtr_fd, "FAILED\n", 7);
+    (void)write(mtr_fd, "FAILED\n", 7);
   close(mtr_fd);
 
   return result;

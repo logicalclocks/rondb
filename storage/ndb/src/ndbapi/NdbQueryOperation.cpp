@@ -102,7 +102,6 @@ static void dumpAggApiWords(const char *label, const Uint32 *buf, Uint32 len) {
 }
 #else
 #define DEB_JOIN_AGG_API(...) do { } while (0)
-static void dumpAggApiWords(const char *, const Uint32 *, Uint32) {}
 #endif
 
 /** To prevent compiler warnings about variables that are only used in asserts
@@ -2264,6 +2263,7 @@ bool NdbQueryImpl::execAggSCAN_TABCONF(Uint32 tcPtrI,
   assert(m_hasAggregation);
   assert(m_aggregator != nullptr);
   assert(receiver != nullptr);
+  (void)receiver;
 
   m_aggExpectedResults += rowCount;
   if (tcPtrI == RNIL) {

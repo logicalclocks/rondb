@@ -2312,6 +2312,7 @@ static int set_rows_hset(Ndb *ndb,
   while (get_ctrl->m_num_keys_outstanding > 0) {
     int finished = execute_ndb(ndb, 1, __LINE__);
     assert(finished >= 0);
+    (void)finished;
   }
   if (get_ctrl->m_num_keys_failed > 0) {
     HSET_DEALIAS_RETURN(0);
@@ -2343,6 +2344,7 @@ static int set_rows_hset(Ndb *ndb,
     while (get_ctrl->m_num_keys_outstanding > 0) {
       int finished = execute_ndb(ndb, 1, __LINE__);
       assert(finished >= 0);
+      (void)finished;
     }
     if (get_ctrl->m_num_keys_failed > 0) {
       HSET_DEALIAS_RETURN(0);
@@ -2362,6 +2364,7 @@ static int set_rows_hset(Ndb *ndb,
       while (get_ctrl->m_num_keys_outstanding > 0) {
         int finished = execute_ndb(ndb, 1, __LINE__);
         assert(finished >= 0);
+        (void)finished;
       }
       if (get_ctrl->m_num_keys_failed > 0) {
         HSET_DEALIAS_RETURN(0);
@@ -2414,6 +2417,7 @@ static int set_rows_hset(Ndb *ndb,
     while (get_ctrl->m_num_keys_outstanding > 0) {
       int finished = execute_ndb(ndb, 1, __LINE__);
       assert(finished >= 0);
+      (void)finished;
     }
     if (get_ctrl->m_num_keys_failed > 0) {
       HSET_DEALIAS_RETURN(0);
@@ -2445,6 +2449,7 @@ static int set_rows_hset(Ndb *ndb,
         while (get_ctrl->m_num_keys_outstanding > 0) {
           int finished = execute_ndb(ndb, 1, __LINE__);
           assert(finished >= 0);
+          (void)finished;
         }
         if (get_ctrl->m_num_keys_failed > 0) {
           HSET_DEALIAS_RETURN(0);
@@ -2465,6 +2470,7 @@ static int set_rows_hset(Ndb *ndb,
         while (get_ctrl->m_num_keys_outstanding > 0) {
           int finished = execute_ndb(ndb, 1, __LINE__);
           assert(finished >= 0);
+          (void)finished;
         }
         if (get_ctrl->m_num_keys_failed > 0) {
           HSET_DEALIAS_RETURN(0);
@@ -2491,6 +2497,7 @@ static int set_rows_hset(Ndb *ndb,
   while (get_ctrl->m_num_keys_outstanding > 0) {
     int finished = execute_ndb(ndb, 1, __LINE__);
     assert(finished >= 0);
+    (void)finished;
   }
   HSET_DEALIAS_RETURN(0);
 #undef HSET_DEALIAS_RETURN
@@ -2578,6 +2585,7 @@ static int set_rows_hdel(Ndb *ndb,
   while (get_ctrl->m_num_keys_outstanding > 0) {
     int finished = execute_ndb(ndb, 1, __LINE__);
     assert(finished >= 0);
+    (void)finished;
   }
   // Hash row didn't exist - nothing to delete, no field_count to
   // touch, no Commit needed. The trans aborts cleanly when closed.
@@ -2616,6 +2624,7 @@ static int set_rows_hdel(Ndb *ndb,
     while (get_ctrl->m_num_keys_outstanding > 0) {
       int finished = execute_ndb(ndb, 1, __LINE__);
       assert(finished >= 0);
+      (void)finished;
     }
     if (get_ctrl->m_num_keys_failed > 0) {
       HDEL_DEALIAS_RETURN(0);
@@ -2648,6 +2657,7 @@ static int set_rows_hdel(Ndb *ndb,
         while (get_ctrl->m_num_keys_outstanding > 0) {
           int finished = execute_ndb(ndb, 1, __LINE__);
           assert(finished >= 0);
+          (void)finished;
         }
         if (get_ctrl->m_num_keys_failed > 0) {
           HDEL_DEALIAS_RETURN(0);
@@ -2693,6 +2703,7 @@ static int set_rows_hdel(Ndb *ndb,
   while (get_ctrl->m_num_keys_outstanding > 0) {
     int finished = execute_ndb(ndb, 1, __LINE__);
     assert(finished >= 0);
+    (void)finished;
   }
   HDEL_DEALIAS_RETURN(0);
 #undef HDEL_DEALIAS_RETURN

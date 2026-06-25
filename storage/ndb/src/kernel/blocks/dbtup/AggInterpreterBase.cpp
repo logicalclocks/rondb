@@ -504,6 +504,7 @@ void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
   Uint32 hdr0 = prog[0];
   assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
   assert((hdr0 & 0xFFFF) == m_prog_len);
+  (void)hdr0;
 
   Uint32 hdr1 = prog[1];
   m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
