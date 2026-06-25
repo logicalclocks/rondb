@@ -62,7 +62,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
-#define DEBUG_JOIN_AGG_API 1
+//#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
 #endif
 

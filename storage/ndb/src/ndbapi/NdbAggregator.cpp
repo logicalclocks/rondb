@@ -29,7 +29,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_NDBAGGREGATOR 1
-#define DEBUG_JOIN_AGG_API 1
+//#define DEBUG_JOIN_AGG_API 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG_API
