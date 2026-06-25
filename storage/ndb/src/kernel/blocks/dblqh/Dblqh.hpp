@@ -5654,6 +5654,22 @@ private:
   void get_tc_ref(Uint32 tcPtrI,
                   Uint32 & tcOprec,
                   Uint32 & tcRef);
+  /* Guarded variant of get_tc_ref: returns false (without crashing) if the
+   * op index does not resolve to a valid TcConnectionrec, e.g. when the lock
+   * holder is a scan op rather than a key op.  Used by deadlock discovery
+   * (RONDB-1062) where the lock owner may be any kind of operation. */
+  bool try_get_tc_ref(Uint32 tcPtrI,
+                      Uint32 & tcOprec,
+                      Uint32 & tcRef);
+  /* Resolve a locking scan to its coordinating TC: given an LQH ScanRecord
+   * index (as stored in DBACC ScanRec::scanUserptr), follow scanTcrec to the
+   * scan's TcConnectionrec and return its TC ref + oprec (the oprec is the
+   * TC ScanFragRec id).  Returns false (no crash) if the index is not a valid
+   * ScanRecord of this LQH instance (e.g. a query-thread instance) or the
+   * scan has no TC.  Used for scan<->scan deadlock detection (RONDB-1062). */
+  bool try_get_scan_tc_ref(Uint32 scanPtrI,
+                           Uint32 & tcOprec,
+                           Uint32 & tcRef);
 
   bool is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP);
 
@@ -6286,6 +6302,50 @@ inline void Dblqh::get_tc_ref(Uint32 tcPtrI,
   ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
   tcOprec = tcConnectptr.p->tcOprec;
   tcRef = tcConnectptr.p->tcBlockref;
+}
+
+inline bool Dblqh::try_get_tc_ref(Uint32 tcPtrI,
+                                  Uint32 & tcOprec,
+                                  Uint32 & tcRef)
+{
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = tcPtrI;
+  if (!tcConnect_pool.getValidPtr(tcConnectptr))
+  {
+    return false;
+  }
+  tcOprec = tcConnectptr.p->tcOprec;
+  tcRef = tcConnectptr.p->tcBlockref;
+  return true;
+}
+
+inline bool Dblqh::try_get_scan_tc_ref(Uint32 scanPtrI,
+                                       Uint32 & tcOprec,
+                                       Uint32 & tcRef)
+{
+  ScanRecordPtr sp;
+  sp.i = scanPtrI;
+  if (!c_scanRecordPool.getValidPtr(sp))
+  {
+    return false;
+  }
+  if (sp.p->scanTcrec == RNIL)
+  {
+    return false;
+  }
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = sp.p->scanTcrec;
+  if (!tcConnect_pool.getValidPtr(tcConnectptr))
+  {
+    return false;
+  }
+  /* For a scan the coordinating TC is the SCAN_FRAGCONF destination
+   * (clientBlockref), and the TC-side handle is clientConnectrec (the TC
+   * ScanFragRec id).  A scan does NOT set tcBlockref/tcOprec the way a key op
+   * does, so using those (as try_get_tc_ref would) routes to an unknown node. */
+  tcOprec = tcConnectptr.p->clientConnectrec;
+  tcRef = tcConnectptr.p->clientBlockref;
+  return true;
 }
 
 inline bool Dblqh::have_frag_scan_access() const {

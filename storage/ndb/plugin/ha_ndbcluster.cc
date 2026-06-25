@@ -849,6 +849,48 @@ int ndb_to_mysql_error(const NdbError *ndberr) {
   return error;
 }
 
+/*
+  RONDB-1062 proactive deadlock discovery: when a transaction was aborted as a
+  *detected* deadlock victim (not merely a lock-wait timeout), the data node
+  reports extra detail via the NDB API.  Surface it as an additional warning so
+  SHOW WARNINGS explains why error 1205 (HA_ERR_LOCK_WAIT_TIMEOUT) was raised:
+  the victim operation's table and the table ids involved in the cycle.  This is
+  best-effort and additive - the error code itself is unchanged, and nothing is
+  pushed for a plain timeout or when talking to an older data node (wasDeadlock()
+  is then false).
+*/
+static void ndb_push_deadlock_warning(THD *thd, NdbTransaction *trans) {
+  if (!trans->wasDeadlock()) {
+    return;
+  }
+  Uint32 table_ids[2];
+  const int n = trans->getDeadlockTableIds(table_ids);
+  const NdbOperation *const op = trans->getDeadlockOperation();
+  const char *const op_table = (op != nullptr) ? op->getTableName() : nullptr;
+
+  char tables[128];
+  tables[0] = '\0';
+  if (n == 2) {
+    snprintf(tables, sizeof(tables), "; tables involved (id): %u, %u",
+             table_ids[0], table_ids[1]);
+  } else if (n == 1) {
+    snprintf(tables, sizeof(tables), "; table involved (id): %u", table_ids[0]);
+  }
+
+  char detail[256];
+  if (op_table != nullptr && op_table[0] != '\0') {
+    snprintf(detail, sizeof(detail),
+             "Deadlock detected by NDB; victim operation on table '%s'%s",
+             op_table, tables);
+  } else {
+    snprintf(detail, sizeof(detail), "Deadlock detected by NDB%s", tables);
+  }
+
+  push_warning_printf(thd, Sql_condition::SL_WARNING, ER_GET_TEMPORARY_ERRMSG,
+                      ER_THD(thd, ER_GET_TEMPORARY_ERRMSG),
+                      trans->getNdbError().code, detail, "NDB");
+}
+
 ulong opt_ndb_slave_conflict_role;
 ulong opt_ndb_applier_conflict_role;
 
@@ -1264,6 +1306,11 @@ int ha_ndbcluster::ndb_err(NdbTransaction *trans) {
   const int res = ndb_to_mysql_error(&err);
   DBUG_PRINT("info", ("transformed ndbcluster error %d to mysql error %d",
                       err.code, res));
+  if (res == HA_ERR_LOCK_WAIT_TIMEOUT) {
+    // RONDB-1062: add deadlock detail to SHOW WARNINGS when the data node
+    // detected a real deadlock cycle (no-op for a plain timeout / old node).
+    ndb_push_deadlock_warning(current_thd, trans);
+  }
   if (res == HA_ERR_FOUND_DUPP_KEY) {
     char *error_data = err.details;
     uint dupkey = MAX_KEY;

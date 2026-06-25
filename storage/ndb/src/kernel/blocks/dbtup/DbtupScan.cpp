@@ -3470,3 +3470,14 @@ Dbtup::lcp_frag_watchdog_print(Uint32 tableId, Uint32 fragId)
         tableId, fragId, scanPtr.p->m_state, scanPtr.p->m_last_seen);
   }
 }
+
+/* RONDB-1062 deadlock discovery: ScanOp index -> LQH scan record index. */
+bool Dbtup::get_scan_lqh_ptr(Uint32 scanPtrI, Uint32& lqhScanPtr) {
+  ScanOpPtr scanPtr;
+  scanPtr.i = scanPtrI;
+  if (!c_scanOpPool.getValidPtr(scanPtr)) {
+    return false;
+  }
+  lqhScanPtr = scanPtr.p->m_userPtr;
+  return true;
+}

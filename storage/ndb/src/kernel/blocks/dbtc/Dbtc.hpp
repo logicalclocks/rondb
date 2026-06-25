@@ -1281,6 +1281,44 @@ class Dbtc : public SimulatedBlock {
     LocalTcIndexOperation_dllist::Head theSeizedIndexOperations;
     UintR tcIndxSendArray[6];
 
+    /**
+     * RONDB-1062 proactive deadlock discovery.
+     *
+     * Wait-for edges for which THIS transaction is the "collector" — the
+     * endpoint with the smaller hash(transid) of the edge's two endpoints
+     * (DBACC routes each edge to that endpoint's TC).  For each other
+     * transaction X we remember whether this transaction waits-on X and/or
+     * is waited-on-by X (a directed wait-for edge in each direction), with
+     * the ctcTimer of the latest observation for freshness.  A 2-cycle
+     * deadlock is detected when, for some X, both directions are recorded
+     * and fresh; the collector (== this transaction, always local) is then
+     * aborted.  This is a small fixed-size cache; under heavy contention an
+     * edge may be evicted (the timeout backstop still catches those).
+     */
+    enum DeadlockDir { DLD_WAITS_ON = 1, DLD_WAITED_BY = 2 };
+    static constexpr Uint32 MAX_DEADLOCK_EDGES = 4;
+    struct DeadlockEdge {
+      Uint32 transId1;   // the OTHER endpoint's transaction id
+      Uint32 transId2;
+      Uint32 timer;      // ctcTimer at last update (freshness)
+      Uint32 direction;  // bitmask of DeadlockDir; 0 == empty slot
+      /* RONDB-1062 deadlock enrichment (Phase A): the table contended on in
+       * each direction.  WAITS_ON: the table this txn's blocked op wanted (the
+       * other txn held it); WAITED_BY: the table the other txn's blocked op
+       * wanted (this txn held it).  RNIL until that direction is reported.  On
+       * a detected 2-cycle these two give the table(s) involved (dedup when
+       * equal) for later reporting to the NDB API. */
+      Uint32 tableIdWaitsOn;
+      Uint32 tableIdWaitedBy;
+      /* RONDB-1062 (Phase B): this collector's deadlocking operation, as the
+       * API operation pointer (TcConnectRecord::clientData of the collector's
+       * own waiting key op).  Captured on the WAITS_ON direction (the collector
+       * is the waiter there) so it survives even when the cycle is closed by
+       * the WAITED_BY report.  RNIL for a scan/takeover victim or if unknown. */
+      Uint32 victimOpRef;
+    };
+    DeadlockEdge m_deadlock_edges[MAX_DEADLOCK_EDGES];
+
     bool isExecutingDeferredTriggers() const {
       return apiConnectstate == CS_SEND_FIRE_TRIG_REQ ||
              apiConnectstate == CS_WAIT_FIRE_TRIG_REQ;
@@ -2277,6 +2315,22 @@ class Dbtc : public SimulatedBlock {
   void execCTE_PHASE_COMPLETE_REP(Signal *signal);
   void sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
                                     Uint32 phase);
+
+  /* RONDB-1062 proactive deadlock discovery (DBACC wait-for edge). */
+  void execDBACC_WAITFOR_REP(Signal *signal);
+  /* Record a wait-for edge and return the index of the slot it landed in (the
+   * caller reads that slot's direction to test for a 2-cycle and its stored
+   * table ids / victim op for the deadlock detail report).  victimOpRef is the
+   * collector's deadlocking op (clientData), stored only on the WAITS_ON
+   * direction. */
+  Uint32 recordDeadlockEdge(ApiConnectRecord *regApiPtr, Uint32 otherTransId1,
+                            Uint32 otherTransId2, Uint32 direction,
+                            Uint32 contendedTableId, Uint32 victimOpRef);
+  /* Send the version-gated GSN_TC_DEADLOCK_REP to the victim's API node just
+   * before aborting it (no-op if the API node is too old to understand it). */
+  void sendDeadlockDetailRep(Signal *signal, ApiConnectRecordPtr apiConnectptr,
+                             Uint32 tableId1, Uint32 tableId2,
+                             Uint32 victimOpRef);
 
   /* Phase L (C): allocate / look up / release aggregation completion
    * records.  Records are linked into ScanRecord::m_aggRecordsHead and
@@ -3612,6 +3666,10 @@ class Dbtc : public SimulatedBlock {
   Uint32 m_max_writes_per_trans;
   Uint32 c_trans_error_loglevel;
   Uint32 m_take_over_operations;
+  // RONDB-1062: when false, ignore DBACC wait-for edges (no proactive deadlock
+  // detection); only the timeout backstop resolves deadlocks.  Config:
+  // EnableProactiveDeadlockDetection (default false; MTR enables it).
+  bool c_proactive_deadlock_detect = false;
 
   bool m_dbinfo_full_apiconnectrecord;
 

@@ -1116,6 +1116,15 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "1200", "50",
      STR_VALUE(MAX_INT_RNIL)},
 
+    {CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION,
+     "EnableProactiveDeadlockDetection", DB_TOKEN,
+     "RONDB-1062: enable proactive deadlock discovery.  When true, DBACC reports "
+     "lock wait-for edges to DBTC, which detects deadlock cycles and aborts a "
+     "victim immediately instead of waiting for "
+     "TransactionDeadlockDetectionTimeout.  When false (default), only the "
+     "timeout backstop resolves deadlocks (the pre-RONDB-1062 behaviour).",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
     {CFG_DB_DISCLESS, "Diskless", DB_TOKEN, "Run wo/ disk", ConfigInfo::CI_USED,
      CI_RESTART_INITIAL | CI_RESTART_SYSTEM, ConfigInfo::CI_BOOL, "false",
      "false", "true"},

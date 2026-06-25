@@ -3441,6 +3441,15 @@ sub environment_setup {
       mtr_verbose("NDB_PUSH_AGG_DIR: $ENV{'NDB_PUSH_AGG_DIR'}");
     }
 
+    # RONDB-1062: testDeadlock NDB API program (scan<->scan deadlock test)
+    my $test_deadlock_binary =
+      my_find_bin($bindir, [ "runtime_output_directory", "bin" ],
+                  "testDeadlock", NOT_REQUIRED);
+    if ($test_deadlock_binary) {
+      $ENV{'NDB_TEST_DEADLOCK_BINARY'} = $test_deadlock_binary;
+      mtr_verbose("NDB_TEST_DEADLOCK_BINARY: $test_deadlock_binary");
+    }
+
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";
     $ENV{'NDB_TOOLS_OUTPUT'} = $path_ndb_testrun_log;
 

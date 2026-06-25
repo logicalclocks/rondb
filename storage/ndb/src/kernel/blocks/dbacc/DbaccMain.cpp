@@ -38,6 +38,7 @@
 #include <signaldata/AccLock.hpp>
 #include <signaldata/AccScan.hpp>
 #include <signaldata/DbinfoScan.hpp>
+#include <signaldata/DeadlockWaitfor.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/EventReport.hpp>
@@ -74,6 +75,7 @@ extern EventLogger *g_eventLogger;
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_LOCK_TRANS 1
+//#define DEBUG_DEADLOCK 1
 //#define DEBUG_HASH 1
 #endif
 
@@ -81,6 +83,13 @@ extern EventLogger *g_eventLogger;
 #define DEB_LOCK_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_LOCK_TRANS(arglist) do { } while (0)
+#endif
+
+/* RONDB-1062 proactive deadlock discovery trace. */
+#ifdef DEBUG_DEADLOCK
+#define DEB_DEADLOCK(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_DEADLOCK(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -92,6 +101,7 @@ extern EventLogger *g_eventLogger;
 // primary key is stored in TUP
 #include "../dblqh/Dblqh.hpp"
 #include "../dbtup/Dbtup.hpp"
+#include "../dbtux/Dbtux.hpp"
 /**
  * DBACC interface description
  * ---------------------------
@@ -478,6 +488,12 @@ void Dbacc::execREAD_CONFIG_REQ(Signal *signal) {
   ndbrequire(p != 0);
   
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_ACC_TABLE, &ctablesize));
+  // RONDB-1062: proactive deadlock discovery on/off (default off in production;
+  // MTR enables it via default_ndbd.cnf).  When off, skip capturing/sending
+  // DBACC wait-for edges entirely.
+  Uint32 dl = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION, &dl);
+  c_proactive_deadlock_detect = (dl != 0);
   initRecords(p);
 
   initialiseRecordsLab(signal, 0, ref, senderData);
@@ -2066,7 +2082,173 @@ ref:
   return;
 }
 
-void 
+/**
+ * RONDB-1062 deadlock discovery.
+ *
+ * A deterministic, unbiased hash of a transaction id.  Used to pick the
+ * "collector" of a wait-for edge (the endpoint with the smaller hash) so that
+ * both edges of a 2-cycle converge on the same DBTC, and so that the chosen
+ * victim is not systematically biased towards the oldest transaction or a
+ * lower-numbered API node (raw transid ordering would have that bias).
+ */
+static inline Uint32 deadlock_transid_hash(Uint32 t1, Uint32 t2)
+{
+  Uint32 h = t1 * 2654435761U;   // Knuth multiplicative
+  h ^= t2 * 0x85ebca6bU;
+  h ^= h >> 15;
+  return h;
+}
+
+/**
+ * Total order over transactions for collector/victim selection: returns true
+ * iff endpoint A is the collector, i.e. (hash(A), A) sorts before (hash(B), B).
+ * Tie-broken by the raw transid so the order is total even on hash collision.
+ */
+static inline bool deadlock_a_is_collector(Uint32 a1, Uint32 a2,
+                                           Uint32 b1, Uint32 b2)
+{
+  const Uint32 ha = deadlock_transid_hash(a1, a2);
+  const Uint32 hb = deadlock_transid_hash(b1, b2);
+  if (ha != hb) return ha < hb;
+  if (a2 != b2) return a2 < b2;
+  return a1 < b1;
+}
+
+/**
+ * RONDB-1062: fill a DeadlockEndpoint from an ACC operation.
+ *
+ * The op's userblockref/userptr refer to the block instance that actually
+ * requested the lock (LDM thread or query thread), so we resolve through that
+ * instance (via globalData.getBlock), not the fragment-owning instance:
+ *   - DBLQH/DBQLQH : a key operation; userptr is the LQH TcConnectionrec ->
+ *     try_get_tc_ref gives the TC ref + op index.  isScan = false.
+ *   - DBTUX/DBQTUX : an ordered-index scan; userptr is the DBTUX ScanOp ->
+ *     ScanOp::m_userPtr is the LQH scan record -> try_get_scan_tc_ref gives the
+ *     scan's TC ref (clientBlockref) + ScanFragRec id.  isScan = true.
+ *   - DBTUP/DBQTUP : a full-table scan; same as DBTUX via the DBTUP ScanOp.
+ * Anything that does not resolve leaves tcRef = 0 and the edge is dropped (the
+ * timeout backstop still applies).
+ */
+void Dbacc::describe_deadlock_endpoint(const Operationrec *opP,
+                                       DeadlockEndpoint &ep)
+{
+  ep.transId1 = opP->transId1;
+  ep.transId2 = opP->transId2;
+  ep.isScan = false;
+  ep.tcOprec = 0;
+  ep.tcRef = 0;
+  const Uint32 ref = opP->userblockref;
+  const Uint32 bno = refToMain(ref);
+  const Uint32 inst = refToInstance(ref);
+  if (bno == DBLQH || bno == DBQLQH)
+  {
+    Dblqh *const lqh = (Dblqh *)globalData.getBlock(bno, inst);
+    if (lqh != nullptr)
+    {
+      lqh->try_get_tc_ref(opP->userptr, ep.tcOprec, ep.tcRef);
+    }
+    return;
+  }
+  /* Scan lock (DBTUX ordered index, or DBTUP full table scan).  Follow the
+   * scan op to its LQH scan record (same instance as the scan block), then to
+   * the scan's TC. */
+  Uint32 lqhScanPtr = RNIL;
+  if (bno == DBTUX || bno == DBQTUX)
+  {
+    ep.isScan = true;
+    Dbtux *const tux = (Dbtux *)globalData.getBlock(bno, inst);
+    if (tux == nullptr || !tux->get_scan_lqh_ptr(opP->userptr, lqhScanPtr))
+    {
+      return;
+    }
+  }
+  else if (bno == DBTUP || bno == DBQTUP)
+  {
+    ep.isScan = true;
+    Dbtup *const tup = (Dbtup *)globalData.getBlock(bno, inst);
+    if (tup == nullptr || !tup->get_scan_lqh_ptr(opP->userptr, lqhScanPtr))
+    {
+      return;
+    }
+  }
+  else
+  {
+    return;  // unknown requestor block: leave unresolvable
+  }
+  const Uint32 lqhBno = (bno == DBQTUX || bno == DBQTUP) ? DBQLQH : DBLQH;
+  Dblqh *const lqh = (Dblqh *)globalData.getBlock(lqhBno, inst);
+  if (lqh != nullptr)
+  {
+    lqh->try_get_scan_tc_ref(lqhScanPtr, ep.tcOprec, ep.tcRef);
+  }
+}
+
+/**
+ * RONDB-1062: send one wait-for edge (waiter waits on owner) to the collector
+ * TC.  The collector is always the smaller-hash endpoint (by transaction id).
+ *
+ * Routing MUST be by transaction id, not by op kind: a transaction caught in a
+ * lock-takeover deadlock appears as a scan-waiter in one edge and a key-op
+ * owner in the other (its scan waits while its taken-over lock blocks the other
+ * party), so a kind-based "send to the key-op" rule would send the two edges of
+ * the cycle to different collectors and never assemble it.  The smaller-hash
+ * transaction id is the only key identical for both edges, so both converge
+ * there.  The CollectorIsScan flag still tells DBTC which resolution/abort path
+ * the collector endpoint needs (scan vs key op); DBTC further canonicalises a
+ * taken-over scan to its lock-holding buddy.  An edge is dropped only if the
+ * collector's TC ref could not be resolved locally (e.g. a query-thread scan).
+ * contendedTableId is the table both endpoints contend on (RONDB-1062 Phase A
+ * enrichment, carried to DBTC for later reporting to the API; RNIL if unknown).
+ * NOTE: reuses signal->theData, so callers needing the signal contents must
+ * rebuild them afterwards.
+ */
+void Dbacc::send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &w,
+                                  const DeadlockEndpoint &o,
+                                  Uint32 contendedTableId)
+{
+  const bool collectorIsWaiter =
+      deadlock_a_is_collector(w.transId1, w.transId2, o.transId1, o.transId2);
+  const DeadlockEndpoint &collector = collectorIsWaiter ? w : o;
+  const BlockReference dstRef = collector.tcRef;
+  // The collector must be a transaction coordinator.  Skip (rather than risk a
+  // sendSignal to an unknown node) if the ref didn't resolve to a TC - e.g. an
+  // endpoint whose records live in another (query-thread) instance.
+  if (dstRef == 0 || refToMain(dstRef) != DBTC)
+  {
+    DEB_DEADLOCK(("(%u) drop edge: collector TC ref unresolved/invalid"
+                  " (dst=0x%x); waiter trans(%u,%u) scan=%u owner trans(%u,%u)"
+                  " scan=%u", instance(), dstRef, w.transId1, w.transId2,
+                  (Uint32)w.isScan, o.transId1, o.transId2, (Uint32)o.isScan));
+    return;
+  }
+  DEB_DEADLOCK(("(%u) send DBACC_WAITFOR_REP: waiter trans(%u,%u) scan=%u"
+                " tc(0x%x,%u) -> owner trans(%u,%u) scan=%u tc(0x%x,%u),"
+                " collectorIsWaiter=%u collectorIsScan=%u contendedTable=%u"
+                " dst=0x%x",
+                instance(), w.transId1, w.transId2, (Uint32)w.isScan, w.tcRef,
+                w.tcOprec, o.transId1, o.transId2, (Uint32)o.isScan, o.tcRef,
+                o.tcOprec, (Uint32)collectorIsWaiter, (Uint32)collector.isScan,
+                contendedTableId, dstRef));
+  DeadlockWaitforRep *const rep =
+      reinterpret_cast<DeadlockWaitforRep *>(signal->getDataPtrSend());
+  rep->senderRef = reference();
+  rep->flags =
+      (collectorIsWaiter ? (Uint32)DeadlockWaitforRep::CollectorIsWaiter : 0) |
+      (collector.isScan ? (Uint32)DeadlockWaitforRep::CollectorIsScan : 0);
+  rep->waiterTransId1 = w.transId1;
+  rep->waiterTransId2 = w.transId2;
+  rep->waiterTcRef = w.tcRef;
+  rep->waiterTcOprec = w.tcOprec;
+  rep->ownerTransId1 = o.transId1;
+  rep->ownerTransId2 = o.transId2;
+  rep->ownerTcRef = o.tcRef;
+  rep->ownerTcOprec = o.tcOprec;
+  rep->contendedTableId = contendedTableId;
+  sendSignal(dstRef, GSN_DBACC_WAITFOR_REP, signal,
+             DeadlockWaitforRep::SignalLength, JBB);
+}
+
+void
 Dbacc::accIsLockedLab(Signal* signal,
                       OperationrecPtr lockOwnerPtr,
                       Uint32 hash,
@@ -2155,6 +2337,74 @@ Dbacc::accIsLockedLab(Signal* signal,
                     tcBlockref,
                     lockOwnerPtr.i));
 
+    /**
+     * RONDB-1062 deadlock discovery: when this request must wait (it was put
+     * on the serial/wait queue), capture wait-for edges from the waiter to
+     * EVERY distinct foreign transaction currently holding the lock.  The lock
+     * owner's parallel queue can hold several transactions co-holding a shared
+     * read lock, so we walk it and describe one endpoint per distinct foreign
+     * transaction.  Captured under the fragment mutex (records are stable
+     * here); the edges are sent to the collector TC(s) after the mutex is
+     * released.  The waiter here is always a key op (this is the key-op /
+     * lock-req path); owners may be key ops or batch scan ops.
+     */
+    DeadlockEndpoint dl_waiter;
+    const Uint32 DL_MAX_OWNERS = 8;
+    DeadlockEndpoint dl_owners[DL_MAX_OWNERS];
+    Uint32 dl_num = 0;
+    /* The contended lock's table (waiter and all owners contend on this same
+     * row, hence the same table); carried to DBTC for deadlock enrichment.
+     * Captured under the fragment mutex with the rest of the edge data. */
+    Uint32 dl_table = RNIL;
+    if (c_proactive_deadlock_detect && return_result == ZSERIAL_QUEUE)
+    {
+      dl_table = fragrecptr.p->myTableId;
+      describe_deadlock_endpoint(operationRecPtr.p, dl_waiter);
+      OperationrecPtr loopPtr = lockOwnerPtr;
+      while (loopPtr.i != RNIL && dl_num < DL_MAX_OWNERS)
+      {
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+        if (!operationRecPtr.p->is_same_trans(loopPtr.p))
+        {
+          bool dup = false;
+          for (Uint32 j = 0; j < dl_num; j++)
+          {
+            if (dl_owners[j].transId1 == loopPtr.p->transId1 &&
+                dl_owners[j].transId2 == loopPtr.p->transId2)
+            {
+              dup = true;
+              break;
+            }
+          }
+          if (!dup)
+          {
+            ndbrequire(dl_num < DL_MAX_OWNERS);  // guaranteed by the loop guard
+            describe_deadlock_endpoint(loopPtr.p, dl_owners[dl_num]);
+            dl_num++;
+          }
+        }
+        loopPtr.i = loopPtr.p->nextParallelQue;
+      }
+      /* If we stopped on the cap rather than the end of the queue, there are
+       * more distinct lock-owner transactions than we report edges for; those
+       * extra wait-for relationships fall back to the deadlock timeout. */
+      if (loopPtr.i != RNIL)
+      {
+        jam();
+        DEB_DEADLOCK(("(%u) deadlock fan-out truncated at DL_MAX_OWNERS=%u;"
+                      " extra owners fall back to the timeout", instance(),
+                      DL_MAX_OWNERS));
+      }
+      DEB_DEADLOCK(("(%u) serial lock wait on tab(%u,%u) row(%u,%u): waiter"
+                    " trans(%u,%u) scan=%u, distinct foreign owners=%u",
+                    instance(), fragrecptr.p->myTableId,
+                    fragrecptr.p->fragmentid,
+                    operationRecPtr.p->localdata.m_page_no,
+                    operationRecPtr.p->localdata.m_page_idx,
+                    operationRecPtr.p->transId1, operationRecPtr.p->transId2,
+                    (Uint32)dl_waiter.isScan, dl_num));
+    }
+
     release_frag_mutex_hash(fragrecptr.p, hash);
 
     if (return_result == ZPARALLEL_QUEUE)
@@ -2176,6 +2426,17 @@ Dbacc::accIsLockedLab(Signal* signal,
       fragrecptr.p->m_lockStats.req_start(
           (bits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
           operationRecPtr.p->m_lockTime, getHighResTimer());
+      /**
+       * Send one wait-for edge per blocking transaction to its collector TC.
+       * NOTE: this reuses signal->theData, so we restore the "blocked"
+       * indicator (theData[0] = RNIL) afterwards.  Both callers (DBLQH and
+       * execACC_LOCKREQ) read only theData[0] on the blocked path.
+       */
+      for (Uint32 i = 0; i < dl_num; i++)
+      {
+        jam();
+        send_deadlock_waitfor(signal, dl_waiter, dl_owners[i], dl_table);
+      }
       signal->theData[0] = RNIL;
       return;
     } else {
@@ -8469,6 +8730,9 @@ void Dbacc::checkNextBucketLab(Signal *signal) {
             scanPtr.p->scanLockMode != ZREADLOCK, operationRecPtr.p->m_lockTime,
             getHighResTimer());
         putOpScanLockQue(); /* PUT THE OP IN A QUE IN THE SCAN REC */
+        /* RONDB-1062: no deadlock wait-for edge is reported here - this is the
+         * dead DBACC full-table-scan path (real scans run in DBTUX/DBTUP and
+         * take their locks via ACC_LOCKREQ -> accIsLockedLab). */
         scanPtr.p->scan_lastSeen = __LINE__;
         BlockReference ref = scanPtr.p->scanUserblockref;
         signal->theData[0] = scanPtr.p->scanUserptr;
@@ -10214,6 +10478,20 @@ bool Dbacc::getNextOpRec(Uint32 &next, OperationrecPtr &loc_opptr,
 
 void Dbacc::execDUMP_STATE_ORD(Signal *signal) {
   DumpStateOrd *const dumpState = (DumpStateOrd *)&signal->theData[0];
+  if (dumpState->args[0] == DumpStateOrd::DeadlockDetection) {
+    // RONDB-1062: runtime enable/disable of proactive deadlock discovery; this
+    // gates the wait-for edge capture in accIsLockedLab.  ALL DUMP 16000 1
+    // enables, ALL DUMP 16000 0 disables (also handled by DBTC).
+    jam();
+    if (signal->length() >= 2) {
+      c_proactive_deadlock_detect = (dumpState->args[1] != 0);
+      g_eventLogger->info(
+          "ACC %u: proactive deadlock discovery %s by DUMP %u", instance(),
+          c_proactive_deadlock_detect ? "ENABLED" : "DISABLED",
+          (Uint32)DumpStateOrd::DeadlockDetection);
+    }
+    return;
+  }
   if (dumpState->args[0] == DumpStateOrd::AccDumpOneScanRec) {
     ScanRecPtr scanPtr;
     Uint32 recordNo = RNIL;

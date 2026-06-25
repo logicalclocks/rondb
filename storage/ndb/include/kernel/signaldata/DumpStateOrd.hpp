@@ -321,6 +321,13 @@ class DumpStateOrd {
     DbinfoListColumns = 14002,
     DbinfoScanTable = 14003,
 
+    /* RONDB-1062: runtime enable/disable of proactive deadlock discovery.
+     * "ALL DUMP 16000 1" enables it, "ALL DUMP 16000 0" disables it.  Handled
+     * by both DBTC and DBACC (it is < OneBlockOnly so CMVMI fans it out to all
+     * blocks).  Overrides the EnableProactiveDeadlockDetection config at
+     * runtime until the next node (re)start. */
+    DeadlockDetection = 16000,
+
     SchemaResourceSnapshot = 4000, // Save resource consumption
     SchemaResourceCheckLeak = 4001, // check same as snapshot
 

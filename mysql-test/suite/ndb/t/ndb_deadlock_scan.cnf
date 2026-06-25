@@ -1,0 +1,6 @@
+!include suite/ndb/my.cnf
+
+[cluster_config.1]
+# RONDB-1062: a high deadlock-detection timeout so that deadlocks resolved
+# quickly prove proactive detection rather than the timeout backstop.
+TransactionDeadlockDetectionTimeout = 60000

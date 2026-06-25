@@ -385,6 +385,9 @@ class Dbtup : public SimulatedBlock {
   Tsman* c_tsman;
   Lgman* c_lgman;
   Pgman* c_pgman;
+  /* RONDB-1062 deadlock discovery: full-table ScanOp index -> LQH scan record
+   * index (ScanOp::m_userPtr).  Called cross-instance from DBACC. */
+  bool get_scan_lqh_ptr(Uint32 scanPtrI, Uint32& lqhScanPtr);
   Dbacc* c_acc;
   Dbtux* c_tux;
   Suma* c_suma;

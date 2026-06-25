@@ -1,3 +1,12 @@
 !include suite/ndb/my.cnf
+
+[cluster_config.1]
+# RONDB-1062: this test deliberately holds a 2-way deadlock open (with the
+# deadlock-detection timeout disabled) so it can be observed in
+# ndbinfo.cluster_locks.  Proactive deadlock detection would resolve the cycle
+# immediately, so disable it for this test.  It only affects the Deadlock
+# section - no other part of the test forms a lock cycle.
+EnableProactiveDeadlockDetection = 0
+
 [mysqld]
 ndb-read-backup=0
