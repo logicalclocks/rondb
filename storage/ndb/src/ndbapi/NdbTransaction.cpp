@@ -2711,6 +2711,15 @@ void NdbTransaction::receiveTcDeadlockRep(const TcDeadlockRep *rep) {
       }
     }
   }
+  NdbTransaction *owner = nullptr;
+  if (theScanningOp != nullptr) {
+    owner = theScanningOp->getNdbTransaction();
+  } else if (m_scanningQuery != nullptr) {
+    owner = &m_scanningQuery->getNdbTransaction();
+  }
+  if (owner != nullptr && owner != this) {
+    owner->receiveTcDeadlockRep(rep);
+  }
 }  // NdbTransaction::receiveTcDeadlockRep()
 
 bool NdbTransaction::wasDeadlock() const { return theDeadlockDetailValid; }

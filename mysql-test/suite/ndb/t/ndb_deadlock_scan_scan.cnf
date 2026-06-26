@@ -5,6 +5,7 @@
 # deadlock created by testDeadlock -scan s, when resolved quickly, proves
 # proactive detection rather than the timeout backstop.
 TransactionDeadlockDetectionTimeout = 60000
+EnableProactiveDeadlockDetection = 1
 
 [mysqld]
 # testDeadlock -scan s creates its table through the NDB API, which the NDB

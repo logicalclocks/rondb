@@ -1335,12 +1335,27 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
        * getDeadlockOperation() accessors.  theData[0] is the API connection id,
        * resolved the same way as the other TC->API signals.
        */
+      const TcDeadlockRep *const rep =
+          CAST_CONSTPTR(TcDeadlockRep, aSignal->getDataPtr());
+      const Uint32 buddyApiConnectPtr = rep->buddyApiConnectPtr;
       if (tFirstDataPtr != nullptr) {
         tCon = void2con(tFirstDataPtr);
         if (tCon->checkMagicNumber() == 0) {
-          const TcDeadlockRep *const rep =
-              CAST_CONSTPTR(TcDeadlockRep, aSignal->getDataPtr());
           tCon->receiveTcDeadlockRep(rep);
+          if (buddyApiConnectPtr != RNIL && buddyApiConnectPtr != tFirstData) {
+            void *const buddyPtr = int2void(buddyApiConnectPtr);
+            if (buddyPtr != nullptr) {
+              NdbTransaction *const buddyCon = void2con(buddyPtr);
+              if (buddyCon->checkMagicNumber() == 0) {
+                buddyCon->receiveTcDeadlockRep(rep);
+              }
+            }
+          }
+          if (tWaitState == WAIT_SCAN) {
+            // The report does not complete the scan, but wake the scan wait loop
+            // so the detail is consumed before the caller observes SCAN_TABREF.
+            tNewState = NO_WAIT;
+          }
         }
       }
       break;

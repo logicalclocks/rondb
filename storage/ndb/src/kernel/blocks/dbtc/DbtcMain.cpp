@@ -11692,8 +11692,23 @@ void Dbtc::sendDeadlockDetailRep(Signal *signal,
   rep->tableId1 = tableId1;
   rep->tableId2 = tableId2;
   rep->victimOpRef = victimOpRef;
-  DEB_DEADLOCK(("(%u) send TC_DEADLOCK_REP to api 0x%x (node %u): trans(%u,%u)"
-                " tables(%u,%u) victimOp=%u", instance(), apiRef, apiNode,
+  rep->buddyApiConnectPtr = RNIL;
+  if (apiConnectptr.p->buddyPtr != RNIL) {
+    jam();
+    ApiConnectRecordPtr buddyApiPtr;
+    buddyApiPtr.i = apiConnectptr.p->buddyPtr;
+    if (c_apiConnectRecordPool.getValidPtr(buddyApiPtr) &&
+        buddyApiPtr.p->transid[0] == rep->transId1 &&
+        buddyApiPtr.p->transid[1] == rep->transId2 &&
+        buddyApiPtr.p->ndbapiBlockref == apiRef) {
+      jam();
+      rep->buddyApiConnectPtr = buddyApiPtr.p->ndbapiConnect;
+    }
+  }
+  DEB_DEADLOCK(("(%u) queue TC_DEADLOCK_REP to api 0x%x (node %u):"
+                " apiConnectPtr=%u buddyApiConnectPtr=%u trans(%u,%u)"
+                " tables(%u,%u) victimOp=%u prio=JBB", instance(), apiRef,
+                apiNode, rep->apiConnectPtr, rep->buddyApiConnectPtr,
                 rep->transId1, rep->transId2, tableId1, tableId2, victimOpRef));
   sendSignal(apiRef, GSN_TC_DEADLOCK_REP, signal, TcDeadlockRep::SignalLength,
              JBB);
@@ -18237,6 +18252,11 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
   ref->transId2 = apiConnectptr.p->transid[1];
   ref->errorCode = errorCode;
   ref->closeNeeded = 1;
+  DEB_DEADLOCK(("(%u) queue SCAN_TABREF to api 0x%x: apiConnectPtr=%u"
+                " trans(%u,%u) error=%u closeNeeded=%u prio=JBB", instance(),
+                apiConnectptr.p->ndbapiBlockref, ref->apiConnectPtr,
+                ref->transId1, ref->transId2, ref->errorCode,
+                ref->closeNeeded));
   sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_SCAN_TABREF, signal,
              ScanTabRef::SignalLength, JBB);
 }  // Dbtc::scanError()
@@ -20216,6 +20236,10 @@ void Dbtc::releaseAbortResources(Signal* signal,
         tcRollbackRep->transId[1] = apiConnectptr.p->transid[1];
         tcRollbackRep->returnCode = apiConnectptr.p->returncode;
         tcRollbackRep->errorData = apiConnectptr.p->errorData;
+        DEB_DEADLOCK(("(%u) queue TCROLLBACKREP to api 0x%x: trans(%u,%u)"
+                      " error=%u prio=JBB", instance(), blockRef,
+                      tcRollbackRep->transId[0], tcRollbackRep->transId[1],
+                      tcRollbackRep->returnCode));
         sendSignal(blockRef, GSN_TCROLLBACKREP, signal,
                    TcRollbackRep::SignalLength, JBB);
       } break;

@@ -1,9 +1,9 @@
 --source include/have_ndb.inc
 
---echo # RONDB-1062: a proactively detected deadlock is surfaced in SHOW WARNINGS
---echo # (in addition to the unchanged 1205 / ER_LOCK_WAIT_TIMEOUT error).
+--echo # RONDB-1062: a proactively detected deadlock is surfaced as
+--echo # ER_LOCK_DEADLOCK (1213), with extra detail in SHOW WARNINGS.
 --echo # con1 holds row 1 and wants row 2; con2 holds row 2 and wants row 1, a
---echo # true 2-cycle on table t1.  Exactly one transaction is aborted with 1205;
+--echo # true 2-cycle on table t1.  Exactly one transaction is aborted with 1213;
 --echo # on that connection SHOW WARNINGS carries the "Deadlock detected by NDB"
 --echo # detail line - the victim operation's table name and the contended table
 --echo # id (masked below as it is not stable across runs).
@@ -42,27 +42,28 @@ connection con2;
 
 # Evaluate the victim count on the default connection so the SELECT does not
 # clear the victim connection's diagnostics area (SHOW WARNINGS reads it below).
-# A proactively detected key-op deadlock victim is aborted with 266 -> 1205, so
+# A proactively detected key-op deadlock victim is aborted with 266 -> 1213, so
 # exactly one of the two connections must be that victim.
 connection default;
-if (`SELECT ($c1_err = 1205) + ($c2_err = 1205) <> 1`)
+if (`SELECT ($c1_err = 1213) + ($c2_err = 1213) <> 1`)
 {
-  --die Expected exactly one deadlock victim with ER_LOCK_WAIT_TIMEOUT (1205)
+  --die Expected exactly one deadlock victim with ER_LOCK_DEADLOCK (1213)
 }
 
 --echo # SHOW WARNINGS on the victim connection (contended table id masked).  It
 --echo # carries the standard temporary-error warning, the RONDB-1062 deadlock
---echo # detail, and the unchanged 1205 error.  (SHOW WARNINGS does not clear the
---echo # diagnostics area, so the victim's warnings are still present here.)
+--echo # detail, the 1213 deadlock error, and the NDB transaction rollback
+--echo # diagnostic.  (SHOW WARNINGS does not clear the diagnostics area, so the
+--echo # victim's warnings are still present here.)
 --enable_result_log
 
-if ($c1_err == 1205)
+if ($c1_err == 1213)
 {
   connection con1;
   --replace_regex /\(id\): [0-9]+/(id): #/
   SHOW WARNINGS;
 }
-if ($c2_err == 1205)
+if ($c2_err == 1213)
 {
   connection con2;
   --replace_regex /\(id\): [0-9]+/(id): #/

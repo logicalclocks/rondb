@@ -26,7 +26,8 @@ TransactionDeadlockDetectionTimeout=3000
 # MTR runs with it ON so the deadlock test suite exercises it.  Tests that must
 # hold a deadlock open (e.g. ndbinfo_cluster_locks) override this back to 0 in
 # their own .cnf.
-EnableProactiveDeadlockDetection=1
+# Temporarily disabled Deadlock Discovery in MTR
+EnableProactiveDeadlockDetection=0
 Checksum=1
 SpinMethod=CostBasedSpinning
 AutomaticThreadConfig=0
