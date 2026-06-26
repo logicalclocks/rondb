@@ -6,3 +6,4 @@
 # which is resolved quickly proves that PROACTIVE detection fired (DBACC ->
 # DBTC wait-for edges), rather than the slow timeout backstop.
 TransactionDeadlockDetectionTimeout = 60000
+EnableProactiveDeadlockDetection = 1

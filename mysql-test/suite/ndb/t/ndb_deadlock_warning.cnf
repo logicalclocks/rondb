@@ -6,3 +6,4 @@
 # quickly proves PROACTIVE detection fired (DBACC -> DBTC wait-for edges) - the
 # only path that also sends the GSN_TC_DEADLOCK_REP detail this test checks for.
 TransactionDeadlockDetectionTimeout = 60000
+EnableProactiveDeadlockDetection = 1

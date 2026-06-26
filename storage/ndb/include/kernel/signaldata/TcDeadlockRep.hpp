@@ -40,9 +40,12 @@
  *
  * Fire-and-forget (no CONF/REF).  The API matches it to the transaction by the
  * carried apiConnectPtr and validates with the transaction id; a stale or
- * unmatched report is dropped.  Because it is gated on the API node version,
- * an old API never receives it, and a new API that receives an (older) abort
- * with no preceding report simply reports "no deadlock detail".
+ * unmatched report is dropped.  For scan victims, apiConnectPtr names the
+ * internal scan transaction that will receive SCAN_TABREF, while
+ * buddyApiConnectPtr names the user-visible transaction that owns the scan.
+ * Because it is gated on the API node version, an old API never receives it,
+ * and a new API that receives an abort with no preceding report simply reports
+ * "no deadlock detail".
  */
 struct TcDeadlockRep {
   Uint32 apiConnectPtr;  // API's connection object ptr (== ApiConnectRecord::
@@ -57,8 +60,10 @@ struct TcDeadlockRep {
   Uint32 victimOpRef;    // the aborted victim's deadlocking operation, as the
                          // API operation pointer (TcConnectRecord::clientData);
                          // RNIL for a pure scan victim or if not resolvable
+  Uint32 buddyApiConnectPtr;  // API connection ptr for the user-visible owner
+                              // of a scan transaction; RNIL if none
 
-  static constexpr Uint32 SignalLength = 7;
+  static constexpr Uint32 SignalLength = 8;
 
   enum Reason {
     RealDeadlock = 0x1   // a cycle was detected (always set by this sender)

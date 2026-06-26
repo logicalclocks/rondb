@@ -853,11 +853,9 @@ int ndb_to_mysql_error(const NdbError *ndberr) {
   RONDB-1062 proactive deadlock discovery: when a transaction was aborted as a
   *detected* deadlock victim (not merely a lock-wait timeout), the data node
   reports extra detail via the NDB API.  Surface it as an additional warning so
-  SHOW WARNINGS explains why error 1205 (HA_ERR_LOCK_WAIT_TIMEOUT) was raised:
-  the victim operation's table and the table ids involved in the cycle.  This is
-  best-effort and additive - the error code itself is unchanged, and nothing is
-  pushed for a plain timeout or when talking to an older data node (wasDeadlock()
-  is then false).
+  SHOW WARNINGS carries the victim operation's table and the table ids involved
+  in the cycle.  This is best-effort and additive: nothing is pushed for a plain
+  timeout or when talking to an older data node (wasDeadlock() is then false).
 */
 static void ndb_push_deadlock_warning(THD *thd, NdbTransaction *trans) {
   if (!trans->wasDeadlock()) {
@@ -1306,10 +1304,11 @@ int ha_ndbcluster::ndb_err(NdbTransaction *trans) {
   const int res = ndb_to_mysql_error(&err);
   DBUG_PRINT("info", ("transformed ndbcluster error %d to mysql error %d",
                       err.code, res));
-  if (res == HA_ERR_LOCK_WAIT_TIMEOUT) {
-    // RONDB-1062: add deadlock detail to SHOW WARNINGS when the data node
-    // detected a real deadlock cycle (no-op for a plain timeout / old node).
+  if (res == HA_ERR_LOCK_WAIT_TIMEOUT && trans->wasDeadlock()) {
+    // RONDB-1062: DBTC detected a real deadlock cycle, not just the timeout
+    // backstop. Surface that through MySQL's deadlock error code.
     ndb_push_deadlock_warning(current_thd, trans);
+    return HA_ERR_LOCK_DEADLOCK;
   }
   if (res == HA_ERR_FOUND_DUPP_KEY) {
     char *error_data = err.details;
@@ -14706,7 +14705,7 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
   }
 
   if (any_real_read && execute_no_commit_ie(m_thd_ndb, trans))
-    ERR_RETURN(trans->getNdbError());
+    return ndb_err(trans);
 
   if (!m_range_res) {
     DBUG_PRINT("info",
