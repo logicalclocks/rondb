@@ -677,6 +677,139 @@ sendCteLookupReq(SignalSender &ss, Uint32 nodeId, Uint32 ldmInst,
   return 0;
 }
 
+static int
+waitForCteLookupRows(SignalSender &ss, const char *label,
+                     bool checkFirstConnectPtr = false,
+                     Uint32 expectedFirstConnectPtr = 0,
+                     bool checkSecondConnectPtr = false,
+                     Uint32 expectedSecondConnectPtr = 0)
+{
+  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, label);
+  if (resp == nullptr) return -1;
+
+  int gsn = getGsn(resp);
+  if (gsn == GSN_CTE_LOOKUP_REF) {
+    const CteLookupRef *ref =
+      reinterpret_cast<const CteLookupRef *>(resp->getDataPtr());
+    if (ref->errorCode == CteLookupRef::GROUP_NOT_FOUND) {
+      V("  CTE_LOOKUP_REF for %s (group not on this node)\n", label);
+      return 1;
+    }
+    fprintf(stderr, "FAIL: %s got CTE_LOOKUP_REF errorCode=%u\n",
+            label, ref->errorCode);
+    return -1;
+  }
+  if (gsn != GSN_TRANSID_AI) {
+    fprintf(stderr, "FAIL: %s expected TRANSID_AI, got GSN=%d\n",
+            label, gsn);
+    return -1;
+  }
+  if (checkFirstConnectPtr) {
+    const TransIdAI *tai =
+      reinterpret_cast<const TransIdAI *>(resp->getDataPtr());
+    if (tai->connectPtr != expectedFirstConnectPtr) {
+      fprintf(stderr, "FAIL: %s first TRANSID_AI connectPtr=%u, expected %u\n",
+              label, tai->connectPtr, expectedFirstConnectPtr);
+      return -1;
+    }
+  }
+
+  resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(2)");
+  if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
+    fprintf(stderr, "FAIL: %s expected second TRANSID_AI\n", label);
+    return -1;
+  }
+  if (checkSecondConnectPtr) {
+    const TransIdAI *tai =
+      reinterpret_cast<const TransIdAI *>(resp->getDataPtr());
+    if (tai->connectPtr != expectedSecondConnectPtr) {
+      fprintf(stderr, "FAIL: %s second TRANSID_AI connectPtr=%u, expected %u\n",
+              label, tai->connectPtr, expectedSecondConnectPtr);
+      return -1;
+    }
+  }
+
+  resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_CONF");
+  if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_CONF) {
+    fprintf(stderr, "FAIL: %s expected CTE_LOOKUP_CONF\n", label);
+    return -1;
+  }
+  return 0;
+}
+
+static int
+lookupExistingKey(SignalSender &ss,
+                  const std::map<Uint32, Uint32> &aggStateKeys,
+                  const std::map<Uint32, Uint32> &ownerInstances,
+                  Uint32 correlationId,
+                  const Uint32 *keyBuf, Uint32 keyWords, Uint32 keyBytes,
+                  const std::vector<Uint32> &attrInfo,
+                  const char *label,
+                  bool checkFirstConnectPtr = false,
+                  Uint32 expectedFirstConnectPtr = 0,
+                  bool checkSecondConnectPtr = false,
+                  Uint32 expectedSecondConnectPtr = 0)
+{
+  for (auto &kv : aggStateKeys) {
+    Uint32 nodeId = kv.first;
+    Uint32 aggStateKey = kv.second;
+    auto ownerIt = ownerInstances.find(nodeId);
+    if (ownerIt == ownerInstances.end()) {
+      fprintf(stderr, "FAIL: no owner instance for node %u\n", nodeId);
+      return -1;
+    }
+
+    if (sendCteLookupReq(ss, nodeId, ownerIt->second, aggStateKey,
+                         correlationId, keyBuf, keyWords, keyBytes,
+                         attrInfo) != 0)
+      return -1;
+
+    int rc = waitForCteLookupRows(ss, label,
+                                  checkFirstConnectPtr,
+                                  expectedFirstConnectPtr,
+                                  checkSecondConnectPtr,
+                                  expectedSecondConnectPtr);
+    if (rc == 0) return 0;
+    if (rc < 0) return -1;
+  }
+
+  fprintf(stderr, "FAIL: %s not found on any CTE state\n", label);
+  return -1;
+}
+
+static int
+lookupMissingKey(SignalSender &ss,
+                 const std::map<Uint32, Uint32> &aggStateKeys,
+                 const std::map<Uint32, Uint32> &ownerInstances,
+                 Uint32 correlationId,
+                 const Uint32 *keyBuf, Uint32 keyWords, Uint32 keyBytes,
+                 const std::vector<Uint32> &attrInfo,
+                 const char *label)
+{
+  for (auto &kv : aggStateKeys) {
+    Uint32 nodeId = kv.first;
+    Uint32 aggStateKey = kv.second;
+    auto ownerIt = ownerInstances.find(nodeId);
+    if (ownerIt == ownerInstances.end()) {
+      fprintf(stderr, "FAIL: no owner instance for node %u\n", nodeId);
+      return -1;
+    }
+
+    if (sendCteLookupReq(ss, nodeId, ownerIt->second, aggStateKey,
+                         correlationId, keyBuf, keyWords, keyBytes,
+                         attrInfo) != 0)
+      return -1;
+
+    int rc = waitForCteLookupRows(ss, label);
+    if (rc == 0) {
+      fprintf(stderr, "FAIL: %s unexpectedly found a CTE group\n", label);
+      return -1;
+    }
+    if (rc < 0) return -1;
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Common: setup + scan + complete lifecycle for CTE mode               */
 /* ------------------------------------------------------------------ */
@@ -685,7 +818,8 @@ static int
 setupScanComplete(SignalSender &ss, const TableMeta &meta,
                   const std::vector<Uint32> &aggProg,
                   int /*mysqlPort*/,
-                  std::map<Uint32, Uint32> &aggStateKeys)
+                  std::map<Uint32, Uint32> &aggStateKeys,
+                  std::map<Uint32, Uint32> &ownerInstances)
 {
   /* Collect unique data nodes */
   std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
@@ -695,7 +829,8 @@ setupScanComplete(SignalSender &ss, const TableMeta &meta,
    * routing the COMPLETE_REQ on this node and for populating the
    * aggKey-triple section so remote nodes can address their
    * REDISTRIBUTE_REQ / FINAL_REP back to the right owner. */
-  std::map<Uint32, Uint32> ownerInstances;
+  aggStateKeys.clear();
+  ownerInstances.clear();
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
     Uint32 owner = 0;
@@ -751,11 +886,10 @@ testBasicLookup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
 
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
   std::map<Uint32, Uint32> aggKeys;
-  if (setupScanComplete(ss, meta, aggProg, mysqlPort, aggKeys) != 0) return -1;
-
-  /* Pick first node for lookups */
-  Uint32 nodeId = aggKeys.begin()->first;
-  Uint32 aggStateKey = aggKeys.begin()->second;
+  std::map<Uint32, Uint32> ownerInstances;
+  if (setupScanComplete(ss, meta, aggProg, mysqlPort,
+                        aggKeys, ownerInstances) != 0)
+    return -1;
 
   auto attrInfo = buildCteLookupAttrInfo(1, 1, ss.getOwnRef(),
                                           FAKE_SENDER_DATA, ss.getOwnRef());
@@ -767,32 +901,10 @@ testBasicLookup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
     Uint32 keyWords, keyBytes;
     buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 1);
 
-    if (sendCteLookupReq(ss, nodeId, 1, aggStateKey, 100,
-                          keyBuf, keyWords, keyBytes, attrInfo) != 0) {
-      failures++; goto cleanup;
-    }
-
-    /* Expect: TRANSID_AI (FLUSH_AI columns), TRANSID_AI (CORR_FACTOR), CONF */
-    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(1)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected first TRANSID_AI for key=1\n");
+    if (lookupExistingKey(ss, aggKeys, ownerInstances, 100,
+                          keyBuf, keyWords, keyBytes, attrInfo,
+                          "key=1") != 0) {
       failures++;
-    } else {
-      V("  Got TRANSID_AI(1) for key=1 (FLUSH_AI columns)\n");
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(2)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected second TRANSID_AI for key=1\n");
-      failures++;
-    } else {
-      V("  Got TRANSID_AI(2) for key=1 (CORR_FACTOR)\n");
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_CONF");
-    if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_CONF) {
-      fprintf(stderr, "FAIL: expected CTE_LOOKUP_CONF\n");
-      failures++;
-    } else {
-      V("  Got CTE_LOOKUP_CONF for key=1\n");
     }
   }
 
@@ -802,21 +914,13 @@ testBasicLookup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
     Uint32 keyWords, keyBytes;
     buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 999);
 
-    if (sendCteLookupReq(ss, nodeId, 1, aggStateKey, 101,
-                          keyBuf, keyWords, keyBytes, attrInfo) != 0) {
-      failures++; goto cleanup;
-    }
-
-    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_REF");
-    if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_REF) {
-      fprintf(stderr, "FAIL: expected CTE_LOOKUP_REF for key=999\n");
+    if (lookupMissingKey(ss, aggKeys, ownerInstances, 101,
+                         keyBuf, keyWords, keyBytes, attrInfo,
+                         "key=999") != 0) {
       failures++;
-    } else {
-      V("  Got CTE_LOOKUP_REF for key=999 (not found)\n");
     }
   }
 
-cleanup:
   releaseAll(ss, aggKeys);
   if (failures == 0) printf("  PASS\n");
   return failures > 0 ? -1 : 0;
@@ -834,10 +938,11 @@ testCountLookup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
 
   auto aggProg = buildAggProgram_CountGroupBy(meta.attrIdA, meta.attrIdB);
   std::map<Uint32, Uint32> aggKeys;
-  if (setupScanComplete(ss, meta, aggProg, mysqlPort, aggKeys) != 0) return -1;
+  std::map<Uint32, Uint32> ownerInstances;
+  if (setupScanComplete(ss, meta, aggProg, mysqlPort,
+                        aggKeys, ownerInstances) != 0)
+    return -1;
 
-  Uint32 nodeId = aggKeys.begin()->first;
-  Uint32 aggStateKey = aggKeys.begin()->second;
   auto attrInfo = buildCteLookupAttrInfo(1, 1, ss.getOwnRef(),
                                           FAKE_SENDER_DATA, ss.getOwnRef());
   int failures = 0;
@@ -846,30 +951,11 @@ testCountLookup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   Uint32 keyWords, keyBytes;
   buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 2);
 
-  if (sendCteLookupReq(ss, nodeId, 1, aggStateKey, 200,
-                        keyBuf, keyWords, keyBytes, attrInfo) != 0) {
-    failures++; goto cleanup;
-  }
+  if (lookupExistingKey(ss, aggKeys, ownerInstances, 200,
+                        keyBuf, keyWords, keyBytes, attrInfo,
+                        "COUNT key=2") != 0)
+    failures++;
 
-  {
-    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(1)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected first TRANSID_AI for COUNT key=2\n");
-      failures++;
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(2)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected second TRANSID_AI for COUNT key=2\n");
-      failures++;
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_CONF");
-    if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_CONF) {
-      fprintf(stderr, "FAIL: expected CTE_LOOKUP_CONF\n");
-      failures++;
-    }
-  }
-
-cleanup:
   releaseAll(ss, aggKeys);
   if (failures == 0) printf("  PASS\n");
   return failures > 0 ? -1 : 0;
@@ -887,10 +973,11 @@ testMultiAgg(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
 
   auto aggProg = buildAggProgram_CountSumGroupBy(meta.attrIdA, meta.attrIdB);
   std::map<Uint32, Uint32> aggKeys;
-  if (setupScanComplete(ss, meta, aggProg, mysqlPort, aggKeys) != 0) return -1;
+  std::map<Uint32, Uint32> ownerInstances;
+  if (setupScanComplete(ss, meta, aggProg, mysqlPort,
+                        aggKeys, ownerInstances) != 0)
+    return -1;
 
-  Uint32 nodeId = aggKeys.begin()->first;
-  Uint32 aggStateKey = aggKeys.begin()->second;
   auto attrInfo = buildCteLookupAttrInfo(1, 2, ss.getOwnRef(),
                                           FAKE_SENDER_DATA, ss.getOwnRef());
   int failures = 0;
@@ -899,30 +986,11 @@ testMultiAgg(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   Uint32 keyWords, keyBytes;
   buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 5);
 
-  if (sendCteLookupReq(ss, nodeId, 1, aggStateKey, 300,
-                        keyBuf, keyWords, keyBytes, attrInfo) != 0) {
-    failures++; goto cleanup;
-  }
+  if (lookupExistingKey(ss, aggKeys, ownerInstances, 300,
+                        keyBuf, keyWords, keyBytes, attrInfo,
+                        "multi-agg key=5") != 0)
+    failures++;
 
-  {
-    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(1)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected first TRANSID_AI for multi-agg key=5\n");
-      failures++;
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(2)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected second TRANSID_AI for multi-agg key=5\n");
-      failures++;
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_CONF");
-    if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_CONF) {
-      fprintf(stderr, "FAIL: expected CTE_LOOKUP_CONF\n");
-      failures++;
-    }
-  }
-
-cleanup:
   releaseAll(ss, aggKeys);
   if (failures == 0) printf("  PASS\n");
   return failures > 0 ? -1 : 0;
@@ -940,16 +1008,16 @@ testCteModeSilentComplete(Ndb * /*ndb*/, SignalSender &ss,
 
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
   std::map<Uint32, Uint32> aggKeys;
+  std::map<Uint32, Uint32> ownerInstances;
   /* setupScanComplete already validates no TRANSID_AI before COMPLETE_CONF */
-  if (setupScanComplete(ss, meta, aggProg, mysqlPort, aggKeys) != 0) {
+  if (setupScanComplete(ss, meta, aggProg, mysqlPort,
+                        aggKeys, ownerInstances) != 0) {
     fprintf(stderr, "  FAIL\n");
     releaseAll(ss, aggKeys);
     return -1;
   }
 
   /* Verify hash table survives: do a lookup */
-  Uint32 nodeId = aggKeys.begin()->first;
-  Uint32 aggStateKey = aggKeys.begin()->second;
   auto attrInfo = buildCteLookupAttrInfo(1, 1, ss.getOwnRef(),
                                           FAKE_SENDER_DATA, ss.getOwnRef());
   Uint32 keyBuf[3];
@@ -957,29 +1025,11 @@ testCteModeSilentComplete(Ndb * /*ndb*/, SignalSender &ss,
   buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 3);
 
   int failures = 0;
-  if (sendCteLookupReq(ss, nodeId, 1, aggStateKey, 400,
-                        keyBuf, keyWords, keyBytes, attrInfo) != 0) {
-    failures++; goto cleanup;
-  }
+  if (lookupExistingKey(ss, aggKeys, ownerInstances, 400,
+                        keyBuf, keyWords, keyBytes, attrInfo,
+                        "key=3 after CTE COMPLETE") != 0)
+    failures++;
 
-  {
-    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(1)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: hash table not alive after CTE COMPLETE\n");
-      failures++;
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(2)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected second TRANSID_AI after CTE COMPLETE\n");
-      failures++;
-    }
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_CONF");
-    if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_CONF) {
-      failures++;
-    }
-  }
-
-cleanup:
   releaseAll(ss, aggKeys);
   if (failures == 0) printf("  PASS\n");
   return failures > 0 ? -1 : 0;
@@ -997,10 +1047,10 @@ testFlushAIRouting(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
 
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
   std::map<Uint32, Uint32> aggKeys;
-  if (setupScanComplete(ss, meta, aggProg, mysqlPort, aggKeys) != 0) return -1;
-
-  Uint32 nodeId = aggKeys.begin()->first;
-  Uint32 aggStateKey = aggKeys.begin()->second;
+  std::map<Uint32, Uint32> ownerInstances;
+  if (setupScanComplete(ss, meta, aggProg, mysqlPort,
+                        aggKeys, ownerInstances) != 0)
+    return -1;
 
   /* Build AttrInfo with FLUSH_AI directing output to a specific resultData.
    * After FLUSH_AI, CORR_FACTOR goes to the remaining output which is
@@ -1017,55 +1067,13 @@ testFlushAIRouting(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 4);
 
   const Uint32 CORR_ID = 500;
-  if (sendCteLookupReq(ss, nodeId, 1, aggStateKey, CORR_ID,
-                        keyBuf, keyWords, keyBytes, attrInfo) != 0) {
-    failures++; goto cleanup;
-  }
+  if (lookupExistingKey(ss, aggKeys, ownerInstances, CORR_ID,
+                        keyBuf, keyWords, keyBytes, attrInfo,
+                        "FLUSH_AI key=4",
+                        true, FLUSH_RESULT_DATA,
+                        true, CORR_ID) != 0)
+    failures++;
 
-  {
-    /* First TRANSID_AI: from FLUSH_AI, connectPtr should be FLUSH_RESULT_DATA */
-    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(flush)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected TRANSID_AI from FLUSH_AI\n");
-      failures++;
-    } else {
-      const TransIdAI *tai =
-        reinterpret_cast<const TransIdAI *>(resp->getDataPtr());
-      if (tai->connectPtr != FLUSH_RESULT_DATA) {
-        fprintf(stderr, "FAIL: FLUSH_AI TRANSID_AI connectPtr=%u, expected %u\n",
-                tai->connectPtr, FLUSH_RESULT_DATA);
-        failures++;
-      } else {
-        V("  FLUSH_AI TRANSID_AI: connectPtr=%u (correct)\n", tai->connectPtr);
-      }
-    }
-
-    /* Second TRANSID_AI: remaining output (CORR_FACTOR), connectPtr=senderData */
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TRANSID_AI(corr)");
-    if (resp == nullptr || getGsn(resp) != GSN_TRANSID_AI) {
-      fprintf(stderr, "FAIL: expected second TRANSID_AI with CORR_FACTOR\n");
-      failures++;
-    } else {
-      const TransIdAI *tai =
-        reinterpret_cast<const TransIdAI *>(resp->getDataPtr());
-      if (tai->connectPtr != CORR_ID) {
-        fprintf(stderr, "FAIL: CORR TRANSID_AI connectPtr=%u, expected %u\n",
-                tai->connectPtr, CORR_ID);
-        failures++;
-      } else {
-        V("  CORR TRANSID_AI: connectPtr=%u (correct)\n", tai->connectPtr);
-      }
-    }
-
-    /* CTE_LOOKUP_CONF */
-    resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "CTE_LOOKUP_CONF");
-    if (resp == nullptr || getGsn(resp) != GSN_CTE_LOOKUP_CONF) {
-      fprintf(stderr, "FAIL: expected CTE_LOOKUP_CONF\n");
-      failures++;
-    }
-  }
-
-cleanup:
   releaseAll(ss, aggKeys);
   if (failures == 0) printf("  PASS\n");
   return failures > 0 ? -1 : 0;
@@ -1111,14 +1119,18 @@ testErrorCases(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   {
     V("  6b: Malformed AttrInfo...\n");
     std::map<Uint32, Uint32> aggKeys;
-    if (setupScanComplete(ss, meta, aggProg, mysqlPort, aggKeys) != 0) {
+    std::map<Uint32, Uint32> ownerInstances;
+    if (setupScanComplete(ss, meta, aggProg, mysqlPort,
+                          aggKeys, ownerInstances) != 0) {
       failures++; goto done;
     }
+    Uint32 stateNode = aggKeys.begin()->first;
     Uint32 stateKey = aggKeys.begin()->second;
+    Uint32 stateOwner = ownerInstances[stateNode];
 
     /* AttrInfo with only 3 words (minimum is 8) */
     std::vector<Uint32> badAI = {0, 1, 0};
-    if (sendCteLookupReq(ss, nodeId, 1, stateKey, 601,
+    if (sendCteLookupReq(ss, stateNode, stateOwner, stateKey, 601,
                           keyBuf, keyWords, keyBytes, badAI) != 0) {
       failures++;
       releaseAll(ss, aggKeys);
