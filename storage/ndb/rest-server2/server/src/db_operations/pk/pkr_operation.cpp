@@ -68,9 +68,28 @@
 #endif
 
 BatchKeyOperations::BatchKeyOperations() {
+  // Initialise members so the destructor is safe even if init_batch_operations
+  // never runs (e.g. an early allocation failure). m_isSuccess starts true so
+  // the destructor's read-column reset is skipped until init explicitly marks
+  // failure.
+  m_numOperations = 0;
+  m_ndb_object    = nullptr;
+  m_key_ops       = nullptr;
+  m_isSuccess     = true;
 }
 
 BatchKeyOperations::~BatchKeyOperations() {
+  // Release the ref-counted global table objects acquired via getTableGlobal.
+  if (m_ndb_object != nullptr && m_key_ops != nullptr) {
+    const NdbDictionary::Dictionary *dict = m_ndb_object->getDictionary();
+    for (Uint32 i = 0; i < m_numOperations; i++) {
+      KeyOperation *key_op = &m_key_ops[i];
+      if (key_op->m_tableDict != nullptr) {
+        dict->removeTableGlobal(*key_op->m_tableDict, 0);
+        key_op->m_tableDict = nullptr;
+      }
+    }
+  }
   if (!m_isSuccess) {
     for (Uint32 i = 0; i < m_numOperations; i++) {
       KeyOperation *key_op = &m_key_ops[i];
@@ -104,6 +123,9 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   for (Uint32 i = 0; i < numOps; i++) {
     KeyOperation *key_op = &m_key_ops[i];
     key_op->m_ndbTransaction = nullptr;
+    // m_key_ops is arena-allocated and not zero-initialised; null m_tableDict
+    // so the destructor only releases global table refs that were acquired.
+    key_op->m_tableDict = nullptr;
     PKRRequest *req = new (&key_op->m_req) PKRRequest(&reqBuffer[i]);
     if (unlikely(ndb_object->setCatalogName(req->DB()) != 0)) {
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
@@ -117,7 +139,10 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
       return err;
     }
     const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
-    const NdbDictionary::Table *tableDict = dict->getTable(req->Table());
+    // Version-checked global dictionary cache (released in the destructor).
+    // Avoids using a stale per-Ndb cached table whose id may have been reused
+    // by a different table after a drop+recreate.
+    const NdbDictionary::Table *tableDict = dict->getTableGlobal(req->Table());
     DEB_NDB_BE("Request on DB: %s, Table: %s, op: %u, reqBuffer: %p",
       req->DB(), req->Table(), i, reqBuffer[i].buffer);
     if (unlikely(tableDict == nullptr)) {

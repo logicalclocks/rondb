@@ -1748,6 +1748,29 @@ class TransactionGuard {
   NdbTransaction* transaction_;
 };
 
+// ScanGlobalSchemaRefs releases the version-checked global dictionary objects
+// (getTableGlobal / getIndexGlobal) on every exit path of perform_scan. These
+// accessors are ref-counted, so each acquired object must be released exactly
+// once with removeTableGlobal / removeIndexGlobal.
+namespace {
+struct ScanGlobalSchemaRefs {
+  const NdbDictionary::Dictionary *dict;
+  const NdbDictionary::Table *table = nullptr;
+  const NdbDictionary::Index *index = nullptr;
+  explicit ScanGlobalSchemaRefs(const NdbDictionary::Dictionary *d) : dict(d) {}
+  ~ScanGlobalSchemaRefs() {
+    if (index != nullptr) {
+      dict->removeIndexGlobal(*index, 0);
+    }
+    if (table != nullptr) {
+      dict->removeTableGlobal(*table, 0);
+    }
+  }
+  ScanGlobalSchemaRefs(const ScanGlobalSchemaRefs &) = delete;
+  ScanGlobalSchemaRefs &operator=(const ScanGlobalSchemaRefs &) = delete;
+};
+}  // namespace
+
 RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_str_buf,
                        uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
   // Clear the JSON buffer in case this is a retry
@@ -1770,7 +1793,13 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     return err;
   }
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
-  const NdbDictionary::Table* table = dict->getTable(scan_params.path.table.c_str());
+  // Use the version-checked global dictionary cache. getTableGlobal /
+  // getIndexGlobal validate the cached object against the live schema and
+  // refetch a stale one, so a table/index that was dropped and recreated (and
+  // whose internal id may have been reused by a different table) cannot be
+  // silently scanned with a stale handle. schemaRefs releases them on exit.
+  ScanGlobalSchemaRefs schemaRefs(dict);
+  const NdbDictionary::Table* table = dict->getTableGlobal(scan_params.path.table.c_str());
   if (unlikely(table == nullptr)) {
     RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
       std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
@@ -1778,6 +1807,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       std::string(" Table: ") + scan_params.path.table);
     return err;
   }
+  schemaRefs.table = table;
 
   const NdbDictionary::Index* index = nullptr;
 
@@ -1901,7 +1931,10 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
   if (scan_params.index != std::nullopt) {
     // Index scan
     IndexScanParams& index_params = scan_params.index.value();
-    index = dict->getIndex(index_params.name.c_str(), *table);
+    // getIndexGlobal validates the cached index against *table's current
+    // id/version and refetches if stale - this is what prevents a recreated
+    // table's index from resolving to the wrong table's data.
+    index = dict->getIndexGlobal(index_params.name.c_str(), *table);
     if (unlikely(index == nullptr)) {
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
         std::string(rdrsErrorMessage(ERROR_INDEX_NOT_EXIST)) +
@@ -1910,6 +1943,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         std::string(" Index: ") + index_params.name);
       return err;
     }
+    schemaRefs.index = index;
 
     RS_Status err = BindIndexColumns(index_params, table, index);
     if (err.http_code != HTTP_CODE::SUCCESS) {
