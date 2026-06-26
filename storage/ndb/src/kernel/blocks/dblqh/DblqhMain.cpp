@@ -6877,6 +6877,7 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr,
   locTcConnectptr.p->original_operation = 0xFF;
   locTcConnectptr.p->ttl_ignore = 0;
   locTcConnectptr.p->ttl_only_expired = 0;
+  locTcConnectptr.p->m_restore_op = 0;
 
   tcConnectptr = locTcConnectptr;
   ndbrequire(Magic::check_ptr(locTcConnectptr.p->tupConnectPtrP));
@@ -9382,6 +9383,24 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->tableref = tabptr.i;
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
+  /*
+   * TTL related. Remember whether this operation originates from LCP restore.
+   * For such inserts DBACC must NOT convert a duplicate ZINSERT into an
+   * in-place TTL update; the duplicate must surface as 630 so restore's
+   * delete-by-PK + reinsert recovery keeps the row count consistent.
+   */
+  regTcPtr->m_restore_op = (senderBlockNo == getRESTORE()) ? 1 : 0;
+  /*
+   * TTL related (companion to the NoTTLDupConvert insert fix). A restore
+   * delete can target an EXPIRED row: the duplicate-key recovery deletes the
+   * stale copy by PK (restore.cpp), and normal replay issues DELETE BY ROWID.
+   * Without ignoring TTL such a delete returns 626 on the expired row, which
+   * would break the recovery. Restore rebuilds physical state, so its deletes
+   * must be expiry-blind.
+   */
+  if (regTcPtr->m_restore_op && op == ZDELETE) {
+    regTcPtr->ttl_ignore = 1;
+  }
   if (senderBlockNo == getRESTORE())
     regTcPtr->m_disk_table &= !LqhKeyReq::getNoDiskFlag(Treqinfo);
   else if (op == ZREAD || op == ZREAD_EX || op == ZUPDATE)
@@ -10098,6 +10117,11 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
     taccreq = AccKeyReq::setNoWait(
         taccreq, ((regTcPtr.p->m_flags & TcConnectionrec::OP_NOWAIT) != 0));
     taccreq = AccKeyReq::setLockReq(taccreq, false);
+    /*
+     * TTL related. Tell DBACC not to convert a duplicate ZINSERT into an
+     * in-place TTL update for LCP-restore-originated operations.
+     */
+    taccreq = AccKeyReq::setNoTTLDupConvert(taccreq, regTcPtr.p->m_restore_op);
 
     AccKeyReq * const req = reinterpret_cast<AccKeyReq*>(&signal->theData[0]);
     req->requestInfo = taccreq;
@@ -14126,6 +14150,7 @@ void Dblqh::releaseTcrec(Signal *signal, TcConnectionrecPtr locTcConnectptr) {
   locTcConnectptr.p->original_operation = 0xFF;
   locTcConnectptr.p->ttl_ignore = 0;
   locTcConnectptr.p->ttl_only_expired = 0;
+  locTcConnectptr.p->m_restore_op = 0;
   Dblqh *lqh = m_curr_lqh;
   if (likely(locTcConnectptr.i < lqh->ctcConnectReserved))
   {

@@ -2857,7 +2857,8 @@ class Dblqh : public SimulatedBlock {
       //m_nr_delete only used in Copy fragment, set before used
       original_operation(0xFF),
       ttl_ignore(0),
-      ttl_only_expired(0)
+      ttl_only_expired(0),
+      m_restore_op(0)
     {
       m_dealloc_data.m_unused = RNIL;
 #ifdef DEBUG_USAGE_COUNT
@@ -3048,6 +3049,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 original_operation; /* TTL related, original operation */
     Uint8 ttl_ignore; /* TTL related, ttl ignore */
     Uint8 ttl_only_expired;
+    Uint8 m_restore_op; /* TTL related, op originates from LCP restore */
   };                 /* p2c: size = 308 bytes */
 
   static constexpr Uint32 DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;
