@@ -388,7 +388,7 @@ class RingBufferWriter {
             // C++ NdbRingBufferWriter does: theCommitStatus=Started,
             // theError.code=0, releaseCompletedOpsAndQueries().
             // We achieve a similar reset by executing NoCommit with no
-            // pending ops — this clears the transaction error state.
+            // pending ops; this clears the transaction error state.
             trans.executeNoCommitDirect(AbortOption.AO_IgnoreError);
             batchMeta.initFirstInsert();
             batchMetaExisted = false;
