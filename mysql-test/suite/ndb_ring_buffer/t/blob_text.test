@@ -31,11 +31,11 @@ SELECT id, ring_idx, LENGTH(description) AS len, LEFT(description, 30) AS previe
     FROM test.rb_text WHERE id = 1 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 2: Ring wrapping with TEXT — large data overwritten correctly
+# Case 2: Ring wrapping with TEXT - large data overwritten correctly
 ###############################################################################
 
 --echo #
---echo # Case 2: Ring wrapping with TEXT — large data overwritten correctly
+--echo # Case 2: Ring wrapping with TEXT - large data overwritten correctly
 --echo #
 
 # 4th insert wraps, overwrites slot 1 (which had 'Short text')
@@ -52,11 +52,11 @@ SELECT id, ring_idx, LENGTH(description) AS len, LEFT(description, 30) AS previe
     FROM test.rb_text WHERE id = 1 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 3: BLOB column — binary data integrity through wrapping
+# Case 3: BLOB column - binary data integrity through wrapping
 ###############################################################################
 
 --echo #
---echo # Case 3: BLOB column — binary data integrity through wrapping
+--echo # Case 3: BLOB column - binary data integrity through wrapping
 --echo #
 
 CREATE TABLE test.rb_blob (
@@ -76,7 +76,7 @@ INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'01020304', 100));
 SELECT id, ring_idx, LENGTH(payload) AS len, SHA1(payload) AS checksum
     FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
 
-# Wrap — overwrites slot 1
+# Wrap - overwrites slot 1
 INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'FF00FF00', 50));
 
 SELECT id, ring_idx, LENGTH(payload) AS len, SHA1(payload) AS checksum
@@ -121,11 +121,11 @@ SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
     FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 5: UPDATE TEXT/BLOB user columns — allowed
+# Case 5: UPDATE TEXT/BLOB user columns - allowed
 ###############################################################################
 
 --echo #
---echo # Case 5: UPDATE TEXT/BLOB user columns — allowed
+--echo # Case 5: UPDATE TEXT/BLOB user columns - allowed
 --echo #
 
 UPDATE test.rb_mixed SET notes = 'Updated note', attachment = x'AABB'

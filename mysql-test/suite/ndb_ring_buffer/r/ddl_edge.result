@@ -145,7 +145,7 @@ Alice	1	alice_fresh
 Bob	1	bob_1
 DROP TABLE test.rb_varchar;
 #
-# Case 5: CHAR PK prefix — fixed-length string
+# Case 5: CHAR PK prefix - fixed-length string
 #
 CREATE TABLE test.rb_char (
 code CHAR(10) NOT NULL,
@@ -210,7 +210,7 @@ region	client_id	ring_idx	data
 US-West	1	1	r3
 DROP TABLE test.rb_mixed_pk;
 #
-# Case 7: 4-column composite PK — 3 prefix columns + ring_idx
+# Case 7: 4-column composite PK - 3 prefix columns + ring_idx
 #
 CREATE TABLE test.rb_4pk (
 region INT NOT NULL,
@@ -307,7 +307,7 @@ ring_meta	varbinary	YES	NULL
 val	varchar	YES	NULL
 DROP TABLE test.rb_is;
 #
-# Case 10: ALTER TABLE DROP ring_idx/ring_meta columns — blocked
+# Case 10: ALTER TABLE DROP ring_idx/ring_meta columns - blocked
 #
 CREATE TABLE test.rb_drop_col (
 id INT NOT NULL,
@@ -371,7 +371,7 @@ DROP TRIGGER test.rb_after_ins;
 DROP TABLE test.trigger_log;
 DROP TABLE test.rb_trigger;
 #
-# Case 12: CREATE TABLE with index on ring_idx — blocked
+# Case 12: CREATE TABLE with index on ring_idx - blocked
 #
 CREATE TABLE test.rb_idx_on_internal (
 id INT NOT NULL,
@@ -384,7 +384,7 @@ INDEX idx_ring_idx (ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_idx_on_internal' (use SHOW WARNINGS for more info).
 #
-# Case 13: CREATE TABLE with index on ring_meta — blocked
+# Case 13: CREATE TABLE with index on ring_meta - blocked
 #
 CREATE TABLE test.rb_idx_on_meta (
 id INT NOT NULL,
@@ -397,7 +397,7 @@ INDEX idx_ring_meta (ring_meta)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_idx_on_meta' (use SHOW WARNINGS for more info).
 #
-# Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+# Case 14: CREATE TABLE with UNIQUE index on ring_idx - blocked
 #
 CREATE TABLE test.rb_uniq_on_internal (
 id INT NOT NULL,
@@ -410,7 +410,7 @@ UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_uniq_on_internal' (use SHOW WARNINGS for more info).
 #
-# Case 15: CREATE TABLE with composite index including ring_idx — blocked
+# Case 15: CREATE TABLE with composite index including ring_idx - blocked
 #
 CREATE TABLE test.rb_composite_idx (
 id INT NOT NULL,
@@ -423,7 +423,7 @@ INDEX idx_val_ring (val, ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_composite_idx' (use SHOW WARNINGS for more info).
 #
-# Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+# Case 16: ALTER TABLE ADD INDEX on ring_idx - blocked
 #
 CREATE TABLE test.rb_alter_idx (
 id INT NOT NULL,

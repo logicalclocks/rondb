@@ -438,7 +438,7 @@ void NdbRingBufferWriter::buildDataMask(const unsigned char *userMask,
 }
 
 // ---------------------------------------------------------------
-// readMetaRow — read the meta row (ring_idx=0) with exclusive lock
+// readMetaRow - read the meta row (ring_idx=0) with exclusive lock
 // ---------------------------------------------------------------
 
 int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
@@ -479,7 +479,7 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
    */
   const NdbError &read_err = read_op->getNdbError();
   if (read_err.code == 0) {
-    // Meta row found — unpack it
+    // Meta row found - unpack it
     m_batch_meta_existed = true;
 
     // Check if ring_meta is null
@@ -491,7 +491,7 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
     }
 
     if (meta_is_null) {
-      // Meta row exists but ring_meta is null — re-init
+      // Meta row exists but ring_meta is null - re-init
       m_batch_meta.init_first_insert();
     } else {
       // Read the packed meta value
@@ -512,7 +512,7 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
       }
 
       if (data_len < RING_META_SIZE) {
-        // Corrupted — re-init
+        // Corrupted - re-init
         m_batch_meta.init_first_insert();
       } else {
         m_batch_meta.unpack(data_ptr);
@@ -527,7 +527,7 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
       }
     }
   } else if (read_err.code == 626) {
-    // Meta row not found — first insert for this PK prefix.
+    // Meta row not found - first insert for this PK prefix.
     // The 626 propagates to theError.code via setOperationErrorCode().
     // Clear it and release the completed read so subsequent writeTuple
     // calls on this transaction are not rejected.
@@ -545,7 +545,7 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
 }
 
 // ---------------------------------------------------------------
-// writeDataRow — queue a writeTuple for one data row
+// writeDataRow - queue a writeTuple for one data row
 // ---------------------------------------------------------------
 
 const NdbOperation *NdbRingBufferWriter::writeDataRow(
@@ -585,7 +585,7 @@ const NdbOperation *NdbRingBufferWriter::writeDataRow(
 }
 
 // ---------------------------------------------------------------
-// writeMetaRow — insert or update the meta row
+// writeMetaRow - insert or update the meta row
 // ---------------------------------------------------------------
 
 int NdbRingBufferWriter::writeMetaRow() {
@@ -642,7 +642,7 @@ int NdbRingBufferWriter::writeMetaRow() {
 }
 
 // ---------------------------------------------------------------
-// addRow — main entry point
+// addRow - main entry point
 // ---------------------------------------------------------------
 
 const NdbOperation *NdbRingBufferWriter::addRow(
@@ -660,7 +660,7 @@ const NdbOperation *NdbRingBufferWriter::addRow(
   m_error_code = 0;
   m_error_message[0] = '\0';
 
-  // Path A: batch hit — same PK prefix as current batch
+  // Path A: batch hit - same PK prefix as current batch
   if (m_batch_active) {
     if (pkPrefixMatches(rowBuffer, m_pk_prefix_buffer)) {
       // Advance meta in memory and queue data write (no execute)
@@ -668,13 +668,13 @@ const NdbOperation *NdbRingBufferWriter::addRow(
       return op;
     }
 
-    // PK prefix changed — flush old batch
+    // PK prefix changed - flush old batch
     if (flush() != 0) {
       return nullptr;
     }
   }
 
-  // Path B: new batch — read meta row, queue first data write
+  // Path B: new batch - read meta row, queue first data write
   if (readMetaRow(rowBuffer) != 0) {
     return nullptr;
   }
@@ -695,7 +695,7 @@ const NdbOperation *NdbRingBufferWriter::addRow(
 }
 
 // ---------------------------------------------------------------
-// flush — finalize pending batch
+// flush - finalize pending batch
 // ---------------------------------------------------------------
 
 int NdbRingBufferWriter::flush() {

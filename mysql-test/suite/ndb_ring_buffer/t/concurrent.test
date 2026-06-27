@@ -24,11 +24,11 @@ CREATE TABLE test.rb (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 
 ###############################################################################
-# Case 1: Two sessions inserting to DIFFERENT PK prefixes — no conflict
+# Case 1: Two sessions inserting to DIFFERENT PK prefixes - no conflict
 ###############################################################################
 
 --echo #
---echo # Case 1: Two sessions inserting to different PK prefixes — no conflict
+--echo # Case 1: Two sessions inserting to different PK prefixes - no conflict
 --echo #
 
 connect(con1, localhost, root,,test);
@@ -59,7 +59,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 ###############################################################################
 
 --echo #
---echo # Case 2: Two sessions inserting to same PK prefix — sequential
+--echo # Case 2: Two sessions inserting to same PK prefix - sequential
 --echo #
 
 --connection con1
@@ -86,7 +86,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 --echo #
 
 # client_id=3 already has 4 rows, ring_size=8
-# Each session adds 2 more → 8 total (ring full)
+# Each session adds 2 more -> 8 total (ring full)
 --connection con1
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_5');
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_6');
@@ -102,7 +102,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 3
     ORDER BY ring_idx;
 
-# Now wrap — each session adds 1 more
+# Now wrap - each session adds 1 more
 --connection con1
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'wrap_9');
 
@@ -123,11 +123,11 @@ SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
-# Case 4: One session inserts while another reads — no meta leak
+# Case 4: One session inserts while another reads - no meta leak
 ###############################################################################
 
 --echo #
---echo # Case 4: One session inserts, another reads — meta rows never visible
+--echo # Case 4: One session inserts, another reads - meta rows never visible
 --echo #
 
 --connection con1
@@ -156,7 +156,7 @@ SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
 ###############################################################################
 
 --echo #
---echo # Case 5: Transaction isolation — committed data visible to other session
+--echo # Case 5: Transaction isolation - committed data visible to other session
 --echo #
 
 --connection con1
@@ -172,11 +172,11 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 ###############################################################################
-# Case 6: Transaction: INSERT + ROLLBACK — other session sees nothing
+# Case 6: Transaction: INSERT + ROLLBACK - other session sees nothing
 ###############################################################################
 
 --echo #
---echo # Case 6: Transaction isolation — rolled back data not visible
+--echo # Case 6: Transaction isolation - rolled back data not visible
 --echo #
 
 --connection con1
@@ -217,7 +217,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1
     ORDER BY ring_idx;
 
-# Re-insert from different session — fresh ring
+# Re-insert from different session - fresh ring
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_B');
 

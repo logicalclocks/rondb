@@ -1,5 +1,5 @@
 #
-# Case 1: PREPARE/EXECUTE INSERT — ring buffer path works
+# Case 1: PREPARE/EXECUTE INSERT - ring buffer path works
 #
 CREATE TABLE test.rb (
 client_id INT NOT NULL,
@@ -39,7 +39,7 @@ client_id	ring_idx	event_data
 1	4	prep_D
 DEALLOCATE PREPARE stmt_ins;
 #
-# Case 3: Prepared SELECT — meta rows hidden
+# Case 3: Prepared SELECT - meta rows hidden
 #
 PREPARE stmt_sel FROM
 'SELECT client_id, ring_idx, event_data FROM test.rb WHERE client_id = ? ORDER BY ring_idx';
@@ -57,7 +57,7 @@ cnt
 DEALLOCATE PREPARE stmt_sel;
 DEALLOCATE PREPARE stmt_cnt;
 #
-# Case 4: Prepared UPDATE — user column update allowed
+# Case 4: Prepared UPDATE - user column update allowed
 #
 PREPARE stmt_upd FROM
 'UPDATE test.rb SET event_data = ? WHERE client_id = ? AND ring_idx = ?';
@@ -72,7 +72,7 @@ client_id	ring_idx	event_data
 1	4	prep_D
 DEALLOCATE PREPARE stmt_upd;
 #
-# Case 5: Prepared UPDATE on ring_idx — blocked
+# Case 5: Prepared UPDATE on ring_idx - blocked
 #
 PREPARE stmt_upd_bad FROM
 'UPDATE test.rb SET ring_idx = ? WHERE client_id = ? AND ring_idx = ?';
@@ -81,7 +81,7 @@ EXECUTE stmt_upd_bad USING @new_idx, @cid, @old_idx;
 ERROR HY000: Table storage engine for 'Cannot update ring_idx on ring-buffer table' doesn't have this option
 DEALLOCATE PREPARE stmt_upd_bad;
 #
-# Case 6: Prepared DELETE with full PK prefix — allowed
+# Case 6: Prepared DELETE with full PK prefix - allowed
 #
 PREPARE stmt_del FROM 'DELETE FROM test.rb WHERE client_id = ?';
 SET @cid = 1;
@@ -96,7 +96,7 @@ client_id	ring_idx	event_data
 1	1	after_del
 DEALLOCATE PREPARE stmt_del;
 #
-# Case 7: Prepared INSERT with ring_idx specified — blocked
+# Case 7: Prepared INSERT with ring_idx specified - blocked
 #
 PREPARE stmt_bad FROM
 'INSERT INTO test.rb (client_id, ring_idx, event_data) VALUES (?, ?, ?)';
@@ -106,7 +106,7 @@ ERROR HY000: Table storage engine for 'Cannot specify ring_idx column in INSERT 
 DEALLOCATE PREPARE stmt_bad;
 DROP TABLE test.rb;
 #
-# Case 8: LOAD DATA INFILE — ring buffer write path intercepted
+# Case 8: LOAD DATA INFILE - ring buffer write path intercepted
 #
 CREATE TABLE test.rb_load (
 id INT NOT NULL,
@@ -195,7 +195,7 @@ id	ring_idx	val
 2	3	multi_C
 DROP TABLE test.rb_ignore;
 #
-# Case 12: INT UNSIGNED ring_idx — inserts and wrapping
+# Case 12: INT UNSIGNED ring_idx - inserts and wrapping
 #
 CREATE TABLE test.rb_unsigned (
 client_id INT NOT NULL,
@@ -228,7 +228,7 @@ client_id	ring_idx	HEX(ring_meta)
 1	0	0100000002000000030000000000000004000000000000000000000000000000
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 13: INT UNSIGNED ring_idx — meta row filtering works
+# Case 13: INT UNSIGNED ring_idx - meta row filtering works
 #
 SELECT COUNT(*) AS cnt FROM test.rb_unsigned WHERE client_id = 1;
 cnt
@@ -237,7 +237,7 @@ SELECT client_id, ring_idx, data FROM test.rb_unsigned
 WHERE client_id = 1 AND ring_idx = 0;
 client_id	ring_idx	data
 #
-# Case 14: INT UNSIGNED ring_idx — bulk insert + wrap
+# Case 14: INT UNSIGNED ring_idx - bulk insert + wrap
 #
 INSERT INTO test.rb_unsigned (client_id, data)
 VALUES (2, 'bulk_U1'), (2, 'bulk_U2'), (2, 'bulk_U3'), (2, 'bulk_U4');

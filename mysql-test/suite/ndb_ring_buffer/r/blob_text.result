@@ -19,7 +19,7 @@ id	ring_idx	len	preview
 1	2	1300	Hello World! Hello World! Hell
 1	3	18	Another short text
 #
-# Case 2: Ring wrapping with TEXT — large data overwritten correctly
+# Case 2: Ring wrapping with TEXT - large data overwritten correctly
 #
 INSERT INTO test.rb_text (id, description)
 VALUES (1, REPEAT('Wrapped data ', 200));
@@ -37,7 +37,7 @@ id	ring_idx	len	preview
 1	2	17	Small after large
 1	3	18	Another short text
 #
-# Case 3: BLOB column — binary data integrity through wrapping
+# Case 3: BLOB column - binary data integrity through wrapping
 #
 CREATE TABLE test.rb_blob (
 id INT NOT NULL,
@@ -99,7 +99,7 @@ client_id	ring_idx	label	note_len	attach_len
 1	2	Entry 2	10	1
 1	3	Entry 3	NULL	NULL
 #
-# Case 5: UPDATE TEXT/BLOB user columns — allowed
+# Case 5: UPDATE TEXT/BLOB user columns - allowed
 #
 UPDATE test.rb_mixed SET notes = 'Updated note', attachment = x'AABB'
     WHERE client_id = 1 AND ring_idx = 2;

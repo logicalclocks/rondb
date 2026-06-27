@@ -29,11 +29,11 @@ INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
 
 ###############################################################################
-# Case 1: Single node restart — data survives
+# Case 1: Single node restart - data survives
 ###############################################################################
 
 --echo #
---echo # Case 1: Single node restart — data survives
+--echo # Case 1: Single node restart - data survives
 --echo #
 
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -55,11 +55,11 @@ SELECT client_id, ring_idx FROM test.rb ORDER BY client_id, ring_idx;
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
-# Case 2: System restart (ALL RESTART) — data survives
+# Case 2: System restart (ALL RESTART) - data survives
 ###############################################################################
 
 --echo #
---echo # Case 2: System restart — data survives
+--echo # Case 2: System restart - data survives
 --echo #
 
 # Verify data before system restart
@@ -136,7 +136,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
-# Continue inserting — ring should keep working
+# Continue inserting - ring should keep working
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_G');
 
 SELECT client_id, ring_idx, event_data FROM test.rb

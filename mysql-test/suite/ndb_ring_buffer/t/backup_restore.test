@@ -8,11 +8,11 @@
 --source suite/ndb/include/backup_restore_setup.inc
 
 ###############################################################################
-# Case 1: Basic backup/restore — data rows preserved
+# Case 1: Basic backup/restore - data rows preserved
 ###############################################################################
 
 --echo #
---echo # Case 1: Basic backup/restore — data rows preserved
+--echo # Case 1: Basic backup/restore - data rows preserved
 --echo #
 
 CREATE TABLE test.rb (
@@ -76,11 +76,11 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 DROP TABLE test.rb;
 
 ###############################################################################
-# Case 2: Wrapped ring backup/restore — wrapped state preserved
+# Case 2: Wrapped ring backup/restore - wrapped state preserved
 ###############################################################################
 
 --echo #
---echo # Case 2: Wrapped ring backup/restore — wrapped state preserved
+--echo # Case 2: Wrapped ring backup/restore - wrapped state preserved
 --echo #
 
 CREATE TABLE test.rb_wrap (
@@ -204,7 +204,7 @@ SHOW CREATE TABLE test.rb_meta;
 DROP TABLE test.rb_meta;
 
 ###############################################################################
-# Case 4: Continue INSERT after restore — ring continues correctly
+# Case 4: Continue INSERT after restore - ring continues correctly
 ###############################################################################
 
 --echo #
@@ -277,7 +277,7 @@ SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
 DROP TABLE test.rb_cont;
 
 ###############################################################################
-# Case 5: BLOB/TEXT columns — data integrity through backup/restore
+# Case 5: BLOB/TEXT columns - data integrity through backup/restore
 ###############################################################################
 
 --echo #
@@ -348,7 +348,7 @@ SELECT id, ring_idx, LENGTH(description), SHA1(description),
 DROP TABLE test.rb_blob;
 
 ###############################################################################
-# Case 6: Multiple PK prefixes — all independent rings preserved
+# Case 6: Multiple PK prefixes - all independent rings preserved
 ###############################################################################
 
 --echo #
@@ -419,7 +419,7 @@ SELECT region, client_id, ring_idx, event FROM test.rb_multi
 DROP TABLE test.rb_multi;
 
 ###############################################################################
-# Case 7: Meta rows properly restored — visible with show_meta
+# Case 7: Meta rows properly restored - visible with show_meta
 ###############################################################################
 
 --echo #
@@ -480,7 +480,7 @@ while ($metadata_sync_value != 0)
 }
 --connection server1
 
-# Meta rows should be restored — visible with show_meta ON
+# Meta rows should be restored - visible with show_meta ON
 SET ndb_ring_buffer_show_meta = ON;
 SELECT id, ring_idx FROM test.rb_show ORDER BY id, ring_idx;
 SET ndb_ring_buffer_show_meta = OFF;
@@ -491,7 +491,7 @@ SELECT id, ring_idx, val FROM test.rb_show ORDER BY id, ring_idx;
 DROP TABLE test.rb_show;
 
 ###############################################################################
-# Case 8: NOT NULL + unique index — backup/restore
+# Case 8: NOT NULL + unique index - backup/restore
 # Meta rows (code=0) must not collide with the unique index during restore.
 ###############################################################################
 
@@ -572,14 +572,14 @@ SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
 DROP TABLE test.rb_nn_uniq;
 
 ###############################################################################
-# Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+# Case 9: NOT NULL + unique index - 4-step restore with rebuild-indexes
 # Uses --disable-indexes + --rebuild-indexes which rebuilds the unique index
 # via TRIX/SUMA after data is loaded. Exercises the SUMA fix that hides
 # meta rows for SingleTableScan index build scans.
 ###############################################################################
 
 --echo #
---echo # Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+--echo # Case 9: NOT NULL + unique index - 4-step restore with rebuild-indexes
 --echo #
 
 CREATE TABLE test.rb_nn_rebuild (

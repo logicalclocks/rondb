@@ -1,5 +1,5 @@
 #
-# Case 1: NOT NULL INT column — basic ring buffer works
+# Case 1: NOT NULL INT column - basic ring buffer works
 #
 CREATE TABLE test.rb_nn_bare (
 id INT NOT NULL,
@@ -17,7 +17,7 @@ id	ring_idx	status
 2	1	99
 DROP TABLE test.rb_nn_bare;
 #
-# Case 2: NOT NULL VARCHAR column — basic ring buffer works
+# Case 2: NOT NULL VARCHAR column - basic ring buffer works
 #
 CREATE TABLE test.rb_nn_varchar (
 id INT NOT NULL,
@@ -35,7 +35,7 @@ id	ring_idx	name
 2	1	Bob
 DROP TABLE test.rb_nn_varchar;
 #
-# Case 3: Multiple NOT NULL columns — all work
+# Case 3: Multiple NOT NULL columns - all work
 #
 CREATE TABLE test.rb_nn_multi (
 id INT NOT NULL,
@@ -55,7 +55,7 @@ id	ring_idx	cat	sub	label
 2	1	30	40	world
 DROP TABLE test.rb_nn_multi;
 #
-# Case 4: UNIQUE index on NOT NULL INT — no collision between meta rows
+# Case 4: UNIQUE index on NOT NULL INT - no collision between meta rows
 #
 CREATE TABLE test.rb_uniq_int (
 client_id INT NOT NULL,
@@ -78,7 +78,7 @@ INSERT INTO test.rb_uniq_int (client_id, status) VALUES (1, 99);
 ERROR 23000: Duplicate entry '99' for key 'rb_uniq_int.idx_status'
 DROP TABLE test.rb_uniq_int;
 #
-# Case 5: UNIQUE index on NOT NULL VARCHAR — no collision
+# Case 5: UNIQUE index on NOT NULL VARCHAR - no collision
 #
 CREATE TABLE test.rb_uniq_vc (
 id INT NOT NULL,
@@ -119,7 +119,7 @@ id	ring_idx	cat	sub
 2	1	30	40
 DROP TABLE test.rb_uniq_comp;
 #
-# Case 7: Non-unique index on NOT NULL column — meta rows not in index
+# Case 7: Non-unique index on NOT NULL column - meta rows not in index
 #
 CREATE TABLE test.rb_nonuniq (
 id INT NOT NULL,
@@ -146,7 +146,7 @@ id	ring_idx	priority
 2	1	15
 DROP TABLE test.rb_nonuniq;
 #
-# Case 8: Ring wrap with UNIQUE index — old values freed, new indexed
+# Case 8: Ring wrap with UNIQUE index - old values freed, new indexed
 #
 CREATE TABLE test.rb_wrap_uniq (
 id INT NOT NULL,
@@ -179,7 +179,7 @@ id	ring_idx	code
 1	3	300
 DROP TABLE test.rb_wrap_uniq;
 #
-# Case 9: ALTER TABLE ADD UNIQUE INDEX — meta rows hidden in TRIX scan
+# Case 9: ALTER TABLE ADD UNIQUE INDEX - meta rows hidden in TRIX scan
 #
 CREATE TABLE test.rb_alter_uniq (
 id INT NOT NULL,
@@ -203,7 +203,7 @@ id	ring_idx	code
 2	1	200
 DROP TABLE test.rb_alter_uniq;
 #
-# Case 10: UNIQUE on NULLABLE column — control case
+# Case 10: UNIQUE on NULLABLE column - control case
 #
 CREATE TABLE test.rb_uniq_null (
 id INT NOT NULL,
@@ -224,7 +224,7 @@ id	ring_idx	tag
 3	1	third
 DROP TABLE test.rb_uniq_null;
 #
-# Case 11: show_meta — meta rows show zero-defaults for NOT NULL columns
+# Case 11: show_meta - meta rows show zero-defaults for NOT NULL columns
 #
 CREATE TABLE test.rb_show_meta (
 id INT NOT NULL,
@@ -265,7 +265,7 @@ INSERT INTO test.rb_bulk_nn_uniq (id, code) VALUES (4, 100);
 ERROR 23000: Duplicate entry '100' for key 'rb_bulk_nn_uniq.idx_code'
 DROP TABLE test.rb_bulk_nn_uniq;
 #
-# Case 13: NOT NULL DEFAULT non-zero — meta rows use zero-default
+# Case 13: NOT NULL DEFAULT non-zero - meta rows use zero-default
 #
 CREATE TABLE test.rb_nn_default (
 id INT NOT NULL,
@@ -401,7 +401,7 @@ id	ring_idx	code
 1	5	500
 DROP TABLE test.rb_grow_nn;
 #
-# Case 17: Multiple NOT NULL types — VARCHAR + INT with indexes
+# Case 17: Multiple NOT NULL types - VARCHAR + INT with indexes
 #
 CREATE TABLE test.rb_nn_types (
 id INT NOT NULL,
@@ -432,7 +432,7 @@ ORDER BY id, ring_idx;
 id	ring_idx	name	score
 DROP TABLE test.rb_nn_types;
 #
-# Case 18: NOT NULL BLOB/TEXT columns — blocked at CREATE TABLE
+# Case 18: NOT NULL BLOB/TEXT columns - blocked at CREATE TABLE
 #
 CREATE TABLE test.rb_nn_text (
 id INT NOT NULL,

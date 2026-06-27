@@ -13,11 +13,11 @@
 --source include/have_ndb.inc
 
 ###############################################################################
-# Case 1: NOT NULL INT column — no secondary index
+# Case 1: NOT NULL INT column - no secondary index
 ###############################################################################
 
 --echo #
---echo # Case 1: NOT NULL INT column — basic ring buffer works
+--echo # Case 1: NOT NULL INT column - basic ring buffer works
 --echo #
 
 CREATE TABLE test.rb_nn_bare (
@@ -37,11 +37,11 @@ SELECT id, ring_idx, status FROM test.rb_nn_bare ORDER BY id, ring_idx;
 DROP TABLE test.rb_nn_bare;
 
 ###############################################################################
-# Case 2: NOT NULL VARCHAR column — no secondary index
+# Case 2: NOT NULL VARCHAR column - no secondary index
 ###############################################################################
 
 --echo #
---echo # Case 2: NOT NULL VARCHAR column — basic ring buffer works
+--echo # Case 2: NOT NULL VARCHAR column - basic ring buffer works
 --echo #
 
 CREATE TABLE test.rb_nn_varchar (
@@ -61,11 +61,11 @@ SELECT id, ring_idx, name FROM test.rb_nn_varchar ORDER BY id, ring_idx;
 DROP TABLE test.rb_nn_varchar;
 
 ###############################################################################
-# Case 3: Multiple NOT NULL columns — no secondary index
+# Case 3: Multiple NOT NULL columns - no secondary index
 ###############################################################################
 
 --echo #
---echo # Case 3: Multiple NOT NULL columns — all work
+--echo # Case 3: Multiple NOT NULL columns - all work
 --echo #
 
 CREATE TABLE test.rb_nn_multi (
@@ -87,11 +87,11 @@ SELECT id, ring_idx, cat, sub, label FROM test.rb_nn_multi ORDER BY id, ring_idx
 DROP TABLE test.rb_nn_multi;
 
 ###############################################################################
-# Case 4: UNIQUE index on NOT NULL INT — multiple PK prefixes
+# Case 4: UNIQUE index on NOT NULL INT - multiple PK prefixes
 ###############################################################################
 
 --echo #
---echo # Case 4: UNIQUE index on NOT NULL INT — no collision between meta rows
+--echo # Case 4: UNIQUE index on NOT NULL INT - no collision between meta rows
 --echo #
 
 CREATE TABLE test.rb_uniq_int (
@@ -117,11 +117,11 @@ INSERT INTO test.rb_uniq_int (client_id, status) VALUES (1, 99);
 DROP TABLE test.rb_uniq_int;
 
 ###############################################################################
-# Case 5: UNIQUE index on NOT NULL VARCHAR — multiple PK prefixes
+# Case 5: UNIQUE index on NOT NULL VARCHAR - multiple PK prefixes
 ###############################################################################
 
 --echo #
---echo # Case 5: UNIQUE index on NOT NULL VARCHAR — no collision
+--echo # Case 5: UNIQUE index on NOT NULL VARCHAR - no collision
 --echo #
 
 CREATE TABLE test.rb_uniq_vc (
@@ -173,7 +173,7 @@ DROP TABLE test.rb_uniq_comp;
 ###############################################################################
 
 --echo #
---echo # Case 7: Non-unique index on NOT NULL column — meta rows not in index
+--echo # Case 7: Non-unique index on NOT NULL column - meta rows not in index
 --echo #
 
 CREATE TABLE test.rb_nonuniq (
@@ -206,7 +206,7 @@ DROP TABLE test.rb_nonuniq;
 ###############################################################################
 
 --echo #
---echo # Case 8: Ring wrap with UNIQUE index — old values freed, new indexed
+--echo # Case 8: Ring wrap with UNIQUE index - old values freed, new indexed
 --echo #
 
 CREATE TABLE test.rb_wrap_uniq (
@@ -247,7 +247,7 @@ DROP TABLE test.rb_wrap_uniq;
 ###############################################################################
 
 --echo #
---echo # Case 9: ALTER TABLE ADD UNIQUE INDEX — meta rows hidden in TRIX scan
+--echo # Case 9: ALTER TABLE ADD UNIQUE INDEX - meta rows hidden in TRIX scan
 --echo #
 
 CREATE TABLE test.rb_alter_uniq (
@@ -262,7 +262,7 @@ CREATE TABLE test.rb_alter_uniq (
 INSERT INTO test.rb_alter_uniq (id, code) VALUES (1, 100);
 INSERT INTO test.rb_alter_uniq (id, code) VALUES (2, 200);
 
-# SUMA hides meta rows for index build scans — no duplicate key collision
+# SUMA hides meta rows for index build scans - no duplicate key collision
 ALTER TABLE test.rb_alter_uniq ADD UNIQUE INDEX idx_code (code);
 
 # Verify unique constraint works after ALTER
@@ -279,11 +279,11 @@ SELECT id, ring_idx, code FROM test.rb_alter_uniq
 DROP TABLE test.rb_alter_uniq;
 
 ###############################################################################
-# Case 10: UNIQUE on NULLABLE column — still works (control case)
+# Case 10: UNIQUE on NULLABLE column - still works (control case)
 ###############################################################################
 
 --echo #
---echo # Case 10: UNIQUE on NULLABLE column — control case
+--echo # Case 10: UNIQUE on NULLABLE column - control case
 --echo #
 
 CREATE TABLE test.rb_uniq_null (
@@ -309,7 +309,7 @@ DROP TABLE test.rb_uniq_null;
 ###############################################################################
 
 --echo #
---echo # Case 11: show_meta — meta rows show zero-defaults for NOT NULL columns
+--echo # Case 11: show_meta - meta rows show zero-defaults for NOT NULL columns
 --echo #
 
 CREATE TABLE test.rb_show_meta (
@@ -368,7 +368,7 @@ DROP TABLE test.rb_bulk_nn_uniq;
 ###############################################################################
 
 --echo #
---echo # Case 13: NOT NULL DEFAULT non-zero — meta rows use zero-default
+--echo # Case 13: NOT NULL DEFAULT non-zero - meta rows use zero-default
 --echo #
 
 CREATE TABLE test.rb_nn_default (
@@ -431,7 +431,7 @@ INSERT INTO test.rb_wrap_add_uniq (id, code) VALUES (1, 400);
 
 SELECT id, ring_idx, code FROM test.rb_wrap_add_uniq ORDER BY ring_idx;
 
-# Add unique index on wrapped table — TRIX scan hides meta rows
+# Add unique index on wrapped table - TRIX scan hides meta rows
 ALTER TABLE test.rb_wrap_add_uniq ADD UNIQUE INDEX idx_code (code);
 
 # Verify constraint: 200 is still active in slot 2
@@ -532,7 +532,7 @@ DROP TABLE test.rb_grow_nn;
 ###############################################################################
 
 --echo #
---echo # Case 17: Multiple NOT NULL types — VARCHAR + INT with indexes
+--echo # Case 17: Multiple NOT NULL types - VARCHAR + INT with indexes
 --echo #
 
 CREATE TABLE test.rb_nn_types (
@@ -555,7 +555,7 @@ INSERT INTO test.rb_nn_types (id, name, score) VALUES (3, 'Charlie', 95);
 --error ER_DUP_ENTRY
 INSERT INTO test.rb_nn_types (id, name, score) VALUES (4, 'Alice', 70);
 
-# Empty string is VARCHAR zero-default in meta rows — insertable as data value
+# Empty string is VARCHAR zero-default in meta rows - insertable as data value
 INSERT INTO test.rb_nn_types (id, name, score) VALUES (4, '', 70);
 
 SELECT id, ring_idx, name, score FROM test.rb_nn_types ORDER BY id, ring_idx;
@@ -568,16 +568,16 @@ SELECT id, ring_idx, name, score FROM test.rb_nn_types
 DROP TABLE test.rb_nn_types;
 
 ###############################################################################
-# Case 18: NOT NULL BLOB/TEXT columns — blocked at DDL time
+# Case 18: NOT NULL BLOB/TEXT columns - blocked at DDL time
 # Meta rows cannot set zero-defaults for BLOB types, so NOT NULL BLOB/TEXT
 # columns are rejected at CREATE TABLE time.
 ###############################################################################
 
 --echo #
---echo # Case 18: NOT NULL BLOB/TEXT columns — blocked at CREATE TABLE
+--echo # Case 18: NOT NULL BLOB/TEXT columns - blocked at CREATE TABLE
 --echo #
 
-# TEXT NOT NULL → rejected
+# TEXT NOT NULL -> rejected
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.rb_nn_text (
     id INT NOT NULL,
@@ -588,7 +588,7 @@ CREATE TABLE test.rb_nn_text (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-# BLOB NOT NULL → rejected
+# BLOB NOT NULL -> rejected
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.rb_nn_blob (
     id INT NOT NULL,

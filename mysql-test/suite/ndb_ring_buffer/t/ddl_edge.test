@@ -8,7 +8,7 @@
 --source include/have_ndb.inc
 
 ###############################################################################
-# Case 1: CREATE TABLE ... LIKE — preserves MAX_ROWS_PER_PK
+# Case 1: CREATE TABLE ... LIKE - preserves MAX_ROWS_PER_PK
 ###############################################################################
 
 --echo #
@@ -65,12 +65,12 @@ CREATE TABLE test.rb_src (
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_A');
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
 
-# CREATE AS SELECT creates a new table — it should NOT be a ring buffer
+# CREATE AS SELECT creates a new table - it should NOT be a ring buffer
 # It copies the data but not the NDB_TABLE comment semantics
 CREATE TABLE test.rb_as_sel ENGINE=NDB AS
     SELECT id, ring_idx, val FROM test.rb_src WHERE id = 1;
 
-# The new table is a regular NDB table — no MAX_ROWS_PER_PK in SHOW CREATE
+# The new table is a regular NDB table - no MAX_ROWS_PER_PK in SHOW CREATE
 SHOW CREATE TABLE test.rb_as_sel;
 
 # Should contain the selected rows
@@ -171,7 +171,7 @@ DROP TABLE test.rb_varchar;
 ###############################################################################
 
 --echo #
---echo # Case 5: CHAR PK prefix — fixed-length string
+--echo # Case 5: CHAR PK prefix - fixed-length string
 --echo #
 
 CREATE TABLE test.rb_char (
@@ -244,7 +244,7 @@ DROP TABLE test.rb_mixed_pk;
 ###############################################################################
 
 --echo #
---echo # Case 7: 4-column composite PK — 3 prefix columns + ring_idx
+--echo # Case 7: 4-column composite PK - 3 prefix columns + ring_idx
 --echo #
 
 CREATE TABLE test.rb_4pk (
@@ -290,7 +290,7 @@ SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
 DROP TABLE test.rb_4pk;
 
 ###############################################################################
-# Case 8: SHOW TABLE STATUS — row count
+# Case 8: SHOW TABLE STATUS - row count
 ###############################################################################
 
 --echo #
@@ -356,11 +356,11 @@ SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
 DROP TABLE test.rb_is;
 
 ###############################################################################
-# Case 10: DROP COLUMN that is ring_idx or ring_meta — should error
+# Case 10: DROP COLUMN that is ring_idx or ring_meta - should error
 ###############################################################################
 
 --echo #
---echo # Case 10: ALTER TABLE DROP ring_idx/ring_meta columns — blocked
+--echo # Case 10: ALTER TABLE DROP ring_idx/ring_meta columns - blocked
 --echo #
 
 CREATE TABLE test.rb_drop_col (
@@ -418,7 +418,7 @@ INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_B');
 SELECT id, ring_idx, val FROM test.rb_trigger ORDER BY ring_idx;
 SELECT log_id, logged_id, logged_val FROM test.trigger_log ORDER BY log_id;
 
-# Wrap — trigger still fires
+# Wrap - trigger still fires
 INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_C');
 INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_D');
 
@@ -430,11 +430,11 @@ DROP TABLE test.trigger_log;
 DROP TABLE test.rb_trigger;
 
 ###############################################################################
-# Case 12: CREATE TABLE with index on ring buffer internal columns — blocked
+# Case 12: CREATE TABLE with index on ring buffer internal columns - blocked
 ###############################################################################
 
 --echo #
---echo # Case 12: CREATE TABLE with index on ring_idx — blocked
+--echo # Case 12: CREATE TABLE with index on ring_idx - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -449,7 +449,7 @@ CREATE TABLE test.rb_idx_on_internal (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
---echo # Case 13: CREATE TABLE with index on ring_meta — blocked
+--echo # Case 13: CREATE TABLE with index on ring_meta - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -464,7 +464,7 @@ CREATE TABLE test.rb_idx_on_meta (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
---echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+--echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -479,7 +479,7 @@ CREATE TABLE test.rb_uniq_on_internal (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
---echo # Case 15: CREATE TABLE with composite index including ring_idx — blocked
+--echo # Case 15: CREATE TABLE with composite index including ring_idx - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -494,11 +494,11 @@ CREATE TABLE test.rb_composite_idx (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 ###############################################################################
-# Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns — blocked
+# Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns - blocked
 ###############################################################################
 
 --echo #
---echo # Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+--echo # Case 16: ALTER TABLE ADD INDEX on ring_idx - blocked
 --echo #
 
 CREATE TABLE test.rb_alter_idx (
