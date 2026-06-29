@@ -511,8 +511,8 @@ void Dbdict::dumpSchemaTransaction(SchemaTransPtr trans_ptr) {
         getDictObject(schemaOp, dictObjPtr);
         char nameBuff[MAX_TAB_NAME_SIZE];
         {
-          LocalRope name(c_rope_pool, dictObjPtr.p->m_name);
-          name.copy(nameBuff);
+          LcLocalRope name(dictObjPtr.p->m_name);
+          name.copy(nameBuff, sizeof(nameBuff));
         }
         g_eventLogger->info("  DictObject id %u type %u i %u name %s",
                             dictObjPtr.p->m_id, dictObjPtr.p->m_type,
