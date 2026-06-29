@@ -14045,6 +14045,7 @@ void Dbdih::execDIADDTABREQ(Signal *signal) {
                         0,
                         noFragments,
                         __LINE__);
+  DIH_TAB_WRITE_LOCK(tabPtr.p);
   for (Uint32 fragId = 0; fragId < noFragments; fragId++)
   {
     jam();
@@ -14052,6 +14053,7 @@ void Dbdih::execDIADDTABREQ(Signal *signal) {
     getFragstore(tabPtr.p, fragId, fragPtr);
     updateNodeInfo(signal, tabPtr, fragPtr);
   }
+  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
   initTableFile(tabPtr);
   tabPtr.p->tabCopyStatus = TabRecord::CS_ADD_TABLE_MASTER;
   signal->theData[0] = DihContinueB::ZPACK_TABLE_INTO_PAGES;
@@ -14949,6 +14951,7 @@ Dbdih::add_fragments_to_table(Signal *signal,
                         current,
                         current + cnt,
                         __LINE__);
+  DIH_TAB_WRITE_LOCK(tabPtr.p);
   for (i = 0; i < cnt; i++)
   {
     FragmentstorePtr fragPtr;
@@ -14956,6 +14959,7 @@ Dbdih::add_fragments_to_table(Signal *signal,
     getFragstore(tabPtr.p, fragId, fragPtr);
     updateNodeInfo(signal, tabPtr, fragPtr);
   }
+  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
   return 0;
 error:
   for (i = i + current; i != current; i--) {
