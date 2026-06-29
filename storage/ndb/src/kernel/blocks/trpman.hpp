@@ -34,6 +34,8 @@
 #include <signaldata/CloseComReqConf.hpp>
 #include <signaldata/EnableCom.hpp>
 #include <signaldata/SyncThreadViaReqConf.hpp>
+#include <span>
+#include "kernel/NodeBitmask.hpp"
 
 #define JAM_FILE_ID 334
 
@@ -61,6 +63,7 @@ class Trpman : public SimulatedBlock {
   void execNODE_START_REP(Signal *);
   void execREAD_CONFIG_REQ(Signal *);
   void execSTTOR(Signal *);
+  void execTIME_SIGNAL(Signal *);
 
   void execNDB_TAMPER(Signal *);
   void execDUMP_STATE_ORD(Signal *);
@@ -85,7 +88,37 @@ public:
   bool handles_this_trp(TrpId trpId);
   void close_com_failed_node(Signal *, NodeId);
   void enable_com_node(Signal *, NodeId);
+  void set_db_hb_sender(NodeId dbHbSender);
+  static unsigned calculate_histogram_bin_limits(
+      unsigned hb_interval, std::span<unsigned> bin_limits);
+  static unsigned verify_histogram(unsigned interval,
+                                   const std::span<unsigned> bin_limits);
+
+  // Let TransporterReceiveHandleKernel::transporter_recv_from access
+  // Trpman::m_recv_data
+  friend class TransporterReceiveHandleKernel;
+  // Let test class access any part of Trpman
+  friend class TestTrpmanActivityHistogram;
+
+  // Time between TIME_SIGNAL signals to itself.
+  static constexpr Uint32 TRP_TIME_SIGNAL_DELAY = 50;  // ms
+  static constexpr Uint32 TRP_ACTIVITY_HIST_BIN_COUNT = 20;
+
+  NodeId m_dbHbSender;
+  TrpId m_dbHbSenderTrp;
+  Uint32 m_hbDbDb;
+  Uint32 m_hbDbApi;
+  Uint32 m_hbDbDb_bin_count;
+  Uint32 m_hbDbApi_bin_count;
+  Uint32 m_hbDbDb_bin_bounds[TRP_ACTIVITY_HIST_BIN_COUNT];
+  Uint32 m_hbDbApi_bin_bounds[TRP_ACTIVITY_HIST_BIN_COUNT];
   bool m_init_continueb;
+
+  TrpBitmask m_recv_data;  // Bit will be set on when transporter receives data
+  struct {
+    NDB_TICKS last_recv;
+    Uint32 hist_bins[TRP_ACTIVITY_HIST_BIN_COUNT];
+  } m_trp_activity[MAX_NTRANSPORTERS];
 };
 
 class TrpmanProxy : public LocalProxy {

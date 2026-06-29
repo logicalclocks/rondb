@@ -1,4 +1,4 @@
-/* 
+/*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
@@ -159,7 +159,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
 
     Uint32 server_port = 0;
     if (iter.get(CFG_CONNECTION_SERVER_PORT, &server_port)) break;
-    
+
     Uint32 nodeIdServer = 0;
     if (iter.get(CFG_CONNECTION_NODE_ID_SERVER, &nodeIdServer)) break;
 
@@ -184,7 +184,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
                                    !bindInAddrAny ? localHostName : "",
                                    server_port, requireTls);
     }
-    
+
     DBUG_PRINT("info", ("Transporter between this node %d and node %d using "
                         "port %d, signalId %d, checksum %d,"
         "preSendChecksum %d",
@@ -246,7 +246,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
           break;
       iter.get(CFG_TCP_SPINTIME, &spintime);
         conf.tcp.tcpSpintime = spintime;
-      
+
         const char *proxy;
       if (!iter.get(CFG_TCP_PROXY, &proxy)) {
 	if (strlen(proxy) > 0 && nodeId2 == nodeId) {
@@ -261,7 +261,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       iter.get(CFG_CONNECTION_OVERLOAD, &conf.tcp.tcpOverloadLimit);
 
       conf.type = tt_TCP_TRANSPORTER;
-      
+
         if (!tr.configureTransporter(&conf)) {
           g_eventLogger->info(
               "Node %u failed to configure TCP transporter to node %u", nodeId,

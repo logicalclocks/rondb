@@ -98,7 +98,8 @@ class Ndbinfo {
     CERTIFICATES_TABLEID = 51,
     THREADBLOCK_DETAILS_TABLEID = 52,
     TRANSPORTER_DETAILS_TABLEID = 53,
-    TRANSACTIONS_FULL_TABLEID = 54
+    TRANSACTIONS_FULL_TABLEID = 54,
+    TRANSPORTER_ACTIVITY_TABLEID = 55
   };
 
   enum BufferId {
@@ -214,8 +215,8 @@ class Ndbinfo {
     bool need_break(const DbinfoScan &scan) const {
       const Uint32 MAX_ROWS = 256;
 
-      // Upgrade zero to MAX_ROWS 
-      Uint32 maxRows = scan.maxRows ? scan.maxRows : MAX_ROWS; 
+      // Upgrade zero to MAX_ROWS
+      Uint32 maxRows = scan.maxRows ? scan.maxRows : MAX_ROWS;
 
       // Limit maxRows to MAX_ROWS
       if (maxRows > MAX_ROWS) maxRows = MAX_ROWS;

@@ -272,7 +272,7 @@ class Dbdih : public SimulatedBlock {
     Uint64 nextPool;
     Uint64 oldStoredReplicas;    /* "DEAD" STORED REPLICAS */
     Uint64 storedReplicas;       /* "ALIVE" STORED REPLICAS */
-    
+
     /**
      * Used by Fully replicated tables to find the main fragment and to
      * find local fragments.
@@ -280,7 +280,7 @@ class Dbdih : public SimulatedBlock {
     Uint32 partition_id;
     Uint32 nextCopyFragmentId;
     Uint32 fragId;
-    
+
     Uint16 preferredPrimary;
     Uint16 primaryNode;
 
@@ -1670,7 +1670,7 @@ class Dbdih : public SimulatedBlock {
 //------------------------------------
 // Replica record specific methods
 //------------------------------------
-  Uint32 findLogInterval(ReplicaRecordPtr regReplicaPtr, 
+  Uint32 findLogInterval(ReplicaRecordPtr regReplicaPtr,
 			 Uint32 startGci);
   void findMinGci(ReplicaRecordPtr fmgReplicaPtr,
                   Uint32& keeGci,
@@ -1739,7 +1739,7 @@ class Dbdih : public SimulatedBlock {
   void searchStoredReplicas(FragmentstorePtr regFragptr);
   bool setup_create_replica(FragmentstorePtr, CreateReplicaRecord*,
 			    ReplicaRecordPtr);
-  void updateNodeInfo(Signal *, FragmentstorePtr regFragptr);
+  void updateNodeInfo(Signal *, TabRecordPtr regTabPtr, FragmentstorePtr regFragptr);
 
 //------------------------------------
 // Fragment allocation, deallocation and

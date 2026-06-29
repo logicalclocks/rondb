@@ -48,9 +48,9 @@ static void trim(char *);
 //****************************************************************************
 //  Ctor / Dtor
 //****************************************************************************
-InitConfigFileParser::InitConfigFileParser() { m_info = new ConfigInfo(); }
-
-InitConfigFileParser::~InitConfigFileParser() { delete m_info; }
+InitConfigFileParser::InitConfigFileParser() {
+  m_info = &ConfigInfo::default_instance();
+}
 
 //****************************************************************************
 //  Read Config File

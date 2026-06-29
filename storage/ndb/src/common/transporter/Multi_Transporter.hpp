@@ -44,7 +44,8 @@ class Multi_Transporter {
    * Get the particular Transporter to send over among
    * the active multi Transporters.
    */
-  Transporter *get_send_transporter(Uint32 recBlock, Uint32 /*sendBlock*/) {
+  Transporter *get_send_transporter(Uint32 recBlock,
+                                    Uint32 /*sendBlock*/) const {
     /**
      * We hash on receiver instance to avoid any risk of changed signal order
      * compared to today. In addition each receiver thread will act on behalf
@@ -55,6 +56,13 @@ class Multi_Transporter {
     Uint32 instanceXOR = recInstance;
     Uint32 index = instanceXOR % m_num_active_transporters;
     return m_active_transporters[index];
+  }
+  Transporter *get_recv_transporter(Uint32 recBlock, Uint32 sendBlock) const {
+    /**
+     * We assume that sender uses the same logic for get_send_transporter as
+     * this node does, and that each link index is same for both nodes.
+     */
+    return get_send_transporter(sendBlock, recBlock);
   }
 
   Uint32 get_num_active_transporters() const {

@@ -2142,8 +2142,7 @@ void Suma::execDUMP_STATE_ORD(Signal *signal) {
     infoEvent("-- End dump of pending subscribers --");
   }
 
-  if (tCase == DumpStateOrd::DihTcSumaNodeFailCompleted &&
-      signal->getLength() == 2) {
+  if (tCase == DumpStateOrd::LogNodeFailProgress && signal->getLength() == 2) {
     jam();
     Uint32 nodeId = signal->theData[1];
     if (nodeId < MAX_NODES) {

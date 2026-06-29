@@ -100,9 +100,10 @@ table_id	table_name	comment
 52	threadblock_details	which blocks are run in which threads and some internal state details
 53	transporter_details	detailed transporter status
 54	transactions_full	transactions_full
+55	transporter_activity	Histogram over activity on heartbeated transporters
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
-55
+56
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -157,6 +158,7 @@ table_id	table_name	comment
 52	threadblock_details	which blocks are run in which threads and some internal state details
 53	transporter_details	detailed transporter status
 54	transactions_full	transactions_full
+55	transporter_activity	Histogram over activity on heartbeated transporters
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -230,6 +232,7 @@ table_id	table_name
 13	transactions
 54	transactions_full
 4	transporters
+55	transporter_activity
 53	transporter_details
 
 SELECT table_id, column_id, column_name FROM ndb$columns LIMIT 7;
@@ -321,6 +324,7 @@ table_id
 52
 53
 54
+55
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only
@@ -867,14 +871,14 @@ create table t1 (a int primary key) engine = ndb;
 begin;
 insert into t1 values (1);
 select state, count_operations, outstanding_operations,
-IF(client_node_id <= 2039, "<client_node_id>", "<incorrect node id>") 
+IF(client_node_id <= 2039, "<client_node_id>", "<incorrect node id>")
   client_node_id
 from server_transactions;
 state	count_operations	outstanding_operations	client_node_id
 Started	1	0	<client_node_id>
 select node_id, operation_type, state,
 IF(tc_node_id <= 48, "<tc_node_id>", "<incorrect nodeid>") tc_node_id,
-IF(client_node_id <= 2039, "<client_node_id>", "<incorrect node id>") 
+IF(client_node_id <= 2039, "<client_node_id>", "<incorrect node id>")
   client_node_id
 from server_operations
 order by 1;
@@ -1819,12 +1823,12 @@ cpu_exec_vm_time	int unsigned	YES		NULL
 elapsed_time	int unsigned	YES		NULL	
 desc table_memory_usage;
 Field	Type	Null	Key	Default	Extra
-database_name	varchar(512)	YES		NULL	
-table_name	varchar(512)	YES		NULL	
-in_memory_bytes	decimal(42,0)	YES		NULL	
-free_in_memory_bytes	decimal(42,0)	YES		NULL	
-disk_memory_bytes	decimal(42,0)	YES		NULL	
-free_disk_memory_bytes	decimal(42,0)	YES		NULL	
+database_name	varchar(512)	YES		NULL
+table_name	varchar(512)	YES		NULL
+in_memory_bytes	decimal(42,0)	YES		NULL
+free_in_memory_bytes	decimal(42,0)	YES		NULL
+disk_memory_bytes	decimal(42,0)	YES		NULL
+free_disk_memory_bytes	decimal(42,0)	YES		NULL
 
 select * from hwinfo;
 select * from cpuinfo;

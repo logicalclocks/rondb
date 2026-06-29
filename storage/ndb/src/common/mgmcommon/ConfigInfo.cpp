@@ -951,7 +951,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_HEARTBEAT_INTERVAL, "HeartbeatIntervalDbDb", DB_TOKEN,
      "Time between " DB_TOKEN_PRINT "-" DB_TOKEN_PRINT
-     " heartbeats. " DB_TOKEN_PRINT " considered dead after 3 missed HBs",
+     " heartbeats. " DB_TOKEN_PRINT " considered dead after 4 missed HBs",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT,
 #if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
      "1500",
@@ -975,7 +975,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_API_HEARTBEAT_INTERVAL, "HeartbeatIntervalDbApi", DB_TOKEN,
      "Time between " API_TOKEN_PRINT "-" DB_TOKEN_PRINT
-     " heartbeats. " API_TOKEN_PRINT " connection closed after 3 missed HBs",
+     " heartbeats. " DB_TOKEN_PRINT
+     " connection closed by API after 3 missed HBs. " API_TOKEN_PRINT
+     " connection closed by DB after 4 missed HBs.",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "1500", "100",
      STR_VALUE(MAX_INT_RNIL)},
 
@@ -1173,9 +1175,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "Transporter, heartbeat errors printed on stdout", ConfigInfo::CI_USED,
      false, ConfigInfo::CI_INT, "8", "0", "15"},
 
-    {CFG_LOGLEVEL_INFO, "LogLevelInfo", DB_TOKEN,
-     "Heartbeat and log info printed on stdout", ConfigInfo::CI_USED, false,
-     ConfigInfo::CI_INT, "0", "0", "15"},
+    {CFG_LOGLEVEL_INFO, "LogLevelInfo", DB_TOKEN, "Log info printed on stdout",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "15"},
 
     {CFG_LOGLEVEL_BACKUP, "LogLevelBackup", DB_TOKEN,
      "Backup info printed on stdout", ConfigInfo::CI_USED, false,

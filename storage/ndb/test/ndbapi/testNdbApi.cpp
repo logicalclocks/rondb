@@ -7578,6 +7578,43 @@ int testSetVarbinaryWithSetValue(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runIgnoreDisconnectFromInvalidNodeTypes(NDBT_Context *ctx,
+                                            NDBT_Step *step) {
+  /* This test reproduces conditions leading to Bug38857144, where API nodes
+   * unknown to data nodes would cause them to crash after disconnecting.
+   * This happens when the management node is started with the
+   * '--no-nodeid-checks' option and new API nodes are added to the
+   * configuration.* This option allows them to allocate a node ID and partially
+   * join the cluster, being recognized by data nodes that have already
+   * restarted and got the new configuration but not by the others. If such an
+   * API node disconnects, the data nodes that have not received the new
+   * configuration will try to handle the communication failure to an unknown
+   * node and crash.
+   *
+   * After the fix, data nodes should ignore the disconnect of any node whose
+   * type is invalid.
+   *
+   * More details in Bug#38857144.
+   */
+  NdbRestarter restarter;
+
+  // Sending a API_FAILREQ signal to all nodes to handle the communication
+  // failure to an unknown node.
+  const int undefinedNodeId = restarter.getUndefinedNodeId();
+  if (undefinedNodeId < 0) {
+    g_err << "Unable to find an undefined node id" << endl;
+    return NDBT_SKIPPED;
+  }
+  int dumpCodes[] = {900, undefinedNodeId};
+  restarter.dumpStateAllNodes(dumpCodes, 2);
+
+  // After receiving the API_FAILREQ signal, data nodes may take some time to
+  // crash so must wait some seconds before succeeding.
+  NdbSleep_SecSleep(10);
+
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testNdbApi);
 TESTCASE("MaxNdb", "Create Ndb objects until no more can be created\n") {
   INITIALIZER(runTestMaxNdb);
@@ -7961,6 +7998,11 @@ TESTCASE("TestSlowConnectEnable", "Test behaviour with slow connection enale") {
 }
 TESTCASE("SetVarbinaryWithSetValue", "Check OO_SETVALUE works with Varbinary") {
   STEP(testSetVarbinaryWithSetValue);
+}
+TESTCASE("IgnoreDisconnectFromInvalidNodeTypes",
+         "Test if disconnecting API nodes unknown to data nodes are"
+         "ignored and does not make them crash") {
+  STEP(runIgnoreDisconnectFromInvalidNodeTypes);
 }
 
 NDBT_TESTSUITE_END(testNdbApi)

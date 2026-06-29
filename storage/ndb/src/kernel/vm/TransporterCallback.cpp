@@ -964,7 +964,9 @@ void TransporterReceiveHandleKernel::assign_trps(
 }
 #endif
 
-void TransporterReceiveHandleKernel::transporter_recv_from(NodeId nodeId) {
+void TransporterReceiveHandleKernel::transporter_recv_from(NodeId nodeId,
+                                                           TrpId trpId) {
+  if (m_trpman) static_cast<Trpman *>(m_trpman)->m_recv_data.set(trpId);
   if (globalData.get_hb_count(nodeId) != 0) {
     globalData.set_hb_count(nodeId) = 0;
   }

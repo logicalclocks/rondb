@@ -1170,4 +1170,27 @@ ndbd_support_arbitration_rank_wait(Uint32 x) {
   }
   return false;
 }
+
+/*
+ * With bug#39029290 heartbeats are sent twice per configured heartbeat
+ * interval.
+ */
+#define NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_80 NDB_MAKE_VERSION(8,0,46)
+#define NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_84 NDB_MAKE_VERSION(8,4,9)
+#define NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_97 NDB_MAKE_VERSION(9,7,0)
+static
+inline
+int
+ndb_heartbeat_send_twice_per_interval(Uint32 x)
+{
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (x >= NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_97) return 1;
+  if (major > 8) return 0;
+  if (x >= NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_84) return 1;
+  if (major == 8 && minor > 0) return 0;
+  if (x >= NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_80) return 1;
+  return 0;
+}
+
 #endif

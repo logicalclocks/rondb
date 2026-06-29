@@ -397,3 +397,11 @@ max-time: 360
 cmd: testBackup
 args: -n BackupFragmentConsistency T1
 max-time: 240
+
+cmd: testNodeRestart
+args: -n PreparedUpdatesNF -l 1 T1
+max-time: 300
+
+cmd: testNdbApi
+args: -n IgnoreDisconnectFromInvalidNodeTypes T1
+max-time: 60

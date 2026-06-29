@@ -2262,6 +2262,10 @@ void NdbScanOperation::close(bool forceSend, bool releaseOp) {
     */
     PollGuard poll_guard(*theNdb->theImpl);
     close_impl(forceSend, &poll_guard);
+
+    for (uint i = 0; i < m_allocated_receivers; i++) {
+      m_receivers[i]->release();
+    }
   }
 
   /* Free buffer used to store scan result set.

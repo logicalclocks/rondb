@@ -747,6 +747,8 @@ static struct view {
      "SELECT * "
      "FROM `ndbinfo`.`ndb$threads`"},
     {"ndbinfo", "threadstat", "SELECT * FROM `ndbinfo`.`ndb$threadstat`"},
+    {"ndbinfo", "transporter_activity",
+     "SELECT * FROM `ndbinfo`.`ndb$transporter_activity`"},
     {"ndbinfo", "transporter_details",
      "SELECT node_id, block_instance, trp_id, remote_node_id, "
      " CASE connection_status"
@@ -765,7 +767,9 @@ static struct view {
      "   WHEN 1 THEN \"TCP\""
      "   WHEN 3 THEN \"SHM\""
      "   ELSE NULL "
-     " END AS type "
+     " END AS type, "
+     " heartbeat_interval, "
+     " last_recv "
      "FROM `ndbinfo`.`ndb$transporter_details`"},
     {"ndbinfo", "transporters",
      "SELECT node_id, remote_node_id, "

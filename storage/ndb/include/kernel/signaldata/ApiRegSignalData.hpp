@@ -101,7 +101,7 @@ class ApiRegConf {
  private:
   Uint32 qmgrRef;
   Uint32 version;  // Version of NDB node
-  Uint32 apiHeartbeatFrequency;
+  Uint32 apiHeartbeatInterval;
   Uint32 mysql_version;
   Uint32 minDbVersion;
   NodeStatePOD nodeState;

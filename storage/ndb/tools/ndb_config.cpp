@@ -287,7 +287,7 @@ int main(int argc, char **argv) {
   if (opts.handle_options()) exit(255);
 
   if (g_configinfo) {
-    ConfigInfo info;
+    const ConfigInfo &info = ConfigInfo::default_instance();
     if (g_xml)
       info.print_xml();
     else
