@@ -74,7 +74,7 @@ static void mysql_exec(MYSQL *mysql, const char *sql) {
 }
 
 // ---------------------------------------------------------------
-// NdbRecord buffer helpers — charset-safe varchar encoding
+// NdbRecord buffer helpers - charset-safe varchar encoding
 // ---------------------------------------------------------------
 
 static const NdbRecord::Attr *findAttr(const NdbRecord *rec,
@@ -317,7 +317,7 @@ static bool test_single_insert(Ndb *ndb, MYSQL *mysql) {
 
 /*
  * Test 2: Fill ring and verify wraparound.
- * 7 rows into ring_size=5 — only last 5 survive.
+ * 7 rows into ring_size=5 - only last 5 survive.
  */
 static bool test_fill_ring(Ndb *ndb, MYSQL *mysql) {
   std::cout << "[Test 2] Fill ring + wraparound" << std::endl;
@@ -454,7 +454,7 @@ static bool test_multiple_prefixes(Ndb *ndb, MYSQL *mysql) {
 }
 
 /*
- * Test 4: Batch insert — 10 rows, same PK prefix, ring_size=10.
+ * Test 4: Batch insert - 10 rows, same PK prefix, ring_size=10.
  */
 static bool test_batch_insert(Ndb *ndb, MYSQL *mysql) {
   std::cout << "[Test 4] Batch insert (same PK prefix)" << std::endl;
@@ -603,7 +603,7 @@ static bool test_notnull_column(Ndb *ndb, MYSQL *mysql) {
 }
 
 /*
- * Test 6: ring_size=1 — every insert overwrites the single slot.
+ * Test 6: ring_size=1 - every insert overwrites the single slot.
  */
 static bool test_ring_size_1(Ndb *ndb, MYSQL *mysql) {
   std::cout << "[Test 6] Ring size = 1" << std::endl;
@@ -655,7 +655,7 @@ static bool test_ring_size_1(Ndb *ndb, MYSQL *mysql) {
 }
 
 /*
- * Test 7: Non-ring-buffer table — writer should reject.
+ * Test 7: Non-ring-buffer table - writer should reject.
  */
 static bool test_error_non_ring_table(Ndb *ndb, MYSQL *mysql) {
   std::cout << "[Test 7] Error: non-ring-buffer table" << std::endl;
@@ -691,7 +691,7 @@ static bool test_error_non_ring_table(Ndb *ndb, MYSQL *mysql) {
 }
 
 /*
- * Test 8: Multiple transactions — verify meta row carries state.
+ * Test 8: Multiple transactions - verify meta row carries state.
  */
 static bool test_multi_transaction(Ndb *ndb, MYSQL *mysql) {
   std::cout << "[Test 8] Multiple transactions" << std::endl;
@@ -793,7 +793,7 @@ static bool test_multi_transaction(Ndb *ndb, MYSQL *mysql) {
 }
 
 /*
- * Test 9: BLOB/TEXT columns — insert via NdbRingBufferWriter + NdbBlob.
+ * Test 9: BLOB/TEXT columns - insert via NdbRingBufferWriter + NdbBlob.
  * Verifies that large TEXT data survives ring wrapping.
  */
 static bool test_blob_text(Ndb *ndb, MYSQL *mysql) {
@@ -836,7 +836,7 @@ static bool test_blob_text(Ndb *ndb, MYSQL *mysql) {
   const char *cols[] = {"client_id", "content"};
   buildMask(table, mask, mask_size, cols, 2);
 
-  // Insert 5 rows into ring_size=3 — only last 3 should survive
+  // Insert 5 rows into ring_size=3 - only last 3 should survive
   const char *texts[] = {"alpha_text", "bravo_text", "charlie_text",
                          "delta_text", "echo_text"};
 
@@ -961,7 +961,7 @@ static bool test_delete_reinsert(Ndb *ndb, MYSQL *mysql) {
               "after delete: expected 0 total, got " +
                   std::to_string(total_after_delete));
 
-  // Phase 3: Re-insert 2 rows — should start fresh ring
+  // Phase 3: Re-insert 2 rows - should start fresh ring
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction phase3");
@@ -1002,10 +1002,10 @@ static bool test_delete_reinsert(Ndb *ndb, MYSQL *mysql) {
 }
 
 /*
- * Test 11: Rollback — verify meta row is reverted.
+ * Test 11: Rollback - verify meta row is reverted.
  * Insert 2 rows + commit, then insert 3 more + rollback.
  * Verify only first 2 rows survive.
- * Then insert 1 more + commit — should continue from ring_idx=3.
+ * Then insert 1 more + commit - should continue from ring_idx=3.
  */
 static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
   std::cout << "[Test 11] Rollback" << std::endl;
@@ -1075,7 +1075,7 @@ static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
   }
   TEST_ASSERT(!found_rolled_back, "rolled-back data should not exist");
 
-  // Transaction 3: Insert 1 more row, commit — should go to ring_idx=3
+  // Transaction 3: Insert 1 more row, commit - should go to ring_idx=3
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction tx3");
@@ -1113,7 +1113,7 @@ static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
 
 /*
  * Test 12: Multiple wraps in a single batch.
- * 10 rows into ring_size=3 in one transaction — tests aggressive wrapping.
+ * 10 rows into ring_size=3 in one transaction - tests aggressive wrapping.
  * Only last 3 rows should survive.
  */
 static bool test_multi_wrap_batch(Ndb *ndb, MYSQL *mysql) {
@@ -1162,7 +1162,7 @@ static bool test_multi_wrap_batch(Ndb *ndb, MYSQL *mysql) {
               "expected 3, got " + std::to_string(rows.size()));
 
   // 10 inserts into size 3: wraps at 3, 6, 9.
-  // Slots: wrap_7→idx1, wrap_8→idx2, wrap_9→idx3
+  // Slots: wrap_7->idx1, wrap_8->idx2, wrap_9->idx3
   bool found_7 = false, found_8 = false, found_9 = false;
   bool found_0 = false;
   for (const auto &r : rows) {
@@ -1243,7 +1243,7 @@ static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
   };
   Ins inserts[] = {
       {1, 100, "r1c100_A"}, {1, 100, "r1c100_B"}, {1, 100, "r1c100_C"},
-      {1, 100, "r1c100_D"},  // 4th → wraps, overwrites A
+      {1, 100, "r1c100_D"},  // 4th -> wraps, overwrites A
       {1, 200, "r1c200_A"}, {1, 200, "r1c200_B"},
       {2, 100, "r2c100_A"}, {2, 100, "r2c100_B"},
   };
@@ -1278,7 +1278,7 @@ static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
   delete[] rowbuf;
   delete[] mask;
 
-  // Verify (1,100): 4 inserts into size 3 → 3 survive, A overwritten
+  // Verify (1,100): 4 inserts into size 3 -> 3 survive, A overwritten
   mysql_exec(mysql,
              "SELECT event_data FROM test.rb_t13 "
              "WHERE region=1 AND client_id=100 AND ring_idx>0 "
@@ -1296,7 +1296,7 @@ static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(!found_A, "(1,100): A should be overwritten");
   TEST_ASSERT(found_D, "(1,100): D should survive");
 
-  // Verify (1,200): 2 inserts → 2 rows
+  // Verify (1,200): 2 inserts -> 2 rows
   mysql_exec(mysql,
              "SELECT event_data FROM test.rb_t13 "
              "WHERE region=1 AND client_id=200 AND ring_idx>0 "
@@ -1305,7 +1305,7 @@ static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(mysql_num_rows(res) == 2, "(1,200): expected 2 rows");
   mysql_free_result(res);
 
-  // Verify (2,100): 2 inserts → 2 rows
+  // Verify (2,100): 2 inserts -> 2 rows
   mysql_exec(mysql,
              "SELECT event_data FROM test.rb_t13 "
              "WHERE region=2 AND client_id=100 AND ring_idx>0 "
@@ -1431,7 +1431,7 @@ static std::vector<UniqueDataRow> readUniqueRows(MYSQL *mysql, const char *tbl,
  * The commit must fail with ER_DUP_ENTRY (NDB error 893).
  */
 static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
-  std::cout << "[Test 14] Unique dup — same PK prefix" << std::endl;
+  std::cout << "[Test 14] Unique dup - same PK prefix" << std::endl;
 
   mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t14");
   char ddl[1024];
@@ -1448,7 +1448,7 @@ static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
   char *rowbuf = h.newRow();
   unsigned char *mask = h.newUserMask(table);
 
-  // Insert two rows: AAA then BBB — should succeed
+  // Insert two rows: AAA then BBB - should succeed
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction tx1");
@@ -1467,7 +1467,7 @@ static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
   auto rows1 = readUniqueRows(mysql, "rb_t14", 1);
   TEST_ASSERT(rows1.size() == 2, "after tx1: expected 2 rows");
 
-  // Insert duplicate 'AAA' for same PK prefix — must fail
+  // Insert duplicate 'AAA' for same PK prefix - must fail
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction tx2");
@@ -1484,7 +1484,7 @@ static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
         int exec_rc = trans->execute(NdbTransaction::Commit);
         TEST_ASSERT(exec_rc != 0, "commit should fail with dup key");
       }
-      // Else flush failed — also acceptable
+      // Else flush failed - also acceptable
     }
     ndb->closeTransaction(trans);
   }
@@ -1517,7 +1517,7 @@ static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
   delete[] rowbuf;
   delete[] mask;
   mysql_exec(mysql, "DROP TABLE test.rb_t14");
-  TEST_PASS("Unique dup — same PK prefix");
+  TEST_PASS("Unique dup - same PK prefix");
   return true;
 }
 
@@ -1566,7 +1566,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
   auto rows1 = readUniqueRows(mysql, "rb_t15", 1);
   TEST_ASSERT(rows1.size() == 3, "after fill: expected 3 rows");
 
-  // 4th insert wraps to slot 1: AAA freed, DDD takes its place — should succeed
+  // 4th insert wraps to slot 1: AAA freed, DDD takes its place - should succeed
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction wrap1");
@@ -1588,7 +1588,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(rows2[2].code == "CCC", "slot3 should be CCC");
 
   // 5th insert wraps to slot 2: BBB would be freed, but 'CCC' collides
-  // with active slot 3 — must fail
+  // with active slot 3 - must fail
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction wrap2");
@@ -1614,7 +1614,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(rows3[1].code == "BBB", "slot2 still BBB");
   TEST_ASSERT(rows3[2].code == "CCC", "slot3 still CCC");
 
-  // Retry with non-duplicate value — should succeed at slot 2
+  // Retry with non-duplicate value - should succeed at slot 2
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction retry");
@@ -1697,7 +1697,7 @@ static bool test_unique_freed_reuse(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  // AAA was freed — id=2 can now use it
+  // AAA was freed - id=2 can now use it
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction reuse");
@@ -1708,7 +1708,7 @@ static bool test_unique_freed_reuse(Ndb *ndb, MYSQL *mysql) {
     TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow AAA reuse");
     TEST_ASSERT(writer.flush() == 0, "flush reuse");
     TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0,
-                "commit reuse — AAA should be free");
+                "commit reuse - AAA should be free");
     ndb->closeTransaction(trans);
   }
 
@@ -1722,7 +1722,7 @@ static bool test_unique_freed_reuse(Ndb *ndb, MYSQL *mysql) {
   }
   TEST_ASSERT(found_id2_AAA, "id=2 should have AAA");
 
-  // BBB is still active in id=1 slot 2 — cannot reuse
+  // BBB is still active in id=1 slot 2 - cannot reuse
   {
     NdbTransaction *trans = ndb->startTransaction(table);
     TEST_ASSERT(trans != nullptr, "startTransaction dup_BBB");
@@ -1735,7 +1735,7 @@ static bool test_unique_freed_reuse(Ndb *ndb, MYSQL *mysql) {
       int flush_rc = writer.flush();
       if (flush_rc == 0) {
         int exec_rc = trans->execute(NdbTransaction::Commit);
-        TEST_ASSERT(exec_rc != 0, "BBB still active — should fail");
+        TEST_ASSERT(exec_rc != 0, "BBB still active - should fail");
       }
     }
     ndb->closeTransaction(trans);

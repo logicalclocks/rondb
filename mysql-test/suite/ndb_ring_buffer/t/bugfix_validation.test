@@ -9,7 +9,7 @@
 --echo # Bug 1: Empty MAX_ROWS_PER_PK value crashes server (std::stoll(""))
 --echo #
 
-# MAX_ROWS_PER_PK= with no value (empty string) — should return error, not crash
+# MAX_ROWS_PER_PK= with no value (empty string) - should return error, not crash
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.rb_empty (
     client_id INT NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE test.rb_empty (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=";
 
-# MAX_ROWS_PER_PK with size 0 — should also be rejected (size must be >= 1)
+# MAX_ROWS_PER_PK with size 0 - should also be rejected (size must be >= 1)
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.rb_zero (
     client_id INT NOT NULL,
@@ -32,7 +32,7 @@ CREATE TABLE test.rb_zero (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0";
 
 --echo #
---echo # Bug 1b: Empty MAX_ROWS_PER_PK in ALTER TABLE — should not crash
+--echo # Bug 1b: Empty MAX_ROWS_PER_PK in ALTER TABLE - should not crash
 --echo #
 
 CREATE TABLE test.rb_alter_empty (
@@ -64,7 +64,7 @@ CREATE TABLE test.rb_small_meta (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
-# VARBINARY(31) — still too small
+# VARBINARY(31) - still too small
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.rb_small_meta2 (
     client_id INT NOT NULL,
@@ -75,7 +75,7 @@ CREATE TABLE test.rb_small_meta2 (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
-# VARBINARY(32) — exactly large enough, should succeed
+# VARBINARY(32) - exactly large enough, should succeed
 CREATE TABLE test.rb_exact_meta (
     client_id INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
@@ -85,7 +85,7 @@ CREATE TABLE test.rb_exact_meta (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
-# Verify the table works — insert and read
+# Verify the table works - insert and read
 INSERT INTO test.rb_exact_meta (client_id, data) VALUES (1, 'hello');
 SELECT client_id, ring_idx, data FROM test.rb_exact_meta ORDER BY client_id, ring_idx;
 
@@ -140,5 +140,5 @@ SELECT client_id, ring_idx, event_data FROM test.rb_del_bypass ORDER BY client_i
 DROP TABLE test.rb_del_bypass;
 
 --echo #
---echo # Done — all bug regression tests passed
+--echo # Done - all bug regression tests passed
 --echo #

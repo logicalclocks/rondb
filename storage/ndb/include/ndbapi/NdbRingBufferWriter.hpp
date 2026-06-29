@@ -51,7 +51,7 @@ class NdbOperation;
  *   NdbRingBufferWriter writer(table, record, trans);
  *
  *   // Fill row buffer with user column values (NdbRecord layout)
- *   // Do NOT set ring_idx or ring_meta — the writer manages those.
+ *   // Do NOT set ring_idx or ring_meta - the writer manages those.
  *   writer.addRow(rowBuffer, userMask);
  *   writer.addRow(rowBuffer2, userMask);  // batches if same PK prefix
  *
@@ -62,7 +62,7 @@ class NdbOperation;
  *
  * The userMask is a byte array indexed by attribute ID (same format as
  * NdbTransaction::insertTuple).  The bits for ring_idx and ring_meta
- * columns must NOT be set — the writer adds them internally.
+ * columns must NOT be set - the writer adds them internally.
  *
  * For tables with BLOB/TEXT columns, addRow() returns the NdbOperation*
  * so the caller can obtain blob handles via op->getBlobHandle(attrId).
@@ -76,13 +76,13 @@ class NdbRingBufferWriter {
    * @param ndbRecord NdbRecord for the table (use table->getDefaultRecord())
    * @param trans     Active NdbTransaction (must already be started)
    *
-   * Check getErrorCode() after construction — non-zero means the table
+   * Check getErrorCode() after construction - non-zero means the table
    * is not a ring buffer table or metadata could not be cached.
    */
   NdbRingBufferWriter(const NdbDictionary::Table *table,
                       const NdbRecord *ndbRecord, NdbTransaction *trans);
 
-  /** Destructor.  Does NOT auto-flush — caller must call flush() explicitly. */
+  /** Destructor.  Does NOT auto-flush - caller must call flush() explicitly. */
   ~NdbRingBufferWriter();
 
   /**

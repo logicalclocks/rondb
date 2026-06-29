@@ -14,7 +14,7 @@ INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
 #
-# Case 1: Single node restart — data survives
+# Case 1: Single node restart - data survives
 #
 SELECT client_id, ring_idx, event_data FROM test.rb
 ORDER BY client_id, ring_idx;
@@ -41,7 +41,7 @@ client_id	ring_idx
 2	1
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 2: System restart — data survives
+# Case 2: System restart - data survives
 #
 SELECT client_id, ring_idx, event_data FROM test.rb
 ORDER BY client_id, ring_idx;

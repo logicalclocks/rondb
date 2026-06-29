@@ -20,7 +20,7 @@ PRIMARY KEY (client_id, ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647'
 #
-# Bug 1b: Empty MAX_ROWS_PER_PK in ALTER TABLE — should not crash
+# Bug 1b: Empty MAX_ROWS_PER_PK in ALTER TABLE - should not crash
 #
 CREATE TABLE test.rb_alter_empty (
 client_id INT NOT NULL,
@@ -102,5 +102,5 @@ client_id	ring_idx	event_data
 2	1	c
 DROP TABLE test.rb_del_bypass;
 #
-# Done — all bug regression tests passed
+# Done - all bug regression tests passed
 #

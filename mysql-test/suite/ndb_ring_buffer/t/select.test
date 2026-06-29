@@ -51,7 +51,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 SELECT COUNT(*) FROM test.rb WHERE client_id = 1;
 
 --echo #
---echo # Case 4: SET ndb_ring_buffer_show_meta = ON — scan shows meta rows
+--echo # Case 4: SET ndb_ring_buffer_show_meta = ON - scan shows meta rows
 --echo #
 
 SET ndb_ring_buffer_show_meta = ON;
@@ -61,14 +61,14 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 5: SET ndb_ring_buffer_show_meta = ON — PK lookup on ring_idx=0 works
+--echo # Case 5: SET ndb_ring_buffer_show_meta = ON - PK lookup on ring_idx=0 works
 --echo #
 
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 1 AND ring_idx = 0;
 
 --echo #
---echo # Case 6: SET ndb_ring_buffer_show_meta = OFF — meta hidden again
+--echo # Case 6: SET ndb_ring_buffer_show_meta = OFF - meta hidden again
 --echo #
 
 SET ndb_ring_buffer_show_meta = OFF;
@@ -81,14 +81,14 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 AND ring_idx = 0;
 
 --echo #
---echo # Case 7: Multiple PK prefixes — all meta hidden
+--echo # Case 7: Multiple PK prefixes - all meta hidden
 --echo #
 
 SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY client_id, ring_idx;
 
 --echo #
---echo # Case 8: Ring after wrap — meta still hidden, all data visible
+--echo # Case 8: Ring after wrap - meta still hidden, all data visible
 --echo # Insert one more to trigger another wrap
 --echo #
 

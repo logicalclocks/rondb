@@ -22,7 +22,7 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 /*
-  Ring Buffer Table — extracted from ha_ndbcluster.cc (see
+  Ring Buffer Table - extracted from ha_ndbcluster.cc (see
   ha_ndbcluster_ring_buffer.h). This TU owns the Ring_meta on-disk layout,
   the DELETE WHERE Item-tree walker, and the two ring-buffer member function
   bodies of ha_ndbcluster. Everything else (call-site hooks in write/update/
@@ -52,7 +52,7 @@
 /*
   Plugin-internal helper defined in ha_ndbcluster.cc. Declared here so the
   ring-buffer member function bodies that were moved out of ha_ndbcluster.cc
-  can still call it. Kept out of any header to limit symbol exposure — only
+  can still call it. Kept out of any header to limit symbol exposure - only
   this TU needs the cross-file reference.
 */
 int execute_no_commit(Thd_ndb *thd_ndb, NdbTransaction *trans,
@@ -128,7 +128,7 @@ struct Ring_meta {
  * This validates that a DELETE WHERE clause on a ring-buffer table
  * will only delete complete rings. Any field reference to ring_idx
  * or a non-PK column causes rejection. Accepts any operator (=, IN,
- * >, <, >=, <=, BETWEEN, etc.) — the constraint is on which columns
+ * >, <, >=, <=, BETWEEN, etc.) - the constraint is on which columns
  * are referenced, not which operators are used.
  */
 bool check_ring_buffer_delete_condition(const TABLE *table,
@@ -197,7 +197,7 @@ bool show_meta_active(THD *thd, bool is_ring_buffer, bool delete_allowed) {
 const char *parse_spec(const NDB_Modifier *mod, Spec *out) {
   std::string rb_comment(mod->m_val_str.str, mod->m_val_str.len);
 
-  /* "off" keyword — caller owns the policy of what "off" means. */
+  /* "off" keyword - caller owns the policy of what "off" means. */
   if (!my_strcasecmp(system_charset_info, mod->m_val_str.str, "off")) {
     out->is_off = true;
     return nullptr;
@@ -285,7 +285,7 @@ const char *validate_columns_mysql(const TABLE *table, const Spec &spec) {
   if (!found_meta) return "Ring meta column not found in table";
 
   /* No NOT NULL BLOB/TEXT user columns (meta rows cannot set zero-defaults
-     for BLOB types → NDB error 839 at runtime). */
+     for BLOB types -> NDB error 839 at runtime). */
   for (uint i = 0; i < table->s->fields; i++) {
     Field *const field = table->field[i];
     if (!my_strcasecmp(system_charset_info, field->field_name,
@@ -385,7 +385,7 @@ int ha_ndbcluster::flush_ring_buffer_batch() {
    * They may have been cleared by write_row() cleanup if we're called
    * from end_bulk_insert().
    *
-   * We intentionally do NOT clear these bits on exit — the caller is
+   * We intentionally do NOT clear these bits on exit - the caller is
    * responsible for cleanup.  When called from write_row(), the cleanup
    * label clears them; when called from end_bulk_insert(), the caller
    * clears them explicitly after this function returns.
@@ -555,13 +555,13 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
   }
 
   /*
-   * Add ring columns to write_set — we are writing them as part of
+   * Add ring columns to write_set - we are writing them as part of
    * ring management. The user-specified checks above already verified
    * these bits were NOT set, so we own them from here on.
    */
   bitmap_set_bit(table->write_set, ring_idx_field->field_index());
   bitmap_set_bit(table->write_set, ring_meta_field->field_index());
-  /* Also add to read_set — we read ring_meta from the meta row to unpack it */
+  /* Also add to read_set - we read ring_meta from the meta row to unpack it */
   bitmap_set_bit(table->read_set, ring_idx_field->field_index());
   bitmap_set_bit(table->read_set, ring_meta_field->field_index());
 
@@ -780,7 +780,7 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
 
     if (m_rows_to_insert > 1) {
       /*
-       * Path B: Bulk mode — queue data write only, defer meta write.
+       * Path B: Bulk mode - queue data write only, defer meta write.
        * Cache meta state for subsequent same-prefix rows (Path A).
        */
       ring_idx_field->store(data_slot, true);
@@ -839,7 +839,7 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       thd_ndb->m_unsent_bytes += 2 * m_bytes_per_write;
     } else {
       /*
-       * Path C: Single-row mode — queue data write + meta write, execute.
+       * Path C: Single-row mode - queue data write + meta write, execute.
        * This is the original behavior, unchanged.
        */
       ring_idx_field->store(data_slot, true);

@@ -10,7 +10,7 @@ PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 #
-# Case 1: Single-row insert — first insert for PK prefix
+# Case 1: Single-row insert - first insert for PK prefix
 # Expected: ring_idx=1 assigned, meta row created
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_A');
@@ -33,7 +33,7 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 3: Ring wraps — oldest entry overwritten
+# Case 3: Ring wraps - oldest entry overwritten
 # 5th insert should overwrite slot 1
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_E');
@@ -46,7 +46,7 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 4: Additional wrap — slot 2 overwritten
+# Case 4: Additional wrap - slot 2 overwritten
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -58,7 +58,7 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 5: Different PK prefix — independent ring
+# Case 5: Different PK prefix - independent ring
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_B');
@@ -110,7 +110,7 @@ client_id	ring_idx	HEX(ring_meta)
 1	0	0100000003000000040000000000000006000000000000000000000000000000
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 11: Ring size = 1 (single slot — every insert overwrites)
+# Case 11: Ring size = 1 (single slot - every insert overwrites)
 #
 CREATE TABLE test.rb1 (
 pk INT NOT NULL,
