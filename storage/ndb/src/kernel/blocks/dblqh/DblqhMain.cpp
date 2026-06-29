@@ -10120,6 +10120,19 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
     /*
      * TTL related. Tell DBACC not to convert a duplicate ZINSERT into an
      * in-place TTL update for LCP-restore-originated operations.
+     *
+     * NOTE: this is deliberately NOT extended to REDO replay
+     * (c_executing_redo_log). An insert that replaced an expired row commits as
+     * ZINSERT_TTL (= ZINSERT | 0x08 = 10), but LqhKeyReq's operation field is
+     * only 3 bits, so on replay it arrives here as a plain ZINSERT. Suppressing
+     * the conversion for REDO would make that replayed insert return 630 and be
+     * skipped by logLqhkeyrefLab -> the committed replacement is dropped and the
+     * node aborts during recovery. REDO must instead ALLOW the conversion so the
+     * upsert overwrites the (always-expired) existing row, reconstructing the
+     * committed state. ttl_ignore=1 (set for REDO in initReqinfoExecSr) makes
+     * that overwrite unconditional, which is correct here because a replayed
+     * duplicate insert in chronological REDO can only land on the expired row it
+     * replaced (a plain insert onto a live row is preceded by its delete).
      */
     taccreq = AccKeyReq::setNoTTLDupConvert(taccreq, regTcPtr.p->m_restore_op);
 
@@ -33690,6 +33703,16 @@ void Dblqh::initReqinfoExecSr(Signal *signal,
   regTcPtr->m_dealloc_data.m_unused = RNIL;
   regTcPtr->indTakeOver = ZFALSE;
   regTcPtr->m_flags = 0;
+  /*
+   * TTL related. REDO replay physically reconstructs already-committed state
+   * and must NOT re-apply TTL expiry. Without this, a replayed UPDATE/DELETE
+   * whose pre-image row has expired (wall clock) since the restored LCP hits
+   * checkTTL -> 626, which logLqhkeyrefLab "tolerates" by SKIPPING the op,
+   * silently dropping a still-live row (e.g. an UPDATE that refreshed ttl_col).
+   * Same principle as copy-fragment (a6519fdcdd4) and LCP restore (37f1c92c75e).
+   * packLqhkeyreqLab serializes this into the replayed LQHKEYREQ (TTLIgnoreFlag).
+   */
+  regTcPtr->ttl_ignore = 1;
 }  // Dblqh::initReqinfoExecSr()
 
 Uint32
