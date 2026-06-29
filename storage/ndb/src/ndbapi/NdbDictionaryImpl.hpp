@@ -1528,7 +1528,27 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
   } else
     tab = info->m_table_impl;
 
-  return tab->m_index;
+  {
+    NdbIndexImpl *idx = tab->m_index;
+    /**
+     * The index cache is keyed by base-table id (sys/def/<tabid>/<index_name>).
+     * After a table is dropped and recreated the base-table id can be reused by
+     * a sibling table, so a stale cached entry may resolve to the sibling's
+     * (currently valid) index and silently return the wrong table's rows with
+     * no error. Validate -- as getIndexGlobal() already does -- that the
+     * resolved index still belongs to this base-table incarnation; otherwise
+     * drop the stale entry and report a schema-version error (241) so the
+     * caller refreshes its dictionary cache and retries.
+     */
+    if (idx->m_table_id == (unsigned)prim.getObjectId() &&
+        idx->m_table_version == (unsigned)prim.getObjectVersion()) {
+      return idx;
+    }
+    m_localHash.drop(internal_indexname);
+    releaseIndexGlobal(*idx, 1);
+    m_error.code = 241;  // Invalid schema object version
+    return nullptr;
+  }
 
 retry:
   // Index not found, try old format
@@ -1547,7 +1567,18 @@ retry:
   } else
     tab = info->m_table_impl;
 
-  return tab->m_index;
+  {
+    NdbIndexImpl *idx = tab->m_index;
+    // Same validation for the old index-name format (see above).
+    if (idx->m_table_id == (unsigned)prim.getObjectId() &&
+        idx->m_table_version == (unsigned)prim.getObjectVersion()) {
+      return idx;
+    }
+    m_localHash.drop(old_internal_indexname);
+    releaseIndexGlobal(*idx, 1);
+    m_error.code = 241;  // Invalid schema object version
+    return nullptr;
+  }
 
 err:
   // Indexes are treated as tables while fetching them from the
