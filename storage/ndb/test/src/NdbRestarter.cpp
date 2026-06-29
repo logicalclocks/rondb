@@ -1076,7 +1076,7 @@ int NdbRestarter::getUndefinedNodeId() {
 
   if (getStatus() != 0) return -1;
 
-  int allClusterNodes[MAX_NODES_ID];
+  int allClusterNodes[ABS_MAX_NODES];
   unsigned int nodeIdx = 0;
 
   // Collecting all node ids allocated in the cluster

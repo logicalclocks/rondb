@@ -1378,7 +1378,7 @@ class Ndb_schema_dist_data {
   bool metadata_changed;
 
   void init(Ndb_cluster_connection *cluster_connection) {
-    const Uint32 max_subscribers = MAX_NODES;
+    const Uint32 max_subscribers = ABS_MAX_NODES;
     m_own_nodeid = cluster_connection->node_id();
     NDB_SCHEMA_OBJECT::init(m_own_nodeid);
 
