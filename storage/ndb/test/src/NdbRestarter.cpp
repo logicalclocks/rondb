@@ -1076,7 +1076,7 @@ int NdbRestarter::getUndefinedNodeId() {
 
   if (getStatus() != 0) return -1;
 
-  int allClusterNodes[MAX_NODES];
+  int allClusterNodes[MAX_NODES_ID];
   unsigned int nodeIdx = 0;
 
   // Collecting all node ids allocated in the cluster
@@ -1096,7 +1096,7 @@ int NdbRestarter::getUndefinedNodeId() {
   }
 
   const unsigned int numberOfClusterNodes = nodeIdx;
-  if (numberOfClusterNodes == MAX_NODES) {
+  if (numberOfClusterNodes == MAX_NODES_ID) {
     // The number of node ids allocated in the cluster is
     // equal to the maximum number of nodes, so there is
     // not a single node id available.

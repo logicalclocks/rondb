@@ -1279,7 +1279,7 @@ DECLARE_NDBINFO_TABLE(TRANSPORTER_ACTIVITY, 8) = {
     {"transporter_activity", 8, 0,
      [](const Ndbinfo::Counts &c) {
        // data_nodes * (1 data node trp + all api/mgm nodes) * 10
-       return c.data_nodes * MAX_NODES *
+       return c.data_nodes * c.all_nodes *
               20 /* Trpman::TRP_ACTIVITY_HIST_BIN_COUNT */;
      },
      "Histogram over activity on heartbeated transporters"},
