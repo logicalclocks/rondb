@@ -333,10 +333,8 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
   addRecSignal(GSN_NODE_STATE_REP, &Qmgr::execNODE_STATE_REP,
                true);  // Override
 
-  // Data node security: per-violation counters start zero; enforcement on by
-  // default (config EnableSecurityDisconnect is applied in execREAD_CONFIG_REQ).
+  // Data node security: per-violation counters start zero.
   memset(m_violationCounts, 0, sizeof(m_violationCounts));
-  m_enableSecurityDisconnect = true;
 
   initData();
 }  // Qmgr::Qmgr()

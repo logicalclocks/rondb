@@ -906,12 +906,6 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "1",
     "4096" },
 
-    {CFG_DB_ENABLE_SECURITY_DISCONNECT, "EnableSecurityDisconnect", DB_TOKEN,
-     "Data node security: when true (default) a node sending a Tier A malicious "
-     "signal is disconnected. When false the cluster is in observation mode: "
-     "violations are counted and logged but no node is disconnected.",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "true", "false", "true"},
-
     /* End RonDB additions */
 
     {CFG_DB_TRANSACTION_MEM, "TransactionMemory", DB_TOKEN,

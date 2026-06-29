@@ -303,7 +303,8 @@
 #define CFG_DB_NUM_LQHKEYREQ_COUNTS   702
 #define CFG_DB_NUM_SCAN_FRAGREQ_COUNTS 703
 #define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 704
-#define CFG_DB_ENABLE_SECURITY_DISCONNECT 705
+/* 705 retired: was CFG_DB_ENABLE_SECURITY_DISCONNECT (security kill switch,
+ * removed). Do not reuse — keep the id retired to avoid config-id collisions. */
 
 /* End RonDB only configuration parameters */
 

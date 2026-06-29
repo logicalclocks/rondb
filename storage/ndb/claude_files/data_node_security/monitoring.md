@@ -41,7 +41,7 @@ The first 4 fields are byte-for-byte identical to the kernel format. `node_id=0`
 
 RONDIS logs to its own stdout, not the NDB cluster log. Configure your log collector to scrape both streams.
 
-**Tier B flood caveat:** there is no in-kernel or upstream rate limiter on `SECURITY_EVENT:` emission. A connected, authenticated client can sustain high Tier B violation rates, each emitting one line, churning the 6×1 MB rotating cluster log. Tier A self-limits (offender disconnected on first strike when `EnableSecurityDisconnect=true`). For Tier B, the worst case is forensic-integrity loss, not crash or OOM. Bound inflow via connection-level controls; monitor `ndbinfo.security_violation_counts` for persistent elevation.
+**Tier B flood caveat:** there is no in-kernel or upstream rate limiter on `SECURITY_EVENT:` emission. A connected, authenticated client can sustain high Tier B violation rates, each emitting one line, churning the 6×1 MB rotating cluster log. Tier A self-limits (offender disconnected on first strike). For Tier B, the worst case is forensic-integrity loss, not crash or OOM. Bound inflow via connection-level controls; monitor `ndbinfo.security_violation_counts` for persistent elevation.
 
 ---
 
@@ -93,7 +93,6 @@ ORDER BY cluster_total DESC;
 | **Any `tier=A` line in the cluster log** | Page on-call | The cluster just disconnected a node — investigate immediately. |
 | **`tier=A` from multiple distinct node_ids in a short window** | Higher-priority page | Coordinated attack or widespread client bug — both warrant immediate eyes. |
 | **Sustained `tier=B` rate from one node** | Notify (not page) | Buggy client or active probing. Threshold: operator-tunable; default suggestion: >10 violations in 5 min for the same `(node_id, violation)`. |
-| **`EnableSecurityDisconnect = false`** | Page | Security enforcement is off. Either a deliberate ops action or an incident response. |
 
 Note: `violation_id` + `reporting_node_id` is the natural grouping key for Tier B. A single buggy library fires the same `(node_id, violation)` pair repeatedly; group before alerting to prevent pager flood.
 
@@ -204,8 +203,7 @@ groups:
           summary: "NDB Tier A violation — node {{ $labels.reporting_node_id }} violation {{ $labels.reason }}"
           description: >
             A Tier A malicious-signal violation was detected. The offending node was
-            disconnected (when EnableSecurityDisconnect=true). Investigate the cluster
-            log for SECURITY_EVENT lines.
+            disconnected. Investigate the cluster log for SECURITY_EVENT lines.
 
       - alert: NdbTierBElevated
         expr: rate(ndb_security_violation_counts_total_count{tier="B"}[10m]) > 0.1
@@ -219,18 +217,6 @@ groups:
             over 10 min from node {{ $labels.reporting_node_id }}. Check the cluster
             log for the offending node_id; this may be a buggy client or active probing.
 ```
-
----
-
-## Observation mode (kill switch off)
-
-When `EnableSecurityDisconnect=false`, the cluster detects and logs everything but disconnects nothing. Signs:
-
-- In debug builds: `DUMP 9101 0` toggles to observation; `DUMP 9101 1` re-enables.
-- In production: `config.ini` parameter at startup.
-- Query current state: `ndb_config --query=EnableSecurityDisconnect --type=ndbd`.
-
-If observation mode is on, **Tier A violations are being logged but not enforced.** Treat this as an operational alert whenever it is not an explicitly authorized rollout window.
 
 ---
 

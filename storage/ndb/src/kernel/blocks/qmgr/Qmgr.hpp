@@ -676,9 +676,6 @@ class Qmgr : public SimulatedBlock {
   // Exposed via ndbinfo.security_violation_counts for Prometheus scraping.
   Uint64 m_violationCounts[NUM_VIOLATION_TYPES];
 
-  // Master kill switch (config EnableSecurityDisconnect). When false the cluster
-  // is in observation mode: count/log everything, disconnect nothing.
-  bool m_enableSecurityDisconnect;
   void checkStartInterface(Signal *signal, NDB_TICKS now);
   void failReport(Signal *signal, Uint16 aFailedNode, UintR aSendFailRep,
                   FailRep::FailCause failCause, Uint16 sourceNode);

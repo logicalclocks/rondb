@@ -42,10 +42,14 @@
  *
  * To add a new violation type:
  *   1. Add an enum value before VT_UNKNOWN.
- *   2. Add a matching row to g_violation_info[] at the same index.
+ *   2. Add a matching row to g_violation_info[] at the same index, with the
+ *      enum value as the first field (id). The static_assert below will fire
+ *      at compile time if the id does not match the row's array position.
  *   3. For a Tier A type, verify it is impossible to trigger via valid SQL /
  *      HTTP / REST / Redis user inputs (the categorization rule). Misclassifying
  *      a user-triggerable violation as Tier A reintroduces punishment laundering.
+ *   4. Tier A call sites must NOT call abortErrorLab or releaseAtErrorLab —
+ *      see tiered_response_policy.md Section 10 (Tier assignment invariant).
  * Never renumber existing values. The MaliciousSignalReport signal is delivered
  * to the local node's QMGR (QMGR_REF = numberToRef(QMGR, 0)), so the type
  * integer does not cross the network and there is no cross-version wire concern
@@ -63,41 +67,42 @@ enum ViolationTier : Uint32 {
 enum ViolationType : Uint32 {
   // ---- DBTC (see DbtcMain.cpp call sites; Section 7 catalog) ----
   VT_UNEXPECTED_API_STATE = 0,     // A: signal in unexpected apiConnectRecord state
-  VT_APICONNECT_OWNERSHIP,         // A: apiConnectRecord owned by different node
-  VT_START_FLAG_DURING_ABORT,      // A: start flag during active abort
-  VT_KEYINFO_INVALID_APICONNECT,   // A: invalid apiConnectPtr in KEYINFO
-  VT_KEYINFO_OWNERSHIP,            // A: KEYINFO apiConnectPtr not owned by sender
-  VT_KEYINFO_SIGNAL_LENGTH,        // B: KEYINFO signal length mismatch
-  VT_ATTRINFO_INVALID_APICONNECT,  // A: invalid apiConnectPtr in ATTRINFO
-  VT_ATTRINFO_OWNERSHIP,           // A: ATTRINFO apiConnectPtr not owned by sender
-  VT_ATTRINFO_SIGNAL_TOO_SHORT,    // A: ATTRINFO signal too short
-  VT_TCKEYREQ_SIGNAL_TOO_SHORT,    // A: TCKEYREQ signal too short
-  VT_TCKEYREQ_KEYINFO_TOO_LARGE,   // B: TCKEYREQ KeyInfo section too large
-  VT_TCKEYREQ_ATTRINFO_TOO_LARGE,  // B: TCKEYREQ AttrInfo section too large
-  VT_TCKEYREQ_INVALID_APICONNECT,  // A: invalid apiConnectPtr in TCKEYREQ
-  VT_TCKEYREQ_OWNERSHIP,           // A: TCKEYREQ apiConnectPtr not owned by sender
-  VT_TCKEYREQ_TABLE_OUT_OF_BOUNDS, // A: table index out of bounds in TCKEYREQ
-  VT_REORG_INVALID_OP_TYPE,        // B: reorg flag with invalid operation type
-  VT_TCKEYREQ_LONG_SIGNAL_LENGTH,  // B: TCKEYREQ long signal length mismatch
-  VT_TCKEYREQ_SHORT_SIGNAL_LENGTH, // B: TCKEYREQ short signal length mismatch
-  VT_UNLOCK_WITHOUT_DISTKEY,       // B: UNLOCK without distribution key
-  VT_COMMIT_WITHOUT_EXEC,          // B: CommitFlag without ExecFlag
-  VT_KEY_LENGTH_EXCEEDED,          // B: key length exceeds MAX_KEY_SIZE_IN_WORDS
-  VT_SCANTABREQ_MISSING_SECTION,   // A: SCAN_TABREQ missing required section 0
-  VT_SCANTABREQ_INVALID_APICONNECT,// A: invalid apiConnectPtr in SCAN_TABREQ
+  VT_APICONNECT_OWNERSHIP = 1,     // A: apiConnectRecord owned by different node
+  VT_START_FLAG_DURING_ABORT = 2,      // A: start flag during active abort
+  VT_KEYINFO_INVALID_APICONNECT = 3,   // A: invalid apiConnectPtr in KEYINFO
+  VT_KEYINFO_OWNERSHIP = 4,            // A: KEYINFO apiConnectPtr not owned by sender
+  VT_KEYINFO_SIGNAL_LENGTH = 5,        // B: KEYINFO signal length mismatch
+  VT_ATTRINFO_INVALID_APICONNECT = 6,  // A: invalid apiConnectPtr in ATTRINFO
+  VT_ATTRINFO_OWNERSHIP = 7,           // A: ATTRINFO apiConnectPtr not owned by sender
+  VT_ATTRINFO_SIGNAL_TOO_SHORT = 8,    // A: ATTRINFO signal too short
+  VT_TCKEYREQ_SIGNAL_TOO_SHORT = 9,    // A: TCKEYREQ signal too short
+  VT_TCKEYREQ_KEYINFO_TOO_LARGE = 10,   // B: TCKEYREQ KeyInfo section too large
+  VT_TCKEYREQ_ATTRINFO_TOO_LARGE = 11,  // B: TCKEYREQ AttrInfo section too large
+  VT_TCKEYREQ_INVALID_APICONNECT = 12,  // A: invalid apiConnectPtr in TCKEYREQ
+  VT_TCKEYREQ_OWNERSHIP = 13,           // A: TCKEYREQ apiConnectPtr not owned by sender
+  VT_TCKEYREQ_TABLE_OUT_OF_BOUNDS = 14, // A: table index out of bounds in TCKEYREQ
+  VT_REORG_INVALID_OP_TYPE = 15,        // B: reorg flag with invalid operation type
+  VT_TCKEYREQ_LONG_SIGNAL_LENGTH = 16,  // B: TCKEYREQ long signal length mismatch
+  VT_TCKEYREQ_SHORT_SIGNAL_LENGTH = 17, // B: TCKEYREQ short signal length mismatch
+  VT_UNLOCK_WITHOUT_DISTKEY = 18,       // B: UNLOCK without distribution key
+  VT_COMMIT_WITHOUT_EXEC = 19,          // B: CommitFlag without ExecFlag
+  VT_KEY_LENGTH_EXCEEDED = 20,          // B: key length exceeds MAX_KEY_SIZE_IN_WORDS
+  VT_SCANTABREQ_MISSING_SECTION = 21,   // A: SCAN_TABREQ missing required section 0
+  VT_SCANTABREQ_INVALID_APICONNECT = 22,// A: invalid apiConnectPtr in SCAN_TABREQ
 
   // ---- RONDIS (separate per-connection counter system) ----
-  VT_RONDIS_OVERSIZE_VALUE,        // B: oversize SET value
-  VT_RONDIS_SELECT_OUT_OF_RANGE,   // B: SELECT db index out of range
+  VT_RONDIS_OVERSIZE_VALUE = 23,        // B: oversize SET value
+  VT_RONDIS_SELECT_OUT_OF_RANGE = 24,   // B: SELECT db index out of range
 
   // ---- Framework-internal ----
-  VT_FRAGMENT_INVALID_SECTION_NO,  // A: fragmented signal carried a section number >= 3
+  VT_FRAGMENT_INVALID_SECTION_NO = 25,  // A: fragmented signal carried a section number >= 3
 
-  VT_UNKNOWN,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES              // sentinel — keep last
+  VT_UNKNOWN = 26,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 27              // sentinel — keep last
 };
 
 struct ViolationInfo {
+  ViolationType id;    // must equal the array index — verified by static_assert below
   ViolationTier tier;
   const char *reason;  // lowercase_underscore, used in SECURITY_EVENT: log lines
 };
@@ -107,45 +112,61 @@ struct ViolationInfo {
  * tier derivation) and QMGR (receiver side, reason-string lookup) link the same
  * definition without a separate translation unit or build-system change.
  *
- * Rows are positional and MUST stay in the same order as the ViolationType enum
- * (array designators like [VT_X] = ... are a non-standard C extension, so we
- * rely on order). The static_assert below guards the count; if you add an enum
- * value you will get a compile error until you add the matching row here.
+ * Each row carries its own ViolationType id. The static_assert below verifies at
+ * compile time that every row's id matches its array position — a misplaced or
+ * out-of-order row is a build error, not a silent mismatch.
+ *
+ * To add a new violation type:
+ *   1. Add an enum value before VT_UNKNOWN.
+ *   2. Add a matching row to g_violation_info[] with the same enum value as id.
+ *      Position it at the same index as the enum value (i.e. at the end, before
+ *      the VT_UNKNOWN and VT_FRAGMENT_INVALID_SECTION_NO rows).
+ *   3. For a Tier A type, verify it is impossible to trigger via valid SQL /
+ *      HTTP / REST / Redis user inputs (the categorization rule). Misclassifying
+ *      a user-triggerable violation as Tier A reintroduces punishment laundering.
+ *   4. Tier A call sites must NOT call abortErrorLab or releaseAtErrorLab before
+ *      returning — see tiered_response_policy.md Section 10 (Tier assignment
+ *      invariant).
  */
 inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
-    {TIER_A, "unexpected_api_state"},        // VT_UNEXPECTED_API_STATE
-    {TIER_A, "apiconnect_ownership"},         // VT_APICONNECT_OWNERSHIP
-    {TIER_A, "start_flag_during_abort"},      // VT_START_FLAG_DURING_ABORT
-    {TIER_A, "keyinfo_invalid_apiconnect"},   // VT_KEYINFO_INVALID_APICONNECT
-    {TIER_A, "keyinfo_ownership"},            // VT_KEYINFO_OWNERSHIP
-    {TIER_B, "keyinfo_signal_length_mismatch"}, // VT_KEYINFO_SIGNAL_LENGTH
-    {TIER_A, "attrinfo_invalid_apiconnect"},  // VT_ATTRINFO_INVALID_APICONNECT
-    {TIER_A, "attrinfo_ownership"},           // VT_ATTRINFO_OWNERSHIP
-    {TIER_A, "attrinfo_signal_too_short"},    // VT_ATTRINFO_SIGNAL_TOO_SHORT
-    {TIER_A, "tckeyreq_signal_too_short"},    // VT_TCKEYREQ_SIGNAL_TOO_SHORT
-    {TIER_B, "tckeyreq_keyinfo_too_large"},   // VT_TCKEYREQ_KEYINFO_TOO_LARGE
-    {TIER_B, "tckeyreq_attrinfo_too_large"},  // VT_TCKEYREQ_ATTRINFO_TOO_LARGE
-    {TIER_A, "tckeyreq_invalid_apiconnect"},  // VT_TCKEYREQ_INVALID_APICONNECT
-    {TIER_A, "tckeyreq_ownership"},           // VT_TCKEYREQ_OWNERSHIP
-    {TIER_A, "tckeyreq_table_out_of_bounds"}, // VT_TCKEYREQ_TABLE_OUT_OF_BOUNDS
-    {TIER_B, "reorg_invalid_op_type"},        // VT_REORG_INVALID_OP_TYPE
-    {TIER_B, "tckeyreq_long_signal_length"},  // VT_TCKEYREQ_LONG_SIGNAL_LENGTH
-    {TIER_B, "tckeyreq_short_signal_length"}, // VT_TCKEYREQ_SHORT_SIGNAL_LENGTH
-    {TIER_B, "unlock_without_distkey"},       // VT_UNLOCK_WITHOUT_DISTKEY
-    {TIER_B, "commit_without_exec"},          // VT_COMMIT_WITHOUT_EXEC
-    {TIER_B, "key_length_exceeded"},          // VT_KEY_LENGTH_EXCEEDED
-    {TIER_A, "scantabreq_missing_section"},   // VT_SCANTABREQ_MISSING_SECTION
-    {TIER_A, "scantabreq_invalid_apiconnect"},// VT_SCANTABREQ_INVALID_APICONNECT
-    {TIER_B, "rondis_oversize_value"},        // VT_RONDIS_OVERSIZE_VALUE
-    {TIER_B, "rondis_select_out_of_range"},   // VT_RONDIS_SELECT_OUT_OF_RANGE
-    {TIER_A, "fragment_invalid_section_no"},  // VT_FRAGMENT_INVALID_SECTION_NO
-    {TIER_A, "unknown_violation_type"},       // VT_UNKNOWN
+    {VT_UNEXPECTED_API_STATE,      TIER_A, "unexpected_api_state"},
+    {VT_APICONNECT_OWNERSHIP,      TIER_A, "apiconnect_ownership"},
+    {VT_START_FLAG_DURING_ABORT,   TIER_A, "start_flag_during_abort"},
+    {VT_KEYINFO_INVALID_APICONNECT,TIER_A, "keyinfo_invalid_apiconnect"},
+    {VT_KEYINFO_OWNERSHIP,         TIER_A, "keyinfo_ownership"},
+    {VT_KEYINFO_SIGNAL_LENGTH,     TIER_B, "keyinfo_signal_length_mismatch"},
+    {VT_ATTRINFO_INVALID_APICONNECT,TIER_A,"attrinfo_invalid_apiconnect"},
+    {VT_ATTRINFO_OWNERSHIP,        TIER_A, "attrinfo_ownership"},
+    {VT_ATTRINFO_SIGNAL_TOO_SHORT, TIER_A, "attrinfo_signal_too_short"},
+    {VT_TCKEYREQ_SIGNAL_TOO_SHORT, TIER_A, "tckeyreq_signal_too_short"},
+    {VT_TCKEYREQ_KEYINFO_TOO_LARGE,TIER_B, "tckeyreq_keyinfo_too_large"},
+    {VT_TCKEYREQ_ATTRINFO_TOO_LARGE,TIER_B,"tckeyreq_attrinfo_too_large"},
+    {VT_TCKEYREQ_INVALID_APICONNECT,TIER_A,"tckeyreq_invalid_apiconnect"},
+    {VT_TCKEYREQ_OWNERSHIP,        TIER_A, "tckeyreq_ownership"},
+    {VT_TCKEYREQ_TABLE_OUT_OF_BOUNDS,TIER_A,"tckeyreq_table_out_of_bounds"},
+    {VT_REORG_INVALID_OP_TYPE,     TIER_B, "reorg_invalid_op_type"},
+    {VT_TCKEYREQ_LONG_SIGNAL_LENGTH,TIER_B,"tckeyreq_long_signal_length"},
+    {VT_TCKEYREQ_SHORT_SIGNAL_LENGTH,TIER_B,"tckeyreq_short_signal_length"},
+    {VT_UNLOCK_WITHOUT_DISTKEY,    TIER_B, "unlock_without_distkey"},
+    {VT_COMMIT_WITHOUT_EXEC,       TIER_B, "commit_without_exec"},
+    {VT_KEY_LENGTH_EXCEEDED,       TIER_B, "key_length_exceeded"},
+    {VT_SCANTABREQ_MISSING_SECTION,TIER_A, "scantabreq_missing_section"},
+    {VT_SCANTABREQ_INVALID_APICONNECT,TIER_A,"scantabreq_invalid_apiconnect"},
+    {VT_RONDIS_OVERSIZE_VALUE,     TIER_B, "rondis_oversize_value"},
+    {VT_RONDIS_SELECT_OUT_OF_RANGE,TIER_B, "rondis_select_out_of_range"},
+    {VT_FRAGMENT_INVALID_SECTION_NO,TIER_A,"fragment_invalid_section_no"},
+    {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 
-static_assert(sizeof(g_violation_info) / sizeof(g_violation_info[0]) ==
-                  NUM_VIOLATION_TYPES,
-              "g_violation_info[] must have exactly one row per ViolationType; "
-              "add the matching row when you add an enum value.");
+static_assert(
+    []() constexpr {
+      for (Uint32 i = 0; i < NUM_VIOLATION_TYPES; i++) {
+        if (static_cast<Uint32>(g_violation_info[i].id) != i) return false;
+      }
+      return true;
+    }(),
+    "g_violation_info[] has an out-of-order or missing entry: each row's id "
+    "must equal its array index (i.e. match the ViolationType enum value).");
 
 /**
  * Tier for a violation type, used on the sender side to tag the report.

@@ -8,35 +8,19 @@ WHERE reporting_node_id=1 AND violation_id=5;
 reporting_node_id	violation_id	count
 1	5	1
 #
-# Test 2: Observation mode + Tier A injection (vtype=0 = UNEXPECTED_API_STATE).
-#   With the kill switch off, even a Tier A violation is counted and logged
-#   but produces no disconnect.
-#
-# Baseline: violation_id=0 counter must be zero before injection.
-SELECT COUNT(*) = 0 AS baseline_is_zero
-FROM `ndbinfo`.`ndb$security_violation_counts`
-WHERE reporting_node_id=1 AND violation_id=0;
-baseline_is_zero
-1
-SELECT reporting_node_id, violation_id, count
-FROM `ndbinfo`.`ndb$security_violation_counts`
-WHERE reporting_node_id=1 AND violation_id=0;
-reporting_node_id	violation_id	count
-1	0	1
-#
-# Test 3: Verify static violation catalog is queryable.
+# Test 2: Verify static violation catalog is queryable.
 #
 SELECT violation_id, tier, reason FROM ndbinfo.security_violations
 WHERE violation_id=5;
 violation_id	tier	reason
 5	B	keyinfo_signal_length_mismatch
 #
-# Test 4: Public view (ndbinfo.security_violation_counts) exposes
+# Test 3: Public view (ndbinfo.security_violation_counts) exposes
 #   reporting_node_id so Prometheus can label counts per data node.
 #   This is the query that mysqld_exporter runs for Prometheus scraping.
 #
 SELECT reporting_node_id, violation_id, tier, reason,
-       total_count > 0 AS has_count
+total_count > 0 AS has_count
 FROM ndbinfo.security_violation_counts
 WHERE reporting_node_id=1 AND violation_id=5;
 reporting_node_id	violation_id	tier	reason	has_count
@@ -47,6 +31,3 @@ reporting_node_id	violation_id	tier	reason	has_count
 SELECT 1 AS still_connected;
 still_connected
 1
-#
-# Restore enforcement and clean up.
-#

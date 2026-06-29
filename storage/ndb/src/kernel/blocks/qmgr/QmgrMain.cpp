@@ -495,14 +495,6 @@ void Qmgr::execREAD_CONFIG_REQ(Signal *signal) {
       m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
-  /* Data node security: master kill switch (default true = enforcement on). */
-  {
-    Uint32 enableSecDisc = 1;
-    ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_SECURITY_DISCONNECT,
-                              &enableSecDisc);
-    m_enableSecurityDisconnect = (enableSecDisc != 0);
-  }
-
   m_num_multi_trps = 0;
   if (globalData.ndbMtSendThreads) {
     ndb_mgm_get_int_parameter(p, CFG_DB_NODE_GROUP_TRANSPORTERS,
@@ -5157,9 +5149,9 @@ void Qmgr::execMALICIOUS_SIGNAL_REPORT(Signal *signal) {
    * NO in-kernel or upstream rate limiter on this path. The per-database
    * ActivateRateLimits quota is off by default, per-database, and charged by
    * DBLQH execution work, so it never sees a request rejected here in DBTC. Tier
-   * A self-limits (offender disconnected on first strike when
-   * EnableSecurityDisconnect is on), but Tier B is log-only forever: a connected,
-   * authenticated client can sustain a high rate of cheaply-rejected Tier B
+   * A self-limits (offender disconnected on first strike), but Tier B is log-only
+   * forever: a connected, authenticated client can sustain a high rate of
+   * cheaply-rejected Tier B
    * violations, each emitting one unthrottled line and churning the rotating
    * cluster log. Worst case is post-auth forensic-integrity loss, NOT node crash
    * or memory exhaustion (the counter array is fixed size). Operators must bound
@@ -5175,11 +5167,11 @@ void Qmgr::execMALICIOUS_SIGNAL_REPORT(Signal *signal) {
   signal->theData[4] = vtype;
   sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 5, JBB);
 
-  if (tier == TIER_A && m_enableSecurityDisconnect) {
+  if (tier == TIER_A) {
     jam();
     securityDisconnectNode(signal, nodeId);
   }
-  /* Tier B, or observation mode: counted and logged, not disconnected. */
+  /* Tier B: counted and logged, not disconnected. */
 }
 
 void Qmgr::securityDisconnectNode(Signal *signal, Uint32 nodeId) {
@@ -8515,22 +8507,6 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
     rep->offendingNodeId = offendingNodeId;
     rep->violationType = vtype;
     execMALICIOUS_SIGNAL_REPORT(signal);
-    return;
-  }
-  /**
-   * Data node security test injector: toggle the master kill switch at runtime.
-   *
-   *   DUMP 9101 <0|1>     ; 0 = observation mode (no disconnect), 1 = enforce
-   *
-   * Used by mysql-test/suite/ndb_security/ to test observation mode without
-   * needing the live-`ndb_mgm SET` plumbing for EnableSecurityDisconnect (which
-   * is deferred from v1).
-   */
-  if (signal->theData[0] == 9101 && signal->getLength() == 2) {
-    jam();
-    m_enableSecurityDisconnect = (signal->theData[1] != 0);
-    g_eventLogger->info("Security test: EnableSecurityDisconnect=%u",
-                        (Uint32)m_enableSecurityDisconnect);
     return;
   }
 #endif

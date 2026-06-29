@@ -16,7 +16,7 @@ Kernel block (e.g. DBTC)            QMGR (singleton per data node)
   → reportMaliciousSignal()          ← receives GSN_MALICIOUS_SIGNAL_REPORT
     sends signal to QMGR              increments m_violationCounts[vtype]
                                       writes SECURITY_EVENT: cluster log line
-                                      if Tier A + kill switch on: disconnects node
+                                      if Tier A: disconnects node
                                       if Tier B: stops here (log-only)
 ```
 
@@ -131,8 +131,6 @@ Every new call site requires at minimum:
 
 1. **Tier A injection test:** trigger the violation → verify disconnect + `SECURITY_EVENT: tier=A` log line + `total_count` increment in `ndbinfo.security_violation_counts`.
 2. **Tier B injection test (if Tier B):** same → verify no disconnect, counter increments, log line.
-3. **Kill-switch test:** flip `EnableSecurityDisconnect=false`, inject Tier A → verify no disconnect, log line still emits.
-
 Tests live in `mysql-test/suite/ndb/`. Use `DUMP 9100 <offendingNodeId> <violationType>` as the injector (debug builds only — no need for a custom NDB API client).
 
 ---
@@ -164,14 +162,13 @@ QMGR's handler (`execMALICIOUS_SIGNAL_REPORT`):
 3. If sender is a data node (NODE_TYPE_DB) and tier is B: escalate to A.
 4. Increment `m_violationCounts[vtype]`.
 5. Emit `SECURITY_EVENT:` cluster log line.
-6. If `tier == A && m_enableSecurityDisconnect`: invoke disconnect path.
+6. If `tier == A`: invoke disconnect path.
 
 ### QMGR security state
 
 ```cpp
 // In Qmgr.hpp — the complete v2 security state:
 Uint64  m_violationCounts[NUM_VIOLATION_TYPES];   // ~240 bytes
-bool    m_enableSecurityDisconnect;               // master kill switch
 ```
 
 Fixed array, zero-initialized at startup. No per-node state, no sliding window, no allocation-failure path.
@@ -284,17 +281,10 @@ When you find an unguarded path that would crash or corrupt state: add the guard
 - [ ] **ViolationType enum value added** before `VT_UNKNOWN`/`NUM_VIOLATION_TYPES` sentinels in `ViolationType.hpp`.
 - [ ] **Catalog row added** to `g_violation_info[]` at the matching position; `static_assert` passes.
 - [ ] **Return immediately** after `reportMaliciousSignal` — no further processing of the malformed signal.
+- [ ] **Call site does NOT call `abortErrorLab` or `releaseAtErrorLab`:** Tier A sites must not perform transaction-level cleanup. The QMGR-triggered disconnect drives the node-failure path in DBTC, which is the sole cleanup owner for Tier A violations. If your call site needs `abortErrorLab`/`releaseAtErrorLab`, it must be Tier B. Promoting a transaction-aborting site to Tier A violates the single-cleanup invariant — see _Tier assignment invariant_ in `tiered_response_policy.md` Section 10.
 - [ ] **Injection test written** targeting `ndb_security` or a new suite.
 
 ---
-
-## Config parameters reference
-
-| Parameter | Default | Change mechanism | Notes |
-|---|---|---|---|
-| `EnableSecurityDisconnect` | `true` | `config.ini`; debug DUMP 9101 | `false` = observation mode (log only, no disconnect) |
-
-That is the only security-system config parameter in v2. The Tier C threshold, report suppression window, and sliding-window size parameters from earlier designs were removed with the lean counter redesign.
 
 ---
 

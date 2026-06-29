@@ -134,7 +134,7 @@ This has an important ndbinfo consequence: **RONDIS violation types appear in `n
 
 **What it is:** violations that no protocol-compliant implementation could produce from valid user inputs. Active malice or fundamental compromise.
 
-**Action:** disconnect the offending node via the existing QMGR path (`api_failed()` for API nodes, `node_failed()` for data nodes). No grace, no threshold. Subject to the master kill switch (Section 8.3).
+**Action:** disconnect the offending node via the existing QMGR path (`api_failed()` for API nodes, `node_failed()` for data nodes). No grace, no threshold.
 
 **Categorization rule (HARD REQUIREMENT):** A violation is Tier A *only if* it is **impossible to trigger via valid SQL, HTTP, REST, or Redis user inputs** at any multi-tenant API node. Misclassifying a user-triggerable violation as Tier A reintroduces the laundering attack vector. When adding new Tier A types in future block audits, this must be explicitly verified in the code review.
 
@@ -267,7 +267,7 @@ Kernel block (e.g. DBTC)                    QMGR (singleton per data node)
                                                   tier = TIER_A  (escalation)
                                              10. m_violationCounts[vtype]++
                                              11. emit SECURITY_EVENT: cluster log line
-                                             12. if tier == A && m_enableSecurityDisconnect:
+                                             12. if tier == A:
                                                    securityDisconnectNode(offendingNodeId)
 ```
 
@@ -291,7 +291,6 @@ The complete v2 security state in QMGR (Qmgr.hpp):
 
 ```cpp
 Uint64  m_violationCounts[NUM_VIOLATION_TYPES];   // ~240 bytes; one counter per type
-bool    m_enableSecurityDisconnect;               // master kill switch
 ```
 
 `m_violationCounts[vtype]` is the lifetime cumulative count for that violation type across all senders since cluster start. Zero-initialized at startup. No per-node history, no sliding window, no allocation-failure path. Counter reset on cluster restart only.
@@ -303,18 +302,30 @@ bool    m_enableSecurityDisconnect;               // master kill switch
 ```cpp
 enum ViolationType : Uint32 { VT_UNEXPECTED_API_STATE = 0, ..., VT_UNKNOWN, NUM_VIOLATION_TYPES };
 
-struct ViolationInfo { ViolationTier tier; const char *reason; };
-
-inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
-    {TIER_A, "unexpected_api_state"},           // VT_UNEXPECTED_API_STATE
-    // ... one row per enum value, positional ...
-    {TIER_A, "unknown_violation_type"},         // VT_UNKNOWN
+struct ViolationInfo {
+  ViolationType id;      // must equal the array index — verified by static_assert below
+  ViolationTier tier;
+  const char *reason;
 };
 
-static_assert(sizeof(g_violation_info)/sizeof(g_violation_info[0]) == NUM_VIOLATION_TYPES, ...);
+inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
+    {VT_UNEXPECTED_API_STATE, TIER_A, "unexpected_api_state"},
+    // ... one row per enum value; id field must match array position ...
+    {VT_UNKNOWN,              TIER_A, "unknown_violation_type"},
+};
+
+static_assert(
+    []() constexpr {
+      for (Uint32 i = 0; i < NUM_VIOLATION_TYPES; i++) {
+        if (static_cast<Uint32>(g_violation_info[i].id) != i) return false;
+      }
+      return true;
+    }(),
+    "g_violation_info[] has an out-of-order or missing entry: each row's id "
+    "must equal its array index.");
 ```
 
-The `static_assert` fires at compile time if an enum value is added without a matching row, preventing catalog/enum drift.
+The `static_assert` uses a constexpr lambda to verify that each row's `id` field matches its array index. Adding a row in the wrong position or omitting a row causes a compile-time error — a misordered row can no longer silently survive.
 
 ### 8.5 reportMaliciousSignal() — the call site API
 
@@ -366,21 +377,7 @@ if (value.size() > REDIS_MAX_VALUE_LEN) {
 }
 ```
 
-### 8.7 Master kill switch (observation mode)
-
-`EnableSecurityDisconnect` (default `true`) is the master enforcement switch. When `false`:
-
-- All Tier A disconnect paths are skipped.
-- Counters still increment, `SECURITY_EVENT:` lines still emit, ndbinfo is updated.
-- Effect: every violation is detected, logged, and counted — nothing is disconnected.
-
-In debug builds, toggled at runtime: `ndb_mgm -e "ALL DUMP 9101 0"` (observation) / `DUMP 9101 1` (enforcement). In production, set in `config.ini`.
-
-**Observation mode is not zero-cost.** Logging and ndbinfo overhead continue exactly as in enforcement mode; only the disconnect action is removed.
-
-**Recommended initial rollout posture:** deploy with `EnableSecurityDisconnect=false`, watch real traffic for false positives in the cluster log and ndbinfo, then flip to enforcement.
-
-### 8.8 Debug test injector
+### 8.7 Debug test injector
 
 In debug builds, `ndb_mgm -e "1 DUMP 9100 <offendingNodeId> <violationType>"` synthesizes a `GSN_MALICIOUS_SIGNAL_REPORT` from the management client, exercising the QMGR handler without a real malicious client. Used by the MTR test suite (`ndb_security`, `ndb_security_enforce`).
 
@@ -560,7 +557,6 @@ groups:
 | Any `tier=A` line in cluster log | Page | Cluster disconnected a node — investigate immediately. |
 | `tier=A` from multiple distinct `node_id` values simultaneously | Higher-priority page | Coordinated attack or widespread client bug. |
 | Sustained Tier B rate from one node | Notify (not page) | Buggy client or active probing. Default threshold: >10 violations/5 min for same `(node_id, violation)`. |
-| `EnableSecurityDisconnect=false` | Page | Security enforcement is off — deliberate ops action or incident. |
 
 The offending `node_id` for Tier B is only in the log line. Use `violation_id` + `reporting_node_id` as the ndbinfo grouping key.
 
@@ -572,11 +568,21 @@ Adding a new violation site:
 
 1. **Add to `ViolationType.hpp`:** enum value (before `VT_UNKNOWN`) + matching `g_violation_info[]` row. `static_assert` fires at compile time if count mismatches.
 2. **Call `reportMaliciousSignal()`** at the detection site, return immediately.
-3. **Write a test:** injection → counter increment + log line; Tier A → disconnect; kill switch → no disconnect but log still emits.
+3. **Write a test:** injection → counter increment + log line; Tier A → disconnect.
 
 **Meta-requirement for Tier A:** every new Tier A type must be explicitly verified as user-untriggerable in the code review. Misclassification reintroduces punishment laundering.
 
 **Do not renumber existing values.** `violation_id` is a stable external contract indexed by ndbinfo monitoring dashboards.
+
+### Tier assignment invariant: transaction-aborting sites must stay Tier B
+
+The system maintains a clean single-cleanup guarantee: for any given violation, either the call-site cleanup (abort/release) runs, or the QMGR-triggered node-failure-path cleanup runs — never both for the same transaction. This holds because every call site that performs transaction-level cleanup (`abortErrorLab`, `releaseAtErrorLab`) is currently Tier B, and Tier B never triggers a disconnect. Conversely, Tier A sites that do trigger a disconnect perform no transaction-level cleanup, deliberately deferring to the node-failure path.
+
+**This invariant must be preserved when modifying or adding violation types.** Specifically: a call site that calls `abortErrorLab` or `releaseAtErrorLab` before returning must **not** be assigned Tier A. If such a site were promoted to Tier A, both cleanups would run for the same `ApiConnectRecord` — the call-site abort would drive it to `CS_ABORTING`, and the disconnect-triggered node-failure scan would then process it a second time. The `handleFailedApiConnection` state machine in DBTC does handle `CS_ABORTING` gracefully (it detects in-progress aborts and avoids starting a second one), so this is not a correctness crash — but it violates the single-cleanup contract and creates unnecessary complexity in the control flow.
+
+If you believe a transaction-aborting site genuinely qualifies as Tier A (user-untriggerable), verify the call site can be restructured to skip `abortErrorLab` and rely solely on the disconnect path for cleanup before assigning Tier A.
+
+This guarantee holds in both single-threaded `ndbd` and multi-threaded `ndbmtd`. In `ndbmtd`, each DBTC worker instance owns its own `ApiConnectRecord` pool and processes signals run-to-completion per instance. The call-site cleanup finishes entirely within one scheduler slot; the `API_FAILREQ` that eventually arrives from the disconnect path is a later signal, queued after any pending signals from the failing node (enforced by the CMVMI routing in `sendApiFailReq`). No cross-thread conflict is possible because no two DBTC instances share a record.
 
 ---
 
@@ -586,7 +592,7 @@ All tests in `mysql-test/suite/ndb/` and `mysql-test/suite/rondis/`:
 
 | Test | What it covers |
 |---|---|
-| `ndb_security` | Static catalog queries via `security_violations`; counter increments via DUMP 9100 injector; observation mode (DUMP 9101 0/1); PROCESS privilege gating on `security_violation_counts` |
+| `ndb_security` | Static catalog queries via `security_violations`; counter increments via DUMP 9100 injector; PROCESS privilege gating on `security_violation_counts` |
 | `ndbinfo_security_events_priv` | PROCESS privilege enforcement — query denied without it, succeeds with it |
 | `ndb_security_enforce` | End-to-end Tier A enforcement: DUMP 9100 against connection-pool node 1600; polls `ndbinfo.processes` to observe disconnect; waits for reconnect; leaves cluster healthy |
 | `rondis_security` | RONDIS Tier B paths: oversize SET (> 512000 bytes), out-of-range SELECT; error messages deliberately omit exact limits so the wire response doesn't disclose internal thresholds |
@@ -615,7 +621,6 @@ All tests in `mysql-test/suite/ndb/` and `mysql-test/suite/rondis/`:
 | **Cluster restart resets counters.** No disk persistence. | Cluster restart is itself hugely visible and disruptive; forcing one to launder strikes is a very loud attack. |
 | **Unaudited blocks (DBSPJ / DBLQH / DBDICT).** If those blocks crash on bad inputs before reaching validation, counter infrastructure alone doesn't help. | Per-block audit is committed as explicit Phase 2 immediately after v2 ships. Unaudited blocks remain a real gap until then. |
 | **Tier B log-only has no automatic enforcement.** A persistently-misbehaving API node produces Tier B events forever. | Explicit policy choice against punishment laundering. Operators use monitoring to detect patterns and intervene manually. |
-| **Reconnect oscillation for Tier A.** Node keeps reconnecting and triggering Tier A each time. | Bounded by reconnect delay; surfaces the issue rapidly. Worst case: offender burns its own and slightly the cluster's resources until an operator disconnects the node or flips the kill switch. |
-| **Bugs in our own code causing false-positive Tier A.** | Master kill switch: `EnableSecurityDisconnect=false` stops all disconnects in one config change without redeploying the cluster. |
+| **Reconnect oscillation for Tier A.** Node keeps reconnecting and triggering Tier A each time. | Bounded by reconnect delay; surfaces the issue rapidly. Worst case: offender burns its own and slightly the cluster's resources until an operator disconnects the node at the network level. |
 | **Live ndbinfo is a live attacker feedback channel.** With `PROCESS` privilege, an attacker can probe and confirm detection in real time. | Accepted cost of meaningful observability. Restrict `PROCESS` to DBA accounts; lock down log access correspondingly. |
 | **RONDIS oversize value: read-before-reject.** The RESP parser fully buffers bulk strings (up to 512 000 bytes) before calling the command handler; the size check fires on the materialized buffer, not the length header. This means a sustained stream of max-size values is buffered repeatedly before rejection — a memory pressure path, not just a log-flood. | REDIS_MAX_VALUE_LEN (512 000 bytes) caps the buffer; no single value can OOM the process. The same limit that produces the Tier B violation also bounds the memory cost. |

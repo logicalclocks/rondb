@@ -23,7 +23,7 @@ Both API nodes and compromised data nodes (`ndbmtd`) can send malformed signals.
 
 ## Implemented Approach (v2 framework)
 
-All 23 DBTC call sites now call `reportMaliciousSignal(signal, offendingNodeId, VT_*)` — a protected method on `SimulatedBlock` that sends `GSN_MALICIOUS_SIGNAL_REPORT` to QMGR. QMGR then decides whether to disconnect based on the violation tier and `EnableSecurityDisconnect`.
+All 23 DBTC call sites now call `reportMaliciousSignal(signal, offendingNodeId, VT_*)` — a protected method on `SimulatedBlock` that sends `GSN_MALICIOUS_SIGNAL_REPORT` to QMGR. QMGR then decides whether to disconnect based on the violation tier.
 
 The old `disconnectMaliciousNode()` function and `REPORT_MALICIOUS_SIGNAL` macro described in this plan were superseded by the framework. Call sites look like:
 
@@ -130,5 +130,5 @@ These `ndbrequire`/`ndbassert` calls guard internal state unreachable from exter
 ## Verification
 
 1. Build: `cmake -DWITH_NDB=1 -DWITH_NDB_TEST=1 ...` and `make`
-2. Run MTR: `./mtr --suite=ndb ndb_security` — covers Tier A/B injection, counter increments, and kill-switch behavior
+2. Run MTR: `./mtr --suite=ndb ndb_security` — covers Tier A/B injection and counter increments
 3. For each changed path, verify the sending node is disconnected (Tier A) or stays connected with a log entry (Tier B) instead of the data node crashing

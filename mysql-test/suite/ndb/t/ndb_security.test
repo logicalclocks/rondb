@@ -5,11 +5,13 @@
 # Data node security: end-to-end injection test for the tiered malicious-input
 # response framework (claude_files/data_node_security/tiered_response_policy.md).
 #
-# Uses test-only DUMP_STATE_ORD codes added in QMGR (debug builds only):
+# Uses a test-only DUMP_STATE_ORD code added in QMGR (debug builds only):
 #   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious-signal report
-#   DUMP 9101 <0|1>                              - toggle EnableSecurityDisconnect
 #
 # We dump to data node 1 only, so per-violation counts are deterministic on node 1.
+# This test covers the non-disconnecting paths only (Tier B counting, catalog and
+# public-view queries). Tier A enforcement disconnect is covered by
+# ndb_security_enforce.test, which targets a spare connection-pool node.
 #
 
 --echo #
@@ -29,36 +31,13 @@ FROM `ndbinfo`.`ndb$security_violation_counts`
 WHERE reporting_node_id=1 AND violation_id=5;
 
 --echo #
---echo # Test 2: Observation mode + Tier A injection (vtype=0 = UNEXPECTED_API_STATE).
---echo #   With the kill switch off, even a Tier A violation is counted and logged
---echo #   but produces no disconnect.
---echo #
-
---echo # Baseline: violation_id=0 counter must be zero before injection.
-SELECT COUNT(*) = 0 AS baseline_is_zero
-FROM `ndbinfo`.`ndb$security_violation_counts`
-WHERE reporting_node_id=1 AND violation_id=0;
-
---exec $NDB_MGM -e "1 dump 9101 0" >> $NDB_TOOLS_OUTPUT
---exec $NDB_MGM -e "1 dump 9100 228 0" >> $NDB_TOOLS_OUTPUT
-
-let $wait_condition=
-  SELECT COUNT(*) > 0 FROM `ndbinfo`.`ndb$security_violation_counts`
-  WHERE reporting_node_id=1 AND violation_id=0 AND count >= 1;
---source include/wait_condition.inc
-
-SELECT reporting_node_id, violation_id, count
-FROM `ndbinfo`.`ndb$security_violation_counts`
-WHERE reporting_node_id=1 AND violation_id=0;
-
---echo #
---echo # Test 3: Verify static violation catalog is queryable.
+--echo # Test 2: Verify static violation catalog is queryable.
 --echo #
 SELECT violation_id, tier, reason FROM ndbinfo.security_violations
 WHERE violation_id=5;
 
 --echo #
---echo # Test 4: Public view (ndbinfo.security_violation_counts) exposes
+--echo # Test 3: Public view (ndbinfo.security_violation_counts) exposes
 --echo #   reporting_node_id so Prometheus can label counts per data node.
 --echo #   This is the query that mysqld_exporter runs for Prometheus scraping.
 --echo #
@@ -72,8 +51,4 @@ WHERE reporting_node_id=1 AND violation_id=5;
 --echo #
 SELECT 1 AS still_connected;
 
---echo #
---echo # Restore enforcement and clean up.
---echo #
---exec $NDB_MGM -e "1 dump 9101 1" >> $NDB_TOOLS_OUTPUT
 --remove_file $NDB_TOOLS_OUTPUT
