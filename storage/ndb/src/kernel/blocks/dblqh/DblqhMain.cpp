@@ -34284,6 +34284,15 @@ void Dblqh::readLogHeader(LogPageRecordPtr &logPagePtr,
     tcConnectptr.p->m_row_id.m_page_idx =
         readLogwordExec(logPagePtr, logPartPtrP);
   }  // if
+  /*
+   * ZINSERT_TTL is an internal DBLQH operation which is stored verbatim in
+   * old REDO records, but it does not fit in LqhKeyReq's operation field.
+   * Replay it as the underlying ZINSERT; DBACC will re-derive ZINSERT_TTL if
+   * the key restored by the LCP is still present.
+   */
+  if (tcConnectptr.p->operation == ZINSERT_TTL) {
+    tcConnectptr.p->operation = ZINSERT;
+  }
   tcConnectptr.p->m_use_rowid = (tcConnectptr.p->operation == ZINSERT);
 }  // Dblqh::readLogHeader()
 
@@ -34658,7 +34667,9 @@ void Dblqh::sendLqhTransconf(Signal *signal, LqhTransConf::OperationStatus stat,
   LqhTransConf::setLastReplicaNo(reqInfo, tcConnectptr.p->lastReplicaNo);
   LqhTransConf::setSimpleFlag(reqInfo, tcConnectptr.p->opSimple);
   LqhTransConf::setDirtyFlag(reqInfo, tcConnectptr.p->dirtyOp);
-  LqhTransConf::setOperation(reqInfo, tcConnectptr.p->operation);
+  /* ZINSERT_TTL carries ZINSERT in the protocol's three-bit operation field. */
+  LqhTransConf::setOperation(
+      reqInfo, tcConnectptr.p->operation & LTC_OPERATION_MASK);
   
   DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrILQH: %u, old_node: %u",
