@@ -271,18 +271,10 @@ static const Uint32 WaitTableStateChangeMillis = 1;
     } while (specNodePtr.i != RNIL);                         \
   }
 
-#define DIH_TAB_WRITE_LOCK(tabPtrP) \
-  do {                              \
-    assertOwnThread();              \
-    tabPtrP->m_lock.write_lock();   \
-  } while (0)
-
-#define DIH_TAB_WRITE_UNLOCK(tabPtrP) \
-  do {                                \
-    assertOwnThread();                \
-    tabPtrP->m_lock.write_unlock();   \
-  } while (0)
-
+/*
+ * DIH_TAB_WRITE_LOCK / DIH_TAB_WRITE_UNLOCK are defined later in this file
+ * (the RonDB variant of DIH_TAB_WRITE_LOCK also bumps tabPtr.p->changeNumber).
+ */
 #define DIH_TAB_CHECK_WRITE_LOCK(tabPtrP)            \
   do {                                               \
     ndbassert(tabPtrP->m_lock.is_write_lock_held()); \
