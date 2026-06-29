@@ -14058,7 +14058,7 @@ void Dbdih::execDIADDTABREQ(Signal *signal) {
     jam();
     FragmentstorePtr fragPtr;
     getFragstore(tabPtr.p, fragId, fragPtr);
-    updateNodeInfo(signal, fragPtr);
+    updateNodeInfo(signal, tabPtr, fragPtr);
   }
   initTableFile(tabPtr);
   tabPtr.p->tabCopyStatus = TabRecord::CS_ADD_TABLE_MASTER;
@@ -14962,7 +14962,7 @@ Dbdih::add_fragments_to_table(Signal *signal,
     FragmentstorePtr fragPtr;
     Uint32 fragId = current + i;
     getFragstore(tabPtr.p, fragId, fragPtr);
-    updateNodeInfo(signal, fragPtr);
+    updateNodeInfo(signal, tabPtr, fragPtr);
   }
   return 0;
 error:
