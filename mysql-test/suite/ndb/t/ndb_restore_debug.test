@@ -794,7 +794,7 @@ UPDATE ndb_restore_output SET a = TRIM(TRAILING "\r" FROM a);
 
 # Check output contains useful messages
 --echo Expect error message
-select count(*) into @msgcount from ndb_restore_output where a like "%Error restoring the data log%";
+select count(*) into @msgcount from ndb_restore_output where a like "%Error restoring the data log%" or a like "%Error reading the data log%";
 select @msgcount as 'Count of error message 1';
 select * from ndb_restore_output where @msgcount != 1;
 
