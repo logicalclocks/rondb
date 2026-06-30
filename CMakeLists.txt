@@ -2305,10 +2305,9 @@ ADD_SUBDIRECTORY(sql-common/oci)
 option(WITH_SIMSIMD "Enable SimSIMD integration" ON)
 
 if (WITH_SIMSIMD)
-  # Build SimSIMD as a shared library so multiple ISA backends are packed
-  # and chosen at runtime (dynamic dispatch).
-  option(SIMSIMD_BUILD_SHARED "Enable SimSIMD integration" ON)
-  # set(SIMSIMD_BUILD_SHARED ON CACHE BOOL "" FORCE)
+  # Build SimSIMD as a static runtime by default. Release tarballs should not
+  # require libsimsimd.so at runtime.
+  option(SIMSIMD_BUILD_SHARED "Build SimSIMD as a shared runtime" OFF)
 
   # Bring in upstream SimSIMD CMake (keeps its own -march=native defaults).
   add_subdirectory(extra/SimSIMD)
@@ -2348,10 +2347,41 @@ if (WITH_SIMSIMD)
     endif()
 
   else()
-    # Header-only fallback (no runtime dispatch). Still provide an alias.
-    add_library(simsimd::simsimd ALIAS simsimd)
-    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
-      target_compile_options(simsimd INTERFACE
+    add_library(simsimd_static STATIC extra/SimSIMD/c/lib.c)
+    add_library(simsimd::simsimd ALIAS simsimd_static)
+    target_include_directories(simsimd_static PUBLIC
+      ${CMAKE_SOURCE_DIR}/extra/SimSIMD/include)
+    set_target_properties(simsimd_static PROPERTIES
+      OUTPUT_NAME simsimd
+      POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(simsimd_static PUBLIC SIMSIMD_DYNAMIC_DISPATCH=1)
+
+    if (UNIX AND NOT APPLE)
+      target_link_libraries(simsimd_static PUBLIC m)
+    endif()
+
+    # If upstream Debug adds ASan, disable it here to avoid link/load-order
+    # problems with non-ASan main binaries (ndbd/ndbmtd).
+    if (CMAKE_C_COMPILER_ID MATCHES "^(Apple)?Clang$|^GNU$")
+      target_compile_options(simsimd_static PRIVATE -fno-sanitize=address)
+    endif()
+
+    if (CMAKE_C_COMPILER_ID MATCHES "^(Apple)?Clang$")
+      target_compile_options(simsimd_static PRIVATE
+        -Wno-unknown-pragmas
+      )
+      target_compile_options(simsimd_static PUBLIC
+        -Wno-unknown-pragmas
+      )
+    elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(simsimd_static PRIVATE
+        -Wno-unknown-pragmas -Wno-error=unknown-pragmas
+        -Wno-unused-variable -Wno-error=unused-variable
+        -Wno-unused-const-variable
+        -Wno-unused-but-set-variable -Wno-unused-function
+        -Wno-error=cpp -Wno-cpp
+      )
+      target_compile_options(simsimd_static PUBLIC
         -Wno-unknown-pragmas -Wno-error=unknown-pragmas
         -Wno-error=cpp -Wno-cpp
       )
