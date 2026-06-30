@@ -2748,6 +2748,15 @@ private:
                bool* has_error,
                int* err_no);
 
+  /*
+   * TTL Bug #2 same-owner check for a converted ZINSERT_TTL on a unique
+   * hash-index table. Returns 0 to allow the in-place overwrite (same base-row
+   * owner), -1 with terrorCode set otherwise. See the definition in
+   * DbtupExecQuery.cpp; must be called after the tuple expand/copy.
+   */
+  int ttlUniqueIndexSameOwnerCheck(KeyReqStruct *req_struct,
+                                   Tablerec *regTabPtr);
+
   void PrepareAccLockReq4RAL(void* scan_rec,
                              Signal* signal);
 // *****************************************************************

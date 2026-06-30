@@ -1,0 +1,109 @@
+# ==========================================================================
+# B3 repro: same-owner check FALSE-POSITIVE with a CASE-INSENSITIVE PK collation
+# ==========================================================================
+#
+# The Bug #2 same-owner check (Dbtup::handleUpdateReq) decides whether a
+# converted ZINSERT_TTL on a TTL table's internal UNIQUE hash-index may
+# overwrite an existing index entry. It compares the index entry's owner
+# (trailing NDB$PK = base fragment id + packed base PK) with a binary memcmp:
+# equal owner -> same base row -> allow the refresh; different -> 630 ->
+# ER_DUP_ENTRY.
+#
+# That binary compare is STRICTER than the base PK's collation. With a
+# case-insensitive PK collation:
+#   1. 'ALPHA' and 'alpha' are the SAME primary key (NDB hashes/compares the PK
+#      collation-aware), so re-inserting 'alpha' lands on the expired 'ALPHA' row
+#      as a TTL insert-on-dup upsert (ZINSERT_TTL).
+#   2. checkUpdateOfPrimaryKey (DbtupRoutines.cpp) permits the PK column write
+#      because the new value is collation-equal, so the upsert REWRITES the
+#      stored PK 'ALPHA' -> 'alpha' (the stored PK is raw, not normalised).
+#   3. The unique-index trigger reads the now-'alpha' PK from the stored tuple
+#      and builds the incoming owner = NDB$PK('alpha'), while the existing index
+#      entry still holds NDB$PK('ALPHA') -> memcmp mismatch -> spurious 630.
+#
+# CONTRACT: re-inserting the SAME logical row (collation-equal PK) into its own
+# expired-but-unpurged slot MUST SUCCEED. A genuinely different PK must still be
+# rejected.
+#
+# EXPECTED RESULT: on the current (unfixed) code this test FAILS at the
+# "refresh" INSERT below with an unexpected ER_DUP_ENTRY -- that failure is the
+# proof of the bug. Once the same-owner check is made collation-aware, it PASSES.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# checkTTL compares against UTC; pin the session to UTC so the row truly expires.
+SET time_zone = '+00:00';
+
+# Base PK uses a case-insensitive collation: 'ALPHA' and 'alpha' are one key.
+CREATE TABLE tci (
+  k       VARCHAR(32) COLLATE utf8mb4_0900_ai_ci PRIMARY KEY,
+  ttl_col DATETIME,
+  u       INT,
+  UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--echo # 'ALPHA' owns unique value 100; a DIFFERENT PK cannot reuse it while live
+INSERT INTO tci VALUES ('ALPHA', NOW(), 100);
+--error ER_DUP_ENTRY
+INSERT INTO tci VALUES ('gamma', NOW(), 100);
+SELECT u FROM tci WHERE k = 'ALPHA';
+
+--echo # let 'ALPHA' expire (TTL=5s); it stays physically present (no purge here)
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tci WHERE k = 'ALPHA'
+--let $ttl_wait_timeout = 15
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT u FROM tci WHERE k = 'ALPHA';
+
+--echo # SAME logical row, re-inserted with the DIFFERENT-CASE PK 'alpha'
+--echo # (collation-equal to 'ALPHA'): refreshes its own expired slot -> MUST SUCCEED
+INSERT INTO tci VALUES ('alpha', NOW(), 100);
+SELECT u FROM tci WHERE k = 'alpha';
+
+--echo # a genuinely DIFFERENT PK still cannot take the (now live again) value 100
+--error ER_DUP_ENTRY
+INSERT INTO tci VALUES ('gamma', NOW(), 100);
+SELECT u FROM tci WHERE k = 'alpha';
+
+DROP TABLE tci;
+
+# ==========================================================================
+# Same bug with a MULTI-COLUMN primary key (VARCHAR ci, INT): exercises
+# cmp_key()'s per-column walk -- the case-insensitive char component must
+# compare collation-aware while the trailing integer component compares exact,
+# and cmp_key must advance past the variable-length k1 to reach k2.
+# ==========================================================================
+CREATE TABLE tmc (
+  k1      VARCHAR(32) COLLATE utf8mb4_0900_ai_ci,
+  k2      INT,
+  ttl_col DATETIME,
+  u       INT,
+  PRIMARY KEY (k1, k2),
+  UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--echo # ('ALPHA',7) owns unique value 200; a DIFFERENT composite PK cannot reuse it
+INSERT INTO tmc VALUES ('ALPHA', 7, NOW(), 200);
+--error ER_DUP_ENTRY
+INSERT INTO tmc VALUES ('alpha', 8, NOW(), 200);
+SELECT u FROM tmc WHERE k1 = 'ALPHA' AND k2 = 7;
+
+--echo # let ('ALPHA',7) expire; it stays physically present (no purge here)
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tmc WHERE k1 = 'ALPHA' AND k2 = 7
+--let $ttl_wait_timeout = 15
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT u FROM tmc WHERE k1 = 'ALPHA' AND k2 = 7;
+
+--echo # SAME composite row, different-case first component ('alpha',7): self-refresh
+--echo # -> MUST SUCCEED (k1 collation-equal, k2 equal => same owner)
+INSERT INTO tmc VALUES ('alpha', 7, NOW(), 200);
+SELECT u FROM tmc WHERE k1 = 'alpha' AND k2 = 7;
+
+--echo # a DIFFERENT composite PK (k2 differs) still cannot take the live value 200
+--error ER_DUP_ENTRY
+INSERT INTO tmc VALUES ('alpha', 8, NOW(), 200);
+SELECT u FROM tmc WHERE k1 = 'alpha' AND k2 = 7;
+
+DROP TABLE tmc;

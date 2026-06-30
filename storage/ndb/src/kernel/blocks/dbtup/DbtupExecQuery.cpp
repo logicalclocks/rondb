@@ -29,6 +29,7 @@
 #include <portlib/ndb_prefetch.h>
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
+#include <KeyDescriptor.hpp>
 #include <Checksum.hpp>
 #include <Interpreter.hpp>
 #include <NdbSqlUtil.hpp>
@@ -3306,12 +3307,109 @@ static Uint32 get_reorg_flag(Dbtup::KeyReqStruct *req_struct,
 /* ---------------------------------------------------------------- */
 /* ---------------------------- UPDATE ---------------------------- */
 /* ---------------------------------------------------------------- */
+/*
+ * TTL same-owner check (Bug #2). For a converted ZINSERT_TTL on a TTL table's
+ * internal UNIQUE hash-index, decide whether the incoming index insert refers to
+ * the SAME base row as the existing index entry (a refresh -> allow the in-place
+ * overwrite) or to a different row (genuine duplicate -> 630 -> ER_DUP_ENTRY).
+ *
+ * DBACC converts the dup index ZINSERT to ZINSERT_TTL because is_ttl_table
+ * follows the index's primaryTableId to the TTL base table; DBTUP would
+ * otherwise apply it as an UNCHECKED overwrite (checkTTL is skipped -- the index
+ * table's own m_ttl_sec is RNIL). A different owner must be rejected: a different
+ * live row could silently steal the unique value, and even an expired owner's
+ * slot must not be handed to a new owner (purge deletes the index entry by key
+ * only, with no owner-PK validation -- DbtcMain.cpp).
+ *
+ * The owner is the single trailing NDB$PK attribute (attr id == noOfKeyAttr):
+ * [base fragId][packed base PK]. Decide "same base row" the way NDB compares
+ * primary keys, NOT with a raw memcmp: when the base PK has a character
+ * (collation) column, two byte-different packed PKs can be the SAME key (e.g. a
+ * case-insensitive collation: 'ABC' vs 'abc'), and a ZINSERT_TTL upsert can have
+ * rewritten the stored PK to a collation-equal-but-byte-different value -- a raw
+ * memcmp would then wrongly reject the SAME owner with a spurious 630. Compare
+ * the packed PK only (skip the leading fragId word: PK uniqueness makes the PK
+ * the owner identity, and fragId can change under online reorg). Mirrors
+ * Dblqh::compare_key: cmp_key() (per-column, collation-aware, handles
+ * multi-column and variable-length keys) when the base PK has char attributes, a
+ * binary compare otherwise.
+ *
+ * Returns 0 to allow the overwrite (same owner); -1 with terrorCode set (630, or
+ * a read error) otherwise -- the caller must propagate -1. MUST be called after
+ * the expand/copy in handleUpdateReq so the existing tuple's variable-length
+ * metadata is initialised.
+ */
+int Dbtup::ttlUniqueIndexSameOwnerCheck(KeyReqStruct *req_struct,
+                                        Tablerec *regTabPtr) {
+  const Uint32 ownerAttrId = regTabPtr->noOfKeyAttr;
+  /* Existing owner: read NDB$PK from the existing-valued tuple (m_tuple_ptr)
+   * into the DBTUP read scratch buffer (c_dataBuffer). */
+  Uint32 readReq = (ownerAttrId << 16);
+  Uint32 *const ownerBuf = reinterpret_cast<Uint32 *>(c_dataBuffer);
+  const int rdRet = readAttributes(req_struct, &readReq, 1, ownerBuf,
+                                   Uint32(sizeof(c_dataBuffer) >> 2));
+  if (unlikely(rdRet < 0)) {
+    jam();
+    terrorCode = Uint32(-rdRet);
+    tupkeyErrorLab(req_struct);
+    return -1;
+  }
+  AttributeHeader *const ahExisting = (AttributeHeader *)ownerBuf;
+  const Uint32 *const existingOwner = ahExisting->getDataPtr();
+  const Uint32 existingOwnerWords = ahExisting->getDataSize();
+  /* Incoming owner: locate NDB$PK in the (not-yet-applied) update attrinfo. */
+  const Uint32 *incomingOwner = nullptr;
+  Uint32 incomingOwnerWords = 0;
+  {
+    const Uint32 len = req_struct->attrinfo_len;
+    Uint32 pos = 0;
+    while (pos < len) {
+      const Uint32 ahWord = cinBuffer[pos];
+      const Uint32 dsz = AttributeHeader::getDataSize(ahWord);
+      if (unlikely(pos + 1 + dsz > len)) {
+        break;  // truncated/malformed attrinfo: stop scanning
+      }
+      if (AttributeHeader::getAttributeId(ahWord) == ownerAttrId) {
+        incomingOwner = &cinBuffer[pos + 1];
+        incomingOwnerWords = dsz;
+        break;
+      }
+      pos += 1 + dsz;
+    }
+  }
+  /* A well-formed index insert always carries NDB$PK (built by DBTC). */
+  ndbrequire(incomingOwner != nullptr);
+  /* Owner layout = [base fragId][packed base PK]; need at least the fragId. */
+  ndbrequire(existingOwnerWords >= 1 && incomingOwnerWords >= 1);
+  const Uint32 baseTableId =
+      g_key_descriptor_pool.getPtr(req_struct->fragPtrP->fragTableId)
+          ->primaryTableId;
+  bool same_owner;
+  if (g_key_descriptor_pool.getPtr(baseTableId)->hasCharAttr) {
+    jam();
+    same_owner =
+        (cmp_key(baseTableId, existingOwner + 1, incomingOwner + 1) == 0);
+  } else {
+    jam();
+    same_owner = (existingOwnerWords == incomingOwnerWords) &&
+                 (memcmp(existingOwner + 1, incomingOwner + 1,
+                         size_t(existingOwnerWords - 1) << 2) == 0);
+  }
+  if (!same_owner) {
+    jam();
+    terrorCode = 630;  // ZALREADYEXIST -> ZNOTUNIQUE(893) -> ER_DUP_ENTRY
+    tupkeyErrorLab(req_struct);
+    return -1;
+  }
+  return 0;
+}
+
 int Dbtup::handleUpdateReq(Signal* signal,
                            Operationrec* operPtrP,
                            Fragrecord* regFragPtr,
                            Tablerec* regTabPtr,
                            KeyReqStruct* req_struct,
-                           bool disk) 
+                           bool disk)
 {
   if (unlikely(operPtrP->ttl_ignore == 0 &&
                operPtrP->ttl_only_expired == 1 &&
@@ -3484,89 +3582,21 @@ int Dbtup::handleUpdateReq(Signal* signal,
   }
 
   /*
-   * TTL related (Bug #2 -- unique-index same-owner check).
-   * DBACC converts a duplicate index ZINSERT into ZINSERT_TTL on a TTL table's
-   * internal UNIQUE hash-index table (Dblqh::is_ttl_table follows primaryTableId
-   * to the base table), and DBTUP would otherwise apply it as an UNCHECKED
-   * in-place overwrite of the existing index entry -- the checkTTL block above is
-   * skipped because the index table's own m_ttl_sec is RNIL. That overwrite is
-   * the bug: a different live row could silently steal the unique value, and even
-   * an expired owner's slot must not be handed to a new owner (the purge deletes
-   * the index entry by key only, with no owner-PK validation, so a stolen entry
-   * would later be orphaned -- see DbtcMain.cpp:25106).
-   *
-   * Permit the overwrite ONLY when it refreshes the SAME owner row, i.e. the
-   * stored owner is unchanged. The owner is the single trailing NDB$PK attribute
-   * (attr id == noOfKeyAttr), which holds the base fragment id + packed base PK.
-   * A different owner (live OR expired) is a genuine duplicate -> return 630,
-   * which DBTC's SECONDARY_INDEX trigger maps to ZNOTUNIQUE(893) -> ER_DUP_ENTRY.
-   *
-   * Recovery/replication is exempt and reproduces committed state verbatim, gated
-   * by m_ttl_owner_check_bypass (the OP_TTL_OWNER_CHECK_BYPASS provenance): REDO
-   * replay, copy-fragment, replication apply, and explicit OO_TTL_IGNORE set it;
-   * LCP restore keeps the op a plain ZINSERT (m_restore_op -> NoTTLDupConvert) so
-   * it never arrives here as ZINSERT_TTL. We deliberately do NOT gate on
-   * ttl_ignore == 0: DBACC also sets ttl_ignore for ordinary same-transaction
-   * lock visibility ("read-what-you-locked"), and such a same-transaction
-   * duplicate (e.g. two rows with one unique value in one multi-row INSERT) must
-   * still be rejected here -- it carries no bypass provenance.
-   *
-   * Placement: AFTER the expand/copy above, so m_tuple_ptr (== dst) holds the
-   * existing tuple's values (the incoming change is not applied until
-   * updateAttributes below) with the variable-length metadata initialised --
-   * required because write execution does not run prepare_read(), so reading a
-   * variable NDB$PK from the pre-expand tuple would dereference uninitialised
-   * var-data.
+   * TTL Bug #2: on a TTL table's internal UNIQUE hash-index, a converted
+   * ZINSERT_TTL would otherwise overwrite the existing index entry UNCHECKED
+   * (the checkTTL block above is skipped -- the index table's own m_ttl_sec is
+   * RNIL). Allow the overwrite only when it refreshes the SAME base-row owner; a
+   * different owner (live OR expired) is a genuine duplicate (-> 630 ->
+   * ER_DUP_ENTRY). Recovery/replication is exempt via m_ttl_owner_check_bypass.
+   * Called HERE, after the expand/copy above, so the existing tuple's
+   * variable-length metadata is initialised (write execution skips
+   * prepare_read()); see ttlUniqueIndexSameOwnerCheck().
    */
   if (operPtrP->op_type == ZINSERT_TTL &&
       !req_struct->m_ttl_owner_check_bypass &&
       c_lqh->is_unique_hash_index_table(req_struct->fragPtrP->fragTableId)) {
     jam();
-    const Uint32 ownerAttrId = regTabPtr->noOfKeyAttr;
-    /* Existing owner: read NDB$PK from the existing-valued tuple (m_tuple_ptr). */
-    Uint32 readReq = (ownerAttrId << 16);
-    Uint32 ownerBuf[MAX_KEY_SIZE_IN_WORDS + 2];
-    const int rdRet = readAttributes(req_struct, &readReq, 1, ownerBuf,
-                                     Uint32(sizeof(ownerBuf) >> 2));
-    if (unlikely(rdRet < 0)) {
-      jam();
-      terrorCode = Uint32(-rdRet);
-      tupkeyErrorLab(req_struct);
-      return -1;
-    }
-    AttributeHeader *const ahExisting = (AttributeHeader *)ownerBuf;
-    const Uint32 *const existingOwner = ahExisting->getDataPtr();
-    const Uint32 existingOwnerWords = ahExisting->getDataSize();
-    /* Incoming owner: locate NDB$PK in the (not-yet-applied) update attrinfo. */
-    const Uint32 *incomingOwner = nullptr;
-    Uint32 incomingOwnerWords = 0;
-    {
-      const Uint32 len = req_struct->attrinfo_len;
-      Uint32 pos = 0;
-      while (pos < len) {
-        const Uint32 ahWord = cinBuffer[pos];
-        const Uint32 dsz = AttributeHeader::getDataSize(ahWord);
-        if (unlikely(pos + 1 + dsz > len)) {
-          break;  // truncated/malformed attrinfo: stop scanning
-        }
-        if (AttributeHeader::getAttributeId(ahWord) == ownerAttrId) {
-          incomingOwner = &cinBuffer[pos + 1];
-          incomingOwnerWords = dsz;
-          break;
-        }
-        pos += 1 + dsz;
-      }
-    }
-    /* A well-formed index insert always carries NDB$PK (built by DBTC). */
-    ndbrequire(incomingOwner != nullptr);
-    const bool same_owner =
-        (incomingOwnerWords == existingOwnerWords) &&
-        (memcmp(existingOwner, incomingOwner,
-                size_t(existingOwnerWords) << 2) == 0);
-    if (!same_owner) {
-      jam();
-      terrorCode = 630;  // ZALREADYEXIST -> ZNOTUNIQUE(893) -> ER_DUP_ENTRY
-      tupkeyErrorLab(req_struct);
+    if (unlikely(ttlUniqueIndexSameOwnerCheck(req_struct, regTabPtr) < 0)) {
       return -1;
     }
   }
