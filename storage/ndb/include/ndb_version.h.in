@@ -1170,4 +1170,47 @@ ndbd_support_arbitration_rank_wait(Uint32 x) {
   }
   return false;
 }
+
+/**
+ * Proactive DROP notification to API nodes.
+ *
+ * A data node that supports this feature broadcasts GSN_ALTER_TABLE_REP with
+ * changeType CT_DROPPED when a table/index is dropped, so API-side dictionary
+ * caches invalidate the stale object promptly. Older API clients must NOT
+ * receive it -- they predate the feature and would otherwise see their global
+ * dictionary cache invalidated on drops for the first time, a behavior change.
+ *
+ * The feature lands in the 25.10 maintenance series at 25.10.14 and in the
+ * 26.02 series at 26.02.5. A single broadcast minVersion cannot express both
+ * cutoffs (26.02.0-4 sort numerically above 25.10.14 yet must be excluded),
+ * so the sender checks each API node's version with this function.
+ */
+#define NDBD_DROP_TABLE_NOTIFICATION_2510 NDB_MAKE_VERSION(25,10,14)
+#define NDBD_DROP_TABLE_NOTIFICATION_2602 NDB_MAKE_VERSION(26,2,5)
+static inline
+bool
+ndbd_support_drop_table_notification(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    if (minor == 10) {
+      return x >= NDBD_DROP_TABLE_NOTIFICATION_2510;
+    }
+    return minor > 10;
+  }
+  /* major == 26 */
+  if (minor < 2) {
+    return false;
+  }
+  if (minor == 2) {
+    return x >= NDBD_DROP_TABLE_NOTIFICATION_2602;
+  }
+  return true;
+}
 #endif
