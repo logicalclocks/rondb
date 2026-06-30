@@ -2101,6 +2101,14 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool last_row;
     bool m_use_rowid;
     bool m_nr_copy_or_redo;
+    /*
+     * TTL related (same-transaction unique-dup gap fix). True iff this op carries
+     * genuine TTL-ignore provenance (OP_TTL_OWNER_CHECK_BYPASS): recovery,
+     * replication apply, or explicit OO_TTL_IGNORE. When true, handleUpdateReq
+     * skips the unique-index same-owner duplicate check. NOT set merely because
+     * ttl_ignore == 1 (same-transaction lock visibility leaves this false).
+     */
+    bool m_ttl_owner_check_bypass;
     bool m_deferred_constraints;
     bool m_disable_fk_checks;
 

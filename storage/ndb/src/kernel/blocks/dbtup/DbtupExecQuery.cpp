@@ -2083,6 +2083,8 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.interpreted_exec = interpreted_exec;
     req_struct.interpreted_insert = interpreted_insert;
     req_struct.m_nr_copy_or_redo = 0;
+    /* Scans never reach the ZINSERT_TTL unique-index owner check; default safe. */
+    req_struct.m_ttl_owner_check_bypass = false;
     req_struct.m_use_rowid = 0;
 #ifdef ERROR_INSERT
     /* Insert garbage into rowid, should not be used */
@@ -2145,6 +2147,13 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_nr_copy_or_redo =
         ((LqhKeyReq::getNrCopyFlag(lqhOpPtrP->reqinfo) |
           c_lqh->c_executing_redo_log) != 0);
+    /*
+     * TTL related (same-transaction unique-dup gap fix). Carry the genuine
+     * TTL-ignore provenance into DBTUP so handleUpdateReq exempts only true
+     * recovery/replication/explicit-ignore replays from the same-owner check.
+     */
+    req_struct.m_ttl_owner_check_bypass =
+        ((flags & Dblqh::TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS) != 0);
     disable_fk_checks = ((flags & Dblqh::TcConnectionrec::OP_DISABLE_FK) != 0);
     deferred_constraints =
         ((flags & Dblqh::TcConnectionrec::OP_DEFERRED_CONSTRAINTS) != 0);
@@ -3492,9 +3501,15 @@ int Dbtup::handleUpdateReq(Signal* signal,
    * A different owner (live OR expired) is a genuine duplicate -> return 630,
    * which DBTC's SECONDARY_INDEX trigger maps to ZNOTUNIQUE(893) -> ER_DUP_ENTRY.
    *
-   * Recovery is exempt and reproduces committed state verbatim: REDO replay and
-   * copy-fragment set ttl_ignore=1; LCP restore keeps the op a plain ZINSERT
-   * (m_restore_op -> NoTTLDupConvert) so it never arrives here as ZINSERT_TTL.
+   * Recovery/replication is exempt and reproduces committed state verbatim, gated
+   * by m_ttl_owner_check_bypass (the OP_TTL_OWNER_CHECK_BYPASS provenance): REDO
+   * replay, copy-fragment, replication apply, and explicit OO_TTL_IGNORE set it;
+   * LCP restore keeps the op a plain ZINSERT (m_restore_op -> NoTTLDupConvert) so
+   * it never arrives here as ZINSERT_TTL. We deliberately do NOT gate on
+   * ttl_ignore == 0: DBACC also sets ttl_ignore for ordinary same-transaction
+   * lock visibility ("read-what-you-locked"), and such a same-transaction
+   * duplicate (e.g. two rows with one unique value in one multi-row INSERT) must
+   * still be rejected here -- it carries no bypass provenance.
    *
    * Placement: AFTER the expand/copy above, so m_tuple_ptr (== dst) holds the
    * existing tuple's values (the incoming change is not applied until
@@ -3504,7 +3519,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
    * var-data.
    */
   if (operPtrP->op_type == ZINSERT_TTL &&
-      operPtrP->ttl_ignore == 0 &&
+      !req_struct->m_ttl_owner_check_bypass &&
       c_lqh->is_unique_hash_index_table(req_struct->fragPtrP->fragTableId)) {
     jam();
     const Uint32 ownerAttrId = regTabPtr->noOfKeyAttr;

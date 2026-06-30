@@ -9107,6 +9107,21 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    * TTL related
    */
   regTcPtr->ttl_ignore = LqhKeyReq::getTTLIgnoreFlag(Treqinfo);
+  /*
+   * TTL related (same-transaction unique-dup gap fix). At request setup the wire
+   * ttl_ignore reflects GENUINE TTL-ignore intent -- explicit OO_TTL_IGNORE,
+   * replication apply, or a recovery op forwarded from the primary. The DBACC
+   * same-transaction "read-what-you-locked" value is added LATER (execACCKEYCONF),
+   * not here, so recording the bypass from the request-time ttl_ignore captures
+   * only genuine recovery/replication intent, never same-transaction visibility.
+   * (A forwarded same-transaction op can carry ttl_ignore=1 from the primary's
+   * merge, but such ops are always same-owner refreshes the primary already
+   * allowed -- a different-owner duplicate is rejected on the primary before
+   * forwarding -- so setting bypass here is harmless.)
+   */
+  if (regTcPtr->ttl_ignore) {
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
+  }
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
   TTL_RONDB_TRACE(tabptr.i, "Dblqh::execLQHKEYREQ(), ttl_ignore: %u, only_expired: %u",
                   regTcPtr->ttl_ignore,
@@ -9406,6 +9421,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    */
   if (regTcPtr->m_restore_op && op == ZDELETE) {
     regTcPtr->ttl_ignore = 1;
+    /* Genuine recovery intent -> exempt from the same-owner check (provenance). */
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   }
   if (senderBlockNo == getRESTORE())
     regTcPtr->m_disk_table &= !LqhKeyReq::getNoDiskFlag(Treqinfo);
@@ -10215,7 +10232,13 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                       "so set it to 1! "
                       "table id: %u",
                       tabptr.i);
-      /* IMPORTANT */
+      /*
+       * IMPORTANT (same-transaction unique-dup gap fix): set the EFFECTIVE
+       * ttl_ignore from the DBACC same-transaction "read-what-you-locked"
+       * response, but NEVER set OP_TTL_OWNER_CHECK_BYPASS here. A same-
+       * transaction duplicate is not recovery intent and must still be rejected
+       * by the DBTUP same-owner check.
+       */
       regTcPtr.p->ttl_ignore = signal->theData[5];
     } else if (regTcPtr.p->ttl_ignore && signal->theData[5]) {
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
@@ -11453,7 +11476,13 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
                       "so set it to 1! "
                       "table id: %u",
                       tabptr.i);
-      /* IMPORTANT */
+      /*
+       * IMPORTANT (same-transaction unique-dup gap fix): set the EFFECTIVE
+       * ttl_ignore from the DBACC same-transaction "read-what-you-locked"
+       * response, but NEVER set OP_TTL_OWNER_CHECK_BYPASS here. A same-
+       * transaction duplicate is not recovery intent and must still be rejected
+       * by the DBTUP same-owner check.
+       */
       regTcPtr->ttl_ignore = signal->theData[5];
     } else if (regTcPtr->ttl_ignore && signal->theData[5]) {
       TTL_RONDB_TRACE(tabptr.i, "Dblqh::execACCKEYCONF[2], ttl_ignore in "
@@ -12367,10 +12396,17 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   LqhKeyReq::setRowidFlag(Treqinfo, regTcPtr->m_use_rowid);
 
   /*
-   * TTL related
-   * TODO (Zhao)
-   * Double check that it needs to set ttl_ignore for LqhKeyReq
-   * in other places as well
+   * TTL related. Serialize the EFFECTIVE ttl_ignore (NOT the owner-check-bypass
+   * provenance). The downstream replica needs ttl_ignore to suppress its own
+   * checkTTL: e.g. a scan-takeover DELETE of an expired row during online reorg
+   * or TTL purge gets ttl_ignore=1 from the same-transaction lock and must not be
+   * rejected with 626 on the backup. The unique-index same-owner check (Bug
+   * same-transaction-dup fix) does NOT need the bypass bit on the wire: it is
+   * enforced authoritatively on the PRIMARY replica, which rejects a different
+   * owner with 630 BEFORE forwarding, so the only same-transaction ops a backup
+   * ever receives are same-owner refreshes the primary already allowed -- the
+   * backup deriving its bypass from this ttl_ignore (execLQHKEYREQ) is therefore
+   * safe.
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
 
@@ -23061,6 +23097,15 @@ void Dblqh::initCopyTc(Signal *signal, Operation_t op,
    * 1 in execCOPY_FRAGREQ); packLqhkeyreqLab serializes it to the starting node.
    */
   regTcPtr->ttl_ignore = scanptr.p->m_ttl_ignore;
+  /*
+   * TTL related (same-transaction unique-dup gap fix). Copy-fragment is genuine
+   * recovery intent -> mark the owner-check bypass so packLqhkeyreqLab serializes
+   * it to the starting node (m_flags is cleared once per copy op at the NR copy
+   * setup; persisting the bit across copied rows is correct, all are recovery).
+   */
+  if (regTcPtr->ttl_ignore) {
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
+  }
   /* ------------------------------------------------------------------------ */
   /* THE RECEIVING NODE WILL EXPECT THAT IT IS THE LAST NODE AND WILL         */
   /* SEND COMPLETED AS THE RESPONSE SIGNAL SINCE DIRTY_OP BIT IS SET.         */
@@ -33719,6 +33764,9 @@ void Dblqh::initReqinfoExecSr(Signal *signal,
    * packLqhkeyreqLab serializes this into the replayed LQHKEYREQ (TTLIgnoreFlag).
    */
   regTcPtr->ttl_ignore = 1;
+  /* Genuine recovery intent -> exempt from the same-owner check (provenance).
+   * m_flags was cleared just above; packLqhkeyreqLab serializes this bit. */
+  regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
 }  // Dblqh::initReqinfoExecSr()
 
 Uint32

@@ -3012,7 +3012,18 @@ class Dblqh : public SimulatedBlock {
       OP_DISABLE_FK = 0x20,
       OP_NO_TRIGGERS = 0x40,
       OP_NOWAIT = 0x80,
-      OP_REPLICA_APPLIER = 0x100
+      OP_REPLICA_APPLIER = 0x100,
+      /*
+       * TTL related (same-transaction unique-dup gap fix). Genuine TTL-ignore
+       * PROVENANCE: set ONLY from explicit request/recovery intent (API
+       * OO_TTL_IGNORE, replication apply, a recovery op forwarded from the
+       * primary, copy-fragment, REDO replay). It is NEVER set from the DBACC
+       * same-transaction "read-what-you-locked" response (execACCKEYCONF). DBTUP
+       * uses it to exempt a ZINSERT_TTL on a unique-hash-index table from the
+       * same-owner duplicate check, so genuine recovery/replication replays stay
+       * exempt while an ordinary same-transaction duplicate is still rejected.
+       */
+      OP_TTL_OWNER_CHECK_BYPASS = 0x200
     };
     Uint32 m_flags;
     LogPartRecord *m_log_part_ptr_p;
