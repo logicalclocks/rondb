@@ -3474,6 +3474,88 @@ int Dbtup::handleUpdateReq(Signal* signal,
     req_struct->m_tuple_ptr->m_header_bits |= Tuple_header::COPY_TUPLE;
   }
 
+  /*
+   * TTL related (Bug #2 -- unique-index same-owner check).
+   * DBACC converts a duplicate index ZINSERT into ZINSERT_TTL on a TTL table's
+   * internal UNIQUE hash-index table (Dblqh::is_ttl_table follows primaryTableId
+   * to the base table), and DBTUP would otherwise apply it as an UNCHECKED
+   * in-place overwrite of the existing index entry -- the checkTTL block above is
+   * skipped because the index table's own m_ttl_sec is RNIL. That overwrite is
+   * the bug: a different live row could silently steal the unique value, and even
+   * an expired owner's slot must not be handed to a new owner (the purge deletes
+   * the index entry by key only, with no owner-PK validation, so a stolen entry
+   * would later be orphaned -- see DbtcMain.cpp:25106).
+   *
+   * Permit the overwrite ONLY when it refreshes the SAME owner row, i.e. the
+   * stored owner is unchanged. The owner is the single trailing NDB$PK attribute
+   * (attr id == noOfKeyAttr), which holds the base fragment id + packed base PK.
+   * A different owner (live OR expired) is a genuine duplicate -> return 630,
+   * which DBTC's SECONDARY_INDEX trigger maps to ZNOTUNIQUE(893) -> ER_DUP_ENTRY.
+   *
+   * Recovery is exempt and reproduces committed state verbatim: REDO replay and
+   * copy-fragment set ttl_ignore=1; LCP restore keeps the op a plain ZINSERT
+   * (m_restore_op -> NoTTLDupConvert) so it never arrives here as ZINSERT_TTL.
+   *
+   * Placement: AFTER the expand/copy above, so m_tuple_ptr (== dst) holds the
+   * existing tuple's values (the incoming change is not applied until
+   * updateAttributes below) with the variable-length metadata initialised --
+   * required because write execution does not run prepare_read(), so reading a
+   * variable NDB$PK from the pre-expand tuple would dereference uninitialised
+   * var-data.
+   */
+  if (operPtrP->op_type == ZINSERT_TTL &&
+      operPtrP->ttl_ignore == 0 &&
+      c_lqh->is_unique_hash_index_table(req_struct->fragPtrP->fragTableId)) {
+    jam();
+    const Uint32 ownerAttrId = regTabPtr->noOfKeyAttr;
+    /* Existing owner: read NDB$PK from the existing-valued tuple (m_tuple_ptr). */
+    Uint32 readReq = (ownerAttrId << 16);
+    Uint32 ownerBuf[MAX_KEY_SIZE_IN_WORDS + 2];
+    const int rdRet = readAttributes(req_struct, &readReq, 1, ownerBuf,
+                                     Uint32(sizeof(ownerBuf) >> 2));
+    if (unlikely(rdRet < 0)) {
+      jam();
+      terrorCode = Uint32(-rdRet);
+      tupkeyErrorLab(req_struct);
+      return -1;
+    }
+    AttributeHeader *const ahExisting = (AttributeHeader *)ownerBuf;
+    const Uint32 *const existingOwner = ahExisting->getDataPtr();
+    const Uint32 existingOwnerWords = ahExisting->getDataSize();
+    /* Incoming owner: locate NDB$PK in the (not-yet-applied) update attrinfo. */
+    const Uint32 *incomingOwner = nullptr;
+    Uint32 incomingOwnerWords = 0;
+    {
+      const Uint32 len = req_struct->attrinfo_len;
+      Uint32 pos = 0;
+      while (pos < len) {
+        const Uint32 ahWord = cinBuffer[pos];
+        const Uint32 dsz = AttributeHeader::getDataSize(ahWord);
+        if (unlikely(pos + 1 + dsz > len)) {
+          break;  // truncated/malformed attrinfo: stop scanning
+        }
+        if (AttributeHeader::getAttributeId(ahWord) == ownerAttrId) {
+          incomingOwner = &cinBuffer[pos + 1];
+          incomingOwnerWords = dsz;
+          break;
+        }
+        pos += 1 + dsz;
+      }
+    }
+    /* A well-formed index insert always carries NDB$PK (built by DBTC). */
+    ndbrequire(incomingOwner != nullptr);
+    const bool same_owner =
+        (incomingOwnerWords == existingOwnerWords) &&
+        (memcmp(existingOwner, incomingOwner,
+                size_t(existingOwnerWords) << 2) == 0);
+    if (!same_owner) {
+      jam();
+      terrorCode = 630;  // ZALREADYEXIST -> ZNOTUNIQUE(893) -> ER_DUP_ENTRY
+      tupkeyErrorLab(req_struct);
+      return -1;
+    }
+  }
+
   tup_version= (tup_version + 1) & ZTUP_VERSION_MASK;
   operPtrP->op_struct.bit_field.tupVersion= tup_version;
 

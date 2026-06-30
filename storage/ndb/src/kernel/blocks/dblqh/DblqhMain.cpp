@@ -4601,6 +4601,12 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
             t_tabptr.p->m_ttl_col_no != RNIL);
   }
 }
+bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
+  TablerecPtr t_tabptr;
+  t_tabptr.i = table_id;
+  ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
+  return t_tabptr.p->tableType == DictTabInfo::UniqueHashIndex;
+}
 void
 Dblqh::release_frag_array(Tablerec *tabPtrP)
 {

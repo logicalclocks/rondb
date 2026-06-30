@@ -2681,6 +2681,11 @@ class Dblqh : public SimulatedBlock {
   };  // Size 100 bytes
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);
+  // TTL related (Bug #2). True iff table_id is an internal UNIQUE hash index.
+  // Used by DBTUP's same-owner check to scope the duplicate-vs-live-owner
+  // rejection to unique indexes (NOT BLOB part-tables, which also have
+  // primaryTableId != self but must keep the TTL upsert conversion).
+  bool is_unique_hash_index_table(Uint32 table_id);
   void release_frag_array(Tablerec*);
   Uint32 findFreeFragEntry(Uint32 num_fragments_in_array);
   bool seize_frag_array(Tablerec*,

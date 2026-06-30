@@ -1,0 +1,38 @@
+SET time_zone='+00:00';
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+v VARCHAR(20),
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+# The LCP contains an expired owner and a live owner.
+INSERT INTO t1 VALUES
+(1, '2000-01-01 00:00:00', 101, 'expired-old'),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 102, 'live-lcp');
+# Force and allow the LCP to complete; automatic LCPs are suppressed by
+# TimeBetweenLocalCheckpoints=31 in the companion configuration.
+# Same-PK insert-over-expired refreshes owner 1 after the LCP. Its base
+# and UNIQUE-index ZINSERT_TTL operations must replay from REDO.
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 101, 'refreshed');
+# Additional post-LCP REDO contains one live and two expired owners.
+INSERT INTO t1 VALUES
+(3, DATE_ADD(NOW(), INTERVAL 10 YEAR), 103, 'live-redo'),
+(4, '2000-01-01 00:00:00', 104, 'expired-redo-4'),
+(5, '2000-01-01 00:00:00', 105, 'expired-redo-5');
+# System restart recovers every node from LCP plus REDO, without copyfrag.
+# Recovery completed without error 2352 or a data-node crash. Base-table
+# and forced UNIQUE-index reads must agree, including the refreshed row.
+SELECT id, u, v FROM t1 ORDER BY id;
+id	u	v
+1	101	refreshed
+2	102	live-lcp
+3	103	live-redo
+SELECT id, u, v FROM t1 FORCE INDEX (ux)
+WHERE u IN (101, 102, 103, 104, 105) ORDER BY id;
+id	u	v
+1	101	refreshed
+2	102	live-lcp
+3	103	live-redo
+DROP TABLE t1;
