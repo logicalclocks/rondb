@@ -9405,23 +9405,28 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
   /*
-   * TTL related. Remember whether this operation originates from LCP restore.
-   * For such inserts DBACC must NOT convert a duplicate ZINSERT into an
-   * in-place TTL update; the duplicate must surface as 630 so restore's
-   * delete-by-PK + reinsert recovery keeps the row count consistent.
+   * TTL related. LCP restore is a PHYSICAL reconstruction from full row images,
+   * NOT a replay of incremental changes: every row present in the restored LCP
+   * -- including one whose last change during the LCP was an UPDATE -- is
+   * reinstalled wholesale via insert-by-rowid, and a row deleted during the LCP
+   * is recorded as DELETE BY ROWID (restore.cpp parse_record; a WRITE_TYPE
+   * change record carries the full after-image and is installed as ZINSERT). So
+   * restore issues only two op types -- never ZUPDATE/ZWRITE, hence there is no
+   * update case to handle here -- and each must bypass TTL's logical read/purge
+   * policy:
+   *   INSERT: must NOT be converted by DBACC into an in-place TTL upsert on a
+   *     duplicate. m_restore_op makes exec_acckeyreq set
+   *     AccKeyReq::NoTTLDupConvert, so a duplicate surfaces as 630 and restore's
+   *     delete-by-PK + reinsert recovery keeps the row count consistent.
+   *   DELETE: can target an EXPIRED row (the duplicate-key recovery deletes the
+   *     stale copy by PK -- restore.cpp; normal replay issues DELETE BY ROWID).
+   *     Without ignoring TTL the delete returns 626 on the expired row and
+   *     breaks recovery, so it must be expiry-blind (ttl_ignore=1) and -- being
+   *     genuine recovery intent -- exempt from the same-owner check.
    */
   regTcPtr->m_restore_op = (senderBlockNo == getRESTORE()) ? 1 : 0;
-  /*
-   * TTL related (companion to the NoTTLDupConvert insert fix). A restore
-   * delete can target an EXPIRED row: the duplicate-key recovery deletes the
-   * stale copy by PK (restore.cpp), and normal replay issues DELETE BY ROWID.
-   * Without ignoring TTL such a delete returns 626 on the expired row, which
-   * would break the recovery. Restore rebuilds physical state, so its deletes
-   * must be expiry-blind.
-   */
   if (regTcPtr->m_restore_op && op == ZDELETE) {
     regTcPtr->ttl_ignore = 1;
-    /* Genuine recovery intent -> exempt from the same-owner check (provenance). */
     regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   }
   if (senderBlockNo == getRESTORE())
@@ -10147,7 +10152,7 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
      * NOTE: this is deliberately NOT extended to REDO replay
      * (c_executing_redo_log). An insert that replaced an expired row commits as
      * ZINSERT_TTL (= ZINSERT | 0x08 = 10), but LqhKeyReq's operation field is
-     * only 3 bits, so on replay it arrives here as a plain ZINSERT. Suppressing
+     * only 3 bits, so readLogHeader replays it as a plain ZINSERT. Suppressing
      * the conversion for REDO would make that replayed insert return 630 and be
      * skipped by logLqhkeyrefLab -> the committed replacement is dropped and the
      * node aborts during recovery. REDO must instead ALLOW the conversion so the
@@ -23093,19 +23098,16 @@ void Dblqh::initCopyTc(Signal *signal, Operation_t op,
    * expired-but-not-yet-purged TTL rows). It must NOT re-apply TTL expiry on the
    * starting node, otherwise the converted copy ZUPDATE / delete-by-rowid ZDELETE
    * hits checkTTL -> 626 -> COPY_FRAGREF -> the starting node is shut down in
-   * start phase 5 (error 2303). Inherit the copy scan's TTL-ignore intent (set to
-   * 1 in execCOPY_FRAGREQ); packLqhkeyreqLab serializes it to the starting node.
+   * start phase 5 (error 2303). execCOPY_FRAGREQ sets the copy scan's
+   * m_ttl_ignore=1 unconditionally for every copy-fragment scan, so assert that
+   * invariant and ignore TTL here; packLqhkeyreqLab serializes it to the starting
+   * node. Copy-fragment is genuine recovery intent, so also mark the owner-check
+   * bypass (same-transaction unique-dup gap fix); m_flags is cleared once per
+   * copy op at NR copy setup, so it is correct that all copied rows carry it.
    */
-  regTcPtr->ttl_ignore = scanptr.p->m_ttl_ignore;
-  /*
-   * TTL related (same-transaction unique-dup gap fix). Copy-fragment is genuine
-   * recovery intent -> mark the owner-check bypass so packLqhkeyreqLab serializes
-   * it to the starting node (m_flags is cleared once per copy op at the NR copy
-   * setup; persisting the bit across copied rows is correct, all are recovery).
-   */
-  if (regTcPtr->ttl_ignore) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
-  }
+  ndbrequire(scanptr.p->m_ttl_ignore == 1);
+  regTcPtr->ttl_ignore = 1;
+  regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   /* ------------------------------------------------------------------------ */
   /* THE RECEIVING NODE WILL EXPECT THAT IT IS THE LAST NODE AND WILL         */
   /* SEND COMPLETED AS THE RESPONSE SIGNAL SINCE DIRTY_OP BIT IS SET.         */
@@ -34339,10 +34341,18 @@ void Dblqh::readLogHeader(LogPageRecordPtr &logPagePtr,
         readLogwordExec(logPagePtr, logPartPtrP);
   }  // if
   /*
-   * ZINSERT_TTL is an internal DBLQH operation which is stored verbatim in
-   * old REDO records, but it does not fit in LqhKeyReq's operation field.
-   * Replay it as the underlying ZINSERT; DBACC will re-derive ZINSERT_TTL if
-   * the key restored by the LCP is still present.
+   * ZINSERT_TTL (an insert that overwrote an expired row) is an internal DBLQH
+   * operation stored verbatim in old REDO records, but the value 10 does not fit
+   * LqhKeyReq's 3-bit operation field. Replay it as the underlying ZINSERT
+   * (m_use_rowid is derived from this just below): on replay DBACC finds the
+   * LCP-restored expired row as a duplicate and re-derives ZINSERT_TTL via its
+   * expiry-blind dup-conversion, and ttl_ignore=1 (set for REDO in
+   * initReqinfoExecSr) forces the overwrite -- reconstructing the committed
+   * state.
+   * Deliberately ZINSERT, NOT ZUPDATE: ZINSERT preserves the logged rowid
+   * placement and, in the corner case where the target row is absent, inserts it
+   * rather than dropping it -- a ZUPDATE on a missing tuple is tolerated as 626
+   * (logLqhkeyrefLab) and would silently lose the committed row.
    */
   if (tcConnectptr.p->operation == ZINSERT_TTL) {
     tcConnectptr.p->operation = ZINSERT;
@@ -34721,7 +34731,13 @@ void Dblqh::sendLqhTransconf(Signal *signal, LqhTransConf::OperationStatus stat,
   LqhTransConf::setLastReplicaNo(reqInfo, tcConnectptr.p->lastReplicaNo);
   LqhTransConf::setSimpleFlag(reqInfo, tcConnectptr.p->opSimple);
   LqhTransConf::setDirtyFlag(reqInfo, tcConnectptr.p->dirtyOp);
-  /* ZINSERT_TTL carries ZINSERT in the protocol's three-bit operation field. */
+  /*
+   * ZINSERT_TTL (=10) does not fit this 3-bit operation field; carry the
+   * underlying ZINSERT (10 & LTC_OPERATION_MASK == 2), consistent with REDO
+   * replay in readLogHeader. The TTL upsert semantics are re-derived downstream
+   * (dup-conversion + ttl_ignore), not encoded in the protocol op. (Not ZUPDATE
+   * -- see readLogHeader.)
+   */
   LqhTransConf::setOperation(
       reqInfo, tcConnectptr.p->operation & LTC_OPERATION_MASK);
   
