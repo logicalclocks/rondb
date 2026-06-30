@@ -14951,7 +14951,6 @@ Dbdih::add_fragments_to_table(Signal *signal,
                         current,
                         current + cnt,
                         __LINE__);
-  DIH_TAB_WRITE_LOCK(tabPtr.p);
   for (i = 0; i < cnt; i++)
   {
     FragmentstorePtr fragPtr;
@@ -14959,7 +14958,6 @@ Dbdih::add_fragments_to_table(Signal *signal,
     getFragstore(tabPtr.p, fragId, fragPtr);
     updateNodeInfo(signal, tabPtr, fragPtr);
   }
-  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
   return 0;
 error:
   for (i = i + current; i != current; i--) {
