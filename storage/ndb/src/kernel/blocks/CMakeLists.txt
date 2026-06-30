@@ -44,10 +44,6 @@ set(NDBBLOCKS_LINK_LIBS
   ext::zlib
 )
 
-if(WITH_SIMSIMD)
-  list(APPEND NDBBLOCKS_LINK_LIBS simsimd::simsimd)
-endif()
-
 ADD_STATIC_LIBRARY(ndbblocks
   LocalProxy.cpp
   PgmanProxy.cpp
@@ -149,6 +145,10 @@ ADD_STATIC_LIBRARY(ndbblocks
   ${EXTRA_SRC}
   LINK_LIBRARIES ${NDBBLOCKS_LINK_LIBS}
   )
+
+if(WITH_SIMSIMD)
+  target_compile_definitions(ndbblocks PRIVATE SIMSIMD_DYNAMIC_DISPATCH=1)
+endif()
 
 MYSQL_ADD_EXECUTABLE(ndb_print_file
   print_file.cpp

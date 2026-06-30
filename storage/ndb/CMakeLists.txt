@@ -134,10 +134,6 @@ IF(NOT WITHOUT_SERVER)
     extra::unordered_dense
   )
 
-  if(WITH_SIMSIMD)
-    list(APPEND NDBCLUSTER_LINK_LIBS simsimd::simsimd)
-  endif()
-
   MYSQL_ADD_PLUGIN(ndbcluster ${NDBCLUSTER_SOURCES} STORAGE_ENGINE
     DEFAULT STATIC_ONLY
     LINK_LIBRARIES
