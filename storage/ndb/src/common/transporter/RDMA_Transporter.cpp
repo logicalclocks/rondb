@@ -2084,7 +2084,7 @@ int RDMA_Transporter::reap_recv_completions(
       /* Heartbeat: notify the receive handle that we saw traffic from
        * this node. This is required by the existing API contract so
        * Qmgr's HeartbeatIntervalDbDb mechanism continues to work. */
-      recvdata.transporter_recv_from(remoteNodeId);
+      recvdata.transporter_recv_from(remoteNodeId, getTransporterIndex());
 
       /* CREDIT_ONLY / HEARTBEAT messages carry no payload; do not
        * enqueue them for the unpacker. The slot is now empty and we
