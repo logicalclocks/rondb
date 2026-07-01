@@ -2446,6 +2446,12 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
            * congestion clears. m_stop_trp_id gives the same fair-resume point
            * the TCP path relies on.
            */
+          // Note reception from this node so that a long congestion window
+          // does not let a heartbeat timeout falsely declare the peer dead:
+          // the data really did arrive (it is parked in the recv slots), we
+          // are only deferring its unpack. The TCP/SHM branches likewise call
+          // transporter_recv_from() whenever they take in bytes.
+          recvdata.transporter_recv_from(node_id);
           if (!stop_unpacking)
           {
             stop_unpacking = true;
