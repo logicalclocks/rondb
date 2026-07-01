@@ -3004,8 +3004,13 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
                       "%u.%u.%u %u:%u:%u",
                       dt.year, dt.month, dt.day,
                       dt.hour, dt.minute, dt.second);
-      Uint32 ttl_sec = regTabPtr->m_ttl_sec;
-      ttl_sec += req_struct->ttl_purge_window_size;
+      // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge
+      // window is added on top, so a Uint32 add could wrap and defeat the
+      // date_add_interval() overflow guard below (a wrapped small value would
+      // yield a bogus near-term expiry -> premature purge). date_add_interval()
+      // range-checks the result, so no separate upper-bound clamp is needed.
+      const Uint64 ttl_sec =
+          Uint64(regTabPtr->m_ttl_sec) + req_struct->ttl_purge_window_size;
       bool valid_future_dt = true;
       if (ttl_sec != 0) {
         Interval interval;
@@ -3038,11 +3043,12 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
          * Compare with TTL
          */
         TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "Get TTL [%u + (%u) = %u], "
+                        "Get TTL [%u + (%u) = %llu], "
                         "expired time: %u.%u.%u %u:%u:%u, "
                         "current time: %u.%u.%u %u:%u:%u",
                         regTabPtr->m_ttl_sec,
-                        req_struct->ttl_purge_window_size, ttl_sec,
+                        req_struct->ttl_purge_window_size,
+                        (unsigned long long)ttl_sec,
                         dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
                         curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
                         curr_dt.minute, curr_dt.second);

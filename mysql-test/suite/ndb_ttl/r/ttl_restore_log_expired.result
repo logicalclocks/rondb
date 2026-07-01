@@ -1,0 +1,38 @@
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT PRIMARY KEY,
+col_b TIMESTAMP NULL DEFAULT NULL,
+col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=10@col_b";
+# anchor row 1 (col_b NULL -> never expires, control) + row 2 (expires)
+INSERT INTO test.sz VALUES (1, NULL,   100);
+INSERT INTO test.sz VALUES (2, NOW(),  200);
+# --- stall backup AFTER the fragment scan (error 10040 pauses at the
+#     WAIT_GCP phase): the scan captures row 2's ORIGINAL col_b, and the
+#     refresh UPDATE below then lands ONLY in the backup log (so the
+#     restored snapshot copy is the expiring one, exercising log replay).
+Starting backup
+Backup started
+# let the (instant, 2-row) fragment scan finish before mutating row 2
+# --- refresh row 2 while it is still live on the source: col_c 200->222
+#     and col_b far into the future. Queues as an UPDATE in the backup log.
+UPDATE test.sz SET col_c = 222, col_b = NOW() + INTERVAL 1 HOUR WHERE col_a = 2;
+# --- allow backup to complete.
+Waiting for backup to complete
+Backup completed
+# backup committed end-state: rows 1(100) and 2(222)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+# --- age row 2's SNAPSHOT copy (col_b = NOW()@t0) past its 10s TTL, so at
+#     restore time it is expired and the log UPDATE(2) hits checkTTL.
+# --- drop and restore (metadata + data + log replay).
+DROP TABLE test.sz;
+# --- restored state MUST equal the backup end-state: rows 1(100), 2(222).
+#     BUG drops the log UPDATE(2) -> row 2 stays expired-hidden -> lost.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+DROP TABLE test.sz;
