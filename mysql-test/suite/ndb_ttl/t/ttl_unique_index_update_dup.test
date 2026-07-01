@@ -1,0 +1,33 @@
+# Bug #2: UPDATE must not take a UNIQUE value from another owner.
+
+--source include/have_ndb.inc
+
+SET time_zone='+00:00';
+
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 200);
+
+--echo # A live owner reserves its UNIQUE value.
+--error ER_DUP_ENTRY
+UPDATE t1 SET u = 200 WHERE id = 1;
+
+--echo # An expired-but-unpurged owner also reserves its UNIQUE value. This is
+--echo # the deliberately accepted same-owner product behavior.
+INSERT INTO t1 VALUES (3, '2000-01-01 00:00:00', 300);
+--error ER_DUP_ENTRY
+UPDATE t1 SET u = 300 WHERE id = 1;
+
+--echo # Both rejected UPDATE statements leave all visible rows unchanged.
+SELECT id, u FROM t1 ORDER BY id;
+SELECT id, u FROM t1 FORCE INDEX (ux)
+WHERE u IN (100, 200, 300) ORDER BY id;
+
+DROP TABLE t1;

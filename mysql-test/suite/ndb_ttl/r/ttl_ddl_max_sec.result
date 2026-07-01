@@ -1,0 +1,22 @@
+DROP TABLE IF EXISTS test.sz;
+# TTL = RNIL (4294967040) must be rejected on CREATE (not silently stored
+# as the no-TTL sentinel).
+CREATE TABLE test.sz (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=4294967040@b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'The maximum ttl is 4294967039 seconds'
+# the documented maximum TTL (RNIL-1 = 4294967039) is accepted
+CREATE TABLE test.sz (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=4294967039@b";
+DROP TABLE test.sz;
+# TTL = RNIL added via ALTER must also be rejected
+CREATE TABLE test.sz (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB;
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=4294967040@b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'The maximum ttl is 4294967039 seconds'
+DROP TABLE test.sz;

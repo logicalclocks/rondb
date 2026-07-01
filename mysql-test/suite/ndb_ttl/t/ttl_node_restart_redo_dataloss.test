@@ -1,0 +1,107 @@
+# ==========================================================================
+# Bug: REDO replay DISCARDS an UPDATE whose pre-image expired during downtime
+#      -> a row that was alive before the crash is lost (data-loss)
+# ==========================================================================
+#
+# Root cause (whole-path review 2026-06-29): Dblqh::initReqinfoExecSr
+# (DblqhMain.cpp) builds REDO-replay operations with ttl_ignore=0, so REDO
+# replay runs checkTTL. A logged UPDATE/DELETE whose pre-image row has expired
+# (wall clock) by the time REDO is replayed gets 626 (ZNO_TUPLE_FOUND), and
+# Dblqh::logLqhkeyrefLab "tolerates" 626 for ZUPDATE/ZDELETE by SKIPPING the
+# operation. If that UPDATE refreshed the TTL column (extended the row's life),
+# the refresh is discarded and the still-alive row is left expired -> hidden on
+# read and eventually purged = data-loss.
+#
+# NOTE: this CONTRADICTS the earlier ttl_node_restart_redo guard, which only
+# verified that REDO replay does not CRASH. REDO is crash-safe but NOT
+# data-safe; this test exercises the data-integrity side.
+#
+# Scenario:
+#   1. INSERT a row with TTL=45s (ttl_col = NOW()), then force an LCP so the
+#      ORIGINAL (soon-to-expire) ttl_col is captured in the checkpoint.
+#   2. While the row is still live, UPDATE ttl_col to NOW() + INTERVAL 1 HOUR
+#      (a refresh that extends its life far into the future). This UPDATE lands
+#      in REDO (it happened after the LCP).
+#   3. Sleep past the ORIGINAL 45s expiry (the row stays alive via the refresh),
+#      then SYSTEM-restart so every node recovers from LCP+REDO. At replay time
+#      the pre-image ttl_col (from the LCP) is expired.
+#   4. The row must still exist (its refreshed ttl_col is ~1h in the future).
+#
+# Correct build: REDO replay ignores TTL -> the refresh is applied -> the row
+# survives -> the SELECT returns it. Buggy build: the refresh is discarded ->
+# ttl_col stays at the old (expired) value -> the row is hidden on read -> the
+# SELECT returns 0 rows = bug reproduced (result diff).
+#
+# Robust against timing: the refresh pushes expiry ~1h out, so the post-restart
+# query has a huge margin; the only requirement is that the pre-image is expired
+# at replay, which is guaranteed by sleeping past the 45s TTL BEFORE restarting.
+# Requires a SYSTEM restart (no copy-fragment): see the companion .cnf.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+# TTL expiry is evaluated against UTC in the data node; pin the session to UTC
+# so NOW() and the expiry check agree.
+SET time_zone = '+00:00';
+
+CREATE TABLE t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=45@ttl_col";
+
+--echo # --- insert one row; its ttl_col expires 45s from now
+INSERT INTO t1 VALUES (1, NOW(), 0);
+
+--echo # --- force an LCP so the ORIGINAL (soon-to-expire) ttl_col is captured
+--exec $NDB_MGM -e "all dump 7099" > /dev/null 2>&1
+--sleep 8
+
+--echo # --- while still live, REFRESH ttl_col ~1 hour into the future.
+--echo #     This UPDATE is logged in REDO (after the LCP above).
+UPDATE t1 SET ttl_col = NOW() + INTERVAL 1 HOUR WHERE id = 1;
+
+--echo # --- wait past the ORIGINAL 45s expiry (row stays alive via the refresh)
+--sleep 45
+
+--echo # --- SYSTEM restart: every node recovers from its own LCP+REDO; REDO
+--echo #     replays the refresh UPDATE while the LCP pre-image is expired
+--exec $NDB_MGM -e "all restart -n" > /dev/null 2>&1
+--exec $NDB_WAITER --not-started --timeout=90 > /dev/null 2>&1
+--exec $NDB_MGM -e "all start" > /dev/null 2>&1
+--exec $NDB_WAITER --timeout=180 > /dev/null 2>&1
+
+--echo # --- wait for mysqld to reconnect; poll until test.t1 is queryable
+--source include/ndb_wait_connected.inc
+--disable_query_log
+--disable_result_log
+let $mysql_errno= 1;
+let $counter= 600;
+while ($mysql_errno)
+{
+  --error 0,1296,4009
+  SELECT v FROM t1 WHERE id = 1;
+  if ($mysql_errno)
+  {
+    if (!$counter)
+    {
+      die Timed out waiting for test.t1 to become queryable after restart;
+    }
+    dec $counter;
+    --sleep 0.1
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo # --- the refreshed row must still be visible (ttl_col ~1h in the future).
+--echo #     On the buggy build REDO discarded the refresh, so the row is left
+--echo #     expired and this returns NO rows = data-loss reproduced.
+SELECT id, v FROM t1 WHERE id = 1;
+
+DROP TABLE t1;

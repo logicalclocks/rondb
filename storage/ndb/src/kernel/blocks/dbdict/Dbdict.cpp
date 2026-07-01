@@ -8998,6 +8998,54 @@ void Dbdict::dropTable_commit(Signal *signal, SchemaOpPtr op_ptr) {
              dropTabPtr.p->m_request.tableId, tablePtr.p->tableVersion,
              tablePtr.p->tableType);
 
+  /**
+   * Proactively notify API nodes that this object is being dropped,
+   * so their dictionary caches invalidate the stale entry now, instead of only
+   * discovering it reactively on the next schema error. Reuses GSN_ALTER_TABLE_REP
+   * (previously sent only for ALTER) tagged CT_DROPPED. The client's
+   * GlobalDictCache::alter_table_rep() marks the cached object Invalid; pooled
+   * Ndb local caches then drop their stale entry on the next lookup (see
+   * NdbDictionaryImpl get_local_table_info/getIndex). Best-effort: a missed
+   * notification is still caught by the client-side version checks.
+   *
+   * Only notify API/MGM nodes new enough to support the feature
+   * (ndbd_support_drop_table_notification): older clients predate it and must
+   * not start seeing their cache invalidated on drops. The two maintenance-series
+   * cutoffs (25.10.14 and 26.02.5) cannot be expressed as a single
+   * ApiBroadcastRep minVersion, so send per node instead of broadcasting.
+   *
+   * dropTable_commit runs on every participant node, so guard on m_isMaster
+   * (like send_event above) to send exactly once from the master.
+   */
+  if (trans_ptr.p->m_isMaster) {
+    AlterTableRep *rep = (AlterTableRep *)signal->getDataPtrSend();
+    rep->tableId = dropTabPtr.p->m_request.tableId;
+    rep->tableVersion = tablePtr.p->tableVersion;
+    rep->changeType = AlterTableRep::CT_DROPPED;
+
+    char dropTableName[MAX_TAB_NAME_SIZE];
+    std::memset(dropTableName, 0, sizeof(dropTableName));
+    {
+      LcConstRope r(tablePtr.p->tableName);
+      r.copy(dropTableName, sizeof(dropTableName));
+    }
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = (Uint32 *)dropTableName;
+    ptr[0].sz = (sizeof(dropTableName) + 3) >> 2;
+
+    for (Uint32 nodeId = 1; nodeId < MAX_NODES; nodeId++) {
+      const NodeInfo &nodeInfo = getNodeInfo(nodeId);
+      if (nodeInfo.m_connected &&
+          (nodeInfo.getType() == NodeInfo::API ||
+           nodeInfo.getType() == NodeInfo::MGM) &&
+          ndbd_support_drop_table_notification(nodeInfo.m_version)) {
+        sendSignal(numberToRef(API_CLUSTERMGR, nodeId), GSN_ALTER_TABLE_REP,
+                   signal, AlterTableRep::SignalLength, JBB, ptr, 1);
+      }
+    }
+  }
+
   if (DictTabInfo::isIndex(tablePtr.p->tableType)) {
     TableRecordPtr basePtr;
     bool ok = find_object(basePtr, tablePtr.p->primaryTableId);

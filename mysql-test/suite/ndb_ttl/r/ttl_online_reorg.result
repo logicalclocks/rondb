@@ -1,0 +1,36 @@
+SET time_zone = '+00:00';
+# --- TTL table (TTL=30s on ttl_col), default key partitioning so the
+#     reorganize below relocates rows between node groups.
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+# --- 100 rows that will expire (ttl_col = NOW()), plus 5 never-expiring
+#     anchor rows (ttl_col = NULL) used to verify data survives the reorg.
+# --- wait comfortably past the 30s TTL: the 100 dated rows are now expired
+#     but still physically present (no purger in MTR). The 5 NULL-ttl_col
+#     rows never expire. (Once expired, rows stay expired, so the margin
+#     only grows -- the reorg below always sees them as expired.)
+# --- bring up the spare data nodes 3,4 as a second node group
+Nodegroup 1 created
+Node 1: STARTED
+Node 2: STARTED
+Node 3: STARTED
+Node 4: STARTED
+# --- reorganize: the copy phase (ZWRITE) relocates ~half the rows to the
+#     new node group; the delete phase removes the moved rows from the old
+#     fragments. The moved EXPIRED rows are deleted via the scan-takeover
+#     TTL-ignore grant (see header), so this SUCCEEDS.
+ALTER TABLE test.t1 ALGORITHM=INPLACE, REORGANIZE PARTITION;
+# --- reorg completed. The 5 anchor rows remain visible and intact; the 100
+#     expired rows are hidden on read (SELECT *, not COUNT(*), since
+#     expired-but-unpurged rows can still be counted -- a known TTL quirk).
+SELECT * FROM test.t1 ORDER BY id;
+id	ttl_col	v
+1001	NULL	0
+1002	NULL	0
+1003	NULL	0
+1004	NULL	0
+1005	NULL	0
+DROP TABLE test.t1;

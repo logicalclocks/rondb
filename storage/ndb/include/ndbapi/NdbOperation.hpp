@@ -1191,6 +1191,9 @@ class NdbOperation {
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
   // XXX until NdbRecord is used in ndb_restore
   void set_disable_fk() { m_flags |= OF_DISABLE_FK; }
+  /* Ignore TTL: physical-recovery paths (e.g. ndb_restore backup-log replay)
+     must apply an op to an expired-but-unpurged row verbatim, not skip it. */
+  void set_ttl_ignore() { m_flags |= OF_TTL_IGNORE; }
 
   /* Set nowait option on locking read */
   int setNoWait();
