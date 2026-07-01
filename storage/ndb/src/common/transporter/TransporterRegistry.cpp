@@ -2486,6 +2486,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           if (szUsed == 0) break;
           t_rdma->consume_received_bytes(szUsed);
           received_data = true;
+          t->set_last_recv(last_recv);
           rec_bytes += szUsed;
           if (stopReceiving) break;
         }
