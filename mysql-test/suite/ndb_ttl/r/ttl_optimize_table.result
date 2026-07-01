@@ -1,0 +1,38 @@
+SET time_zone = '+00:00';
+# --- TTL table with a variable-sized column so OPTIMIZE has work to do
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       VARCHAR(1024)
+) ROW_FORMAT=DYNAMIC ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+# --- 200 rows that will expire (ttl_col = NOW(), long var value), plus 5
+#     never-expiring anchor rows (ttl_col = NULL) to verify data survives.
+# --- wait comfortably past the 30s TTL: the 200 dated rows are now expired
+#     but still physically present (no purger in MTR). Anchors never expire.
+# --- precondition: a normal read now hides the 200 expired rows; only the 5
+#     anchors are visible. (The expired rows are still physically present and
+#     will be swept over by OPTIMIZE's locking scan.)
+SELECT id FROM test.t1 ORDER BY id;
+id
+1001
+1002
+1003
+1004
+1005
+# --- OPTIMIZE the table. The exclusive locking scan reads expired rows as
+#     626 and skips them, processing only the live rows, so this completes
+#     successfully with no 626 reaching the SQL layer.
+SET ndb_optimization_delay = 0;
+OPTIMIZE TABLE test.t1;
+Table	Op	Msg_type	Msg_text
+test.t1	optimize	status	OK
+# --- live anchor rows are intact and visible; expired rows are hidden on
+#     read (SELECT id, not COUNT(*)).
+SELECT id FROM test.t1 ORDER BY id;
+id
+1001
+1002
+1003
+1004
+1005
+DROP TABLE test.t1;

@@ -5709,7 +5709,11 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  if (m_ttl_ignore) {
+  // A binlog applier replays row events the source already resolved against
+  // live rows; ignore replica-side TTL expiry so an UPDATE onto an
+  // expired-but-unpurged replica row is applied verbatim instead of being
+  // dropped as 626 (silent source/replica divergence).
+  if (m_ttl_ignore || thd_ndb->get_applier()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_update_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -5999,7 +6003,11 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  if (m_ttl_ignore) {
+  // A binlog applier replays row events the source already resolved against
+  // live rows; ignore replica-side TTL expiry so a DELETE onto an
+  // expired-but-unpurged replica row is applied verbatim instead of being
+  // dropped as 626 (silent source/replica divergence).
+  if (m_ttl_ignore || thd_ndb->get_applier()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_delete_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -9722,7 +9730,7 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
         }
       }
       ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
-      if (ttl_sec_raw > RNIL) {
+      if (ttl_sec_raw >= RNIL) {
         return create.failed_illegal_create_option(
             "The maximum ttl is 4294967039 seconds");
       } else {
@@ -16369,7 +16377,7 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
         }
       }
       new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
-      if (new_ttl_sec_raw > RNIL) {
+      if (new_ttl_sec_raw >= RNIL) {
           *reason = "The maximum ttl is 4294967039 seconds";
           return true;
       } else {

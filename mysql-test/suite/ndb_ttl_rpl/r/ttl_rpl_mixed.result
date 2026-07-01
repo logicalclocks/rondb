@@ -29,14 +29,14 @@ col_a	col_c
 1	100
 2	200
 BEGIN;
-UPDATE test.sz SET col_c = col_c + 100;
+UPDATE test.sz SET col_c = col_c + 1000;
 COMMIT;
 SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
 col_a	col_c
-1	200
+1	1100
 SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
 col_a	col_c
-1	200
+1	1100
 BEGIN;
 DELETE FROM test.sz WHERE col_c >= 100;
 COMMIT;
@@ -85,15 +85,15 @@ col_a	col_c
 8	8
 9	9
 10	10
-UPDATE test.sz SET col_c = 100 WHERE col_c <= 3;
+UPDATE test.sz SET col_c = col_c + 100 WHERE col_c <= 3;
 SELECT ROW_COUNT();
 ROW_COUNT()
 3
 SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 ORDER BY col_a FOR SHARE;
 col_a	col_c
-1	100
-2	100
-3	100
+1	101
+2	102
+3	103
 DELETE FROM test.sz WHERE col_c >= 20;
 SELECT ROW_COUNT();
 ROW_COUNT()

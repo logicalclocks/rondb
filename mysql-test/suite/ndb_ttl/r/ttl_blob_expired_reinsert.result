@@ -1,0 +1,26 @@
+SET time_zone = '+00:00';
+CREATE TABLE tb (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       BLOB
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+# insert a row with a multi-part BLOB
+INSERT INTO tb VALUES (1, NOW(), REPEAT('a', 5000));
+SELECT id, LENGTH(v) FROM tb WHERE id = 1;
+id	LENGTH(v)
+1	5000
+# wait for the row to expire (TTL=5s); it stays physically present
+# (no purge worker in this suite) so its BLOB parts remain
+SELECT id, LENGTH(v) FROM tb WHERE id = 1;
+id	LENGTH(v)
+# re-insert the SAME PK over the expired row with a larger BLOB: the TTL
+# upsert must overwrite the expired base row AND its BLOB parts -> succeeds
+INSERT INTO tb VALUES (1, NOW(), REPEAT('b', 7000));
+# the new row is live and carries the new BLOB (length 7000, all 'b')
+SELECT id, LENGTH(v) FROM tb WHERE id = 1;
+id	LENGTH(v)
+1	7000
+SELECT id, v = REPEAT('b', 7000) AS blob_is_new FROM tb WHERE id = 1;
+id	blob_is_new
+1	1
+DROP TABLE tb;

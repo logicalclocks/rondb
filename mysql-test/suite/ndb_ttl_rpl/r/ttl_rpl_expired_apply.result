@@ -1,0 +1,63 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+CREATE TABLE test.sz (
+col_a INT PRIMARY KEY,
+col_b TIMESTAMP NULL DEFAULT NULL,
+col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+# --- seed: a never-expiring anchor (col_b NULL) plus two rows that will
+#     expire (col_b = NOW()). Replicate them to the replica.
+INSERT INTO test.sz VALUES (1, NULL,   100);
+INSERT INTO test.sz VALUES (2, NOW(),  200);
+INSERT INTO test.sz VALUES (3, NOW(),  300);
+# replica initially sees all three rows
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+3	300
+# --- pause the applier (SQL thread) to inject replication lag. The
+#     receiver thread keeps running, so the relay log still fills.
+STOP REPLICA sql_thread;
+# --- while rows 2,3 are still live on the source: UPDATE row 2 (refresh its
+#     ttl far into the future so it stays visible), DELETE row 3, and INSERT
+#     a fresh never-expiring row 4 AFTER the delete (to prove replication
+#     keeps flowing past the expired-row delete). These queue in the relay
+#     log while the applier is paused.
+UPDATE test.sz SET col_c = 222, col_b = NOW() + INTERVAL 1 HOUR WHERE col_a = 2;
+DELETE FROM test.sz WHERE col_a = 3;
+INSERT INTO test.sz VALUES (4, NULL, 400);
+# source final state: rows 1, 2(222), 4 (row 3 deleted)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+4	400
+# --- age rows 2,3 past their 10s TTL on the replica (their original col_b
+#     is still NOW()@t0 because the applier is paused). Margin only grows.
+# [precondition] with the applier still STOPPED, rows 2 and 3 are now expired
+#                on the replica (hidden); only the anchor row 1 is visible.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+# --- resume the applier: it applies the queued UPDATE/DELETE/INSERT to a
+#     replica where rows 2,3 are expired. UPDATE(2) arrives as WRITE_ROWS ->
+#     ZWRITE -> applied; DELETE(3) -> 626 swallowed -> harmless no-op;
+#     INSERT(4) -> applied. Replication must not stop.
+START REPLICA sql_thread;
+# --- SOURCE and REPLICA must agree: rows 1, 2(222), 4 visible; row 3 gone.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+4	400
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+4	400
+DROP TABLE test.sz;
+include/rpl/deinit.inc

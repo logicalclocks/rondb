@@ -1,0 +1,98 @@
+# ==========================================================================
+# Regression guard: online reorg correctly relocates a TTL table that holds
+# expired-but-unpurged rows (TTL is ignored on the physical row move).
+# ==========================================================================
+#
+# Background / suspicion investigated:
+#   ALTER TABLE ... ALGORITHM=INPLACE, REORGANIZE PARTITION moves rows between
+#   fragments in two TRIX-driven phases over a SUMA scan (the scan sets
+#   TTLIgnoreFragFlag, so it reads expired-but-unpurged rows verbatim):
+#     - COPY phase   = DBUTIL "Write"  -> ZWRITE (handleUpdateReq bypasses
+#                      checkTTL for original_op_type==ZWRITE).
+#     - DELETE phase = DBUTIL "Delete" -> ZDELETE, built WITHOUT TTLIgnoreFlag.
+#   A static reading suggested the DELETE phase would hit DBTUP checkTTL -> 626
+#   on an expired moved row and fail the reorg. THIS IS NOT A BUG: the reorg
+#   copy/delete are SCAN-TAKEOVER operations that run in the reorg scan's own
+#   transaction, which already holds the row's EXCLUSIVE lock. DBACC takeover
+#   rewrites the scan-lock op's transId to the delete transaction
+#   (DbaccMain.cpp), so accIsLockedLab() sees is_same_trans() and grants
+#   ignore_ttl=1 (the "you may modify the row you already locked, even if
+#   expired" rule); it is propagated via ACCKEYCONF -> DBLQH ttl_ignore upgrade.
+#   So the reorg delete is TTL-blind and an expired moved row is deleted, not
+#   rejected. Verified empirically (this test) and by code review.
+#
+# This test locks in that behavior: a reorg of a TTL table holding expired rows
+# must SUCCEED and must not lose the live rows. If a future change broke the
+# takeover TTL-ignore grant, the reorg would fail here with 626.
+#
+# In MTR there is no RDRS purger, so any row past its TTL stays physically
+# present, which is exactly the condition under test.
+#
+# Requires 4 data nodes (2 spare) with NoOfReplicas=2: see ttl_online_reorg.cnf.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/not_windows.inc
+--source include/not_parallel.inc
+
+# This test brings spare data nodes into a new node group ("create nodegroup"),
+# which permanently changes ndb$membership. That state cannot be restored inside
+# the test, so tell MTR to restart the cluster afterwards (this also skips the
+# post-test check-testcase membership comparison, which would otherwise fail).
+--source include/force_restart.inc
+
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+--enable_query_log
+
+# checkTTL compares ttl_col against the data node's UTC clock, while NOW() stores
+# the value in the session time zone. Pin the session to UTC so a row inserted
+# with NOW() actually looks expired to the data node after the TTL elapses.
+SET time_zone = '+00:00';
+
+--echo # --- TTL table (TTL=30s on ttl_col), default key partitioning so the
+--echo #     reorganize below relocates rows between node groups.
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+
+--echo # --- 100 rows that will expire (ttl_col = NOW()), plus 5 never-expiring
+--echo #     anchor rows (ttl_col = NULL) used to verify data survives the reorg.
+--disable_query_log
+let $i = 1;
+while ($i <= 100) {
+  eval INSERT INTO test.t1 VALUES ($i, NOW(), 0);
+  inc $i;
+}
+let $i = 1001;
+while ($i <= 1005) {
+  eval INSERT INTO test.t1 VALUES ($i, NULL, 0);
+  inc $i;
+}
+--enable_query_log
+
+--echo # --- wait comfortably past the 30s TTL: the 100 dated rows are now expired
+--echo #     but still physically present (no purger in MTR). The 5 NULL-ttl_col
+--echo #     rows never expire. (Once expired, rows stay expired, so the margin
+--echo #     only grows -- the reorg below always sees them as expired.)
+--sleep 45
+
+--echo # --- bring up the spare data nodes 3,4 as a second node group
+--exec $NDB_MGM -e "create nodegroup 3,4"
+--sleep 5
+--exec $NDB_WAITER --timeout=120
+
+--echo # --- reorganize: the copy phase (ZWRITE) relocates ~half the rows to the
+--echo #     new node group; the delete phase removes the moved rows from the old
+--echo #     fragments. The moved EXPIRED rows are deleted via the scan-takeover
+--echo #     TTL-ignore grant (see header), so this SUCCEEDS.
+ALTER TABLE test.t1 ALGORITHM=INPLACE, REORGANIZE PARTITION;
+
+--echo # --- reorg completed. The 5 anchor rows remain visible and intact; the 100
+--echo #     expired rows are hidden on read (SELECT *, not COUNT(*), since
+--echo #     expired-but-unpurged rows can still be counted -- a known TTL quirk).
+SELECT * FROM test.t1 ORDER BY id;
+
+DROP TABLE test.t1;
