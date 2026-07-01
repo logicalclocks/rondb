@@ -228,11 +228,11 @@ bool TransporterReceiveData::init(unsigned maxTransporters) {
     return false;
   }
   const unsigned max_poll_sockets = maxTransporters + 2U;
-  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_spintime = 0;
   m_total_spintime = 0;
   assert(m_bad_data_transporters.isclear());
 #if defined(HAVE_EPOLL_CREATE)
+  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_epoll_fd = epoll_create(max_epoll_events);
   if (m_epoll_fd == -1) {
     perror("epoll_create failed... falling back to poll()!");
@@ -2451,7 +2451,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           // the data really did arrive (it is parked in the recv slots), we
           // are only deferring its unpack. The TCP/SHM branches likewise call
           // transporter_recv_from() whenever they take in bytes.
-          recvdata.transporter_recv_from(node_id);
+          recvdata.transporter_recv_from(node_id, trp_id);
           if (!stop_unpacking)
           {
             stop_unpacking = true;
