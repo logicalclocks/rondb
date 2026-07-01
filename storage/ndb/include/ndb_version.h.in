@@ -1187,6 +1187,7 @@ ndbd_support_arbitration_rank_wait(Uint32 x) {
  */
 #define NDBD_DROP_TABLE_NOTIFICATION_2510 NDB_MAKE_VERSION(25,10,14)
 #define NDBD_DROP_TABLE_NOTIFICATION_2602 NDB_MAKE_VERSION(26,2,5)
+#define NDBD_DROP_TABLE_NOTIFICATION_2604 NDB_MAKE_VERSION(26,4,2)
 static inline
 bool
 ndbd_support_drop_table_notification(Uint32 x) {
@@ -1199,18 +1200,23 @@ ndbd_support_drop_table_notification(Uint32 x) {
     return false;
   }
   if (major == 25) {
+    /* 25.10 is the only release in the 25 series; the feature is in 25.10.14. */
     if (minor == 10) {
       return x >= NDBD_DROP_TABLE_NOTIFICATION_2510;
     }
-    return minor > 10;
-  }
-  /* major == 26 */
-  if (minor < 2) {
     return false;
   }
+  /* major == 26: the feature is backported to the 26.02 and 26.04 lines. */
   if (minor == 2) {
     return x >= NDBD_DROP_TABLE_NOTIFICATION_2602;
   }
-  return true;
+  if (minor == 4) {
+    /* 26.04.1 shipped without the feature; it lands in 26.04.2. */
+    return x >= NDBD_DROP_TABLE_NOTIFICATION_2604;
+  }
+  if (minor > 4) {
+    return true;
+  }
+  return false;
 }
 #endif
