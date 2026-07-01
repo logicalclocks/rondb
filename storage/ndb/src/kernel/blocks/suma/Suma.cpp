@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2142,8 +2142,7 @@ void Suma::execDUMP_STATE_ORD(Signal *signal) {
     infoEvent("-- End dump of pending subscribers --");
   }
 
-  if (tCase == DumpStateOrd::DihTcSumaNodeFailCompleted &&
-      signal->getLength() == 2) {
+  if (tCase == DumpStateOrd::LogNodeFailProgress && signal->getLength() == 2) {
     jam();
     Uint32 nodeId = signal->theData[1];
     if (nodeId < MAX_NODES) {

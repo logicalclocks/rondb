@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -964,7 +964,9 @@ void TransporterReceiveHandleKernel::assign_trps(
 }
 #endif
 
-void TransporterReceiveHandleKernel::transporter_recv_from(NodeId nodeId) {
+void TransporterReceiveHandleKernel::transporter_recv_from(NodeId nodeId,
+                                                           TrpId trpId) {
+  if (m_trpman) static_cast<Trpman *>(m_trpman)->m_recv_data.set(trpId);
   if (globalData.get_hb_count(nodeId) != 0) {
     globalData.set_hb_count(nodeId) = 0;
   }

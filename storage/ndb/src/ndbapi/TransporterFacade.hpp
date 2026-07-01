@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -307,7 +307,7 @@ class TransporterFacade : public TransporterCallback,
   void reportDisconnect(NodeId nodeId, Uint32 errNo) override;
   void reportError(NodeId nodeId, TransporterError errorCode,
                    const char *info = nullptr) override;
-  void transporter_recv_from(NodeId node) override;
+  void transporter_recv_from(NodeId node, TrpId trpId) override;
 
   /**
    * Wakeup

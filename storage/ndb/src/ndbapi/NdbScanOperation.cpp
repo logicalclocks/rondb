@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2262,6 +2262,10 @@ void NdbScanOperation::close(bool forceSend, bool releaseOp) {
     */
     PollGuard poll_guard(*theNdb->theImpl);
     close_impl(forceSend, &poll_guard);
+
+    for (uint i = 0; i < m_allocated_receivers; i++) {
+      m_receivers[i]->release();
+    }
   }
 
   /* Free buffer used to store scan result set.
