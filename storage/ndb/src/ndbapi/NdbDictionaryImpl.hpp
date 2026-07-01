@@ -1361,6 +1361,24 @@ inline Ndb_local_table_info *NdbDictionaryImpl::get_local_table_info(
   DBUG_PRINT("enter", ("table: %s", internalTableName.c_str()));
 
   Ndb_local_table_info *info = m_localHash.get(internalTableName);
+  if (info != nullptr) {
+    /**
+     * A schema-change notification (GSN_ALTER_TABLE_REP ->
+     * GlobalDictCache::alter_table_rep) marks the shared NdbTableImpl
+     * Invalid/Altered. This local cache entry points at that same object, so
+     * honor the mark: drop+release the stale entry and re-resolve below from
+     * the global cache (which self-heals on Invalid). The re-resolution
+     * reflects the current schema -- a fresh incarnation after a recreate, or
+     * "table not found" if it was dropped. Without this a pooled Ndb keeps
+     * serving the stale object after a schema change.
+     */
+    const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
+    if (unlikely(st == NdbDictionary::Object::Invalid ||
+                 st == NdbDictionary::Object::Altered)) {
+      invalidateObject(*info->m_table_impl);  // drop local + release global
+      info = nullptr;
+    }
+  }
   if (info == nullptr) {
     NdbTableImpl *tab = fetchGlobalTableImplRef(InitTable(internalTableName));
     if (tab) {
@@ -1517,6 +1535,17 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
 
   Ndb_local_table_info *info = m_localHash.get(internal_indexname);
   NdbTableImpl *tab;
+  if (info != nullptr) {
+    // Honor a DROP/ALTER invalidation on a local hit so the stale index entry
+    // is refetched instead of reused. (See the matching check in
+    // get_local_table_info.)
+    const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
+    if (unlikely(st == NdbDictionary::Object::Invalid ||
+                 st == NdbDictionary::Object::Altered)) {
+      invalidateObject(*info->m_table_impl);  // drop local + release global
+      info = nullptr;
+    }
+  }
   if (info == nullptr) {
     tab = fetchGlobalTableImplRef(
         InitIndex(internal_indexname, index_name, prim));
@@ -1528,7 +1557,27 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
   } else
     tab = info->m_table_impl;
 
-  return tab->m_index;
+  {
+    NdbIndexImpl *idx = tab->m_index;
+    /**
+     * The index cache is keyed by base-table id (sys/def/<tabid>/<index_name>).
+     * After a table is dropped and recreated the base-table id can be reused by
+     * a sibling table, so a stale cached entry may resolve to the sibling's
+     * (currently valid) index and silently return the wrong table's rows with
+     * no error. Validate -- as getIndexGlobal() already does -- that the
+     * resolved index still belongs to this base-table incarnation; otherwise
+     * drop the stale entry and report a schema-version error (241) so the
+     * caller refreshes its dictionary cache and retries.
+     */
+    if (idx->m_table_id == (unsigned)prim.getObjectId() &&
+        idx->m_table_version == (unsigned)prim.getObjectVersion()) {
+      return idx;
+    }
+    m_localHash.drop(internal_indexname);
+    releaseIndexGlobal(*idx, 1);
+    m_error.code = 241;  // Invalid schema object version
+    return nullptr;
+  }
 
 retry:
   // Index not found, try old format
@@ -1536,6 +1585,15 @@ retry:
       NdbIndexImpl::old_internal_index_name(&prim, index_name));
 
   info = m_localHash.get(old_internal_indexname);
+  if (info != nullptr) {
+    // Honor a DROP/ALTER invalidation on a local hit (see get_local_table_info).
+    const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
+    if (unlikely(st == NdbDictionary::Object::Invalid ||
+                 st == NdbDictionary::Object::Altered)) {
+      invalidateObject(*info->m_table_impl);  // drop local + release global
+      info = nullptr;
+    }
+  }
   if (info == nullptr) {
     tab = fetchGlobalTableImplRef(
         InitIndex(old_internal_indexname, index_name, prim));
@@ -1547,7 +1605,18 @@ retry:
   } else
     tab = info->m_table_impl;
 
-  return tab->m_index;
+  {
+    NdbIndexImpl *idx = tab->m_index;
+    // Same validation for the old index-name format (see above).
+    if (idx->m_table_id == (unsigned)prim.getObjectId() &&
+        idx->m_table_version == (unsigned)prim.getObjectVersion()) {
+      return idx;
+    }
+    m_localHash.drop(old_internal_indexname);
+    releaseIndexGlobal(*idx, 1);
+    m_error.code = 241;  // Invalid schema object version
+    return nullptr;
+  }
 
 err:
   // Indexes are treated as tables while fetching them from the

@@ -20,6 +20,10 @@ DROP TABLE IF EXISTS table_1;
 
 DROP TABLE IF EXISTS table_2;
 
+DROP TABLE IF EXISTS table_3;
+
+DROP TABLE IF EXISTS table_4;
+
 CREATE TABLE table_1(
     id0 VARCHAR(10),
     new_col0 VARCHAR(100),
@@ -54,4 +58,47 @@ VALUES
         'new_col0_data',
         'new_col1_data',
         'new_col2_data'
+    );
+
+-- Recreate the identical pair in REVERSE order (table_4 before table_3) so NDB
+-- hands table_3's freed internal table id to the new table_4, making a stale
+-- cached "table_3" object resolve to table_4's storage. Markers are preserved
+-- so the index-scan reproduction can detect a cross-table read.
+
+CREATE TABLE table_4(
+    id0 INT(10),
+    col0 VARCHAR(100),
+    col1 VARCHAR(100),
+    col2 VARCHAR(100),
+    PRIMARY KEY(id0),
+    KEY ix_col0 (col0)
+) ENGINE = ndbcluster;
+
+CREATE TABLE table_3(
+    id0 INT(10),
+    col0 VARCHAR(100),
+    col1 VARCHAR(100),
+    col2 VARCHAR(100),
+    PRIMARY KEY(id0),
+    KEY ix_col0 (col0)
+) ENGINE = ndbcluster;
+
+INSERT INTO
+    table_4
+VALUES
+    (
+        1,
+        'col0_data',
+        'MARKER_TABLE_4',
+        'col2_data'
+    );
+
+INSERT INTO
+    table_3
+VALUES
+    (
+        1,
+        'col0_data',
+        'MARKER_TABLE_3',
+        'col2_data'
     );
