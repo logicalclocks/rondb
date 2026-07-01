@@ -237,32 +237,43 @@ OPTION(WITH_NDB_RDMA
 SET(NDB_RDMA_LIBRARIES "")
 SET(NDB_RDMA_INCLUDE_DIRS "")
 IF(WITH_NDB_RDMA)
-  # The header infiniband/verbs.h is provided by the libibverbs-devel (RPM) /
-  # libibverbs-dev (Debian) package -- NOT by rdma-core-devel, which does not
-  # ship it. rdma-core installs a libibverbs.pc pkg-config file, so use that
-  # to locate the header and library even under a non-standard prefix, then
-  # fall back to a plain system search.
+  # Locate libibverbs. On RPM-based distros the header infiniband/verbs.h and
+  # the linkable libibverbs.so live in the rdma-core-devel package (which also
+  # Provides the virtual name libibverbs-devel); on Debian/Ubuntu they are in
+  # libibverbs-dev. rdma-core ships a libibverbs.pc, so prefer pkg-config: it
+  # is re-evaluated on every configure run and therefore is not subject to the
+  # sticky negative caching of CHECK_INCLUDE_FILES -- a header probe made
+  # before the package was installed caches HAVE_INFINIBAND_VERBS_H=false and
+  # is then skipped (never re-run) on every subsequent reconfigure.
   FIND_PACKAGE(PkgConfig QUIET)
   IF(PKG_CONFIG_FOUND)
     PKG_CHECK_MODULES(PC_IBVERBS QUIET libibverbs)
   ENDIF()
 
-  # Honour any include dir reported by pkg-config when probing for the header.
-  SET(SAVE_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
-  IF(PC_IBVERBS_INCLUDE_DIRS)
-    LIST(APPEND CMAKE_REQUIRED_INCLUDES ${PC_IBVERBS_INCLUDE_DIRS})
+  IF(PC_IBVERBS_FOUND)
+    # Trust pkg-config. Assign a *normal* variable so it shadows any stale
+    # INTERNAL cache entry left by an earlier (pre-install) CHECK_INCLUDE_FILES
+    # -- this lets a freshly-installed rdma-core-devel be picked up by a plain
+    # reconfigure, without anyone having to clear CMakeCache.txt.
+    SET(HAVE_INFINIBAND_VERBS_H 1)
+  ELSE()
+    # No pkg-config data; probe the default system include paths directly.
+    CHECK_INCLUDE_FILES("infiniband/verbs.h" HAVE_INFINIBAND_VERBS_H)
   ENDIF()
-  CHECK_INCLUDE_FILES("infiniband/verbs.h" HAVE_INFINIBAND_VERBS_H)
-  SET(CMAKE_REQUIRED_INCLUDES "${SAVE_CMAKE_REQUIRED_INCLUDES}")
 
+  # FIND_LIBRARY re-searches whenever its cached result is *-NOTFOUND, so unlike
+  # the header check it is not affected by a stale negative cache. Feed it the
+  # pkg-config library dir as a hint for non-standard prefixes.
   FIND_LIBRARY(IBVERBS_LIBRARY ibverbs HINTS ${PC_IBVERBS_LIBRARY_DIRS})
   IF(NOT HAVE_INFINIBAND_VERBS_H OR NOT IBVERBS_LIBRARY)
     MESSAGE(FATAL_ERROR
-      "WITH_NDB_RDMA=ON but libibverbs (infiniband/verbs.h and -libverbs) "
-      "could not be located. Install the libibverbs development package: "
-      "'libibverbs-devel' on RPM-based distros (dnf/yum) or 'libibverbs-dev' "
-      "on Debian/Ubuntu. Note that 'rdma-core-devel' does NOT provide "
-      "infiniband/verbs.h. Alternatively set WITH_NDB_RDMA=OFF.")
+      "WITH_NDB_RDMA=ON but libibverbs (infiniband/verbs.h and -libibverbs) "
+      "could not be located. Install the libibverbs development files: "
+      "'rdma-core-devel' on RPM-based distros (dnf/yum; it provides "
+      "libibverbs-devel) or 'libibverbs-dev' on Debian/Ubuntu. If they are "
+      "already installed, a stale CMake cache may be hiding them -- run "
+      "'cmake -U HAVE_INFINIBAND_VERBS_H .' (or delete CMakeCache.txt) and "
+      "re-run cmake. Alternatively set WITH_NDB_RDMA=OFF.")
   ENDIF()
   SET(NDB_RDMA_LIBRARIES "${IBVERBS_LIBRARY}")
   SET(NDB_RDMA_INCLUDE_DIRS "${PC_IBVERBS_INCLUDE_DIRS}")
