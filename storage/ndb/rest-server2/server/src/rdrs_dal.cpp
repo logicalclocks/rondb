@@ -1903,6 +1903,22 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     IndexScanParams& index_params = scan_params.index.value();
     index = dict->getIndex(index_params.name.c_str(), *table);
     if (unlikely(index == nullptr)) {
+      const NdbError &dictErr = dict->getNdbError();
+      if (dictErr.code == 241 /* Invalid schema object version */) {
+        // The cached base table is stale and its id was reused by a recreated
+        // sibling table, so the index would otherwise resolve to the wrong
+        // table. getIndex() now reports 241 instead of returning that stale
+        // index. Surface the real NDB error (rather than masking it as a plain
+        // 404) so scan_read()'s HandleSchemaErrors()/retry path unloads the
+        // stale schema and retries against the recreated table.
+        RS_Status err = RS_RONDB_SERVER_ERROR(
+          dictErr,
+          std::string(rdrsErrorMessage(ERROR_INDEX_NOT_EXIST)) +
+          std::string(" Database: ") + db +
+          std::string(" Table: ") + scan_params.path.table +
+          std::string(" Index: ") + index_params.name);
+        return err;
+      }
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
         std::string(rdrsErrorMessage(ERROR_INDEX_NOT_EXIST)) +
         std::string(" Database: ") + db +
