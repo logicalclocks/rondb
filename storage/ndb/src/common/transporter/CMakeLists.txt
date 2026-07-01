@@ -37,6 +37,11 @@ ENDIF()
 # libibverbs was located by ndb_configure.cmake.
 IF(NDB_RDMA_TRANSPORTER_SUPPORTED)
   LIST(APPEND EXTRA_SRC RDMA_Transporter.cpp)
+  # NDB_RDMA_INCLUDE_DIRS is populated from pkg-config when libibverbs lives
+  # under a non-standard prefix; empty for a normal /usr/include install.
+  IF(NDB_RDMA_INCLUDE_DIRS)
+    INCLUDE_DIRECTORIES(${NDB_RDMA_INCLUDE_DIRS})
+  ENDIF()
 ENDIF()
 
 ADD_CONVENIENCE_LIBRARY(ndbtransport

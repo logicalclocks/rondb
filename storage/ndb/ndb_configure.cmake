@@ -235,16 +235,37 @@ OPTION(WITH_NDB_RDMA
   "Build the experimental RonDB native RDMA transporter (requires libibverbs)"
   OFF)
 SET(NDB_RDMA_LIBRARIES "")
+SET(NDB_RDMA_INCLUDE_DIRS "")
 IF(WITH_NDB_RDMA)
+  # The header infiniband/verbs.h is provided by the libibverbs-devel (RPM) /
+  # libibverbs-dev (Debian) package -- NOT by rdma-core-devel, which does not
+  # ship it. rdma-core installs a libibverbs.pc pkg-config file, so use that
+  # to locate the header and library even under a non-standard prefix, then
+  # fall back to a plain system search.
+  FIND_PACKAGE(PkgConfig QUIET)
+  IF(PKG_CONFIG_FOUND)
+    PKG_CHECK_MODULES(PC_IBVERBS QUIET libibverbs)
+  ENDIF()
+
+  # Honour any include dir reported by pkg-config when probing for the header.
+  SET(SAVE_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
+  IF(PC_IBVERBS_INCLUDE_DIRS)
+    LIST(APPEND CMAKE_REQUIRED_INCLUDES ${PC_IBVERBS_INCLUDE_DIRS})
+  ENDIF()
   CHECK_INCLUDE_FILES("infiniband/verbs.h" HAVE_INFINIBAND_VERBS_H)
-  FIND_LIBRARY(IBVERBS_LIBRARY ibverbs)
+  SET(CMAKE_REQUIRED_INCLUDES "${SAVE_CMAKE_REQUIRED_INCLUDES}")
+
+  FIND_LIBRARY(IBVERBS_LIBRARY ibverbs HINTS ${PC_IBVERBS_LIBRARY_DIRS})
   IF(NOT HAVE_INFINIBAND_VERBS_H OR NOT IBVERBS_LIBRARY)
     MESSAGE(FATAL_ERROR
       "WITH_NDB_RDMA=ON but libibverbs (infiniband/verbs.h and -libverbs) "
-      "could not be located. Install rdma-core development packages "
-      "or set WITH_NDB_RDMA=OFF.")
+      "could not be located. Install the libibverbs development package: "
+      "'libibverbs-devel' on RPM-based distros (dnf/yum) or 'libibverbs-dev' "
+      "on Debian/Ubuntu. Note that 'rdma-core-devel' does NOT provide "
+      "infiniband/verbs.h. Alternatively set WITH_NDB_RDMA=OFF.")
   ENDIF()
   SET(NDB_RDMA_LIBRARIES "${IBVERBS_LIBRARY}")
+  SET(NDB_RDMA_INCLUDE_DIRS "${PC_IBVERBS_INCLUDE_DIRS}")
   SET(NDB_RDMA_TRANSPORTER_SUPPORTED 1)
   ADD_DEFINITIONS(-DNDB_RDMA_TRANSPORTER_SUPPORTED=1)
   MESSAGE(STATUS "Building RonDB RDMA transporter using ${IBVERBS_LIBRARY}")
