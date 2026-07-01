@@ -4661,9 +4661,28 @@ void Qmgr::sendApiFailReq(Signal *signal, Uint16 failedNodeNo, bool sumaOnly) {
 
 void Qmgr::execAPI_FAILREQ(Signal *signal) {
   jamEntry();
+  NodeRecPtr failedNodePtr;
+  failedNodePtr.i = signal->theData[0];
+  // signal->theData[1] == QMGR_REF
+  ptrCheckGuard(failedNodePtr, MAX_NODES, nodeRec);
 
-  api_failed(signal, signal->theData[0], AFC_Notification,
-             signal->getSendersBlockRef());
+  Uint32 type = getNodeInfo(failedNodePtr.i).getType();
+  ndbrequire(type != NodeInfo::DB);
+
+  if (type == NodeInfo::API || type == NodeInfo::MGM) {
+    jam();
+    api_failed(signal, signal->theData[0], AFC_Notification,
+               signal->getSendersBlockRef());
+  } else {
+    /**
+     * If we have changed the config and removed API node ids from the
+     * configuration, another node might see an API node failing, since
+     * we don't even have it in our configuration we need not do anything.
+     * Should be a very rare event when a config is changed during some
+     * upgrade.
+     */
+    g_eventLogger->info("Failure of an API node which isn't in our config");
+  }
 }
 
 void Qmgr::execAPI_FAILCONF(Signal *signal) {
