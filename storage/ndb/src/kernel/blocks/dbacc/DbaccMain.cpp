@@ -1479,8 +1479,17 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
    * to make the following steps pass. The operation in DBLQH is
    * unchanged
    *
+   * EXCEPTION: LCP-restore-originated inserts (NoTTLDupConvert) must NOT be
+   * converted. During restore a relocated key can be replayed (in rowid order)
+   * while an older, expired copy of the same key is still present; converting
+   * the duplicate into an in-place TTL update would let restore count the
+   * INSERT (+1) while TUP does not create a row (+0), causing an LCP row-count
+   * mismatch (error 2352). Leaving it as ZINSERT makes the duplicate return
+   * 630, which restore's delete-by-PK + reinsert recovery reconciles (just as
+   * on a non-TTL table).
    */
-  if (op == ZINSERT && found && is_ttl) {
+  if (op == ZINSERT && found && is_ttl &&
+      !AccKeyReq::getNoTTLDupConvert(req->requestInfo)) {
     ndbrequire((operationRecPtr.p->m_op_bits & (Uint32)Operationrec::OP_MASK) ==
                ZINSERT);
     op = ZWRITE;

@@ -55,6 +55,7 @@ struct AccKeyReq {
   static bool getTakeOver(Uint32 requestInfo);
   static bool getLockReq(Uint32 requestInfo);
   static bool getNoWait(Uint32 requestInfo);
+  static bool getNoTTLDupConvert(Uint32 requestInfo);
 
   static Uint32 setOperation(Uint32 requestInfo, Uint32 op);
   static Uint32 setLockType(Uint32 requestInfo, Uint32 locktype);
@@ -63,6 +64,7 @@ struct AccKeyReq {
   static Uint32 setTakeOver(Uint32 requestInfo, bool takeover);
   static Uint32 setLockReq(Uint32 requestInfo, bool lockreq);
   static Uint32 setNoWait(Uint32 requestInfo, bool lockreq);
+  static Uint32 setNoTTLDupConvert(Uint32 requestInfo, bool val);
 
  private:
   enum RequestInfo {
@@ -78,6 +80,14 @@ struct AccKeyReq {
     RI_TAKE_OVER_MASK = 1,
     RI_NOWAIT_SHIFT = 10,
     RI_NOWAIT_MASK = 1,
+    /*
+     * TTL related. Set by DBLQH for LCP-restore-originated inserts so that
+     * DBACC does NOT convert a duplicate ZINSERT into an in-place TTL update.
+     * Lets a duplicate during restore surface as the normal 630 error which
+     * restore's delete-by-PK + reinsert recovery reconciles (restore.cpp).
+     */
+    RI_NO_TTL_DUP_CONVERT_SHIFT = 11,
+    RI_NO_TTL_DUP_CONVERT_MASK = 1,
     RI_LOCK_REQ_SHIFT = 31,
     RI_LOCK_REQ_MASK = 1,
   };
@@ -109,6 +119,10 @@ inline bool AccKeyReq::getLockReq(Uint32 requestInfo) {
 
 inline bool AccKeyReq::getNoWait(Uint32 requestInfo) {
   return (requestInfo >> RI_NOWAIT_SHIFT) & RI_NOWAIT_MASK;
+}
+
+inline bool AccKeyReq::getNoTTLDupConvert(Uint32 requestInfo) {
+  return (requestInfo >> RI_NO_TTL_DUP_CONVERT_SHIFT) & RI_NO_TTL_DUP_CONVERT_MASK;
 }
 
 inline Uint32 AccKeyReq::setOperation(Uint32 requestInfo, Uint32 op) {
@@ -148,5 +162,10 @@ inline Uint32 AccKeyReq::setLockReq(Uint32 requestInfo, bool lockreq) {
 inline Uint32 AccKeyReq::setNoWait(Uint32 requestInfo, bool nowait) {
   return (requestInfo & ~(RI_NOWAIT_MASK << RI_NOWAIT_SHIFT)) |
          (nowait ? 1U << RI_NOWAIT_SHIFT : 0);
+}
+
+inline Uint32 AccKeyReq::setNoTTLDupConvert(Uint32 requestInfo, bool val) {
+  return (requestInfo & ~(RI_NO_TTL_DUP_CONVERT_MASK << RI_NO_TTL_DUP_CONVERT_SHIFT)) |
+         (val ? 1U << RI_NO_TTL_DUP_CONVERT_SHIFT : 0);
 }
 #endif

@@ -1,0 +1,97 @@
+# Same-transaction UNIQUE-dup gap fix (OP_TTL_OWNER_CHECK_BYPASS provenance).
+#
+# On a TTL table with a UNIQUE secondary index, two rows with the SAME unique
+# value in the SAME TRANSACTION must be rejected with ER_DUP_ENTRY, exactly like
+# a plain table -- the transaction aborts atomically and the unique index never
+# diverges from the base table.
+#
+# Before the fix these collided silently (base kept both rows; the unique index
+# mapped the value to only one owner) because DBACC's same-transaction
+# "read-what-you-locked" rule set ttl_ignore=1, which the DBTUP same-owner check
+# was (wrongly) gated on. The fix gates that check on genuine TTL-ignore
+# provenance (OP_TTL_OWNER_CHECK_BYPASS) instead, which the same-transaction lock
+# never carries -- so the duplicate is rejected while real recovery/replication
+# replays stay exempt.
+
+--source include/have_ndb.inc
+
+# checkTTL compares against UTC; pin the session so the far-future rows are live.
+SET time_zone = '+00:00';
+
+--echo # ---- Case 1: multi-row INSERT, two PKs sharing one unique value ----
+CREATE TABLE t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+--echo # the second tuple duplicates the first tuple's unique value -> must fail
+--error ER_DUP_ENTRY
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+
+--echo # atomic: NEITHER tuple is present, base and unique index agree
+SELECT id, u FROM t1 ORDER BY id;
+SELECT id, u FROM t1 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+DROP TABLE t1;
+
+--echo # ---- Case 2: INSERT ... SELECT producing duplicate unique values ----
+CREATE TABLE src (id INT PRIMARY KEY, u INT NOT NULL);
+INSERT INTO src VALUES (1, 100), (2, 100);
+CREATE TABLE t2 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+--error ER_DUP_ENTRY
+INSERT INTO t2 (id, ttl_col, u)
+SELECT id, DATE_ADD(NOW(), INTERVAL 10 YEAR), u FROM src;
+
+SELECT id, u FROM t2 ORDER BY id;
+SELECT id, u FROM t2 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+DROP TABLE t2;
+DROP TABLE src;
+
+--echo # ---- Case 3: multi-row UPDATE moving two rows to the same unique value ----
+CREATE TABLE t3 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO t3 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 1),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 2);
+
+--echo # collapsing both rows onto u=9 is a unique collision -> must fail
+--error ER_DUP_ENTRY
+UPDATE t3 SET u = 9 WHERE id IN (1, 2);
+
+--echo # originals preserved, base and unique index agree
+SELECT id, u FROM t3 ORDER BY id;
+SELECT id, u FROM t3 FORCE INDEX (ux) WHERE u IN (1, 2, 9) ORDER BY id;
+DROP TABLE t3;
+
+--echo # ---- Case 4: explicit transaction, two separate inserts collide ----
+CREATE TABLE t4 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+BEGIN;
+INSERT INTO t4 VALUES (1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+--echo # second insert in the same transaction reuses the unique value -> fails
+--error ER_DUP_ENTRY
+INSERT INTO t4 VALUES (2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+ROLLBACK;
+
+--echo # nothing committed, base and unique index agree
+SELECT id, u FROM t4 ORDER BY id;
+SELECT id, u FROM t4 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+DROP TABLE t4;

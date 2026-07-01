@@ -1,0 +1,63 @@
+SET time_zone = '+00:00';
+# ---- Case 1: single-column unique, duplicate vs a LIVE owner ----
+CREATE TABLE t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+# live owner of unique value 100 (TTL=3600s, nowhere near expiry)
+INSERT INTO t1 VALUES (1, NOW(), 100);
+# second row with the SAME unique value while the owner is LIVE:
+# must be rejected with a duplicate-key error
+INSERT INTO t1 VALUES (2, NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 't1.ux'
+# the unique constraint must hold: only id=1 is present, and a lookup
+# by the unique value returns exactly one row
+SELECT id, u FROM t1 ORDER BY id;
+id	u
+1	100
+SELECT id, u FROM t1 WHERE u = 100;
+id	u
+1	100
+DROP TABLE t1;
+# ---- Case 2: composite (multi-column) unique, duplicate vs LIVE owner ----
+CREATE TABLE t2 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+a       INT,
+b       INT,
+UNIQUE KEY ux (a, b)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO t2 VALUES (1, NOW(), 10, 20);
+# the SAME (a,b) tuple while the owner is LIVE must be rejected
+INSERT INTO t2 VALUES (2, NOW(), 10, 20);
+ERROR 23000: Duplicate entry '10-20' for key 't2.ux'
+# a tuple that differs in one component is accepted
+INSERT INTO t2 VALUES (3, NOW(), 10, 21);
+SELECT id, a, b FROM t2 ORDER BY id;
+id	a	b
+1	10	20
+3	10	21
+DROP TABLE t2;
+# ---- Case 3: NULL in unique column -- multiple NULLs allowed ----
+CREATE TABLE t3 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+# NULL unique values do not collide (SQL NULL uniqueness semantics):
+# the fix must not turn NULLs into spurious duplicates
+INSERT INTO t3 VALUES (1, NOW(), NULL);
+INSERT INTO t3 VALUES (2, NOW(), NULL);
+INSERT INTO t3 VALUES (3, NOW(), 100);
+# a non-NULL duplicate against the live owner is still rejected
+INSERT INTO t3 VALUES (4, NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 't3.ux'
+SELECT id, u FROM t3 ORDER BY id;
+id	u
+1	NULL
+2	NULL
+3	100
+DROP TABLE t3;

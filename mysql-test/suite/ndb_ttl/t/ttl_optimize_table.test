@@ -1,0 +1,78 @@
+# ==========================================================================
+# Regression guard: OPTIMIZE TABLE on a TTL table that holds expired-but-unpurged
+# rows completes successfully and does not lose the live rows.
+# ==========================================================================
+#
+# Background / suspicion investigated:
+#   OPTIMIZE TABLE defragments the variable-sized part of NDB rows. It is driven
+#   by an EXCLUSIVE locking scan (NdbDictionaryImpl.cpp: readTuples(LM_Exclusive))
+#   plus a per-row scan-takeover update that moves the var-part, with no TTL-ignore
+#   set. A static reading suspected the per-row update could hit the DBTUP update
+#   checkTTL gate (error 626) on an expired row.
+#   In practice OPTIMIZE is safe: in DBTUP a LOCKING-scan read of an expired row
+#   returns 626 (DbtupExecQuery.cpp handleReadReq: the "read what you locked" TTL
+#   grant via WhetherSkipTTL does NOT apply to a fresh scan read of a not-yet-locked
+#   row, so the expired-row read falls through to terrorCode=626). The expired row
+#   is therefore not returned to the scan, OPTIMIZE never issues an optimize-update
+#   for it, and the scan simply continues. OPTIMIZE processes only the live rows,
+#   leaves the expired ones for purge, and completes with status OK -- no 626 ever
+#   reaches the SQL layer and no live data is lost. (NB: this differs from the
+#   reorg/copy scans, which set TTLIgnoreFragFlag and so DO sweep expired rows;
+#   OPTIMIZE does not set it, so it skips them instead -- both are safe.)
+#
+# This test locks in that behavior: OPTIMIZE TABLE on a TTL table holding expired
+# rows must succeed and the live (never-expiring) rows must remain intact. If a
+# future change made optimize surface a 626 on expired rows, this would fail.
+#
+# In MTR there is no RDRS purger, so any row past its TTL stays physically present
+# (the condition under test).
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# checkTTL compares ttl_col against the data node's UTC clock; NOW() stores in the
+# session zone. Pin to UTC so NOW()-stamped rows actually look expired after TTL.
+SET time_zone = '+00:00';
+
+--echo # --- TTL table with a variable-sized column so OPTIMIZE has work to do
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       VARCHAR(1024)
+) ROW_FORMAT=DYNAMIC ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+
+--echo # --- 200 rows that will expire (ttl_col = NOW(), long var value), plus 5
+--echo #     never-expiring anchor rows (ttl_col = NULL) to verify data survives.
+--disable_query_log
+let $i = 1;
+while ($i <= 200) {
+  eval INSERT INTO test.t1 VALUES ($i, NOW(), REPEAT('x', 1000));
+  inc $i;
+}
+let $i = 1001;
+while ($i <= 1005) {
+  eval INSERT INTO test.t1 VALUES ($i, NULL, REPEAT('a', 1000));
+  inc $i;
+}
+--enable_query_log
+
+--echo # --- wait comfortably past the 30s TTL: the 200 dated rows are now expired
+--echo #     but still physically present (no purger in MTR). Anchors never expire.
+--sleep 45
+
+--echo # --- precondition: a normal read now hides the 200 expired rows; only the 5
+--echo #     anchors are visible. (The expired rows are still physically present and
+--echo #     will be swept over by OPTIMIZE's locking scan.)
+SELECT id FROM test.t1 ORDER BY id;
+
+--echo # --- OPTIMIZE the table. The exclusive locking scan reads expired rows as
+--echo #     626 and skips them, processing only the live rows, so this completes
+--echo #     successfully with no 626 reaching the SQL layer.
+SET ndb_optimization_delay = 0;
+OPTIMIZE TABLE test.t1;
+
+--echo # --- live anchor rows are intact and visible; expired rows are hidden on
+--echo #     read (SELECT id, not COUNT(*)).
+SELECT id FROM test.t1 ORDER BY id;
+
+DROP TABLE test.t1;
