@@ -1175,13 +1175,21 @@ ndbd_support_arbitration_rank_wait(Uint32 x) {
  * interval.
  * The function is modified according to RonDB versioning.
  */
-#define NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_RONDB NDB_MAKE_VERSION(26,2,5)
 static
 inline
 int
 ndb_heartbeat_send_twice_per_interval(Uint32 x)
 {
-  return x >= NDB_HEARTBEAT_SEND_TWICE_PER_INTERVAL_RONDB;
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel   = x & 0xFF;
+  if (major > 26) return 1;
+  if (major < 26) return 0;
+  /* major == 26 */
+  if (minor >= 5) return 1;        /* 26.05 and every later line */
+  if (minor == 4) return rel >= 2; /* 26.04.2+ (26.04.0/1 shipped without) */
+  if (minor == 2) return rel >= 5; /* 26.02.5+ */
+  return 0;                        /* 26.00, 26.01, 26.03, sub-threshold */
 }
 
 
