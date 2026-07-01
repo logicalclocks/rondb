@@ -1,0 +1,23 @@
+SET time_zone = '+00:00';
+CREATE TABLE t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=45@ttl_col";
+# --- insert one row; its ttl_col expires 45s from now
+INSERT INTO t1 VALUES (1, NOW(), 0);
+# --- force an LCP so the ORIGINAL (soon-to-expire) ttl_col is captured
+# --- while still live, REFRESH ttl_col ~1 hour into the future.
+#     This UPDATE is logged in REDO (after the LCP above).
+UPDATE t1 SET ttl_col = NOW() + INTERVAL 1 HOUR WHERE id = 1;
+# --- wait past the ORIGINAL 45s expiry (row stays alive via the refresh)
+# --- SYSTEM restart: every node recovers from its own LCP+REDO; REDO
+#     replays the refresh UPDATE while the LCP pre-image is expired
+# --- wait for mysqld to reconnect; poll until test.t1 is queryable
+# --- the refreshed row must still be visible (ttl_col ~1h in the future).
+#     On the buggy build REDO discarded the refresh, so the row is left
+#     expired and this returns NO rows = data-loss reproduced.
+SELECT id, v FROM t1 WHERE id = 1;
+id	v
+1	0
+DROP TABLE t1;

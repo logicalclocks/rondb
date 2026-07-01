@@ -9,7 +9,7 @@ UNIQUE KEY(col_c)
 COMMENT="NDB_TABLE=TTL=66@col_b";
 ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
 #
-# Case 47: Unique index behavior with TTL and re-insert
+# Case 47: Unique index + TTL -- expired-but-unpurged value not reusable
 #
 DELETE FROM sz;
 BEGIN;
@@ -18,33 +18,14 @@ COMMIT;
 SELECT col_a, col_c FROM sz WHERE col_a = 1;
 col_a	col_c
 1	100
-SELECT COUNT(*) FROM sz;
-COUNT(*)
-0
-BEGIN;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
 INSERT INTO sz VALUES(2, SYSDATE(), 100);
-COMMIT;
+ERROR 23000: Duplicate entry '100' for key 'sz.col_c'
 SELECT col_a, col_c FROM sz WHERE col_a = 2;
 col_a	col_c
-2	100
-BEGIN;
-INSERT INTO sz VALUES(2, SYSDATE(), 100);
-COMMIT;
-SELECT COUNT(*) FROM sz;
-COUNT(*)
-1
-SELECT col_a FROM sz WHERE col_a = 2;
-col_a
-2
-SELECT COUNT(*) FROM sz;
-COUNT(*)
-1
-SELECT col_a FROM sz WHERE col_a = 2;
-col_a
-2
-SELECT COUNT(*) FROM sz;
-COUNT(*)
-0
+SELECT col_a, col_c FROM sz WHERE col_a = 2;
+col_a	col_c
 DELETE FROM sz;
 #
 # Case 50: ALTER TABLE ADD UNIQUE INDEX with TTL

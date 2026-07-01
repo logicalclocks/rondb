@@ -4380,6 +4380,11 @@ retry:
   }  // if
 
   op->set_disable_fk();
+  // Backup-log replay is a physical-recovery path: apply the logged
+  // INSERT/UPDATE/DELETE to the (possibly expired-at-restore-time) row
+  // verbatim, ignoring TTL, so restored data matches the backup's committed
+  // end state instead of silently dropping the change on checkTTL 626.
+  op->set_ttl_ignore();
 
   if (table->getFragmentType() == NdbDictionary::Object::UserDefined) {
     if (table->getDefaultNoPartitionsFlag()) {

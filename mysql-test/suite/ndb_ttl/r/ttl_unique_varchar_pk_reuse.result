@@ -1,0 +1,30 @@
+SET time_zone = '+00:00';
+CREATE TABLE tv (
+k       VARCHAR(32) PRIMARY KEY,
+ttl_col DATETIME,
+u       INT,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+# live owner 'alpha' of unique value 100; a different PK cannot reuse it
+INSERT INTO tv VALUES ('alpha', NOW(), 100);
+INSERT INTO tv VALUES ('beta', NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 'tv.ux'
+SELECT k, u FROM tv ORDER BY k;
+k	u
+alpha	100
+# let 'alpha' expire (TTL=5s); it stays physically present (no purge here)
+SELECT k, u FROM tv WHERE k = 'alpha';
+k	u
+# the SAME PK 'alpha' refreshes into its own expired slot: must SUCCEED
+# (same owner -- the existing and incoming index-owner keys match)
+INSERT INTO tv VALUES ('alpha', NOW(), 100);
+SELECT k, u FROM tv WHERE k = 'alpha';
+k	u
+alpha	100
+# a DIFFERENT PK still cannot take the (now live again) unique value 100
+INSERT INTO tv VALUES ('beta', NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 'tv.ux'
+SELECT k, u FROM tv ORDER BY k;
+k	u
+alpha	100
+DROP TABLE tv;

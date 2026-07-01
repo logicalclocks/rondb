@@ -1,0 +1,24 @@
+SET time_zone = '+00:00';
+CREATE TABLE t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+data    VARCHAR(20)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+# --- row A (id=7), expires 30s from now
+INSERT INTO t1 VALUES (7, NOW(), 'A');
+# --- force an LCP so the (soon-to-expire) A is captured
+# --- wait past A's 30s TTL so A is expired
+# --- INSERT id=7 again ('B', far-future ttl): A is expired, so this is the
+#     TTL insert-over-expired upsert. B replaces A and is logged in REDO.
+INSERT INTO t1 VALUES (7, NOW() + INTERVAL 1 HOUR, 'B');
+# --- B is the live committed row before the restart
+SELECT id, data FROM t1 WHERE id = 7;
+id	data
+7	B
+# --- SYSTEM restart: recover from LCP (A) + REDO (replay of the B upsert)
+# --- the committed replacement B must still be present after recovery.
+#     On the buggy build REDO dropped it, so id=7 is gone = bug reproduced.
+SELECT id, data FROM t1 WHERE id = 7;
+id	data
+7	B
+DROP TABLE t1;
