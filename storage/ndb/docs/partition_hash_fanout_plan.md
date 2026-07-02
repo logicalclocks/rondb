@@ -301,22 +301,52 @@ This pruning does not need to be exposed to the SQL optimizer in the first
 version. It is sufficient for NDB API/DBTC/DBSPJ to perform the pruning
 internally after the access path has been selected.
 
-`ScanTabReq` currently has one optional `distributionKey`. It has no interval
-count. Add an extension that can carry:
+`ScanTabReq` has one optional `distributionKey` and one request-info bit
+stating that it is present. All 32 bits of `requestInfo` are used in newer
+RonDB versions, so the interval mode cannot live there. Instead it uses the
+high half of `storedProcId`: `storedProcId`, `batch_byte_size` and
+`first_batch_size` only carry values below 65536, so their high 16 bits are
+guaranteed zero from all older senders (`storedProcId` has been a constant
+`0xFFFF` in every NDB API since 2004) and can carry extended request-info
+bits, allocated downwards from bit 31:
 
 ```
-base_routing_hash
-fanout
+ScanTabReq::setDistributionKeyFlag          existing requestInfo bit,
+                                            distributionKey present
+ScanTabReq::setDistributionKeyIntervalFlag  new, storedProcId bit 31:
+                                            distributionKey is a grouped
+                                            partition-hash base hash and the
+                                            scan covers the fanout interval
+                                            starting at it
 ```
 
-or add a new request-info mode where the existing `distributionKey` carries the
-base hash and another optional word carries the fanout. The signal format must
-remain version-gated.
+Readers check the high half of `storedProcId` for non-zero before decoding
+extended bits, and DBTC masks the low 16 bits (`getStoredProcId()`) when
+storing the stored-procedure id.
 
-Do not reinterpret every existing `distributionKey` scan as a fanout interval.
-Existing explicit scan partitioning APIs must keep their current one-fragment
-meaning, or be rejected for fanout tables until a non-ambiguous signal mode is
-available. Examples of these explicit APIs are:
+The fanout itself is not carried in the signal; DBTC reads it from its table
+record, which is safe because the metadata cannot be changed online. The
+interval flag is only valid together with the distribution key flag on tables
+with `fanout > 1`; DBTC rejects the scan with a schema-version error
+otherwise. The NDB API only sets the flag when the fanout base-key pruning
+path recognised the range, which is version-gated on
+`ndbd_support_partition_hash_fanout()`.
+
+The API only sets the interval flag when all data nodes support it, gated on
+`ndbd_support_partition_hash_fanout()` (25.10.15+, 26.02.6+, 26.04.2+ and
+anything above 26.04) — the same gate used for `PARTITION_HASH` table
+creation. Without support the scan simply stays unpruned, which is correct
+on any version.
+
+Existing `distributionKey` scans are not reinterpreted as fanout intervals.
+On fanout tables DBTC rejects a pruned scan without the interval flag with a
+dedicated error (2203, `ZSCAN_PRUNE_PARTITION_HASH_ERROR`): rows sharing a
+base partition key are spread over the fanout interval, so a scan pruned to
+one partition cannot be trusted to see all rows the application intended.
+This fails loudly instead of silently returning partial results, and also
+covers clients that are unaware of partition hash fanout. This defines the
+behavior of the explicit scan partitioning APIs on fanout tables — they are
+all rejected:
 
 ```
 ScanOptions::SO_PART_INFO
@@ -328,19 +358,18 @@ ScanOptions::SO_PARTITION_ID
 NdbOperation::setPartitionId(partitionId)
 ```
 
-For example, an application can pass `SO_PART_INFO` with
-`PS_DISTR_KEY_PART_PTR`; `NdbScanOperation::getPartValueFromInfo()` computes a
-raw distribution hash and stores it in `ScanTabReq::distributionKey`. That is
-not the same value as the grouped base hash used by fanout base-key pruning. The
-internal fanout pruning path therefore needs a distinct signal flag or prune
-type, such as:
+mysqld only uses `SO_PARTITION_ID` for user-defined partitioning, which is
+rejected on fanout tables, so SQL scans cannot hit these paths. The TTL purge
+scans in rest-server2 use `setPartitionId()` per fragment and would fail with
+error 2203 on a fanout table; combining TTL with `PARTITION_HASH` fanout
+needs either a DDL-level rejection or purge-scan support as follow-up work.
 
-```
-scan_prune_type = none | one_fragment | base_hash_interval
-distributionKey = raw_hash_or_fragment for one_fragment
-distributionKey = grouped_base_hash for base_hash_interval
-interval_count = fanout for base_hash_interval
-```
+In the NDB API, the pruning state distinguishes the two prune kinds
+(`SPS_ONE_PARTITION` vs `SPS_PARTITION_HASH_INTERVAL`); MRR ranges only stay
+pruned when both the prune kind and the prune value match, since a raw
+distribution hash and a grouped base hash must never be merged.
+`NdbScanOperation::getPruned()` reports interval-pruned scans as pruned, so
+`Ndb_pruned_scan_count` includes them.
 
 ### DBTC Scans
 
@@ -357,13 +386,17 @@ Current DBTC scan anchors:
   * `sendFragScansLab()`
   * `sendScanFragReq()`
 
-Current partition-pruned scans store one `m_scan_dist_key` and one flag, then
-force `tfragCount = 1`. Replace or extend this with:
+Partition-pruned scans store one `m_scan_dist_key` and one flag. The
+implemented interval mode adds `m_scan_dist_key_interval_flag`, parsed from
+`ScanTabReq::getDistributionKeyIntervalFlag()`, giving:
 
 ```
 scan_prune_type: none | one_fragment | fragment_interval
-scan_base_hash
-scan_fanout
+  none:              !m_scan_dist_key_flag
+  one_fragment:      m_scan_dist_key_flag, tfragCount = 1
+  fragment_interval: m_scan_dist_key_flag && m_scan_dist_key_interval_flag,
+                     scanFirstHashValue = m_scan_dist_key,
+                     tfragCount = table fanout
 ```
 
 For `fragment_interval`:
@@ -375,9 +408,12 @@ For `fragment_interval`:
   interval pruning in the first implementation
 * reuse the existing fragment-location list and MultiFrag grouping logic
 
-DBTC must only enter the interval path when the new interval prune type or flag
-is set. A normal explicit scan partition value must continue to resolve one
-fragment, even when the table has `fanout > 1`.
+DBTC only enters the interval path when `m_scan_dist_key_interval_flag` is
+set. On tables with `fanout > 1`, `execSCAN_TABREQ` rejects a pruned scan
+without the interval flag with error 2203 and rejects the interval flag
+without the distribution key flag (or on tables without fanout) with a
+schema-version error, so a one-fragment pruned scan can never silently run
+against a fanout table.
 
 The existing MultiFrag path can already group multiple fragment ids into
 `SCAN_FRAGREQ`; the main work is getting the correct list of fragments instead
@@ -463,18 +499,20 @@ Exit criteria:
 
 ### Phase 4: DBTC Scan Interval Pruning
 
-* Extend `ScanTabReq` or add versioned optional words for interval pruning.
-* Add an explicit scan prune type so existing explicit scan partitioning APIs
-  are not mistaken for fanout base-key interval pruning.
-* Extend API scan-pruning state.
-* Extend DBTC scan state and DIH fragment resolution loop.
+* Extend `ScanTabReq` with the `DistributionKeyIntervalFlag` request-info bit
+  so explicit scan partitioning APIs cannot be mistaken for fanout base-key
+  interval pruning.
+* Extend API scan-pruning state with `SPS_PARTITION_HASH_INTERVAL`.
+* Extend DBTC scan state (`m_scan_dist_key_interval_flag`) and DIH fragment
+  resolution loop.
+* Reject one-partition pruned scans on fanout tables in DBTC with error 2203.
 * Reuse existing MultiFrag scan grouping.
 
 Exit criteria:
 
 * equality on base key scans exactly `fanout` fragments
-* explicit one-fragment scan partitioning still scans one fragment or is
-  rejected clearly if unsupported for fanout tables
+* explicit one-fragment scan partitioning on fanout tables is rejected
+  clearly with error 2203
 * `fanout = 1` is equivalent to current one-partition pruning
 * no rows are missed or duplicated
 
@@ -661,9 +699,9 @@ Checks:
 * different intervals fall back or are represented safely
 * mixed prunable/non-prunable falls back to all partitions
 * equality only on detail-key columns does not trigger first-version pruning
-* explicit scan partitioning APIs keep one-fragment semantics or fail with a
-  clear unsupported error on fanout tables
-* fanout interval pruning uses only the new interval prune type or flag
+* explicit scan partitioning APIs fail with error 2203 on fanout tables and
+  keep one-fragment semantics on all other tables
+* fanout interval pruning uses only the new `DistributionKeyIntervalFlag`
 * `fanout = 1` keeps current one-partition behavior
 
 ### DBTC Kernel Tests

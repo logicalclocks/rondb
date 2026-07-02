@@ -171,6 +171,7 @@
 
 #define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
+#define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2203
 
 // ----------------------------------------
 // Error Codes for transactions
@@ -2003,9 +2004,16 @@ class Dbtc : public SimulatedBlock {
     bool m_read_committed_base;
 
     /**
-     *
+     * m_scan_dist_key_flag: scan is pruned, m_scan_dist_key holds the prune
+     * value from ScanTabReq::distributionKey.
+     * m_scan_dist_key_interval_flag: m_scan_dist_key is a grouped
+     * partition-hash base hash and the scan covers the fanout interval of
+     * fragments starting at it. Only valid together with
+     * m_scan_dist_key_flag on tables with partition hash fanout > 1.
+     * Without it a pruned scan always covers exactly one fragment.
      */
     bool m_scan_dist_key_flag;
+    bool m_scan_dist_key_interval_flag;
     bool m_par_ordered_scan_flag;
     Uint32 m_scan_dist_key;
     Uint32 m_read_any_node;

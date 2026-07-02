@@ -521,7 +521,8 @@ class NdbScanOperation : public NdbOperation {
   NdbTransaction *getNdbTransaction() const override;
 
   /**
-   * Is scan operation pruned to a single table partition?
+   * Is scan operation pruned to a single table partition, or for tables
+   * with partition hash fanout, to one fanout interval of partitions?
    * For NdbRecord defined scans, valid before+after execute.
    * For Old Api defined scans, valid only after execute.
    */
@@ -743,11 +744,14 @@ class NdbScanOperation : public NdbOperation {
     SPS_UNKNOWN,           // Initial state
     SPS_FIXED,             // Explicit partitionId passed in ScanOptions
     SPS_ONE_PARTITION,     // Scan pruned to one partition by previous range
+    SPS_PARTITION_HASH_INTERVAL,  // Scan pruned to a partition-hash fanout
+                                  // interval of partitions by previous range
     SPS_MULTI_PARTITION    // Scan cannot be pruned due to previous ranges
   };
-  
+
   ScanPruningState m_pruneState;
-  Uint32 m_pruningKey;  // Can be distr key hash or actual partition id.
+  Uint32 m_pruningKey;  // Distr key hash, actual partition id or grouped
+                        // partition-hash base hash (interval start).
 
   bool m_continousScan;
   /**

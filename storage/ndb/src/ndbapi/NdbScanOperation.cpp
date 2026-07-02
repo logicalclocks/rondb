@@ -1222,11 +1222,12 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
    * Where partition 'value' is either a partition id or a hash
    * that maps to one in the kernel.
    */
-  if ((m_pruneState == SPS_UNKNOWN) ||  // First range
-      (m_pruneState ==
-       SPS_ONE_PARTITION))  // Previous ranges are commonly pruned
+  if ((m_pruneState == SPS_UNKNOWN) ||       // First range
+      (m_pruneState == SPS_ONE_PARTITION) ||  // Previous ranges are commonly
+      (m_pruneState == SPS_PARTITION_HASH_INTERVAL))  // pruned
   {
     bool currRangeHasOnePartVal = false;
+    bool currRangeIsHashInterval = false;
     Uint32 currRangePartValue = 0;
 
     /* Determine whether this range scan can be pruned */
@@ -1271,6 +1272,10 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
          * The hash scheme itself only requires equality on the base key; this
          * limitation can be removed later by gathering base key values from
          * arbitrary index positions.
+         *
+         * All data nodes must understand the distribution key interval flag
+         * (storedProcId bit 31) before it may be sent. Without it the scan
+         * simply stays unpruned, which is correct on any version.
          */
         if (tabHasPartitionHashFanout &&
             ndbd_support_partition_hash_fanout(
@@ -1286,6 +1291,7 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
                                             bound.high_key, base_key_count)) {
             assert(!openRange);
             currRangeHasOnePartVal = true;
+            currRangeIsHashInterval = true;
             if (getPartitionHashBaseHashFromRange(
                     key_record, m_attribute_record, bound.low_key,
                     &currRangePartValue))
@@ -1306,18 +1312,26 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
      */
     const ScanPruningState prevPruneState = m_pruneState;
     if (currRangeHasOnePartVal) {
+      const ScanPruningState currRangePruneState =
+          currRangeIsHashInterval ? SPS_PARTITION_HASH_INTERVAL
+                                  : SPS_ONE_PARTITION;
       if (m_pruneState == SPS_UNKNOWN) {
         /* Prune the scan to use this range's partition value */
-        m_pruneState = SPS_ONE_PARTITION;
+        m_pruneState = currRangePruneState;
         m_pruningKey = currRangePartValue;
       } else {
-        /* If this range's partition value is the same as the previous
-         * ranges then we can stay pruned, otherwise we cannot
+        /* If this range's pruning type and partition value are the same
+         * as the previous ranges then we can stay pruned, otherwise we
+         * cannot.  A one-partition value (raw distribution hash) and a
+         * partition-hash interval value (grouped base hash) have different
+         * meanings in the kernel and must never be merged.
          */
-        assert(m_pruneState == SPS_ONE_PARTITION);
-        if (currRangePartValue != m_pruningKey) {
-          /* This range is found in a different partition to previous
-           * range(s).  We cannot prune this scan.
+        assert(m_pruneState == SPS_ONE_PARTITION ||
+               m_pruneState == SPS_PARTITION_HASH_INTERVAL);
+        if (m_pruneState != currRangePruneState ||
+            currRangePartValue != m_pruningKey) {
+          /* This range is found in a different partition (interval) to
+           * previous range(s).  We cannot prune this scan.
            */
           m_pruneState = SPS_MULTI_PARTITION;
         }
@@ -1331,17 +1345,20 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
 
     /* Now modify the SCANTABREQ */
     if (m_pruneState != prevPruneState) {
-      theDistrKeyIndicator_ = (m_pruneState == SPS_ONE_PARTITION);
+      theDistrKeyIndicator_ = (m_pruneState == SPS_ONE_PARTITION ||
+                               m_pruneState == SPS_PARTITION_HASH_INTERVAL);
       theDistributionKey = m_pruningKey;
 
       ScanTabReq *req = CAST_PTR(ScanTabReq, theSCAN_TABREQ->getDataPtrSend());
       ScanTabReq::setDistributionKeyFlag(req->requestInfo,
                                          theDistrKeyIndicator_);
+      ScanTabReq::setDistributionKeyIntervalFlag(
+          req->storedProcId, m_pruneState == SPS_PARTITION_HASH_INTERVAL);
       req->distributionKey = theDistributionKey;
       theSCAN_TABREQ->setLength(ScanTabReq::StaticLength +
                                 theDistrKeyIndicator_);
     }
-  }  // if (m_pruneState == UNKNOWN / SPS_ONE_PARTITION)
+  }  // if (m_pruneState == UNKNOWN / ONE_PARTITION / HASH_INTERVAL)
 
   return 0;
 }  // ::setBound();
@@ -2723,6 +2740,8 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
 
   /* Set distribution key info if required */
   ScanTabReq::setDistributionKeyFlag(reqInfo, theDistrKeyIndicator_);
+  ScanTabReq::setDistributionKeyIntervalFlag(
+      req->storedProcId, m_pruneState == SPS_PARTITION_HASH_INTERVAL);
 
   /* Set aggregation information */
   if (m_aggregation_code != nullptr) {
@@ -4948,7 +4967,9 @@ bool NdbScanOperation::getPruned() const {
   /* Note that for old Api scans, the bounds are not added until
    * execute() time, so this will return false until after execute
    */
-  return ((m_pruneState == SPS_ONE_PARTITION) || (m_pruneState == SPS_FIXED));
+  return ((m_pruneState == SPS_ONE_PARTITION) ||
+          (m_pruneState == SPS_PARTITION_HASH_INTERVAL) ||
+          (m_pruneState == SPS_FIXED));
 }
 
 NdbBlob *NdbScanOperation::getBlobHandle(const char *anAttrName) const {

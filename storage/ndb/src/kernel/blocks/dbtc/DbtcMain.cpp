@@ -16101,6 +16101,41 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   scanptr.p->m_scan_dist_key = scanTabReq->distributionKey;
   scanptr.p->m_scan_dist_key_flag = ScanTabReq::getDistributionKeyFlag(ri);
+  scanptr.p->m_scan_dist_key_interval_flag =
+      ScanTabReq::getDistributionKeyIntervalFlag(scanTabReq->storedProcId);
+
+  if (unlikely(scanptr.p->m_scan_dist_key_interval_flag &&
+               (!scanptr.p->m_scan_dist_key_flag ||
+                tabptr.p->m_partition_hash_fanout <= 1))) {
+    jam();
+    /*
+     * Interval pruning requires API and kernel to agree on the table's
+     * partition hash fanout metadata. The metadata cannot be changed
+     * online, so a mismatch means the API used a stale table definition.
+     */
+    errCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
+
+  if (unlikely(scanptr.p->m_scan_dist_key_flag &&
+               !scanptr.p->m_scan_dist_key_interval_flag &&
+               tabptr.p->m_partition_hash_fanout > 1)) {
+    jam();
+    /*
+     * Rows sharing a base partition key are spread over the fanout interval
+     * of fragments, so a scan pruned to one partition cannot be trusted to
+     * see all rows the application intended. This also rejects clients that
+     * are unaware of partition hash fanout and old-style explicit scan
+     * partitioning (SO_PARTITION_ID, SO_PART_INFO, setPartitionId()) on
+     * fanout tables, rather than silently returning partial results.
+     */
+    errCode = ZSCAN_PRUNE_PARTITION_HASH_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
 
   if (ERROR_INSERTED(8119)) {
     jam();
@@ -16285,6 +16320,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->batch_size_rows = batchSizeRows;
   scanptr.p->m_scan_block_no = DBLQH;
   scanptr.p->m_scan_dist_key_flag = 0;
+  scanptr.p->m_scan_dist_key_interval_flag = 0;
   scanptr.p->m_start_ticks = getHighResTimer();
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
@@ -16318,7 +16354,9 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
 
   scanptr.p->scanRequestInfo = tmp;
   scanptr.p->m_read_committed_base = ScanTabReq::getReadCommittedBaseFlag(ri);
-  scanptr.p->scanStoredProcId = scanTabReq->storedProcId;
+  /* The high half of storedProcId carries extended request-info bits. */
+  scanptr.p->scanStoredProcId =
+      ScanTabReq::getStoredProcId(scanTabReq->storedProcId);
   scanptr.p->scanState = ScanRecord::RUNNING;
   scanptr.p->m_queued_count = 0;
   scanptr.p->m_booked_fragments_count = 0;
@@ -16600,14 +16638,30 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
                is_ttl_table(tabPtr.p));
     */
 
-    const Uint32 partition_hash_fanout = tabPtr.p->m_partition_hash_fanout;
-    if (partition_hash_fanout > 1) {
+    if (scanptr.p->m_scan_dist_key_interval_flag) {
+      /**
+       * m_scan_dist_key is a grouped partition-hash base hash. Scan the
+       * fanout interval of raw hash values starting at it. The interval
+       * flag is only accepted by execSCAN_TABREQ when the table has
+       * partition hash fanout > 1, and the metadata cannot change online,
+       * but fail the scan rather than trust that if the metadata
+       * disagrees here.
+       */
+      const Uint32 partition_hash_fanout = tabPtr.p->m_partition_hash_fanout;
+      if (unlikely(partition_hash_fanout <= 1)) {
+        jam();
+        abortScanLab(signal, scanptr, ZWRONG_SCHEMA_VERSION_ERROR, true,
+                     apiConnectptr);
+        return;
+      }
       scanptr.p->scanFirstHashValue = scanptr.p->m_scan_dist_key;
       tfragCount = partition_hash_fanout;
     } else {
       /**
        * Prepare for sendDihGetNodeReq to request DBDIH info for
-       * the single pruned-to fragId we got from NDB API.
+       * the single pruned-to fragId we got from NDB API. Tables with
+       * partition hash fanout > 1 cannot reach here: execSCAN_TABREQ
+       * rejects one-partition pruned scans on such tables.
        */
       tfragCount = 1;
     }
@@ -16783,8 +16837,7 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
     }
 
     const bool partition_hash_interval =
-        scanP->m_scan_dist_key_flag &&
-        tabPtr.p->m_partition_hash_fanout > 1;
+        scanP->m_scan_dist_key_interval_flag;
     const Uint32 scanHashOrFragId =
         partition_hash_interval
             ? scanP->scanFirstHashValue + scanP->scanNextFragId
@@ -17032,14 +17085,14 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
   ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
 
   const bool partition_hash_interval =
-      scanptr.p->m_scan_dist_key_flag &&
-      tabPtr.p->m_partition_hash_fanout > 1;
+      scanptr.p->m_scan_dist_key_interval_flag;
   if (partition_hash_interval) {
     /*
      * scanFragId is a raw hash value in the grouped base-hash interval.
      * Keep distr_key_indicator cleared so DIH maps it through the current
      * table distribution. Uint32 addition may wrap, which is fine for hashes.
      */
+    ndbassert(tabPtr.p->m_partition_hash_fanout > 1);
     distr_key_indicator = 0;
   } else if (scanptr.p->m_scan_dist_key_flag)
   {

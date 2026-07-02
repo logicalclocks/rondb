@@ -297,11 +297,14 @@ ndbd_support_fully_replicated(Uint32 x)
 }
 
 /**
- * Support for NDB_TABLE=PARTITION_HASH=...
+ * Support for NDB_TABLE=PARTITION_HASH=... and for the distribution key
+ * interval flag in ScanTabReq (storedProcId bit 31), used for partition
+ * hash fanout base-key interval scan pruning. All data nodes must support
+ * the flag before an API can send it.
  */
-#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_25_10 NDB_MAKE_VERSION(25,10,14)
+#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_25_10 NDB_MAKE_VERSION(25,10,15)
 #define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_02 NDB_MAKE_VERSION(26,2,6)
-#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_05 NDB_MAKE_VERSION(26,5,0)
+#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_04 NDB_MAKE_VERSION(26,4,2)
 
 static
 inline
@@ -320,15 +323,24 @@ ndbd_support_partition_hash_fanout(Uint32 x)
   }
   if (major == 26)
   {
+    if (minor < 2)
+    {
+      return 0;
+    }
     if (minor == 2)
     {
       return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_02;
     }
-    if (minor >= 5)
+    if (minor == 3)
     {
-      return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_05;
+      return 0;
     }
-    return 0;
+    if (minor == 4)
+    {
+      return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_04;
+    }
+    /* > 26.04 */
+    return 1;
   }
   return 1;
 }

@@ -532,6 +532,7 @@ ErrorBundle ErrorCodes[] = {
   { 2200,  DMEC, AE, "Dirty reads and dirty writes are supported, not other operation types" },
   { 2201,  DMEC, AE, "Parallel Ordered Index scan flag set requires even number of receiver ids" },
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },
+  { 2203,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
 
   /** 
    * Scan application errors

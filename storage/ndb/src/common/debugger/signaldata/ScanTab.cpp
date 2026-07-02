@@ -44,7 +44,8 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
   fprintf(output,
           " Batch: %u LockMode: %u Keyinfo: %u Holdlock: %u "
           "RangeScan: %u Descending: %u TupScan: %u\n ReadCommitted: %u "
-          "DistributionKeyFlag: %u NoDisk: %u Spj: %u MultiFrag: %u\n "
+          "DistributionKeyFlag: %u DistributionKeyIntervalFlag: %u "
+          "NoDisk: %u Spj: %u MultiFrag: %u\n "
           ", PassQueueFlag: %u, AggregationFlag: %u,"
           " TTLIgnoreFragFlag: %u, ParOrdScanFlag: %u",
           sig->getScanBatch(requestInfo),
@@ -53,6 +54,7 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
           sig->getDescendingFlag(requestInfo), sig->getTupScanFlag(requestInfo),
           sig->getReadCommittedFlag(requestInfo),
           sig->getDistributionKeyFlag(requestInfo),
+          sig->getDistributionKeyIntervalFlag(sig->storedProcId),
           sig->getNoDiskFlag(requestInfo), sig->getViaSPJFlag(requestInfo),
           sig->getMultiFragFlag(requestInfo),
           sig->getPassQueueingFlag(requestInfo),
