@@ -228,11 +228,11 @@ bool TransporterReceiveData::init(unsigned maxTransporters) {
     return false;
   }
   const unsigned max_poll_sockets = maxTransporters + 2U;
-  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_spintime = 0;
   m_total_spintime = 0;
   assert(m_bad_data_transporters.isclear());
 #if defined(HAVE_EPOLL_CREATE)
+  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_epoll_fd = epoll_create(max_epoll_events);
   if (m_epoll_fd == -1) {
     perror("epoll_create failed... falling back to poll()!");
@@ -2353,6 +2353,31 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
             TCP_Transporter *tcp_t = (TCP_Transporter *)t;
             more_pending = tcp_t->hasPending();
           }
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+          else if (t->getTransporterType() == tt_RDMA_TRANSPORTER)
+          {
+            /*
+             * RDMA control-socket wake under a job-buffer-full condition.
+             *
+             * RDMA payload never arrives on the control socket: inbound
+             * data is delivered through the recv CQ and surfaces via
+             * m_read_transporters, not m_recv_socket_transporters (see
+             * check_TCP() and docs/rdma-wakeup.txt). We only reach this
+             * arm if the control socket became readable for a connected
+             * RDMA transporter (e.g. an unexpected byte or a peer HUP).
+             * There is no socket payload to drain into a receive buffer
+             * and no SHM/TCP semantics apply, so we intentionally do
+             * nothing: more_pending stays false, the
+             * m_recv_socket_transporters bit is cleared below, and any
+             * disconnect is handled by the normal control-socket dispatch
+             * once the job buffer drains. This mirrors the RDMA arms in
+             * the primary/secondary dispatch blocks; without it an RDMA
+             * transporter would fall into the SHM branch and trip
+             * require(type == SHM) (or require(false) in a build without
+             * SHM support).
+             */
+          }
+#endif
           else
           {
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
@@ -2389,6 +2414,51 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           // doReceive()
           recvdata.m_recv_socket_transporters.set(trp_id, more_pending);
         }
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+        else if (t->getTransporterType() == tt_RDMA_TRANSPORTER &&
+                 ((RDMA_Transporter *)t)->has_received_data())
+        {
+          /**
+           * RDMA job-buffer-full handling.
+           *
+           * Unlike TCP/SHM there is nothing to drain into a receive buffer
+           * here: an inbound RDMA SEND has already landed in a parked HCA
+           * recv slot (moved off the recv CQ by poll_RDMA() in
+           * pollReceive()), and m_recv_socket_transporters is never set for
+           * RDMA. We deliberately do NOT consume the slot -- leaving it
+           * unconsumed withholds the recv credit from the peer, which is the
+           * RDMA-native equivalent of not reading a congested TCP socket.
+           *
+           * We must, however, still propagate the back-pressure signal the
+           * way the TCP branch above does. Without this, a receive thread
+           * whose only ready transporters are RDMA would fall through to the
+           * 'continue' below without ever setting stop_unpacking;
+           * performReceive() would then return 0 (== not buffersFull) and the
+           * mt.cpp receive loop would keep calling pollReceive()+
+           * performReceive() with delay==0 -- a hot spin that re-reaps the CQ
+           * and re-scans every transporter until the block threads drain the
+           * job buffers. Setting stop_unpacking makes performReceive() report
+           * buffersFull, so the caller performs the lighter congested-wait
+           * (recheck_congested_job_buffers) instead.
+           *
+           * m_read_transporters stays set for this trp_id (we 'continue'
+           * before the clear below), so the parked data is re-visited once
+           * congestion clears. m_stop_trp_id gives the same fair-resume point
+           * the TCP path relies on.
+           */
+          // Note reception from this node so that a long congestion window
+          // does not let a heartbeat timeout falsely declare the peer dead:
+          // the data really did arrive (it is parked in the recv slots), we
+          // are only deferring its unpack. The TCP/SHM branches likewise call
+          // transporter_recv_from() whenever they take in bytes.
+          recvdata.transporter_recv_from(node_id, trp_id);
+          if (!stop_unpacking)
+          {
+            stop_unpacking = true;
+            recvdata.m_stop_trp_id = trp_id;
+          }
+        }
+#endif
         continue;
       }
       if (t->getTransporterType() == tt_TCP_TRANSPORTER)
