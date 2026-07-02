@@ -318,6 +318,10 @@ ScanTabReq::setDistributionKeyIntervalFlag  new, storedProcId bit 31:
                                             partition-hash base hash and the
                                             scan covers the fanout interval
                                             starting at it
+ScanTabReq::setDistributionKeyPartIdFlag    new, storedProcId bit 30:
+                                            distributionKey is a distinct
+                                            fragment id and the scan covers
+                                            exactly that fragment
 ```
 
 Readers check the high half of `storedProcId` for non-zero before decoding
@@ -332,37 +336,50 @@ otherwise. The NDB API only sets the flag when the fanout base-key pruning
 path recognised the range, which is version-gated on
 `ndbd_support_partition_hash_fanout()`.
 
-The API only sets the interval flag when all data nodes support it, gated on
-`ndbd_support_partition_hash_fanout()` (25.10.15+, 26.02.6+, 26.04.2+ and
+The API only sets the extended flags when all data nodes support them, gated
+on `ndbd_support_partition_hash_fanout()` (25.10.15+, 26.02.6+, 26.04.2+ and
 anything above 26.04) — the same gate used for `PARTITION_HASH` table
-creation. Without support the scan simply stays unpruned, which is correct
-on any version.
+creation. This gate is required for both flags since old data nodes store
+`storedProcId` unmasked. Without support an interval-prunable scan simply
+stays unpruned and a partition id scan keeps its legacy signal form, which
+is correct on any version.
 
 Existing `distributionKey` scans are not reinterpreted as fanout intervals.
-On fanout tables DBTC rejects a pruned scan without the interval flag with a
-dedicated error (2203, `ZSCAN_PRUNE_PARTITION_HASH_ERROR`): rows sharing a
-base partition key are spread over the fanout interval, so a scan pruned to
-one partition cannot be trusted to see all rows the application intended.
-This fails loudly instead of silently returning partial results, and also
-covers clients that are unaware of partition hash fanout. This defines the
-behavior of the explicit scan partitioning APIs on fanout tables — they are
-all rejected:
+On fanout tables DBTC rejects a hash-valued pruned scan without the interval
+flag with a dedicated error (2203, `ZSCAN_PRUNE_PARTITION_HASH_ERROR`): rows
+sharing a base partition key are spread over the fanout interval, so a scan
+pruned to one partition by a hash value cannot be trusted to see all rows
+the application intended. This fails loudly instead of silently returning
+partial results, and also covers clients that are unaware of partition hash
+fanout. Hash-valued explicit scan partitioning is therefore rejected on
+fanout tables:
 
 ```
 ScanOptions::SO_PART_INFO
   PartitionSpec::PS_DISTR_KEY_PART_PTR
   PartitionSpec::PS_DISTR_KEY_RECORD
+```
 
+Distinct-partition explicit scan partitioning works on fanout tables via the
+partition id flag, which tells DBTC to resolve `distributionKey` as an exact
+fragment id (`distr_key_indicator = 1` towards DIH) instead of mapping it
+through the table distribution as a hash:
+
+```
 ScanOptions::SO_PARTITION_ID
-
+ScanOptions::SO_PART_INFO with PartitionSpec::PS_USER_DEFINED
 NdbOperation::setPartitionId(partitionId)
 ```
 
-mysqld only uses `SO_PARTITION_ID` for user-defined partitioning, which is
-rejected on fanout tables, so SQL scans cannot hit these paths. The TTL purge
-scans in rest-server2 use `setPartitionId()` per fragment and would fail with
-error 2203 on a fanout table; combining TTL with `PARTITION_HASH` fanout
-needs either a DDL-level rejection or purge-scan support as follow-up work.
+Scanning a distinct fragment enumerates fragments rather than locating rows
+by key, so it is well defined regardless of fanout. This keeps the TTL purge
+scans working on fanout tables: rest-server2 purges fragment by fragment
+using `setPartitionId()`. DBTC validates the fragment id against the DIH
+fragment count and rejects out-of-range ids with a fragment error. As a side
+effect the fragment id resolution is also exact during hash-map changes,
+where the legacy value-as-hash mapping could drift. mysqld only uses
+`SO_PARTITION_ID` for user-defined partitioning, which is rejected on fanout
+tables, so SQL scans cannot hit these paths.
 
 In the NDB API, the pruning state distinguishes the two prune kinds
 (`SPS_ONE_PARTITION` vs `SPS_PARTITION_HASH_INTERVAL`); MRR ranges only stay
@@ -387,16 +404,21 @@ Current DBTC scan anchors:
   * `sendScanFragReq()`
 
 Partition-pruned scans store one `m_scan_dist_key` and one flag. The
-implemented interval mode adds `m_scan_dist_key_interval_flag`, parsed from
-`ScanTabReq::getDistributionKeyIntervalFlag()`, giving:
+implemented modes add `m_scan_dist_key_interval_flag` and
+`m_scan_dist_key_part_id_flag`, parsed from the storedProcId extended bits,
+giving:
 
 ```
-scan_prune_type: none | one_fragment | fragment_interval
-  none:              !m_scan_dist_key_flag
-  one_fragment:      m_scan_dist_key_flag, tfragCount = 1
-  fragment_interval: m_scan_dist_key_flag && m_scan_dist_key_interval_flag,
-                     scanFirstHashValue = m_scan_dist_key,
-                     tfragCount = table fanout
+scan_prune_type: none | one_fragment | one_fragment_by_id | fragment_interval
+  none:               !m_scan_dist_key_flag
+  one_fragment:       m_scan_dist_key_flag, value is hash or UD partition id,
+                      tfragCount = 1
+  one_fragment_by_id: m_scan_dist_key_flag && m_scan_dist_key_part_id_flag,
+                      value is a distinct fragment id, tfragCount = 1,
+                      distr_key_indicator = 1 towards DIH
+  fragment_interval:  m_scan_dist_key_flag && m_scan_dist_key_interval_flag,
+                      scanFirstHashValue = m_scan_dist_key,
+                      tfragCount = table fanout
 ```
 
 For `fragment_interval`:
@@ -409,11 +431,13 @@ For `fragment_interval`:
 * reuse the existing fragment-location list and MultiFrag grouping logic
 
 DBTC only enters the interval path when `m_scan_dist_key_interval_flag` is
-set. On tables with `fanout > 1`, `execSCAN_TABREQ` rejects a pruned scan
-without the interval flag with error 2203 and rejects the interval flag
-without the distribution key flag (or on tables without fanout) with a
-schema-version error, so a one-fragment pruned scan can never silently run
-against a fanout table.
+set. On tables with `fanout > 1`, `execSCAN_TABREQ` rejects a hash-valued
+pruned scan (neither interval nor partition id flag) with error 2203, and
+rejects malformed flag combinations (interval flag without the distribution
+key flag or on tables without fanout, both extended flags together, or the
+partition id flag without the distribution key flag) with a schema-version
+error, so a hash-pruned one-fragment scan can never silently run against a
+fanout table while distinct-fragment scans keep working.
 
 The existing MultiFrag path can already group multiple fragment ids into
 `SCAN_FRAGREQ`; the main work is getting the correct list of fragments instead
@@ -499,20 +523,25 @@ Exit criteria:
 
 ### Phase 4: DBTC Scan Interval Pruning
 
-* Extend `ScanTabReq` with the `DistributionKeyIntervalFlag` request-info bit
-  so explicit scan partitioning APIs cannot be mistaken for fanout base-key
-  interval pruning.
-* Extend API scan-pruning state with `SPS_PARTITION_HASH_INTERVAL`.
-* Extend DBTC scan state (`m_scan_dist_key_interval_flag`) and DIH fragment
-  resolution loop.
-* Reject one-partition pruned scans on fanout tables in DBTC with error 2203.
+* Extend `ScanTabReq` with the `DistributionKeyIntervalFlag` and
+  `DistributionKeyPartIdFlag` extended bits so explicit scan partitioning
+  APIs cannot be mistaken for fanout base-key interval pruning.
+* Extend API scan-pruning state with `SPS_PARTITION_HASH_INTERVAL` and
+  distinguish distinct-partition-id prune values.
+* Extend DBTC scan state (`m_scan_dist_key_interval_flag`,
+  `m_scan_dist_key_part_id_flag`) and DIH fragment resolution loop.
+* Reject hash-valued one-partition pruned scans on fanout tables in DBTC
+  with error 2203; distinct-fragment-id scans (setPartitionId(),
+  SO_PARTITION_ID, e.g. TTL purge) keep working via the partition id flag.
 * Reuse existing MultiFrag scan grouping.
 
 Exit criteria:
 
 * equality on base key scans exactly `fanout` fragments
-* explicit one-fragment scan partitioning on fanout tables is rejected
-  clearly with error 2203
+* hash-valued explicit one-fragment scan partitioning on fanout tables is
+  rejected clearly with error 2203
+* setPartitionId()/SO_PARTITION_ID scans one distinct fragment, also on
+  fanout tables, and TTL purge works on fanout tables
 * `fanout = 1` is equivalent to current one-partition pruning
 * no rows are missed or duplicated
 
@@ -699,8 +728,12 @@ Checks:
 * different intervals fall back or are represented safely
 * mixed prunable/non-prunable falls back to all partitions
 * equality only on detail-key columns does not trigger first-version pruning
-* explicit scan partitioning APIs fail with error 2203 on fanout tables and
-  keep one-fragment semantics on all other tables
+* hash-valued explicit scan partitioning (SO_PART_INFO with distribution key
+  values) fails with error 2203 on fanout tables and keeps one-fragment
+  semantics on all other tables
+* setPartitionId()/SO_PARTITION_ID scans exactly the given fragment on all
+  tables including fanout tables, and rejects out-of-range fragment ids
+* TTL purge scans work on fanout tables
 * fanout interval pruning uses only the new `DistributionKeyIntervalFlag`
 * `fanout = 1` keeps current one-partition behavior
 

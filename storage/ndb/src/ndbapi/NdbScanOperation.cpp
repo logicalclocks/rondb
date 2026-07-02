@@ -138,6 +138,7 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   m_readTuplesCalled = false;
   m_interpretedCodeOldApi = nullptr;
   m_pruneState = SPS_UNKNOWN;
+  m_pruningKeyPartitionId = false;
 
   m_api_receivers_count = 0;
   m_current_api_receiver = 0;
@@ -316,6 +317,7 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
 
     m_pruneState = SPS_FIXED;
     m_pruningKey = options->partitionId;
+    m_pruningKeyPartitionId = true;
 
     /* And set the vars in the operation now too */
     theDistributionKey = options->partitionId;
@@ -345,6 +347,8 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
     assert(m_pruneState == SPS_UNKNOWN);
     m_pruneState = SPS_FIXED;
     m_pruningKey = partValue;
+    m_pruningKeyPartitionId =
+        (pSpec->type == Ndb::PartitionSpec::PS_USER_DEFINED);
 
     theDistributionKey = partValue;
     theDistrKeyIndicator_ = 1;
@@ -1513,6 +1517,7 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
                                            bool allow_continous_scan) {
   m_ordered = m_descending = false;
   m_pruneState = SPS_UNKNOWN;
+  m_pruningKeyPartitionId = false;
   Uint32 fragCount = m_currentTable->m_fragmentCount;
 
   assert(fragCount > 0);
@@ -2742,6 +2747,18 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   ScanTabReq::setDistributionKeyFlag(reqInfo, theDistrKeyIndicator_);
   ScanTabReq::setDistributionKeyIntervalFlag(
       req->storedProcId, m_pruneState == SPS_PARTITION_HASH_INTERVAL);
+  /*
+   * Tell DBTC when the distribution key is a distinct partition id, so it
+   * is resolved as an exact fragment id and never mistaken for a hash.
+   * This makes setPartitionId()/SO_PARTITION_ID scans (e.g. TTL purge)
+   * work on tables with partition hash fanout. Old data nodes store
+   * storedProcId unmasked, so the bit may only be sent when all data
+   * nodes understand the extended request-info bits.
+   */
+  ScanTabReq::setDistributionKeyPartIdFlag(
+      req->storedProcId,
+      (m_pruneState == SPS_FIXED) && m_pruningKeyPartitionId &&
+          ndbd_support_partition_hash_fanout(theNdb->getMinDbNodeVersion()));
 
   /* Set aggregation information */
   if (m_aggregation_code != nullptr) {

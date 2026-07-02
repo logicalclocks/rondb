@@ -16103,16 +16103,30 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   scanptr.p->m_scan_dist_key_flag = ScanTabReq::getDistributionKeyFlag(ri);
   scanptr.p->m_scan_dist_key_interval_flag =
       ScanTabReq::getDistributionKeyIntervalFlag(scanTabReq->storedProcId);
+  scanptr.p->m_scan_dist_key_part_id_flag =
+      ScanTabReq::getDistributionKeyPartIdFlag(scanTabReq->storedProcId);
 
   if (unlikely(scanptr.p->m_scan_dist_key_interval_flag &&
                (!scanptr.p->m_scan_dist_key_flag ||
+                scanptr.p->m_scan_dist_key_part_id_flag ||
                 tabptr.p->m_partition_hash_fanout <= 1))) {
     jam();
     /*
      * Interval pruning requires API and kernel to agree on the table's
      * partition hash fanout metadata. The metadata cannot be changed
      * online, so a mismatch means the API used a stale table definition.
+     * The interval flag and the partition id flag are mutually exclusive.
      */
+    errCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
+
+  if (unlikely(scanptr.p->m_scan_dist_key_part_id_flag &&
+               !scanptr.p->m_scan_dist_key_flag)) {
+    jam();
+    /* Partition id flag without a distribution key is malformed. */
     errCode = ZWRONG_SCHEMA_VERSION_ERROR;
     transP->apiScanRec = scanptr.i;
     releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
@@ -16121,15 +16135,18 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   if (unlikely(scanptr.p->m_scan_dist_key_flag &&
                !scanptr.p->m_scan_dist_key_interval_flag &&
+               !scanptr.p->m_scan_dist_key_part_id_flag &&
                tabptr.p->m_partition_hash_fanout > 1)) {
     jam();
     /*
      * Rows sharing a base partition key are spread over the fanout interval
-     * of fragments, so a scan pruned to one partition cannot be trusted to
-     * see all rows the application intended. This also rejects clients that
-     * are unaware of partition hash fanout and old-style explicit scan
-     * partitioning (SO_PARTITION_ID, SO_PART_INFO, setPartitionId()) on
-     * fanout tables, rather than silently returning partial results.
+     * of fragments, so a scan pruned to one partition by a hash value
+     * cannot be trusted to see all rows the application intended. This
+     * rejects clients that are unaware of partition hash fanout and
+     * hash-valued explicit scan partitioning (SO_PART_INFO) on fanout
+     * tables, rather than silently returning partial results. Scans pruned
+     * to a distinct fragment id carry m_scan_dist_key_part_id_flag and are
+     * allowed.
      */
     errCode = ZSCAN_PRUNE_PARTITION_HASH_ERROR;
     transP->apiScanRec = scanptr.i;
@@ -16321,6 +16338,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_scan_block_no = DBLQH;
   scanptr.p->m_scan_dist_key_flag = 0;
   scanptr.p->m_scan_dist_key_interval_flag = 0;
+  scanptr.p->m_scan_dist_key_part_id_flag = 0;
   scanptr.p->m_start_ticks = getHighResTimer();
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
@@ -16656,12 +16674,26 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
       }
       scanptr.p->scanFirstHashValue = scanptr.p->m_scan_dist_key;
       tfragCount = partition_hash_fanout;
+    } else if (scanptr.p->m_scan_dist_key_part_id_flag) {
+      /**
+       * m_scan_dist_key is a distinct fragment id. Scan exactly that
+       * fragment, also on tables with partition hash fanout. Validate the
+       * fragment id against the fragment count from DIH instead of
+       * trusting the API.
+       */
+      if (unlikely(scanptr.p->m_scan_dist_key >= tfragCount)) {
+        jam();
+        abortScanLab(signal, scanptr, ZNO_FRAGMENT_ERROR, true,
+                     apiConnectptr);
+        return;
+      }
+      tfragCount = 1;
     } else {
       /**
        * Prepare for sendDihGetNodeReq to request DBDIH info for
        * the single pruned-to fragId we got from NDB API. Tables with
        * partition hash fanout > 1 cannot reach here: execSCAN_TABREQ
-       * rejects one-partition pruned scans on such tables.
+       * rejects hash-valued one-partition pruned scans on such tables.
        */
       tfragCount = 1;
     }
@@ -17100,7 +17132,15 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
     ndbassert(scanFragId == 0); /* Pruned to 1 fragment */
     req->hashValue = scanptr.p->m_scan_dist_key;
 
-    distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    if (scanptr.p->m_scan_dist_key_part_id_flag) {
+      /*
+       * m_scan_dist_key is a distinct fragment id, resolve it directly
+       * instead of mapping it through the table distribution as a hash.
+       */
+      distr_key_indicator = ZTRUE;
+    } else {
+      distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    }
   }
   req->distr_key_indicator = distr_key_indicator;
   c_dih->execDIGETNODESREQ(signal);

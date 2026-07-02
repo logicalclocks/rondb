@@ -752,6 +752,9 @@ class NdbScanOperation : public NdbOperation {
   ScanPruningState m_pruneState;
   Uint32 m_pruningKey;  // Distr key hash, actual partition id or grouped
                         // partition-hash base hash (interval start).
+  // m_pruningKey is a distinct partition id (SO_PARTITION_ID,
+  // setPartitionId() or PS_USER_DEFINED), not a distribution hash.
+  bool m_pruningKeyPartitionId;
 
   bool m_continousScan;
   /**

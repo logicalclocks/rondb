@@ -2011,9 +2011,15 @@ class Dbtc : public SimulatedBlock {
      * fragments starting at it. Only valid together with
      * m_scan_dist_key_flag on tables with partition hash fanout > 1.
      * Without it a pruned scan always covers exactly one fragment.
+     * m_scan_dist_key_part_id_flag: m_scan_dist_key is a distinct fragment
+     * id and the scan covers exactly that fragment. Set by explicit scan
+     * partitioning (SO_PARTITION_ID, setPartitionId()), also allowed on
+     * tables with partition hash fanout (e.g. TTL purge scans). Never
+     * valid together with m_scan_dist_key_interval_flag.
      */
     bool m_scan_dist_key_flag;
     bool m_scan_dist_key_interval_flag;
+    bool m_scan_dist_key_part_id_flag;
     bool m_par_ordered_scan_flag;
     Uint32 m_scan_dist_key;
     Uint32 m_read_any_node;
