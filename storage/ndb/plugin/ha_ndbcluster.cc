@@ -35,6 +35,7 @@
 #include <algorithm>  // std::min(),std::max()
 #include <memory>
 #include <sstream>
+#include <stdexcept>  // std::out_of_range
 #include <string>
 
 #include "my_config.h"  // WORDS_BIGENDIAN
@@ -9729,7 +9730,18 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
               "Invalid TTL format, please use: 'Seconds@Column (uint@string)'");
         }
       }
-      ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      // A value beyond LLONG_MAX makes std::stoll throw std::out_of_range;
+      // uncaught, that aborts mysqld (any CREATE/ALTER user could crash the
+      // server). The value is already validated as non-empty and all-digits,
+      // so an out-of-range value is the only parse failure to expect here --
+      // treat it as "too large" and reject with the same error as the >= RNIL
+      // check below.
+      try {
+        ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      } catch (const std::out_of_range &) {
+        return create.failed_illegal_create_option(
+            "The maximum ttl is 4294967039 seconds");
+      }
       if (ttl_sec_raw >= RNIL) {
         return create.failed_illegal_create_option(
             "The maximum ttl is 4294967039 seconds");
@@ -16376,7 +16388,16 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
           return true;
         }
       }
-      new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      // See ha_ndbcluster::create: a value beyond LLONG_MAX makes std::stoll
+      // throw std::out_of_range; uncaught, that aborts mysqld. The prefix is
+      // already validated as non-empty all-digits, so an out-of-range value is
+      // the only parse failure to expect here -- treat it as "too large".
+      try {
+        new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      } catch (const std::out_of_range &) {
+        *reason = "The maximum ttl is 4294967039 seconds";
+        return true;
+      }
       if (new_ttl_sec_raw >= RNIL) {
           *reason = "The maximum ttl is 4294967039 seconds";
           return true;

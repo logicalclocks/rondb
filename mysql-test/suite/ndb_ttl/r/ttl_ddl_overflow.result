@@ -1,0 +1,43 @@
+DROP TABLE IF EXISTS test.ovf;
+# CREATE with a 20-digit TTL (> LLONG_MAX) must be rejected cleanly,
+# not crash the server via an uncaught std::out_of_range from std::stoll.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=99999999999999999999@b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'The maximum ttl is 4294967039 seconds'
+# LLONG_MAX + 1 (19 digits) also overflows std::stoll and must be rejected.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=9223372036854775808@b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'The maximum ttl is 4294967039 seconds'
+# A value that fits in long long but exceeds the documented max
+# (RNIL-1 = 4294967039) still gets the clean maximum-ttl error.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5000000000@b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'The maximum ttl is 4294967039 seconds'
+# The server is still alive after the rejected DDLs: a valid TTL works.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=60@b";
+DROP TABLE test.ovf;
+# A leading-zero TTL that is numerically in range (000...060 = 60s) must
+# still be ACCEPTED -- the overflow guard must key off numeric magnitude,
+# not raw digit count.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=00000000000000000060@b";
+# ALTER with an over-long TTL digit string must also be rejected cleanly.
+ALTER TABLE test.ovf COMMENT="NDB_TABLE=TTL=99999999999999999999@b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'The maximum ttl is 4294967039 seconds'
+# Server survived the ALTER path too: table is still usable.
+INSERT INTO test.ovf VALUES (1, NOW());
+SELECT a FROM test.ovf ORDER BY a;
+a
+1
+DROP TABLE test.ovf;
