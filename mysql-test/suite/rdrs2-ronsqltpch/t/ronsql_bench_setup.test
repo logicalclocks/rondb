@@ -1,0 +1,30 @@
+--source include/have_ndb.inc
+
+# Benchmark cluster setup for rondb-cli RonSQL benchmarks
+# =======================================================
+#
+# This test exists to start a benchmark cluster (mysqld + ndbmtd + RDRS)
+# with the enlarged memory configuration in ronsql_bench_setup.cnf:
+#
+#   ./mtr --suite=rdrs2-ronsqltpch ronsql_bench_setup --start-and-exit
+#
+# mtr prints the mysqld port (MASTER_MYPORT). The RDRS REST port is
+# assigned by mtr and written into the generated config file:
+#
+#   grep ServerPort var/rdrs.1.1_config.json      (no-TLS instance)
+#
+# Then run the benchmarks:
+#
+#   cd tools/rondb-cli && go build -o rondb .
+#   ./rondb --mysql-port <MASTER_MYPORT> --rdrs-port <ServerPort> --no-rondis
+#   .load_tpch 1 8 200
+#   .bench_ronsql all
+#
+# See .help bench in the CLI and
+# storage/ndb/claude_files/pushdown_join_aggregation/ronsql_cli_benchmarks.md.
+#
+# When run as a normal MTR test (without --start-and-exit) it only verifies
+# that the cluster came up with the benchmark configuration.
+
+--echo # Verify cluster is running
+SELECT 1;

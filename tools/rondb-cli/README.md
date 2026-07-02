@@ -244,7 +244,22 @@ rondb-cli includes built-in benchmarks for Rondis, SQL, and REST API (RDRS). Use
 # RDRS (REST API) benchmarks
 .bench_rdrs [T] [N] [R]          Batch pk-read benchmark
 .bench_rdrs_cont [T] [N] [R] [S] Continuous benchmark
+
+# RonSQL benchmarks (pushdown aggregation / CTE queries over TPC-H data)
+.load_tpch [SF] [T] [B]          Load TPC-H data (SF=scale factor)
+.bench_ronsql                    List available RonSQL benchmark queries
+.bench_ronsql <name> [T] [N]     Run a named query benchmark (default 1 thread x 10 requests)
+.bench_ronsql all [T] [N]        Run all RonSQL benchmark queries sequentially
 ```
+
+The RonSQL benchmarks include Feature-Store-style queries (`fs_*`: CTE feature
+groups over one table or a simple join, joined to an entity table via scans and
+key lookups) and TPC-H queries rewritten with CTEs (`tpch_q2`, `tpch_q11`,
+`tpch_q13`, `tpch_q15`, `tpch_q22`). They require TPC-H data loaded via
+`.load_tpch`. Latencies are reported with microsecond precision (min/avg/max,
+p95/p99/p99.9). Note: if the `tpch` database was loaded with an older CLI
+version, run `.drop_tpch` and reload to pick up the secondary indexes the
+benchmarks use.
 
 Key format: `bench:key:<client>:<thread>:<key>:<row>`
 

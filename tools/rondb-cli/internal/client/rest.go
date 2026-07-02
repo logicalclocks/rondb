@@ -44,14 +44,16 @@ type RestClient struct {
 	client  *http.Client
 	baseURL string
 	apiKey  string
+	timeout time.Duration
 }
 
 // RestOptions holds connection options for REST API
 type RestOptions struct {
-	Host   string
-	Port   int
-	TLS    bool
-	APIKey string
+	Host    string
+	Port    int
+	TLS     bool
+	APIKey  string
+	Timeout time.Duration // Per-request timeout (default 30s if zero)
 }
 
 // NewRestClient creates a new REST client with default options
@@ -79,8 +81,13 @@ func NewRestClientWithOptions(opts RestOptions) (*RestClient, error) {
 		}
 	}
 
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
 	httpClient := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   timeout,
 		Transport: transport,
 	}
 
@@ -88,6 +95,7 @@ func NewRestClientWithOptions(opts RestOptions) (*RestClient, error) {
 		client:  httpClient,
 		baseURL: baseURL,
 		apiKey:  opts.APIKey,
+		timeout: timeout,
 	}
 
 	// Validate connection
@@ -134,7 +142,7 @@ func (c *RestClient) Delete(endpoint string, body interface{}) ([]byte, time.Dur
 
 // doRequest sends an HTTP request with JSON body and returns the response
 func (c *RestClient) doRequest(method, endpoint string, body interface{}) ([]byte, time.Duration, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
 	jsonBody, err := json.Marshal(body)

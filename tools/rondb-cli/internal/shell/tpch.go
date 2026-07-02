@@ -126,7 +126,8 @@ var tpchTableDDL = map[string]string{
 		s_phone CHAR(15) NOT NULL,
 		s_acctbal DECIMAL(15,2) NOT NULL,
 		s_comment VARCHAR(101),
-		PRIMARY KEY (s_suppkey)
+		PRIMARY KEY (s_suppkey),
+		KEY idx_supplier_nationkey (s_nationkey)
 	) ENGINE=NDB`,
 
 	"customer": `CREATE TABLE IF NOT EXISTS tpch.customer (
@@ -138,7 +139,8 @@ var tpchTableDDL = map[string]string{
 		c_acctbal DECIMAL(15,2) NOT NULL,
 		c_mktsegment CHAR(10) NOT NULL,
 		c_comment VARCHAR(117),
-		PRIMARY KEY (c_custkey)
+		PRIMARY KEY (c_custkey),
+		KEY idx_customer_nationkey (c_nationkey)
 	) ENGINE=NDB`,
 
 	"part": `CREATE TABLE IF NOT EXISTS tpch.part (
@@ -173,7 +175,8 @@ var tpchTableDDL = map[string]string{
 		o_clerk CHAR(15) NOT NULL,
 		o_shippriority INT NOT NULL,
 		o_comment VARCHAR(79),
-		PRIMARY KEY (o_orderkey)
+		PRIMARY KEY (o_orderkey),
+		KEY idx_orders_custkey (o_custkey)
 	) ENGINE=NDB`,
 
 	"lineitem": `CREATE TABLE IF NOT EXISTS tpch.lineitem (
@@ -193,7 +196,9 @@ var tpchTableDDL = map[string]string{
 		l_shipinstruct CHAR(25) NOT NULL,
 		l_shipmode CHAR(10) NOT NULL,
 		l_comment VARCHAR(44),
-		PRIMARY KEY (l_orderkey, l_linenumber)
+		PRIMARY KEY (l_orderkey, l_linenumber),
+		KEY idx_lineitem_suppkey (l_suppkey),
+		KEY idx_lineitem_shipdate (l_shipdate)
 	) ENGINE=NDB`,
 }
 

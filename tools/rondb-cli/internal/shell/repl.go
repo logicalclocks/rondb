@@ -476,6 +476,8 @@ func (s *Shell) executeInternal(line string) error {
 			switch parts[1] {
 			case "internal":
 				s.printHelpInternal()
+			case "bench", "benchmarks":
+				s.printHelpBench()
 			case "start":
 				s.printHelpStart()
 			default:
@@ -777,6 +779,31 @@ func (s *Shell) executeInternal(line string) error {
 			return err
 		}
 		return s.runDelRondis(numThreads, numOps, rowsPerOp)
+	case "bench_ronsql":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run bench_ronsql.")
+		}
+		queryName := ""
+		if len(parts) > 1 {
+			queryName = parts[1]
+		}
+		numThreads := 1
+		numOps := 10
+		if len(parts) > 2 {
+			n, err := strconv.Atoi(parts[2])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid number of threads: %s", parts[2])
+			}
+			numThreads = n
+		}
+		if len(parts) > 3 {
+			n, err := strconv.Atoi(parts[3])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid number of requests: %s", parts[3])
+			}
+			numOps = n
+		}
+		return s.runBenchRonSQL(queryName, numThreads, numOps)
 	case "bench_rdrs":
 		if s.restClient == nil {
 			return fmt.Errorf("REST API not connected. Cannot run bench_rdrs.")
@@ -4128,7 +4155,8 @@ Commands:
     .demo               Run a quick demo (write, read, query)
     .tables             List all tables
     .help               Show this help
-    .help internal      Show benchmark commands
+    .help bench         Benchmark guide: what each benchmark measures, how to run them
+    .help internal      Show benchmark command reference
     .help start         Show connection flags and environment variables
     quit, exit, q       Exit the shell
 
@@ -4173,8 +4201,99 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, T=threads, B=batch size)
     .drop_tpch                           Drop all TPC-H tables and database
 
+  RonSQL benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):
+    .bench_ronsql                        List available RonSQL benchmark queries
+    .bench_ronsql <name> [T] [N]         Run named query T threads × N requests (default 1×10)
+    .bench_ronsql all [T] [N]            Run all RonSQL benchmark queries sequentially
+
 Key format: bench:key:<client>:<thread>:<key>:<row>
-Defaults: T=2, N=1000, R=1, W=0, S=60, client=0, SF=1, B=100
+Defaults: T=4, N=100, R=10, W=0, S=60, client=0, SF=1, B=100 (bench_ronsql: T=1, N=10)
+
+Use .help bench for a guided overview of what each benchmark measures, with examples.
+`
+	fmt.Println(help)
+}
+
+func (s *Shell) printHelpBench() {
+	help := `
+RonDB CLI Benchmark Guide
+
+All benchmarks run from this shell and report throughput plus latency
+percentiles (min/avg/max, p95/p99/p99.9). Latencies below 1ms are printed
+in microseconds. Each thread uses its own connection; total requests = T x N.
+
+Common parameters:
+  T = threads    N = requests per thread    R = rows per request
+  W = write percentage (0=all reads, 100=all writes)    S = duration seconds
+
+1. Rondis benchmarks - Redis-protocol key-value operations
+   Measures point read/write throughput and latency over the Rondis port.
+   Prerequisite: load keys first with .load_rondis (same T/N/R you benchmark with).
+
+     .load_rondis 4 1000 10          Load: 4 threads x 1000 ops x 10 rows
+     .bench_rondis 4 1000 10 0       Read-only benchmark on those keys
+     .bench_rondis_cont 4 1000 10 20 60   Continuous: 20% writes, 60 seconds
+     .del_rondis 4 1000 10           Clean up
+
+2. SQL benchmarks - point and scan queries through mysqld
+   Measures SELECT/INSERT latency via the MySQL protocol on test.sql_test.
+   Prerequisite: .load_sql (or .load_rdrs - same table).
+
+     .load_sql 4 1000 10             Load rows via INSERT
+     .bench_sql 4 1000 10 0          Point read benchmark (primary key IN-list)
+     .bench_sql_scan 4 1000 10       Scan benchmark (partial key: user_id only)
+     .bench_sql_cont 4 1000 10 20 60      Continuous mixed read/write, 60s
+     .bench_sql_scan_cont 4 1000 10 60    Continuous scans, 60s
+     .del_sql 4 1000 10 / .drop_sql  Clean up rows / drop the table
+
+3. RDRS benchmarks - REST API batch pk-reads/writes
+   Measures batched key-value operations through the RDRS REST server
+   (same test.sql_test table as the SQL benchmarks).
+
+     .load_rdrs 4 1000 10            Load rows via REST batchwrite
+     .bench_rdrs 4 1000 10 0         Batch pk-read benchmark
+     .bench_rdrs_cont 4 1000 10 0 60      Continuous benchmark, 60s
+     .del_rdrs 4 1000 10             Clean up via REST batchdelete
+
+4. RonSQL benchmarks - pushdown aggregation / CTE queries over TPC-H data
+   Measures end-to-end analytic query latency via the RonSQL REST endpoint:
+   RonSQL parse/prepare + aggregation pushed down to the data nodes.
+   Prerequisite: .load_tpch (creates the tpch database; SF=1 is ~8.6M rows).
+
+     .load_tpch 1 8 200              Load TPC-H scale factor 1, 8 threads
+     .bench_ronsql                   List all queries with descriptions
+     .bench_ronsql fs_point 4 100    Feature-vector point query, 4 threads x 100
+     .bench_ronsql tpch_q15          TPC-H Q15 CTE rewrite (default 1 x 10)
+     .bench_ronsql all 1 10          Run every query sequentially
+
+   Query families:
+     fs_*     Feature-Store-style: CTEs compute per-entity aggregate features
+              (over one table or a simple join), joined to an entity table
+              via scans and key lookups. fs_point uses a random customer key
+              per request; fs_scalar isolates pure CTE materialization cost.
+     tpch_q*  TPC-H queries whose official form contains a subquery or
+              derived table, rewritten with CTEs: Q2, Q11, Q13, Q15, Q22.
+
+   Each run starts with one warmup request that validates the query (an
+   unsupported shape fails immediately with the RonSQL error), primes caches,
+   and prints its latency and result row count before the timed run begins.
+
+   Note: if tpch was loaded by an older CLI build, run .drop_tpch and reload
+   to pick up the secondary indexes the benchmarks use.
+
+   To start a benchmark cluster (mysqld + ndbmtd + RDRS) via MTR:
+     cd mysql-test
+     ./mtr --suite=rdrs2-ronsqltpch ronsql_bench_setup --start-and-exit
+     grep ServerPort var/rdrs.1.1_config.json    (RDRS REST port, no-TLS)
+   then connect: rondb --mysql-port <mysqld port> --rdrs-port <port> --no-rondis
+
+Tips:
+  .client N     Set a client ID prefix so multiple CLI instances can benchmark
+                concurrently without key collisions (families 1-3)
+  .debug 1      Print every request and response
+  .help internal   Compact command reference
+
+Defaults: T=4, N=100, R=10, W=0, S=60 (bench_ronsql: T=1, N=10; load_tpch: SF=1, T=4, B=100)
 `
 	fmt.Println(help)
 }
@@ -4356,6 +4475,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".drop_tpch"),
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
+		readline.PcItem(".bench_ronsql", ronsqlBenchCompletions()...),
 		readline.PcItem(".browse"),
 		readline.PcItem(".demo"),
 		readline.PcItem(".debug"),
@@ -4366,6 +4486,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		),
 		readline.PcItem(".client"),
 		readline.PcItem(".help",
+			readline.PcItem("bench"),
 			readline.PcItem("internal"),
 			readline.PcItem("start"),
 		),
