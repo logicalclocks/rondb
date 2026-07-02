@@ -6070,11 +6070,74 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
 
   tablePtr.p->ttlSec = c_tableDesc.TTLSec;
   tablePtr.p->ttlColumnNo = c_tableDesc.TTLColumnNo;
-  tablePtr.p->partitionHashBaseKeyCount =
-      (Uint8)c_tableDesc.PartitionHashBaseKeyCount;
-  tablePtr.p->partitionHashDetailKeyCount =
-      (Uint8)c_tableDesc.PartitionHashDetailKeyCount;
-  tablePtr.p->partitionHashFanout = (Uint16)c_tableDesc.PartitionHashFanout;
+  Uint32 partitionHashBaseKeyCount = c_tableDesc.PartitionHashBaseKeyCount;
+  Uint32 partitionHashDetailKeyCount = c_tableDesc.PartitionHashDetailKeyCount;
+  Uint32 partitionHashFanout = c_tableDesc.PartitionHashFanout;
+  Uint32 partitionHashPrimaryKeyCount = c_tableDesc.NoOfKeyAttr;
+  if (DictTabInfo::isOrderedIndex(c_tableDesc.TableType) &&
+      c_tableDesc.PrimaryTableId != RNIL) {
+    TableRecordPtr basePtr;
+    if (!find_object(basePtr, c_tableDesc.PrimaryTableId) ||
+        !basePtr.p->isTable()) {
+      jam();
+      parseP->errorCode = CreateIndxRef::InvalidPrimaryTable;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    partitionHashPrimaryKeyCount = basePtr.p->noOfPrimkey;
+  }
+  if (partitionHashPrimaryKeyCount != 0 && partitionHashBaseKeyCount == 0 &&
+      partitionHashDetailKeyCount == 0 && partitionHashFanout == 1) {
+    partitionHashBaseKeyCount = partitionHashPrimaryKeyCount;
+  }
+  if (partitionHashBaseKeyCount > 0xff ||
+      partitionHashDetailKeyCount > 0xff || partitionHashFanout > 0xffff ||
+      partitionHashFanout == 0) {
+    jam();
+    parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+    parseP->errorLine = __LINE__;
+    return;
+  }
+  if (partitionHashPrimaryKeyCount != 0 &&
+      (partitionHashBaseKeyCount == 0 ||
+       partitionHashBaseKeyCount + partitionHashDetailKeyCount !=
+           partitionHashPrimaryKeyCount)) {
+    jam();
+    parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+    parseP->errorLine = __LINE__;
+    return;
+  }
+  if (partitionHashFanout > 1) {
+    if (partitionHashDetailKeyCount == 0) {
+      jam();
+      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    if ((tablePtr.p->m_bits & TableRecord::TR_FullyReplicated) != 0) {
+      jam();
+      parseP->errorCode = CreateTableRef::WrongPartitionBalanceFullyReplicated;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    if (c_tableDesc.FragmentType == DictTabInfo::UserDefined) {
+      jam();
+      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    if (!DictTabInfo::isOrderedIndex(c_tableDesc.TableType) &&
+        (tablePtr.p->partitionCount == 0 ||
+         (tablePtr.p->partitionCount % partitionHashFanout) != 0)) {
+      jam();
+      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+  }
+  tablePtr.p->partitionHashBaseKeyCount = (Uint8)partitionHashBaseKeyCount;
+  tablePtr.p->partitionHashDetailKeyCount = (Uint8)partitionHashDetailKeyCount;
+  tablePtr.p->partitionHashFanout = (Uint16)partitionHashFanout;
 
   g_eventLogger->info("[DICT]s< parsed c_tableDesc , table_id: %u, "
                       "TTL sec: %u, TTL column no: %u",
@@ -13100,6 +13163,13 @@ void Dbdict::createIndex_toCreateTable(Signal *signal, SchemaOpPtr op_ptr) {
                ~tablePtr.p->hashMapObjectId != 0);
     w.add(DictTabInfo::HashMapObjectId, tablePtr.p->hashMapObjectId);
     w.add(DictTabInfo::HashMapVersion, tablePtr.p->hashMapVersion);
+  }
+  if (createIndexPtr.p->m_request.indexType == DictTabInfo::OrderedIndex) {
+    w.add(DictTabInfo::PartitionHashBaseKeyCount,
+          tablePtr.p->partitionHashBaseKeyCount);
+    w.add(DictTabInfo::PartitionHashDetailKeyCount,
+          tablePtr.p->partitionHashDetailKeyCount);
+    w.add(DictTabInfo::PartitionHashFanout, tablePtr.p->partitionHashFanout);
   }
 
   w.add(DictTabInfo::TableTypeVal, createIndexPtr.p->m_request.indexType);

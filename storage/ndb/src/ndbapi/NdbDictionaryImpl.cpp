@@ -59,6 +59,53 @@
 
 #define INCOMPATIBLE_VERSION -2
 
+static int validate_partition_hash_metadata(const NdbTableImpl &impl,
+                                            Uint32 partition_count,
+                                            bool partition_count_known,
+                                            NdbError &error) {
+  const Uint32 primary_key_count = impl.m_noOfKeys;
+  const Uint32 base_count = impl.getPartitionHashBaseKeyCount();
+  const Uint32 detail_count = impl.getPartitionHashDetailKeyCount();
+  const Uint32 fanout = impl.getPartitionHashFanout();
+
+  if (base_count > 0xff || detail_count > 0xff || fanout > 0xffff ||
+      fanout == 0) {
+    error.code = CreateTableRef::InvalidPartitionHash;
+    return -1;
+  }
+
+  if (primary_key_count == 0 && base_count == 0 && detail_count == 0 &&
+      fanout == 1) {
+    return 0;
+  }
+
+  if (base_count == 0 || base_count + detail_count != primary_key_count) {
+    error.code = CreateTableRef::InvalidPartitionHash;
+    return -1;
+  }
+
+  if (fanout > 1) {
+    if (detail_count == 0) {
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    if (impl.getFullyReplicated()) {
+      error.code = CreateTableRef::WrongPartitionBalanceFullyReplicated;
+      return -1;
+    }
+    if (impl.m_fragmentType == NdbDictionary::Object::UserDefined) {
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    if (partition_count_known && (partition_count % fanout) != 0) {
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
 /**
  * Signal response timeouts
  *
@@ -4261,7 +4308,17 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
 
   DBUG_ENTER("NdbDictInterface::createTable");
 
+  impl.computeAggregates();
+
   if (impl.m_fragmentType == NdbDictionary::Object::HashMapPartition) {
+    const bool partition_count_known =
+        impl.getPartitionBalance() == NDB_PARTITION_BALANCE_SPECIFIC;
+    const Uint32 partition_count =
+        partition_count_known ? impl.getFragmentCount() : 0;
+    if (validate_partition_hash_metadata(impl, partition_count,
+                                         partition_count_known, m_error) != 0) {
+      DBUG_RETURN(-1);
+    }
     if (impl.m_hash_map_id == RNIL && impl.m_hash_map_version == ~(Uint32)0) {
       /**
        * Make sure that hashmap exists (i.e after upgrade or similar)
@@ -4282,21 +4339,6 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
         req_type |= CreateHashMapReq::CreateForOneNodegroup;
       }
       assert(partitionBalance_Count != 0);
-      const Uint32 partition_hash_fanout = impl.getPartitionHashFanout();
-      if (partition_hash_fanout == 0) {
-        m_error.code = CreateTableRef::InvalidPartitionHash;
-        DBUG_RETURN(-1);
-      }
-      if (partition_hash_fanout > 1) {
-        if (impl.getFullyReplicated()) {
-          m_error.code = 797;  // WrongPartitionBalanceFullyReplicated
-          DBUG_RETURN(-1);
-        }
-        if ((partitionBalance_Count % partition_hash_fanout) != 0) {
-          m_error.code = CreateTableRef::InvalidPartitionHash;
-          DBUG_RETURN(-1);
-        }
-      }
       DBUG_PRINT("info", ("PartitionBalance: create_hashmap: %x",
                           partitionBalance_Count));
       NdbHashMapImpl hashmap;
@@ -4308,6 +4350,9 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
       impl.m_hash_map_version = hashmap.m_version;
     }
   } else {
+    if (validate_partition_hash_metadata(impl, 0, false, m_error) != 0) {
+      DBUG_RETURN(-1);
+    }
     DBUG_PRINT("info", ("Hashmap already defined"));
   }
 
@@ -4480,6 +4525,14 @@ int NdbDictInterface::alterTable(Ndb &ndb, const NdbTableImpl &old_impl,
   ret = compChangeMask(old_impl, impl, change_mask);
   if (ret != 0) DBUG_RETURN(ret);
 
+  impl.computeAggregates();
+  if (validate_partition_hash_metadata(
+          impl, impl.getFragmentCount(),
+          impl.getPartitionBalance() == NDB_PARTITION_BALANCE_SPECIFIC,
+          m_error) != 0) {
+    DBUG_RETURN(-1);
+  }
+
   UtilBufferWriter w(m_buffer);
   ret = serializeTableDesc(impl, w);
   if (ret != 0) DBUG_RETURN(ret);
@@ -4551,6 +4604,10 @@ int NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
       impl.m_tablespace_name != old_impl.m_tablespace_name ||
       impl.m_tablespace_id != old_impl.m_tablespace_id ||
       impl.m_tablespace_version != old_impl.m_tablespace_version ||
+      impl.m_base_partition_key_count != old_impl.m_base_partition_key_count ||
+      impl.m_detail_partition_key_count !=
+          old_impl.m_detail_partition_key_count ||
+      impl.m_base_partition_fanout != old_impl.m_base_partition_fanout ||
       impl.m_id != old_impl.m_id || impl.m_version != old_impl.m_version ||
       sz < old_sz ||
       impl.m_extra_row_gci_bits != old_impl.m_extra_row_gci_bits ||
