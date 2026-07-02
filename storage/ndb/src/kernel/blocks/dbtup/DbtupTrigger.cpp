@@ -805,6 +805,12 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
   switch (save_type) {
   case ZUPDATE:
   case ZINSERT:
+  /*
+   * TTL related: an INSERT over an expired-but-unpurged row is recorded as
+   * ZINSERT_TTL until commit. Like ZINSERT/ZUPDATE its new (after) values
+   * live in the copy tuple, so fetch it here (mirrors checkDetachedTriggers).
+   */
+  case ZINSERT_TTL:
     jam();
     req_struct->m_tuple_ptr =
       get_copy_tuple(&regOperPtr->m_copy_tuple_location);
@@ -831,6 +837,20 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
      */
     jam();
     regOperPtr->op_type = ZUPDATE;
+  } else if (save_type == ZINSERT_TTL) {
+    /*
+     * TTL related: INSERT over an expired-but-unpurged row. The row
+     * physically pre-existed (ALLOC unset), so without this branch op_type
+     * stays ZINSERT_TTL and the op-type switch below hits default:ndbabort()
+     * -- a data-node crash reachable via ndb_deferred_constraints=1 + a unique
+     * index. Map to ZINSERT so deferred unique-index / FK maintenance fires
+     * the after-image (index insert) exactly like the immediate path, which
+     * keeps ZINSERT_TTL -> TE_INSERT (add-only; the stale expired index entry
+     * is reclaimed by purge, not here). See DbtupExecQuery.cpp ZINSERT_TTL
+     * handleUpdateReq branch and Dbtup::checkDetachedTriggers.
+     */
+    jam();
+    regOperPtr->op_type = ZINSERT;
   }
 
   switch (regOperPtr->op_type) {
