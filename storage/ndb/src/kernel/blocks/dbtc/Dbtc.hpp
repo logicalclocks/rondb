@@ -172,6 +172,15 @@
 #define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 
+/**
+ * A CTE JoinAgg main scan (CTEs + main aggregation program) received a
+ * mid-fragment SCAN_FRAGCONF.  DBSPJ owns batch continuation for such
+ * scans (handleJoinAggNextBatch); DBTC receiving one means broken row
+ * accounting upstream.  Same error family as DBLQH's
+ * ZCTE_AGG_FEED_SELF_REFERENCE (1269).
+ */
+#define ZCTE_AGG_BATCH_PROTOCOL_ERROR 1270
+
 // ----------------------------------------
 // Error Codes for transactions
 // ----------------------------------------

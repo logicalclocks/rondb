@@ -6889,9 +6889,31 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
   // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
   // outstanding results mismatch.
-  // Skip for aggregate leaf (result fed to aggregation) and for nodes
-  // inside CTE subtrees (result feeds enclosing CTE's aggregator, not API).
-  if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+  //
+  // Skip for requests with a MAIN aggregation program.  A join with
+  // non-clear m_aggNodes IS an aggregate join: m_aggNodes is populated
+  // only from the main [nodeId, aggStateKey] pairs (aggregating CTE
+  // bodies never set it), so it is non-clear exactly when the main
+  // SELECT aggregates.  T_AGGREGATE_LEAF is the wrong test for that:
+  // it only marks the aggregation FEED POINT — the one op carrying the
+  // aggregation program — while an aggregate join can have tree nodes
+  // that are not T_AGGREGATE_LEAF, e.g. an internal CTE_LOOKUP whose
+  // columns reach the leaf's feed via linked projections.  Rows of
+  // such nodes never reach the API either, so counting them here
+  // (the old !T_AGGREGATE_LEAF check did) inflates m_rows with rows
+  // the API will never see.
+  //
+  // In an aggregate join the API receives nothing per batch, and the
+  // same m_aggNodes rule is applied in scanFrag_execSCAN_FRAGCONF.  A
+  // non-zero m_rows would defeat the handleJoinAggNextBatch()
+  // self-continue in batchComplete() and emit a mid-fragment
+  // SCAN_FRAGCONF that DBTC must not act on — the API never gets an
+  // intermediate SCAN_TABCONF for such scans, so DBTC would park the
+  // fragment in DELIVERED with no possible continuation (query hang).
+  //
+  // Also skip for nodes inside CTE subtrees (result feeds the
+  // enclosing CTE's aggregator, not the API).
+  if (requestPtr.p->m_aggNodes.isclear() &&
       treeNodePtr.p->m_cteId == RNIL) {
     requestPtr.p->m_rows++;
   }

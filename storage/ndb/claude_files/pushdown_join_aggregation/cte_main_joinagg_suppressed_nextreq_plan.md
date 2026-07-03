@@ -10,6 +10,9 @@ control, and fail loud if it is ever asked to.
 
 All line numbers refer to the tree at commit `bc1594832be`.
 
+**Status: Changes 1-4 implemented, Change 5 audit complete (findings
+recorded below).  Pending: build + verification plan runs (items 1-8).**
+
 ## Trigger
 
 The observed hang was reproduced by a RonSQL query with two aggregating CTEs
@@ -167,13 +170,30 @@ DbspjMain.cpp:6894 — mirror the scan-side rule (13173):
 // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
 // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
 // outstanding results mismatch.
-// Skip for requests with a MAIN aggregation program (m_aggNodes set,
-// same rule as scanFrag_execSCAN_FRAGCONF): every main-query row feeds
-// the aggregation engine, the API receives nothing per batch, and a
+//
+// Skip for requests with a MAIN aggregation program.  A join with
+// non-clear m_aggNodes IS an aggregate join: m_aggNodes is populated
+// only from the main [nodeId, aggStateKey] pairs (aggregating CTE
+// bodies never set it), so it is non-clear exactly when the main
+// SELECT aggregates.  T_AGGREGATE_LEAF is the wrong test for that:
+// it only marks the aggregation FEED POINT — the one op carrying the
+// aggregation program — while an aggregate join can have tree nodes
+// that are not T_AGGREGATE_LEAF, e.g. an internal CTE_LOOKUP whose
+// columns reach the leaf's feed via linked projections.  Rows of
+// such nodes never reach the API either, so counting them here
+// (the old !T_AGGREGATE_LEAF check did) inflates m_rows with rows
+// the API will never see.
+//
+// In an aggregate join the API receives nothing per batch, and the
+// same m_aggNodes rule is applied in scanFrag_execSCAN_FRAGCONF.  A
 // non-zero m_rows would defeat the handleJoinAggNextBatch()
-// self-continue and emit a mid-fragment SCAN_FRAGCONF that DBTC must
-// not act on.  Also skip for nodes inside CTE subtrees (result feeds
-// the enclosing CTE's aggregator, not the API).
+// self-continue in batchComplete() and emit a mid-fragment
+// SCAN_FRAGCONF that DBTC must not act on — the API never gets an
+// intermediate SCAN_TABCONF for such scans, so DBTC would park the
+// fragment in DELIVERED with no possible continuation (query hang).
+//
+// Also skip for nodes inside CTE subtrees (result feeds the
+// enclosing CTE's aggregator, not the API).
 if (requestPtr.p->m_aggNodes.isclear() &&
     treeNodePtr.p->m_cteId == RNIL) {
   requestPtr.p->m_rows++;
@@ -314,22 +334,41 @@ not take the connection down.
 ### Change 5: audit the remaining `m_rows` arms
 
 Sweep the other counting sites for the same class of bug on multi-batch
-case-1/case-2 shapes, and record the result in this doc:
+case-1/case-2 shapes. **Audit done; findings:**
 
-- [ ] `execCTE_SCAN_CONF` paths (b) and (leaf) (DbspjMain.cpp:7757-7771):
-      can a main-query `CTE_SCAN` node in a case-2 request carry
-      `T_USER_PROJECTION`, or hit the bare `isLeaf()` arm with
-      `m_joinAggStateKey == RNIL`? (The I.12 "scanCte as main-query
-      aggregate leaf" shape is in the green suite but may be single-batch
-      there.)
-- [ ] `lookup_execLQHKEYCONF` `T_USER_PROJECTION` arm (DbspjMain.cpp:9089):
-      confirm RonSQL/NdbQueryBuilder never sets a user projection on
-      internal real-table lookups in aggregate queries.
-- [ ] Root-scan arm (DbspjMain.cpp:13173): confirm DBLQH reports
-      `completedOps == 0` for JoinAgg-flagged scans when nothing was
-      evicted, including CTE-materialization root scans in case-3 requests
-      (`m_aggNodes` clear there, so the guard alone does not exclude them —
-      the DBLQH-side count must be 0).
+- [x] `execCTE_SCAN_CONF` paths (b) and (leaf) (DbspjMain.cpp:7757-7771):
+      **safe.** A main-query `CTE_SCAN` aggregate leaf takes accounting
+      path (a): `cte_scan_sendReq` computes a non-RNIL
+      `data.m_joinAggStateKey` for every `T_AGGREGATE_LEAF` node,
+      including the main-query arm feeding `m_aggStateKeys[targetNodeId]`
+      (DbspjMain.cpp:7554-7585).  Path (b) `T_USER_PROJECTION` cannot be
+      set in an aggregate request (see next item).  Residual: the bare
+      `isLeaf()` arm would count rows for a non-agg-leaf CTE_SCAN leaf in
+      an aggregate main query — that is not a plannable shape (every
+      main-query leaf in an agg query carries an agg program; the
+      multi-leaf 0x0722 format assigns one per leaf), so no code change;
+      revisit if such a shape is ever introduced.
+- [x] `lookup_execLQHKEYCONF` `T_USER_PROJECTION` arm (DbspjMain.cpp:9101):
+      **safe.** `parseDA` suppresses the user projection — and therefore
+      never sets `T_USER_PROJECTION` — for every non-agg-leaf node of an
+      `RT_AGGREGATE` request and for every non-agg-leaf node inside a CTE
+      subtree (`suppressFlushAI`, DbspjMain.cpp:15339-15354).  Internal
+      real-table lookups in aggregate queries cannot phantom-count.
+- [x] Root-scan arm (DbspjMain.cpp:13173): **safe.** DBLQH updates the
+      batch counters that become `ScanFragConf::completedOps` only in the
+      non-join-agg arm of `scanTupkeyConfLab` (DblqhMain.cpp:23475-23479);
+      for `m_join_agg_state_key != RNIL` scans (which includes
+      CTE-materialization root scans — JoinAggFlag is set on their
+      SCAN_FRAGREQ) the counters stay 0, so `completedOps == 0` for all
+      silently-consumed batches regardless of the `m_aggNodes` guard.
+      Note scan-feed evictions bump only `m_join_agg_evict_rows`
+      (DblqhMain.cpp:23451-23453), not `completedOps` — consistent with
+      the deferred eviction-contract item.
+- Case-2 root scan for completeness: the main-scan root (e.g. the
+  customer scan in the trigger query) delivers TRANSID_AI to DBSPJ to
+  drive the probes, so its DBLQH conf legitimately reports
+  `completedOps > 0` — the 13173 guard (`m_aggNodes` non-clear, root not
+  `T_AGGREGATE_LEAF`) correctly keeps those rows out of `m_rows`.
 
 ## Explicitly rejected / deferred
 

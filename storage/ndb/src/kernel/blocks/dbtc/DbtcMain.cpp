@@ -18732,6 +18732,23 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                     "SCAN_TABCONF during CTE phase",
                     instance()));
     } else {
+      if (scanptr.p->m_joinAgg &&
+          scanptr.p->m_numCtes > 0 &&
+          scanptr.p->m_hasMainAggProgram &&
+          status == 0) {
+        jam();
+        /* CTE JoinAgg main scan hit a mid-fragment batch boundary.
+         * DBSPJ owns batch continuation for aggregating requests
+         * (handleJoinAggNextBatch) and must never hand a silent batch
+         * to DBTC: the API gets no intermediate SCAN_TABCONF for this
+         * scan, so no SCAN_NEXTREQ could ever continue a DELIVERED
+         * fragment.  Receiving one here means broken row accounting
+         * upstream (Request::m_rows counted rows the API will never
+         * see).  Fail loud instead of parking the fragment and
+         * hanging the query. */
+        scanError(signal, scanptr, ZCTE_AGG_BATCH_PROTOCOL_ERROR);
+        return;
+      }
       /* For JoinAgg queries, sendScanTabConf does fragment list
        * management but suppresses the actual signal to API
        * until all fragments are done (EndOfData path). */
@@ -18987,6 +19004,23 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
      *
      * Wait for API close request
      */
+    return;
+  }
+
+  if (unlikely(scanP->m_joinAgg && scanP->m_numCtes > 0 &&
+               scanP->m_hasMainAggProgram)) {
+    jam();
+    /* CTE JoinAgg main scans are flow-controlled by DBSPJ
+     * (handleJoinAggNextBatch); the API is never sent an intermediate
+     * SCAN_TABCONF and thus never given fragments to continue (the
+     * final conf from sendJoinAggScanTabConf is EndOfData).  Nothing
+     * to do here — and the receiver-id loop below must not run on ids
+     * we never handed out.  Close requests (stopScan) were dispatched
+     * above and are unaffected. */
+    g_eventLogger->warning(
+        "TC %u : ignoring non-close SCAN_NEXTREQ from node %u for "
+        "CTE JoinAgg scan (ACR %u)",
+        instance(), refToNode(signal->senderBlockRef()), apiConnectptr.i);
     return;
   }
 
@@ -19953,12 +19987,23 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
    * SCAN_TABCONFs.  m_hasMainAggProgram is used instead of checking
    * m_aggProgramPtrI because the section is released during SETUP_CONF.
    *
+   * Only per-fragment COMPLETION confs can reach here: mid-fragment
+   * batch boundaries are rejected in execSCAN_FRAGCONF with
+   * ZCTE_AGG_BATCH_PROTOCOL_ERROR (DBSPJ owns their continuation via
+   * handleJoinAggNextBatch).  Aggregate queries start all fragments up
+   * front (scanParallelism == fragCount, so 'left' is 0), so a
+   * completion conf always takes the done -> COMPLETED path above.
+   * Assert that no fragment was parked in DELIVERED — the API never
+   * receives an intermediate SCAN_TABCONF for this scan, so nothing
+   * could ever continue such a fragment.
+   *
    * CTE_LOOKUP queries (no main agg) still need SCAN_TABCONFs for
    * flow control of the main scan. */
   if (scanPtr.p->m_joinAgg && !release &&
       scanPtr.p->m_numCtes > 0 &&
       scanPtr.p->m_hasMainAggProgram) {
     jam();
+    ndbassert(scanPtr.p->m_delivered_scan_frags.isEmpty());
     DEB_JOIN_AGG(("(%u) sendScanTabConf: suppress "
                   "intermediate SCAN_TABCONF for CTE JoinAgg",
                   instance()));
