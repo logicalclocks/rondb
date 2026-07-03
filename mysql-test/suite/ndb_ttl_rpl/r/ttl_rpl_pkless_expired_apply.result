@@ -1,0 +1,60 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+# log updates as UPDATE_ROWS (not WRITE_ROWS) so the replica must locate
+# the row via find_row (the path with no ZWRITE checkTTL bypass).
+SET @old_luaw = @@global.ndb_log_update_as_write;
+SET GLOBAL ndb_log_update_as_write = 0;
+# PK-LESS TTL table (hidden PK) -> applier is forced through find_row.
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP NULL DEFAULT NULL,
+col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+# --- seed: a never-expiring anchor (col_b NULL) plus one row that will
+#     expire (col_b = NOW()). Replicate both to the replica.
+INSERT INTO test.sz VALUES (1, NULL,   100);
+INSERT INTO test.sz VALUES (2, NOW(),  200);
+# replica initially sees both rows
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+# --- pause the applier to inject replication lag; the receiver keeps
+#     running so the relay log still fills.
+STOP REPLICA sql_thread;
+# --- while row 2 is still live on the source: refresh it (extend ttl far
+#     into the future so it stays visible) and change col_c. With
+#     ndb_log_update_as_write=0 this queues as an UPDATE_ROWS event.
+UPDATE test.sz SET col_c = 222, col_b = NOW() + INTERVAL 1 HOUR WHERE col_a = 2;
+# source final state: rows 1(100), 2(222)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+# --- age row 2 past its 10s TTL on the replica (its original col_b is
+#     still NOW()@t0 because the applier is paused).
+# [precondition] with the applier STOPPED, row 2 is now expired-hidden on
+#                the replica; only anchor row 1 is visible.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+# --- resume the applier: it must find (via find_row) and refresh the
+#     expired row 2. On the buggy build the lookup scan skips the expired
+#     row -> UPDATE_ROWS(2) is dropped -> row 2 lost on the replica.
+START REPLICA sql_thread;
+# --- SOURCE and REPLICA must agree: rows 1(100) and 2(222) both visible.
+#     On the buggy build the replica shows only row 1 = divergence.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	222
+SET GLOBAL ndb_log_update_as_write = @old_luaw;
+DROP TABLE test.sz;
+include/rpl/deinit.inc

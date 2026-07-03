@@ -3549,10 +3549,8 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     poptions = &options;
   }
 
-  /*
-   * TTL related
-   */
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
@@ -3822,10 +3820,8 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_PARTITION_ID;
     }
 
-    /*
-     * TTL related
-     */
-    if (m_ttl_ignore) {
+    /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+    if (should_ignore_ttl()) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
 
@@ -3945,10 +3941,8 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
   NdbScanOperation::ScanOptions options;
   options.optionsPresent = (NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                             NdbScanOperation::ScanOptions::SO_PARALLEL);
-  /*
-   * TTL related
-   */
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
 
@@ -5710,11 +5704,8 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  // A binlog applier replays row events the source already resolved against
-  // live rows; ignore replica-side TTL expiry so an UPDATE onto an
-  // expired-but-unpurged replica row is applied verbatim instead of being
-  // dropped as 626 (silent source/replica divergence).
-  if (m_ttl_ignore || thd_ndb->get_applier()) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_update_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -6004,11 +5995,8 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  // A binlog applier replays row events the source already resolved against
-  // live rows; ignore replica-side TTL expiry so a DELETE onto an
-  // expired-but-unpurged replica row is applied verbatim instead of being
-  // dropped as 626 (silent source/replica divergence).
-  if (m_ttl_ignore || thd_ndb->get_applier()) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_delete_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -13984,10 +13972,8 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
 
         options.optionsPresent = NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                                  NdbScanOperation::ScanOptions::SO_PARALLEL;
-        /*
-         * TTL related
-         */
-        if (m_ttl_ignore) {
+        /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+        if (should_ignore_ttl()) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
 
