@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024, 2025 Hopsworks and/or its affiliates
+ * Copyright (C) 2024, 2026 Hopsworks and/or its affiliates
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -1394,7 +1394,7 @@ retry_trx:
         // (DbtupExecQuery), so this bounds the index scan to exactly the rows
         // SF_OnlyExpiredScan accepts -- instead of [infimum, now) = every row.
         packed_now = GetNow(encoded_threshold, type_timestamp,
-                            iter->second.ttl_sec + purge_window);
+                            Uint64(iter->second.ttl_sec) + purge_window);
         TIME_from_longlong_datetime_packed(&datetime, packed_now);
         log_buf += " --- expire<=" +
                    std::to_string(TIME_to_ulonglong_datetime(datetime)) + "]";
@@ -2230,7 +2230,7 @@ err:
 }
 
 Int64 TTLPurger::GetNow(unsigned char* encoded_now, bool timestamp,
-                        Uint32 minus_sec) {
+                        Uint64 minus_sec) {
   assert(encoded_now != nullptr);
   Int64 packed_now = 0;
   memset(encoded_now, 0, 8);

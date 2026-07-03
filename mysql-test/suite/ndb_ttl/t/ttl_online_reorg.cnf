@@ -1,0 +1,41 @@
+# GAP #1 repro: online reorg DELETE phase on a TTL table (error 626).
+#
+# 4 data nodes, NoOfReplicas=2. Nodes 1,2 form the initial (single) node group;
+# nodes 3,4 start as spares (Nodegroup=65536) and are brought in as a 2nd node
+# group at runtime via "create nodegroup 3,4". A subsequent
+# "reorganize partition" then redistributes ~half the rows to the new node group,
+# exercising the reorg copy phase (ZWRITE) and delete phase (ZDELETE) over a TTL
+# table that holds expired-but-unpurged rows. Mirrors suite/ndb/t/ndb_addnode.cnf.
+!include include/default_mysqld.cnf
+!include include/default_ndbd.cnf
+
+[cluster_config.1]
+ndbd=,,,
+ndb_mgmd=
+mysqld=
+ndbapi=,,,,,,,,
+NoOfReplicas=2
+PartitionsPerNode=2
+DataMemory=200M
+SchemaMemory=80M
+
+[cluster_config.ndbd.3.1]
+Nodegroup=65536
+
+[cluster_config.ndbd.4.1]
+Nodegroup=65536
+
+[mysqld]
+ndbcluster
+ndb-wait-connected=30
+ndb-wait-setup=120
+ndb-extra-logging=99
+local-infile=true
+skip-log-bin
+skip-log-replica-updates
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYSOCK=                 @mysqld.1.1.socket
+MASTER_MYPORT=                 @mysqld.1.1.port
+NDB_BACKUP_DIR=                @cluster_config.ndbd.1.1.BackupDataDir

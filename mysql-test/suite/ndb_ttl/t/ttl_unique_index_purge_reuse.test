@@ -1,0 +1,48 @@
+# Bug #2: the same-owner rejection of an expired-but-unpurged UNIQUE value is
+# TEMPORARY (it lasts only until the expired owner is physically removed), not
+# permanent. While the expired owner is still physically present a different PK
+# is rejected with ER_DUP_ENTRY (the accepted same-owner semantics); once the
+# owner row is physically deleted, its UNIQUE value is free and a new PK can
+# take it.
+#
+# This suite has no RDRS purge worker, and a normal DELETE cannot see an expired
+# row (checkTTL hides it -> 626), so we physically remove the expired owner the
+# only way available in-suite: ALTER ... TTL=OFF makes the expired row visible
+# again, DELETE removes it (and its unique-index entry), then TTL is re-enabled.
+
+--source include/have_ndb.inc
+
+SET time_zone='+00:00';
+
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+--echo # Owner id=1 is born already expired (ttl_col far in the past).
+INSERT INTO t1 VALUES (1, '2000-01-01 00:00:00', 100);
+
+--echo # It is expired and hidden from reads, but still physically holds u=100.
+SELECT id, u FROM t1 ORDER BY id;
+
+--echo # While the expired owner is still physically present, a DIFFERENT PK may
+--echo # NOT reuse its unique value -- the same-owner check rejects it.
+--error ER_DUP_ENTRY
+INSERT INTO t1 VALUES (2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+
+--echo # Physically remove the expired owner (simulates a completed purge):
+--echo # disable TTL so the expired row becomes visible, delete it, re-enable TTL.
+ALTER TABLE t1 COMMENT="NDB_TABLE=TTL=OFF";
+SELECT id, u FROM t1 ORDER BY id;
+DELETE FROM t1 WHERE id = 1;
+ALTER TABLE t1 COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+--echo # The unique value is now free: a different PK can reuse it.
+INSERT INTO t1 VALUES (2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+
+SELECT id, u FROM t1 ORDER BY id;
+SELECT id, u FROM t1 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+
+DROP TABLE t1;

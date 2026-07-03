@@ -1,0 +1,53 @@
+# ==========================================================================
+# Bug #2 same-owner check with a VARIABLE-length (VARCHAR) primary key
+# ==========================================================================
+#
+# The DBTUP same-owner check compares the index entry's owner (the trailing
+# NDB$PK attribute = base fragment id + packed base PK). When the base PK is
+# variable-length, NDB$PK is a variable-size attribute, so this test exercises
+# the var-attribute read+compare path -- the exact path that would break if the
+# existing NDB$PK were read before the tuple's variable-length metadata is
+# initialised (it is read after expand).
+#
+# Contract:
+#   * a DIFFERENT PK may NOT reuse a LIVE unique value (ER_DUP_ENTRY);
+#   * the SAME PK MAY refresh into its own expired-but-unpurged slot (success) --
+#     this requires the existing and incoming NDB$PK to compare byte-equal.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# checkTTL compares against UTC; pin the session to UTC.
+SET time_zone = '+00:00';
+
+CREATE TABLE tv (
+  k       VARCHAR(32) PRIMARY KEY,
+  ttl_col DATETIME,
+  u       INT,
+  UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--echo # live owner 'alpha' of unique value 100; a different PK cannot reuse it
+INSERT INTO tv VALUES ('alpha', NOW(), 100);
+--error ER_DUP_ENTRY
+INSERT INTO tv VALUES ('beta', NOW(), 100);
+SELECT k, u FROM tv ORDER BY k;
+
+--echo # let 'alpha' expire (TTL=5s); it stays physically present (no purge here)
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tv WHERE k = 'alpha'
+--let $ttl_wait_timeout = 15
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT k, u FROM tv WHERE k = 'alpha';
+
+--echo # the SAME PK 'alpha' refreshes into its own expired slot: must SUCCEED
+--echo # (same owner -- the existing and incoming index-owner keys match)
+INSERT INTO tv VALUES ('alpha', NOW(), 100);
+SELECT k, u FROM tv WHERE k = 'alpha';
+
+--echo # a DIFFERENT PK still cannot take the (now live again) unique value 100
+--error ER_DUP_ENTRY
+INSERT INTO tv VALUES ('beta', NOW(), 100);
+SELECT k, u FROM tv ORDER BY k;
+
+DROP TABLE tv;

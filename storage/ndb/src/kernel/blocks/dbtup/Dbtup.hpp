@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2123,6 +2123,14 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool last_row;
     bool m_use_rowid;
     bool m_nr_copy_or_redo;
+    /*
+     * TTL related (same-transaction unique-dup gap fix). True iff this op carries
+     * genuine TTL-ignore provenance (OP_TTL_OWNER_CHECK_BYPASS): recovery,
+     * replication apply, or explicit OO_TTL_IGNORE. When true, handleUpdateReq
+     * skips the unique-index same-owner duplicate check. NOT set merely because
+     * ttl_ignore == 1 (same-transaction lock visibility leaves this false).
+     */
+    bool m_ttl_owner_check_bypass;
     bool m_deferred_constraints;
     bool m_disable_fk_checks;
 
@@ -2761,6 +2769,15 @@ private:
                KeyReqStruct *req_struct,
                bool* has_error,
                int* err_no);
+
+  /*
+   * TTL Bug #2 same-owner check for a converted ZINSERT_TTL on a unique
+   * hash-index table. Returns 0 to allow the in-place overwrite (same base-row
+   * owner), -1 with terrorCode set otherwise. See the definition in
+   * DbtupExecQuery.cpp; must be called after the tuple expand/copy.
+   */
+  int ttlUniqueIndexSameOwnerCheck(KeyReqStruct *req_struct,
+                                   Tablerec *regTabPtr);
 
   void PrepareAccLockReq4RAL(void* scan_rec,
                              Signal* signal);

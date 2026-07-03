@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1755,9 +1755,9 @@ MgmApiSession::set_config_param(Parser<MgmApiSession>::Context &,
                                 Properties const &args)
 {
   Uint32 node;
-  Uint32 config_key;
-  Uint32 config_value_high;
-  Uint32 config_value_low;
+  Uint32 config_key = 0;
+  Uint32 config_value_high = 0;
+  Uint32 config_value_low = 0;
 
   bool ok = args.get("node", &node);
   ok = ok && args.get("config_key", &config_key);

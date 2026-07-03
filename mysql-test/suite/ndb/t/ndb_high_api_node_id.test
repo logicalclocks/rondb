@@ -1,0 +1,45 @@
+--source include/have_ndb.inc
+--source include/have_debug.inc
+
+--let $unsubscribe_message= Ignoring unsubscribe from node 2040. The maximum supported node ID is 2039
+--let $subscribe_message= Ignoring subscribe from node 2040. The maximum supported node ID is 2039
+--eval CALL mtr.add_suppression("$unsubscribe_message")
+--eval CALL mtr.add_suppression("$subscribe_message")
+
+SET @save_debug= @@GLOBAL.debug;
+SET @@GLOBAL.debug="+d,ndb_test_high_api_node_id";
+
+# Fail an existing, connected API node so the data nodes send an
+# unsubscribe/subscribe event to the other API nodes. In RonDB the mtr cluster
+# uses high API node ids, so we target the second mysqld (NodeId=1600 in the
+# included config) rather than a low fixed id. By setting
+# 'ndb_test_high_api_node_id', the handling of that event injects subscribe/
+# unsubscribe reports with out-of-range node ids, testing:
+# - unsubscribe of an API node with ID higher than the maximum supported by
+#   cluster (MAX_NODES_ID + 1 = 2040);
+# - subscribe of an API node with ID higher than the highest API node ID defined
+#   in configuration;
+# - subscribe of an API node with ID higher than the maximum supported by
+#   cluster.
+exec $NDB_MGM -e "ALL DUMP 900 1600";
+
+# Wait for the last expected error in the log.
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--let $grep_pattern= $subscribe_message
+--let $wait_timeout= 60
+--let $skip_first_x_occurrences= 1
+--source include/wait_for_pattern_in_file.inc
+
+SET @@GLOBAL.debug = @save_debug;
+
+--let $assert_text= Unsubscribe error found
+--let $assert_select= $unsubscribe_message
+--let $assert_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--let $assert_count_condition= >=2
+--source include/assert_grep.inc
+
+--let $assert_text= Subscribe error found
+--let $assert_select= $subscribe_message
+--let $assert_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--let $assert_count_condition= >=2
+--source include/assert_grep.inc

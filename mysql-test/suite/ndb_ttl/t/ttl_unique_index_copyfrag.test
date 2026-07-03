@@ -1,0 +1,77 @@
+# Bug #2: copyfrag must ignore TTL while restoring a UNIQUE index.
+
+--source include/have_ndb.inc
+
+SET time_zone='+00:00';
+
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+v VARCHAR(20),
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+
+--echo # Initial checkpoint contains both long-lived and short-lived owners.
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 101, 'live-1'),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 102, 'live-2'),
+(3, NOW(), 103, 'short-3'),
+(4, NOW(), 104, 'short-4');
+
+--exec $NDB_MGM -e "all dump 7099" > /dev/null 2>&1
+--sleep 10
+
+--echo # Stop node 2, preserving its local checkpoint.
+--exec $NDB_MGM -e "$NDB_NDBD_2_NODEID restart -n" > /dev/null 2>&1
+--exec $NDB_WAITER --wait-nodes=$NDB_NDBD_2_NODEID --not-started --timeout=60 > /dev/null 2>&1
+
+--echo # While node 2 is down, change each short-lived row's unique key and then
+--echo # change it back. The source ends with the same key/owner as node 2's LCP,
+--echo # but with newer base and UNIQUE-index state that copyfrag must apply.
+UPDATE t1 SET u = u + 100, v = 'changed' WHERE id IN (3, 4);
+UPDATE t1 SET u = u - 100 WHERE id IN (3, 4);
+INSERT INTO t1 VALUES
+(5, DATE_ADD(NOW(), INTERVAL 10 YEAR), 105, 'live-5');
+
+--echo # Let rows 3 and 4 expire without purge before copyfrag starts.
+--sleep 35
+
+--echo # A ttl_ignore regression fails node restart with 626/2303; the waiter
+--echo # only returns when node 2 has rejoined successfully.
+--exec $NDB_MGM -e "$NDB_NDBD_2_NODEID start" > /dev/null 2>&1
+--exec $NDB_WAITER --wait-nodes=$NDB_NDBD_2_NODEID --timeout=120 > /dev/null 2>&1
+
+--source include/ndb_wait_connected.inc
+--disable_query_log
+--disable_result_log
+let $mysql_errno= 1;
+let $counter= 600;
+while ($mysql_errno)
+{
+  --error 0,1296,4009
+  SELECT v FROM t1 WHERE id = 1;
+  if ($mysql_errno)
+  {
+    if (!$counter)
+    {
+      die Timed out waiting for test.t1 after node restart;
+    }
+    dec $counter;
+    --sleep 0.1
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo # Base-table scan and forced UNIQUE-index access return the same rows.
+SELECT id, u, v FROM t1 ORDER BY id;
+SELECT id, u, v FROM t1 FORCE INDEX (ux)
+WHERE u IN (101, 102, 103, 104, 105) ORDER BY id;
+
+DROP TABLE t1;

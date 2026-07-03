@@ -1,0 +1,39 @@
+# ==========================================================================
+# Guard for the sentinel-TTL off-by-one (#6).
+# ==========================================================================
+# RNIL (Uint32(0xffffff00) = 4294967040) is the "no TTL" sentinel stored in
+# m_ttl_sec. A user-specified TTL of exactly RNIL must be REJECTED -- otherwise
+# it is cast to RNIL, stored, and read back as "TTL disabled", silently
+# dropping the TTL the user asked for. The documented maximum is RNIL-1 =
+# 4294967039 (the DDL error text). Covers both the CREATE and ALTER paths.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz;
+--enable_warnings
+
+--echo # TTL = RNIL (4294967040) must be rejected on CREATE (not silently stored
+--echo # as the no-TTL sentinel).
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.sz (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=4294967040@b";
+
+--echo # the documented maximum TTL (RNIL-1 = 4294967039) is accepted
+CREATE TABLE test.sz (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=4294967039@b";
+DROP TABLE test.sz;
+
+--echo # TTL = RNIL added via ALTER must also be rejected
+CREATE TABLE test.sz (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB;
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=4294967040@b";
+DROP TABLE test.sz;

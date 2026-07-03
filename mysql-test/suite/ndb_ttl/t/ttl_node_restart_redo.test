@@ -1,0 +1,148 @@
+# ==========================================================================
+# copyfrag-626 sibling SUSPECT #1: does REDO log replay re-apply TTL expiry
+# and crash the node during recovery?
+# ==========================================================================
+#
+# Concern (flagged while fixing copyfrag-626): on a (system) restart the REDO
+# log replays committed UPDATE/DELETE operations. A replayed op carries
+# ttl_ignore=0 and original_op_type != ZWRITE, so DBTUP would run checkTTL; if
+# the row has expired by replay time, handleUpdateReq/handleDeleteReq return
+# 626. The worry was that REDO's error handler would treat that 626 as a fatal
+# "found a bug" and progError the node (like the copy-fragment 626 -> 2303).
+#
+# This test forces exactly that situation and checks whether the cluster
+# recovers cleanly:
+#   1. INSERT rows into a short-TTL table.
+#   2. Force ONE LCP so the rows are captured as the restore base.
+#   3. UPDATE every row and DELETE a subset AFTER that LCP. The workload is tiny
+#      (far below the redo volume that triggers an automatic LCP), so no second
+#      LCP captures these ops -- they live in the REDO log and are replayed on
+#      restart.
+#   4. Wait past the TTL so every base row is expired.
+#   5. ABORT (crash) system restart of all nodes -- an abort skips the graceful
+#      final LCP, so the post-LCP UPDATE/DELETE are recovered from REDO (not from
+#      a fresh LCP). On restart each node restores its base rows from LCP (expired,
+#      but inserts have no TTL check) and then REDO replays the UPDATE/DELETE onto
+#      those now-expired rows.
+#
+# NOTE: MTR cannot hard-prevent an automatic second LCP, but the workload here is
+# orders of magnitude below the LCP trigger, so REDO replay is the path exercised.
+# Even in the unlikely event a second LCP captured the mutations, recovery would
+# replay them from the LCP image instead -- also a TTL-safe path -- so the test
+# still validates safe recovery of expired rows either way.
+#
+# NoOfReplicas=1 (two node groups) => NO copy-fragment phase, so this isolates
+# the REDO path from the copy-fragment path Fix A already covers.
+#
+# Expected on a correct build: the cluster comes back up. The REDO error
+# handler (Dblqh::logLqhkeyrefLab) tolerates terrorCode == ZNO_TUPLE_FOUND
+# (== 626) for ZUPDATE/ZDELETE, so the TTL-expiry 626 is swallowed exactly like
+# the normal "row already removed by a later op" case. If REDO were exposed the
+# node would progError during start phase recovery and the "all start" waiter
+# would time out -> test FAILS.
+#
+# Requires NoOfReplicas=1 with 2 data nodes: see ttl_node_restart_redo.cnf.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+# TTL expiry is evaluated against UTC in the data node (checkTTL uses
+# gmtime_r(my_micro_time())); pin the session to UTC so the stored ttl_col and
+# the expiry check agree (see ttl_node_restart_copyfrag for the rationale).
+SET time_zone = '+00:00';
+
+--echo # --- fixed-width TTL table (TTL=30s on ttl_col)
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+
+--echo # --- fill with fresh rows (spread across both node groups' fragments)
+--disable_query_log
+DELIMITER |;
+CREATE PROCEDURE fill_rows(IN n INT)
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  WHILE i <= n DO
+    INSERT INTO test.t1 VALUES (i, NOW(), 0);
+    SET i = i + 1;
+  END WHILE;
+END|
+DELIMITER ;|
+CALL fill_rows(200);
+DROP PROCEDURE fill_rows;
+--enable_query_log
+
+--echo # --- force an LCP now (captures all rows as the restore base). The tiny
+--echo #     post-LCP workload below stays well under the automatic-LCP trigger, so
+--echo #     the UPDATE/DELETE live in the REDO log and are replayed on restart.
+--exec $NDB_MGM -e "all dump 7099" > /dev/null 2>&1
+--sleep 10
+
+--echo # --- mutate every row (REDO-only). UPDATE does NOT touch ttl_col, so the
+--echo #     TTL clock keeps running from the INSERT; the rows are still fresh
+--echo #     now so these ops succeed on the live cluster.
+UPDATE test.t1 SET v = v + 1;
+DELETE FROM test.t1 WHERE id <= 50;
+
+--echo # --- wait past the TTL (30s from the INSERT) so every base row is expired
+--echo #     by the time REDO replays the UPDATE/DELETE onto it
+--sleep 25
+
+--echo # --- ABORT system restart: crash all nodes (an abort skips the graceful
+--echo #     final LCP, so the UPDATE/DELETE are recovered from REDO), hold at
+--echo #     not-started, then start. On a buggy build a node would progError while
+--echo #     replaying REDO on the expired rows and never reach STARTED -> the
+--echo #     waiter times out.
+--exec $NDB_MGM -e "all restart -a -n" > /dev/null 2>&1
+--exec $NDB_WAITER --not-started --timeout=90 > /dev/null 2>&1
+--exec $NDB_MGM -e "all start" > /dev/null 2>&1
+--exec $NDB_WAITER --timeout=180 > /dev/null 2>&1
+
+--echo # --- wait for mysqld to reconnect to the restored cluster
+--source include/ndb_wait_connected.inc
+
+# After a full-cluster restart the existing table is briefly not queryable
+# (NDB error 4009 / "schema distribution is not ready") until schema
+# distribution catches up. Poll until test.t1 can actually be read. (Use a
+# bounded SELECT, not COUNT(*): COUNT(*) on a TTL table is unreliable as it may
+# include expired-but-unpurged rows.)
+--disable_query_log
+--disable_result_log
+let $mysql_errno= 1;
+let $counter= 600;
+while ($mysql_errno)
+{
+  --error 0,1296,4009
+  SELECT id FROM test.t1 LIMIT 1;
+  if ($mysql_errno)
+  {
+    if (!$counter)
+    {
+      die Timed out waiting for test.t1 to become queryable after restart;
+    }
+    dec $counter;
+    --sleep 0.1
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo # --- cluster healthy after recovery. Every surviving row is expired (and
+--echo #     the id<=50 rows were deleted), so SELECT * filters them all on read
+--echo #     and returns nothing. Reaching here at all means REDO replay did not
+--echo #     crash the node. (SELECT * not COUNT(*): COUNT may still include
+--echo #     expired-but-unpurged rows, a known TTL visibility quirk.)
+SELECT * FROM test.t1 ORDER BY id;
+
+--echo # --- table is writable post-recovery
+INSERT INTO test.t1 VALUES (1000, NOW(), 7);
+SELECT id, v FROM test.t1 WHERE id = 1000;
+
+DROP TABLE test.t1;
