@@ -71,12 +71,19 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 #define DEBUG_TRANSID_AI 1
+//#define DEBUG_TRANSID_AI_DETAIL 1
 //#define DEBUG_AGGREGATION 1
 //#define DEBUG_STAR_AGG 1
 //#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_MATCH 1
 //#define DEBUG_SCAN_PARENT_ROW 1
 //#define DEBUG_CTE 1
+#define DEBUG_CTE_PHASE 1
+/* DEBUG_CTE_PHASE_VERBOSE traces every batch-completion check.  This is
+ * useful for stuck outstanding/cnt_active debugging, but too chatty for
+ * normal CTE phase tracing. */
+//#define DEBUG_CTE_PHASE_VERBOSE 1
+#define DEBUG_SCAN_HB_SEND 1
 /* DEBUG_CTE_BUILD: per-node flag dump emitted at the end of each
  * TreeNode build (typed name, m_cteId, m_bits with named flags).
  * Very verbose — one line per built node per incoming SCAN_FRAGREQ —
@@ -94,6 +101,26 @@
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CTE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CTE_PHASE
+#define DEB_CTE_PHASE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE_PHASE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CTE_PHASE_VERBOSE
+#define DEB_CTE_PHASE_VERBOSE(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE_PHASE_VERBOSE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_SCAN_HB_SEND
+#define DEB_SCAN_HB_SEND(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SCAN_HB_SEND(arglist) do { } while (0)
 #endif
 
 /* m_cnt_active is the SPJ request's count of tree nodes still in
@@ -152,6 +179,12 @@
 #define DEB_TRANSID_AI(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_TRANSID_AI(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_TRANSID_AI_DETAIL
+#define DEB_TRANSID_AI_DETAIL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRANSID_AI_DETAIL(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -3476,6 +3509,15 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
  * execution, *must* call ::checkBatchComplete() before returning.
  */
 void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
+  DEB_CTE_PHASE_VERBOSE(
+      ("(%u) checkBatchComplete: outstanding=%u cnt_active=%u "
+       "CTE_PHASE=%d state=0x%x completed=0x%x active=0x%x suspended=0x%x",
+       instance(), requestPtr.p->m_outstanding, requestPtr.p->m_cnt_active,
+       !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+       requestPtr.p->m_state,
+       requestPtr.p->m_completed_tree_nodes.rep.data[0],
+       requestPtr.p->m_active_tree_nodes.rep.data[0],
+       requestPtr.p->m_suspended_tree_nodes.rep.data[0]));
   /* Unconditional counter trace: logged on EVERY reply handler's tail, so a
    * hang shows exactly which value m_outstanding sticks at (and which handler
    * stopped decrementing it).  The DEB_CTE below only fires once outstanding
@@ -3536,6 +3578,13 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
      */
     if (requestPtr.p->m_cnt_active != 0) {
       jam();
+      DEB_CTE_PHASE(("(%u) batchComplete: RT_CTE_PHASE next batch, "
+                     "cnt_active=%u rows=%u completed=0x%x active=0x%x",
+                     instance(),
+                     requestPtr.p->m_cnt_active,
+                     requestPtr.p->m_rows,
+                     requestPtr.p->m_completed_tree_nodes.rep.data[0],
+                     requestPtr.p->m_active_tree_nodes.rep.data[0]));
       DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE more batches, "
                "cnt_active=%u rows=%u -> restart next batch in DBSPJ",
                instance(),
@@ -3550,6 +3599,15 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
              requestPtr.p->m_outstanding,
              requestPtr.p->m_cnt_active,
              requestPtr.p->m_rows));
+    DEB_CTE_PHASE(("(%u) batchComplete: RT_CTE_PHASE complete, "
+                   "outstanding=%u cnt_active=%u rows=%u completed=0x%x "
+                   "active=0x%x",
+                   instance(),
+                   requestPtr.p->m_outstanding,
+                   requestPtr.p->m_cnt_active,
+                   requestPtr.p->m_rows,
+                   requestPtr.p->m_completed_tree_nodes.rep.data[0],
+                   requestPtr.p->m_active_tree_nodes.rep.data[0]));
     handleCtePhaseComplete(signal, requestPtr);
     return;
   }
@@ -3570,7 +3628,27 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
     jam();
 
     if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0) {
-      ndbassert(is_complete);
+      if (!is_complete) {
+        jam();
+        /*
+         * During abort, no further work will be started.  Once all
+         * outstanding signals have drained, remaining active nodes only
+         * represent scan state that was stopped by abort handling.  Mark
+         * them inactive so the request can send SCAN_FRAGREF and clean up.
+         */
+        Ptr<TreeNode> nodePtr;
+        Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+        for (list.first(nodePtr); !nodePtr.isNull(); list.next(nodePtr)) {
+          if (nodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+            jam();
+            DEC_CNT_ACTIVE(requestPtr.p, "batchComplete_abort_done",
+                           nodePtr.p->m_node_no);
+            nodePtr.p->m_state = TreeNode::TN_INACTIVE;
+          }
+        }
+        ndbassert(requestPtr.p->m_cnt_active == 0);
+        is_complete = true;
+      }
     }
 
     // Remember the active treeNodes the completed scan returned rows from
@@ -3686,12 +3764,29 @@ Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
     if (NdbTick_Elapsed(requestPtr.p->m_lastHbrepTicks, now).milliSec()
             >= 20) {
       jam();
+      Uint32 save[4];
+      save[0] = signal->theData[0];
+      save[1] = signal->theData[1];
+      save[2] = signal->theData[2];
+      save[3] = signal->getLength();
+
       signal->theData[0] = requestPtr.p->m_senderData;
       signal->theData[1] = requestPtr.p->m_transId[0];
       signal->theData[2] = requestPtr.p->m_transId[1];
       sendSignal(requestPtr.p->m_senderRef, GSN_SCAN_HBREP, signal, 3,
                  JBB);
       requestPtr.p->m_lastHbrepTicks = now;
+      DEB_SCAN_HB_SEND(
+          ("(%u)DBSPJ send SCAN_HBREP next-batch: senderRef=0x%x "
+           "senderData=%u transid=(0x%x,0x%x) request=%u rows=%u",
+           instance(), requestPtr.p->m_senderRef,
+           requestPtr.p->m_senderData, requestPtr.p->m_transId[0],
+           requestPtr.p->m_transId[1], requestPtr.i,
+           requestPtr.p->m_rows));
+      signal->theData[0] = save[0];
+      signal->theData[1] = save[1];
+      signal->theData[2] = save[2];
+      signal->setLength(save[3]);
     }
   }
 
@@ -4665,6 +4760,13 @@ void Dbspj::execSCAN_HBREP(Signal *signal) {
   signal->theData[0] = requestPtr.p->m_senderData;
   signal->theData[1] = transid1;
   signal->theData[2] = transid2;
+  DEB_SCAN_HB_SEND(
+      ("(%u)DBSPJ forward SCAN_HBREP: fromRef=0x%x fromSenderData=%u "
+       "toRef=0x%x toSenderData=%u transid=(0x%x,0x%x) request=%u "
+       "treeNode=%u scanFragHandle=%u",
+       instance(), senderRef, senderData, ref, requestPtr.p->m_senderData,
+       transid1, transid2, requestPtr.i, treeNodePtr.p->m_node_no,
+       scanFragHandlePtr.i));
   sendSignal(ref, GSN_SCAN_HBREP, signal, 3, JBB);
 }
 
@@ -4914,8 +5016,12 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   if (unlikely(
           !(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI))) {
     jam();
-    DEB_TRANSID_AI(("(%u) unexpected execTRANSID_AI node: %u, requestPtrI: %u",
-      instance(), treeNodePtr.p->m_node_no, requestPtr.i));
+    DEB_TRANSID_AI(("(%u) unexpected execTRANSID_AI node: %u, requestPtrI: %u"
+                    ", bits: 0x%x",
+      instance(),
+      treeNodePtr.p->m_node_no,
+      requestPtr.i,
+      treeNodePtr.p->m_bits));
     if (signal->getNoOfSections() > 0) {
       SectionHandle handle(this, signal);
       releaseSections(handle);
@@ -4923,7 +5029,7 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     return;
   }
 
-  DEB_TRANSID_AI(("(%u) execTRANSID_AI node: %u, requestPtrI: %u",
+  DEB_TRANSID_AI_DETAIL(("(%u) execTRANSID_AI node: %u, requestPtrI: %u",
     instance(), treeNodePtr.p->m_node_no, requestPtr.i));
   DEBUG("execTRANSID_AI"
         << ", node: " << treeNodePtr.p->m_node_no
@@ -4955,7 +5061,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     linearPtr.p = m_buffer1;
     linearPtr.sz = dataPtr.sz;
     releaseSections(handle);
-    DEB_TRANSID_AI(("(%u) Dbspj::TRANSID_AI: len: %u", instance(), dataPtr.sz));
+    DEB_TRANSID_AI_DETAIL(("(%u) Dbspj::TRANSID_AI: len: %u",
+      instance(), dataPtr.sz));
   }
   jamDataDebug(linearPtr.sz);
 
@@ -7957,6 +8064,16 @@ void Dbspj::handleCtePhaseComplete(Signal *signal, Ptr<Request> requestPtr) {
   rep->senderRef = reference();
   rep->senderData = requestPtr.p->m_senderData;
   rep->phase = requestPtr.p->m_cteCurrentPhase;
+  rep->transId1 = requestPtr.p->m_transId[0];
+  rep->transId2 = requestPtr.p->m_transId[1];
+  DEB_CTE_PHASE(("(%u)DBSPJ send CTE_PHASE_COMPLETE_REP: "
+                 "senderData=%u phase=%u transid=(0x%x,0x%x) outstanding=%u "
+                 "cnt_active=%u completed=0x%x active=0x%x",
+                 instance(), rep->senderData, rep->phase,
+                 rep->transId1, rep->transId2,
+                 requestPtr.p->m_outstanding, requestPtr.p->m_cnt_active,
+                 requestPtr.p->m_completed_tree_nodes.rep.data[0],
+                 requestPtr.p->m_active_tree_nodes.rep.data[0]));
   sendSignal(requestPtr.p->m_senderRef, GSN_CTE_PHASE_COMPLETE_REP,
              signal, CtePhaseCompleteRep::SignalLength, JBB);
 }

@@ -35,7 +35,7 @@
 #include <NdbQueryOperationImpl.hpp>
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-//#define DEBUG_JOIN_AGG_API 1
+#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
 #endif
 

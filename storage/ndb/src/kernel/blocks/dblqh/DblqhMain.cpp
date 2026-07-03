@@ -166,6 +166,10 @@
 //#define DEBUG_RATE_SEND 1
 //#define DEBUG_RATE_DETAIL 1
 //#define DEBUG_QUOTAS 1
+/* Per-group redistribution tracing is very noisy on large CTEs.  Keep it
+ * separate from DEBUG_JOIN_AGG so normal phase/state tracing stays readable. */
+//#define DEBUG_JOIN_AGG_REDIST_VERBOSE 1
+#define DEBUG_SCAN_HB_SEND 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 #define DEBUG_JOIN_AGG 1
@@ -183,6 +187,20 @@
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_REDIST_VERBOSE
+#define DEB_JOIN_AGG_REDIST_VERBOSE(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG_REDIST_VERBOSE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_SCAN_HB_SEND
+#define DEB_SCAN_HB_SEND(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SCAN_HB_SEND(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_MATCH
@@ -18609,7 +18627,13 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
 void
 Dblqh::sendJoinAggCompleteHeartbeat(Signal *signal,
                                     JoinAggregationState *state) {
-  if (state->m_cte_complete_hb_scanFragPtrI == RNIL ||
+  /*
+   * Tagged completion requests are tracked by DBTC using requestId, not by the
+   * scan-fragment id carried in data word 0.  The scan-fragment id can be RNIL
+   * once ordinary scan-fragment state has moved on, but completion/redistribution
+   * still needs to keep the owning DBTC scan alive.
+   */
+  if ((state->m_cte_complete_requestId & 0x80000000) == 0 ||
       state->m_cte_complete_senderRef == 0) {
     return;
   }
@@ -21531,12 +21555,12 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       lsp[1].sz = (valLen + 3) >> 2;
 
       BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
-      DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ send: "
-                    "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u "
-                    "dstOwner=%u keyLen=%u valueLen=%u needConf=%u "
-                    "batchBytes=%u sigBytes=%u",
-                    instance(), aggStateKey, dstKey, ownerNode, dstOwner,
-                    keyLen, valLen, needConf, batch_bytes, sigBytes));
+      DEB_JOIN_AGG_REDIST_VERBOSE(
+          ("(%u) DBLQH REDIST_REQ send: "
+           "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u dstOwner=%u "
+           "keyLen=%u valueLen=%u needConf=%u batchBytes=%u sigBytes=%u",
+           instance(), aggStateKey, dstKey, ownerNode, dstOwner, keyLen,
+           valLen, needConf, batch_bytes, sigBytes));
       sendBatchedFragmentedSignal(remoteRef,
                                   GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
                                   JoinAggRedistributeReq::SignalLength,
@@ -21657,17 +21681,16 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   releaseSections(handle);
 
   JoinAggregationState::State curState = state->m_state.load();
-  DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ recv: "
-                "aggStateKey=%u senderAggStateKey=%u senderNode=%u "
-                "senderRef=0x%x state=%u keyLen=%u valueLen=%u "
-                "keyWords=%u valueWords=%u needConf=%u queueCount=%u "
-                "redistDone=%u",
-                instance(), aggStateKey, senderAggStateKey,
-                refToNode(signal->getSendersBlockRef()),
-                signal->getSendersBlockRef(), (Uint32)curState, keyLen,
-                valueLen, keySection.sz, valueSection.sz, needConf,
-                state->m_redist_queue_count,
-                state->m_cte_redistribution_done));
+  DEB_JOIN_AGG_REDIST_VERBOSE(
+      ("(%u) DBLQH REDIST_REQ recv: "
+       "aggStateKey=%u senderAggStateKey=%u senderNode=%u senderRef=0x%x "
+       "state=%u keyLen=%u valueLen=%u keyWords=%u valueWords=%u "
+       "needConf=%u queueCount=%u redistDone=%u",
+       instance(), aggStateKey, senderAggStateKey,
+       refToNode(signal->getSendersBlockRef()), signal->getSendersBlockRef(),
+       (Uint32)curState, keyLen, valueLen, keySection.sz, valueSection.sz,
+       needConf, state->m_redist_queue_count,
+       state->m_cte_redistribution_done));
 
   /* Send CONF immediately if requested so the sender can resume
    * without waiting for our merge to complete. */
@@ -21733,12 +21756,12 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       state->m_redist_queue_head = entry;
     state->m_redist_queue_tail = entry;
     state->m_redist_queue_count++;
-    DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ queued: "
-                  "aggStateKey=%u senderAggStateKey=%u state=%u "
-                  "keyLen=%u valueLen=%u queueCount=%u",
-                  instance(), aggStateKey, senderAggStateKey,
-                  (Uint32)curState, keyLen, valueLen,
-                  state->m_redist_queue_count));
+    DEB_JOIN_AGG_REDIST_VERBOSE(
+        ("(%u) DBLQH REDIST_REQ queued: "
+         "aggStateKey=%u senderAggStateKey=%u state=%u keyLen=%u "
+         "valueLen=%u queueCount=%u",
+         instance(), aggStateKey, senderAggStateKey, (Uint32)curState, keyLen,
+         valueLen, state->m_redist_queue_count));
     return;
   }
   /* Process immediately: merge into local hash table */
@@ -21762,12 +21785,13 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
   }
-  DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ merged: "
-                "aggStateKey=%u senderAggStateKey=%u state=%u "
-                "keyLen=%u valueLen=%u queueCount=%u redistDone=%u",
-                instance(), aggStateKey, senderAggStateKey,
-                (Uint32)curState, keyLen, valueLen,
-                state->m_redist_queue_count, state->m_cte_redistribution_done));
+  DEB_JOIN_AGG_REDIST_VERBOSE(
+      ("(%u) DBLQH REDIST_REQ merged: "
+       "aggStateKey=%u senderAggStateKey=%u state=%u keyLen=%u valueLen=%u "
+       "queueCount=%u redistDone=%u",
+       instance(), aggStateKey, senderAggStateKey, (Uint32)curState, keyLen,
+       valueLen, state->m_redist_queue_count,
+       state->m_cte_redistribution_done));
 }
 
 /**
@@ -22761,6 +22785,15 @@ void Dblqh::check_send_scan_hb_rep(Signal *signal, ScanRecord *scanPtrP,
     signal->theData[0] = tcPtrP->clientConnectrec;
     signal->theData[1] = tcPtrP->transid[0];
     signal->theData[2] = tcPtrP->transid[1];
+    DEB_SCAN_HB_SEND(
+        ("(%u)DBLQH send SCAN_HBREP: tcScanRec=%u clientConnectrec=%u "
+         "clientBlockref=0x%x clientNode=%u transid=(0x%x,0x%x) "
+         "time_waiting=%u limit=%u joinAgg=%u",
+         instance(), tcPtrP->tcScanRec, tcPtrP->clientConnectrec,
+         tcPtrP->clientBlockref, refToNode(tcPtrP->clientBlockref),
+         tcPtrP->transid[0], tcPtrP->transid[1],
+         time_waiting, limit,
+         scanPtrP->m_join_agg_state_key != RNIL));
     sendSignal(tcPtrP->clientBlockref, GSN_SCAN_HBREP, signal, 3, JBB);
 
     signal->theData[0] = save[0];
@@ -23572,6 +23605,14 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     ndbrequire(scanPtr->m_curr_batch_size_rows < scanPtr->m_def_max_batch_size);
   }
   if (scanPtr->m_join_agg_state_key != RNIL) {
+    /*
+     * Join aggregation consumes scan rows inside DBLQH/DBTUP and can avoid
+     * sending TRANSID_AI/SCAN_FRAGCONF for long periods.  Report scan
+     * progress here so DBTC does not time out an active scan fragment while
+     * the aggregation scan is still making progress.
+     */
+    check_send_scan_hb_rep(signal, scanPtr, regTcPtr);
+
     jam();
     if (read_len > 0) {
       scanPtr->m_join_agg_evict_rows++;
@@ -23852,6 +23893,13 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
 #endif // DEBUG_PA
   }
   jamDebug();
+  if (scanPtr->m_join_agg_state_key != RNIL) {
+    /*
+     * Same progress heartbeat as in scanTupkeyConfLab(), but for filtered
+     * rows / key-not-found rows that continue the scan without producing data.
+     */
+    check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
+  }
   jamDataDebug(scanPtr->m_curr_batch_size_rows);
   jamDataDebug(scanPtr->scan_acc_index);
   scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT_COMMIT;

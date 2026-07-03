@@ -62,7 +62,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
-//#define DEBUG_JOIN_AGG_API 1
+#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
 #endif
 
@@ -2288,7 +2288,14 @@ bool NdbQueryImpl::noteAggResultReceived() {
   assert(m_aggregator != nullptr);
 
   m_aggReceivedResults++;
-  return isAggReceiveComplete();
+  const bool is_complete = isAggReceiveComplete();
+#ifdef DEBUG_JOIN_AGG_API
+  DEB_JOIN_AGG_API("[AGG_API] noteAggResultReceived: "
+                   "received=%u expected=%u finalConfs=%u complete=%u\n",
+                   m_aggReceivedResults, m_aggExpectedResults,
+                   m_aggFinalConfs, is_complete ? 1 : 0);
+#endif
+  return is_complete;
 }
 
 bool NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
@@ -3305,7 +3312,17 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
           if (isAggReceiveComplete()) {
             return FetchResult_noMoreData;
           }
-          return FetchResult_noMoreCache;
+          /*
+           * Aggregate SCAN_TABCONF promises how many aggregate TRANSID_AI rows
+           * to expect. Those rows may arrive after the final SCAN_TABCONF, so
+           * keep waiting until the aggregate receiver has seen all promised
+           * rows instead of reporting that no more cached data is available.
+           */
+          DEB_JOIN_AGG_API("[AGG_API] awaitMoreResults: waiting for "
+                           "aggregate rows received=%u expected=%u "
+                           "finalConfs=%u\n",
+                           m_aggReceivedResults, m_aggExpectedResults,
+                           m_aggFinalConfs);
         }
 
         const Uint32 timeout = ndb->get_waitfor_timeout();

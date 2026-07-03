@@ -42,7 +42,15 @@ import (
 // ronsqlBenchTimeout is the per-request timeout for RonSQL benchmark queries.
 // Analytic queries over large scale factors can far exceed the default 30s
 // REST timeout used for point operations.
-const ronsqlBenchTimeout = 300 * time.Second
+var ronsqlBenchTimeoutSeconds = "120"
+
+func ronsqlBenchTimeout() time.Duration {
+	seconds, err := strconv.Atoi(ronsqlBenchTimeoutSeconds)
+	if err != nil || seconds <= 0 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
+}
 
 // RonSQLBenchQuery is a named RonSQL benchmark query. Queries run against
 // the tpch database created by .load_tpch. A query may contain the {KEY}
@@ -374,7 +382,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 			Port:    s.config.RestPort,
 			TLS:     s.config.RDRSTLS,
 			APIKey:  s.config.RDRSAPIKey,
-			Timeout: ronsqlBenchTimeout,
+			Timeout: ronsqlBenchTimeout(),
 		})
 		if err != nil {
 			for j := 0; j < i; j++ {

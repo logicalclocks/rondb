@@ -155,6 +155,8 @@
 //#define DEBUG_RATE_OVERFLOW 1
 #define DEBUG_CONT_SCAN 1
 #define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_SCAN_HB_TIMEOUT 1
+#define DEBUG_SCAN_HB_TRACE 1
 //#define DEBUG_DEADLOCK 1
 #endif
 
@@ -162,6 +164,20 @@
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_SCAN_HB_TIMEOUT
+#define DEB_SCAN_HB_TIMEOUT(arglist) \
+  do { g_eventLogger->info arglist; } while (0)
+#else
+#define DEB_SCAN_HB_TIMEOUT(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_SCAN_HB_TRACE
+#define DEB_SCAN_HB_TRACE(arglist) \
+  do { g_eventLogger->info arglist; } while (0)
+#else
+#define DEB_SCAN_HB_TRACE(arglist) do { } while (0)
 #endif
 
 /* RONDB-1062 proactive deadlock discovery trace. */
@@ -12115,12 +12131,103 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
   jamEntry();
 
   BlockReference senderRef = signal->senderBlockRef();
+  const Uint32 signalLength = signal->getLength();
   const bool joinAggCompleteHb =
-      signal->getLength() >= 4 &&
+      signalLength >= 4 &&
       isAggCompleteRequestId(signal->theData[3]);
+#ifdef DEBUG_SCAN_HB_TRACE
+  const Uint32 hbRequestId = signalLength >= 4 ? signal->theData[3] : 0;
+#endif
+  if (joinAggCompleteHb) {
+    jam();
+    AggCompleteRecordPtr rec;
+    rec.i = decodeAggCompleteRequestId(signal->theData[3]);
+    if (unlikely(!getValidAggCompleteRecord(rec) ||
+                 rec.p->m_state != AggCompleteRecord::REC_WAIT_COMPLETE)) {
+      DEB_SCAN_HB_TRACE(
+          ("TC %u : SCAN_HBREP complete ignored stale requestId=0x%x "
+           "senderRef=0x%x senderNode=%u len=%u transid=(0x%x,0x%x)",
+           instance(), signal->theData[3], senderRef, refToNode(senderRef),
+           signalLength, signal->theData[1], signal->theData[2]));
+      return;
+    }
+
+    ScanRecordPtr scanptr;
+    scanptr.i = rec.p->m_scanPtrI;
+    if (unlikely(!scanRecordPool.getUncheckedPtrRW(scanptr))) {
+      DEB_SCAN_HB_TRACE(
+          ("TC %u : SCAN_HBREP complete ignored invalid scanPtr=%u "
+           "requestId=0x%x senderRef=0x%x senderNode=%u",
+           instance(), rec.p->m_scanPtrI, signal->theData[3],
+           senderRef, refToNode(senderRef)));
+      return;
+    }
+
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    ndbrequire(Magic::check_ptr(scanptr.p));
+    if (unlikely(!c_apiConnectRecordPool.getUncheckedPtrRW(apiConnectptr))) {
+      DEB_SCAN_HB_TRACE(
+          ("TC %u : SCAN_HBREP complete ignored invalid apiConnectPtr=%u "
+           "scanPtr=%u requestId=0x%x",
+           instance(), scanptr.p->scanApiRec, scanptr.i,
+           signal->theData[3]));
+      return;
+    }
+    ndbrequire(Magic::check_ptr(apiConnectptr.p));
+
+    const Uint32 senderNodeId = refToNode(senderRef);
+    const bool senderPending =
+        senderNodeId < ABS_MAX_NDB_NODES &&
+        rec.p->m_aggNodesPending.get(senderNodeId);
+    const bool transidMatch =
+        apiConnectptr.p->transid[0] == signal->theData[1] &&
+        apiConnectptr.p->transid[1] == signal->theData[2];
+    if (unlikely(!senderPending || !transidMatch)) {
+      DEB_SCAN_HB_TRACE(
+          ("TC %u : SCAN_HBREP complete ignored validation scanPtr=%u "
+           "apiConnectPtr=%u requestId=0x%x senderRef=0x%x senderNode=%u "
+           "senderPending=%u apiTransid=(0x%x,0x%x) hbTransid=(0x%x,0x%x)",
+           instance(), scanptr.i, apiConnectptr.i, signal->theData[3],
+           senderRef, senderNodeId, senderPending,
+           apiConnectptr.p->transid[0], apiConnectptr.p->transid[1],
+           signal->theData[1], signal->theData[2]));
+      return;
+    }
+
+    updateBuddyTimer(apiConnectptr);
+    Uint32 refreshed = 0;
+    Local_ScanFragRec_dllist running(c_scan_frag_pool,
+                                     scanptr.p->m_running_scan_frags);
+    ScanFragRecPtr fragPtr;
+    for (running.first(fragPtr); !fragPtr.isNull(); running.next(fragPtr)) {
+      if (fragPtr.p->scanFragState == ScanFragRec::LQH_ACTIVE &&
+          fragPtr.p->scanFragTimer != 0) {
+        jam();
+        fragPtr.p->startFragTimer(ctcTimer);
+        refreshed++;
+      }
+    }
+    DEB_SCAN_HB_TRACE(
+        ("TC %u : SCAN_HBREP complete accepted scanPtr=%u apiConnectPtr=%u "
+         "requestId=0x%x senderRef=0x%x senderNode=%u transid=(0x%x,0x%x) "
+         "refreshed=%u ctcTimer=%u outstanding=%u",
+         instance(), scanptr.i, apiConnectptr.i, signal->theData[3],
+         senderRef, senderNodeId, signal->theData[1], signal->theData[2],
+         refreshed, ctcTimer, rec.p->m_outstanding));
+    return;
+  }
+
   scanFragptr.i = signal->theData[0];
   if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragptr))) {
     jam();
+    DEB_SCAN_HB_TRACE(
+        ("TC %u : SCAN_HBREP ignored invalid scanFragPtr=%u "
+         "senderRef=0x%x senderNode=%u len=%u transid=(0x%x,0x%x) "
+         "joinAggCompleteHb=%u requestId=0x%x",
+         instance(), signal->theData[0], senderRef, refToNode(senderRef),
+         signalLength, signal->theData[1], signal->theData[2],
+         joinAggCompleteHb, hbRequestId));
     if (joinAggCompleteHb) {
       return;
     }
@@ -12132,6 +12239,14 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     case ScanFragRec::LQH_ACTIVE:
       break;
     default:
+      DEB_SCAN_HB_TRACE(
+          ("TC %u : SCAN_HBREP ignored state scanFragPtr=%u "
+           "scanFragState=%u senderRef=0x%x senderNode=%u len=%u "
+           "transid=(0x%x,0x%x) joinAggCompleteHb=%u requestId=0x%x",
+           instance(), scanFragptr.i, scanFragptr.p->scanFragState,
+           senderRef, refToNode(senderRef), signalLength,
+           signal->theData[1], signal->theData[2],
+           joinAggCompleteHb, hbRequestId));
       if (joinAggCompleteHb) {
         jam();
         return;
@@ -12155,6 +12270,17 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
   Uint32 compare_transid2 = apiConnectptr.p->transid[1] - signal->theData[2];
   ndbrequire(Magic::check_ptr(apiConnectptr.p));
   if (unlikely(compare_transid1 != 0 || compare_transid2 != 0)) {
+    DEB_SCAN_HB_TRACE(
+        ("TC %u : SCAN_HBREP ignored transid mismatch scanPtr=%u "
+         "scanFragPtr=%u apiConnectPtr=%u scanState=%u scanFragState=%u "
+         "senderRef=0x%x senderNode=%u apiTransid=(0x%x,0x%x) "
+         "hbTransid=(0x%x,0x%x) joinAggCompleteHb=%u requestId=0x%x",
+         instance(), scanptr.i, scanFragptr.i, apiConnectptr.i,
+         scanptr.p->scanState, scanFragptr.p->scanFragState,
+         senderRef, refToNode(senderRef),
+         apiConnectptr.p->transid[0], apiConnectptr.p->transid[1],
+         signal->theData[1], signal->theData[2],
+         joinAggCompleteHb, hbRequestId));
     jam();
     if (joinAggCompleteHb) {
       return;
@@ -12190,10 +12316,39 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
     }
   }
   // Update timer on ScanFragRec
+#ifdef DEBUG_SCAN_HB_TRACE
+  const Uint32 oldScanFragTimer = scanFragptr.p->scanFragTimer;
+#endif
   if (likely(scanFragptr.p->scanFragTimer != 0)) {
     updateBuddyTimer(apiConnectptr);
     scanFragptr.p->startFragTimer(ctcTimer);
+    DEB_SCAN_HB_TRACE(
+        ("TC %u : SCAN_HBREP accepted scanPtr=%u scanFragPtr=%u "
+         "apiConnectPtr=%u scanState=%u scanFragState=%u "
+         "oldScanFragTimer=%u newScanFragTimer=%u ctcTimer=%u "
+         "lqhBlockRef=0x%x senderRef=0x%x senderNode=%u "
+         "transid=(0x%x,0x%x) joinAggCompleteHb=%u requestId=0x%x",
+         instance(), scanptr.i, scanFragptr.i, apiConnectptr.i,
+         scanptr.p->scanState, scanFragptr.p->scanFragState,
+         oldScanFragTimer, scanFragptr.p->scanFragTimer, ctcTimer,
+         scanFragptr.p->lqhBlockref, senderRef, refToNode(senderRef),
+         signal->theData[1], signal->theData[2],
+         joinAggCompleteHb, hbRequestId));
   } else {
+    DEB_SCAN_HB_TRACE(
+        ("TC %u : SCAN_HBREP ignored timer off scanPtr=%u scanFragPtr=%u "
+         "apiConnectPtr=%u scanState=%u scanFragState=%u "
+         "senderRef=0x%x senderNode=%u transid=(0x%x,0x%x) "
+         "joinAggCompleteHb=%u requestId=0x%x",
+         instance(), scanptr.i, scanFragptr.i, apiConnectptr.i,
+         scanptr.p->scanState, scanFragptr.p->scanFragState,
+        senderRef, refToNode(senderRef),
+        signal->theData[1], signal->theData[2],
+        joinAggCompleteHb, hbRequestId));
+    if (isCteScanFragTimerStopped(scanptr, scanFragptr)) {
+      jam();
+      return;
+    }
     if (joinAggCompleteHb) {
       jam();
       return;
@@ -12363,6 +12518,30 @@ void Dbtc::timeOutFoundFragLab(Signal *signal, UintR TscanConPtr) {
       if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
         break;
       }
+
+#ifdef DEBUG_SCAN_HB_TIMEOUT
+      {
+        ApiConnectRecordPtr apiConnectptr;
+        apiConnectptr.i = scanptr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiConnectptr);
+
+        DEB_SCAN_HB_TIMEOUT(
+            ("TC %u : SCAN_HB_TIMEOUT scanPtr=%u scanFragPtr=%u "
+             "scanState=%u scanFragState=%u scanFragTimer=%u ctcTimer=%u "
+             "timerAge=%u lqhBlockRef=0x%x lqhNode=%u lqhInstance=%u "
+             "apiConnectPtr=%u apiBlockRef=0x%x apiNode=%u "
+             "transid=(0x%x,0x%x) scanRequestInfo=0x%x",
+             instance(), scanptr.i, ptr.i, scanptr.p->scanState,
+             ptr.p->scanFragState, ptr.p->scanFragTimer, ctcTimer,
+             ctcTimer - ptr.p->scanFragTimer, ptr.p->lqhBlockref,
+             refToNode(ptr.p->lqhBlockref),
+             refToInstance(ptr.p->lqhBlockref), scanptr.p->scanApiRec,
+             apiConnectptr.p->ndbapiBlockref,
+             refToNode(apiConnectptr.p->ndbapiBlockref),
+             apiConnectptr.p->transid[0], apiConnectptr.p->transid[1],
+             scanptr.p->scanRequestInfo));
+      }
+#endif
 
       logScanTimeout(signal, ptr, scanptr);
 
@@ -16938,6 +17117,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_queued_scan_frags.init();
   scanptr.p->m_delivered_scan_frags.init();
   scanptr.p->m_fragLocations.init();
+  scanptr.p->m_cteScanFragHandles.init();
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->scanAttrInfoPtr = RNIL;
   scanptr.p->m_scan_cookie = DihScanTabConf::InvalidCookie;
@@ -17678,6 +17858,18 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
                         m_fragLocationPool);
   }
 
+  {
+    CteScanFragHandlePtr ptr;
+    Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                         scanPtr.p->m_cteScanFragHandles);
+    while (handles.removeFirst(ptr)) {
+      c_cteScanFragHandleHash.remove(ptr);
+      c_cteScanFragHandlePool.release(ptr);
+    }
+    checkPoolShrinkNeed(DBTC_CTE_SCAN_FRAG_HANDLE_TRANSIENT_POOL_INDEX,
+                        c_cteScanFragHandlePool);
+  }
+
   if (scanPtr.p->scanKeyInfoPtr != RNIL) {
     releaseSection(scanPtr.p->scanKeyInfoPtr);
     scanPtr.p->scanKeyInfoPtr = RNIL;
@@ -17696,6 +17888,7 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   ndbrequire(scanPtr.p->m_running_scan_frags.isEmpty());
   ndbrequire(scanPtr.p->m_queued_scan_frags.isEmpty());
   ndbrequire(scanPtr.p->m_delivered_scan_frags.isEmpty());
+  ndbrequire(scanPtr.p->m_cteScanFragHandles.isEmpty());
 
   ndbassert(scanPtr.p->scanApiRec == apiConnectptr.i);
   ndbassert(apiConnectptr.p->apiScanRec == scanPtr.i);
@@ -17859,24 +18052,27 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
       (ScanFragReq::getReadCommittedFlag(scanptr.p->scanRequestInfo) ||
        scanptr.p->m_read_committed_base)) {
     jamDebug();
-    /* Primary not counted in DIGETNODES signal */
     Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
-    for (Uint32 i = 1; i < count; i++) {
-      if (conf->nodes[i] == ownNodeId) {
-        jamDebug();
-        nodeId = ownNodeId;
-        break;
-      }
-    }
     if (nodeId != ownNodeId) {
       Uint32 node;
       jamDebug();
       Uint16 nodes[4];
-      nodes[0] = (Uint16)conf->nodes[0];
-      nodes[1] = (Uint16)conf->nodes[1];
-      nodes[2] = (Uint16)conf->nodes[2];
-      nodes[3] = (Uint16)conf->nodes[3];
-      if ((node = check_own_location_domain(&nodes[0], count)) != 0) {
+      Uint32 loc_count = 0;
+      /*
+       * Do not prefer the local node for READ_BACKUP scans here.  CTE
+       * materialisation scans can otherwise collapse all fragments onto
+       * the TC-local node when each fragment has a local readable backup.
+       *
+       * Keep the location-domain preference, but only among non-local
+       * replicas.  If no such replica exists, retain DIH's primary node.
+       */
+      for (Uint32 i = 0; i < count && loc_count < NDB_ARRAY_SIZE(nodes); i++) {
+        if (conf->nodes[i] != ownNodeId) {
+          nodes[loc_count++] = (Uint16)conf->nodes[i];
+        }
+      }
+      if (loc_count != 0 &&
+          (node = check_own_location_domain(&nodes[0], loc_count)) != 0) {
         nodeId = node;
       }
     }
@@ -18912,7 +19108,12 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
    */
   if (old == ScanRecord::WAIT_JOIN_AGG_SETUP ||
       old == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
-      old == ScanRecord::WAIT_JOIN_AGG_RELEASE) {
+      old == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
+      (old == ScanRecord::RUNNING &&
+       scanPtr.p->m_numCtes > 0 &&
+       scanPtr.p->m_cteCurrentPhase < scanPtr.p->m_ctePhaseCount &&
+       scanPtr.p->m_cteScanReportsReceived <
+           scanPtr.p->m_cteScanReportsExpected)) {
     jam();
     scanPtr.p->m_close_scan_req = req_received;
     if (!scanPtr.p->m_aggPhaseFailed) {
@@ -19170,6 +19371,69 @@ void Dbtc::get_and_step_next_frag_location(ScanFragLocationPtr &fragLocationPtr,
     checkPoolShrinkNeed(DBTC_FRAG_LOCATION_TRANSIENT_POOL_INDEX,
                         m_fragLocationPool);
   }
+}
+
+bool Dbtc::registerCteScanFragHandle(ScanRecordPtr scanptr,
+                                     ScanFragRecPtr scanFragP,
+                                     ApiConnectRecordPtr const apiConnectptr) {
+  jam();
+  ndbrequire(scanptr.p->m_numCtes > 0);
+
+  {
+    Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                         scanptr.p->m_cteScanFragHandles);
+    CteScanFragHandlePtr handlePtr;
+    for (handles.first(handlePtr); !handlePtr.isNull();
+         handles.next(handlePtr)) {
+      if (handlePtr.p->m_scanFragPtrI == scanFragP.i) {
+        jam();
+        ndbrequire(handlePtr.p->m_transId1 == apiConnectptr.p->transid[0]);
+        ndbrequire(handlePtr.p->m_transId2 == apiConnectptr.p->transid[1]);
+#ifdef DEBUG_JOIN_AGG_TRACE
+        DEB_JOIN_AGG(("(%u)DBTC CTE handle already registered: "
+                      "scanPtr.i=%u scanFragPtr.i=%u dbspjRef=0x%x "
+                      "transid=(%u,%u)",
+                      instance(), scanptr.i,
+                      handlePtr.p->m_scanFragPtrI,
+                      handlePtr.p->m_dbspjRef,
+                      handlePtr.p->m_transId1,
+                      handlePtr.p->m_transId2));
+#endif
+        return true;
+      }
+    }
+  }
+
+  CteScanFragHandlePtr handlePtr;
+  if (unlikely(!c_cteScanFragHandlePool.seize(handlePtr))) {
+    jam();
+    return false;
+  }
+
+  handlePtr.p->m_scanFragPtrI = scanFragP.i;
+  handlePtr.p->m_dbspjRef = scanFragP.p->lqhBlockref;
+  handlePtr.p->m_scanPtrI = scanptr.i;
+  handlePtr.p->m_transId1 = apiConnectptr.p->transid[0];
+  handlePtr.p->m_transId2 = apiConnectptr.p->transid[1];
+  handlePtr.p->m_activeMask = 0;
+  handlePtr.p->m_lastCompletePhase = RNIL;
+  handlePtr.p->m_completeMask = 0;
+
+  Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                       scanptr.p->m_cteScanFragHandles);
+  handles.addLast(handlePtr);
+  c_cteScanFragHandleHash.add(handlePtr);
+  scanptr.p->m_cteScanReportsExpected++;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC CTE handle registered: scanPtr.i=%u "
+                "scanFragPtr.i=%u dbspjRef=0x%x transid=(%u,%u) "
+                "expected=%u numCtes=%u",
+                instance(), scanptr.i, scanFragP.i, scanFragP.p->lqhBlockref,
+                apiConnectptr.p->transid[0], apiConnectptr.p->transid[1],
+                scanptr.p->m_cteScanReportsExpected, scanptr.p->m_numCtes));
+#endif
+  return true;
 }
 
 bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
@@ -19463,6 +19727,32 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
         }
       }
     }
+
+    if (scanP->m_numCtes > 0) {
+      jam();
+      if (unlikely(!registerCteScanFragHandle(scanptr, scanFragP,
+                                              apiConnectptr))) {
+        sections.clear();
+        scanError(signal, scanptr, ZGET_DATAREC_ERROR);
+        return false;
+      }
+    }
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+    if (scanP->m_numCtes > 0) {
+      DEB_JOIN_AGG(("(%u)DBTC CTE SCAN_FRAGREQ route: "
+                    "scanPtr.i=%u scanFragPtr.i=%u tableId=%u fragId=%u "
+                    "primaryRef=0x%x preferredRef=0x%x sendRef=0x%x "
+                    "sendNode=%u sendInst=%u nextFrag=%u noFrag=%u "
+                    "multiFrag=%u queryThread=%u",
+                    instance(), scanptr.i, scanFragP.i, scanP->scanTableref,
+                    fragId, primaryLqhBlockRef, preferredLqhBlockRef, ref,
+                    refToNode(ref), refToInstance(ref),
+                    scanP->scanNextFragId, scanP->scanNoFrag,
+                    ScanFragReq::getMultiFragFlag(requestInfo),
+                    ScanFragReq::getQueryThreadFlag(req->requestInfo)));
+    }
+#endif
 #ifdef DEBUG_ACTIVE_NODES
     Uint32 currentNodeId = refToNode(ref);
     Uint32 signalId = signal->header.theSignalId;
@@ -19496,11 +19786,6 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   scanFragP.p->m_start_ticks = getHighResTimer();
   updateBuddyTimer(apiConnectptr);
 
-  // Track how many DBSPJ instances will send CTE_SCAN_COMPLETE_REP
-  if (scanP->m_numCtes > 0) {
-    jamDebug();
-    scanP->m_cteScanReportsExpected++;
-  }
   return true;
 }  // Dbtc::sendScanFragReq()
 
@@ -21517,6 +21802,13 @@ void Dbtc::execDBINFO_SCANREQ(Signal *signal) {
            c_scan_frag_pool.getUsedHi(),
            {CFG_DB_NO_LOCAL_SCANS, 0, 0, 0},
            RT_DBTC_SCAN_FRAGMENT},
+          {"CTE Scan Fragment Handle",
+           c_cteScanFragHandlePool.getUsed(),
+           c_cteScanFragHandlePool.getSize(),
+           c_cteScanFragHandlePool.getEntrySize(),
+           c_cteScanFragHandlePool.getUsedHi(),
+           {0, 0, 0, 0},
+           RT_DBTC_CTE_SCAN_FRAG_HANDLE},
           {"Scan Fragment Location",
            m_fragLocationPool.getUsed(),
            m_fragLocationPool.getSize(),
@@ -30281,9 +30573,10 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   }
 
   DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_COMPLETE_CONF: recI=%u kind=%u "
-                "nodeId=%u outstanding=%u",
+                "nodeId=%u numResultRows=%u totalAggRows=%u outstanding=%u",
                 instance(), rec.i, (Uint32)rec.p->m_kind,
-                senderNodeId, rec.p->m_outstanding));
+                senderNodeId, conf->numResultRows,
+                scanptr.p->m_aggResultRows, rec.p->m_outstanding));
 
   if (rec.p->m_outstanding != 0) return;
 
@@ -30454,6 +30747,86 @@ void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
              JoinAggSendConf::SignalLength, JBB);
 }
 
+bool Dbtc::getCteScanFragForTimer(ScanRecordPtr scanptr,
+                                  CteScanFragHandlePtr handlePtr,
+                                  ScanFragRecPtr &scanFragPtr) {
+  scanFragPtr.i = handlePtr.p->m_scanFragPtrI;
+  if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
+    jam();
+    return false;
+  }
+
+  if (unlikely(scanFragPtr.p->scanRec != scanptr.i ||
+               scanFragPtr.p->scanFragState != ScanFragRec::LQH_ACTIVE)) {
+    jam();
+    return false;
+  }
+
+  return true;
+}
+
+void Dbtc::stopCteScanFragTimer(ScanRecordPtr scanptr,
+                                CteScanFragHandlePtr handlePtr) {
+  ScanFragRecPtr scanFragPtr;
+  if (!getCteScanFragForTimer(scanptr, handlePtr, scanFragPtr)) {
+    return;
+  }
+
+  scanFragPtr.p->stopFragTimer();
+
+  DEB_JOIN_AGG(("(%u)DBTC stop CTE scan timer: scanPtr.i=%u "
+                "scanFragPtr.i=%u phase=%u",
+                instance(), scanptr.i, scanFragPtr.i,
+                scanptr.p->m_cteCurrentPhase));
+}
+
+void Dbtc::startCteScanFragTimer(ScanRecordPtr scanptr,
+                                 CteScanFragHandlePtr handlePtr,
+                                 ApiConnectRecordPtr const apiConnectptr) {
+  ScanFragRecPtr scanFragPtr;
+  if (!getCteScanFragForTimer(scanptr, handlePtr, scanFragPtr)) {
+    return;
+  }
+
+  scanFragPtr.p->startFragTimer(ctcTimer);
+  scanFragPtr.p->m_start_ticks = getHighResTimer();
+  updateBuddyTimer(apiConnectptr);
+
+  DEB_JOIN_AGG(("(%u)DBTC start CTE scan timer: scanPtr.i=%u "
+                "scanFragPtr.i=%u phase=%u",
+                instance(), scanptr.i, scanFragPtr.i,
+                scanptr.p->m_cteCurrentPhase));
+}
+
+bool Dbtc::isCteScanFragTimerStopped(ScanRecordPtr scanptr,
+                                     ScanFragRecPtr scanFragPtr) {
+  if (scanptr.p->m_numCtes == 0 ||
+      scanptr.p->m_cteCurrentPhase >= scanptr.p->m_ctePhaseCount ||
+      scanFragPtr.p->scanFragState != ScanFragRec::LQH_ACTIVE ||
+      scanFragPtr.p->scanFragTimer != 0) {
+    return false;
+  }
+
+  Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                       scanptr.p->m_cteScanFragHandles);
+  CteScanFragHandlePtr handlePtr;
+  for (handles.first(handlePtr); !handlePtr.isNull();
+       handles.next(handlePtr)) {
+    if (handlePtr.p->m_scanFragPtrI == scanFragPtr.i &&
+        handlePtr.p->m_scanPtrI == scanptr.i &&
+        handlePtr.p->m_lastCompletePhase == scanptr.p->m_cteCurrentPhase) {
+      jam();
+      DEB_JOIN_AGG(("(%u)DBTC ignore SCAN_HBREP for stopped CTE timer: "
+                    "scanPtr.i=%u scanFragPtr.i=%u phase=%u",
+                    instance(), scanptr.i, scanFragPtr.i,
+                    scanptr.p->m_cteCurrentPhase));
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * CTE_PHASE_COMPLETE_REP — DBSPJ reports that all CTE scans for a
  * specific execution phase have completed on that DBSPJ instance.
@@ -30470,16 +30843,40 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
   const CtePhaseCompleteRep *rep =
       reinterpret_cast<const CtePhaseCompleteRep *>(signal->getDataPtr());
 
-  ScanFragRecPtr scanFragPtr;
-  scanFragPtr.i = rep->senderData;
-  if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
+  CteScanFragHandle key;
+  key.m_scanFragPtrI = rep->senderData;
+  key.m_dbspjRef = 0;
+  key.m_transId1 = rep->transId1;
+  key.m_transId2 = rep->transId2;
+
+  CteScanFragHandlePtr handlePtr;
+  if (unlikely(!c_cteScanFragHandleHash.find(handlePtr, key))) {
     jam();
+#ifdef DEBUG_JOIN_AGG_TRACE
+    DEB_JOIN_AGG(("(%u)DBTC drop CTE_PHASE_COMPLETE_REP: "
+                  "unknown handle senderData=%u senderRef=0x%x "
+                  "transid=(%u,%u) phase=%u",
+                  instance(), rep->senderData, rep->senderRef,
+                  rep->transId1, rep->transId2, rep->phase));
+#endif
     return;
   }
 
+#ifdef DEBUG_JOIN_AGG_TRACE
+  if (unlikely(rep->senderRef != handlePtr.p->m_dbspjRef)) {
+    DEB_JOIN_AGG(("(%u)DBTC CTE_PHASE_COMPLETE_REP senderRef differs: "
+                  "senderRef=0x%x registeredRef=0x%x senderData=%u",
+                  instance(), rep->senderRef, handlePtr.p->m_dbspjRef,
+                  rep->senderData));
+  }
+#endif
+
   ScanRecordPtr scanptr;
-  scanptr.i = scanFragPtr.p->scanRec;
-  scanRecordPool.getPtr(scanptr);
+  scanptr.i = handlePtr.p->m_scanPtrI;
+  if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
+    jam();
+    return;
+  }
 
   /* A late CTE_PHASE_COMPLETE_REP can arrive after the scan has
    * timed out or been aborted (scanState != RUNNING).  Ignore it
@@ -30506,6 +30903,20 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
     ndbassert(false);
     return;
   }
+
+  if (unlikely(handlePtr.p->m_lastCompletePhase == rep->phase)) {
+    jam();
+    g_eventLogger->info(
+        "(%u)DBTC duplicate CTE_PHASE_COMPLETE_REP: "
+        "scanPtr.i=%u senderData=%u phase=%u transid=(%u,%u)",
+        instance(), scanptr.i, rep->senderData, rep->phase,
+        rep->transId1, rep->transId2);
+    ndbrequire(false);
+    return;
+  }
+  handlePtr.p->m_lastCompletePhase = rep->phase;
+
+  stopCteScanFragTimer(scanptr, handlePtr);
 
   scanptr.p->m_cteScanReportsReceived++;
 
@@ -30556,6 +30967,13 @@ void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
   scanptr.i = scanFragPtr.p->scanRec;
   scanRecordPool.getPtr(scanptr);
   phaseRep->phase = scanptr.p->m_cteCurrentPhase;
+  {
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiPtr);
+    phaseRep->transId1 = apiPtr.p->transid[0];
+    phaseRep->transId2 = apiPtr.p->transid[1];
+  }
 
   execCTE_PHASE_COMPLETE_REP(signal);
 }
@@ -30773,22 +31191,15 @@ void Dbtc::sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
   req->transId2 = apiPtr.p->transid[1];
   req->phase = phase;
 
-  Local_ScanFragRec_dllist running(c_scan_frag_pool,
-                                   scanptr.p->m_running_scan_frags);
-  ScanFragRecPtr fragPtr;
-  for (running.first(fragPtr); !fragPtr.isNull(); running.next(fragPtr)) {
+  Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                       scanptr.p->m_cteScanFragHandles);
+  CteScanFragHandlePtr handlePtr;
+  for (handles.first(handlePtr); !handlePtr.isNull();
+       handles.next(handlePtr)) {
+    startCteScanFragTimer(scanptr, handlePtr, apiPtr);
     jam();
-    req->senderData = fragPtr.i;
-    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_PHASE_START_REQ,
-               signal, CtePhaseStartReq::SignalLength, JBB);
-  }
-
-  Local_ScanFragRec_dllist queued(c_scan_frag_pool,
-                                  scanptr.p->m_queued_scan_frags);
-  for (queued.first(fragPtr); !fragPtr.isNull(); queued.next(fragPtr)) {
-    jam();
-    req->senderData = fragPtr.i;
-    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_PHASE_START_REQ,
+    req->senderData = handlePtr.p->m_scanFragPtrI;
+    sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_PHASE_START_REQ,
                signal, CtePhaseStartReq::SignalLength, JBB);
   }
 }
@@ -30809,10 +31220,8 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
 #endif
 
   /**
-   * Iterate through all ScanFragRecs (running + queued + delivered)
-   * and send CTE_START_MAIN_REQ to each DBSPJ instance.
-   * The senderData carries the ScanFragRec.i which DBSPJ stored
-   * as its Request.m_senderData for hash lookup.
+   * Iterate through all stable CTE handles.  The senderData carries the
+   * request key which DBSPJ stored as Request::m_senderData.
    */
   CteStartMainReq *req =
       reinterpret_cast<CteStartMainReq *>(signal->getDataPtrSend());
@@ -30820,23 +31229,15 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
   req->transId1 = apiPtr.p->transid[0];
   req->transId2 = apiPtr.p->transid[1];
 
-  Local_ScanFragRec_dllist running(c_scan_frag_pool,
-                                   scanptr.p->m_running_scan_frags);
-  ScanFragRecPtr fragPtr;
-  for (running.first(fragPtr); !fragPtr.isNull(); running.next(fragPtr)) {
+  Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                       scanptr.p->m_cteScanFragHandles);
+  CteScanFragHandlePtr handlePtr;
+  for (handles.first(handlePtr); !handlePtr.isNull();
+       handles.next(handlePtr)) {
+    startCteScanFragTimer(scanptr, handlePtr, apiPtr);
     jam();
-    req->senderData = fragPtr.i;
-    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_START_MAIN_REQ,
-               signal, CteStartMainReq::SignalLength, JBB);
-  }
-
-  // Also check queued list (fragments not yet started)
-  Local_ScanFragRec_dllist queued(c_scan_frag_pool,
-                                  scanptr.p->m_queued_scan_frags);
-  for (queued.first(fragPtr); !fragPtr.isNull(); queued.next(fragPtr)) {
-    jam();
-    req->senderData = fragPtr.i;
-    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_START_MAIN_REQ,
+    req->senderData = handlePtr.p->m_scanFragPtrI;
+    sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_START_MAIN_REQ,
                signal, CteStartMainReq::SignalLength, JBB);
   }
 
@@ -30981,6 +31382,10 @@ void Dbtc::sendJoinAggScanTabConf(Signal *signal,
 
   const Uint32 sigLen =
       ScanTabConf::SignalLength + (sendActiveMask ? 5 : 4);
+  DEB_JOIN_AGG(("(%u)DBTC sendJoinAggScanTabConf: scanPtr.i=%u "
+                "receiverId=%u aggResultRows=%u sigLen=%u",
+                instance(), scanptr.i, scanptr.p->m_aggReceiverId,
+                scanptr.p->m_aggResultRows, sigLen));
   sendSignal(ref, GSN_SCAN_TABCONF, signal, sigLen, JBB);
 }
 
