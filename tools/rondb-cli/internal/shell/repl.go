@@ -831,6 +831,42 @@ func (s *Shell) executeInternal(line string) error {
 			numOps = n
 		}
 		return s.runBenchRonSQL(queryName, numThreads, numOps)
+	case "list_query_ronsql":
+		s.listRonSQLBenchQueries()
+		return nil
+	case "list_query_sql":
+		s.listSQLBenchQueries()
+		return nil
+	case "query_ronsql":
+		if len(parts) < 2 {
+			s.listRonSQLBenchQueries()
+			return fmt.Errorf("usage: .query_ronsql <name>")
+		}
+		return s.printQueryRonSQL(parts[1])
+	case "query_sql":
+		if len(parts) < 2 {
+			s.listSQLBenchQueries()
+			return fmt.Errorf("usage: .query_sql <name>")
+		}
+		return s.printQuerySQL(parts[1])
+	case "explain_ronsql":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run explain_ronsql.")
+		}
+		if len(parts) < 2 {
+			s.listRonSQLBenchQueries()
+			return fmt.Errorf("usage: .explain_ronsql <name>")
+		}
+		return s.runExplainRonSQL(parts[1])
+	case "explain_sql":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run explain_sql.")
+		}
+		if len(parts) < 2 {
+			s.listSQLBenchQueries()
+			return fmt.Errorf("usage: .explain_sql <name>")
+		}
+		return s.runExplainSQL(parts[1])
 	case "bench_rdrs":
 		if s.restClient == nil {
 			return fmt.Errorf("REST API not connected. Cannot run bench_rdrs.")
@@ -4177,6 +4213,11 @@ Commands:
     .ronsql_format [format]    Show/set RonSQL output format (JSON, JSON_ASCII, TEXT, TEXT_NOHEADER)
     .ronsql_explain [mode]     Show/set RonSQL explain mode (ALLOW, FORBID, REQUIRE, REMOVE, FORCE)
 
+  Named analytics queries (over the tpch database, see .help bench):
+    .list_query_ronsql / .list_query_sql   List query names with descriptions
+    .query_ronsql / .query_sql <name>      Print the SQL a query name represents
+    .explain_ronsql / .explain_sql <name>  EXPLAIN via RonSQL / the MySQL server
+
   Internal commands:
     .browse             Open database browser (TUI)
     .demo               Run a quick demo (write, read, query)
@@ -4236,6 +4277,13 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
                                          (comparative baseline; also tpch_q* official
                                          TPC-H and ORDER BY/LIMIT fs queries)
     .bench_sql list                      List available SQL benchmark queries
+
+  Query inspection (same named queries as the analytics benchmarks):
+    .list_query_ronsql / .list_query_sql List query names with short descriptions
+    .query_ronsql <name>                 Print the SQL a RonSQL query name represents
+    .query_sql <name>                    Print the SQL a SQL query name represents
+    .explain_ronsql <name>               EXPLAIN via RonSQL (plan only, not executed)
+    .explain_sql <name>                  EXPLAIN via the MySQL server (+ pushdown notes)
 
 Key format: bench:key:<client>:<thread>:<key>:<row>
 Defaults: T=4, N=100, R=10, W=0, S=60, client=0, SF=1, B=100 (bench_ronsql/.bench_sql <name>: T=1, N=10)
@@ -4305,6 +4353,17 @@ Common parameters:
                                      .bench_ronsql tpch_q15)
      .bench_sql tpch_q15             Official TPC-H Q15 formulation via MySQL
      .bench_sql all 1 10             Run every SQL query sequentially
+
+   Inspecting the queries:
+     .list_query_ronsql              Query names + descriptions (RonSQL namespace)
+     .list_query_sql                 Query names + descriptions (SQL namespace)
+     .query_ronsql fs_batch          Print the SQL fs_batch represents, with
+                                     {KEY}/{KEY2} placeholder semantics
+     .explain_ronsql fs_batch        RonSQL EXPLAIN (query plan only; {KEY} is
+                                     substituted with a fixed sample key)
+     .explain_sql tpch_q15           MySQL EXPLAIN plus SHOW WARNINGS, where
+                                     NDB notes pushed-join status and reasons
+                                     a join could not be pushed
 
    Query families:
      fs_*          Online Feature-Store-style: CTEs compute per-entity
@@ -4525,6 +4584,12 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
 		readline.PcItem(".bench_ronsql", ronsqlBenchCompletions()...),
+		readline.PcItem(".list_query_ronsql"),
+		readline.PcItem(".list_query_sql"),
+		readline.PcItem(".query_ronsql", ronsqlQueryNameCompletions()...),
+		readline.PcItem(".query_sql", sqlQueryNameCompletions()...),
+		readline.PcItem(".explain_ronsql", ronsqlQueryNameCompletions()...),
+		readline.PcItem(".explain_sql", sqlQueryNameCompletions()...),
 		readline.PcItem(".browse"),
 		readline.PcItem(".demo"),
 		readline.PcItem(".debug"),

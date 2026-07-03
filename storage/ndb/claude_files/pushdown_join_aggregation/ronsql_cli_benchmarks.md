@@ -24,7 +24,8 @@ by the **MySQL server** over the same tables. Three comparisons matter:
 | File | What |
 |------|------|
 | `tools/rondb-cli/internal/shell/ronsql_bench.go` | Shared query registry (`ronsqlBenchQueries`), RonSQL runner (`runBenchRonSQL*`), MySQL runner (`runBenchSQLNamed`/`runBenchSQLQuery`), completion |
-| `tools/rondb-cli/internal/shell/repl.go` | `.bench_ronsql` dispatch, `.bench_sql` named-form dispatch (non-numeric first arg), `.help internal` / `.help bench` text, autocomplete |
+| `tools/rondb-cli/internal/shell/query_inspect.go` | Query inspection: `.list_query_ronsql`/`.list_query_sql`, `.query_ronsql`/`.query_sql <name>`, `.explain_ronsql`/`.explain_sql <name>` |
+| `tools/rondb-cli/internal/shell/repl.go` | `.bench_ronsql` dispatch, `.bench_sql` named-form dispatch (non-numeric first arg), query-inspection dispatch, `.help internal` / `.help bench` text, autocomplete |
 | `tools/rondb-cli/internal/shell/tpch.go` | Secondary indexes added to the TPC-H DDL (see below) |
 | `tools/rondb-cli/internal/client/rest.go` | `RestOptions.Timeout` (benchmark clients use a build-time timeout instead of the default 30s) |
 | `tools/rondb-cli/internal/client/mysql.go` | `MySQLOptions.Database` (per-benchmark connections default to the query's schema) |
@@ -89,6 +90,28 @@ run follows.
 Queries with `RandKey` substitute a random key per request (`{KEY}`
 placeholder; `{KEY2}` = `{KEY}` + span for segment queries). The key range
 is discovered via `KeySQL` over the MySQL connection at benchmark start.
+
+### Inspecting the queries
+
+```
+.list_query_ronsql            # query names + descriptions (RonSQL namespace)
+.list_query_sql               # query names + descriptions (SQL namespace)
+.query_ronsql fs_batch        # print the SQL fs_batch represents
+.query_sql tpch_q15           # print the official Q15 SQL
+.explain_ronsql fs_batch      # RonSQL EXPLAIN (plan only, not executed)
+.explain_sql tpch_q15         # MySQL EXPLAIN + SHOW WARNINGS
+```
+
+`.query_*` prints the registry entry (category, database, cross-namespace
+name, SQL template, `{KEY}`/`{KEY2}` semantics). `.explain_*` substitutes a
+deterministic sample key (the same seed-1 key the benchmark warmup uses) and
+asks the engine for its plan: `.explain_ronsql` posts the unmodified query
+with `explainMode: FORCE` and `outputFormat: TEXT` (RonSQL prints the plan
+without executing; JSON EXPLAIN output is not implemented), while
+`.explain_sql` runs `EXPLAIN` on a dedicated connection with the query's
+schema as default database, then `SHOW WARNINGS` — where NDB reports
+pushed-join status and the reasons a join could not be pushed. MySQLOnly
+entries are rejected by `.explain_ronsql` with a redirect to `.explain_sql`.
 
 **Important:** if the `tpch` database was loaded with an older CLI build, run
 `.drop_tpch` and reload — the DDL now includes secondary indexes

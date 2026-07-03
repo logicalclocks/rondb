@@ -602,6 +602,7 @@ func (s *Shell) listRonSQLBenchQueries() {
 	fmt.Println("  Queries run against the tpch database - run .load_tpch first.")
 	fmt.Println("  Defaults: T=1 thread, N=10 requests per thread.")
 	fmt.Println("  Run the same queries through the MySQL server with .bench_sql <name>.")
+	fmt.Println("  Inspect a query with .query_ronsql <name>, explain it with .explain_ronsql <name>.")
 	fmt.Println()
 }
 
@@ -627,6 +628,7 @@ func (s *Shell) listSQLBenchQueries() {
 	fmt.Println("  Queries run against the tpch database - run .load_tpch first.")
 	fmt.Println("  Defaults: T=1 thread, N=10 requests per thread.")
 	fmt.Println("  Compare with .bench_ronsql <name> for RonSQL pushdown execution.")
+	fmt.Println("  Inspect a query with .query_sql <name>, explain it with .explain_sql <name>.")
 	fmt.Println()
 }
 
@@ -659,18 +661,29 @@ func (s *Shell) resolveRonSQLBenchKeyRange(q *RonSQLBenchQuery) int {
 	return maxKey
 }
 
+// pickBenchKey picks a random key so that [key, key+KeySpan) stays within
+// [1, maxKey].
+func pickBenchKey(q *RonSQLBenchQuery, rng *rand.Rand, maxKey int) int {
+	upper := maxKey - q.KeySpan
+	if upper < 1 {
+		upper = 1
+	}
+	return rng.Intn(upper) + 1
+}
+
+// substituteBenchKey replaces the {KEY} / {KEY2} placeholders with the given
+// key and key+KeySpan.
+func substituteBenchKey(q *RonSQLBenchQuery, key int) string {
+	sql := strings.ReplaceAll(q.SQL, "{KEY2}", strconv.Itoa(key+q.KeySpan))
+	return strings.ReplaceAll(sql, "{KEY}", strconv.Itoa(key))
+}
+
 // buildRonSQLBenchSQL substitutes the {KEY} / {KEY2} placeholders if present.
 func buildRonSQLBenchSQL(q *RonSQLBenchQuery, rng *rand.Rand, maxKey int) string {
 	if !q.RandKey {
 		return q.SQL
 	}
-	upper := maxKey - q.KeySpan
-	if upper < 1 {
-		upper = 1
-	}
-	key := rng.Intn(upper) + 1
-	sql := strings.ReplaceAll(q.SQL, "{KEY2}", strconv.Itoa(key+q.KeySpan))
-	return strings.ReplaceAll(sql, "{KEY}", strconv.Itoa(key))
+	return substituteBenchKey(q, pickBenchKey(q, rng, maxKey))
 }
 
 // countRonSQLResultRows counts data rows in a TEXT (header + TSV) response.
