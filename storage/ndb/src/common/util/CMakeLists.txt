@@ -1,5 +1,5 @@
-# Copyright (c) 2008, 2025, Oracle and/or its affiliates.
-# Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2008, 2026, Oracle and/or its affiliates.
+# Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -50,6 +50,7 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   NdbSqlUtil.cpp
   NodeCertificate.cpp
   ndb_az31.cpp
+  ndb_barrier.cpp
   ndb_ndbxfrm1.cpp
   ndb_openssl3_compat.cpp
   ndb_openssl_evp.cpp
@@ -112,9 +113,11 @@ SET_PROPERTY(SOURCE ndb_opts.cpp
 FOREACH(tests
     NdbPack
     mysql_utils_test
+    ndb_barrier
     ndb_openssl_evp
     ndbxfrm_file
     NdbSqlUtil
+    OutputStream
     rondb_hash
     LogBuffer
     testSimpleProperties

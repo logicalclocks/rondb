@@ -54,4 +54,8 @@ id=494	LOCALHOST  (NDB_VERSION)
 id=563	LOCALHOST  (NDB_VERSION)
 id=1271	LOCALHOST  (NDB_VERSION)
 id=1600	LOCALHOST  (NDB_VERSION)
+Waiting for backup to complete
+Backup completed
 # Start backup with NOWAIT option
+Waiting for backup to complete
+Backup completed

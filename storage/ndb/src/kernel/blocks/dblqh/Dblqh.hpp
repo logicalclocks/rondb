@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2703,6 +2703,11 @@ class Dblqh : public SimulatedBlock {
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);
   bool is_ring_buffer_table(Uint32 table_id);
+  // TTL related (Bug #2). True iff table_id is an internal UNIQUE hash index.
+  // Used by DBTUP's same-owner check to scope the duplicate-vs-live-owner
+  // rejection to unique indexes (NOT BLOB part-tables, which also have
+  // primaryTableId != self but must keep the TTL upsert conversion).
+  bool is_unique_hash_index_table(Uint32 table_id);
   void release_frag_array(Tablerec*);
   Uint32 findFreeFragEntry(Uint32 num_fragments_in_array);
   bool seize_frag_array(Tablerec*,
@@ -2880,7 +2885,8 @@ class Dblqh : public SimulatedBlock {
       original_operation(0xFF),
       ttl_ignore(0),
       ttl_only_expired(0),
-      ring_buffer_op(0)
+      ring_buffer_op(0),
+      m_restore_op(0)
     {
       m_dealloc_data.m_unused = RNIL;
 #ifdef DEBUG_USAGE_COUNT
@@ -3029,7 +3035,18 @@ class Dblqh : public SimulatedBlock {
       OP_DISABLE_FK = 0x20,
       OP_NO_TRIGGERS = 0x40,
       OP_NOWAIT = 0x80,
-      OP_REPLICA_APPLIER = 0x100
+      OP_REPLICA_APPLIER = 0x100,
+      /*
+       * TTL related (same-transaction unique-dup gap fix). Genuine TTL-ignore
+       * PROVENANCE: set ONLY from explicit request/recovery intent (API
+       * OO_TTL_IGNORE, replication apply, a recovery op forwarded from the
+       * primary, copy-fragment, REDO replay). It is NEVER set from the DBACC
+       * same-transaction "read-what-you-locked" response (execACCKEYCONF). DBTUP
+       * uses it to exempt a ZINSERT_TTL on a unique-hash-index table from the
+       * same-owner duplicate check, so genuine recovery/replication replays stay
+       * exempt while an ordinary same-transaction duplicate is still rejected.
+       */
+      OP_TTL_OWNER_CHECK_BYPASS = 0x200
     };
     Uint32 m_flags;
     LogPartRecord *m_log_part_ptr_p;
@@ -3073,6 +3090,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 ttl_only_expired;
     Uint8 ring_buffer_op; /* Ring Buffer related */
     Uint8 ring_buffer_show_meta;
+    Uint8 m_restore_op; /* TTL related, op originates from LCP restore */
   };                 /* p2c: size = 308 bytes */
 
   static constexpr Uint32 DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;
