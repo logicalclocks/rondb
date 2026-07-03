@@ -176,7 +176,8 @@ var tpchTableDDL = map[string]string{
 		o_shippriority INT NOT NULL,
 		o_comment VARCHAR(79),
 		PRIMARY KEY (o_orderkey),
-		KEY idx_orders_custkey (o_custkey)
+		KEY idx_orders_custkey (o_custkey),
+		KEY idx_orders_orderdate (o_orderdate)
 	) ENGINE=NDB`,
 
 	"lineitem": `CREATE TABLE IF NOT EXISTS tpch.lineitem (

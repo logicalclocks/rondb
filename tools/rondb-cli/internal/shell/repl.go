@@ -664,6 +664,33 @@ func (s *Shell) executeInternal(line string) error {
 		if s.mysqlClient == nil {
 			return fmt.Errorf("MySQL not connected. Cannot run bench_sql.")
 		}
+		// Two forms share the command:
+		//   .bench_sql [T] [N] [R] [W]      key-value benchmark (numeric args)
+		//   .bench_sql <name> [T] [N]       named analytics query via the MySQL
+		//                                   server (comparative twin of
+		//                                   .bench_ronsql; name is non-numeric)
+		if len(parts) > 1 {
+			if _, err := strconv.Atoi(parts[1]); err != nil {
+				queryName := parts[1]
+				numThreads := 1
+				numOps := 10
+				if len(parts) > 2 {
+					n, err := strconv.Atoi(parts[2])
+					if err != nil || n <= 0 {
+						return fmt.Errorf("invalid number of threads: %s", parts[2])
+					}
+					numThreads = n
+				}
+				if len(parts) > 3 {
+					n, err := strconv.Atoi(parts[3])
+					if err != nil || n <= 0 {
+						return fmt.Errorf("invalid number of requests: %s", parts[3])
+					}
+					numOps = n
+				}
+				return s.runBenchSQLNamed(queryName, numThreads, numOps)
+			}
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -4201,13 +4228,17 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, T=threads, B=batch size)
     .drop_tpch                           Drop all TPC-H tables and database
 
-  RonSQL benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):
+  Analytics benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):
     .bench_ronsql                        List available RonSQL benchmark queries
     .bench_ronsql <name> [T] [N]         Run named query T threads × N requests (default 1×10)
     .bench_ronsql all [T] [N]            Run all RonSQL benchmark queries sequentially
+    .bench_sql <name> [T] [N]            Run the same named queries via the MySQL server
+                                         (comparative baseline; also tpch_q* official
+                                         TPC-H and ORDER BY/LIMIT fs queries)
+    .bench_sql list                      List available SQL benchmark queries
 
 Key format: bench:key:<client>:<thread>:<key>:<row>
-Defaults: T=4, N=100, R=10, W=0, S=60, client=0, SF=1, B=100 (bench_ronsql: T=1, N=10)
+Defaults: T=4, N=100, R=10, W=0, S=60, client=0, SF=1, B=100 (bench_ronsql/.bench_sql <name>: T=1, N=10)
 
 Use .help bench for a guided overview of what each benchmark measures, with examples.
 `
@@ -4255,31 +4286,49 @@ Common parameters:
      .bench_rdrs_cont 4 1000 10 0 60      Continuous benchmark, 60s
      .del_rdrs 4 1000 10             Clean up via REST batchdelete
 
-4. RonSQL benchmarks - pushdown aggregation / CTE queries over TPC-H data
-   Measures end-to-end analytic query latency via the RonSQL REST endpoint:
-   RonSQL parse/prepare + aggregation pushed down to the data nodes.
+4. Analytics benchmarks - pushdown aggregation / CTE queries over TPC-H data
+   .bench_ronsql measures end-to-end analytic query latency via the RonSQL
+   REST endpoint: RonSQL parse/prepare + aggregation pushed down to the data
+   nodes. .bench_sql <name> runs the same named queries through the MySQL
+   server as a comparative baseline - if RonSQL is slower than MySQL on the
+   same SQL, there is a RonSQL performance issue to investigate.
    Prerequisite: .load_tpch (creates the tpch database; SF=1 is ~8.6M rows).
 
      .load_tpch 1 8 200              Load TPC-H scale factor 1, 8 threads
-     .bench_ronsql                   List all queries with descriptions
+     .bench_ronsql                   List all RonSQL queries with descriptions
      .bench_ronsql fs_point 4 100    Feature-vector point query, 4 threads x 100
      .bench_ronsql tpch_q15          TPC-H Q15 CTE rewrite (default 1 x 10)
      .bench_ronsql all 1 10          Run every query sequentially
+     .bench_sql list                 List all SQL (MySQL-executed) queries
+     .bench_sql fs_point 4 100       Same fs_point query via the MySQL server
+     .bench_sql cte_tpch_q15         Q15 CTE rewrite via MySQL (same SQL as
+                                     .bench_ronsql tpch_q15)
+     .bench_sql tpch_q15             Official TPC-H Q15 formulation via MySQL
+     .bench_sql all 1 10             Run every SQL query sequentially
 
    Query families:
-     fs_*     Feature-Store-style: CTEs compute per-entity aggregate features
-              (over one table or a simple join), joined to an entity table
-              via scans and key lookups. fs_point uses a random customer key
-              per request; fs_scalar isolates pure CTE materialization cost.
-     tpch_q*  TPC-H queries whose official form contains a subquery or
-              derived table, rewritten with CTEs: Q2, Q11, Q13, Q15, Q22.
+     fs_*          Online Feature-Store-style: CTEs compute per-entity
+                   aggregate features joined to entity tables, with filters
+                   bounding the work to hundreds .. tens of thousands of
+                   rows. fs_point/fs_batch/fs_freshness use a random entity
+                   key or segment per request. fs_topk and fs_history use
+                   ORDER BY/LIMIT and are .bench_sql-only.
+     offline_fs_*  Offline feature materialization: full-table per-entity
+                   CTEs re-aggregated across the entity table.
+     tpch_q*       (.bench_ronsql) TPC-H queries whose official form has a
+                   subquery or derived table, rewritten with CTEs:
+                   Q2, Q11, Q13, Q15, Q22.
+     cte_tpch_q*   (.bench_sql) the same CTE rewrites executed by MySQL.
+     tpch_q*       (.bench_sql) the official TPC-H formulations (region/
+                   nation joins, correlated subqueries, ORDER BY/LIMIT).
 
    Each run starts with one warmup request that validates the query (an
    unsupported shape fails immediately with the RonSQL error), primes caches,
    and prints its latency and result row count before the timed run begins.
 
    Note: if tpch was loaded by an older CLI build, run .drop_tpch and reload
-   to pick up the secondary indexes the benchmarks use.
+   to pick up the secondary indexes the benchmarks use (most recently
+   orders(o_orderdate) for the recent-window fs queries).
 
    To start a benchmark cluster (mysqld + ndbmtd + RDRS) via MTR:
      cd mysql-test
@@ -4463,7 +4512,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".del_sql"),
 		readline.PcItem(".del_rdrs"),
 		readline.PcItem(".drop_sql"),
-		readline.PcItem(".bench_sql"),
+		readline.PcItem(".bench_sql", sqlBenchCompletions()...),
 		readline.PcItem(".bench_sql_cont"),
 		readline.PcItem(".bench_sql_scan"),
 		readline.PcItem(".bench_sql_scan_cont"),

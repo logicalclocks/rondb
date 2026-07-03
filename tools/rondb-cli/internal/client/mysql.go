@@ -45,7 +45,8 @@ type MySQLOptions struct {
 	Port     int
 	User     string
 	Password string
-	TLS      bool // Enable TLS
+	TLS      bool   // Enable TLS
+	Database string // Default database for the connection (optional)
 }
 
 // sanitizeIdentifier escapes MySQL identifiers to prevent SQL injection.
@@ -67,7 +68,8 @@ func NewMySQLClient(host string, port int, user, password string) (*MySQLClient,
 
 // NewMySQLClientWithOptions creates a new MySQL client with extended options
 func NewMySQLClientWithOptions(opts MySQLOptions) (*MySQLClient, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", opts.User, opts.Password, opts.Host, opts.Port)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+		opts.User, opts.Password, opts.Host, opts.Port, opts.Database)
 
 	// Register TLS config if enabled
 	if opts.TLS {
