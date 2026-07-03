@@ -10466,7 +10466,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * This is a normal operation in a starting node which is currently being
      * synchronised with the live node.
      */
-    if (!match && op != ZINSERT) {
+    if (!match && op != ZINSERT &&
+        !(op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))) {
       /**
        * We are performing an UPDATE or a DELETE and the row id position
        * doesn't contain the correct primary key.
@@ -10474,6 +10475,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        * Either there was no row in this row id, or it is an old row which
        * which haven't yet seen the copy row. We can safely ignore this
        * one.
+       *
+       * Exception: on a TTL table a live write of a new key is forwarded to
+       * replicas as ZWRITE (so replicas skip checkTTL), not ZINSERT. Such a
+       * ZWRITE with !match is effectively a new-key insert and must be treated
+       * like ZINSERT below - it cannot be ignored, otherwise if its (possibly
+       * reused) row id is below the copy scan pointer the forward scan never
+       * re-delivers it and the row is permanently lost on the starting node.
        */
       jam();
       if (TRACENR_FLAG) TRACENR(" IGNORE " << endl);
@@ -10507,7 +10515,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * same manner as if it was a copy row coming. It might be redone later
      * but this is not a problem with consistency.
      */
-    ndbassert(!match && op == ZINSERT);
+    ndbassert(!match && (op == ZINSERT ||
+                         (op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))));
 
     /**
      * Perform the following action (same as above for copy row case)
