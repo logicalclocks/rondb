@@ -12439,9 +12439,18 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * I explain the reason there. Check [TTL Replication ZWRITE to replicas]
    * there for more details
    *
+   * This conversion is only needed (and only valid) on the PRIMARY replica.
+   * continueACCKEYCONF() rewrites regTcPtr->reqinfo (hence Treqinfo) from ZWRITE
+   * back to the real ZINSERT/ZUPDATE ONLY when seqNoReplica==0, so the
+   * ndbrequire below holds there. On a backup replica that rewrite is skipped,
+   * so reqinfo/Treqinfo still carries ZWRITE and is forwarded to the next
+   * replica unchanged -- running this block on a MIDDLE replica (which exists
+   * only at NoOfReplicas>=3 and forwards onward) would trip the ndbrequire on
+   * the already-ZWRITE op and crash the node.
    */
   if (is_ttl_table(fragptr.p->tabRef) &&
-      regTcPtr->original_operation == ZWRITE) {
+      regTcPtr->original_operation == ZWRITE &&
+      regTcPtr->seqNoReplica == 0) {
     ndbrequire(LqhKeyReq::getOperation(Treqinfo) == ZINSERT ||
                LqhKeyReq::getOperation(Treqinfo) == ZUPDATE);
     TTL_RONDB_TRACE(fragptr.p->tabRef, "set LqhKeyReq op to ZWRITE from %u in order to "
