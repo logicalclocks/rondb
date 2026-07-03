@@ -1,4 +1,14 @@
-# CTE main JoinAgg suppressed SCAN_NEXTREQ plan
+# CTE main JoinAgg batch continuation: DBSPJ row accounting fix
+
+Supersedes the earlier version of this plan, which proposed that DBTC
+self-send `SCAN_NEXTREQ` to continue delivered main-scan fragments. Deeper
+analysis showed the hang is caused one layer upstream, in DBSPJ row
+accounting, and that DBSPJ already owns batch continuation for aggregating
+queries. The fix belongs there. DBTC's role is the opposite of the earlier
+proposal: it must *refuse* to get involved in case-2 mid-fragment flow
+control, and fail loud if it is ever asked to.
+
+All line numbers refer to the tree at commit `bc1594832be`.
 
 ## Trigger
 
@@ -20,15 +30,9 @@ JOIN recent_stats ON recent_stats.k2 = c.c_custkey
 GROUP BY c.c_nationkey;
 ```
 
-Debug logs show the query reaches the main SELECT phase. The CTE hash tables
-already exist and the main scan is doing `CTE_LOOKUP` probes:
-
-```text
-CTE_LOOKUP result: aggStateKey=1 ...
-CTE_LOOKUP result: aggStateKey=2 ...
-```
-
-The last useful DBTC trace then shows a main-scan fragment batch boundary:
+Debug logs show the query reaches the main SELECT phase; the CTE hash tables
+exist and the main scan is doing `CTE_LOOKUP` probes. The last useful DBTC
+trace shows a main-scan fragment batch boundary:
 
 ```text
 TC scanPtrI: 0, done: 0, scan_frag_conf_status: 0, scanFragPtrI: 3 ...
@@ -40,169 +44,387 @@ No later `SCAN_NEXTREQ` or `JOIN_AGG_COMPLETE_REQ` appears for the main scan.
 
 ## Classification
 
-There are three relevant DBTC paths:
+Three relevant flows, and who owns batch continuation in each:
 
-1. CTE materialization phase.
-   DBTC must suppress `SCAN_TABCONF`; CTE scan continuation is driven by DBSPJ.
-   This is the `m_cteCurrentPhase < m_ctePhaseCount` path in
-   `execSCAN_FRAGCONF()`.
+1. **CTE materialization phase.**
+   DBTC suppresses `SCAN_TABCONF` (`execSCAN_FRAGCONF`, DbtcMain.cpp:18672);
+   continuation is driven entirely inside DBSPJ by
+   `handleCtePhaseNextBatch()` (DbspjMain.cpp:3825).
 
-2. Main SELECT with CTEs and a main aggregation program.
-   DBTC must also suppress intermediate `SCAN_TABCONF` to the API. The raw
-   main-scan batches are only inputs to `JoinAggInterpreter`; final rows are
-   delivered after `JOIN_AGG_COMPLETE_REQ`.
-
-3. Main SELECT without a main aggregation program, with or without CTEs.
-   DBTC must send `SCAN_TABCONF` to the API, because normal API
-   `SCAN_NEXTREQ` flow control is the result delivery protocol.
-
-The trigger query is case 2. Suppressing the API-visible `SCAN_TABCONF` is
-correct. The bug is that suppressing it also suppresses the only continuation
-event for a delivered main-scan fragment.
-
-## Current failure mode
-
-`sendScanTabConf()` drains `m_queued_scan_frags`.
-
-For each queued fragment:
-
-- if `done`, the fragment becomes `COMPLETED`;
-- if not `done`, the fragment is moved to `m_delivered_scan_frags` and marked
-  `DELIVERED`.
-
-For normal scans, the API receives `SCAN_TABCONF` containing the delivered
-fragment ids. It later sends `SCAN_NEXTREQ`, and `execSCAN_NEXTREQ()` moves
-those fragments back to `m_running_scan_frags` and either:
-
-- sends `SCAN_NEXTREQ` to the same fragment when `m_scan_frag_conf_status == 0`;
-- or reuses the scan fragment record for the next fragment when
-  `m_scan_frag_conf_status != 0` and more fragments remain.
-
-For case 2, `sendScanTabConf()` suppresses the API-visible signal after moving
-the fragment to `DELIVERED`. Since no API `SCAN_NEXTREQ` can arrive, delivered
-fragments never run again. If this happens after the last running fragment has
-paused, the scan cannot reach the existing completion condition:
-
-```cpp
-m_delivered_scan_frags.isEmpty() && m_running_scan_frags.isEmpty()
-```
-
-Therefore `sendJoinAggCompleteReqs()` is never called.
-
-## Design goal
-
-Keep API semantics unchanged:
-
-- do not send intermediate `SCAN_TABCONF` to the API for case 2;
-- continue to deliver only final aggregate rows through `JOIN_AGG_COMPLETE`;
-- do not change CTE materialization phase suppression;
-- do not change non-aggregate main SELECT behavior.
-
-But DBTC must still drive main-scan flow control internally when it suppresses
-the API-visible `SCAN_TABCONF`.
-
-## Proposed implementation
-
-1. Factor the case-2 predicate in `sendScanTabConf()`.
-
-   The predicate is:
+2. **Main SELECT with CTEs and a main aggregation program** (this bug).
+   Raw main-scan batches are only inputs to `JoinAggInterpreter`; final rows
+   are delivered after `JOIN_AGG_COMPLETE` via
+   `sendJoinAggScanTabConf()` (terminal `EndOfData | 1` conf targeting the
+   agg receiver, DbtcMain.cpp:31292). Batch continuation is owned by
+   **DBSPJ**: `Dbspj::batchComplete()` detects an aggregating request whose
+   batch delivered nothing to the API and fetches the next batch itself,
+   without any DBTC/API round-trip (DbspjMain.cpp:3712):
 
    ```cpp
-   scanPtr.p->m_joinAgg &&
-   scanPtr.p->m_numCtes > 0 &&
-   scanPtr.p->m_hasMainAggProgram &&
-   !release
+   if (!is_complete && requestPtr.p->m_errCode == 0 &&
+       !requestPtr.p->m_aggNodes.isclear() &&
+       requestPtr.p->m_rows == 0) {
+     handleJoinAggNextBatch(signal, requestPtr);
+     return;
+   }
+   sendConf(signal, requestPtr, is_complete);
    ```
 
-   It should be computed before the suppression return and reused for logging
-   and continuation decisions.
+   `handleJoinAggNextBatch()` (DbspjMain.cpp:3754) also sends the throttled
+   `SCAN_HBREP` keep-alives that DBTC honors since `bc1594832be`. This is
+   exactly how **non-CTE** main-aggregation scans already survive silent
+   batch boundaries.
 
-2. When a queued fragment is moved to `DELIVERED` under this predicate, schedule
-   an internal continuation for that exact `ScanFragRec`.
+3. **Main SELECT without a main aggregation program, with or without CTEs.**
+   Normal API `SCAN_TABCONF` / `SCAN_NEXTREQ` flow control is the result
+   delivery protocol. DBTC forwards confs; the API drives continuation.
 
-   Only newly delivered fragments from the current `sendScanTabConf()` call
-   should be continued. Do not walk the full `m_delivered_scan_frags` list,
-   otherwise duplicate continuations are possible.
+For case 2, DBTC should only ever see a `SCAN_FRAGCONF` when a fragment
+genuinely completes (`fragmentCompleted == 1`), never at a silent
+mid-fragment batch boundary. The trigger query violates that — and the
+violation, not DBTC's suppression, is the bug.
 
-3. Implement the internal continuation by self-sending `GSN_SCAN_NEXTREQ` to
-   DBTC with one receiver id.
+## Root cause: phantom rows in `Request::m_rows`
 
-   The signal should contain:
+`m_rows` means "rows delivered to the API in this batch". It becomes
+`ScanFragConf::completedOps` (`sendConf`, DbspjMain.cpp:4031), which DBTC
+forwards as the per-receiver row count in `SCAN_TABCONF`, which the API uses
+as the number of `TRANSID_AI` rows to expect. Every counting site respects
+this — except one:
 
-   - `apiConnectPtr = scanApiRec`;
-   - `stopScan = 0`;
-   - current transaction ids;
-   - the delivered `ScanFragRec` id after `ScanNextReq::SignalLength`.
+| Site | Condition for counting | Correct for main-agg requests? |
+|------|------------------------|--------------------------------|
+| Root/child scan conf (DbspjMain.cpp:13173) | `m_aggNodes.isclear() \|\| T_AGGREGATE_LEAF`, and not `T_CTE_INDIRECT_FEED` | yes — explicitly excludes agg-consumed rows |
+| CTE_SCAN conf (DbspjMain.cpp:7744) | three documented paths; agg-feed path (a) never touches `m_rows` | yes |
+| Real-table lookup conf (DbspjMain.cpp:9079) | agg leaf: only `readLen` (evicted rows actually sent to API); else only `T_USER_PROJECTION` | yes |
+| **CTE_LOOKUP conf (DbspjMain.cpp:6894)** | `!T_AGGREGATE_LEAF && m_cteId == RNIL` — **no main-agg guard** | **no** |
 
-   Prefer an asynchronous self-signal (`sendSignal(reference(), ...)`) rather
-   than `EXECUTE_DIRECT`, so the queued-to-delivered list transition finishes
-   before `execSCAN_NEXTREQ()` mutates the same lists.
+```cpp
+// DbspjMain.cpp:6894 — current code
+if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+    treeNodePtr.p->m_cteId == RNIL) {
+  requestPtr.p->m_rows++;
+}
+```
 
-4. Let the existing `execSCAN_NEXTREQ()` path perform all state transitions.
+In the trigger query only one of the two CTE_LOOKUP ops carries
+`NI_AGGREGATE_LEAF` — the one holding the main aggregation program
+(`m_isAggregateLeaf = options.hasAggregation()`, NdbQueryBuilder.cpp:2333).
+Main-query probe nodes have `TreeNode::m_cteId == RNIL` (`m_cteId` is set
+only on nodes *inside* materialization subtrees, DbspjMain.cpp:2144; the
+referenced CTE id lives in `m_cteLookup_data.m_cteId`). So the **other**
+CTE_LOOKUP increments `m_rows` once per probed customer row, even though in
+a main-agg query its result feeds the aggregation engine and the API never
+sees a single row.
 
-   This keeps the continuation rules centralized:
+Consequences per main-scan batch:
 
-   - `DELIVERED` -> `RUNNING`;
-   - same-fragment `SCAN_NEXTREQ` when `m_scan_frag_conf_status == 0`;
-   - next-fragment `SCAN_FRAGREQ` when the previous fragment completed but more
-     fragments remain.
+- `m_rows > 0` → the `m_rows == 0` self-continue check at
+  DbspjMain.cpp:3712 fails → `sendConf` emits a mid-fragment
+  `SCAN_FRAGCONF` with a phantom `completedOps`.
+- DBTC queues the fragment; `sendScanTabConf` (DbtcMain.cpp:19753) moves it
+  to `DELIVERED` (19841-19847), then the case-2 suppression (19902-19911)
+  correctly withholds the `SCAN_TABCONF` from the API — so no
+  `SCAN_NEXTREQ` can ever arrive, the fragment is parked forever, the
+  completion condition (`m_delivered_scan_frags.isEmpty() &&
+  m_running_scan_frags.isEmpty()`, 19855) is unreachable, and
+  `sendJoinAggCompleteReqs()` is never called.
 
-5. Avoid misleading API-wait state in the suppressed path.
+Why only long queries hang: a case-2 query whose main scan fits in one
+batch produces only fragment-completion confs, which take the
+`done → COMPLETED` path and reach `WAIT_JOIN_AGG_COMPLETE` before the
+suppression branch.
 
-   The current log path says `Send SCAN_TABCONF and wait for API` and starts an
-   API timer when all running fragments are delivered. For case 2, DBTC is not
-   waiting for the API. Either skip that timer for the suppressed predicate, or
-   ensure the self-sent `SCAN_NEXTREQ` clears it immediately. The preferred fix
-   is to make the log and timer conditional on actually sending an API-visible
-   `SCAN_TABCONF`.
+Why forwarding the conf instead would be worse: intermediate `SCAN_TABCONF`
+ops entries are dispatched to the per-worker **query** receivers
+(NdbTransactionScan.cpp:154-177), so the API would add the phantom
+`rowCount` to that receiver's expected rows and wait forever for
+`TRANSID_AI` that never comes. The suppression has been masking wrong data;
+the earlier plan would have kept masking it while adding DBTC-side
+continuation machinery to work around the side effect.
 
-6. Leave final completion unchanged.
+## Design goals
 
-   Once all main-scan fragments genuinely complete, `m_delivered_scan_frags`
-   and `m_running_scan_frags` become empty. The existing path should enter
-   `WAIT_JOIN_AGG_COMPLETE`, send `JOIN_AGG_COMPLETE_REQ`, and deliver final
-   aggregate rows through `sendJoinAggScanTabConf()`.
+- Fix the row accounting where it is wrong: DBSPJ.
+- Case-2 batch continuation stays owned by DBSPJ
+  (`handleJoinAggNextBatch`), uniform with non-CTE aggregation.
+- DBTC must **not accept involvement** in case-2 mid-fragment flow
+  control: any such request is a protocol violation and must fail loud
+  (clean scan abort with a distinct error code), never park state that can
+  only hang.
+- API semantics unchanged: no intermediate `SCAN_TABCONF` for case 2, final
+  aggregate rows via `JOIN_AGG_COMPLETE` / `sendJoinAggScanTabConf`.
+- Cases 1 and 3 unchanged.
+
+## Implementation
+
+### Change 1 (the fix): guard `m_rows++` in `execCTE_LOOKUP_CONF` — DBSPJ
+
+DbspjMain.cpp:6894 — mirror the scan-side rule (13173):
+
+```cpp
+// Count FLUSH_AI result sent to API — same as lookup_countSignal does
+// for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
+// SCAN_FRAGCONF::completedOps undercounts and the API asserts on
+// outstanding results mismatch.
+// Skip for requests with a MAIN aggregation program (m_aggNodes set,
+// same rule as scanFrag_execSCAN_FRAGCONF): every main-query row feeds
+// the aggregation engine, the API receives nothing per batch, and a
+// non-zero m_rows would defeat the handleJoinAggNextBatch()
+// self-continue and emit a mid-fragment SCAN_FRAGCONF that DBTC must
+// not act on.  Also skip for nodes inside CTE subtrees (result feeds
+// the enclosing CTE's aggregator, not the API).
+if (requestPtr.p->m_aggNodes.isclear() &&
+    treeNodePtr.p->m_cteId == RNIL) {
+  requestPtr.p->m_rows++;
+}
+```
+
+Notes:
+
+- `m_aggNodes` is the per-data-node MAIN aggStateKey set, populated only
+  from the main `[nodeId, aggStateKey]` pairs before `CTE_KEYS_MARKER`
+  (DbspjMain.cpp:1581). Non-empty exactly in case 2; empty in case 3, so
+  the case-3 counting this site was added for (see the existing comment
+  about API undercount asserts) is preserved.
+- The old `!T_AGGREGATE_LEAF` conjunct is subsumed: a main-query aggregate
+  leaf implies a main aggregation program, hence `m_aggNodes` non-empty.
+- Alternative considered: gate on `T_USER_PROJECTION` like the regular
+  lookup arm (9089) and CTE_SCAN path (b) (7757). Functionally equivalent
+  if RonSQL never registers per-op projections on aggregate queries, but
+  the `m_aggNodes` form restates the rule already proven at 13173 and does
+  not depend on what the client serialized.
+
+Effect: every silent case-2 batch now has `m_rows == 0`, the
+DbspjMain.cpp:3712 check fires, `handleJoinAggNextBatch()` fetches the next
+batch directly from DBLQH (with `SCAN_HBREP` keep-alives), and DBTC never
+sees a mid-fragment `SCAN_FRAGCONF` for case 2. The hang disappears with no
+DBTC behavior change required.
+
+### Change 2: DBTC refuses mid-fragment confs for case 2 — `execSCAN_FRAGCONF`
+
+DBTC must not accept work it cannot complete. After Change 1, a
+mid-fragment (`fragmentCompleted == 0`) `SCAN_FRAGCONF` for a case-2 scan
+can only mean broken accounting upstream (or an undefined eviction
+delivery, see "Deferred"). Parking the fragment in `DELIVERED` is a
+guaranteed hang; instead, abort the scan cleanly.
+
+In `execSCAN_FRAGCONF` (DbtcMain.cpp:18666-18684), the arriving conf's
+`status` is in scope and the fragment has just been queued:
+
+```cpp
+if (scanptr.p->m_queued_count > /** Min */ 0) {
+  jamDebug();
+  if (scanptr.p->m_numCtes > 0 &&
+      scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
+    jam();
+    /* CTE phase: suppress entirely — DBSPJ drives continuation. */
+    DEB_JOIN_AGG(...);
+  } else {
+    if (scanptr.p->m_joinAgg &&
+        scanptr.p->m_numCtes > 0 &&
+        scanptr.p->m_hasMainAggProgram &&
+        status == 0) {
+      jam();
+      /* Case-2 mid-fragment batch boundary.  DBSPJ owns continuation
+       * for aggregating requests (handleJoinAggNextBatch) and must
+       * never hand a silent batch to DBTC: the API gets no
+       * intermediate SCAN_TABCONF for this scan, so no SCAN_NEXTREQ
+       * can ever continue a DELIVERED fragment.  Receiving one here
+       * means broken row accounting upstream.  Fail loud instead of
+       * parking the fragment and hanging the query. */
+      scanError(signal, scanptr, ZCTE_AGG_BATCH_PROTOCOL_ERROR);
+      return;
+    }
+    sendScanTabConf(signal, scanptr, apiConnectptr);
+  }
+}
+```
+
+Details:
+
+- `scanError` (DbtcMain.cpp:18414) requires `scanState == RUNNING` (true
+  here: the case-2 main scan runs with all CTE phases complete, so the
+  join-agg close deferral in `close_scan_req` at 19053-19060 does not
+  trigger) and proceeds to a normal close: the just-queued fragment is
+  drained by the `QUEUED_FOR_DELIVERY` arm (19188-19213), and the API gets
+  `SCAN_TABREF` with the error code — a clean, retryable failure instead of
+  a hang.
+- New error code: `#define ZCTE_AGG_BATCH_PROTOCOL_ERROR 1270` in
+  `Dbtc.hpp`, next to DBLQH's CTE-agg family (`ZCTE_AGG_FEED_SELF_REFERENCE
+  1269`, Dblqh.hpp:504). Register in `ndberror.cpp` following the 1269
+  entry (ndberror.cpp:481), e.g.
+  `{ 1270, DMEC, IE, "CTE join aggregation scan received an unexpected intermediate batch boundary" }`.
+- The guard deliberately fires regardless of `completedOps`. A
+  `completedOps > 0` mid-fragment conf for case 2 would today mean group
+  eviction (see "Deferred") — whose delivery contract is undefined for the
+  CTE path; a clean error is strictly better than either hang mode.
+
+### Change 3: tighten the `sendScanTabConf` suppression branch — DBTC
+
+Keep the suppression (DbtcMain.cpp:19902-19911) — after Change 2 it only
+ever handles per-fragment **completion** confs for case 2 while other
+fragments still run, and those must still be withheld from the API (the
+API's terminal conf is `sendJoinAggScanTabConf`). Make the new invariant
+explicit:
+
+- Re-document the branch: "only fragment-completion confs can reach here
+  for CTE JoinAgg scans; mid-fragment boundaries are rejected in
+  execSCAN_FRAGCONF and silent batches are continued inside DBSPJ."
+- Add `ndbassert(scanPtr.p->m_delivered_scan_frags.isEmpty());` inside the
+  suppressed return. For aggregate queries every fragment starts up front
+  (`scanParallelism == fragCount`; NdbQueryOperation forces
+  `m_fragsPerWorker = 1`), so `left == 0` and a completion conf always
+  takes `done → COMPLETED` — no case-2 fragment can legally be parked in
+  `DELIVERED`. If a future shape breaks the parallelism assumption, the
+  assert catches it in debug builds instead of reintroducing a silent hang.
+
+### Change 4: DBTC rejects non-close `SCAN_NEXTREQ` for case-2 scans
+
+The API never receives an intermediate `SCAN_TABCONF` for a case-2 scan and
+the final conf is terminal (`EndOfData | 1`, DbtcMain.cpp:31311), so the
+only legitimate `SCAN_NEXTREQ` for such a scan is a close
+(`stopScan == 1`). A stray or malicious data-fetch `SCAN_NEXTREQ` would run
+the receiver-id loop (DbtcMain.cpp:18949) whose
+`c_scan_frag_pool.getPtr` / `ndbrequire(scanFragState == DELIVERED)` can
+crash the node on untrusted input.
+
+In `execSCAN_NEXTREQ`, after the `stopScan` close dispatch (18917) and the
+`CLOSING_SCAN` check (18926), add:
+
+```cpp
+if (scanP->m_joinAgg && scanP->m_numCtes > 0 &&
+    scanP->m_hasMainAggProgram) {
+  jam();
+  /* CTE JoinAgg main scans are flow-controlled by DBSPJ; the API is
+   * never given fragments to continue.  Nothing to do — and the
+   * receiver-id loop below must not run on ids we never handed out. */
+  g_eventLogger->warning(
+      "TC %u : ignoring non-close SCAN_NEXTREQ from node %u for "
+      "CTE JoinAgg scan (ACR %u)",
+      instance(), refToNode(signal->senderBlockRef()), apiConnectptr.i);
+  return;
+}
+```
+
+Ignore-and-warn (not disconnect): the signal is harmless once dropped, and
+a well-behaved API can only send it due to a version-skew bug, which should
+not take the connection down.
+
+### Change 5: audit the remaining `m_rows` arms
+
+Sweep the other counting sites for the same class of bug on multi-batch
+case-1/case-2 shapes, and record the result in this doc:
+
+- [ ] `execCTE_SCAN_CONF` paths (b) and (leaf) (DbspjMain.cpp:7757-7771):
+      can a main-query `CTE_SCAN` node in a case-2 request carry
+      `T_USER_PROJECTION`, or hit the bare `isLeaf()` arm with
+      `m_joinAggStateKey == RNIL`? (The I.12 "scanCte as main-query
+      aggregate leaf" shape is in the green suite but may be single-batch
+      there.)
+- [ ] `lookup_execLQHKEYCONF` `T_USER_PROJECTION` arm (DbspjMain.cpp:9089):
+      confirm RonSQL/NdbQueryBuilder never sets a user projection on
+      internal real-table lookups in aggregate queries.
+- [ ] Root-scan arm (DbspjMain.cpp:13173): confirm DBLQH reports
+      `completedOps == 0` for JoinAgg-flagged scans when nothing was
+      evicted, including CTE-materialization root scans in case-3 requests
+      (`m_aggNodes` clear there, so the guard alone does not exclude them —
+      the DBLQH-side count must be 0).
+
+## Explicitly rejected / deferred
+
+### Rejected: DBTC self-sending `SCAN_NEXTREQ` (the previous version of this plan)
+
+Beyond being unnecessary once the accounting is fixed, the mechanism was
+hazardous:
+
+- `execSCAN_NEXTREQ`'s validation is API-oriented. A self-sent signal
+  processed after the scan closed (cross-thread job-buffer ordering allows
+  an LQH close-conf to overtake it) lands in `handleSignalStateProblem`
+  (DbtcMain.cpp:18787) → `disconnectMaliciousNode()` **on the node's own
+  id**, plus `ndbassert(false)` in debug builds.
+- The wrong-transid path replies `SCAN_TABREF` to the sender — DBTC has no
+  `SCAN_TABREF` handler, so that is an ndbabort.
+- It would have duplicated flow-control logic that DBSPJ already owns for
+  aggregating queries, leaving the phantom `completedOps` in the conf
+  stream as a trap for any future change that forwards intermediate confs.
+
+If DBTC-side continuation is ever wanted again, it needs an internal-origin
+flag bit in `ScanNextReq::stopScan` (precedent: bit 2 `sent_from_queue`)
+with graceful drops on every validation failure — but Change 2's fail-loud
+guard is the appropriate DBTC posture for this protocol.
+
+### Deferred: eviction delivery contract for case 2
+
+Group eviction (aggregator memory pressure; forced by ERROR_INSERT 5090)
+sends partial-result rows to the API mid-scan and is the one *legitimate*
+source of `m_rows > 0` in an aggregating batch (scan arm 13173
+`T_AGGREGATE_LEAF`, lookup arm 9088 `readLen`). For the CTE path this is
+undefined today: `CTE_LOOKUP_CONF` carries no eviction count at all, and
+the case-2 suppression would swallow the conf while the evicted
+`TRANSID_AI` already reached the agg receiver. With this plan, a case-2
+eviction that produces a mid-fragment conf hits Change 2's guard and fails
+with error 1270 — a clean abort documenting the gap, instead of a hang or
+silent miscount. Designing the real contract (count evictions on the agg
+receiver's conf entry, or buffer evicted groups until `JOIN_AGG_COMPLETE`)
+is follow-up work; note that the API-side completion check
+(`isAggReceiveComplete`, NdbQueryOperation.cpp:2251) uses
+`received >= expected`, which tolerates under-counted expectations.
 
 ## Review points
 
-- The fix must not send raw main-scan `SCAN_TABCONF` to the API for case 2.
-- CTE phase suppression in `execSCAN_FRAGCONF()` must remain untouched.
-- Internal continuation must be per newly delivered fragment to avoid duplicate
-  `SCAN_NEXTREQ`.
-- Use the existing `execSCAN_NEXTREQ()` state machine rather than manually
-  moving scan fragment records.
-- Close and API-failure paths must remain safe if an internal continuation
-  signal is already queued.
+- The DBSPJ guard must not change case-3 behavior: multi-CTE non-aggregate
+  queries rely on the `m_rows++` for their API row accounting (the original
+  undercount bug this site fixed).
+- `m_aggNodes` must be populated before any `CTE_LOOKUP_CONF` can arrive
+  (it is parsed from the SCAN_FRAGREQ agg-keys section at build time, prior
+  to any probe being sent).
+- Change 2's `scanError` runs with the fragment already in
+  `m_queued_scan_frags` — verify `close_scan_req`'s queued-drain arm covers
+  it (it does: 19188-19213, including the `m_queued_count` decrement).
+- Change 4 must not block scan close (`stopScan == 1` dispatches before the
+  guard) or the final `WAIT_JOIN_AGG_*` states (guard is only reachable in
+  `RUNNING`-family states via the earlier `CLOSING_SCAN` check; wait states
+  are only entered with empty fragment lists).
+- CTE-phase suppression in `execSCAN_FRAGCONF` (case 1) remains untouched.
+- Non-CTE join aggregation is unaffected: Change 1 only alters CTE_LOOKUP
+  accounting; Changes 2-4 are gated on `m_numCtes > 0`.
 
 ## Verification plan
 
-1. Re-run the trigger query.
+1. **Confirm the diagnosis before coding** (optional but cheap): re-run the
+   trigger query with `DEBUG_CTE` enabled; the existing trace
+   `execCTE_LOOKUP_CONF: after decrement ... m_rows=N` (DbspjMain.cpp:6899)
+   must show `m_rows` growing on the non-agg-leaf CTE_LOOKUP node.
 
-   Expected debug trace:
+2. **Trigger query after Change 1.** Expected debug trace:
+   - no mid-fragment `SCAN_FRAGCONF` for the main scan reaches DBTC;
+   - `DBSPJ send SCAN_HBREP next-batch` lines instead (throttled, ≥20 ms);
+   - per-fragment completion confs only, then `send JOIN_AGG_COMPLETE_REQ`;
+   - final aggregate `SCAN_TABCONF` (`EndOfData`) to the API;
+   - correct results vs mysqld baseline.
 
-   - `sendScanTabConf: suppress intermediate SCAN_TABCONF for CTE JoinAgg`;
-   - an internal continuation log for the delivered `ScanFragRec`;
-   - `SCAN_NEXTREQ` / `send SCAN_NEXTREQ to node` or next-fragment
-     `SCAN_FRAGREQ`;
-   - eventually `send JOIN_AGG_COMPLETE_REQ`;
-   - final aggregate `SCAN_TABCONF` to the API.
+3. **Case-2 multi-batch regression.** Add a `ronsql_large`-suite case (the
+   `load_ronsql_large` loader provides `lg_cust`/`lg_orders`) with two
+   aggregating CTEs joined to a scanned table, sized to force several
+   main-scan batch boundaries — the trigger shape, kept in the permanent
+   regression net across the `ronsql_cte_ng*` topologies.
 
-2. Re-run a CTE materialization-heavy query.
+4. **Case 3 regression** (protects the original undercount fix): multi-CTE
+   non-aggregate main SELECT returning enough rows to span batches; API
+   must receive correct per-batch row counts and drive `SCAN_NEXTREQ`.
 
-   Expected: still uses `execSCAN_FRAGCONF: suppress SCAN_TABCONF during CTE
-   phase`; no API-visible intermediate `SCAN_TABCONF`.
+5. **Case 1 regression:** a CTE-materialization-heavy query still shows
+   `execSCAN_FRAGCONF: suppress SCAN_TABCONF during CTE phase` and no
+   API-visible intermediate confs.
 
-3. Re-run a CTE main SELECT without aggregation.
+6. **Non-CTE join aggregation regression** (`testJoinAggNdbApi`,
+   `bench_q9_dbtc`): no behavior change — Change 1 doesn't touch their
+   accounting, Changes 2-4 are `m_numCtes`-gated.
 
-   Expected: normal API-visible `SCAN_TABCONF` / `SCAN_NEXTREQ` flow remains.
+7. **Guard coverage:** temporarily revert Change 1 in a debug build and
+   re-run the trigger query — Change 2 must convert the former hang into a
+   clean error 1270 with `SCAN_TABREF` to the API.
 
-4. Re-run a non-CTE join aggregation query.
-
-   Expected: no behavior change; the new predicate is false because
-   `m_numCtes == 0`.
-
-5. Add or re-enable a focused regression after the code fix is confirmed.
-
-   The regression should force at least one main-scan batch boundary in case 2,
-   so the internal continuation path is exercised before final
-   `JOIN_AGG_COMPLETE`.
+8. **Eviction probe (expected error, documents the deferred gap):**
+   ERROR_INSERT 5090 + the trigger query → error 1270, no hang, no crash.
