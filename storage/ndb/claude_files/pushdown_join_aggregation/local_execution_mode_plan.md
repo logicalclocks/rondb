@@ -2,6 +2,11 @@
 
 **Status: PLAN (not yet implemented)**
 
+> **Alternative under evaluation:** `aggregation_treenode_alternative_plan.md`
+> proposes replacing the feed mechanism of §4.2/§4.3 (Phase 3) with an
+> explicit aggregation TreeNode in the query tree — orthogonal to the LOCAL
+> placement decision; Phases 0-2 of this plan are shared either way.
+
 New RonSQL feature: a per-query / per-CTE `LOCAL` modifier that changes the
 *placement* of a pushdown-join-aggregation query:
 
