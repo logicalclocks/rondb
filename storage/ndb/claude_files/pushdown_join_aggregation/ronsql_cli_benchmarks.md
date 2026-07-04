@@ -137,9 +137,13 @@ nation-derived). Note this is a different physical schema from
 
 RonSQL-capable queries respect the RonSQL CTE envelope (see
 `cte_test_authoring_guide.md`): aggregating main SELECT, complete-key CTE
-equijoins, no ORDER BY / LIMIT / HAVING / AVG / DISTINCT. `SUM(DECIMAL)` in
-CTE bodies is used freely — the D1 fix widens scale-0 to exact BIGINT and
-scale>0 to DOUBLE.
+equijoins, no HAVING / AVG / DISTINCT. ORDER BY (targets must be GROUP BY
+columns or aggregate output aliases) and LIMIT ARE supported on aggregate
+main SELECTs — the sort/limit runs in the RDRS ResultPrinter over the
+aggregated groups (`ronsql_orderby_limit_plan.md` has the full shape
+inventory; projection-only and single-table non-aggregate shapes remain
+out). `SUM(DECIMAL)` in CTE bodies is used freely — the D1 fix widens
+scale-0 to exact BIGINT and scale>0 to DOUBLE.
 
 ### Online Feature-Store-style (`fs_*`)
 
@@ -155,13 +159,18 @@ sweeps belong in `offline_fs_*`).
 | `fs_freshness` | Two CTEs (lifetime + last-order) over a random 500-customer segment, joined to the same customer range | ~10k orders | both |
 | `fs_supplier` | Per-supplier features over a 3-day `l_shipdate` window (index scan), joined to one random nation's suppliers | ~7k lineitems, ~400 suppliers | both |
 | `fs_nation` | Recent-window (`o_orderdate >= 1998-06-01`, index scan) per-customer CTE joined to one nation's customers, `GROUP BY c_mktsegment` | ~40k orders | both |
-| `fs_topk` | Recent-spend CTE joined to customer, `ORDER BY spend DESC LIMIT 100` | thousands | **MySQL only** |
+| `fs_topk` | Recent-spend CTE joined to customer in aggregate form (`GROUP BY c_custkey, c_name`; MAX = identity per unique key), `ORDER BY top_spend DESC LIMIT 100` | thousands | both |
 | `fs_history` | Order-history page for a 200-customer segment, `ORDER BY o_orderdate DESC LIMIT 1000` | ~2k orders | **MySQL only** |
 
-`fs_topk`/`fs_history` use ORDER BY/LIMIT, which RonSQL does not push down
-(LIMIT-aware early close is deferred, see Phase N / I.14); `.bench_ronsql`
-rejects them with a pointer to `.bench_sql`. They document the gap and give
-a MySQL baseline for when support lands.
+`fs_topk` was rewritten from its natural projection-only form into the
+equivalent aggregate form: `c_custkey` is unique, so grouping by
+`(c_custkey, c_name)` yields one group per customer and `MAX()` is the
+identity — same result set, but inside the aggregate ORDER BY/LIMIT
+envelope. The projection-only original needs `ronsql_orderby_limit_plan.md`
+Phase 3. `fs_history` is a single-table non-aggregate SELECT (Phase 4
+there); `.bench_ronsql` rejects it with a pointer to `.bench_sql`. Note the
+aggregate-path LIMIT is a print-time cutoff, not a scan reduction (early
+close is Phase N / I.14).
 
 ### Offline Feature-Store-style (`offline_fs_*`)
 
@@ -185,11 +194,11 @@ stay in the envelope) are listed per query.
 
 | Name | Original subquery construct | Deviations |
 |------|------------------------------|------------|
-| `tpch_q2` | Correlated `ps_supplycost = (SELECT MIN(ps_supplycost)...)` → per-part `min_cost` CTE | The final self-join back to the supplier achieving the min cost needs a col-vs-CTE-output equijoin (unsupported); instead reports min/max min-cost per manufacturer for size-15 parts. Region/type filters dropped (kept: `p_size = 15`) |
+| `tpch_q2` | Correlated `ps_supplycost = (SELECT MIN(ps_supplycost)...)` → per-part `min_cost` CTE | The final self-join back to the supplier achieving the min cost needs a col-vs-CTE-output equijoin (unsupported); instead reports min/max min-cost per manufacturer for size-15 parts. Region/type filters dropped (kept: `p_size = 15`). `ORDER BY p_mfgr LIMIT 100` mirrors the official ordering + LIMIT |
 | `tpch_q11` | `HAVING SUM(...) > (SELECT SUM(...) * fraction)` → per-supplier `stock` CTE | HAVING-vs-scalar comparison unsupported; stock value uses `SUM(ps_availqty)` (exact int) instead of `ps_supplycost * ps_availqty` (expression-of-DECIMAL SUM in CTE body unproven). Nation filter as main-query WHERE `s_nationkey = 7` (GERMANY) |
 | `tpch_q13` | Derived table `(SELECT c_custkey, COUNT(o_orderkey) ... LEFT JOIN ... GROUP BY)` → `c_orders` CTE | The outer `GROUP BY c_count` (distribution histogram) groups by an aggregate output (unsupported); reports scalar distribution stats (COUNT/SUM/MIN/MAX) over the LEFT JOIN with NULL injection instead |
 | `tpch_q15` | `revenue` view + `total_revenue = (SELECT MAX(total_revenue)...)` → date-filtered `revenue` CTE, main SELECT is the scalar MAX | Revenue is `SUM(l_extendedprice)` instead of `SUM(l_extendedprice * (1 - l_discount))` (expression-of-DECIMAL SUM in CTE body unproven); the supplier join back to the max is the same col-vs-CTE-output limitation as Q2 |
-| `tpch_q22` | `NOT EXISTS (SELECT * FROM orders ...)` + scalar AVG subquery → `cust_orders` CTE anti-join | Faithful anti-join via `LEFT JOIN ... IS NULL`; the `c_acctbal > (SELECT AVG(...))` threshold is a fixed `> 0.00`; phone-prefix `SUBSTRING` filter replaced by `GROUP BY c_nationkey` |
+| `tpch_q22` | `NOT EXISTS (SELECT * FROM orders ...)` + scalar AVG subquery → `cust_orders` CTE anti-join | Faithful anti-join via `LEFT JOIN ... IS NULL`; the `c_acctbal > (SELECT AVG(...))` threshold is a fixed `> 0.00`; phone-prefix `SUBSTRING` filter replaced by `GROUP BY c_nationkey`. `ORDER BY c_nationkey` mirrors the official `ORDER BY cntrycode` |
 
 ### Official TPC-H (`tpch_q*` in `.bench_sql`, MySQL only)
 

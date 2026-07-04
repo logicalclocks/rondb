@@ -67,7 +67,8 @@ const (
 //
 //   - .bench_ronsql <Name>: runs the query through the RonSQL REST endpoint.
 //     MySQLOnly entries are rejected (their shape is outside the RonSQL
-//     envelope, e.g. ORDER BY / LIMIT).
+//     envelope, e.g. correlated subqueries, comma joins, derived tables,
+//     or non-aggregate SELECT).
 //
 //   - .bench_sql <sqlBenchName()>: runs the same SQL through the MySQL
 //     server, as a comparative baseline. SQLName renames an entry in this
@@ -83,7 +84,7 @@ type RonSQLBenchQuery struct {
 	Name        string
 	SQLName     string // name in the .bench_sql namespace; empty = Name
 	Category    string
-	MySQLOnly   bool // shape outside the RonSQL envelope (ORDER BY / LIMIT / correlated subqueries)
+	MySQLOnly   bool // shape outside the RonSQL envelope (correlated subqueries, comma joins, derived tables, non-aggregate SELECT)
 	Description string
 	Database    string
 	SQL         string
@@ -108,8 +109,11 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 //   - fs_*: online Feature-Store-style workloads. CTEs compute per-entity
 //     aggregate features and are joined to entity tables, with filters
 //     bounding the work to hundreds .. tens of thousands of source rows
-//     (online serving latencies, not full-table sweeps). Some use
-//     ORDER BY / LIMIT and are MySQL-only until RonSQL supports those.
+//     (online serving latencies, not full-table sweeps). RonSQL supports
+//     ORDER BY / LIMIT on aggregate queries (targets must be GROUP BY
+//     columns or aggregate aliases); fs_history stays MySQL-only until
+//     RonSQL supports single-table non-aggregate SELECT (see
+//     ronsql_orderby_limit_plan.md).
 //
 //   - offline_fs_*: offline feature materialization. Full-table CTEs
 //     (per-customer / per-supplier aggregates over all orders or lineitems)
@@ -118,7 +122,8 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 //   - tpch_q* (.bench_ronsql) / cte_tpch_q* (.bench_sql): TPC-H queries that
 //     originally contain subqueries or derived tables, rewritten to use CTEs
 //     within RonSQL's supported envelope (aggregating main SELECT,
-//     complete-key CTE joins, no ORDER BY/LIMIT/HAVING/AVG).
+//     complete-key CTE joins, no HAVING/AVG; ORDER BY on GROUP BY columns
+//     or aggregate aliases plus LIMIT are supported).
 //
 //   - tpch_q* (.bench_sql only): the official TPC-H formulations (region/
 //     nation joins, correlated subqueries, HAVING, ORDER BY/LIMIT), with
@@ -230,20 +235,27 @@ GROUP BY c.c_mktsegment;`,
 	{
 		Name:        "fs_topk",
 		Category:    benchCatFS,
-		MySQLOnly:   true,
-		Description: "Top-100 recent spenders in one nation (CTE join + ORDER BY spend DESC LIMIT 100)",
+		Description: "Top-100 recent spenders in one nation (aggregate-form CTE join, ORDER BY spend DESC LIMIT 100)",
 		Database:    "tpch",
 		RandKey:     true,
 		KeySQL:      "SELECT MAX(c_nationkey) FROM tpch.customer",
 		KeyDefault:  24,
+		// Aggregate-form equivalent of the natural projection-only query
+		// (SELECT c_custkey, c_name, recent.cnt, recent.spend ... ORDER BY
+		// recent.spend DESC): c_custkey is unique, so grouping by
+		// (c_custkey, c_name) yields one group per customer and MAX() is
+		// the identity. RonSQL supports ORDER BY/LIMIT on aggregate
+		// queries only; the projection-only form needs
+		// ronsql_orderby_limit_plan.md Phase 3.
 		SQL: `WITH recent AS (
   SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_totalprice) AS spend
   FROM orders WHERE o_orderdate >= '1998-06-01'
   GROUP BY o_custkey)
-SELECT c.c_custkey, c.c_name, recent.cnt, recent.spend
+SELECT c.c_custkey, c.c_name, MAX(recent.cnt) AS cnt, MAX(recent.spend) AS top_spend
 FROM customer AS c JOIN recent ON recent.k = c.c_custkey
 WHERE c.c_nationkey = {KEY}
-ORDER BY recent.spend DESC
+GROUP BY c.c_custkey, c.c_name
+ORDER BY top_spend DESC
 LIMIT 100;`,
 	},
 	{
@@ -354,7 +366,9 @@ FROM cust_features;`,
 SELECT p.p_mfgr, COUNT(*), MIN(min_cost.mc), MAX(min_cost.mc), SUM(min_cost.supplier_cnt)
 FROM part AS p JOIN min_cost ON min_cost.pk = p.p_partkey
 WHERE p.p_size = 15
-GROUP BY p.p_mfgr;`,
+GROUP BY p.p_mfgr
+ORDER BY p.p_mfgr
+LIMIT 100;`,
 	},
 	{
 		Name:        "tpch_q11",
@@ -406,7 +420,8 @@ FROM revenue;`,
 SELECT c.c_nationkey, COUNT(*), SUM(c.c_acctbal), MAX(c.c_acctbal)
 FROM customer AS c LEFT JOIN cust_orders ON cust_orders.k = c.c_custkey
 WHERE cust_orders.order_cnt IS NULL AND c.c_acctbal > 0.00
-GROUP BY c.c_nationkey;`,
+GROUP BY c.c_nationkey
+ORDER BY c.c_nationkey;`,
 	},
 
 	// ---------------------------------------------------------------

@@ -206,17 +206,26 @@ assembly of existing machinery:
 
 ### Phase 5 — CLI enablement + benchmarks
 
-- Flip `MySQLOnly` off: `fs_topk` (after Phase 3), `fs_history` (after
-  Phase 4). Their descriptions already name ORDER BY/LIMIT as the
-  blocker.
-- After Phase 1, add the official ORDER BY (+ LIMIT where present) to
-  the `cte_tpch_q*` rewrites so their output ordering matches the
-  official queries, and re-audit `tpch_q13_official` /
-  `tpch_q15_official` (blockers may reduce to shapes Phases 1-4 cover).
-  `tpch_q2/q11/q22_official` stay MySQLOnly — their blockers are
-  correlated subqueries / HAVING-subquery / anti-join, not ORDER BY.
-- Update the registry comments (`ronsql_bench.go:69-124`) and
-  `ronsql_cli_benchmarks.md`.
+**Partially delivered early** (ahead of Phase 1 MTR verification, since the
+aggregate-path support already exists): `fs_topk` rewritten into its
+aggregate-form equivalent (`GROUP BY c_custkey, c_name` with `MAX()` as the
+per-unique-key identity, `ORDER BY top_spend DESC LIMIT 100`) and un-flagged;
+`cte_tpch_q2` gained `ORDER BY p_mfgr LIMIT 100` and `cte_tpch_q22`
+`ORDER BY c_nationkey` (deterministic output mirroring the officials);
+registry comments and `ronsql_cli_benchmarks.md` updated. `cte_tpch_q11`
+(single group) and `q13`/`q15` (single-row implicit agg) have nothing to
+order. Audit result for the officials: **all five** `tpch_q*_official` have
+blockers beyond ORDER BY/LIMIT — comma-join syntax (q2/q11/q15), derived
+tables in FROM (q13/q22), correlated/scalar subqueries (all), LIKE /
+SUBSTRING / IN (q2/q13/q22) — so none can flip regardless of this plan.
+
+Remaining for this phase:
+- Flip `MySQLOnly` off: `fs_topk` original projection-only form (after
+  Phase 3 — optionally revert the aggregate-form rewrite then),
+  `fs_history` (after Phase 4).
+- Phase 1's MTR family retroactively locks in the shapes the early
+  delivery relies on (ORDER BY aggregate alias DESC + LIMIT on a
+  CTE-join aggregate; ORDER BY GROUP BY col).
 
 ### Phase 6 — deferred follow-ups (out of scope by default)
 
