@@ -542,10 +542,16 @@ Exit criteria:
   rejected clearly with error 2203
 * setPartitionId()/SO_PARTITION_ID scans one distinct fragment, also on
   fanout tables, and TTL purge works on fanout tables
-* `fanout = 1` is equivalent to current one-partition pruning
+* `fanout = 1` is equivalent to a table without `PARTITION_HASH` (all hash
+  paths gate on `fanout > 1`): full-PK hash routing, no interval pruning
+  (verified by `ndb_partition_hash_fanout.test`)
 * no rows are missed or duplicated
 
 ### Phase 5: DBSPJ
+
+Status: DEFERRED to a future RonDB version (decision 2026-07-02). Pushed-join
+pruning stays disabled for fanout tables (correct, unoptimized). Design notes
+and machinery study are preserved in `partition_hash_fanout_spj_worklog.md`.
 
 * Extend constant and pattern pruning to produce `fanout` fragments.
 * Duplicate/share range and parameter sections correctly.
@@ -735,7 +741,7 @@ Checks:
   tables including fanout tables, and rejects out-of-range fragment ids
 * TTL purge scans work on fanout tables
 * fanout interval pruning uses only the new `DistributionKeyIntervalFlag`
-* `fanout = 1` keeps current one-partition behavior
+* `fanout = 1` keeps current behavior (full-PK hash, no pruning change)
 
 ### DBTC Kernel Tests
 

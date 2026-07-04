@@ -9433,9 +9433,7 @@ static bool parsePartitionHash(const NDB_Modifier *mod_partition_hash,
       pos >= len || str[pos++] != ':' ||
       !parse_partition_hash_uint(str, len, &pos, &partition_hash->fanout) ||
       pos != len) {
-    *reason =
-        "PARTITION_HASH must use the form "
-        "base_key_count:detail_key_count:fanout";
+    *reason = "PARTITION_HASH must be base_keys:detail_keys:fanout";
     return false;
   }
 
@@ -9460,10 +9458,10 @@ static const char *validatePartitionHashCreate(
 
   if (partition_hash.base_key_count + partition_hash.detail_key_count !=
       primary_key_count)
-    return "PARTITION_HASH key counts must match the primary key column count";
+    return "PARTITION_HASH key counts must match primary key columns";
 
   if (partition_hash.fanout > 1 && partition_hash.detail_key_count == 0)
-    return "PARTITION_HASH fanout greater than one requires detail key columns";
+    return "PARTITION_HASH fanout > 1 requires detail key columns";
 
   if (fully_replicated)
     return "PARTITION_HASH is not supported for fully replicated tables";

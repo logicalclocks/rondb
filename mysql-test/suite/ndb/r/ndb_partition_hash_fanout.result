@@ -1,0 +1,415 @@
+#
+# Positive create cases
+#
+CREATE TABLE t1 (
+a INT NOT NULL,
+PRIMARY KEY (a)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:0:1";
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int NOT NULL,
+  PRIMARY KEY (`a`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=1:0:1'
+CREATE TABLE t2 (
+a INT NOT NULL,
+b INT NOT NULL,
+PRIMARY KEY (a,b)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2";
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=1:1:2'
+CREATE TABLE t3 (
+a INT NOT NULL,
+b INT NOT NULL,
+c INT NOT NULL,
+PRIMARY KEY (a,b,c)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:2:4"
+PARTITION BY KEY () PARTITIONS 8;
+SHOW CREATE TABLE t3;
+Table	Create Table
+t3	CREATE TABLE `t3` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  `c` int NOT NULL,
+  PRIMARY KEY (`a`,`b`,`c`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=1:2:4'
+/*!50100 PARTITION BY KEY ()
+PARTITIONS 8 */
+CREATE TABLE t4 (
+a INT NOT NULL,
+b INT NOT NULL,
+c INT NOT NULL,
+PRIMARY KEY (a,b,c)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=2:1:4"
+PARTITION BY KEY () PARTITIONS 4;
+SHOW CREATE TABLE t4;
+Table	Create Table
+t4	CREATE TABLE `t4` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  `c` int NOT NULL,
+  PRIMARY KEY (`a`,`b`,`c`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=2:1:4'
+/*!50100 PARTITION BY KEY ()
+PARTITIONS 4 */
+CREATE TABLE t5 (
+a INT NOT NULL,
+b INT NOT NULL,
+created_at DATETIME NOT NULL,
+PRIMARY KEY (a,b)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@created_at,PARTITION_HASH=1:1:2";
+SHOW CREATE TABLE t5;
+Table	Create Table
+t5	CREATE TABLE `t5` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3600@created_at,PARTITION_HASH=1:1:2'
+DROP TABLE t5;
+#
+# No generated PARTITION_HASH comment when not specified
+#
+CREATE TABLE t_plain (
+a INT NOT NULL,
+b INT NOT NULL,
+PRIMARY KEY (a,b)
+) ENGINE=NDB;
+SHOW CREATE TABLE t_plain;
+Table	Create Table
+t_plain	CREATE TABLE `t_plain` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+CREATE TABLE t_rb (
+a INT NOT NULL,
+b INT NOT NULL,
+PRIMARY KEY (a,b)
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1";
+SHOW CREATE TABLE t_rb;
+Table	Create Table
+t_rb	CREATE TABLE `t_rb` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1'
+DROP TABLE t_rb;
+#
+# Negative create cases: malformed modifier values
+#
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH must be base_keys:detail_keys:fanout'
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH must be base_keys:detail_keys:fanout'
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH must be base_keys:detail_keys:fanout'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:-1:2";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH must be base_keys:detail_keys:fanout'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2:3";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH must be base_keys:detail_keys:fanout'
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=abc";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH must be base_keys:detail_keys:fanout'
+#
+# Negative create cases: invalid values
+#
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=0:1:2";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH base key count must be greater than zero'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:0";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must be greater than zero'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, c INT NOT NULL,
+PRIMARY KEY (a,b,c)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=2:2:2";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH key counts must match primary key columns'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:0:2";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH key counts must match primary key columns'
+CREATE TABLE tx (a INT) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:0:1";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH requires an explicit primary key'
+#
+# Negative create cases: partition count interaction
+#
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 2;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must divide the number of partitions'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:3"
+PARTITION BY KEY () PARTITIONS 4;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must divide the number of partitions'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:70000";
+ERROR HY000: Can't create table 'tx' (use SHOW WARNINGS for more info).
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 800 'Invalid partition hash definition' from NDB
+Error	1005	Can't create table 'tx' (use SHOW WARNINGS for more info).
+#
+# Negative create cases: unsupported table types
+#
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY RANGE (a)
+(PARTITION p0 VALUES LESS THAN (10),
+PARTITION p1 VALUES LESS THAN (20));
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH is not supported with user-defined partitioning'
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=FULLY_REPLICATED=1,PARTITION_HASH=1:1:2";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH is not supported for fully replicated tables'
+#
+# Alter tests: PARTITION_HASH is preserved across unrelated alters
+#
+ALTER TABLE t2 COMMENT="unrelated comment";
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=1:1:2 unrelated comment'
+ALTER TABLE t2 ALGORITHM=INPLACE, COMMENT="NDB_TABLE=READ_BACKUP=1";
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,PARTITION_HASH=1:1:2'
+ALTER TABLE t2 ALGORITHM=INPLACE, ADD COLUMN extra INT COLUMN_FORMAT DYNAMIC;
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  `extra` int /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,PARTITION_HASH=1:1:2'
+#
+# Alter tests: rejected changes
+#
+ALTER TABLE t2 ALGORITHM=INPLACE, COMMENT="NDB_TABLE=PARTITION_HASH=2:0:1";
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Changing PARTITION_HASH is not supported online. Try ALGORITHM=COPY.
+ALTER TABLE t2 ALGORITHM=COPY, COMMENT="NDB_TABLE=PARTITION_HASH=2:0:1";
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  `extra` int /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  PRIMARY KEY (`a`,`b`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,PARTITION_HASH=2:0:1'
+ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 6;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must divide the number of partitions'
+ALTER TABLE t2 COMMENT="NDB_TABLE=FULLY_REPLICATED=1,PARTITION_HASH=2:0:1";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH is not supported for fully replicated tables'
+DROP TABLE t1, t2, t3, t4, t_plain;
+#
+# Data correctness: fanout table vs full-PK-hash twin
+#
+CREATE TABLE tf (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+id INT NOT NULL,
+payload VARCHAR(64),
+PRIMARY KEY (entity_id, ts, id)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:2:4"
+PARTITION BY KEY () PARTITIONS 8;
+CREATE TABLE tn (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+id INT NOT NULL,
+payload VARCHAR(64),
+PRIMARY KEY (entity_id, ts, id)
+) ENGINE=NDB
+PARTITION BY KEY () PARTITIONS 8;
+CREATE TABLE nums (n INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO tf
+SELECT a.n, b.n, a.n*1000+b.n, CONCAT('p', a.n, '_', b.n)
+FROM nums a, nums b WHERE a.n < 20;
+INSERT INTO tn SELECT * FROM tf;
+SELECT COUNT(*) FROM tf;
+COUNT(*)
+500
+SELECT COUNT(*) FROM tn;
+COUNT(*)
+500
+SELECT COUNT(*) FROM tf JOIN tn USING (entity_id, ts, id)
+WHERE tf.payload <=> tn.payload;
+COUNT(*)
+500
+#
+# Scan pruning: base-key equality scans are pruned
+#
+SELECT * FROM tf FORCE INDEX (PRIMARY) WHERE entity_id = 7 AND ts < 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	p7_3
+7	4	7004	p7_4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+SELECT * FROM tf FORCE INDEX (PRIMARY)
+WHERE entity_id = 7 AND ts BETWEEN 3 AND 6;
+entity_id	ts	id	payload
+7	3	7003	p7_3
+7	4	7004	p7_4
+7	5	7005	p7_5
+7	6	7006	p7_6
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+SELECT * FROM tf FORCE INDEX (PRIMARY)
+WHERE entity_id = 7 ORDER BY ts, id LIMIT 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	p7_3
+7	4	7004	p7_4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+SELECT * FROM tf WHERE ts = 24 AND entity_id < 3;
+entity_id	ts	id	payload
+0	24	24	p0_24
+1	24	1024	p1_24
+2	24	2024	p2_24
+ndb_scan_count
+1
+ndb_pruned_scan_count
+0
+SELECT * FROM tf FORCE INDEX (PRIMARY)
+WHERE entity_id IN (3, 11) AND ts = 2;
+entity_id	ts	id	payload
+11	2	11002	p11_2
+3	2	3002	p3_2
+ndb_scan_count
+1
+ndb_pruned_scan_count
+0
+SELECT * FROM tf WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+entity_id	ts	id	payload
+7	3	7003	p7_3
+ndb_scan_count
+0
+ndb_pruned_scan_count
+0
+#
+# Result equality with the twin table
+#
+SELECT * FROM tn FORCE INDEX (PRIMARY) WHERE entity_id = 7 AND ts < 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	p7_3
+7	4	7004	p7_4
+SELECT * FROM tn FORCE INDEX (PRIMARY)
+WHERE entity_id = 7 AND ts BETWEEN 3 AND 6;
+entity_id	ts	id	payload
+7	3	7003	p7_3
+7	4	7004	p7_4
+7	5	7005	p7_5
+7	6	7006	p7_6
+SELECT * FROM tn WHERE ts = 24 AND entity_id < 3;
+entity_id	ts	id	payload
+0	24	24	p0_24
+1	24	1024	p1_24
+2	24	2024	p2_24
+#
+# Writes through the SQL layer
+#
+UPDATE tf SET payload = 'updated' WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+UPDATE tn SET payload = 'updated' WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+DELETE FROM tf WHERE entity_id = 8 AND ts = 4 AND id = 8004;
+DELETE FROM tn WHERE entity_id = 8 AND ts = 4 AND id = 8004;
+UPDATE tf SET payload = 'wide' WHERE entity_id = 9;
+UPDATE tn SET payload = 'wide' WHERE entity_id = 9;
+DELETE FROM tf WHERE entity_id = 10;
+DELETE FROM tn WHERE entity_id = 10;
+SELECT COUNT(*) FROM tf;
+COUNT(*)
+474
+SELECT COUNT(*) FROM tn;
+COUNT(*)
+474
+SELECT COUNT(*) FROM tf JOIN tn USING (entity_id, ts, id)
+WHERE tf.payload <=> tn.payload;
+COUNT(*)
+474
+#
+# Physical routing: one base key occupies exactly fanout fragments
+#
+CREATE TABLE t_route (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_route SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_route;
+COUNT(*)
+100
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_route' AND fixed_elem_count > 0;
+fragments_with_rows
+4
+CREATE TABLE t_route_n (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_route_n SELECT * FROM t_route;
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_route_n' AND fixed_elem_count > 0;
+fragments_with_rows
+8
+#
+# fanout = 1 is equivalent to a plain table (full-PK hash routing)
+#
+CREATE TABLE t_f1 (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:1"
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_f1 SELECT 1, n FROM nums;
+SELECT * FROM t_f1 FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+entity_id	ts
+1	0
+1	1
+1	2
+1	3
+1	4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+0
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_f1' AND fixed_elem_count > 0;
+fragments_with_rows
+8
+DROP TABLE tf, tn, t_route, t_route_n, t_f1, nums;
