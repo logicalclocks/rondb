@@ -49,6 +49,7 @@ struct yy_buffer_state;
 // this header. Full definitions are included in RonSQLPreparer.cpp.
 class NdbQueryBuilder;
 class NdbQueryOperationDef;
+class NdbQueryOptions;
 
 struct LexLocation
 {
@@ -238,15 +239,17 @@ private:
     const NdbDictionary::Table* table = NULL;
     AggregationAPICompiler* agg = NULL;
 
-    // Phase I.9: per-CTE-body scan-config state.  `body_indexes`,
+    // Phase I.9: per-scope scan-config state.  `body_indexes`,
     // `body_toplevel_conditions`, and `body_scan_config_candidates`
-    // mirror the main-query members `m_indexes`,
+    // mirror the single-table members `m_indexes`,
     // `m_toplevel_conditions`, and `m_scan_config_candidates`, but
-    // scoped to this CTE body so multi-CTE queries don't trample
-    // each other.  `body_scan_config` is the chosen candidate
-    // (NULL for the main scope or for CTE bodies where no useful
-    // index was found, in which case the body falls back to the
-    // existing TABLE_SCAN single-op self-join branch).
+    // scoped per query body so multi-CTE queries don't trample each
+    // other.  Used by CTE bodies (Phase I.9) and, since
+    // join_root_index_scan_plan.md, by the main scope of join queries
+    // (the single-table `m_*` fields still serve non-join queries).
+    // `body_scan_config` is the chosen candidate (NULL when the
+    // selector didn't run or found no useful index, in which case the
+    // scope falls back to the existing TABLE_SCAN emit).
     DynamicArray<const NdbDictionary::Index*> body_indexes;
     DynamicArray<ConditionalExpression*> body_toplevel_conditions;
     DynamicArray<ScanConfig> body_scan_config_candidates;
@@ -408,9 +411,9 @@ private:
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
-  // Shared scan-config candidate generator used by both the main-query
-  // path (`generate_scan_config_candidates`) and the per-CTE-body path
-  // (`select_cte_body_scan_config`).  Pushes one TABLE_SCAN candidate
+  // Shared scan-config candidate generator used by both the
+  // single-table path (`generate_scan_config_candidates`) and the
+  // per-scope path (`select_root_scan_config`).  Pushes one TABLE_SCAN candidate
   // (goodness 0) plus one INDEX_SCAN candidate per ordered index that
   // any top-level conjunct can serve as a (possibly multi-column)
   // bound.  Bound-vs-residual routing for each conjunct is recorded in
@@ -433,16 +436,30 @@ private:
   // Reject (throw) a FORCE/USE/IGNORE INDEX hint on any joined table — index
   // hints are only honored on root-table scans.  Safe to call with NULL.
   void reject_index_hints_on_joins(const JoinClause* joins) const;
-  // Phase I.9: per-CTE-body version of the scan-config selection
-  // pipeline.  Loads the body's source-table indexes, walks the
-  // body's WHERE for top-level AND conjuncts, scores candidate
-  // index plans, and (if a usable ordered index is found) flips
-  // the planner's first JoinOp from TABLE_SCAN to INDEX_SCAN.
-  // Bound vs residual filter routing lives in
+  // Per-scope scan-config selection pipeline (Phase I.9 for CTE bodies;
+  // join_root_index_scan_plan.md for the main-query root of join
+  // queries).  Loads the root table's indexes into the scope, walks
+  // `where_ce` for top-level AND conjuncts, scores candidate index
+  // plans, and (if a usable ordered index is found) flips the planner's
+  // first JoinOp from TABLE_SCAN to INDEX_SCAN.  Bound vs residual
+  // filter routing lives in
   // `scope.body_scan_config->condition_handling_map`.
-  void select_cte_body_scan_config(QueryScope& scope,
-                                    ConditionalExpression* where_ce,
-                                    const TableRef* hint);
+  //
+  // Callers gate the scope shape: CTE bodies call it only for
+  // single-op bodies (passing the body's whole WHERE); the main scope
+  // calls it for any real-table TABLE_SCAN root (passing only the
+  // root-classified conjuncts, `join_where_ce[0]`).  A FORCE INDEX
+  // hint bypasses the "no WHERE" early-out so it can throw the same
+  // errors as the single-table path.
+  void select_root_scan_config(QueryScope& scope,
+                               ConditionalExpression* where_ce,
+                               const TableRef* hint);
+  // True when every primary-key column of scope's root table has an
+  // equality against a constant among the root-classified WHERE
+  // conjuncts (join_where_ce[0]) — the shapes emit_root_op serves
+  // better with readTuple / an equality-bound PK index scan.  Used to
+  // keep root scan-config selection out of their way.
+  bool root_pk_equality_covered(QueryScope& scope);
   bool load_cte_body_indexes(QueryScope& scope,
                              const NdbDictionary::Table* tab);
   static bool decimal_minmax_fits_64bit(
@@ -532,6 +549,17 @@ private:
                     const NdbQueryOperationDef** opDefs,
                     NdbAggregator* singleAgg = nullptr,
                     NdbDictionary::Table** cteVirtualTables = nullptr);
+  // Shared emit for a scan-config-selected index-scan root (Phase I.9
+  // CTE bodies + main-query roots).  Builds the NdbQueryIndexBound
+  // low/high chains from the scope's flattened conjuncts +
+  // condition_handling_map, routes residual conjuncts (map == -1) into
+  // an InterpretedCode filter on rootOpts, and returns the scanIndex
+  // operation def.
+  const NdbQueryOperationDef* emit_index_scan_root(
+      NdbQueryBuilder* qb, QueryScope& scope,
+      const NdbDictionary::Table* tab,
+      const NdbDictionary::Index* idx,
+      NdbQueryOptions& rootOpts);
   void build_cte_virtual_tables(const JoinPlan& plan,
                                 NdbDictionary::Table** out);
   void emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,

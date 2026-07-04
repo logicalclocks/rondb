@@ -1,0 +1,298 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== mri-1: root equality bound on idx_c_nationkey (fs_nation shape) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn, SUM(cf.t) AS st
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey = 7
+GROUP BY cu.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn, SUM(cf.t) AS st
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey = 7
+GROUP BY cu.c_nationkey|
+nk	c	sn	st
+7	12	60	120
+
+=== mri-2: root double range bound on idx_c_nationkey ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
+GROUP BY cu.c_nationkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
+GROUP BY cu.c_nationkey|
+nk	c	sn
+5	12	60
+6	12	60
+7	12	60
+8	12	60
+9	12	60
+
+=== mri-3: root range bounds + non-indexable residual (c_custkey has hash PK only) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn, MIN(cu.c_custkey) AS mn, MAX(cu.c_custkey) AS mx
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10 AND cu.c_custkey > 150;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn, MIN(cu.c_custkey) AS mn, MAX(cu.c_custkey) AS mx
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10 AND cu.c_custkey > 150|
+c	sn	mn	mx
+30	150	155	284
+
+=== mri-4: root PRIMARY ordered-index range (fs_batch shape, acct table) ===
+== Query ==
+WITH g AS (SELECT a_grp AS k, COUNT(*) AS n, SUM(a_val) AS s
+FROM acct GROUP BY a_grp)
+SELECT COUNT(*) AS c, SUM(g.n) AS sn, SUM(g.s) AS ss,
+MIN(a.a_id) AS mn, MAX(a.a_id) AS mx
+FROM acct AS a JOIN g ON g.k = a.a_grp
+WHERE a.a_id >= 50 AND a.a_id < 100;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH g AS (SELECT a_grp AS k, COUNT(*) AS n, SUM(a_val) AS s
+FROM acct GROUP BY a_grp)
+SELECT COUNT(*) AS c, SUM(g.n) AS sn, SUM(g.s) AS ss,
+MIN(a.a_id) AS mn, MAX(a.a_id) AS mx
+FROM acct AS a JOIN g ON g.k = a.a_grp
+WHERE a.a_id >= 50 AND a.a_id < 100|
+c	sn	ss	mn	mx
+50	1000	301500	50	99
+
+=== mri-5 (regression): full-PK equality root keeps the PK-lookup path ===
+== Query ==
+WITH g AS (SELECT a_grp AS k, COUNT(*) AS n FROM acct GROUP BY a_grp)
+SELECT COUNT(*) AS c, SUM(g.n) AS sn, MAX(a.a_val) AS mv
+FROM acct AS a JOIN g ON g.k = a.a_grp
+WHERE a.a_id = 77;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH g AS (SELECT a_grp AS k, COUNT(*) AS n FROM acct GROUP BY a_grp)
+SELECT COUNT(*) AS c, SUM(g.n) AS sn, MAX(a.a_val) AS mv
+FROM acct AS a JOIN g ON g.k = a.a_grp
+WHERE a.a_id = 77|
+c	sn	mv
+1	20	231
+
+=== mri-6 (regression): no root WHERE stays TABLE_SCAN ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+GROUP BY cu.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+GROUP BY cu.c_nationkey|
+nk	c	sn
+0	12	60
+1	12	60
+10	12	60
+11	12	60
+12	12	60
+13	12	60
+14	12	60
+15	12	60
+16	12	60
+17	12	60
+18	12	60
+19	12	60
+2	12	60
+20	12	60
+21	12	60
+22	12	60
+23	12	60
+24	12	60
+3	12	60
+4	12	60
+5	12	60
+6	12	60
+7	12	60
+8	12	60
+9	12	60
+
+=== mri-7: FORCE INDEX (idx_c_nationkey) on the join-query root ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu FORCE INDEX (idx_c_nationkey) JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
+GROUP BY cu.c_nationkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu FORCE INDEX (idx_c_nationkey) JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
+GROUP BY cu.c_nationkey|
+nk	c	sn
+5	12	60
+6	12	60
+7	12	60
+8	12	60
+9	12	60
+
+=== mri-8: IGNORE INDEX (idx_c_nationkey) on the join-query root -> TABLE_SCAN ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu IGNORE INDEX (idx_c_nationkey) JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
+GROUP BY cu.c_nationkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu IGNORE INDEX (idx_c_nationkey) JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
+GROUP BY cu.c_nationkey|
+nk	c	sn
+5	12	60
+6	12	60
+7	12	60
+8	12	60
+9	12	60
+
+=== mri-9: col-vs-col root conjunct routes to the residual filter ===
+== Query ==
+WITH g AS (SELECT a_grp AS k, COUNT(*) AS n FROM acct GROUP BY a_grp)
+SELECT COUNT(*) AS c, SUM(g.n) AS sn
+FROM acct AS a JOIN g ON g.k = a.a_grp
+WHERE a.a_id > a.a_grp AND a.a_id >= 50 AND a.a_id < 100;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH g AS (SELECT a_grp AS k, COUNT(*) AS n FROM acct GROUP BY a_grp)
+SELECT COUNT(*) AS c, SUM(g.n) AS sn
+FROM acct AS a JOIN g ON g.k = a.a_grp
+WHERE a.a_id > a.a_grp AND a.a_id >= 50 AND a.a_id < 100|
+c	sn
+50	1000
+
+=== mri-10: composite idx_o_status_date on the orders root ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
+            FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*) AS c, SUM(li.n) AS sn, SUM(li.q) AS sq
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+WHERE o.o_orderstatus = 'F' AND o.o_orderdate >= '1995-03-01';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
+FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*) AS c, SUM(li.n) AS sn, SUM(li.q) AS sq
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+WHERE o.o_orderstatus = 'F' AND o.o_orderdate >= '1995-03-01';
+c	sn	sq
+460	920	23730
+
+=== mri-P1 (rejection): FORCE INDEX on the join root names an unusable index ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_c_mktsegment' cannot be used: no WHERE condition matches its leading column.

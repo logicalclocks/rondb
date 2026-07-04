@@ -1,6 +1,47 @@
 # Join-Query Root Index Scan (fs_batch TABLE_SCAN fix)
 
-**Status: PLANNED — not yet implemented.**
+**Status: Changes 1-4 SHIPPED — build green, MTR family recorded and
+green across all 5 topology suites.  Change 5 (multi-op CTE bodies)
+still pending as a follow-up commit.**
+
+Recording surfaced one test-shape issue (not a code regression): the
+original mri-9 used a mixed-type col-vs-col conjunct (INT c_custkey vs
+TINYINT c_nationkey); the interpreter's attr-vs-attr compare requires
+identical column types, so the residual filter failed with retryable
+"Failed to apply filter." — identically on the pre-change scanTable
+path.  mri-9 now uses the all-INT acct table with the col-vs-col
+conjunct first (so the generator hardening is the deciding factor);
+the mixed-type gap is recorded as a NEXT-PHASE probe in the .inc.
+
+Implementation notes beyond the plan below:
+
+- `select_cte_body_scan_config` was renamed `select_root_scan_config`;
+  the `num_ops == 1` gate moved to the CTE call site in
+  `build_cte_scopes`.  The main-scope call sits at the end of
+  `load_join()`, guarded by `root_pk_equality_covered()` (bypassed under
+  FORCE INDEX so the hint can win over the PK-lookup branches — the new
+  emit branch is checked before them).
+- The shared bound/residual emit is `emit_index_scan_root()`; the I.9
+  CTE-body branch now calls it too (single implementation).
+- **Generator hardening found during implementation:**
+  `build_scan_config_candidates` accepted any `col <op> <anything>`
+  conjunct as a bound without checking the right side; a col-vs-col
+  conjunct (`WHERE t.a > t.b`) or unfolded expression would reach
+  `encode_constant` at emit and throw "Bug in ...".  Latent on the
+  single-table path too.  Now only right sides of kind
+  T_INT / T_FLOAT / T_STRING / I_MYSQL_TIME / I_SUBQUERY are
+  bound-eligible; everything else routes to the residual filter
+  (`apply_filter_cmp` supports col-vs-col via the two-column
+  `NdbScanFilter::cmp`).
+- `NdbQueryOptions` needed a forward declaration in RonSQLPreparer.hpp
+  (NdbQueryBuilder.hpp is a src-side header not pulled in via
+  NdbApi.hpp).
+- Tests: new family `suite/ronsql_cte/include/body_main_root_index.inc`
+  (cases mri-1..10 + probe mri-P1) sourced by
+  `ronsql_cte_dd_main_root_index.test` in ronsql_cte + the 4 topology
+  siblings.  Includes a dedicated `acct` table with an ORDERED primary
+  key (shared schema is hash-PK-only) for the fs_batch PRIMARY-range
+  shape.  Baselines need `./mtr --record` per suite.
 
 ## Trigger
 
