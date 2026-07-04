@@ -484,6 +484,48 @@ JOIN reviews r ON VECTOR_SEARCH(r.embedding, p.query_vector, 10);
 - Aggregation over vector search results (e.g., AVG similarity score
   per product category)
 
+### Future: Reduce Fixed Overhead for Small-Range CTE Queries (RonSQL) (Priority: Low)
+
+Observed July 2026 with the `fs_batch` benchmark (customer JOIN aggregating
+CTE over orders, 100-key range, ~1,128 orders rows): even with the root
+INDEX_SCAN fix (commit 82729085179), MySQL is ~2x faster using ~2x less CPU.
+Both engines push the two scans identically (pushed condition + MRR); the gap
+is entirely the join/aggregation execution locus. At this selectivity the
+query is overhead-bound — the distributed CTE machinery has a fixed cost
+floor that MySQL's "ship ~1,200 rows to mysqld, join via in-memory temp
+table" plan doesn't pay:
+
+1. **Two serialized phases with a cluster-wide barrier** — JOIN_AGG_SETUP to
+   every node, full CTE materialisation on all fragments, group merge +
+   redistribute, JOIN_AGG_COMPLETE round trips, and only then the main scan.
+2. **Per-row CTE_LOOKUP signaling** — one signal chain per probe row, routed
+   (often cross-node) to the group's hash-owner, vs a local hashtable probe
+   in mysqld.
+3. **Fan-out fixed costs** — aggregate queries force `m_fragsPerWorker = 1`;
+   every LDM on every node instantiates aggregator state (hash table, chunk
+   allocator, ~8 KB query memory) for source CTE agg + target CTE state +
+   main agg, then tears it down at RELEASE — the 2x CPU.
+4. **Per-request envelope** — RDRS HTTP/JSON plus full parse → prepare →
+   NdbQueryBuilder build per execution.
+
+The pushdown's value is proportional to rows *not shipped*; at ~1,200 rows
+there is nothing to save while the orchestration still costs full price.
+The crossover should invert at larger ranges (10k–100k keys) — verify with
+widened `fs_batch` spans or the `offline_fs_*` variants, and use the
+phase-timing instrumentation planned in `ronsql_cli_benchmarks.md` to split
+barrier latency from per-row signaling.
+
+**Candidate optimizations (real projects, not tweaks):**
+- **Skip/short-circuit the redistribute round** when the CTE produced few
+  enough groups that shipping them all directly to the DBTC-co-located owner
+  is cheaper — the scalar path from Phase I.17e already has the
+  `keyLen == 0` JoinAggRedistributeReq variant to build on.
+- **Batch CTE_LOOKUPs per owner node** instead of one signal chain per probe
+  row.
+
+Only worth pursuing if the small-range interactive case matters for the
+feature-store workload.
+
 ### 5b. 64-bit rowsExamined (Priority: Low)
 
 For very large joins (millions of leaf rows), the 32-bit rowsExamined
