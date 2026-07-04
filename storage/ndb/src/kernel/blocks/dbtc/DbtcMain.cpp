@@ -30187,7 +30187,7 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         req->tableId = scanptr.p->m_cteInfos[c].tableId;
         req->expectedOpCount = 0;
         req->concurrencyStrategy =
-            JoinAggSetupReq::STRATEGY_MUTEX_BASED |
+            JoinAggSetupReq::STRATEGY_MUTEX_FREE |
             JoinAggSetupReq::CTE_MODE_FLAG;
         req->resultRef = apiConnectptr.p->ndbapiBlockref;
         req->resultData = scanptr.p->m_aggReceiverId;
