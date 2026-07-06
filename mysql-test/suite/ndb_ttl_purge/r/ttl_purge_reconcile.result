@@ -1,0 +1,32 @@
+SET time_zone = '+00:00';
+CREATE DATABASE recon;
+CREATE TABLE recon.skip_me (id INT PRIMARY KEY, x INT) ENGINE=NDB;
+#
+# Phase A: with reconcile DISABLED, an out-of-band NDB drop is invisible
+#          to the purger (the #16 gap).
+#
+include/assert.inc [reconcile_interval_sec = 0 was applied]
+CREATE DATABASE IF NOT EXISTS recon;
+Warnings:
+Note	1007	Can't create database 'recon'; database exists
+DROP TABLE IF EXISTS recon.t_prune;
+CREATE TABLE recon.t_prune (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON recon.t_prune(ttl_col);
+ALTER TABLE recon.t_prune COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO recon.t_prune (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO recon.t_prune (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO recon.t_prune (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO recon.t_prune (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO recon.t_prune (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+include/assert.inc [With reconcile off, out-of-band-dropped table stays in the API]
+Reconcile disabled: out-of-band drop not observed (as expected)
+#
+# Phase B: enabling reconcile prunes the vanished table; the classified
+#          skip of recon.skip_me does not abort the reconcile pass.
+#
+include/assert.inc [reconcile_interval_sec = 2 was applied]
+Reconcile enabled: out-of-band-dropped table pruned; skip did not abort
+Classified-skip hook fired for recon.skip_me (found in RDRS log)
+include/assert.inc [Purge state is not error after repeated classified skips]
+DROP TABLE recon.skip_me;
+DROP DATABASE recon;

@@ -1,0 +1,135 @@
+# ==========================================================================
+# ttl_purge_reconcile.test
+#
+# Findings #14 (classified skip) + #16 (periodic reconcile).
+#
+# The TTL purger discovers tables via the init scan + ndb_schema events only,
+# so a table created/dropped OUT OF BAND (ndb_restore into a live cluster,
+# NdbAPI/ClusterJ, ndb_drop_table) emits no ndb_schema event and is invisible
+# until an unrelated watcher restart. #16 adds a periodic re-list reconcile
+# that discovers/prunes such tables; #14 ensures one unreadable table is
+# skipped (classified) rather than stalling the scan.
+#
+# This test drives the reconcile PRUNE path deterministically with
+# ndb_drop_table (an out-of-band NDB drop that emits no ndb_schema event):
+#   - reconcile disabled  -> the dropped table stays in the purge API (the gap)
+#   - reconcile enabled    -> it is pruned
+# It also exercises the #14 skip path: the env var RDRS_TTL_PURGE_FAIL_GETTABLE
+# (set in ttl_purge_reconcile.cnf to recon/skip_me) makes the reconcile's
+# getTable for the non-TTL table recon.skip_me fail every cycle; the successful
+# prune below proves that classified skip does not abort the reconcile pass.
+#
+# Requires the reconcile_interval_sec config knob and the getTable-fault env
+# hook, both added with the fix (rdrs2).
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/have_rdrs_curl.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+
+SET time_zone = '+00:00';
+
+CREATE DATABASE recon;
+
+# Non-TTL table whose name matches the getTable-fault hook. reconcile re-lists
+# it every cycle (it is never tracked), so the hook fires each pass -> exercises
+# the #14 classified skip inside reconcile.
+CREATE TABLE recon.skip_me (id INT PRIMARY KEY, x INT) ENGINE=NDB;
+
+--echo #
+--echo # Phase A: with reconcile DISABLED, an out-of-band NDB drop is invisible
+--echo #          to the purger (the #16 gap).
+--echo #
+
+# Disable periodic reconcile for this phase, and prove the setting applied
+# (Phase A is only meaningful if the reconcile is really off).
+--exec $ttl_purge_put_config '{"reconcile_interval_sec": 0}' > /dev/null 2>&1
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/_recon_cfg.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/_recon_cfg.json
+--let $json_field = reconcile_interval_sec
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = reconcile_interval_sec = 0 was applied
+--let $assert_cond = $json_value = 0
+--source include/assert.inc
+--sleep 1
+
+# Create a TTL table via SQL: discovered via the ndb_schema CREATE event.
+--let $ttl_db = recon
+--let $ttl_table = t_prune
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = recon
+--let $insert_table = t_prune
+--let $insert_count = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $wait_db = recon
+--let $wait_table = t_prune
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Drop the table from NDB ONLY (NdbAPI): no ndb_schema event is emitted, so the
+# purger cannot learn of the drop from the event stream.
+--exec $NDB_DROP_TABLE -d recon t_prune >> $NDB_TOOLS_OUTPUT 2>&1
+
+# reconcile is off -> the table must still be present in the purge API.
+--sleep 6
+--exec curl -s -o /dev/null -w "%{http_code}" $ttl_purge_base/tables/recon/t_prune > $MYSQL_TMP_DIR/_recon_code.txt 2>/dev/null
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/_recon_code.txt" or die;
+my $code = <$f>; chomp $code; close $f;
+open my $o, '>', "$tmp/_recon_present.inc" or die;
+print $o "--let \$table_still_present = " . ($code eq '200' ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_recon_present.inc
+
+--let $assert_text = With reconcile off, out-of-band-dropped table stays in the API
+--let $assert_cond = $table_still_present = 1
+--source include/assert.inc
+--echo Reconcile disabled: out-of-band drop not observed (as expected)
+
+--echo #
+--echo # Phase B: enabling reconcile prunes the vanished table; the classified
+--echo #          skip of recon.skip_me does not abort the reconcile pass.
+--echo #
+
+--exec $ttl_purge_put_config '{"reconcile_interval_sec": 2}' > /dev/null 2>&1
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/_recon_cfg.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/_recon_cfg.json
+--let $json_field = reconcile_interval_sec
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = reconcile_interval_sec = 2 was applied
+--let $assert_cond = $json_value = 2
+--source include/assert.inc
+
+--let $wait_db = recon
+--let $wait_table = t_prune
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+--echo Reconcile enabled: out-of-band-dropped table pruned; skip did not abort
+
+# Prove the #14 classified-skip hook actually fired: every reconcile pass
+# re-lists the untracked non-TTL recon.skip_me, so the pass that pruned
+# t_prune above must already have hit the simulated getTable failure.
+--exec grep -q "Simulated getTable failure for recon.skip_me" $MYSQLTEST_VARDIR/log/rdrs.1.1.log
+--echo Classified-skip hook fired for recon.skip_me (found in RDRS log)
+
+# Purger stays healthy (not in error state) despite the repeated skip.
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/_recon_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/_recon_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Purge state is not error after repeated classified skips
+--let $assert_cond = "$json_value" <> "error"
+--source include/assert.inc
+
+# --- Cleanup ---
+--exec $ttl_purge_put_config '{"reconcile_interval_sec": 30}' > /dev/null 2>&1
+--disable_warnings
+DROP TABLE recon.skip_me;
+# recon.t_prune is gone from NDB (ndb_drop_table); drop the orphaned DD entry.
+DROP DATABASE recon;
+--enable_warnings
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
