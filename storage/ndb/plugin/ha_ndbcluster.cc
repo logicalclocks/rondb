@@ -16402,6 +16402,13 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
         *reason = "Invalid TTL format, column type "
                  "must be DATETIME/TIMESTAMP";
         return true;
+      } else if (ttl_col->getStorageType() ==
+                 NdbDictionary::Column::StorageTypeDisk) {
+        // Mirror the CREATE-path rejection: checkTTL reads the TTL column
+        // without attaching the disk page, so an on-disk TTL column is
+        // unusable. This inplace path validated only the column type.
+        *reason = "TTL column can't be an on-disk column";
+        return true;
       }
       ndb_log_info("[API]parse TTL successfully: TTL = %u sec, "
                    "TTL_COLUMN = %s",
