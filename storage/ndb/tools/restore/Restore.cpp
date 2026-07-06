@@ -887,7 +887,6 @@ void RestoreDataIterator::check_extra_storage() {
      * continue.
      */
     flush_and_reset_buffers();
-    assert(m_extra_data_buffer.hasSpaceForEntry(m_row_max_extra_wordlen));
 
     /**
      * We do not want to break up batching due to a lack of
@@ -897,8 +896,13 @@ void RestoreDataIterator::check_extra_storage() {
      * to double the extra storage size, so that batching
      * boundaries are eventually controlled by the file
      * buffering only.
+     * RonDB row and attribute limits exceed the initial
+     * buffer size (RONDB-871), so keep doubling until the
+     * worst-case entry fits.
      */
-    m_extra_data_buffer.expand();
+    do {
+      m_extra_data_buffer.expand();
+    } while (!m_extra_data_buffer.hasSpaceForEntry(m_row_max_extra_wordlen));
   }
 }
 
@@ -2086,7 +2090,6 @@ void RestoreLogIterator::check_extra_storage() {
      * and continue
      */
     flush_and_reset_buffers();
-    assert(m_extra_data_buffer.hasSpaceForEntry(RowBuffWords));
 
     /**
      * We do not want to break up batching due to a lack of
@@ -2096,8 +2099,13 @@ void RestoreLogIterator::check_extra_storage() {
      * to double the extra storage size, so that batching
      * boundaries are eventually controlled by the file
      * buffering only.
+     * RonDB row and attribute limits exceed the initial
+     * buffer size (RONDB-871), so keep doubling until the worst-case
+     * entry fits.
      */
-    m_extra_data_buffer.expand();
+    do {
+      m_extra_data_buffer.expand();
+    } while (!m_extra_data_buffer.hasSpaceForEntry(RowBuffWords));
   }
 }
 
