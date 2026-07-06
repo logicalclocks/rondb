@@ -44,6 +44,12 @@ set(NDBBLOCKS_LINK_LIBS
   ext::zlib
 )
 
+if(WITH_SIMSIMD)
+  # SIMSIMD_DYNAMIC_DISPATCH (below) makes simsimd_* extern, so all
+  # consumers of ndbblocks need the SimSIMD runtime; link it transitively.
+  list(APPEND NDBBLOCKS_LINK_LIBS simsimd::simsimd)
+endif()
+
 ADD_STATIC_LIBRARY(ndbblocks
   LocalProxy.cpp
   PgmanProxy.cpp
