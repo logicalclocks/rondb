@@ -1,0 +1,50 @@
+# ==========================================================================
+# Guard for the Bug #2 fix predicate: BLOB part-tables must KEEP TTL upsert
+# ==========================================================================
+#
+# The Bug #2 "strict unique index" fix suppresses the TTL insert-on-duplicate
+# upsert conversion for a TTL table's internal UNIQUE-index tables. It is gated
+# on DictTabInfo::isUniqueIndex(tableType) -- deliberately NOT on
+# (primaryTableId != tableref), because a BLOB part-table ALSO has
+# primaryTableId != self yet is a UserTable that MUST keep the conversion so a
+# PK re-insert over an expired row can upsert the BLOB parts.
+#
+# This test would fail (duplicate-key error on the BLOB part-table) if the fix
+# were ever narrowed to (primaryTableId != tableref): re-inserting the same PK
+# over an expired row writes BLOB parts whose keys already exist physically
+# (the expired row is not yet purged), so the part-table insert relies on the
+# TTL upsert conversion firing.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# checkTTL compares against UTC; pin the session to UTC.
+SET time_zone = '+00:00';
+
+CREATE TABLE tb (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       BLOB
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--echo # insert a row with a multi-part BLOB
+INSERT INTO tb VALUES (1, NOW(), REPEAT('a', 5000));
+SELECT id, LENGTH(v) FROM tb WHERE id = 1;
+
+--echo # wait for the row to expire (TTL=5s); it stays physically present
+--echo # (no purge worker in this suite) so its BLOB parts remain
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tb WHERE id = 1
+--let $ttl_wait_timeout = 15
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT id, LENGTH(v) FROM tb WHERE id = 1;
+
+--echo # re-insert the SAME PK over the expired row with a larger BLOB: the TTL
+--echo # upsert must overwrite the expired base row AND its BLOB parts -> succeeds
+INSERT INTO tb VALUES (1, NOW(), REPEAT('b', 7000));
+
+--echo # the new row is live and carries the new BLOB (length 7000, all 'b')
+SELECT id, LENGTH(v) FROM tb WHERE id = 1;
+SELECT id, v = REPEAT('b', 7000) AS blob_is_new FROM tb WHERE id = 1;
+
+DROP TABLE tb;

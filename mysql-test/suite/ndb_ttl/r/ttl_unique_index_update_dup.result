@@ -1,0 +1,29 @@
+SET time_zone='+00:00';
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 200);
+# A live owner reserves its UNIQUE value.
+UPDATE t1 SET u = 200 WHERE id = 1;
+ERROR 23000: Duplicate entry '200' for key 't1.ux'
+# An expired-but-unpurged owner also reserves its UNIQUE value. This is
+# the deliberately accepted same-owner product behavior.
+INSERT INTO t1 VALUES (3, '2000-01-01 00:00:00', 300);
+UPDATE t1 SET u = 300 WHERE id = 1;
+ERROR 23000: Duplicate entry '300' for key 't1.ux'
+# Both rejected UPDATE statements leave all visible rows unchanged.
+SELECT id, u FROM t1 ORDER BY id;
+id	u
+1	100
+2	200
+SELECT id, u FROM t1 FORCE INDEX (ux)
+WHERE u IN (100, 200, 300) ORDER BY id;
+id	u
+1	100
+2	200
+DROP TABLE t1;

@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2014, 2025, Oracle and/or its affiliates.
+ Copyright (c) 2014, 2026, Oracle and/or its affiliates.
  Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
  
 

@@ -1,0 +1,112 @@
+# ==========================================================================
+# Regression guard: replicating UPDATE/DELETE to rows that are expired-but-
+# unpurged ON THE REPLICA does not break replication or diverge.
+# ==========================================================================
+#
+# Suspicion investigated: the NDB binlog applier applies row events without a
+# TTL-ignore flag, so an UPDATE/DELETE replicated onto a row that has expired on
+# the replica might hit DBTUP checkTTL -> 626 and be skipped, diverging from the
+# source.
+#
+# Findings (verified empirically by this test + code review):
+#   - UPDATE of a primary-key table: SAFE. The source logs PK-table updates as
+#     WRITE_ROWS events (ndb_log_update_as_write defaults to 1), so the replica
+#     applies them via writeTuple (ZWRITE). DBTUP bypasses checkTTL for
+#     original_op_type==ZWRITE, so the update is applied to the expired replica
+#     row verbatim (no skip, no divergence).
+#   - DELETE: the replica applies deleteTuple; on an expired replica row DBTUP
+#     checkTTL returns 626, but the NDB handler accepts NoDataFound at commit, so
+#     the delete is a harmless no-op (the row is already logically gone on both
+#     sides) and replication KEEPS FLOWING (it does not stop).
+#
+# SCOPE: this proves the DEFAULT configuration -- a primary-key table with
+# ndb_log_update_as_write=1 (the default), where the source logs updates as
+# WRITE_ROWS. NOT covered here (would route via UPDATE_ROWS -> updateTuple, which
+# has no ZWRITE bypass): tables with no primary key / only a hidden key, or
+# ndb_log_update_as_write=0. Those paths are left unaudited by this guard.
+#
+# This test locks in that behavior. To inject the "expired on the replica" race
+# deterministically (and avoid any wall-clock observation window), the applier is
+# paused, the source mutates the rows, and the rows are aged past their short TTL
+# before the applier resumes. The surviving rows use NULL / far-future ttl values
+# so the final state is stable regardless of test duration.
+#
+# In MTR there is no RDRS purger, so any row past its TTL stays physically present
+# (the condition under test). Topology: source (2 ndbd) -> replica (1 ndbd), row
+# based binlog. See suite/ndb_ttl_rpl/my.cnf.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+--connection master
+CREATE TABLE test.sz (
+  col_a INT PRIMARY KEY,
+  col_b TIMESTAMP NULL DEFAULT NULL,
+  col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+# let the schema propagate to all nodes
+sleep 3;
+
+--echo # --- seed: a never-expiring anchor (col_b NULL) plus two rows that will
+--echo #     expire (col_b = NOW()). Replicate them to the replica.
+INSERT INTO test.sz VALUES (1, NULL,   100);
+INSERT INTO test.sz VALUES (2, NOW(),  200);
+INSERT INTO test.sz VALUES (3, NOW(),  300);
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+--echo # replica initially sees all three rows
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+--echo # --- pause the applier (SQL thread) to inject replication lag. The
+--echo #     receiver thread keeps running, so the relay log still fills.
+STOP REPLICA sql_thread;
+
+--connection master
+--echo # --- while rows 2,3 are still live on the source: UPDATE row 2 (refresh its
+--echo #     ttl far into the future so it stays visible), DELETE row 3, and INSERT
+--echo #     a fresh never-expiring row 4 AFTER the delete (to prove replication
+--echo #     keeps flowing past the expired-row delete). These queue in the relay
+--echo #     log while the applier is paused.
+UPDATE test.sz SET col_c = 222, col_b = NOW() + INTERVAL 1 HOUR WHERE col_a = 2;
+DELETE FROM test.sz WHERE col_a = 3;
+INSERT INTO test.sz VALUES (4, NULL, 400);
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--echo # source final state: rows 1, 2(222), 4 (row 3 deleted)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--echo # --- age rows 2,3 past their 10s TTL on the replica (their original col_b
+--echo #     is still NOW()@t0 because the applier is paused). Margin only grows.
+sleep 15;
+
+--echo # [precondition] with the applier still STOPPED, rows 2 and 3 are now expired
+--echo #                on the replica (hidden); only the anchor row 1 is visible.
+--connection slave
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--echo # --- resume the applier: it applies the queued UPDATE/DELETE/INSERT to a
+--echo #     replica where rows 2,3 are expired. UPDATE(2) arrives as WRITE_ROWS ->
+--echo #     ZWRITE -> applied; DELETE(3) -> 626 swallowed -> harmless no-op;
+--echo #     INSERT(4) -> applied. Replication must not stop.
+START REPLICA sql_thread;
+
+--connection master
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--echo # --- SOURCE and REPLICA must agree: rows 1, 2(222), 4 visible; row 3 gone.
+--connection master
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+--connection slave
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+###############################################################################
+# Cleanup
+###############################################################################
+--connection master
+DROP TABLE test.sz;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+--source include/rpl/deinit.inc

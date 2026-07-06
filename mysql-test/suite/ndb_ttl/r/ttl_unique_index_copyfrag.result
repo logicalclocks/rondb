@@ -1,0 +1,38 @@
+SET time_zone='+00:00';
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+v VARCHAR(20),
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+# Initial checkpoint contains both long-lived and short-lived owners.
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 101, 'live-1'),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 102, 'live-2'),
+(3, NOW(), 103, 'short-3'),
+(4, NOW(), 104, 'short-4');
+# Stop node 2, preserving its local checkpoint.
+# While node 2 is down, change each short-lived row's unique key and then
+# change it back. The source ends with the same key/owner as node 2's LCP,
+# but with newer base and UNIQUE-index state that copyfrag must apply.
+UPDATE t1 SET u = u + 100, v = 'changed' WHERE id IN (3, 4);
+UPDATE t1 SET u = u - 100 WHERE id IN (3, 4);
+INSERT INTO t1 VALUES
+(5, DATE_ADD(NOW(), INTERVAL 10 YEAR), 105, 'live-5');
+# Let rows 3 and 4 expire without purge before copyfrag starts.
+# A ttl_ignore regression fails node restart with 626/2303; the waiter
+# only returns when node 2 has rejoined successfully.
+# Base-table scan and forced UNIQUE-index access return the same rows.
+SELECT id, u, v FROM t1 ORDER BY id;
+id	u	v
+1	101	live-1
+2	102	live-2
+5	105	live-5
+SELECT id, u, v FROM t1 FORCE INDEX (ux)
+WHERE u IN (101, 102, 103, 104, 105) ORDER BY id;
+id	u	v
+1	101	live-1
+2	102	live-2
+5	105	live-5
+DROP TABLE t1;

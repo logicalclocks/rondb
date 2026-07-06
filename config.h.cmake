@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2026, Oracle and/or its affiliates.
    Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
  
  This program is free software; you can redistribute it and/or modify
@@ -293,6 +293,7 @@
 #cmakedefine DISABLE_PSI_MEMORY 1
 #cmakedefine DISABLE_PSI_TRANSACTION 1
 #cmakedefine DISABLE_PSI_SERVER_TELEMETRY_TRACES 1
+#cmakedefine DISABLE_PSI_SERVER_TELEMETRY_LOGS 1
 #cmakedefine DISABLE_PSI_METRICS 1
 
 /*

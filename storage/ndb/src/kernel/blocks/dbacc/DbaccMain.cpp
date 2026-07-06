@@ -1,4 +1,4 @@
-/* Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1498,22 +1498,34 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
   }
 
   Uint32 op = opbits & Operationrec::OP_MASK;
+  /*
+   * TTL related
+   * Convert ZINSERT to ZWRITE for TTL table
+   * NOTICE:
+   * we only need change the operation to ZWRITE in DbAcc::Operationrec
+   * to make the following steps pass. The operation in DBLQH is
+   * unchanged
+   *
+   * EXCEPTION: LCP-restore-originated inserts (NoTTLDupConvert) must NOT be
+   * converted. During restore a relocated key can be replayed (in rowid order)
+   * while an older, expired copy of the same key is still present; converting
+   * the duplicate into an in-place TTL update would let restore count the
+   * INSERT (+1) while TUP does not create a row (+0), causing an LCP row-count
+   * mismatch (error 2352). Leaving it as ZINSERT makes the duplicate return
+   * 630, which restore's delete-by-PK + reinsert recovery reconciles (just as
+   * on a non-TTL table).
+   */
+  if (op == ZINSERT && found && is_ttl &&
+      !AccKeyReq::getNoTTLDupConvert(req->requestInfo)) {
+    ndbrequire((operationRecPtr.p->m_op_bits & (Uint32)Operationrec::OP_MASK) ==
+               ZINSERT);
+    op = ZWRITE;
+    Uint32 tmp_opbits = operationRecPtr.p->m_op_bits;
+	  tmp_opbits &= ~(Uint32)Operationrec::OP_MASK;
+	  tmp_opbits |= op;
+	  operationRecPtr.p->m_op_bits = tmp_opbits;
+  }
   if (found == ZTRUE) {
-    /*
-     * TTL related
-     * Convert ZINSERT-on-existing to ZWRITE for TTL tables. The switch
-     * arm for ZWRITE then converts to ZUPDATE in the lock-free path. The
-     * operation in DBLQH is unchanged.
-     */
-    if (op == ZINSERT && is_ttl) {
-      ndbrequire((operationRecPtr.p->m_op_bits &
-                  (Uint32)Operationrec::OP_MASK) == ZINSERT);
-      op = ZWRITE;
-      Uint32 tmp_opbits = operationRecPtr.p->m_op_bits;
-      tmp_opbits &= ~(Uint32)Operationrec::OP_MASK;
-      tmp_opbits |= op;
-      operationRecPtr.p->m_op_bits = tmp_opbits;
-    }
     switch (op) {
     case ZREAD:
     case ZUPDATE:

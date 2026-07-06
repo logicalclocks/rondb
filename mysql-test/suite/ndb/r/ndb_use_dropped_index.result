@@ -77,9 +77,10 @@ a	b	c	d	e
 
 ##########################################
 ## Use ndb_drop_index to drop the unique index on b.
-## First attempt to use dropped index fails with stale metadata
+## The proactive drop notification has already invalidated the cached index,
+## so the first attempt already sees it as unavailable.
 SELECT * FROM t1 WHERE b = 3;
-ERROR HY000: Table definition has changed, please retry transaction
+ERROR HY000: Incorrect key file for table 't1'; try to repair it
 
 ## Second attempt fails with bad index.
 SELECT * FROM t1 WHERE b = 3;
@@ -142,9 +143,9 @@ Error	1034	Incorrect key file for table 't1'; try to repair it
 
 ##########################################
 ## Use ndb_drop_index to drop the index on c.
-## Stale metadata
+## Index already known dropped (proactive invalidation)
 select c, count(1) from t1 group by c order by c;
-ERROR HY000: Table definition has changed, please retry transaction
+ERROR HY000: Incorrect key file for table 't1'; try to repair it
 
 ## Use of index fails
 select c, count(1) from t1 group by c order by c;
@@ -190,9 +191,11 @@ a	b	c	d	e
 4	4	4	4	4
 5	5	5	5	5
 
-## But, try to use the index? Stale metadata.
+## d$unique downgrades to an ordered index; the cache is already refreshed, so
+## the query succeeds using the remaining ordered index.
 SELECT * FROM t1 where d = 3;
-ERROR HY000: Table definition has changed, please retry transaction
+a	b	c	d	e
+3	3	3	3	3
 
 ## Then it succeeds (the ordered index is still available).
 SELECT * FROM t1 where d = 3;
@@ -224,9 +227,12 @@ a	b	c	d	e
 4	4	4	4	4
 5	5	5	5	5
 
-## First attempt to use dropped index fails with stale metadata
+## e (ordered) is dropped and downgraded; with the cache already refreshed the
+## query succeeds using the remaining index/scan.
 SELECT * FROM t1 where e > 3;
-ERROR HY000: Table definition has changed, please retry transaction
+a	b	c	d	e
+5	5	5	5	5
+4	4	4	4	4
 
 ## Second attempt succeeds.
 SELECT * FROM t1 where e > 3 order by e;
@@ -262,8 +268,9 @@ ERROR HY000: Table definition has changed, please retry transaction
 select * from t2 where a > 2;
 a	b	c
 3	1	1
+## Proactively refreshed: index b is already known to be gone.
 select * from t2 where b = 2;
-ERROR HY000: Table definition has changed, please retry transaction
+ERROR HY000: Incorrect key file for table 't2'; try to repair it
 select * from t2 where b = 2;
 ERROR HY000: Incorrect key file for table 't2'; try to repair it
 

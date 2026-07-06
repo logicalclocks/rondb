@@ -1,0 +1,42 @@
+SET time_zone = '+00:00';
+# --- create a fixed-width TTL table (TTL=45s on ttl_col) and one fresh row
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=45@ttl_col";
+INSERT INTO test.t1 VALUES (1, NOW(), 0);
+# --- force an LCP so node 2 captures the row in its local checkpoint
+Sending dump signal with data:
+0x00001bbb 
+Sending dump signal with data:
+0x00001bbb 
+
+# (wait for the LCP to complete)
+# --- stop data node 2 (keep its data); node 1 keeps serving
+Node 2 is being restarted
+
+Node 2: NOT_STARTED
+# --- while node 2 is down, UPDATE the row on node 1 (does NOT touch
+#     ttl_col, so the TTL clock keeps running from the INSERT). This bumps
+#     rowGCI above node 2's restore GCI so the copy-fragment ships the row
+#     to node 2 on restart (the NR scan's GCI filter would otherwise skip
+#     an unchanged row).
+UPDATE test.t1 SET v = v + 1 WHERE id = 1;
+# --- wait past the TTL (45s, measured from the INSERT) so the row is
+#     expired by the time node 2 copies it (no purger in MTR, so the
+#     expired row stays physically present on node 1)
+# --- start node 2: copy-fragment ships the expired row -> on a BUGGY
+#     build node 2 crashes (error 626 -> 2303) and the waiter times out;
+#     on a FIXED build node 2 rejoins cleanly.
+Database node 2 is being started.
+
+Node 2: STARTED
+# --- node 2 rejoined (only reached on a fixed build); cluster is healthy.
+#     The expired row was copied (TTL ignored during copy) but is hidden
+#     on read. Use SELECT * to list visible rows: COUNT(*) is avoided here
+#     because it may still include expired-but-unpurged rows (a known TTL
+#     visibility quirk), whereas SELECT * filters them on read.
+SELECT * FROM test.t1 ORDER BY id;
+id	ttl_col	v
+DROP TABLE test.t1;

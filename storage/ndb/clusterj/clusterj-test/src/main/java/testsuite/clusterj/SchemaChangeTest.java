@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2026, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -175,7 +175,10 @@ public class SchemaChangeTest extends AbstractClusterJModelTest {
         tryQuery("testDropTable before drop table table scan", Maldacena.class, "string_not_null_none", "0", 1,
                 "TABLE_SCAN", "no index", "no error");
         executeSQL(dropTableStatement);
-        tryFind("testDropTable after drop table find", Maldacena.class, 0, 1, "code 284");
+        // With the proactive drop notification, a find on the just-dropped table
+        // re-resolves the (now gone) table and reports "No such table existed"
+        // (code 723) rather than the legacy "table not defined in TC" (code 284).
+        tryFind("testDropTable after drop table find", Maldacena.class, 0, 1, "code 723");
         tryQuery("testDropTable after drop table unique key", Maldacena.class, "string_not_null_hash", "0", 0,
                 "UNIQUE_KEY", "idx_string_not_null_hash", "code 284");
         tryQuery("testDropTable after drop table index scan", Maldacena.class, "string_not_null_btree", "0", 0,
