@@ -16311,6 +16311,74 @@ enum_alter_inplace_result ha_ndbcluster::check_if_supported_inplace_alter(
         return HA_ALTER_ERROR;
       }
     }
+
+    /*
+     * Renaming the TTL column must not slip through either: the kernel keeps
+     * expiring by column NUMBER, but the stored comment still names the OLD
+     * column, so (a) SHOW CREATE emits DDL that cannot be re-created
+     * (mysqldump/restore of the table fails), and (b) if a new column later
+     * reuses the old name, the next comment re-parse (any copying ALTER)
+     * silently rebinds TTL to the WRONG column -- live rows can then expire
+     * and be purged by the wrong timestamp. This wrapper also runs before a
+     * COPY fallback, so the same statement MAY legitimately fix the comment
+     * (rename + COMMENT='...TTL=n@<new name>' is never inplace -- the
+     * ALTER_COLUMN_NAME exclusivity above sends it to COPY) or remove TTL
+     * altogether: allow those, reject only a rename that leaves the comment
+     * pointing at the old name.
+     */
+    if (ha_alter_info->handler_flags &
+        Alter_inplace_info::ALTER_COLUMN_NAME) {
+      const uint fields = std::min(table->s->fields, altered_table->s->fields);
+      for (uint i = 0; i < fields; i++) {
+        Field *old_field = table->field[i];
+        Field *new_field = altered_table->field[i];
+        if (strcmp(old_field->field_name, new_field->field_name) != 0 &&
+            !my_strcasecmp(system_charset_info, ttl_column.c_str(),
+                           old_field->field_name)) {
+          bool comment_rebinds = false;
+          const HA_CREATE_INFO *new_create_info = ha_alter_info->create_info;
+          NDB_Modifiers new_modifiers(ndb_table_modifier_prefix,
+                                      ndb_table_modifiers);
+          if (new_modifiers.loadComment(new_create_info->comment.str,
+                                        new_create_info->comment.length) !=
+              -1) {
+            const NDB_Modifier *new_mod_ttl = new_modifiers.get("TTL");
+            if (!new_mod_ttl->m_found) {
+              // TTL removed in the same statement. (NOTE: this arm is
+              // near-unreachable in practice -- update_comment_info() has
+              // already re-injected the old TTL into any new comment that
+              // does not set one, so e.g. COMMENT="" still carries the stale
+              // binding and is correctly rejected below.)
+              comment_rebinds = true;
+            } else {
+              std::string new_ttl_comment(new_mod_ttl->m_val_str.str,
+                                          new_mod_ttl->m_val_str.len);
+              std::size_t at = new_ttl_comment.find('@');
+              if (at == std::string::npos) {
+                if (!my_strcasecmp(system_charset_info,
+                                   new_mod_ttl->m_val_str.str, "off")) {
+                  // TTL=OFF: TTL disabled in the same statement
+                  comment_rebinds = true;
+                }
+              } else if (!my_strcasecmp(system_charset_info,
+                                        new_ttl_comment.substr(at + 1).c_str(),
+                                        new_field->field_name)) {
+                // Comment re-bound to the column's new name
+                comment_rebinds = true;
+              }
+            }
+          }
+          if (!comment_rebinds) {
+            ha_alter_info->unsupported_reason = "It's used as the TTL column";
+            ha_alter_info->report_unsupported_error(
+                "Renaming the TTL column without updating the TTL comment",
+                "renaming it and updating the comment in one ALTER TABLE "
+                "... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement");
+            return HA_ALTER_ERROR;
+          }
+        }
+      }
+    }
   }
   return result;
 }
