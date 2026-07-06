@@ -843,14 +843,21 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
      * physically pre-existed (ALLOC unset), so without this branch op_type
      * stays ZINSERT_TTL and the op-type switch below hits default:ndbabort()
      * -- a data-node crash reachable via ndb_deferred_constraints=1 + a unique
-     * index. Map to ZINSERT so deferred unique-index / FK maintenance fires
-     * the after-image (index insert) exactly like the immediate path, which
-     * keeps ZINSERT_TTL -> TE_INSERT (add-only; the stale expired index entry
-     * is reclaimed by purge, not here). See DbtupExecQuery.cpp ZINSERT_TTL
-     * handleUpdateReq branch and Dbtup::checkDetachedTriggers.
+     * index. Map to ZUPDATE so deferred unique-index maintenance fires with
+     * UPDATE semantics (delete the OLD unique value's entry from the
+     * before-image, insert the new one; unchanged values are suppressed by
+     * the before/after equality check in readTriggerInfo) -- matching the
+     * immediate path's ttl_index_update handling in executeTrigger. Add-only
+     * (ZINSERT) maintenance would leak the old-value index entry forever
+     * when the refresh changes a unique value: nothing ever reclaims it (the
+     * purge only removes expired BASE rows), so lookups of the old value
+     * return the wrong row and the value stays blocked for other rows.
+     * op_type is restored to ZINSERT_TTL at 'end:' below, so commit-time
+     * processing (checkDetachedTriggers maps ZINSERT_TTL -> TE_INSERT for
+     * binlog/SUMA) is unaffected.
      */
     jam();
-    regOperPtr->op_type = ZINSERT;
+    regOperPtr->op_type = ZUPDATE;
   }
 
   switch (regOperPtr->op_type) {
@@ -1432,13 +1439,35 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
     jamLine((Uint16)triggerType);
   }
 
+  /*
+   * TTL related: an insert over an expired-but-unpurged row (ZINSERT_TTL)
+   * physically UPDATES the base row in place, but its unique-index
+   * maintenance used to fire as TE_INSERT (add-only). When such a refresh
+   * CHANGES a unique value, the old value's index entry was left behind with
+   * no reclaimer (the purge only removes expired BASE rows): lookups of the
+   * old value resolved to the refreshed row (wrong result), the value stayed
+   * blocked for other rows (spurious duplicate via the same-owner check),
+   * and after the owner was deleted the entry was orphaned forever. Fire
+   * SECONDARY_INDEX maintenance with UPDATE semantics instead: before-values
+   * come from the expired row, DBTC deletes the old entry and inserts the
+   * new one, and an unchanged value is suppressed by the before/after
+   * equality check in readTriggerInfo. Scoped to SECONDARY_INDEX only:
+   * FULLY_REPLICATED triggers must keep TE_INSERT (the copy fragments hold
+   * the same expired row and rely on the insert-over-expired conversion),
+   * and detached/subscription triggers never see ZINSERT_TTL here
+   * (checkDetachedTriggers maps it to ZINSERT for binlog/SUMA).
+   */
+  const bool ttl_index_update =
+      (regOperPtr->op_type == ZINSERT_TTL &&
+       triggerType == TriggerType::SECONDARY_INDEX);
+
   Uint32 noPrimKey, noAfterWords, noBeforeWords;
   Uint32 *const keyBuffer = &cinBuffer[0];
   Uint32 *const afterBuffer = &coutBuffer[0];
   Uint32 *const beforeBuffer = &clogMemBuffer[0];
   if (!readTriggerInfo(trigPtr, regOperPtr, req_struct, regFragPtr.p, keyBuffer,
                        noPrimKey, afterBuffer, noAfterWords, beforeBuffer,
-                       noBeforeWords, disk)) {
+                       noBeforeWords, disk, ttl_index_update)) {
     jam();
     return;
   }
@@ -1626,7 +1655,10 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
 
   switch (regOperPtr->op_type) {
     case (ZINSERT):
-    /* 
+      jam();
+      fireTrigOrd->m_triggerEvent = TriggerEvent::TE_INSERT;
+      break;
+    /*
      * TTL related
      * crash on fully_replicated table here:
      * 1. insert 1 row
@@ -1635,7 +1667,11 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
      */
     case(ZINSERT_TTL):
       jam();
-      fireTrigOrd->m_triggerEvent = TriggerEvent::TE_INSERT;
+      /* UPDATE semantics for unique-index maintenance (delete old value's
+       * entry + insert new); TE_INSERT for everything else, notably
+       * FULLY_REPLICATED (see ttl_index_update above). */
+      fireTrigOrd->m_triggerEvent = ttl_index_update ? TriggerEvent::TE_UPDATE
+                                                     : TriggerEvent::TE_INSERT;
       break;
     case (ZUPDATE):
       jam();
@@ -1787,7 +1823,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
                             Uint32 *const keyBuffer, Uint32 &noPrimKey,
                             Uint32 *const afterBuffer, Uint32 &noAfterWords,
                             Uint32 *const beforeBuffer, Uint32 &noBeforeWords,
-                            bool disk) {
+                            bool disk, bool ttl_as_update) {
   noAfterWords = 0;
   noBeforeWords = 0;
   Uint32 readBuffer[MAX_ATTRIBUTES_IN_TABLE];
@@ -1903,7 +1939,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
   req_struct->m_tuple_ptr = save0;
 
   AttributeMask attributeMask;
-  if ((regOperPtr->op_type == ZUPDATE) &&
+  if ((regOperPtr->op_type == ZUPDATE || ttl_as_update) &&
       (trigPtr->sendOnlyChangedAttributes)) {
     jam();
     //--------------------------------------------------------------------
@@ -1925,7 +1961,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
     // attributeMask & ~ (blobAttributeMask & ~ changeMask)
     //--------------------------------------------------------------------
     attributeMask = trigPtr->attributeMask;
-    if (regOperPtr->op_type == ZUPDATE) {
+    if (regOperPtr->op_type == ZUPDATE || ttl_as_update) {
       AttributeMask tmpMask = regTabPtr->blobAttributeMask;
       tmpMask.bitANDC(req_struct->changeMask);
       attributeMask.bitANDC(tmpMask);
@@ -1978,7 +2014,8 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
   //--------------------------------------------------------------------
   // Initialise pagep and tuple offset for read of copy tuple
   //--------------------------------------------------------------------
-  if ((regOperPtr->op_type == ZUPDATE || regOperPtr->op_type == ZDELETE) &&
+  if ((regOperPtr->op_type == ZUPDATE || regOperPtr->op_type == ZDELETE ||
+       ttl_as_update) &&
       (trigPtr->sendBeforeValues)) {
     jam();
 
@@ -2055,7 +2092,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
     // had a change in their binary representation (eg: 'xyz' -> 'XYZ').
     // Such changes may need to be replicated, included in backup logs, etc.
     //--------------------------------------------------------------------
-    if (regOperPtr->op_type == ZUPDATE &&
+    if ((regOperPtr->op_type == ZUPDATE || ttl_as_update) &&
         refToMain(trigPtr->m_receiverRef) != SUMA) {
       if (keys_equal && noAfterWords == noBeforeWords &&
           memcmp(afterBuffer, beforeBuffer, noAfterWords * 4) == 0) {

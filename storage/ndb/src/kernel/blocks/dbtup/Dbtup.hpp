@@ -3390,11 +3390,17 @@ public:
   bool check_fire_suma(const KeyReqStruct *, const Operationrec *,
                        const Fragrecord *) const;
 
+  /* ttl_as_update: treat a ZINSERT_TTL (insert over an expired-but-unpurged
+   * row, physically an in-place update) as ZUPDATE for before-value reading
+   * and unchanged-value suppression -- used for SECONDARY_INDEX maintenance
+   * so a changed unique value deletes its old index entry (see
+   * executeTrigger's ttl_index_update). */
   bool readTriggerInfo(TupTriggerData *trigPtr, Operationrec *regOperPtr,
                        KeyReqStruct *req_struct, Fragrecord *regFragPtr,
                        Uint32 *keyBuffer, Uint32 &noPrimKey,
                        Uint32 *afterBuffer, Uint32 &noAfterWords,
-                       Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk);
+                       Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk,
+                       bool ttl_as_update = false);
 
   void sendTrigAttrInfo(Signal *signal, Uint32 *data, Uint32 dataLen,
                         bool executeDirect, BlockReference receiverReference);
