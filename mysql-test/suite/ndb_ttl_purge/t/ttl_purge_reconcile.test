@@ -29,6 +29,16 @@
 
 SET time_zone = '+00:00';
 
+# This test targets the WATCHER-side discovery/prune paths (init-scan skip
+# classification + periodic reconcile), so disable the purge WORKER for its
+# duration: the worker's own vanished-table classification (finding #15)
+# would otherwise notice the out-of-band drop via its per-table getTable
+# (723) and remove the table's metrics itself, destroying Phase A's
+# "still visible in the API" observable.
+--exec $ttl_purge_put_config '{"enabled": false}' > /dev/null 2>&1
+--let $wait_state_target = disabled
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
 CREATE DATABASE recon;
 
 # Non-TTL table whose name matches the getTable-fault hook. reconcile re-lists
@@ -125,6 +135,7 @@ EOF
 --source include/assert.inc
 
 # --- Cleanup ---
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
 --exec $ttl_purge_put_config '{"reconcile_interval_sec": 30}' > /dev/null 2>&1
 --disable_warnings
 DROP TABLE recon.skip_me;

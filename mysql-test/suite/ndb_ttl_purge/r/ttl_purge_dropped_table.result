@@ -1,0 +1,38 @@
+SET time_zone = '+00:00';
+CREATE DATABASE recon2;
+include/assert.inc [reconcile_interval_sec = 0 was applied]
+CREATE DATABASE IF NOT EXISTS recon2;
+Warnings:
+Note	1007	Can't create database 'recon2'; database exists
+DROP TABLE IF EXISTS recon2.keeper;
+CREATE TABLE recon2.keeper (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON recon2.keeper(ttl_col);
+ALTER TABLE recon2.keeper COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS recon2;
+Warnings:
+Note	1007	Can't create database 'recon2'; database exists
+DROP TABLE IF EXISTS recon2.victim;
+CREATE TABLE recon2.victim (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON recon2.victim(ttl_col);
+ALTER TABLE recon2.victim COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO recon2.victim (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO recon2.victim (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO recon2.victim (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO recon2.victim (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO recon2.victim (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+Both tables purged
+Vanished table classified and removed from the purge round
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO recon2.keeper (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+Surviving table still being purged
+include/assert.inc [Purge state is not error after the mid-round drop]
+DROP TABLE recon2.keeper;
+DROP DATABASE recon2;

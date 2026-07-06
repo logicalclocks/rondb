@@ -1304,10 +1304,30 @@ void TTLPurger::PurgeWorkerJob() {
          */
         dict->removeCachedTable(table_str.c_str());
       }
-      local_ttl_cache.clear();
+      std::map<std::string, TTLInfo> prev_local;
+      prev_local.swap(local_ttl_cache);
       purged_pos_.clear();
       const std::lock_guard<std::mutex> lock(mutex_);
       local_ttl_cache = ttl_cache_;
+      // Carry the worker-local rotation state forward for tables unchanged
+      // across the reload (same db/table key AND same table_id). The shared
+      // cache's entries always hold part_id = 0 / offset-not-applied, so
+      // without this every TTL-relevant schema event would restart the
+      // rotation at the first partition (nodeId offset or, in sharded mode,
+      // partition 0) and starve the high partitions under TTL-DDL churn.
+      // ttl_sec/col_no deliberately come from the fresh shared entry. The
+      // offset flag is carried verbatim: a never-visited table (flag still
+      // false) must still get its initial nodeId%partition_count offset.
+      for (auto& kv : local_ttl_cache) {
+        auto old_it = prev_local.find(kv.first);
+        if (old_it != prev_local.end() &&
+            old_it->second.table_id == kv.second.table_id) {
+          kv.second.part_id = old_it->second.part_id;
+          kv.second.batch_size = old_it->second.batch_size;
+          kv.second.part_id_offset_applied =
+              old_it->second.part_id_offset_applied;
+        }
+      }
       cache_updated_ = false;
       update_objects = true;
       g_eventLogger->info("[TTL PWorker] Detected cache updated, "
@@ -1417,11 +1437,29 @@ void TTLPurger::PurgeWorkerJob() {
       }
       ttl_tab = dict->getTable(table_str.c_str());
       if (ttl_tab == nullptr) {
+        const NdbError& gt_err = dict->getNdbError();
+        if (gt_err.code == 723) {
+          // 723 = no such table: it was dropped out-of-band mid-round and
+          // cannot be purged until re-created (a create event or the
+          // reconcile re-adds it then), so drop it from this round's local
+          // cache instead of burning retries into a full worker escalation.
+          // ONLY the explicit not-found code qualifies: broader classes
+          // (e.g. NdbError::PermanentError) include transient conditions
+          // like schema-version races (241), and erasing a live table here
+          // has no re-add path while reconcile is disabled.
+          g_eventLogger->info("[TTL PWorker] Table %s is gone (error %d), "
+                              "removing from the local purge cache",
+                              iter->first.c_str(), gt_err.code);
+          RemoveTableMetrics(iter->first);
+          purge_trx_started = false;
+          iter = local_ttl_cache.erase(iter);
+          continue;
+        }
         g_eventLogger->warning("[TTL PWorker] Failed to get table: "
                               "%s, error: %d(%s). Retry...",
                                table_str.c_str(),
-                               dict->getNdbError().code,
-                               dict->getNdbError().message);
+                               gt_err.code,
+                               gt_err.message);
 	goto table_err;
       }
       table_id = ttl_tab->getTableId();
@@ -1439,7 +1477,16 @@ void TTLPurger::PurgeWorkerJob() {
           worker_ndb_->getNodeId() % ttl_tab->getPartitionCount();
         iter->second.part_id_offset_applied = true;
       }
-      assert(iter->second.part_id < ttl_tab->getPartitionCount());
+      {
+        // A carried part_id can exceed the partition count if it shrank
+        // (e.g. a reorganize) since the last visit: wrap instead of
+        // scanning a nonexistent partition (the old assert here was
+        // compiled out in release builds anyway).
+        Uint32 part_count = ttl_tab->getPartitionCount();
+        if (part_count > 0 && iter->second.part_id >= part_count) {
+          iter->second.part_id %= part_count;
+        }
+      }
       log_buf += ("[P" + std::to_string(iter->second.part_id) +
                  "/" +
                  std::to_string(ttl_tab->getPartitionCount()) + "]");
@@ -1459,11 +1506,31 @@ retry_trx:
        */
       ttl_tab = dict->getTable(table_str.c_str());
       if (ttl_tab == nullptr) {
+        const NdbError& gt_err = dict->getNdbError();
+        if (gt_err.code == 723) {
+          // Same 723-only classified removal as the first per-table fetch
+          // above; this is the retry_trx refetch, reached when the table
+          // vanished MID-BATCH (the transaction failed and
+          // purge_trx_started sent table_err back here) -- precisely the
+          // case that previously retried kMaxTrxRetryTimes times and then
+          // killed the worker.
+          g_eventLogger->info("[TTL PWorker] Table %s is gone (error %d), "
+                              "removing from the local purge cache",
+                              iter->first.c_str(), gt_err.code);
+          RemoveTableMetrics(iter->first);
+          if (trans != nullptr) {
+            worker_ndb_->closeTransaction(trans);
+            trans = nullptr;
+          }
+          purge_trx_started = false;
+          iter = local_ttl_cache.erase(iter);
+          continue;
+        }
         g_eventLogger->warning("[TTL PWorker] Failed to get table: "
                               "%s, error: %d(%s). Retry...",
                                table_str.c_str(),
-                               dict->getNdbError().code,
-                               dict->getNdbError().message);
+                               gt_err.code,
+                               gt_err.message);
 	goto table_err;
       }
       trans = worker_ndb_->startTransaction();
