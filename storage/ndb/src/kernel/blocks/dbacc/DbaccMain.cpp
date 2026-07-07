@@ -3476,7 +3476,16 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
 {
   jamEntryDebug();
   bool skip = false;
-  
+
+  /*
+   * TTL related
+   * This runs re-entrantly from DBTUP in the middle of a scan read, so the
+   * block member operationRecPtr (which the code below points at the local
+   * scratch record) must be preserved for whatever ACC-level processing the
+   * enclosing signal chain resumes after the read returns.
+   */
+  const OperationrecPtr saveOperationRecPtr = operationRecPtr;
+
   // Make up AccLockReq
   AccLockReq* sig = (AccLockReq*)signal->getDataPtrSend();
   AccLockReq reqCopy = *sig;
@@ -3654,6 +3663,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
           ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
           if (loopPtr.p->is_same_trans(operationRecPtr.p)) {
             skip = true;
+            break;
           }
           loopPtr.i = loopPtr.p->nextParallelQue;
         } while (loopPtr.i != RNIL);
@@ -3664,6 +3674,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
   } // execACCKEYREQ()
   req->returnCode = AccLockReq::Success;
   req->accOpPtr = RNIL;
+  operationRecPtr = saveOperationRecPtr;
   return skip;
 }
 

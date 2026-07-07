@@ -7209,6 +7209,23 @@ int ha_ndbcluster::reset() {
   return 0;
 }
 
+handler *ha_ndbcluster::clone(const char *name, MEM_ROOT *mem_root) {
+  handler *new_handler = handler::clone(name, mem_root);
+  if (new_handler != nullptr) {
+    /*
+     * TTL related
+     * Carry the statement-scoped TTL-ignore over to the clone: plans that
+     * read through cloned handlers (e.g. index_merge) must see the same
+     * expired-row visibility as the primary handler, or a DELETE running
+     * with ttl_expired_rows_visible_in_delete silently skips the expired
+     * rows it was asked to remove. (The binlog applier is unaffected: its
+     * ignore comes from the Thd_ndb applier state, not this member.)
+     */
+    (static_cast<ha_ndbcluster *>(new_handler))->m_ttl_ignore = m_ttl_ignore;
+  }
+  return new_handler;
+}
+
 int ha_ndbcluster::flush_bulk_insert(bool allow_batch) {
   NdbTransaction *trans = m_thd_ndb->trans;
   DBUG_TRACE;
@@ -9199,9 +9216,15 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       }
 
       char old_ttl_str[256] = {0};
-      strncpy(old_ttl_str,
+      // Bound by the buffer, not only by the source length: a valid stored
+      // TTL value is always far shorter, but don't rely on that here.
+      size_t old_ttl_len = old_table_modifiers.get("TTL")->m_val_str.len;
+      if (old_ttl_len > sizeof(old_ttl_str) - 1) {
+        old_ttl_len = sizeof(old_ttl_str) - 1;
+      }
+      memcpy(old_ttl_str,
              old_table_modifiers.get("TTL")->m_val_str.str,
-             old_table_modifiers.get("TTL")->m_val_str.len);
+             old_ttl_len);
 
       table_modifiers.set("TTL", old_ttl_str);
       ndb_log_info("No new TTL comment is set, will use the old one: %s",
