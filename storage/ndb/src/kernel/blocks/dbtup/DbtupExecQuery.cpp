@@ -2894,22 +2894,20 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
 
 /*
  * TTL related
- * Lock-free replacement for gmtime_r() on the TTL hot path.
+ * Lock-free replacement for gmtime_r() on the TTL path.
  *
  * glibc's gmtime_r()/localtime_r() funnel through __tz_convert(), which
  * unconditionally takes the process-global tzset_lock (a private futex) even
- * for the UTC case. Under concurrent TTL purge scans every LDM thread hits
- * that single lock per row, serializing in the kernel futex path. This routine
- * converts UTC epoch seconds to a broken-down MYSQL_TIME using only the
- * in-tree calendar arithmetic (get_date_from_daynr), so it touches no glibc
- * lock.
+ * for the UTC case. This routine converts UTC epoch seconds to a broken-down
+ * MYSQL_TIME using only the in-tree calendar arithmetic
+ * (get_date_from_daynr), so it touches no glibc lock.
  *
  * It is field-for-field equivalent to MySQL's sec_to_TIME(out, t, 0) -- the
  * lock-free Time_zone_offset / my_tz_OFFSET0 path in sql/tztime.cc -- and is
- * reimplemented here because tztime.cc is part of the mysqld server and is not
- * linked into ndbmtd (get_date_from_daynr lives in mysys/my_time.cc, which is).
- * The gmtime_r() path this replaces was a copy of the locking Time_zone_utc
- * variant of the very same UTC conversion.
+ * reimplemented here because tztime.cc is part of the mysqld server and is
+ * not linked into ndbmtd (get_date_from_daynr lives in mysys/my_time.cc,
+ * which is). Since the integer expiry compare took over the hot path, this
+ * is only used by checkTTL's ttl_sec == 0 cold branch.
  */
 static inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
   /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
@@ -3031,94 +3029,100 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
     ttl_data = reinterpret_cast<const unsigned char*>(ahOut->getDataPtr());
   }
 
-  int cmp_ret = 0;
-  {
-    if (!is_null) {
-      /*
-       * TTL related
-       * Just need to parse to second part.
-       */
-      MYSQL_TIME dt;
-      if (type_id == NDB_TYPE_TIMESTAMP2) {
-        my_timeval timeval;
-        my_timestamp_from_binary(&timeval, ttl_data, 0);
-        /*
-         * TTL related
-         * Lock-free UTC conversion: avoids glibc gmtime_r()'s tzset_lock,
-         * which serializes all LDM threads on the TTL purge hot path.
-         */
-        const time_t tmp_t = (time_t)timeval.m_tv_sec;
-        ttl_utc_sec_to_TIME(tmp_t, &dt);
-      } else {
-        int64_t dt_bin = my_datetime_packed_from_binary(ttl_data, 0);
-        TIME_from_longlong_datetime_packed(&dt, dt_bin);
-      }
-      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                      "Parsed TTL column data: "
-                      "%u.%u.%u %u:%u:%u",
-                      dt.year, dt.month, dt.day,
-                      dt.hour, dt.minute, dt.second);
-      // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge
-      // window is added on top, so a Uint32 add could wrap and defeat the
-      // date_add_interval() overflow guard below (a wrapped small value would
-      // yield a bogus near-term expiry -> premature purge). date_add_interval()
-      // range-checks the result, so no separate upper-bound clamp is needed.
-      const Uint64 ttl_sec =
-          Uint64(regTabPtr->m_ttl_sec) + req_struct->ttl_purge_window_size;
-      bool valid_future_dt = true;
-      if (ttl_sec != 0) {
-        Interval interval;
-        memset(&interval, 0, sizeof(interval));
-        interval.second = ttl_sec;
-        bool add_ret = date_add_interval(&dt, INTERVAL_SECOND,
-            interval, nullptr);
-        if (add_ret) {
-          g_eventLogger->warning("TTL column adds "
-              "interval overflowing");
-          valid_future_dt = false;
-        }
-      }
-      if (valid_future_dt) {
-        /*
-         * TTL related
-         * Current UTC time: reuse the wall-clock sampled once per scan batch
-         * in DBLQH when available (scans, incl. the purge scan); PK ops keep
-         * the per-op clock read (ttl_now_sec == 0).
-         */
-        MYSQL_TIME curr_dt;
-        time_t t_now = (req_struct->ttl_now_sec != 0)
-                           ? (time_t)req_struct->ttl_now_sec
-                           : (time_t)(my_micro_time() / 1000000); /* second */
-        /*
-         * TTL related
-         * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) to keep the TTL
-         * purge hot path off glibc's global tzset_lock.
-         */
-        ttl_utc_sec_to_TIME(t_now, &curr_dt);
+  if (is_null) {
+    ndbassert(*has_error == false);
+    // NULL equals no TTL is set on the row
+    return 1;
+  }
 
-        /*
-         * TTL related
-         * Compare with TTL
-         */
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "Get TTL [%u + (%u) = %llu], "
-                        "expired time: %u.%u.%u %u:%u:%u, "
-                        "current time: %u.%u.%u %u:%u:%u",
-                        regTabPtr->m_ttl_sec,
-                        req_struct->ttl_purge_window_size,
-                        (unsigned long long)ttl_sec,
-                        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-                        curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-                        curr_dt.minute, curr_dt.second);
-        cmp_ret = my_time_compare(dt, curr_dt);
-      } else {
-        // future_dt overflows, we assume this row doesn't expire
+  /*
+   * TTL related
+   * Expiry decision: integer compare in seconds, replacing the broken-down
+   * time path (ttl_utc_sec_to_TIME / TIME_from_longlong_datetime_packed ->
+   * date_add_interval(INTERVAL_SECOND) -> my_time_compare vs UTC "now"),
+   * whose calendar arithmetic dominated checkTTL's per-row cost.
+   *
+   * This is a bit-exact replacement, not an approximation: MySQL's calendar
+   * has no DST, no leap seconds and 86400-second days, and
+   * date_add_interval()'s INTERVAL_SECOND branch is itself a linearization:
+   *   daynr = calc_daynr(year, month, 1)
+   *         + floor((Uint32(day - 1) * 86400 + hms + ttl_sec) / 86400)
+   * failing (-> row treated as never expiring) iff daynr exceeds
+   * MAX_DAY_NUMBER, while my_time_compare() orders the resulting valid
+   * datetimes exactly by that second count. That arithmetic is reproduced
+   * below verbatim -- including the unsigned (day - 1) wrap, which is what
+   * routes day-of-month 0 (zero date / zero-day date under permissive
+   * sql_mode) into the never-expiring overflow branch -- so every storable
+   * value keeps the exact pre-optimization verdict (verified against the
+   * original path by an exhaustive differential harness). "now" linearizes
+   * to now_sec + EPOCH_DAYNR * 86400 (ttl_utc_sec_to_TIME is the plain
+   * inverse of that). Callers use only sign(cmp_ret) ("<= 0" == expired),
+   * so the equal case maps to -1.
+   */
+  // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge window
+  // is added on top, so a Uint32 add could wrap and defeat the expiry
+  // overflow guard below (a wrapped small value would yield a bogus
+  // near-term expiry -> premature purge).
+  const Int64 ttl_sec =
+      Int64(regTabPtr->m_ttl_sec) + Int64(req_struct->ttl_purge_window_size);
+  /*
+   * TTL related
+   * Current UTC time: reuse the wall-clock sampled once per scan batch in
+   * DBLQH when available (scans, incl. the purge scan); PK ops keep the
+   * per-op clock read (ttl_now_sec == 0).
+   */
+  const Int64 now_sec = (req_struct->ttl_now_sec != 0)
+                            ? Int64(req_struct->ttl_now_sec)
+                            : Int64(my_micro_time() / 1000000); /* second */
+  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
+  constexpr Int64 EPOCH_DAYNR = 719528;
+  int cmp_ret;
+  if (type_id == NDB_TYPE_TIMESTAMP2) {
+    /*
+     * TIMESTAMP2(0) stores UTC epoch seconds (4 bytes, big-endian): pure
+     * integer compare. The expiry overflow guard is unreachable here: epoch
+     * seconds (< 2^32) plus ttl_sec (< 2^33) stay far below the year-9999
+     * limit (~2.5e11 epoch seconds), and with ttl_sec == 0 the direct
+     * compare of two valid UTC datetimes is this integer compare.
+     */
+    my_timeval tv;
+    my_timestamp_from_binary(&tv, ttl_data, 0);
+    cmp_ret = (Int64(tv.m_tv_sec) + ttl_sec <= now_sec) ? -1 : 1;
+  } else {
+    /* DATETIME2(0) holds a UTC wall-clock datetime. */
+    MYSQL_TIME dt;
+    TIME_from_longlong_datetime_packed(
+        &dt, my_datetime_packed_from_binary(ttl_data, 0));
+    if (likely(ttl_sec != 0)) {
+      /* Linearize to seconds since year 0 with date_add_interval()'s own
+         arithmetic (see the equivalence note above). */
+      const Int64 expiry_sec =
+          (Int64(calc_daynr(dt.year, dt.month, 1)) +
+           Int64(Uint32(dt.day - 1u))) * 86400 +
+          Int64(dt.hour) * 3600 + Int64(dt.minute) * 60 + Int64(dt.second) +
+          ttl_sec;
+      if (unlikely(expiry_sec >= (MAX_DAY_NUMBER + 1) * Int64(86400))) {
+        // date_add_interval()'s invalid_date outcome (expiry would pass
+        // 9999-12-31, incl. the day-of-month 0 wrap): never expires.
+        g_eventLogger->warning("TTL column adds "
+            "interval overflowing");
         cmp_ret = 1;
+      } else {
+        cmp_ret = (expiry_sec <= now_sec + EPOCH_DAYNR * 86400) ? -1 : 1;
       }
     } else {
-      ndbassert(*has_error == false);
-      // NULL equals no TTL is set on the row
-      cmp_ret = 1;
+      /*
+       * ttl_sec == 0: a TTL=0 table scanned without a purge window. The
+       * original path skips date_add_interval() here and my_time_compare()
+       * orders the degenerate dates permissive sql_modes can store (zero
+       * month/day, ALLOW_INVALID_DATES) lexicographically, which no
+       * linearization reproduces -- so keep the broken-down compare
+       * verbatim. Cold: every valid row of such a table expires the second
+       * it is written.
+       */
+      MYSQL_TIME curr_dt;
+      ttl_utc_sec_to_TIME((time_t)now_sec, &curr_dt);
+      cmp_ret = my_time_compare(dt, curr_dt);
     }
   }
   return cmp_ret;
