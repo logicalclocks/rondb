@@ -16212,6 +16212,27 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
             "drop the foreign keys from all the children tables");
         return HA_ALTER_ERROR;
       }
+      if (new_tab.isTTLEnabled() &&
+          (alter_flags & Alter_inplace_info::ADD_FOREIGN_KEY)) {
+        /*
+         * TTL related
+         * Same-statement ADD FOREIGN KEY + TTL comment would slip BOTH
+         * prohibition checks: create_fks() runs in the prepare phase
+         * against the OLD dictionary object (TTL not applied until
+         * alterTableGlobal in the commit phase), and the m_ttl_fk guard
+         * above only reflects pre-statement foreign keys. Reject the
+         * combination here; each half alone keeps its existing check
+         * (create_fk rejects an FK on a TTL table, the guard above
+         * rejects TTL on an FK table). The COPY path is already rejected
+         * by copy_fk_for_offline_alter.
+         */
+        ha_alter_info->unsupported_reason =
+            "Cannot add a foreign key and TTL in the same statement";
+        ha_alter_info->report_unsupported_error(
+            "Adding a foreign key together with TTL",
+            "TTL tables may not participate in foreign keys");
+        return HA_ALTER_ERROR;
+      }
     }
 
     if (max_rows_changed) {

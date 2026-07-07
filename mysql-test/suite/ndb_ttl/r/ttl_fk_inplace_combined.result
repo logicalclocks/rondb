@@ -1,0 +1,52 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.fk_child;
+DROP TABLE IF EXISTS test.fk_parent;
+CREATE TABLE test.fk_parent (pk INT PRIMARY KEY) ENGINE=NDB;
+CREATE TABLE test.fk_child (
+pk INT PRIMARY KEY,
+ref INT,
+ts TIMESTAMP NULL DEFAULT NULL,
+KEY idx_ref (ref)
+) ENGINE=NDB;
+#
+# Combined ADD FK + TTL comment in one INPLACE statement must be
+# rejected (either side would reject the other's result).
+#
+ALTER TABLE test.fk_child
+ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk),
+COMMENT="NDB_TABLE=TTL=5@ts",
+ALGORITHM=INPLACE;
+ERROR 0A000: Adding a foreign key together with TTL is not supported. Reason: Cannot add a foreign key and TTL in the same statement. Try TTL tables may not participate in foreign keys.
+# unspecified algorithm is a hard error too (no silent COPY fallback)
+ALTER TABLE test.fk_child
+ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk),
+COMMENT="NDB_TABLE=TTL=5@ts";
+ERROR 0A000: Adding a foreign key together with TTL is not supported. Reason: Cannot add a foreign key and TTL in the same statement. Try TTL tables may not participate in foreign keys.
+# neither the FK nor TTL may have landed
+SHOW CREATE TABLE test.fk_child;
+Table	Create Table
+fk_child	CREATE TABLE `fk_child` (
+  `pk` int NOT NULL,
+  `ref` int DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx_ref` (`ref`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+#
+# Sanity: the same combination via COPY stays rejected (finding #6)
+#
+ALTER TABLE test.fk_child
+ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk),
+COMMENT="NDB_TABLE=TTL=5@ts",
+ALGORITHM=COPY;
+ERROR HY000: Cannot add foreign key constraint
+#
+# Each half alone still behaves: TTL alone works ...
+#
+ALTER TABLE test.fk_child COMMENT="NDB_TABLE=TTL=5@ts", ALGORITHM=INPLACE;
+# ... and adding an FK to the now-TTL table is rejected
+ALTER TABLE test.fk_child
+ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk);
+ERROR HY000: Cannot add foreign key constraint
+DROP TABLE test.fk_child;
+DROP TABLE test.fk_parent;
