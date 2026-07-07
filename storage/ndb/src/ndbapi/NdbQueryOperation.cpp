@@ -6145,8 +6145,14 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       if (def.isCteEmbedded()) {
         // CTE-embedded scans: use fixed defaults since API-side batch
         // computation doesn't apply (DBSPJ handles the scan internally).
-        batchRows = 256;
-        batchByteSize = 65536;
+        // These rows never reach the API — the batch size only bounds
+        // DBSPJ-side row buffering, and every batch boundary costs a
+        // SCAN_NEXTREQ round trip during the CTE build.  Sized to match
+        // the root-scan batch default so typical CTE body fragments
+        // complete in one batch (the 12-bit correlation-id limit allows
+        // up to 4096 rows).
+        batchRows = 990;
+        batchByteSize = 131072;
       } else {
         const Uint32 fragsPerWorker = getQuery().m_fragsPerWorker;
         batchRows = getMaxBatchRows() * fragsPerWorker;
