@@ -2928,6 +2928,7 @@ static inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
 
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,
+                    bool var_data_prepared,
                     bool* has_error,
                     int* err_no) {
   Uint32 attrId = (regTabPtr->m_ttl_col_no);
@@ -2948,6 +2949,24 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
                   "size_in_words: %u",
                   req_struct->fragPtrP->fragTableId, type_id, size,
                   size_in_bytes, size_in_words);
+  /*
+   * TTL related
+   * A DYNAMIC-format TTL column is read by readAttributes() through the
+   * var/dyn row metadata in req_struct->m_var_data. The read path has set
+   * it up (prepare_read()) before coming here; the write paths
+   * (UPDATE/DELETE/converted upsert) skip prepare_read(), so derive it here
+   * for the tuple version this check reads (req_struct->m_tuple_ptr: the
+   * committed row or a chained copy tuple). Both write paths re-derive that
+   * state right after the TTL check (expand_tuple() resp. handleDeleteReq's
+   * own prepare_read()), and the memory-only disk=false call cannot clobber
+   * read-path disk state because it only runs when nothing has prepared
+   * m_var_data yet. Without this, the column read follows uninitialized
+   * pointers -- a data node segfault on UPDATE/DELETE of any row in a TTL
+   * table whose TTL column is COLUMN_FORMAT DYNAMIC.
+   */
+  if (!var_data_prepared && AttributeDescriptor::getDynamic(TattrDesc1)) {
+    prepare_read(req_struct, regTabPtr, false);
+  }
   /*
    * TTL related
    * Prepare correct attribute id format before passing it to readAttributes
@@ -3188,7 +3207,9 @@ int Dbtup::handleReadReq(
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(READ) handleReadReq TTL check");
-    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    // Read execution ran prepare_read() before dispatching here.
+    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/true,
+                       &has_error, &err_no);
     if (!has_error) {
       if (_regOperPtr->ttl_only_expired == 0) {
         if (cmp_ret <= 0) {
@@ -3544,7 +3565,10 @@ int Dbtup::handleUpdateReq(Signal* signal,
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(UPDATE) handleUpdateReq TTL check");
-    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    // Write execution skips prepare_read(); checkTTL prepares the var/dyn
+    // metadata itself iff the TTL column is DYNAMIC-format.
+    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
+                       &has_error, &err_no);
     if (!has_error) {
       if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
         /*
@@ -4755,7 +4779,10 @@ int Dbtup::handleDeleteReq(Signal* signal,
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(DELETE) handleDeleteReq TTL check");
-    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    // Write execution skips prepare_read(); checkTTL prepares the var/dyn
+    // metadata itself iff the TTL column is DYNAMIC-format.
+    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
+                       &has_error, &err_no);
     if (!has_error) {
       if (unlikely(regOperPtr->ttl_only_expired == 1)) {
         /*

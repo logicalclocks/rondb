@@ -2743,8 +2743,17 @@ private:
                                 LinearSectionPtr ptr[],
                                 Uint32 nptr);
 
+  /*
+   * TTL row-expiry check. var_data_prepared says whether the caller has
+   * already derived the var/dyn row metadata in req_struct->m_var_data
+   * (prepare_read()): true on the read path, false on the write paths
+   * (UPDATE/DELETE/converted upsert), where checkTTL prepares it itself
+   * iff the TTL column is DYNAMIC-format and must go through
+   * readAttributes().
+   */
   int checkTTL(Tablerec* regTabPtr,
                KeyReqStruct *req_struct,
+               bool var_data_prepared,
                bool* has_error,
                int* err_no);
 
