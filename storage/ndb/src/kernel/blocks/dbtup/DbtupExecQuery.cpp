@@ -2959,50 +2959,81 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
                   size_in_bytes, size_in_words);
   /*
    * TTL related
-   * A DYNAMIC-format TTL column is read by readAttributes() through the
-   * var/dyn row metadata in req_struct->m_var_data. The read path has set
-   * it up (prepare_read()) before coming here; the write paths
-   * (UPDATE/DELETE/converted upsert) skip prepare_read(), so derive it here
-   * for the tuple version this check reads (req_struct->m_tuple_ptr: the
-   * committed row or a chained copy tuple). Both write paths re-derive that
-   * state right after the TTL check (expand_tuple() resp. handleDeleteReq's
-   * own prepare_read()), and the memory-only disk=false call cannot clobber
-   * read-path disk state because it only runs when nothing has prepared
-   * m_var_data yet. Without this, the column read follows uninitialized
-   * pointers -- a data node segfault on UPDATE/DELETE of any row in a TTL
-   * table whose TTL column is COLUMN_FORMAT DYNAMIC.
+   * Read the TTL column. Fast path: a FIXED-format column sits at a static
+   * word offset in the fixed part of the in-memory tuple, so read it in
+   * place -- byte-identical to what readAttributes()'s fixed-size read
+   * functions copy out (see readFixedSizeTHManyWordNotNULL), minus the
+   * per-row read-function dispatch, AttributeHeader setup and memcpy.
+   * DYNAMIC-format columns are not at a static offset; those fall back to
+   * the generic readAttributes() decode. The TTL column is always in-memory
+   * (a disk-based TTL column is rejected at DDL time).
    */
-  if (!var_data_prepared && AttributeDescriptor::getDynamic(TattrDesc1)) {
-    prepare_read(req_struct, regTabPtr, false);
+  const Uint32 TattrDesc2 = attrDescriptor[1];
+  ndbrequire(!AttributeDescriptor::getDiskBased(TattrDesc1));
+  Uint32 out_buf[3];  // backing store for ttl_data on the readAttributes path
+  const unsigned char* ttl_data;
+  bool is_null = false;
+  *has_error = false;
+  *err_no = 0;
+  if (likely(!AttributeDescriptor::getDynamic(TattrDesc1))) {
+    ttl_data = reinterpret_cast<const unsigned char*>(
+        req_struct->m_tuple_ptr->m_data +
+        AttributeOffset::getOffset(TattrDesc2));
+    if (AttributeDescriptor::getNullable(TattrDesc1)) {
+      const Uint64 attrDes = (Uint64(TattrDesc2) << 32) | Uint64(TattrDesc1);
+      is_null = nullFlagCheck(req_struct, attrDes);
+    }
+  } else {
+    /*
+     * TTL related
+     * DYNAMIC-format fallback: readAttributes() reads a dynamic column
+     * through the var/dyn row metadata in req_struct->m_var_data. The read
+     * path has set it up (prepare_read()) before coming here; the write
+     * paths (UPDATE/DELETE/converted upsert) skip prepare_read(), so derive
+     * it here for the tuple version this check reads
+     * (req_struct->m_tuple_ptr: the committed row or a chained copy tuple).
+     * Both write paths re-derive that state right after the TTL check
+     * (expand_tuple() resp. handleDeleteReq's own prepare_read()), and the
+     * memory-only disk=false call cannot clobber read-path disk state
+     * because it only runs when nothing has prepared m_var_data yet.
+     * Without this, the column read follows uninitialized pointers -- a
+     * data node segfault on UPDATE/DELETE of any row in a TTL table whose
+     * TTL column is COLUMN_FORMAT DYNAMIC.
+     */
+    if (!var_data_prepared) {
+      prepare_read(req_struct, regTabPtr, false);
+    }
+    /*
+     * TTL related
+     * TODO (Zhao)
+     * Double check whether it's safe to reuse req_struct here or not.
+     */
+    Uint32 rd_attrId = attrId << 16;
+    int ret = readAttributes(req_struct,
+        &rd_attrId,
+        1,
+        out_buf,
+        3);
+    if (unlikely(ret < 0)) {
+      jam();
+      *has_error = true;
+      *err_no = ret;
+      return 0;
+    }
+    AttributeHeader* ahOut = (AttributeHeader*)out_buf;
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "Get ttl column data, col_id: %u, "
+                    "byte_size: %u, data_size: %u, is_null: %u",
+                    ahOut->getAttributeId(), ahOut->getByteSize(),
+                    ahOut->getDataSize(), ahOut->isNULL());
+    ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
+    is_null = ahOut->isNULL();
+    ttl_data = reinterpret_cast<const unsigned char*>(ahOut->getDataPtr());
   }
-  /*
-   * TTL related
-   * Prepare correct attribute id format before passing it to readAttributes
-   */
-  attrId = attrId << 16;
-  Uint32 out_buf[3];
-  /*
-   * TTL related
-   * TODO (Zhao)
-   * Double check whether it's safe to reuse req_struct here or not.
-   */
-  int ret = readAttributes(req_struct,
-      &attrId,
-      1,
-      out_buf,
-      3);
-  AttributeHeader* ahOut = (AttributeHeader*)out_buf;
-  TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                  "Get ttl column data, col_id: %u, "
-                  "byte_size: %u, data_size: %u, is_null: %u",
-                  ahOut->getAttributeId(), ahOut->getByteSize(),
-                  ahOut->getDataSize(), ahOut->isNULL());
-  ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
 
   int cmp_ret = 0;
-  *has_error = false;
-  if (ret >= 0) {
-    if (!ahOut->isNULL()) {
+  {
+    if (!is_null) {
       /*
        * TTL related
        * Just need to parse to second part.
@@ -3010,9 +3041,7 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
       MYSQL_TIME dt;
       if (type_id == NDB_TYPE_TIMESTAMP2) {
         my_timeval timeval;
-        my_timestamp_from_binary(&timeval,
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
+        my_timestamp_from_binary(&timeval, ttl_data, 0);
         /*
          * TTL related
          * Lock-free UTC conversion: avoids glibc gmtime_r()'s tzset_lock,
@@ -3021,9 +3050,7 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
         const time_t tmp_t = (time_t)timeval.m_tv_sec;
         ttl_utc_sec_to_TIME(tmp_t, &dt);
       } else {
-        int64_t dt_bin = my_datetime_packed_from_binary(
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
+        int64_t dt_bin = my_datetime_packed_from_binary(ttl_data, 0);
         TIME_from_longlong_datetime_packed(&dt, dt_bin);
       }
       TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
@@ -3089,22 +3116,10 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
         cmp_ret = 1;
       }
     } else {
-      /*
-       * TTL related
-       * TODO (Zhao)
-       * remove the warning log here.
-       */
-#ifdef TTL_DEBUG
-      g_eventLogger->warning("Zard, Read a NULL TTL column");
-#endif  // TTL_DEBUG
       ndbassert(*has_error == false);
       // NULL equals no TTL is set on the row
       cmp_ret = 1;
     }
-  } else {
-    jam();
-    *has_error = true;
-    *err_no = ret;
   }
   return cmp_ret;
 }
