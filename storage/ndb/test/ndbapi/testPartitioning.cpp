@@ -1087,6 +1087,868 @@ static int run_dist_test(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * RONDB-1074: PARTITION_HASH fanout tests
+ *
+ * A fanout table splits its primary key into base keys [0,x) and detail
+ * keys [x,x+y) with routing hash ((base_hash/z)*z) + (detail_hash%z), so
+ * all rows sharing a base key are stored in an interval of z fragments.
+ *
+ * The tests use a dedicated table with PK (BaseKey, DetailKey) and
+ * PARTITION_HASH x:y:z = 1:1:<fanout>:
+ * - metadata validation through the direct NDB API (error 800)
+ * - hinted PK operations agree with DBTC routing (error insert 8050)
+ * - ordered index scans with base-key equality prune to the interval
+ * - explicit hash-valued scan pruning is rejected with error 2203
+ * - fanout = 1 keeps legacy behavior
+ *
+ * NOTE: error insert 8050 crashes a data node if any scan fragment is
+ * not local to the TC node. Interval scans legitimately span nodes, so
+ * 8050 must never be active during fanout interval scans.
+ */
+
+static const char *FanoutTabName = "FanoutTest";
+static const char *FanoutBaseCol = "BaseKey";
+static const char *FanoutDetailCol = "DetailKey";
+static const char *FanoutResultCol = "Result";
+static const char *FanoutIdxName = "PRIMARY";
+
+static const Uint32 FANOUT_NUM_BASE = 16;    // distinct base key values
+static const Uint32 FANOUT_NUM_DETAIL = 32;  // detail rows per base key
+static const Uint32 FANOUT_FRAG_COUNT = 8;   // multiple of every fanout used
+
+static Uint32 fanout_result_value(Uint32 base, Uint32 detail) {
+  return base * 10000 + detail;
+}
+
+static void define_fanout_table(NdbDictionary::Table &tab, const char *name,
+                                Uint32 base_keys, Uint32 detail_keys,
+                                Uint32 fanout, Uint32 fragCount) {
+  tab.setName(name);
+  tab.setFragmentType(NdbDictionary::Object::HashMapPartition);
+  if (fragCount > 0) {
+    tab.setFragmentCount(fragCount);
+    tab.setPartitionBalance(NdbDictionary::Object::PartitionBalance_Specific);
+  }
+
+  NdbDictionary::Column bk;
+  bk.setName(FanoutBaseCol);
+  bk.setType(NdbDictionary::Column::Unsigned);
+  bk.setLength(1);
+  bk.setNullable(false);
+  bk.setPrimaryKey(true);
+  tab.addColumn(bk);
+
+  NdbDictionary::Column dk;
+  dk.setName(FanoutDetailCol);
+  dk.setType(NdbDictionary::Column::Unsigned);
+  dk.setLength(1);
+  dk.setNullable(false);
+  dk.setPrimaryKey(true);
+  tab.addColumn(dk);
+
+  NdbDictionary::Column res;
+  res.setName(FanoutResultCol);
+  res.setType(NdbDictionary::Column::Unsigned);
+  res.setLength(1);
+  res.setNullable(true);
+  res.setPrimaryKey(false);
+  tab.addColumn(res);
+
+  tab.setPartitionHash(base_keys, detail_keys, fanout);
+}
+
+/* Attempt a create through the direct NDB API, expecting success
+ * (expectedError == 0, table is dropped again) or a specific error code.
+ */
+static int fanout_create_check(Ndb *pNdb, Uint32 base_keys, Uint32 detail_keys,
+                               Uint32 fanout, Uint32 fragCount,
+                               int expectedError) {
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  NdbDictionary::Table tab;
+  define_fanout_table(tab, "FanoutDDL", base_keys, detail_keys, fanout,
+                      fragCount);
+
+  const int ret = dict->createTable(tab);
+  const int errCode = (ret == 0) ? 0 : dict->getNdbError().code;
+
+  if (expectedError == 0) {
+    if (ret != 0) {
+      ndbout << "Create " << base_keys << ":" << detail_keys << ":" << fanout
+             << " frags " << fragCount << " failed unexpectedly with "
+             << errCode << endl;
+      return NDBT_FAILED;
+    }
+    dict->dropTable("FanoutDDL");
+    return NDBT_OK;
+  }
+
+  if (ret == 0) {
+    ndbout << "Create " << base_keys << ":" << detail_keys << ":" << fanout
+           << " frags " << fragCount << " succeeded but should have failed"
+           << endl;
+    dict->dropTable("FanoutDDL");
+    return NDBT_FAILED;
+  }
+  if (errCode != expectedError) {
+    ndbout << "Create " << base_keys << ":" << detail_keys << ":" << fanout
+           << " frags " << fragCount << " failed with " << errCode
+           << " expected " << expectedError << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+static int run_fanout_ddl(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const int InvalidPartitionHash = 800;
+
+  dict->dropTable("FanoutDDL");
+
+  /* Invalid metadata combinations must be rejected with error 800 */
+  if (fanout_create_check(pNdb, 0, 1, 2, FANOUT_FRAG_COUNT,
+                          InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // base key count zero
+  if (fanout_create_check(pNdb, 1, 0, 2, FANOUT_FRAG_COUNT,
+                          InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // fanout > 1 without detail keys
+  if (fanout_create_check(pNdb, 1, 2, 2, FANOUT_FRAG_COUNT,
+                          InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // key counts do not match primary key
+  if (fanout_create_check(pNdb, 1, 1, 0, FANOUT_FRAG_COUNT,
+                          InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // fanout zero
+  if (fanout_create_check(pNdb, 1, 1, 70000, FANOUT_FRAG_COUNT,
+                          InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // fanout exceeds compact metadata (Uint16)
+  if (fanout_create_check(pNdb, 1, 1, 3, FANOUT_FRAG_COUNT,
+                          InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // fanout does not divide partition count
+  if (fanout_create_check(pNdb, 1, 1, 4, 6, InvalidPartitionHash) != NDBT_OK)
+    return NDBT_FAILED;  // fanout does not divide partition count
+
+  /* Valid spec: create, verify dictionary round-trip, reject alter */
+  {
+    NdbDictionary::Table tab;
+    define_fanout_table(tab, "FanoutDDL", 1, 1, 4, FANOUT_FRAG_COUNT);
+    CHECK(dict->createTable(tab), dict);
+
+    const NdbDictionary::Table *pTab = dict->getTable("FanoutDDL");
+    CHECKNOTNULL(pTab, dict);
+    if (pTab->getPartitionHashBaseKeyCount() != 1 ||
+        pTab->getPartitionHashDetailKeyCount() != 1 ||
+        pTab->getPartitionHashFanout() != 4) {
+      ndbout << "Retrieved partition hash metadata mismatch: "
+             << pTab->getPartitionHashBaseKeyCount() << ":"
+             << pTab->getPartitionHashDetailKeyCount() << ":"
+             << pTab->getPartitionHashFanout() << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Changing the partition hash spec through alter must be rejected */
+    NdbDictionary::Table alteredTab(*pTab);
+    alteredTab.setPartitionHash(2, 0, 1);
+    if (dict->alterTable(*pTab, alteredTab) == 0) {
+      ndbout << "Alter changing PARTITION_HASH succeeded but should not"
+             << endl;
+      return NDBT_FAILED;
+    }
+    const int alterErr = dict->getNdbError().code;
+    if (alterErr != 741)  // Unsupported alter table
+    {
+      ndbout << "Alter changing PARTITION_HASH failed with " << alterErr
+             << " expected 741" << endl;
+      return NDBT_FAILED;
+    }
+    CHECK(dict->dropTable("FanoutDDL"), dict);
+  }
+
+  /* A table created without partition hash metadata is normalized to
+   * (distribution_key_count, remaining_keys, 1) and must work
+   */
+  {
+    NdbDictionary::Table tab;
+    define_fanout_table(tab, "FanoutDDL", 0, 0, 1, 0);
+    CHECK(dict->createTable(tab), dict);
+    const NdbDictionary::Table *pTab = dict->getTable("FanoutDDL");
+    CHECKNOTNULL(pTab, dict);
+    if (pTab->getPartitionHashBaseKeyCount() != 2 ||
+        pTab->getPartitionHashDetailKeyCount() != 0 ||
+        pTab->getPartitionHashFanout() != 1) {
+      ndbout << "Default table metadata not normalized to (pk, 0, 1): "
+             << pTab->getPartitionHashBaseKeyCount() << ":"
+             << pTab->getPartitionHashDetailKeyCount() << ":"
+             << pTab->getPartitionHashFanout() << endl;
+      return NDBT_FAILED;
+    }
+    CHECK(dict->dropTable("FanoutDDL"), dict);
+  }
+
+  return NDBT_OK;
+}
+
+static int run_create_fanout_table(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const Uint32 fanout = ctx->getProperty("Fanout", (unsigned)4);
+
+  dict->dropTable(FanoutTabName);
+
+  NdbDictionary::Table tab;
+  define_fanout_table(tab, FanoutTabName, 1, 1, fanout, FANOUT_FRAG_COUNT);
+  CHECK(dict->createTable(tab), dict);
+
+  const NdbDictionary::Table *pTab = dict->getTable(FanoutTabName);
+  CHECKNOTNULL(pTab, dict);
+  if (pTab->getPartitionHashBaseKeyCount() != 1 ||
+      pTab->getPartitionHashDetailKeyCount() != 1 ||
+      pTab->getPartitionHashFanout() != fanout) {
+    ndbout << "Partition hash metadata did not survive dictionary round-trip"
+           << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Ordered index on the primary key, used for interval scans */
+  NdbDictionary::Index idx;
+  idx.setType(NdbDictionary::Index::OrderedIndex);
+  idx.setLogging(false);
+  idx.setTable(FanoutTabName);
+  idx.setName(FanoutIdxName);
+  idx.addColumnName(FanoutBaseCol);
+  idx.addColumnName(FanoutDetailCol);
+  CHECK(dict->createIndex(idx), dict);
+
+  return NDBT_OK;
+}
+
+static int run_drop_fanout_table(NDBT_Context *ctx, NDBT_Step *step) {
+  GETNDB(step)->getDictionary()->dropTable(FanoutTabName);
+  return NDBT_OK;
+}
+
+/* Load all (base, detail) rows without transaction hinting.
+ * Must not run with error insert 8050 active.
+ */
+static int run_load_fanout_table(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab =
+      pNdb->getDictionary()->getTable(FanoutTabName);
+  CHECKNOTNULL(tab, pNdb->getDictionary());
+  const NdbRecord *rec = tab->getDefaultRecord();
+  CHECKNOTNULL(rec, pNdb);
+
+  const Uint32 rowLen = NdbDictionary::getRecordRowLength(rec);
+  char *buf = (char *)malloc(rowLen);
+  CHECKNOTNULL(buf, pNdb);
+  Ap bufAp(buf);
+
+  const Uint32 baseAttrId = tab->getColumn(FanoutBaseCol)->getAttrId();
+  const Uint32 detailAttrId = tab->getColumn(FanoutDetailCol)->getAttrId();
+  const Uint32 resultAttrId = tab->getColumn(FanoutResultCol)->getAttrId();
+
+  for (Uint32 b = 0; b < FANOUT_NUM_BASE; b++) {
+    NdbTransaction *trans = pNdb->startTransaction();
+    CHECKNOTNULL(trans, pNdb);
+
+    for (Uint32 d = 0; d < FANOUT_NUM_DETAIL; d++) {
+      memcpy(NdbDictionary::getValuePtr(rec, buf, baseAttrId), &b, sizeof(b));
+      memcpy(NdbDictionary::getValuePtr(rec, buf, detailAttrId), &d,
+             sizeof(d));
+      const Uint32 val = fanout_result_value(b, d);
+      memcpy(NdbDictionary::getValuePtr(rec, buf, resultAttrId), &val,
+             sizeof(val));
+      NdbDictionary::setNull(rec, buf, resultAttrId, false);
+
+      CHECKNOTNULL(trans->insertTuple(rec, buf), trans);
+    }
+    CHECK(trans->execute(NdbTransaction::Commit), trans);
+    trans->close();
+  }
+  return NDBT_OK;
+}
+
+/* Start a transaction hinted with the (base, detail) primary key */
+static NdbTransaction *fanout_hinted_trans(Ndb *pNdb,
+                                           const NdbDictionary::Table *tab,
+                                           Uint32 base, Uint32 detail) {
+  Ndb::Key_part_ptr keyParts[3];
+  keyParts[0].ptr = &base;
+  keyParts[0].len = sizeof(base);
+  keyParts[1].ptr = &detail;
+  keyParts[1].len = sizeof(detail);
+  keyParts[2].ptr = NULL;
+  keyParts[2].len = 0;
+  return pNdb->startTransaction(tab, keyParts);
+}
+
+/**
+ * Hinted primary key operations with error insert 8050: if the API
+ * transaction hint (composed fanout routing hash) does not agree with
+ * DBTC's routing, a data node asserts and the test fails.
+ */
+static int run_fanout_pk_ops(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab =
+      pNdb->getDictionary()->getTable(FanoutTabName);
+  CHECKNOTNULL(tab, pNdb->getDictionary());
+  const NdbRecord *rec = tab->getDefaultRecord();
+  CHECKNOTNULL(rec, pNdb);
+
+  const Uint32 rowLen = NdbDictionary::getRecordRowLength(rec);
+  char *buf = (char *)malloc(rowLen);
+  char *resBuf = (char *)malloc(rowLen);
+  CHECKNOTNULL(buf, pNdb);
+  CHECKNOTNULL(resBuf, pNdb);
+  Ap bufAp(buf);
+  Ap resBufAp(resBuf);
+
+  const Uint32 baseAttrId = tab->getColumn(FanoutBaseCol)->getAttrId();
+  const Uint32 detailAttrId = tab->getColumn(FanoutDetailCol)->getAttrId();
+  const Uint32 resultAttrId = tab->getColumn(FanoutResultCol)->getAttrId();
+  /* Column mask covering only the Result column */
+  unsigned char resultMask[4] = {0, 0, 0, 0};
+  resultMask[resultAttrId >> 3] = (unsigned char)(1 << (resultAttrId & 7));
+
+  NdbRestarter restarter;
+  if (restarter.insertErrorInAllNodes(8050) != 0) return NDBT_FAILED;
+
+  int result = NDBT_OK;
+  for (Uint32 b = 0; b < FANOUT_NUM_BASE && result == NDBT_OK; b++) {
+    for (Uint32 d = 0; d < FANOUT_NUM_DETAIL && result == NDBT_OK; d++) {
+      const Uint32 val = fanout_result_value(b, d);
+
+      memcpy(NdbDictionary::getValuePtr(rec, buf, baseAttrId), &b, sizeof(b));
+      memcpy(NdbDictionary::getValuePtr(rec, buf, detailAttrId), &d,
+             sizeof(d));
+      memcpy(NdbDictionary::getValuePtr(rec, buf, resultAttrId), &val,
+             sizeof(val));
+      NdbDictionary::setNull(rec, buf, resultAttrId, false);
+
+      /* Hinted insert */
+      {
+        NdbTransaction *trans = fanout_hinted_trans(pNdb, tab, b, d);
+        if (trans == NULL) {
+          ndbout << "startTransaction failed " << pNdb->getNdbError().code
+                 << endl;
+          result = NDBT_FAILED;
+          break;
+        }
+        if (trans->insertTuple(rec, buf) == NULL ||
+            trans->execute(NdbTransaction::Commit) != 0) {
+          ndbout << "Hinted insert failed " << trans->getNdbError().code
+                 << endl;
+          result = NDBT_FAILED;
+        }
+        trans->close();
+      }
+      if (result != NDBT_OK) break;
+
+      /* Hinted locking read, verify value */
+      {
+        NdbTransaction *trans = fanout_hinted_trans(pNdb, tab, b, d);
+        if (trans == NULL) {
+          result = NDBT_FAILED;
+          break;
+        }
+        memset(resBuf, 0, rowLen);
+        if (trans->readTuple(rec, buf, rec, resBuf, NdbOperation::LM_Read) ==
+                NULL ||
+            trans->execute(NdbTransaction::Commit) != 0) {
+          ndbout << "Hinted read failed " << trans->getNdbError().code << endl;
+          result = NDBT_FAILED;
+        } else {
+          Uint32 readVal;
+          memcpy(&readVal,
+                 NdbDictionary::getValuePtr(rec, resBuf, resultAttrId),
+                 sizeof(readVal));
+          if (readVal != val) {
+            ndbout << "Read wrong value " << readVal << " expected " << val
+                   << endl;
+            result = NDBT_FAILED;
+          }
+        }
+        trans->close();
+      }
+      if (result != NDBT_OK) break;
+
+      /* Hinted update of the Result column */
+      {
+        const Uint32 newVal = val + 1;
+        memcpy(NdbDictionary::getValuePtr(rec, buf, resultAttrId), &newVal,
+               sizeof(newVal));
+        NdbTransaction *trans = fanout_hinted_trans(pNdb, tab, b, d);
+        if (trans == NULL) {
+          result = NDBT_FAILED;
+          break;
+        }
+        if (trans->updateTuple(rec, buf, rec, buf, resultMask) == NULL ||
+            trans->execute(NdbTransaction::Commit) != 0) {
+          ndbout << "Hinted update failed " << trans->getNdbError().code
+                 << endl;
+          result = NDBT_FAILED;
+        }
+        trans->close();
+      }
+      if (result != NDBT_OK) break;
+
+      /* Hinted write (upsert) restoring the original value */
+      {
+        memcpy(NdbDictionary::getValuePtr(rec, buf, resultAttrId), &val,
+               sizeof(val));
+        NdbTransaction *trans = fanout_hinted_trans(pNdb, tab, b, d);
+        if (trans == NULL) {
+          result = NDBT_FAILED;
+          break;
+        }
+        if (trans->writeTuple(rec, buf, rec, buf) == NULL ||
+            trans->execute(NdbTransaction::Commit) != 0) {
+          ndbout << "Hinted write failed " << trans->getNdbError().code
+                 << endl;
+          result = NDBT_FAILED;
+        }
+        trans->close();
+      }
+      if (result != NDBT_OK) break;
+
+      /* Hinted delete */
+      {
+        NdbTransaction *trans = fanout_hinted_trans(pNdb, tab, b, d);
+        if (trans == NULL) {
+          result = NDBT_FAILED;
+          break;
+        }
+        if (trans->deleteTuple(rec, buf, rec) == NULL ||
+            trans->execute(NdbTransaction::Commit) != 0) {
+          ndbout << "Hinted delete failed " << trans->getNdbError().code
+                 << endl;
+          result = NDBT_FAILED;
+        }
+        trans->close();
+      }
+    }
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  return result;
+}
+
+struct FanoutScanRange {
+  Uint32 base;
+  Uint32 detail;
+  bool hasDetail;   // equality on (base, detail) instead of base only
+  bool openHigh;    // low bound on base only, no high bound
+};
+
+/**
+ * Run one ordered-index scan with the given ranges, check pruned state
+ * and verify returned rows (contents and count).
+ */
+static int fanout_scan_check(Ndb *pNdb, const FanoutScanRange *ranges,
+                             Uint32 rangeCount, bool expectPruned,
+                             Uint32 expectedRows) {
+  const NdbDictionary::Table *tab =
+      pNdb->getDictionary()->getTable(FanoutTabName);
+  CHECKNOTNULL(tab, pNdb->getDictionary());
+  const NdbDictionary::Index *idx =
+      pNdb->getDictionary()->getIndex(FanoutIdxName, FanoutTabName);
+  CHECKNOTNULL(idx, pNdb->getDictionary());
+  const NdbRecord *tabRec = tab->getDefaultRecord();
+  const NdbRecord *idxRec = idx->getDefaultRecord();
+
+  const Uint32 baseAttrId = tab->getColumn(FanoutBaseCol)->getAttrId();
+  const Uint32 detailAttrId = tab->getColumn(FanoutDetailCol)->getAttrId();
+  const Uint32 resultAttrId = tab->getColumn(FanoutResultCol)->getAttrId();
+
+  const Uint32 boundLen = NdbDictionary::getRecordRowLength(idxRec);
+  /* Each range needs its own bound buffer for the send */
+  char *boundBufs = (char *)malloc(boundLen * rangeCount);
+  CHECKNOTNULL(boundBufs, pNdb);
+  Ap boundAp(boundBufs);
+
+  NdbTransaction *trans = pNdb->startTransaction();
+  CHECKNOTNULL(trans, pNdb);
+
+  NdbScanOperation::ScanOptions opts;
+  opts.optionsPresent = NdbScanOperation::ScanOptions::SO_SCANFLAGS;
+  opts.scan_flags = NdbScanOperation::SF_MultiRange;
+
+  NdbIndexScanOperation *op =
+      trans->scanIndex(idxRec, tabRec, NdbOperation::LM_Read, NULL, NULL,
+                       &opts, sizeof(opts));
+  CHECKNOTNULL(op, trans);
+
+  for (Uint32 r = 0; r < rangeCount; r++) {
+    char *boundBuf = boundBufs + r * boundLen;
+    memcpy(NdbDictionary::getValuePtr(idxRec, boundBuf, baseAttrId),
+           &ranges[r].base, sizeof(Uint32));
+    Uint32 keyCount = 1;
+    if (ranges[r].hasDetail) {
+      memcpy(NdbDictionary::getValuePtr(idxRec, boundBuf, detailAttrId),
+             &ranges[r].detail, sizeof(Uint32));
+      keyCount = 2;
+    }
+
+    NdbIndexScanOperation::IndexBound ib;
+    ib.low_key = boundBuf;
+    ib.low_key_count = keyCount;
+    ib.low_inclusive = true;
+    if (ranges[r].openHigh) {
+      ib.high_key = NULL;
+      ib.high_key_count = 0;
+    } else {
+      ib.high_key = boundBuf;
+      ib.high_key_count = keyCount;
+    }
+    ib.high_inclusive = true;
+    ib.range_no = r;
+
+    CHECK(op->setBound(idxRec, ib), op);
+  }
+
+  if (op->getPruned() != expectPruned) {
+    ndbout << "Scan pruned state was " << op->getPruned() << " expected "
+           << expectPruned << endl;
+    trans->close();
+    return NDBT_FAILED;
+  }
+
+  CHECK(trans->execute(NdbTransaction::NoCommit), trans);
+
+  Uint32 rowCount = 0;
+  const char *resultPtr;
+  int rc;
+  while ((rc = op->nextResult(&resultPtr, true, true)) == 0) {
+    Uint32 b, d, val;
+    memcpy(&b, NdbDictionary::getValuePtr(tabRec, resultPtr, baseAttrId),
+           sizeof(b));
+    memcpy(&d, NdbDictionary::getValuePtr(tabRec, resultPtr, detailAttrId),
+           sizeof(d));
+    memcpy(&val, NdbDictionary::getValuePtr(tabRec, resultPtr, resultAttrId),
+           sizeof(val));
+
+    if (val != fanout_result_value(b, d)) {
+      ndbout << "Bad row contents: base " << b << " detail " << d
+             << " result " << val << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+
+    /* The row must match one of the requested ranges */
+    bool matched = false;
+    for (Uint32 r = 0; r < rangeCount; r++) {
+      if (ranges[r].openHigh) {
+        matched |= (b >= ranges[r].base);
+      } else if (ranges[r].hasDetail) {
+        matched |= (b == ranges[r].base && d == ranges[r].detail);
+      } else {
+        matched |= (b == ranges[r].base);
+      }
+    }
+    if (!matched) {
+      ndbout << "Row outside requested ranges: base " << b << " detail " << d
+             << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+    rowCount++;
+  }
+
+  if (rc != 1) {
+    ndbout << "Scan failed, rc " << rc << " op error "
+           << op->getNdbError().code << " trans error "
+           << trans->getNdbError().code << endl;
+    trans->close();
+    return NDBT_FAILED;
+  }
+
+  trans->close();
+
+  if (rowCount != expectedRows) {
+    ndbout << "Scan returned " << rowCount << " rows, expected "
+           << expectedRows << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Ordered index scans on a fanout table:
+ * - base-key equality (open or bounded detail) prunes to the interval
+ * - MRR ranges in the same interval stay pruned
+ * - MRR ranges in different intervals fall back to unpruned, correctly
+ * - mixed prunable and non-prunable ranges fall back to unpruned
+ *
+ * No error insert: interval scans span several nodes by design.
+ */
+static int run_fanout_interval_scan(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+
+  /* a) Single range, equality on base key only: pruned interval scan */
+  {
+    FanoutScanRange r[1] = {{7, 0, false, false}};
+    if (fanout_scan_check(pNdb, r, 1, true, FANOUT_NUM_DETAIL) != NDBT_OK)
+      return NDBT_FAILED;
+  }
+
+  /* b) Single range, equality on the full primary key: still an interval */
+  {
+    FanoutScanRange r[1] = {{7, 3, true, false}};
+    if (fanout_scan_check(pNdb, r, 1, true, 1) != NDBT_OK) return NDBT_FAILED;
+  }
+
+  /* c) MRR: several ranges with the same base key stay pruned */
+  {
+    FanoutScanRange r[3] = {
+        {7, 3, true, false}, {7, 11, true, false}, {7, 19, true, false}};
+    if (fanout_scan_check(pNdb, r, 3, true, 3) != NDBT_OK) return NDBT_FAILED;
+  }
+
+  /* d) MRR: ranges with different base keys map to different intervals,
+   * the scan falls back to unpruned but must return correct rows
+   */
+  {
+    FanoutScanRange r[8];
+    for (Uint32 i = 0; i < 8; i++) {
+      r[i].base = i;
+      r[i].detail = 5;
+      r[i].hasDetail = true;
+      r[i].openHigh = false;
+    }
+    if (fanout_scan_check(pNdb, r, 8, false, 8) != NDBT_OK)
+      return NDBT_FAILED;
+  }
+
+  /* e) MRR: one prunable range plus one open (non-prunable) range */
+  {
+    FanoutScanRange r[2] = {
+        {2, 0, false, false},
+        {FANOUT_NUM_BASE - 2, 0, false, true}};  // base >= 14: 2 base keys
+    if (fanout_scan_check(pNdb, r, 2, false, 3 * FANOUT_NUM_DETAIL) != NDBT_OK)
+      return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
+/**
+ * Explicit hash-valued scan pruning must be rejected with error 2203 on
+ * fanout tables, and explicit partition-id scans (SO_PARTITION_ID) keep
+ * their existing restriction (error 4546 on non-UserDefined tables).
+ */
+static int run_fanout_explicit_prune(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab =
+      pNdb->getDictionary()->getTable(FanoutTabName);
+  CHECKNOTNULL(tab, pNdb->getDictionary());
+  const NdbDictionary::Index *idx =
+      pNdb->getDictionary()->getIndex(FanoutIdxName, FanoutTabName);
+  CHECKNOTNULL(idx, pNdb->getDictionary());
+  const NdbRecord *tabRec = tab->getDefaultRecord();
+  const NdbRecord *idxRec = idx->getDefaultRecord();
+
+  const Uint32 baseAttrId = tab->getColumn(FanoutBaseCol)->getAttrId();
+  const Uint32 detailAttrId = tab->getColumn(FanoutDetailCol)->getAttrId();
+
+  const Uint32 boundLen = NdbDictionary::getRecordRowLength(idxRec);
+  char *boundBuf = (char *)malloc(boundLen);
+  char *tabRow = (char *)malloc(NdbDictionary::getRecordRowLength(tabRec));
+  CHECKNOTNULL(boundBuf, pNdb);
+  CHECKNOTNULL(tabRow, pNdb);
+  Ap boundAp(boundBuf);
+  Ap tabRowAp(tabRow);
+
+  Uint32 base = 1;
+  Uint32 detail = 1;
+
+  /* Common range: equality on the full primary key */
+  memcpy(NdbDictionary::getValuePtr(idxRec, boundBuf, baseAttrId), &base,
+         sizeof(base));
+  memcpy(NdbDictionary::getValuePtr(idxRec, boundBuf, detailAttrId), &detail,
+         sizeof(detail));
+  NdbIndexScanOperation::IndexBound ib;
+  ib.low_key = boundBuf;
+  ib.low_key_count = 2;
+  ib.low_inclusive = true;
+  ib.high_key = boundBuf;
+  ib.high_key_count = 2;
+  ib.high_inclusive = true;
+  ib.range_no = 0;
+
+  for (int variant = 0; variant < 2; variant++) {
+    NdbTransaction *trans = pNdb->startTransaction();
+    CHECKNOTNULL(trans, pNdb);
+
+    NdbIndexScanOperation *op = trans->scanIndex(
+        idxRec, tabRec, NdbOperation::LM_Read, NULL, NULL, NULL, 0);
+    CHECKNOTNULL(op, trans);
+
+    Ndb::Key_part_ptr keyParts[3];
+    keyParts[0].ptr = &base;
+    keyParts[0].len = sizeof(base);
+    keyParts[1].ptr = &detail;
+    keyParts[1].len = sizeof(detail);
+    keyParts[2].ptr = NULL;
+    keyParts[2].len = 0;
+
+    Ndb::PartitionSpec pSpec;
+    if (variant == 0) {
+      pSpec.type = Ndb::PartitionSpec::PS_DISTR_KEY_PART_PTR;
+      pSpec.KeyPartPtr.tableKeyParts = keyParts;
+      pSpec.KeyPartPtr.xfrmbuf = NULL;
+      pSpec.KeyPartPtr.xfrmbuflen = 0;
+    } else {
+      memcpy(NdbDictionary::getValuePtr(tabRec, tabRow, baseAttrId), &base,
+             sizeof(base));
+      memcpy(NdbDictionary::getValuePtr(tabRec, tabRow, detailAttrId),
+             &detail, sizeof(detail));
+      pSpec.type = Ndb::PartitionSpec::PS_DISTR_KEY_RECORD;
+      pSpec.KeyRecord.keyRecord = tabRec;
+      pSpec.KeyRecord.keyRow = tabRow;
+      pSpec.KeyRecord.xfrmbuf = NULL;
+      pSpec.KeyRecord.xfrmbuflen = 0;
+    }
+
+    CHECK(op->setBound(idxRec, ib, &pSpec, sizeof(pSpec)), op);
+
+    /* The scan must be rejected by DBTC with 2203:
+     * hash-valued one-partition pruning is ambiguous on fanout tables
+     */
+    int execRc = trans->execute(NdbTransaction::NoCommit);
+    int errCode = trans->getNdbError().code;
+    if (execRc == 0) {
+      const char *resultPtr;
+      int rc = op->nextResult(&resultPtr, true, true);
+      if (rc >= 0) {
+        ndbout << "Explicit hash-valued prune variant " << variant
+               << " was not rejected" << endl;
+        trans->close();
+        return NDBT_FAILED;
+      }
+      errCode = op->getNdbError().code != 0 ? op->getNdbError().code
+                                            : trans->getNdbError().code;
+    }
+    if (errCode != 2203) {
+      ndbout << "Explicit hash-valued prune variant " << variant
+             << " failed with " << errCode << " expected 2203" << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+    trans->close();
+  }
+
+  /* SO_PARTITION_ID is not allowed on non-UserDefined tables (unchanged) */
+  {
+    NdbTransaction *trans = pNdb->startTransaction();
+    CHECKNOTNULL(trans, pNdb);
+
+    NdbScanOperation::ScanOptions opts;
+    opts.optionsPresent = NdbScanOperation::ScanOptions::SO_PARTITION_ID;
+    opts.partitionId = 0;
+
+    NdbScanOperation *op = trans->scanTable(tabRec, NdbOperation::LM_Read,
+                                            NULL, &opts, sizeof(opts));
+    if (op != NULL) {
+      ndbout << "SO_PARTITION_ID scan was not rejected" << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+    if (trans->getNdbError().code != 4546) {
+      ndbout << "SO_PARTITION_ID scan failed with "
+             << trans->getNdbError().code << " expected 4546" << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+    trans->close();
+  }
+
+  return NDBT_OK;
+}
+
+/**
+ * fanout = 1 keeps legacy behavior: key operations and fully-equal
+ * distribution key scans behave exactly like an ordinary table.
+ */
+static int run_fanout_one(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab =
+      pNdb->getDictionary()->getTable(FanoutTabName);
+  CHECKNOTNULL(tab, pNdb->getDictionary());
+  const NdbRecord *rec = tab->getDefaultRecord();
+  CHECKNOTNULL(rec, pNdb);
+
+  const Uint32 rowLen = NdbDictionary::getRecordRowLength(rec);
+  char *buf = (char *)malloc(rowLen);
+  char *resBuf = (char *)malloc(rowLen);
+  CHECKNOTNULL(buf, pNdb);
+  CHECKNOTNULL(resBuf, pNdb);
+  Ap bufAp(buf);
+  Ap resBufAp(resBuf);
+
+  const Uint32 baseAttrId = tab->getColumn(FanoutBaseCol)->getAttrId();
+  const Uint32 detailAttrId = tab->getColumn(FanoutDetailCol)->getAttrId();
+  const Uint32 resultAttrId = tab->getColumn(FanoutResultCol)->getAttrId();
+
+  /* Hinted reads with 8050: legacy full-PK routing must agree */
+  NdbRestarter restarter;
+  if (restarter.insertErrorInAllNodes(8050) != 0) return NDBT_FAILED;
+
+  int result = NDBT_OK;
+  for (Uint32 b = 0; b < FANOUT_NUM_BASE && result == NDBT_OK; b++) {
+    for (Uint32 d = 0; d < FANOUT_NUM_DETAIL; d += 7) {
+      NdbTransaction *trans = fanout_hinted_trans(pNdb, tab, b, d);
+      if (trans == NULL) {
+        result = NDBT_FAILED;
+        break;
+      }
+      memcpy(NdbDictionary::getValuePtr(rec, buf, baseAttrId), &b, sizeof(b));
+      memcpy(NdbDictionary::getValuePtr(rec, buf, detailAttrId), &d,
+             sizeof(d));
+      memset(resBuf, 0, rowLen);
+      if (trans->readTuple(rec, buf, rec, resBuf, NdbOperation::LM_Read) ==
+              NULL ||
+          trans->execute(NdbTransaction::Commit) != 0) {
+        ndbout << "fanout=1 hinted read failed " << trans->getNdbError().code
+               << endl;
+        result = NDBT_FAILED;
+      } else {
+        Uint32 readVal;
+        memcpy(&readVal,
+               NdbDictionary::getValuePtr(rec, resBuf, resultAttrId),
+               sizeof(readVal));
+        if (readVal != fanout_result_value(b, d)) {
+          ndbout << "fanout=1 read wrong value" << endl;
+          result = NDBT_FAILED;
+        }
+      }
+      trans->close();
+      if (result != NDBT_OK) break;
+    }
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  if (result != NDBT_OK) return result;
+
+  /* Full distribution-key equality scans prune to one partition as on
+   * any ordinary table (SPS_ONE_PARTITION, not an interval)
+   */
+  {
+    FanoutScanRange r[1] = {{3, 5, true, false}};
+    if (fanout_scan_check(pNdb, r, 1, true, 1) != NDBT_OK) return NDBT_FAILED;
+  }
+
+  /* Base-key-only equality does not prune when fanout = 1: partition
+   * hash intervals are only used with fanout > 1
+   */
+  {
+    FanoutScanRange r[1] = {{3, 0, false, false}};
+    if (fanout_scan_check(pNdb, r, 1, false, FANOUT_NUM_DETAIL) != NDBT_OK)
+      return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testPartitioning);
 TESTCASE("pk_dk", "Primary key operations with distribution key") {
   TC_PROPERTY("distributionkey", ~0);
@@ -1231,6 +2093,45 @@ TESTCASE("startTransactionHint_orderedIndex_MaxKey",
   INITIALIZER(run_startHint_ordered_index);
   INITIALIZER(run_create_pk_index_drop);
   INITIALIZER(run_drop_table);
+}
+TESTCASE("fanout_ddl",
+         "PARTITION_HASH metadata validation through the direct NDB API") {
+  INITIALIZER(run_fanout_ddl);
+}
+TESTCASE("fanout_pk_ops",
+         "Hinted primary key operations on a PARTITION_HASH fanout table."
+         " If hint and DBTC routing disagree, node failure occurs") {
+  TC_PROPERTY("Fanout", (unsigned)4);
+  INITIALIZER(run_create_fanout_table);
+  INITIALIZER(run_fanout_pk_ops);
+  FINALIZER(run_drop_fanout_table);
+}
+TESTCASE("fanout_interval_scan",
+         "Ordered index scans on a fanout table prune base-key equality"
+         " ranges to the fanout interval") {
+  TC_PROPERTY("Fanout", (unsigned)4);
+  INITIALIZER(run_create_fanout_table);
+  INITIALIZER(run_load_fanout_table);
+  INITIALIZER(run_fanout_interval_scan);
+  FINALIZER(run_drop_fanout_table);
+}
+TESTCASE("fanout_explicit_prune",
+         "Explicit hash-valued scan pruning is rejected with 2203 on"
+         " fanout tables, SO_PARTITION_ID keeps its restriction") {
+  TC_PROPERTY("Fanout", (unsigned)4);
+  INITIALIZER(run_create_fanout_table);
+  INITIALIZER(run_load_fanout_table);
+  INITIALIZER(run_fanout_explicit_prune);
+  FINALIZER(run_drop_fanout_table);
+}
+TESTCASE("fanout_one",
+         "PARTITION_HASH with fanout = 1 keeps legacy routing and"
+         " one-partition scan pruning") {
+  TC_PROPERTY("Fanout", (unsigned)1);
+  INITIALIZER(run_create_fanout_table);
+  INITIALIZER(run_load_fanout_table);
+  INITIALIZER(run_fanout_one);
+  FINALIZER(run_drop_fanout_table);
 }
 
 NDBT_TESTSUITE_END(testPartitioning)

@@ -658,6 +658,12 @@ Alter-table tests:
 
 ### NDB API Key Operation Tests
 
+Status: core coverage implemented in `testPartitioning` test cases
+`fanout_ddl`, `fanout_pk_ops`, `fanout_interval_scan`,
+`fanout_explicit_prune` and `fanout_one` (passing 2026-07-04). Not yet
+covered there: `startTransaction(NdbRecord, ...)` hints, batch operations
+under hint verification, and unique-index operations.
+
 Use tables where many rows share the same base key and have different detail
 keys.
 
