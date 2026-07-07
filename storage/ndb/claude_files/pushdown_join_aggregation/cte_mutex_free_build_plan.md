@@ -265,3 +265,39 @@ CTE build phase throughput scales with LDM/query-worker count instead of
 being mutex-serialized per node; q15-class queries (build-dominated) should
 close most of the 4x gap against the MySQL baseline, q22-class queries
 improve partially (probe phase remains until CTE_LOOKUP batching lands).
+
+## Follow-up (2026-07-06): distribute CTE_LOOKUP_REQ across query workers
+
+The probe phase serialized on a second single-thread bottleneck: Phase L
+routes CTE_LOOKUP_REQ to the state's owner LDM instance, so every probe on a
+node executes on one thread.  Post-flip that pinning is only needed for the
+state-**mutating** signals (JOIN_AGG_COMPLETE / REDISTRIBUTE / RELEASE) — a
+probe is read-only on the source table (immutable once CTE_READY, per-LDM
+xfrm scratch per D26), and an agg feed lands in the executing thread's
+per-thread interpreter (merged at the target's COMPLETE).  Thread-ID domain
+holds everywhere a probe can land: query workers occupy thread IDs
+`[0, ndbMtQueryWorkers)` (mt.cpp thread layout, Configuration.cpp:1904) and
+the per-thread interpreter arrays are sized `ndbMtQueryWorkers`.
+
+Change (maintainer-directed V_QUERY routing, mirroring `lookup_send`
+DbspjMain.cpp:8808-8824 and `JOIN_AGG_NULL_ROW_REQ` DbspjMain.cpp:10161):
+
+1. `Dbspj::cte_lookup_send` — same-node sends pick a worker via
+   `get_lqhkeyreq_ref(&c_tc->m_distribution_handle, targetOwnerInstance)`
+   (local RR-group distribution, LDM-or-query-thread by load); remote sends
+   address `numberToRef(V_QUERY, targetOwnerInstance, targetNodeId)` so the
+   receiver's TRPMAN picks the worker.
+2. `Trpman::distribute_signal` — new `GSN_CTE_LOOKUP_REQ` arm returning
+   `get_lqhkeyreq_ref(handle, instance_no)` (key-lookup weight, not scan
+   weight).  V_QUERY-addressed signals reach this via
+   TransporterCallback.cpp:305; an unhandled GSN there is TE_INVALID_SIGNAL,
+   fine here since CTE_LOOKUP_REQ only exists on 26.04 dev builds (no
+   version gate, consistent with 4d's routing change).
+
+Verified before the change: `execCTE_LOOKUP_REQ` has no owner-instance
+assert and performs only atomic/immutable reads of the source state; the
+handler is registered in both the DBLQH and DBQLQH constructor branches
+(DblqhInit.cpp:686/:849); `getJoinAggState` is a static SimulatedBlock
+lookup; the agg scratch buffers are inline members of every Dbtup/DBQTUP
+instance; CTE feeds run with `tablePtrP == nullptr` (4d linked-only guard)
+so no LDM-local table access occurs on the feed path.

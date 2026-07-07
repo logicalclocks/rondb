@@ -6813,7 +6813,27 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       cnt = 1;
     }
 
-    Uint32 ref = numberToRef(DBLQH, targetOwnerInstance, targetNodeId);
+    /* CTE_LOOKUP_REQ may execute on any query worker: the source CTE
+     * hash table is immutable once CTE_READY, the probe hashes in the
+     * executing thread's xfrm scratch (D26), and an agg feed lands in
+     * the executing thread's per-thread interpreter (MUTEX_FREE),
+     * merged at the target's COMPLETE.  Distribute across the owner
+     * LDM's round-robin group instead of serializing every probe on
+     * the owner instance: local sends pick a worker via
+     * get_lqhkeyreq_ref (as JOIN_AGG_NULL_ROW_REQ does), remote sends
+     * address V_QUERY so the receiver's Trpman::distribute_signal
+     * picks the worker (as LQHKEYREQ does).  Owner pinning remains
+     * for the state-mutating signals (JOIN_AGG_COMPLETE /
+     * REDISTRIBUTE / RELEASE). */
+    Uint32 ref;
+    if (targetNodeId == getOwnNodeId()) {
+      jam();
+      ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle,
+                              targetOwnerInstance);
+    } else {
+      jam();
+      ref = numberToRef(V_QUERY, targetOwnerInstance, targetNodeId);
+    }
     DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
              "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x "
              "resultData=0x%x rootResultData=0x%x cnt=%u joinAgg=%u",
