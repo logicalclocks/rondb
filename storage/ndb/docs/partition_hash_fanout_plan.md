@@ -829,21 +829,29 @@ exactly fanout fragments, and post-restore writes):
 * restore into clean cluster
 * verify metadata and data placement
 
-Upgrade/version (manual test steps, needs one old-version cluster):
+Upgrade/version (implemented: mtr `ndb_partition_hash_fanout_upgrade`,
+run with `MTR_RONDB_V2=1` and a pre-25.10.15 `ndbmtd_v2` binary in the
+bin directory - the cluster starts on the old binary and the test does
+a rolling upgrade via the `NDBMTD_LINK` symlink, the
+`ndb_fk_upgrade_restart` mechanism):
 
 * create rejected if any data node lacks feature version:
-  * SQL: `CREATE ... PARTITION_HASH=...` against old data nodes must
-    fail with "PARTITION_HASH not supported by current data node
-    versions" (ha_ndbcluster gate).
-  * direct API: `createTable()` with fanout > 1 must fail with 794
-    (`NdbDictInterface::createTable` gate).
+  * SQL: covered by the mtr upgrade test on the all-old and the mixed
+    cluster ("PARTITION_HASH not supported by current data node
+    versions", ha_ndbcluster gate).
+  * direct API: `createTable()` with fanout > 1 fails with 794
+    (`NdbDictInterface::createTable` gate; the gate is checked before
+    spec validation, so any fanout > 1 create on an old cluster gets
+    794). Manual check only - the mtr test exercises the SQL gate.
 * old API client against new data nodes: cannot set the metadata (no
   setter), plain tables unaffected; scans on fanout tables created by
   new clients stay unpruned (old client never sets storedProcId bits) -
   correct, just unoptimized.
-* rolling-upgrade scenario with feature unused
-* rolling-upgrade scenario attempting to create feature table mid-upgrade
-  (must fail until the last data node runs a supporting version)
+* rolling-upgrade scenario with feature unused: covered (plain-table
+  traffic across both rolling restarts in the mtr upgrade test)
+* rolling-upgrade scenario attempting to create feature table mid-upgrade:
+  covered (create fails until the last data node runs a supporting
+  version, then succeeds with working pruning and placement)
 
 Reorg/hash-map (implemented: reorg section of mtr
 `ndb_partition_hash_fanout`, ADD PARTITION 4->8 with placement and
