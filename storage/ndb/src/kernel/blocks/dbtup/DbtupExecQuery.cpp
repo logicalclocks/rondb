@@ -4757,7 +4757,28 @@ int Dbtup::handleDeleteReq(Signal* signal,
                     "(DELETE) handleDeleteReq TTL check");
     cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
     if (!has_error) {
-      if (cmp_ret <= 0) {
+      if (unlikely(regOperPtr->ttl_only_expired == 1)) {
+        /*
+         * TTL related
+         * An only-expired delete may only remove an EXPIRED row; a live row
+         * is out of its scope and is reported as not-found. Without this
+         * branch the flag's semantics were inverted for a bare key delete:
+         * the normal-delete check below rejected the expired rows it is
+         * meant to reclaim, while live rows were deleted. The TTL purge's
+         * takeover deletes never reach here: they carry ttl_ignore=1 from
+         * the takeover lock (expiry already verified by the only-expired
+         * scan under that lock), on backup replicas too via the serialized
+         * ttl_ignore bit.
+         */
+        if (cmp_ret > 0) {
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                          "(DELETE) only-expired delete on a live row");
+          terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
+          tupkeyErrorLab(req_struct);
+          return -1;
+        }
+        // Expired: fall through and delete the row.
+      } else if (cmp_ret <= 0) {
         /*
          * TTL related
          * 1. Normal deletion on an already existing but expired row
