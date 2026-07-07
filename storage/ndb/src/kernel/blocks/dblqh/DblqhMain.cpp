@@ -12424,6 +12424,16 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
 
+  /*
+   * TTL related. Serialize ttl_only_expired too: every replica must classify
+   * an only-expired (TTL purge) delete identically when committing, because
+   * DBTUP excludes such deletes from the fragment's committed-changes counter
+   * (the COMMIT_COUNT pseudo column used by copying ALTER TABLE change
+   * detection). Without the bit the counters would diverge between primary
+   * and backup replicas.
+   */
+  LqhKeyReq::setTTLOnlyExpiredFlag(Treqinfo, regTcPtr->ttl_only_expired);
+
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
     // ndbassert(LqhKeyReq::getOperation(Treqinfo) == ZINSERT);
