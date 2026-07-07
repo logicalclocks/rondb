@@ -115,6 +115,7 @@
 #include <TransporterRegistry.hpp>
 
 #include <EventLogger.hpp>
+#include "my_systime.h"  // my_micro_time() for per-scan-batch TTL clock sampling
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ABORT_TRANS 1
@@ -4599,6 +4600,25 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
   } else {
     return (t_tabptr.p->m_ttl_sec != RNIL &&
             t_tabptr.p->m_ttl_col_no != RNIL);
+  }
+}
+/*
+ * TTL related
+ * Sample wall-clock "now" once per scan batch and reuse it for every row's
+ * TTL expiry check (Dbtup::checkTTL), instead of calling my_micro_time()
+ * (a gettimeofday, which is a real syscall on VMs without a TSC clocksource)
+ * once per scanned row. The staleness is bounded by one batch, well within
+ * the 1-second granularity of TTL expiry itself. Only relevant when this
+ * scan actually evaluates TTL: a TTL table whose expiry check is enabled
+ * (m_ttl_ignore == 0), i.e. normal user scans and the background purge scan.
+ * Otherwise leave it 0 so checkTTL keeps its per-row clock read (it isn't
+ * called for non-TTL/ignored scans anyway) and non-TTL scans pay no TTL cost.
+ */
+void Dblqh::set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id) {
+  if (scanPtr->m_ttl_ignore == 0 && is_ttl_table(table_id)) {
+    scanPtr->m_ttl_now_sec = (Uint32)(my_micro_time() / 1000000);
+  } else {
+    scanPtr->m_ttl_now_sec = 0;
   }
 }
 bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
@@ -17008,6 +17028,10 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   }
   scanPtr->m_max_batch_size_rows = max_rows;
 
+  // TTL: refresh the per-batch "now" cache for the rows fetched by this
+  // SCAN_NEXTREQ (covers both the lock-release and direct continue paths).
+  set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+
   /* --------------------------------------------------------------------
    * If scanLockHold = true we need to unlock previous round of
    * scanned records.
@@ -19764,6 +19788,8 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
   scanPtr->m_ttl_only_expired = ttl_only_expired;
+  // Sample "now" for the first batch; refreshed per batch in execSCAN_NEXTREQ.
+  set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
   Uint32 tupScan = ScanFragReq::getTupScanFlag(reqinfo);
@@ -20281,6 +20307,10 @@ void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
   scanPtr->scanType = ScanRecord::ST_IDLE;
   scanPtr->scanTcWaiting = 0;
   scanPtr->scan_lastSeen = __LINE__;
+  // TTL: keep the per-batch "now" cache defined for every (re)used scan record,
+  // including the NR copy-fragment scan, which is set up directly and bypasses
+  // initScanrec (it runs with m_ttl_ignore=1, so checkTTL never reads this).
+  scanPtr->m_ttl_now_sec = 0;
   /*
    * PA related
    * reset aggregation variables

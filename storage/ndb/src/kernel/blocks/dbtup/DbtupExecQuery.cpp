@@ -2051,6 +2051,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.agg_n_res_recs = 0;
 
   req_struct.ttl_purge_window_size = 0;
+  req_struct.ttl_now_sec = 0;
 
   if (unlikely(trans_state != TRANS_IDLE)) {
     TUPKEY_abort(&req_struct, 39);
@@ -2125,6 +2126,13 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     }
     req_struct.ttl_purge_window_size = lqhScanPtrP->m_ttl_purge_window_size;
+    /*
+     * TTL related
+     * Reuse the wall-clock "now" sampled once per scan batch in DBLQH instead
+     * of calling my_micro_time() per row in checkTTL. PK/UPDATE/DELETE keep
+     * ttl_now_sec == 0 and read the clock per op.
+     */
+    req_struct.ttl_now_sec = lqhScanPtrP->m_ttl_now_sec;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -3046,10 +3054,14 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
       if (valid_future_dt) {
         /*
          * TTL related
-         * Get current utc time
+         * Current UTC time: reuse the wall-clock sampled once per scan batch
+         * in DBLQH when available (scans, incl. the purge scan); PK ops keep
+         * the per-op clock read (ttl_now_sec == 0).
          */
         MYSQL_TIME curr_dt;
-        time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
+        time_t t_now = (req_struct->ttl_now_sec != 0)
+                           ? (time_t)req_struct->ttl_now_sec
+                           : (time_t)(my_micro_time() / 1000000); /* second */
         /*
          * TTL related
          * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) to keep the TTL
