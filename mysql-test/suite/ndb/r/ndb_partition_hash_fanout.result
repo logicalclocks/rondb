@@ -412,4 +412,49 @@ FROM ndbinfo.memory_per_fragment
 WHERE fq_name = 'test/def/t_f1' AND fixed_elem_count > 0;
 fragments_with_rows
 8
+#
+# Online reorg: ADD PARTITION on a fanout table
+#
+CREATE TABLE t_reorg (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY () PARTITIONS 4;
+INSERT INTO t_reorg SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_reorg;
+COUNT(*)
+100
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+fragments_with_rows
+2
+ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 4;
+SELECT COUNT(*) FROM t_reorg;
+COUNT(*)
+100
+SELECT * FROM t_reorg FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+entity_id	ts
+1	0
+1	1
+1	2
+1	3
+1	4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+fragments_with_rows
+2
+ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 3;
+ERROR HY000: Failed to prepare hash map
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 800 'Invalid partition hash definition' from NDB
+Error	1296	Failed to prepare hash map
+DROP TABLE t_reorg;
 DROP TABLE tf, tn, t_route, t_route_n, t_f1, nums;

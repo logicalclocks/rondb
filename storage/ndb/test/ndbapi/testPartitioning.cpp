@@ -1866,6 +1866,131 @@ static int run_fanout_explicit_prune(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 /**
+ * Read back every loaded row through an (unhinted) primary key read and
+ * verify the Result value. A primary key read locates the row through
+ * DBTC's composed routing hash, so this proves that the stored placement
+ * of every row still agrees with the routing hash - e.g. after node or
+ * system restarts. A placement/routing mismatch shows up as error 626
+ * (row not found).
+ */
+static int run_fanout_verify_data(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab =
+      pNdb->getDictionary()->getTable(FanoutTabName);
+  CHECKNOTNULL(tab, pNdb->getDictionary());
+  const NdbRecord *rec = tab->getDefaultRecord();
+  CHECKNOTNULL(rec, pNdb);
+
+  const Uint32 rowLen = NdbDictionary::getRecordRowLength(rec);
+  char *buf = (char *)malloc(rowLen);
+  char *resBuf = (char *)malloc(rowLen);
+  CHECKNOTNULL(buf, pNdb);
+  CHECKNOTNULL(resBuf, pNdb);
+  Ap bufAp(buf);
+  Ap resBufAp(resBuf);
+
+  const Uint32 baseAttrId = tab->getColumn(FanoutBaseCol)->getAttrId();
+  const Uint32 detailAttrId = tab->getColumn(FanoutDetailCol)->getAttrId();
+  const Uint32 resultAttrId = tab->getColumn(FanoutResultCol)->getAttrId();
+
+  for (Uint32 b = 0; b < FANOUT_NUM_BASE; b++) {
+    for (Uint32 d = 0; d < FANOUT_NUM_DETAIL; d++) {
+      memcpy(NdbDictionary::getValuePtr(rec, buf, baseAttrId), &b, sizeof(b));
+      memcpy(NdbDictionary::getValuePtr(rec, buf, detailAttrId), &d,
+             sizeof(d));
+
+      NdbTransaction *trans = pNdb->startTransaction();
+      CHECKNOTNULL(trans, pNdb);
+      memset(resBuf, 0, rowLen);
+      const NdbOperation *op =
+          trans->readTuple(rec, buf, rec, resBuf, NdbOperation::LM_Read);
+      if (op == NULL || trans->execute(NdbTransaction::Commit) != 0 ||
+          op->getNdbError().code != 0) {
+        /* A row stored in a fragment that does not match the composed
+         * routing hash shows up here as error 626 (row not found)
+         */
+        ndbout << "PK read of base " << b << " detail " << d << " failed: "
+               << (op != NULL ? op->getNdbError().code
+                              : trans->getNdbError().code)
+               << endl;
+        trans->close();
+        return NDBT_FAILED;
+      }
+      Uint32 readVal;
+      memcpy(&readVal, NdbDictionary::getValuePtr(rec, resBuf, resultAttrId),
+             sizeof(readVal));
+      trans->close();
+      if (readVal != fanout_result_value(b, d)) {
+        ndbout << "PK read of base " << b << " detail " << d
+               << " returned wrong value " << readVal << endl;
+        return NDBT_FAILED;
+      }
+    }
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Restart one data node (normal, then initial) and verify that the
+ * partition hash metadata and row placement survive: all rows are
+ * still found through composed-hash routed PK reads and interval scans
+ * still prune and return correct results.
+ */
+static int run_fanout_node_restart(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    ndbout << "Too few data nodes, skipping" << endl;
+    return NDBT_OK;
+  }
+
+  const int nodeId = restarter.getDbNodeId(rand() % restarter.getNumDbNodes());
+
+  ndbout << "Restarting node " << nodeId << endl;
+  if (restarter.restartOneDbNode(nodeId, false /* initial */,
+                                 false /* nostart */, true /* abort */) != 0)
+    return NDBT_FAILED;
+  if (restarter.waitClusterStarted() != 0) return NDBT_FAILED;
+
+  if (run_fanout_verify_data(ctx, step) != NDBT_OK) return NDBT_FAILED;
+  if (run_fanout_interval_scan(ctx, step) != NDBT_OK) return NDBT_FAILED;
+
+  ndbout << "Restarting node " << nodeId << " initial" << endl;
+  if (restarter.restartOneDbNode(nodeId, true /* initial */,
+                                 false /* nostart */, true /* abort */) != 0)
+    return NDBT_FAILED;
+  if (restarter.waitClusterStarted() != 0) return NDBT_FAILED;
+
+  if (run_fanout_verify_data(ctx, step) != NDBT_OK) return NDBT_FAILED;
+  if (run_fanout_interval_scan(ctx, step) != NDBT_OK) return NDBT_FAILED;
+
+  return NDBT_OK;
+}
+
+/**
+ * System restart: the partition hash metadata must survive the DICT
+ * schema file round-trip and all (logged) rows must still be found
+ * through composed-hash routed PK reads.
+ */
+static int run_fanout_system_restart(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+
+  /* Graceful restart: an aborted shutdown intentionally discards
+   * transactions committed after the last durable GCP, so rows loaded
+   * just before the restart would legitimately be lost.
+   */
+  ndbout << "Restarting all nodes" << endl;
+  if (restarter.restartAll(false /* initial */, false /* nostart */,
+                           false /* abort */) != 0)
+    return NDBT_FAILED;
+  if (restarter.waitClusterStarted() != 0) return NDBT_FAILED;
+
+  if (run_fanout_verify_data(ctx, step) != NDBT_OK) return NDBT_FAILED;
+  if (run_fanout_interval_scan(ctx, step) != NDBT_OK) return NDBT_FAILED;
+
+  return NDBT_OK;
+}
+
+/**
  * fanout = 1 keeps legacy behavior: key operations and fully-equal
  * distribution key scans behave exactly like an ordinary table.
  */
@@ -2131,6 +2256,23 @@ TESTCASE("fanout_one",
   INITIALIZER(run_create_fanout_table);
   INITIALIZER(run_load_fanout_table);
   INITIALIZER(run_fanout_one);
+  FINALIZER(run_drop_fanout_table);
+}
+TESTCASE("fanout_node_restart",
+         "Fanout table placement and metadata survive node restart"
+         " (normal and initial)") {
+  TC_PROPERTY("Fanout", (unsigned)4);
+  INITIALIZER(run_create_fanout_table);
+  INITIALIZER(run_load_fanout_table);
+  INITIALIZER(run_fanout_node_restart);
+  FINALIZER(run_drop_fanout_table);
+}
+TESTCASE("fanout_system_restart",
+         "Fanout table placement and metadata survive system restart") {
+  TC_PROPERTY("Fanout", (unsigned)4);
+  INITIALIZER(run_create_fanout_table);
+  INITIALIZER(run_load_fanout_table);
+  INITIALIZER(run_fanout_system_restart);
   FINALIZER(run_drop_fanout_table);
 }
 

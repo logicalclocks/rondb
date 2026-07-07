@@ -4310,6 +4310,18 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
 
   impl.computeAggregates();
 
+  /**
+   * Old data nodes silently ignore unknown table properties, so a
+   * partition hash fanout table created against an old cluster would
+   * come into existence as an ordinary table while this API client
+   * believes it has fanout routing. Refuse instead.
+   */
+  if (impl.getPartitionHashFanout() > 1 &&
+      !ndbd_support_partition_hash_fanout(ndb.getMinDbNodeVersion())) {
+    m_error.code = 794;  // Schema feature requires data node upgrade
+    DBUG_RETURN(-1);
+  }
+
   if (impl.m_fragmentType == NdbDictionary::Object::HashMapPartition) {
     const bool partition_count_known =
         impl.getPartitionBalance() == NDB_PARTITION_BALANCE_SPECIFIC;

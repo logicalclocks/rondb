@@ -565,15 +565,39 @@ Exit criteria:
 
 ### Phase 6: Reorg, Backup, Upgrade, and Performance
 
-* Test with node restart and system restart.
-* Test backup/restore.
-* Test online reorg/hash-map changes allowed by the chosen restrictions.
-* Add mixed-version rejection.
-* Add performance measurements for target workloads.
+Status (2026-07-07): code paths audited, one gap fixed, tests written.
+
+Findings from the audit:
+
+* `ndb_restore` needs NO data-path changes: `get_part_id()` and explicit
+  `setPartitionId()` are only used for UserDefined-partitioned tables,
+  which cannot have `PARTITION_HASH`. Fanout rows are restored through
+  ordinary primary key writes, so DBTC recomputes the composed routing
+  hash and placement is correct by construction. The same holds for
+  backup-log replay.
+* `ndb_restore --restore-meta` preserves the partition hash spec: the
+  restored table object is a copy of the backup's parsed dictionary
+  info, which carries the PartitionHash properties, and
+  `PartitionBalance_Specific` keeps the backup's fragment count.
+  Restoring a fanout table onto a cluster whose (balance-derived)
+  partition count is not a multiple of the fanout fails loudly with
+  error 800 - the same as a create would on that cluster.
+* Online reorg is correct by construction: per-row movement decisions
+  flow through the fanout-aware `Dbtc::hash()` and DIH
+  (`Tuple_header::REORG_MOVE` is set via normal operations), and
+  `prepareHashMap()` rejects new fragment counts that are not a
+  multiple of the fanout.
+* GAP (fixed): the direct NDB API `createTable()` had no data node
+  version gate. Old DICT silently ignores unknown table properties, so
+  an old cluster would create the table as an ordinary table while the
+  API client believes it has fanout routing. `NdbDictInterface::
+  createTable()` now fails with error 794 (Schema feature requires
+  data node upgrade) when fanout > 1 and
+  `ndbd_support_partition_hash_fanout()` is false.
 
 Exit criteria:
 
-* feature is blocked on old data nodes
+* feature is blocked on old data nodes (SQL layer + direct API 794 gate)
 * backup/restore preserves metadata
 * scan latency improves for entity-range workloads without breaking throughput
 
@@ -788,27 +812,42 @@ Checks:
 
 ### Restart, Backup, Upgrade, and Reorg Tests
 
-Restart:
+Restart (implemented: `testPartitioning -n fanout_node_restart` and
+`-n fanout_system_restart`; placement is proven by reading back every
+row through composed-hash routed PK reads after each restart):
 
-* data node restart
+* data node restart (normal and initial)
 * API reconnect
 * system restart
 * table reopen after mysqld restart
 
-Backup/restore:
+Backup/restore (implemented: mtr `ndb_partition_hash_fanout_restore`,
+verifies restored row counts, base-key scan pruning, one base key in
+exactly fanout fragments, and post-restore writes):
 
 * backup table with `PARTITION_HASH`
 * restore into clean cluster
 * verify metadata and data placement
 
-Upgrade/version:
+Upgrade/version (manual test steps, needs one old-version cluster):
 
-* create rejected if any data node lacks feature version
-* old API client sees a clear failure or a compatible default
+* create rejected if any data node lacks feature version:
+  * SQL: `CREATE ... PARTITION_HASH=...` against old data nodes must
+    fail with "PARTITION_HASH not supported by current data node
+    versions" (ha_ndbcluster gate).
+  * direct API: `createTable()` with fanout > 1 must fail with 794
+    (`NdbDictInterface::createTable` gate).
+* old API client against new data nodes: cannot set the metadata (no
+  setter), plain tables unaffected; scans on fanout tables created by
+  new clients stay unpruned (old client never sets storedProcId bits) -
+  correct, just unoptimized.
 * rolling-upgrade scenario with feature unused
-* rolling-upgrade scenario attempting to create feature table
+* rolling-upgrade scenario attempting to create feature table mid-upgrade
+  (must fail until the last data node runs a supporting version)
 
-Reorg/hash-map:
+Reorg/hash-map (implemented: reorg section of mtr
+`ndb_partition_hash_fanout`, ADD PARTITION 4->8 with placement and
+pruning verification plus non-multiple rejection):
 
 * add node or repartition where supported
 * verify rows remain findable by key
@@ -817,6 +856,13 @@ Reorg/hash-map:
 * verify fully replicated conversion is rejected for `PARTITION_HASH` tables
 
 ### Performance Tests
+
+Suggested setup: `flexAsynch`-style loader or `ndb_import` into the
+schema below on a fixed cluster (e.g. 2 nodes, 8 LDM), then a scan
+driver issuing base-key equality ordered-index scans (the
+`fanout_interval_scan` pattern) from N concurrent API threads. Since
+`fanout = 1` disables interval routing entirely, the baseline table and
+each fanout variant can use identical DDL apart from the comment.
 
 Primary workload:
 

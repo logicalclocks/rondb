@@ -369,4 +369,49 @@ SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
 FROM ndbinfo.memory_per_fragment
 WHERE fq_name = 'test/def/t_f1' AND fixed_elem_count > 0;
 
+--echo #
+--echo # Online reorg: ADD PARTITION on a fanout table
+--echo #
+
+CREATE TABLE t_reorg (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY () PARTITIONS 4;
+
+# Single base key: occupies exactly 2 (= fanout) of the 4 fragments
+INSERT INTO t_reorg SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_reorg;
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+
+# Online add partition to a count that stays a multiple of the fanout.
+# Row movement decisions go through the composed routing hash in
+# DBTC/DIH, so the interval property must survive the reorg.
+ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 4;
+
+SELECT COUNT(*) FROM t_reorg;
+
+# Base-key scans are still pruned after the reorg
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM t_reorg FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# The base key still occupies exactly fanout fragments (of now 8)
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+
+# Adding partitions to a count that is not a multiple of the fanout
+# is rejected: prepareHashMap fails with NDB error 800 (Invalid
+# partition hash definition), surfaced as ER_GET_ERRMSG
+--error ER_GET_ERRMSG
+ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 3;
+SHOW WARNINGS;
+
+DROP TABLE t_reorg;
+
 DROP TABLE tf, tn, t_route, t_route_n, t_f1, nums;
