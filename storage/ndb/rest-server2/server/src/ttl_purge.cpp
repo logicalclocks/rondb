@@ -437,9 +437,27 @@ retry:
           case NdbDictionary::Event::TE_OUT_OF_MEMORY:
             // Retry from beginning
             goto err;
+          case NdbDictionary::Event::TE_DELETE:
+            /*
+             * A row delete on ndb_schema is the coordinator cleaning up a
+             * COMPLETED schema operation -- there is nothing to parse, apply
+             * or acknowledge (mysqld participants ignore these deletes too).
+             * Crucially, the after-image RecAttrs are NOT populated for a
+             * delete event: they still hold the PREVIOUS event's values, or
+             * nothing at all right after a (re)subscribe. Falling through to
+             * the parser acted on that stale/uninitialized data (type,
+             * node_id, schema_op_id, db/table names): in the normal op
+             * sequence the stale type happened to be SOT_CLEAR_SLOCK from
+             * the coordinator's final update, which accidentally skipped the
+             * ACK; but a cleanup delete without that predecessor, or as the
+             * first event seen, could write a junk ndb_schema_result row,
+             * rerun a cache update for a stale table (a failing getTable
+             * there restarts the whole watcher), or build names from
+             * uninitialized length bytes.
+             */
+            break;
           case NdbDictionary::Event::TE_INSERT:
           case NdbDictionary::Event::TE_UPDATE:
-          case NdbDictionary::Event::TE_DELETE:
             for (int l = 0; l < kNoEventCol; l++) {
               ptr_pre = rec_attr_pre[l].ra->aRef();
               ptr = rec_attr[l].ra->aRef();
