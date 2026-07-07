@@ -11607,8 +11607,16 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
   {
     /*
      * TTL related
-     * TODO (Zhao)
-     * maybe need to handle this code path for TTL
+     * No TTL-specific handling is needed on the disk-table path: it only
+     * DEFERS the TUPKEYREQ until the disk page is loaded, and all TTL
+     * state (the ACC-converted operation, ttl_ignore/ttl_only_expired,
+     * original_operation) lives on the TcConnectionrec, which survives the
+     * asynchronous page load unchanged. checkTTL in DBTUP reads only the
+     * TTL column, which is always an in-memory column (DDL rejects binding
+     * TTL to a disk column). Covered by ndb_ttl.ttl_disk_expired_write:
+     * insert-over-expired refresh, REPLACE/ON-DUP over expired, delete and
+     * update of expired, and the same-transaction duplicate reject all
+     * behave identically to the in-memory-table paths.
      */
     jamDebug();
     jamDataDebug(localKey1);
