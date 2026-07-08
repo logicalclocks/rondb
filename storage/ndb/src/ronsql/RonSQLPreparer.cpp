@@ -6126,19 +6126,23 @@ RonSQLPreparer::execute_join()
       qb->beginCteSubtree(c);
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
       if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::TABLE_SCAN) {
-        // Single-table CTE body: emit the "self-join" pattern the NDB API
-        // expects — scanTable + readTuple(linked_pk) with the aggregator
-        // on the readTuple. The normal emit_child_ops path would start
-        // at i=1 and never attach the aggregator when there are no
-        // joined children.
+        // Single-table CTE body: attach the aggregator directly on the
+        // root scan.  The scan is then a T_CTE_SCAN node with no
+        // T_AGGREGATE_LEAF child below it, so DBSPJ sets JoinAggFlag on
+        // the SCAN_FRAGREQ and DBLQH/DBTUP feed each scanned row into
+        // the CTE hash table in place (handleJoinAggRow) — no per-row
+        // PK round trip through DBSPJ and no second read of the row.
+        // The aggregation program itself travels via defineCte(); the
+        // aggregator on the op only marks it NI_AGGREGATE_LEAF.
         const NdbDictionary::Table* srcTab = cp.ops[0].table;
         require_run(srcTab != NULL, "CTE body root has no physical table.");
 
         // Attach the CTE body WHERE filter (pre-GROUP BY) to the root
         // scan when present. build_cte_scopes classifies the CTE body's
         // WHERE into cs.join_where_ce; emit_root_op handles this for
-        // multi-op bodies, but the single-table self-lookup path below
-        // must do it inline.
+        // multi-op bodies, but the single-table path must do it inline.
+        // The WHERE interpreter runs before the aggregation feed, so
+        // only passing rows aggregate.
         NdbQueryOptions rootOpts;
         NdbInterpretedCode rootCode(srcTab);
         if (cs.join_where_ce[0] != NULL) {
@@ -6152,35 +6156,21 @@ RonSQLPreparer::execute_join()
           rootCode.finalise();
           rootOpts.setInterpretedCode(rootCode);
         }
+        require_run(rootOpts.setAggregation(*cteAgg) == 0,
+                    "Failed to attach aggregator to CTE body scan root.");
         cteOpDefs[0] = qb->scanTable(srcTab, &rootOpts);
         require_run(cteOpDefs[0] != NULL,
                     "Failed to create CTE body scan root.");
-        const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-        int nkeys = srcTab->getNoOfPrimaryKeys();
-        for (int k = 0; k < nkeys; k++) {
-          const char* pk_name = srcTab->getPrimaryKey(k);
-          keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
-          require_run(keys[k] != NULL,
-                      "Failed to create CTE body self-join linked key.");
-        }
-        keys[nkeys] = nullptr;
-        NdbQueryOptions leafOpts;
-        leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-        require_run(leafOpts.setAggregation(*cteAgg) == 0,
-                    "Failed to attach aggregator to CTE body leaf.");
-        cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
-        require_run(cteOpDefs[1] != NULL,
-                    "Failed to create CTE body self-join leaf.");
       } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::INDEX_SCAN) {
         // Phase I.9: single-table CTE body via ordered index.  Same
-        // self-join materialisation pattern as the TABLE_SCAN branch,
-        // but use scanIndex(idx, srcTab, &bound) for the root and
-        // route bound conjuncts to NdbQueryIndexBound, residual
-        // conjuncts to the InterpretedCode filter.  Bound vs residual
-        // routing comes from select_root_scan_config's per-scope
-        // condition_handling_map, and the bound/filter emit itself is
-        // the shared emit_index_scan_root (also used for main-query
-        // roots, see join_root_index_scan_plan.md).
+        // in-place aggregation feed as the TABLE_SCAN branch, but use
+        // scanIndex(idx, srcTab, &bound) for the root and route bound
+        // conjuncts to NdbQueryIndexBound, residual conjuncts to the
+        // InterpretedCode filter.  Bound vs residual routing comes from
+        // select_root_scan_config's per-scope condition_handling_map,
+        // and the bound/filter emit itself is the shared
+        // emit_index_scan_root (also used for main-query roots, see
+        // join_root_index_scan_plan.md).
         const NdbDictionary::Table* srcTab = cp.ops[0].table;
         const NdbDictionary::Index* idx = cp.ops[0].index;
         require_run(srcTab != NULL,
@@ -6190,6 +6180,11 @@ RonSQLPreparer::execute_join()
 
         NdbQueryOptions rootOpts;
         if (cs.body_minmax_kind != QueryScope::MinMaxKind::NONE) {
+          // Phase I.10 scalar MIN/MAX: ordered scan + maxRows=1.  Keep
+          // the readTuple(linked_pk) self-join here — the early close
+          // relies on scan rows reaching DBSPJ for the maxRows
+          // accounting, which an in-place aggregation scan (0 reported
+          // rows) would defeat.
           if (cs.body_minmax_kind == QueryScope::MinMaxKind::MAX_DESC) {
             rootOpts.setOrdering(NdbQueryOptions::ScanOrdering_descending);
           } else {
@@ -6199,27 +6194,31 @@ RonSQLPreparer::execute_join()
           cteOpDefs[0] = qb->scanIndex(idx, srcTab, NULL, &rootOpts);
           require_run(cteOpDefs[0] != NULL,
                       "Failed to create CTE body index-scan root.");
+
+          const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+          int nkeys = srcTab->getNoOfPrimaryKeys();
+          for (int k = 0; k < nkeys; k++) {
+            const char* pk_name = srcTab->getPrimaryKey(k);
+            keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
+            require_run(keys[k] != NULL,
+                        "Failed to create CTE body self-join linked key.");
+          }
+          keys[nkeys] = nullptr;
+          NdbQueryOptions leafOpts;
+          leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+          require_run(leafOpts.setAggregation(*cteAgg) == 0,
+                      "Failed to attach aggregator to CTE body leaf.");
+          cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
+          require_run(cteOpDefs[1] != NULL,
+                      "Failed to create CTE body self-join leaf.");
         } else {
+          // Aggregator directly on the index-scan root — same in-place
+          // feed as the TABLE_SCAN branch; bounds and residual filter
+          // come from emit_index_scan_root.
+          require_run(rootOpts.setAggregation(*cteAgg) == 0,
+                      "Failed to attach aggregator to CTE body scan root.");
           cteOpDefs[0] = emit_index_scan_root(qb, cs, srcTab, idx, rootOpts);
         }
-
-        // readTuple(linked_pk) leaf, identical to the TABLE_SCAN branch.
-        const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-        int nkeys = srcTab->getNoOfPrimaryKeys();
-        for (int k = 0; k < nkeys; k++) {
-          const char* pk_name = srcTab->getPrimaryKey(k);
-          keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
-          require_run(keys[k] != NULL,
-                      "Failed to create CTE body self-join linked key.");
-        }
-        keys[nkeys] = nullptr;
-        NdbQueryOptions leafOpts;
-        leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-        require_run(leafOpts.setAggregation(*cteAgg) == 0,
-                    "Failed to attach aggregator to CTE body leaf.");
-        cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
-        require_run(cteOpDefs[1] != NULL,
-                    "Failed to create CTE body self-join leaf.");
       } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::CTE_SCAN) {
         // Chained CTE body whose root is a CTE_SCAN reading a
         // predecessor CTE.  emit_root_op already handles CTE_SCAN
