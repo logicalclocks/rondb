@@ -5570,7 +5570,28 @@ void Qmgr::execAPI_VERSION_REQ(Signal *signal) {
   ApiVersionConf *conf = (ApiVersionConf *)req;
   static_assert(sizeof(in6_addr) <= 16,
                 "Cannot fit in6_inaddr into ApiVersionConf:m_inet6_addr");
-  NodeInfo nodeInfo = getNodeInfo(nodeId);
+  /**
+   * The requested node id comes from the sender's configuration view
+   * (typically the management server sweeping every configured node,
+   * e.g. for ndb_mgm SHOW), which can legitimately be wider than ours
+   * while a configuration change is rolling out: MAX_NODES is dynamic
+   * since it became get_max_nodeid() (the highest node id in the
+   * config generation THIS node fetched, see set_not_active_nodes()).
+   * A data node still running the older, narrower generation would
+   * previously crash on the getNodeInfo() ndbrequire (error 2341,
+   * SimulatedBlock.hpp getNodeInfo) at the first version probe naming
+   * a node id beyond its view -- taking down every data node during a
+   * config expansion.  Treat unknown ids as 'not connected' (version
+   * 0) instead, mirroring the guard in execNODE_VERSION_REP() below.
+   */
+  NodeInfo nodeInfo;  /* defaults: not connected, version 0 */
+  if (likely(nodeId > 0 && nodeId < MAX_NODES)) {
+    jam();
+    nodeInfo = getNodeInfo(nodeId);
+  } else {
+    jam();
+    jamLine(Uint16(nodeId));
+  }
   conf->m_inet_addr = 0;
   Uint32 siglen = ApiVersionConf::SignalLengthIPv4;
   if (nodeInfo.m_connected) {
