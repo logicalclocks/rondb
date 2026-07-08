@@ -189,6 +189,12 @@
 #define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
+/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
+ * Unconditionally enabled, also in release builds — grep "AGGT" in the
+ * node out-logs and diff the logger's own µs timestamps.
+ * Remove all AGGT sites when the investigation is done. */
+#define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+
 #ifdef DEBUG_JOIN_AGG_REDIST_VERBOSE
 #define DEB_JOIN_AGG_REDIST_VERBOSE(arglist) \
   do { g_eventLogger->info arglist ; } while (0)
@@ -18851,6 +18857,8 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
    * via CONTINUEB yielding (one interpreter per batch).
    * MUTEX_BASED: single shared interpreter, go straight to send.
    */
+  AGGT(("AGGT(%u) DBLQH COMPLETE recv key=%u cte=%u",
+        instance(), aggStateKey, (Uint32)state->m_cte_mode));
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     jam();
     continueJoinAggMerge(signal, aggStateKey, 1,
@@ -19082,6 +19090,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       return;
     }
   }
+  AGGT(("AGGT(%u) DBLQH merge done key=%u cte=%u",
+        instance(), aggStateKey, (Uint32)state->m_cte_mode));
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   interp->finalizeResults();
 
@@ -19105,6 +19115,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       jam();
       DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
                instance()));
+      AGGT(("AGGT(%u) DBLQH CTE_READY (single node) key=%u",
+            instance(), aggStateKey));
       state->m_state.store(JoinAggregationState::CTE_READY);
       JoinAggCompleteConf *conf =
         (JoinAggCompleteConf *)signal->getDataPtrSend();
@@ -19138,6 +19150,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
       state->m_state.store(JoinAggregationState::CTE_REDISTRIBUTING);
       state->m_cte_redist_batch_bytes = 0;
+      AGGT(("AGGT(%u) DBLQH redist start key=%u",
+            instance(), aggStateKey));
       continueJoinAggRedistribute(signal, aggStateKey);
     }
     return;
@@ -22044,6 +22058,8 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
                 "all nodes done, transition to CTE_READY queueCount=%u",
                 instance(), state->m_redist_queue_count));
   DEB_CTE(("(%u) checkCteReady: all nodes done → CTE_READY", instance()));
+  AGGT(("AGGT(%u) DBLQH CTE_READY key=%u",
+        instance(), state->m_key));
   state->m_state.store(JoinAggregationState::CTE_READY);
 
   JoinAggCompleteConf *conf =
@@ -24350,6 +24366,15 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   } else {
     scanPtr->m_outer_join_agg_scan = 0;
   }
+  if (refToMain(scanFragReq->resultRef) == DBSPJ) {
+    AGGT(("AGGT(%u) LQH SPJ scan start tab=%u frag=%u aggFlag=%u key=0x%x "
+          "maxRows=%u maxBytes=%u",
+          instance(), scanFragReq->tableId,
+          scanFragReq->fragmentNoKeyLen & 0xFFFF,
+          ScanFragReq::getJoinAggFlag(reqinfo),
+          scanPtr->m_join_agg_state_key,
+          max_rows, max_bytes));
+  }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;
 
@@ -25467,6 +25492,13 @@ void Dblqh::sendScanFragConf(Signal *signal,
   const Uint32 completed_ops= tmp_completed_ops;
   const Uint32 total_len= tmp_total_len / sizeof(Uint32);
   const Uint32 rows_examined = scanPtr->m_rows_examined;
+
+  if (scanPtr->m_join_agg_state_key != RNIL) {
+    AGGT(("AGGT(%u) LQH agg frag conf completed=%u ops=%u examined=%u "
+          "state=%u lastSeen=%u",
+          instance(), scanCompleted, completed_ops, rows_examined,
+          (Uint32)scanPtr->scanState, scanPtr->scan_lastSeen));
+  }
 
   ndbassert((scanPtr->m_curr_batch_size_bytes % sizeof(Uint32)) == 0);
 

@@ -166,6 +166,12 @@
 #define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
+/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
+ * Unconditionally enabled, also in release builds — grep "AGGT" in the
+ * node out-logs and diff the logger's own µs timestamps.
+ * Remove all AGGT sites when the investigation is done. */
+#define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+
 #ifdef DEBUG_SCAN_HB_TIMEOUT
 #define DEB_SCAN_HB_TIMEOUT(arglist) \
   do { g_eventLogger->info arglist; } while (0)
@@ -16534,6 +16540,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   const Uint32 ri = scanTabReq->requestInfo;
   const Uint32 schemaVersion = scanTabReq->tableSchemaVersion;
   const Uint32 transid1 = scanTabReq->transId1;
+  AGGT(("AGGT(%u) SCAN_TABREQ recv tab=%u transid1=0x%x",
+        instance(), scanTabReq->tableId, transid1));
   const Uint32 transid2 = scanTabReq->transId2;
   const Uint32 tmpXX = scanTabReq->buddyConPtr;
   const Uint32 buddyPtr = (tmpXX == 0xFFFFFFFF ? RNIL : tmpXX);
@@ -17821,6 +17829,8 @@ void Dbtc::abortScanLab(Signal *signal, ScanRecordPtr scanptr, Uint32 errCode,
 void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
                                 ApiConnectRecordPtr const apiConnectptr,
                                 bool not_started) {
+  AGGT(("AGGT(%u) scan done scanPtr=%u transid1=0x%x",
+        instance(), scanPtr.i, apiConnectptr.p->transid[0]));
   if (apiConnectptr.p->cachePtr != RNIL) {
     CacheRecordPtr cachePtr;
     cachePtr.i = apiConnectptr.p->cachePtr;
@@ -18583,6 +18593,13 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
     scanFragptr.p->m_apiPtr[1],
     scanFragptr.p->m_apiPtr[2],
     scanFragptr.p->m_apiPtr[3]));
+
+  if (scanptr.p->m_aggReceiverId != RNIL) {
+    AGGT(("AGGT(%u) SCAN_FRAGCONF recv scanPtr=%u frag=%u completed=%u "
+          "ops=%u from=0x%x scanState=%u",
+          instance(), scanptr.i, scanFragptr.i, status, noCompletedOps,
+          conf->senderRef, (Uint32)scanptr.p->scanState));
+  }
 
   BlockReference lqhRef = scanFragptr.p->lqhBlockref;
   if (sig_len >= ScanFragConf::SignalLength_query) {
@@ -30064,6 +30081,8 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                 "numCtes=%u",
                 instance(), scanptr.i,
                 scanptr.p->m_numCtes));
+  AGGT(("AGGT(%u) SETUP send scanPtr=%u numCtes=%u",
+        instance(), scanptr.i, scanptr.p->m_numCtes));
   scanptr.p->m_joinAggNodes->m_aggNodes.clear();
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -30370,6 +30389,8 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   if (scanptr.p->m_aggNodesOutstanding == 0 &&
       scanptr.p->m_cteSetupOutstanding == 0) {
     jam();
+    AGGT(("AGGT(%u) SETUP complete scanPtr=%u",
+          instance(), scanptr.i));
 
     if (scanptr.p->m_aggPhaseFailed) {
       jam();
@@ -30648,6 +30669,9 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
     ApiConnectRecordPtr apiConnectptr;
     apiConnectptr.i = scanptr.p->scanApiRec;
     c_apiConnectRecordPool.getPtr(apiConnectptr);
+    AGGT(("AGGT(%u) MAIN complete all nodes, results rows=%u "
+          "scanPtr=%u",
+          instance(), scanptr.p->m_aggResultRows, scanptr.i));
     sendJoinAggScanTabConf(signal, scanptr, apiConnectptr);
     sendJoinAggReleaseReqs(signal, scanptr);
   }
@@ -30976,6 +31000,8 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
   if (scanptr.p->m_cteScanReportsReceived ==
       scanptr.p->m_cteScanReportsExpected) {
     jam();
+    AGGT(("AGGT(%u) CTE phase=%u scans complete scanPtr=%u",
+          instance(), scanptr.p->m_cteCurrentPhase, scanptr.i));
     /**
      * All DBSPJ instances completed this CTE phase.
      * Redistribute this phase's CTEs.
@@ -31054,6 +31080,8 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
   /* Phase L (C): authoritative per-phase counter.  Drives
    * cteAdvancePhase together with per-record m_state. */
   scanptr.p->m_ctePhaseRemaining = 0;
+  AGGT(("AGGT(%u) CTE COMPLETE send phase=%u scanPtr=%u",
+        instance(), phase, scanptr.i));
 
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
@@ -31207,10 +31235,14 @@ void Dbtc::cteAdvancePhase(Signal *signal, ScanRecordPtr scanptr) {
     scanptr.p->m_cteCurrentPhase = nextPhase;
     scanptr.p->m_cteScanReportsReceived = 0;
     scanptr.p->scanState = ScanRecord::RUNNING;
+    AGGT(("AGGT(%u) CTE ready, phase=%u start scanPtr=%u",
+          instance(), nextPhase, scanptr.i));
     sendCtePhaseStartReqs(signal, scanptr, nextPhase);
   } else {
     jam();
     /* All CTE phases complete — start the main query. */
+    AGGT(("AGGT(%u) CTE all ready, MAIN start scanPtr=%u",
+          instance(), scanptr.i));
     sendCteStartMainReqs(signal, scanptr);
   }
 }
@@ -31294,6 +31326,8 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
 }
 
 void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
+  AGGT(("AGGT(%u) MAIN COMPLETE send scanPtr=%u",
+        instance(), scanptr.i));
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
 

@@ -116,6 +116,12 @@
 #define DEB_CTE_PHASE_VERBOSE(arglist) do { } while (0)
 #endif
 
+/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
+ * Unconditionally enabled, also in release builds — grep "AGGT" in the
+ * node out-logs and diff the logger's own µs timestamps.
+ * Remove all AGGT sites when the investigation is done. */
+#define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+
 #ifdef DEBUG_SCAN_HB_SEND
 #define DEB_SCAN_HB_SEND(arglist) \
   do { g_eventLogger->info arglist ; } while (0)
@@ -3752,6 +3758,11 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
  */
 void
 Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  /* TEMPORARY fs_batch phase-timing probe — see AGGT in DbtcMain.cpp. */
+  g_eventLogger->info("AGGT(%u) SPJ agg self-continue request=%u rows=%u "
+                      "outstanding=%u",
+                      instance(), requestPtr.i, requestPtr.p->m_rows,
+                      requestPtr.p->m_outstanding);
   cleanupBatch(requestPtr, /*done=*/false);
 
   /**
@@ -12894,6 +12905,17 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
        * is the last request in which case they can be freed. If
        * the last request is a local send then a copy is avoided.
        */
+      AGGT(("AGGT(%u) SPJ frag send node=%u tab=%u frag=%u ref=0x%x "
+            "aggFlag=%u cte=%u aggLeaf=%u indirect=%u aggKey=0x%x "
+            "bsRows=%u bsBytes=%u",
+            instance(), treeNodePtr.p->m_node_no, req->tableId,
+            fragPtr.p->m_fragId, ref,
+            ScanFragReq::getJoinAggFlag(req->requestInfo),
+            !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN),
+            !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
+            !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_INDIRECT_FEED),
+            agg_extra ? req->variableData[var_index + 2] : 0,
+            req->batch_size_rows, req->batch_size_bytes));
       {
         jam();
         sendBatchedFragmentedSignal(
