@@ -1,0 +1,215 @@
+SET time_zone='+00:00';
+# -------------------------------------------------------
+# TIMESTAMP TTL column: FIXED vs COLUMN_FORMAT DYNAMIC
+# -------------------------------------------------------
+CREATE TABLE t_fix (
+a INT,
+ts TIMESTAMP NULL,
+v INT,
+PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ts";
+CREATE TABLE t_dyn (
+a INT,
+ts TIMESTAMP NULL COLUMN_FORMAT DYNAMIC,
+v INT,
+PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ts";
+SHOW CREATE TABLE t_fix;
+Table	Create Table
+t_fix	CREATE TABLE `t_fix` (
+  `a` int NOT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `v` int DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=300@ts'
+SHOW CREATE TABLE t_dyn;
+Table	Create Table
+t_dyn	CREATE TABLE `t_dyn` (
+  `a` int NOT NULL,
+  `ts` timestamp NULL /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `v` int DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=300@ts'
+INSERT INTO t_fix VALUES
+(1, NOW() - INTERVAL 600 SECOND, 10),
+(2, NOW(), 20),
+(3, NULL, 30);
+INSERT INTO t_dyn VALUES
+(1, NOW() - INTERVAL 600 SECOND, 10),
+(2, NOW(), 20),
+(3, NULL, 30);
+# Scan: only the live and NULL rows are visible
+SELECT a, v FROM t_fix ORDER BY a;
+a	v
+2	20
+3	30
+SELECT a, v FROM t_dyn ORDER BY a;
+a	v
+2	20
+3	30
+# PK read: expired row invisible, live and NULL rows visible
+SELECT a, v FROM t_fix WHERE a = 1;
+a	v
+SELECT a, v FROM t_dyn WHERE a = 1;
+a	v
+SELECT a, v FROM t_fix WHERE a = 2;
+a	v
+2	20
+SELECT a, v FROM t_dyn WHERE a = 2;
+a	v
+2	20
+SELECT a, v FROM t_fix WHERE a = 3;
+a	v
+3	30
+SELECT a, v FROM t_dyn WHERE a = 3;
+a	v
+3	30
+# UPDATE: expired row not found (0 rows), live row updated (1 row)
+UPDATE t_fix SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+UPDATE t_dyn SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+UPDATE t_fix SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+UPDATE t_dyn SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+# DELETE: expired row not found (0 rows), live row deleted (1 row)
+DELETE FROM t_fix WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+DELETE FROM t_dyn WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+DELETE FROM t_fix WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+DELETE FROM t_dyn WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+SELECT a, v FROM t_fix ORDER BY a;
+a	v
+3	30
+SELECT a, v FROM t_dyn ORDER BY a;
+a	v
+3	30
+DROP TABLE t_fix;
+DROP TABLE t_dyn;
+# -------------------------------------------------------
+# DATETIME TTL column: FIXED vs COLUMN_FORMAT DYNAMIC
+# -------------------------------------------------------
+CREATE TABLE d_fix (
+a INT,
+dt DATETIME NULL,
+v INT,
+PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@dt";
+CREATE TABLE d_dyn (
+a INT,
+dt DATETIME NULL COLUMN_FORMAT DYNAMIC,
+v INT,
+PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@dt";
+SHOW CREATE TABLE d_fix;
+Table	Create Table
+d_fix	CREATE TABLE `d_fix` (
+  `a` int NOT NULL,
+  `dt` datetime DEFAULT NULL,
+  `v` int DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=300@dt'
+SHOW CREATE TABLE d_dyn;
+Table	Create Table
+d_dyn	CREATE TABLE `d_dyn` (
+  `a` int NOT NULL,
+  `dt` datetime /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `v` int DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=300@dt'
+INSERT INTO d_fix VALUES
+(1, NOW() - INTERVAL 600 SECOND, 10),
+(2, NOW(), 20),
+(3, NULL, 30);
+INSERT INTO d_dyn VALUES
+(1, NOW() - INTERVAL 600 SECOND, 10),
+(2, NOW(), 20),
+(3, NULL, 30);
+# Scan: only the live and NULL rows are visible
+SELECT a, v FROM d_fix ORDER BY a;
+a	v
+2	20
+3	30
+SELECT a, v FROM d_dyn ORDER BY a;
+a	v
+2	20
+3	30
+# PK read: expired row invisible, live and NULL rows visible
+SELECT a, v FROM d_fix WHERE a = 1;
+a	v
+SELECT a, v FROM d_dyn WHERE a = 1;
+a	v
+SELECT a, v FROM d_fix WHERE a = 2;
+a	v
+2	20
+SELECT a, v FROM d_dyn WHERE a = 2;
+a	v
+2	20
+SELECT a, v FROM d_fix WHERE a = 3;
+a	v
+3	30
+SELECT a, v FROM d_dyn WHERE a = 3;
+a	v
+3	30
+# UPDATE: expired row not found (0 rows), live row updated (1 row)
+UPDATE d_fix SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+UPDATE d_dyn SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+UPDATE d_fix SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+UPDATE d_dyn SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+# DELETE: expired row not found (0 rows), live row deleted (1 row)
+DELETE FROM d_fix WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+DELETE FROM d_dyn WHERE a = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+DELETE FROM d_fix WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+DELETE FROM d_dyn WHERE a = 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+SELECT a, v FROM d_fix ORDER BY a;
+a	v
+3	30
+SELECT a, v FROM d_dyn ORDER BY a;
+a	v
+3	30
+DROP TABLE d_fix;
+DROP TABLE d_dyn;

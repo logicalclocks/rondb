@@ -1,0 +1,102 @@
+# ttl_disk_column_alter_bind.test
+#
+# Regression guard for TTL review finding #8:
+#   CREATE rejects binding TTL to an on-disk column (ha_ndbcluster.cc create():
+#   "TTL column can't be an on-disk column"), but the inplace ALTER comment
+#   parser (inplace_parse_comment) validated only the column TYPE
+#   (DATETIME/TIMESTAMP), never its STORAGE. So adding TTL via
+#   ALTER ... COMMENT to a column that is already STORAGE DISK slipped through,
+#   producing a state CREATE forbids; the kernel checkTTL then reads the TTL
+#   column without attaching the disk page and reads/updates hang (observed as
+#   ER 1205 lock-wait-timeout) until TTL is turned off.
+#
+# Fix: inplace_parse_comment rejects a StorageTypeDisk TTL column, mirroring
+#   the CREATE-path check.
+
+--source include/have_ndb.inc
+
+CREATE LOGFILE GROUP lg_1
+  ADD UNDOFILE 'lg_1_undofile.dat'
+  INITIAL_SIZE 16M
+  UNDO_BUFFER_SIZE 1M
+  ENGINE NDB;
+
+CREATE TABLESPACE ts_1
+  ADD DATAFILE 'ts_1_datafile.dat'
+  USE LOGFILE GROUP lg_1
+  INITIAL_SIZE 64M
+  ENGINE NDB;
+
+# checkTTL compares vs UTC; pin session tz.
+SET time_zone='+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+DROP TABLE IF EXISTS test.sz2;
+DROP TABLE IF EXISTS test.sz3;
+--enable_warnings
+
+--echo #
+--echo # Baseline: CREATE forbids binding TTL to an on-disk column.
+--echo # (Also proves col_b really is on disk -- else this CREATE would pass.)
+--echo #
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.sz2 (
+    col_a INT,
+    col_b TIMESTAMP STORAGE DISK,
+    col_c INT,
+    PRIMARY KEY(col_a)
+) TABLESPACE ts_1, ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=5@col_b";
+
+--echo #
+--echo # #8: a table with a DISK-stored TIMESTAMP column, no TTL yet
+--echo #
+CREATE TABLE test.sz1 (
+    col_a INT,
+    col_b TIMESTAMP STORAGE DISK,
+    col_c INT,
+    PRIMARY KEY(col_a)
+) TABLESPACE ts_1, ENGINE = NDB;
+sleep 2;
+
+--echo # ALGORITHM=INPLACE add-TTL on the on-disk column -> rejected by the fix
+--echo # (inplace_parse_comment; no COPY fallback under explicit INPLACE)
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=5@col_b", ALGORITHM=INPLACE;
+
+--echo # ALGORITHM=COPY add-TTL on the on-disk column -> rejected by CREATE path
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=5@col_b", ALGORITHM=COPY;
+
+--echo # default algorithm: the inplace check reports unsupported, MySQL falls
+--echo # back to COPY, and the CREATE path then rejects it.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=5@col_b";
+
+--echo # sz1 is unchanged (no TTL comment)
+SHOW CREATE TABLE sz1;
+
+--echo #
+--echo # Negative control: binding TTL to a MEMORY timestamp column still works,
+--echo # even when the table has an unrelated on-disk column (col_c).
+--echo #
+CREATE TABLE test.sz3 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT STORAGE DISK,
+    PRIMARY KEY(col_a)
+) TABLESPACE ts_1, ENGINE = NDB;
+sleep 2;
+ALTER TABLE sz3 COMMENT="NDB_TABLE=TTL=5@col_b";
+--echo # sz3 now has TTL bound to the in-memory col_b
+SHOW CREATE TABLE sz3;
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+DROP TABLE IF EXISTS test.sz3;
+--enable_warnings
+
+ALTER TABLESPACE ts_1 DROP DATAFILE 'ts_1_datafile.dat';
+DROP TABLESPACE ts_1;
+DROP LOGFILE GROUP lg_1 ENGINE NDB;

@@ -1,0 +1,66 @@
+# ==========================================================================
+# Guard for the deferred-trigger ZINSERT_TTL ndbabort crash (finding #3).
+# ==========================================================================
+# For an INSERT over an expired-but-unpurged row, the operation carries
+# op_type == ZINSERT_TTL (=10) until commit. The DEFERRED trigger path
+# (checkDeferredTriggers, fired at commit via FIRE_TRIG_REQ) never maps
+# ZINSERT_TTL to a real op type: its first switch does not fetch the copy
+# tuple for ZINSERT_TTL, the ALLOC fixup has no ZINSERT_TTL branch (the row
+# pre-existed so ALLOC is unset), and the final op-type switch hits
+# default: ndbabort() -> data-node crash.
+#
+# Reachability: TTL table + a UNIQUE index + ndb_deferred_constraints=1 (so
+# the unique-index constraint is deferred and its trigger fires at commit) +
+# an INSERT over an expired-unpurged row.
+#
+# After the fix the deferred path handles ZINSERT_TTL like the immediate
+# path, so the INSERT-over-expired commits without crashing the data node.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# checkTTL compares the TTL column against UTC; align the session tz so a
+# NOW()-stamped row actually expires on schedule (MTR default tz=SYSTEM).
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.dfr;
+--enable_warnings
+
+# TTL = 2s base table with a UNIQUE secondary index on col_c.
+CREATE TABLE test.dfr (
+  col_a INT PRIMARY KEY,
+  col_b TIMESTAMP NULL DEFAULT NULL,
+  col_c INT,
+  UNIQUE KEY uk_c (col_c)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@col_b";
+
+# Defer the unique-index constraint so its trigger fires at commit-time
+# FIRE_TRIG_REQ -> checkDeferredTriggers (the crashing path).
+SET ndb_deferred_constraints = 1;
+
+# Live owner of PK=1 / unique value 100.
+INSERT INTO test.dfr VALUES (1, NOW(), 100);
+
+# Wait for PK=1 to expire (TTL=2s) but stay unpurged (no purge worker here).
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.dfr WHERE col_a = 1
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+--echo # INSERT over the expired PK=1 (ZINSERT_TTL). With a deferred unique
+--echo # constraint this fires the deferred UK trigger at commit. On the buggy
+--echo # build the data node hits ndbabort in checkDeferredTriggers; after the
+--echo # fix it commits cleanly.
+INSERT INTO test.dfr VALUES (1, NOW(), 100);
+
+--echo # The row is present with its refreshed value and the node is alive.
+SELECT col_a, col_c FROM test.dfr WHERE col_a = 1;
+
+--echo # The unique index is consistent: the value is reachable via a uk lookup.
+SELECT col_a, col_c FROM test.dfr WHERE col_c = 100;
+
+--echo # The node is fully alive: a further DML round-trip on the table works.
+INSERT INTO test.dfr VALUES (2, NOW(), 200);
+SELECT col_a, col_c FROM test.dfr ORDER BY col_a;
+
+DROP TABLE test.dfr;

@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 #include <random>
+#include <set>
+#include <cstdlib>
 
 #include "src/rdrs_rondb_connection_pool.hpp"
 #include "src/ttl_purge.hpp"
@@ -166,6 +168,9 @@ void TTLPurger::SchemaWatcherJob() {
   [[maybe_unused]] char event_name_buf[128];
   char slock_buf_pre[32];
   char slock_buf[32];
+  // Declared before the retry/err labels so the early `goto err` sites do not
+  // jump over an initialized scalar (ill-formed). Reset before each poll loop.
+  Uint64 last_reconcile_us = 0;
 
   g_eventLogger->info("[TTL SWatcher] Started");
 retry:
@@ -357,23 +362,17 @@ retry:
     if (strcmp(db_str, "mysql") == 0) {
       continue;
     }
-    if (watcher_ndb_->setDatabaseName(db_str) != 0) {
-      g_eventLogger->warning("[TTL SWatcher] Failed to select database: %s"
-                             ", error: %d(%s). Retry...",
-                             db_str,
-                             watcher_ndb_->getNdbError().code,
-                             watcher_ndb_->getNdbError().message);
+    const NdbDictionary::Table* tab = nullptr;
+    FetchResult fr = FetchTableForDiscovery(watcher_ndb_, dict, db_str,
+                                            table_str, &tab);
+    if (fr == FetchResult::kRestart) {
       goto err;
     }
-    const NdbDictionary::Table* tab = dict->getTable(
-        table_str);
-    if (tab == nullptr) {
-      g_eventLogger->warning("[TTL SWatcher] Failed to get table: %s"
-                             ", error: %d(%s). Retry...",
-                             table_str,
-                             dict->getNdbError().code,
-                             dict->getNdbError().message);
-      goto err;
+    if (fr == FetchResult::kSkipTable) {
+      // Broken/unreadable table: skip it instead of stalling the entire init
+      // scan (which would loop forever and never spawn the purge worker). The
+      // periodic reconcile retries it later.
+      continue;
     }
     UpdateLocalCache(db_str, table_str, tab);
   }
@@ -388,6 +387,7 @@ retry:
                                      NDB_THREAD_PRIO_MEAN);
   purge_worker_running_ = true;
 
+  last_reconcile_us = my_micro_time();
   // Main schema_watcher_ task
   while (!exit_) {
     int res = watcher_ndb_->pollEvents(1000);  // wait for event or 1000 ms
@@ -437,9 +437,27 @@ retry:
           case NdbDictionary::Event::TE_OUT_OF_MEMORY:
             // Retry from beginning
             goto err;
+          case NdbDictionary::Event::TE_DELETE:
+            /*
+             * A row delete on ndb_schema is the coordinator cleaning up a
+             * COMPLETED schema operation -- there is nothing to parse, apply
+             * or acknowledge (mysqld participants ignore these deletes too).
+             * Crucially, the after-image RecAttrs are NOT populated for a
+             * delete event: they still hold the PREVIOUS event's values, or
+             * nothing at all right after a (re)subscribe. Falling through to
+             * the parser acted on that stale/uninitialized data (type,
+             * node_id, schema_op_id, db/table names): in the normal op
+             * sequence the stale type happened to be SOT_CLEAR_SLOCK from
+             * the coordinator's final update, which accidentally skipped the
+             * ACK; but a cleanup delete without that predecessor, or as the
+             * first event seen, could write a junk ndb_schema_result row,
+             * rerun a cache update for a stale table (a failing getTable
+             * there restarts the whole watcher), or build names from
+             * uninitialized length bytes.
+             */
+            break;
           case NdbDictionary::Event::TE_INSERT:
           case NdbDictionary::Event::TE_UPDATE:
-          case NdbDictionary::Event::TE_DELETE:
             for (int l = 0; l < kNoEventCol; l++) {
               ptr_pre = rec_attr_pre[l].ra->aRef();
               ptr = rec_attr[l].ra->aRef();
@@ -763,6 +781,24 @@ trx_err:
                              watcher_ndb_->getNdbError().message);
       goto err;
     }
+
+    // Periodic reconcile: discover TTL tables created out-of-band (ndb_restore,
+    // NdbAPI/ClusterJ) and prune ones dropped the same way -- neither emits an
+    // ndb_schema event. Timer-gated; runs on this (watcher) thread so it is
+    // serialized with the event handling above.
+    {
+      Uint32 reconcile_sec = GetConfig().reconcile_interval_sec;
+      if (reconcile_sec > 0) {
+        Uint64 now_us = my_micro_time();
+        if (now_us - last_reconcile_us >=
+            static_cast<Uint64>(reconcile_sec) * 1000000ULL) {
+          last_reconcile_us = now_us;
+          if (ReconcileTables(dict) == ReconcileResult::kRestart) {
+            goto err;
+          }
+        }
+      }
+    }
   }
 err:
   if (ev_op != nullptr) {
@@ -798,6 +834,172 @@ err:
   }
   g_eventLogger->info("[TTL SWatcher] Exited");
   return;
+}
+
+TTLPurger::FetchResult TTLPurger::FetchTableForDiscovery(
+    Ndb* ndb, NdbDictionary::Dictionary* dict, const std::string& db,
+    const std::string& table, const NdbDictionary::Table** out) {
+  *out = nullptr;
+
+  // Test-only fault injection (inert unless the env var is set): simulate a
+  // permanent getTable failure for a named "db/table" to exercise the
+  // skip-and-continue path deterministically. Mirrors the getenv() precedent
+  // in main.cc; unset => no effect in production.
+  const char* fail_tab = std::getenv("RDRS_TTL_PURGE_FAIL_GETTABLE");
+  if (fail_tab != nullptr && (db + "/" + table) == fail_tab) {
+    g_eventLogger->warning("[TTL SWatcher] (debug) Simulated getTable failure "
+                           "for %s.%s -- skipping table",
+                           db.c_str(), table.c_str());
+    return FetchResult::kSkipTable;
+  }
+
+  // A per-table failure must not abort the whole scan (which would loop
+  // forever on a single broken table, never spawning the purge worker).
+  // Only a TemporaryError (connection/overload -- where every table would
+  // fail) warrants restarting the watcher; permanent/not-found errors are
+  // table-local, so skip and let the periodic reconcile retry the table.
+  if (ndb->setDatabaseName(db.c_str()) != 0) {
+    const NdbError& err = ndb->getNdbError();
+    bool temp = err.status == NdbError::TemporaryError;
+    g_eventLogger->warning("[TTL SWatcher] Failed to select database: %s"
+                           ", error: %d(%s). %s",
+                           db.c_str(), err.code, err.message,
+                           temp ? "Retry..." : "Skipping table...");
+    return temp ? FetchResult::kRestart : FetchResult::kSkipTable;
+  }
+
+  const NdbDictionary::Table* tab = dict->getTable(table.c_str());
+  if (tab == nullptr) {
+    const NdbError& err = dict->getNdbError();
+    bool temp = err.status == NdbError::TemporaryError;
+    g_eventLogger->warning("[TTL SWatcher] Failed to get table: %s"
+                           ", error: %d(%s). %s",
+                           table.c_str(), err.code, err.message,
+                           temp ? "Retry..." : "Skipping table...");
+    return temp ? FetchResult::kRestart : FetchResult::kSkipTable;
+  }
+
+  *out = tab;
+  return FetchResult::kOk;
+}
+
+TTLPurger::ReconcileResult TTLPurger::ReconcileTables(
+    NdbDictionary::Dictionary* dict) {
+  NdbDictionary::Dictionary::List list;
+  if (dict->listObjects(list, NdbDictionary::Object::UserTable) != 0) {
+    const NdbError& err = dict->getNdbError();
+    g_eventLogger->warning("[TTL SWatcher] Reconcile: failed to list objects"
+                           ", error: %d(%s). Skipping this cycle.",
+                           err.code, err.message);
+    // Never prune on an incomplete listing.
+    return err.status == NdbError::TemporaryError ? ReconcileResult::kRestart
+                                                  : ReconcileResult::kOk;
+  }
+
+  // Names present in the cluster right now (excluding the system db), used to
+  // discover new TTL tables and to prune ones dropped out-of-band.
+  std::set<std::string> present;
+  bool changed = false;
+
+  for (uint i = 0; i < list.count; i++) {
+    NdbDictionary::Dictionary::List::Element& elmt = list.elements[i];
+    const char* db_str = elmt.database;
+    const char* table_str = elmt.name;
+    if (strcmp(db_str, "mysql") == 0) {
+      continue;
+    }
+    std::string key = std::string(db_str) + "/" + table_str;
+    present.insert(key);
+
+    // Tracked tables are re-fetched every pass too: an out-of-band NdbAPI
+    // alterTable can change the TTL metadata (ttl_sec/col_no) IN PLACE --
+    // same table id, no ndb_schema event -- so an id compare alone would
+    // leave the cache stale until an unrelated watcher restart. The fetched
+    // metadata is compared below so an unchanged table stays a no-op.
+    bool tracked = false;
+    TTLInfo cached;
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      auto it = ttl_cache_.find(key);
+      if (it != ttl_cache_.end()) {
+        tracked = true;
+        cached = it->second;
+      }
+    }
+
+    const NdbDictionary::Table* tab = nullptr;
+    FetchResult fr = FetchTableForDiscovery(watcher_ndb_, dict, db_str,
+                                            table_str, &tab);
+    if (fr == FetchResult::kRestart) {
+      return ReconcileResult::kRestart;
+    }
+    if (fr == FetchResult::kSkipTable) {
+      continue;
+    }
+    if (!tracked && !tab->isTTLEnabled()) {
+      continue;  // untracked non-TTL table: nothing to track
+    }
+    if (tracked && tab->isTTLEnabled() &&
+        cached.table_id == tab->getTableId() &&
+        cached.ttl_sec == tab->getTTLSec() &&
+        cached.col_no == tab->getTTLColumnNo()) {
+      continue;  // tracked and unchanged
+    }
+    // Real change: a new TTL table, an out-of-band recreate/alter (id or TTL
+    // metadata differs), or a tracked table that came back non-TTL (drop).
+    // UpdateLocalCache handles each case. NOTE it returns true
+    // unconditionally for tracked entries, hence the no-op pre-check above:
+    // the pass must stay change-sensitive, or a quiet reconcile would set
+    // cache_updated_ every interval and force pointless worker reloads.
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (UpdateLocalCache(db_str, table_str, tab)) {
+        changed = true;
+        g_eventLogger->info("[TTL SWatcher] Reconcile: %s out-of-band TTL "
+                            "table %s",
+                            tracked ? "refreshed" : "discovered",
+                            key.c_str());
+      }
+    }
+  }
+
+  // Prune TTL tables that vanished out-of-band from the purge cache (this is
+  // what stops the worker from trying to purge them). Safe only because the
+  // listing above completed successfully.
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = ttl_cache_.begin(); it != ttl_cache_.end();) {
+      if (present.find(it->first) == present.end()) {
+        g_eventLogger->info("[TTL SWatcher] Reconcile: pruning vanished TTL "
+                            "table %s from cache", it->first.c_str());
+        it = ttl_cache_.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+  }
+  // Sweep per-table metrics for tables no longer present. This reclaims the
+  // pruned tables' entries AND any that a concurrent purge-worker round
+  // re-inserted (via UpdateRoundMetrics) just after a prune -- otherwise the
+  // /tables API would report a vanished table forever. Keyed by the same
+  // "db/table" as ttl_cache_; only entries absent from the successful listing
+  // are removed.
+  {
+    const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+    for (auto it = table_metrics_.begin(); it != table_metrics_.end();) {
+      if (present.find(it->first) == present.end()) {
+        it = table_metrics_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  if (changed) {
+    cache_updated_ = true;
+  }
+  return ReconcileResult::kOk;
 }
 
 bool TTLPurger::UpdateLocalCache(const std::string& db,
@@ -1120,10 +1322,30 @@ void TTLPurger::PurgeWorkerJob() {
          */
         dict->removeCachedTable(table_str.c_str());
       }
-      local_ttl_cache.clear();
+      std::map<std::string, TTLInfo> prev_local;
+      prev_local.swap(local_ttl_cache);
       purged_pos_.clear();
       const std::lock_guard<std::mutex> lock(mutex_);
       local_ttl_cache = ttl_cache_;
+      // Carry the worker-local rotation state forward for tables unchanged
+      // across the reload (same db/table key AND same table_id). The shared
+      // cache's entries always hold part_id = 0 / offset-not-applied, so
+      // without this every TTL-relevant schema event would restart the
+      // rotation at the first partition (nodeId offset or, in sharded mode,
+      // partition 0) and starve the high partitions under TTL-DDL churn.
+      // ttl_sec/col_no deliberately come from the fresh shared entry. The
+      // offset flag is carried verbatim: a never-visited table (flag still
+      // false) must still get its initial nodeId%partition_count offset.
+      for (auto& kv : local_ttl_cache) {
+        auto old_it = prev_local.find(kv.first);
+        if (old_it != prev_local.end() &&
+            old_it->second.table_id == kv.second.table_id) {
+          kv.second.part_id = old_it->second.part_id;
+          kv.second.batch_size = old_it->second.batch_size;
+          kv.second.part_id_offset_applied =
+              old_it->second.part_id_offset_applied;
+        }
+      }
       cache_updated_ = false;
       update_objects = true;
       g_eventLogger->info("[TTL PWorker] Detected cache updated, "
@@ -1233,11 +1455,29 @@ void TTLPurger::PurgeWorkerJob() {
       }
       ttl_tab = dict->getTable(table_str.c_str());
       if (ttl_tab == nullptr) {
+        const NdbError& gt_err = dict->getNdbError();
+        if (gt_err.code == 723) {
+          // 723 = no such table: it was dropped out-of-band mid-round and
+          // cannot be purged until re-created (a create event or the
+          // reconcile re-adds it then), so drop it from this round's local
+          // cache instead of burning retries into a full worker escalation.
+          // ONLY the explicit not-found code qualifies: broader classes
+          // (e.g. NdbError::PermanentError) include transient conditions
+          // like schema-version races (241), and erasing a live table here
+          // has no re-add path while reconcile is disabled.
+          g_eventLogger->info("[TTL PWorker] Table %s is gone (error %d), "
+                              "removing from the local purge cache",
+                              iter->first.c_str(), gt_err.code);
+          RemoveTableMetrics(iter->first);
+          purge_trx_started = false;
+          iter = local_ttl_cache.erase(iter);
+          continue;
+        }
         g_eventLogger->warning("[TTL PWorker] Failed to get table: "
                               "%s, error: %d(%s). Retry...",
                                table_str.c_str(),
-                               dict->getNdbError().code,
-                               dict->getNdbError().message);
+                               gt_err.code,
+                               gt_err.message);
 	goto table_err;
       }
       table_id = ttl_tab->getTableId();
@@ -1255,7 +1495,16 @@ void TTLPurger::PurgeWorkerJob() {
           worker_ndb_->getNodeId() % ttl_tab->getPartitionCount();
         iter->second.part_id_offset_applied = true;
       }
-      assert(iter->second.part_id < ttl_tab->getPartitionCount());
+      {
+        // A carried part_id can exceed the partition count if it shrank
+        // (e.g. a reorganize) since the last visit: wrap instead of
+        // scanning a nonexistent partition (the old assert here was
+        // compiled out in release builds anyway).
+        Uint32 part_count = ttl_tab->getPartitionCount();
+        if (part_count > 0 && iter->second.part_id >= part_count) {
+          iter->second.part_id %= part_count;
+        }
+      }
       log_buf += ("[P" + std::to_string(iter->second.part_id) +
                  "/" +
                  std::to_string(ttl_tab->getPartitionCount()) + "]");
@@ -1275,11 +1524,31 @@ retry_trx:
        */
       ttl_tab = dict->getTable(table_str.c_str());
       if (ttl_tab == nullptr) {
+        const NdbError& gt_err = dict->getNdbError();
+        if (gt_err.code == 723) {
+          // Same 723-only classified removal as the first per-table fetch
+          // above; this is the retry_trx refetch, reached when the table
+          // vanished MID-BATCH (the transaction failed and
+          // purge_trx_started sent table_err back here) -- precisely the
+          // case that previously retried kMaxTrxRetryTimes times and then
+          // killed the worker.
+          g_eventLogger->info("[TTL PWorker] Table %s is gone (error %d), "
+                              "removing from the local purge cache",
+                              iter->first.c_str(), gt_err.code);
+          RemoveTableMetrics(iter->first);
+          if (trans != nullptr) {
+            worker_ndb_->closeTransaction(trans);
+            trans = nullptr;
+          }
+          purge_trx_started = false;
+          iter = local_ttl_cache.erase(iter);
+          continue;
+        }
         g_eventLogger->warning("[TTL PWorker] Failed to get table: "
                               "%s, error: %d(%s). Retry...",
                                table_str.c_str(),
-                               dict->getNdbError().code,
-                               dict->getNdbError().message);
+                               gt_err.code,
+                               gt_err.message);
 	goto table_err;
       }
       trans = worker_ndb_->startTransaction();

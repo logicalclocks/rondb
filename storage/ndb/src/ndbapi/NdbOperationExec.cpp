@@ -157,12 +157,19 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
       theReadCommittedBaseIndicator & static_cast<Uint8>(longSignal));
   TcKeyReq::setNoWaitFlag(requestInfo, (m_flags & OF_NOWAIT) != 0);
   /*
-   * TTL related
+   * TTL related.
+   * Gated on longSignal like ReadCommittedBase above: the TTL bits (26/28)
+   * live inside the short-signal key-length field (bits 20-31), so a short
+   * TCKEYREQ overwrites them with the key length in doSendKeyReq(), and DBTC
+   * ignores TTL for short requests regardless. Keep them out of the short
+   * request so the bits never leak into the key-length field transiently.
    */
-  TcKeyReq::setTTLIgnoreFlag(requestInfo,
-                          (m_flags & OF_TTL_IGNORE) != 0);
-  TcKeyReq::setTTLOnlyExpiredFlag(requestInfo,
-                          (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
+  TcKeyReq::setTTLIgnoreFlag(
+      requestInfo,
+      ((m_flags & OF_TTL_IGNORE) != 0) & static_cast<Uint8>(longSignal));
+  TcKeyReq::setTTLOnlyExpiredFlag(
+      requestInfo,
+      ((m_flags & OF_TTL_ONLY_EXPIRED) != 0) & static_cast<Uint8>(longSignal));
   req->requestInfo = requestInfo;
 }
 
