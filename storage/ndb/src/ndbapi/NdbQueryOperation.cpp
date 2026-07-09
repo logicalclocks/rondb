@@ -3682,6 +3682,27 @@ int NdbQueryImpl::prepareSend() {
       setErrorCode(error);
       return -1;
     }
+    // Count number of nodes 'rootTable' is distributed over.
+    // Returns 0 on error (fragment without node, should never happen).
+    const auto countDataNodes = [&rootTable, rootFragments]() -> Uint32 {
+      NdbNodeBitmask dataNodes;
+      Uint32 cnt = 0;
+      for (Uint32 i = 0; i < rootFragments; i++) {
+        Uint32 nodes[1];
+        const Uint32 res =
+            rootTable.getFragmentNodes(i, nodes, NDB_ARRAY_SIZE(nodes));
+        assert(res > 0);
+        if (res == 0) {
+          return 0;
+        }
+        if (!dataNodes.get(nodes[0])) {
+          dataNodes.set(nodes[0]);
+          cnt++;
+        }
+      }
+      return cnt;
+    };
+
     /**
      * A 'pruned scan' will only be sent to the single fragment identified
      * by the partition key.
@@ -3699,33 +3720,67 @@ int NdbQueryImpl::prepareSend() {
       // 'MultiFragment' not supported by all datanodes, partially upgraded?
       m_fragsPerWorker = 1;
     } else if (m_hasAggregation) {
-      // Aggregate queries: each fragment gets its own SCAN_FRAGREQ to a
-      // separate DBSPJ instance for maximum parallelism across TC threads.
-      // Multi-fragment bundling would send all fragments on a node to one
-      // DBSPJ instance, serializing the work. Since aggregation results
-      // are per-node (not per-fragment), the extra API round-trips that
-      // multi-fragment workers avoid are not a concern.
+      /**
+       * Aggregate queries default to one fragment per SCAN_FRAGREQ, each
+       * to a separate DBSPJ instance for maximum parallelism across TC
+       * threads. Since aggregation results are per-node (not per-fragment),
+       * the API round-trips that multi-fragment workers avoid are not a
+       * concern.
+       *
+       * NdbQueryOptions::setFragsPerWorker on the root operation opts in
+       * to bundling K fragments per worker to reduce the per-fragment
+       * fixed cost (fewer DBSPJ requests / API receivers; the fragments
+       * of a bundle are still scanned by their owning LDM threads).
+       * K is a power of two (normalized by the setter), clamped here to
+       * a divisor of the per-node fragment count. Requires all data nodes
+       * on ndbd_support_joinagg_frags_per_worker().
+       *
+       * Queries containing a CTE_SCAN (scanCte) operation stay pinned
+       * to 1: DBSPJ's cte_scan_start maps each request's single
+       * m_rootFragId onto a data-node CTE partition (virtual
+       * fragments), and a bundled fragment set would leave partitions
+       * unscanned. CTE bodies probed only via CTE_LOOKUP bundle fine —
+       * the DBSPJ CTE-root scan handles the MultiFrag fragId list.
+       */
       m_fragsPerWorker = 1;
-    } else {
-      NdbNodeBitmask dataNodes;
-      Uint32 cnt = 0;
-
-      // Count number of nodes 'rootTable' is distributed over.
-      for (Uint32 i = 0; i < rootFragments; i++) {
-        Uint32 nodes[1];
-        const Uint32 res =
-            rootTable.getFragmentNodes(i, nodes, NDB_ARRAY_SIZE(nodes));
-        assert(res > 0);
-        if (res == 0) {
-          // Fragment without node, should never happen
+      const Uint32 optFrags =
+          rootOp.getQueryOperationDef().getOptions().getFragsPerWorker();
+      bool hasCteScanOp = false;
+      if (optFrags > 1 && getQueryDef().getNumCtes() > 0) {
+        for (Uint32 i = 0; i < getQueryDef().getNoOfOperations(); i++) {
+          if (getQueryDef().getQueryOperation(i).getType() ==
+              NdbQueryOperationDef::CteScan) {
+            hasCteScanOp = true;
+            break;
+          }
+        }
+      }
+      if (optFrags > 1 && !hasCteScanOp &&
+          ndbd_support_joinagg_frags_per_worker(
+              m_transaction.getNdb()->getMinDbNodeVersion())) {
+        const Uint32 cnt = countDataNodes();
+        if (unlikely(cnt == 0)) {
           setErrorCode(QRY_BAD_FRAGMENT_DATA);
           DEBUG_CRASH();
           return -1;
         }
-        if (!dataNodes.get(nodes[0])) {
-          dataNodes.set(nodes[0]);
-          cnt++;
+        if ((rootFragments % cnt) == 0) {
+          const Uint32 fragsPerNode = rootFragments / cnt;
+          Uint32 frags = optFrags;
+          while (frags > 1 &&
+                 (frags > fragsPerNode || (fragsPerNode % frags) != 0)) {
+            frags /= 2;  // keep a power of two for the wire encoding
+          }
+          m_fragsPerWorker = frags;
         }
+      }
+    } else {
+      const Uint32 cnt = countDataNodes();
+      if (unlikely(cnt == 0)) {
+        // Fragment without node, should never happen
+        setErrorCode(QRY_BAD_FRAGMENT_DATA);
+        DEBUG_CRASH();
+        return -1;
       }
       require(cnt > 0);
       assert((rootFragments % cnt) == 0);
@@ -3754,6 +3809,9 @@ int NdbQueryImpl::prepareSend() {
   }
   m_workerCount = rootFragments / m_fragsPerWorker;
   assert(m_workerCount > 0);
+  // Every path above picks m_fragsPerWorker as a divisor of rootFragments;
+  // a remainder would leave fragments without a worker (query hang).
+  assert(m_workerCount * m_fragsPerWorker == rootFragments);
 
   int error = m_resultStreamAlloc.init(m_workerCount * getNoOfOperations());
   if (error != 0) {
@@ -4616,7 +4674,19 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
         return -1;
       }
       ScanTabReq::setJoinAggFlag(reqInfo, 1);
-      scanTabReq->scanParallelism = m_workerCount * m_fragsPerWorker;
+      /**
+       * scanParallelism = the number of SPJ workers (SCAN_FRAGREQs) DBTC
+       * shall prepare ScanFragRec handles for. With m_fragsPerWorker == 1
+       * (the default) this equals the root fragment count, bit-identical
+       * to the pre-fragsPerWorker wire image. When bundling is enabled
+       * (m_fragsPerWorker > 1, gated in prepareSend on
+       * ndbd_support_joinagg_frags_per_worker), log2(fragsPerWorker) is
+       * encoded in storedProcId bits 16-17 and DBTC chunks each node's
+       * fragments accordingly.
+       */
+      scanTabReq->scanParallelism = m_workerCount;
+      ScanTabReq::setFragsPerWorker(scanTabReq->storedProcId,
+                                    m_fragsPerWorker);
       tSignal.setLength(ScanTabReq::StaticLength + 5);
     }
     scanTabReq->requestInfo = reqInfo;
