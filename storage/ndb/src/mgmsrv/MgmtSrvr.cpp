@@ -444,13 +444,24 @@ bool MgmtSrvr::wait_until_arbitrator() {
       rankWait);
 
   /*
-   * Single wait loop with two early-exit paths:
+   * Single wait loop with several early-exit paths:
    *
    *   - Cold-start detection: if no data node has connected within
    *     kColdStartMs there is nothing to wait for; this happens when
    *     the mgmd is started before any ndbd process, e.g. in the
    *     k8s/helm boot sequence.  Skipping avoids the long pointless
    *     wait the user reported.
+   *
+   *   - Initial-start / parallel-restart detection: data nodes have
+   *     connected but none reports SL_STARTED.  There is no president
+   *     yet, so nobody can hand us arbitration — and worse, the data
+   *     nodes need the MGM client port to exchange their dynamic
+   *     transporter ports before they can interconnect and elect one.
+   *     Waiting here deadlocks the whole cluster start until the
+   *     rankWait timeout (observed as a 60 s stall with the data
+   *     nodes looping "Initial start, waiting for <node> to connect"
+   *     and mgmapi sessions being refused).  Open the port after
+   *     kColdStartMs instead; this is the pre-feature behaviour.
    *
    *   - Upgrade short-wait: if a connected data node lacks the
    *     ArbitrationRankWait code path, it will pick a rank-2
@@ -500,6 +511,16 @@ bool MgmtSrvr::wait_until_arbitrator() {
           "No data nodes connected within %u ms, treating as cold start "
           "and skipping arbitrator wait",
           kColdStartMs);
+      DBUG_RETURN(true);
+    }
+    if (db_seen && elapsed >= kColdStartMs && theFacade != nullptr &&
+        theFacade->ext_hasConfirmedDbNode() &&
+        !theFacade->ext_hasStartedDbNode()) {
+      g_eventLogger->info(
+          "Connected data node(s) not yet started - cluster is starting, "
+          "not restarting; opening MGM client port without waiting for "
+          "arbitrator (data nodes need the MGM port to exchange "
+          "transporter ports before a president can be elected)");
       DBUG_RETURN(true);
     }
     if (elapsed >= effectiveWait) {

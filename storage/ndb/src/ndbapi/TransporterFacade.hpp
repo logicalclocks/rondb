@@ -170,6 +170,25 @@ class TransporterFacade : public TransporterCallback,
    */
   bool ext_hasConnectedDbNode() const;
 
+  /*
+   * True if any connected data node has reported its state via
+   * API_REGCONF.  Gate for ext_hasStartedDbNode(): a node that is
+   * connected but not yet confirmed has an indeterminate state and
+   * must not be judged as "not started".
+   */
+  bool ext_hasConfirmedDbNode() const;
+
+  /*
+   * True if any connected data node reports NodeState SL_STARTED (via
+   * API_REGCONF).  Used by MgmtSrvr::wait_until_arbitrator() to detect
+   * an initial cluster start / parallel system restart: when no data
+   * node is started there is no president to hand us arbitration, and
+   * the data nodes need the MGM client port to exchange their dynamic
+   * transporter ports before they can even elect one — waiting would
+   * deadlock until the timeout.
+   */
+  bool ext_hasStartedDbNode() const;
+
   // Is node available for running transactions
  private:
   bool get_node_alive(NodeId nodeId) const;
