@@ -98,6 +98,10 @@ func printBenchQueryDetails(q *RonSQLBenchQuery, name string, ronsqlSide bool) {
 	fmt.Println()
 	fmt.Println(strings.TrimSpace(q.SQL))
 	fmt.Println()
+	if ronsqlSide && q.RonSQLPrefix != "" {
+		fmt.Println(ui.Info(fmt.Sprintf("RonSQL prefix: %q prepended on .bench_ronsql/.explain_ronsql (not used by the MySQL baseline)",
+			q.RonSQLPrefix)))
+	}
 	if q.RandKey {
 		fmt.Println(ui.Info(fmt.Sprintf("{KEY} is a random key per benchmark request, 1..max from: %s (default %d)",
 			q.KeySQL, q.KeyDefault)))
@@ -143,6 +147,10 @@ func (s *Shell) runExplainRonSQL(name string) error {
 	}
 
 	sqlText, key := s.sampleBenchSQL(q)
+	// RonSQL-side path: include the RonSQL-only statement prefix (e.g.
+	// FRAGS_PER_WORKER = 2) so the explained plan matches what
+	// .bench_ronsql actually runs.
+	sqlText = applyRonSQLPrefix(q, sqlText)
 
 	fmt.Println()
 	fmt.Println(ui.Info(fmt.Sprintf("EXPLAIN %s (RonSQL) - %s", q.Name, q.Description)))

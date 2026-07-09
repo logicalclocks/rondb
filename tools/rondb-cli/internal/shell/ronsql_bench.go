@@ -88,10 +88,15 @@ type RonSQLBenchQuery struct {
 	Description string
 	Database    string
 	SQL         string
-	RandKey     bool
-	KeySQL      string
-	KeyDefault  int
-	KeySpan     int // when > 0, {KEY2} = {KEY} + KeySpan
+	// RonSQLPrefix is prepended (with a space) to the statement on the
+	// RonSQL REST paths only (.bench_ronsql / .explain_ronsql), e.g.
+	// "FRAGS_PER_WORKER = 2". It is RonSQL-specific syntax, so the MySQL
+	// baseline paths (.bench_sql / .explain_sql) use the bare SQL.
+	RonSQLPrefix string
+	RandKey      bool
+	KeySQL       string
+	KeyDefault   int
+	KeySpan      int // when > 0, {KEY2} = {KEY} + KeySpan
 }
 
 // sqlBenchName is the query's name in the .bench_sql namespace.
@@ -156,10 +161,15 @@ FROM cust_features;`,
 		Category:    benchCatFS,
 		Description: "Batch serving: per-entity feature vectors for a random 100-customer segment (~1k orders)",
 		Database:    "tpch",
-		RandKey:     true,
-		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
-		KeyDefault:  tpchCustomerBase,
-		KeySpan:     100,
+		// Bundle 4 root fragments per SPJ worker: measured 2026-07-09 as
+		// ~10% faster than the un-hinted run (and ~5% over 2) on this
+		// small-range query (frags_per_worker_plan.md). The API clamps to
+		// the per-node fragment count on smaller topologies.
+		RonSQLPrefix: "FRAGS_PER_WORKER = 4",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		KeySpan:      100,
 		SQL: `WITH cust_features AS (
   SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_totalprice) AS total_spend,
          MAX(o_orderdate) AS last_order
@@ -694,11 +704,22 @@ func substituteBenchKey(q *RonSQLBenchQuery, key int) string {
 }
 
 // buildRonSQLBenchSQL substitutes the {KEY} / {KEY2} placeholders if present.
+// This is the bare SQL shared with the MySQL baseline paths.
 func buildRonSQLBenchSQL(q *RonSQLBenchQuery, rng *rand.Rand, maxKey int) string {
 	if !q.RandKey {
 		return q.SQL
 	}
 	return substituteBenchKey(q, pickBenchKey(q, rng, maxKey))
+}
+
+// applyRonSQLPrefix prepends the RonSQL-only statement prefix (e.g.
+// "FRAGS_PER_WORKER = 2") when the registry entry has one. Only for text
+// sent to the RonSQL REST endpoint - the prefix is not valid MySQL syntax.
+func applyRonSQLPrefix(q *RonSQLBenchQuery, sql string) string {
+	if q.RonSQLPrefix == "" {
+		return sql
+	}
+	return q.RonSQLPrefix + " " + sql
 }
 
 // countRonSQLResultRows counts data rows in a TEXT (header + TSV) response.
@@ -846,7 +867,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	// An unsupported query shape fails here with the RonSQL error message
 	// instead of producing a benchmark full of errors.
 	warmupReq := RonSQLRequest{
-		Query:        buildRonSQLBenchSQL(q, warmupRng, maxKey),
+		Query:        applyRonSQLPrefix(q, buildRonSQLBenchSQL(q, warmupRng, maxKey)),
 		Database:     q.Database,
 		ExplainMode:  "ALLOW",
 		OutputFormat: "TEXT",
@@ -882,7 +903,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 			rng := rand.New(rand.NewSource(int64(threadID)*100003 + 7))
 			for i := 0; i < numOps; i++ {
 				req := RonSQLRequest{
-					Query:        buildRonSQLBenchSQL(q, rng, maxKey),
+					Query:        applyRonSQLPrefix(q, buildRonSQLBenchSQL(q, rng, maxKey)),
 					Database:     q.Database,
 					ExplainMode:  "ALLOW",
 					OutputFormat: "TEXT",
