@@ -1141,7 +1141,7 @@ ndbd_support_scan_frag_rows_examined(Uint32 x) {
   if (major > 26) {
     return true;
   }
-  if ((major == 26) && (minor == 04) && (rel >= 1)) {
+  if ((major == 26) && (minor == 04) && (rel >= 2)) {
     return true;
   }
   if ((major == 26) && (minor > 04)) {
@@ -1182,7 +1182,7 @@ ndbd_support_arbitration_rank_wait(Uint32 x) {
   if ((major == 26) && (minor == 02) && (rel >= 4)) {
     return true;
   }
-  if ((major == 26) && (minor == 04) && (rel >= 1)) {
+  if ((major == 26) && (minor == 04) && (rel >= 2)) {
     return true;
   }
   return false;
@@ -1201,7 +1201,7 @@ ndbd_support_pushdown_join_agg(Uint32 x) {
   if ((major == 26) && (minor > 5)) {
     return true;
   }
-  if ((major == 26) && (minor == 04) && (rel >= 1)) {
+  if ((major == 26) && (minor == 04) && (rel >= 2)) {
     return true;
   }
   return false;
@@ -1232,7 +1232,36 @@ ndbd_support_agg_wide_type(Uint32 x) {
   if ((major == 26) && (minor > 5)) {
     return true;
   }
-  if ((major == 26) && (minor == 04) && (rel >= 1)) {
+  if ((major == 26) && (minor == 04) && (rel >= 2)) {
+    return true;
+  }
+  return false;
+}
+
+/*
+ * Configurable fragsPerWorker for pushed-aggregation (JoinAgg) queries.
+ * The API may bundle 2/4/8 root fragments per SPJ worker by encoding
+ * log2(fragsPerWorker) in bits 16-17 of SCAN_TABREQ::storedProcId (see
+ * ScanTabReq::setFragsPerWorker), with scanParallelism carrying the worker
+ * count.  DBTC support for chunked SPJ-instance assignment (and the DBSPJ
+ * CTE-root multi-fragment scan) is required to honor it, so the API gates
+ * values > 1 on this predicate; the value-1 wire image is bit-identical to
+ * older versions.  First shipped in 26.04.2.
+ */
+static inline
+bool
+ndbd_support_joinagg_frags_per_worker(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+
+  if (major > 26) {
+    return true;
+  }
+  if ((major == 26) && (minor > 5)) {
+    return true;
+  }
+  if ((major == 26) && (minor == 04) && (rel >= 2)) {
     return true;
   }
   return false;
