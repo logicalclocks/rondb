@@ -1,4 +1,5 @@
 --source include/have_ndb.inc
+--source include/have_ndb_debug.inc
 
 # Requires the testDeadlock NDB API program (built with -DWITH_NDB_TEST=1).
 let $have_bin= `SELECT LENGTH('$NDB_TEST_DEADLOCK_BINARY') > 0`;
