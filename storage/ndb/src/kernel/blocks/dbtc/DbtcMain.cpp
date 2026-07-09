@@ -17185,6 +17185,14 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggErrorCode = 0;
   scanptr.p->m_aggNodesOutstanding = 0;
   scanptr.p->m_joinAggNodes = nullptr;
+  scanptr.p->m_fragsPerWorker = 1;
+  if (ScanTabReq::getJoinAggFlag(ri)) {
+    jamDebug();
+    /* storedProcId bits 16-17 carry log2(fragsPerWorker); zero (any
+     * pre-26.04.2 sender, or fragsPerWorker == 1) decodes to 1. */
+    scanptr.p->m_fragsPerWorker =
+        ScanTabReq::getFragsPerWorker(scanTabReq->storedProcId);
+  }
   scanptr.p->m_numCtes = 0;
   scanptr.p->m_ctePhaseCount = 0;
   scanptr.p->m_cteCurrentPhase = 0;
@@ -17233,7 +17241,9 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
 
   scanptr.p->scanRequestInfo = tmp;
   scanptr.p->m_read_committed_base = ScanTabReq::getReadCommittedBaseFlag(ri);
-  scanptr.p->scanStoredProcId = scanTabReq->storedProcId;
+  /* The upper 16 bits of storedProcId are extended flags (decoded above),
+   * not part of the stored-procedure id — mask them off. */
+  scanptr.p->scanStoredProcId = scanTabReq->storedProcId & 0xFFFF;
   scanptr.p->scanState = ScanRecord::RUNNING;
   scanptr.p->m_queued_count = 0;
   scanptr.p->m_booked_fragments_count = 0;
@@ -17523,11 +17533,14 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
   }
   ndbassert(scanptr.p->scanNextFragId == 0);
 
-  /* CTE compound queries require one DBSPJ instance per fragment.
-   * Check the original scanParallel (from API) against the actual
-   * fragment count before overriding. */
+  /* CTE compound queries require every fragment to be covered by a
+   * DBSPJ worker: one instance per fragment, or — with fragsPerWorker
+   * bundling — one instance per chunk of m_fragsPerWorker fragments.
+   * Check the original scanParallel (worker count from the API)
+   * against the actual fragment count before overriding. */
   if (unlikely(scanptr.p->m_numCtes > 0 &&
-               scanptr.p->scanParallel < tfragCount)) {
+               scanptr.p->scanParallel * scanptr.p->m_fragsPerWorker <
+                   tfragCount)) {
     jam();
     abortScanLab(signal, scanptr, ZINVALID_KEY, true,
                  apiConnectptr);
@@ -17549,8 +17562,19 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
 }  // Dbtc::execDIH_SCAN_TAB_CONF()
 
 static int compareFragLocation(const void *a, const void *b) {
-  return (((Dbtc::ScanFragLocation *)a)->primaryBlockRef -
-          ((Dbtc::ScanFragLocation *)b)->primaryBlockRef);
+  const Dbtc::ScanFragLocation *fa = (const Dbtc::ScanFragLocation *)a;
+  const Dbtc::ScanFragLocation *fb = (const Dbtc::ScanFragLocation *)b;
+  if (fa->primaryBlockRef != fb->primaryBlockRef) {
+    return (int)(fa->primaryBlockRef - fb->primaryBlockRef);
+  }
+  /* fragId tiebreak: keep node runs deterministic with ascending
+   * fragIds so that fragsPerWorker chunking puts fragment 0 first in
+   * its chunk (the bundle's first fragId becomes the REQ's
+   * fragmentNoKeyLen -> DBSPJ's m_rootFragId). Root CTE_LOOKUP /
+   * lookup nodes execute exactly once cluster-wide by firing only on
+   * the request with m_rootFragId == 0, so exactly one bundle must
+   * keep rootFragId 0. */
+  return (int)(fa->fragId - fb->fragId);
 }
 
 /********************************************************************
@@ -17731,7 +17755,17 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
     ScanFragLocationPtr ptr;
     Local_ScanFragLocation_list frags(m_fragLocationPool,
                                       scanP->m_fragLocations);
-    const Uint32 spjInstance = (cspjInstanceRR++ % 120) + 1;
+    /**
+     * JoinAgg queries may bundle m_fragsPerWorker fragments per SPJ
+     * worker: the chunked assignment below gives each run of (at most)
+     * m_fragsPerWorker node-local fragments its own SPJ instance.
+     * All other MultiFrag scans use a single SPJ instance for the whole
+     * scan, so all fragments on a node collapse into one bundle.
+     */
+    const bool chunkedJoinAgg =
+        scanP->m_joinAgg && scanP->m_fragsPerWorker > 1;
+    const Uint32 spjInstance =
+        chunkedJoinAgg ? 0 : (cspjInstanceRR++ % 120) + 1;
 
     ScanFragLocation fragLocations[MAX_NDB_PARTITIONS];
 
@@ -17760,9 +17794,81 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
       }
     }
     ndbassert(i == scanP->scanNoFrag);
-    /* Sort fragment locations on 'blockRef' */
+    /* Sort fragment locations on 'blockRef' (the instance is uniform
+     * within the scan at this point, so this groups per node) */
     qsort(fragLocations, scanP->scanNoFrag, sizeof(ScanFragLocation),
           compareFragLocation);
+
+    if (chunkedJoinAgg) {
+      /**
+       * Assign a fresh SPJ instance to each chunk of m_fragsPerWorker
+       * node-local fragments. sendScanFragReq bundles contiguous equal
+       * blockRefs into one SCAN_FRAGREQ, so the chunks (contiguous
+       * after the node sort above) become ceil(fragsOnNode /
+       * fragsPerWorker) SPJ workers per node. No re-sort is needed.
+       *
+       * Guard: a JoinAgg scan must not produce more bundles than the
+       * API-provided scanParallelism (== m_booked_fragments_count here;
+       * it is first decremented in sendFragScansLab, which runs after
+       * this block). The API never sends SCAN_NEXTREQ for JoinAgg and
+       * PassAllConfs disables the ScanFragRec reuse path, so a bundle
+       * deficit would leave fragments unscanned and hang the query.
+       * The API computes scanParallelism from the same fragment
+       * distribution, so a mismatch can only arise from a metadata race
+       * (e.g. node restart); fall back to the legacy
+       * one-bundle-per-node assignment (the minimal bundle count) and
+       * let the empty-conf path absorb the excess ScanFragRecs.
+       */
+      jam();
+      const Uint32 fragsPerWorker = scanP->m_fragsPerWorker;
+      const Uint32 budget = scanP->m_booked_fragments_count;
+      Uint32 totalChunks = 0;
+      Uint32 runLen = 0;
+      for (i = 0; i < scanP->scanNoFrag; i++) {
+        if (i > 0 && fragLocations[i].primaryBlockRef !=
+                         fragLocations[i - 1].primaryBlockRef) {
+          totalChunks += (runLen + fragsPerWorker - 1) / fragsPerWorker;
+          runLen = 0;
+        }
+        runLen++;
+      }
+      totalChunks += (runLen + fragsPerWorker - 1) / fragsPerWorker;
+
+      if (unlikely(totalChunks > budget)) {
+        jam();
+        const Uint32 fallbackInstance = (cspjInstanceRR++ % 120) + 1;
+        for (i = 0; i < scanP->scanNoFrag; i++) {
+          fragLocations[i].primaryBlockRef =
+              numberToRef(DBSPJ, fallbackInstance,
+                          refToNode(fragLocations[i].primaryBlockRef));
+          fragLocations[i].preferredBlockRef =
+              numberToRef(DBSPJ, fallbackInstance,
+                          refToNode(fragLocations[i].preferredBlockRef));
+        }
+      } else {
+        jam();
+        Uint32 chunkInstance = (cspjInstanceRR++ % 120) + 1;
+        Uint32 inChunk = 0;
+        BlockReference prevRef = 0;  // unused before i == 1
+        for (i = 0; i < scanP->scanNoFrag; i++) {
+          const BlockReference primaryRef =
+              fragLocations[i].primaryBlockRef;
+          const BlockReference preferredRef =
+              fragLocations[i].preferredBlockRef;
+          if (i > 0 && (primaryRef != prevRef || inChunk == fragsPerWorker)) {
+            /* Node change or chunk full: start a new chunk */
+            chunkInstance = (cspjInstanceRR++ % 120) + 1;
+            inChunk = 0;
+          }
+          prevRef = primaryRef;
+          fragLocations[i].primaryBlockRef =
+              numberToRef(DBSPJ, chunkInstance, refToNode(primaryRef));
+          fragLocations[i].preferredBlockRef =
+              numberToRef(DBSPJ, chunkInstance, refToNode(preferredRef));
+          inChunk++;
+        }
+      }
+    }
 
     /* Write back the blockRef-sorted fragment locations */
     i = 0;
@@ -19547,7 +19653,22 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
     sections.m_cnt = 2;  // and sometimes keyinfo
   }
 
-  if (scanP->m_joinAgg) {
+  /**
+   * JoinAgg + MultiFrag (fragsPerWorker > 1): AttrInfo and (often)
+   * KeyInfo are already attached; adding aggKeys AND the fragId list
+   * as separate sections would need 4 sections while a signal carries
+   * at most 3 (getSections asserts).  Pack them into ONE trailing
+   * section instead: [fragCount, fragIds..., aggKeys...].  The
+   * receiving DBSPJ unpacks that format when both flags are set; it is
+   * guaranteed to understand it because JoinAgg+MultiFrag is only
+   * produced when the API passed the ndbd_support_joinagg_frags_per_worker
+   * gate (26.04.2).
+   */
+  const bool multiFragAgg =
+      scanP->m_joinAgg &&
+      ScanFragReq::getMultiFragFlag(scanP->scanRequestInfo);
+
+  if (scanP->m_joinAgg && !multiFragAgg) {
     jam();
     sections.m_ptr[sections.m_cnt++].i = scanP->m_aggKeysSectionPtrI;
   }
@@ -19589,17 +19710,13 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
      * with normal partitioning.
      */
     Uint32 fragIdPtrI = RNIL;
-    if (unlikely(!appendToSection(fragIdPtrI, &fragId, 1))) {
-      jam();
-      releaseSection(fragIdPtrI);
-      sections.clear();
-      scanError(signal, scanptr, ZGET_DATAREC_ERROR);
-      return false;
-    }
+    Uint32 fragIds[MAX_NDB_PARTITIONS];
+    Uint32 numFrags = 0;
+    fragIds[numFrags++] = fragId;
 
     /**
      * The fragLocations are sorted on primaryBlockRef.
-     * Append all fragIds at same block to this SCAN_FRAGREQ.
+     * Collect all fragIds at same block into this SCAN_FRAGREQ.
      * Use preferredBlockRef to decide which SPJ to place
      * this SCAN_FRAGREQ.
      */
@@ -19615,21 +19732,49 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
         break;
       }
       ndbrequire(preferredLqhBlockRef == scanFragP.p->lqhBlockref);
-      if ((ERROR_INSERTED(8116)) ||
-          (ERROR_INSERTED(8117) && (rand() % 3) == 0) ||
-          unlikely(!appendToSection(fragIdPtrI, &fragId, 1))) {
-        jam();
-        releaseSection(fragIdPtrI);
-        sections.clear();
-        scanError(signal, scanptr, ZGET_DATAREC_ERROR);
-        return false;
-      }
+      ndbrequire(numFrags < MAX_NDB_PARTITIONS);
+      fragIds[numFrags++] = fragId;
       scanP->scanNextFragId++;
       get_and_step_next_frag_location(fragLocationPtr, scanptr.p, fragId,
                                       thisPrimaryLqhBlockRef,
                                       thisPreferredLqhBlockRef);
     }
     jam();
+
+    bool appendOk = !(ERROR_INSERTED(8116)) &&
+                    !(ERROR_INSERTED(8117) && (rand() % 3) == 0);
+    if (appendOk && multiFragAgg) {
+      /* Combined format: explicit count word first */
+      appendOk = appendToSection(fragIdPtrI, &numFrags, 1);
+    }
+    if (appendOk) {
+      appendOk = appendToSection(fragIdPtrI, fragIds, numFrags);
+    }
+    if (appendOk && multiFragAgg) {
+      /**
+       * Append a copy of the aggKeys content.  The shared
+       * m_aggKeysSectionPtrI section stays owned by the scan record
+       * for the remaining sends (it is not attached to the handle in
+       * this mode) and is released at the last send below.
+       */
+      SectionReader aggReader(scanP->m_aggKeysSectionPtrI,
+                              getSectionSegmentPool());
+      Uint32 remaining = aggReader.getSize();
+      while (appendOk && remaining > 0) {
+        Uint32 buf[64];
+        const Uint32 n = (remaining > 64) ? 64 : remaining;
+        ndbrequire(aggReader.getWords(buf, n));
+        appendOk = appendToSection(fragIdPtrI, buf, n);
+        remaining -= n;
+      }
+    }
+    if (unlikely(!appendOk)) {
+      jam();
+      releaseSection(fragIdPtrI);
+      sections.clear();
+      scanError(signal, scanptr, ZGET_DATAREC_ERROR);
+      return false;
+    }
     sections.m_ptr[sections.m_cnt++].i = fragIdPtrI;
   }  // MultiFrag
 
@@ -19645,7 +19790,16 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
     jamDebug();
     scanP->scanKeyInfoPtr = RNIL;
     scanP->scanAttrInfoPtr = RNIL;
-    if (scanP->m_joinAgg) scanP->m_aggKeysSectionPtrI = RNIL;
+    if (scanP->m_joinAgg) {
+      if (multiFragAgg && scanP->m_aggKeysSectionPtrI != RNIL) {
+        /* Not attached to the handle in combined mode (its content was
+         * copied into the trailing section), so the send will not
+         * release it — do it here. */
+        jam();
+        releaseSection(scanP->m_aggKeysSectionPtrI);
+      }
+      scanP->m_aggKeysSectionPtrI = RNIL;
+    }
   }
 
   getSections(sections.m_cnt, sections.m_ptr);

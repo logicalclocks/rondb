@@ -2130,6 +2130,14 @@ class Dbtc : public SimulatedBlock {
     bool m_hasMainAggProgram;      // True if main query has an agg program
     bool m_aggPhaseFailed;         // Error received during current agg phase
     Uint32 m_aggErrorCode;         // Error code from first failure
+    /**
+     * Root fragments bundled per SPJ worker (SCAN_FRAGREQ) for JoinAgg
+     * queries. Decoded from SCAN_TABREQ storedProcId bits 16-17
+     * (ScanTabReq::getFragsPerWorker); 1 unless the API opted in to
+     * multi-fragment bundling. Drives the chunked SPJ-instance
+     * assignment in sendDihGetNodesLab.
+     */
+    Uint32 m_fragsPerWorker;
 
     /**
      * Per-node join agg state, dynamically allocated via

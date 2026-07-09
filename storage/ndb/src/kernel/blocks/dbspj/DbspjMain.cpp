@@ -1524,14 +1524,42 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
 
     Uint32 sectionCnt = handle.m_cnt;
     Uint32 fragIdsPtrI = RNIL;
-    if (ScanFragReq::getMultiFragFlag(req->requestInfo)) {
+    /**
+     * With both MultiFrag and JoinAgg set, DBTC packs the fragId list
+     * and the aggKeys into ONE trailing section
+     * [fragCount, fragIds..., aggKeys...], since AttrInfo + optional
+     * KeyInfo would otherwise make 4 sections (a signal carries at
+     * most 3).  aggKeysReadOffset marks where the aggKeys part starts
+     * within that combined section (0 = separate sections, the
+     * pre-fragsPerWorker layout).
+     */
+    Uint32 aggKeysReadOffset = 0;
+    const bool multiFragReq = ScanFragReq::getMultiFragFlag(req->requestInfo);
+    const bool joinAggReq = ScanFragReq::getJoinAggFlag(req->requestInfo);
+    if (multiFragReq) {
       jam();
       sectionCnt--;
       fragIdsPtrI = handle.m_ptr[sectionCnt].i;
       SectionReader fragsReader(fragIdsPtrI, getSectionSegmentPool());
 
+      Uint32 fragCnt;
+      if (joinAggReq) {
+        jam();
+        /* Combined section: explicit count word first */
+        if (unlikely(!fragsReader.getWord(&fragCnt)) ||
+            unlikely(fragCnt > MAX_NDB_PARTITIONS)) {
+          jam();
+          err = DbspjErr::InvalidRequest;
+          break;
+        }
+        aggKeysReadOffset = 1 + fragCnt;
+      } else {
+        /* Pure fragId list: section size == count */
+        fragCnt = fragsReader.getSize();
+      }
+
       // Unpack into extended signal memory:
-      const Uint32 fragCnt = signal->theData[25] = fragsReader.getSize();
+      signal->theData[25] = fragCnt;
       if (unlikely(!fragsReader.getWords(&signal->theData[26], fragCnt))) {
         jam();
         err = DbspjErr::InvalidRequest;
@@ -1562,18 +1590,31 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
     Uint32 parsedCteMetaCount = 0;
 
     Uint32 aggKeysPtrI = RNIL;
-    if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
+    if (joinAggReq) {
       jam();
-      sectionCnt--;
-      aggKeysPtrI = handle.m_ptr[sectionCnt].i;
-      SectionReader reader(aggKeysPtrI, getSectionSegmentPool());
+      Uint32 aggReadPtrI;
+      if (multiFragReq) {
+        jam();
+        /* Combined section (see above); aggKeysPtrI stays RNIL so the
+         * release below frees the shared section exactly once (via
+         * fragIdsPtrI). */
+        aggReadPtrI = fragIdsPtrI;
+      } else {
+        sectionCnt--;
+        aggKeysPtrI = handle.m_ptr[sectionCnt].i;
+        aggReadPtrI = aggKeysPtrI;
+      }
+      SectionReader reader(aggReadPtrI, getSectionSegmentPool());
+      if (aggKeysReadOffset > 0) {
+        ndbrequire(reader.step(aggKeysReadOffset));
+      }
 
       /**
        * Read main aggregation [nodeId, aggStateKey] pairs until we hit
        * CTE_KEYS_MARKER or exhaust the section.
        */
       static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-      const Uint32 totalWords = reader.getSize();
+      const Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
       Uint32 wordsRead = 0;
       while (wordsRead + 2 <= totalWords) {
         Uint32 word0;
@@ -3704,6 +3745,13 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
 
           const Uint32 bs_rows = 1;
           const Uint32 bs_bytes = (org->batch_size_bytes - data.m_totalBytes);
+          /**
+           * A sorted-order root is never a MultiFrag bundle: the API
+           * forces fragsPerWorker = 1 for ordered scans, and JoinAgg
+           * queries (the only scans that may bundle > 1 root fragment
+           * per request since fragsPerWorker became configurable) never
+           * set T_SORTED_ORDER. Hence exactly one root fragment here.
+           */
           ndbassert(requestPtr.p->m_rootFragCnt == 1);
           scanFrag_send_NEXTREQ(signal, requestPtr, treeRootPtr, 1, bs_bytes,
                                 bs_rows);
@@ -7566,6 +7614,15 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * table scans (scanFrag_start) are different: each LDM instance
    * scans its own local fragment partition. */
   ndbrequire(m_numDataNodes > 0);
+  /* This virtual-fragment -> data-node mapping keys on the request's
+   * single m_rootFragId and assumes exactly one root fragment per
+   * request: a fragsPerWorker > 1 bundle would make the set of
+   * m_rootFragId values (first fragId of each chunk) fail to cover
+   * 0..numDataNodes-1, silently skipping CTE partitions.  The API
+   * therefore pins fragsPerWorker = 1 for any query containing a
+   * CTE_SCAN (scanCte) operation — only CTE_LOOKUP-probed CTEs may
+   * bundle.  Tripwire: */
+  ndbassert(requestPtr.p->m_rootFragCnt <= 1);
   if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
     jam();
     DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
@@ -10888,15 +10945,17 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
     } else if (ctx.m_cteSubtreeRemaining > 0 &&
                !(treeBits & DABits::NI_HAS_PARENT)) {
       /**
-       * CTE root scan — scan exactly the same single fragment as the main
+       * CTE root scan — scan exactly the same fragment set as the main
        * query root scan.  Without this, each DBSPJ instance would ask DIH
        * for ALL fragments of the CTE source table, producing duplicate
        * aggregation into the same DBLQH hash table and wrong results.
        *
        * A CTE executes the same way as a normal aggregate query: DBTC
-       * distributes fragments across DBSPJ instances via SCAN_FRAGREQ,
-       * each instance scans one fragment.  The CTE root scan reuses the
-       * fragment that DBTC assigned to this instance (m_rootFragId).
+       * distributes fragments across DBSPJ instances via SCAN_FRAGREQ.
+       * Without fragsPerWorker bundling each instance scans one fragment
+       * (m_rootFragId); with MultiFrag (fragsPerWorker > 1) the request
+       * carries a list of node-local fragIds and the CTE body must scan
+       * all of them, mirroring the main-root MultiFrag branch above.
        *
        * Only the CTE root scan (no parent) is affected.  Child scans
        * within the CTE subtree (NI_HAS_PARENT set) still need the
@@ -10917,37 +10976,80 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
       data.m_null_row_outstanding = 0;
       data.m_agg_range_cnt = 0;
 
+      /* CTE subtrees build before the main query root consumes the
+       * start_signal, so the root REQuest (and the MultiFrag fragId list
+       * unpacked into extended signal memory by execSCAN_FRAGREQ) is
+       * still available here. */
+      ndbassert(ctx.m_start_signal != NULL);
+      const ScanFragReq *const rootReq =
+          reinterpret_cast<const ScanFragReq *>(
+              ctx.m_start_signal->getDataPtr());
+
       {
         Local_ScanFragHandle_list list(m_scanfraghandle_pool, data.m_fragments);
-        Ptr<ScanFragHandle> fragPtr;
-        data.m_fragCount = 1;
 
-        const Uint32 ref = numberToRef(
-            get_query_block_no(getOwnNodeId()),
-            getInstance(node->tableId, rootFragId), getOwnNodeId());
+        if (ScanFragReq::getMultiFragFlag(rootReq->requestInfo)) {
+          jam();
+          Uint32 variableLen = 25;
+          data.m_fragCount = ctx.m_start_signal->theData[variableLen++];
+          for (Uint32 i = 0; i < data.m_fragCount; i++) {
+            jam();
+            Ptr<ScanFragHandle> fragPtr;
+            const Uint32 fragId =
+                ctx.m_start_signal->theData[variableLen++];
+            const Uint32 ref = numberToRef(
+                get_query_block_no(getOwnNodeId()),
+                getInstance(node->tableId, fragId), getOwnNodeId());
 
-        if (!ERROR_INSERTED_CLEAR(17004) &&
-            likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
-                                               fragPtr))) {
-          jam();
-          fragPtr.p->init(rootFragId, readBackup);
-          fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
-          fragPtr.p->m_ref = ref;
-          fragPtr.p->m_next_ref = ref;
-          list.addLast(fragPtr);
-          insertGuardedPtr(requestPtr, fragPtr);
-        } else {
-          jam();
-          err = DbspjErr::OutOfQueryMemory;
-          return err;
+            if (!ERROR_INSERTED_CLEAR(17004) &&
+                likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
+                                                   fragPtr))) {
+              fragPtr.p->init(fragId, readBackup);
+              fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
+              fragPtr.p->m_ref = ref;
+              fragPtr.p->m_next_ref = ref;
+              list.addLast(fragPtr);
+              insertGuardedPtr(requestPtr, fragPtr);
+            } else {
+              jam();
+              err = DbspjErr::OutOfQueryMemory;
+              return err;
+            }
+          }
+        } else  // 'not getMultiFragFlag(rootReq->requestInfo)'
+        {
+          Ptr<ScanFragHandle> fragPtr;
+          data.m_fragCount = 1;
+
+          const Uint32 ref = numberToRef(
+              get_query_block_no(getOwnNodeId()),
+              getInstance(node->tableId, rootFragId), getOwnNodeId());
+
+          if (!ERROR_INSERTED_CLEAR(17004) &&
+              likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
+                                                 fragPtr))) {
+            jam();
+            fragPtr.p->init(rootFragId, readBackup);
+            fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
+            fragPtr.p->m_ref = ref;
+            fragPtr.p->m_next_ref = ref;
+            list.addLast(fragPtr);
+            insertGuardedPtr(requestPtr, fragPtr);
+          } else {
+            jam();
+            err = DbspjErr::OutOfQueryMemory;
+            return err;
+          }
         }
       }
 
-      /* Set m_rootFragCnt for CTE compound queries. Only set
-       * once (first CTE root scan). CTE scans use single fragment
-       * per DBSPJ instance, so m_rootFragCnt = 1. */
+      /* Set m_rootFragCnt for CTE compound queries. Only set once
+       * (first CTE root scan). Matches this request's fragment count:
+       * 1 unless fragsPerWorker bundling is in effect (the main query
+       * root, built after the CTE subtrees, sets the same count from
+       * the same MultiFrag list). */
       if (requestPtr.p->m_rootFragCnt == 0) {
-        requestPtr.p->m_rootFragCnt = 1;
+        requestPtr.p->m_rootFragCnt = data.m_fragCount;
       }
 
       dst->tableId = node->tableId;
