@@ -53,6 +53,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(EXPLAIN),
   kwdef(EXTRACT),
   kwdef(FORCE),
+  kwdef(FRAGS_PER_WORKER),
   kwdef(FROM),
   kwdef(GREATEST),
   kwdef(GROUP),

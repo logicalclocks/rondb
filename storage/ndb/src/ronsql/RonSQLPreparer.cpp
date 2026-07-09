@@ -801,6 +801,9 @@ RonSQLPreparer::parse()
   case ErrState::TOO_LONG_UNALIASED_OUTPUT:
     msg = "Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.";
     break;
+  case ErrState::INVALID_FRAGS_PER_WORKER:
+    msg = "FRAGS_PER_WORKER must be a positive integer.";
+    break;
   case ErrState::PARSER_ERROR:
     if (m_sql.len == 0)
     {
@@ -6791,6 +6794,19 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   JoinPlan& plan = scope.join_plan;
   NdbQueryOptions rootOpts;
 
+  // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
+  // SPJ worker for aggregate pushed queries.  Applied to the main-query
+  // root options only (rootOpts is shared with emit_index_scan_root);
+  // CTE-body emission is deliberately untouched — the value is
+  // query-global, carried in SCAN_TABREQ.  The NDB API normalizes
+  // (power of two, cap 8), clamps to the per-node fragment count, and
+  // ignores it for non-aggregate queries, ordered/pruned scans and
+  // scanCte-containing queries (see frags_per_worker_plan.md).
+  if (m_context.ast_root.frags_per_worker > 0)
+  {
+    rootOpts.setFragsPerWorker((Uint32)m_context.ast_root.frags_per_worker);
+  }
+
   // Dispatch CTE_SCAN root before the real-table logic. Reuses the
   // CTE_LOOKUP filter helper (same opcode family — verified by
   // testCteNdbApiFilter::testCteScanFilterRoot) and attaches the main
@@ -11484,6 +11500,12 @@ void
 RonSQLPreparer::print()
 {
   std::basic_ostream<char>& out = *m_conf.out_stream;
+
+  if (m_context.ast_root.frags_per_worker > 0) {
+    out << "FRAGS_PER_WORKER = " << m_context.ast_root.frags_per_worker
+        << " (requested; the NDB API normalizes to a power of two <= 8 and"
+           " may clamp or ignore it, see frags_per_worker_plan.md)\n\n";
+  }
 
   // Print CTE definitions
   if (m_has_ctes) {
