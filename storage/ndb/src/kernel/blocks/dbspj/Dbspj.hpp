@@ -455,6 +455,12 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteSubtreeRemaining;  // Embedded nodes remaining in current CTE
     Uint32 m_cteSubtreeCteId;      // CTE identifier for current subtree
 
+    // Set by parseDA on a protocol violation; NUM_VIOLATION_TYPES = none.
+    // Reported by the caller after the early-ref epilogue (deferred: signal
+    // buffer is still needed for the REF at that point).
+    Uint32 m_maliciousViolationType;
+    Uint32 m_maliciousNodeId;  // offending API node
+
     // Used for resolving dependencies
     Ptr<TreeNode> m_node_list[NDB_SPJ_MAX_TREE_NODES];
   };

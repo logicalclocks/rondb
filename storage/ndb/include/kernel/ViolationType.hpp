@@ -97,8 +97,12 @@ enum ViolationType : Uint32 {
   // ---- Framework-internal ----
   VT_FRAGMENT_INVALID_SECTION_NO = 25,  // A: fragmented signal carried a section number >= 3
 
-  VT_UNKNOWN = 26,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 27              // sentinel — keep last
+  // ---- DBSPJ (Phase 2 audit; see DbspjMain.cpp parseDA) ----
+  VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS = 26, // A: NI_HAS_PARENT parent index outside built-node range
+  VT_SPJ_ATTR_LIST_LENGTH_MISMATCH = 27,  // B: PI_ATTR_LIST declared length exceeds param section
+
+  VT_UNKNOWN = 28,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 29              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -155,6 +159,8 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_RONDIS_OVERSIZE_VALUE,     TIER_B, "rondis_oversize_value"},
     {VT_RONDIS_SELECT_OUT_OF_RANGE,TIER_B, "rondis_select_out_of_range"},
     {VT_FRAGMENT_INVALID_SECTION_NO,TIER_A,"fragment_invalid_section_no"},
+    {VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS,TIER_A,"spj_parent_index_out_of_bounds"},
+    {VT_SPJ_ATTR_LIST_LENGTH_MISMATCH, TIER_B,"spj_attr_list_length_mismatch"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 
