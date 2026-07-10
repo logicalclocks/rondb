@@ -74,6 +74,87 @@ inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
   out->time_zone_displacement = 0;
   out->time_type = MYSQL_TIMESTAMP_DATETIME;
 }
+
+/*
+ * Partition-level shard ownership (sharded mode, i.e. mysql.ttl_purge_nodes
+ * in use): shard s owns partition p of a table with hash h iff
+ * (h + p) % n_nodes == s. Per table the owned counts across shards differ by
+ * at most one (maximal evenness), and the hash offset rotates which shards
+ * carry the remainder partitions from table to table, so the aggregate load
+ * spreads evenly. Ownership is a pure function of (part_count, hash, n_nodes,
+ * shard) recomputed every round, so partition reorganizations and purge-node
+ * arrivals/departures re-scatter automatically; distinct shards never overlap,
+ * so purge scans never contend on rows.
+ *
+ * The smallest owned partition id is first = (s - h) mod n_nodes; owned ids
+ * are first, first + n_nodes, first + 2*n_nodes, ... below part_count.
+ */
+inline Uint32 FirstOwnedPartition(Uint32 table_hash, Uint32 n_nodes,
+                                  Uint32 shard) {
+  return (shard + n_nodes - (table_hash % n_nodes)) % n_nodes;
+}
+
+/*
+ * Position *part_id on the smallest owned partition >= its current value
+ * (wrapping to the first owned one when past the end). Returns false when
+ * this shard owns no partition of the table (n_nodes > part_count and the
+ * table's hash maps this shard past the last partition).
+ */
+bool AlignToOwnedPartition(Uint32* part_id, Uint32 part_count,
+                           Uint32 table_hash, Uint32 n_nodes, Uint32 shard) {
+  if (part_count == 0 || n_nodes == 0) {
+    return false;
+  }
+  Uint32 first = FirstOwnedPartition(table_hash, n_nodes, shard);
+  if (first >= part_count) {
+    return false;
+  }
+  Uint32 p = *part_id;
+  Uint32 cand;
+  if (p <= first) {
+    cand = first;
+  } else {
+    cand = first + ((p - first + n_nodes - 1) / n_nodes) * n_nodes;
+    if (cand >= part_count) {
+      cand = first;
+    }
+  }
+  *part_id = cand;
+  return true;
+}
+
+/*
+ * The next owned partition strictly after part_id, wrapping to the first
+ * owned one. Caller must have established ownership of >= 1 partition via
+ * AlignToOwnedPartition with the same (part_count, hash, n_nodes, shard).
+ */
+Uint32 NextOwnedPartition(Uint32 part_id, Uint32 part_count,
+                          Uint32 table_hash, Uint32 n_nodes, Uint32 shard) {
+  Uint32 first = FirstOwnedPartition(table_hash, n_nodes, shard);
+  Uint32 next = (part_id < first)
+                    ? first
+                    : first + (((part_id - first) / n_nodes) + 1) * n_nodes;
+  if (next >= part_count) {
+    next = first;
+  }
+  return next;
+}
+
+/*
+ * Advance a table's rotation pointer to the next partition this node may
+ * purge: the next owned one in sharded mode (shard >= 0), the next one
+ * plainly otherwise. Used for the normal post-batch rotation and to back
+ * off to a different partition after a lock timeout.
+ */
+Uint32 AdvancePartition(Uint32 part_id, Uint32 part_count, Uint32 table_hash,
+                        Int32 n_nodes, Int32 shard) {
+  if (shard >= 0 && n_nodes > 0) {
+    return NextOwnedPartition(part_id, part_count, table_hash,
+                              static_cast<Uint32>(n_nodes),
+                              static_cast<Uint32>(shard));
+  }
+  return part_count > 0 ? (part_id + 1) % part_count : 0;
+}
 }  // namespace
 
 TTLPurger::TTLPurger() :
@@ -1559,9 +1640,6 @@ void TTLPurger::PurgeWorkerJob() {
       deletedRows = 0;
       trx_failure_times = 0;
 
-      // Update status with current table being processed
-      UpdateCurrentTable(iter->first, iter->second.part_id);
-
       if (worker_ndb_->setDatabaseName(db_str.c_str()) != 0) {
         g_eventLogger->warning("[TTL PWorker] Failed to select "
             "database: %s"
@@ -1601,11 +1679,6 @@ void TTLPurger::PurgeWorkerJob() {
       table_id = ttl_tab->getTableId();
       hash_val = murmur3_32(reinterpret_cast<unsigned char*>(&table_id),
                                              sizeof(int), 0);
-	      if (shard >= kShardFirst && n_purge_nodes > 0 &&
-		  hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
-		++iter;
-		continue;
-	      }
       if (shard == kShardNosharding &&
           !iter->second.part_id_offset_applied &&
           ttl_tab->getPartitionCount() > 1) {
@@ -1623,6 +1696,26 @@ void TTLPurger::PurgeWorkerJob() {
           iter->second.part_id %= part_count;
         }
       }
+      if (shard >= kShardFirst && n_purge_nodes > 0) {
+        // Sharded mode: partition-level ownership (see the helpers above).
+        // Every active purge node works each TTL table, but on a disjoint,
+        // evenly-scattered subset of its partitions, so purge scans never
+        // contend with each other and a table's purge throughput scales
+        // with the number of active purge nodes. Recomputed every round
+        // from the live partition count and active-node set.
+        if (!AlignToOwnedPartition(&iter->second.part_id,
+                                   ttl_tab->getPartitionCount(), hash_val,
+                                   static_cast<Uint32>(n_purge_nodes),
+                                   static_cast<Uint32>(shard))) {
+          // More purge nodes than partitions and this table's hash maps
+          // this node past the last partition: nothing to do here.
+          ++iter;
+          continue;
+        }
+      }
+      // Published after the wrap/ownership fix-ups above so /status shows
+      // the partition this scan will actually use
+      UpdateCurrentTable(iter->first, iter->second.part_id);
       log_buf += ("[P" + std::to_string(iter->second.part_id) +
                  "/" +
                  std::to_string(ttl_tab->getPartitionCount()) + "]");
@@ -1907,6 +2000,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         }
@@ -1939,6 +2040,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         } else if (*reinterpret_cast<Int64*>(encoded_curr_purge) != 0) {
@@ -2056,6 +2165,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         }
@@ -2088,6 +2205,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         }
@@ -2120,8 +2245,9 @@ retry_trx:
         sleep_between_each_round = false;
       }
 
-      iter->second.part_id =
-        ((iter->second.part_id + 1) % ttl_tab->getPartitionCount());
+      iter->second.part_id = AdvancePartition(
+          iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+          n_purge_nodes, shard);
 
       // Accumulate metrics locally (no locking during round)
       local_rows_purged += deletedRows;

@@ -1,0 +1,161 @@
+# ==========================================================================
+# ttl_purge_partition_sharding.test
+#
+# Sharded mode (mysql.ttl_purge_nodes in use) with partition-level shard
+# ownership: shard s owns partition p of a table with hash h iff
+# (h + p) % n_nodes == s.
+#   1. Single active purge node (n=1) owns ALL partitions of a table:
+#      a multi-partition table must be fully purged (ownership alignment
+#      and next-owned rotation must visit every partition).
+#   2. Partition count change (8 -> 16 via online ADD PARTITION): the
+#      ownership layout is recomputed from the live count, so the new
+#      partitions must be purged too.
+#   3. A node that is not in the active purge-node set (another node holds
+#      a fresh lease) must not purge at all.
+#   4. When every configured purge node's lease expires, nodes fall back
+#      to unsharded purging (documented failsafe) and purging resumes.
+#
+# The RDRS API node id is not statically known, so phase 1 pre-creates a
+# lease row for EVERY possible node id (1..255) with a NULL lease: only the
+# row leased by the live purge worker counts as active (NULL leases are
+# inactive, and the worker's own row is always considered alive).
+#
+# Purge activity is asserted via the purger's rows_purged_total metric
+# (snapshot + delta), NOT via COUNT(*): SQL reads TTL-filter expired rows,
+# so row counts cannot distinguish "expired but retained" from "purged".
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+
+# Baseline of the cumulative purge counter (the suite shares one RDRS)
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/ps_m.json
+--let $json_file = $MYSQL_TMP_DIR/ps_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $purged_base = $json_value
+
+--echo #
+--echo # Phase 1: sharded mode, one active node owns all partitions
+--echo #
+
+CREATE TABLE mysql.ttl_purge_nodes (node_id INT PRIMARY KEY, last_active DATETIME) ENGINE=NDB;
+INSERT INTO mysql.ttl_purge_nodes WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 255) SELECT n, NULL FROM seq;
+
+# Wait until the RDRS purge worker has leased its row => sharded mode is on
+--let $wait_timeout = 30
+--let $wait_condition = SELECT COUNT(*) >= 1 FROM mysql.ttl_purge_nodes WHERE last_active IS NOT NULL
+--source include/wait_condition.inc
+
+--let $ttl_db = ttl_shard
+--let $ttl_table = t1
+--let $ttl_seconds = 5
+--let $ttl_partitions = 8
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_shard
+--let $wait_table = t1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_shard
+--let $insert_table = t1
+--let $insert_count = 200
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Full purge proves the single shard visits every one of the 8 partitions
+--let $expected_purge_total = `SELECT $purged_base + 200`
+--let $purge_wait_timeout = 45
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_shard
+--let $purge_table = t1
+--let $purge_completion_timeout = 90
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Phase 2: partition count change (8 -> 16) is picked up
+--echo #
+
+ALTER TABLE ttl_shard.t1 ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 8;
+
+--let $insert_db = ttl_shard
+--let $insert_table = t1
+--let $insert_count = 200
+--let $insert_start_id = 1000
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $expected_purge_total = `SELECT $purged_base + 400`
+--let $purge_wait_timeout = 45
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_shard
+--let $purge_table = t1
+--let $purge_completion_timeout = 90
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Phase 3: not an active purge node => no purging
+--echo #
+
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+
+# Node id 1 is a data node id, never an RDRS API node: with only node 1
+# holding a fresh lease, this RDRS node is not in the active purge set
+DELETE FROM mysql.ttl_purge_nodes;
+INSERT INTO mysql.ttl_purge_nodes VALUES (1, UTC_TIMESTAMP());
+
+--let $log_pattern = Not the configured purging node
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rdrs_log.inc
+
+--let $insert_db = ttl_shard
+--let $insert_table = t1
+--let $insert_count = 20
+--let $insert_start_id = 2000
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Keep the fake node's lease fresh while checking that nothing is purged
+# (the lease outlives the check by the 20s lease period)
+UPDATE mysql.ttl_purge_nodes SET last_active = UTC_TIMESTAMP() WHERE node_id = 1;
+--sleep 5
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/ps_m.json
+--let $json_file = $MYSQL_TMP_DIR/ps_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $phase3_expected = `SELECT $purged_base + 400`
+--let $assert_text = A non-purge node must not purge any rows
+--let $assert_cond = $json_value = $phase3_expected
+--source include/assert.inc
+
+--echo #
+--echo # Phase 4: all configured purge nodes dead => fallback purging
+--echo #
+
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+
+# Stop refreshing node 1's lease: after ~20s it is considered dead, the
+# active set becomes empty and this node falls back to unsharded purging
+--let $log_pattern = Became an active purging node
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rdrs_log.inc
+
+--let $expected_purge_total = `SELECT $purged_base + 420`
+--let $purge_wait_timeout = 45
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_shard
+--let $purge_table = t1
+--let $purge_completion_timeout = 90
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE mysql.ttl_purge_nodes;
+DROP DATABASE ttl_shard;
+--sleep 2
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
