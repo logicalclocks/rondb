@@ -1,0 +1,56 @@
+SET time_zone = '+00:00';
+#
+# Phase 1: purger starts disabled, config-file window is reported
+#
+include/assert.inc [Purging must be disabled from the config file]
+include/assert.inc [The config-file active window must be reported]
+CREATE DATABASE IF NOT EXISTS ttl_cf;
+DROP TABLE IF EXISTS ttl_cf.t1;
+CREATE TABLE ttl_cf.t1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_cf.t1(ttl_col);
+ALTER TABLE ttl_cf.t1 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_cf.t1 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+include/assert.inc [A disabled purger must not purge any rows]
+#
+# Phase 2: enabled via REST, per-node window far from now => idle
+#
+include/assert.inc [The effective window must come from the per-node config]
+include/assert.inc [No rows may be purged outside the per-node window]
+#
+# Phase 3: cluster-wide ctrl window over now takes precedence
+#
+CREATE TABLE mysql.ttl_purge_ctrl (ctrl_id INT PRIMARY KEY, value INT) ENGINE=NDB;
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+INSERT INTO mysql.ttl_purge_ctrl VALUES (2, (@now_min + 1380) % 1440), (3, (@now_min + 60) % 1440);
+include/assert.inc [The effective window must come from the ctrl table]
+#
+# Phase 4: invalid active_window via REST is rejected
+#
+invalid active_window rejected with HTTP 400
+#
+# Phase 5: clearing the per-node window resumes purging
+#
+DROP TABLE mysql.ttl_purge_ctrl;
+#
+# Cleanup
+#
+DROP DATABASE ttl_cf;
