@@ -4607,8 +4607,15 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
  * Sample wall-clock "now" once per scan batch and reuse it for every row's
  * TTL expiry check (Dbtup::checkTTL), instead of calling my_micro_time()
  * (a gettimeofday, which is a real syscall on VMs without a TSC clocksource)
- * once per scanned row. The staleness is bounded by one batch, well within
- * the 1-second granularity of TTL expiry itself. Only relevant when this
+ * once per scanned row. Sampled at every point a batch starts evaluating
+ * rows: scan start (initScanrec), each SCAN_NEXTREQ, a queued scan's
+ * restart, and the start of a prefetched batch (parallel ordered scans).
+ * This is a deliberate relaxation of the old per-row clock read: the value
+ * can be stale by up to one batch's execution time (for selective scans,
+ * the time to examine -- not return -- a batch's worth of rows). A stale
+ * "now" errs only toward "not yet expired": an expired row can stay visible
+ * to the batch (or be skipped by a purge round and caught by the next one),
+ * but a row can never expire or be purged early. Only relevant when this
  * scan actually evaluates TTL: a TTL table whose expiry check is enabled
  * (m_ttl_ignore == 0), i.e. normal user scans and the background purge scan.
  * Otherwise leave it 0 so checkTTL keeps its per-row clock read (it isn't
@@ -17030,7 +17037,12 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
 
   // TTL: refresh the per-batch "now" cache for the rows fetched by this
   // SCAN_NEXTREQ (covers both the lock-release and direct continue paths).
-  set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+  // Skip while a prefetched batch is in flight or ready (parallel ordered
+  // scans): its timestamp was sampled when the prefetch started, and the
+  // batch after it resamples at its own start in sendScanFragConf.
+  if (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) {
+    set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+  }
 
   /* --------------------------------------------------------------------
    * If scanLockHold = true we need to unlock previous round of
@@ -19718,6 +19730,10 @@ void Dblqh::restart_queued_scan(Signal *signal, Uint32 scanPtrI) {
   ndbrequire(loc_scanptr.p->copyPtr == RNIL);
   setup_scan_pointers(scanPtrI, __LINE__);
   m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 8;
+  // TTL: this scan may have waited in the scan queue arbitrarily long;
+  // resample the per-batch "now" so its first batch doesn't evaluate TTL
+  // expiry with the clock read back at SCAN_FRAGREQ time (initScanrec).
+  set_scan_ttl_now_sec(loc_scanptr.p, m_tc_connect_ptr.p->tableref);
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
   jamDebug();
@@ -19788,7 +19804,8 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
   scanPtr->m_ttl_only_expired = ttl_only_expired;
-  // Sample "now" for the first batch; refreshed per batch in execSCAN_NEXTREQ.
+  // Sample "now" for the first batch; resampled at every later batch start
+  // (execSCAN_NEXTREQ, queued-scan restart, prefetched-batch start).
   set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
@@ -20967,6 +20984,10 @@ void Dblqh::sendScanFragConf(Signal *signal,
                ScanRecord::CONTINOUS_SCAN_IDLE);
     scanPtr->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_ACTIVE;
     scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
+    // TTL: the prefetched next batch starts scanning now; resample the
+    // per-batch "now" so its rows don't reuse the timestamp sampled when
+    // the batch just sent to the API began.
+    set_scan_ttl_now_sec(scanPtr, regTcPtr->tableref);
 
     DEB_CONT_SCAN(("(%u) LQH SCAN_FRAGCONF sent scanPtrI: %u, "
                    "CONT_SCAN_IDLE -> CONT_SCAN_ACTIVE"
