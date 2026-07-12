@@ -49,6 +49,7 @@
 #include "AggInterpreter.hpp"
 #include "my_time.h"
 #include "my_systime.h"
+#include "ttl_expiry.hpp"
 #include <signaldata/AccLock.hpp>
 #include "rondb_hash.hpp"
 #include "../dbtux/Dbtux.hpp"
@@ -2892,46 +2893,6 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
 
 #define MAX_READ (MIN(sizeof(signal->theData), MAX_SEND_MESSAGE_BYTESIZE))
 
-/*
- * TTL related
- * Lock-free replacement for gmtime_r() on the TTL path.
- *
- * glibc's gmtime_r()/localtime_r() funnel through __tz_convert(), which
- * unconditionally takes the process-global tzset_lock (a private futex) even
- * for the UTC case. This routine converts UTC epoch seconds to a broken-down
- * MYSQL_TIME using only the in-tree calendar arithmetic
- * (get_date_from_daynr), so it touches no glibc lock.
- *
- * It is field-for-field equivalent to MySQL's sec_to_TIME(out, t, 0) -- the
- * lock-free Time_zone_offset / my_tz_OFFSET0 path in sql/tztime.cc -- and is
- * reimplemented here because tztime.cc is part of the mysqld server and is
- * not linked into ndbmtd (get_date_from_daynr lives in mysys/my_time.cc,
- * which is). Since the integer expiry compare took over the hot path, this
- * is only used by checkTTL's ttl_sec == 0 cold branch.
- */
-static inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
-  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
-  const int64_t EPOCH_DAYNR = 719528;
-  int64_t days = t / 86400;
-  int32_t secs = static_cast<int32_t>(t % 86400);
-  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
-    secs += 86400;
-    days -= 1;
-  }
-  unsigned int year, month, day;
-  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
-  out->neg = false;
-  out->second_part = 0;
-  out->year = year;
-  out->month = month;
-  out->day = day;
-  out->hour = secs / 3600;
-  out->minute = (secs % 3600) / 60;
-  out->second = secs % 60;
-  out->time_zone_displacement = 0;
-  out->time_type = MYSQL_TIMESTAMP_DATETIME;
-}
-
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,
                     bool var_data_prepared,
@@ -3040,29 +3001,15 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
    * Expiry decision: integer compare in seconds, replacing the broken-down
    * time path (ttl_utc_sec_to_TIME / TIME_from_longlong_datetime_packed ->
    * date_add_interval(INTERVAL_SECOND) -> my_time_compare vs UTC "now"),
-   * whose calendar arithmetic dominated checkTTL's per-row cost.
-   *
-   * This is a bit-exact replacement, not an approximation: MySQL's calendar
-   * has no DST, no leap seconds and 86400-second days, and
-   * date_add_interval()'s INTERVAL_SECOND branch is itself a linearization:
-   *   daynr = calc_daynr(year, month, 1)
-   *         + floor((Uint32(day - 1) * 86400 + hms + ttl_sec) / 86400)
-   * failing (-> row treated as never expiring) iff daynr exceeds
-   * MAX_DAY_NUMBER, while my_time_compare() orders the resulting valid
-   * datetimes exactly by that second count. That arithmetic is reproduced
-   * below verbatim -- including the unsigned (day - 1) wrap, which is what
-   * routes day-of-month 0 (zero date / zero-day date under permissive
-   * sql_mode) into the never-expiring overflow branch -- so every storable
-   * value keeps the exact pre-optimization verdict (verified against the
-   * original path by an exhaustive differential harness). "now" linearizes
-   * to now_sec + EPOCH_DAYNR * 86400 (ttl_utc_sec_to_TIME is the plain
-   * inverse of that). Callers use only sign(cmp_ret) ("<= 0" == expired),
-   * so the equal case maps to -1.
+   * whose calendar arithmetic dominated checkTTL's per-row cost. The
+   * decision arithmetic lives in ttl_expiry.hpp (see the equivalence note
+   * there); the differential unit test ttl_expiry-t.cpp asserts it keeps
+   * the exact pre-optimization verdict across a boundary-biased sweep.
    */
   // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge window
   // is added on top, so a Uint32 add could wrap and defeat the expiry
-  // overflow guard below (a wrapped small value would yield a bogus
-  // near-term expiry -> premature purge).
+  // overflow guard (a wrapped small value would yield a bogus near-term
+  // expiry -> premature purge).
   const Int64 ttl_sec =
       Int64(regTabPtr->m_ttl_sec) + Int64(req_struct->ttl_purge_window_size);
   /*
@@ -3074,55 +3021,22 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
   const Int64 now_sec = (req_struct->ttl_now_sec != 0)
                             ? Int64(req_struct->ttl_now_sec)
                             : Int64(my_micro_time() / 1000000); /* second */
-  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
-  constexpr Int64 EPOCH_DAYNR = 719528;
   int cmp_ret;
   if (type_id == NDB_TYPE_TIMESTAMP2) {
-    /*
-     * TIMESTAMP2(0) stores UTC epoch seconds (4 bytes, big-endian): pure
-     * integer compare. The expiry overflow guard is unreachable here: epoch
-     * seconds (< 2^32) plus ttl_sec (< 2^33) stay far below the year-9999
-     * limit (~2.5e11 epoch seconds), and with ttl_sec == 0 the direct
-     * compare of two valid UTC datetimes is this integer compare.
-     */
+    /* TIMESTAMP2(0) stores UTC epoch seconds (4 bytes, big-endian). */
     my_timeval tv;
     my_timestamp_from_binary(&tv, ttl_data, 0);
-    cmp_ret = (Int64(tv.m_tv_sec) + ttl_sec <= now_sec) ? -1 : 1;
+    cmp_ret = ttl_expiry_cmp_timestamp2(Int64(tv.m_tv_sec), ttl_sec, now_sec);
   } else {
     /* DATETIME2(0) holds a UTC wall-clock datetime. */
     MYSQL_TIME dt;
     TIME_from_longlong_datetime_packed(
         &dt, my_datetime_packed_from_binary(ttl_data, 0));
-    if (likely(ttl_sec != 0)) {
-      /* Linearize to seconds since year 0 with date_add_interval()'s own
-         arithmetic (see the equivalence note above). */
-      const Int64 expiry_sec =
-          (Int64(calc_daynr(dt.year, dt.month, 1)) +
-           Int64(Uint32(dt.day - 1u))) * 86400 +
-          Int64(dt.hour) * 3600 + Int64(dt.minute) * 60 + Int64(dt.second) +
-          ttl_sec;
-      if (unlikely(expiry_sec >= (MAX_DAY_NUMBER + 1) * Int64(86400))) {
-        // date_add_interval()'s invalid_date outcome (expiry would pass
-        // 9999-12-31, incl. the day-of-month 0 wrap): never expires.
-        g_eventLogger->warning("TTL column adds "
-            "interval overflowing");
-        cmp_ret = 1;
-      } else {
-        cmp_ret = (expiry_sec <= now_sec + EPOCH_DAYNR * 86400) ? -1 : 1;
-      }
-    } else {
-      /*
-       * ttl_sec == 0: a TTL=0 table scanned without a purge window. The
-       * original path skips date_add_interval() here and my_time_compare()
-       * orders the degenerate dates permissive sql_modes can store (zero
-       * month/day, ALLOW_INVALID_DATES) lexicographically, which no
-       * linearization reproduces -- so keep the broken-down compare
-       * verbatim. Cold: every valid row of such a table expires the second
-       * it is written.
-       */
-      MYSQL_TIME curr_dt;
-      ttl_utc_sec_to_TIME((time_t)now_sec, &curr_dt);
-      cmp_ret = my_time_compare(dt, curr_dt);
+    bool overflow = false;
+    cmp_ret = ttl_expiry_cmp_datetime2(dt, ttl_sec, now_sec, &overflow);
+    if (unlikely(overflow)) {
+      g_eventLogger->warning("TTL column adds "
+          "interval overflowing");
     }
   }
   return cmp_ret;
