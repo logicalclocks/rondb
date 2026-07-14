@@ -45,7 +45,9 @@ TARGET_LINK_LIBRARIES(
 )
 
 set(RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")
-set(TESTDBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources/testdbs")
+# Single source of truth for SQL test fixtures: the Go test tree. The C++
+# tests embed the same files, so both suites always see identical schemas.
+set(TESTDBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../test_go/resources/testdbs")
 set(GENERATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/embedded_content.hpp")
 
 file(GLOB_RECURSE SQL_FILES RELATIVE "${TESTDBS_DIR}" "${TESTDBS_DIR}/**/*.sql")
