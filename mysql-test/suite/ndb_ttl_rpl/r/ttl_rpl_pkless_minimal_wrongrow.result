@@ -1,0 +1,53 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+SET @old_luaw = @@global.ndb_log_update_as_write;
+SET @old_lum  = @@global.ndb_log_update_minimal;
+SET GLOBAL ndb_log_update_as_write = 0;
+SET GLOBAL ndb_log_update_minimal  = 1;
+# PK-LESS TTL table (hidden PK) -> applier locates rows via find_row scan.
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP NULL DEFAULT NULL,
+col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+# --- seed two rows identical in (col_a, col_c) but differing ONLY in the
+#     TTL column col_b: R_exp expires in ~10s, R_live stays live 1h.
+#     R_exp is inserted first (lower rowid) to bias scan order toward it.
+INSERT INTO test.sz VALUES (1, NOW(),                    100);
+INSERT INTO test.sz VALUES (1, NOW() + INTERVAL 1 HOUR,  100);
+# replica initially sees both rows (col_c both 100)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+col_a	col_c
+1	100
+1	100
+STOP REPLICA sql_thread;
+# --- age R_exp past its 10s TTL (both source and replica). R_live stays.
+# --- UPDATE only col_c. On the source the WHERE scan hides the expired
+#     R_exp, so only R_live is updated -> one UPDATE_ROWS event whose
+#     minimal before-image is just {col_c=100} (col_b excluded).
+UPDATE test.sz SET col_c = 999 WHERE col_c = 100;
+# source final visible state: the live row now shows col_c=999.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+col_a	col_c
+1	999
+# [precondition] applier paused: R_exp expired-hidden, only R_live (100).
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+col_a	col_c
+1	100
+# --- resume: applier must update the LIVE row to 999. If TTL-ignore lets
+#     it pick the expired R_exp first, R_live stays 100 -> divergence.
+START REPLICA sql_thread;
+# --- SOURCE vs REPLICA must agree: the live row shows col_c=999.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+col_a	col_c
+1	999
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+col_a	col_c
+1	999
+SET GLOBAL ndb_log_update_as_write = @old_luaw;
+SET GLOBAL ndb_log_update_minimal  = @old_lum;
+DROP TABLE test.sz;
+include/rpl/deinit.inc

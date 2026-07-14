@@ -72,6 +72,8 @@ std::string TTLPurgeCtrl::configToJson(const TTLPurgeConfig &config) {
   doc.AddMember("min_batch_size", config.min_batch_size, allocator);
   doc.AddMember("max_batch_size", config.max_batch_size, allocator);
   doc.AddMember("sleep_interval_ms", config.sleep_interval_ms, allocator);
+  doc.AddMember("reconcile_interval_sec", config.reconcile_interval_sec,
+                allocator);
 
   rapidjson::StringBuffer buffer;
   rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -170,6 +172,8 @@ void TTLPurgeCtrl::getAll(
   configObj.AddMember("min_batch_size", config.min_batch_size, allocator);
   configObj.AddMember("max_batch_size", config.max_batch_size, allocator);
   configObj.AddMember("sleep_interval_ms", config.sleep_interval_ms, allocator);
+  configObj.AddMember("reconcile_interval_sec", config.reconcile_interval_sec,
+                      allocator);
   doc.AddMember("config", configObj, allocator);
 
   // Status object
@@ -299,6 +303,16 @@ void TTLPurgeCtrl::updateConfig(
         if (!val.error()) {
           config.sleep_interval_ms = static_cast<Uint32>(val.value());
         }
+      } else if (key == "reconcile_interval_sec") {
+        auto val = field.value().get_uint64();
+        if (!val.error()) {
+          // Cap to one day to avoid a uint64->Uint32 wrap (which could
+          // silently land on 0 = disabled) and pathological intervals.
+          // 0 legitimately disables periodic reconciliation.
+          uint64_t v = val.value();
+          config.reconcile_interval_sec =
+              v > 86400 ? 86400 : static_cast<Uint32>(v);
+        }
       }
     }
   } catch (...) {
@@ -336,6 +350,8 @@ void TTLPurgeCtrl::updateConfig(
   configObj.AddMember("min_batch_size", config.min_batch_size, allocator);
   configObj.AddMember("max_batch_size", config.max_batch_size, allocator);
   configObj.AddMember("sleep_interval_ms", config.sleep_interval_ms, allocator);
+  configObj.AddMember("reconcile_interval_sec", config.reconcile_interval_sec,
+                      allocator);
   respDoc.AddMember("config", configObj, allocator);
 
   rapidjson::StringBuffer buffer;

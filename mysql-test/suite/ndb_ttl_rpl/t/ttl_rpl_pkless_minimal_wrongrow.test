@@ -1,0 +1,106 @@
+# ==========================================================================
+# Regression guard for TTL finding #7 fix Concern A: the applier read-side
+# TTL-ignore must NOT pick the wrong physical row on a PK-less table.
+# ==========================================================================
+#
+# The finding #7 fix makes the applier's find_row lookup ignore replica-side
+# TTL so it can see expired-but-unpurged rows. Concern raised in review: on a
+# PK-less table an expired row and a live row indistinguishable in the event
+# before-image would both become scan candidates; the applier picks the first
+# and might update/delete the expired row instead of the intended live one -> a
+# new, opposite divergence.
+#
+# RESOLVED: this cannot happen, and this test locks the invariant that prevents
+# it. For a PK-less table the injected before-image is ALWAYS the full row
+# (ha_ndbcluster_binlog.cc: DELETE forces n=1 full BI at ~6453; UPDATE builds
+# the BI from event_data->stored_columns = all columns, and for a PK-less table
+# generate_minimal_bitmap sets before=after=all-stored-columns -- the "minimal"
+# trim only applies to tables WITH a primary key). So the TTL column is always
+# in the before-image, and record_compare pins the match to exactly one row
+# (expired vs live differ precisely in that TTL column).
+#
+# This test deliberately runs the most adversarial config -- the only one that
+# could conceivably drop the TTL column from a PK-less before-image:
+#   ndb_log_update_as_write = 0  (log UPDATE_ROWS, not WRITE_ROWS)
+#   ndb_log_update_minimal   = 1  (minimal update logging)
+# and two rows sharing the changed column (col_c) but differing ONLY in the TTL
+# column (col_b), one expired one live. The applier must still update the LIVE
+# row. If a future change ever trims the TTL column out of a PK-less
+# before-image, this test diverges (source 999 vs replica 100) and fails.
+#
+# NOTE: this passes on both buggy and fixed builds of finding #7 -- the target
+# (R_live) is a live row, so it is found even without read-side TTL-ignore. The
+# fix's own regression guard is ttl_rpl_pkless_expired_apply (expired target).
+#
+# Topology: source (2 ndbd) -> replica (1 ndbd), row binlog, no RDRS purger.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+--connection master
+SET @old_luaw = @@global.ndb_log_update_as_write;
+SET @old_lum  = @@global.ndb_log_update_minimal;
+SET GLOBAL ndb_log_update_as_write = 0;
+SET GLOBAL ndb_log_update_minimal  = 1;
+
+--echo # PK-LESS TTL table (hidden PK) -> applier locates rows via find_row scan.
+CREATE TABLE test.sz (
+  col_a INT,
+  col_b TIMESTAMP NULL DEFAULT NULL,
+  col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+sleep 3;
+
+--echo # --- seed two rows identical in (col_a, col_c) but differing ONLY in the
+--echo #     TTL column col_b: R_exp expires in ~10s, R_live stays live 1h.
+--echo #     R_exp is inserted first (lower rowid) to bias scan order toward it.
+INSERT INTO test.sz VALUES (1, NOW(),                    100);
+INSERT INTO test.sz VALUES (1, NOW() + INTERVAL 1 HOUR,  100);
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+--echo # replica initially sees both rows (col_c both 100)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+STOP REPLICA sql_thread;
+
+--connection master
+--echo # --- age R_exp past its 10s TTL (both source and replica). R_live stays.
+sleep 15;
+--echo # --- UPDATE only col_c. On the source the WHERE scan hides the expired
+--echo #     R_exp, so only R_live is updated -> one UPDATE_ROWS event whose
+--echo #     minimal before-image is just {col_c=100} (col_b excluded).
+UPDATE test.sz SET col_c = 999 WHERE col_c = 100;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--echo # source final visible state: the live row now shows col_c=999.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+
+--connection slave
+--echo # [precondition] applier paused: R_exp expired-hidden, only R_live (100).
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+--echo # --- resume: applier must update the LIVE row to 999. If TTL-ignore lets
+--echo #     it pick the expired R_exp first, R_live stays 100 -> divergence.
+START REPLICA sql_thread;
+
+--connection master
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--echo # --- SOURCE vs REPLICA must agree: the live row shows col_c=999.
+--connection master
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+--connection slave
+SELECT col_a, col_c FROM test.sz ORDER BY col_a, col_c;
+
+###############################################################################
+# Cleanup
+###############################################################################
+--connection master
+SET GLOBAL ndb_log_update_as_write = @old_luaw;
+SET GLOBAL ndb_log_update_minimal  = @old_lum;
+DROP TABLE test.sz;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+--source include/rpl/deinit.inc

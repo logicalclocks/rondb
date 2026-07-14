@@ -1,0 +1,94 @@
+# ==========================================================================
+# Guard: renaming the TTL column must not leave a stale TTL comment.
+#
+# The kernel expires by column NUMBER but the stored comment binds by NAME.
+# An unguarded rename left the comment naming the old column:
+#   (a) SHOW CREATE emitted DDL that cannot be re-created (mysqldump/restore
+#       of the table failed with "column must exist")
+#   (b) if a new column later reused the old name, the next comment re-parse
+#       (any copying ALTER) silently rebound TTL to the WRONG column --
+#       observed live: expiry jumped columns, so wrong rows would be purged.
+#
+# Fixed semantics:
+#   - a rename that leaves the comment stale is rejected (any algorithm:
+#     inplace/default hit the new guard; explicit COPY hits the create()
+#     comment validation)
+#   - renaming AND re-binding the comment in ONE statement works
+#   - renaming while REMOVING TTL in one statement works
+#   - renaming non-TTL columns is unaffected
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.rn, test.rn_copy;
+--enable_warnings
+
+CREATE TABLE test.rn (
+  id  INT PRIMARY KEY,
+  ttl_col DATETIME,
+  data INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+
+--echo #
+--echo # A pure rename of the TTL column is rejected (comment would go stale)
+--echo #
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new;
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new, ALGORITHM=INPLACE;
+--echo # CHANGE syntax takes the same guard:
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rn CHANGE ttl_col ts_new DATETIME;
+--echo # Explicit ALGORITHM=COPY skips the inplace analysis but the create()
+--echo # comment validation rejects the stale binding:
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new, ALGORITHM=COPY;
+SHOW CREATE TABLE test.rn;
+
+--echo #
+--echo # Renaming a NON-TTL column is unaffected
+--echo #
+ALTER TABLE test.rn RENAME COLUMN data TO payload;
+SHOW CREATE TABLE test.rn;
+
+--echo #
+--echo # Rename + comment re-bind in ONE statement works (via COPY fallback)
+--echo #
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new,
+  COMMENT="NDB_TABLE=TTL=2@ts_new";
+SHOW CREATE TABLE test.rn;
+
+--echo # TTL is functional on the renamed column: a row expires
+INSERT INTO test.rn VALUES (1, NOW(), 10);
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.rn WHERE id = 1
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+SELECT id FROM test.rn WHERE id = 1;
+
+--echo # The emitted DDL is re-creatable again (dump/restore works)
+CREATE TABLE test.rn_copy (
+  id  INT PRIMARY KEY,
+  ts_new DATETIME,
+  payload INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ts_new";
+DROP TABLE test.rn_copy;
+
+--echo #
+--echo # Rename + COMMENT="" is STILL rejected: update_comment_info re-injects
+--echo # the existing TTL modifier into a comment that does not set one, so
+--echo # the binding would go stale all the same
+--echo #
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rn RENAME COLUMN ts_new TO ts_plain, COMMENT="";
+
+--echo #
+--echo # Rename + TTL=OFF (disable) in one statement works
+--echo #
+ALTER TABLE test.rn RENAME COLUMN ts_new TO ts_plain,
+  COMMENT="NDB_TABLE=TTL=OFF";
+SHOW CREATE TABLE test.rn;
+
+DROP TABLE test.rn;
