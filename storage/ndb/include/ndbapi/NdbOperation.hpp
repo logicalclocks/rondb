@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1199,6 +1199,9 @@ class NdbOperation {
   // XXX until NdbRecord is used in ndb_restore
   void set_disable_fk() { m_flags |= OF_DISABLE_FK; }
   void set_ring_buffer_op() { m_flags |= OF_RING_BUFFER_OP; }
+  /* Ignore TTL: physical-recovery paths (e.g. ndb_restore backup-log replay)
+     must apply an op to an expired-but-unpurged row verbatim, not skip it. */
+  void set_ttl_ignore() { m_flags |= OF_TTL_IGNORE; }
 
   /* Set nowait option on locking read */
   int setNoWait();

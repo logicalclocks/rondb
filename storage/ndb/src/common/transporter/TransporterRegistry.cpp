@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -55,6 +55,7 @@
 #include "NdbSpin.h"
 #include "OutputStream.hpp"
 #include "portlib/NdbTCP.h"
+#include "portlib/NdbTick.h"
 
 #include <mgmapi/mgmapi.h>
 #include <mgmapi/mgmapi_debug.h>
@@ -1741,7 +1742,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * per iteration. If more data is present in the transporter it will
    * have to wait until the next iteration. At this next iteration also
    * other transporters gets a chance to receive.
-   * 
+   *
    * To achieve this balanced effort on transporters we need 3
    * bitmaps defined in pollReceive and performReceive.
    *
@@ -2169,8 +2170,8 @@ void TransporterRegistry::set_recv_thread_idx(Transporter *t,
 
 /**
  * Receive from the set of transporters in the bitmask
- * 'recvdata.m_transporters'. These has been polled by 
- * ::pollReceive() which recorded transporters with 
+ * 'recvdata.m_transporters'. These has been polled by
+ * ::pollReceive() which recorded transporters with
  * available data in the subset
  * recvdata.m_recv_socket_transporters,
  * recvdata.m_read_transporters. performReceive will
@@ -2269,7 +2270,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    * bytes. The m_has_data_transporters bitmap was set already in
    * pollReceive for SHM transporters.
    *
-   * 
+   *
    * Unpack data either received above or pending from prev rounds.
    * For the Shared memory transporter m_has_data_transporters can
    * be set in pollReceive as well.
@@ -2292,6 +2293,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    *  CLOSE_COMCONF was sent. For the moment the risk of taking
    *  advantage of this small optimization is not worth the risk.
    */
+  NDB_TICKS last_recv = NdbTick_getCurrentTicks();
   TrpBitmask handle_trps(recvdata.m_recv_socket_transporters);
   bool stop_unpacking = false;
   handle_trps.bitOR(recvdata.m_read_transporters);
@@ -2319,13 +2321,13 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
     /**
      * First check transporter 'is CONNECTED.
      * A transporter can only be set into, or taken out of, is_connected'
-     * state by ::update_connections(). See comment there about 
-     * synchronication between ::update_connections() and 
+     * state by ::update_connections(). See comment there about
+     * synchronication between ::update_connections() and
      * performReceive()
      *
      * Transporter::isConnected() state may change asynch.
      * A mismatch between the TransporterRegistry::is_connected(),
-     * and Transporter::isConnected() state is possible, and indicate 
+     * and Transporter::isConnected() state is possible, and indicate
      * that a change is underway. (Completed by update_connections())
      */
     bool hasdata = false;
@@ -2344,19 +2346,45 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
             int nBytes = t_tcp->doReceive(recvdata);
             if (nBytes > 0)
             {
-              recvdata.transporter_recv_from(node_id);
+              t->set_last_recv(last_recv);
+              recvdata.transporter_recv_from(node_id, trp_id);
               recvdata.m_has_data_transporters.set(trp_id);
             }
             TCP_Transporter *tcp_t = (TCP_Transporter *)t;
             more_pending = tcp_t->hasPending();
           }
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+          else if (t->getTransporterType() == tt_RDMA_TRANSPORTER)
+          {
+            /*
+             * RDMA control-socket wake under a job-buffer-full condition.
+             *
+             * RDMA payload never arrives on the control socket: inbound
+             * data is delivered through the recv CQ and surfaces via
+             * m_read_transporters, not m_recv_socket_transporters (see
+             * check_TCP() and docs/rdma-wakeup.txt). We only reach this
+             * arm if the control socket became readable for a connected
+             * RDMA transporter (e.g. an unexpected byte or a peer HUP).
+             * There is no socket payload to drain into a receive buffer
+             * and no SHM/TCP semantics apply, so we intentionally do
+             * nothing: more_pending stays false, the
+             * m_recv_socket_transporters bit is cleared below, and any
+             * disconnect is handled by the normal control-socket dispatch
+             * once the job buffer drains. This mirrors the RDMA arms in
+             * the primary/secondary dispatch blocks; without it an RDMA
+             * transporter would fall into the SHM branch and trip
+             * require(type == SHM) (or require(false) in a build without
+             * SHM support).
+             */
+          }
+#endif
           else
           {
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
             require(t->getTransporterType() == tt_SHM_TRANSPORTER);
             SHM_Transporter * t_shm = (SHM_Transporter*)t;
             t_shm->doReceive();
-            recvdata.transporter_recv_from(node_id);
+            recvdata.transporter_recv_from(node_id, trp_id);
             recvdata.m_has_data_transporters.set(trp_id);
 #else
             require(false);
@@ -2386,6 +2414,51 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           // doReceive()
           recvdata.m_recv_socket_transporters.set(trp_id, more_pending);
         }
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+        else if (t->getTransporterType() == tt_RDMA_TRANSPORTER &&
+                 ((RDMA_Transporter *)t)->has_received_data())
+        {
+          /**
+           * RDMA job-buffer-full handling.
+           *
+           * Unlike TCP/SHM there is nothing to drain into a receive buffer
+           * here: an inbound RDMA SEND has already landed in a parked HCA
+           * recv slot (moved off the recv CQ by poll_RDMA() in
+           * pollReceive()), and m_recv_socket_transporters is never set for
+           * RDMA. We deliberately do NOT consume the slot -- leaving it
+           * unconsumed withholds the recv credit from the peer, which is the
+           * RDMA-native equivalent of not reading a congested TCP socket.
+           *
+           * We must, however, still propagate the back-pressure signal the
+           * way the TCP branch above does. Without this, a receive thread
+           * whose only ready transporters are RDMA would fall through to the
+           * 'continue' below without ever setting stop_unpacking;
+           * performReceive() would then return 0 (== not buffersFull) and the
+           * mt.cpp receive loop would keep calling pollReceive()+
+           * performReceive() with delay==0 -- a hot spin that re-reaps the CQ
+           * and re-scans every transporter until the block threads drain the
+           * job buffers. Setting stop_unpacking makes performReceive() report
+           * buffersFull, so the caller performs the lighter congested-wait
+           * (recheck_congested_job_buffers) instead.
+           *
+           * m_read_transporters stays set for this trp_id (we 'continue'
+           * before the clear below), so the parked data is re-visited once
+           * congestion clears. m_stop_trp_id gives the same fair-resume point
+           * the TCP path relies on.
+           */
+          // Note reception from this node so that a long congestion window
+          // does not let a heartbeat timeout falsely declare the peer dead:
+          // the data really did arrive (it is parked in the recv slots), we
+          // are only deferring its unpack. The TCP/SHM branches likewise call
+          // transporter_recv_from() whenever they take in bytes.
+          recvdata.transporter_recv_from(node_id, trp_id);
+          if (!stop_unpacking)
+          {
+            stop_unpacking = true;
+            recvdata.m_stop_trp_id = trp_id;
+          }
+        }
+#endif
         continue;
       }
       if (t->getTransporterType() == tt_TCP_TRANSPORTER)
@@ -2394,7 +2467,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
         if (likely(recvdata.m_recv_socket_transporters.get(trp_id)))
         {
           Uint32 nBytes = t_tcp->doReceive(recvdata);
-          recvdata.transporter_recv_from(node_id);
+          if (nBytes > 0) t->set_last_recv(last_recv);
+          recvdata.transporter_recv_from(node_id, trp_id);
           (void)nBytes;
           DEBUG_FPRINTF_DETAIL((stderr,
             "Received %u bytes from trp: %u\n", nBytes, trp_id));
@@ -2482,6 +2556,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           if (szUsed == 0) break;
           t_rdma->consume_received_bytes(szUsed);
           received_data = true;
+          t->set_last_recv(last_recv);
           rec_bytes += szUsed;
           if (stopReceiving) break;
         }
@@ -2514,7 +2589,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
         if (likely(recvdata.m_recv_socket_transporters.get(trp_id)))
         {
           t_shm->doReceive();
-          recvdata.transporter_recv_from(node_id);
+          recvdata.transporter_recv_from(node_id, trp_id);
           /**
            * Ignore any data we read, the data wasn't collected by the
            * shared memory transporter, it was simply read and thrown
@@ -2583,7 +2658,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
         SHM_Transporter *t_shm = (SHM_Transporter *)t;
         Uint32 *readPtr, *eodPtr, *endPtr;
         t_shm->getReceivePtr(&readPtr, &eodPtr, &endPtr);
-        recvdata.transporter_recv_from(node_id);
+        t->set_last_recv(last_recv);
+        recvdata.transporter_recv_from(node_id, trp_id);
         Uint32 *newPtr = unpack(recvdata, readPtr, eodPtr, endPtr, node_id,
                                 trp_id, stopReceiving);
         t_shm->updateReceivePtr(recvdata, newPtr);
@@ -2897,6 +2973,7 @@ void TransporterRegistry::start_connecting(TrpId trp_id) {
   DBUG_PRINT("info", ("performStates[trp:%u]=CONNECTING", trp_id));
 
   Transporter *t = allTransporters[trp_id];
+  require(t != nullptr);
   t->resetBuffers();
   m_error_states[trp_id].m_code = TE_NO_ERROR;
   m_error_states[trp_id].m_info = (const char *)~(UintPtr)0;
@@ -4297,6 +4374,18 @@ Uint64 TransporterRegistry::get_send_buffer_max_used_bytes(TrpId trpId) const {
   return allTransporters[trpId]->get_max_used_bytes();
 }
 
+NDB_TICKS TransporterRegistry::get_last_recv(TrpId trpId) const {
+  assert(trpId < MAX_NTRANSPORTERS);
+  assert(allTransporters[trpId] != nullptr);
+  return allTransporters[trpId]->get_last_recv();
+}
+
+void TransporterRegistry::set_last_recv(TrpId trpId, NDB_TICKS last_recv) {
+  assert(trpId < MAX_NTRANSPORTERS);
+  assert(allTransporters[trpId] != nullptr);
+  allTransporters[trpId]->set_last_recv(last_recv);
+}
+
 void TransporterRegistry::get_trps_for_node(NodeId nodeId, TrpId *trp_ids,
                                             Uint32 &num_ids,
                                             Uint32 max_size) const {
@@ -4331,6 +4420,21 @@ TrpId TransporterRegistry::get_the_only_base_trp(NodeId nodeId) const {
   if (num_ids == 0) return 0;
   require(num_ids == 1);
   return trp_ids[0];
+}
+
+TrpId TransporterRegistry::get_recv_trp(BlockReference recvRef,
+                                        BlockReference sendRef) const {
+  Transporter *t;
+  NodeId sendNode = refToNode(sendRef);
+  Multi_Transporter *multi_trp = get_node_multi_transporter(sendNode);
+  if (multi_trp != nullptr) {
+    t = multi_trp->get_recv_transporter(refToBlock(recvRef),
+                                        refToBlock(sendRef));
+  } else {
+    t = get_node_transporter(sendNode);
+  }
+  if (t == nullptr) return 0;
+  return t->getTransporterIndex();
 }
 
 void TransporterRegistry::switch_active_trp(Multi_Transporter *t) {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2026, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2406,8 +2406,19 @@ static bool read_client_connect_attrs(THD *thd, char **ptr,
   size_t length, length_length;
   char *ptr_save;
 
-  /* not enough bytes to hold the length */
+  /* Need one byte to determine the length-encoded field size. */
   if (*max_bytes_available < 1) return true;
+
+  uchar *pos = (uchar *)*ptr;
+  DBUG_EXECUTE_IF("connect_attrs_too_short_3", *pos = 252;
+                  *max_bytes_available = 2;);
+  DBUG_EXECUTE_IF("connect_attrs_too_short_4", *pos = 253;
+                  *max_bytes_available = 3;);
+  DBUG_EXECUTE_IF("connect_attrs_too_short_9", *pos = 254;
+                  *max_bytes_available = 8;);
+
+  const size_t required_length = (size_t)net_field_length_size(pos);
+  if (*max_bytes_available < required_length) return true;
 
   /* read the length */
   ptr_save = *ptr;

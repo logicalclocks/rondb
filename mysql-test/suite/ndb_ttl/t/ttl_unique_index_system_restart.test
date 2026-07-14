@@ -1,0 +1,75 @@
+# Bug #2: LCP+REDO recovery must ignore TTL for UNIQUE-index operations.
+
+--source include/have_ndb.inc
+
+SET time_zone='+00:00';
+
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+v VARCHAR(20),
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+--echo # The LCP contains an expired owner and a live owner.
+INSERT INTO t1 VALUES
+(1, '2000-01-01 00:00:00', 101, 'expired-old'),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 102, 'live-lcp');
+
+--echo # Force and allow the LCP to complete; automatic LCPs are suppressed by
+--echo # TimeBetweenLocalCheckpoints=31 in the companion configuration.
+--exec $NDB_MGM -e "all dump 7099" > /dev/null 2>&1
+--sleep 8
+
+--echo # Same-PK insert-over-expired refreshes owner 1 after the LCP. Its base
+--echo # and UNIQUE-index ZINSERT_TTL operations must replay from REDO.
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 101, 'refreshed');
+
+--echo # Additional post-LCP REDO contains one live and two expired owners.
+INSERT INTO t1 VALUES
+(3, DATE_ADD(NOW(), INTERVAL 10 YEAR), 103, 'live-redo'),
+(4, '2000-01-01 00:00:00', 104, 'expired-redo-4'),
+(5, '2000-01-01 00:00:00', 105, 'expired-redo-5');
+
+--echo # System restart recovers every node from LCP plus REDO, without copyfrag.
+--exec $NDB_MGM -e "all restart -n" > /dev/null 2>&1
+--exec $NDB_WAITER --not-started --timeout=90 > /dev/null 2>&1
+--exec $NDB_MGM -e "all start" > /dev/null 2>&1
+--exec $NDB_WAITER --timeout=180 > /dev/null 2>&1
+
+--source include/ndb_wait_connected.inc
+--disable_query_log
+--disable_result_log
+let $mysql_errno= 1;
+let $counter= 600;
+while ($mysql_errno)
+{
+  --error 0,1296,4009
+  SELECT v FROM t1 WHERE id = 1;
+  if ($mysql_errno)
+  {
+    if (!$counter)
+    {
+      die Timed out waiting for test.t1 after system restart;
+    }
+    dec $counter;
+    --sleep 0.1
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo # Recovery completed without error 2352 or a data-node crash. Base-table
+--echo # and forced UNIQUE-index reads must agree, including the refreshed row.
+SELECT id, u, v FROM t1 ORDER BY id;
+SELECT id, u, v FROM t1 FORCE INDEX (ux)
+WHERE u IN (101, 102, 103, 104, 105) ORDER BY id;
+
+DROP TABLE t1;

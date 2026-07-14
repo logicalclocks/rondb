@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -12673,7 +12673,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
               signal_size += handle.m_ptr[i].sz;
             }
             signal_size += NDB_ARRAY_SIZE(data.m_scanFragReq) + 1;
-             
+
             if (signal_size <= MAX_SIZE_SINGLE_SIGNAL) {
               jam();
               /* Single signals can be sent to virtual blocks. */

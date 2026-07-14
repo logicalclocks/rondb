@@ -1,0 +1,101 @@
+# ==========================================================================
+# copyfrag-626: node-restart copy-fragment fails on a TTL table
+# ==========================================================================
+#
+# Bug: during a node (re)start, the surviving node's copy-fragment scan ships
+# expired-but-not-yet-purged TTL rows to the restarting node. The per-row copy
+# operation built by Dblqh::initCopyTc does NOT carry the ttl_ignore flag, so
+# the restarting node re-applies TTL expiry to the copy ZUPDATE: DBTUP
+# handleUpdateReq -> checkTTL -> error 626 ("Tuple did not exist") ->
+# COPY_FRAGREF -> the restarting node is force-shutdown in start phase 5 with
+# error 2303 ("System error, node killed during node restart by other node").
+#
+# Trigger (all required):
+#   (a) the row is present in the restarting node's local data (LCP/REDO);
+#   (b) the row was UPDATEd on the surviving node while the target was down, so
+#       its rowGCI > the target's restore GCI and the copy scan ships it;
+#   (c) the row is past its TTL expiry (wall clock) at copy-fragment time;
+#   (d) the expired row is still physically present (not purged) on the
+#       surviving node. In MTR there is no RDRS purger, so expired rows are
+#       never purged -> (d) holds automatically.
+#
+# This test PASSES only on a fixed build (the restarting node rejoins cleanly).
+# On the buggy build the restarting node crashes/cannot rejoin, so the
+# "$NDB_WAITER ... start" step times out and the test FAILS -> bug reproduced.
+#
+# Requires NoOfReplicas=2 with 2 data nodes (one node group): see the companion
+# ttl_node_restart_copyfrag.cnf.
+#
+# The table is intentionally fixed-width and small so the copy data-row's
+# internal word count collides with the copy delete-by-rowid word count; this
+# makes the buggy failure a deterministic node CRASH (error 2303) rather than a
+# (slower) hang. Either way the node fails to rejoin on a buggy build.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# Node-membership change while node 2 is down is expected; keep the (fixed-build)
+# PASS run clean of unrelated error-log noise.
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+# TTL expiry is evaluated in the data node against UTC (checkTTL uses
+# gmtime_r(my_micro_time())), while NOW() stores the value in the session time
+# zone. MTR leaves the session time zone at SYSTEM (the build host's local zone),
+# so on a non-UTC host NOW() would store ttl_col ahead of the data node's UTC
+# clock and the row would never look expired. Pin the session to UTC so the
+# stored ttl_col and the expiry check agree (this is how TTL is used in
+# production, where the server runs in UTC). The '+00:00' offset form needs no
+# time-zone tables.
+SET time_zone = '+00:00';
+
+# Timing budget (TTL measured from the INSERT, since the UPDATE below does not
+# touch ttl_col): the UPDATE must run while the row is still fresh, but the copy
+# on restart must see it expired. The UPDATE can only happen after the graceful
+# "2 restart -n" completes (~20-25s here), so TTL must comfortably exceed that;
+# TTL=45 keeps the UPDATE well inside the live window while the ~10s LCP wait +
+# the stop time + the 25s post-UPDATE wait push the copy safely past expiry.
+--echo # --- create a fixed-width TTL table (TTL=45s on ttl_col) and one fresh row
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=45@ttl_col";
+
+INSERT INTO test.t1 VALUES (1, NOW(), 0);
+
+--echo # --- force an LCP so node 2 captures the row in its local checkpoint
+--exec $NDB_MGM -e "all dump 7099"
+--echo # (wait for the LCP to complete)
+--sleep 10
+
+--echo # --- stop data node 2 (keep its data); node 1 keeps serving
+--exec $NDB_MGM -e "2 restart -n"
+--exec $NDB_WAITER --wait-nodes=2 --not-started --timeout=60
+--echo # --- while node 2 is down, UPDATE the row on node 1 (does NOT touch
+--echo #     ttl_col, so the TTL clock keeps running from the INSERT). This bumps
+--echo #     rowGCI above node 2's restore GCI so the copy-fragment ships the row
+--echo #     to node 2 on restart (the NR scan's GCI filter would otherwise skip
+--echo #     an unchanged row).
+UPDATE test.t1 SET v = v + 1 WHERE id = 1;
+
+--echo # --- wait past the TTL (45s, measured from the INSERT) so the row is
+--echo #     expired by the time node 2 copies it (no purger in MTR, so the
+--echo #     expired row stays physically present on node 1)
+--sleep 25
+
+--echo # --- start node 2: copy-fragment ships the expired row -> on a BUGGY
+--echo #     build node 2 crashes (error 626 -> 2303) and the waiter times out;
+--echo #     on a FIXED build node 2 rejoins cleanly.
+--exec $NDB_MGM -e "2 start"
+--exec $NDB_WAITER --wait-nodes=2 --timeout=120
+--echo # --- node 2 rejoined (only reached on a fixed build); cluster is healthy.
+--echo #     The expired row was copied (TTL ignored during copy) but is hidden
+--echo #     on read. Use SELECT * to list visible rows: COUNT(*) is avoided here
+--echo #     because it may still include expired-but-unpurged rows (a known TTL
+--echo #     visibility quirk), whereas SELECT * filters them on read.
+SELECT * FROM test.t1 ORDER BY id;
+
+DROP TABLE test.t1;

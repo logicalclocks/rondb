@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -166,7 +166,7 @@ void Dbtup::scanProcedure(Signal* signal,
   if (unlikely(!c_storedProcPool.seize(storedPtr))) {
     jam();
     handle->clear();
-    storedProcBufferSeizeErrorLab(signal, 
+    storedProcBufferSeizeErrorLab(signal,
                                   regOperPtr,
                                   RNIL,
                                   ZOUT_OF_STORED_PROC_MEMORY_ERROR);
@@ -294,7 +294,7 @@ void Dbtup::copyProcedure(Signal *signal,
   Uint32 extraAttrIds[EXTRA_COPY_PROC_WORDS];
   Uint32 extraReads = 0;
   Uint32 tableBits = regTabPtr.p->m_bits;
- 
+
   if (tableBits & Tablerec::TR_ExtraRowGCIBits) {
     AttributeHeader ah(AttributeHeader::ROW_GCI64, 0);
     extraAttrIds[extraReads++] = ah.m_value;

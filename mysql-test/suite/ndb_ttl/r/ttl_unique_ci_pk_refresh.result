@@ -1,0 +1,61 @@
+SET time_zone = '+00:00';
+CREATE TABLE tci (
+k       VARCHAR(32) COLLATE utf8mb4_0900_ai_ci PRIMARY KEY,
+ttl_col DATETIME,
+u       INT,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+# 'ALPHA' owns unique value 100; a DIFFERENT PK cannot reuse it while live
+INSERT INTO tci VALUES ('ALPHA', NOW(), 100);
+INSERT INTO tci VALUES ('gamma', NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 'tci.ux'
+SELECT u FROM tci WHERE k = 'ALPHA';
+u
+100
+# let 'ALPHA' expire (TTL=5s); it stays physically present (no purge here)
+SELECT u FROM tci WHERE k = 'ALPHA';
+u
+# SAME logical row, re-inserted with the DIFFERENT-CASE PK 'alpha'
+# (collation-equal to 'ALPHA'): refreshes its own expired slot -> MUST SUCCEED
+INSERT INTO tci VALUES ('alpha', NOW(), 100);
+SELECT u FROM tci WHERE k = 'alpha';
+u
+100
+# a genuinely DIFFERENT PK still cannot take the (now live again) value 100
+INSERT INTO tci VALUES ('gamma', NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 'tci.ux'
+SELECT u FROM tci WHERE k = 'alpha';
+u
+100
+DROP TABLE tci;
+CREATE TABLE tmc (
+k1      VARCHAR(32) COLLATE utf8mb4_0900_ai_ci,
+k2      INT,
+ttl_col DATETIME,
+u       INT,
+PRIMARY KEY (k1, k2),
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+# ('ALPHA',7) owns unique value 200; a DIFFERENT composite PK cannot reuse it
+INSERT INTO tmc VALUES ('ALPHA', 7, NOW(), 200);
+INSERT INTO tmc VALUES ('alpha', 8, NOW(), 200);
+ERROR 23000: Duplicate entry '200' for key 'tmc.ux'
+SELECT u FROM tmc WHERE k1 = 'ALPHA' AND k2 = 7;
+u
+200
+# let ('ALPHA',7) expire; it stays physically present (no purge here)
+SELECT u FROM tmc WHERE k1 = 'ALPHA' AND k2 = 7;
+u
+# SAME composite row, different-case first component ('alpha',7): self-refresh
+# -> MUST SUCCEED (k1 collation-equal, k2 equal => same owner)
+INSERT INTO tmc VALUES ('alpha', 7, NOW(), 200);
+SELECT u FROM tmc WHERE k1 = 'alpha' AND k2 = 7;
+u
+200
+# a DIFFERENT composite PK (k2 differs) still cannot take the live value 200
+INSERT INTO tmc VALUES ('alpha', 8, NOW(), 200);
+ERROR 23000: Duplicate entry '200' for key 'tmc.ux'
+SELECT u FROM tmc WHERE k1 = 'alpha' AND k2 = 7;
+u
+200
+DROP TABLE tmc;
