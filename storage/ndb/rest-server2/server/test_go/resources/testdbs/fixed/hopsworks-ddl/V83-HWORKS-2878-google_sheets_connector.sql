@@ -1,6 +1,10 @@
 SET SQL_SAFE_UPDATES = 0;
 ALTER TABLE `hopsworks`.`data_source` ADD COLUMN `spreadsheet_id` VARCHAR(500) CHARACTER SET latin1 COLLATE latin1_general_cs DEFAULT NULL;
-SET SQL_SAFE_UPDATES = 1;
+-- RDRS-P1-PORT: re-enable of safe-update mode commented out. Flyway runs each
+-- migration in its own session, but the test executor runs ALL migrations in one
+-- pinned session - re-enabling here would break later migrations' data-migration
+-- UPDATEs (e.g. V67). The session-wide disable lives in hopsworks_40_schema.sql.
+-- SET SQL_SAFE_UPDATES = 1;
 
 CREATE TABLE IF NOT EXISTS `hopsworks`.`feature_store_google_sheets_connector` (
   `id`              INT(11)       NOT NULL AUTO_INCREMENT,

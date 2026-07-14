@@ -71,7 +71,11 @@ UPDATE `hopsworks`.`feature_group` AS fg
 JOIN `hopsworks`.`data_source` AS ds
 ON fg.`id` = ds.`fg_id`
 SET fg.`data_source_id` = ds.`id`;
-SET SQL_SAFE_UPDATES = 1;
+-- RDRS-P1-PORT: re-enable of safe-update mode commented out. Flyway runs each
+-- migration in its own session, but the test executor runs ALL migrations in one
+-- pinned session - re-enabling here would break later migrations' data-migration
+-- UPDATEs (e.g. V67). The session-wide disable lives in hopsworks_40_schema.sql.
+-- SET SQL_SAFE_UPDATES = 1;
 
 -- remove unecassary columns
 ALTER TABLE `hopsworks`.`data_source`

@@ -45,24 +45,29 @@ CREATE TABLE IF NOT EXISTS `hopsworks`.`shared_feature`
 DEFAULT CHARSET = latin1
 COLLATE = latin1_general_cs;
 
+-- RDRS-P1-PORT: production-data migration DML commented out. It backfills
+-- shared_feature_store from pre-existing dataset_shared_with rows and then
+-- deletes them - a no-op on fresh test fixtures. The DELETE..JOIN with a
+-- non-key WHERE is also rejected by MySQL safe-update mode (Error 1175) in
+-- the test environment.
 -- Migrate existing shared dataset into the "shared feature store". Before this migration, all shared feature stores
 -- are shared entirely.
-INSERT INTO `hopsworks`.`shared_feature_store`(feature_store, shared_by, shared_on, shared_with_project, shared_entirely)
-SELECT feature_store_id AS feature_store
-     , shared_by
-     , shared_on
-     , project AS shared_with_project
-     , 1 AS shared_entirely
-FROM `hopsworks`.`dataset_shared_with` dsw
-    JOIN `hopsworks`.`dataset` ds ON dsw.dataset = ds.id
-WHERE feature_store_id IS NOT NULL;
+-- INSERT INTO `hopsworks`.`shared_feature_store`(feature_store, shared_by, shared_on, shared_with_project, shared_entirely)
+-- SELECT feature_store_id AS feature_store
+--      , shared_by
+--      , shared_on
+--      , project AS shared_with_project
+--      , 1 AS shared_entirely
+-- FROM `hopsworks`.`dataset_shared_with` dsw
+--     JOIN `hopsworks`.`dataset` ds ON dsw.dataset = ds.id
+-- WHERE feature_store_id IS NOT NULL;
 
 -- We should also remove feature store shared datasets from the table. The permissions will be adjusted by the timer
 -- bean running in Hopsworks
-DELETE dsw
-FROM `hopsworks`.`dataset_shared_with` dsw
-    JOIN `hopsworks`.`dataset` ds ON dsw.dataset = ds.id
-WHERE `inode_name` = "Statistics"
-       OR `inode_name` = "DataValidation"
-       OR `inode_name` LIKE "%_Training_Datasets"
-       OR `feature_store_id` IS NOT NULL;
+-- DELETE dsw
+-- FROM `hopsworks`.`dataset_shared_with` dsw
+--     JOIN `hopsworks`.`dataset` ds ON dsw.dataset = ds.id
+-- WHERE `inode_name` = "Statistics"
+--        OR `inode_name` = "DataValidation"
+--        OR `inode_name` LIKE "%_Training_Datasets"
+--        OR `feature_store_id` IS NOT NULL;

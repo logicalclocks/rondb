@@ -37,17 +37,32 @@ this directory (single source of truth, no duplicate tree).
 - Block comments (`/* … */`) in V38/V39 were converted to `--` line comments
   (the executor only strips `--`; a stray `;` inside a block comment would
   break statement splitting).
-- **Data-migration DML inside otherwise-DDL files is kept** (e.g. V45's
-  backfill from `dataset_shared_with`, V78's `feature_view_alert` status
-  rewrites) — these run fine and are no-ops / small updates on fixture data.
-- **`dynamic/hopsworks_api_key.sql`** switched to an explicit column list:
-  it executes AFTER these patches, and V73 adds `api_key.expiry`, which broke
-  the positional `VALUES` list. (`dynamic/hopsworks_34_add_project.sql` is
-  unaffected — no migration alters `project`/`project_team`.)
-- Validation performed: simulated the Go executor over the fully assembled
-  schema (base + data + V5–V83 + dynamic templates): 586 statements, all
-  starting with valid SQL keywords, no `DELIMITER` leakage, no unbalanced
-  quotes.
+- **Safe-update mode:** V28, V55 and V83 wrap their data-migration DML in
+  `SET SQL_SAFE_UPDATES = 0; … SET SQL_SAFE_UPDATES = 1;`. Under Flyway each
+  migration runs in its own session, so the trailing re-enable is harmless —
+  but the test executor runs ALL migrations in ONE pinned session, so V28's
+  re-enable poisoned every later migration's non-key UPDATE/DELETE
+  (Error 1175, first seen on V45's DELETE, then V67's UPDATE). Fixes:
+  the three `SET SQL_SAFE_UPDATES = 1;` lines are commented out, and
+  `hopsworks_40_schema.sql` disables safe-update mode for the whole seeding
+  session (same pattern as its existing `SET FOREIGN_KEY_CHECKS` usage).
+- **Pure production-data cleanup DML is commented out** where it serves no
+  purpose on a fresh fixture and used unsafe (non-key WHERE) forms: V45's
+  `dataset_shared_with` backfill INSERT..SELECT + DELETE, V78's v1-monitoring
+  wipe DELETEs and alert status-rename UPDATE/DELETE block, V82's BREWER row
+  cleanup. Data-migration UPDATEs that run cleanly (V19, V22, V28, V40, V55,
+  V67, V77) are kept.
+- **Positional INSERT fixes** (tables grew columns via the patches):
+  `dynamic/hopsworks_api_key.sql` (V73 adds `api_key.expiry`) and the
+  `cache_event_test.go` fixture constants (V74 extends
+  `training_dataset_join`, V40 extends `serving_key`) now use explicit column
+  lists. (`dynamic/hopsworks_34_add_project.sql` is unaffected — no migration
+  alters `project`/`project_team`.)
+- Validation performed: full re-seed + green runs of the Go
+  `feature_store`, `batchfeaturestore`, `pkread`, `batchpkread` suites and
+  the C++ `api_key_test` (18) + `feature_store_test` (16) against a live
+  cluster, plus a simulation of the executor over the assembled schema
+  (559 statements, no DELIMITER leakage, no unbalanced quotes).
 
 ## Follow-ups deliberately NOT done here
 

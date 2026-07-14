@@ -26,10 +26,13 @@ CREATE TABLE IF NOT EXISTS `hopsworks`.`feature_statistics_config`
 -- the ON DELETE CASCADE from feature_monitoring_config → feature_monitoring_result is
 -- un-asserted on NDB Cluster, and the reshape ALTERs on feature_monitoring_result
 -- below would fail loudly if rows remained. Safe order either way.
-DELETE FROM `hopsworks`.`feature_monitoring_result`;
-DELETE FROM `hopsworks`.`feature_monitoring_config`;
-DELETE FROM `hopsworks`.`statistics_comparison_config`;
-DELETE FROM `hopsworks`.`monitoring_window_config`;
+-- RDRS-P1-PORT: production-data migration DML commented out; no-op on fresh test
+-- fixtures and rejected by MySQL safe-update mode (Error 1175: UPDATE/DELETE
+-- without a key-based WHERE).
+-- DELETE FROM `hopsworks`.`feature_monitoring_result`;
+-- DELETE FROM `hopsworks`.`feature_monitoring_config`;
+-- DELETE FROM `hopsworks`.`statistics_comparison_config`;
+-- DELETE FROM `hopsworks`.`monitoring_window_config`;
 
 -- Phase 1 — drop the legacy v1 structure in a single pass: the feature_name index,
 -- the inbound FKs that are about to be re-added below with different ON DELETE
@@ -388,66 +391,69 @@ DROP TABLE `hopsworks`.`statistic_columns`;
 --   (a) No UNIQUE constraint violation during the migration.
 --   (b) No legacy-named row survives after the migration.
 
+-- RDRS-P1-PORT: production-data migration DML commented out; no-op on fresh test
+-- fixtures and rejected by MySQL safe-update mode (Error 1175: UPDATE/DELETE
+-- without a key-based WHERE).
 -- ---------------------------------------------------------------------------
 -- feature_group_alert
 -- UNIQUE: (feature_group_id, status)
 -- ---------------------------------------------------------------------------
 
 -- SUCCESS -> VALIDATION_SUCCESS
-UPDATE `hopsworks`.`feature_group_alert` t
-SET t.`status` = 'VALIDATION_SUCCESS'
-WHERE t.`status` = 'SUCCESS'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
-    WHERE _guard.`feature_group_id` = t.`feature_group_id`
-      AND _guard.`status` = 'VALIDATION_SUCCESS'
-  );
+-- UPDATE `hopsworks`.`feature_group_alert` t
+-- SET t.`status` = 'VALIDATION_SUCCESS'
+-- WHERE t.`status` = 'SUCCESS'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
+--     WHERE _guard.`feature_group_id` = t.`feature_group_id`
+--       AND _guard.`status` = 'VALIDATION_SUCCESS'
+--   );
 
 -- WARNING -> VALIDATION_WARNING
-UPDATE `hopsworks`.`feature_group_alert` t
-SET t.`status` = 'VALIDATION_WARNING'
-WHERE t.`status` = 'WARNING'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
-    WHERE _guard.`feature_group_id` = t.`feature_group_id`
-      AND _guard.`status` = 'VALIDATION_WARNING'
-  );
+-- UPDATE `hopsworks`.`feature_group_alert` t
+-- SET t.`status` = 'VALIDATION_WARNING'
+-- WHERE t.`status` = 'WARNING'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
+--     WHERE _guard.`feature_group_id` = t.`feature_group_id`
+--       AND _guard.`status` = 'VALIDATION_WARNING'
+--   );
 
 -- FAILURE -> VALIDATION_FAILURE
-UPDATE `hopsworks`.`feature_group_alert` t
-SET t.`status` = 'VALIDATION_FAILURE'
-WHERE t.`status` = 'FAILURE'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
-    WHERE _guard.`feature_group_id` = t.`feature_group_id`
-      AND _guard.`status` = 'VALIDATION_FAILURE'
-  );
+-- UPDATE `hopsworks`.`feature_group_alert` t
+-- SET t.`status` = 'VALIDATION_FAILURE'
+-- WHERE t.`status` = 'FAILURE'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
+--     WHERE _guard.`feature_group_id` = t.`feature_group_id`
+--       AND _guard.`status` = 'VALIDATION_FAILURE'
+--   );
 
 -- FEATURE_MONITOR_SHIFT_DETECTED -> MONITORING_SHIFT_DETECTED
-UPDATE `hopsworks`.`feature_group_alert` t
-SET t.`status` = 'MONITORING_SHIFT_DETECTED'
-WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_DETECTED'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
-    WHERE _guard.`feature_group_id` = t.`feature_group_id`
-      AND _guard.`status` = 'MONITORING_SHIFT_DETECTED'
-  );
+-- UPDATE `hopsworks`.`feature_group_alert` t
+-- SET t.`status` = 'MONITORING_SHIFT_DETECTED'
+-- WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_DETECTED'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
+--     WHERE _guard.`feature_group_id` = t.`feature_group_id`
+--       AND _guard.`status` = 'MONITORING_SHIFT_DETECTED'
+--   );
 
 -- FEATURE_MONITOR_SHIFT_UNDETECTED -> MONITORING_SHIFT_UNDETECTED
-UPDATE `hopsworks`.`feature_group_alert` t
-SET t.`status` = 'MONITORING_SHIFT_UNDETECTED'
-WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_UNDETECTED'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
-    WHERE _guard.`feature_group_id` = t.`feature_group_id`
-      AND _guard.`status` = 'MONITORING_SHIFT_UNDETECTED'
-  );
+-- UPDATE `hopsworks`.`feature_group_alert` t
+-- SET t.`status` = 'MONITORING_SHIFT_UNDETECTED'
+-- WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_UNDETECTED'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_group_id`, `status` FROM `hopsworks`.`feature_group_alert`) AS _guard
+--     WHERE _guard.`feature_group_id` = t.`feature_group_id`
+--       AND _guard.`status` = 'MONITORING_SHIFT_UNDETECTED'
+--   );
 
 -- Remove any legacy rows that could not be renamed because a new-named row
 -- already existed for the same feature_group_id.
-DELETE FROM `hopsworks`.`feature_group_alert`
-WHERE `status` IN ('SUCCESS', 'WARNING', 'FAILURE',
-                   'FEATURE_MONITOR_SHIFT_DETECTED', 'FEATURE_MONITOR_SHIFT_UNDETECTED');
+-- DELETE FROM `hopsworks`.`feature_group_alert`
+-- WHERE `status` IN ('SUCCESS', 'WARNING', 'FAILURE',
+--                    'FEATURE_MONITOR_SHIFT_DETECTED', 'FEATURE_MONITOR_SHIFT_UNDETECTED');
 
 -- ---------------------------------------------------------------------------
 -- feature_view_alert
@@ -455,60 +461,60 @@ WHERE `status` IN ('SUCCESS', 'WARNING', 'FAILURE',
 -- ---------------------------------------------------------------------------
 
 -- SUCCESS -> VALIDATION_SUCCESS
-UPDATE `hopsworks`.`feature_view_alert` t
-SET t.`status` = 'VALIDATION_SUCCESS'
-WHERE t.`status` = 'SUCCESS'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
-    WHERE _guard.`feature_view_id` = t.`feature_view_id`
-      AND _guard.`status` = 'VALIDATION_SUCCESS'
-  );
+-- UPDATE `hopsworks`.`feature_view_alert` t
+-- SET t.`status` = 'VALIDATION_SUCCESS'
+-- WHERE t.`status` = 'SUCCESS'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
+--     WHERE _guard.`feature_view_id` = t.`feature_view_id`
+--       AND _guard.`status` = 'VALIDATION_SUCCESS'
+--   );
 
 -- WARNING -> VALIDATION_WARNING
-UPDATE `hopsworks`.`feature_view_alert` t
-SET t.`status` = 'VALIDATION_WARNING'
-WHERE t.`status` = 'WARNING'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
-    WHERE _guard.`feature_view_id` = t.`feature_view_id`
-      AND _guard.`status` = 'VALIDATION_WARNING'
-  );
+-- UPDATE `hopsworks`.`feature_view_alert` t
+-- SET t.`status` = 'VALIDATION_WARNING'
+-- WHERE t.`status` = 'WARNING'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
+--     WHERE _guard.`feature_view_id` = t.`feature_view_id`
+--       AND _guard.`status` = 'VALIDATION_WARNING'
+--   );
 
 -- FAILURE -> VALIDATION_FAILURE
-UPDATE `hopsworks`.`feature_view_alert` t
-SET t.`status` = 'VALIDATION_FAILURE'
-WHERE t.`status` = 'FAILURE'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
-    WHERE _guard.`feature_view_id` = t.`feature_view_id`
-      AND _guard.`status` = 'VALIDATION_FAILURE'
-  );
+-- UPDATE `hopsworks`.`feature_view_alert` t
+-- SET t.`status` = 'VALIDATION_FAILURE'
+-- WHERE t.`status` = 'FAILURE'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
+--     WHERE _guard.`feature_view_id` = t.`feature_view_id`
+--       AND _guard.`status` = 'VALIDATION_FAILURE'
+--   );
 
 -- FEATURE_MONITOR_SHIFT_DETECTED -> MONITORING_SHIFT_DETECTED
-UPDATE `hopsworks`.`feature_view_alert` t
-SET t.`status` = 'MONITORING_SHIFT_DETECTED'
-WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_DETECTED'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
-    WHERE _guard.`feature_view_id` = t.`feature_view_id`
-      AND _guard.`status` = 'MONITORING_SHIFT_DETECTED'
-  );
+-- UPDATE `hopsworks`.`feature_view_alert` t
+-- SET t.`status` = 'MONITORING_SHIFT_DETECTED'
+-- WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_DETECTED'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
+--     WHERE _guard.`feature_view_id` = t.`feature_view_id`
+--       AND _guard.`status` = 'MONITORING_SHIFT_DETECTED'
+--   );
 
 -- FEATURE_MONITOR_SHIFT_UNDETECTED -> MONITORING_SHIFT_UNDETECTED
-UPDATE `hopsworks`.`feature_view_alert` t
-SET t.`status` = 'MONITORING_SHIFT_UNDETECTED'
-WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_UNDETECTED'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
-    WHERE _guard.`feature_view_id` = t.`feature_view_id`
-      AND _guard.`status` = 'MONITORING_SHIFT_UNDETECTED'
-  );
+-- UPDATE `hopsworks`.`feature_view_alert` t
+-- SET t.`status` = 'MONITORING_SHIFT_UNDETECTED'
+-- WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_UNDETECTED'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `feature_view_id`, `status` FROM `hopsworks`.`feature_view_alert`) AS _guard
+--     WHERE _guard.`feature_view_id` = t.`feature_view_id`
+--       AND _guard.`status` = 'MONITORING_SHIFT_UNDETECTED'
+--   );
 
 -- Remove any legacy rows that could not be renamed because a new-named row
 -- already existed for the same feature_view_id.
-DELETE FROM `hopsworks`.`feature_view_alert`
-WHERE `status` IN ('SUCCESS', 'WARNING', 'FAILURE',
-                   'FEATURE_MONITOR_SHIFT_DETECTED', 'FEATURE_MONITOR_SHIFT_UNDETECTED');
+-- DELETE FROM `hopsworks`.`feature_view_alert`
+-- WHERE `status` IN ('SUCCESS', 'WARNING', 'FAILURE',
+--                    'FEATURE_MONITOR_SHIFT_DETECTED', 'FEATURE_MONITOR_SHIFT_UNDETECTED');
 
 -- ---------------------------------------------------------------------------
 -- project_service_alert
@@ -517,26 +523,26 @@ WHERE `status` IN ('SUCCESS', 'WARNING', 'FAILURE',
 -- ---------------------------------------------------------------------------
 
 -- FEATURE_MONITOR_SHIFT_DETECTED -> MONITORING_SHIFT_DETECTED
-UPDATE `hopsworks`.`project_service_alert` t
-SET t.`status` = 'MONITORING_SHIFT_DETECTED'
-WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_DETECTED'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `project_id`, `status` FROM `hopsworks`.`project_service_alert`) AS _guard
-    WHERE _guard.`project_id` = t.`project_id`
-      AND _guard.`status` = 'MONITORING_SHIFT_DETECTED'
-  );
+-- UPDATE `hopsworks`.`project_service_alert` t
+-- SET t.`status` = 'MONITORING_SHIFT_DETECTED'
+-- WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_DETECTED'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `project_id`, `status` FROM `hopsworks`.`project_service_alert`) AS _guard
+--     WHERE _guard.`project_id` = t.`project_id`
+--       AND _guard.`status` = 'MONITORING_SHIFT_DETECTED'
+--   );
 
 -- FEATURE_MONITOR_SHIFT_UNDETECTED -> MONITORING_SHIFT_UNDETECTED
-UPDATE `hopsworks`.`project_service_alert` t
-SET t.`status` = 'MONITORING_SHIFT_UNDETECTED'
-WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_UNDETECTED'
-  AND NOT EXISTS (
-    SELECT 1 FROM (SELECT `project_id`, `status` FROM `hopsworks`.`project_service_alert`) AS _guard
-    WHERE _guard.`project_id` = t.`project_id`
-      AND _guard.`status` = 'MONITORING_SHIFT_UNDETECTED'
-  );
+-- UPDATE `hopsworks`.`project_service_alert` t
+-- SET t.`status` = 'MONITORING_SHIFT_UNDETECTED'
+-- WHERE t.`status` = 'FEATURE_MONITOR_SHIFT_UNDETECTED'
+--   AND NOT EXISTS (
+--     SELECT 1 FROM (SELECT `project_id`, `status` FROM `hopsworks`.`project_service_alert`) AS _guard
+--     WHERE _guard.`project_id` = t.`project_id`
+--       AND _guard.`status` = 'MONITORING_SHIFT_UNDETECTED'
+--   );
 
 -- Remove any legacy rows that could not be renamed because a new-named row
 -- already existed for the same project_id.
-DELETE FROM `hopsworks`.`project_service_alert`
-WHERE `status` IN ('FEATURE_MONITOR_SHIFT_DETECTED', 'FEATURE_MONITOR_SHIFT_UNDETECTED');
+-- DELETE FROM `hopsworks`.`project_service_alert`
+-- WHERE `status` IN ('FEATURE_MONITOR_SHIFT_DETECTED', 'FEATURE_MONITOR_SHIFT_UNDETECTED');
