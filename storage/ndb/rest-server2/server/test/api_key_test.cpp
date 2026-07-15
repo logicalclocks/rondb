@@ -20,7 +20,7 @@
 #include "../src/api_key.hpp"
 #include "../src/config_structs.hpp"
 #include "connection.hpp"
-#include "resources/embeddings.hpp"
+#include "resources/test_constants.hpp"
 #include "rdrs_dal.h"
 #include "rdrs_hopsworks_dal.h"
 #include "rdrs_rondb_connection.hpp"

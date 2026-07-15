@@ -44,28 +44,10 @@ TARGET_LINK_LIBRARIES(
   pthread
 )
 
-set(RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")
-# Single source of truth for SQL test fixtures: the Go test tree. The C++
-# tests embed the same files, so both suites always see identical schemas.
-set(TESTDBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../test_go/resources/testdbs")
-set(GENERATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/embedded_content.hpp")
-
-file(GLOB_RECURSE SQL_FILES RELATIVE "${TESTDBS_DIR}" "${TESTDBS_DIR}/**/*.sql")
-
-set(SQL_CONTENT_ENTRIES "")
-
-foreach(SQL_FILE ${SQL_FILES})
-    file(READ "${TESTDBS_DIR}/${SQL_FILE}" CONTENTS)
-
-    string(REPLACE "\"" "\\\"" CONTENTS "${CONTENTS}")
-    string(REPLACE "\\" "\\\\" CONTENTS "${CONTENTS}")
-
-    set(SQL_CONTENT_ENTRIES "${SQL_CONTENT_ENTRIES}    {\"${SQL_FILE}\", R\"SQL(${CONTENTS})SQL\"},\n")
-endforeach()
-
-configure_file("${RESOURCE_DIR}/embedded_content.hpp.in" "${GENERATED_HEADER}" @ONLY)
-
-include_directories("${CMAKE_CURRENT_BINARY_DIR}")
+# The C++ tests do not seed the cluster and embed no SQL fixtures. The test
+# databases are created by the Go test suite from
+# test_go/resources/testdbs (the single source of truth) - run any Go
+# integration test package before running these binaries.
 
 add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)
