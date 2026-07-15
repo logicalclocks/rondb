@@ -5,6 +5,10 @@
 -- reads this row; absence falls back to the enum default ("10"), so a fresh
 -- install behaves the same with or without the migration. The row exists so
 -- admins can override it via the variables UI.
-INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
-VALUES ('quotas_max_queued_executions_per_user_per_job', '10', 0, 0)
-ON DUPLICATE KEY UPDATE `id`=`id`;
+-- RDRS-P1-PORT: data-producing INSERT commented out. In this test pipeline the
+-- migrations are DDL-only; the rows this statement produces are captured in
+-- fixed/hopsworks-data/hopsworks_data.sql (dumped from a fully-migrated DB) and
+-- would collide on re-seed.
+-- INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
+-- VALUES ('quotas_max_queued_executions_per_user_per_job', '10', 0, 0)
+-- ON DUPLICATE KEY UPDATE `id`=`id`;

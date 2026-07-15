@@ -22,49 +22,53 @@ ALTER TABLE `hopsworks`.`feature_group`
     ADD CONSTRAINT `data_source_fk` FOREIGN KEY (`data_source_id`) REFERENCES `data_source` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- populate data
-INSERT INTO `hopsworks`.`data_source` (`query`, `database_name`, `group_name`, `table_name`, `path`, `connector_id`, `fg_id`)
-SELECT 
-    odfg.`query`,
-    COALESCE(
-        redshift.`database_name`,
-        bigquery.`query_project`,
-        snowflake.`database_name`
-    ) AS `database_name`,
-    COALESCE(
-        redshift.`database_group`,
-        bigquery.`dataset`,
-        snowflake.`database_schema`
-    ) AS `group_name`,
-    COALESCE(
-        redshift.`table_name`,
-        bigquery.`query_table`,
-        snowflake.`table_name`
-    ) AS `table_name`,
-    fg.`path`,
-    fg.`connector_id`,
-    fg.`id`
-FROM 
-    `hopsworks`.`feature_group` AS fg
-LEFT JOIN 
-    `hopsworks`.`on_demand_feature_group` AS odfg
-ON 
-    fg.`on_demand_feature_group_id` = odfg.`id`
-LEFT JOIN 
-    `hopsworks`.`feature_store_connector` AS fsc
-ON 
-    fg.`connector_id` = fsc.`id`
-LEFT JOIN 
-    `hopsworks`.`feature_store_redshift_connector` AS redshift
-ON 
-    fsc.`redshift_id` = redshift.`id`
-LEFT JOIN 
-    `hopsworks`.`feature_store_bigquery_connector` AS bigquery
-ON 
-    fsc.`bigquery_id` = bigquery.`id`
-LEFT JOIN 
-    `hopsworks`.`feature_store_snowflake_connector` AS snowflake
-ON 
-    fsc.`snowflake_id` = snowflake.`id`;
+-- RDRS-P1-PORT: data-producing INSERT commented out. In this test pipeline the
+-- migrations are DDL-only; the rows this statement produces are captured in
+-- fixed/hopsworks-data/hopsworks_data.sql (dumped from a fully-migrated DB) and
+-- would collide on re-seed.
+-- INSERT INTO `hopsworks`.`data_source` (`query`, `database_name`, `group_name`, `table_name`, `path`, `connector_id`, `fg_id`)
+-- SELECT 
+--     odfg.`query`,
+--     COALESCE(
+--         redshift.`database_name`,
+--         bigquery.`query_project`,
+--         snowflake.`database_name`
+--     ) AS `database_name`,
+--     COALESCE(
+--         redshift.`database_group`,
+--         bigquery.`dataset`,
+--         snowflake.`database_schema`
+--     ) AS `group_name`,
+--     COALESCE(
+--         redshift.`table_name`,
+--         bigquery.`query_table`,
+--         snowflake.`table_name`
+--     ) AS `table_name`,
+--     fg.`path`,
+--     fg.`connector_id`,
+--     fg.`id`
+-- FROM 
+--     `hopsworks`.`feature_group` AS fg
+-- LEFT JOIN 
+--     `hopsworks`.`on_demand_feature_group` AS odfg
+-- ON 
+--     fg.`on_demand_feature_group_id` = odfg.`id`
+-- LEFT JOIN 
+--     `hopsworks`.`feature_store_connector` AS fsc
+-- ON 
+--     fg.`connector_id` = fsc.`id`
+-- LEFT JOIN 
+--     `hopsworks`.`feature_store_redshift_connector` AS redshift
+-- ON 
+--     fsc.`redshift_id` = redshift.`id`
+-- LEFT JOIN 
+--     `hopsworks`.`feature_store_bigquery_connector` AS bigquery
+-- ON 
+--     fsc.`bigquery_id` = bigquery.`id`
+-- LEFT JOIN 
+--     `hopsworks`.`feature_store_snowflake_connector` AS snowflake
+-- ON 
+--     fsc.`snowflake_id` = snowflake.`id`;
 
 SET SQL_SAFE_UPDATES = 0;
 UPDATE `hopsworks`.`feature_group` AS fg

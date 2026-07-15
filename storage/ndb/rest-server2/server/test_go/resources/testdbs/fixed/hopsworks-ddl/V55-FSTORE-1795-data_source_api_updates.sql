@@ -10,13 +10,17 @@ ALTER TABLE `hopsworks`.`training_dataset`
 ALTER TABLE `hopsworks`.`data_source`
     ADD `td_id`    INT(11); -- tmp removed after migration
 
-INSERT INTO `hopsworks`.`data_source` (`path`, `connector_id`, `td_id`)
-SELECT
-    td.`connector_path`,
-    td.`connector_id`,
-    td.`id`
-FROM
-    `hopsworks`.`training_dataset` AS td;
+-- RDRS-P1-PORT: data-producing INSERT commented out. In this test pipeline the
+-- migrations are DDL-only; the rows this statement produces are captured in
+-- fixed/hopsworks-data/hopsworks_data.sql (dumped from a fully-migrated DB) and
+-- would collide on re-seed.
+-- INSERT INTO `hopsworks`.`data_source` (`path`, `connector_id`, `td_id`)
+-- SELECT
+--     td.`connector_path`,
+--     td.`connector_id`,
+--     td.`id`
+-- FROM
+--     `hopsworks`.`training_dataset` AS td;
 
 SET SQL_SAFE_UPDATES = 0;
 UPDATE `hopsworks`.`training_dataset` AS td

@@ -38,8 +38,9 @@ const std::string BenchmarkAddRow = sqlFiles.at("dynamic/benchmark_add_row.sql")
 const std::string BenchAddRow_TABLE_NAME = "TABLE_NAME";
 const std::string BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT";
 
-//go:embed fixed/hopsworks_40_data.sql
-const std::string HopsworksData = sqlFiles.at("fixed/hopsworks_40_data.sql");
+// Curated hopsworks fixture data, dumped at post-DDL schema level.
+// Loaded AFTER the hopsworks-ddl migration patches (see HopsworksScheme).
+const std::string HopsworksData = sqlFiles.at("fixed/hopsworks-data/hopsworks_data.sql");
 
 //go:embed fixed/hopsworks_40_schema.sql
 const std::string HopsworksSchema = sqlFiles.at("fixed/hopsworks_40_schema.sql");
@@ -125,7 +126,7 @@ const std::string V81 = sqlFiles.at("fixed/hopsworks-ddl/V81-FSTORE-2047-glue_st
 const std::string V82 = sqlFiles.at("fixed/hopsworks-ddl/V82-HWORKS-2789-remove_brewer.sql");
 const std::string V83 = sqlFiles.at("fixed/hopsworks-ddl/V83-HWORKS-2878-google_sheets_connector.sql");
 
-const std::string HopsworksScheme = HopsworksSchema + HopsworksData +
+const std::string HopsworksScheme = HopsworksSchema +
     V5 + V6 + V7 + V8 + V9 + V10 + V11 + V12 + V13 + V14 +
     V15 + V16 + V17 + V18 + V19 + V20 + V21 + V22 + V23 + V24 +
     V25 + V26 + V27 + V28 + V29 + V30 + V31 + V32 + V33 + V34 +
@@ -133,7 +134,8 @@ const std::string HopsworksScheme = HopsworksSchema + HopsworksData +
     V45 + V46 + V47 + V48 + V49 + V50 + V51 + V52 + V53 + V54 +
     V55 + V56 + V57 + V58 + V59 + V60 + V61 + V62 + V63 + V64 +
     V65 + V66 + V67 + V68 + V69 + V70 + V71 + V72 + V73 + V74 +
-    V75 + V76 + V77 + V78 + V79 + V80 + V81 + V82 + V83;
+    V75 + V76 + V77 + V78 + V79 + V80 + V81 + V82 + V83 +
+    HopsworksData;
 
 const std::string HOPSWORKS_DB_NAME = "hopsworks";
 

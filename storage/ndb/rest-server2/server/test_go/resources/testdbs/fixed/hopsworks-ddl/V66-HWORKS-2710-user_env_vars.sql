@@ -14,14 +14,26 @@ CREATE TABLE IF NOT EXISTS `hopsworks`.`user_env_vars` (
 -- Platform-intelligence LLM configuration. Inserted as empty so existing
 -- deployments don't fail to start; an admin sets the API key and (optionally)
 -- a custom base URL via the admin UI.
-INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
-VALUES ('platform_intelligence_llm_api_key', '', 0, 0)
-ON DUPLICATE KEY UPDATE `id`=`id`;
+-- RDRS-P1-PORT: data-producing INSERT commented out. In this test pipeline the
+-- migrations are DDL-only; the rows this statement produces are captured in
+-- fixed/hopsworks-data/hopsworks_data.sql (dumped from a fully-migrated DB) and
+-- would collide on re-seed.
+-- INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
+-- VALUES ('platform_intelligence_llm_api_key', '', 0, 0)
+-- ON DUPLICATE KEY UPDATE `id`=`id`;
 
-INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
-VALUES ('platform_intelligence_llm_model', 'gpt-5.4-mini', 0, 0)
-ON DUPLICATE KEY UPDATE `id`=`id`;
+-- RDRS-P1-PORT: data-producing INSERT commented out. In this test pipeline the
+-- migrations are DDL-only; the rows this statement produces are captured in
+-- fixed/hopsworks-data/hopsworks_data.sql (dumped from a fully-migrated DB) and
+-- would collide on re-seed.
+-- INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
+-- VALUES ('platform_intelligence_llm_model', 'gpt-5.4-mini', 0, 0)
+-- ON DUPLICATE KEY UPDATE `id`=`id`;
 
-INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
-VALUES ('platform_intelligence_llm_base_url', '', 0, 0)
-ON DUPLICATE KEY UPDATE `id`=`id`;
+-- RDRS-P1-PORT: data-producing INSERT commented out. In this test pipeline the
+-- migrations are DDL-only; the rows this statement produces are captured in
+-- fixed/hopsworks-data/hopsworks_data.sql (dumped from a fully-migrated DB) and
+-- would collide on re-seed.
+-- INSERT INTO `hopsworks`.`variables` (`id`, `value`, `visibility`, `hide`)
+-- VALUES ('platform_intelligence_llm_base_url', '', 0, 0)
+-- ON DUPLICATE KEY UPDATE `id`=`id`;
