@@ -870,9 +870,19 @@ RS_Status HandleSchemaErrors(
         for (unsigned i = 0; i < indexes.count; i++) {
           dict->invalidateIndex(indexes.elements[i].name, table);
         }
-        // invalidate table
+        /*
+         * Invalidate the table so that the next getTable() fetches a fresh
+         * definition from the data nodes. invalidateTable(name) releases
+         * this Ndb's reference and marks the version DROPPED in the global
+         * dictionary cache. Do NOT also call removeCachedTable(name) here:
+         * its internal getTable() re-fetches the entry and releases it
+         * again, decrementing the global refcount a second time. That
+         * second decrement steals a reference held by a concurrent request
+         * on another Ndb object; the impl gets deleted while that request
+         * still dereferences its Column and NdbRecord pointers (SIGSEGV in
+         * write_col_to_resp during create_response).
+         */
         dict->invalidateTable(table);
-        dict->removeCachedTable(table);
         rdrs_logger::info(
           "Unloading schema " + std::string(db) + "/" + std::string(table));
       }

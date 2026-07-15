@@ -897,13 +897,15 @@ bool TTLPurger::UpdateLocalCache(const std::string& db,
                                  const std::string& table,
                                  const std::string& new_table,
                                  const NdbDictionary::Table* tab) {
-  // 1. Remove old table
-  bool ret = UpdateLocalCache(db, table, nullptr);
-  assert(ret);
-  // 2. Insert new table
-  ret = UpdateLocalCache(db, new_table, tab);
-  assert(ret);
-  return ret;
+  // A rename may involve tables that were never TTL-cached: plain tables
+  // without a TTL column, or mysqld's internal #sql-* names used during
+  // ALTER TABLE copy operations. Both legs can therefore legitimately
+  // report "nothing changed" - that is not an invariant violation.
+  // 1. Remove old table (no-op if it was not TTL-cached)
+  bool removed = UpdateLocalCache(db, table, nullptr);
+  // 2. Insert new table (no-op if the new definition has no TTL column)
+  bool inserted = UpdateLocalCache(db, new_table, tab);
+  return removed || inserted;
 }
 
 char* TTLPurger::GetEventName(NdbDictionary::Event::TableEvent event_type,
