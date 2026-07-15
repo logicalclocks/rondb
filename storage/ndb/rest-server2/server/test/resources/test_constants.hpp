@@ -36,6 +36,16 @@ const std::string DB002 = "db002";
 const std::string FSDB001 = "fsdb001";
 const std::string FSDB002 = "fsdb002";
 
+// Seeded isolated feature store (fixed/hopsworks-data/hopsworks_data.sql):
+// the api key user macho@hopsworks.ai (uid 10000) is not a member of its
+// project and no share rows exist for it, so it must stay inaccessible
+const std::string FSDB_ISOLATE = "fsdb_isolate";
+const int FSDB_ISOLATE_STORE_ID = 66;
+const int FSDB_ISOLATE_PROJECT_ID = 1002;
+
+// The api key user's home project (999/demo0)
+const int HOME_PROJECT_ID = 999;
+
 // Clear-text secret of the seeded test api keys; the hashed form is stored in
 // hopsworks.api_key by test_go/resources/testdbs/dynamic/hopsworks_api_key.sql
 const std::string HopsworksAPIKey_SECRET =

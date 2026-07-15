@@ -93,6 +93,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define API_KEY                  "api_key"
 #define USERS                    "users"
 #define PROJECT_TEAM             "project_team"
+#define SHARED_FEATURE_STORE     "shared_feature_store"
 #define FEATURE_GROUP            "feature_group"
 #define ON_DEMAND_FEATURE_GROUP  "on_demand_feature_group"
 

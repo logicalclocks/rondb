@@ -1081,7 +1081,7 @@ RS_Status APIKeyCache::get_user_databases(int user_id,
                                           char ***db_ptrs) {
   int count = 0;
   char **projects = nullptr;
-  RS_Status status = find_all_projects(user_id, &projects, &count);
+  RS_Status status = find_user_databases(user_id, &projects, &count);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }

@@ -56,9 +56,11 @@ typedef struct HopsworksProject {
 RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 
 /*
- * Find all projects for the api key
+ * Find all databases the api key's user can access: the user's own
+ * projects plus feature stores shared entirely with any of those projects
+ * (hopsworks.shared_feature_store, shared_entirely = 1)
  */
-RS_Status find_all_projects(int uid, char ***projects, int *count);
+RS_Status find_user_databases(int uid, char ***projects, int *count);
 
 #ifdef __cplusplus
 }  // extern "C"

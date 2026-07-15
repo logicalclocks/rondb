@@ -743,9 +743,192 @@ RS_Status find_projects_vec(
   return find_projects_int(ndb_object, project_team_vec, project_vec);
 }
 
-RS_Status find_all_projects_int(
+/*
+ * SELECT feature_store FROM hopsworks.shared_feature_store
+ * WHERE shared_entirely = 1 AND shared_with_project IN ({project ids})
+ *
+ * Rows with shared_entirely = 0 are listing placeholders created by
+ * Hopsworks when only individual feature groups are shared; they must not
+ * grant access to the store. The flag is read per row instead of pushed
+ * into the scan filter to keep the filter to the proven int-column pattern.
+ */
+RS_Status find_shared_feature_store_ids_int(
+  Ndb *ndb_object,
+  std::vector<HopsworksProjectTeam> *project_team_vec,
+  std::vector<int> *shared_store_ids) {
+
+  if (project_team_vec->empty()) {
+    return RS_OK;
+  }
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  SHARED_FEATURE_STORE,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  const char* index_name = "PRIMARY";
+  status = get_index_scan_op(ndb_object,
+                             tx,
+                             table_dict,
+                             index_name,
+                             &scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuples(ndb_object, scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  int col_id = table_dict->getColumn("shared_with_project")->getColumnNo();
+  NdbScanFilter filter(scanOp);
+  if (unlikely(filter.begin(NdbScanFilter::OR) < 0)) {
+    err = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+  }
+  for (Uint32 i = 0; i < project_team_vec->size(); i++) {
+    if (unlikely(filter.eq(col_id,
+                 (Uint32)(*project_team_vec)[i].project_id) < 0)) {
+      err = filter.getNdbError();
+      ndb_object->closeTransaction(tx);
+      return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    }
+  }
+  if (unlikely(filter.end() < 0)) {
+    err = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+  }
+  NdbRecAttr *feature_store_id = scanOp->getValue("feature_store");
+  NdbRecAttr *shared_entirely = scanOp->getValue("shared_entirely");
+  if (unlikely(feature_store_id == nullptr || shared_entirely == nullptr)) {
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      if (shared_entirely->int8_value() == 1) {
+        shared_store_ids->push_back(feature_store_id->int32_value());
+      }
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal
+  // with the error.
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed Reading API Key. Fn find_shared_feature_store_ids_int");
+  }
+  return RS_OK;
+}
+
+/*
+ * SELECT name FROM hopsworks.feature_store WHERE id = {fs_id}
+ *
+ * The feature store name is the database name. A missing row sets *found to
+ * false instead of failing: the sfs_fs_fk ON DELETE CASCADE removes share
+ * rows with the store, so a dangling share id can only be a scan/delete
+ * race and the store is simply not accessible.
+ */
+RS_Status find_feature_store_name_int(Ndb *ndb_object,
+                                      int fs_id,
+                                      HopsworksProject *store_db,
+                                      bool *found) {
+  *found = false;
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbOperation *ndb_op;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  FEATURE_STORE,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_op(ndb_object, tx, FEATURE_STORE, &ndb_op);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuple(ndb_object, ndb_op);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  if (unlikely(ndb_op->equal("id", fs_id) != 0)) {
+    err = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_EQUAL_FAILED)));
+  }
+  NdbRecAttr *name = ndb_op->getValue("name");
+  if (unlikely(name == nullptr)) {
+    err = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  assert(FEATURE_STORE_NAME_SIZE ==
+         (Uint32)table_dict->getColumn("name")->getSizeInBytes());
+  if (unlikely(tx->execute(NdbTransaction::Commit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  if (ndb_op->getNdbError().classification == NdbError::NoDataFound) {
+    ndb_object->closeTransaction(tx);
+    return RS_OK;
+  }
+  Uint32 name_attr_bytes;
+  const char *name_data_start = nullptr;
+  if (unlikely(GetByteArray(name, &name_data_start, &name_attr_bytes) != 0)) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(sizeof(store_db->projectname) < name_attr_bytes)) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+  }
+  memcpy(store_db->projectname, name_data_start, name_attr_bytes);
+  store_db->projectname[name_attr_bytes] = '\0';
+  *found = true;
+  ndb_object->closeTransaction(tx);
+  return RS_OK;
+}
+
+/*
+ * Names of the projects the user is a member of
+ * (users -> project_team -> project). Also returns the project_team rows:
+ * the project ids are the grantees the sharing lookup filters on.
+ */
+RS_Status find_member_project_names_int(
   Ndb *ndb_object,
   int uid,
+  std::vector<HopsworksProjectTeam> *project_team_vec,
   std::vector<HopsworksProject> *project_vec) {
 
   HopsworksUsers user;
@@ -753,19 +936,71 @@ RS_Status find_all_projects_int(
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-  std::vector<HopsworksProjectTeam> project_team_vec;
-  status = find_project_team(ndb_object, &user, &project_team_vec);
+  status = find_project_team(ndb_object, &user, project_team_vec);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-  status = find_projects_vec(ndb_object, &project_team_vec, project_vec);
+  return find_projects_vec(ndb_object, project_team_vec, project_vec);
+}
+
+/*
+ * Names of the feature stores shared entirely with any of the given
+ * projects (shared_feature_store -> feature_store), appended to project_vec
+ */
+RS_Status find_shared_store_names_int(
+  Ndb *ndb_object,
+  std::vector<HopsworksProjectTeam> *project_team_vec,
+  std::vector<HopsworksProject> *project_vec) {
+
+  std::vector<int> shared_store_ids;
+  RS_Status status = find_shared_feature_store_ids_int(ndb_object,
+                                                       project_team_vec,
+                                                       &shared_store_ids);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
+  }
+  for (Uint32 i = 0; i < shared_store_ids.size(); i++) {
+    HopsworksProject store_db;
+    bool found = false;
+    status = find_feature_store_name_int(ndb_object,
+                                         shared_store_ids[i],
+                                         &store_db,
+                                         &found);
+    if (unlikely(status.http_code != SUCCESS)) {
+      return status;
+    }
+    if (found) {
+      project_vec->push_back(store_db);
+    }
   }
   return RS_OK;
 }
 
-RS_Status find_all_projects(int uid, char ***projects, int *count) {
+/*
+ * The databases the user can access = the user's own projects plus feature
+ * stores shared entirely with any of those projects. Membership grants
+ * access to the user's own projects only; Hopsworks never self-shares a
+ * store, so both sources are needed.
+ */
+RS_Status find_user_databases_int(
+  Ndb *ndb_object,
+  int uid,
+  std::vector<HopsworksProject> *project_vec) {
+
+  std::vector<HopsworksProjectTeam> project_team_vec;
+  RS_Status status = find_member_project_names_int(ndb_object,
+                                                   uid,
+                                                   &project_team_vec,
+                                                   project_vec);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  return find_shared_store_names_int(ndb_object,
+                                     &project_team_vec,
+                                     project_vec);
+}
+
+RS_Status find_user_databases(int uid, char ***projects, int *count) {
 
   std::vector<HopsworksProject> project_vec;
 
@@ -776,11 +1011,13 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   }
   METADATA_OP_RETRY_HANDLER(
     project_vec.clear();
-    status = find_all_projects_int(ndb_object, uid, &project_vec);
+    status = find_user_databases_int(ndb_object, uid, &project_vec);
     HandleSchemaErrors(ndb_object, status, {
       std::make_tuple(HOPSWORKS, USERS),
       std::make_tuple(HOPSWORKS, PROJECT_TEAM),
-      std::make_tuple(HOPSWORKS, PROJECT)});
+      std::make_tuple(HOPSWORKS, PROJECT),
+      std::make_tuple(HOPSWORKS, SHARED_FEATURE_STORE),
+      std::make_tuple(HOPSWORKS, FEATURE_STORE)});
   )
   rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
   if (unlikely(status.http_code != SUCCESS)) {

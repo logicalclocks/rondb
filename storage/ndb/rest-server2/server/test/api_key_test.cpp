@@ -321,6 +321,153 @@ static bool ndb_delete_api_key_by_id(int id) {
   return true;
 }
 
+// Insert a row into hopsworks.shared_feature_store via NDB API
+// (for feature-store sharing tests)
+static bool ndb_insert_shared_feature_store(int id,
+                                            int feature_store_id,
+                                            int shared_with_project,
+                                            int shared_entirely) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(SHARED_FEATURE_STORE);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->insertTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // PK: id (int)
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // feature_store (int, FK -> feature_store.id)
+  if (op->setValue("feature_store", feature_store_id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_by (int, FK -> users.uid): the api key user macho
+  if (op->setValue("shared_by", (Int32)10000) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_on (timestamp - 4-byte seconds since epoch)
+  Uint32 now = (Uint32)time(nullptr);
+  if (op->setValue("shared_on", now) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_with_project (int, FK -> project.id)
+  if (op->setValue("shared_with_project", shared_with_project) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_entirely (tinyint)
+  if (op->setValue("shared_entirely", (Int32)shared_entirely) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB insert failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Delete a row from hopsworks.shared_feature_store by primary key (id)
+static bool ndb_delete_shared_feature_store(int id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(SHARED_FEATURE_STORE);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->deleteTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB delete failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
 class APIKeyTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -1338,6 +1485,99 @@ TEST_F(APIKeyTest, TestEndToEndReconnect) {
 
   // Cleanup
   ndb_delete_api_key_by_id(test_id);
+  stop_api_key_cache();
+}
+
+// Test cross-project feature-store sharing (hopsworks.shared_feature_store):
+// a store shared entirely with one of the key user's projects becomes an
+// allowed database; placeholder rows (shared_entirely = 0) and shares with
+// other projects grant nothing; deleting the share revokes access.
+// fsdb_isolate is the only seeded store the key user cannot already reach.
+// There is no NDB event watcher on shared_feature_store — changes propagate
+// via the refresh thread, so the test waits ~3 refresh cycles after each
+// change.
+TEST_F(APIKeyTest, TestSharedFeatureStoreAccess) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so share changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  const int share_id = 88888;
+  const int other_share_id = 88887;
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_shared_feature_store(share_id);
+  ndb_delete_shared_feature_store(other_share_id);
+
+  // Baseline (lazy load): member DBs accessible, the isolated store not
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
+  ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Member DB should be accessible: " << status.message;
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  ASSERT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared store must be rejected";
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Share the isolated store entirely with the key user's home project
+  ASSERT_TRUE(ndb_insert_shared_feature_store(share_id,
+                                              FSDB_ISOLATE_STORE_ID,
+                                              HOME_PROJECT_ID,
+                                              1))
+      << "Failed to insert shared_feature_store row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Store shared entirely should be accessible: " << status.message;
+  // Member and shared DBs in the same request
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001, FSDB_ISOLATE});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Member DB + shared store together should be accessible: " << status.message;
+
+  // Unshare: access revoked on the next refresh
+  ASSERT_TRUE(ndb_delete_shared_feature_store(share_id))
+      << "Failed to delete shared_feature_store row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared store should be rejected again";
+
+  // A placeholder row (shared_entirely = 0, created by Hopsworks when only
+  // individual feature groups are shared) grants nothing; neither does a
+  // share with a project the key user is not a member of
+  ASSERT_TRUE(ndb_insert_shared_feature_store(share_id,
+                                              FSDB_ISOLATE_STORE_ID,
+                                              HOME_PROJECT_ID,
+                                              0))
+      << "Failed to insert placeholder share row via NDB";
+  ASSERT_TRUE(ndb_insert_shared_feature_store(other_share_id,
+                                              FSDB_ISOLATE_STORE_ID,
+                                              FSDB_ISOLATE_PROJECT_ID,
+                                              1))
+      << "Failed to insert foreign-project share row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Placeholder / foreign-project shares must not grant access";
+
+  // Member access unaffected throughout
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Member DB should still be accessible: " << status.message;
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_shared_feature_store(share_id))
+      << "Failed to cleanup placeholder share row";
+  ASSERT_TRUE(ndb_delete_shared_feature_store(other_share_id))
+      << "Failed to cleanup foreign-project share row";
+
   stop_api_key_cache();
 }
 
