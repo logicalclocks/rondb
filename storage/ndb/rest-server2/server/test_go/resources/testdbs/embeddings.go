@@ -305,7 +305,7 @@ var HopsworksScheme string = HopsworksSchema +
 
 const HOPSWORKS_DB_NAME = "hopsworks"
 
-//go:embed dynamic/hopsworks_34_add_project.sql
+//go:embed dynamic/hopsworks_add_project.sql
 var HopsworksAddProject string
 
 //go:embed fixed/hopsworks_fs_update.sql

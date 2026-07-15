@@ -56,7 +56,7 @@ this directory (single source of truth, no duplicate tree).
   `dynamic/hopsworks_api_key.sql` (V73 adds `api_key.expiry`) and the
   `cache_event_test.go` fixture constants (V74 extends
   `training_dataset_join`, V40 extends `serving_key`) now use explicit column
-  lists. (`dynamic/hopsworks_34_add_project.sql` is unaffected — no migration
+  lists. (`dynamic/hopsworks_add_project.sql` is unaffected — no migration
   alters `project`/`project_team`.)
 - Validation performed: full re-seed + green runs of the Go
   `feature_store`, `batchfeaturestore`, `pkread`, `batchpkread` suites and

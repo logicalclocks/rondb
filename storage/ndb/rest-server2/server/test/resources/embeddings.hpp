@@ -139,8 +139,8 @@ const std::string HopsworksScheme = HopsworksSchema +
 
 const std::string HOPSWORKS_DB_NAME = "hopsworks";
 
-//go:embed dynamic/hopsworks_34_add_project.sql
-const std::string HopsworksAddProject = sqlFiles.at("dynamic/hopsworks_34_add_project.sql");
+//go:embed dynamic/hopsworks_add_project.sql
+const std::string HopsworksAddProject = sqlFiles.at("dynamic/hopsworks_add_project.sql");
 
 //go:embed fixed/hopsworks_fs_update.sql
 const std::string HopsworksUpdateScheme = sqlFiles.at("fixed/hopsworks_fs_update.sql");
