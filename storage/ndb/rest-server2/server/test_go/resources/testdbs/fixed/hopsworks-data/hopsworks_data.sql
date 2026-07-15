@@ -1185,31 +1185,50 @@ INSERT INTO `project` SET
 
 
 
+-- The api key user macho is a member of the home project 999/demo0 only.
+-- Every other accessible feature store is shared entirely with project 999
+-- (Hopsworks cross-project sharing, shared_feature_store rows below),
+-- mirroring how real Hopsworks grants cross-project access. fsdb_isolate
+-- (store 66, project 1002) is neither joined nor shared: it must stay
+-- inaccessible (Test_GetFeatureVector_NotShared depends on it).
 INSERT INTO `project_team` SET
   `project_id` = 999,
   `team_member` = 'macho@hopsworks.ai',
   `team_role` = 'Data scientist',
   `added` = '2022-06-01 13:28:05';
-INSERT INTO `project_team` SET
-  `project_id` = 1000,
-  `team_member` = 'macho@hopsworks.ai',
-  `team_role` = 'Data scientist',
-  `added` = '2022-06-01 13:28:05';
-INSERT INTO `project_team` SET
-  `project_id` = 1001,
-  `team_member` = 'macho@hopsworks.ai',
-  `team_role` = 'Data scientist',
-  `added` = '2022-06-01 13:28:05';
-INSERT INTO `project_team` SET
-  `project_id` = 1003,
-  `team_member` = 'macho@hopsworks.ai',
-  `team_role` = 'Data scientist',
-  `added` = '2022-06-01 13:28:05';
-INSERT INTO `project_team` SET
-  `project_id` = 1004,
-  `team_member` = 'macho@hopsworks.ai',
-  `team_role` = 'Data scientist',
-  `added` = '2022-06-01 13:28:05';
+
+-- fsdb001 (store 67) shared entirely with 999/demo0
+INSERT INTO `shared_feature_store` SET
+  `id` = 1001,
+  `feature_store` = 67,
+  `shared_by` = 10000,
+  `shared_on` = '2023-04-20 16:14:15',
+  `shared_with_project` = 999,
+  `shared_entirely` = 1;
+-- fsdb002 (store 1091) shared entirely with 999/demo0
+INSERT INTO `shared_feature_store` SET
+  `id` = 1002,
+  `feature_store` = 1091,
+  `shared_by` = 10000,
+  `shared_on` = '2023-04-20 16:14:15',
+  `shared_with_project` = 999,
+  `shared_entirely` = 1;
+-- fsdb003 (store 68) shared entirely with 999/demo0
+INSERT INTO `shared_feature_store` SET
+  `id` = 1003,
+  `feature_store` = 68,
+  `shared_by` = 10000,
+  `shared_on` = '2023-04-20 16:14:15',
+  `shared_with_project` = 999,
+  `shared_entirely` = 1;
+-- fsdb004 (store 69) shared entirely with 999/demo0
+INSERT INTO `shared_feature_store` SET
+  `id` = 1004,
+  `feature_store` = 69,
+  `shared_by` = 10000,
+  `shared_on` = '2023-04-20 16:14:15',
+  `shared_with_project` = 999,
+  `shared_entirely` = 1;
 
 
 

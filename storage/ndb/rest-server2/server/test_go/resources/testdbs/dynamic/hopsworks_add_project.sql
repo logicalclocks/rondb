@@ -22,12 +22,24 @@ VALUES
         PROJECT_NUMBER, 'PROJECT_NAME', 'macho@hopsworks.ai', '2022-05-30 14:17:22', 'Some desc', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'SomeDockerImage', 1, 0
     );
 
+-- Register the database as a feature store and share it entirely with the
+-- api key user's home project 999/demo0. macho is only a member of 999;
+-- access to every other database comes via shared_feature_store, mirroring
+-- how real Hopsworks grants cross-project access.
 INSERT INTO
-    `project_team`
-VALUES
-    (
-        PROJECT_NUMBER,
-        'macho@hopsworks.ai',
-        'Data scientist',
-        '2022-06-01 13:28:05'
-    );
+    `feature_store`
+SET
+    `id` = PROJECT_NUMBER,
+    `name` = 'PROJECT_NAME',
+    `project_id` = PROJECT_NUMBER,
+    `created` = '2022-05-30 14:17:22';
+
+INSERT INTO
+    `shared_feature_store`
+SET
+    `id` = PROJECT_NUMBER,
+    `feature_store` = PROJECT_NUMBER,
+    `shared_by` = 10000,
+    `shared_on` = '2022-06-01 13:28:05',
+    `shared_with_project` = 999,
+    `shared_entirely` = 1;
