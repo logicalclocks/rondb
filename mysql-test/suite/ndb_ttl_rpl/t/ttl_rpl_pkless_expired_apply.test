@@ -1,0 +1,102 @@
+# ==========================================================================
+# Runtime repro for TTL finding #7: applier row-lookup (find_row) TTL gap.
+# ==========================================================================
+#
+# The WRITE side of RBR-apply-on-expired-replica is handled: the applier's
+# update/delete ops set OO_TTL_IGNORE (ha_ndbcluster.cc:5717/6011, fix
+# 323d2e78460), proven safe by ttl_rpl_expired_update_diverge -- but that test
+# uses a PK table, so the replica applies via a read-free PK updateTuple and
+# never runs a row lookup.
+#
+# This test drives the uncovered READ side. On a table with no usable primary
+# key (hidden PK) the applier cannot do a read-free PK apply: it calls find_row,
+# which does an index/table SCAN to locate the before-image row. The scan read
+# paths gate TTL-ignore on m_ttl_ignore alone, never get_applier()
+# (ha_ndbcluster.cc:3555/3828/3951/13990). So the lookup scan respects
+# replica-side TTL, skips the expired-but-unpurged row, find_row misses, and the
+# UPDATE_ROWS event is dropped (idempotent applier) -> the replica loses a row
+# the source still has = silent divergence.
+#
+# Fix direction: extend the applier TTL-ignore to the read/lookup paths (add
+# || get_applier() at the scan sites, or set m_ttl_ignore for applier THDs).
+#
+# Topology: source (2 ndbd) -> replica (1 ndbd), row-based binlog. In MTR there
+# is no RDRS purger, so a row past its TTL stays physically present (the
+# condition under test) but is hidden by checkTTL.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+--connection master
+--echo # log updates as UPDATE_ROWS (not WRITE_ROWS) so the replica must locate
+--echo # the row via find_row (the path with no ZWRITE checkTTL bypass).
+SET @old_luaw = @@global.ndb_log_update_as_write;
+SET GLOBAL ndb_log_update_as_write = 0;
+
+--echo # PK-LESS TTL table (hidden PK) -> applier is forced through find_row.
+CREATE TABLE test.sz (
+  col_a INT,
+  col_b TIMESTAMP NULL DEFAULT NULL,
+  col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+# let the schema propagate to all nodes
+sleep 3;
+
+--echo # --- seed: a never-expiring anchor (col_b NULL) plus one row that will
+--echo #     expire (col_b = NOW()). Replicate both to the replica.
+INSERT INTO test.sz VALUES (1, NULL,   100);
+INSERT INTO test.sz VALUES (2, NOW(),  200);
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+--echo # replica initially sees both rows
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+--echo # --- pause the applier to inject replication lag; the receiver keeps
+--echo #     running so the relay log still fills.
+STOP REPLICA sql_thread;
+
+--connection master
+--echo # --- while row 2 is still live on the source: refresh it (extend ttl far
+--echo #     into the future so it stays visible) and change col_c. With
+--echo #     ndb_log_update_as_write=0 this queues as an UPDATE_ROWS event.
+UPDATE test.sz SET col_c = 222, col_b = NOW() + INTERVAL 1 HOUR WHERE col_a = 2;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--echo # source final state: rows 1(100), 2(222)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--echo # --- age row 2 past its 10s TTL on the replica (its original col_b is
+--echo #     still NOW()@t0 because the applier is paused).
+sleep 15;
+
+--connection slave
+--echo # [precondition] with the applier STOPPED, row 2 is now expired-hidden on
+--echo #                the replica; only anchor row 1 is visible.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+--echo # --- resume the applier: it must find (via find_row) and refresh the
+--echo #     expired row 2. On the buggy build the lookup scan skips the expired
+--echo #     row -> UPDATE_ROWS(2) is dropped -> row 2 lost on the replica.
+START REPLICA sql_thread;
+
+--connection master
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--echo # --- SOURCE and REPLICA must agree: rows 1(100) and 2(222) both visible.
+--echo #     On the buggy build the replica shows only row 1 = divergence.
+--connection master
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+--connection slave
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+###############################################################################
+# Cleanup
+###############################################################################
+--connection master
+SET GLOBAL ndb_log_update_as_write = @old_luaw;
+DROP TABLE test.sz;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+--source include/rpl/deinit.inc

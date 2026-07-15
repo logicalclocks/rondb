@@ -1,0 +1,92 @@
+# ttl_fk_copy_alter.test
+#
+# Regression guard for TTL review finding #6:
+#   The FK+TTL prohibition (a table involved in a foreign key may not be a
+#   TTL table) was enforced only on the inplace ALTER path. An explicit
+#   ALGORITHM=COPY skips the whole inplace capability analysis
+#   (sql/sql_table.cc), and the COPY path's FK recreation
+#   (ha_ndbcluster::copy_fk_for_offline_alter) had no isTTLEnabled() check,
+#   so `ALTER ... COMMENT='...TTL...', ALGORITHM=COPY` silently produced a
+#   forbidden table with both a foreign key and TTL enabled.
+#
+# Fix: copy_fk_for_offline_alter rejects (ER_CANNOT_ADD_FOREIGN) any
+#   surviving FK when the altered table is TTL-enabled, mirroring create_fk.
+#
+# Coupled finding #4 (FK RESTRICT child-existence scan returns an expired
+#   child row -> false ER_ROW_IS_REFERENCED_2 on a parent DELETE) is only
+#   reachable once such a forbidden FK+TTL table exists, i.e. via the #6
+#   bypass. With #6 closed, FK+TTL is unreachable through supported DDL and
+#   the vulnerable kernel scan can no longer run on a TTL child, so #4 has no
+#   separate code fix. The #4 mechanism was reproduced separately before the
+#   fix (see scratchpad REPRO_ttl_fk_copy_alter_expired.*); it cannot be
+#   exercised here anymore because the state is no longer constructible.
+
+--source include/have_ndb.inc
+
+# checkTTL compares vs UTC; pin session tz so any TTL evaluation is stable.
+SET time_zone='+00:00';
+
+--disable_warnings
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE IF EXISTS child;
+DROP TABLE IF EXISTS parent;
+SET FOREIGN_KEY_CHECKS=1;
+--enable_warnings
+
+CREATE TABLE parent (
+  id  INT PRIMARY KEY,
+  pts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=NDB;
+
+CREATE TABLE child (
+  id  INT PRIMARY KEY,
+  pid INT,
+  ts  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY(pid),
+  CONSTRAINT child_fk FOREIGN KEY(pid) REFERENCES parent(id)
+) ENGINE=NDB;
+
+--echo #
+--echo # #6: add-TTL on an FK CHILD must be rejected regardless of ALGORITHM
+--echo #
+--echo # (a) inplace (default) -> rejected by the m_ttl_fk inplace guard
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE child COMMENT='NDB_TABLE=TTL=5@ts';
+--echo # (b) ALGORITHM=COPY -> previously the bypass; must now be rejected
+--error ER_CANNOT_ADD_FOREIGN
+ALTER TABLE child COMMENT='NDB_TABLE=TTL=5@ts', ALGORITHM=COPY;
+--echo # child is unchanged (no TTL comment, FK intact)
+SHOW CREATE TABLE child;
+
+--echo #
+--echo # #6: add-TTL on an FK PARENT must be rejected regardless of ALGORITHM
+--echo #
+--echo # (a) inplace (default)
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE parent COMMENT='NDB_TABLE=TTL=5@pts';
+--echo # (b) ALGORITHM=COPY
+--error ER_CANNOT_ADD_FOREIGN
+ALTER TABLE parent COMMENT='NDB_TABLE=TTL=5@pts', ALGORITHM=COPY;
+--echo # parent is unchanged (no TTL comment)
+SHOW CREATE TABLE parent;
+
+--echo #
+--echo # Negative control: dropping the FK and enabling TTL in the SAME COPY
+--echo # alter is legitimate (no FK survives) and must still succeed.
+--echo #
+# A prior rejected COPY alter leaves a self-healing NDB intermediate table
+# (#sql-<pid>) that the next DDL removes with a non-deterministic-name
+# warning; suppress it so the recorded result is stable.
+--disable_warnings
+ALTER TABLE child DROP FOREIGN KEY child_fk,
+                  COMMENT='NDB_TABLE=TTL=5@ts', ALGORITHM=COPY;
+--enable_warnings
+--echo # child is now a TTL table with no foreign key
+SHOW CREATE TABLE child;
+
+--disable_warnings
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE IF EXISTS child;
+DROP TABLE IF EXISTS parent;
+SET FOREIGN_KEY_CHECKS=1;
+--enable_warnings

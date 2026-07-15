@@ -1,0 +1,33 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=600@col_b";
+# Baseline: all data nodes STARTED before any write.
+SELECT COUNT(*) = 3 AS all_data_nodes_started
+FROM ndbinfo.nodes WHERE status = 'STARTED';
+all_data_nodes_started
+1
+#
+# Writes that chain through the middle replica. On an unfixed build the
+# first REPLACE already crashes the middle data node.
+#
+REPLACE INTO test.sz VALUES (1, SYSDATE(), 100);
+REPLACE INTO test.sz VALUES (1, SYSDATE(), 101);
+REPLACE INTO test.sz VALUES (2, SYSDATE(), 200);
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	101
+2	200
+#
+# All three data nodes must still be STARTED (no middle-replica crash).
+#
+SELECT COUNT(*) = 3 AS all_data_nodes_started
+FROM ndbinfo.nodes WHERE status = 'STARTED';
+all_data_nodes_started
+1
+DROP TABLE test.sz;

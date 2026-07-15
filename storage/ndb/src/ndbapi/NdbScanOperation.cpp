@@ -2944,6 +2944,17 @@ NdbOperation *NdbScanOperation::takeOverScanOp(OperationType opType,
     newOp->theDistributionKey = tTakeOverFragment;
   }
 
+  /*
+   * TTL related
+   * A take-over operation inherits the scan's only-expired marker: a row
+   * taken over from an SF_OnlyExpiredScan (the TTL purge) can only be an
+   * expired row. Downstream blocks use the marker to classify the operation,
+   * e.g. DBTUP excludes only-expired deletes from the fragment's
+   * committed-changes counter so that the TTL purge does not abort a
+   * concurrent copying ALTER TABLE via its commit-count change detection.
+   */
+  newOp->m_flags |= (m_flags & OF_TTL_ONLY_EXPIRED);
+
   // Copy the first 8 words of key info from KEYINF20 into TCKEYREQ
   TcKeyReq *tcKeyReq = CAST_PTR(TcKeyReq, newOp->theTCREQ->getDataPtrSend());
   Uint32 i = MIN(TcKeyReq::MaxKeyInfo, len);

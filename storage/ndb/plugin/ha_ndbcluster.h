@@ -224,6 +224,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
   ha_rows end_read_removal(void) override;
   int extra(enum ha_extra_function operation) override;
   int reset() override;
+  handler *clone(const char *name, MEM_ROOT *mem_root) override;
   int external_lock(THD *thd, int lock_type) override;
   void unlock_row() override;
   int start_stmt(THD *thd, thr_lock_type) override;
@@ -743,6 +744,19 @@ class ha_ndbcluster : public handler, public Partition_handler {
    */
   bool m_ttl_ignore;
   bool m_ttl_fk;
+
+  /*
+   * Whether TTL expiry should be ignored for the operations/scans issued by
+   * this handler. True when either the SQL layer explicitly asked for it via
+   * HA_EXTRA_IGNORE_TTL (m_ttl_ignore), or this is a binlog applier: an applier
+   * replays row events the source already resolved against live rows, so both
+   * its writes and its row lookups (find_row) must locate an
+   * expired-but-unpurged replica row instead of dropping/erroring the event and
+   * diverging from the source. Used at every TTL_IGNORE op/scan gate.
+   */
+  bool should_ignore_ttl() const {
+    return m_ttl_ignore || (m_thd_ndb && m_thd_ndb->get_applier());
+  }
 };
 
 bool is_cluster_failure_code(int error);
