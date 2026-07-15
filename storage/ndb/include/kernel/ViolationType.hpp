@@ -100,9 +100,13 @@ enum ViolationType : Uint32 {
   // ---- DBSPJ (Phase 2 audit; see DbspjMain.cpp parseDA) ----
   VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS = 26, // A: NI_HAS_PARENT parent index outside built-node range
   VT_SPJ_ATTR_LIST_LENGTH_MISMATCH = 27,  // B: PI_ATTR_LIST declared length exceeds param section
+  VT_SPJ_SECTION_LENGTH_MISMATCH = 28,    // B: parseDA declared length (key pattern / interpret
+                                          //    program / attr pattern) exceeds its tree/param section
+  VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS = 29, // A: key-param cnt exceeds MAX_ATTRIBUTES_IN_TABLE
+                                             //    (parseDA key params, or scanFrag_build prune params)
 
-  VT_UNKNOWN = 28,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 29              // sentinel — keep last
+  VT_UNKNOWN = 30,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 31              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -161,6 +165,8 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_FRAGMENT_INVALID_SECTION_NO,TIER_A,"fragment_invalid_section_no"},
     {VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS,TIER_A,"spj_parent_index_out_of_bounds"},
     {VT_SPJ_ATTR_LIST_LENGTH_MISMATCH, TIER_B,"spj_attr_list_length_mismatch"},
+    {VT_SPJ_SECTION_LENGTH_MISMATCH,   TIER_B,"spj_section_length_mismatch"},
+    {VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS,TIER_A,"spj_key_param_count_out_of_bounds"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 

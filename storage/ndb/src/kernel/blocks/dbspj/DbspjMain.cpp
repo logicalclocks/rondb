@@ -10678,6 +10678,21 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
       ndbrequire((cnt == 0) == ((treeBits & Node::SF_PRUNE_PARAMS) == 0));
       ndbrequire((cnt == 0) == ((paramBits & Params::SFP_PRUNE_PARAMS) == 0));
 
+      // Same unbounded-cnt issue as parseDA's key-param count (see there for
+      // the full writeup): cnt is passed as paramCnt into expand(), which
+      // writes cnt entries into a MAX_ATTRIBUTES_IN_TABLE-sized stack array
+      // via buildRowHeader with no cap. No real table has more than
+      // MAX_ATTRIBUTES_IN_TABLE columns and no valid prune pattern carries
+      // more than that many parameters, so this is user-untriggerable via
+      // SQL/HTTP/REST/Redis -- Tier A.
+      if (unlikely(cnt > MAX_ATTRIBUTES_IN_TABLE)) {
+        jam();
+        ctx.m_maliciousViolationType = VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS;
+        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
+
       if (treeBits & Node::SF_PRUNE_LINKED) {
         jam();
         DEBUG("LINKED-PRUNE PATTERN w/ " << cnt << " PARAM values");
@@ -14708,15 +14723,72 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
        * If keys are parametrized or linked
        *   DATA0[LO/HI] - Length of key pattern/#parameters to key
        */
+      // The length header word itself must be inside the tree section.
+      if (unlikely(tree.ptr >= tree.end)) {
+        jam();
+        ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
       Uint32 len_cnt = *tree.ptr++;
       Uint32 len = len_cnt & 0xFFFF;  // length of pattern in words
       Uint32 cnt = len_cnt >> 16;     // no of parameters
+
+      // Declared key-pattern length must not exceed the tree section.
+      if (unlikely(len > (Uint32)(tree.end - tree.ptr))) {
+        jam();
+        ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
 
       err = DbspjErr::InvalidTreeParametersSpecificationIncorrectKeyParamCount;
       if (unlikely(
               ((cnt == 0) != ((treeBits & DABits::NI_KEY_PARAMS) == 0)) ||
               ((cnt == 0) != ((paramBits & DABits::PI_KEY_PARAMS) == 0)))) {
         jam();
+        break;
+      }
+
+      // TEST-ONLY (F9: Markus_tests/test_dbspj_f9_keyparam_overflow.py, Phase 2):
+      // force the key-param count past the expand() stack buffer to demonstrate
+      // the buildRowHeader(3-arg) overflow. Placed AFTER the cnt==0 consistency
+      // check so a well-formed linked-key JOIN still reaches expand(). No-op
+      // unless error insert 17210 is armed (`<nodeId> error 17210`). Compiles to
+      // nothing in non-error-insert builds. REMOVE before merge.
+      //
+      // Uses 0xFFFF (65535), the real attacker ceiling for this 16-bit field
+      // (len_cnt >> 16), not just MAX_ATTRIBUTES_IN_TABLE+1 -- a small overrun
+      // (a few KB) can land in unused stack-frame padding on an 8MB default
+      // thread stack and never get touched again before the function returns
+      // cleanly. The full-width value overruns tmp[] by ~61K words (~245KB),
+      // which is what an actual malicious query tree would send on the wire.
+      if (ERROR_INSERTED_CLEAR(17210)) {
+        jam();
+        g_eventLogger->info(
+            "F9 injection: forcing key-param cnt from %u to 0xFFFF"
+            " (DbspjMain.cpp parseDA, error insert 17210)",
+            cnt);
+        cnt = 0xFFFF;
+      }
+
+      // cnt (key-param count, decoded above) has no upper bound check other
+      // than the cnt==0/DABits agreement check -- it is passed as paramCnt
+      // into expand(), which declares a stack array sized
+      // MAX_ATTRIBUTES_IN_TABLE and writes cnt entries into it via
+      // buildRowHeader with no cap. cnt > MAX_ATTRIBUTES_IN_TABLE overruns
+      // that stack array (verified: SIGSEGV inside Dbspj::expand(), see
+      // Markus_tests/test_dbspj_f9_keyparam_overflow.py). No real table has
+      // more than MAX_ATTRIBUTES_IN_TABLE columns and no valid key pattern
+      // carries more than that many parameters, so this is user-untriggerable
+      // via SQL/HTTP/REST/Redis -- Tier A.
+      if (unlikely(cnt > MAX_ATTRIBUTES_IN_TABLE)) {
+        jam();
+        ctx.m_maliciousViolationType = VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS;
+        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+        err = DbspjErr::InvalidTreeNodeSpecification;
         break;
       }
 
@@ -14826,6 +14898,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          */
         if (treeBits & (DABits::NI_ATTR_INTERPRET | DABits::NI_ATTR_LINKED)) {
           jam();
+          // The length header word itself must be inside the tree section.
+          if (unlikely(tree.ptr >= tree.end)) {
+            jam();
+            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+            err = DbspjErr::InvalidTreeNodeSpecification;
+            break;
+          }
           Uint32 len2 = *tree.ptr++;
           Uint32 len_prg = len2 & 0xFFFF;   // Length of interpret program
           Uint32 len_pattern = len2 >> 16;  // Length of attr param pattern
@@ -14843,6 +14923,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             }
 
             treeNodePtr.p->m_bits |= TreeNode::T_ATTR_INTERPRETED;
+            // Declared program length must not exceed the tree section.
+            if (unlikely(len_prg > (Uint32)(tree.end - tree.ptr))) {
+              jam();
+              ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+              ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+              err = DbspjErr::InvalidTreeNodeSpecification;
+              break;
+            }
             err = DbspjErr::OutOfSectionMemory;
             if (unlikely(!appendToSection(attrInfoPtrI, tree.ptr, len_prg))) {
               jam();
@@ -14861,6 +14949,16 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
            */
           DABuffer no_param;
           no_param.ptr = nullptr;
+
+          // Declared attr-pattern length must not exceed the tree section.
+          // (tree.ptr has already advanced past the interpret program above.)
+          if (unlikely(len_pattern > (Uint32)(tree.end - tree.ptr))) {
+            jam();
+            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+            err = DbspjErr::InvalidTreeNodeSpecification;
+            break;
+          }
 
           if (treeBits & DABits::NI_ATTR_LINKED) {
             jam();
@@ -14924,6 +15022,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           /**
            * Add the interpreted code that represents the scan filter.
            */
+          // The length header word itself must be inside the param section.
+          if (unlikely(param.ptr >= param.end)) {
+            jam();
+            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+            err = DbspjErr::InvalidTreeParametersSpecification;
+            break;
+          }
           const Uint32 len2 = *param.ptr++;
           const Uint32 program_len = len2 & 0xFFFF;
           const Uint32 subroutine_len = len2 >> 16;
@@ -14936,6 +15042,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
                          param.ptr,
                          program_len);
 #endif
+          // Declared program length must not exceed the param section.
+          if (unlikely(program_len > (Uint32)(param.end - param.ptr))) {
+            jam();
+            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+            err = DbspjErr::InvalidTreeParametersSpecification;
+            break;
+          }
           err = DbspjErr::OutOfSectionMemory;
           if (unlikely(
                   !appendToSection(attrInfoPtrI, param.ptr, program_len))) {
@@ -14956,6 +15070,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             // This code branch has never been tested, unused as well.
             ndbassert(false);  // Need validation before being used.
 
+            // Declared subroutine length must not exceed the param section.
+            if (unlikely(subroutine_len > (Uint32)(param.end - param.ptr))) {
+              jam();
+              ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
+              ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+              err = DbspjErr::InvalidTreeParametersSpecification;
+              break;
+            }
             err = DbspjErr::OutOfSectionMemory;
             if (unlikely(!appendToSection(attrParamPtrI, param.ptr,
                                           subroutine_len))) {
