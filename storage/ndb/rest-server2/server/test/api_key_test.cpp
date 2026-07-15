@@ -20,6 +20,7 @@
 #include "../src/api_key.hpp"
 #include "../src/config_structs.hpp"
 #include "connection.hpp"
+#include "resources/seed_check.hpp"
 #include "resources/test_constants.hpp"
 #include "rdrs_dal.h"
 #include "rdrs_hopsworks_dal.h"
@@ -324,6 +325,7 @@ class APIKeyTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     printf("Set up TestSuite\n");
+    RequireSeededTestDatabases();
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
                                                               globalConfigs.ronDBMetadataCluster,
                                                               4);
