@@ -43,6 +43,13 @@ const BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT"
 //go:embed fixed/hopsworks-data/hopsworks_data.sql
 var HopsworksData string
 
+// Fine-grained FG/FV sharing fixture (RONDB-1088): cleaned import of the
+// live-cluster reference state (docs/fine_grained_recordings/) - hopsworks
+// metadata plus the usera_project online database, all ids >= 100000.
+// Loaded after HopsworksData.
+//go:embed fixed/hopsworks-data/fine_grained_sharing_data.sql
+var FineGrainedSharingData string
+
 //go:embed fixed/hopsworks_40_schema.sql
 var HopsworksSchema string
 
@@ -301,7 +308,8 @@ var HopsworksScheme string = HopsworksSchema +
 	V61 + V62 + V63 + V64 + V65 + V66 + V67 + V68 + V69 + V70 +
 	V71 + V72 + V73 + V74 + V75 + V76 + V77 + V78 + V79 + V80 +
 	V81 + V82 + V83 +
-	HopsworksData
+	HopsworksData +
+	FineGrainedSharingData
 
 const HOPSWORKS_DB_NAME = "hopsworks"
 
@@ -500,6 +508,30 @@ const FSDB003 = "fsdb003"
 var FSDB004Scheme string
 
 const FSDB004 = "fsdb004"
+
+// Online feature store DB of the fine-grained sharing producer project.
+// Created by FineGrainedSharingData as part of the hopsworks seed - it is
+// deliberately NOT in databaseCreateSchemes (no dynamic project template).
+const USERA_PROJECT = "usera_project"
+
+// Cleartext API keys of the 12 fine-grained sharing test users
+// usera..userl (uids 100000-100011). The matching salted hashes are the
+// api_key rows (ids 100012-100023) in fine_grained_sharing_data.sql.
+// Test-only credentials, recorded from the throwaway reference cluster.
+const (
+	USERA_API_KEY = "ChwGeR9Hb49Krbm8.NhZHfEDKpFKxz1KqZ1dEadX3TGIMbqEJePjganxBTPKFUT0p2IOUI60eTXVO1Ekx"
+	USERB_API_KEY = "NJOTkByOD8jRApvR.OgbInog1SLVtJf4DfoblPehxWDS6oDTJYSGrt12cdUMhRxNBtAXWUwGmmJ0hptqb"
+	USERC_API_KEY = "keFK4Ay0SxBMNjVA.ernb51BTbUwC4mldvnlMw2DydJuLwr6xZ8C9nMjWPrsSSMKVTeTdLb8ZEo2dZ564"
+	USERD_API_KEY = "RmanPkMndlooED6L.ceoXmGl2BLdkYe6MwDESIIZnh4JofHiZbNiKh4ts6T7HdChyFAdZWSS4uwbrf4NT"
+	USERE_API_KEY = "lMweR23LdnqLr56h.wpLMSuJQlDBculzDyfOUqziPbAofJQUHdDAVhP1R4q5chSFhARNKhzlR6dr105o9"
+	USERF_API_KEY = "18OJHwyAFFLOhswO.3ZOnogkLwdFLfBX4fSBqwZlbajPBCaTaoUhxnNfQMEsNjXxeac2iDAwMmk8PhiJL"
+	USERG_API_KEY = "70waGjjDEAC2RjS1.2FIp0APnKgOzOBbCTjMX9OySccqZ6stXwWtoFbV0CEKJkrk2miHS3ckoEDFtpXCf"
+	USERH_API_KEY = "senMNxLu0PggmzGZ.dQhvaSxh2boOa2X7nYDquRVxrBxe4M0IbbDiqAjblnVgFtPNjw6GyjCpfJmxOMuq"
+	USERI_API_KEY = "npUExoYmLz4kJrJM.DcaDL6uzdIRTqguq5zecjGXk2ewdd4W9Pe3PPXCkFcNj8BPkzwy73taT2n7AkgDJ"
+	USERJ_API_KEY = "AI074gWjUl5pZEa8.VoNvwxOoSkbDJFpZI6oQnqCThCRonF2v4gNFXPRhhft5mwMTjAMjBOwyC5EF4Jb2"
+	USERK_API_KEY = "tr80O5ClBpOupXzI.YBxXBwHk0abT0yV9hJ9Jth3Ta2r1sOgSmqx48JFCNi8CHZUTuZg6bxZ1gse6xCmZ"
+	USERL_API_KEY = "yaRas68o9CmUeZDX.Y6AtxyK0bFwqCGZv91YHixP5juKcHeOqNd9JEel64v36itRbNDPNKYaI901SwJ01"
+)
 
 // This is sentinel DB
 // If this exists then we have successfully initialized all the DBs
