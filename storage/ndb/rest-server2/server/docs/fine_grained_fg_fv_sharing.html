@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fine-Grained Feature Group / Feature Sharing — Hopsworks</title>
+<style>
+  /* GitHub markdown-body look (light) */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #ffffff; color: #1f2328;
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .layout { display: block; max-width: 1012px; margin: 0 auto; padding: 32px 16px 96px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  /* Contents box, like a wiki sidebar card placed at the top */
+  nav {
+    background: #f6f8fa; border: 1px solid #d1d9e0; border-radius: 6px;
+    padding: 16px; margin: 24px 0;
+  }
+  nav h2 { font-size: 14px; margin: 10px 0 6px; padding: 0; border: none; }
+  nav a { display: block; padding: 1px 0; font-size: 14px; }
+  nav a.sub { padding-left: 18px; }
+  main { display: block; }
+  h1 { font-size: 2em; font-weight: 600; line-height: 1.25; margin: 0 0 16px; padding-bottom: .3em; border-bottom: 1px solid #d1d9e0; }
+  .subtitle { color: #59636e; margin: 0 0 16px; }
+  h2 { font-size: 1.5em; font-weight: 600; line-height: 1.25; margin: 24px 0 16px; padding-bottom: .3em; border-bottom: 1px solid #d1d9e0; }
+  h3 { font-size: 1.25em; font-weight: 600; line-height: 1.25; margin: 24px 0 16px; }
+  h4 { font-size: 1em; font-weight: 600; line-height: 1.25; margin: 24px 0 16px; }
+  p { margin: 0 0 16px; }
+  code, .fn, .commit, .path {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 85%;
+  }
+  code { background: rgba(129,139,152,0.12); padding: .2em .4em; border-radius: 6px; }
+  pre {
+    background: #f6f8fa; border-radius: 6px; padding: 16px; margin: 0 0 16px;
+    overflow-x: auto; font-size: 85%; line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; font-size: 100%; }
+  .path { color: #59636e; }
+  table { border-collapse: collapse; border-spacing: 0; display: block; width: max-content; max-width: 100%; overflow: auto; margin: 0 0 16px; }
+  th, td { border: 1px solid #d1d9e0; padding: 6px 13px; text-align: left; vertical-align: top; }
+  th { font-weight: 600; }
+  tr:nth-child(2n) td { background: #f6f8fa; }
+  /* GitHub-style alerts */
+  .callout { border-left: .25em solid #d1d9e0; padding: 8px 16px; margin: 0 0 16px; color: inherit; }
+  .callout .tag { display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .callout.info   { border-left-color: #0969da; } .callout.info .tag   { color: #0969da; }
+  .callout.good   { border-left-color: #1a7f37; } .callout.good .tag   { color: #1a7f37; }
+  .callout.warn   { border-left-color: #9a6700; } .callout.warn .tag   { color: #9a6700; }
+  .callout.danger { border-left-color: #cf222e; } .callout.danger .tag { color: #cf222e; }
+  /* Topic-style pills */
+  .pill { display: inline-block; background: #ddf4ff; color: #0969da; border-radius: 2em; padding: 0 10px; font-size: 12px; line-height: 22px; margin: 0 3px 4px 0; }
+  a.ext { color: #0969da; }
+  .flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+  .flow .node { background: #f6f8fa; border: 1px solid #d1d9e0; border-radius: 6px; padding: 8px 12px; font-size: 14px; flex: 1; min-width: 150px; }
+  .flow .node b { display: block; font-size: 12px; margin-bottom: 2px; }
+  .arrow { color: #59636e; align-self: center; font-size: 18px; }
+  .meta { color: #59636e; font-size: 12px; }
+  hr { height: .25em; padding: 0; margin: 24px 0; background: #d1d9e0; border: 0; }
+  ul, ol { margin: 0 0 16px; padding-left: 2em; }
+  li { margin: .25em 0; }
+  .legend td:first-child { white-space: nowrap; }
+  .ok { color: #1a7f37; font-weight: 600; }
+  .no { color: #cf222e; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div style="font-weight:700;font-size:15px;">FG / Feature Sharing</div>
+  <div class="meta" style="margin-top:4px;">Hopsworks access control study</div>
+  <h2>Contents</h2>
+  <a href="#overview">1. Overview — two systems</a>
+  <a href="#commits">2. The commits</a>
+  <a href="#sharing">3. Cross-project sharing</a>
+  <a href="#sharing-tables" class="sub">3.1 The three tables</a>
+  <a href="#sharing-hierarchy" class="sub">3.2 shared_entirely hierarchy</a>
+  <a href="#sharing-lifecycle" class="sub">3.3 Lifecycle &amp; REST API</a>
+  <a href="#sharing-read" class="sub">3.4 Read-side logic</a>
+  <a href="#restricted">4. In-project restricted access</a>
+  <a href="#restricted-tables" class="sub">4.1 The two tables</a>
+  <a href="#restricted-role" class="sub">4.2 The role &amp; lifecycle</a>
+  <a href="#restricted-logic" class="sub">4.3 Decision logic</a>
+  <a href="#routing">5. How the two systems compose</a>
+  <a href="#routing-both" class="sub">5.1 What if both apply?</a>
+  <a href="#backends">6. Per-backend enforcement</a>
+  <a href="#be-rondb" class="sub">6.1 RonDB GRANT SELECT</a>
+  <a href="#be-hopsfs" class="sub">6.2 HopsFS ACLs</a>
+  <a href="#be-arrow" class="sub">6.3 ArrowFlight</a>
+  <a href="#be-opensearch" class="sub">6.4 OpenSearch FLS</a>
+  <a href="#choke">7. Recursive FV/TD checks</a>
+  <a href="#choke-matrix" class="sub">7.1 Decision matrix</a>
+  <a href="#choke-2744" class="sub">7.2 HWORKS-2744</a>
+  <a href="#threat">8. The indirect-leak threat</a>
+  <a href="#tests">9. Test coverage</a>
+  <a href="#rondb">10. Relevance to RDRS2</a>
+</nav>
+
+<main>
+<h1>Fine-Grained Feature&nbsp;Group / Feature Sharing in Hopsworks</h1>
+<div class="subtitle">The two access-control systems — cross-project sharing (<code>shared_feature_store</code> / <code>shared_feature_group</code> / <code>shared_feature</code>) and in-project restricted access (<code>restricted_feature_group_access</code> / <code>restricted_feature_access</code>) — their table semantics, grant lifecycle, per-backend enforcement, and the recursive feature-view checks.</div>
+
+<div>
+  <span class="pill jira">FSTORE-1905</span>
+  <span class="pill jira">FSTORE-1940</span>
+  <span class="pill jira">FSTORE-2026</span>
+  <span class="pill jira">HWORKS-2744</span>
+  <span class="pill">hopsworks-common</span>
+  <span class="pill">hopsworks-api</span>
+  <span class="pill">hopsworks-persistence</span>
+  <span class="pill">vector-db</span>
+</div>
+
+<div class="callout info">
+  <span class="tag">Purpose of this document</span>
+  This is a study of how the feature is built <em>in Hopsworks</em>, produced before porting the equivalent enforcement to the RonDB REST server (RDRS2). It is descriptive, not a design for RDRS2 — that comes next. All file/line references are against the Hopsworks monorepo at <span class="path">/Users/salman/code/hops/hopsworks</span> (HEAD, July&nbsp;2026); line numbers may drift as files evolve. Markdown companion with the same content: <span class="path">docs/fg_fv_sharing_how_it_works.md</span>.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="overview">1. Overview — two independent systems</h2>
+
+<p>Hopsworks has <strong>two orthogonal fine-grained access mechanisms</strong> that are easy to conflate because both can limit access down to individual features (columns) of a feature group:</p>
+
+<table>
+  <tr><th></th><th>Cross-project <strong>sharing</strong></th><th>In-project <strong>restricted access</strong></th></tr>
+  <tr><td>Tables</td><td><code>shared_feature_store</code>, <code>shared_feature_group</code>, <code>shared_feature</code></td><td><code>restricted_feature_group_access</code>, <code>restricted_feature_access</code></td></tr>
+  <tr><td>Grantee</td><td>a <strong>project</strong> (<code>shared_with_project</code>)</td><td>a <strong>user</strong> (<code>granted_to_user</code>)</td></tr>
+  <tr><td>Semantics</td><td>additive grant on top of normal project membership</td><td>allow-list for members who otherwise see <em>nothing</em></td></tr>
+  <tr><td>Trigger</td><td>Data Owner shares FS / FG / columns with another project</td><td>member holds project role <code>FEATURE_STORE_RESTRICTED</code> (&ldquo;Feature store restricted&rdquo;)</td></tr>
+  <tr><td>JIRA / migration</td><td>FSTORE-1905, <span class="path">V45__..._column_level_permissions.sql</span></td><td>FSTORE-1940, <span class="path">V46__..._restricted_feature_access.sql</span></td></tr>
+  <tr><td>Core commit</td><td><span class="commit">c0957d9d5b</span> (18-Dec-2025)</td><td><span class="commit">c43ca1153b</span> (14-Jan-2026)</td></tr>
+  <tr><td>Owning controllers</td><td><code>ShareFeatureStoreController</code>, <code>ShareFeatureGroupController</code></td><td><code>FeatureGroupRestrictedAccessController</code></td></tr>
+</table>
+
+<div class="callout good">
+  <span class="tag">Mutually exclusive, not layered</span>
+  For a given (project, user) exactly <strong>one</strong> of the two systems applies. The single choke point <code>AccessController</code> routes every decision by the caller's project team role: <code>FEATURE_STORE_RESTRICTED</code> members are checked against the <code>restricted_*</code> tables only; everyone else against the <code>shared_*</code> cascade only (§5).
+</div>
+
+<p>Why the feature touches so many subsystems: a Hopsworks feature group is <strong>simultaneously materialised in four backends</strong>, each with its own access primitive:</p>
+
+<table>
+  <tr><th>Backend</th><th>Stores</th><th>Access primitive</th><th>Column-level?</th></tr>
+  <tr><td>RonDB</td><td>online FG (row store)</td><td>native per-user <code>GRANT SELECT (cols)</code></td><td class="ok">✅ native column grant</td></tr>
+  <tr><td>HopsFS</td><td>offline FG (parquet/Hudi files)</td><td>POSIX ACL on directory</td><td class="no">❌ directory-level only</td></tr>
+  <tr><td>ArrowFlight (FlyingDuck)</td><td>external FGs + partial offline reads</td><td>signed super-user query, encrypted connectors</td><td class="ok">✅ query-time projection</td></tr>
+  <tr><td>OpenSearch</td><td>embedding vectors</td><td>Field-Level-Security role + mapping</td><td class="ok">✅ FLS field list</td></tr>
+</table>
+
+<p>Because feature views (FV) and training datasets (TD) are <em>derived</em> objects projecting columns out of one or more FGs, a second class of work (FSTORE-2026 / HWORKS-2744) makes their authorization <strong>recursive over constituent FGs</strong> so derived objects cannot be used as a side channel to read un-granted data (§7–§8).</p>
+
+<!-- ============================================================ -->
+<h2 id="commits">2. The commits</h2>
+
+<table class="legend">
+  <tr><th>Commit</th><th>JIRA</th><th>What it did</th></tr>
+  <tr><td class="commit">c0957d9d5b</td><td>FSTORE-1905</td><td>Core cross-project sharing — the 3 <code>shared_*</code> tables, <code>Share*Controller</code>s, and all four backend enforcers. FV/TD checks introduced but <em>flat</em> (own-project only).</td></tr>
+  <tr><td class="commit">baaed15b41</td><td>FSTORE-1905</td><td>Fix SQL migration (backtick-quoting in the DELETE that removes redundant <code>dataset_shared_with</code> rows).</td></tr>
+  <tr><td class="commit">b622a0dbd0</td><td>FSTORE-1905</td><td>Handle sharing of <em>external</em> feature groups — adds <code>requiresSuperUserExec</code>, wires <code>filterSharedFeatures</code> into the ArrowFlight read path; adds <code>PKIUtils.encryptText</code>.</td></tr>
+  <tr><td class="commit">863455155e</td><td>FSTORE-1905</td><td>Fix <code>ConstructorController</code> logic for super-user query construction.</td></tr>
+  <tr><td class="commit">bbd3f4eee3</td><td>FSTORE-1905</td><td>Fix tests.</td></tr>
+  <tr><td class="commit">c43ca1153b</td><td>FSTORE-1940</td><td>In-project restricted access — the 2 <code>restricted_*</code> tables, the <code>FEATURE_STORE_RESTRICTED</code> role, <code>FeatureGroupRestrictedAccessController</code>, unified <code>AccessController.filterAvailableFeatures</code>. <span class="meta">(A revert exists — <span class="commit">730a02ed85</span> — but only on the 4.6.1 release branch; the feature is live at HEAD.)</span></td></tr>
+  <tr><td class="commit">79665ccd3b</td><td>FSTORE-1905</td><td>Fix reading from ArrowFlight using a query.</td></tr>
+  <tr><td class="commit">a5ab4408a2</td><td>FSTORE-2026</td><td>&ldquo;Restricted user can access more than he should.&rdquo; Makes FV/TD checks <em>recursive</em>; adds restricted-user overloads; wires <code>filterAvailableFeatureViews</code> into FV listings; adds OpenSearch FLS + per-user embedding identities.</td></tr>
+  <tr><td class="commit">e1b8b2b295</td><td>HWORKS-2744</td><td>Deny feature-view read when a constituent FG is inaccessible — replaces a swallowed <code>verifyAccess</code> on the single-FV GET with the recursive <code>hasAccess</code> gate; adds <code>TestAccessController</code>.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="sharing">3. Cross-project sharing (<code>shared_*</code> tables)</h2>
+
+<div class="flow">
+  <div class="node"><b>Level 1 — Feature Store</b>share <em>every</em> feature group and column</div>
+  <div class="arrow">▸</div>
+  <div class="node"><b>Level 2 — Feature Group</b>share one whole FG (all columns)</div>
+  <div class="arrow">▸</div>
+  <div class="node"><b>Level 3 — Feature (column)</b>share only a named subset of columns of one FG</div>
+</div>
+
+<h3 id="sharing-tables">3.1 The three tables</h3>
+<p class="meta"><span class="path">docker/migration/sql/ddl/V45__[FSTORE-1905]_column_level_permissions.sql</span> — all three are <code>ndbcluster</code> tables in the <code>hopsworks</code> catalog. JPA entities in <code>io.hops.hopsworks.persistence.entity.featurestore.share</code>; facades in <span class="path">hopsworks-common/.../featurestore/share/</span>.</p>
+
+<table>
+  <tr><th>Table</th><th>Key columns</th><th><code>shared_entirely</code>?</th><th>Meaning</th></tr>
+  <tr>
+    <td><code>shared_feature_store</code></td>
+    <td><code>feature_store</code>→feature_store(id), <code>shared_with_project</code>→project(id), <code>shared_by</code>→users(uid), <code>shared_on</code></td>
+    <td>✅ default 1</td>
+    <td>An entire feature store shared with a project (or a placeholder — see below).</td>
+  </tr>
+  <tr>
+    <td><code>shared_feature_group</code></td>
+    <td>same + <code>feature_group</code>→feature_group(id)</td>
+    <td>✅ default 1</td>
+    <td>One FG shared with a project — whole FG or column subset.</td>
+  </tr>
+  <tr>
+    <td><code>shared_feature</code></td>
+    <td><code>feature_group</code> + <code>feature VARCHAR(63)</code> (the column <em>name</em>, not an FK — features aren't first-class entities) + <code>shared_with_project</code></td>
+    <td>❌ (it is the leaf)</td>
+    <td>One named column of one FG shared with a project.</td>
+  </tr>
+</table>
+
+<p>All foreign keys are <code>ON DELETE CASCADE</code>, so dropping a feature store / FG / project / user automatically revokes its shares. The V45 migration also <strong>backfills</strong> <code>shared_feature_store</code> from existing full-store <code>dataset_shared_with</code> rows (with <code>shared_entirely = 1</code>) and then deletes those redundant rows — see §3.3 for what remains of the legacy mechanism.</p>
+
+<h3 id="sharing-hierarchy">3.2 The <code>shared_entirely</code> short-circuit hierarchy</h3>
+
+<p>The <code>shared_entirely</code> flag lets a broad grant subsume the finer tables. Read authorization walks top-down and returns at the first satisfied level:</p>
+
+<pre><code>1. own project?                                  → full access
+2. shared_feature_store.shared_entirely = 1 ?    → full access (whole store)
+3. shared_feature_group.shared_entirely = 1 ?    → full access (whole FG)
+4. else → intersect requested columns with shared_feature rows for (FG, project)</code></pre>
+
+<div class="callout info">
+  <span class="tag">Marker rows</span>
+  When you share a <em>single FG</em> but the parent store has no share row yet, the controller creates a <code>shared_feature_store</code> row with <code>shared_entirely = 0</code> (<span class="path">ShareFeatureGroupController.java:169–174</span>). This placeholder never grants store-wide access — it exists so the store shows up in the receiving project's store listings (<span class="fn">FeaturestoreController.getProjectFeaturestores</span> uses <span class="fn">findSharedWithProject</span>, which ignores the flag). It is removed again when the last FG share from that store is revoked (<span class="path">:433–438</span>). Likewise a <code>shared_feature_group</code> row with <code>shared_entirely = 0</code> means &ldquo;consult <code>shared_feature</code> for the exact columns.&rdquo;
+</div>
+
+<div class="callout good">
+  <span class="tag">PK + event-time always included</span>
+  Column-subset shares are always augmented with the FG's primary-key and event-time columns (<span class="fn">addPrimaryKeysAndEventTime</span>, <span class="path">ShareFeatureGroupController.java:237–248</span>) so the shared subset stays queryable and joinable. You cannot hide PKs or event time via a partial share. The restricted system does the same (§4).
+</div>
+
+<h3 id="sharing-lifecycle">3.3 Lifecycle — REST API, who shares, no accept flow</h3>
+
+<p>Two JAX-RS sub-resources under a project's feature store, in <span class="path">hopsworks-api/.../api/featurestore/share/</span>. Every method is gated <code>@AllowedProjectRoles({DATA_OWNER})</code> — <strong>only a Data Owner of the owning project can share</strong> (receiver-side revoke needs a Data Owner of the receiving project). The target project is identified purely by numeric id.</p>
+
+<table>
+  <tr><th>Endpoint</th><th>Action</th></tr>
+  <tr><td><code>POST&nbsp;.../featurestores/{fsId}/share?project={id}</code></td><td>Share the whole store (<code>shared_entirely=1</code>).</td></tr>
+  <tr><td><code>DELETE&nbsp;.../share?project={id}</code> / <code>DELETE&nbsp;.../share/received?featurestore={id}</code></td><td>Owner-side / receiver-side revoke.</td></tr>
+  <tr><td><code>POST&nbsp;.../share/featuregroups/{fgId}?project={id}&amp;feature=c1&amp;feature=c2</code></td><td>Share one FG. Empty feature set ⇒ whole FG; non-empty ⇒ column subset.</td></tr>
+  <tr><td><code>DELETE&nbsp;.../share/featuregroups/{fgId}?project={id}</code> (+ <code>/received</code>)</td><td>Revoke an FG share.</td></tr>
+  <tr><td><code>GET</code> variants</td><td>List shares.</td></tr>
+</table>
+
+<div class="callout warn">
+  <span class="tag">No accept / invitation flow</span>
+  Unlike the legacy <code>dataset_shared_with</code> (which had a pending state and <span class="fn">acceptShared</span>), these shares are <strong>immediate and unconditional</strong>: the metadata row and all backend permissions (HopsFS ACLs, RonDB grants, OpenSearch) are applied synchronously in the same call. There is no timer bean in the new path — the &ldquo;timer bean&rdquo; comment in V45 refers to the legacy dataset <code>PermissionsFixer</code>.
+</div>
+
+<p>Sharing an FG enforces two invariants (<span class="path">ShareFeatureGroupController.java:155–168</span>): <code>FEATURE_STORE_ALREADY_SHARED</code> if the store is already shared entirely with that project, and <code>FEATURE_GROUP_ALREADY_SHARED</code> if any FG row already exists — no silent widening/narrowing; unshare first.</p>
+
+<h4>Project lifecycle hooks (<span class="path">ProjectController.java</span>)</h4>
+<ul>
+  <li><strong>Member added</strong> (<span class="path">:2125–2126</span>) — <span class="fn">addUserToSharedFeatureStores</span> / <span class="fn">addUserToSharedFeatureGroups</span> replay all existing shares for the new member (entirely-shared → ACL + RonDB grant; partially-shared → online grant only). <strong>Skipped entirely for <code>FEATURE_STORE_RESTRICTED</code> members</strong> (<span class="path">:2124–2127</span>).</li>
+  <li><strong>Member removed</strong> (<span class="path">:2404–2405</span>) — reverse.</li>
+  <li><strong>Project deleted</strong> (<span class="path">:1373</span>, <span class="path">:1876</span>) — <span class="fn">unshareAllFeatureStores</span> / <span class="fn">unshareAllFeatureGroup</span> for shares <em>received</em> by the dying project; owning-side rows die by DB cascade.</li>
+  <li><strong>Project created</strong> — the configured default feature store is auto-shared (<span class="path">ProjectService.java:725</span> → <span class="fn">shareDefaultFeatureStore</span>); an import wizard can per-FG-share all HopsFS-materialised FGs of the default project (<span class="path">FeaturestoreService.java:381</span>).</li>
+</ul>
+
+<h3 id="sharing-read">3.4 Read-side logic — <span class="fn">checkIfShared</span> &amp; <span class="fn">filterSharedFeatures</span></h3>
+<p class="meta"><span class="path">hopsworks-common/.../featurestore/share/ShareFeatureGroupController.java</span> — <code>@Stateless</code>, <code>@TransactionAttribute(NEVER)</code>.</p>
+
+<pre><code>public boolean checkIfShared(Project project, Featuregroup fg) {          // L498–513
+  if (fg.getFeaturestore().getProject().equals(project)) return true;      // own store
+  if (sharedFeatureStoreFacade
+        .findByFeatureStoreAndSharedEntirelyWithProject(fg.getFeaturestore(), project).isPresent())
+    return true;                                                            // whole store
+  return sharedFeatureGroupFacade
+        .findByFeatureGroupAndSharedWithProject(fg, project).isPresent();   // any FG share
+}</code></pre>
+<p><code>checkIfShared</code> uses <em>any</em> FG share at level 3 (a partial share still makes the FG visible). Column narrowing is done separately by <span class="fn">filterSharedFeatures</span> (L532–562), which returns the full list for levels 1–3 and otherwise intersects the requested columns with the <code>shared_feature</code> rows. There is also a stricter <span class="fn">checkIfSharedEntirely</span>, used to decide whether a query needs the super-user executor (§6.3).</p>
+
+<!-- ============================================================ -->
+<h2 id="restricted">4. In-project restricted access (<code>restricted_*</code> tables)</h2>
+
+<p>The second system, added by <strong>FSTORE-1940</strong> one migration after sharing. A project member holding the fifth project role <code>FEATURE_STORE_RESTRICTED</code> (&ldquo;Feature store restricted&rdquo;) starts with access to <strong>nothing</strong> in the feature store; a Data Owner then explicitly grants access to individual FGs, or individual features within an FG. It is a <strong>pure allow-list</strong> — absence of a row means no access — and it is scoped to a <em>user</em>, not a project.</p>
+
+<h3 id="restricted-tables">4.1 The two tables</h3>
+<p class="meta"><span class="path">docker/migration/sql/ddl/V46__[FSTORE-1940]_restricted_feature_access.sql</span> — <code>ndbcluster</code>, cascade FKs. Entities in <code>io.hops.hopsworks.persistence.entity.featurestore.access</code>.</p>
+
+<table>
+  <tr><th>Table</th><th>Key columns</th><th>Meaning</th></tr>
+  <tr>
+    <td><code>restricted_feature_group_access</code></td>
+    <td><code>feature_store</code>, <code>feature_group</code>, <code>granted_to_user</code>→users(uid), <code>granted_by</code>, <code>granted_on</code>, <code>can_access_entirely</code> (default 1)</td>
+    <td>&ldquo;User U may access FG G.&rdquo; <code>can_access_entirely=1</code> ⇒ all columns; <code>=0</code> ⇒ only the columns in the child table.</td>
+  </tr>
+  <tr>
+    <td><code>restricted_feature_access</code></td>
+    <td><code>restricted_feature_group_access</code>→<strong>parent row</strong>(id), <code>feature VARCHAR(63)</code>, <code>granted_to_user</code>, <code>granted_by</code>, <code>granted_on</code></td>
+    <td>One named column granted within the parent FG grant.</td>
+  </tr>
+</table>
+
+<div class="callout info">
+  <span class="tag">Structural difference from the shared tables</span>
+  <code>shared_feature</code> FKs directly to <code>feature_group</code>, but <code>restricted_feature_access</code> FKs to its <strong>parent grant row</strong> — a per-feature grant cannot exist without its per-FG parent, and deleting the parent cascades the children. The parent's <code>can_access_entirely</code> plays the same role <code>shared_entirely</code> plays on <code>shared_feature_group</code>.
+</div>
+
+<p>As with sharing, PK + event-time columns are force-added to any per-feature grant (<span class="fn">addPrimaryKeysAndEventTime</span>, <span class="path">FeatureGroupRestrictedAccessController.java:159–170</span>).</p>
+
+<h3 id="restricted-role">4.2 The role &amp; grant lifecycle</h3>
+
+<ul>
+  <li><code>ProjectRoleTypes.FEATURE_STORE_RESTRICTED("Feature store restricted")</code> — <span class="path">hopsworks-persistence/.../project/team/ProjectRoleTypes.java:48</span>; also <span class="path">AllowedRoles.java:48</span>. A project <em>team role</em>, in the same slot as Data owner / Data scientist / Observer.</li>
+  <li>On add-member, restricted members are deliberately <strong>not</strong> wired into existing cross-project shares (<span class="path">ProjectController.java:2124–2127</span>), and their online DB user is created with <strong>zero schema grants</strong> — <span class="fn">updateUserOnlineFeatureStoreDB</span> (<span class="path">OnlineFeaturestoreController.java:292–302</span>) only grants for <code>DATA_OWNER</code> / <code>DATA_SCIENTIST</code>. They accumulate only the explicit per-FG / per-column grants.</li>
+</ul>
+
+<p>Grants are managed via <span class="path">hopsworks-api/.../featurestore/access/FeatureGroupRestrictedAccessResource.java</span>, a sub-resource of a feature group, all methods <code>@AllowedProjectRoles({DATA_OWNER})</code>:</p>
+
+<table>
+  <tr><th>Endpoint</th><th>Action</th></tr>
+  <tr><td><code>POST&nbsp;grantAccess?user=&lt;email&gt;&amp;feature=&lt;set&gt;</code></td><td>No <code>feature</code> params ⇒ whole-FG grant (<code>can_access_entirely=1</code>); with them ⇒ per-feature grant.</td></tr>
+  <tr><td><code>DELETE&nbsp;revokeAccess?user=&lt;email&gt;</code></td><td>Remove the grant (children cascade).</td></tr>
+  <tr><td><code>GET&nbsp;getUsersGrantedAccess()</code></td><td>List grants for the FG.</td></tr>
+</table>
+
+<p><span class="fn">grantRestrictedAccess</span> (<span class="path">FeatureGroupRestrictedAccessController.java:90–137</span>) re-verifies the target user actually holds the restricted role, writes the rows, then — if the FG is online-enabled — immediately issues the RonDB grant (§6.1) and, if the FG has an embedding, the OpenSearch FLS role (§6.4). There are <strong>no HopsFS ACLs</strong> for restricted users; offline reads are enforced at the API layer plus super-user execution (§6.3).</p>
+
+<h3 id="restricted-logic">4.3 Decision logic</h3>
+
+<pre><code>// FeatureGroupRestrictedAccessController.filterRestrictedFeatures  L236–262
+Optional&lt;RestrictedFeatureGroupAccess&gt; restrictedAccess =
+    restrictedFeatureGroupAccessFacade.findByFeatureGroupAndUser(featuregroup, user);
+if (restrictedAccess.isEmpty()) return new ArrayList&lt;&gt;();          // no grant → nothing
+if (restrictedAccess.get().isCanAccessEntirely()) return features; // whole FG
+// else intersect with granted RestrictedFeatureAccess column names</code></pre>
+
+<p><span class="fn">checkIfUserHasAccess</span> is the boolean form: a grant row exists for (FG, user) or not. <span class="fn">filterRestrictedFeatureGroups</span> is the FG-list analogue: keep only FGs with a grant row for this user.</p>
+
+<!-- ============================================================ -->
+<h2 id="routing">5. How the two systems compose — <code>AccessController</code> routing</h2>
+<p class="meta"><span class="path">hopsworks-common/.../util/AccessController.java</span> — <code>@Stateless</code>, <code>@TransactionAttribute(NEVER)</code>. Every REST resource that lists or fetches a feature-store entity routes authorization through here.</p>
+
+<pre><code>protected boolean checkIfRestricted(Project project, Users user) {        // L393–400
+  Optional&lt;ProjectTeam&gt; projectTeam = project.getProjectTeamCollection().stream()
+      .filter(t -&gt; t.getUser().equals(user)).findFirst();
+  return projectTeam.isPresent() &amp;&amp;
+      projectTeam.get().getTeamRole().equals(ProjectRoleTypes.FEATURE_STORE_RESTRICTED.getRole());
+}
+
+public boolean hasAccess(Project userProject, Users user, Featuregroup fg) {  // L137–145
+  boolean restricted = checkIfRestricted(userProject, user);
+  if (restricted) {
+    return featureGroupRestrictedAccessController.checkIfUserHasAccess(user, fg);
+  } else {
+    return shareFeatureGroupController.checkIfShared(userProject, fg);
+  }
+}</code></pre>
+
+<p>Every access method branches the same way — <span class="fn">filterAvailableFeatureGroups</span> (L361–368), <span class="fn">filterAvailableFeatures</span> (L379–390), the FV overloads (§7). If the user is restricted, the <code>shared_*</code> tables are never consulted for them, and vice versa. Callers such as the online preview/query paths throw <code>FEATUREGROUP_NO_ACCESSIBLE_FEATURES</code> when the filtered column list comes back empty.</p>
+
+<table>
+  <tr><th>Method family</th><th>Role</th></tr>
+  <tr><td><code>hasAccess(Project[, Users], X)</code></td><td>Boolean gate for one entity; the <code>Users</code> overload adds the restricted routing.</td></tr>
+  <tr><td><code>verifyAccess(...)</code></td><td>Throwing gate for the query/data path — walks the query's join tree and throws <code>FEATURE_NOT_SHARED</code> listing exactly which columns are missing. <span class="meta">(RESTCode 268 — surfaced as HTTP <strong>400</strong>, not 403; <span class="path">RESTCodes.java:1847</span>.)</span></td></tr>
+  <tr><td><code>filterAvailable{FeatureGroups,FeatureViews,Features}(...)</code></td><td>The listing filter — only accessible items survive.</td></tr>
+  <tr><td><code>hasAccess{Fgs,Fvs,Tds,Models,Connectors}</code></td><td>Batch variants grouped by feature store to minimize round-trips. <span class="meta">Note: the FV/TD batch variants are a coarse fast-path (own-project or whole-store only, no FG recursion), used by search/provenance.</span></td></tr>
+</table>
+
+<h3 id="routing-both">5.1 What if both mechanisms apply to the same user?</h3>
+
+<p>Rows in both table sets <em>can</em> coexist for the same feature group — e.g. FG <code>G</code> is shared into project B (a <code>shared_feature_group</code> row, grantee = project B) while user U in B also has a <code>restricted_feature_group_access</code> row for <code>G</code> (grantee = U). There is nothing preventing that state in the database. But at decision time the two are <strong>never merged</strong> — no union, no intersection. <span class="fn">checkIfRestricted(project, user)</span> reduces to one boolean (U's team role in the <em>calling</em> project), and the router takes exactly one branch. The other table set is simply <strong>inert</strong> for that user:</p>
+
+<table>
+  <tr><th>Setup</th><th>Branch taken</th><th>Outcome</th></tr>
+  <tr><td>U is Data Scientist in B; FG shared to B; U also has (stale) <code>restricted_*</code> rows</td><td>shared</td><td>Access via the share. The restricted rows are dead metadata — never consulted.</td></tr>
+  <tr><td>U is <code>FEATURE_STORE_RESTRICTED</code> in B; FG shared to B; U has <strong>no</strong> restricted grant</td><td>restricted</td><td><strong>Deny.</strong> The project-level share is invisible to a restricted member — that is the point of the role.</td></tr>
+  <tr><td>U is restricted in B; FG shared to B (entirely) <em>and</em> U has a restricted grant for 2 columns</td><td>restricted</td><td>Allow, but <strong>only the 2 granted columns</strong> (+ PK/event-time). The broader project share does not widen U's view.</td></tr>
+  <tr><td>Same user, two projects: restricted in B, Data Owner in C; both projects can reach FG <code>G</code></td><td>per-project</td><td>The branch is chosen per calling project: requests from C use the shared cascade, requests from B use the allow-list.</td></tr>
+</table>
+
+<p><strong>Why a switch and not an OR/AND:</strong> the two systems have opposite default semantics. Sharing is <em>additive</em> (project members see the project's data plus whatever is shared in); restricted access is a <em>default-deny allow-list</em>. OR-ing them would let every restricted user inherit all project-wide shares — the allow-list guarantee collapses. AND-ing them would deny normal users everything (they have no restricted rows). The role <em>is</em> the selector for which semantics a member gets.</p>
+
+<p>The backends mirror the same exclusivity so the metadata switch and the physical grants agree: on add-member, share replay is skipped for restricted members (<span class="path">ProjectController.java:2124–2127</span>); their online DB user gets no schema-wide grant (<span class="path">OnlineFeaturestoreController.java:292–302</span> grants only for Data owner / Data scientist); HDFS refuses to add restricted members to feature-store dataset groups (<span class="path">HdfsUsersController.addNewMember, :639–643</span>); and the <code>PermissionsFixer</code> timer bean skips them too (<span class="path">PermissionsFixer.java:269–272</span>).</p>
+
+<div class="callout warn">
+  <span class="tag">Role transitions are the seams</span>
+  Changing a member's role flips the switch instantly at the API layer, but backend state can lag:
+  <ul style="margin-bottom:0;">
+    <li><strong>Data Scientist → restricted (demotion):</strong> <span class="fn">updateMemberRole</span> calls <span class="fn">updateUserOnlineFeatureStoreDB</span> with the new role, which matches <em>neither</em> grant branch — so no grant is issued, but <strong>no revoke happens either</strong> (the revoke lives inside <span class="fn">grantUserPrivileges</span> and only runs when a grant is issued). The user's old <code>GRANT SELECT ON db.*</code> survives in MySQL; only the Hopsworks API layer cuts them off immediately.</li>
+    <li><strong>Restricted → Data Scientist (promotion):</strong> a schema-wide <code>SELECT</code> is granted (revoking schema-level grants first). The user's <code>restricted_*</code> rows stay behind, dormant — if the user is later demoted again, the old allow-list <em>resurrects</em> as-is.</li>
+    <li><span class="fn">HdfsUsersController.changeMemberRole</span> (<span class="path">:741</span>) lacks the restricted+feature-store-dataset guard that <span class="fn">addNewMember</span> and the <code>PermissionsFixer</code> both have.</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="backends">6. Per-backend enforcement — one metadata grant, four mechanisms</h2>
+
+<p>The tables in §3–§4 are only metadata. When a grant row is inserted or deleted, the controllers synchronously push real permissions to up to four backends. The sharing dispatch point is <span class="fn">grantFeatureGroupAccess</span> (<span class="path">ShareFeatureGroupController.java:192–215</span>):</p>
+<pre><code>// Offline (HopsFS) only when the WHOLE FG is shared AND it is HopsFS-backed
+if (featuregroup.getDataSource().getConnector() == null &amp;&amp; features.isEmpty()) {
+  grantOfflineFeatureGroupAccess(featuregroup, sharedWithProjectTeam, dfso);
+  grantOfflineFeatureStoreExecPrivileges(featuregroup.getFeaturestore(), sharedWithProjectTeam, dfso);
+}
+onlineFeaturestoreController.setupOnlineFeatureStore(sharedWithProject);
+if (featuregroup.isOnlineEnabled()) {
+  onlineFeaturegroupController.shareOnlineFeatureGroup(featuregroup, sharedWithProjectTeam, features);
+  embeddingController.shareEmbeddingFeatureGroup(featuregroup, sharedWithProjectTeam, features);
+}</code></pre>
+
+<h3 id="be-rondb">6.1 RonDB — native per-user <code>GRANT SELECT (columns)</code> (online)</h3>
+<p>Every project member has a <strong>per-user DB account</strong>: <span class="fn">onlineDbUsername(project, user)</span> = <code>&lt;project&gt;_&lt;user&gt;</code> clipped to 32 chars (<span class="path">OnlineFeaturestoreController.java:589</span>), with a random password stored as a Hopsworks secret and a per-user JDBC connector. Grants are issued over an <em>admin</em> connection when a share/grant row changes, when a member is added/removed, or on role change. <span class="fn">OnlineFeaturestoreFacade.grantDataScientistPrivileges</span> (<span class="path">:226–260</span>) has three variants:</p>
+<pre><code>GRANT SELECT ON db.*        TO dbUser;              -- feature-store level
+GRANT SELECT ON db.table    TO dbUser;              -- whole feature group
+GRANT SELECT (col1,col2,..) ON db.table TO dbUser;  -- column subset (partial / restricted)</code></pre>
+<p>The column list is the granted set <em>after</em> PK + event-time augmentation. <span class="fn">grantUserPrivileges</span> revokes-then-regrants, so re-shares don't stack. If multi-region is enabled the grant is replayed on the secondary region (async via <code>OperationLog</code>).</p>
+<div class="callout good">
+  <span class="tag">Who actually reads under these grants</span>
+  Online feature serving is <em>not</em> executed by Hopsworks Java: <span class="fn">PreparedStatementBuilder</span> (<span class="path">hopsworks-api, :117</span>) hands prepared-statement templates to the client SDK, which connects through the <strong>per-user JDBC connector</strong> — so JDBC/SDK reads run as the grantee and RonDB's own privilege system enforces everything, including column-level visibility, with no proxy.
+</div>
+<div class="callout danger">
+  <span class="tag">The RDRS gap</span>
+  This GRANT model constrains only MySQL/JDBC-protocol reads. The RonDB REST server (RDRS/RDRS2) authenticates with <strong>Hopsworks API keys</strong>, reads rows directly through the NDB API under a service identity, and never sees the per-user table/column GRANTs. No Hopsworks code pushes column-level restrictions into RDRS — FSTORE-1905/1940 column enforcement is JDBC-path only. This is the gap the RDRS2 port must close (§10).
+</div>
+
+<h3 id="be-hopsfs">6.2 HopsFS — POSIX ACLs (offline, whole-FG only, sharing only)</h3>
+<p><span class="fn">grantOfflineFeatureGroupAccess</span> (L250–272) creates a dedicated HopsFS group <code>&lt;fsId&gt;__&lt;fgId&gt;__shared</code>, sets a <code>READ_EXECUTE</code> ACL (ACCESS + DEFAULT scope) on the FG's directory, then adds each receiving project member's per-project HDFS username into that group. A sibling exec-group grant lets members traverse down to the FG directory. Whole-store shares instead add each member to the FS dataset with <code>READ_ONLY</code> via the standard dataset ACL path (<span class="fn">addUserToFeatureStoreACL</span>, <span class="path">ShareFeatureStoreController.java:420–425</span>).</p>
+<div class="callout warn">
+  <span class="tag">Why offline is whole-group only</span>
+  HopsFS ACLs are directory-level POSIX permissions — there is no way to hide individual columns inside parquet files at the filesystem layer, hence the <code>features.isEmpty()</code> guard. Partial offline reads instead go through the ArrowFlight super-user path (§6.3). External FGs (<code>connector != null</code>) skip HopsFS entirely. <strong>Restricted access never drives HopsFS ACLs at all</strong> — offline enforcement for restricted users is purely API-layer + super-user execution.
+</div>
+
+<h3 id="be-arrow">6.3 ArrowFlight — signed + encrypted super-user queries (external / partial offline)</h3>
+<p>Neither a POSIX ACL nor a per-user GRANT can cover (a) partial <em>offline</em> reads, (b) <em>external</em> FGs whose connector credentials must not be exposed, or (c) restricted users (who have no HopsFS grants). Those queries run as a super user through FlyingDuck. The trigger is <span class="fn">AccessController.requiresSuperUserExec</span> (L402–406):</p>
+<pre><code>return checkIfRestricted(project, user)                                // restricted role
+    || !shareFeatureGroupController.checkIfSharedEntirely(project, fg)  // partial share
+    || fg.getFeaturegroupType() == ON_DEMAND_FEATURE_GROUP;             // external FG</code></pre>
+<p>When super-user exec is required:</p>
+<ul>
+  <li><strong>Authorize first</strong> — <span class="fn">ConstructorController.construct</span> (L146) runs <span class="fn">verifyAccess</span> over the whole query tree; any inaccessible column ⇒ <code>FEATURE_NOT_SHARED</code>.</li>
+  <li><strong>Column projection</strong> — <span class="fn">filterAvailableFeatures</span> narrows the query to only the granted columns <em>before</em> SQL generation (empty ⇒ <code>FEATUREGROUP_NO_ACCESSIBLE_FEATURES</code>); the filtered list becomes both the SELECT and the DTO's <code>features</code> map (<span class="path">ArrowFlightController.java:342–354</span>).</li>
+  <li><strong>Connector encryption</strong> — <span class="fn">PKIUtils.encryptText</span> (L66–107): hybrid AES-256-GCM + RSA-OAEP to FlyingDuck's certificate. The connector block holds super-user DB credentials; only FlyingDuck can decrypt, so the user never sees them.</li>
+  <li><strong>Query signing</strong> — <span class="fn">BaseHadoopClientsService.getMessageSignatureBase64</span> (L162–175) signs the <em>entire serialized DTO JSON</em> (SQL + allowed-column list + filters + encrypted connectors) with Hopsworks' super-user private key (<code>SHA256withRSA</code>). FlyingDuck verifies before honoring a super-user query — any client tampering with the SQL, column list, or filters breaks the signature. The permitted column set is fixed at sign time.</li>
+</ul>
+
+<h3 id="be-opensearch">6.4 OpenSearch — Field-Level Security for embeddings</h3>
+<p>Embedding FGs store vectors in an OpenSearch index. <span class="fn">EmbeddingController</span> maps granted column names to prefixed index fields (<span class="fn">toEmbeddedFeatureNames</span>, L457) and calls <span class="fn">OpensearchVectorDatabase.grantRestrictedAccess</span> (<span class="path">vector-db, L387–410</span>), which creates one security role per (index, identity):</p>
+<pre><code>role  fls_&lt;index&gt;_&lt;identity&gt;:  index_patterns=[index], allowed_actions=["read"],
+                              fls=[ "col1","col2" ]   // or "*" for whole-FG
+rolesmapping fls_&lt;index&gt;_&lt;identity&gt;:  users=["&lt;identity&gt;"]</code></pre>
+<p>The identity is the <em>receiving project name</em> for a cross-project share (<span class="fn">shareEmbeddingFeatureGroup</span>, L401) or <code>&lt;project&gt;__&lt;user&gt;</code> for a restricted grant (<span class="fn">grantRestrictedEmbeddingAccess</span>, L431) — matching the JWT subject minted by <span class="fn">OpenSearchJWTController.createTokenForELKAsUser</span>. OpenSearch strips fields outside the FLS list server-side before results leave the cluster. Revoke deletes the mapping then the role, tolerating 404.</p>
+
+<!-- ============================================================ -->
+<h2 id="choke">7. Recursive feature-view / training-dataset checks</h2>
+
+<div class="callout danger">
+  <span class="tag">Before FSTORE-2026</span>
+  The original FV/TD checks were <strong>flat</strong>: <code>return featureView.getFeaturestore().getProject().equals(userProject)</code> — a pure own-project test, no traversal into constituent FGs, and no user-scoped overload. This is the hole.
+</div>
+
+<p>FSTORE-2026 makes FV access <strong>conjunctive over its constituent feature groups</strong> (<span class="path">AccessController.java:102–124</span>):</p>
+<pre><code>public boolean hasAccess(Project userProject, FeatureView fv) {
+  if (fv.getFeaturestore().getProject().equals(userProject)) return true;       // own project
+  if (sharedFeatureStoreFacade
+        .findByFeatureStoreAndSharedEntirelyWithProject(fv.getFeaturestore(), userProject).isPresent())
+    return true;                                                                 // whole store shared
+  if (fv.getFeatures() != null &amp;&amp; !fv.getFeatures().isEmpty()) {
+    return fv.getFeatures().stream()
+        .map(TrainingDatasetFeature::getFeatureGroup).filter(Objects::nonNull).distinct()
+        .allMatch(fg -&gt; hasAccess(userProject, fg));   // FV → every constituent FG must be shared
+  }
+  return false;
+}</code></pre>
+
+<p>The user-aware overload (L147–172) goes one level deeper for restricted users: it groups the FV's features by FG and, per FG, requires that <em>every column the FV projects</em> survives <span class="fn">filterAvailableFeatures</span> (<code>accessible.size() == fvFeatures.size()</code>) — catching a user granted <em>some</em> columns of an FG but not the specific ones the FV needs. Training datasets delegate to their feature view in the user-aware overload; the project-level <span class="fn">hasAccess(Project, TrainingDataset)</span> (L126–135) is deliberately coarser — <strong>owner or whole-store share only</strong>, TDs are not reachable via FG- or feature-level shares.</p>
+
+<h3 id="choke-matrix">7.1 Decision matrix (single-FV endpoint)</h3>
+<table>
+  <tr><th>Scenario</th><th>Result</th></tr>
+  <tr><td>Own project (even a degraded FV whose FGs were unshared/deleted)</td><td class="ok">Allow</td></tr>
+  <tr><td>Whole feature store shared with caller's project</td><td class="ok">Allow</td></tr>
+  <tr><td>Cross-project, all constituent FGs shared (entirely, or all needed columns)</td><td class="ok">Allow</td></tr>
+  <tr><td>Cross-project, any constituent FG / column missing</td><td class="no">Deny (<code>FEATURE_NOT_SHARED</code>, HTTP 400)</td></tr>
+  <tr><td>Restricted user, all FV columns granted</td><td class="ok">Allow</td></tr>
+  <tr><td>Restricted user, any FV column not granted</td><td class="no">Deny</td></tr>
+</table>
+<p>At the FV endpoint level access is <strong>all-or-nothing</strong> — one boolean per FV. Column <em>filtering</em> to a subset happens at the FG / query-construction layer (<span class="fn">filterAvailableFeatures</span> in <code>FeaturegroupController</code>, <code>OnlineFeaturegroupController</code>, <code>ArrowFlightController</code>, <code>ConstructorController</code>); the FV check reuses that filter but converts &ldquo;any column missing&rdquo; into full deny. Listing endpoints silently <em>omit</em> inaccessible FVs via <span class="fn">filterAvailableFeatureViews</span>.</p>
+
+<h3 id="choke-2744">7.2 HWORKS-2744 — deny single-FV read when a constituent FG is inaccessible</h3>
+<p>Between FSTORE-2026 and HWORKS-2744, the single-FV GET's <span class="fn">verifyAccess</span> got wrapped in a try/catch that swallowed <code>FEATURE_NOT_SHARED</code> for <em>everyone</em> — intended so an owner could still view/delete a <em>degraded</em> FV. But swallowing it unconditionally reopened the leak. HWORKS-2744 replaces the swallowed call with the recursive gate (<span class="path">FeatureViewResource.getByNameVersion, ~L293–304</span>):</p>
+<pre><code>if (!accessCtrl.hasAccess(project, user, featureView)) {
+  throw new FeaturestoreException(FEATURE_NOT_SHARED, Level.FINE,
+      "Feature view '" + name + "' ... is not accessible: one or more of its"
+      + " feature groups are not shared with the calling project or granted to the user.");
+}</code></pre>
+<p>This keeps the degraded-owner intent (own-project short-circuits to <code>true</code> before the FG walk) while denying a cross-project or restricted caller who lacks any one constituent FG. The single-GET and the listing now agree; degraded own-project rendering is handled by <span class="fn">FeatureViewBuilder.build</span> wrapping query expansion in best-effort try/catch.</p>
+
+<!-- ============================================================ -->
+<h2 id="threat">8. The indirect-leak threat model</h2>
+<div class="callout danger">
+  <span class="tag">Concrete scenario (pre-fix)</span>
+  <ol style="margin-bottom:0;">
+    <li>Project A owns <code>FG1</code> (public columns) and <code>FG2</code> (contains <code>salary</code>).</li>
+    <li>A builds feature view <code>FV = FG1.* + FG2.salary</code>.</li>
+    <li>A shares <strong>only FG1</strong> with project B (or grants restricted user U only FG1).</li>
+    <li>B/U calls <code>GET .../featureview/FV</code>. The old check was own-project only — so FV metadata (and, via the query path, <code>salary</code>) leaked through the FV even though <code>FG2</code> was never shared.</li>
+  </ol>
+</div>
+<p><strong>Direct</strong> access was already gated by FSTORE-1905/1940 (<code>hasAccess(FG)</code> / <code>filterAvailableFeatures</code>). The <strong>indirect</strong> leak was that derived objects (FV/TD) didn't look at their constituents. FSTORE-2026 closes it by making FV/TD access conjunctive over constituents; HWORKS-2744 plugs the reopened single-GET hole. Every read path — list, single GET, query construction (<span class="fn">ConstructorController.construct</span> calls <span class="fn">verifyAccess</span>), ArrowFlight offline read, online read, and embedding preview — now funnels through the same recursive logic that resolves to per-FG / per-column grant records.</p>
+
+<!-- ============================================================ -->
+<h2 id="tests">9. Test coverage</h2>
+
+<table>
+  <tr><th>Test class</th><th>#</th><th>Verifies</th></tr>
+  <tr><td><code>TestShareFeatureGroupController</code></td><td>21</td><td>share/unshare + the filter/check hierarchy: reject when store already shared entirely; PK+event-time auto-inclusion (subset of 2 → 4 SharedFeature rows); ACL group <code>1__1__shared</code> set twice; partial-share unshare does <em>not</em> touch HopsFS; <code>filterSharedFeatures</code> narrows {shared, not_shared} → 1.</td></tr>
+  <tr><td><code>TestShareFeatureStoreController</code></td><td>10</td><td>whole-store share/unshare (READ_ONLY member add, online setup); already-shared/not-shared errors; default-FS import filters to HopsFS-materialised FGs, buckets per-FG failures, rolls back partial metadata, skips already-shared.</td></tr>
+  <tr><td><code>TestFeatureGroupRestrictedAccessController</code></td><td>~15</td><td>FSTORE-1940 allow-list semantics: role verification on grant, PK+event-time augmentation, whole-FG vs per-feature grants, filter returns empty with no grant row, revoke.</td></tr>
+  <tr><td><code>TestHdfsUsersController</code> (FSTORE-1940 additions)</td><td>—</td><td>Restricted members excluded from share-replay HDFS group wiring.</td></tr>
+  <tr><td><code>TestArrowFlightController</code> (relevant subset)</td><td>4</td><td>whole-FG share ⇒ plaintext connectors + <em>null</em> signature; feature-level share ⇒ 3 cols filtered to 2, connectors <em>encrypted</em>, signature set; signature propagated to the <code>hopsworks-signature</code> gRPC header (and absent when unsigned).</td></tr>
+  <tr><td><code>TestPKIUtils</code> (<code>common/security</code>)</td><td>8</td><td>AES-GCM+RSA round-trip; 12-byte IV; cert-not-found → exception; two encryptions of same plaintext differ (random key+IV).</td></tr>
+  <tr><td><code>TestOpensearchVectorDatabase</code> (vector-db)</td><td>8</td><td>FLS role + mapping request bodies; empty/null fields → wildcard <code>"*"</code>; revoke deletes mapping then role; 404 swallowed, 500 throws; role name format <code>fls_&lt;index&gt;_&lt;identity&gt;</code>.</td></tr>
+  <tr><td><code>TestAccessController</code></td><td>23</td><td>The recursive <code>hasAccess</code> matrix of §7.1 — own-project allow (owner of a degraded FV still reads it), cross-project all-FGs-shared allow, partial-share deny, whole-FS allow, restricted all-granted allow, restricted partial-grant deny, TD-delegates-to-FV.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="rondb">10. What this means for the RonDB REST server (next step)</h2>
+<p>This document is the input to porting equivalent enforcement into RDRS2, which serves reads out of the <strong>online</strong> store. The load-bearing conclusions:</p>
+<ul>
+  <li><strong>RDRS2 sits outside the enforcement perimeter today (§6.1).</strong> Hopsworks' column-level enforcement rides on per-user MySQL accounts; RDRS authenticates with API keys and reads via the NDB API under a service identity, so the GRANTs never apply. RDRS2 must read the five metadata tables (<code>shared_*</code> + <code>restricted_*</code>) — or a cache of them — and filter at the application layer.</li>
+  <li><strong>Both routing legs must be reproduced (§5).</strong> Role check first (<code>FEATURE_STORE_RESTRICTED</code>?), then either the restricted allow-list (§4.3) or the shared cascade owner → store-entirely → FG-entirely → per-feature (§3.2/§3.4).</li>
+  <li><strong>Recursive FV checks are mandatory (§7)</strong> for the feature-view endpoints RDRS2 serves: FV access = all constituent FGs/columns accessible, all-or-nothing deny at the FV level — otherwise the FSTORE-2026 indirect leak reopens at the REST layer. Column filtering, if implemented, belongs at the FG level.</li>
+  <li><strong>PK + event-time columns are always granted</strong> alongside any column-level grant (§3.2/§4.1) — RDRS2 can rely on PK columns being readable whenever any column of the FG is.</li>
+  <li><strong>Offline concerns don't apply.</strong> HopsFS ACLs and ArrowFlight signing (§6.2/§6.3) are out of scope; only the metadata model and the decision logic need porting.</li>
+  <li><strong>Error surface:</strong> Hopsworks returns <code>FEATURE_NOT_SHARED</code> as HTTP <strong>400</strong> (code 268) — worth matching or consciously diverging.</li>
+</ul>
+<p class="meta">Concrete RDRS2 design decisions are deferred to the implementation phase.</p>
+
+<hr>
+<p class="meta">Research for porting FSTORE-1905 / FSTORE-1940 / FSTORE-2026 / HWORKS-2744 into the RonDB REST server. Line numbers reference the Hopsworks monorepo at HEAD (July 2026) and may drift as those files evolve. Markdown companion: <span class="path">docs/fg_fv_sharing_how_it_works.md</span>.</p>
+
+</main>
+</div>
+</body>
+</html>
