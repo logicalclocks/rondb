@@ -10678,13 +10678,8 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
       ndbrequire((cnt == 0) == ((treeBits & Node::SF_PRUNE_PARAMS) == 0));
       ndbrequire((cnt == 0) == ((paramBits & Params::SFP_PRUNE_PARAMS) == 0));
 
-      // Same unbounded-cnt issue as parseDA's key-param count (see there for
-      // the full writeup): cnt is passed as paramCnt into expand(), which
-      // writes cnt entries into a MAX_ATTRIBUTES_IN_TABLE-sized stack array
-      // via buildRowHeader with no cap. No real table has more than
-      // MAX_ATTRIBUTES_IN_TABLE columns and no valid prune pattern carries
-      // more than that many parameters, so this is user-untriggerable via
-      // SQL/HTTP/REST/Redis -- Tier A.
+      // cnt is passed as paramCnt into expand(), which writes cnt entries into
+      // a MAX_ATTRIBUTES_IN_TABLE-sized stack array with no cap -- Tier A.
       if (unlikely(cnt > MAX_ATTRIBUTES_IN_TABLE)) {
         jam();
         ctx.m_maliciousViolationType = VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS;
@@ -14752,38 +14747,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         break;
       }
 
-      // TEST-ONLY (F9: Markus_tests/test_dbspj_f9_keyparam_overflow.py, Phase 2):
-      // force the key-param count past the expand() stack buffer to demonstrate
-      // the buildRowHeader(3-arg) overflow. Placed AFTER the cnt==0 consistency
-      // check so a well-formed linked-key JOIN still reaches expand(). No-op
-      // unless error insert 17210 is armed (`<nodeId> error 17210`). Compiles to
-      // nothing in non-error-insert builds. REMOVE before merge.
-      //
-      // Uses 0xFFFF (65535), the real attacker ceiling for this 16-bit field
-      // (len_cnt >> 16), not just MAX_ATTRIBUTES_IN_TABLE+1 -- a small overrun
-      // (a few KB) can land in unused stack-frame padding on an 8MB default
-      // thread stack and never get touched again before the function returns
-      // cleanly. The full-width value overruns tmp[] by ~61K words (~245KB),
-      // which is what an actual malicious query tree would send on the wire.
-      if (ERROR_INSERTED_CLEAR(17210)) {
-        jam();
-        g_eventLogger->info(
-            "F9 injection: forcing key-param cnt from %u to 0xFFFF"
-            " (DbspjMain.cpp parseDA, error insert 17210)",
-            cnt);
-        cnt = 0xFFFF;
-      }
-
-      // cnt (key-param count, decoded above) has no upper bound check other
-      // than the cnt==0/DABits agreement check -- it is passed as paramCnt
-      // into expand(), which declares a stack array sized
-      // MAX_ATTRIBUTES_IN_TABLE and writes cnt entries into it via
-      // buildRowHeader with no cap. cnt > MAX_ATTRIBUTES_IN_TABLE overruns
-      // that stack array (verified: SIGSEGV inside Dbspj::expand(), see
-      // Markus_tests/test_dbspj_f9_keyparam_overflow.py). No real table has
-      // more than MAX_ATTRIBUTES_IN_TABLE columns and no valid key pattern
-      // carries more than that many parameters, so this is user-untriggerable
-      // via SQL/HTTP/REST/Redis -- Tier A.
+      // cnt is passed as paramCnt into expand(), which writes cnt entries into
+      // a MAX_ATTRIBUTES_IN_TABLE-sized stack array with no cap -- Tier A.
       if (unlikely(cnt > MAX_ATTRIBUTES_IN_TABLE)) {
         jam();
         ctx.m_maliciousViolationType = VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS;
