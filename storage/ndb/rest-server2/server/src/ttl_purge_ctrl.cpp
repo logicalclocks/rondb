@@ -21,6 +21,7 @@
 #include "config_structs.hpp"
 #include "api_key.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <drogon/HttpTypes.h>
 #include <simdjson.h>
@@ -56,11 +57,25 @@ const char* TTLPurgeCtrl::stateToString(TTLPurgeStatus::State state) {
       return "paused";
     case TTLPurgeStatus::State::kDisabled:
       return "disabled";
+    case TTLPurgeStatus::State::kOutsideWindow:
+      return "outside_window";
     case TTLPurgeStatus::State::kError:
       return "error";
     default:
       return "unknown";
   }
+}
+
+// "HH:MM-HH:MM" (UTC) for a configured daily active window, "" when unset
+// (or out of the 0..1439 minutes-of-day range)
+static std::string activeWindowToString(Int32 start_min, Int32 end_min) {
+  if (start_min < 0 || start_min >= 1440 || end_min < 0 || end_min >= 1440) {
+    return "";
+  }
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%02d:%02d-%02d:%02d",
+           start_min / 60, start_min % 60, end_min / 60, end_min % 60);
+  return buf;
 }
 
 std::string TTLPurgeCtrl::configToJson(const TTLPurgeConfig &config) {
@@ -74,6 +89,10 @@ std::string TTLPurgeCtrl::configToJson(const TTLPurgeConfig &config) {
   doc.AddMember("sleep_interval_ms", config.sleep_interval_ms, allocator);
   doc.AddMember("reconcile_interval_sec", config.reconcile_interval_sec,
                 allocator);
+  std::string active_window = activeWindowToString(
+      config.active_window_start_min, config.active_window_end_min);
+  doc.AddMember("active_window",
+      rapidjson::Value(active_window.c_str(), allocator), allocator);
 
   rapidjson::StringBuffer buffer;
   rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -94,6 +113,13 @@ std::string TTLPurgeCtrl::statusToJson(const TTLPurgeStatus &status) {
   doc.AddMember("current_table",
       rapidjson::Value(status.current_table.c_str(), allocator), allocator);
   doc.AddMember("current_partition", status.current_partition, allocator);
+  std::string active_window = activeWindowToString(
+      status.active_window_start_min, status.active_window_end_min);
+  doc.AddMember("active_window",
+      rapidjson::Value(active_window.c_str(), allocator), allocator);
+  doc.AddMember("active_window_source",
+      rapidjson::Value(status.active_window_source.c_str(), allocator),
+      allocator);
 
   rapidjson::StringBuffer buffer;
   rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -174,6 +200,10 @@ void TTLPurgeCtrl::getAll(
   configObj.AddMember("sleep_interval_ms", config.sleep_interval_ms, allocator);
   configObj.AddMember("reconcile_interval_sec", config.reconcile_interval_sec,
                       allocator);
+  std::string config_active_window = activeWindowToString(
+      config.active_window_start_min, config.active_window_end_min);
+  configObj.AddMember("active_window",
+      rapidjson::Value(config_active_window.c_str(), allocator), allocator);
   doc.AddMember("config", configObj, allocator);
 
   // Status object
@@ -187,6 +217,13 @@ void TTLPurgeCtrl::getAll(
   statusObj.AddMember("current_table",
       rapidjson::Value(status.current_table.c_str(), allocator), allocator);
   statusObj.AddMember("current_partition", status.current_partition, allocator);
+  std::string active_window = activeWindowToString(
+      status.active_window_start_min, status.active_window_end_min);
+  statusObj.AddMember("active_window",
+      rapidjson::Value(active_window.c_str(), allocator), allocator);
+  statusObj.AddMember("active_window_source",
+      rapidjson::Value(status.active_window_source.c_str(), allocator),
+      allocator);
   doc.AddMember("status", statusObj, allocator);
 
   // Metrics object
@@ -313,6 +350,34 @@ void TTLPurgeCtrl::updateConfig(
           config.reconcile_interval_sec =
               v > 86400 ? 86400 : static_cast<Uint32>(v);
         }
+      } else if (key == "active_window") {
+        // Reject malformed values (wrong type or bad spec) rather than
+        // ignore them: a silently-dropped window would change WHEN purging
+        // happens. Wrong types on the older numeric fields keep their
+        // pre-existing silent-ignore behavior.
+        auto val = field.value().get_string();
+        bool bad = val.error();
+        if (!bad) {
+          std::string spec(val.value());
+          if (spec.empty()) {
+            // Clear the per-node window: purge around the clock (unless a
+            // cluster-wide window in mysql.ttl_purge_ctrl overrides)
+            config.active_window_start_min = -1;
+            config.active_window_end_min = -1;
+          } else {
+            bad = !TTLPurge::parseActiveWindow(
+                spec, &config.active_window_start_min,
+                &config.active_window_end_min);
+          }
+        }
+        if (bad) {
+          resp->setBody("{\"error\": \"active_window must be a string "
+                        "\\\"HH:MM-HH:MM\\\" (UTC) or empty\"}");
+          resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+          resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+          callback(resp);
+          return;
+        }
       }
     }
   } catch (...) {
@@ -352,6 +417,10 @@ void TTLPurgeCtrl::updateConfig(
   configObj.AddMember("sleep_interval_ms", config.sleep_interval_ms, allocator);
   configObj.AddMember("reconcile_interval_sec", config.reconcile_interval_sec,
                       allocator);
+  std::string resp_active_window = activeWindowToString(
+      config.active_window_start_min, config.active_window_end_min);
+  configObj.AddMember("active_window",
+      rapidjson::Value(resp_active_window.c_str(), allocator), allocator);
   respDoc.AddMember("config", configObj, allocator);
 
   rapidjson::StringBuffer buffer;

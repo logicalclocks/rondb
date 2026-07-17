@@ -1,0 +1,234 @@
+# ==========================================================================
+# ttl_purge_multi_node_sharding.test
+#
+# Partition-level shard ownership across TWO live RDRS purge workers (see
+# the matching .cnf, which adds [rdrs.2.1]). With both nodes leased in
+# mysql.ttl_purge_nodes, each owns a disjoint half of a 16-partition TTL
+# table's partitions ((hash + p) % 2 == shard):
+#   - the table must be purged COMPLETELY (no partition falls through the
+#     ownership split), and
+#   - BOTH nodes must report rows_purged > 0 for the table (the work is
+#     really spread, not served by a single node).
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+
+--echo #
+--echo # Two active purge nodes split a 16-partition table
+--echo #
+
+CREATE TABLE mysql.ttl_purge_nodes (node_id INT PRIMARY KEY, last_active DATETIME) ENGINE=NDB;
+INSERT INTO mysql.ttl_purge_nodes WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 255) SELECT n, NULL FROM seq;
+
+# Wait until BOTH RDRS purge workers have leased their rows
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) >= 2 FROM mysql.ttl_purge_nodes WHERE last_active IS NOT NULL
+--source include/wait_condition.inc
+
+--let $ttl_db = ttl_ms
+--let $ttl_table = t1
+--let $ttl_seconds = 5
+--let $ttl_partitions = 16
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_ms
+--let $wait_table = t1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_ms
+--let $insert_table = t1
+--let $insert_count = 600
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Completion proves the two disjoint ownership sets cover all 16 partitions
+--let $purge_db = ttl_ms
+--let $purge_table = t1
+--let $purge_completion_timeout = 120
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Both nodes participated and together purged all 600 rows
+--echo #
+
+# Poll both nodes' per-table metrics until each reports rows_purged > 0 AND
+# the two counters sum to (at least) the 600 inserted expired rows. The sum
+# is the physical-purge proof: SQL COUNT(*) TTL-filters expired rows, so it
+# cannot distinguish "expired but retained" from "purged". Disjoint
+# partition ownership means each row is deleted by exactly one node.
+--exec echo 'http://$RDRS_HOST:$RDRS_PORT/0.1.0/ttl-purge/tables/ttl_ms/t1' > $MYSQL_TMP_DIR/_ms_url1.txt
+--exec echo 'http://$RDRS_HOST:$RDRS2_PORT/0.1.0/ttl-purge/tables/ttl_ms/t1' > $MYSQL_TMP_DIR/_ms_url2.txt
+
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my @urls = (rd("$tmp/_ms_url1.txt"), rd("$tmp/_ms_url2.txt"));
+my @purged = (0, 0);
+my $ok = 0;
+for (my $i = 0; $i < 60; $i++) {
+  for my $n (0, 1) {
+    my $json = `curl -s $urls[$n] 2>/dev/null`;
+    if (defined $json && $json ne '') {
+      my $d = eval { decode_json($json) };
+      if ($d && defined $d->{rows_purged}) { $purged[$n] = $d->{rows_purged}; }
+    }
+  }
+  if ($purged[0] > 0 && $purged[1] > 0 && $purged[0] + $purged[1] >= 600) {
+    $ok = 1;
+    last;
+  }
+  sleep 2;
+}
+open my $o, '>', "$tmp/_ms_result.inc" or die "Cannot write: $!";
+if ($ok) {
+  print $o "--echo Both purge nodes purged rows and all 600 rows are purged\n";
+} else {
+  print $o "--echo [multi_node_sharding] rows_purged node1=$purged[0] node2=$purged[1]\n";
+  print $o "--let \$_ms_both = 0\n";
+}
+print $o "--let \$_ms_both = 1\n" if $ok;
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_ms_result.inc
+
+if (!$_ms_both)
+{
+  --die Both RDRS nodes must purge rows of the sharded table
+}
+
+--let $_ms_both =
+
+--echo #
+--echo # Per-node window: the out-of-window node ages out and ownership
+--echo # redistributes to the in-window node
+--echo #
+
+# Give node 2 a per-node active window far from now via ITS REST API; it
+# must stop purging AND stop refreshing its lease, so after ~20s node 1
+# owns ALL partitions and a fresh batch is purged by node 1 alone.
+--let $win_far = `SELECT CONCAT(TIME_FORMAT(SEC_TO_TIME(((HOUR(UTC_TIME())*60+MINUTE(UTC_TIME()) + 240) % 1440) * 60), '%H:%i'), '-', TIME_FORMAT(SEC_TO_TIME(((HOUR(UTC_TIME())*60+MINUTE(UTC_TIME()) + 360) % 1440) * 60), '%H:%i'))`
+--exec curl -s -X PUT -H "Content-Type: application/json" http://$RDRS_HOST:$RDRS2_PORT/0.1.0/ttl-purge/config -d '{"active_window":"$win_far"}' > /dev/null 2>&1
+
+# Wait until node 2 reports outside_window (from here on its per-table
+# purge counter must not move)
+--exec echo 'http://$RDRS_HOST:$RDRS2_PORT/0.1.0/ttl-purge/status' > $MYSQL_TMP_DIR/_ms_n2st.txt
+
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my $url = rd("$tmp/_ms_n2st.txt");
+my $state = '';
+my $ok = 0;
+for (my $i = 0; $i < 30; $i++) {
+  my $json = `curl -s $url 2>/dev/null`;
+  if (defined $json && $json ne '') {
+    my $d = eval { decode_json($json) };
+    $state = $d->{state} if $d && defined $d->{state};
+  }
+  if ($state eq 'outside_window') { $ok = 1; last; }
+  sleep 1;
+}
+open my $o, '>', "$tmp/_ms_n2wait.inc" or die "Cannot write: $!";
+if ($ok) {
+  print $o "--let \$_ms_n2_out = 1\n";
+} else {
+  print $o "--echo [multi_node_sharding] node2 state '$state', not outside_window\n";
+  print $o "--let \$_ms_n2_out = 0\n";
+}
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_ms_n2wait.inc
+
+if (!$_ms_n2_out)
+{
+  --die Node 2 did not reach outside_window after its per-node window PUT
+}
+
+# Baseline both nodes' per-table counters (all previous rows are purged,
+# so they are static here), then insert a fresh expired batch
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my @urls = (rd("$tmp/_ms_url1.txt"), rd("$tmp/_ms_url2.txt"));
+my @base = (0, 0);
+for my $n (0, 1) {
+  my $json = `curl -s $urls[$n] 2>/dev/null`;
+  if (defined $json && $json ne '') {
+    my $d = eval { decode_json($json) };
+    $base[$n] = $d->{rows_purged} if $d && defined $d->{rows_purged};
+  }
+}
+open my $o, '>', "$tmp/_ms_redis_base.txt" or die "Cannot write: $!";
+print $o "$base[0] $base[1]\n";
+close $o;
+EOF
+
+INSERT INTO ttl_ms.t1 (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 5000 UNION ALL SELECT n + 1 FROM seq WHERE n < 5199) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+
+# Node 1 must purge the whole batch alone (node 2's lease expires after
+# ~20s, then node 1 owns all 16 partitions); node 2 must purge none of it
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my @urls = (rd("$tmp/_ms_url1.txt"), rd("$tmp/_ms_url2.txt"));
+my @base = split / /, rd("$tmp/_ms_redis_base.txt");
+my @cur = (0, 0);
+my $ok = 0;
+for (my $i = 0; $i < 60; $i++) {
+  for my $n (0, 1) {
+    my $json = `curl -s $urls[$n] 2>/dev/null`;
+    if (defined $json && $json ne '') {
+      my $d = eval { decode_json($json) };
+      $cur[$n] = $d->{rows_purged} if $d && defined $d->{rows_purged};
+    }
+  }
+  if ($cur[0] - $base[0] >= 200 && $cur[1] == $base[1]) { $ok = 1; last; }
+  sleep 2;
+}
+open my $o, '>', "$tmp/_ms_redis_result.inc" or die "Cannot write: $!";
+if ($ok) {
+  print $o "--echo Node 1 purged the whole batch alone; node 2 purged none\n";
+  print $o "--let \$_ms_redis = 1\n";
+} else {
+  my $d0 = $cur[0] - $base[0];
+  my $d1 = $cur[1] - $base[1];
+  print $o "--echo [multi_node_sharding] redistribution deltas node1=$d0 node2=$d1\n";
+  print $o "--let \$_ms_redis = 0\n";
+}
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_ms_redis_result.inc
+
+if (!$_ms_redis)
+{
+  --die Ownership did not redistribute to the in-window node
+}
+
+# Restore node 2's config for any later runs on this server
+--exec curl -s -X PUT -H "Content-Type: application/json" http://$RDRS_HOST:$RDRS2_PORT/0.1.0/ttl-purge/config -d '{"active_window":""}' > /dev/null 2>&1
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE mysql.ttl_purge_nodes;
+DROP DATABASE ttl_ms;
+--sleep 2
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
