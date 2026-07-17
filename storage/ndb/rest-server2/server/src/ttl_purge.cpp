@@ -1362,6 +1362,9 @@ void TTLPurger::PurgeWorkerJob() {
   Uint64 local_rows_purged = 0;
   std::map<std::string, TTLTableMetrics> local_table_metrics;
   int pre_trx_failures = 0;  // Tracks pre-transaction errors across rounds
+  // Wall-clock ms of this worker's last successful UpdateLease; 0 = never.
+  // Detects lease lapses for the shard warm-up round below.
+  Uint64 last_lease_renew_ms = 0;
   do {
     // Reset local accumulators at start of each round
     local_rows_purged = 0;
@@ -1504,12 +1507,14 @@ void TTLPurger::PurgeWorkerJob() {
     // active purge set after kLeaseSeconds, so in sharded mode its owned
     // partitions redistribute to in-window nodes instead of going unpurged
     // -- essential when per-node windows differ. At window open, the first
-    // round may see stale peer leases (GetShard always counts self), giving
-    // a transient 1-2 rounds of ownership overlap until every node has
-    // re-leased; overlap is benign (idempotent expired-row deletes plus the
-    // 296/499 partition back-off). Hard-stop semantics: a backlog never
-    // extends purging past the window close (see the matching mid-round
-    // check in the table loop).
+    // round still sees stale peer leases (GetShard always counts self, so
+    // every node returning together would claim all partitions); the shard
+    // warm-up below (see lease_had_lapsed) re-leases and skips that round,
+    // so ownership converges before purging resumes. Any residual overlap
+    // (e.g. a straggler joining later) stays benign: idempotent expired-row
+    // deletes plus the 296/499 partition back-off. Hard-stop semantics: a
+    // backlog never extends purging past the window close (see the matching
+    // mid-round check in the table loop).
     {
       const char* win_source = "";
       eff_win_start = -1;
@@ -1565,9 +1570,37 @@ void TTLPurger::PurgeWorkerJob() {
     }
 
     GetNow(encoded_now, false);
-    if (shard >= kShardFirst && !UpdateLease(encoded_now)) {
-      g_eventLogger->warning("[TTL PWorker] Failed to update the lease");
-      goto round_err;
+    if (shard >= kShardFirst) {
+      if (!UpdateLease(encoded_now)) {
+        g_eventLogger->warning("[TTL PWorker] Failed to update the lease");
+        goto round_err;
+      }
+      // Shard warm-up: if our own lease had lapsed when this round's
+      // GetShard() ran (worker start, re-entering the daily active window,
+      // re-enable, or a long stall), our shard map was computed from a
+      // stale view: GetShard always counts self but excludes lapsed peers,
+      // so every node returning together sees n_nodes == 1 and claims ALL
+      // partitions -- an all-node overlap round exactly when the backlog is
+      // largest. We have just re-leased above, so peers can see us again:
+      // skip purging for this one round and let the next round's GetShard
+      // compute shards from converged membership. Costs one round interval
+      // against a multi-hour window; without it the overlap is only
+      // mitigated after the fact by the 296/499 partition back-off.
+      const Uint64 now_ms = my_micro_time() / 1000;
+      const bool lease_had_lapsed =
+          (last_lease_renew_ms == 0 ||
+           now_ms - last_lease_renew_ms > Uint64(kLeaseSeconds) * 1000);
+      last_lease_renew_ms = now_ms;
+      if (lease_had_lapsed) {
+        g_eventLogger->info("[TTL PWorker] Re-entered the active purge set "
+                            "(own lease had lapsed); skipping one round so "
+                            "shard assignment converges before purging");
+        if (purge_worker_exit_) {
+          break;
+        }
+        NdbSleep_MilliSleep(kDisabledCheckIntervalMs);
+        continue;
+      }
     }
 
     if (local_ttl_cache.empty()) {
@@ -1620,6 +1653,9 @@ void TTLPurger::PurgeWorkerJob() {
         if (shard >= kShardFirst && !UpdateLease(encoded_now)) {
           g_eventLogger->warning("[TTL PWorker] Failed to update the lease[2]");
 	  goto table_err;
+        }
+        if (shard >= kShardFirst) {
+          last_lease_renew_ms = my_micro_time() / 1000;
         }
       }
       // Note: cache_updated_ is only checked at round start (line 1067).
