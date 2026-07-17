@@ -4615,7 +4615,12 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
  * the time to examine -- not return -- a batch's worth of rows). A stale
  * "now" errs only toward "not yet expired": an expired row can stay visible
  * to the batch (or be skipped by a purge round and caught by the next one),
- * but a row can never expire or be purged early. Only relevant when this
+ * but a row can never expire or be purged early. That one-sidedness assumes
+ * the wall clock (gettimeofday) is never stepped backward mid-batch: NTP
+ * slewing preserves it, while a hard backward step leaves the cached value
+ * ahead of the corrected clock until the next batch boundary -- the same
+ * exposure any wall-clock-based expiry already has, widened by at most one
+ * batch. Only relevant when this
  * scan actually evaluates TTL: a TTL table whose expiry check is enabled
  * (m_ttl_ignore == 0), i.e. normal user scans and the background purge scan.
  * Otherwise leave it 0 so checkTTL keeps its per-row clock read (it isn't

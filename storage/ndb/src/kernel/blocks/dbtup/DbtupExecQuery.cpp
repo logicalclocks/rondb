@@ -2962,11 +2962,6 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
     if (!var_data_prepared) {
       prepare_read(req_struct, regTabPtr, false);
     }
-    /*
-     * TTL related
-     * TODO (Zhao)
-     * Double check whether it's safe to reuse req_struct here or not.
-     */
     Uint32 rd_attrId = attrId << 16;
     int ret = readAttributes(req_struct,
         &rd_attrId,
