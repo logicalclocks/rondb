@@ -43,7 +43,18 @@
  * Note that this is used in a lot of signals
  */
 #define _NODE_BITMASK_SIZE_255 8
-#define _NODE_BITMASK_SIZE 64
+#define _NODE_BITMASK_SIZE 256
+
+/**
+ * Frozen legacy size (64 words = 2048 bits) of the all-node bitmask as it
+ * was when node ids 256..2039 were introduced (RONDB-914).
+ *
+ * MUST NOT change: legacy fixed-length wire constants (e.g.
+ * NodeFailRep::SignalLengthLong_v1) and legacy embedded signal layouts are
+ * derived from this value. Deriving them from _NODE_BITMASK_SIZE would
+ * silently change the legacy wire format whenever the mask grows.
+ */
+#define _NODE_BITMASK_SIZE_2K 64
 
 /**
  * No. of 32 bits words needed to store a node bitmask
@@ -61,7 +72,7 @@
  *   containing all the transporters in the system
  *   Both NDB nodes and API, MGM... nodes
  */
-#define _TRP_BITMASK_SIZE 68
+#define _TRP_BITMASK_SIZE 260
 
 /**
  * No of 32 bits words needed to store a node bitmask
@@ -92,8 +103,10 @@
 
 typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE> NodeBitmask;
 typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE_255> NodeBitmask255;
+typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE_2K> NodeBitmask2K;
 typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE> NodeBitmaskPOD;
 typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE_255> NodeBitmask255POD;
+typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE_2K> NodeBitmask2KPOD;
 
 typedef Bitmask<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmask;
 typedef BitmaskPOD<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmaskPOD;

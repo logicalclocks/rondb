@@ -716,8 +716,10 @@ bool TransporterRegistry::connect_server(NdbSocket &&socket, BaseString &msg,
                          multi_transporter_instance));
   */
 
-  // Check that nodeid is in range before accessing the arrays
-  if (nodeId < 0 || nodeId > (int)ABS_MAX_NODES) {
+  // Check that nodeid is in range before accessing the arrays.
+  // The arrays are sized ABS_MAX_NODES, so the valid range is
+  // 0 < nodeId < ABS_MAX_NODES (the previous check was off by one).
+  if (nodeId <= 0 || nodeId >= (int)ABS_MAX_NODES) {
     /* Strange, log it */
     msg.assfmt(
         "Ignored connection attempt as client "
@@ -929,7 +931,8 @@ bool TransporterRegistry::configureTransporter(
   assert(localNodeId);
   assert(config->localNodeId == localNodeId);
 
-  if (remoteNodeId > ABS_MAX_NODES) return false;
+  // Arrays are sized ABS_MAX_NODES: valid ids are < ABS_MAX_NODES
+  if (remoteNodeId >= ABS_MAX_NODES) return false;
 
   Transporter *t = theNodeIdTransporters[remoteNodeId];
   if (t != nullptr) {
@@ -4097,13 +4100,13 @@ TransporterRegistry::get_send_transporter_id(NodeId nodeId, BlockNumber bno)
 }
 
 Transporter* TransporterRegistry::get_node_transporter(NodeId nodeId) const {
-  assert(nodeId <= ABS_MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   return theNodeIdTransporters[nodeId];
 }
 
 Multi_Transporter *TransporterRegistry::get_node_multi_transporter(
     NodeId nodeId) const {
-  assert(nodeId <= ABS_MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   return theNodeIdMultiTransporters[nodeId];
 }
 
@@ -4115,7 +4118,7 @@ Multi_Transporter *TransporterRegistry::get_node_multi_transporter(
  */
 Transporter *TransporterRegistry::get_node_base_transporter(
     NodeId nodeId) const {
-  assert(nodeId <= ABS_MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   Transporter *t = theNodeIdTransporters[nodeId];
   assert(t == nullptr || !t->isPartOfMultiTransporter());
   return t;

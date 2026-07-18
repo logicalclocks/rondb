@@ -282,7 +282,8 @@ int NdbInfoScanNodes::receive(void) {
           nbm = sig->ptr[0].p;
           len = sig->ptr[0].sz;
         } else {
-          assert(len == NodeBitmask::Size);  // only full length in ndbapi
+          // inline legacy format is frozen at the 64-word mask
+          assert(len == NodeBitmask2K::Size);
           nbm = rep->theAllNodes;
         }
         if (BitmaskImpl::safe_get(len, nbm, m_node_id)) {

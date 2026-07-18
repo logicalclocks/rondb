@@ -835,7 +835,7 @@ ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
   Uint32 activateNodeId = activateReq->activateNodeId;
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal signal(ref);
-  if (activateNodeId > ABS_MAX_NODES)
+  if (activateNodeId >= ABS_MAX_NODES)
   {
     ActivateRef * const ref_sig =
       CAST_PTR(ActivateRef, signal.getDataPtrSend());
@@ -877,7 +877,7 @@ ClusterMgr::execDEACTIVATE_REQ(const Uint32 *theData)
   Uint32 deactivateNodeId = deactivateReq->deactivateNodeId;
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal signal(ref);
-  if (deactivateNodeId > ABS_MAX_NODES)
+  if (deactivateNodeId >= ABS_MAX_NODES)
   {
     DeactivateRef * const ref_sig =
       CAST_PTR(DeactivateRef, signal.getDataPtrSend());
@@ -921,7 +921,7 @@ ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
   Uint32 senderRef = setHostnameReq->senderRef;
   Uint32 changeNodeId = setHostnameReq->changeNodeId;
   bool ok = true;
-  if (changeNodeId > ABS_MAX_NODES)
+  if (changeNodeId >= ABS_MAX_NODES)
   {
     ok = false;
   }
@@ -1700,12 +1700,19 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
   const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
   NodeBitmask mask;
   if (sig->getLength() == NodeFailRep::SignalLengthLong_v1) {
-    mask.assign(NodeBitmask::Size, rep->theAllNodes);
+    // Legacy fixed-length format, frozen at the 64-word mask
+    mask.assign(NodeBitmask2K::Size, rep->theAllNodes);
   } else if (sig->getLength() == NodeFailRep::SignalLength_v1) {
     mask.assign(NdbNodeBitmask48::Size, rep->theNodes);
   } else {
     assert(sig->m_noOfSections == 1);
-    mask.assign(ptr[0].sz, ptr[0].p);
+    if (!bitmask_assign_checked(mask, ptr[0].p, ptr[0].sz)) {
+      // Malformed section: no version can legitimately send a node
+      // bitmask larger than NodeBitmask::Size. Ignore the signal rather
+      // than copy out of bounds.
+      assert(false);
+      DBUG_VOID_RETURN;
+    }
   }
 
   NdbApiSignal signal(sig->theSendersBlockRef);

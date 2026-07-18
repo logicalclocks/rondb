@@ -1288,7 +1288,7 @@ int MgmtSrvr::sendVersionReq(int v_nodeId, Uint32 &version,
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||
+        assert(len == NodeBitmask2K::Size ||
                len == 0);  // only full length in ndbapi
         if (signal->header.m_noOfSections >= 1) {
           len = signal->ptr[0].sz;
@@ -1483,7 +1483,7 @@ MgmtSrvr::set_location_domain_id_request(
       const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
                                               signal->getDataPtr());
       Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-      assert(len == NodeBitmask::Size || // only full length in ndbapi
+      assert(len == NodeBitmask2K::Size || // only full length in ndbapi
              len == 0);
       NodeBitmask mask;
       if (signal->header.m_noOfSections >= 1)
@@ -1596,7 +1596,7 @@ MgmtSrvr::set_config_param_request(
       const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
                                               signal->getDataPtr());
       Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-      assert(len == NodeBitmask::Size || // only full length in ndbapi
+      assert(len == NodeBitmask2K::Size || // only full length in ndbapi
              len == 0);
       NodeBitmask mask;
       if (signal->header.m_noOfSections >= 1)
@@ -1720,7 +1720,7 @@ MgmtSrvr::set_hostname_request(int nodeId, const char *new_hostname)
       const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
                                               signal->getDataPtr());
       Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-      assert(len == NodeBitmask::Size || // only full length in ndbapi
+      assert(len == NodeBitmask2K::Size || // only full length in ndbapi
              len == 0);
       NodeBitmask mask;
       if (signal->header.m_noOfSections >= 1)
@@ -1874,7 +1874,7 @@ MgmtSrvr::activate_request(int activateNodeId)
       const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
                                               signal->getDataPtr());
       Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-      assert(len == NodeBitmask::Size || // only full length in ndbapi
+      assert(len == NodeBitmask2K::Size || // only full length in ndbapi
              len == 0);
       NodeBitmask mask;
       if (signal->header.m_noOfSections >= 1)
@@ -1984,7 +1984,7 @@ MgmtSrvr::deactivate_request(int deactivateNodeId)
       const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
                                               signal->getDataPtr());
       Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-      assert(len == NodeBitmask::Size || // only full length in ndbapi
+      assert(len == NodeBitmask2K::Size || // only full length in ndbapi
              len == 0);
       NodeBitmask mask;
       if (signal->header.m_noOfSections >= 1)
@@ -2122,7 +2122,7 @@ int MgmtSrvr::sendall_STOP_REQ(NodeBitmask &stoppedNodes, bool abort, bool stop,
         const NodeFailRep *rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||  // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                len == 0);
         NodeBitmask mask;
         if (signal->header.m_noOfSections >= 1) {
@@ -2420,7 +2420,7 @@ int MgmtSrvr::sendSTOP_REQ(const Vector<NodeId> &node_ids,
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        require(len == NodeBitmask::Size ||  // only full length in ndbapi
+        require(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                 len == 0);                   // bitmask sent in signal section
         NodeBitmask mask;
         if (len == 0) {
@@ -2590,7 +2590,7 @@ int MgmtSrvr::enterSingleUser(int *stopCount, Uint32 apiNodeId) {
         const NodeFailRep *rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||  // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                len == 0);
         NodeBitmask mask;
 
@@ -3279,7 +3279,7 @@ int MgmtSrvr::setEventReportingLevelImpl(int nodeId_arg,
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        require(len == NodeBitmask::Size ||  // only full length in ndbapi
+        require(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                 len == 0);
         NdbNodeBitmask mask;
         // only care about data nodes
@@ -3420,7 +3420,7 @@ retry:
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||  // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                len == 0);
         if (signal->header.m_noOfSections >= 1) {
           if (BitmaskImpl::safe_get(
@@ -3484,7 +3484,7 @@ int MgmtSrvr::endSchemaTrans(SignalSender &ss, NodeId nodeId, Uint32 transId,
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||  // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -3579,7 +3579,7 @@ int MgmtSrvr::createNodegroup(int *nodes, int count, int *ng) {
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||  // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -3658,7 +3658,7 @@ int MgmtSrvr::dropNodegroup(unsigned ng) {
         const NodeFailRep *const rep =
             CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size ||  // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size ||  // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -4036,7 +4036,8 @@ void MgmtSrvr::trp_deliver_signal(const NdbApiSignal *signal,
         nbm = ptr[0].p;
         len = ptr[0].sz;
       } else {
-        assert(len == NodeBitmask::Size);  // only full length in ndbapi
+        // Frozen legacy _v1 fixed-length format (64-word mask)
+        assert(len == NodeBitmask2K::Size);
         nbm = rep->theAllNodes;
       }
 
@@ -4381,7 +4382,7 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
           nbm = signal->ptr[0].p;
           len = signal->ptr[0].sz;
         } else {
-          assert(len == NodeBitmask::Size);  // only full length in ndbapi
+          assert(len == NodeBitmask2K::Size);  // only full length in ndbapi
           nbm = rep->theAllNodes;
         }
 
@@ -5005,9 +5006,14 @@ bool MgmtSrvr::getNextNodeId(NodeId *nodeId,
   NodeId tmp = *nodeId;
 
   tmp++;
-  while (nodeTypes[tmp] != type && tmp < ABS_MAX_NODES) tmp++;
+  /**
+   * The bounds check must come first: the previous condition read
+   * nodeTypes[tmp] before checking tmp < ABS_MAX_NODES, an out-of-bounds
+   * read when tmp reached the last id.
+   */
+  while (tmp < ABS_MAX_NODES && nodeTypes[tmp] != type) tmp++;
 
-  if (tmp == ABS_MAX_NODES) {
+  if (tmp >= ABS_MAX_NODES) {
     return false;
   }
 
@@ -5203,7 +5209,7 @@ int MgmtSrvr::startBackup(Uint32 &backupId, int waitCompleted,
           nbm = signal->ptr[0].p;
           len = signal->ptr[0].sz;
         } else {
-          assert(len == NodeBitmask::Size);  // only full length in ndbapi
+          assert(len == NodeBitmask2K::Size);  // only full length in ndbapi
           nbm = rep->theAllNodes;
         }
 
@@ -5706,7 +5712,7 @@ void MgmtSrvr::make_sync_req(SignalSender &ss, Uint32 nodeId) {
           nbm = signal->ptr[0].p;
           len = signal->ptr[0].sz;
         } else {
-          assert(len == NodeBitmask::Size);  // only full length in ndbapi
+          assert(len == NodeBitmask2K::Size);  // only full length in ndbapi
           nbm = rep->theAllNodes;
         }
 
@@ -5956,7 +5962,7 @@ MgmtSrvr::set_quotas(const char *database_name,
         const NodeFailRep * const rep =
           CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size || // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size || // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -6087,7 +6093,7 @@ MgmtSrvr::alter_quotas(const char *database_name,
         const NodeFailRep * const rep =
           CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size || // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size || // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -6211,7 +6217,7 @@ int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
         const NodeFailRep * const rep =
           CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size || // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size || // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -6336,7 +6342,7 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
         const NodeFailRep * const rep =
           CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size || // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size || // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -6478,7 +6484,7 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         const NodeFailRep * const rep =
           CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size || // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size || // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
@@ -6615,7 +6621,7 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         const NodeFailRep * const rep =
           CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
         Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-        assert(len == NodeBitmask::Size || // only full length in ndbapi
+        assert(len == NodeBitmask2K::Size || // only full length in ndbapi
                len == 0);
 
         if (signal->header.m_noOfSections >= 1) {
