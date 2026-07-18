@@ -653,6 +653,48 @@ bool ndbcluster_binlog_init(handlerton *h) {
 }
 
 /**
+  @brief Check that this node's id can take part in schema distribution
+  using the given mysql.ndb_schema table.
+
+  A node whose id has no bit in the legacy 'slock' column (node id N needs
+  bit N, so N < slock bits is required) can only ack schema operations via
+  the mysql.ndb_schema_result protocol, which requires the 'schema_op_id'
+  column in mysql.ndb_schema. Joining schema distribution with a
+  legacy-format table would make every schema operation involving this
+  node end in a participant timeout, so refuse setup up front with an
+  actionable error instead.
+
+  @param schema_dist_table  Open mysql.ndb_schema table
+
+  @return true if this node can use the table for schema distribution
+*/
+static bool schema_dist_table_usable_by_own_nodeid(
+    const Ndb_schema_dist_table &schema_dist_table) {
+  const uint32 own_nodeid = g_ndb_cluster_connection->node_id();
+  const uint32 slock_bits = schema_dist_table.get_slock_bytes() * 8;
+  if (own_nodeid < slock_bits) {
+    // Node id has a bit in 'slock' -> can always ack
+    return true;
+  }
+  if (schema_dist_table.have_schema_op_id_column()) {
+    // Node id is beyond the 'slock' capacity, but the table supports the
+    // result-based protocol (together with mysql.ndb_schema_result, whose
+    // setup is verified separately)
+    return true;
+  }
+  ndb_log_error(
+      "Schema distribution setup refused: node id %u is beyond the "
+      "capacity of the legacy 'slock' column (%u bits) in the "
+      "mysql.ndb_schema table, and the table lacks the 'schema_op_id' "
+      "column required for result-based schema distribution. Upgrade "
+      "mysql.ndb_schema (see --ndb-schema-dist-upgrade-allowed, requires "
+      "all connected MySQL Servers to support the upgrade) or use a node "
+      "id below %u.",
+      own_nodeid, slock_bits, slock_bits);
+  return false;
+}
+
+/**
   Utility class encapsulating the code which setup the 'ndb binlog thread'
   to be "connected" to the cluster.
   This involves:
@@ -854,6 +896,12 @@ class Ndb_binlog_setup {
     if (!schema_dist_table.create_or_upgrade(m_thd,
                                              ndb_schema_dist_upgrade_allowed))
       return false;
+
+    if (!schema_dist_table_usable_by_own_nodeid(schema_dist_table)) {
+      // This node's id can't ack schema operations using the current
+      // (legacy) table format -> refuse to join schema distribution
+      return false;
+    }
 
     if (!Ndb_schema_dist::is_ready(m_thd)) {
       ndb_log_verbose(50, "Schema distribution setup failed");
@@ -1904,8 +1952,22 @@ class Ndb_schema_event_handler {
     // Bitmap for the slock bits
     MY_BITMAP slock;
     const uint slock_bits = schema_dist_table.get_slock_bytes() * 8;
-    // Make sure that own nodeid fits in slock
-    ndbcluster::ndbrequire(own_nodeid() <= slock_bits);
+    if (own_nodeid() >= slock_bits) {
+      /**
+       * Own node id has no bit in the legacy slock bitmap (node id N uses
+       * bit N, so N < slock_bits is required; the previous ndbrequire used
+       * <= which was off by one and crashed the server). A node with an id
+       * above the slock capacity must NEVER ack via slock: report the
+       * failure and let the coordinator's participant timeout surface a
+       * deterministic error to the client. Acks from such nodes normally
+       * travel via the ndb_schema_result protocol instead.
+       */
+      ndb_log_error(
+          "Schema dist: can't ack '%s.%s' via slock, own node id %u "
+          "exceeds slock capacity (%u bits)",
+          schema->db.c_str(), schema->name.c_str(), own_nodeid(), slock_bits);
+      return 1;
+    }
     (void)bitmap_init(&slock, nullptr, slock_bits);
 
     while (1) {
@@ -4306,6 +4368,11 @@ class Ndb_schema_event_handler {
     Ndb_schema_dist_table schema_dist_table(m_thd_ndb);
     if (!schema_dist_table.create_or_upgrade(m_thd, allow_upgrade)) {
       ndb_log_info(" - failed to setup ndb_schema");
+      return true;
+    }
+
+    if (!schema_dist_table_usable_by_own_nodeid(schema_dist_table)) {
+      ndb_log_info(" - ndb_schema not usable by this node's id");
       return true;
     }
 
