@@ -109,7 +109,7 @@ ndb$threads	26	40
 ndb$threadstat	22	144
 ndb$transactions	5	44
 ndb$transactions_full	5	44
-ndb$transporter_activity	81600	40
+ndb$transporter_activity	327680	40
 ndb$transporter_details	32	124
 ndb$transporters	32	68
 

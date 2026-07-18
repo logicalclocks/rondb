@@ -3322,6 +3322,9 @@ sub environment_setup {
     }
 
     # Tools not supporting --defaults-file=xxx, only define NDB_PROG_EXE
+    # NOTE: these are treated as optional since ronsql_cli is only built
+    # when WITH_RDRS is enabled; tests using them will fail with an
+    # undefined environment variable instead of blocking every ndb test.
     @ndb_tools = qw(
       ndb_print_file
       ndb_print_sys_file
@@ -3331,7 +3334,9 @@ sub environment_setup {
     foreach my $tool ( @ndb_tools)
     {
       my $exe =
-        my_find_bin($bindir, [ "runtime_output_directory", "bin" ], $tool);
+        my_find_bin($bindir, [ "runtime_output_directory", "bin" ], $tool,
+                    NOT_REQUIRED);
+      next unless $exe;
 
       $ENV{uc($tool)} = "${exe}";
       $ENV{uc($tool)."_EXE"} = "${exe}";
