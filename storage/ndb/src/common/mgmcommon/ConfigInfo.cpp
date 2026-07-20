@@ -2381,6 +2381,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "does not currently change runtime behavior.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
 
+    {CFG_RDMA_LOG_LEVEL, "RdmaLogLevel", "RDMA",
+     "Verbosity of the RDMA transporter's own event-log output. "
+     "0 = errors only (suppresses the periodic per-link RDMA stats "
+     "heartbeat and the one-shot connect/teardown info lines, which "
+     "can otherwise flood the system log on large clusters); "
+     "1 = warnings; 2 = info (default; periodic stats every 10s); "
+     "3 = debug (periodic stats every 1s). Error-level lines are "
+     "always emitted regardless of this setting. Applied at node "
+     "(re)start; changing only this value does not force a reconnect.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "2", "0", "3"},
+
     /****************************************************************************
      * SCI (Deprecated now)
      ***************************************************************************/

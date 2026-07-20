@@ -44,6 +44,14 @@
 static constexpr Uint64 RDMA_STATS_HEARTBEAT_NS =
     10ULL * 1000ULL * 1000ULL * 1000ULL;
 
+/*
+ * Shorter cadence used when RdmaLogLevel is DEBUG (3). 1 second keeps
+ * the periodic stats useful for active debugging while remaining
+ * interval-bounded (never emitted per-poll).
+ */
+static constexpr Uint64 RDMA_STATS_DEBUG_HEARTBEAT_NS =
+    1ULL * 1000ULL * 1000ULL * 1000ULL;
+
 
 /*
  * libibverbs is required at link time when NDB_RDMA_TRANSPORTER_SUPPORTED is
@@ -278,6 +286,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_service_level(config->rdma.serviceLevel),
       m_retry_count(config->rdma.retryCount),
       m_rnr_retry_count(config->rdma.rnrRetryCount),
+      m_log_level(config->rdma.logLevel),
       m_device_name(rdma_clone_device_name(config->rdma.deviceName)),
       m_verbs_ctx(nullptr),
       m_pd(nullptr),
@@ -334,6 +343,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_service_level(other->m_service_level),
       m_retry_count(other->m_retry_count),
       m_rnr_retry_count(other->m_rnr_retry_count),
+      m_log_level(other->m_log_level),
       m_device_name(rdma_clone_device_name(other->m_device_name)),
       m_verbs_ctx(nullptr),
       m_pd(nullptr),
@@ -1561,12 +1571,13 @@ void RDMA_Transporter::release_verbs_resources() {
   /* Snapshot the cross-thread counters with relaxed loads to decide
    * whether to emit a final summary line. The values do not need to be
    * mutually consistent, only "non-zero somewhere". */
-  if (m_stats.send_posted.load(std::memory_order_relaxed) != 0 ||
-      m_stats.recv_completions_ok.load(std::memory_order_relaxed) != 0 ||
-      m_stats.recv_credit_only_in.load(std::memory_order_relaxed) != 0 ||
-      m_stats.send_completion_errors.load(std::memory_order_relaxed) != 0 ||
-      m_stats.recv_completion_errors.load(std::memory_order_relaxed) != 0 ||
-      m_stats.reconnect_attempts.load(std::memory_order_relaxed) != 0) {
+  if (m_log_level >= RDMA_LOG_INFO &&
+      (m_stats.send_posted.load(std::memory_order_relaxed) != 0 ||
+       m_stats.recv_completions_ok.load(std::memory_order_relaxed) != 0 ||
+       m_stats.recv_credit_only_in.load(std::memory_order_relaxed) != 0 ||
+       m_stats.send_completion_errors.load(std::memory_order_relaxed) != 0 ||
+       m_stats.recv_completion_errors.load(std::memory_order_relaxed) != 0 ||
+       m_stats.reconnect_attempts.load(std::memory_order_relaxed) != 0)) {
     log_stats();
   }
 
@@ -2547,6 +2558,15 @@ void RDMA_Transporter::log_stats() const {
 
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
   /*
+   * Verbosity gate: the periodic stats heartbeat is an INFO-level
+   * diagnostic. When RdmaLogLevel is below INFO (errors/warnings only)
+   * we skip it entirely -- including the clock read below -- which is
+   * what stops these lines from flooding the system log. See the
+   * RDMA_LOG_* constants in RDMA_Transporter.hpp.
+   */
+  if (m_log_level < RDMA_LOG_INFO) return;
+
+  /*
    * Read the monotonic clock. CLOCK_MONOTONIC is unaffected by wall-
    * clock jumps (NTP step, DST), which is what we want for an interval
    * timer. clock_gettime() is a vDSO call on Linux and costs ~10 ns,
@@ -2571,7 +2591,14 @@ void RDMA_Transporter::maybe_log_stats_heartbeat() {
    */
   const Uint64 last_ns =
       m_last_stats_log_ns.load(std::memory_order_relaxed);
-  if (last_ns != 0 && (now_ns - last_ns) < RDMA_STATS_HEARTBEAT_NS) {
+  /*
+   * DEBUG uses the 1s cadence; INFO uses the standard 10s cadence. The
+   * level was already checked to be >= INFO at function entry.
+   */
+  const Uint64 interval_ns = (m_log_level >= RDMA_LOG_DEBUG)
+                                 ? RDMA_STATS_DEBUG_HEARTBEAT_NS
+                                 : RDMA_STATS_HEARTBEAT_NS;
+  if (last_ns != 0 && (now_ns - last_ns) < interval_ns) {
     return;
   }
   log_stats();
@@ -2585,6 +2612,8 @@ void RDMA_Transporter::log_negotiated_attributes() const {
    * useful for diagnosing capability mismatches but should not be
    * verbose enough to flood the event log in steady state.
    */
+  /* Verbosity gate: this is an INFO-level one-shot connect line. */
+  if (m_log_level < RDMA_LOG_INFO) return;
   if (m_verbs_ctx == nullptr || m_qp == nullptr) {
     /* Defensive: nothing to log. */
     return;

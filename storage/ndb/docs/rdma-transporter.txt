@@ -44,6 +44,7 @@ same config.ini. The most-tuned parameters are:
     RdmaServiceLevel           default 0   (0..15; IB SL / RoCE PCP-equivalent)
     RdmaRetryCount             default 7
     RdmaRnrRetryCount          default 7
+    RdmaLogLevel               default 2   (0=errors..3=debug; see below)
 
 The buffer/queue-depth defaults satisfy the runtime per-slot validator
 (slot size >= 24-byte framing header + 32768-byte max signal). Going
@@ -51,6 +52,34 @@ below the default values requires balancing the two: increasing
 RdmaQueueDepth without raising the buffer sizes will drive per-slot
 size below the minimum and refuse the configuration with a precise
 error pointing at the parameters involved.
+
+Controlling RDMA log volume (RdmaLogLevel)
+------------------------------------------
+The RDMA transporter emits a periodic per-link statistics line for
+every RDMA connection (one INFO line per transporter roughly every
+10 seconds, from both the send and the receive path). On large
+clusters with many node pairs this can dominate the system log.
+RdmaLogLevel sets a verbosity threshold for the transporter's own
+log output:
+
+    0  errors only   - suppresses the periodic stats heartbeat and the
+                       one-shot connect/teardown info lines. Use this to
+                       stop RDMA stats from flooding syslog/journald;
+                       error-level lines are still emitted.
+    1  warnings      - reserved; no warning-level lines are emitted in
+                       the current release, so this behaves like level 0.
+    2  info          - default. Periodic stats every ~10s plus the
+                       one-shot connect/teardown summaries. This is the
+                       historical behaviour.
+    3  debug         - as info, but the periodic stats use a ~1s cadence
+                       for short debugging windows.
+
+RdmaLogLevel is a per-[RDMA]-section parameter, so it can be applied to
+all RDMA links or narrowed to specific node pairs. It takes effect when
+the node (re)starts; changing only this value does not force a
+transporter reconnect. To silence the flood, set RdmaLogLevel=0 in the
+relevant [RDMA] section(s), restart ndb_mgmd to load the new config,
+then perform a rolling restart of the affected nodes.
 
 Cluster-wide gate for API-to-DB RDMA
 ------------------------------------

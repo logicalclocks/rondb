@@ -607,6 +607,21 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_retry_count;
   Uint32 m_rnr_retry_count;
   /*
+   * RDMA transporter self-logging verbosity threshold, taken from the
+   * RdmaLogLevel config parameter (0..3) and compared against the
+   * RDMA_LOG_* constants below to decide which of this transporter's
+   * own g_eventLogger lines are emitted. error() lines are always
+   * emitted regardless of this value. Read-only after construction
+   * (set once in the initializer list), so the send and receive
+   * threads that both call maybe_log_stats_heartbeat() can read it
+   * without synchronization.
+   */
+  static constexpr Uint32 RDMA_LOG_ERROR = 0;
+  static constexpr Uint32 RDMA_LOG_WARNING = 1;
+  static constexpr Uint32 RDMA_LOG_INFO = 2;
+  static constexpr Uint32 RDMA_LOG_DEBUG = 3;
+  Uint32 m_log_level;
+  /*
    * Owned copy of the configured device name. NULL means "first available".
    * Copied so the transporter doesn't depend on the lifetime of the
    * ConfigInfo string table.
