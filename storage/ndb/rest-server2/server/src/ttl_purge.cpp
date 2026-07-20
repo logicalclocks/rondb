@@ -74,6 +74,87 @@ inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
   out->time_zone_displacement = 0;
   out->time_type = MYSQL_TIMESTAMP_DATETIME;
 }
+
+/*
+ * Partition-level shard ownership (sharded mode, i.e. mysql.ttl_purge_nodes
+ * in use): shard s owns partition p of a table with hash h iff
+ * (h + p) % n_nodes == s. Per table the owned counts across shards differ by
+ * at most one (maximal evenness), and the hash offset rotates which shards
+ * carry the remainder partitions from table to table, so the aggregate load
+ * spreads evenly. Ownership is a pure function of (part_count, hash, n_nodes,
+ * shard) recomputed every round, so partition reorganizations and purge-node
+ * arrivals/departures re-scatter automatically; distinct shards never overlap,
+ * so purge scans never contend on rows.
+ *
+ * The smallest owned partition id is first = (s - h) mod n_nodes; owned ids
+ * are first, first + n_nodes, first + 2*n_nodes, ... below part_count.
+ */
+inline Uint32 FirstOwnedPartition(Uint32 table_hash, Uint32 n_nodes,
+                                  Uint32 shard) {
+  return (shard + n_nodes - (table_hash % n_nodes)) % n_nodes;
+}
+
+/*
+ * Position *part_id on the smallest owned partition >= its current value
+ * (wrapping to the first owned one when past the end). Returns false when
+ * this shard owns no partition of the table (n_nodes > part_count and the
+ * table's hash maps this shard past the last partition).
+ */
+bool AlignToOwnedPartition(Uint32* part_id, Uint32 part_count,
+                           Uint32 table_hash, Uint32 n_nodes, Uint32 shard) {
+  if (part_count == 0 || n_nodes == 0) {
+    return false;
+  }
+  Uint32 first = FirstOwnedPartition(table_hash, n_nodes, shard);
+  if (first >= part_count) {
+    return false;
+  }
+  Uint32 p = *part_id;
+  Uint32 cand;
+  if (p <= first) {
+    cand = first;
+  } else {
+    cand = first + ((p - first + n_nodes - 1) / n_nodes) * n_nodes;
+    if (cand >= part_count) {
+      cand = first;
+    }
+  }
+  *part_id = cand;
+  return true;
+}
+
+/*
+ * The next owned partition strictly after part_id, wrapping to the first
+ * owned one. Caller must have established ownership of >= 1 partition via
+ * AlignToOwnedPartition with the same (part_count, hash, n_nodes, shard).
+ */
+Uint32 NextOwnedPartition(Uint32 part_id, Uint32 part_count,
+                          Uint32 table_hash, Uint32 n_nodes, Uint32 shard) {
+  Uint32 first = FirstOwnedPartition(table_hash, n_nodes, shard);
+  Uint32 next = (part_id < first)
+                    ? first
+                    : first + (((part_id - first) / n_nodes) + 1) * n_nodes;
+  if (next >= part_count) {
+    next = first;
+  }
+  return next;
+}
+
+/*
+ * Advance a table's rotation pointer to the next partition this node may
+ * purge: the next owned one in sharded mode (shard >= 0), the next one
+ * plainly otherwise. Used for the normal post-batch rotation and to back
+ * off to a different partition after a lock timeout.
+ */
+Uint32 AdvancePartition(Uint32 part_id, Uint32 part_count, Uint32 table_hash,
+                        Int32 n_nodes, Int32 shard) {
+  if (shard >= 0 && n_nodes > 0) {
+    return NextOwnedPartition(part_id, part_count, table_hash,
+                              static_cast<Uint32>(n_nodes),
+                              static_cast<Uint32>(shard));
+  }
+  return part_count > 0 ? (part_id + 1) % part_count : 0;
+}
 }  // namespace
 
 TTLPurger::TTLPurger() :
@@ -1232,7 +1313,11 @@ void TTLPurger::PurgeWorkerJob() {
   std::map<Int32, std::map<Uint32, Int64>>::iterator purge_tab_iter;
   std::map<Uint32, Int64>::iterator purge_part_iter;
 
-  NdbDictionary::Dictionary* dict = nullptr;
+  // Initialized up front: the round-start cache_updated_ walk dereferences
+  // dict, and idle rounds (disabled / not-a-purge-node / outside the active
+  // window) `continue` before the later per-round assignment -- leaving it
+  // null exactly when a schema event arrives during an idle stretch.
+  NdbDictionary::Dictionary* dict = worker_ndb_->getDictionary();
   const NdbDictionary::Table* ttl_tab = nullptr;
   const NdbDictionary::Index* ttl_index = nullptr;
   Uint64 start_time = 0;
@@ -1249,6 +1334,22 @@ void TTLPurger::PurgeWorkerJob() {
   NdbRecAttr* rec_attr[3] = {nullptr, nullptr, nullptr};
   bool use_index = false;
   Uint32 purge_window = 0;
+  PurgeCtrlSettings purge_ctrl;
+  // Effective daily active window for the current round: the cluster-wide
+  // ttl_purge_ctrl window when valid, else the per-node config window,
+  // else -1/-1 (no window). Resolved once per round by the gate below.
+  Int32 eff_win_start = -1;
+  Int32 eff_win_end = -1;
+  // Daily active-window bookkeeping: -1 = not yet evaluated, 0 = outside,
+  // 1 = inside (or no window configured). Used to log transitions once.
+  int last_window_state = -1;
+  // Transition-only logging for the not-a-purge-node idle state
+  bool was_not_purger = false;
+  // True when the previous purging round ended still saturated (some table
+  // finished a full batch at max size, or the window closed mid-round):
+  // leaving the window in that state means a backlog likely remains.
+  bool last_round_saturated = false;
+  bool window_closed_mid_round = false;
 
   g_eventLogger->info("[TTL PWorker] Started");
   // Reset status from potential previous kError state
@@ -1261,10 +1362,14 @@ void TTLPurger::PurgeWorkerJob() {
   Uint64 local_rows_purged = 0;
   std::map<std::string, TTLTableMetrics> local_table_metrics;
   int pre_trx_failures = 0;  // Tracks pre-transaction errors across rounds
+  // Wall-clock ms of this worker's last successful UpdateLease; 0 = never.
+  // Detects lease lapses for the shard warm-up round below.
+  Uint64 last_lease_renew_ms = 0;
   do {
     // Reset local accumulators at start of each round
     local_rows_purged = 0;
     local_table_metrics.clear();
+    window_closed_mid_round = false;
     // Read config once at the start of each round (single shared_lock)
     // This minimizes lock contention - only one brief lock per ~1.5s round
     local_config = GetConfig();
@@ -1365,26 +1470,137 @@ void TTLPurger::PurgeWorkerJob() {
       goto round_err;
     }
     if (shard == kShardNotPurger) {
-      g_eventLogger->info("Not the configured purging node, skip purging...");
+      // Log only on the transition: this branch repeats every ~2s on every
+      // non-purging node, which on a large RDRS fleet floods the logs.
+      if (!was_not_purger) {
+        g_eventLogger->info("[TTL PWorker] Not the configured purging node, "
+                            "skip purging...");
+        was_not_purger = true;
+      }
       if (purge_worker_exit_) {
         break;
       }
       sleep(2);
       continue;
     }
+    if (was_not_purger) {
+      was_not_purger = false;
+      g_eventLogger->info("[TTL PWorker] Became an active purging node");
+    }
 
-    if (GetPurgeWindow(&purge_window, update_objects) == false) {
-      g_eventLogger->info("[TTL PWorker] Failed to get purge window, "
-                          "error: %u(%s). Retry...",
-                          watcher_ndb_->getNdbError().code,
-                          watcher_ndb_->getNdbError().message);
+    if (GetPurgeCtrl(&purge_ctrl, update_objects) == false) {
+      // GetPurgeCtrl already logged the precise failure; worker_ndb_'s
+      // top-level error here may be stale and watcher_ndb_ belongs to the
+      // other thread, so add no error fields
+      g_eventLogger->info("[TTL PWorker] Failed to get purge control "
+                          "settings. Retry...");
       goto round_err;
+    }
+    purge_window = purge_ctrl.purge_lag_sec;
+
+    // Daily active-window gate (UTC). The effective window is the
+    // cluster-wide one from mysql.ttl_purge_ctrl when valid, else the
+    // per-node config window (.TTLPurge.ActiveWindow / REST config API),
+    // else none. When now is outside the effective window, idle this round
+    // WITHOUT refreshing the lease (the gate sits above UpdateLease on
+    // purpose): like a disabled node, an out-of-window node ages out of the
+    // active purge set after kLeaseSeconds, so in sharded mode its owned
+    // partitions redistribute to in-window nodes instead of going unpurged
+    // -- essential when per-node windows differ. At window open, the first
+    // round still sees stale peer leases (GetShard always counts self, so
+    // every node returning together would claim all partitions); the shard
+    // warm-up below (see lease_had_lapsed) re-leases and skips that round,
+    // so ownership converges before purging resumes. Any residual overlap
+    // (e.g. a straggler joining later) stays benign: idempotent expired-row
+    // deletes plus the 296/499 partition back-off. Hard-stop semantics: a
+    // backlog never extends purging past the window close (see the matching
+    // mid-round check in the table loop).
+    {
+      const char* win_source = "";
+      eff_win_start = -1;
+      eff_win_end = -1;
+      if (HasActiveWindow(purge_ctrl.win_start_min, purge_ctrl.win_end_min)) {
+        eff_win_start = purge_ctrl.win_start_min;
+        eff_win_end = purge_ctrl.win_end_min;
+        win_source = "ttl_purge_ctrl";
+      } else if (HasActiveWindow(local_config.active_window_start_min,
+                                 local_config.active_window_end_min)) {
+        eff_win_start = local_config.active_window_start_min;
+        eff_win_end = local_config.active_window_end_min;
+        win_source = "config";
+      }
+      UpdateActiveWindowStatus(eff_win_start, eff_win_end, win_source);
+      bool in_window =
+          eff_win_start < 0 ||
+          InActiveWindow(eff_win_start, eff_win_end,
+                         (time_t)(my_micro_time() / 1000000));
+      if (!in_window) {
+        if (last_window_state != 0) {
+          g_eventLogger->info("[TTL PWorker] Outside the purge active window "
+                              "[%02d:%02d-%02d:%02d) UTC (from %s), "
+                              "purging paused",
+                              eff_win_start / 60, eff_win_start % 60,
+                              eff_win_end / 60, eff_win_end % 60,
+                              win_source);
+          if (last_round_saturated) {
+            g_eventLogger->warning(
+                "[TTL PWorker] The purge active window closed while purging "
+                "was still saturated; an expired-row backlog likely remains. "
+                "Consider a wider window or more purge nodes.");
+          }
+        }
+        last_window_state = 0;
+        UpdateStatus(TTLPurgeStatus::State::kOutsideWindow);
+        UpdateCurrentTable("", 0);
+        if (purge_worker_exit_) {
+          break;
+        }
+        NdbSleep_MilliSleep(kDisabledCheckIntervalMs);
+        continue;
+      }
+      if (eff_win_start >= 0 && last_window_state == 0) {
+        g_eventLogger->info("[TTL PWorker] Entered the purge active window "
+                            "[%02d:%02d-%02d:%02d) UTC (from %s), "
+                            "purging resumed",
+                            eff_win_start / 60, eff_win_start % 60,
+                            eff_win_end / 60, eff_win_end % 60,
+                            win_source);
+      }
+      last_window_state = 1;
     }
 
     GetNow(encoded_now, false);
-    if (shard >= kShardFirst && !UpdateLease(encoded_now)) {
-      g_eventLogger->warning("[TTL PWorker] Failed to update the lease");
-      goto round_err;
+    if (shard >= kShardFirst) {
+      if (!UpdateLease(encoded_now)) {
+        g_eventLogger->warning("[TTL PWorker] Failed to update the lease");
+        goto round_err;
+      }
+      // Shard warm-up: if our own lease had lapsed when this round's
+      // GetShard() ran (worker start, re-entering the daily active window,
+      // re-enable, or a long stall), our shard map was computed from a
+      // stale view: GetShard always counts self but excludes lapsed peers,
+      // so every node returning together sees n_nodes == 1 and claims ALL
+      // partitions -- an all-node overlap round exactly when the backlog is
+      // largest. We have just re-leased above, so peers can see us again:
+      // skip purging for this one round and let the next round's GetShard
+      // compute shards from converged membership. Costs one round interval
+      // against a multi-hour window; without it the overlap is only
+      // mitigated after the fact by the 296/499 partition back-off.
+      const Uint64 now_ms = my_micro_time() / 1000;
+      const bool lease_had_lapsed =
+          (last_lease_renew_ms == 0 ||
+           now_ms - last_lease_renew_ms > Uint64(kLeaseSeconds) * 1000);
+      last_lease_renew_ms = now_ms;
+      if (lease_had_lapsed) {
+        g_eventLogger->info("[TTL PWorker] Re-entered the active purge set "
+                            "(own lease had lapsed); skipping one round so "
+                            "shard assignment converges before purging");
+        if (purge_worker_exit_) {
+          break;
+        }
+        NdbSleep_MilliSleep(kDisabledCheckIntervalMs);
+        continue;
+      }
     }
 
     if (local_ttl_cache.empty()) {
@@ -1415,12 +1631,31 @@ void TTLPurger::PurgeWorkerJob() {
         UpdateStatus(TTLPurgeStatus::State::kDisabled);
         break;
       }
+      // Hard stop at active-window close, even mid-round: a backlog must
+      // never extend purging into the hours the window is meant to protect.
+      // Checked before EACH table's batch, so the overrun past close is
+      // bounded by one already-open scan transaction: up to the table's
+      // current batch_size rows plus NDB timeout behavior. Interrupting the
+      // in-flight scan instead would roll back its deletes -- same data-node
+      // work, zero rows purged -- for a seconds-scale gain against
+      // multi-hour windows. Pure local arithmetic (no NDB access); the next
+      // round's gate logs the transition and publishes kOutsideWindow.
+      if (eff_win_start >= 0 &&
+          !InActiveWindow(eff_win_start, eff_win_end,
+                          (time_t)(my_micro_time() / 1000000))) {
+        window_closed_mid_round = true;  // tables were still pending
+        UpdateStatus(TTLPurgeStatus::State::kOutsideWindow);
+        break;
+      }
       purge_trx_started = false;
       {
         GetNow(encoded_now, false);
         if (shard >= kShardFirst && !UpdateLease(encoded_now)) {
           g_eventLogger->warning("[TTL PWorker] Failed to update the lease[2]");
 	  goto table_err;
+        }
+        if (shard >= kShardFirst) {
+          last_lease_renew_ms = my_micro_time() / 1000;
         }
       }
       // Note: cache_updated_ is only checked at round start (line 1067).
@@ -1440,9 +1675,6 @@ void TTLPurger::PurgeWorkerJob() {
       check = 0;
       deletedRows = 0;
       trx_failure_times = 0;
-
-      // Update status with current table being processed
-      UpdateCurrentTable(iter->first, iter->second.part_id);
 
       if (worker_ndb_->setDatabaseName(db_str.c_str()) != 0) {
         g_eventLogger->warning("[TTL PWorker] Failed to select "
@@ -1483,11 +1715,6 @@ void TTLPurger::PurgeWorkerJob() {
       table_id = ttl_tab->getTableId();
       hash_val = murmur3_32(reinterpret_cast<unsigned char*>(&table_id),
                                              sizeof(int), 0);
-	      if (shard >= kShardFirst && n_purge_nodes > 0 &&
-		  hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
-		++iter;
-		continue;
-	      }
       if (shard == kShardNosharding &&
           !iter->second.part_id_offset_applied &&
           ttl_tab->getPartitionCount() > 1) {
@@ -1505,6 +1732,26 @@ void TTLPurger::PurgeWorkerJob() {
           iter->second.part_id %= part_count;
         }
       }
+      if (shard >= kShardFirst && n_purge_nodes > 0) {
+        // Sharded mode: partition-level ownership (see the helpers above).
+        // Every active purge node works each TTL table, but on a disjoint,
+        // evenly-scattered subset of its partitions, so purge scans never
+        // contend with each other and a table's purge throughput scales
+        // with the number of active purge nodes. Recomputed every round
+        // from the live partition count and active-node set.
+        if (!AlignToOwnedPartition(&iter->second.part_id,
+                                   ttl_tab->getPartitionCount(), hash_val,
+                                   static_cast<Uint32>(n_purge_nodes),
+                                   static_cast<Uint32>(shard))) {
+          // More purge nodes than partitions and this table's hash maps
+          // this node past the last partition: nothing to do here.
+          ++iter;
+          continue;
+        }
+      }
+      // Published after the wrap/ownership fix-ups above so /status shows
+      // the partition this scan will actually use
+      UpdateCurrentTable(iter->first, iter->second.part_id);
       log_buf += ("[P" + std::to_string(iter->second.part_id) +
                  "/" +
                  std::to_string(ttl_tab->getPartitionCount()) + "]");
@@ -1789,6 +2036,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         }
@@ -1821,6 +2076,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         } else if (*reinterpret_cast<Int64*>(encoded_curr_purge) != 0) {
@@ -1938,6 +2201,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         }
@@ -1970,6 +2241,14 @@ retry_trx:
                                    "Retry...",
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
+            // Another purge worker is likely on this partition right now
+            // (lock wait / scan takeover). Back off to the next partition
+            // this node may purge instead of piling onto the contended one;
+            // the skipped partition is revisited on a later rotation or
+            // drained by the contending node.
+            iter->second.part_id = AdvancePartition(
+                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+                n_purge_nodes, shard);
           }
 	  goto table_err;
         }
@@ -2002,8 +2281,9 @@ retry_trx:
         sleep_between_each_round = false;
       }
 
-      iter->second.part_id =
-        ((iter->second.part_id + 1) % ttl_tab->getPartitionCount());
+      iter->second.part_id = AdvancePartition(
+          iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+          n_purge_nodes, shard);
 
       // Accumulate metrics locally (no locking during round)
       local_rows_purged += deletedRows;
@@ -2137,6 +2417,9 @@ table_err:
     }
     // Round completed without pre-trx escalation, reset the counter
     pre_trx_failures = 0;
+    // Remember whether this round ended still saturated (feeds the
+    // backlog warning when the active window closes).
+    last_round_saturated = window_closed_mid_round || !sleep_between_each_round;
     // Finish 1 round - update all metrics with single lock acquisition
     {
       Uint64 round_end_time = my_micro_time();
@@ -2161,7 +2444,7 @@ round_err:
     if (purge_worker_exit_) {
       break;
     }
-    // Pre-round failures (cache_updated_ walk / GetShard / GetPurgeWindow /
+    // Pre-round failures (cache_updated_ walk / GetShard / GetPurgeCtrl /
     // pre-loop UpdateLease) share the do-while-scoped pre_trx_failures
     // counter with table_err's pre-trx branch so persistent failures
     // eventually escalate instead of sleeping silently forever. The counter
@@ -2360,8 +2643,26 @@ err:
   return false;
 }
 
-bool TTLPurger::GetPurgeWindow(Uint32* purge_window, bool update_objects) {
-  uint32_t old_purge_window = *purge_window;
+bool TTLPurger::HasActiveWindow(Int32 start_min, Int32 end_min) {
+  return start_min >= 0 && start_min < kMinutesPerDay &&
+         end_min >= 0 && end_min < kMinutesPerDay &&
+         start_min != end_min;
+}
+
+bool TTLPurger::InActiveWindow(Int32 start_min, Int32 end_min,
+                               time_t now_utc) {
+  Int32 minute_of_day = static_cast<Int32>((now_utc % 86400) / 60);
+  if (start_min < end_min) {
+    return minute_of_day >= start_min && minute_of_day < end_min;
+  }
+  // start > end: the daily window wraps past midnight
+  return minute_of_day >= start_min || minute_of_day < end_min;
+}
+
+bool TTLPurger::GetPurgeCtrl(PurgeCtrlSettings* settings,
+                             bool update_objects) {
+  PurgeCtrlSettings old = *settings;
+  PurgeCtrlSettings fresh;  // defaults: no lag, no active window
   if (worker_ndb_->setDatabaseName(kSystemDBName) != 0) {
     g_eventLogger->warning("[TTL PWorker] Failed to select system database: "
                           "%s, error: %d(%s). Retry...",
@@ -2376,11 +2677,7 @@ bool TTLPurger::GetPurgeWindow(Uint32* purge_window, bool update_objects) {
   }
   const NdbDictionary::Table* tab = dict->getTable(kTTLPurgeCtrlTabName);
   if (tab == nullptr) {
-    if (dict->getNdbError().code == 723) {
-      // Purge control configuration table not found — no purge window defined
-      *purge_window = 0;
-      return true;
-    } else {
+    if (dict->getNdbError().code != 723) {
       g_eventLogger->warning("[TTL PWorker] Failed to get table: "
                             "%s, error: %d(%s). Retry...",
                              kTTLPurgeCtrlTabName,
@@ -2388,114 +2685,111 @@ bool TTLPurger::GetPurgeWindow(Uint32* purge_window, bool update_objects) {
                              dict->getNdbError().message);
       return false;
     }
-  }
-  NdbRecAttr* rec_attr[3];
-  NdbTransaction* trans = nullptr;
-  NdbOperation* op = nullptr;
-  Int32 n_nodes = 0;;
-  std::vector<Int32> purge_nodes;
-  size_t pos = 0;
-  std::string log_buf = "[TTL PWorker] ";
-  std::string active_nodes = "[";
-  std::string inactive_nodes = "[";
-
-  trans = worker_ndb_->startTransaction();
-  if (trans == nullptr) {
-    g_eventLogger->warning("[TTL PWorker] Failed to start "
-                           "transaction"
-                           ", error: %d(%s). Retry...",
-                           worker_ndb_->getNdbError().code,
-                           worker_ndb_->getNdbError().message);
-    goto err;
-  }
-
-  op = trans->getNdbOperation(tab);
-  if (op == nullptr) {
-    g_eventLogger->warning("[TTL PWorker] Failed to start get "
-                           "operation on table %s"
-                           ", error: %d(%s). Retry...",
-                           tab->getName(),
-                           trans->getNdbError().code,
-                           trans->getNdbError().message);
-    goto err;
-  }
-
-  if (op->readTuple(NdbOperation::LM_CommittedRead) != 0) {
-    g_eventLogger->warning("[TTL PWorker] Failed to readTuple "
-                           "on table %s"
-                           ", error: %d(%s). Retry...",
-                           tab->getName(),
-                           trans->getNdbError().code,
-                           trans->getNdbError().message);
-    goto err;
-  }
-  if (op->equal(kPurgeCtrlKey, kPurgeCtrlPurgeWindowId) != 0) {
-    g_eventLogger->warning("[TTL PWorker] Failed to set key on table %s"
-                           ", error: %d(%s). Retry...",
-                           tab->getName(),
-                           op->getNdbError().code,
-                           op->getNdbError().message);
-    goto err;
-  }
-
-  rec_attr[0] = op->getValue(kPurgeCtrlKey);
-  if (rec_attr[0] == nullptr) {
-    g_eventLogger->warning("[TTL PWorker] Failed to getValue "
-                           "on table %s"
-                           ", error: %d(%s). Retry...",
-                           tab->getName(),
-                           trans->getNdbError().code,
-                           trans->getNdbError().message);
-    goto err;
-  }
-  rec_attr[1] = op->getValue(kPurgeCtrlValue);
-  if (rec_attr[1] == nullptr) {
-    g_eventLogger->warning("[TTL PWorker] Failed to getValue "
-                           "on table %s"
-                           ", error: %d(%s). Retry...",
-                           tab->getName(),
-                           trans->getNdbError().code,
-                           trans->getNdbError().message);
-    goto err;
-  }
-  if (trans->execute(NdbTransaction::Commit) != 0) {
-    g_eventLogger->warning("[TTL PWorker] Failed to execute transaction "
-                           "on table %s"
-                           ", error: %d(%s). Retry...",
-                           tab->getName(),
-                           trans->getNdbError().code,
-                           trans->getNdbError().message);
-    goto err;
-  }
-  if (trans->getNdbError().classification == NdbError::NoDataFound) {
-    g_eventLogger->warning("[TTL PWorker] ttl_purge_ctrl table found, "
-                           "but missing purge window, [%s = %u]",
-                           kPurgeCtrlKey, kPurgeCtrlPurgeWindowId);
-    *purge_window = 0;
+    // Purge control configuration table not found — defaults apply
   } else {
-    Int32 value = rec_attr[1]->isNULL() ? 0 : rec_attr[1]->int32_value();
-    if (value < 0) {
+    NdbTransaction* trans = worker_ndb_->startTransaction();
+    if (trans == nullptr) {
+      g_eventLogger->warning("[TTL PWorker] Failed to start "
+                             "transaction"
+                             ", error: %d(%s). Retry...",
+                             worker_ndb_->getNdbError().code,
+                             worker_ndb_->getNdbError().message);
+      return false;
+    }
+    // One committed read per ctrl row, batched in a single transaction.
+    // Reads default to AO_IgnoreError, so an absent row surfaces as a
+    // per-operation 626 (leaving that setting at its default) instead of
+    // failing the whole execute.
+    const int ctrl_ids[3] = {kPurgeCtrlPurgeWindowId,
+                             kPurgeCtrlActiveWinStartId,
+                             kPurgeCtrlActiveWinEndId};
+    const NdbOperation* ops[3] = {nullptr, nullptr, nullptr};
+    NdbRecAttr* vals[3] = {nullptr, nullptr, nullptr};
+    for (int i = 0; i < 3; i++) {
+      NdbOperation* op = trans->getNdbOperation(tab);
+      if (op == nullptr ||
+          op->readTuple(NdbOperation::LM_CommittedRead) != 0 ||
+          op->equal(kPurgeCtrlKey, ctrl_ids[i]) != 0 ||
+          (vals[i] = op->getValue(kPurgeCtrlValue)) == nullptr) {
+        g_eventLogger->warning("[TTL PWorker] Failed to prepare read "
+                               "[%s = %d] on table %s"
+                               ", error: %d(%s). Retry...",
+                               kPurgeCtrlKey, ctrl_ids[i], tab->getName(),
+                               trans->getNdbError().code,
+                               trans->getNdbError().message);
+        worker_ndb_->closeTransaction(trans);
+        return false;
+      }
+      ops[i] = op;
+    }
+    if (trans->execute(NdbTransaction::Commit) != 0) {
+      g_eventLogger->warning("[TTL PWorker] Failed to execute transaction "
+                             "on table %s"
+                             ", error: %d(%s). Retry...",
+                             tab->getName(),
+                             trans->getNdbError().code,
+                             trans->getNdbError().message);
+      worker_ndb_->closeTransaction(trans);
+      return false;
+    }
+    Int32 raw[3] = {0, -1, -1};  // defaults: lag 0, window unset
+    for (int i = 0; i < 3; i++) {
+      const NdbError& op_err = ops[i]->getNdbError();
+      if (op_err.code == 626) {
+        continue;  // row absent: keep the default
+      }
+      if (op_err.code != 0) {
+        g_eventLogger->warning("[TTL PWorker] Failed to read [%s = %d] "
+                               "on table %s, error: %d(%s). Retry...",
+                               kPurgeCtrlKey, ctrl_ids[i], tab->getName(),
+                               op_err.code, op_err.message);
+        worker_ndb_->closeTransaction(trans);
+        return false;
+      }
+      if (!vals[i]->isNULL()) {
+        raw[i] = vals[i]->int32_value();
+      }
+    }
+    worker_ndb_->closeTransaction(trans);
+    if (raw[0] < 0) {
       g_eventLogger->warning("[TTL PWorker] Negtive purge window size %d "
                              "is set in the ttl_purge_ctrl, using 0 instead",
-                             value);
-      value = 0;
+                             raw[0]);
+      raw[0] = 0;
     }
-    *purge_window = value;
+    fresh.purge_lag_sec = static_cast<Uint32>(raw[0]);
+    fresh.win_start_min = raw[1];
+    fresh.win_end_min = raw[2];
   }
+  *settings = fresh;
 
-  worker_ndb_->closeTransaction(trans);
-  if (old_purge_window != *purge_window) {
+  // Change logging: this runs every round, so log only on transitions.
+  if (old.purge_lag_sec != settings->purge_lag_sec) {
     g_eventLogger->info("[TTL PWorker] purge window size changed from %u "
                         "to %u seconds",
-                        old_purge_window, *purge_window);
+                        old.purge_lag_sec, settings->purge_lag_sec);
+  }
+  if (old.win_start_min != settings->win_start_min ||
+      old.win_end_min != settings->win_end_min) {
+    if (HasActiveWindow(settings->win_start_min, settings->win_end_min)) {
+      g_eventLogger->info("[TTL PWorker] purge active window set to "
+                          "[%02d:%02d-%02d:%02d) UTC",
+                          settings->win_start_min / 60,
+                          settings->win_start_min % 60,
+                          settings->win_end_min / 60,
+                          settings->win_end_min % 60);
+    } else if (settings->win_start_min >= 0 || settings->win_end_min >= 0) {
+      g_eventLogger->warning("[TTL PWorker] Invalid purge active window "
+                             "(start=%d, end=%d): both must be in [0, 1439] "
+                             "minutes and start != end; ignoring it (any "
+                             "per-node config window still applies)",
+                             settings->win_start_min, settings->win_end_min);
+    } else {
+      g_eventLogger->info("[TTL PWorker] purge active window cleared, "
+                          "purging around the clock");
+    }
   }
   return true;
-
-err:
-  if (trans != nullptr) {
-    worker_ndb_->closeTransaction(trans);
-  }
-  return false;
 }
 
 Int64 TTLPurger::GetNow(unsigned char* encoded_now, bool timestamp,
@@ -2789,6 +3083,14 @@ void TTLPurger::UpdateCurrentTable(const std::string& table, Uint32 partition) {
   const std::lock_guard<std::shared_mutex> lock(metrics_mutex_);
   status_.current_table = table;
   status_.current_partition = partition;
+}
+
+void TTLPurger::UpdateActiveWindowStatus(Int32 start_min, Int32 end_min,
+                                         const char* source) {
+  const std::lock_guard<std::shared_mutex> lock(metrics_mutex_);
+  status_.active_window_start_min = start_min;
+  status_.active_window_end_min = end_min;
+  status_.active_window_source = source;
 }
 
 void TTLPurger::UpdateRoundMetrics(
