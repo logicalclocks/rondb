@@ -532,9 +532,8 @@ const (
 	USERK_API_KEY = "tr80O5ClBpOupXzI.YBxXBwHk0abT0yV9hJ9Jth3Ta2r1sOgSmqx48JFCNi8CHZUTuZg6bxZ1gse6xCmZ"
 	USERL_API_KEY = "yaRas68o9CmUeZDX.Y6AtxyK0bFwqCGZv91YHixP5juKcHeOqNd9JEel64v36itRbNDPNKYaI901SwJ01"
 	// userm (uid 100012): D5 - restricted member of usera_project who also
-	// owns his own project. Created on the reference cluster AFTER the T3
-	// import, so he exists in the D5 recording but not in the fixture until
-	// the next re-import.
+	// owns his own (empty) userm_project; customers_fg granted entirely.
+	// See recording_D5.json.
 	USERM_API_KEY = "9mNzTyVuQXb8Bwq3.DnSmbpHdAVbLbS1WZwJPk4m9cGrWmMAO0Gxsl3Ky8qYY87P73ZLsCwDbd1bEeZ6D"
 )
 
