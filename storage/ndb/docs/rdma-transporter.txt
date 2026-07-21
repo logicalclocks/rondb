@@ -75,11 +75,35 @@ log output:
                        for short debugging windows.
 
 RdmaLogLevel is a per-[RDMA]-section parameter, so it can be applied to
-all RDMA links or narrowed to specific node pairs. It takes effect when
-the node (re)starts; changing only this value does not force a
-transporter reconnect. To silence the flood, set RdmaLogLevel=0 in the
-relevant [RDMA] section(s), restart ndb_mgmd to load the new config,
-then perform a rolling restart of the affected nodes.
+all RDMA links or narrowed to specific node pairs. There are two ways to
+change it:
+
+  * Persistently via config.ini: set RdmaLogLevel=0 in the relevant
+    [RDMA] section(s), restart ndb_mgmd to load the new config, then
+    perform a rolling restart of the affected nodes.
+
+  * At runtime, without a restart, from the ndb_mgm client:
+
+        ALL SET RdmaLogLevel 0        -- silence on all nodes
+        <nodeid> SET RdmaLogLevel 3   -- verbose on one node
+
+    The management client applies the change to the running data nodes
+    immediately (the periodic stats stop or resume at once) and also
+    updates the stored configuration, so the new value survives a
+    restart. Internally this maps to the CmvmiSetRdmaLogLevel dump code
+    (103020); "ALL DUMP 103020 <level>" is the lower-level equivalent
+    that changes only the running value, without updating the stored
+    config.
+
+Monitoring (ndbinfo.rdma_transporters)
+--------------------------------------
+Per-link RDMA counters are available through the ndbinfo table
+ndbinfo.rdma_transporters: reconnects, send/recv posted/ok/err counts,
+send_credit_stalls, peer_credits, rnr, retry_exceeded, qp_fatal, and
+bytes_sent/received. Rows are produced only for RDMA links, so the table
+is empty on nodes that use only TCP/SHM. This exposes the same counters
+as the periodic log line, so it can be polled instead of raising
+RdmaLogLevel.
 
 Cluster-wide gate for API-to-DB RDMA
 ------------------------------------

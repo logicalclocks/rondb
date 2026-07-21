@@ -504,6 +504,31 @@ class RDMA_Transporter : public Transporter {
   void handle_recv_comp_event();
   void arm_recv_cq();
 
+  /*
+   * Runtime accessor/mutator for the RDMA self-logging verbosity
+   * threshold (see the RDMA_LOG_* constants and m_log_level).
+   * set_log_level() is invoked by
+   * TransporterRegistry::set_rdma_log_level() when an operator changes
+   * the level at runtime via the CmvmiSetRdmaLogLevel dump code. Both
+   * use relaxed ordering because the value only gates diagnostic
+   * logging and orders no other state.
+   */
+  void set_log_level(Uint32 level) {
+    m_log_level.store(level, std::memory_order_relaxed);
+  }
+  Uint32 get_log_level() const {
+    return m_log_level.load(std::memory_order_relaxed);
+  }
+
+  /*
+   * Fill 'out' with a snapshot of this transporter's observability
+   * counters for the ndbinfo.rdma_transporters table. Reads the atomic
+   * counters with relaxed ordering, so it is safe to call from a block
+   * thread while the send/receive threads update them. The elaborated
+   * 'struct RdmaTransporterStats' type is defined in TransporterRegistry.hpp.
+   */
+  void fill_stats(struct RdmaTransporterStats &out) const;
+
  private:
 
   /*
@@ -607,20 +632,24 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_retry_count;
   Uint32 m_rnr_retry_count;
   /*
-   * RDMA transporter self-logging verbosity threshold, taken from the
-   * RdmaLogLevel config parameter (0..3) and compared against the
+   * RDMA transporter self-logging verbosity threshold, initialised from
+   * the RdmaLogLevel config parameter (0..3) and compared against the
    * RDMA_LOG_* constants below to decide which of this transporter's
    * own g_eventLogger lines are emitted. error() lines are always
-   * emitted regardless of this value. Read-only after construction
-   * (set once in the initializer list), so the send and receive
-   * threads that both call maybe_log_stats_heartbeat() can read it
-   * without synchronization.
+   * emitted regardless of this value.
+   *
+   * std::atomic because the value can be changed at runtime: an operator
+   * issues the CmvmiSetRdmaLogLevel dump, which reaches this object via
+   * TransporterRegistry::set_rdma_log_level(), while the send and receive
+   * threads read it from maybe_log_stats_heartbeat(). Relaxed ordering is
+   * sufficient -- the field is a pure diagnostic gate and orders no other
+   * state.
    */
   static constexpr Uint32 RDMA_LOG_ERROR = 0;
   static constexpr Uint32 RDMA_LOG_WARNING = 1;
   static constexpr Uint32 RDMA_LOG_INFO = 2;
   static constexpr Uint32 RDMA_LOG_DEBUG = 3;
-  Uint32 m_log_level;
+  std::atomic<Uint32> m_log_level;
   /*
    * Owned copy of the configured device name. NULL means "first available".
    * Copied so the transporter doesn't depend on the lifetime of the

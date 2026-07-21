@@ -784,6 +784,8 @@ static struct view {
      " connect_count, "
      " overloaded, overload_count, slowdown, slowdown_count, encrypted "
      "FROM `ndbinfo`.`ndb$transporters`"},
+    {"ndbinfo", "rdma_transporters",
+     "SELECT * FROM `ndbinfo`.`ndb$rdma_transporters`"},
 };
 
 static constexpr size_t num_views = sizeof(views) / sizeof(views[0]);

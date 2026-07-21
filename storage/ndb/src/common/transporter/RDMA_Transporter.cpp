@@ -62,6 +62,7 @@ static constexpr Uint64 RDMA_STATS_DEBUG_HEARTBEAT_NS =
 
 #include "RDMA_Transporter.hpp"
 #include "TransporterCallback.hpp"
+#include "TransporterRegistry.hpp"  // RdmaTransporterStats (fill_stats)
 #include "util/NdbSocket.h"
 #include "util/require.h"
 
@@ -343,7 +344,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_service_level(other->m_service_level),
       m_retry_count(other->m_retry_count),
       m_rnr_retry_count(other->m_rnr_retry_count),
-      m_log_level(other->m_log_level),
+      m_log_level(other->m_log_level.load(std::memory_order_relaxed)),
       m_device_name(rdma_clone_device_name(other->m_device_name)),
       m_verbs_ctx(nullptr),
       m_pd(nullptr),
@@ -1571,7 +1572,7 @@ void RDMA_Transporter::release_verbs_resources() {
   /* Snapshot the cross-thread counters with relaxed loads to decide
    * whether to emit a final summary line. The values do not need to be
    * mutually consistent, only "non-zero somewhere". */
-  if (m_log_level >= RDMA_LOG_INFO &&
+  if (m_log_level.load(std::memory_order_relaxed) >= RDMA_LOG_INFO &&
       (m_stats.send_posted.load(std::memory_order_relaxed) != 0 ||
        m_stats.recv_completions_ok.load(std::memory_order_relaxed) != 0 ||
        m_stats.recv_credit_only_in.load(std::memory_order_relaxed) != 0 ||
@@ -2556,6 +2557,36 @@ void RDMA_Transporter::log_stats() const {
           std::memory_order_relaxed));
 }
 
+void RDMA_Transporter::fill_stats(RdmaTransporterStats &out) const {
+  /*
+   * Snapshot the observability counters for ndbinfo. Relaxed loads match
+   * the way log_stats() reads them; a slightly inconsistent set of values
+   * across counters is acceptable for a monitoring view. peer_credits is
+   * read with acquire ordering to mirror its updater.
+   */
+  out.reconnects = m_stats.reconnect_attempts.load(std::memory_order_relaxed);
+  out.send_posted = m_stats.send_posted.load(std::memory_order_relaxed);
+  out.send_completions_ok =
+      m_stats.send_completions_ok.load(std::memory_order_relaxed);
+  out.send_completion_errors =
+      m_stats.send_completion_errors.load(std::memory_order_relaxed);
+  out.recv_posted = m_stats.recv_posted.load(std::memory_order_relaxed);
+  out.recv_completions_ok =
+      m_stats.recv_completions_ok.load(std::memory_order_relaxed);
+  out.recv_completion_errors =
+      m_stats.recv_completion_errors.load(std::memory_order_relaxed);
+  out.send_credit_stalls =
+      m_stats.send_credit_stalls.load(std::memory_order_relaxed);
+  out.rnr_events = m_stats.rnr_events.load(std::memory_order_relaxed);
+  out.retry_exceeded_events =
+      m_stats.retry_exceeded_events.load(std::memory_order_relaxed);
+  out.qp_fatal_events = m_stats.qp_fatal_events.load(std::memory_order_relaxed);
+  out.bytes_sent = m_wire_bytes_sent.load(std::memory_order_relaxed);
+  out.bytes_received = m_wire_bytes_received.load(std::memory_order_relaxed);
+  out.peer_credits =
+      (Uint32)m_peer_recv_credits.load(std::memory_order_acquire);
+}
+
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
   /*
    * Verbosity gate: the periodic stats heartbeat is an INFO-level
@@ -2564,7 +2595,7 @@ void RDMA_Transporter::maybe_log_stats_heartbeat() {
    * what stops these lines from flooding the system log. See the
    * RDMA_LOG_* constants in RDMA_Transporter.hpp.
    */
-  if (m_log_level < RDMA_LOG_INFO) return;
+  if (m_log_level.load(std::memory_order_relaxed) < RDMA_LOG_INFO) return;
 
   /*
    * Read the monotonic clock. CLOCK_MONOTONIC is unaffected by wall-
@@ -2595,9 +2626,10 @@ void RDMA_Transporter::maybe_log_stats_heartbeat() {
    * DEBUG uses the 1s cadence; INFO uses the standard 10s cadence. The
    * level was already checked to be >= INFO at function entry.
    */
-  const Uint64 interval_ns = (m_log_level >= RDMA_LOG_DEBUG)
-                                 ? RDMA_STATS_DEBUG_HEARTBEAT_NS
-                                 : RDMA_STATS_HEARTBEAT_NS;
+  const Uint64 interval_ns =
+      (m_log_level.load(std::memory_order_relaxed) >= RDMA_LOG_DEBUG)
+          ? RDMA_STATS_DEBUG_HEARTBEAT_NS
+          : RDMA_STATS_HEARTBEAT_NS;
   if (last_ns != 0 && (now_ns - last_ns) < interval_ns) {
     return;
   }
@@ -2613,7 +2645,7 @@ void RDMA_Transporter::log_negotiated_attributes() const {
    * verbose enough to flood the event log in steady state.
    */
   /* Verbosity gate: this is an INFO-level one-shot connect line. */
-  if (m_log_level < RDMA_LOG_INFO) return;
+  if (m_log_level.load(std::memory_order_relaxed) < RDMA_LOG_INFO) return;
   if (m_verbs_ctx == nullptr || m_qp == nullptr) {
     /* Defensive: nothing to log. */
     return;
