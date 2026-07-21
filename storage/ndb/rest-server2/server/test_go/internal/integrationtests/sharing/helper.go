@@ -69,6 +69,19 @@ func getBatchFeatureStoreResponseWithKey(t *testing.T, apiKey string,
 	return nil
 }
 
+// ronsqlQueryWithKey sends a RonSQL query under a caller-chosen API key and
+// returns the response code and raw body. TEXT_NOHEADER output keeps the
+// body to the bare result values so callers can compare them against mysqld
+// exactly.
+func ronsqlQueryWithKey(t *testing.T, apiKey string, database string,
+	query string, message string, status ...int) (int, []byte) {
+	body := fmt.Sprintf(`{"query": %q, "database": %q, "outputFormat": "TEXT_NOHEADER"}`,
+		query, database)
+	return testclient.SendHttpRequestWithAPIKey(
+		t, apiKey, config.RONSQL_HTTP_VERB, testutils.NewRonSQLURL(),
+		body, message, status...)
+}
+
 // pkReadWithKey mirrors pkread.pkRESTTest with a caller-chosen API key.
 // On 200 the returned columns listed in testInfo.RespKVs are validated
 // against mysqld (the existing CompareDataWithDB pattern).

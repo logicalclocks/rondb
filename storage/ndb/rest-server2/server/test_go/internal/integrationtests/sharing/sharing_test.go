@@ -60,6 +60,7 @@ package sharing
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore"
@@ -765,6 +766,288 @@ func Test_Sharing_BatchPKRead(t *testing.T) {
 			{db: useraProject, table: transactionsTable, customerID: 1},
 		}, denyTxTable, http.StatusUnauthorized)
 	})
+}
+
+type ronsqlTest struct {
+	scenario string // recording / design-doc scenario id
+	apiKey   string
+	query    string
+	httpCode int
+	// substring the denial body must contain (denial contract)
+	errMsgContains string
+	// on 200: read this column of usera_project/<validateTable> for
+	// customer 1 from mysqld and require the result to equal the value.
+	// Only meaningful for single-row aggregates (WHERE customer_id = 1).
+	validateTable string
+	validateCol   string
+}
+
+// RonSQL authorization: the server parses the query and authorizes every
+// referenced table and column through the same grant ladder as the other
+// endpoints. Columns count wherever they appear - aggregate arguments,
+// WHERE, GROUP BY and ORDER BY. RonSQL only supports aggregate queries, so
+// every query below aggregates; SUM over a single row (WHERE on the PK)
+// equals the row value, which is what the mysqld validation compares.
+var ronsqlTests = []ronsqlTest{
+	// usera reads his own store via plain membership - baseline.
+	{
+		scenario:      "owner_select",
+		apiKey:        testdbs.USERA_API_KEY,
+		query:         "SELECT SUM(age) FROM usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: customersTable,
+		validateCol:   "age",
+	},
+	// A1: store shared entirely -> full SQL access to every table.
+	{
+		scenario:      "A1_userb_granted_store",
+		apiKey:        testdbs.USERB_API_KEY,
+		query:         "SELECT SUM(num_transactions_30d) FROM usera_transactions_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: transactionsTable,
+		validateCol:   "num_transactions_30d",
+	},
+	// A1: including columns no fine-grained user is granted.
+	{
+		scenario: "A1_userb_any_column",
+		apiKey:   testdbs.USERB_API_KEY,
+		query:    "SELECT SUM(total_spend_30d) FROM usera_transactions_fg_1;",
+		httpCode: http.StatusOK,
+	},
+	// B1: whole-FG share opens exactly that table to SQL.
+	{
+		scenario:      "B1_userd_granted_table",
+		apiKey:        testdbs.USERD_API_KEY,
+		query:         "SELECT SUM(age) FROM usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: customersTable,
+		validateCol:   "age",
+	},
+	// B4: the FG share does not open the store's other tables.
+	{
+		scenario:       "B4_userd_unshared_table",
+		apiKey:         testdbs.USERD_API_KEY,
+		query:          "SELECT SUM(num_transactions_30d) FROM usera_transactions_fg_1 WHERE customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyTxTable,
+	},
+	// E2: feature-subset share - the granted column serves, also when the
+	// PK is referenced in the WHERE clause (PK is force-granted).
+	{
+		scenario:      "E2_usere_granted_column",
+		apiKey:        testdbs.USERE_API_KEY,
+		query:         "SELECT SUM(num_transactions_30d) FROM usera_transactions_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: transactionsTable,
+		validateCol:   "num_transactions_30d",
+	},
+	// E2: COUNT(*) references no columns; any grant on the table admits it
+	// (MySQL grants one column -> COUNT(*) works, same here).
+	{
+		scenario: "E2_usere_count_star",
+		apiKey:   testdbs.USERE_API_KEY,
+		query:    "SELECT COUNT(*) FROM usera_transactions_fg_1;",
+		httpCode: http.StatusOK,
+	},
+	// E2: aggregating an ungranted column is rejected naming the column.
+	{
+		scenario:       "E2_usere_ungranted_column",
+		apiKey:         testdbs.USERE_API_KEY,
+		query:          "SELECT SUM(total_spend_30d) FROM usera_transactions_fg_1 WHERE customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denySpendCol,
+	},
+	// E2: an ungranted column hidden in the WHERE clause counts as a read
+	// (a filter on it leaks its values) and is rejected the same way.
+	{
+		scenario:       "E2_usere_ungranted_where_column",
+		apiKey:         testdbs.USERE_API_KEY,
+		query:          "SELECT SUM(num_transactions_30d) FROM usera_transactions_fg_1 WHERE total_spend_30d > 0;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denySpendCol,
+	},
+	// E2: same for GROUP BY on an ungranted column.
+	{
+		scenario:       "E2_usere_ungranted_groupby_column",
+		apiKey:         testdbs.USERE_API_KEY,
+		query:          "SELECT SUM(num_transactions_30d) FROM usera_transactions_fg_1 GROUP BY total_spend_30d;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denySpendCol,
+	},
+	// F: no grants at all - denied at the database.
+	{
+		scenario:       "F_userf_no_grants",
+		apiKey:         testdbs.USERF_API_KEY,
+		query:          "SELECT SUM(age) FROM usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyDB,
+	},
+	// D0: restricted member without grants - membership opens nothing.
+	{
+		scenario:       "D0_userj_restricted_no_grants",
+		apiKey:         testdbs.USERJ_API_KEY,
+		query:          "SELECT SUM(age) FROM usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyDB,
+	},
+	// D1: restricted member with a whole-FG grant reads that table via SQL.
+	{
+		scenario:      "D1_userk_granted_table",
+		apiKey:        testdbs.USERK_API_KEY,
+		query:         "SELECT SUM(age) FROM usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: customersTable,
+		validateCol:   "age",
+	},
+	// D2: userl's partial transactions grant - granted column serves,
+	// ungranted column rejected.
+	{
+		scenario:      "D2_userl_granted_column",
+		apiKey:        testdbs.USERL_API_KEY,
+		query:         "SELECT SUM(num_transactions_30d) FROM usera_transactions_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: transactionsTable,
+		validateCol:   "num_transactions_30d",
+	},
+	{
+		scenario:       "D2_userl_ungranted_column",
+		apiKey:         testdbs.USERL_API_KEY,
+		query:          "SELECT SUM(total_spend_30d) FROM usera_transactions_fg_1 WHERE customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denySpendCol,
+	},
+}
+
+func Test_Sharing_RonSQL(t *testing.T) {
+	for _, tt := range ronsqlTests {
+		t.Run(tt.scenario, func(t *testing.T) {
+			_, respBody := ronsqlQueryWithKey(t, tt.apiKey, useraProject,
+				tt.query, tt.errMsgContains, tt.httpCode)
+			if tt.httpCode == http.StatusOK && tt.validateCol != "" {
+				expected := readRowFromMySQL(t, useraProject, tt.validateTable,
+					1, []string{tt.validateCol})[0]
+				got := strings.TrimSpace(string(respBody))
+				if got != expected {
+					t.Fatalf("scenario %s: result %q does not equal the mysqld "+
+						"value %q for column %s",
+						tt.scenario, got, expected, tt.validateCol)
+				}
+			}
+		})
+	}
+}
+
+// RonSQL can only aggregate numeric columns, so the parity test checks
+// value equality via single-row SUMs on these; string columns still count
+// for authorization via GROUP BY references.
+var ronsqlNumericCols = map[string]map[string]bool{
+	customersTable: {
+		"customer_id": true, "age": true, "is_premium": true},
+	transactionsTable: {
+		"num_transactions_30d": true, "total_spend_30d": true,
+		"avg_transaction_value_30d": true},
+}
+
+// Per-table constituent columns of every FV in the matrix. The fvReadTests
+// rows only carry column sets on allow rows (for value validation), so the
+// parity test resolves them from the FV name instead.
+var fvColumnSets = map[string]struct {
+	customers    []string
+	transactions []string
+}{
+	fullFV:         {fullFVCustomersCols, fullFVTransactionsCols},
+	narrowFV:       {narrowFVCustomersCols, narrowFVTransactionsCols},
+	"userk_own_fv": {narrowFVCustomersCols, nil},
+	"userl_own_fv": {narrowFVCustomersCols, narrowFVTransactionsCols},
+}
+
+// Test_Sharing_RonSQL_FVParity replays the feature-store serving matrix
+// through RonSQL: for every producer-store scenario in fvReadTests, each
+// constituent table's exact column set is referenced in a SQL query (via
+// GROUP BY, so string columns count too) and the authorization decision
+// must match the feature-store endpoints' - allowed FVs must have every
+// per-table column set served, denied FVs must have at least one table
+// denied with the same denial message. On 200 every numeric column's
+// single-row SUM must equal the value mysqld returns - the same source
+// the FV vectors are validated against.
+//
+// Consumer-store scenarios (fsName != usera_project) are skipped: their
+// denials happen at the FV-metadata visibility tier, which has no SQL
+// analogue - RonSQL authorizes data grants only.
+func Test_Sharing_RonSQL_FVParity(t *testing.T) {
+	for _, tt := range fvReadTests {
+		if tt.fsName != useraProject {
+			continue
+		}
+		t.Run(tt.scenario, func(t *testing.T) {
+			colSets, ok := fvColumnSets[tt.fvName]
+			if !ok {
+				t.Fatalf("scenario %s: FV %s missing from fvColumnSets",
+					tt.scenario, tt.fvName)
+			}
+			perTable := []struct {
+				table string
+				cols  []string
+			}{
+				{customersTable, colSets.customers},
+				{transactionsTable, colSets.transactions},
+			}
+			anyDenied := false
+			denialBodies := ""
+			for _, pt := range perTable {
+				if len(pt.cols) == 0 {
+					continue
+				}
+				query := fmt.Sprintf(
+					"SELECT COUNT(customer_id) FROM %s WHERE customer_id = 1 GROUP BY %s;",
+					pt.table, strings.Join(pt.cols, ", "))
+				if tt.httpCode == http.StatusOK {
+					// The FV serves, so every per-table column set must too.
+					ronsqlQueryWithKey(t, tt.apiKey, useraProject, query,
+						"", http.StatusOK)
+					for _, col := range pt.cols {
+						if !ronsqlNumericCols[pt.table][col] {
+							continue
+						}
+						sumQuery := fmt.Sprintf(
+							"SELECT SUM(%s) FROM %s WHERE customer_id = 1;",
+							col, pt.table)
+						_, respBody := ronsqlQueryWithKey(t, tt.apiKey,
+							useraProject, sumQuery, "", http.StatusOK)
+						expected := readRowFromMySQL(t, useraProject, pt.table,
+							1, []string{col})[0]
+						got := strings.TrimSpace(string(respBody))
+						if got != expected {
+							t.Fatalf("column %s/%s: ronsql result %q does not "+
+								"equal the mysqld value %q",
+								pt.table, col, got, expected)
+						}
+					}
+				} else {
+					// The FV is denied but the scenario row does not say by
+					// which constituent table - accept both outcomes per
+					// table and check the overall verdict below.
+					code, respBody := ronsqlQueryWithKey(t, tt.apiKey,
+						useraProject, query, "", http.StatusOK, tt.httpCode)
+					if code != http.StatusOK {
+						anyDenied = true
+						denialBodies += string(respBody)
+					}
+				}
+			}
+			if tt.httpCode != http.StatusOK {
+				if !anyDenied {
+					t.Fatalf("scenario %s: feature store denies but every "+
+						"constituent table serves via RonSQL", tt.scenario)
+				}
+				if !strings.Contains(denialBodies, tt.errMsgContains) {
+					t.Fatalf("scenario %s: RonSQL denials %q do not contain "+
+						"the feature-store denial %q",
+						tt.scenario, denialBodies, tt.errMsgContains)
+				}
+			}
+		})
+	}
 }
 
 // createFeatureStoreRequest builds a single-entry request for the given FV.
