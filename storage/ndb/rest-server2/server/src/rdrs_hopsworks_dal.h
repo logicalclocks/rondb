@@ -43,6 +43,7 @@ typedef struct HopsworksUsers {
 // project_team table
 typedef struct HopsworksProjectTeam {
   int project_id;
+  char team_role[PROJECT_TEAM_TEAM_ROLE_SIZE];
 } HopsworksProjectTeam;
 
 // project_team table
@@ -55,18 +56,43 @@ typedef struct HopsworksProject {
  */
 RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 
-/*
- * Find all databases the api key's user can access: the user's own
- * projects plus feature stores shared entirely with any of those projects
- * (hopsworks.shared_feature_store, shared_entirely = 1)
- */
-RS_Status find_user_databases(int uid, char ***projects, int *count);
-
 #ifdef __cplusplus
 }  // extern "C"
 
 #include <string>
 #include <vector>
+
+// One fine-grained data grant: a single online table the user may read,
+// either entirely (columns empty) or restricted to the listed columns.
+// Sourced from shared_feature_group/shared_feature (grantee = project) and
+// restricted_feature_group_access/restricted_feature_access (grantee = user).
+struct HopsworksFineGrant {
+  std::string db;                    // producer feature store database
+  std::string table;                 // online table name: <fg_name>_<version>
+  std::vector<std::string> columns;  // empty = the whole table is granted
+};
+
+// Everything an API key user may access, resolved from the Hopsworks
+// membership and sharing tables.
+struct HopsworksUserGrants {
+  // Full-database data access: the user's own (non-restricted) projects
+  // plus feature stores shared entirely with any of those projects.
+  std::vector<std::string> full_dbs;
+  // Databases the user may resolve feature-view metadata from but not read
+  // wholesale: restricted memberships and placeholder store shares
+  // (shared_feature_store.shared_entirely = 0).
+  std::vector<std::string> visible_dbs;
+  // Table/column-level data grants.
+  std::vector<HopsworksFineGrant> fine_grants;
+};
+
+/*
+ * Resolve all databases, tables and columns the api key's user can access.
+ * Members with the 'Feature store restricted' project role get no member
+ * access: their project is only visible and their data access comes
+ * exclusively from the restricted_* grant rows.
+ */
+RS_Status find_user_databases(int uid, HopsworksUserGrants *grants);
 
 struct HopsworksAPIKeyEntry {
   std::string prefix;

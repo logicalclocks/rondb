@@ -28,6 +28,7 @@
 #include "rdrs_rondb_connection_pool.hpp"
 #include <NdbMutex.h>
 
+#include <functional>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <memory>
@@ -468,6 +469,132 @@ static bool ndb_delete_shared_feature_store(int id) {
   return true;
 }
 
+// Shared plumbing for the fine-grained grant-table rows: insert one row
+// with integer PK 'id'; set_columns sets the non-PK columns on the
+// operation and returns 0 on success.
+static bool ndb_insert_row(const char *table_name,
+                           int id,
+                           const std::function<int(NdbOperation*)> &set_columns) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+  bool ok = false;
+  NdbTransaction *tx = nullptr;
+  do {
+    if (ndb->setDatabaseName(HOPSWORKS) != 0) break;
+    const NdbDictionary::Table *tab =
+        ndb->getDictionary()->getTable(table_name);
+    if (tab == nullptr) break;
+    tx = ndb->startTransaction();
+    if (tx == nullptr) break;
+    NdbOperation *op = tx->getNdbOperation(tab);
+    if (op == nullptr || op->insertTuple() != 0) break;
+    if (op->equal("id", id) != 0) break;
+    if (set_columns(op) != 0) break;
+    if (tx->execute(NdbTransaction::Commit) != 0) {
+      std::cerr << "NDB insert into " << table_name << " failed: "
+                << tx->getNdbError().code << " "
+                << tx->getNdbError().message << std::endl;
+      break;
+    }
+    ok = true;
+  } while (false);
+  if (tx != nullptr) {
+    ndb->closeTransaction(tx);
+  }
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return ok;
+}
+
+// Delete one row by integer PK 'id' (fine-grained grant tables)
+static bool ndb_delete_row(const char *table_name, int id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+  bool ok = false;
+  NdbTransaction *tx = nullptr;
+  do {
+    if (ndb->setDatabaseName(HOPSWORKS) != 0) break;
+    const NdbDictionary::Table *tab =
+        ndb->getDictionary()->getTable(table_name);
+    if (tab == nullptr) break;
+    tx = ndb->startTransaction();
+    if (tx == nullptr) break;
+    NdbOperation *op = tx->getNdbOperation(tab);
+    if (op == nullptr || op->deleteTuple() != 0) break;
+    if (op->equal("id", id) != 0) break;
+    if (tx->execute(NdbTransaction::Commit) != 0) break;
+    ok = true;
+  } while (false);
+  if (tx != nullptr) {
+    ndb->closeTransaction(tx);
+  }
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return ok;
+}
+
+// hopsworks.shared_feature_group: FG shared with a project, whole
+// (shared_entirely = 1) or feature-wise (0, columns in shared_feature)
+static bool ndb_insert_shared_feature_group(int id,
+                                            int feature_store_id,
+                                            int feature_group_id,
+                                            int shared_with_project,
+                                            int shared_entirely) {
+  return ndb_insert_row(SHARED_FEATURE_GROUP, id, [&](NdbOperation *op) {
+    Uint32 now = (Uint32)time(nullptr);
+    return op->setValue("feature_store", feature_store_id) |
+           op->setValue("feature_group", feature_group_id) |
+           op->setValue("shared_by", (Int32)10000) |
+           op->setValue("shared_on", now) |
+           op->setValue("shared_with_project", shared_with_project) |
+           op->setValue("shared_entirely", (Int32)shared_entirely);
+  });
+}
+
+// hopsworks.shared_feature: one column of a feature-wise FG share
+static bool ndb_insert_shared_feature(int id,
+                                      int feature_group_id,
+                                      const char *feature,
+                                      int shared_with_project) {
+  return ndb_insert_row(SHARED_FEATURE, id, [&](NdbOperation *op) {
+    char feature_buf[SHARED_FEATURE_NAME_SIZE];
+    memset(feature_buf, 0, sizeof(feature_buf));
+    prepare_short_varchar(feature_buf, feature, strlen(feature));
+    Uint32 now = (Uint32)time(nullptr);
+    return op->setValue("feature_group", feature_group_id) |
+           op->setValue("feature", feature_buf) |
+           op->setValue("shared_by", (Int32)10000) |
+           op->setValue("shared_on", now) |
+           op->setValue("shared_with_project", shared_with_project);
+  });
+}
+
+// hopsworks.restricted_feature_group_access: per-user FG grant, whole
+// (can_access_entirely = 1) or feature-wise (0, columns in
+// restricted_feature_access)
+static bool ndb_insert_restricted_feature_group_access(int id,
+                                                       int feature_store_id,
+                                                       int feature_group_id,
+                                                       int granted_to_user,
+                                                       int can_access_entirely) {
+  return ndb_insert_row(RESTRICTED_FEATURE_GROUP_ACCESS, id,
+                        [&](NdbOperation *op) {
+    Uint32 now = (Uint32)time(nullptr);
+    return op->setValue("feature_store", feature_store_id) |
+           op->setValue("feature_group", feature_group_id) |
+           op->setValue("granted_by", (Int32)10000) |
+           op->setValue("granted_on", now) |
+           op->setValue("granted_to_user", granted_to_user) |
+           op->setValue("can_access_entirely", (Int32)can_access_entirely);
+  });
+}
+
 class APIKeyTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -520,12 +647,12 @@ void test_key(APIKeyCache *cache) {
       << "Wrong prefix was falsely validated";
 
   apiKey = "bkYjEz6OTZyevbqT";
-  status = cache->validate_api_key(apiKey, {});
+  status = cache->validate_api_key(apiKey, std::vector<std::string_view>{});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Missing secret was falsely validated";
 
   apiKey = "bkYjEz6OTZyevbq.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
-  status = cache->validate_api_key(apiKey, {});
+  status = cache->validate_api_key(apiKey, std::vector<std::string_view>{});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Wrong length prefix was falsely validated";
 
@@ -1577,6 +1704,153 @@ TEST_F(APIKeyTest, TestSharedFeatureStoreAccess) {
       << "Failed to cleanup placeholder share row";
   ASSERT_TRUE(ndb_delete_shared_feature_store(other_share_id))
       << "Failed to cleanup foreign-project share row";
+
+  stop_api_key_cache();
+}
+
+// Fine-grained sharing (RONDB-1088): shared_feature_group / shared_feature
+// grant table- and column-level access to another project's online tables;
+// restricted_feature_group_access is the per-user mirror. Targets the
+// usera_project entities of the imported fixture
+// (fine_grained_sharing_data.sql, ids >= 100000) - a store the key user
+// macho has no access to. Like shared_feature_store, the grant tables have
+// no NDB event watcher: changes propagate via the refresh thread.
+TEST_F(APIKeyTest, TestFineGrainedSharedAccess) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so grant changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Producer entities of the fine-grained sharing fixture
+  const std::string_view usera_db = "usera_project";
+  const std::string_view customers_table = "usera_customers_fg_1";
+  const std::string_view transactions_table = "usera_transactions_fg_1";
+  const int usera_store_id = 100000;
+  const int customers_fg_id = 100000;
+  const int transactions_fg_id = 100001;
+
+  const int fg_share_id = 88886;         // customers FG shared whole
+  const int fg_subset_share_id = 88885;  // transactions FG shared feature-wise
+  const int feature_share_id1 = 88884;
+  const int feature_share_id2 = 88883;
+  const int restricted_id = 88882;       // transactions granted to the user
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_row(SHARED_FEATURE_GROUP, fg_share_id);
+  ndb_delete_row(SHARED_FEATURE_GROUP, fg_subset_share_id);
+  ndb_delete_row(SHARED_FEATURE, feature_share_id1);
+  ndb_delete_row(SHARED_FEATURE, feature_share_id2);
+  ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS, restricted_id);
+
+  auto table_request = [](const std::string_view &db,
+                          const std::string_view &table,
+                          const std::vector<std::string_view> *columns) {
+    TableAccessRequest accessReq;
+    accessReq.db = db;
+    accessReq.table = table;
+    accessReq.columns = columns;
+    return std::vector<TableAccessRequest>{accessReq};
+  };
+
+  // Baseline (lazy load): no access to the producer's tables or database
+  RS_Status status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, customers_table, nullptr));
+  ASSERT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared table must be rejected";
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Whole-FG share: the FG's table becomes readable, nothing else
+  ASSERT_TRUE(ndb_insert_shared_feature_group(fg_share_id,
+                                              usera_store_id,
+                                              customers_fg_id,
+                                              HOME_PROJECT_ID,
+                                              1))
+      << "Failed to insert shared_feature_group row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, customers_table, nullptr));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Wholly shared FG table should be accessible: " << status.message;
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "FG share must not open the store's other tables";
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY,
+                                            {usera_db});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "FG share must not grant database-level access";
+
+  // Feature-wise share: only the shared columns are readable
+  ASSERT_TRUE(ndb_insert_shared_feature_group(fg_subset_share_id,
+                                              usera_store_id,
+                                              transactions_fg_id,
+                                              HOME_PROJECT_ID,
+                                              0))
+      << "Failed to insert feature-wise shared_feature_group row via NDB";
+  ASSERT_TRUE(ndb_insert_shared_feature(feature_share_id1,
+                                        transactions_fg_id,
+                                        "customer_id",
+                                        HOME_PROJECT_ID))
+      << "Failed to insert shared_feature row via NDB";
+  ASSERT_TRUE(ndb_insert_shared_feature(feature_share_id2,
+                                        transactions_fg_id,
+                                        "num_transactions_30d",
+                                        HOME_PROJECT_ID))
+      << "Failed to insert shared_feature row via NDB";
+  NdbSleep_MilliSleep(3000);
+  const std::vector<std::string_view> granted_columns =
+    {"customer_id", "num_transactions_30d"};
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &granted_columns));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Shared columns should be accessible: " << status.message;
+  const std::vector<std::string_view> ungranted_columns = {"total_spend_30d"};
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &ungranted_columns));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared column must be rejected";
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Whole-row read of a column-shared table must be rejected";
+
+  // Restricted per-user grant: same ladder, keyed by user instead of project
+  ASSERT_TRUE(ndb_insert_restricted_feature_group_access(restricted_id,
+                                                         usera_store_id,
+                                                         transactions_fg_id,
+                                                         10000 /*macho*/,
+                                                         1))
+      << "Failed to insert restricted_feature_group_access row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Restricted whole-FG grant should open the table: " << status.message;
+
+  // Revoking the restricted grant drops back to the column subset
+  ASSERT_TRUE(ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS, restricted_id))
+      << "Failed to delete restricted_feature_group_access row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Revoked restricted grant must reject whole-row reads again";
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE_GROUP, fg_share_id));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE_GROUP, fg_subset_share_id));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, feature_share_id1));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, feature_share_id2));
 
   stop_api_key_cache();
 }
