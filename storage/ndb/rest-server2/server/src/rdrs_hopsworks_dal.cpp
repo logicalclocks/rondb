@@ -27,7 +27,10 @@
 #include "retry_handler.hpp"
 #include "ndb_api_helper.hpp"
 
+#include <my_time.h>
+
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <set>
 #include <string>
@@ -51,6 +54,31 @@ extern EventLogger *g_eventLogger;
 
 // RonDB connection pool
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
+
+/*
+ * api_key.expiry is a nullable DATETIME: wall-clock time with no timezone,
+ * which Hopsworks compares against the server's local time
+ * (ApiKeyUtilities.getApiKeyCheckingExpiry). Convert it to unix epoch
+ * seconds once at load time so validation is a plain integer comparison.
+ */
+long long datetime_attr_to_epoch(const NdbRecAttr *attr, unsigned precision) {
+  if (attr->isNULL()) {
+    return 0;
+  }
+  longlong packed = my_datetime_packed_from_binary(
+    (const unsigned char *)attr->aRef(), precision);
+  MYSQL_TIME mysql_time;
+  TIME_from_longlong_datetime_packed(&mysql_time, packed);
+  struct tm local_tm = {};
+  local_tm.tm_year = (int)mysql_time.year - 1900;
+  local_tm.tm_mon = (int)mysql_time.month - 1;
+  local_tm.tm_mday = (int)mysql_time.day;
+  local_tm.tm_hour = (int)mysql_time.hour;
+  local_tm.tm_min = (int)mysql_time.minute;
+  local_tm.tm_sec = (int)mysql_time.second;
+  local_tm.tm_isdst = -1;  // let mktime resolve DST
+  return (long long)mktime(&local_tm);
+}
 
 RS_Status find_api_key_int(Ndb *ndb_object,
                            const char *prefix,
@@ -117,6 +145,8 @@ RS_Status find_api_key_int(Ndb *ndb_object,
   NdbRecAttr *secret = scanOp->getValue("secret");
   NdbRecAttr *salt = scanOp->getValue("salt");
   NdbRecAttr *name = scanOp->getValue("name");
+  NdbRecAttr *expiry = scanOp->getValue("expiry");
+  unsigned expiry_prec = table_dict->getColumn("expiry")->getPrecision();
 
   assert(API_KEY_SECRET_SIZE ==
          (Uint32)table_dict->getColumn("secret")->getSizeInBytes());
@@ -128,7 +158,8 @@ RS_Status find_api_key_int(Ndb *ndb_object,
   if (unlikely(user_id == nullptr ||
                secret == nullptr ||
                salt == nullptr ||
-               name == nullptr)) {
+               name == nullptr ||
+               expiry == nullptr)) {
     err = scanOp->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
@@ -186,6 +217,7 @@ RS_Status find_api_key_int(Ndb *ndb_object,
       api_key->salt[salt_attr_bytes] = '\0';
 
       api_key->user_id = user_id->int32_value();
+      api_key->expiry_epoch = datetime_attr_to_epoch(expiry, expiry_prec);
     } while ((check = scanOp->nextResult(false)) == 0);
   }
   NdbError error = scanOp->getNdbError();
@@ -252,11 +284,14 @@ RS_Status find_all_api_keys_int(Ndb *ndb_object,
   NdbRecAttr *secret_attr = scanOp->getValue("secret");
   NdbRecAttr *salt_attr = scanOp->getValue("salt");
   NdbRecAttr *user_id_attr = scanOp->getValue("user_id");
+  NdbRecAttr *expiry_attr = scanOp->getValue("expiry");
+  unsigned expiry_prec = table_dict->getColumn("expiry")->getPrecision();
 
   if (unlikely(prefix_attr == nullptr ||
                secret_attr == nullptr ||
                salt_attr == nullptr ||
-               user_id_attr == nullptr)) {
+               user_id_attr == nullptr ||
+               expiry_attr == nullptr)) {
     err = scanOp->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err,
@@ -302,7 +337,8 @@ RS_Status find_all_api_keys_int(Ndb *ndb_object,
         std::string(prefix_start, prefix_bytes),
         std::string(secret_start, secret_bytes),
         std::string(salt_start, salt_bytes),
-        user_id_attr->int32_value()
+        user_id_attr->int32_value(),
+        datetime_attr_to_epoch(expiry_attr, expiry_prec)
       });
     } while ((check = scanOp->nextResult(false)) == 0);
   }
@@ -375,11 +411,14 @@ static RS_Status find_api_key_by_id_int(Ndb *ndb_object,
   NdbRecAttr *secret_attr = op->getValue("secret");
   NdbRecAttr *salt_attr   = op->getValue("salt");
   NdbRecAttr *user_id_attr = op->getValue("user_id");
+  NdbRecAttr *expiry_attr = op->getValue("expiry");
+  unsigned expiry_prec = table_dict->getColumn("expiry")->getPrecision();
 
   if (unlikely(prefix_attr == nullptr ||
                secret_attr == nullptr ||
                salt_attr == nullptr ||
-               user_id_attr == nullptr)) {
+               user_id_attr == nullptr ||
+               expiry_attr == nullptr)) {
     err = op->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err,
@@ -421,6 +460,7 @@ static RS_Status find_api_key_by_id_int(Ndb *ndb_object,
   entry->secret = std::string(secret_start, secret_bytes);
   entry->salt = std::string(salt_start, salt_bytes);
   entry->user_id = user_id_attr->int32_value();
+  entry->expiry_epoch = datetime_attr_to_epoch(expiry_attr, expiry_prec);
 
   ndb_object->closeTransaction(tx);
   return RS_OK;

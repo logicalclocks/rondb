@@ -28,6 +28,7 @@
 #include "db_operations/pk/common.hpp"
 
 #include <chrono>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <openssl/evp.h>
@@ -509,9 +510,10 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
   require(userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
 
-  // Copy secret+salt out so we can verify outside the lock
+  // Copy secret+salt+expiry out so we can verify outside the lock
   std::string secret = userDBs->m_secret;
   std::string salt = userDBs->m_salt;
+  long long expiry_epoch = userDBs->m_expiry_epoch;
 
   // Check database/table/column access while we hold the lock.
   // Store the result instead of returning early — the hash check must
@@ -543,6 +545,15 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
   if (hashStatus.http_code != HTTP_CODE::SUCCESS) {
     DEB_AUTH("API Key hash mismatch, Line: %u", __LINE__);
     return hashStatus;
+  }
+
+  // Expiry check mirrors Hopsworks (ApiKeyUtilities.getApiKeyCheckingExpiry):
+  // NULL never expires, otherwise expired when strictly before now. Checked
+  // after the hash so an unauthenticated caller cannot probe expiry dates,
+  // and before authorization errors like Hopsworks checks it before scopes.
+  if (expiry_epoch != 0 && expiry_epoch < (long long)time(nullptr)) {
+    DEB_AUTH("API Key expired, Line: %u", __LINE__);
+    return CRS_Status(HTTP_CODE::AUTH_ERROR, "API key has expired").status;
   }
 
   if (!db_access_ok) {
@@ -622,6 +633,7 @@ RS_Status APIKeyCache::update_cache(const std::string &prefix,
       newUserDBs->m_secret = key.secret;
       newUserDBs->m_salt = key.salt;
       newUserDBs->m_user_id = key.user_id;
+      newUserDBs->m_expiry_epoch = key.expiry_epoch;
       newUserDBs->m_lastUsed = now;
       newUserDBs->m_state = UserDBs::IS_VALID;
       update_record(grants, newUserDBs);
@@ -689,7 +701,8 @@ RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
 void APIKeyCache::load_single_key(const std::string &prefix,
                                   const std::string &secret,
                                   const std::string &salt,
-                                  int user_id) {
+                                  int user_id,
+                                  long long expiry_epoch) {
 #if (NUM_API_KEY_CACHES == 1)
   Uint32 key_cache_id = 0;
 #else
@@ -715,6 +728,7 @@ void APIKeyCache::load_single_key(const std::string &prefix,
   newUserDBs->m_secret = secret;
   newUserDBs->m_salt = salt;
   newUserDBs->m_user_id = user_id;
+  newUserDBs->m_expiry_epoch = expiry_epoch;
   m_key_cache[key_cache_id][prefix] = newUserDBs;
   m_rwLock[key_cache_id].unlock();
 
@@ -759,7 +773,8 @@ void APIKeyCache::preload_all_keys() {
   Uint32 num_threads = globalConfigs.security.apiKey.preloadThreads;
   if (num_threads <= 1 || keys.size() <= 1) {
     for (const auto &entry : keys) {
-      load_single_key(entry.prefix, entry.secret, entry.salt, entry.user_id);
+      load_single_key(entry.prefix, entry.secret, entry.salt, entry.user_id,
+                      entry.expiry_epoch);
     }
   } else {
     if (num_threads > keys.size()) {
@@ -771,7 +786,8 @@ void APIKeyCache::preload_all_keys() {
       threads.emplace_back([this, &keys, t, num_threads]() {
         for (size_t i = t; i < keys.size(); i += num_threads) {
           load_single_key(keys[i].prefix, keys[i].secret,
-                          keys[i].salt, keys[i].user_id);
+                          keys[i].salt, keys[i].user_id,
+                          keys[i].expiry_epoch);
         }
       });
     }
@@ -919,6 +935,7 @@ void APIKeyCache::refresh_job() {
               userDBs->m_secret = key.secret;
               userDBs->m_salt = key.salt;
               userDBs->m_user_id = key.user_id;
+              userDBs->m_expiry_epoch = key.expiry_epoch;
               update_record(grants, userDBs);
               DEB_AUTH_THREAD("Refreshed API Key: %s", prefix.c_str());
             } else {
@@ -956,7 +973,9 @@ void APIKeyCache::event_watcher_job() {
   NdbRecAttr *secret_val = nullptr;
   NdbRecAttr *salt_val = nullptr;
   NdbRecAttr *user_id_val = nullptr;
+  NdbRecAttr *expiry_val = nullptr;
   NdbRecAttr *prefix_pre_val = nullptr;
+  unsigned expiry_prec = 0;
 
 retry:
   ndb = nullptr;
@@ -990,6 +1009,15 @@ retry:
                              dict->getNdbError().message);
       goto err;
     }
+
+    const NdbDictionary::Column *expiry_col = tab->getColumn("expiry");
+    if (expiry_col == nullptr) {
+      g_eventLogger->warning(
+        "[API Key Event] Failed to get expiry column "
+        "(schema may have changed). Retry...");
+      goto err;
+    }
+    expiry_prec = expiry_col->getPrecision();
 
     NdbDictionary::Event event(EVENT_NAME);
     event.setTable(*tab);
@@ -1031,6 +1059,7 @@ retry:
   secret_val = ev_op->getValue("secret");
   salt_val = ev_op->getValue("salt");
   user_id_val = ev_op->getValue("user_id");
+  expiry_val = ev_op->getValue("expiry");
 
   // Pre-values must be registered for all columns that have after-values.
   // NDB requires matching getValue/getPreValue pairs to properly consume
@@ -1040,11 +1069,13 @@ retry:
   (void)ev_op->getPreValue("secret");
   (void)ev_op->getPreValue("salt");
   (void)ev_op->getPreValue("user_id");
+  (void)ev_op->getPreValue("expiry");
 
   // Null-check all NdbRecAttr pointers (schema may have changed)
   if (id_val == nullptr || prefix_val == nullptr ||
       secret_val == nullptr || salt_val == nullptr ||
-      user_id_val == nullptr || prefix_pre_val == nullptr) {
+      user_id_val == nullptr || expiry_val == nullptr ||
+      prefix_pre_val == nullptr) {
     g_eventLogger->warning(
       "[API Key Event] Failed to register event columns "
       "(schema may have changed). Retry...");
@@ -1130,11 +1161,13 @@ retry:
           std::string salt(salt_start, salt_bytes);
 
           int user_id = user_id_val->int32_value();
+          long long expiry_epoch = datetime_attr_to_epoch(expiry_val,
+                                                          expiry_prec);
 
           g_eventLogger->info(
             "[API Key Event] INSERT detected for prefix: %s",
             prefix.c_str());
-          load_single_key(prefix, secret, salt, user_id);
+          load_single_key(prefix, secret, salt, user_id, expiry_epoch);
           break;
         }
         case NdbDictionary::Event::TE_UPDATE: {
@@ -1175,6 +1208,7 @@ retry:
             userDBs->m_secret = upd_secret;
             userDBs->m_salt = upd_salt;
             userDBs->m_user_id = upd_user_id;
+            userDBs->m_expiry_epoch = upd_key.expiry_epoch;
             NdbMutex_Unlock(userDBs->m_waitLock);
             m_rwLock[upd_cache_id].unlock_shared();
             g_eventLogger->info(
@@ -1182,7 +1216,8 @@ retry:
               upd_prefix.c_str());
           } else {
             m_rwLock[upd_cache_id].unlock_shared();
-            load_single_key(upd_prefix, upd_secret, upd_salt, upd_user_id);
+            load_single_key(upd_prefix, upd_secret, upd_salt, upd_user_id,
+                            upd_key.expiry_epoch);
           }
           break;
         }

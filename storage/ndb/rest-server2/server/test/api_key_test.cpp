@@ -27,6 +27,7 @@
 #include "rdrs_rondb_connection.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
 #include <NdbMutex.h>
+#include <my_time.h>
 
 #include <functional>
 #include <gtest/gtest.h>
@@ -81,12 +82,30 @@ static void prepare_medium_varchar(char *buf, const char *str, size_t len) {
 }
 
 // Insert a row into hopsworks.api_key via NDB API (for event tests)
+// Encode a unix epoch as the 5-byte packed DATETIME(0) NDB storage format
+static void encode_datetime(time_t epoch, unsigned char *buf) {
+  struct tm local_tm;
+  localtime_r(&epoch, &local_tm);
+  MYSQL_TIME mysql_time;
+  memset(&mysql_time, 0, sizeof(mysql_time));
+  mysql_time.year = local_tm.tm_year + 1900;
+  mysql_time.month = local_tm.tm_mon + 1;
+  mysql_time.day = local_tm.tm_mday;
+  mysql_time.hour = local_tm.tm_hour;
+  mysql_time.minute = local_tm.tm_min;
+  mysql_time.second = local_tm.tm_sec;
+  mysql_time.time_type = MYSQL_TIMESTAMP_DATETIME;
+  longlong packed = TIME_to_longlong_datetime_packed(mysql_time);
+  my_datetime_packed_to_binary(packed, buf, 0);
+}
+
 static bool ndb_insert_api_key(int id,
                                 const char *prefix,
                                 const char *secret,
                                 const char *salt,
                                 const char *name,
-                                int user_id) {
+                                int user_id,
+                                time_t expiry_epoch = 0) {
   Ndb *ndb = nullptr;
   RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
   if (rs.http_code != SUCCESS) {
@@ -194,8 +213,75 @@ static bool ndb_insert_api_key(int id,
     return false;
   }
 
+  // expiry (nullable DATETIME) - left NULL (= never expires) unless given
+  if (expiry_epoch != 0) {
+    unsigned char expiry_buf[8];
+    memset(expiry_buf, 0, sizeof(expiry_buf));
+    encode_datetime(expiry_epoch, expiry_buf);
+    if (op->setValue("expiry", (const char *)expiry_buf) != 0) {
+      ndb->closeTransaction(tx);
+      rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+      return false;
+    }
+  }
+
   if (tx->execute(NdbTransaction::Commit) != 0) {
     std::cerr << "NDB insert failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Update the expiry column of a row in hopsworks.api_key by PK (id) via NDB API
+static bool ndb_update_api_key_expiry(int id, time_t expiry_epoch) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(API_KEY);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->updateTuple() != 0 || op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  unsigned char expiry_buf[8];
+  memset(expiry_buf, 0, sizeof(expiry_buf));
+  encode_datetime(expiry_epoch, expiry_buf);
+  if (op->setValue("expiry", (const char *)expiry_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB update failed: " << tx->getNdbError().code
               << " " << tx->getNdbError().message << std::endl;
     ndb->closeTransaction(tx);
     rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
@@ -1966,6 +2052,97 @@ TEST_F(APIKeyTest, TestOrphanSubsetGrantFailsClosed) {
   ASSERT_TRUE(ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS,
                              orphan_restricted_id));
   ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, late_feature_id));
+
+  stop_api_key_cache();
+}
+
+// api_key.expiry enforcement, mirroring Hopsworks
+// (ApiKeyUtilities.getApiKeyCheckingExpiry): NULL never expires, otherwise
+// the key is rejected once expiry is strictly before now. Also covers
+// expiry changes on an already-cached key propagating via the background
+// threads (api_key UPDATE event / refresh sweep).
+TEST_F(APIKeyTest, TestAPIKeyExpiry) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so expiry changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  const int past_id = 99996;
+  const int future_id = 99995;
+  const int null_id = 99994;
+  const char *past_prefix = "EXPIRY_PAST_TEST";    // 16 chars
+  const char *future_prefix = "EXPIRY_FUTR_TEST";  // 16 chars
+  const char *null_prefix = "EXPIRY_NULL_TEST";    // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+  const time_t now = time(nullptr);
+
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_api_key_by_id(past_id);
+  ndb_delete_api_key_by_id(future_id);
+  ndb_delete_api_key_by_id(null_id);
+
+  ASSERT_TRUE(ndb_insert_api_key(past_id, past_prefix, test_secret,
+                                 test_salt, "expiry_past", test_user_id,
+                                 now - 3600))
+      << "Failed to insert expired API key";
+  ASSERT_TRUE(ndb_insert_api_key(future_id, future_prefix, test_secret,
+                                 test_salt, "expiry_future", test_user_id,
+                                 now + 3600))
+      << "Failed to insert not-yet-expired API key";
+  ASSERT_TRUE(ndb_insert_api_key(null_id, null_prefix, test_secret,
+                                 test_salt, "expiry_null", test_user_id))
+      << "Failed to insert never-expiring API key";
+
+  // Expired key: correct secret, but rejected with the Hopsworks message
+  std::string pastKey = std::string(past_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(pastKey, {DB001});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Expired API key must be rejected";
+  EXPECT_NE(std::string(status.message).find("expired"), std::string::npos)
+      << "Denial should name the expiry, got: " << status.message;
+
+  // Expiry in the future: works like any valid key
+  std::string futureKey =
+      std::string(future_prefix) + "." + HopsworksAPIKey_SECRET;
+  status = apiKeyCachePtr->validate_api_key(futureKey, {DB001});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Not-yet-expired API key should validate: " << status.message;
+
+  // NULL expiry: never expires
+  std::string nullKey = std::string(null_prefix) + "." + HopsworksAPIKey_SECRET;
+  status = apiKeyCachePtr->validate_api_key(nullKey, {DB001});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "API key without expiry should validate: " << status.message;
+
+  // Shortening a cached key's expiry into the past must revoke it via the
+  // background threads (UPDATE event or refresh sweep)
+  apiKeyCachePtr->start_background_threads();
+  NdbSleep_MilliSleep(2000);  // let the event watcher subscribe
+  ASSERT_TRUE(ndb_update_api_key_expiry(future_id, now - 60))
+      << "Failed to update API key expiry via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(futureKey, {DB001});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Key expired after caching must be rejected";
+  EXPECT_NE(std::string(status.message).find("expired"), std::string::npos)
+      << "Denial should name the expiry, got: " << status.message;
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_api_key_by_id(past_id));
+  ASSERT_TRUE(ndb_delete_api_key_by_id(future_id));
+  ASSERT_TRUE(ndb_delete_api_key_by_id(null_id));
 
   stop_api_key_cache();
 }

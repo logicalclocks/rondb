@@ -33,6 +33,8 @@ typedef struct HopsworksAPIKey {
   char salt[API_KEY_SALT_SIZE];
   char name[API_KEY_NAME_SIZE];
   int user_id;
+  // api_key.expiry as unix epoch seconds; 0 = NULL = never expires
+  long long expiry_epoch;
 } HopsworksAPIKey;
 
 // User table
@@ -99,7 +101,14 @@ struct HopsworksAPIKeyEntry {
   std::string secret;
   std::string salt;
   int user_id;
+  // api_key.expiry as unix epoch seconds; 0 = NULL = never expires
+  long long expiry_epoch;
 };
+
+// Decode a nullable DATETIME NdbRecAttr to unix epoch seconds (0 = NULL).
+// Used for api_key.expiry by the DAL readers and the api_key event watcher.
+class NdbRecAttr;
+long long datetime_attr_to_epoch(const NdbRecAttr *attr, unsigned precision);
 
 RS_Status find_all_api_keys(std::vector<HopsworksAPIKeyEntry> *keys);
 

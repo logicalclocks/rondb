@@ -116,9 +116,12 @@ class UserDBs {
   std::string m_secret;
   std::string m_salt;
   int m_user_id;
+  // api_key.expiry as unix epoch seconds; 0 = NULL = never expires
+  long long m_expiry_epoch;
 
   UserDBs() {
     m_user_id = 0;
+    m_expiry_epoch = 0;
     m_waitLock = NdbMutex_Create();
     m_waitCond = NdbCondition_Create();
   }
@@ -205,7 +208,8 @@ class APIKeyCache {
   void load_single_key(const std::string &prefix,
                        const std::string &secret,
                        const std::string &salt,
-                       int user_id);
+                       int user_id,
+                       long long expiry_epoch);
   RS_Status get_user_databases(int user_id,
                                HopsworksUserGrants &grants);
   Int32 refresh_interval();
