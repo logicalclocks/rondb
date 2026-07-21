@@ -366,7 +366,7 @@ expressible as a full-FG grant on every FG.
 | D2 | **full FG** | customers_fg full only (userk) | userk key | usera_customers_transactions_fv | deny 400/268 (FV needs transactions_fg too; testHasAccessFeatureViewRestrictedUserPartialGrantDenied) |
 | D3 | **part of FG** | customers_fg full + transactions_fg `feature=num_transactions_30d` (userl) | userl key | usera_txncount_fv allow; usera_customers_transactions_fv deny; pk-read: customers table allow (E1), transactions table per E3 | granted-subset boundary, both directions under one grant |
 | D4 | — | grant to a user WITHOUT the restricted role (e.g. userb, not a member) | — | grant call itself | rejected: UserException ACCESS_CONTROL ("must have FEATURE_STORE_RESTRICTED role") |
-| D5 | none | D0 state + usera's store shared entirely with some project userj joins normally | userj key | — | routing check: for usera_project reads userj is routed by his restricted role there, shares don't apply; record actual behavior |
+| D5 | **full FG** | userm (NEW restricted-block user, uid 100012, post-T3): restricted member of usera_project + Data owner of his OWN userm_project; customers_fg granted entirely | userm key | from userm_project scope: reach usera's store / create FV over usera FGs; from usera_project scope: FG metadata parity with F4 | **RECORDED 2026-07-17** (recording_D5.json): grants do NOT travel - usera store invisible from his own project (404/270008, A2 parity; no shared_feature_store row created for userm_project), so an own-store FV over usera FGs is impossible; inside usera_project exact userk parity (customers ok, transactions 400/270266) |
 
 Metadata to record: D1 → `restricted_feature_group_access` rows with
 `canAccessEntirely = 1` and zero `restricted_feature_access` rows; D3 →
@@ -463,6 +463,15 @@ denied), **1143** (column denied, message names the column).
 - Restricted users CAN create FVs (in usera_project — they own no
   project) within their grants (F4/F5); column checks at creation mirror
   the cross-project case exactly.
+- **Restricted grants do not travel to projects the user owns** (D5,
+  recorded 2026-07-17 with userm — restricted in usera_project AND owner
+  of userm_project): the grant creates no share row for his project, the
+  producer store is 404/270008-invisible from his own project's scope
+  (A2 parity), so an FV over the producer's FGs can only ever live in the
+  producer project itself (which is why userk_own_fv/userl_own_fv sit in
+  usera's catalog). Inside usera_project userm behaves exactly like userk.
+  The restricted-user block grows alphabetically: j, k, l, m (the g-i gap
+  stays reserved for consumer-side tests).
 - Consumer-created FVs land in the consumer's feature store while their
   features reference the producer's FGs — the cross-store serving path
   RDRS must support (fixtures now include 4 such FVs).

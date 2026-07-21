@@ -13,15 +13,16 @@
 -- hand-written fixture rows in hopsworks_data.sql.
 --
 -- Cleaning rules applied to the raw dumps (cluster system rows are NOT here):
---   users            only the 12 test users usera..userl (uids 100000-100011);
+--   users            only the test users usera..userl (uids 100000-100011)
+--                    plus userm (100012, added 2026-07-17 for scenario D5);
 --                    admin/agent/srvmanager/onlinefs/airflow dropped (the
 --                    cluster admin uid 10000 collides with fixture user macho)
 --   project_team     the 12 auto-added onlinefs/serving service memberships
 --                    dropped; 6 owners + 3 restricted members kept
---   api_key          only the 12 user*_api_key rows (ids 100012-100023);
---                    admin key and the auto-created serving_* keys dropped.
---                    Cleartext keys: USERA_API_KEY..USERL_API_KEY constants
---                    in embeddings.go.
+--   api_key          only the user*_api_key rows (ids 100012-100023 + 100025
+--                    for userm); admin key and the auto-created serving_*
+--                    keys dropped. Cleartext keys: USERA_API_KEY..
+--                    USERM_API_KEY constants in embeddings.go.
 --   api_key_scope    dropped entirely - RDRS never reads it
 --   schemas/subjects only the 2 usera FG avro subjects; the per-project
 --                    'inferenceschema' serving-infra rows dropped
@@ -40,6 +41,9 @@
 --                                       (+usere_own_fv)
 --   userf: nothing shared        userk/l: restricted grants (+own FVs in
 --                                usera_project); userj: restricted, no grants
+--   userm (D5): restricted in usera_project (customers entirely) AND owner
+--               of his own empty userm_project - restricted grants do not
+--               travel to it (recording_D5.json)
 
 USE hopsworks;
 
@@ -356,8 +360,35 @@ INSERT INTO `users` SET
   `tours_state` = 0,
   `salt` = 'BQpvTNf5Lh4zT/k9E2JDZv8D8UGeMWwHTSovObJncYFWj0gtq/zmJKz0iTcW6LNXNLNpBePaHAPaShwy8C+JPQ==',
   `last_visited_at` = '2026-07-16 08:29:59';
+-- userm added 2026-07-17 for scenario D5 (recording_D5.json): restricted
+-- member of usera_project who also owns his own userm_project
+INSERT INTO `users` SET
+  `uid` = 100012,
+  `username` = 'userm000',
+  `password` = 'f67295abac57690aa8028c825b1520da10e41324e65cf2a793b951b2ef833831',
+  `email` = 'userm@lc.com',
+  `fname` = 'userm',
+  `lname` = 'lc',
+  `activated` = '2026-07-17 08:38:13',
+  `title` = '-',
+  `false_login` = 0,
+  `status` = 2,
+  `isonline` = 1,
+  `secret` = 'NX4N2YSR6B2QA4J4',
+  `validation_key` = 'EmbzfB+0/SueGAAI+Ag4EchGIVeNUn/hgt6/REFXLJ30BR+mGf4J9dXWMjbMLfv5OviEN+IQ5lBrUhb5egIM+Q==',
+  `validation_key_updated` = '2026-07-17 08:38:13',
+  `validation_key_type` = 'EMAIL',
+  `mode` = 0,
+  `password_changed` = '2026-07-17 08:38:13',
+  `notes` = NULL,
+  `max_num_projects` = 10,
+  `num_active_projects` = 1,
+  `two_factor` = 0,
+  `tours_state` = 0,
+  `salt` = 'JubtIqjB/j54LXC6LKQzXHIwvoiz0XhrgdJ3J4thO/8gSAvG8K+gNKZLYyyvCpKMFLNKkXXwMNgsVDwScQIBBQ==',
+  `last_visited_at` = '2026-07-17 08:38:13';
 
--- ---- project (6 rows) ----
+-- ---- project (7 rows) ----
 
 INSERT INTO `project` SET
   `id` = 100000,
@@ -431,8 +462,21 @@ INSERT INTO `project` SET
   `topic_name` = NULL,
   `creation_status` = 0,
   `online_feature_store_available` = 1;
+-- userm's own project (D5); no online DB - it holds no feature groups
+INSERT INTO `project` SET
+  `id` = 100006,
+  `projectname` = 'userm_project',
+  `username` = 'userm@lc.com',
+  `created` = '2026-07-17 08:39:25',
+  `description` = 'D5: restricted member of usera_project with own project',
+  `payment_type` = 'NOLIMIT',
+  `last_quota_update` = '2026-07-17 08:39:27',
+  `kafka_max_num_topics` = 100,
+  `topic_name` = NULL,
+  `creation_status` = 0,
+  `online_feature_store_available` = 0;
 
--- ---- project_team (9 rows) ----
+-- ---- project_team (11 rows) ----
 
 INSERT INTO `project_team` SET
   `project_id` = 100000,
@@ -479,8 +523,19 @@ INSERT INTO `project_team` SET
   `team_member` = 'userf@lc.com',
   `team_role` = 'Data owner',
   `added` = '2026-07-16 08:42:22';
+-- userm (D5): normal owner of his own project, restricted in usera's
+INSERT INTO `project_team` SET
+  `project_id` = 100006,
+  `team_member` = 'userm@lc.com',
+  `team_role` = 'Data owner',
+  `added` = '2026-07-17 08:39:27';
+INSERT INTO `project_team` SET
+  `project_id` = 100000,
+  `team_member` = 'userm@lc.com',
+  `team_role` = 'Feature store restricted',
+  `added` = '2026-07-17 08:39:10';
 
--- ---- feature_store (6 rows) ----
+-- ---- feature_store (7 rows) ----
 
 INSERT INTO `feature_store` SET
   `id` = 100000,
@@ -512,6 +567,11 @@ INSERT INTO `feature_store` SET
   `name` = 'userf_project',
   `project_id` = 100005,
   `created` = '2026-07-16 08:42:31';
+INSERT INTO `feature_store` SET
+  `id` = 100006,
+  `name` = 'userm_project',
+  `project_id` = 100006,
+  `created` = '2026-07-17 08:39:35';
 
 -- ---- schemas (2 rows) ----
 
@@ -1380,6 +1440,19 @@ INSERT INTO `api_key` SET
   `user_id` = 100011,
   `reserved` = 0,
   `expiry` = NULL;
+-- userm's key (D5); id 100025 - 100024 was consumed on the cluster by an
+-- auto-created serving_ key, dropped per the cleaning rules
+INSERT INTO `api_key` SET
+  `id` = 100025,
+  `prefix` = '9mNzTyVuQXb8Bwq3',
+  `secret` = '08b8596f71ae84364ff929bff16edf63c7768e244acd9fc8bcda6ded8bc497d4',
+  `salt` = 'FXr/xudIjpd+M63e+tvnOTB+tVohTHgaxK+85qCWd6LDUrwAMmY96ZCJbGEMCQt0SdhA4giU86HYz8niiVuAcw==',
+  `created` = '2026-07-17 08:38:31',
+  `modified` = '2026-07-17 08:38:31',
+  `name` = 'userm_api_key',
+  `user_id` = 100012,
+  `reserved` = 0,
+  `expiry` = NULL;
 
 -- ---- shared_feature_store (4 rows) ----
 
@@ -1505,6 +1578,15 @@ INSERT INTO `restricted_feature_group_access` SET
   `granted_on` = '2026-07-16 00:00:00',
   `granted_to_user` = 100011,
   `can_access_entirely` = 0;
+-- userm (D5): customers entirely, mirror of userk's grant
+INSERT INTO `restricted_feature_group_access` SET
+  `id` = 100004,
+  `feature_store` = 100000,
+  `feature_group` = 100000,
+  `granted_by` = 100000,
+  `granted_on` = '2026-07-17 00:00:00',
+  `granted_to_user` = 100012,
+  `can_access_entirely` = 1;
 
 -- ---- restricted_feature_access (3 rows) ----
 
