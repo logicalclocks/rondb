@@ -1855,6 +1855,121 @@ TEST_F(APIKeyTest, TestFineGrainedSharedAccess) {
   stop_api_key_cache();
 }
 
+// A feature-wise share (shared_entirely/can_access_entirely = 0) whose
+// column rows are missing must grant NOTHING. Hopsworks commits the parent
+// and child rows in separate transactions and validates the feature names
+// only after the parent is committed, so a parent row without children is
+// reachable both mid-write and permanently (share request with a bad
+// feature name). Resolving it as an empty column set would mean "whole
+// table granted" - a privilege escalation.
+TEST_F(APIKeyTest, TestOrphanSubsetGrantFailsClosed) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so grant changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Producer entities of the fine-grained sharing fixture
+  const std::string_view usera_db = "usera_project";
+  const std::string_view transactions_table = "usera_transactions_fg_1";
+  const int usera_store_id = 100000;
+  const int transactions_fg_id = 100001;
+
+  const int orphan_share_id = 88881;       // subset share without columns
+  const int orphan_restricted_id = 88880;  // restricted grant without columns
+  const int late_feature_id = 88879;       // column row committed later
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_row(SHARED_FEATURE_GROUP, orphan_share_id);
+  ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS, orphan_restricted_id);
+  ndb_delete_row(SHARED_FEATURE, late_feature_id);
+
+  auto table_request = [](const std::string_view &db,
+                          const std::string_view &table,
+                          const std::vector<std::string_view> *columns) {
+    TableAccessRequest accessReq;
+    accessReq.db = db;
+    accessReq.table = table;
+    accessReq.columns = columns;
+    return std::vector<TableAccessRequest>{accessReq};
+  };
+  const std::vector<std::string_view> one_column = {"num_transactions_30d"};
+
+  // Baseline (lazy load): no access to the producer's table
+  RS_Status status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, nullptr));
+  ASSERT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared table must be rejected";
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Orphan feature-wise share: parent row committed, column rows absent
+  ASSERT_TRUE(ndb_insert_shared_feature_group(orphan_share_id,
+                                              usera_store_id,
+                                              transactions_fg_id,
+                                              HOME_PROJECT_ID,
+                                              0))
+      << "Failed to insert orphan shared_feature_group row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Orphan subset share must not grant whole-row reads";
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &one_column));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Orphan subset share must not grant any column";
+
+  // Orphan restricted grant: same fail-closed rule on the per-user ladder
+  ASSERT_TRUE(ndb_insert_restricted_feature_group_access(orphan_restricted_id,
+                                                         usera_store_id,
+                                                         transactions_fg_id,
+                                                         10000 /*macho*/,
+                                                         0))
+      << "Failed to insert orphan restricted_feature_group_access row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &one_column));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Orphan restricted grant must not grant any column";
+
+  // The writer finishes: the column row lands and only that column opens up
+  ASSERT_TRUE(ndb_insert_shared_feature(late_feature_id,
+                                        transactions_fg_id,
+                                        "num_transactions_30d",
+                                        HOME_PROJECT_ID))
+      << "Failed to insert shared_feature row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &one_column));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Completed share should grant the shared column: " << status.message;
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Completed subset share must not grant whole-row reads";
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE_GROUP, orphan_share_id));
+  ASSERT_TRUE(ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS,
+                             orphan_restricted_id));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, late_feature_id));
+
+  stop_api_key_cache();
+}
+
 int main(int argc, char **argv) {
   ndb_init();
   globalConfigsMutex = NdbMutex_Create();

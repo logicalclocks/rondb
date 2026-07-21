@@ -1556,6 +1556,15 @@ static RS_Status find_fine_grained_grants_int(
           columns.push_back(f_row.feature);
         }
       }
+      if (columns.empty()) {
+        // A consistent feature-subset share always has at least one
+        // shared_feature row (Hopsworks force-adds the primary key).
+        // Zero rows means the share is mid-write (Hopsworks commits the
+        // tables in separate transactions) or its writer failed after
+        // committing only the parent row. Grant nothing: an empty column
+        // set would mean the whole table is granted.
+        continue;
+      }
     }
     status = add_grant(fg_row.feature_group_id, fg_row.shared_entirely,
                        columns);
@@ -1570,6 +1579,12 @@ static RS_Status find_fine_grained_grants_int(
         if (f_row.restricted_feature_group_access == fg_row.id) {
           columns.push_back(f_row.feature);
         }
+      }
+      if (columns.empty()) {
+        // Same fail-closed rule as for shared feature groups above; the
+        // window is wider here because Hopsworks commits each
+        // restricted_feature row in its own transaction.
+        continue;
       }
     }
     status = add_grant(fg_row.feature_group_id, fg_row.can_access_entirely,
