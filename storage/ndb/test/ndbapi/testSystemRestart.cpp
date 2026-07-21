@@ -2671,6 +2671,111 @@ int runSR_DD_UndoHole(NDBT_Context *ctx, NDBT_Step *step) {
   return result;
 }
 
+/**
+ * Test repeated node restarts with holes in the disk data UNDO log.
+ *
+ * Like runSR_DD_UndoHole, but the error insert crash and restart is
+ * repeated back to back several times within each loop. Later cycles
+ * restart on an UNDO log that already contains filler pages written by
+ * the backward hole scan of the previous cycle's restart, and any hole
+ * left unrewritten would sit below the log head where a later restart
+ * treats it as UNDO log corruption once records have been applied.
+ * This verifies that recovery handles repeated crashes with partially
+ * persisted UNDO log writes and that the backward hole scan leaves the
+ * UNDO log contiguous on disk.
+ */
+int runSR_DD_UndoHoleMulti(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  int result = NDBT_OK;
+  Uint32 loops = ctx->getNumLoops();
+  Uint32 rows = ctx->getNumRecords();
+  Uint32 holeCycles = ctx->getProperty("HoleCycles", (unsigned)3);
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ndbout << "Test needs at least 2 data nodes, skipping" << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  int val[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  Uint32 i = 1;
+  HugoTransactions hugoTrans(*ctx->getTab());
+  while (i <= loops && result != NDBT_FAILED) {
+    if (ctx->closeToTimeout(30)) break;
+    ndbout << "Loop " << i << "/" << loops << " started" << endl;
+
+    ndbout << "Loading " << rows << " records..." << endl;
+    CHECK(hugoTrans.loadTable(pNdb, rows) == 0);
+
+    /**
+     * Use the same node in every cycle so that each cycle's restart
+     * runs on the UNDO log produced by the previous cycles.
+     */
+    int nodeId = restarter.getDbNodeId(rand() % restarter.getNumDbNodes());
+    int cnt = 0;
+    for (Uint32 cycle = 1; cycle <= holeCycles; cycle++) {
+      if (result == NDBT_FAILED) break;
+      ndbout << "Cycle " << cycle << "/" << holeCycles
+             << ": inserting error 15002 (UNDO log hole) in node " << nodeId
+             << endl;
+      CHECK(restarter.dumpStateOneNode(nodeId, val, 2) == 0);
+      CHECK(restarter.insertErrorInNode(nodeId, 15002) == 0);
+
+      ndbout << "Updating disk data rows until node " << nodeId << " dies"
+             << endl;
+      const NDB_TICKS start = NdbTick_getCurrentTicks();
+      bool node_died = false;
+      while (!node_died && result != NDBT_FAILED) {
+        (void)hugoTrans.pkUpdateRecords(pNdb, rows, 256);
+        node_died = (restarter.getNodeStatus(nodeId) ==
+                     NDB_MGM_NODE_STATUS_NOT_STARTED);
+        const NDB_TICKS now = NdbTick_getCurrentTicks();
+        if (!node_died && NdbTick_Elapsed(start, now).milliSec() > 600000) {
+          ndbout << "Node " << nodeId
+                 << " did not crash on error insert 15002" << endl;
+          result = NDBT_FAILED;
+        }
+      }
+      CHECK(result == NDBT_OK);
+      CHECK(restarter.waitNodesNoStart(&nodeId, 1) == 0);
+
+      ndbout << "Starting node " << nodeId << endl;
+      CHECK(restarter.startNodes(&nodeId, 1) == 0);
+      CHECK(restarter.waitClusterStarted() == 0);
+      CHECK(pNdb->waitUntilReady() == 0);
+
+      ndbout << "Verifying data..." << endl;
+      cnt = 0;
+      CHECK(hugoTrans.selectCount(pNdb, 0, &cnt) == 0);
+      ndbout << "Found " << cnt << " records, updating..." << endl;
+      CHECK(hugoTrans.scanUpdateRecords(pNdb, NdbScanOperation::SF_TupScan,
+                                        cnt) == 0 ||
+            hugoTrans.getRetryMaxReached());
+    }
+    CHECK(result == NDBT_OK);
+
+    /**
+     * Final clean restart to verify that UNDO logging resumed with
+     * correct LSNs after the sequence of restarts with holes.
+     */
+    ndbout << "Clean restart of node " << nodeId << endl;
+    CHECK(restarter.restartOneDbNode(nodeId, false, true, true) == 0);
+    CHECK(restarter.waitNodesNoStart(&nodeId, 1) == 0);
+    CHECK(restarter.startNodes(&nodeId, 1) == 0);
+    CHECK(restarter.waitClusterStarted() == 0);
+    CHECK(pNdb->waitUntilReady() == 0);
+
+    ndbout << "Clearing..." << endl;
+    CHECK(hugoTrans.clearTable(pNdb, NdbScanOperation::SF_TupScan) == 0);
+    i++;
+  }
+
+  ndbout << "runSR_DD_UndoHoleMulti finished" << endl;
+  ctx->stopTest();
+  return result;
+}
+
 int runBug22696(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
   int result = NDBT_OK;
@@ -4589,6 +4694,14 @@ TESTCASE("SR_DD_UndoHole",
          "UNDO log write") {
   INITIALIZER(runWaitStarted);
   STEP(runSR_DD_UndoHole);
+}
+TESTCASE("SR_DD_UndoHoleMulti",
+         "Repeated back to back node restarts with holes in the disk "
+         "data UNDO log, verifying that recovery rewrites holes with "
+         "filler pages and handles repeated crashes with partially "
+         "persisted UNDO log writes") {
+  INITIALIZER(runWaitStarted);
+  STEP(runSR_DD_UndoHoleMulti);
 }
 TESTCASE("Bug29167", "") {
   INITIALIZER(runWaitStarted);

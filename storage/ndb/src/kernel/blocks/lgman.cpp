@@ -2223,6 +2223,15 @@ Lgman::Logfile_group::Logfile_group(const CreateFilegroupImplReq *req) {
 
   m_tail_pos[0] = m_tail_pos[1];
   m_ndb_version = g_v2 ? NDB_DISK_V2 : 0;
+
+  m_backward_pos.m_ptr_i = RNIL;
+  m_backward_pos.m_idx = 0;
+  m_backward_scanned_pages = 0;
+  m_hole_top_idx = 0;
+  m_fill_pos_idx = 0;
+  m_fill_top_idx = 0;
+  m_fill_lsn = 0;
+  m_holes_filled = 0;
 }
 
 bool
@@ -3422,6 +3431,17 @@ void Lgman::execFSWRITECONF(Signal *signal) {
   ndbrequire(
       m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i));
 
+  if (file_ptr.p->m_state == Undofile::FS_SEARCHING_BACKWARD) {
+    /**
+     * Completed write of a filler page into an UNDO log hole during
+     * the backward hole scan at restart.
+     */
+    jam();
+    hole_filler_write_conf(signal, lg_ptr, file_ptr);
+    client_unlock(number(), __LINE__, this);
+    return;
+  }
+
   Uint32 cnt = lg_ptr.p->m_outstanding_fs;
   ndbrequire(cnt);
 
@@ -4328,6 +4348,11 @@ void Lgman::execFSREADCONF(Signal *signal) {
       find_log_head_end_check(signal, lg_ptr, file_ptr, lsn);
       client_unlock(number(), __LINE__, this);
       return;
+    case Undofile::FS_SEARCHING_BACKWARD:
+      jam();
+      find_log_head_backward_check(signal, lg_ptr, file_ptr, lsn);
+      client_unlock(number(), __LINE__, this);
+      return;
     case Undofile::FS_SEARCHING_FINAL_READ:
       jam();
       find_log_head_complete(signal, lg_ptr, file_ptr);
@@ -4644,13 +4669,317 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
   jam();
 
   /**
+   * The forward search for the end of the UNDO log is done. Before
+   * starting UNDO log execution we scan backward below the log head to
+   * find holes and rewrite them with filler pages.
+   */
+  start_backward_hole_scan(signal, lg_ptr, file_ptr);
+  return;
+}
+
+/**
+ * Scan backward below the log head found by find_log_head_in_file and
+ * find_log_head_end_check.
+ *
+ * A crash during a partially persisted multi-page UNDO log write leaves
+ * holes in the region below the log head: pages that were never written
+ * (PT_Unallocated) or that still contain data from an older lap of the
+ * log. Such holes are harmless for the current restart (the WAL
+ * protocol guarantees that no UNDO log record in the region of the
+ * partially persisted write was ever relied upon), but they stay in the
+ * file since pages behind the head are not rewritten until the log
+ * wraps. A later restart can then be hurt in two ways:
+ *
+ * 1) Its binary search can converge on the old hole and needs the
+ *    forward end check to walk all the way to the true log head.
+ * 2) Its UNDO log execution can encounter the old hole after UNDO log
+ *    records have been applied, which is treated as a corrupt UNDO log
+ *    (see get_next_undo_record) since holes must only occur in the
+ *    region where no records have been applied yet.
+ *
+ * We therefore rewrite each hole with a filler page here, making the
+ * UNDO log contiguous on disk again before UNDO log execution starts.
+ * The scan covers the region where holes can exist, which is bounded
+ * by the UNDO log buffer size (see the scan limit computation in
+ * read_backward_scan_page), and stops earlier when the scan would
+ * reach the log head again in a small log.
+ *
+ * A hole is recognized by its page LSN being below the start LSN of the
+ * file (unwritten pages are patched to page LSN 0 when read, pages from
+ * an older lap have LSNs below the LSN of the first page of the file
+ * from the current lap). A run of holes is resolved when the written
+ * page directly below the run is found: with its page LSN L, the k
+ * filler pages get page LSNs L+1 up to L+k in ascending order. Each
+ * lost page contained at least one record, so these LSNs are all below
+ * the LSN of the first record of the written page above the run, and
+ * the UNDO log execution consumes the fillers as a contiguous LSN
+ * chain. Each filler page contains a single UNDO_NOOP record which is
+ * skipped without action when executed.
+ *
+ * A run of holes can never span a file boundary since the first page of
+ * each file is written and synced in a write of its own before any
+ * further pages are written to the file. A run that is still pending
+ * when the scan crosses a file boundary or reaches the scan limit is
+ * therefore not a partial write hole but never written territory (the
+ * log has not yet wrapped) and is left untouched.
+ */
+void Lgman::start_backward_hole_scan(Signal *signal,
+                                     Ptr<Logfile_group> lg_ptr,
+                                     Ptr<Undofile> file_ptr) {
+  jam();
+  lg_ptr.p->m_backward_pos.m_ptr_i = file_ptr.i;
+  lg_ptr.p->m_backward_pos.m_idx = lg_ptr.p->m_file_pos[HEAD].m_idx;
+  lg_ptr.p->m_backward_scanned_pages = 0;
+  lg_ptr.p->m_hole_top_idx = 0;
+  lg_ptr.p->m_holes_filled = 0;
+  file_ptr.p->m_state = Undofile::FS_SEARCHING_BACKWARD;
+  read_backward_scan_page(signal, lg_ptr);
+}
+
+void Lgman::read_backward_scan_page(Signal *signal,
+                                    Ptr<Logfile_group> lg_ptr) {
+  Ptr<Undofile> file_ptr;
+  ndbrequire(
+      m_file_pool.getPtr(file_ptr, lg_ptr.p->m_backward_pos.m_ptr_i));
+
+  /**
+   * Step back one page, switching to the previous file if needed.
+   */
+  if (lg_ptr.p->m_backward_pos.m_idx == 1) {
+    jam();
+    Ptr<Undofile> prev = file_ptr;
+    {
+      Local_undofile_list files(m_file_pool, lg_ptr.p->m_files);
+      if (!files.prev(prev)) {
+        jam();
+        files.last(prev);
+      }
+    }
+    if (lg_ptr.p->m_hole_top_idx != 0) {
+      /**
+       * A pending hole run at the first page of a file cannot be a
+       * partial write hole, see start_backward_hole_scan. Drop it.
+       */
+      jam();
+      g_eventLogger->info(
+          "LGMAN: Backward scan dropping unresolved hole run up to page"
+          " %u in file %u at file boundary",
+          lg_ptr.p->m_hole_top_idx, file_ptr.p->m_file_id);
+      lg_ptr.p->m_hole_top_idx = 0;
+    }
+    file_ptr.p->m_state = Undofile::FS_EXECUTING;
+    prev.p->m_state = Undofile::FS_SEARCHING_BACKWARD;
+    lg_ptr.p->m_backward_pos.m_ptr_i = prev.i;
+    lg_ptr.p->m_backward_pos.m_idx = prev.p->m_file_size - 1;
+    file_ptr = prev;
+  } else {
+    jam();
+    lg_ptr.p->m_backward_pos.m_idx--;
+  }
+
+  /**
+   * The region where holes can exist is bounded by the UNDO log buffer
+   * size, not by MAX_UNDO_PAGES_OUTSTANDING. The one outstanding write
+   * limit is per file, and buffer pages are only released by the
+   * in-file-order reply processing in execFSWRITECONF. One slow
+   * outstanding write per file can thus leave a partially persisted
+   * chunk at the tail of each of several consecutive files (a crash
+   * while the log head crossed one or more file boundaries), in total
+   * holding at most the number of buffer pages that existed at the
+   * crash. We use the current buffer size as the scan limit, which
+   * covers all holes unless the buffer size was reduced since the
+   * crash. A miss in that corner case is benign: it only leaves the
+   * hole unrewritten, which is the behaviour of versions without the
+   * backward scan.
+   */
+  Uint32 scan_limit =
+      lg_ptr.p->m_total_buffer_words / get_undo_page_words(lg_ptr);
+  if (scan_limit < MAX_UNDO_PAGES_OUTSTANDING) {
+    jam();
+    scan_limit = MAX_UNDO_PAGES_OUTSTANDING;
+  }
+  if ((lg_ptr.p->m_backward_scanned_pages >= scan_limit) ||
+      (lg_ptr.p->m_backward_pos.m_ptr_i ==
+           lg_ptr.p->m_file_pos[HEAD].m_ptr_i &&
+       lg_ptr.p->m_backward_pos.m_idx == lg_ptr.p->m_file_pos[HEAD].m_idx)) {
+    /**
+     * Scan done: either the full window where holes can exist has been
+     * scanned, or the log is so small that the scan reached the log
+     * head again. A hole run still pending is never written territory
+     * and is left untouched.
+     */
+    jam();
+    if (lg_ptr.p->m_hole_top_idx != 0) {
+      jam();
+      lg_ptr.p->m_hole_top_idx = 0;
+    }
+    file_ptr.p->m_state = Undofile::FS_EXECUTING;
+    issue_final_head_read(signal, lg_ptr);
+    return;
+  }
+
+  Uint32 curr = lg_ptr.p->m_backward_pos.m_idx;
+  Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
+  file_ptr.p->m_online.m_outstanding = page_id;
+  file_ptr.p->m_online.m_read_page_idx = curr;
+
+  FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
+  req->filePointer = file_ptr.p->m_fd;
+  req->userReference = reference();
+  req->userPointer = file_ptr.i;
+  req->varIndex = curr;
+  req->numberOfPages = 1;
+  req->data.sharedPage.pageNumber = page_id;
+  req->operationFlag = 0;
+  req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
+
+  sendSignal(NDBFS_REF, GSN_FSREADREQ, signal, FsReadWriteReq::FixedLength + 1,
+             JBA);
+
+  lg_ptr.p->m_outstanding_fs++;
+  file_ptr.p->m_state |= Undofile::FS_OUTSTANDING;
+}
+
+void Lgman::find_log_head_backward_check(Signal *signal,
+                                         Ptr<Logfile_group> lg_ptr,
+                                         Ptr<Undofile> file_ptr,
+                                         Uint64 lsn) {
+  Uint32 idx = lg_ptr.p->m_backward_pos.m_idx;
+  ndbrequire(file_ptr.i == lg_ptr.p->m_backward_pos.m_ptr_i);
+  lg_ptr.p->m_backward_scanned_pages++;
+
+  if (lsn < file_ptr.p->m_start_lsn || file_ptr.p->m_start_lsn == 0) {
+    /**
+     * A hole: either an unwritten page (patched to page LSN 0 when
+     * read) or a page from an older lap of the log. With start LSN 0
+     * (first page of the file unwritten, only possible on a damaged
+     * file) holes cannot be told apart from written pages, so nothing
+     * is rewritten in that file.
+     */
+    jam();
+    if (lg_ptr.p->m_hole_top_idx == 0 && file_ptr.p->m_start_lsn != 0) {
+      jam();
+      lg_ptr.p->m_hole_top_idx = idx;
+    }
+    read_backward_scan_page(signal, lg_ptr);
+    return;
+  }
+  if (lg_ptr.p->m_hole_top_idx != 0) {
+    /**
+     * Found the written page directly below a run of holes. Rewrite
+     * the run with filler pages carrying ascending page LSNs starting
+     * directly above this page's LSN.
+     */
+    jam();
+    lg_ptr.p->m_fill_pos_idx = idx + 1;
+    lg_ptr.p->m_fill_top_idx = lg_ptr.p->m_hole_top_idx;
+    lg_ptr.p->m_fill_lsn = lsn + 1;
+    lg_ptr.p->m_hole_top_idx = 0;
+    SimulatedBlock *fs = globalData.getBlock(NDBFS);
+    g_eventLogger->info(
+        "LGMAN: Rewriting UNDO log hole pages %u to %u in file %s with"
+        " filler pages, first filler LSN %llu",
+        lg_ptr.p->m_fill_pos_idx, lg_ptr.p->m_fill_top_idx,
+        fs->get_filename(file_ptr.p->m_fd), lg_ptr.p->m_fill_lsn);
+    write_hole_filler_page(signal, lg_ptr);
+    return;
+  }
+  jam();
+  read_backward_scan_page(signal, lg_ptr);
+}
+
+void Lgman::write_hole_filler_page(Signal *signal,
+                                   Ptr<Logfile_group> lg_ptr) {
+  Ptr<Undofile> file_ptr;
+  ndbrequire(
+      m_file_pool.getPtr(file_ptr, lg_ptr.p->m_backward_pos.m_ptr_i));
+
+  Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
+  File_formats::Undofile::Undo_page *pageP =
+      (File_formats::Undofile::Undo_page *)m_shared_page_pool.getPtr(page_id);
+
+  Uint64 lsn = lg_ptr.p->m_fill_lsn;
+  pageP->m_page_header.m_page_lsn_hi = (Uint32)(lsn >> 32);
+  pageP->m_page_header.m_page_lsn_lo = (Uint32)(lsn & 0xFFFFFFFF);
+  pageP->m_page_header.m_page_type = File_formats::PT_Undopage;
+  pageP->m_words_used = 1;
+  get_undo_data_ptr((Uint32 *)pageP, lg_ptr, jamBuffer())[0] =
+      ((File_formats::Undofile::UNDO_NOOP |
+        File_formats::Undofile::UNDO_NEXT_LSN) << 16) | 1;
+  if (lg_ptr.p->m_ndb_version >= NDB_DISK_V2) {
+    File_formats::Undofile::Undo_page_v2 *page_v2 =
+        (File_formats::Undofile::Undo_page_v2 *)pageP;
+    jam();
+    page_v2->m_ndb_version = NDB_DISK_V2;
+    page_v2->m_checksum = 0;
+    page_v2->m_last_lsn = 1;
+    page_v2->m_unused[0] = 0;
+    page_v2->m_unused[1] = 0;
+    page_v2->m_unused[2] = 0;
+    page_v2->m_unused[3] = 0;
+    page_v2->m_unused[4] = 0;
+  }
+
+  file_ptr.p->m_online.m_outstanding = 1;
+
+  FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
+  req->filePointer = file_ptr.p->m_fd;
+  req->userReference = reference();
+  req->userPointer = file_ptr.i;
+  req->varIndex = lg_ptr.p->m_fill_pos_idx;
+  req->numberOfPages = 1;
+  req->data.sharedPage.pageNumber = page_id;
+  req->operationFlag = 0;
+  req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
+
+  sendSignal(NDBFS_REF, GSN_FSWRITEREQ, signal,
+             FsReadWriteReq::FixedLength + 1, JBA);
+
+  lg_ptr.p->m_outstanding_fs++;
+  file_ptr.p->m_state |= Undofile::FS_OUTSTANDING;
+}
+
+void Lgman::hole_filler_write_conf(Signal *signal,
+                                   Ptr<Logfile_group> lg_ptr,
+                                   Ptr<Undofile> file_ptr) {
+  jam();
+  ndbrequire(lg_ptr.p->m_outstanding_fs > 0);
+  lg_ptr.p->m_outstanding_fs--;
+  file_ptr.p->m_online.m_outstanding = 0;
+  lg_ptr.p->m_holes_filled++;
+  lg_ptr.p->m_fill_lsn++;
+  lg_ptr.p->m_fill_pos_idx++;
+  if (lg_ptr.p->m_fill_pos_idx <= lg_ptr.p->m_fill_top_idx) {
+    jam();
+    write_hole_filler_page(signal, lg_ptr);
+    return;
+  }
+  /**
+   * Hole run completely rewritten, resume the backward scan below it.
+   */
+  read_backward_scan_page(signal, lg_ptr);
+}
+
+void Lgman::issue_final_head_read(Signal *signal, Ptr<Logfile_group> lg_ptr) {
+  /**
    * Now we are done with the search for the end. However when starting to
    * execute the UNDO log we expect the first page to be already read. So
    * we reread the last page in the UNDO log that we found.
    */
+  Ptr<Undofile> file_ptr;
+  ndbrequire(
+      m_file_pool.getPtr(file_ptr, lg_ptr.p->m_file_pos[HEAD].m_ptr_i));
+
+  if (lg_ptr.p->m_holes_filled > 0) {
+    jam();
+    g_eventLogger->info(
+        "LGMAN: Rewrote %u UNDO log hole pages with filler pages",
+        lg_ptr.p->m_holes_filled);
+  }
+
   Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
   file_ptr.p->m_online.m_outstanding = page_id;
-  curr = lg_ptr.p->m_file_pos[HEAD].m_idx;
+  Uint32 curr = lg_ptr.p->m_file_pos[HEAD].m_idx;
   file_ptr.p->m_online.m_read_page_idx = curr;
 
   FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
@@ -5221,6 +5550,16 @@ void Lgman::execute_undo_record(Signal *signal) {
           return;
         }
       } break;
+      case File_formats::Undofile::UNDO_NOOP:
+        jam();
+        /**
+         * Filler record written into an UNDO log hole by the backward
+         * hole scan of a previous restart. Nothing to apply.
+         */
+        signal->theData[0] = LgmanContinueB::EXECUTE_UNDO_RECORD;
+        signal->theData[1] = 0; /* Not applied flag */
+        sendSignal(LGMAN_REF, GSN_CONTINUEB, signal, 2, JBB);
+        return;
       case File_formats::Undofile::UNDO_TUP_DROP:
         jam();
         if (wait_pending(lsn, ptr, len)) {

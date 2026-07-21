@@ -250,8 +250,16 @@ struct File_formats {
       ,UNDO_TUP_FREE_VAR_PART = 15
       ,UNDO_TUP_UPDATE_VAR_PART = 16
       ,UNDO_TUP_FIRST_UPDATE_VAR_PART = 17
-      
-      ,UNDO_END        = 0x7FFF 
+
+      /**
+       * Filler record written by restart into a hole in the UNDO log
+       * (an unwritten or old page below the log head left behind by a
+       * crash during a partially persisted multi-page UNDO log write).
+       * Skipped without any action when executing the UNDO log.
+       */
+      ,UNDO_NOOP = 18
+
+      ,UNDO_END        = 0x7FFF
       ,UNDO_NEXT_LSN   = 0x8000
     };
 
