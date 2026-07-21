@@ -123,6 +123,7 @@ pages and UNDO log execution across holes (RONDB-1090, Phases&nbsp;1&nbsp;and&nb
   <li><a href="#backward">The backward hole scan</a></li>
   <li><a href="#fillers">Filler pages and LSN assignment</a></li>
   <li><a href="#execution">UNDO log execution across holes and fillers</a></li>
+  <li><a href="#checksums">Page checksums (NDB_DISK_V3)</a></li>
   <li><a href="#edge-cases">Edge cases</a></li>
   <li><a href="#testing">Testing</a></li>
 </ol>
@@ -498,7 +499,64 @@ records are skipped without touching DBTUP, so <code>m_applied</code> is
 unaffected.</figcaption>
 </figure>
 
-<h2 id="edge-cases">8. Edge cases</h2>
+<h2 id="checksums">8. Page checksums (NDB_DISK_V3)</h2>
+
+<p>The remaining exposure after hole rewriting is a page that is <em>partially</em>
+persisted at sub-page (sector) granularity: its header sectors &#8212; page type,
+page LSN, <code>m_words_used</code> &#8212; are intact, but its tail sectors still
+hold stale data. Such a torn page passes every LSN-based check and would be parsed
+as a valid record chain. Page checksums close this gap.</p>
+
+<h3>Format</h3>
+
+<p>The v2 page layout already reserves <code>m_checksum</code> (previously always
+written as 0). From <code>NDB_DISK_V3</code> (26.4.2) every UNDO page write stamps
+the page's <code>m_ndb_version</code> field with <code>NDB_DISK_V3</code> and sets
+<code>m_checksum</code> such that the XOR over the complete 32&nbsp;KByte page
+becomes zero (<code>computeXorChecksum</code>, the same primitive used for REDO log
+pages). Stamping is the last step after all other fields are set
+(<code>stamp_undo_page_checksum()</code>); verification is a single XOR pass
+(<code>verify_undo_page_checksum()</code>). The file format layout is unchanged
+&#8212; the per-page version stamp alone decides whether the checksum field is
+meaningful, so pages written before and after an upgrade coexist in one file, and
+older binaries (which never verify) read V3 pages without issue.</p>
+
+<p>Checksums are stamped at all three places that write UNDO pages: the normal
+write path (<code>write_log_pages()</code>), page 1 initialization at file creation
+(<code>execFSWRITEREQ</code>), and filler pages
+(<code>write_hole_filler_page()</code>). The zero page keeps its
+<code>NDB_DISK_V2</code> stamp: its version field is an exact-match handshake in
+<code>completed_zero_page_read()</code>. v1-format files are unaffected (the fields
+do not exist in that layout).</p>
+
+<h3>Verification: a bad checksum is a hole</h3>
+
+<p>A page whose stamp is <code>&ge; NDB_DISK_V3</code> but whose page XOR is not
+zero is treated <em>exactly like an unwritten page</em>, at the two points that
+cover all reads:</p>
+
+<ul>
+  <li><strong>Restart reads</strong> (sort, binary search, forward end check,
+      backward scan, final read): <code>execFSREADCONF()</code> verifies after the
+      <code>PT_Unallocated</code> patch and, on mismatch, logs and patches the page
+      the same way (<code>patch_unwritten_undo_page()</code>, page LSN 0). The end
+      search will not adopt it, and the backward hole scan classifies it as a hole
+      and <strong>rewrites it with a filler page</strong>.</li>
+  <li><strong>Execution reads</strong> (the bulk producer reads bypass the restart
+      read validation): <code>get_next_undo_record()</code> verifies when entering
+      a new page and forces <code>page_lsn = 0</code> on mismatch, which lands in
+      the existing hole classification &#8212; tolerated while
+      <code>m_applied == false</code> (a torn page in the fuzzy region), fatal
+      <code>NDBD_EXIT_SR_UNDOLOG</code> after records have been applied (real
+      corruption in the durable region).</li>
+</ul>
+
+<p>This yields the intended semantics with no new code paths: <em>inside</em> the
+window where partial writes can occur, a bad-checksum page is repaired like any
+hole; <em>outside</em> it, it is fatal &#8212; and the failure is now an explicit
+checksum report instead of an attempt to parse stale bytes.</p>
+
+<h2 id="edge-cases">9. Edge cases</h2>
 
 <p>All edge cases handled by the new code, with the mechanism that covers each:</p>
 
@@ -647,11 +705,42 @@ unaffected.</figcaption>
       executed by binaries without RONDB-1090 Phase&nbsp;2 &#8212; they hit the
       unknown-type <code>ndbabort()</code> in <code>execute_undo_record()</code>.
       A downgrade requires an initial node restart (or a log guaranteed free of
-      fillers).</td>
+      fillers). V3 checksum stamps themselves are downgrade-safe: older binaries
+      never verify the checksum field and accept any page version
+      <code>&ge; NDB_DISK_V2</code>.</td>
+</tr>
+<tr>
+  <td><strong>E17</strong></td>
+  <td><strong>Torn page: header sectors persisted, tail sectors stale.</strong></td>
+  <td>Detected by checksum verification (V3 pages only). Treated exactly as an
+      unwritten page: repaired by the backward hole scan when inside the scan
+      window, fatal with <code>NDBD_EXIT_SR_UNDOLOG</code> when encountered by
+      execution after records have been applied (section 8). A torn
+      <em>filler</em> page is re-detected the same way and rewritten again
+      (idempotent, extends E12).</td>
+</tr>
+<tr>
+  <td><strong>E18</strong></td>
+  <td><strong>Corruption hits the page's version stamp itself</strong>, making a V3
+      page look like a pre-V3 page.</td>
+  <td>Checksum verification is skipped, so detection degrades to the pre-existing
+      LSN validation: a garbage page LSN is either below the file start LSN
+      (classified as a hole) or fails the page LSN checks in
+      <code>get_next_undo_record()</code>. Detection is weaker but never silent
+      acceptance of a monotone-looking LSN &#8212; the same exposure as before
+      checksums existed.</td>
+</tr>
+<tr>
+  <td><strong>E19</strong></td>
+  <td><strong>Mixed V2/V3 pages in one file after an upgrade.</strong></td>
+  <td>Verification is gated per page by the <code>m_ndb_version</code> stamp: old
+      V2 pages (checksum field written as 0) are never verified, new V3 pages
+      always are. No file conversion is needed; the file becomes fully
+      checksummed as the log wraps.</td>
 </tr>
 </table>
 
-<h2 id="testing">9. Testing</h2>
+<h2 id="testing">10. Testing</h2>
 
 <p>Error inserts (LGMAN range 15000&#8211;15999):</p>
 
@@ -669,6 +758,13 @@ unaffected.</figcaption>
       (including fsync) has completed &#8212; guaranteeing the hole geometry is on
       disk.</td>
 </tr>
+<tr>
+  <td><code>15004</code></td>
+  <td>On the next fully-in-file UNDO log write of &ge; 3 pages: corrupt data words
+      in the second half of the second-to-last page of the chunk <em>after</em> the
+      checksum has been stamped (simulating a torn page with intact header and
+      stale tail sectors), and arm 15003.</td>
+</tr>
 </table>
 
 <p>Test cases in <code>testSystemRestart</code> (autotest suite
@@ -684,12 +780,21 @@ unaffected.</figcaption>
       the <em>same</em> node, so later cycles recover over an UNDO log that already
       contains filler pages from earlier cycles, followed by a final clean
       restart.</li>
+  <li><code>SR_DD_UndoTornPage</code> &#8212; as <code>SR_DD_UndoHole</code> but
+      with error insert 15004: the restart must detect the torn page through
+      checksum verification, treat it as a hole and rewrite it with a filler
+      page.</li>
 </ul>
 
 <p>Log signatures of the mechanisms in a node's out-log:</p>
 
 <pre><code>LGMAN: ERROR_INSERT 15002: zeroing page P in write of N pages ...   (crash setup)
+LGMAN: ERROR_INSERT 15004: tearing page P in write of N pages ...   (crash setup)
 LGMAN: Found written page after end found by binary search ...      (forward end check)
+LGMAN: Checksum mismatch in UNDO log page P in file F, treating
+       page as unwritten                                            (restart reads)
+LGMAN: Checksum mismatch in UNDO log page P during UNDO log
+       execution, treating page as unwritten                        (execution reads)
 LGMAN: Rewriting UNDO log hole pages X to Y in file F with filler
        pages, first filler LSN L                                    (backward scan)
 LGMAN: Rewrote N UNDO log hole pages with filler pages              (scan summary)
@@ -702,11 +807,13 @@ Source: <code>storage/ndb/src/kernel/blocks/lgman.cpp</code>
 <code>start_backward_hole_scan</code>, <code>read_backward_scan_page</code>,
 <code>find_log_head_backward_check</code>, <code>write_hole_filler_page</code>,
 <code>hole_filler_write_conf</code>, <code>issue_final_head_read</code>,
-<code>get_next_undo_record</code>, <code>execute_undo_record</code>),
-<code>diskpage.hpp</code> (<code>UNDO_NOOP</code>).
-Branch RONDB-1090. Planned Phase&nbsp;3: per-page CRC32C checksums; a page with a
-bad checksum inside the scan window will be treated as a hole and rewritten, and as
-corruption elsewhere.</p>
+<code>get_next_undo_record</code>, <code>execute_undo_record</code>,
+<code>patch_unwritten_undo_page</code>, <code>stamp_undo_page_checksum</code>,
+<code>verify_undo_page_checksum</code>),
+<code>diskpage.hpp</code> (<code>UNDO_NOOP</code>),
+<code>ndb_version.h.in</code> (<code>NDB_DISK_V3</code>).
+Branch RONDB-1090: Phase&nbsp;1 (end-of-log search fixes), Phase&nbsp;2 (backward
+hole scan and filler pages), Phase&nbsp;3 (page checksums).</p>
 
 </body>
 </html>

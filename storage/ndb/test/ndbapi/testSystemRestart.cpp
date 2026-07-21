@@ -2776,6 +2776,118 @@ int runSR_DD_UndoHoleMulti(NDBT_Context *ctx, NDBT_Step *step) {
   return result;
 }
 
+/**
+ * Test node restart with a torn page in the disk data UNDO log.
+ *
+ * Error insert 15004 makes LGMAN corrupt data words in the second half
+ * of one page near the end of the next multi-page UNDO log write,
+ * after the page checksum has been computed, and crash the node once
+ * the write and its fsync have completed (error insert 15003). This
+ * simulates a page whose first sectors were persisted but whose tail
+ * sectors still hold stale data after a crash in the middle of the
+ * page write: the page header including the version stamp and the
+ * checksum are intact, so only checksum verification can detect that
+ * the page content is not valid.
+ *
+ * The restart of the node must detect the torn page through checksum
+ * verification, treat it as a hole, rewrite it with a filler page in
+ * the backward hole scan and execute the UNDO log without failures.
+ * The final clean restart in each loop verifies that logging resumed
+ * with correct LSNs.
+ */
+int runSR_DD_UndoTornPage(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  int result = NDBT_OK;
+  Uint32 loops = ctx->getNumLoops();
+  Uint32 rows = ctx->getNumRecords();
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ndbout << "Test needs at least 2 data nodes, skipping" << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  int val[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  Uint32 i = 1;
+  HugoTransactions hugoTrans(*ctx->getTab());
+  while (i <= loops && result != NDBT_FAILED) {
+    if (ctx->closeToTimeout(30)) break;
+    ndbout << "Loop " << i << "/" << loops << " started" << endl;
+
+    ndbout << "Loading " << rows << " records..." << endl;
+    CHECK(hugoTrans.loadTable(pNdb, rows) == 0);
+
+    int nodeId = restarter.getDbNodeId(rand() % restarter.getNumDbNodes());
+    ndbout << "Inserting error 15004 (torn UNDO log page) in node " << nodeId
+           << endl;
+    CHECK(restarter.dumpStateOneNode(nodeId, val, 2) == 0);
+    CHECK(restarter.insertErrorInNode(nodeId, 15004) == 0);
+
+    /**
+     * Update disk data rows to produce UNDO log records until the
+     * tampered node has seen a multi-page UNDO log write, torn a
+     * page in it and crashed itself. Large batches are used to get
+     * bursts of UNDO log records so that multi-page writes occur.
+     */
+    ndbout << "Updating disk data rows until node " << nodeId << " dies"
+           << endl;
+    const NDB_TICKS start = NdbTick_getCurrentTicks();
+    bool node_died = false;
+    while (!node_died && result != NDBT_FAILED) {
+      (void)hugoTrans.pkUpdateRecords(pNdb, rows, 256);
+      node_died = (restarter.getNodeStatus(nodeId) ==
+                   NDB_MGM_NODE_STATUS_NOT_STARTED);
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      if (!node_died && NdbTick_Elapsed(start, now).milliSec() > 600000) {
+        ndbout << "Node " << nodeId
+               << " did not crash on error insert 15004" << endl;
+        result = NDBT_FAILED;
+      }
+    }
+    CHECK(result == NDBT_OK);
+    CHECK(restarter.waitNodesNoStart(&nodeId, 1) == 0);
+
+    /**
+     * Restart the crashed node. Its LGMAN must detect the torn page
+     * through checksum verification, treat it as a hole and execute
+     * the UNDO log without failures.
+     */
+    ndbout << "Starting node " << nodeId << endl;
+    CHECK(restarter.startNodes(&nodeId, 1) == 0);
+    CHECK(restarter.waitClusterStarted() == 0);
+    CHECK(pNdb->waitUntilReady() == 0);
+
+    ndbout << "Verifying data..." << endl;
+    int cnt = 0;
+    CHECK(hugoTrans.selectCount(pNdb, 0, &cnt) == 0);
+    ndbout << "Found " << cnt << " records, updating..." << endl;
+    CHECK(hugoTrans.scanUpdateRecords(pNdb, NdbScanOperation::SF_TupScan,
+                                      cnt) == 0 ||
+          hugoTrans.getRetryMaxReached());
+
+    /**
+     * Restart the node once more without any error insert to verify
+     * that UNDO logging resumed with correct LSNs after the restart
+     * with the torn page.
+     */
+    ndbout << "Clean restart of node " << nodeId << endl;
+    CHECK(restarter.restartOneDbNode(nodeId, false, true, true) == 0);
+    CHECK(restarter.waitNodesNoStart(&nodeId, 1) == 0);
+    CHECK(restarter.startNodes(&nodeId, 1) == 0);
+    CHECK(restarter.waitClusterStarted() == 0);
+    CHECK(pNdb->waitUntilReady() == 0);
+
+    ndbout << "Clearing..." << endl;
+    CHECK(hugoTrans.clearTable(pNdb, NdbScanOperation::SF_TupScan) == 0);
+    i++;
+  }
+
+  ndbout << "runSR_DD_UndoTornPage finished" << endl;
+  ctx->stopTest();
+  return result;
+}
+
 int runBug22696(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
   int result = NDBT_OK;
@@ -4702,6 +4814,13 @@ TESTCASE("SR_DD_UndoHoleMulti",
          "persisted UNDO log writes") {
   INITIALIZER(runWaitStarted);
   STEP(runSR_DD_UndoHoleMulti);
+}
+TESTCASE("SR_DD_UndoTornPage",
+         "Restart a node with a torn page in the disk data UNDO log, "
+         "verifying that checksum verification detects the page and "
+         "recovery treats it as a hole") {
+  INITIALIZER(runWaitStarted);
+  STEP(runSR_DD_UndoTornPage);
 }
 TESTCASE("Bug29167", "") {
   INITIALIZER(runWaitStarted);

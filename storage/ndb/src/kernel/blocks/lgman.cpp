@@ -40,6 +40,7 @@
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/SumaImpl.hpp>
 #include <signaldata/UndoLogLevel.hpp>
+#include <Checksum.hpp>
 #include "dbtup/Dbtup.hpp"
 #include "diskpage.hpp"
 #include "util/require.h"
@@ -1821,7 +1822,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const
       page_v2->m_page_header.m_page_lsn_lo = initialLsn;
       page_v2->m_words_used = 1;
       page_v2->m_checksum = 0;
-      page_v2->m_ndb_version = NDB_DISK_V2;
+      page_v2->m_ndb_version = NDB_DISK_V3;
       page_v2->m_last_lsn = 1;
       page_v2->m_unused[0] = 0;
       page_v2->m_unused[1] = 0;
@@ -1830,6 +1831,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const
       page_v2->m_unused[4] = 0;
       page_v2->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1;
       page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
+      stamp_undo_page_checksum(page_v2);
     } else {
       File_formats::Undofile::Undo_page *page =
           (File_formats::Undofile::Undo_page *)page_ptr.p;
@@ -3252,17 +3254,17 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
     jam();
     for (Uint32 i = 0; i < pages; i++) {
       /**
-       * Ensure that all pages are written using the V2 format and
-       * ensure that it cannot be interpreted as some future version.
-       *
-       * Here we can add checksum calculation for a v3 format when
-       * we are ready for it.
+       * Ensure that all pages are written using the V2 format layout
+       * and ensure that it cannot be interpreted as some future
+       * version. The V3 stamp uses the same layout and additionally
+       * carries a checksum over the complete page in m_checksum,
+       * computed as the last step after all other fields are set.
        */
       File_formats::Undofile::Undo_page_v2 *page_v2 =
           (File_formats::Undofile::Undo_page_v2 *)m_shared_page_pool.getPtr(
               pageId + i);
       page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
-      page_v2->m_ndb_version = NDB_DISK_V2;
+      page_v2->m_ndb_version = NDB_DISK_V3;
       page_v2->m_checksum = 0;
       page_v2->m_last_lsn = 1;
       page_v2->m_unused[0] = 0;
@@ -3275,6 +3277,7 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
           get_undo_data_ptr((Uint32 *)page_v2, ptr, jamBuffer()) + (pos - 1);
       Uint32 len = (*record) & 0xFFFF;
       ndbrequire(pos >= len);
+      stamp_undo_page_checksum(page_v2);
     }
   }
 
@@ -3298,6 +3301,33 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
                         " of %u pages starting at file page %u, crash at"
                         " write completion",
                         1 + head.m_idx + hole_idx, pages, 1 + head.m_idx);
+    SET_ERROR_INSERT_VALUE(15003);
+  }
+  if (ERROR_INSERTED(15004) && pages >= 3 && max > pages &&
+      ptr.p->m_ndb_version >= NDB_DISK_V2) {
+    /**
+     * Test of restart with a torn page in the UNDO log. Corrupt data
+     * words in the second half of one page near the end of this
+     * multi-page write, after the checksum has been stamped. This
+     * simulates a page whose first sectors were persisted but whose
+     * tail sectors still hold stale data after a crash in the middle
+     * of the page write. The page header including the version stamp
+     * and checksum stays intact, so the restart must detect the page
+     * through checksum verification and treat it as a hole. Error
+     * insert 15003 then crashes the node when this write (including
+     * its fsync) has completed.
+     */
+    jam();
+    Uint32 torn_idx = pages - 2;
+    Uint32 *words = (Uint32 *)m_shared_page_pool.getPtr(pageId + torn_idx);
+    for (Uint32 i = GLOBAL_PAGE_SIZE_WORDS / 2; i < GLOBAL_PAGE_SIZE_WORDS;
+         i += 512) {
+      words[i] ^= 0x5A5A5A5A;
+    }
+    g_eventLogger->info("LGMAN: ERROR_INSERT 15004: tearing page %u in write"
+                        " of %u pages starting at file page %u, crash at"
+                        " write completion",
+                        1 + head.m_idx + torn_idx, pages, 1 + head.m_idx);
     SET_ERROR_INSERT_VALUE(15003);
   }
 #endif
@@ -4228,6 +4258,51 @@ void Lgman::find_log_head(Signal *signal, Ptr<Logfile_group> lg_ptr) {
   }
 }
 
+/**
+ * Patch an unusable UNDO log page (unwritten, or failed checksum
+ * verification) in the restart read buffer so that downstream logic
+ * uniformly sees an unwritten page: page LSN 0 and a single UNDO_END
+ * record. Only used during restart, the page is never written back in
+ * this form.
+ */
+void Lgman::patch_unwritten_undo_page(
+    File_formats::Undofile::Undo_page_v2 *page) {
+  page->m_page_header.m_page_lsn_hi = 0;
+  page->m_page_header.m_page_lsn_lo = 0;
+  page->m_words_used = 1;
+  page->m_checksum = 0;
+  page->m_ndb_version = NDB_DISK_V2;
+  page->m_last_lsn = 1;
+  page->m_unused[0] = 0;
+  page->m_unused[1] = 0;
+  page->m_unused[2] = 0;
+  page->m_unused[3] = 0;
+  page->m_unused[4] = 0;
+  page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1;
+  page->m_page_header.m_page_type = File_formats::PT_Undopage;
+}
+
+/**
+ * UNDO log page checksum (pages stamped NDB_DISK_V3 or later).
+ *
+ * The m_checksum field is set so that the XOR over the complete page
+ * becomes zero. Stamping must be the last step after all other fields
+ * of the page have been set; verification is a single XOR pass over
+ * the page. Pages stamped with a version before NDB_DISK_V3 have
+ * m_checksum written as zero and must not be verified.
+ */
+void Lgman::stamp_undo_page_checksum(
+    File_formats::Undofile::Undo_page_v2 *page) {
+  page->m_checksum = 0;
+  page->m_checksum =
+      computeXorChecksum((const Uint32 *)page, GLOBAL_PAGE_SIZE_WORDS);
+}
+
+bool Lgman::verify_undo_page_checksum(
+    const File_formats::Undofile::Undo_page_v2 *page) {
+  return computeXorChecksum((const Uint32 *)page, GLOBAL_PAGE_SIZE_WORDS) == 0;
+}
+
 void Lgman::execFSREADCONF(Signal *signal) {
   jamEntry();
   client_lock(number(), __LINE__, this);
@@ -4298,7 +4373,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
   Ptr<GlobalPage> page_ptr;
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
                                        file_ptr.p->m_online.m_outstanding));
-  File_formats::Undofile::Undo_page_v2* page = 
+  File_formats::Undofile::Undo_page_v2* page =
     (File_formats::Undofile::Undo_page_v2*)page_ptr.p;
   if (page->m_page_header.m_page_type == File_formats::PT_Unallocated)
   {
@@ -4307,19 +4382,27 @@ void Lgman::execFSREADCONF(Signal *signal) {
       file_ptr.p->m_online.m_read_page_idx,
       file_ptr.p->m_file_id));
 
-    page->m_page_header.m_page_lsn_hi = 0;
-    page->m_page_header.m_page_lsn_lo = 0;
-    page->m_words_used = 1;
-    page->m_checksum = 0;
-    page->m_ndb_version = NDB_DISK_V2;
-    page->m_last_lsn = 1;
-    page->m_unused[0] = 0;
-    page->m_unused[1] = 0;
-    page->m_unused[2] = 0;
-    page->m_unused[3] = 0;
-    page->m_unused[4] = 0;
-    page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1 ;
-    page->m_page_header.m_page_type = File_formats::PT_Undopage;
+    patch_unwritten_undo_page(page);
+  }
+  else if (lg_ptr.p->m_ndb_version >= NDB_DISK_V2 &&
+           page->m_ndb_version >= NDB_DISK_V3 &&
+           !verify_undo_page_checksum(page))
+  {
+    /**
+     * A page with a wrong checksum, e.g. a page torn by a crash in the
+     * middle of its write. Such a page can only legally exist in the
+     * region of the log where a partially persisted write can leave
+     * holes, so we treat it exactly as an unwritten page: the end of
+     * log search will not adopt it, the backward hole scan will rewrite
+     * it with a filler page, and UNDO log execution refuses it once
+     * records have been applied.
+     */
+    jam();
+    g_eventLogger->info(
+        "LGMAN: Checksum mismatch in UNDO log page %u in file %u,"
+        " treating page as unwritten",
+        file_ptr.p->m_online.m_read_page_idx, file_ptr.p->m_file_id);
+    patch_unwritten_undo_page(page);
   } else {
     DEB_LGMAN_START_EXTRA(("Read page %u in file %u, page_type: %u",
       file_ptr.p->m_online.m_read_page_idx,
@@ -4910,7 +4993,7 @@ void Lgman::write_hole_filler_page(Signal *signal,
     File_formats::Undofile::Undo_page_v2 *page_v2 =
         (File_formats::Undofile::Undo_page_v2 *)pageP;
     jam();
-    page_v2->m_ndb_version = NDB_DISK_V2;
+    page_v2->m_ndb_version = NDB_DISK_V3;
     page_v2->m_checksum = 0;
     page_v2->m_last_lsn = 1;
     page_v2->m_unused[0] = 0;
@@ -4918,6 +5001,7 @@ void Lgman::write_hole_filler_page(Signal *signal,
     page_v2->m_unused[2] = 0;
     page_v2->m_unused[3] = 0;
     page_v2->m_unused[4] = 0;
+    stamp_undo_page_checksum(page_v2);
   }
 
   file_ptr.p->m_online.m_outstanding = 1;
@@ -5719,6 +5803,28 @@ const Uint32 *Lgman::get_next_undo_record(Uint64 *this_lsn) {
     Uint64 page_lsn = pageP->m_page_header.m_page_lsn_hi;
     page_lsn <<= 32;
     page_lsn += pageP->m_page_header.m_page_lsn_lo;
+    if (lg_ptr.p->m_ndb_version >= NDB_DISK_V2) {
+      File_formats::Undofile::Undo_page_v2 *page_v2 =
+          (File_formats::Undofile::Undo_page_v2 *)pageP;
+      if (page_v2->m_ndb_version >= NDB_DISK_V3 &&
+          !verify_undo_page_checksum(page_v2)) {
+        /**
+         * A page with a wrong checksum read during UNDO log execution.
+         * Force the page LSN to 0 so that the page is classified as an
+         * unwritten page below: ignored while no UNDO log record has
+         * been applied yet (a torn page in the region of a partially
+         * persisted write) and a fatal UNDO log corruption otherwise.
+         * This covers the execution page reads which do not pass
+         * through the restart read validation in execFSREADCONF.
+         */
+        jam();
+        g_eventLogger->info(
+            "LGMAN: Checksum mismatch in UNDO log page %u during UNDO"
+            " log execution, treating page as unwritten",
+            lg_ptr.p->m_consumer_file_pos.m_idx);
+        page_lsn = 0;
+      }
+    }
     if (page_lsn != (lg_ptr.p->m_last_read_lsn - 1)) {
       jam();
       /**

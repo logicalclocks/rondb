@@ -137,6 +137,10 @@ args: -n SR_DD_UndoHoleMulti D2
 max-time: 3600
 
 cmd: testSystemRestart
+args: -n SR_DD_UndoTornPage D2
+max-time: 1980
+
+cmd: testSystemRestart
 args: -n SR_DD_3b_LCP D1
 max-time: 1260
 

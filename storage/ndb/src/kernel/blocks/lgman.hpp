@@ -421,6 +421,12 @@ public:
   void find_log_head(Signal *signal, Ptr<Logfile_group> ptr);
   void find_log_head_in_file(Signal *, Ptr<Logfile_group>, Ptr<Undofile>,
                              Uint64);
+  static void patch_unwritten_undo_page(
+      File_formats::Undofile::Undo_page_v2 *page);
+  static void stamp_undo_page_checksum(
+      File_formats::Undofile::Undo_page_v2 *page);
+  static bool verify_undo_page_checksum(
+      const File_formats::Undofile::Undo_page_v2 *page);
   void start_backward_hole_scan(Signal *, Ptr<Logfile_group>, Ptr<Undofile>);
   void read_backward_scan_page(Signal *, Ptr<Logfile_group>);
   void find_log_head_backward_check(Signal *, Ptr<Logfile_group>,
