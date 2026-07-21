@@ -164,6 +164,7 @@ public:
         Uint32 m_outstanding;  // Outstanding pages
         Uint32 m_current_scan_index;
         Uint32 m_current_scanned_pages;
+        Uint32 m_read_page_idx;  // File page of outstanding restart read
         bool m_binary_search_end;
         Uint64 m_lsn;  // Used when finding log head
       } m_online;
