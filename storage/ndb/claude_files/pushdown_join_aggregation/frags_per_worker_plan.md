@@ -1,14 +1,14 @@
 # Configurable fragsPerWorker (1/2/4) for JoinAgg pushed queries — incl. CTE queries
 
-**Status: Phases 1-7 implemented (wire protocol + version gate @ 26.04.2;
+**Status: Phases 1-8 implemented (wire protocol + version gate @ 26.04.2;
 NdbQueryOptions::setFragsPerWorker; prepareSend + SCAN_TABREQ population;
 DBTC chunked SPJ-instance assignment; DBSPJ defensive comment; CTE
-enablement with scanCte carve-out; RonSQL `FRAGS_PER_WORKER = <n>` syntax).
-Phase 8 (tests) pending. K > 1 is structurally complete end-to-end for
-non-CTE aggregate queries AND CTE_LOOKUP-probed CTE queries (fs_batch
-shape) but unverified (no test sets the option yet — Phase 8); queries
-containing a scanCte (CTE_SCAN) operation stay pinned to K=1
-(virtual-fragment mapping, see Phase 6 Discovery 1).**
+enablement with scanCte carve-out; RonSQL `FRAGS_PER_WORKER = <n>` syntax;
+tests). Phase 8 test files exist but the 5 MTR result files still need a
+first `--record` run. Manually verified live: fs_batch at K=2/4 returns
+correct results; K=4 measured ~10% faster than K=1. Queries containing a
+scanCte (CTE_SCAN) operation stay pinned to K=1 (virtual-fragment mapping,
+see Phase 6 Discovery 1).**
 
 ## Context
 
@@ -317,19 +317,35 @@ Syntax: `[EXPLAIN] [FRAGS_PER_WORKER = <int>] [WITH …] SELECT …`
   SCAN_TABREQ). EXPLAIN (`print()`) leads with `FRAGS_PER_WORKER = N
   (requested; …)` when set.
 
-## Phase 8 — Tests and benchmarks
+## Phase 8 — Tests and benchmarks (IMPLEMENTED; needs first --record run)
 
-- **Block test** — extend `storage/ndb/block_unit_test/testJoinAggNdbApi.cpp`:
-  run an existing GROUP BY join shape with option unset / K=1 / 2 / 4 and
-  assert identical group→(COUNT,SUM) maps; after Phase 6 add a CTE shape the
-  same way. Run:
+- **Block test** — `testJoinAggNdbApi.cpp` **Test 23**
+  (`testFragsPerWorker` + `runTest23Query`): reuses the Test 18 tables
+  (2000 rows, `FOR_RP_BY_LDM_X_2` = 16 fragments) and runs the SUM/COUNT
+  GROUP BY join with `setFragsPerWorker` on the root scan at
+  unset / 1 / 2 / 4 / 8, verifying the closed-form expected results
+  (group g → SUM = 1000·g + 990000, COUNT = 100) for every run. 8
+  exercises the API halving clamp on topologies with < 8 frags/node. No
+  ERROR_INSERT → no fake-OK entry, runs in all build types. Run:
   `make -j$(sysctl -n hw.ncpu) testJoinAggNdbApi` then
   `./storage/ndb/block_unit_test/testJoinAggNdbApi -c <connect_string> -m <mysql_port> --verbose`
-- **MTR** — new `ronsql_frags_per_worker.test`: same aggregate join query with
-  no option / K=1/2/4 (result equality), EXPLAIN output, and (Phase 6) a CTE
-  query. Add a multi-nodegroup topology copy (`ronsql_cte_ng2r2`-style) so K>1
-  actually bundles. Run: `./mtr --suite=ronsql ronsql_frags_per_worker` (and the
-  ronsql_cte topology suites for regression).
+  (or `--only 23`).
+- **MTR** — `suite/ronsql_cte/include/body_frags_per_worker.inc` + thin
+  wrapper `ronsql_cte_dd_frags_per_worker.test` in `ronsql_cte` and the 4
+  topology siblings (ng1r3/ng2r2/ng2r3/ng4r2). Cases: fpw-1..4 fs_batch
+  shape at K = unset/1/2/4 (each strict-diffed against the same bare-SQL
+  MySQL baseline → cross-K equality is transitive); fpw-5 non-CTE join agg
+  K=4; fpw-6 root-lookup CTE query K=4 (rootFragId-0 exactly-once path);
+  fpw-7 scanCte root K=4 (pin path, must still be correct); fpw-8 EXPLAIN
+  header grep (fatal — our own stable output); fpw-9 `= 0` parse error.
+  **`ronsql_compare.inc` gained an optional `$RONSQL_PREFIX` variable**:
+  RonSQL-only statement-head syntax prepended on the RDRS side only
+  (requires `$suppress_ronsql_cli=yes`, reset after each use) — reusable
+  for the LOCAL-mode plan. First run needs `--record` to create the 5
+  result files:
+  `./mtr --record --suite=ronsql_cte ronsql_cte_dd_frags_per_worker`
+  (repeat for `ronsql_cte_ng1r3` / `ng2r2` / `ng2r3` / `ng4r2`), then a
+  plain re-run to confirm stability.
 - **Benchmarks** — after Phase 6, `fs_batch` / `offline_fs_*` via rondb-cli
   `.bench_ronsql` with `FRAGS_PER_WORKER = 2/4` variants (registry
   `tools/rondb-cli/internal/shell/ronsql_bench.go`, `RonSQLPrefix` field
