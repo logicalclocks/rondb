@@ -360,6 +360,36 @@ online reads: full database (member / store shared entirely), whole table
 (FG shared or restricted-granted entirely) and column subset. On denial the
 returned message names the blocking object - database, table or column(s) -
 like MySQL errors 1044/1142/1143 do.
+
+The three grant tiers live in UserDBs (see api_key.hpp): userDBs (full-db),
+visibleDBs (FV-metadata visibility only) and fineGrants
+(db -> table -> columns, where an EMPTY column set means the whole table).
+The request shape is encoded in TableAccessRequest (see api_key.hpp).
+
+Fail-closed by construction: access_ok starts false and is only ever set true
+at one of three explicit allow points (steps 2, 6, 8); every other exit is a
+401. Names are lowercased before comparison (Hopsworks compares them case-
+insensitively). The branches, in order:
+
+  1. Default deny (access_ok = false).
+  2. Tier 1 - full database: db in userDBs -> ALLOW (columns irrelevant).
+  3. metadata_only request: ALLOW iff db in visibleDBs or the key has any
+     fineGrants entry for db (any relationship lets the caller resolve FV
+     metadata); otherwise deny naming the database. This branch never grants
+     row data.
+  4. No data grant in this db: table empty (db-level request) or db absent
+     from fineGrants -> deny naming the database (MySQL 1044).
+  5. Table not granted: table absent from fineGrants[db] -> deny naming
+     db/table (MySQL 1142).
+  6. Tier 2 - whole table: fineGrants[db][table] is the EMPTY set -> ALLOW.
+     (The DAL guarantees a partial grant always carries >=1 column, so an
+     empty set unambiguously means "whole table", never an orphaned partial
+     grant - see find_fine_grained_grants_int.)
+  7. Whole-row read against a column subset: grant is a non-empty subset but
+     accessReq.columns == nullptr -> deny "all columns" (this is what makes a
+     SELECT *-style read fail closed on a column-granted table).
+  8. Tier 3 - per column: any requested column not in the granted set -> deny
+     naming the column(s) (MySQL 1143); otherwise ALLOW.
 */
 static RS_Status check_access(const UserDBs *userDBs,
                               const TableAccessRequest &accessReq,
