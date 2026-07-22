@@ -1,0 +1,110 @@
+# ==========================================================================
+# ttl_purge_lag.test
+#
+# The purge lag (mysql.ttl_purge_ctrl ctrl_id = 1, historically called the
+# "purge window"): an expired row only becomes PURGEABLE once it has been
+# expired for at least the lag. Covers the whole path: GetPurgeCtrl read,
+# setTTLPurgeWindowSize propagation, and the kernel-side expiry check
+# (ttl_sec + lag) plus the index-scan upper bound.
+#   1. lag = 3600s: rows expired ~5 minutes ago are retained (no purging).
+#   2. lag lowered to 60s: the same rows (expired > 60s) are purged.
+#   3. Negative lag value: treated as 0 (fail-open), purging continues.
+#
+# Purge activity is asserted via the purger's rows_purged_total metric
+# (snapshot + delta), NOT via COUNT(*): SQL reads TTL-filter expired rows,
+# so row counts cannot distinguish "expired but retained" from "purged".
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+
+# Baseline of the cumulative purge counter (the suite shares one RDRS)
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/lag_m.json
+--let $json_file = $MYSQL_TMP_DIR/lag_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $purged_base = $json_value
+
+--echo #
+--echo # Phase 1: lag 3600s retains rows that expired ~5 minutes ago
+--echo #
+
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+
+CREATE TABLE mysql.ttl_purge_ctrl (ctrl_id INT PRIMARY KEY, value INT) ENGINE=NDB;
+INSERT INTO mysql.ttl_purge_ctrl VALUES (1, 3600);
+
+# The worker re-reads the ctrl table every round; wait until it saw the lag
+--let $log_pattern = purge window size changed from 0 to 3600 seconds
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rdrs_log.inc
+
+--let $ttl_db = ttl_lag
+--let $ttl_table = t1
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_lag
+--let $wait_table = t1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_lag
+--let $insert_table = t1
+--let $insert_count = 30
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--sleep 6
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/lag_m.json
+--let $json_file = $MYSQL_TMP_DIR/lag_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Rows expired for less than the lag must not be purged
+--let $assert_cond = $json_value = $purged_base
+--source include/assert.inc
+
+--echo #
+--echo # Phase 2: lag lowered to 60s => the rows become purgeable
+--echo #
+
+UPDATE mysql.ttl_purge_ctrl SET value = 60 WHERE ctrl_id = 1;
+
+--let $expected_purge_total = `SELECT $purged_base + 30`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_lag
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Phase 3: negative lag is treated as 0, purging continues
+--echo #
+
+UPDATE mysql.ttl_purge_ctrl SET value = -5 WHERE ctrl_id = 1;
+
+--let $insert_db = ttl_lag
+--let $insert_table = t1
+--let $insert_count = 20
+--let $insert_start_id = 100
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $expected_purge_total = `SELECT $purged_base + 50`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_lag
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE mysql.ttl_purge_ctrl;
+DROP DATABASE ttl_lag;
+--sleep 2
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
