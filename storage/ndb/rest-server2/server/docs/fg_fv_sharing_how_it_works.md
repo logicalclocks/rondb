@@ -435,17 +435,19 @@ fields outside the FLS list are stripped before results leave the cluster.
 
 ## 7. Known gaps — and what they mean for RDRS2
 
-> **Status (2026-07, branch RONDB-1088):** the first slice of the port is
-> implemented. RDRS2 now resolves an API key's allowed databases as *the
-> user's member projects ∪ feature stores shared entirely with any of those
-> projects* (`shared_feature_store`, `shared_entirely = 1`), applied inside
-> the API-key cache (`find_user_databases`, `rdrs_hopsworks_dal.cpp`) so all
-> endpoints inherit it. Test fixtures were flipped to the same model: the
-> test key's user is a member of one home project only; every other database
-> is granted through share rows (see
-> `fg_fv_sharing_rdrs2_happy_path_plan.md` for scope, commits and the
-> follow-up list). FG-level/feature-level shares, the restricted role, and
-> 400-parity remain open — items 2, 3 and 6 below.
+> **Status (2026-07, branch RONDB-1088):** the port is now complete for the
+> online read path. RDRS2 resolves an API key's grants from all six tables
+> (`shared_*`, `restricted_*`, plus `project_team` membership) into a
+> three-tier `UserDBs` grant set (full database, metadata-visible, and
+> db→table→columns), and enforces the full ladder — store-entirely,
+> whole-FG, column-subset, and the restricted role — on every data-serving
+> endpoint (pk-read, batch pk-read, feature-store, batch feature-store, scan,
+> RonSQL). The recursive feature-view check (item 3) is implemented; the
+> orphan-row fail-closed case is handled. Remaining consciously-diverged
+> item: denials are surfaced as **401** rather than Hopsworks' 400 (item 6).
+> The **RDRS2-side authorization architecture is documented in §9 below** —
+> that section is the pointer for "how a REST client's access is decided."
+> See `fg_fv_sharing_rdrs2_happy_path_plan.md` for the porting history.
 
 1. **The RonDB REST server bypasses the MySQL GRANT enforcement.** RDRS
    authenticates with Hopsworks **API keys**, reads rows via the NDB API
@@ -499,3 +501,79 @@ Files (hopsworks repo, `hopsworks-common` unless noted):
 - Entities: `hopsworks-persistence/.../entity/featurestore/{share,access}/`
 - DDL: `docker/migration/sql/ddl/V45__[FSTORE-1905]_column_level_permissions.sql`,
   `V46__[FSTORE-1940]_restricted_feature_access.sql`
+
+---
+
+## 9. RDRS2 implementation: authorization architecture (branch RONDB-1088)
+
+> Unlike the rest of this doc, `file:line` references in this section are
+> relative to `storage/ndb/rest-server2/server` in the **RonDB** repo, not the
+> hopsworks repo.
+
+This is the pointer for understanding how a RonDB REST API caller's access is
+decided. The design mirrors Hopsworks' single-choke-point `AccessController`
+(§1): there is **one** authorization path, and every data-serving endpoint
+funnels through it. Endpoints do not implement their own access logic — they
+only assemble the request(s).
+
+### 9.1 One choke point
+
+Every endpoint calls one of the `authenticate()` overloads in `src/api_key.cpp`,
+and all of them converge on:
+
+```
+authenticate(...)                       // src/api_key.cpp — per-endpoint adapters
+  -> APIKeyCache::validate_api_key(...)  // parse key, hash, expiry, then authorize
+    -> APIKeyCache::find_and_validate(...)
+      -> check_access(userDBs, accessReq, &ok)   // the grant ladder
+```
+
+Grants are resolved **once at cache load time** (preload / lazy load / 180s
+refresh) from the six tables by the `find_*` readers in
+`src/rdrs_hopsworks_dal.cpp` into a per-key `UserDBs` (`src/api_key.hpp`) with
+three tiers: `userDBs` (full-database: membership or store-shared-entirely),
+`visibleDBs` (feature-view metadata visibility only), and `fineGrants`
+(`db -> table -> {columns}`, where an **empty** column set means the whole
+table). The orphan/transient partial-grant row is dropped fail-closed in
+`find_fine_grained_grants_int` so an empty set can never mean "whole table" by
+accident.
+
+`check_access` (numbered branch walkthrough in the comment above the function
+in `src/api_key.cpp`) is fail-closed by construction: it defaults to deny and
+only allows at three explicit points (full-db, whole-table, or all-requested-
+columns-granted). Denials name the blocking object — database / table /
+column(s) — the MySQL 1044 / 1142 / 1143 analogues, returned as HTTP **401**.
+
+### 9.2 Per-endpoint request assembly
+
+| Endpoint | Controller | How the `TableAccessRequest`(s) are built |
+|---|---|---|
+| pk-read | `pk_read_ctrl.cpp` | via `authenticate(PKReadParams&)` — one `(db, table)`; columns = read columns + filter/PK columns, or `nullptr` (whole row) |
+| batch pk-read | `batch_pk_read_ctrl.cpp` | controller aggregates the sub-operations into one request per `(db, table)` (union of read+filter columns; whole-row if any op reads all), then `authenticate(vector<TableAccessRequest>)` |
+| feature-store | `feature_store_ctrl.cpp` | via `authenticate(FeatureViewMetadata&)` — FV store visibility + every constituent FG's online table and the exact served feature columns (spine FGs: metadata-only) |
+| batch feature-store | `batch_feature_store_ctrl.cpp` | the **same** `authenticate(FeatureViewMetadata&)` overload |
+| scan | `scan_read_ctrl.cpp` | read columns + filter columns + index key columns → one request |
+| RonSQL | `ronsql_ctrl.cpp` | parse-only pass extracts the table + every referenced column (SELECT/agg/WHERE/GROUP BY/ORDER BY) → one request |
+
+### 9.3 Why the per-controller diffs differ
+
+Because enforcement lives in the shared `authenticate()` overloads (§9.1), the
+size of a controller's diff does **not** indicate how much authorization it
+does:
+
+- **`pk_read_ctrl.cpp` needed no change.** A single pk-read is exactly one
+  `(db, table)`; its authorization is fully handled by the
+  `authenticate(PKReadParams&)` overload, which this work updated to pass the
+  read + filter columns (or `nullptr` for a whole-row read).
+- **`batch_pk_read_ctrl.cpp` changed** only to *aggregate* many sub-operations
+  into per-`(db, table)` requests before calling the same shared path — logic
+  that is inherently batch-specific and has no other home.
+- **`feature_store_ctrl.cpp` and `batch_feature_store_ctrl.cpp` changed
+  identically** (a one-line swap from the old DB-name-list call to
+  `authenticate(api_key, *metadata)`); all the real work — store visibility +
+  per-constituent-FG table/column checks — is in the shared
+  `authenticate(FeatureViewMetadata&)` overload, so both single and batch get
+  identical enforcement.
+
+A batch is authorized as a whole: any one denied `(db, table)` fails the entire
+request.
