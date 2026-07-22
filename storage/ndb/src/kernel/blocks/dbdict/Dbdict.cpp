@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -6120,19 +6120,44 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
       parseP->errorLine = __LINE__;
       return;
     }
-    if (c_tableDesc.FragmentType == DictTabInfo::UserDefined) {
-      jam();
-      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
-      parseP->errorLine = __LINE__;
-      return;
-    }
-    if (!DictTabInfo::isOrderedIndex(c_tableDesc.TableType) &&
-        (tablePtr.p->partitionCount == 0 ||
-         (tablePtr.p->partitionCount % partitionHashFanout) != 0)) {
-      jam();
-      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
-      parseP->errorLine = __LINE__;
-      return;
+    /**
+     * Ordered index tables inherit the base table's partitioning
+     * implicitly (fragment type DistrKeyOrderedIndex, no hash map
+     * object of their own) while carrying copies of the base table's
+     * partition hash metadata. The base table was already validated,
+     * so the checks below only apply to real tables.
+     */
+    if (!DictTabInfo::isOrderedIndex(c_tableDesc.TableType)) {
+      if (tablePtr.p->fragmentType != DictTabInfo::HashMapPartition) {
+        jam();
+        /* Fanout routing works through a hash map. */
+        parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+      if (partitionHashFanout > tablePtr.p->partitionCount) {
+        jam();
+        parseP->errorCode = CreateTableRef::InvalidFanout;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+      /**
+       * Every base key spreads over a block of partitionHashFanout
+       * consecutive hash map buckets. The fanout must divide the
+       * bucket count or a block could wrap the bucket ring and two
+       * hash values of one base key could collide on a partition.
+       * The map was resolved above for all HashMapPartition tables.
+       */
+      HashMapRecordPtr hm_ptr;
+      ndbrequire(find_object(hm_ptr, tablePtr.p->hashMapObjectId));
+      Ptr<Hash2FragmentMap> mapptr;
+      ndbrequire(g_hash_map.getPtr(mapptr, hm_ptr.p->m_map_ptr_i));
+      if ((mapptr.p->m_cnt % partitionHashFanout) != 0) {
+        jam();
+        parseP->errorCode = CreateTableRef::InvalidFanout;
+        parseP->errorLine = __LINE__;
+        return;
+      }
     }
   }
   tablePtr.p->partitionHashBaseKeyCount = (Uint8)partitionHashBaseKeyCount;

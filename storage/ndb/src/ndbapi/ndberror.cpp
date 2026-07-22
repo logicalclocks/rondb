@@ -505,6 +505,8 @@ ErrorBundle ErrorCodes[] = {
   { 1240, DMEC, AE, "Create Database failed, no disk quota available" },
   { 1241, DMEC, AE, "Alter Database failed, no disk quota available" },
   { 1242, DMEC, AE, "Drop File failed, Not allowed with Disk quotas" },
+  { 1243,  HA_WRONG_CREATE_OPTION, SE, "Invalid partition hash definition" },
+  { 1244,  HA_WRONG_CREATE_OPTION, SE, "Invalid fanout in partition hash definition" },
   { 4256, DMEC, AE, "Must call Ndb::init() before this function" },
   { 4257, DMEC, AE, "Tried to read too much - too many getValue calls" },
   { 320,  DMEC, AE, "Invalid no of nodes specified for new nodegroup" },
@@ -695,7 +697,6 @@ ErrorBundle ErrorCodes[] = {
   { 796,  DMEC, SE, "Out of schema transaction memory" },
   { 798,  DMEC, AE, "A disk table must not be specified as no logging" },
   { 799,  HA_WRONG_CREATE_OPTION, SE, "Non default partitioning without partitions" },
-  { 800,  HA_WRONG_CREATE_OPTION, SE, "Invalid partition hash definition" },
   { 4377, DMEC, AE, "Database and schema name must be set on Ndb object"},
 
   /**

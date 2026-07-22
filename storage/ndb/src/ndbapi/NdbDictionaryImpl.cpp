@@ -93,12 +93,27 @@ static int validate_partition_hash_metadata(const NdbTableImpl &impl,
       error.code = CreateTableRef::WrongPartitionBalanceFullyReplicated;
       return -1;
     }
-    if (impl.m_fragmentType == NdbDictionary::Object::UserDefined) {
+    if (impl.m_fragmentType != NdbDictionary::Object::HashMapPartition) {
+      /* Fanout routing works through a hash map. */
       error.code = CreateTableRef::InvalidPartitionHash;
       return -1;
     }
-    if (partition_count_known && (partition_count % fanout) != 0) {
-      error.code = CreateTableRef::InvalidPartitionHash;
+    if (partition_count_known && fanout > partition_count) {
+      error.code = CreateTableRef::InvalidFanout;
+      return -1;
+    }
+    /**
+     * Every base key spreads over a block of fanout consecutive hash
+     * map buckets, so the fanout must divide the bucket count or a
+     * block could wrap the bucket ring and collide on a partition.
+     * m_hash_map is only populated on table objects fetched from the
+     * kernel (the alter path); at create time the map need not exist
+     * yet and DBDICT validates the bucket count of the actual map at
+     * parse time.
+     */
+    const Uint32 hash_map_size = impl.m_hash_map.size();
+    if (hash_map_size != 0 && (hash_map_size % fanout) != 0) {
+      error.code = CreateTableRef::InvalidFanout;
       return -1;
     }
   }

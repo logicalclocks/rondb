@@ -49,17 +49,28 @@ metadata. This avoids mixing a new hash contract with paths where the client or
 SQL layer already supplies exact fragment ids, or where data placement does not
 benefit from the interval-pruned scan model.
 
-Require the total number of partitions to be a multiple of the fanout:
+Require the fanout to divide the hash map bucket count and to not exceed
+the partition count:
 
 ```
-partition_count % z == 0
+hash_map_bucket_count % z == 0
+z <= partition_count
 ```
 
 This must be checked when creating a table and when an alter operation can
-change the table's partition count or the `PARTITION_HASH` metadata. This keeps
-intervals aligned and avoids relying on partially understood hash-map behavior
-during reorg and partition-balance changes. This restriction can be relaxed
-later after DIH/hash-map behavior is explicitly tested.
+change the table's partition count, hash map, or the `PARTITION_HASH`
+metadata. Every base key spreads over a block of `z` consecutive hash map
+buckets starting at a multiple of `z`; if `z` does not divide the bucket
+count, a block can wrap the bucket ring and two hash values of one base
+key can collide on the same partition. The authoritative check is in
+DBDICT at table parse time (`handleTabInfoInit`), where the actual hash
+map is resolved; the NDB API and SQL layer perform early checks with the
+information they have. Correctness of interval scans never depends on
+these checks — scans resolve the same raw hash values through the live
+DIH mapping that writes use — the checks guarantee the full `z`-way
+spread. An earlier, stricter `partition_count % z == 0` requirement was
+relaxed in July 2026: the partition count no longer has to be a multiple
+of the fanout.
 
 Index table descriptors should keep persistent copies of the partition hash
 metadata when they inherit the base table's partitioning metadata. This matches
@@ -102,15 +113,17 @@ Validation:
 * `fanout >= 1`
 * if `fanout > 1`, then `detail_pk_columns > 0`
 * `fanout <= partition_count`
-* `partition_count % fanout == 0`
+* `hash_map_bucket_count % fanout == 0` (checked in DBDICT where the
+  actual hash map is resolved, and in `prepareHashMap` for reorg)
 * all fields fit in `Uint32`
 * persisted compact metadata fits in the kernel signal format:
   `base_pk_columns <= 255`, `detail_pk_columns <= 255`, `fanout <= 65535`
 * reject malformed strings, missing values, negative values, and extra fields
-* reject use on user-defined partitioning
+* reject use on any partitioning without a hash map (user-defined and the
+  legacy non-hashmap fragment types)
 * reject use on fully replicated tables in the first implementation
 * reject changing these values through online alter in the first version
-* reject alters that would make `partition_count % fanout != 0`
+* reject alters that would make `fanout > partition_count`
 
 Validation must exist below the SQL layer as well as in `ha_ndbcluster.cc`. The
 public NDB API setter must not let direct
@@ -478,8 +491,9 @@ scan pruning is stable.
 * Add table metadata in NDB API and DictTabInfo.
 * Add validation and version gating.
 * Add comment preservation on alter.
-* Check `partition_count % fanout == 0` both at create time and for alter paths
-  that can change partition count or `PARTITION_HASH`.
+* Check `fanout <= partition_count` and `hash_map_bucket_count % fanout == 0`
+  both at create time and for alter paths that can change partition count,
+  hash map or `PARTITION_HASH`.
 * Add lower-layer validation in NDB API dictionary create/alter and DBDICT
   parse so direct API callers cannot bypass SQL validation.
 * Persistently copy partition hash metadata to ordered-index table descriptors
@@ -580,13 +594,14 @@ Findings from the audit:
   info, which carries the PartitionHash properties, and
   `PartitionBalance_Specific` keeps the backup's fragment count.
   Restoring a fanout table onto a cluster whose (balance-derived)
-  partition count is not a multiple of the fanout fails loudly with
-  error 800 - the same as a create would on that cluster.
+  partition count is smaller than the fanout fails loudly with
+  error 1244 (InvalidFanout) - the same as a create would on that
+  cluster.
 * Online reorg is correct by construction: per-row movement decisions
   flow through the fanout-aware `Dbtc::hash()` and DIH
   (`Tuple_header::REORG_MOVE` is set via normal operations), and
-  `prepareHashMap()` rejects new fragment counts that are not a
-  multiple of the fanout.
+  `prepareHashMap()` rejects new fragment counts smaller than the
+  fanout and new maps whose bucket count the fanout does not divide.
 * GAP (fixed): the direct NDB API `createTable()` had no data node
   version gate. Old DICT silently ignores unknown table properties, so
   an old cluster would create the table as an ordinary table while the
@@ -635,7 +650,7 @@ Metadata tests:
 * DBDICT rejects compact metadata overflow instead of truncating it
 * direct NDB API alter rejects changing partition hash metadata
 * direct NDB API alter rejects partition-count changes where
-  `partition_count % fanout != 0`
+  `fanout > partition_count`
 
 ### DDL and SQL Tests
 
@@ -662,7 +677,7 @@ PARTITION_HASH=abc
 PARTITION_HASH=2:2:2 on PRIMARY KEY(a,b,c)
 PARTITION_HASH=1:0:2
 fanout > partition_count
-partition_count % fanout != 0
+fanout that does not divide the hash map bucket count
 user-defined partitioning with PARTITION_HASH
 fully replicated table with PARTITION_HASH
 ```
@@ -854,13 +869,13 @@ a rolling upgrade via the `NDBMTD_LINK` symlink, the
   version, then succeeds with working pruning and placement)
 
 Reorg/hash-map (implemented: reorg section of mtr
-`ndb_partition_hash_fanout`, ADD PARTITION 4->8 with placement and
-pruning verification plus non-multiple rejection):
+`ndb_partition_hash_fanout`, ADD PARTITION 4->8 and 8->11 with placement
+and pruning verification):
 
 * add node or repartition where supported
 * verify rows remain findable by key
 * verify interval scans remain correct
-* verify alters that change partition count recheck `partition_count % fanout`
+* verify alters that change partition count recheck `fanout <= partition_count`
 * verify fully replicated conversion is rejected for `PARTITION_HASH` tables
 
 ### Performance Tests
@@ -897,8 +912,12 @@ Expected outcome:
 
 ## Deferred Questions
 
-* Can the `partition_count % fanout == 0` restriction be relaxed after
-  DIH/hash-map behavior is tested more thoroughly?
+* RESOLVED (July 2026): the `partition_count % fanout == 0` restriction was
+  relaxed to `fanout <= partition_count` plus
+  `hash_map_bucket_count % fanout == 0`. Interval scans resolve raw hash
+  values through the live DIH mapping, so scan correctness never depended
+  on the partition count; the bucket-count divisibility preserves the
+  exactly-`fanout`-distinct-partitions spread per base key.
 * Should a later version expose multi-fragment partition pruning to the SQL
   optimizer for costing?
 * Should a later version support pruning based on equality in the detail-key

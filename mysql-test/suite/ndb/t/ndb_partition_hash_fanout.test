@@ -130,12 +130,20 @@ COMMENT="NDB_TABLE=PARTITION_HASH=1:0:1";
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
 COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
 PARTITION BY KEY () PARTITIONS 2;
-# fanout does not divide the explicit partition count
---error ER_ILLEGAL_HA_CREATE_OPTION
+# fanout does not need to divide the partition count, only the hash map
+# bucket count: fanout 3 with 4 partitions is valid
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
 COMMENT="NDB_TABLE=PARTITION_HASH=1:1:3"
 PARTITION BY KEY () PARTITIONS 4;
-# fanout that cannot divide any partition count is caught below the SQL
+DROP TABLE tx;
+# fanout that does not divide the hash map bucket count (3840) is
+# rejected below the SQL layer at DBDICT parse time
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:7"
+PARTITION BY KEY () PARTITIONS 7;
+SHOW WARNINGS;
+# fanout that exceeds the compact metadata is caught below the SQL
 # layer (default partitioning, so the SQL layer does not know the count)
 --error ER_CANT_CREATE_TABLE
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
@@ -186,9 +194,14 @@ ALTER TABLE t2 ALGORITHM=INPLACE, COMMENT="NDB_TABLE=PARTITION_HASH=2:0:1";
 ALTER TABLE t2 ALGORITHM=COPY, COMMENT="NDB_TABLE=PARTITION_HASH=2:0:1";
 SHOW CREATE TABLE t2;
 
-# Altering to a partition count that is not a multiple of fanout is rejected
---error ER_ILLEGAL_HA_CREATE_OPTION
+# Altering to a partition count that is not a multiple of the fanout is
+# allowed (the fanout only has to divide the hash map bucket count)
 ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 6;
+SHOW CREATE TABLE t3;
+
+# Altering to a partition count smaller than the fanout is rejected
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 3;
 
 # Making a PARTITION_HASH table fully replicated is rejected.
 # Use t2 (default partitioning): on t3 the explicit PARTITIONS 8 gives
@@ -405,12 +418,23 @@ SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
 FROM ndbinfo.memory_per_fragment
 WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
 
-# Adding partitions to a count that is not a multiple of the fanout
-# is rejected: prepareHashMap fails with NDB error 800 (Invalid
-# partition hash definition), surfaced as ER_GET_ERRMSG
---error ER_GET_ERRMSG
+# Adding partitions to a count that is not a multiple of the fanout is
+# allowed: the fanout only has to divide the hash map bucket count. The
+# base key must still occupy exactly fanout fragments afterwards.
 ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 3;
-SHOW WARNINGS;
+
+SELECT COUNT(*) FROM t_reorg;
+
+# Base-key scans are still pruned after the non-multiple reorg
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM t_reorg FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# The base key still occupies exactly fanout fragments (of now 11)
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
 
 DROP TABLE t_reorg;
 

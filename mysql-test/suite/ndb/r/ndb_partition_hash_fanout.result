@@ -146,17 +146,25 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
 COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
 PARTITION BY KEY () PARTITIONS 2;
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must divide the number of partitions'
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout cannot exceed the number of partitions'
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
 COMMENT="NDB_TABLE=PARTITION_HASH=1:1:3"
 PARTITION BY KEY () PARTITIONS 4;
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must divide the number of partitions'
+DROP TABLE tx;
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:7"
+PARTITION BY KEY () PARTITIONS 7;
+ERROR HY000: Can't create table 'tx' (use SHOW WARNINGS for more info).
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 1244 'Invalid fanout in partition hash definition' from NDB
+Error	1005	Can't create table 'tx' (use SHOW WARNINGS for more info).
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
 COMMENT="NDB_TABLE=PARTITION_HASH=1:1:70000";
 ERROR HY000: Can't create table 'tx' (use SHOW WARNINGS for more info).
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1296	Got error 800 'Invalid partition hash definition' from NDB
+Warning	1296	Got error 1243 'Invalid partition hash definition' from NDB
 Error	1005	Can't create table 'tx' (use SHOW WARNINGS for more info).
 #
 # Negative create cases: unsupported table types
@@ -213,7 +221,18 @@ t2	CREATE TABLE `t2` (
   PRIMARY KEY (`a`,`b`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,PARTITION_HASH=2:0:1'
 ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 6;
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout must divide the number of partitions'
+SHOW CREATE TABLE t3;
+Table	Create Table
+t3	CREATE TABLE `t3` (
+  `a` int NOT NULL,
+  `b` int NOT NULL,
+  `c` int NOT NULL,
+  PRIMARY KEY (`a`,`b`,`c`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=1:2:4'
+/*!50100 PARTITION BY KEY ()
+PARTITIONS 6 */
+ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 3;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH fanout cannot exceed the number of partitions'
 ALTER TABLE t2 COMMENT="NDB_TABLE=FULLY_REPLICATED=1,PARTITION_HASH=2:0:1";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH is not supported for fully replicated tables'
 DROP TABLE t1, t2, t3, t4, t_plain;
@@ -451,10 +470,24 @@ WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
 fragments_with_rows
 2
 ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 3;
-ERROR HY000: Failed to prepare hash map
-SHOW WARNINGS;
-Level	Code	Message
-Warning	1296	Got error 800 'Invalid partition hash definition' from NDB
-Error	1296	Failed to prepare hash map
+SELECT COUNT(*) FROM t_reorg;
+COUNT(*)
+100
+SELECT * FROM t_reorg FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+entity_id	ts
+1	0
+1	1
+1	2
+1	3
+1	4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+fragments_with_rows
+2
 DROP TABLE t_reorg;
 DROP TABLE tf, tn, t_route, t_route_n, t_f1, nums;

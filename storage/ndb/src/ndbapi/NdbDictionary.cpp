@@ -1668,8 +1668,8 @@ int NdbDictionary::Dictionary::prepareHashMap(const Table &oldTableF,
         m_impl.m_error.code = 797; // WrongPartitionBalanceFullyReplicated
         return -1;
       }
-      if ((newcnt % partition_hash_fanout) != 0) {
-        m_impl.m_error.code = CreateTableRef::InvalidPartitionHash;
+      if (partition_hash_fanout > newcnt) {
+        m_impl.m_error.code = CreateTableRef::InvalidFanout;
         return -1;
       }
     }
@@ -1702,6 +1702,18 @@ int NdbDictionary::Dictionary::prepareHashMap(const Table &oldTableF,
 
     if (oldmapsize < newmapsize && oldmapsize % newcnt == 0) {
       newmapsize = oldmapsize;
+    }
+
+    /**
+     * Every base key spreads over a block of fanout consecutive hash
+     * map buckets, so the fanout must divide the bucket count of the
+     * map the reorganized table will use. DBDICT re-validates this at
+     * alter parse time.
+     */
+    if (partition_hash_fanout > 1 &&
+        (newmapsize % partition_hash_fanout) != 0) {
+      m_impl.m_error.code = CreateTableRef::InvalidFanout;
+      return -1;
     }
 
     NdbHashMapImpl &newmap = NdbHashMapImpl::getImpl(newmapF);

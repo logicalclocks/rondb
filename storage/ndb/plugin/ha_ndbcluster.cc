@@ -9469,8 +9469,8 @@ static const char *validatePartitionHashCreate(
   if (user_defined_partitioning)
     return "PARTITION_HASH is not supported with user-defined partitioning";
 
-  if (partition_count_known && partition_count % partition_hash.fanout != 0)
-    return "PARTITION_HASH fanout must divide the number of partitions";
+  if (partition_count_known && partition_hash.fanout > partition_count)
+    return "PARTITION_HASH fanout cannot exceed the number of partitions";
 
   return nullptr;
 }

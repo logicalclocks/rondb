@@ -1096,7 +1096,7 @@ static int run_dist_test(NDBT_Context *ctx, NDBT_Step *step) {
  *
  * The tests use a dedicated table with PK (BaseKey, DetailKey) and
  * PARTITION_HASH x:y:z = 1:1:<fanout>:
- * - metadata validation through the direct NDB API (error 800)
+ * - metadata validation through the direct NDB API (errors 1243/1244)
  * - hinted PK operations agree with DBTC routing (error insert 8050)
  * - ordered index scans with base-key equality prune to the interval
  * - explicit hash-valued scan pruning is rejected with error 2203
@@ -1202,11 +1202,12 @@ static int fanout_create_check(Ndb *pNdb, Uint32 base_keys, Uint32 detail_keys,
 static int run_fanout_ddl(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
   NdbDictionary::Dictionary *dict = pNdb->getDictionary();
-  const int InvalidPartitionHash = 800;
+  const int InvalidPartitionHash = 1243;
+  const int InvalidFanout = 1244;
 
   dict->dropTable("FanoutDDL");
 
-  /* Invalid metadata combinations must be rejected with error 800 */
+  /* Invalid metadata combinations must be rejected with error 1243/1244 */
   if (fanout_create_check(pNdb, 0, 1, 2, FANOUT_FRAG_COUNT,
                           InvalidPartitionHash) != NDBT_OK)
     return NDBT_FAILED;  // base key count zero
@@ -1222,11 +1223,18 @@ static int run_fanout_ddl(NDBT_Context *ctx, NDBT_Step *step) {
   if (fanout_create_check(pNdb, 1, 1, 70000, FANOUT_FRAG_COUNT,
                           InvalidPartitionHash) != NDBT_OK)
     return NDBT_FAILED;  // fanout exceeds compact metadata (Uint16)
-  if (fanout_create_check(pNdb, 1, 1, 3, FANOUT_FRAG_COUNT,
-                          InvalidPartitionHash) != NDBT_OK)
-    return NDBT_FAILED;  // fanout does not divide partition count
-  if (fanout_create_check(pNdb, 1, 1, 4, 6, InvalidPartitionHash) != NDBT_OK)
-    return NDBT_FAILED;  // fanout does not divide partition count
+  if (fanout_create_check(pNdb, 1, 1, 2 * FANOUT_FRAG_COUNT, FANOUT_FRAG_COUNT,
+                          InvalidFanout) != NDBT_OK)
+    return NDBT_FAILED;  // fanout exceeds partition count
+  if (fanout_create_check(pNdb, 1, 1, 7, FANOUT_FRAG_COUNT, InvalidFanout) !=
+      NDBT_OK)
+    return NDBT_FAILED;  // fanout does not divide hash map bucket count
+
+  /* The fanout no longer has to divide the partition count */
+  if (fanout_create_check(pNdb, 1, 1, 3, FANOUT_FRAG_COUNT, 0) != NDBT_OK)
+    return NDBT_FAILED;  // fanout 3 with 8 partitions
+  if (fanout_create_check(pNdb, 1, 1, 4, 6, 0) != NDBT_OK)
+    return NDBT_FAILED;  // fanout 4 with 6 partitions
 
   /* Valid spec: create, verify dictionary round-trip, reject alter */
   {
