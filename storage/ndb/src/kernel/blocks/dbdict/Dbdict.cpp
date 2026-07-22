@@ -6425,6 +6425,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   Uint32 counts[] = {0, 0, 0, 0, 0};
 
   bool disk_based = false;
+  bool ttl_column_seen = false;
   for (Uint32 i = 0; i < attrCount; i++) {
     /**
      * Attribute Name
@@ -6550,11 +6551,22 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     attrPtr.p->attributeDescriptor = desc;
     if (tableDesc.TTLColumnNo != RNIL &&
         attrPtr.p->attributeId == tableDesc.TTLColumnNo) {
-      ndbrequire(tableDesc.TTLSec <= RNIL);
-      ndbrequire(AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
+      /*
+       * TTL related
+       * Reject (not crash): a table definition reaches this code from any
+       * NdbAPI client, not only from a mysqld that already validated it.
+       */
+      tabRequire(tableDesc.TTLSec <= RNIL, CreateTableRef::InvalidFormat);
+      tabRequire(AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
                  == DictTabInfo::ExtTimestamp2 ||
                  AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
-                 == DictTabInfo::ExtDatetime2);
+                 == DictTabInfo::ExtDatetime2,
+                 CreateTableRef::InvalidFormat);
+      /* The TTL column must be in-memory: checkTTL reads it on every row
+         visit without loading disk pages (mysqld DDL enforces this too). */
+      tabRequire(attrDesc.AttributeStorageType != NDB_STORAGETYPE_DISK,
+                 CreateTableRef::InvalidFormat);
+      ttl_column_seen = true;
       g_eventLogger->info("[DICT]TTL validation on TTL attrId passed. "
                           "attrId: %u",
                           attrPtr.p->attributeId);
@@ -6648,6 +6660,16 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
     if (it.getKey() != DictTabInfo::AttributeName) break;
   }  // while
+
+  /*
+   * TTL related
+   * A TTL column number that does not name any attribute would make
+   * checkTTL read a nonexistent column on every row visit; reject the
+   * definition (only reachable from a buggy NdbAPI creator -- mysqld
+   * validates the binding before it gets here).
+   */
+  tabRequire(tableDesc.TTLColumnNo == RNIL || ttl_column_seen,
+             CreateTableRef::InvalidFormat);
 
   tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;

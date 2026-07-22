@@ -1,0 +1,39 @@
+SET time_zone='+00:00';
+DROP TABLE IF EXISTS t;
+CREATE TABLE t (
+id INT PRIMARY KEY,
+v  INT,
+ts TIMESTAMP NOT NULL
+) ENGINE=NDB COMMENT='NDB_TABLE=TTL=5@ts';
+INSERT INTO t VALUES (1, 100, SYSDATE());
+# T2 takes a shared lock -> becomes the ACC lock owner
+SET time_zone='+00:00';
+BEGIN;
+SELECT id, v FROM t WHERE id=1 FOR SHARE;
+id	v
+1	100
+# T1 takes a shared lock (parallel behind T2) -> T1 now holds a lock,
+# then issues an UPDATE (X). With another txn (T2) in the parallel
+# queue, the UPDATE is forced onto the serial queue and blocks.
+SET time_zone='+00:00';
+BEGIN;
+SELECT id, v FROM t WHERE id=1 FOR SHARE;
+id	v
+1	100
+UPDATE t SET v=200 WHERE id=1;
+# Let the row expire (TTL=5) while T1's UPDATE waits on the serial queue
+# Release T2's lock -> T1's UPDATE is granted (deferred) on the now-expired row
+COMMIT;
+affected rows: 0
+# Reap T1's UPDATE. Correct (fixed): Rows matched 1 (read-what-you-locked
+# on its own locked row). Bug: matched 0 (deferred grant hid the row).
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+COMMIT;
+# Ground truth: turn TTL off so the (still-expired) row is visible, and
+# check whether the UPDATE applied. v=200 => correct; v=100 => bug.
+ALTER TABLE t COMMENT='NDB_TABLE=TTL=OFF';
+SELECT id, v FROM t WHERE id=1;
+id	v
+1	200
+DROP TABLE t;

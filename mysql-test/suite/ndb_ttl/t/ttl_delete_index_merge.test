@@ -1,0 +1,57 @@
+# ==========================================================================
+# ttl_expired_rows_visible_in_delete through an index_merge plan
+# (review finding: handler clones did not inherit m_ttl_ignore).
+#
+# Coverage for the index_merge x expired-rows-visible combination, which
+# ttl_delete.test Case 27 (single index / table scan shapes) does not
+# exercise. NDB index_merge plans are always sort_union, which reads
+# through the PRIMARY handler, so HA_EXTRA_IGNORE_TTL's handler-level
+# m_ttl_ignore is in effect; the clone shapes (ROR union/intersect,
+# DS-MRR) never materialize for NDB. ha_ndbcluster::clone() nevertheless
+# carries m_ttl_ignore defensively should a cloned-reader plan shape ever
+# appear.
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.tm;
+--enable_warnings
+
+CREATE TABLE test.tm (
+  id INT PRIMARY KEY,
+  a INT,
+  b INT,
+  ttl_col TIMESTAMP NULL DEFAULT NULL,
+  KEY idx_a (a),
+  KEY idx_b (b)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+
+# 8 rows: 4 match a=1, 4 match b=1 (disjoint), all expiring in ~2s.
+INSERT INTO test.tm VALUES
+  (1, 1, 0, NOW()), (2, 1, 0, NOW()), (3, 1, 0, NOW()), (4, 1, 0, NOW()),
+  (5, 0, 1, NOW()), (6, 0, 1, NOW()), (7, 0, 1, NOW()), (8, 0, 1, NOW());
+
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tm WHERE id IN (1,2,3,4,5,6,7,8)
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+--echo #
+--echo # The plan must be an index_merge for this test to mean anything.
+--echo #
+--replace_column 10 # 11 #
+EXPLAIN DELETE /*+ INDEX_MERGE(tm idx_a, idx_b) */ FROM test.tm
+  WHERE a = 1 OR b = 1;
+
+--echo #
+--echo # With the variable ON the DELETE must see and remove all 8 expired
+--echo # rows, also through the cloned index_merge readers.
+--echo #
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE /*+ INDEX_MERGE(tm idx_a, idx_b) */ FROM test.tm
+  WHERE a = 1 OR b = 1;
+SELECT ROW_COUNT() AS deleted_rows;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+DROP TABLE test.tm;

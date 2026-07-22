@@ -22,4 +22,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-
+# Differential oracle for the TTL expiry decision (ttl_expiry.hpp):
+# asserts the optimized integer compare in Dbtup::checkTTL keeps the exact
+# verdict of the original mysys/my_time.cc calendar path.
+NDB_ADD_TEST(ttl_expiry-t ttl_expiry-t.cpp LIBS ndbgeneral)

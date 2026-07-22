@@ -1,0 +1,30 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.dfr;
+CREATE TABLE test.dfr (
+col_a INT PRIMARY KEY,
+col_b TIMESTAMP NULL DEFAULT NULL,
+col_c INT,
+UNIQUE KEY uk_c (col_c)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@col_b";
+SET ndb_deferred_constraints = 1;
+INSERT INTO test.dfr VALUES (1, NOW(), 100);
+# INSERT over the expired PK=1 (ZINSERT_TTL). With a deferred unique
+# constraint this fires the deferred UK trigger at commit. On the buggy
+# build the data node hits ndbabort in checkDeferredTriggers; after the
+# fix it commits cleanly.
+INSERT INTO test.dfr VALUES (1, NOW(), 100);
+# The row is present with its refreshed value and the node is alive.
+SELECT col_a, col_c FROM test.dfr WHERE col_a = 1;
+col_a	col_c
+1	100
+# The unique index is consistent: the value is reachable via a uk lookup.
+SELECT col_a, col_c FROM test.dfr WHERE col_c = 100;
+col_a	col_c
+1	100
+# The node is fully alive: a further DML round-trip on the table works.
+INSERT INTO test.dfr VALUES (2, NOW(), 200);
+SELECT col_a, col_c FROM test.dfr ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+DROP TABLE test.dfr;

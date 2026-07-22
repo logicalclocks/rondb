@@ -338,7 +338,21 @@ int main(int argc, char *argv[]) {
 
   // Start TTL purger
   g_ttl_purger = TTLPurger::CreateTTLPurger();
-  g_ttl_purger->Run();
+  if (g_ttl_purger != nullptr) {
+    // Seed the runtime purge config from the config file; the REST config
+    // API can change it later at runtime.
+    TTLPurgeConfig ttl_purge_config = g_ttl_purger->GetConfig();
+    ttl_purge_config.enabled = globalConfigs.ttlPurge.enable;
+    TTLPurge::parseActiveWindow(globalConfigs.ttlPurge.activeWindow,
+                                &ttl_purge_config.active_window_start_min,
+                                &ttl_purge_config.active_window_end_min);
+    g_ttl_purger->SetConfig(ttl_purge_config);
+    g_ttl_purger->Run();
+  } else {
+    // The TTL purge endpoints will report 503; everything else still works
+    std::cerr << "Failed to initialize the TTL purger; TTL purging is "
+                 "not running on this node.\n";
+  }
 
   // Preload API key cache and start background threads
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
