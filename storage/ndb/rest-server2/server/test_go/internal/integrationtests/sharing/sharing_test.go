@@ -51,9 +51,10 @@
 // (readRowFromMySQL) - the recordings only pin the authorization contract.
 //
 // The scan endpoint shares the same authorization path (table+column
-// checks in validate_api_key); it has no Go test here because the FG
-// tables have hash-only primary keys, which index-scan cannot read. The
-// C++ api_key_test covers the scan-shaped authorization requests.
+// checks through check_access). Test_Sharing_Scan drives it with the same
+// pkReadTests matrix as Test_Sharing_PKRead, using a table scan (no index)
+// so it reads the FGs' hash-only-primary-key tables fine - an ordered index
+// is only needed for an index scan, not for exercising authorization.
 
 package sharing
 
@@ -717,6 +718,20 @@ func Test_Sharing_PKRead(t *testing.T) {
 				RespKVs:        tt.respKVs,
 			}
 			pkReadWithKey(t, tt.apiKey, testInfo)
+		})
+	}
+}
+
+// Test_Sharing_Scan proves the scan endpoint enforces the same grant ladder
+// as pk-read. A table scan (no index) reads any table regardless of PK
+// shape, so it runs the whole pkReadTests matrix: each scenario's expected
+// status and denial message must hold for a scan of the same table with the
+// same projected columns (nil = whole row).
+func Test_Sharing_Scan(t *testing.T) {
+	for _, tt := range pkReadTests {
+		t.Run(tt.scenario, func(t *testing.T) {
+			scanReadWithKey(t, tt.apiKey, useraProject, tt.table, 1,
+				tt.readColumns, tt.respKVs, tt.errMsgContains, tt.httpCode)
 		})
 	}
 }

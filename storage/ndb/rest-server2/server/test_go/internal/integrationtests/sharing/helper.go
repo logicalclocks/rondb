@@ -20,7 +20,9 @@ package sharing
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,6 +82,85 @@ func ronsqlQueryWithKey(t *testing.T, apiKey string, database string,
 	return testclient.SendHttpRequestWithAPIKey(
 		t, apiKey, config.RONSQL_HTTP_VERB, testutils.NewRonSQLURL(),
 		body, message, status...)
+}
+
+// scanReadWithKey issues a table scan (no index) filtered to a single
+// customer under a caller-chosen API key. The scan endpoint shares the
+// pk-read authorization path - a TableAccessRequest with columns=nullptr for
+// a whole-row read (requiring a whole-table grant) or the projected columns
+// otherwise, run through the same check_access ladder - so the same sharing
+// matrix that drives the pk-read test drives this one. readColumns nil reads
+// whole rows. On 200 the single matching row's respKVs columns are validated
+// against mysqld.
+func scanReadWithKey(t *testing.T, apiKey string, db string, table string,
+	customerID int, readColumns []string, respKVs []interface{},
+	message string, status int) {
+	t.Helper()
+	query := api.IndexScanQuery{
+		Limit:       10,
+		ReadColumns: newReadColumns(readColumns),
+		Filters: &api.ScanFilter{
+			Op:     "CMP",
+			Column: "customer_id",
+			Cond:   "EQ",
+			Value:  customerID,
+		},
+	}
+	body, err := json.Marshal(query)
+	if err != nil {
+		t.Fatalf("Failed to marshall scan request %v", err)
+	}
+	httpCode, respBody := testclient.SendHttpRequestWithAPIKey(
+		t, apiKey, config.SCAN_HTTP_VERB, testutils.NewScanURL(db, table),
+		string(body), message, status)
+	if httpCode != http.StatusOK {
+		return
+	}
+	// UseNumber keeps numeric values in their literal string form so they
+	// compare cleanly against the mysqld text values.
+	var scanResp api.IndexScanResponse
+	decoder := json.NewDecoder(strings.NewReader(string(respBody)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&scanResp); err != nil {
+		t.Fatalf("Failed to unmarshal scan response %v", err)
+	}
+	if len(scanResp.Data) != 1 {
+		t.Fatalf("expected exactly 1 row for customer_id=%d but got %d",
+			customerID, len(scanResp.Data))
+	}
+	row := scanResp.Data[0]
+	for _, respKV := range respKVs {
+		col := respKV.(string)
+		got, found := row[col]
+		if !found {
+			t.Fatalf("column %s not found in scan response", col)
+		}
+		expected := readRowFromMySQL(t, db, table, customerID, []string{col})[0]
+		if !scanValueEqualsMySQL(got, expected) {
+			t.Errorf("column %s: scan value %v does not equal mysqld value %s",
+				col, got, expected)
+		}
+	}
+}
+
+// scanValueEqualsMySQL compares a scan JSON value with a mysqld text value.
+// Numbers may print differently on the two sides (e.g. 1234.5 vs 1234.50),
+// so numeric values are compared with a small relative tolerance and
+// everything else as strings.
+func scanValueEqualsMySQL(got interface{}, expected string) bool {
+	gotStr := fmt.Sprintf("%v", got)
+	if gotStr == expected {
+		return true
+	}
+	gf, gErr := strconv.ParseFloat(gotStr, 64)
+	ef, eErr := strconv.ParseFloat(expected, 64)
+	if gErr != nil || eErr != nil {
+		return false
+	}
+	if ef == 0 {
+		return gf == 0
+	}
+	return math.Abs(gf-ef)/math.Abs(ef) < 1e-6
 }
 
 // pkReadWithKey mirrors pkread.pkRESTTest with a caller-chosen API key.
