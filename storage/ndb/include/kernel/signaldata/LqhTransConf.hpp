@@ -204,7 +204,15 @@ inline void LqhTransConf::setOperation(UintR &requestInfo, UintR val) {
   if (val != ZINSERT_TTL) {
     ASSERT_MAX(val, LTC_OPERATION_MASK, "LqhTransConf::setOperation");
   }
-  requestInfo |= (val << LTC_OPERATION_SHIFT);
+  /*
+   * TTL related
+   * ZINSERT_TTL deliberately folds to its underlying ZINSERT
+   * (10 & 7 == 2). Mask inside the setter so an exempted value stays
+   * within the 3-bit field instead of silently spilling into the
+   * neighboring bits if a future caller passes it unmasked (the sole
+   * caller today masks before calling, making this a no-op there).
+   */
+  requestInfo |= ((val & LTC_OPERATION_MASK) << LTC_OPERATION_SHIFT);
 }
 
 inline void LqhTransConf::setMarkerFlag(UintR &requestInfo, UintR val) {

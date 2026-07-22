@@ -1,0 +1,74 @@
+# ==========================================================================
+# Combined single-statement inplace ADD FOREIGN KEY + TTL comment
+# (review suspect 5.12, companion to findings #4/#6).
+#
+# FK+TTL is prohibited: create_fk() rejects an FK when parent or child is
+# TTL-enabled, and the inplace add-TTL guard rejects adding TTL to a table
+# with FKs. But in ONE inplace statement the two checks miss each other:
+# create_fks() runs in the PREPARE phase against the old dictionary object
+# (not TTL yet), while the TTL comment goes live later via
+# alterTableGlobal() in the commit phase; the add-TTL side's m_ttl_fk
+# reflects only pre-statement FKs. Unfixed, the statement landed the
+# prohibited FK+TTL state (runtime-confirmed). Fixed by rejecting the
+# combination in check_if_supported_inplace_alter.
+#
+# The ALGORITHM=COPY variant is already rejected (finding #6's copy_fk
+# check sees TTL in the new definition).
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.fk_child;
+DROP TABLE IF EXISTS test.fk_parent;
+--enable_warnings
+
+CREATE TABLE test.fk_parent (pk INT PRIMARY KEY) ENGINE=NDB;
+CREATE TABLE test.fk_child (
+  pk INT PRIMARY KEY,
+  ref INT,
+  ts TIMESTAMP NULL DEFAULT NULL,
+  KEY idx_ref (ref)
+) ENGINE=NDB;
+
+--echo #
+--echo # Combined ADD FK + TTL comment in one INPLACE statement must be
+--echo # rejected (either side would reject the other's result).
+--echo #
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.fk_child
+  ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk),
+  COMMENT="NDB_TABLE=TTL=5@ts",
+  ALGORITHM=INPLACE;
+
+--echo # unspecified algorithm is a hard error too (no silent COPY fallback)
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.fk_child
+  ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk),
+  COMMENT="NDB_TABLE=TTL=5@ts";
+
+--echo # neither the FK nor TTL may have landed
+SHOW CREATE TABLE test.fk_child;
+
+--echo #
+--echo # Sanity: the same combination via COPY stays rejected (finding #6)
+--echo #
+--error ER_CANNOT_ADD_FOREIGN
+ALTER TABLE test.fk_child
+  ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk),
+  COMMENT="NDB_TABLE=TTL=5@ts",
+  ALGORITHM=COPY;
+
+--echo #
+--echo # Each half alone still behaves: TTL alone works ...
+--echo #
+ALTER TABLE test.fk_child COMMENT="NDB_TABLE=TTL=5@ts", ALGORITHM=INPLACE;
+--echo # ... and adding an FK to the now-TTL table is rejected
+--error ER_CANNOT_ADD_FOREIGN
+ALTER TABLE test.fk_child
+  ADD CONSTRAINT fk_probe FOREIGN KEY (ref) REFERENCES test.fk_parent (pk);
+
+DROP TABLE test.fk_child;
+DROP TABLE test.fk_parent;

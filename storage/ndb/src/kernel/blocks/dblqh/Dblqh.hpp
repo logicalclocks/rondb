@@ -723,7 +723,8 @@ class Dblqh : public SimulatedBlock {
       m_outer_join_agg_scan(0),
       m_local_matched_ranges(nullptr),
       m_local_matched_words(0),
-      m_ttl_purge_window_size(0)
+      m_ttl_purge_window_size(0),
+      m_ttl_now_sec(0)
     {
     }
 
@@ -880,6 +881,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ttl_only_expired;   // Only be insterested in expired rows
     Uint32 m_ttl_purge_window_size;
     Uint8 m_ring_buffer_show_meta;
+    Uint32 m_ttl_now_sec;       // wall-clock "now" (UTC epoch sec) sampled once
+                                // per scan batch for TTL expiry checks; 0 = unset
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2780,6 +2783,7 @@ class Dblqh : public SimulatedBlock {
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);
   bool is_ring_buffer_table(Uint32 table_id);
+  void set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id);
   // TTL related (Bug #2). True iff table_id is an internal UNIQUE hash index.
   // Used by DBTUP's same-owner check to scope the duplicate-vs-live-owner
   // rejection to unique indexes (NOT BLOB part-tables, which also have

@@ -1,0 +1,108 @@
+# ==========================================================================
+# Expired-row write paths on a TTL table WITH a disk column (review §5.14).
+#
+# The TTL column itself must be in-memory (enforced at DDL since
+# f6c49f92a1e), but a TTL table may carry OTHER disk columns. Key writes on
+# a disk table take the deferred acckeyconf_load_diskpage path in DBLQH
+# (the "TODO (Zhao) maybe need to handle this code path for TTL" site at
+# DblqhMain.cpp ~11600) instead of calling TUP directly, so every
+# TTL-converted operation shape needs coverage there:
+#   - INSERT over an expired row  (ZINSERT -> upsert-convert -> refresh)
+#   - REPLACE over an expired row (ZWRITE -> ZUPDATE on expired)
+#   - INSERT .. ON DUPLICATE KEY UPDATE over an expired row (insert arm)
+#   - DELETE / UPDATE of an expired row (filtered, 0 rows)
+#   - same-transaction duplicate INSERT of a LIVE row (630 -> ER_DUP_ENTRY)
+# Each refresh changes the DISK column value and reads it back (forcing a
+# disk page read of the refreshed row) on top of the in-memory columns.
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+# checkTTL compares the TTL column against UTC; align the session tz.
+SET time_zone = '+00:00';
+
+CREATE LOGFILE GROUP lg_probe
+  ADD UNDOFILE 'lg_probe_undofile.dat'
+  INITIAL_SIZE 16M
+  UNDO_BUFFER_SIZE 1M
+  ENGINE NDB;
+
+CREATE TABLESPACE ts_probe
+  ADD DATAFILE 'ts_probe_datafile.dat'
+  USE LOGFILE GROUP lg_probe
+  INITIAL_SIZE 64M
+  ENGINE NDB;
+
+CREATE TABLE test.td (
+  id INT PRIMARY KEY,
+  b TIMESTAMP NULL DEFAULT NULL,
+  v INT,
+  d INT STORAGE DISK
+) TABLESPACE ts_probe, ENGINE=NDB, COMMENT="NDB_TABLE=TTL=2@b";
+
+--echo #
+--echo # Seed: rows 1-4 expire in ~2s; row 5 stays live (future timestamp)
+--echo #
+INSERT INTO test.td VALUES
+  (1, NOW(), 100, 10000),
+  (2, NOW(), 200, 20000),
+  (3, NOW(), 300, 30000),
+  (4, NOW(), 400, 40000),
+  (5, NOW() + INTERVAL 1 HOUR, 500, 50000);
+
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.td WHERE id IN (1,2,3,4)
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+--echo #
+--echo # INSERT over the expired row 1: refresh with NEW memory + disk values
+--echo #
+INSERT INTO test.td VALUES (1, NOW() + INTERVAL 1 HOUR, 111, 11111);
+SELECT id, v, d FROM test.td WHERE id = 1;
+
+--echo #
+--echo # REPLACE over the expired row 2
+--echo #
+REPLACE INTO test.td VALUES (2, NOW() + INTERVAL 1 HOUR, 222, 22222);
+SELECT id, v, d FROM test.td WHERE id = 2;
+
+--echo #
+--echo # INSERT .. ON DUPLICATE KEY UPDATE over the expired row 3
+--echo # (row is expired -> NOT a duplicate -> the insert arm refreshes it)
+--echo #
+INSERT INTO test.td VALUES (3, NOW() + INTERVAL 1 HOUR, 333, 33333)
+  ON DUPLICATE KEY UPDATE v = 999, d = 99999;
+SELECT id, v, d FROM test.td WHERE id = 3;
+
+--echo #
+--echo # DELETE and UPDATE of the still-expired row 4: both see no row
+--echo #
+DELETE FROM test.td WHERE id = 4;
+SELECT ROW_COUNT() AS delete_affected;
+UPDATE test.td SET v = 444, d = 44444 WHERE id = 4;
+SELECT ROW_COUNT() AS update_affected;
+SELECT id, v, d FROM test.td WHERE id = 4;
+
+--echo #
+--echo # Same-transaction duplicate INSERT of the LIVE row 5 -> ER_DUP_ENTRY
+--echo #
+BEGIN;
+--error ER_DUP_ENTRY
+INSERT INTO test.td VALUES (5, NOW(), 555, 55555);
+COMMIT;
+SELECT id, v, d FROM test.td WHERE id = 5;
+
+--echo #
+--echo # Full scan: refreshed rows and the live row, disk values correct
+--echo #
+SELECT id, v, d FROM test.td ORDER BY id;
+
+--echo #
+--echo # Cluster still healthy (no data node crashed on the disk TTL paths)
+--echo #
+SELECT COUNT(*) = 2 AS all_data_nodes_started
+  FROM ndbinfo.nodes WHERE status = 'STARTED';
+
+DROP TABLE test.td;
+ALTER TABLESPACE ts_probe DROP DATAFILE 'ts_probe_datafile.dat';
+DROP TABLESPACE ts_probe;
+DROP LOGFILE GROUP lg_probe ENGINE NDB;

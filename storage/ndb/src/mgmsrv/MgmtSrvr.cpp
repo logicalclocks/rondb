@@ -227,11 +227,25 @@ static int translateStopRef(Uint32 errCode) {
   return 4999;
 }
 
+/*
+ * Upper bound on concurrent MGM API sessions.  Each accepted connection
+ * gets a dedicated session thread + fd; without a bound, a reconnect
+ * storm against a slow or wedged mgmd grows both without limit (>31k
+ * threads / 10 GB RSS observed in the field).  When the cap is reached
+ * the accept loop simply defers accepting (SocketServer::doRun sleeps
+ * and retries), so clients see a delayed connect rather than a dead
+ * mgmd.  The value is sized generously: the widest supported clusters
+ * use ~2k node ids, and MGM sessions (nodeid allocation, config fetch,
+ * transporter handoff, mgm clients) are short-lived.
+ */
+static constexpr unsigned MAX_MGM_API_SESSIONS = 4096;
+
 MgmtSrvr::MgmtSrvr(const MgmtOpts &opts)
     : m_opts(opts),
       _blockNumber(0),
       _ownNodeId(0),
       m_port(0),
+      m_socket_server(MAX_MGM_API_SESSIONS),
       m_local_config(NULL),
       _ownReference(0),
       m_config_manager(NULL),
@@ -4183,8 +4197,39 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
 
   int do_send = 1;
   NodeId nodeId = 0;
+  /*
+   * Bound the retry loop.  It used to run unbounded: 'timeout_ms' was
+   * only carried inside the request payload for the data node's
+   * benefit, and ss.waitFor() was called without a timeout.  When data
+   * nodes keep answering ALLOC_NODE_ID_REF (e.g. a NotMaster ping-pong
+   * while no president is elected), the loop spun at network
+   * round-trip rate (observed in the field: "Sending ALLOC_NODE_ID_REQ
+   * to node N" repeated ~17k times within 3 seconds, sustained for
+   * over an hour) and the MgmApiSession thread driving it never
+   * returned to its command loop, so it could not observe the client
+   * hanging up.  Such sessions are never reaped, leaking one thread
+   * and one fd per registration attempt (>31k leaked threads / 10 GB
+   * RSS observed) until the mgmd stops answering entirely.
+   *
+   * On deadline expiry report NO_CONTACT_WITH_DB_NODES, which callers
+   * already handle: data nodes fall back to a local node id
+   * reservation (same as the existing leaderless NotMaster-0xFFFF
+   * path) and API allocation returns a bounded retry/error.
+   */
+  const NDB_TICKS alloc_start = NdbTick_getCurrentTicks();
+  const Uint32 alloc_deadline_ms = (timeout_ms != 0) ? timeout_ms : 20000;
+  Uint32 consecutive_not_master = 0;
   while (1)
   {
+    if (NdbTick_Elapsed(alloc_start, NdbTick_getCurrentTicks()).milliSec() >
+        alloc_deadline_ms)
+    {
+      g_eventLogger->info(
+          "Alloc node id %u abandoned after %u ms without a conclusive "
+          "answer from the data nodes",
+          free_node_id, alloc_deadline_ms);
+      return NO_CONTACT_WITH_DB_NODES;
+    }
     NodeBitmask active_nodes;
     {
       Guard g(m_local_config_mutex);
@@ -4215,7 +4260,10 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
       do_send = 0;
     }
 
-    SimpleSignal *signal = ss.waitFor();
+    /* Wait bounded so the deadline above is always re-checked; nullptr
+     * means no signal arrived within this poll window. */
+    SimpleSignal *signal = ss.waitFor(1000);
+    if (signal == nullptr) continue;
 
     int gsn = signal->readSignalNumber();
     switch (gsn) {
@@ -4266,6 +4314,10 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
         }
 
         const bool refFromMaster = (refToNode(ref->masterRef) == nodeId);
+        if (ref->errorCode == AllocNodeIdRef::NotMaster)
+          consecutive_not_master++;
+        else
+          consecutive_not_master = 0;
         if (ref->errorCode == AllocNodeIdRef::NotMaster ||
             ref->errorCode == AllocNodeIdRef::Busy ||
             ref->errorCode == AllocNodeIdRef::NodeFailureHandlingNotCompleted) {
@@ -4293,7 +4345,15 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
               NdbSleep_SecSleep(1);
             } else {
               /* AllocNodeIdReq sent to non-master node, retry by sending
-               * AllocNodeIdReq to ref->masterRef. No sleep before retrying */
+               * AllocNodeIdReq to ref->masterRef.  The first redirect is
+               * immediate (the normal one-hop case); if the master is
+               * unknown/unconfirmed or the nodes keep bouncing us between
+               * each other (each denying being master), back off so the
+               * retry runs at ~10 req/s instead of network round-trip
+               * rate. */
+              if (nodeId == 0 || consecutive_not_master > 1) {
+                NdbSleep_MilliSleep(100);
+              }
             }
           } else /* AllocNodeIdRef::NodeFailureHandlingNotCompleted */
           {
