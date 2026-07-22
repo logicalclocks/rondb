@@ -102,6 +102,31 @@ class Multi_Transporter;
 class TransporterRegistry;
 class SocketAuthenticator;
 
+/**
+ * Snapshot of an RDMA transporter's observability counters, produced by
+ * TransporterRegistry::get_rdma_stats() for the ndbinfo.rdma_transporters
+ * table. Plain-old-data so it can be shared between the transporter layer
+ * and the kernel (TRPMAN) without exposing RDMA_Transporter internals or
+ * pulling in libibverbs. Counters are cumulative since process start;
+ * peer_credits is a live gauge.
+ */
+struct RdmaTransporterStats {
+  Uint64 reconnects;
+  Uint64 send_posted;
+  Uint64 send_completions_ok;
+  Uint64 send_completion_errors;
+  Uint64 recv_posted;
+  Uint64 recv_completions_ok;
+  Uint64 recv_completion_errors;
+  Uint64 send_credit_stalls;
+  Uint64 rnr_events;
+  Uint64 retry_exceeded_events;
+  Uint64 qp_fatal_events;
+  Uint64 bytes_sent;
+  Uint64 bytes_received;
+  Uint32 peer_credits;
+};
+
 class TransporterService : public SocketServer::Service {
   SocketAuthenticator *m_auth;
   TransporterRegistry *m_transporter_registry;
@@ -593,6 +618,22 @@ class TransporterRegistry {
   }
   bool is_server(NodeId) const;
   TransporterType get_transporter_type(TrpId id) const;
+
+  /*
+   * Set the RDMA self-logging verbosity level (RdmaLogLevel, 0..3) on
+   * every registered RDMA transporter at runtime. Invoked from CMVMI on
+   * receipt of the CmvmiSetRdmaLogLevel dump code. A no-op on builds or
+   * nodes without RDMA transporters.
+   */
+  void set_rdma_log_level(Uint32 level);
+
+  /*
+   * Fill 'out' with a snapshot of the RDMA observability counters for the
+   * transporter 'trpId' and return true, or return false if 'trpId' is not
+   * an RDMA transporter (also always false on non-RDMA builds). Used by the
+   * ndbinfo.rdma_transporters producer in TRPMAN.
+   */
+  bool get_rdma_stats(TrpId trpId, RdmaTransporterStats &out) const;
 
   ndb_sockaddr get_connect_address_node(NodeId nodeId) const;
   ndb_sockaddr get_connect_address(TrpId trpId) const;
