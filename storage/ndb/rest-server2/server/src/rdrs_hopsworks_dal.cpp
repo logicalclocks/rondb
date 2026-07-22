@@ -30,7 +30,6 @@
 #include <my_time.h>
 
 #include <cstring>
-#include <ctime>
 #include <map>
 #include <set>
 #include <string>
@@ -56,10 +55,24 @@ extern EventLogger *g_eventLogger;
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 /*
- * api_key.expiry is a nullable DATETIME: wall-clock time with no timezone,
- * which Hopsworks compares against the server's local time
- * (ApiKeyUtilities.getApiKeyCheckingExpiry). Convert it to unix epoch
- * seconds once at load time so validation is a plain integer comparison.
+ * api_key.expiry is a nullable DATETIME (wall-clock, no timezone). Hopsworks
+ * reads it via JPA / Connector-J 8.x into a java.util.Date using the app
+ * server's JVM DEFAULT timezone, then compares it against now
+ * (ApiKeyUtilities.getApiKeyCheckingExpiry: expiry.before(new Date())). The
+ * Hopsworks deployment pins no timezone - no connectionTimeZone, no
+ * -Duser.timezone, and the helm chart sets no TZ - so the app server container
+ * defaults to UTC and the stored wall-clock is authored in UTC.
+ *
+ * We convert it the same way with pure integer arithmetic via calc_daynr(),
+ * which is lock-free. mktime()/timegm() are deliberately avoided: they take a
+ * process-wide timezone lock (tzset state) and, with tm_isdst=-1, resolve DST
+ * ambiguously across gaps. Converted to epoch seconds once at key load time so
+ * validation is a plain integer comparison.
+ *
+ * NOTE: this assumes the Hopsworks app server runs in UTC (the deployment
+ * default). Running it in a non-UTC timezone would shift stored expiries by
+ * that offset - matching Hopsworks would then require converting in the same
+ * timezone instead of UTC.
  */
 long long datetime_attr_to_epoch(const NdbRecAttr *attr, unsigned precision) {
   if (attr->isNULL()) {
@@ -69,15 +82,13 @@ long long datetime_attr_to_epoch(const NdbRecAttr *attr, unsigned precision) {
     (const unsigned char *)attr->aRef(), precision);
   MYSQL_TIME mysql_time;
   TIME_from_longlong_datetime_packed(&mysql_time, packed);
-  struct tm local_tm = {};
-  local_tm.tm_year = (int)mysql_time.year - 1900;
-  local_tm.tm_mon = (int)mysql_time.month - 1;
-  local_tm.tm_mday = (int)mysql_time.day;
-  local_tm.tm_hour = (int)mysql_time.hour;
-  local_tm.tm_min = (int)mysql_time.minute;
-  local_tm.tm_sec = (int)mysql_time.second;
-  local_tm.tm_isdst = -1;  // let mktime resolve DST
-  return (long long)mktime(&local_tm);
+  long long days = (long long)calc_daynr(mysql_time.year, mysql_time.month,
+                                         mysql_time.day) -
+                   (long long)calc_daynr(1970, 1, 1);
+  return days * 86400LL +
+         (long long)mysql_time.hour * 3600LL +
+         (long long)mysql_time.minute * 60LL +
+         (long long)mysql_time.second;
 }
 
 RS_Status find_api_key_int(Ndb *ndb_object,

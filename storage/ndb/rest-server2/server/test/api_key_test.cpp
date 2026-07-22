@@ -83,17 +83,22 @@ static void prepare_medium_varchar(char *buf, const char *str, size_t len) {
 
 // Insert a row into hopsworks.api_key via NDB API (for event tests)
 // Encode a unix epoch as the 5-byte packed DATETIME(0) NDB storage format
+// Encode an epoch into the DATETIME column as a UTC wall-clock, mirroring how
+// Hopsworks stores api_key.expiry (JVM default timezone = UTC in the standard
+// deployment). Using UTC here - not localtime - keeps the round-trip through
+// datetime_attr_to_epoch() timezone-independent, so the test is stable
+// regardless of the dev box's local timezone.
 static void encode_datetime(time_t epoch, unsigned char *buf) {
-  struct tm local_tm;
-  localtime_r(&epoch, &local_tm);
+  struct tm utc_tm;
+  gmtime_r(&epoch, &utc_tm);
   MYSQL_TIME mysql_time;
   memset(&mysql_time, 0, sizeof(mysql_time));
-  mysql_time.year = local_tm.tm_year + 1900;
-  mysql_time.month = local_tm.tm_mon + 1;
-  mysql_time.day = local_tm.tm_mday;
-  mysql_time.hour = local_tm.tm_hour;
-  mysql_time.minute = local_tm.tm_min;
-  mysql_time.second = local_tm.tm_sec;
+  mysql_time.year = utc_tm.tm_year + 1900;
+  mysql_time.month = utc_tm.tm_mon + 1;
+  mysql_time.day = utc_tm.tm_mday;
+  mysql_time.hour = utc_tm.tm_hour;
+  mysql_time.minute = utc_tm.tm_min;
+  mysql_time.second = utc_tm.tm_sec;
   mysql_time.time_type = MYSQL_TIMESTAMP_DATETIME;
   longlong packed = TIME_to_longlong_datetime_packed(mysql_time);
   my_datetime_packed_to_binary(packed, buf, 0);
