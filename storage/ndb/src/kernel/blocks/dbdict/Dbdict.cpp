@@ -6369,6 +6369,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   SimpleProperties::UnpackStatus status;
 
   Uint32 keyCount = 0;
+  Uint32 distKeyCount = 0;
   Uint32 keyLength = 0;
   Uint32 attrCount = tablePtr.p->noOfAttributes;
   Uint32 nullCount = 0;
@@ -6556,6 +6557,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     }
 
     keyCount += attrDesc.AttributeKeyFlag;
+    distKeyCount += (attrDesc.AttributeKeyFlag && attrDesc.AttributeDKey);
     nullCount += attrDesc.AttributeNullableFlag;
 
     const Uint32 aSz = (1 << attrDesc.AttributeSize);
@@ -6615,6 +6617,20 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   tablePtr.p->noOfCharsets = noOfCharsets;
   tablePtr.p->tupKeyLength = keyLength;
   tablePtr.p->noOfNullBits = nullCount + nullBits;
+
+  /**
+   * Fanout routing hashes the first base_count primary key columns in
+   * key order and ignores declared distribution keys, and the
+   * distribution key flags would mislead pre-fanout clients into
+   * pruning on them. Reject a proper distribution key subset on
+   * fanout tables (all primary key columns flagged is the default).
+   * Ordered index tables inherit the base table's metadata and were
+   * validated through the base table.
+   */
+  tabRequire(tablePtr.p->partitionHashFanout <= 1 ||
+                 DictTabInfo::isOrderedIndex(tableDesc.TableType) ||
+                 distKeyCount == 0 || distKeyCount == keyCount,
+             CreateTableRef::InvalidPartitionHash);
 
   tabRequire(recordLength <= MAX_TUPLE_SIZE_IN_WORDS,
              CreateTableRef::RecordTooBig);

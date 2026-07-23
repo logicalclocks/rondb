@@ -121,6 +121,12 @@ Validation:
 * reject malformed strings, missing values, negative values, and extra fields
 * reject use on any partitioning without a hash map (user-defined and the
   legacy non-hashmap fragment types)
+* reject explicit distribution key columns (a proper subset of the primary
+  key, e.g. `PARTITION BY KEY(col)`) when `fanout > 1`: fanout routing
+  hashes the first `base_pk_columns` primary key columns in key order and
+  ignores declared distribution keys, and the serialized distribution key
+  flags would mislead pre-fanout clients into pruning on them; declaring
+  all primary key columns is equivalent to the default and is allowed
 * reject use on fully replicated tables in the first implementation
 * reject changing these values through online alter in the first version
 * reject alters that would make `fanout > partition_count`
@@ -678,6 +684,7 @@ PARTITION_HASH=2:2:2 on PRIMARY KEY(a,b,c)
 PARTITION_HASH=1:0:2
 fanout > partition_count
 fanout that does not divide the hash map bucket count
+PARTITION BY KEY(subset of primary key) with PARTITION_HASH fanout > 1
 user-defined partitioning with PARTITION_HASH
 fully replicated table with PARTITION_HASH
 ```

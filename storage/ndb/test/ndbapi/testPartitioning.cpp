@@ -1236,6 +1236,29 @@ static int run_fanout_ddl(NDBT_Context *ctx, NDBT_Step *step) {
   if (fanout_create_check(pNdb, 1, 1, 4, 6, 0) != NDBT_OK)
     return NDBT_FAILED;  // fanout 4 with 6 partitions
 
+  /* A distribution key that is a proper subset of the primary key is
+   * rejected on fanout tables: fanout routing ignores declared
+   * distribution keys and the flags would mislead pre-fanout clients
+   * into pruning on them.
+   */
+  {
+    NdbDictionary::Table tab;
+    define_fanout_table(tab, "FanoutDDL", 1, 1, 4, FANOUT_FRAG_COUNT);
+    tab.getColumn(FanoutBaseCol)->setPartitionKey(true);
+    if (dict->createTable(tab) == 0) {
+      ndbout << "Create with distribution key subset succeeded but should"
+             << " have failed" << endl;
+      dict->dropTable("FanoutDDL");
+      return NDBT_FAILED;
+    }
+    if (dict->getNdbError().code != InvalidPartitionHash) {
+      ndbout << "Create with distribution key subset failed with "
+             << dict->getNdbError().code << " expected "
+             << InvalidPartitionHash << endl;
+      return NDBT_FAILED;
+    }
+  }
+
   /* Valid spec: create, verify dictionary round-trip, reject alter */
   {
     NdbDictionary::Table tab;

@@ -98,6 +98,19 @@ static int validate_partition_hash_metadata(const NdbTableImpl &impl,
       error.code = CreateTableRef::InvalidPartitionHash;
       return -1;
     }
+    /**
+     * Fanout routing hashes the first base_count primary key columns
+     * in key order and ignores declared distribution keys, and the
+     * distribution key flags would mislead pre-fanout clients into
+     * pruning on them. Reject a proper distribution key subset
+     * (computeAggregates normalizes an all-primary-key declaration
+     * to zero, the default).
+     */
+    if (impl.m_noOfDistributionKeys != 0 &&
+        impl.m_noOfDistributionKeys != primary_key_count) {
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
     if (partition_count_known && fanout > partition_count) {
       error.code = CreateTableRef::InvalidFanout;
       return -1;

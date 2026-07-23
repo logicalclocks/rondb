@@ -9443,8 +9443,9 @@ static bool parsePartitionHash(const NDB_Modifier *mod_partition_hash,
 
 static const char *validatePartitionHashCreate(
     const Partition_hash_modifier &partition_hash, Uint32 primary_key_count,
-    Uint32 partition_count, bool partition_count_known,
-    bool user_defined_partitioning, bool fully_replicated) {
+    Uint32 partition_key_count, Uint32 partition_count,
+    bool partition_count_known, bool user_defined_partitioning,
+    bool fully_replicated) {
   if (!partition_hash.found) return nullptr;
 
   if (primary_key_count == 0)
@@ -9468,6 +9469,17 @@ static const char *validatePartitionHashCreate(
 
   if (user_defined_partitioning)
     return "PARTITION_HASH is not supported with user-defined partitioning";
+
+  /*
+    Fanout routing hashes the first base_count primary key columns in key
+    order and ignores declared partition key columns, and the distribution
+    key flags would mislead pre-fanout clients into pruning on them.
+    Declaring all primary key columns is equivalent to the default and is
+    allowed.
+  */
+  if (partition_hash.fanout > 1 && partition_key_count > 0 &&
+      partition_key_count < primary_key_count)
+    return "PARTITION_HASH fanout > 1 cannot use explicit partition keys";
 
   if (partition_count_known && partition_hash.fanout > partition_count)
     return "PARTITION_HASH fanout cannot exceed the number of partitions";
@@ -10425,11 +10437,21 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
           table->key_info[table_share->primary_key].user_defined_key_parts;
     }
 
+    // Explicit PARTITION BY KEY(...) columns were flagged on the NDB
+    // table columns by create_table_set_up_partition_info()
+    Uint32 partition_key_count = 0;
+    for (int i = 0; i < tab.getNoOfColumns(); i++) {
+      const NdbDictionary::Column *col = tab.getColumn(i);
+      if (col->getPrimaryKey() && col->getPartitionKey())
+        partition_key_count++;
+    }
+
     const Uint32 partition_count = tab.getFragmentCount();
     const bool partition_count_known = partition_count != 0;
     const char *reason = validatePartitionHashCreate(
-        partition_hash, primary_key_count, partition_count,
-        partition_count_known, tab.getFragmentType() == NDBTAB::UserDefined,
+        partition_hash, primary_key_count, partition_key_count,
+        partition_count, partition_count_known,
+        tab.getFragmentType() == NDBTAB::UserDefined,
         tab.getFullyReplicated());
     if (reason != nullptr) {
       return create.failed_illegal_create_option(reason);

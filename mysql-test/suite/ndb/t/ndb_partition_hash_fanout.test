@@ -161,6 +161,18 @@ COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
 PARTITION BY RANGE (a)
 (PARTITION p0 VALUES LESS THAN (10),
  PARTITION p1 VALUES LESS THAN (20));
+# explicit partition key columns (a proper subset of the primary key):
+# fanout routing ignores them and the distribution key flags would
+# mislead pre-fanout clients into pruning on them
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY (b);
+# declaring all primary key columns is equivalent to the default
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY (a,b);
+DROP TABLE tx;
 # fully replicated table
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
@@ -202,6 +214,10 @@ SHOW CREATE TABLE t3;
 # Altering to a partition count smaller than the fanout is rejected
 --error ER_ILLEGAL_HA_CREATE_OPTION
 ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 3;
+
+# Altering to explicit partition key columns on a fanout table is rejected
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 PARTITION BY KEY (b);
 
 # Making a PARTITION_HASH table fully replicated is rejected.
 # Use t2 (default partitioning): on t3 the explicit PARTITIONS 8 gives
