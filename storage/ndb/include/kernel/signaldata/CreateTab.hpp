@@ -115,6 +115,7 @@ struct TcSchVerReq {
   Uint32 readBackup;
   Uint32 fullyReplicated;
   Uint32 hashFunctionFlag;
+  Uint32 partitionHash;
   Uint32 diskBased;
   /*
    * TTL
@@ -123,8 +124,25 @@ struct TcSchVerReq {
   Uint32 ttlColumnNo;
   Uint32 primaryTableId;
 
-  static constexpr Uint32 SignalLength = 16;
+  static constexpr Uint32 SignalLength = 17;
 };
+
+static inline Uint32 packPartitionHash(Uint32 base, Uint32 detail,
+                                       Uint32 fanout) {
+  return (base << 24) | (detail << 16) | fanout;
+}
+
+static inline Uint32 getPartitionHashBaseKeyCount(Uint32 partitionHash) {
+  return (partitionHash >> 24) & 0xff;
+}
+
+static inline Uint32 getPartitionHashDetailKeyCount(Uint32 partitionHash) {
+  return (partitionHash >> 16) & 0xff;
+}
+
+static inline Uint32 getPartitionHashFanout(Uint32 partitionHash) {
+  return partitionHash & 0xffff;
+}
 
 struct TcSchVerConf {
   Uint32 senderRef;

@@ -104,7 +104,9 @@ struct CreateTableRef {
     AlterDbNoAvailableMemoryQuota = 1239,
     CreateDbNoAvailableDiskQuota = 1240,
     AlterDbNoAvailableDiskQuota = 1241,
-    NotAllowedToDropFileWithQuotas = 1242
+    NotAllowedToDropFileWithQuotas = 1242,
+    InvalidPartitionHash = 1243,
+    InvalidFanout = 1244
   };
 
   Uint32 senderRef;

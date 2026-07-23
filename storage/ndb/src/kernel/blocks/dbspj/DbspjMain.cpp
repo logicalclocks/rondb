@@ -74,6 +74,8 @@ extern EventLogger* g_eventLogger;
 extern Uint32 ErrorSignalReceive;
 extern Uint32 ErrorMaxSegmentsToSeize;
 
+static constexpr Uint32 ZCORRUPT_KEY_UNABLE_TO_XFRM = 290;
+
 /**
  * 12 bits are used to represent the 'parent-row-correlation-id'.
  * Effectively limiting max rows in a batch. Also used to limit
@@ -313,6 +315,12 @@ void Dbspj::execTC_SCHVERREQ(Signal *signal) {
   ndbrequire(tablePtr.p->get_prepared() == false);
   ndbrequire(tablePtr.p->get_enabled() == false);
   new (tablePtr.p) TableRecord(req->tableVersion);
+  tablePtr.p->m_partition_hash_base_key_count =
+      (Uint8)getPartitionHashBaseKeyCount(req->partitionHash);
+  tablePtr.p->m_partition_hash_detail_key_count =
+      (Uint8)getPartitionHashDetailKeyCount(req->partitionHash);
+  tablePtr.p->m_partition_hash_fanout =
+      (Uint16)getPartitionHashFanout(req->partitionHash);
 
   if (req->readBackup) {
     jam();
@@ -5394,7 +5402,9 @@ Dbspj::handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
   Uint32 workspace[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
   const bool hasVarKeys = desc->noOfVarKeys > 0;
   const bool hasCharAttr = desc->hasCharAttr;
-  const bool compute_distkey = desc->noOfDistrKeys > 0;
+  const bool compute_partition_hash = desc->partitionHashFanout > 1;
+  const bool compute_distkey =
+      !compute_partition_hash && (desc->noOfDistrKeys > 0);
 
   const Uint32 *hashInput = NULL;
   Uint32 inputLen = 0;
@@ -5402,13 +5412,14 @@ Dbspj::handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
   Uint32 *keyPartLenPtr;
 
   /* Normalise KeyInfo into workspace if necessary */
-  if (hasCharAttr || (compute_distkey && hasVarKeys)) {
+  if (hasCharAttr || ((compute_distkey || compute_partition_hash) &&
+                      hasVarKeys)) {
     hashInput = workspace;
     keyPartLenPtr = keyPartLen;
     inputLen = xfrm_key_hash(tableId, src, workspace, sizeof(workspace) >> 2,
                              keyPartLenPtr);
     if (unlikely(inputLen == 0)) {
-      return 290;  // 'Corrupt key in TC, unable to xfrm'
+      return ZCORRUPT_KEY_UNABLE_TO_XFRM;
     }
   } else {
     /* Keyinfo already suitable for hash */
@@ -5443,6 +5454,70 @@ Dbspj::handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
     /* Just one word used for distribution */
     dstHash[1] = distrKeyHash[1];
   }
+  else if (compute_partition_hash) {
+    jam();
+    return handle_partition_hash(dstHash, hashInput, inputLen, desc,
+                                 keyPartLenPtr, use_new_hash_function);
+  }
+  return 0;
+}
+
+Uint32
+Dbspj::handle_partition_hash(Uint32 dstHash[4],
+                             const Uint32 *src,
+                             Uint32 srcLen,
+                             const KeyDescriptor *desc,
+                             const Uint32 *keyPartLen,
+                             bool use_new_hash_function)
+{
+  const Uint32 base_count = desc->partitionHashBaseKeyCount;
+  const Uint32 detail_count = desc->partitionHashDetailKeyCount;
+  const Uint32 fanout = desc->partitionHashFanout;
+  const Uint32 parts = base_count + detail_count;
+
+  if (unlikely(fanout <= 1 || base_count == 0 || detail_count == 0 ||
+               parts > desc->noOfKeyAttr)) {
+    return ZCORRUPT_KEY_UNABLE_TO_XFRM;
+  }
+
+  Uint32 base_len = 0;
+  Uint32 total_len = 0;
+
+  if (keyPartLen != 0) {
+    for (Uint32 i = 0; i < parts; i++) {
+      total_len += keyPartLen[i];
+      if (i + 1 == base_count) {
+        base_len = total_len;
+      }
+    }
+  } else {
+    for (Uint32 i = 0; i < parts; i++) {
+      const Uint32 attr = desc->keyAttr[i].attributeDescriptor;
+      if (unlikely(AttributeDescriptor::getArrayType(attr) !=
+                   NDB_ARRAYTYPE_FIXED)) {
+        return ZCORRUPT_KEY_UNABLE_TO_XFRM;
+      }
+      total_len += AttributeDescriptor::getSizeInWords(attr);
+      if (i + 1 == base_count) {
+        base_len = total_len;
+      }
+    }
+  }
+
+  if (unlikely(base_len == 0 || total_len <= base_len ||
+               total_len > srcLen)) {
+    return ZCORRUPT_KEY_UNABLE_TO_XFRM;
+  }
+
+  Uint32 base_hash[4];
+  Uint32 detail_hash[4];
+  rondb_calc_hash(base_hash, (const char *)src, base_len,
+                  use_new_hash_function);
+  rondb_calc_hash(detail_hash, (const char *)(src + base_len),
+                  total_len - base_len, use_new_hash_function);
+
+  dstHash[1] =
+      ((base_hash[1] / fanout) * fanout) + (detail_hash[1] % fanout);
   return 0;
 }
 
@@ -5470,7 +5545,10 @@ Dbspj::computeHash(Signal* signal,
   const KeyDescriptor *desc = g_key_descriptor_pool.getPtr(tableId);
   ndbrequire(desc != NULL);
 
-  bool need_special_hash = desc->hasCharAttr | (desc->noOfDistrKeys > 0);
+  bool need_special_hash = desc->hasCharAttr |
+                           (desc->noOfDistrKeys > 0) |
+                           ((desc->partitionHashFanout > 1) &&
+                            (desc->noOfVarKeys > 0));
   if (need_special_hash) {
     jam();
     return handle_special_hash(tableId,
@@ -5487,6 +5565,10 @@ Dbspj::computeHash(Signal* signal,
                     (const char*)tmp32,
                     ptr.sz,
                     use_new_hash_function);
+    if (desc->partitionHashFanout > 1) {
+      return handle_partition_hash(dst.hashInfo, tmp32, ptr.sz, desc, 0,
+                                   use_new_hash_function);
+    }
     return 0;
   }
 }
@@ -5534,7 +5616,7 @@ Dbspj::computePartitionHash(Signal* signal,
             dstPos, NDB_ARRAY_SIZE(signal->theData) - 24);
         if (unlikely(attrLen == 0)) {
           DEBUG_CRASH();
-          return 290;  // 'Corrupt key in TC, unable to xfrm'
+          return ZCORRUPT_KEY_UNABLE_TO_XFRM;
         }
       }
     }
@@ -6071,6 +6153,41 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
         c_Counters.incr_counter(CI_CONST_PRUNED_RANGE_SCANS_RECEIVED, 1);
       }
     }  // SF_PRUNE_PATTERN
+
+    /**
+     * Scan pruning is not supported on partition hash fanout tables:
+     * one prune key maps to a raw hash interval of fanout fragments,
+     * not to a single fragment, and the prune key contains only the
+     * distribution key while the fanout routing hash needs the full
+     * primary key. The fanout-aware NDB API does not push prune info
+     * for such tables, but pre-fanout clients only see the
+     * distribution key flags and still can. Drop the prune info and
+     * scan all fragments (correct, unoptimized). Pruning support can
+     * be added in a later version.
+     */
+    if ((treeNodePtr.p->m_bits &
+         (TreeNode::T_PRUNE_PATTERN | TreeNode::T_CONST_PRUNE)) != 0) {
+      /* Index table records carry the base table's fanout metadata */
+      TableRecordPtr tablePtr;
+      tablePtr.i = treeNodePtr.p->m_tableOrIndexId;
+      ptrCheckGuard(tablePtr, c_tabrecFilesize, m_tableRecord);
+      if (tablePtr.p->m_partition_hash_fanout > 1) {
+        jam();
+        if (treeNodePtr.p->m_bits & TreeNode::T_PRUNE_PATTERN) {
+          jam();
+          LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                                     m_dependency_map_pool);
+          Local_pattern_store pattern(pool, data.m_prunePattern);
+          pattern.release();
+        } else if (data.m_constPrunePtrI != RNIL) {
+          jam();
+          releaseSection(data.m_constPrunePtrI);
+          data.m_constPrunePtrI = RNIL;
+        }
+        treeNodePtr.p->m_bits &=
+            ~Uint32(TreeNode::T_PRUNE_PATTERN | TreeNode::T_CONST_PRUNE);
+      }
+    }
 
     if ((treeNodePtr.p->m_bits & TreeNode::T_CONST_PRUNE) == 0 &&
         ((treeBits & Node::SF_PARALLEL) ||

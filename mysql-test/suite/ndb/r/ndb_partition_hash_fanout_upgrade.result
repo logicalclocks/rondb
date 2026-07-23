@@ -1,0 +1,78 @@
+-- All data nodes run the old version
+-- Create with PARTITION_HASH is rejected
+CREATE TABLE t_fan (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH not supported by current data node versions'
+-- Plain tables work on the old version
+CREATE TABLE t_plain (
+a INT NOT NULL,
+b INT NOT NULL,
+PRIMARY KEY (a,b)
+) ENGINE=NDB;
+CREATE TABLE nums (n INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO t_plain SELECT a.n, b.n FROM nums a, nums b;
+SELECT COUNT(*) FROM t_plain;
+COUNT(*)
+625
+-- Rolling upgrade of node 1 to the current version
+--- Wait for node to stop
+--- Start node again
+--- Wait for node to recover
+-- Mixed version cluster: create with PARTITION_HASH still rejected
+CREATE TABLE t_fan (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'PARTITION_HASH not supported by current data node versions'
+-- Plain tables keep working on the mixed cluster
+INSERT INTO t_plain SELECT a.n + 100, b.n FROM nums a, nums b WHERE a.n < 5;
+SELECT COUNT(*) FROM t_plain;
+COUNT(*)
+750
+-- Rolling upgrade of node 2 to the current version
+--- Wait for node to stop
+--- Start node again
+--- Wait for node to recover
+-- All data nodes upgraded: create with PARTITION_HASH succeeds
+CREATE TABLE t_fan (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+SHOW CREATE TABLE t_fan;
+Table	Create Table
+t_fan	CREATE TABLE `t_fan` (
+  `entity_id` int NOT NULL,
+  `ts` int NOT NULL,
+  PRIMARY KEY (`entity_id`,`ts`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_HASH=1:1:4'
+/*!50100 PARTITION BY KEY ()
+PARTITIONS 8 */
+INSERT INTO t_fan SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_fan;
+COUNT(*)
+100
+SELECT * FROM t_fan FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+entity_id	ts
+1	0
+1	1
+1	2
+1	3
+1	4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_fan' AND fixed_elem_count > 0;
+fragments_with_rows
+4
+DROP TABLE t_fan, t_plain, nums;

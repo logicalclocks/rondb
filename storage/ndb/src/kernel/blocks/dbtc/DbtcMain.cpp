@@ -1055,6 +1055,12 @@ void Dbtc::execTC_SCHVERREQ(Signal *signal) {
   tabptr.p->hasCharAttr = desc->hasCharAttr;
   tabptr.p->noOfDistrKeys = desc->noOfDistrKeys;
   tabptr.p->hasVarKeys = desc->noOfVarKeys > 0;
+  tabptr.p->m_partition_hash_base_key_count =
+      (Uint8)getPartitionHashBaseKeyCount(req->partitionHash);
+  tabptr.p->m_partition_hash_detail_key_count =
+      (Uint8)getPartitionHashDetailKeyCount(req->partitionHash);
+  tabptr.p->m_partition_hash_fanout =
+      (Uint16)getPartitionHashFanout(req->partitionHash);
   tabptr.p->databaseRecord = RNIL64;
   tabptr.p->set_user_defined_partitioning(userDefinedPartitioning);
   if (req->hashFunctionFlag)
@@ -3171,6 +3177,16 @@ void Dbtc::hash(Signal *signal, CacheRecord *const regCachePtr) {
   if (!regCachePtr->m_special_hash)
   {
     rondb_calc_hash(tmp, (const char*)&Tdata32[0], keylen, use_new_hash_function);
+    if (!distKey && tabPtrP->m_partition_hash_fanout > 1)
+    {
+      bool ok = handle_partition_hash(tmp,
+                                      &Tdata32[0],
+                                      keylen,
+                                      regCachePtr->tableref,
+                                      0,
+                                      use_new_hash_function);
+      ndbrequire(ok);
+    }
   }
   else
   {
@@ -3218,7 +3234,10 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
   const TableRecord *tabPtrP = &tableRecord[tabPtrI];
   const bool hasVarKeys = tabPtrP->hasVarKeys;
   const bool hasCharAttr = tabPtrP->hasCharAttr;
-  const bool compute_distkey = distr && (tabPtrP->noOfDistrKeys > 0);
+  const bool compute_partition_hash =
+      distr && (tabPtrP->m_partition_hash_fanout > 1);
+  const bool compute_distkey =
+      distr && !compute_partition_hash && (tabPtrP->noOfDistrKeys > 0);
 
   const Uint32 *hashInput;
   Uint32 inputLen = 0;
@@ -3226,7 +3245,8 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
   Uint32 *keyPartLenPtr;
 
   /* Normalise KeyInfo into workspace if necessary */
-  if (hasCharAttr || (compute_distkey && hasVarKeys)) {
+  if (hasCharAttr || ((compute_distkey || compute_partition_hash) &&
+                      hasVarKeys)) {
     hashInput = workspace;
     keyPartLenPtr = keyPartLen;
     inputLen = xfrm_key_hash(tabPtrI, src, workspace, sizeof(workspace) >> 2,
@@ -3266,11 +3286,78 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
     /* Just one word used for distribution */
     dstHash[1] = distrKeyHash[1];
   }
+  else if (compute_partition_hash) {
+    jam();
+    if (!handle_partition_hash(dstHash, hashInput, inputLen, tabPtrI,
+                               keyPartLenPtr, use_new_hash_function)) {
+      goto error;
+    }
+  }
   return true;  // success
 
 error:
   terrorCode = ZINVALID_KEY;
   return false;
+}
+
+bool Dbtc::handle_partition_hash(Uint32 dstHash[4],
+                                 const Uint32 *src,
+                                 Uint32 srcLen,
+                                 const Uint32 tabPtrI,
+                                 const Uint32 *keyPartLen,
+                                 bool use_new_hash_function) {
+  const TableRecord *tabPtrP = &tableRecord[tabPtrI];
+  const KeyDescriptor *desc = g_key_descriptor_pool.getPtr(tabPtrI);
+
+  const Uint32 base_count = tabPtrP->m_partition_hash_base_key_count;
+  const Uint32 detail_count = tabPtrP->m_partition_hash_detail_key_count;
+  const Uint32 fanout = tabPtrP->m_partition_hash_fanout;
+  const Uint32 parts = base_count + detail_count;
+
+  if (unlikely(fanout <= 1 || base_count == 0 || detail_count == 0 ||
+               parts > desc->noOfKeyAttr)) {
+    return false;
+  }
+
+  Uint32 base_len = 0;
+  Uint32 total_len = 0;
+
+  if (keyPartLen != 0) {
+    for (Uint32 i = 0; i < parts; i++) {
+      total_len += keyPartLen[i];
+      if (i + 1 == base_count) {
+        base_len = total_len;
+      }
+    }
+  } else {
+    for (Uint32 i = 0; i < parts; i++) {
+      const Uint32 attr = desc->keyAttr[i].attributeDescriptor;
+      if (unlikely(AttributeDescriptor::getArrayType(attr) !=
+                   NDB_ARRAYTYPE_FIXED)) {
+        return false;
+      }
+      total_len += AttributeDescriptor::getSizeInWords(attr);
+      if (i + 1 == base_count) {
+        base_len = total_len;
+      }
+    }
+  }
+
+  if (unlikely(base_len == 0 || total_len <= base_len ||
+               total_len > srcLen)) {
+    return false;
+  }
+
+  Uint32 base_hash[4];
+  Uint32 detail_hash[4];
+  rondb_calc_hash(base_hash, (const char *)src, base_len,
+                  use_new_hash_function);
+  rondb_calc_hash(detail_hash, (const char *)(src + base_len),
+                  total_len - base_len, use_new_hash_function);
+
+  dstHash[1] =
+      ((base_hash[1] / fanout) * fanout) + (detail_hash[1] % fanout);
+  return true;
 }
 
 /*
@@ -4331,6 +4418,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
 
   regCachePtr->m_special_hash = localTabptr.p->hasCharAttr |
                                 (localTabptr.p->noOfDistrKeys > 0) |
+                                ((localTabptr.p->m_partition_hash_fanout > 1) &&
+                                 localTabptr.p->hasVarKeys) |
                                 regCachePtr->m_no_hash;
 
   if (unlikely(TkeyLength == 0)) {
@@ -16012,6 +16101,58 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   scanptr.p->m_scan_dist_key = scanTabReq->distributionKey;
   scanptr.p->m_scan_dist_key_flag = ScanTabReq::getDistributionKeyFlag(ri);
+  scanptr.p->m_scan_dist_key_interval_flag =
+      ScanTabReq::getDistributionKeyIntervalFlag(scanTabReq->storedProcId);
+  scanptr.p->m_scan_dist_key_part_id_flag =
+      ScanTabReq::getDistributionKeyPartIdFlag(scanTabReq->storedProcId);
+
+  if (unlikely(scanptr.p->m_scan_dist_key_interval_flag &&
+               (!scanptr.p->m_scan_dist_key_flag ||
+                scanptr.p->m_scan_dist_key_part_id_flag ||
+                tabptr.p->m_partition_hash_fanout <= 1))) {
+    jam();
+    /*
+     * Interval pruning requires API and kernel to agree on the table's
+     * partition hash fanout metadata. The metadata cannot be changed
+     * online, so a mismatch means the API used a stale table definition.
+     * The interval flag and the partition id flag are mutually exclusive.
+     */
+    errCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
+
+  if (unlikely(scanptr.p->m_scan_dist_key_part_id_flag &&
+               !scanptr.p->m_scan_dist_key_flag)) {
+    jam();
+    /* Partition id flag without a distribution key is malformed. */
+    errCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
+
+  if (unlikely(scanptr.p->m_scan_dist_key_flag &&
+               !scanptr.p->m_scan_dist_key_interval_flag &&
+               !scanptr.p->m_scan_dist_key_part_id_flag &&
+               tabptr.p->m_partition_hash_fanout > 1)) {
+    jam();
+    /*
+     * Rows sharing a base partition key are spread over the fanout interval
+     * of fragments, so a scan pruned to one partition by a hash value
+     * cannot be trusted to see all rows the application intended. This
+     * rejects clients that are unaware of partition hash fanout and
+     * hash-valued explicit scan partitioning (SO_PART_INFO) on fanout
+     * tables, rather than silently returning partial results. Scans pruned
+     * to a distinct fragment id carry m_scan_dist_key_part_id_flag and are
+     * allowed.
+     */
+    errCode = ZSCAN_PRUNE_PARTITION_HASH_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
 
   if (ERROR_INSERTED(8119)) {
     jam();
@@ -16184,6 +16325,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_par_ordered_scan_flag = par_ordered_scan_flag;
   scanptr.p->scanTableref = tabptr.i;
   scanptr.p->scanSchemaVersion = scanTabReq->tableSchemaVersion;
+  scanptr.p->scanFirstHashValue = 0;
   scanptr.p->scanNoFrag = 0;
   scanptr.p->scanParallel = scanParallel;
   if (batchSizeRows == 0) {
@@ -16195,6 +16337,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->batch_size_rows = batchSizeRows;
   scanptr.p->m_scan_block_no = DBLQH;
   scanptr.p->m_scan_dist_key_flag = 0;
+  scanptr.p->m_scan_dist_key_interval_flag = 0;
+  scanptr.p->m_scan_dist_key_part_id_flag = 0;
   scanptr.p->m_start_ticks = getHighResTimer();
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
@@ -16228,7 +16372,9 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
 
   scanptr.p->scanRequestInfo = tmp;
   scanptr.p->m_read_committed_base = ScanTabReq::getReadCommittedBaseFlag(ri);
-  scanptr.p->scanStoredProcId = scanTabReq->storedProcId;
+  /* The high half of storedProcId carries extended request-info bits. */
+  scanptr.p->scanStoredProcId =
+      ScanTabReq::getStoredProcId(scanTabReq->storedProcId);
   scanptr.p->scanState = ScanRecord::RUNNING;
   scanptr.p->m_queued_count = 0;
   scanptr.p->m_booked_fragments_count = 0;
@@ -16510,15 +16656,51 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
                is_ttl_table(tabPtr.p));
     */
 
-    /**
-     * Prepare for sendDihGetNodeReq to request DBDIH info for
-     * the single pruned-to fragId we got from NDB API.
-     */
-    tfragCount = 1;
+    if (scanptr.p->m_scan_dist_key_interval_flag) {
+      /**
+       * m_scan_dist_key is a grouped partition-hash base hash. Scan the
+       * fanout interval of raw hash values starting at it. The interval
+       * flag is only accepted by execSCAN_TABREQ when the table has
+       * partition hash fanout > 1, and the metadata cannot change online,
+       * but fail the scan rather than trust that if the metadata
+       * disagrees here.
+       */
+      const Uint32 partition_hash_fanout = tabPtr.p->m_partition_hash_fanout;
+      if (unlikely(partition_hash_fanout <= 1)) {
+        jam();
+        abortScanLab(signal, scanptr, ZWRONG_SCHEMA_VERSION_ERROR, true,
+                     apiConnectptr);
+        return;
+      }
+      scanptr.p->scanFirstHashValue = scanptr.p->m_scan_dist_key;
+      tfragCount = partition_hash_fanout;
+    } else if (scanptr.p->m_scan_dist_key_part_id_flag) {
+      /**
+       * m_scan_dist_key is a distinct fragment id. Scan exactly that
+       * fragment, also on tables with partition hash fanout. Validate the
+       * fragment id against the fragment count from DIH instead of
+       * trusting the API.
+       */
+      if (unlikely(scanptr.p->m_scan_dist_key >= tfragCount)) {
+        jam();
+        abortScanLab(signal, scanptr, ZNO_FRAGMENT_ERROR, true,
+                     apiConnectptr);
+        return;
+      }
+      tfragCount = 1;
+    } else {
+      /**
+       * Prepare for sendDihGetNodeReq to request DBDIH info for
+       * the single pruned-to fragId we got from NDB API. Tables with
+       * partition hash fanout > 1 cannot reach here: execSCAN_TABREQ
+       * rejects hash-valued one-partition pruned scans on such tables.
+       */
+      tfragCount = 1;
+    }
   }
   ndbassert(scanptr.p->scanNextFragId == 0);
 
-  scanptr.p->scanParallel = tfragCount;
+  scanptr.p->scanParallel = MIN(scanptr.p->scanParallel, tfragCount);
   scanptr.p->scanNoFrag = tfragCount;
   scanptr.p->scanState = ScanRecord::RUNNING;
 
@@ -16686,10 +16868,15 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
       return;
     }
 
+    const bool partition_hash_interval =
+        scanP->m_scan_dist_key_interval_flag;
+    const Uint32 scanHashOrFragId =
+        partition_hash_interval
+            ? scanP->scanFirstHashValue + scanP->scanNextFragId
+            : scanP->scanNextFragId;
     const bool success =
-        sendDihGetNodeReq(signal, scanptr, fragLocationPtr,
-                          scanP->scanNextFragId, is_multi_spj_scan,
-                          ttl_can_go_to_replica);
+        sendDihGetNodeReq(signal, scanptr, fragLocationPtr, scanHashOrFragId,
+                          is_multi_spj_scan, ttl_can_go_to_replica);
     if (unlikely(!success)) {
       jam();
       return;  // sendDihGetNodeReq called scanError() upon failure.
@@ -16925,17 +17112,35 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
   req->get_next_fragid_indicator = 0;
   req->only_readable_nodes = 1;
 
-  if (scanptr.p->m_scan_dist_key_flag)  // Scan pruned to specific fragment
+  TableRecordPtr tabPtr;
+  tabPtr.i = scanptr.p->scanTableref;
+  ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+
+  const bool partition_hash_interval =
+      scanptr.p->m_scan_dist_key_interval_flag;
+  if (partition_hash_interval) {
+    /*
+     * scanFragId is a raw hash value in the grouped base-hash interval.
+     * Keep distr_key_indicator cleared so DIH maps it through the current
+     * table distribution. Uint32 addition may wrap, which is fine for hashes.
+     */
+    ndbassert(tabPtr.p->m_partition_hash_fanout > 1);
+    distr_key_indicator = 0;
+  } else if (scanptr.p->m_scan_dist_key_flag)
   {
     jamDebug();
     ndbassert(scanFragId == 0); /* Pruned to 1 fragment */
     req->hashValue = scanptr.p->m_scan_dist_key;
 
-    TableRecordPtr tabPtr;
-    tabPtr.i = scanptr.p->scanTableref;
-    ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
-
-    distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    if (scanptr.p->m_scan_dist_key_part_id_flag) {
+      /*
+       * m_scan_dist_key is a distinct fragment id, resolve it directly
+       * instead of mapping it through the table distribution as a hash.
+       */
+      distr_key_indicator = ZTRUE;
+    } else {
+      distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    }
   }
   req->distr_key_indicator = distr_key_indicator;
   c_dih->execDIGETNODESREQ(signal);
@@ -16972,11 +17177,8 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
     }
   }
 
-  TableRecordPtr tabPtr;
-  tabPtr.i = scanptr.p->scanTableref;
-  ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
-
   ndbassert(scanFragId == lqhScanFragId ||
+            partition_hash_interval ||
             scanptr.p->m_scan_dist_key == lqhScanFragId ||
             distr_key_indicator == 0 ||
             (tabPtr.p->m_flags & TableRecord::TR_FULLY_REPLICATED));
