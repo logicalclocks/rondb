@@ -10675,8 +10675,22 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
 
       LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
                                                  m_dependency_map_pool);
-      ndbrequire((cnt == 0) == ((treeBits & Node::SF_PRUNE_PARAMS) == 0));
-      ndbrequire((cnt == 0) == ((paramBits & Params::SFP_PRUNE_PARAMS) == 0));
+
+      // Flag/cnt agreement check: cnt==0 must match whether SF_PRUNE_PARAMS is
+      // absent from treeBits, and separately whether SFP_PRUNE_PARAMS is absent
+      // from paramBits. Identical check to parseDA's key-param agreement test
+      // (InvalidTreeParametersSpecificationIncorrectKeyParamCount) -- a buggy or
+      // version-skewed API client could plausibly encode this mismatch, so
+      // Tier B (log + count, no auto-disconnect), matching parseDA's sibling.
+      if (unlikely(
+              ((cnt == 0) != ((treeBits & Node::SF_PRUNE_PARAMS) == 0)) ||
+              ((cnt == 0) != ((paramBits & Params::SFP_PRUNE_PARAMS) == 0)))) {
+        jam();
+        ctx.m_maliciousViolationType = VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY;
+        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+        err = DbspjErr::InvalidTreeParametersSpecificationIncorrectKeyParamCount;
+        break;
+      }
 
       // cnt is passed as paramCnt into expand(), which writes cnt entries into
       // a MAX_ATTRIBUTES_IN_TABLE-sized stack array with no cap -- Tier A.

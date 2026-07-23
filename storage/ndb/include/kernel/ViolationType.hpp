@@ -104,9 +104,11 @@ enum ViolationType : Uint32 {
                                           //    program / attr pattern) exceeds its tree/param section
   VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS = 29, // A: key-param cnt exceeds MAX_ATTRIBUTES_IN_TABLE
                                              //    (parseDA key params, or scanFrag_build prune params)
+  VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY = 30, // B: parseScanFrag SF_PRUNE_PATTERN cnt==0 disagrees
+                                            //    with SF_PRUNE_PARAMS/SFP_PRUNE_PARAMS flags
 
-  VT_UNKNOWN = 30,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 31              // sentinel — keep last
+  VT_UNKNOWN = 31,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 32              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -167,6 +169,7 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_SPJ_ATTR_LIST_LENGTH_MISMATCH, TIER_B,"spj_attr_list_length_mismatch"},
     {VT_SPJ_SECTION_LENGTH_MISMATCH,   TIER_B,"spj_section_length_mismatch"},
     {VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS,TIER_A,"spj_key_param_count_out_of_bounds"},
+    {VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY,TIER_B,"spj_scan_frag_flag_inconsistency"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 
