@@ -6154,6 +6154,41 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
       }
     }  // SF_PRUNE_PATTERN
 
+    /**
+     * Scan pruning is not supported on partition hash fanout tables:
+     * one prune key maps to a raw hash interval of fanout fragments,
+     * not to a single fragment, and the prune key contains only the
+     * distribution key while the fanout routing hash needs the full
+     * primary key. The fanout-aware NDB API does not push prune info
+     * for such tables, but pre-fanout clients only see the
+     * distribution key flags and still can. Drop the prune info and
+     * scan all fragments (correct, unoptimized). Pruning support can
+     * be added in a later version.
+     */
+    if ((treeNodePtr.p->m_bits &
+         (TreeNode::T_PRUNE_PATTERN | TreeNode::T_CONST_PRUNE)) != 0) {
+      /* Index table records carry the base table's fanout metadata */
+      TableRecordPtr tablePtr;
+      tablePtr.i = treeNodePtr.p->m_tableOrIndexId;
+      ptrCheckGuard(tablePtr, c_tabrecFilesize, m_tableRecord);
+      if (tablePtr.p->m_partition_hash_fanout > 1) {
+        jam();
+        if (treeNodePtr.p->m_bits & TreeNode::T_PRUNE_PATTERN) {
+          jam();
+          LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                                     m_dependency_map_pool);
+          Local_pattern_store pattern(pool, data.m_prunePattern);
+          pattern.release();
+        } else if (data.m_constPrunePtrI != RNIL) {
+          jam();
+          releaseSection(data.m_constPrunePtrI);
+          data.m_constPrunePtrI = RNIL;
+        }
+        treeNodePtr.p->m_bits &=
+            ~Uint32(TreeNode::T_PRUNE_PATTERN | TreeNode::T_CONST_PRUNE);
+      }
+    }
+
     if ((treeNodePtr.p->m_bits & TreeNode::T_CONST_PRUNE) == 0 &&
         ((treeBits & Node::SF_PARALLEL) ||
          (paramBits & Params::SFP_PARALLEL))) {

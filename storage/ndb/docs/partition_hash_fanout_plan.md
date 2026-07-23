@@ -573,6 +573,21 @@ Status: DEFERRED to a future RonDB version (decision 2026-07-02). Pushed-join
 pruning stays disabled for fanout tables (correct, unoptimized). Design notes
 and machinery study are preserved in `partition_hash_fanout_spj_worklog.md`.
 
+The disable is enforced on both sides (July 2026):
+
+* Client side, the fanout-aware NDB API does not mark root scans prunable
+  and does not push child prune patterns for fanout tables
+  (`NdbQueryBuilder.cpp`).
+* Server side, DBSPJ drops `T_CONST_PRUNE`/`T_PRUNE_PATTERN` at parse time
+  (`parseScanFrag`) when the scanned table has `fanout > 1` and scans all
+  fragments instead. This protects against pre-fanout clients, which only
+  see the distribution key flags and would otherwise prune child scans to
+  a single wrong fragment. Root-scan prunes from such clients are already
+  rejected by DBTC with error 2203.
+* Pushed-join child PK lookups need no gate: `Dbspj::computeHash` computes
+  the composed fanout routing hash on both the plain and the special
+  (char/var key) path, mirroring `Dbtc::hash()`.
+
 * Extend constant and pattern pruning to produce `fanout` fragments.
 * Duplicate/share range and parameter sections correctly.
 * Verify pushed joins with parent-row dependent pruning.

@@ -344,6 +344,31 @@ SELECT COUNT(*) FROM tf JOIN tn USING (entity_id, ts, id)
 WHERE tf.payload <=> tn.payload;
 
 --echo #
+--echo # Pushed join on a fanout table: DBSPJ child PK lookups route by
+--echo # the composed fanout hash, scans run without SPJ pruning
+--echo #
+
+set @save_ndb_join_pushdown = @@session.ndb_join_pushdown;
+set ndb_join_pushdown = on;
+
+FLUSH STATUS;
+--sorted_result
+SELECT t1.entity_id, t1.ts, t1.id, t2.payload
+FROM tf t1 JOIN tf t2
+  ON t2.entity_id = t1.entity_id AND t2.ts = t1.ts AND t2.id = t1.id
+WHERE t1.entity_id = 7 AND t1.ts < 5;
+SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed';
+
+# Twin table gives the expected result for the same join
+--sorted_result
+SELECT t1.entity_id, t1.ts, t1.id, t2.payload
+FROM tn t1 JOIN tn t2
+  ON t2.entity_id = t1.entity_id AND t2.ts = t1.ts AND t2.id = t1.id
+WHERE t1.entity_id = 7 AND t1.ts < 5;
+
+set ndb_join_pushdown = @save_ndb_join_pushdown;
+
+--echo #
 --echo # Physical routing: one base key occupies exactly fanout fragments
 --echo #
 

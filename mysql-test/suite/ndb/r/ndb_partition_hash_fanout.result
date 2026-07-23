@@ -386,6 +386,37 @@ WHERE tf.payload <=> tn.payload;
 COUNT(*)
 474
 #
+# Pushed join on a fanout table: DBSPJ child PK lookups route by
+# the composed fanout hash, scans run without SPJ pruning
+#
+set @save_ndb_join_pushdown = @@session.ndb_join_pushdown;
+set ndb_join_pushdown = on;
+FLUSH STATUS;
+SELECT t1.entity_id, t1.ts, t1.id, t2.payload
+FROM tf t1 JOIN tf t2
+ON t2.entity_id = t1.entity_id AND t2.ts = t1.ts AND t2.id = t1.id
+WHERE t1.entity_id = 7 AND t1.ts < 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	updated
+7	4	7004	p7_4
+SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed';
+Variable_name	Value
+Ndb_pushed_queries_executed	3
+SELECT t1.entity_id, t1.ts, t1.id, t2.payload
+FROM tn t1 JOIN tn t2
+ON t2.entity_id = t1.entity_id AND t2.ts = t1.ts AND t2.id = t1.id
+WHERE t1.entity_id = 7 AND t1.ts < 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	updated
+7	4	7004	p7_4
+set ndb_join_pushdown = @save_ndb_join_pushdown;
+#
 # Physical routing: one base key occupies exactly fanout fragments
 #
 CREATE TABLE t_route (
