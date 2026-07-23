@@ -110,6 +110,7 @@ class DumpStateOrd {
     CmvmiSetMaxSignalsPerJBBReceive = 103017,
     CmvmiSetTcQueryThreadDistance = 103018,
     CmvmiSetRecvQueryThreadDistance = 103019,
+    CmvmiSetRdmaLogLevel = 103020,
 
     _CMVMIMax = 103099,
 

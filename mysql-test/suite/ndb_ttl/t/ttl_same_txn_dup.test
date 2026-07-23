@@ -1,0 +1,252 @@
+# ==========================================================================
+# Guard for the same-transaction duplicate-PK silent-upsert on a TTL base
+# table (finding #5).
+# ==========================================================================
+# On a TTL table, the DBACC dup-convert (ZINSERT -> ZWRITE, for
+# upsert-over-expired) fires for ANY found element, including one locked by an
+# in-flight op of the SAME transaction. The converted op then reaches DBTUP's
+# handleUpdateReq as ZINSERT_TTL, but its row-expiry check (which raises 630
+# for a duplicate of a LIVE row) was gated on ttl_ignore == 0 -- and DBACC's
+# same-transaction lock visibility ("read what you locked") sets
+# ttl_ignore = 1. So a same-transaction duplicate-PK INSERT silently upserted
+# instead of returning ER_DUP_ENTRY. A plain non-TTL table, and the same TTL
+# table across separate transactions, correctly reject the duplicate.
+#
+# Fix (DBTUP, mirrors the unique-index fix 813313ddefc): for ZINSERT_TTL, gate
+# the handleUpdateReq expiry check on !m_ttl_owner_check_bypass (genuine
+# recovery/replication/OO_TTL_IGNORE provenance) instead of ttl_ignore, and
+# run it after org is resolved so a chained op reads the previous op's copy
+# tuple (the committed base row is ALLOC-uninitialized when this transaction
+# inserted it). checkTTL then decides by ACTUAL expiry: live -> 630, expired
+# -> upsert. The DBACC layer cannot make that distinction: ON DUP / REPLACE /
+# INSERT IGNORE peek (peek_indexed_rows) with an EXCLUSIVE read lock before
+# inserting, so a same-transaction lock is also present for the fully legit
+# upsert-over-expired -- gating the dup-convert on same-txn locks broke
+# ttl_upsert/ttl_replace (tried twice, reverted).
+#
+# Invariants checked here:
+#   - non-TTL same-txn dup            -> ER_DUP_ENTRY (baseline)
+#   - TTL same-txn dup (3 shapes)     -> ER_DUP_ENTRY (the fix)
+#   - TTL insert over an EXPIRED row  -> succeeds (upsert, must be preserved)
+#   - TTL cross-transaction dup       -> rejected (must be preserved)
+#   - ON DUP / REPLACE / INSERT IGNORE: same-txn dup of a LIVE row keeps
+#     correct duplicate-handling semantics (update-arm / replace / ignore),
+#     and over an EXPIRED row the upsert still succeeds even though the
+#     statement's own peek lock is present (the exact shape the DBACC-side
+#     attempts regressed)
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+# checkTTL compares the TTL column against UTC; align the session tz.
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.nt;
+DROP TABLE IF EXISTS test.lt;
+DROP TABLE IF EXISTS test.st;
+DROP TABLE IF EXISTS test.ut;
+DROP TABLE IF EXISTS test.su;
+--enable_warnings
+
+CREATE TABLE test.nt (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL, c INT)
+  ENGINE=NDB;
+# Long TTL: rows stay live through the duplicate tests.
+CREATE TABLE test.lt (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL, c INT)
+  ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@b";
+# Short TTL: for the legit upsert-over-expired case.
+CREATE TABLE test.st (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL, c INT)
+  ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@b";
+# Long TTL WITH a UNIQUE index: the dup-convert also runs for the internal
+# unique-index table (is_ttl follows the base table), so the same-txn gate
+# must behave correctly there too. (This coverage is what a PK-only table
+# misses.)
+CREATE TABLE test.ut (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL,
+  c INT, UNIQUE KEY uk_c (c)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@b";
+# Short TTL WITH a UNIQUE index: ON DUP/REPLACE on a unique-indexed table
+# peek with an exclusive lock before inserting, so the insert-over-expired
+# carries a same-transaction lock -- the exact shape a DBACC-side gate breaks.
+# The extra payload column d lets the upsert be observed while REUSING the
+# same unique value (avoids interference from unrelated index-entry handling
+# when a unique value changes over an expired row).
+CREATE TABLE test.su (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL,
+  c INT, d INT, UNIQUE KEY uk_c (c)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@b";
+
+--echo # --- Baseline: non-TTL same-txn multi-row dup -> ER_DUP_ENTRY, no row ---
+--error ER_DUP_ENTRY
+INSERT INTO test.nt VALUES (1, NOW(), 100), (1, NOW(), 200);
+SELECT a, c FROM test.nt WHERE a = 1;
+
+--echo # --- Case 1: TTL same-txn multi-row dup -> ER_DUP_ENTRY, no row ---
+--error ER_DUP_ENTRY
+INSERT INTO test.lt VALUES (1, NOW(), 100), (1, NOW(), 200);
+SELECT a, c FROM test.lt WHERE a = 1;
+DELETE FROM test.lt;
+
+--echo # --- Case 2: TTL same-txn explicit BEGIN/INSERT/INSERT ---
+BEGIN;
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+--error ER_DUP_ENTRY
+INSERT INTO test.lt VALUES (1, NOW(), 200);
+COMMIT;
+--echo # first insert committed, second rejected -> row is (1,100)
+SELECT a, c FROM test.lt WHERE a = 1;
+DELETE FROM test.lt;
+
+--echo # --- Case 3: TTL SELECT..FOR UPDATE then INSERT the same live PK ---
+INSERT INTO test.lt VALUES (7, NOW(), 700);
+BEGIN;
+SELECT a, c FROM test.lt WHERE a = 7 FOR UPDATE;
+--error ER_DUP_ENTRY
+INSERT INTO test.lt VALUES (7, NOW(), 777);
+COMMIT;
+--echo # insert rejected -> row keeps its original value (7,700)
+SELECT a, c FROM test.lt WHERE a = 7;
+DELETE FROM test.lt;
+
+--echo # --- Case 3b: same-txn dup PK on a UNIQUE-indexed TTL table -> ER_DUP_ENTRY
+--error ER_DUP_ENTRY
+INSERT INTO test.ut VALUES (1, NOW(), 100), (1, NOW(), 200);
+SELECT a, c FROM test.ut WHERE a = 1;
+DELETE FROM test.ut;
+
+--echo # --- Case 3c: same-txn dup UNIQUE VALUE on a TTL table -> ER_DUP_ENTRY
+--echo # (different PKs, same unique value, one transaction; the dup-convert
+--echo # also runs on the internal unique-index table and must not upsert it)
+--error ER_DUP_ENTRY
+INSERT INTO test.ut VALUES (1, NOW(), 100), (2, NOW(), 100);
+--echo # neither row present (statement rolled back)
+SELECT a, c FROM test.ut ORDER BY a;
+DELETE FROM test.ut;
+
+--echo # --- Case 3d: same-txn DELETE then re-INSERT the same PK MUST succeed ---
+--echo # (lastOp==ZDELETE, so this is a legit re-insert, not a duplicate; the
+--echo # same-txn gate must NOT turn it into 630). Base table:
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+BEGIN;
+DELETE FROM test.lt WHERE a = 1;
+INSERT INTO test.lt VALUES (1, NOW(), 200);
+COMMIT;
+--echo # re-insert succeeded -> row is (1,200)
+SELECT a, c FROM test.lt WHERE a = 1;
+DELETE FROM test.lt;
+
+--echo # ...and on the UNIQUE-indexed table (base + index re-insert):
+INSERT INTO test.ut VALUES (1, NOW(), 100);
+BEGIN;
+DELETE FROM test.ut WHERE a = 1;
+INSERT INTO test.ut VALUES (1, NOW(), 200);
+COMMIT;
+--echo # re-insert succeeded -> (1,200), reachable via the unique index
+SELECT a, c FROM test.ut WHERE a = 1;
+SELECT a, c FROM test.ut WHERE c = 200;
+DELETE FROM test.ut;
+
+--echo # --- Case 4: TTL legit upsert-over-expired MUST still succeed ---
+INSERT INTO test.st VALUES (1, NOW(), 100);
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.st WHERE a = 1
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+--echo # insert over the expired row (new value) -> succeeds (upsert)
+INSERT INTO test.st VALUES (1, NOW(), 999);
+SELECT a, c FROM test.st WHERE a = 1;
+DELETE FROM test.st;
+
+--echo # --- Case 5: TTL cross-transaction dup MUST still be rejected ---
+connect (ca, localhost, root,,test,$MASTER_MYPORT,);
+connect (cb, localhost, root,,test,$MASTER_MYPORT,);
+connection ca;
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+connection cb;
+SET time_zone = '+00:00';
+--echo # cb inserts the same PK -> blocks on ca's uncommitted row
+--send INSERT INTO test.lt VALUES (1, NOW(), 200)
+connection ca;
+COMMIT;
+connection cb;
+--echo # after ca commits its live row, cb's duplicate insert is rejected
+--error ER_DUP_ENTRY
+--reap
+connection default;
+--echo # row keeps ca's value (1,100)
+SELECT a, c FROM test.lt WHERE a = 1;
+disconnect ca;
+disconnect cb;
+
+--echo # --- Case 6: INSERT..ON DUPLICATE KEY UPDATE, same-txn dup of a LIVE row ---
+--echo # The duplicate must surface (peek or kernel 630) so the UPDATE arm runs;
+--echo # a silent upsert would apply the INSERT values (200) instead of 999.
+INSERT INTO test.lt VALUES (1, NOW(), 100), (1, NOW(), 200)
+  ON DUPLICATE KEY UPDATE c = 999;
+SELECT a, c FROM test.lt WHERE a = 1;
+DELETE FROM test.lt;
+--echo # ...and on the UNIQUE-indexed table (peek locks the key first, then the
+--echo # UPDATE arm runs while this txn holds its own peek lock):
+BEGIN;
+INSERT INTO test.ut VALUES (1, NOW(), 100);
+INSERT INTO test.ut VALUES (1, NOW(), 200) ON DUPLICATE KEY UPDATE c = 999;
+COMMIT;
+SELECT a, c FROM test.ut WHERE a = 1;
+DELETE FROM test.ut;
+
+--echo # --- Case 7: REPLACE, same-txn dup of a LIVE row -> row replaced ---
+BEGIN;
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+REPLACE INTO test.lt VALUES (1, NOW(), 200);
+COMMIT;
+SELECT a, c FROM test.lt WHERE a = 1;
+DELETE FROM test.lt;
+--echo # ...and on the UNIQUE-indexed table (peek + delete + re-insert path):
+BEGIN;
+INSERT INTO test.ut VALUES (1, NOW(), 100);
+REPLACE INTO test.ut VALUES (1, NOW(), 200);
+COMMIT;
+SELECT a, c FROM test.ut WHERE a = 1;
+SELECT a, c FROM test.ut WHERE c = 200;
+DELETE FROM test.ut;
+
+--echo # --- Case 8: INSERT IGNORE, same-txn dup of a LIVE row -> dup skipped ---
+--echo # The first value must be kept; a silent upsert would leave 200.
+INSERT IGNORE INTO test.lt VALUES (2, NOW(), 100), (2, NOW(), 200);
+SELECT a, c FROM test.lt WHERE a = 2;
+DELETE FROM test.lt;
+INSERT IGNORE INTO test.ut VALUES (1, NOW(), 100), (2, NOW(), 100);
+SELECT a, c FROM test.ut ORDER BY a;
+DELETE FROM test.ut;
+
+--echo # --- Cases 9/10 setup: seed short-TTL rows and let them expire ---
+INSERT INTO test.st VALUES (11, NOW(), 100), (12, NOW(), 100);
+INSERT INTO test.su VALUES (1, NOW(), 100, 1), (2, NOW(), 200, 1);
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.st WHERE a IN (11, 12)
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.su WHERE a IN (1, 2)
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+--echo # --- Case 9: ON DUP over an EXPIRED row MUST upsert (insert path) ---
+--echo # Expired row is invisible to the peek -> plain insert -> kernel upserts
+--echo # over the expired row. This must succeed even though the statement's
+--echo # own peek lock is a same-transaction lock on the key (the case the
+--echo # DBACC-side attempts broke with 630/893).
+INSERT INTO test.st VALUES (11, NOW(), 555) ON DUPLICATE KEY UPDATE c = 999;
+SELECT a, c FROM test.st WHERE a = 11;
+--echo # ...and on the UNIQUE-indexed table (same unique value, new payload):
+INSERT INTO test.su VALUES (1, NOW(), 100, 2) ON DUPLICATE KEY UPDATE d = 999;
+SELECT a, c, d FROM test.su WHERE a = 1;
+
+--echo # --- Case 10: REPLACE over an EXPIRED row MUST upsert ---
+REPLACE INTO test.st VALUES (12, NOW(), 777);
+SELECT a, c FROM test.st WHERE a = 12;
+REPLACE INTO test.su VALUES (2, NOW(), 200, 7);
+SELECT a, c, d FROM test.su WHERE a = 2;
+DELETE FROM test.st;
+DELETE FROM test.su;
+
+DROP TABLE test.nt;
+DROP TABLE test.lt;
+DROP TABLE test.st;
+DROP TABLE test.ut;
+DROP TABLE test.su;

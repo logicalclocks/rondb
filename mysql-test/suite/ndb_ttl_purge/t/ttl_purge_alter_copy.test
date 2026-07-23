@@ -1,0 +1,139 @@
+# ==========================================================================
+# Copying ALTER TABLE on a TTL table vs the concurrent TTL purge
+# (review finding #13, report section 3.6).
+#
+# A copying ALTER saves the source table's commit count when the copy scan
+# starts (rnd_init -> Copying_alter::save_commit_count) and re-checks it at
+# end of scan: any committed change aborts the ALTER with
+# ER_TABLE_DEF_CHANGED to avoid silently losing concurrent changes. The
+# RDRS TTL purge is an always-on NDB-API writer: its takeover deletes of
+# EXPIRED rows bump the commit count too, although they cannot change the
+# data the copy scan sees (the scan filters expired rows; the purge only
+# ever deletes expired rows). On a table with a steady expiry stream the
+# copy window always contains a purge delete, so the ALTER fails forever.
+#
+# This test drives a copying ALTER while the purge is actively draining a
+# large pre-expired backlog:
+#   - unfixed: the ALTER aborts with ER_TABLE_DEF_CHANGED (the bug)
+#   - fixed: the ALTER succeeds, all live rows survive, and a REAL
+#     concurrent write during the copy still aborts the ALTER (the check
+#     must keep protecting against genuine changes)
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+
+--echo #
+--echo # Setup: TTL table with 32768 live rows and an 8k expired backlog
+--echo #
+
+# Keep the purge away while seeding.
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+
+CREATE DATABASE IF NOT EXISTS ttl_altcopy;
+CREATE TABLE ttl_altcopy.t (
+  id INT PRIMARY KEY,
+  ttl_col DATETIME,
+  data VARCHAR(200)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+# 16 seed rows, then double 11 times -> 32768 live rows (ttl_col = NOW(),
+# TTL 3600s: live for the whole test). Sized for the suite's 30M DataMemory.
+INSERT INTO ttl_altcopy.t VALUES
+  (1,NOW(),REPEAT('x',80)),(2,NOW(),REPEAT('x',80)),
+  (3,NOW(),REPEAT('x',80)),(4,NOW(),REPEAT('x',80)),
+  (5,NOW(),REPEAT('x',80)),(6,NOW(),REPEAT('x',80)),
+  (7,NOW(),REPEAT('x',80)),(8,NOW(),REPEAT('x',80)),
+  (9,NOW(),REPEAT('x',80)),(10,NOW(),REPEAT('x',80)),
+  (11,NOW(),REPEAT('x',80)),(12,NOW(),REPEAT('x',80)),
+  (13,NOW(),REPEAT('x',80)),(14,NOW(),REPEAT('x',80)),
+  (15,NOW(),REPEAT('x',80)),(16,NOW(),REPEAT('x',80));
+
+--let $doubling = 11
+--let $offset = 16
+while ($doubling)
+{
+  --eval INSERT INTO ttl_altcopy.t SELECT id + $offset, ttl_col, data FROM ttl_altcopy.t WHERE id <= $offset
+  --let $offset = `SELECT $offset * 2`
+  --dec $doubling
+}
+SELECT COUNT(*) AS live_rows FROM ttl_altcopy.t;
+
+# 8k already-expired rows (ids 1000001+). Static backlog: nothing else
+# expires during the test, so the purge drains this set at its bounded
+# per-round rate (<= ~500/s) for far longer than the copy takes.
+INSERT INTO ttl_altcopy.t
+  SELECT id + 1000000, '2000-01-01 00:00:00', data
+  FROM ttl_altcopy.t WHERE id <= 8192;
+
+--echo #
+--echo # Start an aggressive purge and wait until it is actively deleting
+--echo #
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/_ac_metrics.json
+--let $json_file = $MYSQL_TMP_DIR/_ac_metrics.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $purge_baseline = $json_value
+
+--exec $ttl_purge_put_config '{"enabled":true,"min_batch_size":5,"max_batch_size":50,"sleep_interval_ms":100}' > /dev/null 2>&1
+
+--let $expected_purge_total = `SELECT $purge_baseline + 200`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--echo # purge is actively deleting expired rows
+
+--echo #
+--echo # Copying ALTER while the purge keeps deleting expired rows.
+--echo # Unfixed: aborts with ER_TABLE_DEF_CHANGED although the purge can
+--echo # never change what the copy scan reads. Fixed: succeeds.
+--echo #
+ALTER TABLE ttl_altcopy.t ADD COLUMN extra INT, ALGORITHM=COPY;
+
+# All live rows survived the copy.
+SELECT COUNT(*) AS live_rows_after_alter
+  FROM ttl_altcopy.t WHERE id < 1000000;
+SHOW CREATE TABLE ttl_altcopy.t;
+
+--echo #
+--echo # A REAL concurrent write during the copy must still abort the ALTER
+--echo #
+# The writer must be on the OTHER mysqld: the ALTER's own server blocks
+# local writes with MDL during the copy, and the commit-count check exists
+# exactly for the writers MDL cannot see (other mysqlds / NDB-API clients).
+connect (writer,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection default;
+
+--send ALTER TABLE ttl_altcopy.t ADD COLUMN extra2 INT, ALGORITHM=COPY
+
+connection writer;
+# Keep committing real changes across the whole copy window so at least one
+# lands between the ALTER's commit-count snapshot and its end-of-scan check,
+# regardless of how long the copy takes.
+--let $w = 25
+--disable_query_log
+while ($w)
+{
+  --eval INSERT INTO ttl_altcopy.t (id, ttl_col, data) VALUES (990000 + $w, NOW(), 'real concurrent write')
+  --sleep 0.2
+  --dec $w
+}
+--enable_query_log
+
+connection default;
+--error ER_TABLE_DEF_CHANGED
+--reap
+disconnect writer;
+
+# The real writes are there; the ALTER was correctly aborted.
+SELECT COUNT(*) AS real_writes
+  FROM ttl_altcopy.t WHERE id BETWEEN 990001 AND 990025;
+
+--echo #
+--echo # Cleanup
+--echo #
+DROP DATABASE ttl_altcopy;
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

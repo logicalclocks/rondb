@@ -42,6 +42,11 @@ struct TTLPurgeConfig {
   Uint32 min_batch_size = 5;
   Uint32 max_batch_size = 50;
   Uint32 sleep_interval_ms = 1500;
+  // Periodic re-list interval (seconds) used by the schema watcher to discover
+  // TTL tables created out-of-band (ndb_restore into a live cluster, NdbAPI /
+  // ClusterJ) that emit no ndb_schema event, and to prune tables dropped the
+  // same way. 0 disables periodic reconciliation. See SchemaWatcherJob.
+  Uint32 reconcile_interval_sec = 30;
 };
 
 // Runtime status for TTL purge
@@ -108,6 +113,7 @@ class TTLPurger {
   static constexpr Uint32 kDefaultSleepIntervalMs = 1500;
   static constexpr Uint32 kBatchSizePerIncr = 5;
   static constexpr Uint32 kDisabledCheckIntervalMs = 2000;
+  static constexpr Uint32 kDefaultReconcileIntervalSec = 30;
   static constexpr const char* kEventColNames[kNoEventCol] = {
     "db",
     "name",
@@ -186,6 +192,28 @@ class TTLPurger {
                         const std::string& table,
                         const std::string& new_table,
                         const NdbDictionary::Table* tab);
+
+  // Outcome of a per-table dictionary fetch during discovery (init scan or
+  // periodic reconcile). A single unreadable table must not stall all purging.
+  enum class FetchResult {
+    kOk,         // table fetched (*out set)
+    kSkipTable,  // permanent/not-found failure: skip this table, keep going
+    kRestart     // temporary/system failure (connection/overload): restart watcher
+  };
+  // setDatabaseName(db)+getTable(table) with failure classification, so a
+  // broken/vanished table is skipped rather than aborting the whole scan.
+  // Shared by the init scan and ReconcileTables.
+  FetchResult FetchTableForDiscovery(Ndb* ndb,
+                                     NdbDictionary::Dictionary* dict,
+                                     const std::string& db,
+                                     const std::string& table,
+                                     const NdbDictionary::Table** out);
+  // Periodic re-list: adds out-of-band-created TTL tables and prunes
+  // out-of-band-dropped ones (neither emits an ndb_schema event). Runs on the
+  // schema watcher thread; mutates ttl_cache_ under mutex_. Returns kRestart
+  // if a temporary/system failure means the watcher should re-initialize.
+  enum class ReconcileResult { kOk, kRestart };
+  ReconcileResult ReconcileTables(NdbDictionary::Dictionary* dict);
   static char* GetEventName(
                         NdbDictionary::Event::TableEvent event_type,
                         char* name_buf);

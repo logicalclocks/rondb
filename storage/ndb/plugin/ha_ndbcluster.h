@@ -224,6 +224,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
   ha_rows end_read_removal(void) override;
   int extra(enum ha_extra_function operation) override;
   int reset() override;
+  handler *clone(const char *name, MEM_ROOT *mem_root) override;
   int external_lock(THD *thd, int lock_type) override;
   void unlock_row() override;
   int start_stmt(THD *thd, thr_lock_type) override;

@@ -2024,22 +2024,60 @@ conf:
   nextOp.p->m_op_bits = nextbits;
   nextOp.p->localdata = lastOp.p->localdata;
   validate_lock_queue(lastOp);
-  release_frag_mutex_hash(fragrecptr.p, hash);
-  
-  if (unlikely(nextop == ZSCAN_OP &&
-              (nextbits & Operationrec::OP_LOCK_REQ) == 0))
-  {
-    jam();
-    ndbabort();
-    takeOutScanLockQueue(nextOp.p->scanRecPtr);
-    putReadyScanQueue(nextOp.p->scanRecPtr);
-  } else {
-    jam();
-    fragrecptr.i = nextOp.p->fragptr;
-    ndbrequire(c_fragment_pool.getPtr(fragrecptr));
 
-    sendAcckeyconf(signal);
-    sendSignal(nextOp.p->userblockref, GSN_ACCKEYCONF, signal, 6, JBB);
+  /*
+   * TTL related (read-what-you-locked on a DEFERRED grant).
+   * accIsLockedLab computes the same-transaction TTL-ignore visibility when
+   * the op is queued, but discards it when the op is placed on the SERIAL
+   * queue. This is the deferred grant of such an op, so recompute it here and
+   * deliver it via ACCKEYCONF, mirroring the immediate-grant path -- otherwise
+   * the granted op would fail checkTTL (626) on a row its own transaction
+   * already holds a lock on. Computed while the fragment mutex is still held
+   * (released just below), same as accIsLockedLab / WhetherSkipTTL. ignore_ttl
+   * is true iff another op of nextOp's transaction is already in the lock
+   * owner's parallel queue (nextOp itself is excluded -- it was appended to
+   * the queue above, so counting it would set ignore_ttl unconditionally).
+   * Wrapped in its own scope so the 'goto ref' paths above do not jump across
+   * these initializations.
+   */
+  {
+    bool ignore_ttl = false;
+    if (is_ttl_table(fragrecptr.p)) {
+      OperationrecPtr ownerPtr;
+      if (lastOp.p->m_op_bits & Operationrec::OP_LOCK_OWNER) {
+        ownerPtr = lastOp;
+      } else {
+        ownerPtr.i = lastOp.p->m_lock_owner_ptr_i;
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(ownerPtr));
+      }
+      OperationrecPtr loopPtr = ownerPtr;
+      while (loopPtr.i != RNIL) {
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+        if (loopPtr.i != nextOp.i && loopPtr.p->is_same_trans(nextOp.p)) {
+          ignore_ttl = true;
+          break;
+        }
+        loopPtr.i = loopPtr.p->nextParallelQue;
+      }
+    }
+
+    release_frag_mutex_hash(fragrecptr.p, hash);
+
+    if (unlikely(nextop == ZSCAN_OP &&
+                (nextbits & Operationrec::OP_LOCK_REQ) == 0))
+    {
+      jam();
+      ndbabort();
+      takeOutScanLockQueue(nextOp.p->scanRecPtr);
+      putReadyScanQueue(nextOp.p->scanRecPtr);
+    } else {
+      jam();
+      fragrecptr.i = nextOp.p->fragptr;
+      ndbrequire(c_fragment_pool.getPtr(fragrecptr));
+
+      sendAcckeyconf(signal, ignore_ttl);
+      sendSignal(nextOp.p->userblockref, GSN_ACCKEYCONF, signal, 6, JBB);
+    }
   }
 
   operationRecPtr = save;
@@ -3439,7 +3477,16 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
 {
   jamEntryDebug();
   bool skip = false;
-  
+
+  /*
+   * TTL related
+   * This runs re-entrantly from DBTUP in the middle of a scan read, so the
+   * block member operationRecPtr (which the code below points at the local
+   * scratch record) must be preserved for whatever ACC-level processing the
+   * enclosing signal chain resumes after the read returns.
+   */
+  const OperationrecPtr saveOperationRecPtr = operationRecPtr;
+
   // Make up AccLockReq
   AccLockReq* sig = (AccLockReq*)signal->getDataPtrSend();
   AccLockReq reqCopy = *sig;
@@ -3617,6 +3664,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
           ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
           if (loopPtr.p->is_same_trans(operationRecPtr.p)) {
             skip = true;
+            break;
           }
           loopPtr.i = loopPtr.p->nextParallelQue;
         } while (loopPtr.i != RNIL);
@@ -3627,6 +3675,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
   } // execACCKEYREQ()
   req->returnCode = AccLockReq::Success;
   req->accOpPtr = RNIL;
+  operationRecPtr = saveOperationRecPtr;
   return skip;
 }
 

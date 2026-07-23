@@ -1,0 +1,86 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.rn, test.rn_copy;
+CREATE TABLE test.rn (
+id  INT PRIMARY KEY,
+ttl_col DATETIME,
+data INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+#
+# A pure rename of the TTL column is rejected (comment would go stale)
+#
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new;
+ERROR 0A000: Renaming the TTL column without updating the TTL comment is not supported. Reason: It's used as the TTL column. Try renaming it and updating the comment in one ALTER TABLE ... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement.
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new, ALGORITHM=INPLACE;
+ERROR 0A000: Renaming the TTL column without updating the TTL comment is not supported. Reason: It's used as the TTL column. Try renaming it and updating the comment in one ALTER TABLE ... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement.
+# CHANGE syntax takes the same guard:
+ALTER TABLE test.rn CHANGE ttl_col ts_new DATETIME;
+ERROR 0A000: Renaming the TTL column without updating the TTL comment is not supported. Reason: It's used as the TTL column. Try renaming it and updating the comment in one ALTER TABLE ... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement.
+# Explicit ALGORITHM=COPY skips the inplace analysis but the create()
+# comment validation rejects the stale binding:
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new, ALGORITHM=COPY;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Invalid TTL format, column name must match a real column'
+SHOW CREATE TABLE test.rn;
+Table	Create Table
+rn	CREATE TABLE `rn` (
+  `id` int NOT NULL,
+  `ttl_col` datetime DEFAULT NULL,
+  `data` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=2@ttl_col'
+#
+# Renaming a NON-TTL column is unaffected
+#
+ALTER TABLE test.rn RENAME COLUMN data TO payload;
+SHOW CREATE TABLE test.rn;
+Table	Create Table
+rn	CREATE TABLE `rn` (
+  `id` int NOT NULL,
+  `ttl_col` datetime DEFAULT NULL,
+  `payload` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=2@ttl_col'
+#
+# Rename + comment re-bind in ONE statement works (via COPY fallback)
+#
+ALTER TABLE test.rn RENAME COLUMN ttl_col TO ts_new,
+COMMENT="NDB_TABLE=TTL=2@ts_new";
+SHOW CREATE TABLE test.rn;
+Table	Create Table
+rn	CREATE TABLE `rn` (
+  `id` int NOT NULL,
+  `ts_new` datetime DEFAULT NULL,
+  `payload` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=2@ts_new'
+# TTL is functional on the renamed column: a row expires
+INSERT INTO test.rn VALUES (1, NOW(), 10);
+SELECT id FROM test.rn WHERE id = 1;
+id
+# The emitted DDL is re-creatable again (dump/restore works)
+CREATE TABLE test.rn_copy (
+id  INT PRIMARY KEY,
+ts_new DATETIME,
+payload INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ts_new";
+DROP TABLE test.rn_copy;
+#
+# Rename + COMMENT="" is STILL rejected: update_comment_info re-injects
+# the existing TTL modifier into a comment that does not set one, so
+# the binding would go stale all the same
+#
+ALTER TABLE test.rn RENAME COLUMN ts_new TO ts_plain, COMMENT="";
+ERROR 0A000: Renaming the TTL column without updating the TTL comment is not supported. Reason: It's used as the TTL column. Try renaming it and updating the comment in one ALTER TABLE ... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement.
+#
+# Rename + TTL=OFF (disable) in one statement works
+#
+ALTER TABLE test.rn RENAME COLUMN ts_new TO ts_plain,
+COMMENT="NDB_TABLE=TTL=OFF";
+SHOW CREATE TABLE test.rn;
+Table	Create Table
+rn	CREATE TABLE `rn` (
+  `id` int NOT NULL,
+  `ts_plain` datetime DEFAULT NULL,
+  `payload` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=OFF'
+DROP TABLE test.rn;

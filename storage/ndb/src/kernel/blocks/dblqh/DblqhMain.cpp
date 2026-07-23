@@ -10523,7 +10523,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * This is a normal operation in a starting node which is currently being
      * synchronised with the live node.
      */
-    if (!match && op != ZINSERT) {
+    if (!match && op != ZINSERT &&
+        !(op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))) {
       /**
        * We are performing an UPDATE or a DELETE and the row id position
        * doesn't contain the correct primary key.
@@ -10531,6 +10532,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        * Either there was no row in this row id, or it is an old row which
        * which haven't yet seen the copy row. We can safely ignore this
        * one.
+       *
+       * Exception: on a TTL table a live write of a new key is forwarded to
+       * replicas as ZWRITE (so replicas skip checkTTL), not ZINSERT. Such a
+       * ZWRITE with !match is effectively a new-key insert and must be treated
+       * like ZINSERT below - it cannot be ignored, otherwise if its (possibly
+       * reused) row id is below the copy scan pointer the forward scan never
+       * re-delivers it and the row is permanently lost on the starting node.
        */
       jam();
       if (TRACENR_FLAG) TRACENR(" IGNORE " << endl);
@@ -10564,7 +10572,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * same manner as if it was a copy row coming. It might be redone later
      * but this is not a problem with consistency.
      */
-    ndbassert(!match && op == ZINSERT);
+    ndbassert(!match && (op == ZINSERT ||
+                         (op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))));
 
     /**
      * Perform the following action (same as above for copy row case)
@@ -11654,8 +11663,16 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
   {
     /*
      * TTL related
-     * TODO (Zhao)
-     * maybe need to handle this code path for TTL
+     * No TTL-specific handling is needed on the disk-table path: it only
+     * DEFERS the TUPKEYREQ until the disk page is loaded, and all TTL
+     * state (the ACC-converted operation, ttl_ignore/ttl_only_expired,
+     * original_operation) lives on the TcConnectionrec, which survives the
+     * asynchronous page load unchanged. checkTTL in DBTUP reads only the
+     * TTL column, which is always an in-memory column (DDL rejects binding
+     * TTL to a disk column). Covered by ndb_ttl.ttl_disk_expired_write:
+     * insert-over-expired refresh, REPLACE/ON-DUP over expired, delete and
+     * update of expired, and the same-transaction duplicate reject all
+     * behave identically to the in-memory-table paths.
      */
     jamDebug();
     jamDataDebug(localKey1);
@@ -12522,6 +12539,16 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
 
+  /*
+   * TTL related. Serialize ttl_only_expired too: every replica must classify
+   * an only-expired (TTL purge) delete identically when committing, because
+   * DBTUP excludes such deletes from the fragment's committed-changes counter
+   * (the COMMIT_COUNT pseudo column used by copying ALTER TABLE change
+   * detection). Without the bit the counters would diverge between primary
+   * and backup replicas.
+   */
+  LqhKeyReq::setTTLOnlyExpiredFlag(Treqinfo, regTcPtr->ttl_only_expired);
+
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
     // ndbassert(LqhKeyReq::getOperation(Treqinfo) == ZINSERT);
@@ -12546,9 +12573,18 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * I explain the reason there. Check [TTL Replication ZWRITE to replicas]
    * there for more details
    *
+   * This conversion is only needed (and only valid) on the PRIMARY replica.
+   * continueACCKEYCONF() rewrites regTcPtr->reqinfo (hence Treqinfo) from ZWRITE
+   * back to the real ZINSERT/ZUPDATE ONLY when seqNoReplica==0, so the
+   * ndbrequire below holds there. On a backup replica that rewrite is skipped,
+   * so reqinfo/Treqinfo still carries ZWRITE and is forwarded to the next
+   * replica unchanged -- running this block on a MIDDLE replica (which exists
+   * only at NoOfReplicas>=3 and forwards onward) would trip the ndbrequire on
+   * the already-ZWRITE op and crash the node.
    */
   if (is_ttl_table(fragptr.p->tabRef) &&
-      regTcPtr->original_operation == ZWRITE) {
+      regTcPtr->original_operation == ZWRITE &&
+      regTcPtr->seqNoReplica == 0) {
     ndbrequire(LqhKeyReq::getOperation(Treqinfo) == ZINSERT ||
                LqhKeyReq::getOperation(Treqinfo) == ZUPDATE);
     TTL_RONDB_TRACE(fragptr.p->tabRef, "set LqhKeyReq op to ZWRITE from %u in order to "

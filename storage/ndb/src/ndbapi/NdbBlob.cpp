@@ -2780,19 +2780,37 @@ int NdbBlob::initBlobTask(NdbTransaction::ExecType anExecType
   } else if (isInsertOp()) {
     DBUG_PRINT("info", ("Insert op"));
 
+    /*
+     * TTL related: on a TTL table an INSERT can land on an expired-but-
+     * unpurged row (the kernel converts it into an in-place update of the
+     * base row). The expired value's parts then still exist in the part
+     * table, and any of them beyond the new value's part count would be
+     * orphaned FOREVER: a later DELETE removes parts from the CURRENT head
+     * length only, and the purge removes only expired BASE rows' parts.
+     * Treat the old length as UNKNOWN, exactly like a write op on a
+     * possibly-existing row: BTS_WRITE_PARTS then probe-deletes any parts
+     * beyond the new value (IgnoreError; a genuinely fresh insert costs one
+     * all-miss probe). Non-TTL tables keep old length 0 -- an insert there
+     * can never land on an existing row.
+     */
+    const Uint64 insert_old_len =
+        (theTable->m_ttl_sec != RNIL && theTable->m_ttl_col_no != RNIL)
+            ? ~Uint64(0)
+            : 0;
+
     /* Define Set op */
     if (theNdbRecordFlag) {
       m_blobOp.m_state = BlobTask::BTS_WRITE_HEAD;
       m_blobOp.m_writeBuffer = theSetBuf;
       m_blobOp.m_writeBufferLen = theGetSetBytes;
-      m_blobOp.m_oldLen = 0;
+      m_blobOp.m_oldLen = insert_old_len;
       m_blobOp.m_position = 0;
     } else {
       /* NdbRecAttr has already written the Blob head */
       m_blobOp.m_state = BlobTask::BTS_WRITE_PARTS;
       m_blobOp.m_writeBuffer = theSetBuf;
       m_blobOp.m_writeBufferLen = theGetSetBytes;
-      m_blobOp.m_oldLen = 0;
+      m_blobOp.m_oldLen = insert_old_len;
       m_blobOp.m_position = theInlineSize;
     }
   } else if (isUpdateOp()) {

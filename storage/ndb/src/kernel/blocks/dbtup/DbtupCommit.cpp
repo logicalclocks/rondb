@@ -2669,7 +2669,20 @@ void Dbtup::finalize_commit(Operationrec *regOperPtrP, Fragrecord *fragPtrP) {
     jam();
     c_undo_buffer.free_copy_tuple(&regOperPtrP->m_copy_tuple_location);
   }
-  fragPtrP->m_committed_changes++;
+  /*
+   * TTL related
+   * An only-expired delete (the TTL purge reclaiming an expired row) is
+   * excluded from m_committed_changes: it cannot change anything a normal
+   * reader sees (expired rows are already invisible), and this counter feeds
+   * the COMMIT_COUNT pseudo column that copying ALTER TABLE uses to detect
+   * concurrent changes -- counting purge deletes starves copying ALTER on
+   * any table with a steady expiry stream. All other operations, including
+   * user deletes and insert-over-expired refreshes, still count.
+   */
+  if (likely(!(regOperPtrP->op_type == ZDELETE &&
+               regOperPtrP->ttl_only_expired == 1))) {
+    fragPtrP->m_committed_changes++;
+  }
   initOpConnection(regOperPtrP);
 }
 
