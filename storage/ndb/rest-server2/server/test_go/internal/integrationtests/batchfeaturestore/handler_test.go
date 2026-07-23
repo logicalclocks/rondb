@@ -938,7 +938,10 @@ func Test_GetFeatureVector_NotShared(t *testing.T) {
 		nil,
 		nil,
 	)
-	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_STORE_NOT_SHARED.GetMessage(), http.StatusUnauthorized)
+	// NOTE: FEATURE_STORE_NOT_SHARED.GetMessage() is "" (the struct
+	// literal fills 'reason', not 'message'), which made this assertion
+	// vacuous - pin the actual authorization denial instead.
+	GetFeatureStoreResponseWithDetail(t, fsReq, "not authorized to access fsdb_isolate", http.StatusUnauthorized)
 }
 
 func Test_GetFeatureVector_WrongPrimaryKey_NotExist(t *testing.T) {

@@ -127,10 +127,12 @@ private:
   enum class Status
   {
     BEGIN,
+    PARSED,
     PREPARED,
     FAILED,
   };
   Status m_status = Status::BEGIN;
+  bool m_parse_only = false;
   LexString m_sql = {NULL, 0};
   ArenaMalloc* m_amalloc;
   Context m_context;
@@ -170,6 +172,16 @@ private:
   // Functions used in preparation phase
 public:
   RonSQLPreparer(RonSQLExecParams conf);
+  /*
+   * Parse-only construction: lexes and parses the SQL but never touches NDB
+   * (conf.ndb may be NULL). Exposes the referenced table and columns via the
+   * getters below so the REST layer can authorize the query before full
+   * preparation. execute() cannot be called on a parse-only instance.
+   */
+  struct ParseOnly {};
+  RonSQLPreparer(RonSQLExecParams conf, ParseOnly);
+  LexCString get_table_name();
+  const DynamicArray<LexCString>& get_referenced_columns();
 private:
   void configure();
   void parse();
