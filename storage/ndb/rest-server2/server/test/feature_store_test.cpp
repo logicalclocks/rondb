@@ -23,7 +23,8 @@
 #include "feature_store_data_structs.hpp"
 #include "feature_util.hpp"
 #include "metadata.hpp"
-#include "resources/embeddings.hpp"
+#include "resources/seed_check.hpp"
+#include "resources/test_constants.hpp"
 #include "rdrs_dal.h"
 #include "rdrs_hopsworks_dal.h"
 #include "fs_cache.hpp"
@@ -855,6 +856,7 @@ class MyEnvironment : public ::testing::Environment {
   // Override this to define how to set up the environment.
   void SetUp() override
   {
+    RequireSeededTestDatabases();
     RS_Status status = RonDBConnection::init_rondb_connection(
       globalConfigs.ronDB,
       globalConfigs.ronDBMetadataCluster,

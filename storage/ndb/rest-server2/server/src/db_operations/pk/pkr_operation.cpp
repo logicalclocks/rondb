@@ -1276,6 +1276,18 @@ RS_Status BatchKeyOperations::perform_operation(
 }
 
 RS_Status BatchKeyOperations::handle_ndb_error(RS_Status status) {
+  /*
+   * Close the transactions BEFORE unloading any schema. Closing a
+   * transaction with outstanding async operations polls the transporter
+   * (waiting for TC_RELEASE confirms), and late TRANSID_AI row signals for
+   * this batch are delivered and unpacked during that poll. The unpack
+   * dereferences the NdbRecord owned by the cached NdbTableImpl, so the
+   * dictionary objects must still be alive at that point - unloading first
+   * frees them and the receive path asserts in NdbReceiver::unpackNdbRecord
+   * (or reads freed memory in release builds).
+   */
+  close_transaction();
+
   // schema errors
   if (UnloadSchema(status)) {
     // no idea which sub-operation threw the error
@@ -1295,7 +1307,5 @@ RS_Status BatchKeyOperations::handle_ndb_error(RS_Status status) {
     }
     HandleSchemaErrors(m_ndb_object, status, tables);
   }
-  close_transaction();
-
   return RS_OK;
 }

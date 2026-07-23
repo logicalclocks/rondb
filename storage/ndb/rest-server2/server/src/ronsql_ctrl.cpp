@@ -108,19 +108,6 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
-    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, database);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
-      callback(resp);
-      DEB_TRACE();
-      return;
-    }
-  }
-
   std::ostringstream out_stream;
   std::ostringstream err_stream;
 
@@ -138,6 +125,53 @@ void RonSQLCtrl::ronsql(
     callback(resp);
     DEB_TRACE();
     return;
+  }
+
+  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    /*
+     * Parse the query (no NDB access) to learn the referenced table and
+     * columns, then authorize against the caller's grants using the same
+     * ladder as the other endpoints: full database, whole table or column
+     * subset. A parse failure is reported like an execution-time parse
+     * failure; the schema is never touched before authorization succeeds.
+     */
+    try {
+      RonSQLPreparer parser(params, RonSQLPreparer::ParseOnly{});
+      LexCString table = parser.get_table_name();
+      const DynamicArray<LexCString>& referenced_columns =
+        parser.get_referenced_columns();
+      std::vector<std::string_view> columns;
+      columns.reserve(referenced_columns.size());
+      for (Uint32 i = 0; i < referenced_columns.size(); i++) {
+        columns.push_back(std::string_view(referenced_columns[i].str,
+                                           referenced_columns[i].len));
+      }
+      TableAccessRequest accessReq;
+      accessReq.db = database;
+      accessReq.table = std::string_view(table.str, table.len);
+      accessReq.columns = &columns;
+      status = authenticate(api_key,
+                            std::vector<TableAccessRequest>{accessReq});
+    }
+    catch (std::exception& e) {
+      err_stream << "Caught exception: " << e.what() << "\n";
+      resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+      resp->setContentTypeCodeAndCustomString(
+        drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+      resp->setBody(err_stream.str());
+      callback(resp);
+      DEB_TRACE();
+      return;
+    }
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      callback(resp);
+      DEB_TRACE();
+      return;
+    }
   }
 
   bool json_output = params.output_format ==

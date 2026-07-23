@@ -1,0 +1,81 @@
+--source include/have_ndb.inc
+--source suite/ndb/include/backup_restore_setup.inc
+
+# RONDB-1074: backup and restore of PARTITION_HASH fanout tables.
+# The restore data path uses ordinary primary key writes, so DBTC
+# recomputes the composed routing hash and rows must come back in the
+# correct fanout interval fragments. The metadata restore must preserve
+# the partition hash spec through the backup's packed dictionary info.
+
+CREATE TABLE t_bfan (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  id INT NOT NULL,
+  payload VARCHAR(64),
+  PRIMARY KEY (entity_id, ts, id)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:2:4"
+PARTITION BY KEY () PARTITIONS 8;
+
+CREATE TABLE nums (n INT PRIMARY KEY) ENGINE=NDB;
+--disable_query_log
+let $i=0;
+while ($i < 25)
+{
+  eval INSERT INTO nums VALUES ($i);
+  inc $i;
+}
+--enable_query_log
+INSERT INTO t_bfan
+  SELECT a.n, b.n, a.n*1000+b.n, CONCAT('p', a.n, '_', b.n)
+  FROM nums a, nums b WHERE a.n < 20;
+
+# Single-base-key table used to verify physical placement after restore
+CREATE TABLE t_broute (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_broute SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+
+SELECT COUNT(*) FROM t_bfan;
+SELECT COUNT(*) FROM t_broute;
+
+--echo # Take a backup
+--exec $NDB_MGM -e "start backup wait completed" >> $NDB_TOOLS_OUTPUT
+--source include/ndb_backup_id.inc
+
+--echo # Drop all tables and restore from the backup
+DROP TABLE t_bfan, t_broute, nums;
+
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m -D $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r -R $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Restored data is complete
+SELECT COUNT(*) FROM t_bfan;
+SELECT COUNT(*) FROM t_broute;
+--sorted_result
+SELECT * FROM t_bfan WHERE entity_id = 7 AND ts < 5;
+
+--echo # Base-key equality scans are still pruned after restore
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM t_bfan FORCE INDEX (PRIMARY) WHERE entity_id = 7 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+--echo # One base key still occupies exactly fanout (4 of 8) fragments
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_broute' AND fixed_elem_count > 0;
+
+--echo # Writes to the restored table route correctly
+INSERT INTO t_bfan VALUES (7, 100, 7100, 'after_restore');
+UPDATE t_bfan SET payload = 'updated' WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+DELETE FROM t_bfan WHERE entity_id = 7 AND ts = 4 AND id = 7004;
+--sorted_result
+SELECT * FROM t_bfan WHERE entity_id = 7 AND ts IN (3, 4, 100);
+
+DROP TABLE t_bfan, t_broute, nums;
+--source suite/ndb/include/backup_restore_cleanup.inc
+--remove_file $NDB_TOOLS_OUTPUT

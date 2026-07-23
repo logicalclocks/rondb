@@ -1,7 +1,12 @@
 # suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
 #
-# Wait until all rows are purged from a table (row count = 0).
-# Uses SELECT * and counts in perl to avoid COUNT(*) TTL visibility bug.
+# Wait until the table looks empty to SQL (COUNT(*) = 0).
+#
+# NOTE: this proves SQL-visible emptiness only, NOT physical purge:
+# COUNT(*) TTL-filters expired rows, so expired-but-unpurged rows are
+# already invisible to it. Callers asserting actual purge activity must
+# pair this with the purger's rows_purged metrics
+# (ttl_purge_wait_rows_purged.inc), as all current callers do.
 #
 # Input:
 #   $purge_db    - Database name
