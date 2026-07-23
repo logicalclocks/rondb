@@ -1,0 +1,1 @@
+ALTER TABLE `hopsworks`.`users` ADD COLUMN `last_visited_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP;

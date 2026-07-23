@@ -290,6 +290,9 @@ class Dbdict : public SimulatedBlock {
       fullyReplicatedTriggerId = RNIL;
       ttlSec = RNIL;
       ttlColumnNo = RNIL;
+      partitionHashBaseKeyCount = 0;
+      partitionHashDetailKeyCount = 0;
+      partitionHashFanout = 1;
     }
     static bool isCompatible(Uint32 type)
     { return DictTabInfo::isTable(type) || DictTabInfo::isIndex(type); }
@@ -354,6 +357,9 @@ class Dbdict : public SimulatedBlock {
 
     /* Number of primary key attributes (should be computed) */
     Uint16 noOfPrimkey;
+    Uint8 partitionHashBaseKeyCount;
+    Uint8 partitionHashDetailKeyCount;
+    Uint16 partitionHashFanout;
 
     /* Length of primary key in words (should be computed) */
     /* For ordered index this is tree node size in words */

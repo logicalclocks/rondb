@@ -61,6 +61,18 @@ func NewHealthURL() string {
 	return url
 }
 
+func NewRonSQLURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.RONSQL_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
 func NewPKReadURL(db string, table string) string {
 	conf := config.GetAll()
 	url := fmt.Sprintf("%s:%d%s%s",
@@ -68,6 +80,20 @@ func NewPKReadURL(db string, table string) string {
 		conf.REST.ServerPort,
 		config.DB_OPS_EP_GROUP,
 		config.PK_DB_OPERATION,
+	)
+	url = strings.Replace(url, ":"+config.DB_PP, db, 1)
+	url = strings.Replace(url, ":"+config.TABLE_PP, table, 1)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewScanURL(db string, table string) string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d%s%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		config.DB_OPS_EP_GROUP,
+		config.SCAN_OPERATION,
 	)
 	url = strings.Replace(url, ":"+config.DB_PP, db, 1)
 	url = strings.Replace(url, ":"+config.TABLE_PP, table, 1)

@@ -28,6 +28,7 @@
 #include <map>
 #include <vector>
 #include <cstdint>
+#include <ctime>
 
 #include <NdbApi.hpp>
 #include "NdbThread.h"
@@ -47,22 +48,36 @@ struct TTLPurgeConfig {
   // ClusterJ) that emit no ndb_schema event, and to prune tables dropped the
   // same way. 0 disables periodic reconciliation. See SchemaWatcherJob.
   Uint32 reconcile_interval_sec = 30;
+  // Per-node default daily purge active window (minutes since UTC midnight,
+  // -1/-1 = none), seeded from the config file (.TTLPurge.ActiveWindow) and
+  // changeable via the REST config API. A valid cluster-wide window in
+  // mysql.ttl_purge_ctrl takes precedence over these.
+  Int32 active_window_start_min = -1;
+  Int32 active_window_end_min = -1;
 };
 
 // Runtime status for TTL purge
 struct TTLPurgeStatus {
   enum class State {
-    kStopped,     // Not started yet
-    kRunning,     // Actively purging
-    kPaused,      // Enabled but temporarily paused (e.g., no TTL tables)
-    kDisabled,    // Disabled via config
-    kError        // Error state
+    kStopped,       // Not started yet
+    kRunning,       // Actively purging
+    kPaused,        // Enabled but temporarily paused (e.g., no TTL tables)
+    kDisabled,      // Disabled via config
+    kOutsideWindow, // Enabled but outside the daily purge active window
+    kError          // Error state
   };
   State state = State::kStopped;
   bool schema_watcher_running = false;
   bool purge_worker_running = false;
   std::string current_table;     // "db/table" being processed
   Uint32 current_partition = 0;
+  // Effective daily purge active window, minutes since UTC midnight;
+  // -1/-1 when no (valid) window is configured.
+  Int32 active_window_start_min = -1;
+  Int32 active_window_end_min = -1;
+  // Where the effective window comes from: "" (none), "config" (per-node
+  // config file / REST config API) or "ttl_purge_ctrl" (cluster-wide table)
+  std::string active_window_source;
 };
 
 // Metrics for TTL purge
@@ -97,10 +112,33 @@ class TTLPurger {
   static constexpr const char* kSchemaResTabName = "ndb_schema_result";
   static constexpr const char* kTTLPurgeNodesTabName = "ttl_purge_nodes";
 
+  /*
+   * mysql.ttl_purge_ctrl is an optional, admin-created NDB table
+   * (ctrl_id INT PRIMARY KEY, value INT) holding cluster-wide purge control
+   * settings. Every purge worker re-reads all rows once per round, so a
+   * plain SQL UPDATE takes effect within ~one round on every RDRS node:
+   *   ctrl_id 1: purge window (lag) in seconds -- an expired row only
+   *              becomes purgeable once it has been expired at least this
+   *              long.
+   *   ctrl_id 2: daily purge active-window start, minutes since UTC midnight
+   *   ctrl_id 3: daily purge active-window end, minutes since UTC midnight
+   * Rows 2 and 3 define the daily [start, end) interval -- wrapping past
+   * midnight when start > end -- outside which the purge worker idles.
+   * Both must be present and valid (0..1439, start != end) for the window
+   * to take effect; otherwise the ctrl window is ignored and any per-node
+   * config window (.TTLPurge.ActiveWindow / REST config API) still applies
+   * -- with neither, purging runs around the clock as before.
+   * In sharded mode an idle (out-of-window) node also stops refreshing its
+   * mysql.ttl_purge_nodes lease, leaves the active set after kLeaseSeconds
+   * and its partitions redistribute to in-window nodes.
+   */
   static constexpr const char* kTTLPurgeCtrlTabName = "ttl_purge_ctrl";
   static constexpr const char* kPurgeCtrlKey = "ctrl_id";
   static constexpr const char* kPurgeCtrlValue = "value";
   static constexpr int kPurgeCtrlPurgeWindowId = 1;
+  static constexpr int kPurgeCtrlActiveWinStartId = 2;
+  static constexpr int kPurgeCtrlActiveWinEndId = 3;
+  static constexpr Int32 kMinutesPerDay = 1440;
 
   static constexpr const char* kTTLPurgeIndexName = "ttl_index";
   static constexpr int kNoEventCol = 10;
@@ -225,7 +263,23 @@ class TTLPurger {
   NdbThread* schema_watcher_;
 
   bool GetShard(Int32* shard, Int32* n_purge_nodes, bool update_objects);
-  bool GetPurgeWindow(Uint32* purge_window, bool update_objects);
+  // Cluster-wide purge control settings from mysql.ttl_purge_ctrl (see the
+  // ctrl_id documentation above). Missing table/rows leave the defaults.
+  // win_*_min hold the values as read (possibly invalid); use
+  // HasActiveWindow() before acting on them.
+  struct PurgeCtrlSettings {
+    Uint32 purge_lag_sec = 0;
+    Int32 win_start_min = -1;
+    Int32 win_end_min = -1;
+  };
+  // Reads all ctrl rows in one transaction; logs value changes (settings
+  // must carry the previous round's values in).
+  bool GetPurgeCtrl(PurgeCtrlSettings* settings, bool update_objects);
+  // True iff start/end define a usable daily window.
+  static bool HasActiveWindow(Int32 start_min, Int32 end_min);
+  // True when now_utc falls inside the daily [start, end) window; a window
+  // with start > end wraps past midnight.
+  static bool InActiveWindow(Int32 start_min, Int32 end_min, time_t now_utc);
   // minus_sec lets callers encode a past instant (now - minus_sec). The TTL
   // purge scan passes ttl_sec + purge_window to obtain the expiry threshold.
   static Int64 GetNow(unsigned char* encoded_now, bool timestamp,
@@ -264,6 +318,9 @@ class TTLPurger {
   // Helper methods for updating status/metrics from worker threads
   void UpdateStatus(TTLPurgeStatus::State state);
   void UpdateCurrentTable(const std::string& table, Uint32 partition);
+  // Publish the effective active window for the status API (-1/-1 = unset)
+  void UpdateActiveWindowStatus(Int32 start_min, Int32 end_min,
+                                const char* source);
   // Update all metrics at once at end of round (single lock acquisition)
   void UpdateRoundMetrics(Uint64 rows_purged_this_round, Uint64 duration_ms,
                           const std::map<std::string, TTLTableMetrics>& table_updates);

@@ -505,6 +505,8 @@ ErrorBundle ErrorCodes[] = {
   { 1240, DMEC, AE, "Create Database failed, no disk quota available" },
   { 1241, DMEC, AE, "Alter Database failed, no disk quota available" },
   { 1242, DMEC, AE, "Drop File failed, Not allowed with Disk quotas" },
+  { 1243,  HA_WRONG_CREATE_OPTION, SE, "Invalid partition hash definition" },
+  { 1244,  HA_WRONG_CREATE_OPTION, SE, "Invalid fanout in partition hash definition" },
   { 4256, DMEC, AE, "Must call Ndb::init() before this function" },
   { 4257, DMEC, AE, "Tried to read too much - too many getValue calls" },
   { 320,  DMEC, AE, "Invalid no of nodes specified for new nodegroup" },
@@ -532,6 +534,7 @@ ErrorBundle ErrorCodes[] = {
   { 2200,  DMEC, AE, "Dirty reads and dirty writes are supported, not other operation types" },
   { 2201,  DMEC, AE, "Parallel Ordered Index scan flag set requires even number of receiver ids" },
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },
+  { 2203,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
 
   /** 
    * Scan application errors

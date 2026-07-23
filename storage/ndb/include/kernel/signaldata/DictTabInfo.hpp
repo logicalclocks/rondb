@@ -173,6 +173,13 @@ class DictTabInfo {
     TTLSec = 164,
     TTLColumnNo = 165,
 
+    /*
+     * Partition hash fanout
+     */
+    PartitionHashBaseKeyCount = 166,
+    PartitionHashDetailKeyCount = 167,
+    PartitionHashFanout = 168,
+
     TableEnd           = 999,
     
     AttributeName          = 1000, // String, Mandatory
@@ -400,6 +407,10 @@ class DictTabInfo {
 
     Uint32 TTLSec;
     Uint32 TTLColumnNo;
+
+    Uint32 PartitionHashBaseKeyCount;
+    Uint32 PartitionHashDetailKeyCount;
+    Uint32 PartitionHashFanout;
 
     Table() {}
     void init();

@@ -1,0 +1,147 @@
+SET time_zone = '+00:00';
+#
+# Phase 1: window far from now => expired rows are not purged
+#
+CREATE TABLE mysql.ttl_purge_ctrl (ctrl_id INT PRIMARY KEY, value INT) ENGINE=NDB;
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+INSERT INTO mysql.ttl_purge_ctrl VALUES (2, (@now_min + 240) % 1440), (3, (@now_min + 360) % 1440);
+include/assert.inc [Status must report the window source as ttl_purge_ctrl]
+CREATE DATABASE IF NOT EXISTS ttl_aw;
+DROP TABLE IF EXISTS ttl_aw.t1;
+CREATE TABLE ttl_aw.t1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_aw.t1(ttl_col);
+ALTER TABLE ttl_aw.t1 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (21, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_21');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (22, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_22');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (23, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_23');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (24, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_24');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (25, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_25');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (26, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_26');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (27, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_27');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (28, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_28');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (29, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_29');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (30, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_30');
+include/assert.inc [No rows may be purged outside the active window]
+#
+# Phase 2: window moved over now => purging resumes
+#
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 1380) % 1440 WHERE ctrl_id = 2;
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 60) % 1440 WHERE ctrl_id = 3;
+#
+# Phase 3: wrap-around window (start > end) not covering now => idle
+#
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 60) % 1440 WHERE ctrl_id = 2;
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 1380) % 1440 WHERE ctrl_id = 3;
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (100, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_100');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (101, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_101');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (102, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_102');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (103, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_103');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (104, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_104');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (105, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_105');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (106, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_106');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (107, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_107');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (108, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_108');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (109, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_109');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (110, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_110');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (111, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_111');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (112, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_112');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (113, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_113');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (114, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_114');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (115, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_115');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (116, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_116');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (117, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_117');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (118, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_118');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (119, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_119');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (120, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_120');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (121, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_121');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (122, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_122');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (123, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_123');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (124, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_124');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (125, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_125');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (126, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_126');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (127, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_127');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (128, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_128');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (129, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_129');
+include/assert.inc [No rows may be purged outside the wrap-around window]
+#
+# Phase 4: ctrl rows deleted => no window, purging resumes
+#
+DELETE FROM mysql.ttl_purge_ctrl WHERE ctrl_id IN (2, 3);
+#
+# Phase 5: invalid window values => fail-open (no window)
+#
+INSERT INTO mysql.ttl_purge_ctrl VALUES (2, 5000), (3, 5000);
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (200, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_200');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (201, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_201');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (202, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_202');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (203, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_203');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (204, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_204');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (205, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_205');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (206, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_206');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (207, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_207');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (208, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_208');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (209, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_209');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (210, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_210');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (211, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_211');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (212, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_212');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (213, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_213');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (214, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_214');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (215, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_215');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (216, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_216');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (217, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_217');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (218, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_218');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (219, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_219');
+#
+# Phase 6: wrap-around window covering now => purging continues
+#
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+SET @gap_min = IF((@now_min + 720) % 1440 = 1439, 1438, (@now_min + 720) % 1440);
+UPDATE mysql.ttl_purge_ctrl SET value = @gap_min + 1 WHERE ctrl_id = 2;
+UPDATE mysql.ttl_purge_ctrl SET value = @gap_min WHERE ctrl_id = 3;
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (300, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_300');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (301, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_301');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (302, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_302');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (303, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_303');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (304, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_304');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (305, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_305');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (306, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_306');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (307, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_307');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (308, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_308');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (309, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_309');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (310, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_310');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (311, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_311');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (312, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_312');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (313, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_313');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (314, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_314');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (315, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_315');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (316, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_316');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (317, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_317');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (318, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_318');
+INSERT INTO ttl_aw.t1 (id, ttl_col, data) VALUES (319, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_319');
+#
+# Cleanup
+#
+DROP TABLE mysql.ttl_purge_ctrl;
+DROP DATABASE ttl_aw;
