@@ -19,6 +19,13 @@
 -- ------------------------------------------------------
 -- Server version	5.7.25-ndb-7.6.9-cluster-gpl
 
+-- Disable safe-update mode for this seeding session (single pinned connection,
+-- see testutils/schemata.go). The hopsworks-ddl migration patches contain
+-- Hopsworks production data-migration UPDATEs whose WHERE clauses use non-key
+-- columns (e.g. V67); safe-update mode rejects those with Error 1175. Real
+-- Hopsworks migrations run through Flyway where safe-update mode is off.
+SET SESSION SQL_SAFE_UPDATES = 0;
+
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT = @@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS = @@CHARACTER_SET_RESULTS */;
 /*!40101 SET @OLD_COLLATION_CONNECTION = @@COLLATION_CONNECTION */;

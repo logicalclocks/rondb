@@ -112,6 +112,7 @@ static void create_rdma_config(ConfigValuesFactory &cvf) {
   require(cvf.put(CFG_RDMA_SERVICE_LEVEL, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
   require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
+  require(cvf.put(CFG_RDMA_LOG_LEVEL, 1));
   cvf.closeSection();
 
   require(cvf.createSection(CONFIG_SECTION_CONNECTION, RDMA_TYPE));
@@ -137,6 +138,7 @@ static void create_rdma_config(ConfigValuesFactory &cvf) {
   require(cvf.put(CFG_RDMA_SERVICE_LEVEL, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
   require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
+  require(cvf.put(CFG_RDMA_LOG_LEVEL, 1));
   cvf.closeSection();
 
   require(cvf.commit(false));
@@ -201,6 +203,8 @@ static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
   require(value == 7);
   require(iter.get(CFG_RDMA_RNR_RETRY_COUNT, &value));
   require(value == 7);
+  require(iter.get(CFG_RDMA_LOG_LEVEL, &value));
+  require(value == 1);
 }
 
 static void verify_rdma_config(const ConfigValues &cfg) {

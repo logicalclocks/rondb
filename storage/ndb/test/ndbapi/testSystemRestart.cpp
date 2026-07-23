@@ -2552,6 +2552,125 @@ int runSR_DD_3(NDBT_Context *ctx, NDBT_Step *step) {
   return result;
 }
 
+/**
+ * Test node restart with a hole in the disk data UNDO log.
+ *
+ * Error insert 15002 makes LGMAN zero one page near the end of the next
+ * multi-page UNDO log write and crash the node once the write and its
+ * fsync have completed (error insert 15003). This simulates a crash
+ * where a large UNDO log write was only partially persisted: an
+ * unwritten page (hole) followed by a written page with higher LSNs.
+ * Up to 16 MByte of UNDO log can be outstanding in one write and the
+ * file system can persist those pages in any order, so this on-disk
+ * state is reachable after any crash during a large UNDO log write.
+ *
+ * The restart of the node must locate the correct end of the UNDO log:
+ * the binary search converges on some written->unwritten boundary and
+ * the forward end check must adopt the written page found after the
+ * hole as the new head including its page LSN, so that UNDO log
+ * execution starts with a consistent m_last_read_lsn and logging
+ * resumes with a m_next_lsn above all LSNs still present in the file.
+ *
+ * The final clean restart in each loop verifies the latter: a stale
+ * m_next_lsn would have broken the LSN monotonicity that the binary
+ * search of the following restart depends upon.
+ */
+int runSR_DD_UndoHole(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  int result = NDBT_OK;
+  Uint32 loops = ctx->getNumLoops();
+  Uint32 rows = ctx->getNumRecords();
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ndbout << "Test needs at least 2 data nodes, skipping" << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  int val[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  Uint32 i = 1;
+  HugoTransactions hugoTrans(*ctx->getTab());
+  while (i <= loops && result != NDBT_FAILED) {
+    if (ctx->closeToTimeout(30)) break;
+    ndbout << "Loop " << i << "/" << loops << " started" << endl;
+
+    ndbout << "Loading " << rows << " records..." << endl;
+    CHECK(hugoTrans.loadTable(pNdb, rows) == 0);
+
+    int nodeId = restarter.getDbNodeId(rand() % restarter.getNumDbNodes());
+    ndbout << "Inserting error 15002 (UNDO log hole) in node " << nodeId
+           << endl;
+    CHECK(restarter.dumpStateOneNode(nodeId, val, 2) == 0);
+    CHECK(restarter.insertErrorInNode(nodeId, 15002) == 0);
+
+    /**
+     * Update disk data rows to produce UNDO log records until the
+     * tampered node has seen a multi-page UNDO log write, zeroed a
+     * page in it and crashed itself. Large batches are used to get
+     * bursts of UNDO log records so that multi-page writes occur.
+     * The remaining node(s) keep the cluster alive, so updates keep
+     * succeeding apart from temporary errors while the node is dying,
+     * which are ignored here.
+     */
+    ndbout << "Updating disk data rows until node " << nodeId << " dies"
+           << endl;
+    const NDB_TICKS start = NdbTick_getCurrentTicks();
+    bool node_died = false;
+    while (!node_died && result != NDBT_FAILED) {
+      (void)hugoTrans.pkUpdateRecords(pNdb, rows, 256);
+      node_died = (restarter.getNodeStatus(nodeId) ==
+                   NDB_MGM_NODE_STATUS_NOT_STARTED);
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      if (!node_died && NdbTick_Elapsed(start, now).milliSec() > 600000) {
+        ndbout << "Node " << nodeId
+               << " did not crash on error insert 15002" << endl;
+        result = NDBT_FAILED;
+      }
+    }
+    CHECK(result == NDBT_OK);
+    CHECK(restarter.waitNodesNoStart(&nodeId, 1) == 0);
+
+    /**
+     * Restart the crashed node. Its LGMAN must find the end of the
+     * UNDO log with the hole present and execute the UNDO log without
+     * failures.
+     */
+    ndbout << "Starting node " << nodeId << endl;
+    CHECK(restarter.startNodes(&nodeId, 1) == 0);
+    CHECK(restarter.waitClusterStarted() == 0);
+    CHECK(pNdb->waitUntilReady() == 0);
+
+    ndbout << "Verifying data..." << endl;
+    int cnt = 0;
+    CHECK(hugoTrans.selectCount(pNdb, 0, &cnt) == 0);
+    ndbout << "Found " << cnt << " records, updating..." << endl;
+    CHECK(hugoTrans.scanUpdateRecords(pNdb, NdbScanOperation::SF_TupScan,
+                                      cnt) == 0 ||
+          hugoTrans.getRetryMaxReached());
+
+    /**
+     * Restart the node once more without any error insert to verify
+     * that UNDO logging resumed with correct LSNs after the restart
+     * with the hole.
+     */
+    ndbout << "Clean restart of node " << nodeId << endl;
+    CHECK(restarter.restartOneDbNode(nodeId, false, true, true) == 0);
+    CHECK(restarter.waitNodesNoStart(&nodeId, 1) == 0);
+    CHECK(restarter.startNodes(&nodeId, 1) == 0);
+    CHECK(restarter.waitClusterStarted() == 0);
+    CHECK(pNdb->waitUntilReady() == 0);
+
+    ndbout << "Clearing..." << endl;
+    CHECK(hugoTrans.clearTable(pNdb, NdbScanOperation::SF_TupScan) == 0);
+    i++;
+  }
+
+  ndbout << "runSR_DD_UndoHole finished" << endl;
+  ctx->stopTest();
+  return result;
+}
+
 int runBug22696(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
   int result = NDBT_OK;
@@ -4463,6 +4582,13 @@ TESTCASE("SR_DD_3b_LCP", "") {
   INITIALIZER(runWaitStarted);
   INITIALIZER(clearOldBackups);
   STEP(runSR_DD_3);
+}
+TESTCASE("SR_DD_UndoHole",
+         "Restart a node with a hole in the disk data UNDO log, "
+         "simulating a crash during a partially persisted multi-page "
+         "UNDO log write") {
+  INITIALIZER(runWaitStarted);
+  STEP(runSR_DD_UndoHole);
 }
 TESTCASE("Bug29167", "") {
   INITIALIZER(runWaitStarted);

@@ -53,21 +53,30 @@ const (
 	fvNameSimple    = "sample_1"
 	fvVersionSimple = 1
 
-	sqlInsertFV2059 = `INSERT INTO hopsworks.feature_view VALUES
+	// Explicit column lists: the hopsworks-ddl migration patches add columns to
+	// these tables (V74 extends training_dataset_join, V40 extends serving_key),
+	// so positional VALUES lists no longer match the table definitions.
+	sqlInsertFV2059 = `INSERT INTO hopsworks.feature_view
+		(id, name, feature_store_id, created, creator, version, description) VALUES
 		(2059, 'sample_1', 67, Timestamp('2023-04-21 09:52:51'), 10000, 1, '');`
 
 	sqlDeleteFV2059 = `DELETE FROM hopsworks.feature_view WHERE id = 2059;`
 
-	sqlInsertTDJ2051 = `INSERT INTO hopsworks.training_dataset_join VALUES
+	sqlInsertTDJ2051 = `INSERT INTO hopsworks.training_dataset_join
+		(id, training_dataset, feature_group, left_feature_group, feature_group_commit_id,
+		 type, idx, parent_idx, prefix, feature_view_id) VALUES
 		(2051, NULL, 2069, NULL, NULL, 0, 0, 0, NULL, 2059);`
 
-	sqlInsertTDF2059 = `INSERT INTO hopsworks.training_dataset_feature VALUES
+	sqlInsertTDF2059 = `INSERT INTO hopsworks.training_dataset_feature
+		(id, training_dataset, feature_group, name, type, td_join, idx, label,
+		 inference_helper_column, training_helper_column, feature_view_id, on_demand_transformation) VALUES
 		(2057, NULL, 2069, 'data1', 'bigint', 2051, 2, 0, 0, 0, 2059, NULL),
 		(2058, NULL, 2069, 'id1', 'bigint', 2051, 0, 0, 0, 0, 2059, NULL),
 		(2059, NULL, 2069, 'ts', 'timestamp', 2051, 1, 0, 0, 0, 2059, NULL),
 		(2060, NULL, 2069, 'data2', 'bigint', 2051, 3, 0, 0, 0, 2059, NULL);`
 
-	sqlInsertSK68 = `INSERT INTO hopsworks.serving_key VALUES
+	sqlInsertSK68 = `INSERT INTO hopsworks.serving_key
+		(id, prefix, feature_name, join_on, join_index, feature_group_id, required, feature_view_id) VALUES
 		(68, NULL, 'id1', NULL, 0, 2069, 1, 2059);`
 
 	sqlInsertAllDeps2059 = sqlInsertTDJ2051 + "\n" + sqlInsertTDF2059 + "\n" + sqlInsertSK68

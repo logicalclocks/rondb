@@ -1,0 +1,159 @@
+--source include/have_ndb.inc
+
+#
+# TTL expiry checks for both TTL-column storage formats.
+#
+# checkTTL() reads a FIXED-format TTL column directly from the fixed part
+# of the in-memory tuple and falls back to the generic readAttributes()
+# decode for a COLUMN_FORMAT DYNAMIC column. Identical statements must give
+# identical expiry verdicts on both formats, for TIMESTAMP and DATETIME TTL
+# columns, across the scan, PK read, UPDATE and DELETE paths, including a
+# NULL TTL value (never expires).
+#
+# Recorded against the pre-optimization checkTTL(): this doubles as a
+# differential gate that the optimized read/compare preserves behavior.
+#
+
+# TTL comparisons happen in UTC inside the data nodes.
+SET time_zone='+00:00';
+
+--echo # -------------------------------------------------------
+--echo # TIMESTAMP TTL column: FIXED vs COLUMN_FORMAT DYNAMIC
+--echo # -------------------------------------------------------
+
+CREATE TABLE t_fix (
+  a INT,
+  ts TIMESTAMP NULL,
+  v INT,
+  PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ts";
+
+CREATE TABLE t_dyn (
+  a INT,
+  ts TIMESTAMP NULL COLUMN_FORMAT DYNAMIC,
+  v INT,
+  PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ts";
+
+# The column formats must differ, otherwise both tables exercise the same
+# kernel read path.
+SHOW CREATE TABLE t_fix;
+SHOW CREATE TABLE t_dyn;
+
+# Row 1: already expired (600s old > TTL 300s).
+# Row 2: live (expires 300s from now, far beyond the test's runtime).
+# Row 3: NULL TTL value -> never expires.
+INSERT INTO t_fix VALUES
+  (1, NOW() - INTERVAL 600 SECOND, 10),
+  (2, NOW(), 20),
+  (3, NULL, 30);
+INSERT INTO t_dyn VALUES
+  (1, NOW() - INTERVAL 600 SECOND, 10),
+  (2, NOW(), 20),
+  (3, NULL, 30);
+
+--echo # Scan: only the live and NULL rows are visible
+SELECT a, v FROM t_fix ORDER BY a;
+SELECT a, v FROM t_dyn ORDER BY a;
+
+--echo # PK read: expired row invisible, live and NULL rows visible
+SELECT a, v FROM t_fix WHERE a = 1;
+SELECT a, v FROM t_dyn WHERE a = 1;
+SELECT a, v FROM t_fix WHERE a = 2;
+SELECT a, v FROM t_dyn WHERE a = 2;
+SELECT a, v FROM t_fix WHERE a = 3;
+SELECT a, v FROM t_dyn WHERE a = 3;
+
+--echo # UPDATE: expired row not found (0 rows), live row updated (1 row)
+UPDATE t_fix SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+UPDATE t_dyn SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+UPDATE t_fix SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+UPDATE t_dyn SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+
+--echo # DELETE: expired row not found (0 rows), live row deleted (1 row)
+DELETE FROM t_fix WHERE a = 1;
+SELECT ROW_COUNT();
+DELETE FROM t_dyn WHERE a = 1;
+SELECT ROW_COUNT();
+DELETE FROM t_fix WHERE a = 2;
+SELECT ROW_COUNT();
+DELETE FROM t_dyn WHERE a = 2;
+SELECT ROW_COUNT();
+
+SELECT a, v FROM t_fix ORDER BY a;
+SELECT a, v FROM t_dyn ORDER BY a;
+
+DROP TABLE t_fix;
+DROP TABLE t_dyn;
+
+--echo # -------------------------------------------------------
+--echo # DATETIME TTL column: FIXED vs COLUMN_FORMAT DYNAMIC
+--echo # -------------------------------------------------------
+
+CREATE TABLE d_fix (
+  a INT,
+  dt DATETIME NULL,
+  v INT,
+  PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@dt";
+
+CREATE TABLE d_dyn (
+  a INT,
+  dt DATETIME NULL COLUMN_FORMAT DYNAMIC,
+  v INT,
+  PRIMARY KEY(a)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@dt";
+
+SHOW CREATE TABLE d_fix;
+SHOW CREATE TABLE d_dyn;
+
+INSERT INTO d_fix VALUES
+  (1, NOW() - INTERVAL 600 SECOND, 10),
+  (2, NOW(), 20),
+  (3, NULL, 30);
+INSERT INTO d_dyn VALUES
+  (1, NOW() - INTERVAL 600 SECOND, 10),
+  (2, NOW(), 20),
+  (3, NULL, 30);
+
+--echo # Scan: only the live and NULL rows are visible
+SELECT a, v FROM d_fix ORDER BY a;
+SELECT a, v FROM d_dyn ORDER BY a;
+
+--echo # PK read: expired row invisible, live and NULL rows visible
+SELECT a, v FROM d_fix WHERE a = 1;
+SELECT a, v FROM d_dyn WHERE a = 1;
+SELECT a, v FROM d_fix WHERE a = 2;
+SELECT a, v FROM d_dyn WHERE a = 2;
+SELECT a, v FROM d_fix WHERE a = 3;
+SELECT a, v FROM d_dyn WHERE a = 3;
+
+--echo # UPDATE: expired row not found (0 rows), live row updated (1 row)
+UPDATE d_fix SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+UPDATE d_dyn SET v = 11 WHERE a = 1;
+SELECT ROW_COUNT();
+UPDATE d_fix SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+UPDATE d_dyn SET v = 22 WHERE a = 2;
+SELECT ROW_COUNT();
+
+--echo # DELETE: expired row not found (0 rows), live row deleted (1 row)
+DELETE FROM d_fix WHERE a = 1;
+SELECT ROW_COUNT();
+DELETE FROM d_dyn WHERE a = 1;
+SELECT ROW_COUNT();
+DELETE FROM d_fix WHERE a = 2;
+SELECT ROW_COUNT();
+DELETE FROM d_dyn WHERE a = 2;
+SELECT ROW_COUNT();
+
+SELECT a, v FROM d_fix ORDER BY a;
+SELECT a, v FROM d_dyn ORDER BY a;
+
+DROP TABLE d_fix;
+DROP TABLE d_dyn;

@@ -1,5 +1,5 @@
 /* Copyright (c) 2004, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2026, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +35,7 @@
 #include <algorithm>  // std::min(),std::max()
 #include <memory>
 #include <sstream>
+#include <stdexcept>  // std::out_of_range
 #include <string>
 
 #include "my_config.h"  // WORDS_BIGENDIAN
@@ -3586,10 +3587,8 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     poptions = &options;
   }
 
-  /*
-   * TTL related
-   */
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
@@ -3863,10 +3862,8 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_PARTITION_ID;
     }
 
-    /*
-     * TTL related
-     */
-    if (m_ttl_ignore) {
+    /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+    if (should_ignore_ttl()) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
     if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
@@ -3990,10 +3987,8 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
   NdbScanOperation::ScanOptions options;
   options.optionsPresent = (NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                             NdbScanOperation::ScanOptions::SO_PARALLEL);
-  /*
-   * TTL related
-   */
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
   if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
@@ -5833,11 +5828,8 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  // A binlog applier replays row events the source already resolved against
-  // live rows; ignore replica-side TTL expiry so an UPDATE onto an
-  // expired-but-unpurged replica row is applied verbatim instead of being
-  // dropped as 626 (silent source/replica divergence).
-  if (m_ttl_ignore || thd_ndb->get_applier()) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_update_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -6188,11 +6180,8 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  // A binlog applier replays row events the source already resolved against
-  // live rows; ignore replica-side TTL expiry so a DELETE onto an
-  // expired-but-unpurged replica row is applied verbatim instead of being
-  // dropped as 626 (silent source/replica divergence).
-  if (m_ttl_ignore || thd_ndb->get_applier()) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_delete_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -7414,6 +7403,23 @@ int ha_ndbcluster::reset() {
   return 0;
 }
 
+handler *ha_ndbcluster::clone(const char *name, MEM_ROOT *mem_root) {
+  handler *new_handler = handler::clone(name, mem_root);
+  if (new_handler != nullptr) {
+    /*
+     * TTL related
+     * Carry the statement-scoped TTL-ignore over to the clone: plans that
+     * read through cloned handlers (e.g. index_merge) must see the same
+     * expired-row visibility as the primary handler, or a DELETE running
+     * with ttl_expired_rows_visible_in_delete silently skips the expired
+     * rows it was asked to remove. (The binlog applier is unaffected: its
+     * ignore comes from the Thd_ndb applier state, not this member.)
+     */
+    (static_cast<ha_ndbcluster *>(new_handler))->m_ttl_ignore = m_ttl_ignore;
+  }
+  return new_handler;
+}
+
 int ha_ndbcluster::flush_bulk_insert(bool allow_batch) {
   NdbTransaction *trans = m_thd_ndb->trans;
   DBUG_TRACE;
@@ -8371,6 +8377,7 @@ static const struct NDB_Modifier ndb_table_modifiers[] = {
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("READ_BACKUP"), 0, {0}},
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("FULLY_REPLICATED"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_BALANCE"), 0, {0}},
+    {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_HASH"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("TTL"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("MAX_ROWS_PER_PK"), 0, {0}},
     {NDB_Modifier::M_BOOL, nullptr, 0, 0, {0}}};
@@ -9177,8 +9184,9 @@ enum COMMENT_ITEMS {
   READ_BACKUP = 1,
   FULLY_REPLICATED = 2,
   PARTITION_BALANCE = 3,
-  TTL = 4,
-  RING_BUFFER = 5
+  PARTITION_HASH = 4,
+  TTL = 5,
+  RING_BUFFER = 6
 };
 
 /**
@@ -9204,6 +9212,8 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
   const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
@@ -9212,6 +9222,7 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
   if (mod_fully_replicated->m_found)
     comment_items_shown[FULLY_REPLICATED] = true;
   if (mod_frags->m_found) comment_items_shown[PARTITION_BALANCE] = true;
+  if (mod_partition_hash->m_found) comment_items_shown[PARTITION_HASH] = true;
   if (mod_ttl->m_found) {
     comment_items_shown[TTL] = true;
   }
@@ -9271,6 +9282,8 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
   const NDB_Modifier * mod_ttl = table_modifiers.get("TTL");
   const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
@@ -9421,6 +9434,35 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
   }
 
   bool add_ttl = false;
+  bool add_partition_hash = false;
+  if (!mod_partition_hash->m_found) {
+    if (old_table_comment[PARTITION_HASH]) {
+      add_partition_hash = true;
+      NDB_Modifiers old_table_modifiers(ndb_table_modifier_prefix,
+                                        ndb_table_modifiers);
+      if (old_table_modifiers.loadComment(
+              table->s->comment.str, table->s->comment.length) == -1) {
+        push_warning_printf(thd, Sql_condition::SL_WARNING,
+                            ER_ILLEGAL_HA_CREATE_OPTION, "%s",
+                            table_modifiers.getErrMsg());
+        my_error(ER_ILLEGAL_HA_CREATE_OPTION, MYF(0), ndbcluster_hton_name,
+                 "Syntax error in COMMENT modifier");
+        return;
+      }
+
+      const NDB_Modifier *old_mod_partition_hash =
+          old_table_modifiers.get("PARTITION_HASH");
+      const std::string old_partition_hash_str(
+          old_mod_partition_hash->m_val_str.str,
+          old_mod_partition_hash->m_val_str.len);
+
+      table_modifiers.set("PARTITION_HASH", old_partition_hash_str.c_str());
+      ndb_log_info("No new PARTITION_HASH comment is set, will use the "
+                   "old one: %s",
+                   table_modifiers.get("PARTITION_HASH")->m_val_str.str);
+    }
+  }
+
   if (!mod_ttl->m_found) {
     if (old_table_comment[TTL]) {
       add_ttl = true;
@@ -9437,9 +9479,15 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       }
 
       char old_ttl_str[256] = {0};
-      strncpy(old_ttl_str,
+      // Bound by the buffer, not only by the source length: a valid stored
+      // TTL value is always far shorter, but don't rely on that here.
+      size_t old_ttl_len = old_table_modifiers.get("TTL")->m_val_str.len;
+      if (old_ttl_len > sizeof(old_ttl_str) - 1) {
+        old_ttl_len = sizeof(old_ttl_str) - 1;
+      }
+      memcpy(old_ttl_str,
              old_table_modifiers.get("TTL")->m_val_str.str,
-             old_table_modifiers.get("TTL")->m_val_str.len);
+             old_ttl_len);
 
       table_modifiers.set("TTL", old_ttl_str);
       ndb_log_info("No new TTL comment is set, will use the old one: %s",
@@ -9475,7 +9523,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
   }
 
   if (!(add_nologging || add_read_backup || add_fully_replicated ||
-        add_part_bal || add_ttl || add_ring_buffer)) {
+        add_part_bal || add_partition_hash || add_ttl || add_ring_buffer)) {
     /* No change of comment is needed. */
     return;
   }
@@ -9599,6 +9647,109 @@ static bool parsePartitionBalance(
     *part_bal = ret;
   }
   return true;
+}
+
+struct Partition_hash_modifier {
+  bool found;
+  Uint32 base_key_count;
+  Uint32 detail_key_count;
+  Uint32 fanout;
+};
+
+static bool parse_partition_hash_uint(const char *str, size_t len, size_t *pos,
+                                      Uint32 *value) {
+  if (*pos >= len) return false;
+
+  Uint64 parsed_value = 0;
+  bool have_digit = false;
+  while (*pos < len && str[*pos] != ':') {
+    const char c = str[*pos];
+    if (c < '0' || c > '9') return false;
+    have_digit = true;
+    parsed_value = (parsed_value * 10) + Uint64(c - '0');
+    if (parsed_value > Uint64(~Uint32(0))) return false;
+    (*pos)++;
+  }
+
+  if (!have_digit) return false;
+  *value = Uint32(parsed_value);
+  return true;
+}
+
+static bool parsePartitionHash(const NDB_Modifier *mod_partition_hash,
+                               Partition_hash_modifier *partition_hash,
+                               const char **reason) {
+  partition_hash->found = false;
+  partition_hash->base_key_count = 0;
+  partition_hash->detail_key_count = 0;
+  partition_hash->fanout = 1;
+
+  if (!mod_partition_hash->m_found) return true;
+
+  const char *str = mod_partition_hash->m_val_str.str;
+  const size_t len = mod_partition_hash->m_val_str.len;
+  size_t pos = 0;
+
+  if (!parse_partition_hash_uint(str, len, &pos,
+                                 &partition_hash->base_key_count) ||
+      pos >= len || str[pos++] != ':' ||
+      !parse_partition_hash_uint(str, len, &pos,
+                                 &partition_hash->detail_key_count) ||
+      pos >= len || str[pos++] != ':' ||
+      !parse_partition_hash_uint(str, len, &pos, &partition_hash->fanout) ||
+      pos != len) {
+    *reason = "PARTITION_HASH must be base_keys:detail_keys:fanout";
+    return false;
+  }
+
+  partition_hash->found = true;
+  return true;
+}
+
+static const char *validatePartitionHashCreate(
+    const Partition_hash_modifier &partition_hash, Uint32 primary_key_count,
+    Uint32 partition_key_count, Uint32 partition_count,
+    bool partition_count_known, bool user_defined_partitioning,
+    bool fully_replicated) {
+  if (!partition_hash.found) return nullptr;
+
+  if (primary_key_count == 0)
+    return "PARTITION_HASH requires an explicit primary key";
+
+  if (partition_hash.base_key_count == 0)
+    return "PARTITION_HASH base key count must be greater than zero";
+
+  if (partition_hash.fanout == 0)
+    return "PARTITION_HASH fanout must be greater than zero";
+
+  if (partition_hash.base_key_count + partition_hash.detail_key_count !=
+      primary_key_count)
+    return "PARTITION_HASH key counts must match primary key columns";
+
+  if (partition_hash.fanout > 1 && partition_hash.detail_key_count == 0)
+    return "PARTITION_HASH fanout > 1 requires detail key columns";
+
+  if (fully_replicated)
+    return "PARTITION_HASH is not supported for fully replicated tables";
+
+  if (user_defined_partitioning)
+    return "PARTITION_HASH is not supported with user-defined partitioning";
+
+  /*
+    Fanout routing hashes the first base_count primary key columns in key
+    order and ignores declared partition key columns, and the distribution
+    key flags would mislead pre-fanout clients into pruning on them.
+    Declaring all primary key columns is equivalent to the default and is
+    allowed.
+  */
+  if (partition_hash.fanout > 1 && partition_key_count > 0 &&
+      partition_key_count < primary_key_count)
+    return "PARTITION_HASH fanout > 1 cannot use explicit partition keys";
+
+  if (partition_count_known && partition_hash.fanout > partition_count)
+    return "PARTITION_HASH fanout cannot exceed the number of partitions";
+
+  return nullptr;
 }
 
 /*
@@ -9954,6 +10105,8 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   const NDB_Modifier *mod_read_backup = table_modifiers.get("READ_BACKUP");
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
 
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
   bool found_ttl = false;
@@ -9987,7 +10140,18 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
               "Invalid TTL format, please use: 'Seconds@Column (uint@string)'");
         }
       }
-      ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      // A value beyond LLONG_MAX makes std::stoll throw std::out_of_range;
+      // uncaught, that aborts mysqld (any CREATE/ALTER user could crash the
+      // server). The value is already validated as non-empty and all-digits,
+      // so an out-of-range value is the only parse failure to expect here --
+      // treat it as "too large" and reject with the same error as the >= RNIL
+      // check below.
+      try {
+        ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      } catch (const std::out_of_range &) {
+        return create.failed_illegal_create_option(
+            "The maximum ttl is 4294967039 seconds");
+      }
       if (ttl_sec_raw >= RNIL) {
         return create.failed_illegal_create_option(
             "The maximum ttl is 4294967039 seconds");
@@ -10079,6 +10243,18 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   if (found_ttl && found_ring_buffer) {
     return create.failed_illegal_create_option(
         "A table cannot be both TTL and MAX_ROWS_PER_PK");
+  }
+  Partition_hash_modifier partition_hash;
+  const char *partition_hash_error = nullptr;
+  if (!parsePartitionHash(mod_partition_hash, &partition_hash,
+                          &partition_hash_error)) {
+    return create.failed_illegal_create_option(partition_hash_error);
+  }
+
+  if (partition_hash.found &&
+      ndbd_support_partition_hash_fanout(ndb->getMinDbNodeVersion()) == 0) {
+    return create.failed_illegal_create_option(
+        "PARTITION_HASH not supported by current data node versions");
   }
 
   NdbDictionary::Object::PartitionBalance part_bal =
@@ -10605,6 +10781,38 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
         return create.failed_in_NDB(dict->getNdbError());
       }
     }
+  }
+
+  if (partition_hash.found) {
+    Uint32 primary_key_count = 0;
+    if (table_share->primary_key != MAX_KEY) {
+      primary_key_count =
+          table->key_info[table_share->primary_key].user_defined_key_parts;
+    }
+
+    // Explicit PARTITION BY KEY(...) columns were flagged on the NDB
+    // table columns by create_table_set_up_partition_info()
+    Uint32 partition_key_count = 0;
+    for (int i = 0; i < tab.getNoOfColumns(); i++) {
+      const NdbDictionary::Column *col = tab.getColumn(i);
+      if (col->getPrimaryKey() && col->getPartitionKey())
+        partition_key_count++;
+    }
+
+    const Uint32 partition_count = tab.getFragmentCount();
+    const bool partition_count_known = partition_count != 0;
+    const char *reason = validatePartitionHashCreate(
+        partition_hash, primary_key_count, partition_key_count,
+        partition_count, partition_count_known,
+        tab.getFragmentType() == NDBTAB::UserDefined,
+        tab.getFullyReplicated());
+    if (reason != nullptr) {
+      return create.failed_illegal_create_option(reason);
+    }
+
+    tab.setPartitionHash(partition_hash.base_key_count,
+                         partition_hash.detail_key_count,
+                         partition_hash.fanout);
   }
 
   // Create the table in NDB
@@ -14360,10 +14568,8 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
 
         options.optionsPresent = NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                                  NdbScanOperation::ScanOptions::SO_PARALLEL;
-        /*
-         * TTL related
-         */
-        if (m_ttl_ignore) {
+        /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+        if (should_ignore_ttl()) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
         if (ndb_ring_buffer::show_meta_active(
@@ -16586,6 +16792,27 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
             "drop the foreign keys from all the children tables");
         return HA_ALTER_ERROR;
       }
+      if (new_tab.isTTLEnabled() &&
+          (alter_flags & Alter_inplace_info::ADD_FOREIGN_KEY)) {
+        /*
+         * TTL related
+         * Same-statement ADD FOREIGN KEY + TTL comment would slip BOTH
+         * prohibition checks: create_fks() runs in the prepare phase
+         * against the OLD dictionary object (TTL not applied until
+         * alterTableGlobal in the commit phase), and the m_ttl_fk guard
+         * above only reflects pre-statement foreign keys. Reject the
+         * combination here; each half alone keeps its existing check
+         * (create_fk rejects an FK on a TTL table, the guard above
+         * rejects TTL on an FK table). The COPY path is already rejected
+         * by copy_fk_for_offline_alter.
+         */
+        ha_alter_info->unsupported_reason =
+            "Cannot add a foreign key and TTL in the same statement";
+        ha_alter_info->report_unsupported_error(
+            "Adding a foreign key together with TTL",
+            "TTL tables may not participate in foreign keys");
+        return HA_ALTER_ERROR;
+      }
     }
 
     if (max_rows_changed) {
@@ -16708,6 +16935,74 @@ enum_alter_inplace_result ha_ndbcluster::check_if_supported_inplace_alter(
         return HA_ALTER_ERROR;
       }
     }
+
+    /*
+     * Renaming the TTL column must not slip through either: the kernel keeps
+     * expiring by column NUMBER, but the stored comment still names the OLD
+     * column, so (a) SHOW CREATE emits DDL that cannot be re-created
+     * (mysqldump/restore of the table fails), and (b) if a new column later
+     * reuses the old name, the next comment re-parse (any copying ALTER)
+     * silently rebinds TTL to the WRONG column -- live rows can then expire
+     * and be purged by the wrong timestamp. This wrapper also runs before a
+     * COPY fallback, so the same statement MAY legitimately fix the comment
+     * (rename + COMMENT='...TTL=n@<new name>' is never inplace -- the
+     * ALTER_COLUMN_NAME exclusivity above sends it to COPY) or remove TTL
+     * altogether: allow those, reject only a rename that leaves the comment
+     * pointing at the old name.
+     */
+    if (ha_alter_info->handler_flags &
+        Alter_inplace_info::ALTER_COLUMN_NAME) {
+      const uint fields = std::min(table->s->fields, altered_table->s->fields);
+      for (uint i = 0; i < fields; i++) {
+        Field *old_field = table->field[i];
+        Field *new_field = altered_table->field[i];
+        if (strcmp(old_field->field_name, new_field->field_name) != 0 &&
+            !my_strcasecmp(system_charset_info, ttl_column.c_str(),
+                           old_field->field_name)) {
+          bool comment_rebinds = false;
+          const HA_CREATE_INFO *new_create_info = ha_alter_info->create_info;
+          NDB_Modifiers new_modifiers(ndb_table_modifier_prefix,
+                                      ndb_table_modifiers);
+          if (new_modifiers.loadComment(new_create_info->comment.str,
+                                        new_create_info->comment.length) !=
+              -1) {
+            const NDB_Modifier *new_mod_ttl = new_modifiers.get("TTL");
+            if (!new_mod_ttl->m_found) {
+              // TTL removed in the same statement. (NOTE: this arm is
+              // near-unreachable in practice -- update_comment_info() has
+              // already re-injected the old TTL into any new comment that
+              // does not set one, so e.g. COMMENT="" still carries the stale
+              // binding and is correctly rejected below.)
+              comment_rebinds = true;
+            } else {
+              std::string new_ttl_comment(new_mod_ttl->m_val_str.str,
+                                          new_mod_ttl->m_val_str.len);
+              std::size_t at = new_ttl_comment.find('@');
+              if (at == std::string::npos) {
+                if (!my_strcasecmp(system_charset_info,
+                                   new_mod_ttl->m_val_str.str, "off")) {
+                  // TTL=OFF: TTL disabled in the same statement
+                  comment_rebinds = true;
+                }
+              } else if (!my_strcasecmp(system_charset_info,
+                                        new_ttl_comment.substr(at + 1).c_str(),
+                                        new_field->field_name)) {
+                // Comment re-bound to the column's new name
+                comment_rebinds = true;
+              }
+            }
+          }
+          if (!comment_rebinds) {
+            ha_alter_info->unsupported_reason = "It's used as the TTL column";
+            ha_alter_info->report_unsupported_error(
+                "Renaming the TTL column without updating the TTL comment",
+                "renaming it and updating the comment in one ALTER TABLE "
+                "... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement");
+            return HA_ALTER_ERROR;
+          }
+        }
+      }
+    }
   }
   return result;
 }
@@ -16734,6 +17029,8 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
   const NDB_Modifier *mod_read_backup = table_modifiers.get("READ_BACKUP");
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
 
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
   int64_t new_ttl_sec_raw = RNIL;
@@ -16771,7 +17068,16 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
           return true;
         }
       }
-      new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      // See ha_ndbcluster::create: a value beyond LLONG_MAX makes std::stoll
+      // throw std::out_of_range; uncaught, that aborts mysqld. The prefix is
+      // already validated as non-empty all-digits, so an out-of-range value is
+      // the only parse failure to expect here -- treat it as "too large".
+      try {
+        new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      } catch (const std::out_of_range &) {
+        *reason = "The maximum ttl is 4294967039 seconds";
+        return true;
+      }
       if (new_ttl_sec_raw >= RNIL) {
           *reason = "The maximum ttl is 4294967039 seconds";
           return true;
@@ -16789,6 +17095,13 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
                  ttl_col->getType() != NdbDictionary::Column::Type::Timestamp2) {
         *reason = "Invalid TTL format, column type "
                  "must be DATETIME/TIMESTAMP";
+        return true;
+      } else if (ttl_col->getStorageType() ==
+                 NdbDictionary::Column::StorageTypeDisk) {
+        // Mirror the CREATE-path rejection: checkTTL reads the TTL column
+        // without attaching the disk page, so an on-disk TTL column is
+        // unusable. This inplace path validated only the column type.
+        *reason = "TTL column can't be an on-disk column";
         return true;
       }
       ndb_log_info("[API]parse TTL successfully: TTL = %u sec, "
@@ -16854,6 +17167,29 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
     return true;
   }
 
+  Partition_hash_modifier partition_hash;
+  const char *partition_hash_error = nullptr;
+  if (!parsePartitionHash(mod_partition_hash, &partition_hash,
+                          &partition_hash_error)) {
+    *reason = partition_hash_error;
+    return true;
+  }
+
+  if (partition_hash.found) {
+    if (ndbd_support_partition_hash_fanout(ndb->getMinDbNodeVersion()) == 0) {
+      *reason = "PARTITION_HASH not supported by current data node versions";
+      return true;
+    }
+    if (old_tab->getPartitionHashBaseKeyCount() !=
+            partition_hash.base_key_count ||
+        old_tab->getPartitionHashDetailKeyCount() !=
+            partition_hash.detail_key_count ||
+        old_tab->getPartitionHashFanout() != partition_hash.fanout) {
+      *reason = "Changing PARTITION_HASH is not supported online";
+      return true;
+    }
+  }
+
   if (mod_nologging->m_found) {
     if (new_tab->getLogging() != (!mod_nologging->m_val_bool)) {
       *reason = "Cannot alter NOLOGGING inplace";
@@ -16877,6 +17213,11 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
   if (mod_fully_replicated->m_found) {
     if (ndbd_support_fully_replicated(ndb->getMinDbNodeVersion()) == 0) {
       *reason = "FULLY_REPLICATED not supported by current data node versions";
+      return true;
+    }
+    if (mod_fully_replicated->m_val_bool && partition_hash.found) {
+      *reason =
+          "PARTITION_HASH is not supported for fully replicated tables";
       return true;
     }
     if (old_tab->getFullyReplicated() != mod_fully_replicated->m_val_bool) {

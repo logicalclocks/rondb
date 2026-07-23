@@ -24,6 +24,7 @@
 #include "rdrs_dal.hpp"
 #include <NdbMutex.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpTypes.h>
@@ -103,6 +104,51 @@ std::string RonDB::generate_Mgmd_connect_string() {
 std::string RonDBMeta::generate_Mgmd_connect_string() {
   Mgmd mgmd = Mgmds[0];
   return mgmd.IP + ":" + std::to_string(mgmd.port);
+}
+
+bool TTLPurge::parseActiveWindow(const std::string &spec,
+                                 Int32 *start_min,
+                                 Int32 *end_min) {
+  if (spec.empty()) {
+    return false;
+  }
+  // Exactly "HH:MM-HH:MM": a fixed width forbids ambiguous partial-width
+  // forms like "03:5-05:00" (which sscanf would otherwise read as 03:05)
+  if (spec.size() != 11) {
+    return false;
+  }
+  int start_hour = 0;
+  int start_minute = 0;
+  int end_hour = 0;
+  int end_minute = 0;
+  char trailing = '\0';
+  // %c catches trailing garbage: a well-formed spec matches exactly 4 items
+  if (sscanf(spec.c_str(), "%2d:%2d-%2d:%2d%c", &start_hour, &start_minute,
+             &end_hour, &end_minute, &trailing) != 4) {
+    return false;
+  }
+  if (start_hour < 0 || start_hour > 23 || end_hour < 0 || end_hour > 23 ||
+      start_minute < 0 || start_minute > 59 ||
+      end_minute < 0 || end_minute > 59) {
+    return false;
+  }
+  Int32 start = start_hour * 60 + start_minute;
+  Int32 end = end_hour * 60 + end_minute;
+  if (start == end) {
+    return false;
+  }
+  *start_min = start;
+  *end_min = end;
+  return true;
+}
+
+bool TTLPurge::hasActiveWindowProblem() const {
+  if (activeWindow.empty()) {
+    return false;
+  }
+  Int32 start_min = 0;
+  Int32 end_min = 0;
+  return !parseActiveWindow(activeWindow, &start_min, &end_min);
 }
 
 std::string MySQL::generate_mysqld_connect_string() {

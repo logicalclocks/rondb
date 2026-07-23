@@ -1,0 +1,67 @@
+# ==========================================================================
+# Guard for the TTL-comment integer-overflow crash (finding #1).
+# ==========================================================================
+# The TTL value before '@' is validated to be all digits, but there is no
+# length cap. std::stoll() throws std::out_of_range for any value greater
+# than LLONG_MAX (19-20+ digit strings). Nothing in the handler stack
+# catches it, so the throw propagates to std::terminate() and aborts mysqld.
+# Any user with CREATE/ALTER privilege can crash the server with a plain DDL.
+#
+# After the fix, an over-long TTL digit string is rejected cleanly with
+# ER_ILLEGAL_HA_CREATE_OPTION ("The maximum ttl is 4294967039 seconds")
+# instead of crashing the server. Covers both the CREATE and ALTER paths.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+--disable_warnings
+DROP TABLE IF EXISTS test.ovf;
+--enable_warnings
+
+--echo # CREATE with a 20-digit TTL (> LLONG_MAX) must be rejected cleanly,
+--echo # not crash the server via an uncaught std::out_of_range from std::stoll.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=99999999999999999999@b";
+
+--echo # LLONG_MAX + 1 (19 digits) also overflows std::stoll and must be rejected.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=9223372036854775808@b";
+
+--echo # A value that fits in long long but exceeds the documented max
+--echo # (RNIL-1 = 4294967039) still gets the clean maximum-ttl error.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5000000000@b";
+
+--echo # The server is still alive after the rejected DDLs: a valid TTL works.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=60@b";
+DROP TABLE test.ovf;
+
+--echo # A leading-zero TTL that is numerically in range (000...060 = 60s) must
+--echo # still be ACCEPTED -- the overflow guard must key off numeric magnitude,
+--echo # not raw digit count.
+CREATE TABLE test.ovf (
+a INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=00000000000000000060@b";
+
+--echo # ALTER with an over-long TTL digit string must also be rejected cleanly.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.ovf COMMENT="NDB_TABLE=TTL=99999999999999999999@b";
+
+--echo # Server survived the ALTER path too: table is still usable.
+INSERT INTO test.ovf VALUES (1, NOW());
+SELECT a FROM test.ovf ORDER BY a;
+
+DROP TABLE test.ovf;

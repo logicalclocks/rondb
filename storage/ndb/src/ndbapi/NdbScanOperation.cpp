@@ -26,6 +26,7 @@
 
 #include "API.hpp"
 #include "util/require.h"
+#include <util/rondb_hash.hpp>
 
 #include <AttributeHeader.hpp>
 #include <NdbSqlUtil.hpp>
@@ -137,6 +138,7 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   m_readTuplesCalled = false;
   m_interpretedCodeOldApi = nullptr;
   m_pruneState = SPS_UNKNOWN;
+  m_pruningKeyPartitionId = false;
 
   m_api_receivers_count = 0;
   m_current_api_receiver = 0;
@@ -315,6 +317,7 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
 
     m_pruneState = SPS_FIXED;
     m_pruningKey = options->partitionId;
+    m_pruningKeyPartitionId = true;
 
     /* And set the vars in the operation now too */
     theDistributionKey = options->partitionId;
@@ -344,6 +347,8 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
     assert(m_pruneState == SPS_UNKNOWN);
     m_pruneState = SPS_FIXED;
     m_pruningKey = partValue;
+    m_pruningKeyPartitionId =
+        (pSpec->type == Ndb::PartitionSpec::PS_USER_DEFINED);
 
     theDistributionKey = partValue;
     theDistrKeyIndicator_ = 1;
@@ -862,6 +867,140 @@ int NdbIndexScanOperation::getDistKeyFromRange(const NdbRecord *key_record,
   }
 }
 
+static bool index_has_base_partition_prefix(const NdbRecord *key_record,
+                                            const NdbRecord *result_record,
+                                            Uint32 base_key_count) {
+  if (key_record->key_index_length < base_key_count ||
+      result_record->key_index_length < base_key_count) {
+    return false;
+  }
+  for (Uint32 i = 0; i < base_key_count; i++) {
+    const Uint32 index_col = key_record->key_indexes[i];
+    const Uint32 table_col = result_record->key_indexes[i];
+    if (key_record->columns[index_col].attrId !=
+        result_record->columns[table_col].attrId) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static int compute_base_hash_from_key_parts(const NdbTableImpl *impl,
+                                            const Ndb::Key_part_ptr *keyData,
+                                            Uint32 parts, void *buf,
+                                            Uint32 bufLen, Uint32 *baseHash) {
+  const NdbColumnImpl *const *cols = impl->m_columns.getBase();
+  const Uint32 colcnt = impl->m_columns.size();
+  const NdbColumnImpl *partcols[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  Uint32 j = 0;
+
+  for (Uint32 i = 0; i < colcnt && j < parts; i++) {
+    if (cols[i]->m_pk && cols[i]->m_keyInfoPos < parts) {
+      partcols[cols[i]->m_keyInfoPos] = cols[i];
+      j++;
+    }
+  }
+  assert(j == parts);
+
+  Uint32 sumlen = 0;
+  for (Uint32 i = 0; i < parts; i++) {
+    Uint32 lb, len;
+    if (unlikely(keyData[i].ptr == nullptr)) return 4316;
+    if (unlikely(!NdbSqlUtil::get_var_length(
+            partcols[i]->m_type, keyData[i].ptr, keyData[i].len, lb, len))) {
+      return 4280;
+    }
+    if (unlikely(keyData[i].len < (lb + len))) return 4277;
+
+    const Uint32 maxlen = partcols[i]->m_attrSize * partcols[i]->m_arraySize;
+    if (unlikely(lb == 0 && keyData[i].len != maxlen)) return 4280;
+
+    if (partcols[i]->m_cs != nullptr) {
+      len = NdbSqlUtil::strnxfrm_hash_len(partcols[i]->m_cs, maxlen - lb);
+    }
+    sumlen += (lb + len + 3) & ~(Uint32)3;
+  }
+
+  if (unlikely(sumlen > bufLen)) return 4278;
+
+  unsigned char *pos = (unsigned char *)buf;
+  unsigned char *bufEnd = pos + bufLen;
+  for (Uint32 i = 0; i < parts; i++) {
+    Uint32 lb, len;
+    NdbSqlUtil::get_var_length(partcols[i]->m_type, keyData[i].ptr,
+                               keyData[i].len, lb, len);
+    CHARSET_INFO *cs = partcols[i]->m_cs;
+    if (cs != nullptr) {
+      const Uint32 maxlen =
+          (partcols[i]->m_attrSize * partcols[i]->m_arraySize) - lb;
+      int n = NdbSqlUtil::strnxfrm_hash(
+          cs, partcols[i]->m_type, pos, bufEnd - pos,
+          ((const uchar *)keyData[i].ptr) + lb, len, maxlen);
+      if (unlikely(n == -1)) return 4279;
+      while ((n & 3) != 0) {
+        pos[n++] = 0;
+      }
+      pos += n;
+    } else {
+      len += lb;
+      memcpy(pos, keyData[i].ptr, len);
+      while (len & 3) {
+        *(pos + len++) = 0;
+      }
+      pos += len;
+    }
+  }
+
+  Uint32 values[4];
+  const Uint32 words = Uint32(UintPtr(pos) - UintPtr(buf)) >> 2;
+  rondb_calc_hash(values, (const char *)buf, words,
+                  impl->m_use_new_hash_function);
+  *baseHash = values[1];
+  return 0;
+}
+
+int NdbIndexScanOperation::getPartitionHashBaseHashFromRange(
+    const NdbRecord *key_record, const NdbRecord *result_record,
+    const char *row, Uint32 *baseHash) {
+  Uint32 xfrmbuf[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
+  char shrinkbuf[NDB_MAX_KEY_SIZE];
+  char *tmpshrink = shrinkbuf;
+  Ndb::Key_part_ptr ptrs[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+  const Uint32 base_key_count =
+      result_record->table->m_base_partition_key_count;
+
+  for (Uint32 i = 0; i < base_key_count; i++) {
+    const NdbRecord::Attr *col =
+        &key_record->columns[key_record->key_indexes[i]];
+    if (col->flags & NdbRecord::IsMysqldShrinkVarchar) {
+      Uint32 len;
+      if (!col->shrink_varchar(row, len, tmpshrink)) {
+        setErrorCodeAbort(4209);
+        return -1;
+      }
+      ptrs[i].ptr = tmpshrink;
+      tmpshrink += len;
+    } else {
+      ptrs[i].ptr = row + col->offset;
+    }
+    ptrs[i].len = col->maxSize;
+  }
+  ptrs[base_key_count].ptr = nullptr;
+
+  Uint32 hashValue;
+  const int ret = compute_base_hash_from_key_parts(
+      result_record->table, ptrs, base_key_count, xfrmbuf, sizeof(xfrmbuf),
+      &hashValue);
+  if (ret != 0) {
+    setErrorCodeAbort(ret);
+    return -1;
+  }
+
+  const Uint32 fanout = result_record->table->m_base_partition_fanout;
+  *baseHash = (hashValue / fanout) * fanout;
+  return 0;
+}
+
 int NdbScanOperation::validatePartInfoPtr(const Ndb::PartitionSpec *&partInfo,
                                           Uint32 sizeOfPartInfo,
                                           Ndb::PartitionSpec &tmpSpec) {
@@ -1091,11 +1230,12 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
    * Where partition 'value' is either a partition id or a hash
    * that maps to one in the kernel.
    */
-  if ((m_pruneState == SPS_UNKNOWN) ||  // First range
-      (m_pruneState ==
-       SPS_ONE_PARTITION))  // Previous ranges are commonly pruned
+  if ((m_pruneState == SPS_UNKNOWN) ||       // First range
+      (m_pruneState == SPS_ONE_PARTITION) ||  // Previous ranges are commonly
+      (m_pruneState == SPS_PARTITION_HASH_INTERVAL))  // pruned
   {
     bool currRangeHasOnePartVal = false;
+    bool currRangeIsHashInterval = false;
     Uint32 currRangePartValue = 0;
 
     /* Determine whether this range scan can be pruned */
@@ -1108,6 +1248,8 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
         return -1;
       }
     } else {
+      const bool tabHasPartitionHashFanout =
+          m_attribute_record->table->m_base_partition_fanout > 1;
       if (likely(!tabHasUserDefPartitioning)) {
         /* Attempt to get implicit partitioning info from range bounds -
          * only possible if they are present and bound a single value
@@ -1116,7 +1258,8 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
         Uint32 index_distkeys = key_record->m_no_of_distribution_keys;
         Uint32 table_distkeys = m_attribute_record->m_no_of_distribution_keys;
         Uint32 distkey_min = key_record->m_min_distkey_prefix_length;
-        if (index_distkeys ==
+        if (!tabHasPartitionHashFanout &&
+            index_distkeys ==
                 table_distkeys &&  // Index has all base table d-keys
             common_key_count >= distkey_min &&  // Bounds have all d-keys
             bound.low_key &&                    // Have both bounds
@@ -1129,6 +1272,39 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
           if (getDistKeyFromRange(key_record, m_attribute_record, bound.low_key,
                                   &currRangePartValue))
             return -1;
+        }
+
+        /*
+         * Current fanout pruning only recognises ordered indexes whose first
+         * key columns are the base primary-key columns in primary-key order.
+         * The hash scheme itself only requires equality on the base key; this
+         * limitation can be removed later by gathering base key values from
+         * arbitrary index positions.
+         *
+         * All data nodes must understand the distribution key interval flag
+         * (storedProcId bit 31) before it may be sent. Without it the scan
+         * simply stays unpruned, which is correct on any version.
+         */
+        if (tabHasPartitionHashFanout &&
+            ndbd_support_partition_hash_fanout(
+                theNdb->getMinDbNodeVersion())) {
+          const Uint32 base_key_count =
+              m_attribute_record->table->m_base_partition_key_count;
+          if (index_has_base_partition_prefix(key_record, m_attribute_record,
+                                              base_key_count) &&
+              common_key_count >= base_key_count &&
+              bound.low_key &&
+              bound.high_key &&
+              0 == compare_index_row_prefix(key_record, bound.low_key,
+                                            bound.high_key, base_key_count)) {
+            assert(!openRange);
+            currRangeHasOnePartVal = true;
+            currRangeIsHashInterval = true;
+            if (getPartitionHashBaseHashFromRange(
+                    key_record, m_attribute_record, bound.low_key,
+                    &currRangePartValue))
+              return -1;
+          }
         }
       }
     }
@@ -1144,18 +1320,26 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
      */
     const ScanPruningState prevPruneState = m_pruneState;
     if (currRangeHasOnePartVal) {
+      const ScanPruningState currRangePruneState =
+          currRangeIsHashInterval ? SPS_PARTITION_HASH_INTERVAL
+                                  : SPS_ONE_PARTITION;
       if (m_pruneState == SPS_UNKNOWN) {
         /* Prune the scan to use this range's partition value */
-        m_pruneState = SPS_ONE_PARTITION;
+        m_pruneState = currRangePruneState;
         m_pruningKey = currRangePartValue;
       } else {
-        /* If this range's partition value is the same as the previous
-         * ranges then we can stay pruned, otherwise we cannot
+        /* If this range's pruning type and partition value are the same
+         * as the previous ranges then we can stay pruned, otherwise we
+         * cannot.  A one-partition value (raw distribution hash) and a
+         * partition-hash interval value (grouped base hash) have different
+         * meanings in the kernel and must never be merged.
          */
-        assert(m_pruneState == SPS_ONE_PARTITION);
-        if (currRangePartValue != m_pruningKey) {
-          /* This range is found in a different partition to previous
-           * range(s).  We cannot prune this scan.
+        assert(m_pruneState == SPS_ONE_PARTITION ||
+               m_pruneState == SPS_PARTITION_HASH_INTERVAL);
+        if (m_pruneState != currRangePruneState ||
+            currRangePartValue != m_pruningKey) {
+          /* This range is found in a different partition (interval) to
+           * previous range(s).  We cannot prune this scan.
            */
           m_pruneState = SPS_MULTI_PARTITION;
         }
@@ -1169,17 +1353,20 @@ int NdbIndexScanOperation::setBound(const NdbRecord *key_record,
 
     /* Now modify the SCANTABREQ */
     if (m_pruneState != prevPruneState) {
-      theDistrKeyIndicator_ = (m_pruneState == SPS_ONE_PARTITION);
+      theDistrKeyIndicator_ = (m_pruneState == SPS_ONE_PARTITION ||
+                               m_pruneState == SPS_PARTITION_HASH_INTERVAL);
       theDistributionKey = m_pruningKey;
 
       ScanTabReq *req = CAST_PTR(ScanTabReq, theSCAN_TABREQ->getDataPtrSend());
       ScanTabReq::setDistributionKeyFlag(req->requestInfo,
                                          theDistrKeyIndicator_);
+      ScanTabReq::setDistributionKeyIntervalFlag(
+          req->storedProcId, m_pruneState == SPS_PARTITION_HASH_INTERVAL);
       req->distributionKey = theDistributionKey;
       theSCAN_TABREQ->setLength(ScanTabReq::StaticLength +
                                 theDistrKeyIndicator_);
     }
-  }  // if (m_pruneState == UNKNOWN / SPS_ONE_PARTITION)
+  }  // if (m_pruneState == UNKNOWN / ONE_PARTITION / HASH_INTERVAL)
 
   return 0;
 }  // ::setBound();
@@ -1334,6 +1521,7 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
                                            bool allow_continous_scan) {
   m_ordered = m_descending = false;
   m_pruneState = SPS_UNKNOWN;
+  m_pruningKeyPartitionId = false;
   Uint32 fragCount = m_currentTable->m_fragmentCount;
 
   assert(fragCount > 0);
@@ -2565,6 +2753,20 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
 
   /* Set distribution key info if required */
   ScanTabReq::setDistributionKeyFlag(reqInfo, theDistrKeyIndicator_);
+  ScanTabReq::setDistributionKeyIntervalFlag(
+      req->storedProcId, m_pruneState == SPS_PARTITION_HASH_INTERVAL);
+  /*
+   * Tell DBTC when the distribution key is a distinct partition id, so it
+   * is resolved as an exact fragment id and never mistaken for a hash.
+   * This makes setPartitionId()/SO_PARTITION_ID scans (e.g. TTL purge)
+   * work on tables with partition hash fanout. Old data nodes store
+   * storedProcId unmasked, so the bit may only be sent when all data
+   * nodes understand the extended request-info bits.
+   */
+  ScanTabReq::setDistributionKeyPartIdFlag(
+      req->storedProcId,
+      (m_pruneState == SPS_FIXED) && m_pruningKeyPartitionId &&
+          ndbd_support_partition_hash_fanout(theNdb->getMinDbNodeVersion()));
 
   /* Set aggregation information */
   if (m_aggregation_code != nullptr) {
@@ -2949,6 +3151,17 @@ NdbOperation *NdbScanOperation::takeOverScanOp(OperationType opType,
     newOp->theDistrKeyIndicator_ = 1;
     newOp->theDistributionKey = tTakeOverFragment;
   }
+
+  /*
+   * TTL related
+   * A take-over operation inherits the scan's only-expired marker: a row
+   * taken over from an SF_OnlyExpiredScan (the TTL purge) can only be an
+   * expired row. Downstream blocks use the marker to classify the operation,
+   * e.g. DBTUP excludes only-expired deletes from the fragment's
+   * committed-changes counter so that the TTL purge does not abort a
+   * concurrent copying ALTER TABLE via its commit-count change detection.
+   */
+  newOp->m_flags |= (m_flags & OF_TTL_ONLY_EXPIRED);
 
   // Copy the first 8 words of key info from KEYINF20 into TCKEYREQ
   TcKeyReq *tcKeyReq = CAST_PTR(TcKeyReq, newOp->theTCREQ->getDataPtrSend());
@@ -4792,7 +5005,9 @@ bool NdbScanOperation::getPruned() const {
   /* Note that for old Api scans, the bounds are not added until
    * execute() time, so this will return false until after execute
    */
-  return ((m_pruneState == SPS_ONE_PARTITION) || (m_pruneState == SPS_FIXED));
+  return ((m_pruneState == SPS_ONE_PARTITION) ||
+          (m_pruneState == SPS_PARTITION_HASH_INTERVAL) ||
+          (m_pruneState == SPS_FIXED));
 }
 
 NdbBlob *NdbScanOperation::getBlobHandle(const char *anAttrName) const {

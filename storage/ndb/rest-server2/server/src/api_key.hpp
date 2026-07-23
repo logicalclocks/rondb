@@ -53,18 +53,53 @@ class APIKeyCache;
 APIKeyCache* start_api_key_cache();
 void stop_api_key_cache();
 
+/*
+One access check of a request against the caller's grants:
+- metadata_only: visibility check - the caller may resolve feature-view
+  metadata from the db (member, restricted member, shared or
+  placeholder-shared store, or any table grant). Grants NO data access;
+  table and columns are ignored and must be left empty.
+- table empty: full-database access required
+- table set, columns == nullptr: the request reads the whole row, so the
+  whole table must be granted (full db or whole-table grant)
+- table set, columns set: every listed column must be granted
+The string_views must outlive the authenticate call.
+*/
+struct TableAccessRequest {
+  std::string_view db;
+  std::string_view table;
+  const std::vector<std::string_view> *columns = nullptr;
+  bool metadata_only = false;
+};
+
+namespace metadata {
+struct FeatureViewMetadata;
+}
+
 RS_Status authenticate_empty(const std::string &apiKey);
 RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
 RS_Status authenticate(const std::string &apiKey, const std::string_view & db);
 RS_Status authenticate(const std::string &apiKey,
                        const std::vector<std::string_view> &);
+RS_Status authenticate(const std::string &apiKey,
+                       const std::vector<TableAccessRequest> &);
+RS_Status authenticate(const std::string &apiKey,
+                       const metadata::FeatureViewMetadata &fvMetadata);
 
 struct NdbThread;
 
 class UserDBs {
  public:
-  std::unordered_set<std::string_view> userDBs;
-  char **m_db_ptrs; // Memory to free for database names
+  // Full-database data grants: member projects + stores shared entirely
+  std::unordered_set<std::string> userDBs;
+  // Feature-view metadata visibility only: restricted memberships and
+  // placeholder store shares (shared_feature_store.shared_entirely = 0)
+  std::unordered_set<std::string> visibleDBs;
+  // Table/column grants: db -> table -> granted columns
+  // (an empty column set means the whole table is granted)
+  std::unordered_map<std::string,
+    std::unordered_map<std::string,
+      std::unordered_set<std::string>>> fineGrants;
   NDB_TICKS m_lastUsed;
   NDB_TICKS m_lastUpdated;
   NdbMutex *m_waitLock;
@@ -81,10 +116,12 @@ class UserDBs {
   std::string m_secret;
   std::string m_salt;
   int m_user_id;
+  // api_key.expiry as unix epoch seconds; 0 = NULL = never expires
+  long long m_expiry_epoch;
 
   UserDBs() {
-    m_db_ptrs = nullptr;
     m_user_id = 0;
+    m_expiry_epoch = 0;
     m_waitLock = NdbMutex_Create();
     m_waitCond = NdbCondition_Create();
   }
@@ -92,9 +129,6 @@ class UserDBs {
   ~UserDBs() {
     NdbMutex_Destroy(m_waitLock);
     NdbCondition_Destroy(m_waitCond);
-    if (m_db_ptrs) {
-      free(m_db_ptrs);
-    }
   }
 };
 
@@ -118,6 +152,12 @@ class APIKeyCache {
   */
   RS_Status validate_api_key(const std::string &,
                              const std::vector<std::string_view> &);
+  /*
+  Checking whether the API key satisfies the given table/column access
+  requests
+  */
+  RS_Status validate_api_key(const std::string &,
+                             const std::vector<TableAccessRequest> &);
 
   Uint64 last_updated(const std::string &);
   std::string to_string();
@@ -152,14 +192,13 @@ class APIKeyCache {
   RS_Status update_cache(const std::string &prefix,
                          const std::string &clientSecret,
                          Uint32 hash);
-  RS_Status update_record(std::vector<std::string_view>,
-                          UserDBs*,
-                          char **db_ptrs);
+  RS_Status update_record(HopsworksUserGrants &grants,
+                          UserDBs*);
   RS_Status find_and_validate(const std::string &prefix,
                               const std::string &clientSecret,
                               bool &keyFoundInCache,
                               bool &allowedAccess,
-                              const std::vector<std::string_view> &dbs,
+                              const std::vector<TableAccessRequest> &accessReqs,
                               Uint32 hash,
                               bool inc_refcount_done);
 
@@ -169,10 +208,10 @@ class APIKeyCache {
   void load_single_key(const std::string &prefix,
                        const std::string &secret,
                        const std::string &salt,
-                       int user_id);
+                       int user_id,
+                       long long expiry_epoch);
   RS_Status get_user_databases(int user_id,
-                               std::vector<std::string_view> &dbs,
-                               char ***db_ptrs);
+                               HopsworksUserGrants &grants);
   Int32 refresh_interval();
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_API_KEY_HPP_

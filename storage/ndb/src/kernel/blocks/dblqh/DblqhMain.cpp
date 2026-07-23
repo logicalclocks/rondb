@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -115,6 +115,7 @@
 #include <TransporterRegistry.hpp>
 
 #include <EventLogger.hpp>
+#include "my_systime.h"  // my_micro_time() for per-scan-batch TTL clock sampling
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ABORT_TRANS 1
@@ -4628,6 +4629,38 @@ bool Dblqh::is_ring_buffer_table(Uint32 table_id) {
   t_tabptr.i = table_id;
   ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
   return (t_tabptr.p->m_ring_buffer_size != RNIL);
+}
+
+/*
+ * TTL related
+ * Sample wall-clock "now" once per scan batch and reuse it for every row's
+ * TTL expiry check (Dbtup::checkTTL), instead of calling my_micro_time()
+ * (a gettimeofday, which is a real syscall on VMs without a TSC clocksource)
+ * once per scanned row. Sampled at every point a batch starts evaluating
+ * rows: scan start (initScanrec), each SCAN_NEXTREQ, a queued scan's
+ * restart, and the start of a prefetched batch (parallel ordered scans).
+ * This is a deliberate relaxation of the old per-row clock read: the value
+ * can be stale by up to one batch's execution time (for selective scans,
+ * the time to examine -- not return -- a batch's worth of rows). A stale
+ * "now" errs only toward "not yet expired": an expired row can stay visible
+ * to the batch (or be skipped by a purge round and caught by the next one),
+ * but a row can never expire or be purged early. That one-sidedness assumes
+ * the wall clock (gettimeofday) is never stepped backward mid-batch: NTP
+ * slewing preserves it, while a hard backward step leaves the cached value
+ * ahead of the corrected clock until the next batch boundary -- the same
+ * exposure any wall-clock-based expiry already has, widened by at most one
+ * batch. Only relevant when this
+ * scan actually evaluates TTL: a TTL table whose expiry check is enabled
+ * (m_ttl_ignore == 0), i.e. normal user scans and the background purge scan.
+ * Otherwise leave it 0 so checkTTL keeps its per-row clock read (it isn't
+ * called for non-TTL/ignored scans anyway) and non-TTL scans pay no TTL cost.
+ */
+void Dblqh::set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id) {
+  if (scanPtr->m_ttl_ignore == 0 && is_ttl_table(table_id)) {
+    scanPtr->m_ttl_now_sec = (Uint32)(my_micro_time() / 1000000);
+  } else {
+    scanPtr->m_ttl_now_sec = 0;
+  }
 }
 
 bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
@@ -10523,7 +10556,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * This is a normal operation in a starting node which is currently being
      * synchronised with the live node.
      */
-    if (!match && op != ZINSERT) {
+    if (!match && op != ZINSERT &&
+        !(op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))) {
       /**
        * We are performing an UPDATE or a DELETE and the row id position
        * doesn't contain the correct primary key.
@@ -10531,6 +10565,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        * Either there was no row in this row id, or it is an old row which
        * which haven't yet seen the copy row. We can safely ignore this
        * one.
+       *
+       * Exception: on a TTL table a live write of a new key is forwarded to
+       * replicas as ZWRITE (so replicas skip checkTTL), not ZINSERT. Such a
+       * ZWRITE with !match is effectively a new-key insert and must be treated
+       * like ZINSERT below - it cannot be ignored, otherwise if its (possibly
+       * reused) row id is below the copy scan pointer the forward scan never
+       * re-delivers it and the row is permanently lost on the starting node.
        */
       jam();
       if (TRACENR_FLAG) TRACENR(" IGNORE " << endl);
@@ -10564,7 +10605,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * same manner as if it was a copy row coming. It might be redone later
      * but this is not a problem with consistency.
      */
-    ndbassert(!match && op == ZINSERT);
+    ndbassert(!match && (op == ZINSERT ||
+                         (op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))));
 
     /**
      * Perform the following action (same as above for copy row case)
@@ -11654,8 +11696,16 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
   {
     /*
      * TTL related
-     * TODO (Zhao)
-     * maybe need to handle this code path for TTL
+     * No TTL-specific handling is needed on the disk-table path: it only
+     * DEFERS the TUPKEYREQ until the disk page is loaded, and all TTL
+     * state (the ACC-converted operation, ttl_ignore/ttl_only_expired,
+     * original_operation) lives on the TcConnectionrec, which survives the
+     * asynchronous page load unchanged. checkTTL in DBTUP reads only the
+     * TTL column, which is always an in-memory column (DDL rejects binding
+     * TTL to a disk column). Covered by ndb_ttl.ttl_disk_expired_write:
+     * insert-over-expired refresh, REPLACE/ON-DUP over expired, delete and
+     * update of expired, and the same-transaction duplicate reject all
+     * behave identically to the in-memory-table paths.
      */
     jamDebug();
     jamDataDebug(localKey1);
@@ -12522,6 +12572,16 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
 
+  /*
+   * TTL related. Serialize ttl_only_expired too: every replica must classify
+   * an only-expired (TTL purge) delete identically when committing, because
+   * DBTUP excludes such deletes from the fragment's committed-changes counter
+   * (the COMMIT_COUNT pseudo column used by copying ALTER TABLE change
+   * detection). Without the bit the counters would diverge between primary
+   * and backup replicas.
+   */
+  LqhKeyReq::setTTLOnlyExpiredFlag(Treqinfo, regTcPtr->ttl_only_expired);
+
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
     // ndbassert(LqhKeyReq::getOperation(Treqinfo) == ZINSERT);
@@ -12546,9 +12606,18 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * I explain the reason there. Check [TTL Replication ZWRITE to replicas]
    * there for more details
    *
+   * This conversion is only needed (and only valid) on the PRIMARY replica.
+   * continueACCKEYCONF() rewrites regTcPtr->reqinfo (hence Treqinfo) from ZWRITE
+   * back to the real ZINSERT/ZUPDATE ONLY when seqNoReplica==0, so the
+   * ndbrequire below holds there. On a backup replica that rewrite is skipped,
+   * so reqinfo/Treqinfo still carries ZWRITE and is forwarded to the next
+   * replica unchanged -- running this block on a MIDDLE replica (which exists
+   * only at NoOfReplicas>=3 and forwards onward) would trip the ndbrequire on
+   * the already-ZWRITE op and crash the node.
    */
   if (is_ttl_table(fragptr.p->tabRef) &&
-      regTcPtr->original_operation == ZWRITE) {
+      regTcPtr->original_operation == ZWRITE &&
+      regTcPtr->seqNoReplica == 0) {
     ndbrequire(LqhKeyReq::getOperation(Treqinfo) == ZINSERT ||
                LqhKeyReq::getOperation(Treqinfo) == ZUPDATE);
     TTL_RONDB_TRACE(fragptr.p->tabRef, "set LqhKeyReq op to ZWRITE from %u in order to "
@@ -17078,6 +17147,15 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   }
   scanPtr->m_max_batch_size_rows = max_rows;
 
+  // TTL: refresh the per-batch "now" cache for the rows fetched by this
+  // SCAN_NEXTREQ (covers both the lock-release and direct continue paths).
+  // Skip while a prefetched batch is in flight or ready (parallel ordered
+  // scans): its timestamp was sampled when the prefetch started, and the
+  // batch after it resamples at its own start in sendScanFragConf.
+  if (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) {
+    set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+  }
+
   /* --------------------------------------------------------------------
    * If scanLockHold = true we need to unlock previous round of
    * scanned records.
@@ -19765,6 +19843,10 @@ void Dblqh::restart_queued_scan(Signal *signal, Uint32 scanPtrI) {
   ndbrequire(loc_scanptr.p->copyPtr == RNIL);
   setup_scan_pointers(scanPtrI, __LINE__);
   m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 8;
+  // TTL: this scan may have waited in the scan queue arbitrarily long;
+  // resample the per-batch "now" so its first batch doesn't evaluate TTL
+  // expiry with the clock read back at SCAN_FRAGREQ time (initScanrec).
+  set_scan_ttl_now_sec(loc_scanptr.p, m_tc_connect_ptr.p->tableref);
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
   jamDebug();
@@ -19837,6 +19919,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_ttl_only_expired = ttl_only_expired;
   scanPtr->m_ring_buffer_show_meta =
       ScanFragReq::getRingBufferShowMetaFragFlag(reqinfo);
+  // Sample "now" for the first batch; resampled at every later batch start
+  // (execSCAN_NEXTREQ, queued-scan restart, prefetched-batch start).
+  set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
   Uint32 tupScan = ScanFragReq::getTupScanFlag(reqinfo);
@@ -20354,6 +20439,10 @@ void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
   scanPtr->scanType = ScanRecord::ST_IDLE;
   scanPtr->scanTcWaiting = 0;
   scanPtr->scan_lastSeen = __LINE__;
+  // TTL: keep the per-batch "now" cache defined for every (re)used scan record,
+  // including the NR copy-fragment scan, which is set up directly and bypasses
+  // initScanrec (it runs with m_ttl_ignore=1, so checkTTL never reads this).
+  scanPtr->m_ttl_now_sec = 0;
   /*
    * PA related
    * reset aggregation variables
@@ -21010,6 +21099,10 @@ void Dblqh::sendScanFragConf(Signal *signal,
                ScanRecord::CONTINOUS_SCAN_IDLE);
     scanPtr->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_ACTIVE;
     scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
+    // TTL: the prefetched next batch starts scanning now; resample the
+    // per-batch "now" so its rows don't reuse the timestamp sampled when
+    // the batch just sent to the API began.
+    set_scan_ttl_now_sec(scanPtr, regTcPtr->tableref);
 
     DEB_CONT_SCAN(("(%u) LQH SCAN_FRAGCONF sent scanPtrI: %u, "
                    "CONT_SCAN_IDLE -> CONT_SCAN_ACTIVE"

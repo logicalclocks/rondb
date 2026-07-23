@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -290,6 +290,10 @@ class Dbdict : public SimulatedBlock {
       fullyReplicatedTriggerId = RNIL;
       ttlSec = RNIL;
       ttlColumnNo = RNIL;
+      partitionHashBaseKeyCount = 0;
+      partitionHashDetailKeyCount = 0;
+      partitionHashFanout = 1;
+
       ringBufferSize = RNIL;
       ringIdxColNo = RNIL;
       ringMetaColNo = RNIL;
@@ -357,6 +361,9 @@ class Dbdict : public SimulatedBlock {
 
     /* Number of primary key attributes (should be computed) */
     Uint16 noOfPrimkey;
+    Uint8 partitionHashBaseKeyCount;
+    Uint8 partitionHashDetailKeyCount;
+    Uint16 partitionHashFanout;
 
     /* Length of primary key in words (should be computed) */
     /* For ordered index this is tree node size in words */

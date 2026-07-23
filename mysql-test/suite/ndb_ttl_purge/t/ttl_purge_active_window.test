@@ -1,0 +1,252 @@
+# ==========================================================================
+# ttl_purge_active_window.test
+#
+# Daily purge active window from the cluster-wide mysql.ttl_purge_ctrl
+# table (ctrl_id 2 = start, ctrl_id 3 = end, minutes since UTC midnight):
+#   1. Window set away from now  -> worker idles (state outside_window),
+#      expired rows are NOT purged; /status reports the window and its
+#      source ("ttl_purge_ctrl").
+#   2. Window moved over now     -> purging resumes, rows are purged.
+#   3. Wrap-around window (start > end) not covering now -> idles again.
+#   4. Ctrl rows deleted         -> no window, purging around the clock.
+#   5. Invalid window values     -> fail-open: treated as no window.
+#   6. Wrap-around window covering now -> purging continues; start > end
+#      is guaranteed by construction (unlike phase 3, whose wrap shape
+#      degenerates near UTC midnight), so the wrap branch is always hit.
+#
+# All windows are computed relative to the current UTC minute with >= 60
+# minute margins, so minute rollover during the test cannot flip a phase.
+#
+# Purge activity is asserted via the purger's own rows_purged_total metric
+# (snapshot + delta), NOT via COUNT(*): SQL reads TTL-filter expired rows,
+# so row counts cannot distinguish "expired but retained" from "purged".
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+
+# Baseline of the cumulative purge counter (the suite shares one RDRS)
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/aw_m.json
+--let $json_file = $MYSQL_TMP_DIR/aw_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $purged_base = $json_value
+
+--echo #
+--echo # Phase 1: window far from now => expired rows are not purged
+--echo #
+
+CREATE TABLE mysql.ttl_purge_ctrl (ctrl_id INT PRIMARY KEY, value INT) ENGINE=NDB;
+
+# Window = [now+4h, now+6h) (mod 24h): now is never inside it
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+INSERT INTO mysql.ttl_purge_ctrl VALUES (2, (@now_min + 240) % 1440), (3, (@now_min + 360) % 1440);
+
+--let $wait_state_target = outside_window
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+# The status API reports the effective window and its source
+--exec curl -s $ttl_purge_base/status > $MYSQL_TMP_DIR/aw_status.json
+--let $json_file = $MYSQL_TMP_DIR/aw_status.json
+--let $json_field = active_window_source
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Status must report the window source as ttl_purge_ctrl
+--let $assert_cond = "$json_value" = "ttl_purge_ctrl"
+--source include/assert.inc
+
+--let $ttl_db = ttl_aw
+--let $ttl_table = t1
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_aw
+--let $wait_table = t1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_aw
+--let $insert_table = t1
+--let $insert_count = 30
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Give the purger several rounds; outside the window nothing may be purged
+--sleep 6
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/aw_m.json
+--let $json_file = $MYSQL_TMP_DIR/aw_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = No rows may be purged outside the active window
+--let $assert_cond = $json_value = $purged_base
+--source include/assert.inc
+
+--echo #
+--echo # Phase 2: window moved over now => purging resumes
+--echo #
+
+# Window = [now-1h, now+1h)
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 1380) % 1440 WHERE ctrl_id = 2;
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 60) % 1440 WHERE ctrl_id = 3;
+
+--let $expected_purge_total = `SELECT $purged_base + 30`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_aw
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Phase 3: wrap-around window (start > end) not covering now => idle
+--echo #
+
+# Window = [now+1h, now-1h) (mod 24h): covers the whole day EXCEPT
+# (now-1h, now+1h), so now is outside. The computed start > end (i.e. the
+# midnight-wrap shape) except within an hour of UTC midnight, where the
+# modulo puts start < end -- "outside a wrapping window" is impossible
+# there, since a start > end window always covers midnight itself. The
+# no-purge assertion holds either way; phase 6 exercises the wrap branch
+# deterministically.
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 60) % 1440 WHERE ctrl_id = 2;
+UPDATE mysql.ttl_purge_ctrl SET value = (@now_min + 1380) % 1440 WHERE ctrl_id = 3;
+
+--let $wait_state_target = outside_window
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--let $insert_db = ttl_aw
+--let $insert_table = t1
+--let $insert_count = 30
+--let $insert_start_id = 100
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--sleep 6
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/aw_m.json
+--let $json_file = $MYSQL_TMP_DIR/aw_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $phase3_expected = `SELECT $purged_base + 30`
+--let $assert_text = No rows may be purged outside the wrap-around window
+--let $assert_cond = $json_value = $phase3_expected
+--source include/assert.inc
+
+--echo #
+--echo # Phase 4: ctrl rows deleted => no window, purging resumes
+--echo #
+
+DELETE FROM mysql.ttl_purge_ctrl WHERE ctrl_id IN (2, 3);
+
+--let $expected_purge_total = `SELECT $purged_base + 60`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_aw
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Phase 5: invalid window values => fail-open (no window)
+--echo #
+
+# 5000 is out of range and start == end is meaningless; both make the
+# window invalid, and an invalid window must not stop purging
+INSERT INTO mysql.ttl_purge_ctrl VALUES (2, 5000), (3, 5000);
+
+--let $insert_db = ttl_aw
+--let $insert_table = t1
+--let $insert_count = 20
+--let $insert_start_id = 200
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $expected_purge_total = `SELECT $purged_base + 80`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_aw
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Phase 6: wrap-around window covering now => purging continues
+--echo #
+
+# Deterministic midnight-wrap coverage (phase 3's wrap shape degenerates
+# to start < end near midnight): exclude a single minute ~12 hours away,
+# window = [gap+1, gap) with gap = (now + 720) % 1440 (remapped off 1439
+# so start = gap+1 stays in range). start > end ALWAYS holds and now is
+# always inside. Also covers the invalid -> valid ctrl UPDATE transition
+# out of phase 5.
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+SET @gap_min = IF((@now_min + 720) % 1440 = 1439, 1438, (@now_min + 720) % 1440);
+UPDATE mysql.ttl_purge_ctrl SET value = @gap_min + 1 WHERE ctrl_id = 2;
+UPDATE mysql.ttl_purge_ctrl SET value = @gap_min WHERE ctrl_id = 3;
+
+# Wait until the worker adopts the now-valid ctrl window (source flips
+# from "" to ttl_purge_ctrl) so the purge below provably runs inside the
+# wrapping window
+--exec echo '$ttl_purge_base/status' > $MYSQL_TMP_DIR/aw_wrap_url.txt
+
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my $url = rd("$tmp/aw_wrap_url.txt");
+my $src = '';
+my $state = '';
+my $ok = 0;
+for (my $i = 0; $i < 30; $i++) {
+  my $json = `curl -s $url 2>/dev/null`;
+  if (defined $json && $json ne '') {
+    my $d = eval { decode_json($json) };
+    if ($d) {
+      $src = $d->{active_window_source} if defined $d->{active_window_source};
+      $state = $d->{state} if defined $d->{state};
+    }
+  }
+  if ($src eq 'ttl_purge_ctrl' && $state ne 'outside_window') { $ok = 1; last; }
+  sleep 1;
+}
+open my $o, '>', "$tmp/aw_wrap_wait.inc" or die "Cannot write: $!";
+if ($ok) {
+  print $o "--let \$_aw_wrap_ok = 1\n";
+} else {
+  print $o "--echo [active_window] source '$src' state '$state', wrap window not adopted\n";
+  print $o "--let \$_aw_wrap_ok = 0\n";
+}
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/aw_wrap_wait.inc
+
+if (!$_aw_wrap_ok)
+{
+  --die Worker did not adopt the wrap-around ctrl window
+}
+
+--let $insert_db = ttl_aw
+--let $insert_table = t1
+--let $insert_count = 20
+--let $insert_start_id = 300
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $expected_purge_total = `SELECT $purged_base + 100`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_aw
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE mysql.ttl_purge_ctrl;
+DROP DATABASE ttl_aw;
+--sleep 2
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

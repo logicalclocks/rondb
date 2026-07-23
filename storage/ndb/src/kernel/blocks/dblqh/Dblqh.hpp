@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -655,7 +655,8 @@ class Dblqh : public SimulatedBlock {
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
       m_agg_interpreter(nullptr),
-      m_ttl_purge_window_size(0)
+      m_ttl_purge_window_size(0),
+      m_ttl_now_sec(0)
     {
     }
 
@@ -804,6 +805,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ttl_only_expired;   // Only be insterested in expired rows
     Uint32 m_ttl_purge_window_size;
     Uint8 m_ring_buffer_show_meta;
+    Uint32 m_ttl_now_sec;       // wall-clock "now" (UTC epoch sec) sampled once
+                                // per scan batch for TTL expiry checks; 0 = unset
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2703,6 +2706,7 @@ class Dblqh : public SimulatedBlock {
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);
   bool is_ring_buffer_table(Uint32 table_id);
+  void set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id);
   // TTL related (Bug #2). True iff table_id is an internal UNIQUE hash index.
   // Used by DBTUP's same-owner check to scope the duplicate-vs-live-owner
   // rejection to unique indexes (NOT BLOB part-tables, which also have

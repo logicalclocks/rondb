@@ -1,0 +1,36 @@
+SET time_zone = '+00:00';
+#
+# Phase 1: default mode (no ttl_purge_nodes), two tables, mixed rows
+#
+CREATE DATABASE IF NOT EXISTS ttl_cust;
+DROP TABLE IF EXISTS ttl_cust.orders;
+CREATE TABLE ttl_cust.orders (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col" PARTITION BY KEY(id) PARTITIONS 8;
+CREATE INDEX ttl_index ON ttl_cust.orders(ttl_col);
+CREATE DATABASE IF NOT EXISTS ttl_cust;
+Warnings:
+Note	1007	Can't create database 'ttl_cust'; database exists
+DROP TABLE IF EXISTS ttl_cust.events;
+CREATE TABLE ttl_cust.events (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=10@ttl_col" PARTITION BY KEY(id) PARTITIONS 8;
+CREATE INDEX ttl_index ON ttl_cust.events(ttl_col);
+INSERT INTO ttl_cust.orders (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+INSERT INTO ttl_cust.orders (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 100001 UNION ALL SELECT n + 1 FROM seq WHERE n < 100200) SELECT n, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT('live_', n) FROM seq;
+INSERT INTO ttl_cust.events (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+INSERT INTO ttl_cust.events (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 100001 UNION ALL SELECT n + 1 FROM seq WHERE n < 100200) SELECT n, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT('live_', n) FROM seq;
+Phase 1: all expired rows purged in default mode
+include/assert.inc [All 200 live rows of orders must survive default-mode purge]
+include/assert.inc [All 200 live rows of events must survive default-mode purge]
+#
+# Phase 2: sharded mode, both nodes split each table's partitions
+#
+CREATE TABLE mysql.ttl_purge_nodes (node_id INT PRIMARY KEY, last_active DATETIME) ENGINE=NDB;
+INSERT INTO mysql.ttl_purge_nodes WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 255) SELECT n, NULL FROM seq;
+INSERT INTO ttl_cust.orders (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 2000 UNION ALL SELECT n + 1 FROM seq WHERE n < 2999) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+INSERT INTO ttl_cust.events (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 2000 UNION ALL SELECT n + 1 FROM seq WHERE n < 2999) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+Phase 2: all expired rows purged, both nodes worked both tables
+include/assert.inc [All 200 live rows of orders must survive sharded-mode purge]
+include/assert.inc [All 200 live rows of events must survive sharded-mode purge]
+#
+# Cleanup
+#
+DROP TABLE mysql.ttl_purge_nodes;
+DROP DATABASE ttl_cust;

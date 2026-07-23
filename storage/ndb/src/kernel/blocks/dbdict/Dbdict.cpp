@@ -1198,6 +1198,12 @@ void Dbdict::packTableIntoPages(SimpleProperties::Writer &w,
         !!(tablePtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData));
   w.add(DictTabInfo::HashFunctionFlag,
         ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0));
+  w.add(DictTabInfo::PartitionHashBaseKeyCount,
+        tablePtr.p->partitionHashBaseKeyCount);
+  w.add(DictTabInfo::PartitionHashDetailKeyCount,
+        tablePtr.p->partitionHashDetailKeyCount);
+  w.add(DictTabInfo::PartitionHashFanout,
+        tablePtr.p->partitionHashFanout);
 
   DEB_HASH(("1: dict_tab(%u) HashFunctionFlag: %u",
             tablePtr.p->tableId,
@@ -6199,6 +6205,99 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
 
   tablePtr.p->ttlSec = c_tableDesc.TTLSec;
   tablePtr.p->ttlColumnNo = c_tableDesc.TTLColumnNo;
+  Uint32 partitionHashBaseKeyCount = c_tableDesc.PartitionHashBaseKeyCount;
+  Uint32 partitionHashDetailKeyCount = c_tableDesc.PartitionHashDetailKeyCount;
+  Uint32 partitionHashFanout = c_tableDesc.PartitionHashFanout;
+  Uint32 partitionHashPrimaryKeyCount = c_tableDesc.NoOfKeyAttr;
+  if (DictTabInfo::isOrderedIndex(c_tableDesc.TableType) &&
+      c_tableDesc.PrimaryTableId != RNIL) {
+    TableRecordPtr basePtr;
+    if (!find_object(basePtr, c_tableDesc.PrimaryTableId) ||
+        !basePtr.p->isTable()) {
+      jam();
+      parseP->errorCode = CreateIndxRef::InvalidPrimaryTable;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    partitionHashPrimaryKeyCount = basePtr.p->noOfPrimkey;
+  }
+  if (partitionHashPrimaryKeyCount != 0 && partitionHashBaseKeyCount == 0 &&
+      partitionHashDetailKeyCount == 0 && partitionHashFanout == 1) {
+    partitionHashBaseKeyCount = partitionHashPrimaryKeyCount;
+  }
+  if (partitionHashBaseKeyCount > 0xff ||
+      partitionHashDetailKeyCount > 0xff || partitionHashFanout > 0xffff ||
+      partitionHashFanout == 0) {
+    jam();
+    parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+    parseP->errorLine = __LINE__;
+    return;
+  }
+  if (partitionHashPrimaryKeyCount != 0 &&
+      (partitionHashBaseKeyCount == 0 ||
+       partitionHashBaseKeyCount + partitionHashDetailKeyCount !=
+           partitionHashPrimaryKeyCount)) {
+    jam();
+    parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+    parseP->errorLine = __LINE__;
+    return;
+  }
+  if (partitionHashFanout > 1) {
+    if (partitionHashDetailKeyCount == 0) {
+      jam();
+      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    if ((tablePtr.p->m_bits & TableRecord::TR_FullyReplicated) != 0) {
+      jam();
+      parseP->errorCode = CreateTableRef::WrongPartitionBalanceFullyReplicated;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    /**
+     * Ordered index tables inherit the base table's partitioning
+     * implicitly (fragment type DistrKeyOrderedIndex, no hash map
+     * object of their own) while carrying copies of the base table's
+     * partition hash metadata. The base table was already validated,
+     * so the checks below only apply to real tables.
+     */
+    if (!DictTabInfo::isOrderedIndex(c_tableDesc.TableType)) {
+      if (tablePtr.p->fragmentType != DictTabInfo::HashMapPartition) {
+        jam();
+        /* Fanout routing works through a hash map. */
+        parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+      if (partitionHashFanout > tablePtr.p->partitionCount) {
+        jam();
+        parseP->errorCode = CreateTableRef::InvalidFanout;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+      /**
+       * Every base key spreads over a block of partitionHashFanout
+       * consecutive hash map buckets. The fanout must divide the
+       * bucket count or a block could wrap the bucket ring and two
+       * hash values of one base key could collide on a partition.
+       * The map was resolved above for all HashMapPartition tables.
+       */
+      HashMapRecordPtr hm_ptr;
+      ndbrequire(find_object(hm_ptr, tablePtr.p->hashMapObjectId));
+      Ptr<Hash2FragmentMap> mapptr;
+      ndbrequire(g_hash_map.getPtr(mapptr, hm_ptr.p->m_map_ptr_i));
+      if ((mapptr.p->m_cnt % partitionHashFanout) != 0) {
+        jam();
+        parseP->errorCode = CreateTableRef::InvalidFanout;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+    }
+  }
+  tablePtr.p->partitionHashBaseKeyCount = (Uint8)partitionHashBaseKeyCount;
+  tablePtr.p->partitionHashDetailKeyCount = (Uint8)partitionHashDetailKeyCount;
+  tablePtr.p->partitionHashFanout = (Uint16)partitionHashFanout;
 
   tablePtr.p->ringBufferSize = c_tableDesc.RingBufferSize;
   tablePtr.p->ringIdxColNo = c_tableDesc.RingIdxColumnNo;
@@ -6409,6 +6508,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   SimpleProperties::UnpackStatus status;
 
   Uint32 keyCount = 0;
+  Uint32 distKeyCount = 0;
   Uint32 keyLength = 0;
   Uint32 attrCount = tablePtr.p->noOfAttributes;
   Uint32 nullCount = 0;
@@ -6425,6 +6525,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   Uint32 counts[] = {0, 0, 0, 0, 0};
 
   bool disk_based = false;
+  bool ttl_column_seen = false;
   for (Uint32 i = 0; i < attrCount; i++) {
     /**
      * Attribute Name
@@ -6550,11 +6651,22 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     attrPtr.p->attributeDescriptor = desc;
     if (tableDesc.TTLColumnNo != RNIL &&
         attrPtr.p->attributeId == tableDesc.TTLColumnNo) {
-      ndbrequire(tableDesc.TTLSec <= RNIL);
-      ndbrequire(AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
+      /*
+       * TTL related
+       * Reject (not crash): a table definition reaches this code from any
+       * NdbAPI client, not only from a mysqld that already validated it.
+       */
+      tabRequire(tableDesc.TTLSec <= RNIL, CreateTableRef::InvalidFormat);
+      tabRequire(AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
                  == DictTabInfo::ExtTimestamp2 ||
                  AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
-                 == DictTabInfo::ExtDatetime2);
+                 == DictTabInfo::ExtDatetime2,
+                 CreateTableRef::InvalidFormat);
+      /* The TTL column must be in-memory: checkTTL reads it on every row
+         visit without loading disk pages (mysqld DDL enforces this too). */
+      tabRequire(attrDesc.AttributeStorageType != NDB_STORAGETYPE_DISK,
+                 CreateTableRef::InvalidFormat);
+      ttl_column_seen = true;
       g_eventLogger->info("[DICT]TTL validation on TTL attrId passed. "
                           "attrId: %u",
                           attrPtr.p->attributeId);
@@ -6596,6 +6708,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     }
 
     keyCount += attrDesc.AttributeKeyFlag;
+    distKeyCount += (attrDesc.AttributeKeyFlag && attrDesc.AttributeDKey);
     nullCount += attrDesc.AttributeNullableFlag;
 
     const Uint32 aSz = (1 << attrDesc.AttributeSize);
@@ -6649,12 +6762,36 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     if (it.getKey() != DictTabInfo::AttributeName) break;
   }  // while
 
+  /*
+   * TTL related
+   * A TTL column number that does not name any attribute would make
+   * checkTTL read a nonexistent column on every row visit; reject the
+   * definition (only reachable from a buggy NdbAPI creator -- mysqld
+   * validates the binding before it gets here).
+   */
+  tabRequire(tableDesc.TTLColumnNo == RNIL || ttl_column_seen,
+             CreateTableRef::InvalidFormat);
+
   tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;
   tablePtr.p->noOfNullAttr = nullCount;
   tablePtr.p->noOfCharsets = noOfCharsets;
   tablePtr.p->tupKeyLength = keyLength;
   tablePtr.p->noOfNullBits = nullCount + nullBits;
+
+  /**
+   * Fanout routing hashes the first base_count primary key columns in
+   * key order and ignores declared distribution keys, and the
+   * distribution key flags would mislead pre-fanout clients into
+   * pruning on them. Reject a proper distribution key subset on
+   * fanout tables (all primary key columns flagged is the default).
+   * Ordered index tables inherit the base table's metadata and were
+   * validated through the base table.
+   */
+  tabRequire(tablePtr.p->partitionHashFanout <= 1 ||
+                 DictTabInfo::isOrderedIndex(tableDesc.TableType) ||
+                 distKeyCount == 0 || distKeyCount == keyCount,
+             CreateTableRef::InvalidPartitionHash);
 
   tabRequire(recordLength <= MAX_TUPLE_SIZE_IN_WORDS,
              CreateTableRef::RecordTooBig);
@@ -7498,6 +7635,9 @@ void Dbdict::createTab_local(Signal *signal, SchemaOpPtr op_ptr,
     KeyDescriptor *desc =
         g_key_descriptor_pool.getPtr(createTabPtr.p->m_request.tableId);
     new (desc) KeyDescriptor();
+    desc->partitionHashBaseKeyCount = tabPtr.p->partitionHashBaseKeyCount;
+    desc->partitionHashDetailKeyCount = tabPtr.p->partitionHashDetailKeyCount;
+    desc->partitionHashFanout = tabPtr.p->partitionHashFanout;
 
     if (tabPtr.p->primaryTableId == RNIL) {
       jam();
@@ -8054,6 +8194,10 @@ void Dbdict::execTAB_COMMITCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->partitionHash =
+        packPartitionHash(tabPtr.p->partitionHashBaseKeyCount,
+                          tabPtr.p->partitionHashDetailKeyCount,
+                          tabPtr.p->partitionHashFanout);
     req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("3: dict_tab(%u) HashFunctionFlag: %u",
@@ -8319,6 +8463,10 @@ void Dbdict::execTC_SCHVERCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->partitionHash =
+        packPartitionHash(tabPtr.p->partitionHashBaseKeyCount,
+                          tabPtr.p->partitionHashDetailKeyCount,
+                          tabPtr.p->partitionHashFanout);
     req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("4: dict_tab(%u) HashFunctionFlag: %u",
@@ -13241,6 +13389,13 @@ void Dbdict::createIndex_toCreateTable(Signal *signal, SchemaOpPtr op_ptr) {
                ~tablePtr.p->hashMapObjectId != 0);
     w.add(DictTabInfo::HashMapObjectId, tablePtr.p->hashMapObjectId);
     w.add(DictTabInfo::HashMapVersion, tablePtr.p->hashMapVersion);
+  }
+  if (createIndexPtr.p->m_request.indexType == DictTabInfo::OrderedIndex) {
+    w.add(DictTabInfo::PartitionHashBaseKeyCount,
+          tablePtr.p->partitionHashBaseKeyCount);
+    w.add(DictTabInfo::PartitionHashDetailKeyCount,
+          tablePtr.p->partitionHashDetailKeyCount);
+    w.add(DictTabInfo::PartitionHashFanout, tablePtr.p->partitionHashFanout);
   }
 
   w.add(DictTabInfo::TableTypeVal, createIndexPtr.p->m_request.indexType);
@@ -34954,4 +35109,3 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
              ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
 }
-
