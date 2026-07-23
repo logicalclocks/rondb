@@ -1,0 +1,72 @@
+SET time_zone = '+00:00';
+#
+# Setup: TTL table with 32768 live rows and an 8k expired backlog
+#
+CREATE DATABASE IF NOT EXISTS ttl_altcopy;
+CREATE TABLE ttl_altcopy.t (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+data VARCHAR(200)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO ttl_altcopy.t VALUES
+(1,NOW(),REPEAT('x',80)),(2,NOW(),REPEAT('x',80)),
+(3,NOW(),REPEAT('x',80)),(4,NOW(),REPEAT('x',80)),
+(5,NOW(),REPEAT('x',80)),(6,NOW(),REPEAT('x',80)),
+(7,NOW(),REPEAT('x',80)),(8,NOW(),REPEAT('x',80)),
+(9,NOW(),REPEAT('x',80)),(10,NOW(),REPEAT('x',80)),
+(11,NOW(),REPEAT('x',80)),(12,NOW(),REPEAT('x',80)),
+(13,NOW(),REPEAT('x',80)),(14,NOW(),REPEAT('x',80)),
+(15,NOW(),REPEAT('x',80)),(16,NOW(),REPEAT('x',80));
+INSERT INTO ttl_altcopy.t SELECT id + 16, ttl_col, data FROM ttl_altcopy.t WHERE id <= 16;
+INSERT INTO ttl_altcopy.t SELECT id + 32, ttl_col, data FROM ttl_altcopy.t WHERE id <= 32;
+INSERT INTO ttl_altcopy.t SELECT id + 64, ttl_col, data FROM ttl_altcopy.t WHERE id <= 64;
+INSERT INTO ttl_altcopy.t SELECT id + 128, ttl_col, data FROM ttl_altcopy.t WHERE id <= 128;
+INSERT INTO ttl_altcopy.t SELECT id + 256, ttl_col, data FROM ttl_altcopy.t WHERE id <= 256;
+INSERT INTO ttl_altcopy.t SELECT id + 512, ttl_col, data FROM ttl_altcopy.t WHERE id <= 512;
+INSERT INTO ttl_altcopy.t SELECT id + 1024, ttl_col, data FROM ttl_altcopy.t WHERE id <= 1024;
+INSERT INTO ttl_altcopy.t SELECT id + 2048, ttl_col, data FROM ttl_altcopy.t WHERE id <= 2048;
+INSERT INTO ttl_altcopy.t SELECT id + 4096, ttl_col, data FROM ttl_altcopy.t WHERE id <= 4096;
+INSERT INTO ttl_altcopy.t SELECT id + 8192, ttl_col, data FROM ttl_altcopy.t WHERE id <= 8192;
+INSERT INTO ttl_altcopy.t SELECT id + 16384, ttl_col, data FROM ttl_altcopy.t WHERE id <= 16384;
+SELECT COUNT(*) AS live_rows FROM ttl_altcopy.t;
+live_rows
+32768
+INSERT INTO ttl_altcopy.t
+SELECT id + 1000000, '2000-01-01 00:00:00', data
+FROM ttl_altcopy.t WHERE id <= 8192;
+#
+# Start an aggressive purge and wait until it is actively deleting
+#
+# purge is actively deleting expired rows
+#
+# Copying ALTER while the purge keeps deleting expired rows.
+# Unfixed: aborts with ER_TABLE_DEF_CHANGED although the purge can
+# never change what the copy scan reads. Fixed: succeeds.
+#
+ALTER TABLE ttl_altcopy.t ADD COLUMN extra INT, ALGORITHM=COPY;
+SELECT COUNT(*) AS live_rows_after_alter
+FROM ttl_altcopy.t WHERE id < 1000000;
+live_rows_after_alter
+32768
+SHOW CREATE TABLE ttl_altcopy.t;
+Table	Create Table
+t	CREATE TABLE `t` (
+  `id` int NOT NULL,
+  `ttl_col` datetime DEFAULT NULL,
+  `data` varchar(200) DEFAULT NULL,
+  `extra` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3600@ttl_col'
+#
+# A REAL concurrent write during the copy must still abort the ALTER
+#
+ALTER TABLE ttl_altcopy.t ADD COLUMN extra2 INT, ALGORITHM=COPY;
+ERROR HY000: Detected change to data in source table during copying ALTER TABLE. Alter aborted to avoid inconsistency.
+SELECT COUNT(*) AS real_writes
+FROM ttl_altcopy.t WHERE id BETWEEN 990001 AND 990025;
+real_writes
+25
+#
+# Cleanup
+#
+DROP DATABASE ttl_altcopy;

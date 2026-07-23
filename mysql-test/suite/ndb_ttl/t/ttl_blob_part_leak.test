@@ -1,0 +1,106 @@
+# ==========================================================================
+# BLOB part leak when insert-over-expired SHRINKS (or NULLs) the value.
+#
+# The grow case is covered by ttl_blob_expired_reinsert (parts upserted via
+# the TTL conversion on the part table + new parts appended). A refresh with
+# a SHORTER value however wrote only the parts the new length needs: the
+# NdbBlob INSERT path assumed a fresh row (old length 0), so the expired
+# value's tail parts were left orphaned in the part table -- and stayed
+# orphaned FOREVER: a later DELETE removes parts from the CURRENT head
+# length only, and the purge removes only expired BASE rows' parts. On a
+# churning TTL blob workload this is an unbounded DataMemory leak
+# (pre-fix observations: shrink left 5 parts instead of 2; DELETE then left
+# 3 orphans; a NULL refresh orphaned all 5).
+#
+# The fix treats the old length as UNKNOWN for inserts on TTL tables
+# (m_oldLen = ~0, the same probing-delete machinery write ops use), so tail
+# parts beyond the new value are probe-deleted in the same transaction.
+#
+# Physical part rows are measured via ndbinfo.memory_per_fragment
+# fixed_elem_count (counts physical rows incl. expired, summed over
+# fragments and replicas -- NoOfReplicas=2 in this suite so values are 2x
+# the row count).
+#
+# BLOB layout: 256 bytes inline in the base row + 2000-byte parts.
+#   value A = 256 + 5*2000 = 10256 bytes -> exactly 5 parts
+#   value B = 256 + 2*2000 =  4256 bytes -> exactly 2 parts
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.tbs;
+--enable_warnings
+
+CREATE TABLE test.tbs (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       BLOB
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+
+
+--echo #
+--echo # Step 1: insert a 5-part blob (10256 bytes of 'a')
+--echo #
+INSERT INTO test.tbs VALUES (1, NOW(), REPEAT('a', 10256));
+SELECT id, LENGTH(v) FROM test.tbs WHERE id = 1;
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+
+--echo #
+--echo # Step 2: expire, then re-insert the SAME PK with a 2-part blob (SHRINK)
+--echo #
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tbs WHERE id = 1
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+INSERT INTO test.tbs VALUES (1, NOW(), REPEAT('b', 4256));
+--echo # data correctness: exactly the new short value
+SELECT id, LENGTH(v), v = REPEAT('b', 4256) AS blob_is_new FROM test.tbs WHERE id = 1;
+--echo # part rows now: exactly 2 parts (= 4 across 2 replicas)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+
+--echo #
+--echo # Step 3: DELETE the row -- all parts should go
+--echo #
+DELETE FROM test.tbs WHERE id = 1;
+--echo # part rows after delete: 0 (no orphans)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+
+--echo #
+--echo # Step 4: fresh re-insert of the same PK with the 5-part value again --
+--echo # data must be correct even if orphans were overwritten
+--echo #
+INSERT INTO test.tbs VALUES (1, NOW(), REPEAT('c', 10256));
+SELECT id, LENGTH(v), v = REPEAT('c', 10256) AS blob_is_new FROM test.tbs WHERE id = 1;
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+
+--echo #
+--echo # Step 5: expire, then refresh with NULL -- all old parts should go
+--echo #
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tbs WHERE id = 1
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+INSERT INTO test.tbs VALUES (1, NOW(), NULL);
+SELECT id, v IS NULL AS blob_is_null FROM test.tbs WHERE id = 1;
+--echo # part rows after NULL refresh: 0 (all old parts probe-deleted)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+
+DROP TABLE test.tbs;

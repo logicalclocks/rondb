@@ -1,0 +1,204 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.nt;
+DROP TABLE IF EXISTS test.lt;
+DROP TABLE IF EXISTS test.st;
+DROP TABLE IF EXISTS test.ut;
+DROP TABLE IF EXISTS test.su;
+CREATE TABLE test.nt (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL, c INT)
+ENGINE=NDB;
+CREATE TABLE test.lt (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL, c INT)
+ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@b";
+CREATE TABLE test.st (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL, c INT)
+ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@b";
+CREATE TABLE test.ut (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL,
+c INT, UNIQUE KEY uk_c (c)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@b";
+CREATE TABLE test.su (a INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL,
+c INT, d INT, UNIQUE KEY uk_c (c)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@b";
+# --- Baseline: non-TTL same-txn multi-row dup -> ER_DUP_ENTRY, no row ---
+INSERT INTO test.nt VALUES (1, NOW(), 100), (1, NOW(), 200);
+ERROR 23000: Duplicate entry '1' for key 'nt.PRIMARY'
+SELECT a, c FROM test.nt WHERE a = 1;
+a	c
+# --- Case 1: TTL same-txn multi-row dup -> ER_DUP_ENTRY, no row ---
+INSERT INTO test.lt VALUES (1, NOW(), 100), (1, NOW(), 200);
+ERROR 23000: Duplicate entry '1' for key 'lt.PRIMARY'
+SELECT a, c FROM test.lt WHERE a = 1;
+a	c
+DELETE FROM test.lt;
+# --- Case 2: TTL same-txn explicit BEGIN/INSERT/INSERT ---
+BEGIN;
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+INSERT INTO test.lt VALUES (1, NOW(), 200);
+ERROR 23000: Duplicate entry '1' for key 'lt.PRIMARY'
+COMMIT;
+# first insert committed, second rejected -> row is (1,100)
+SELECT a, c FROM test.lt WHERE a = 1;
+a	c
+DELETE FROM test.lt;
+# --- Case 3: TTL SELECT..FOR UPDATE then INSERT the same live PK ---
+INSERT INTO test.lt VALUES (7, NOW(), 700);
+BEGIN;
+SELECT a, c FROM test.lt WHERE a = 7 FOR UPDATE;
+a	c
+7	700
+INSERT INTO test.lt VALUES (7, NOW(), 777);
+ERROR 23000: Duplicate entry '7' for key 'lt.PRIMARY'
+COMMIT;
+# insert rejected -> row keeps its original value (7,700)
+SELECT a, c FROM test.lt WHERE a = 7;
+a	c
+7	700
+DELETE FROM test.lt;
+# --- Case 3b: same-txn dup PK on a UNIQUE-indexed TTL table -> ER_DUP_ENTRY
+INSERT INTO test.ut VALUES (1, NOW(), 100), (1, NOW(), 200);
+ERROR 23000: Duplicate entry '1' for key 'ut.PRIMARY'
+SELECT a, c FROM test.ut WHERE a = 1;
+a	c
+DELETE FROM test.ut;
+# --- Case 3c: same-txn dup UNIQUE VALUE on a TTL table -> ER_DUP_ENTRY
+# (different PKs, same unique value, one transaction; the dup-convert
+# also runs on the internal unique-index table and must not upsert it)
+INSERT INTO test.ut VALUES (1, NOW(), 100), (2, NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 'ut.uk_c'
+# neither row present (statement rolled back)
+SELECT a, c FROM test.ut ORDER BY a;
+a	c
+DELETE FROM test.ut;
+# --- Case 3d: same-txn DELETE then re-INSERT the same PK MUST succeed ---
+# (lastOp==ZDELETE, so this is a legit re-insert, not a duplicate; the
+# same-txn gate must NOT turn it into 630). Base table:
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+BEGIN;
+DELETE FROM test.lt WHERE a = 1;
+INSERT INTO test.lt VALUES (1, NOW(), 200);
+COMMIT;
+# re-insert succeeded -> row is (1,200)
+SELECT a, c FROM test.lt WHERE a = 1;
+a	c
+1	200
+DELETE FROM test.lt;
+# ...and on the UNIQUE-indexed table (base + index re-insert):
+INSERT INTO test.ut VALUES (1, NOW(), 100);
+BEGIN;
+DELETE FROM test.ut WHERE a = 1;
+INSERT INTO test.ut VALUES (1, NOW(), 200);
+COMMIT;
+# re-insert succeeded -> (1,200), reachable via the unique index
+SELECT a, c FROM test.ut WHERE a = 1;
+a	c
+1	200
+SELECT a, c FROM test.ut WHERE c = 200;
+a	c
+1	200
+DELETE FROM test.ut;
+# --- Case 4: TTL legit upsert-over-expired MUST still succeed ---
+INSERT INTO test.st VALUES (1, NOW(), 100);
+# insert over the expired row (new value) -> succeeds (upsert)
+INSERT INTO test.st VALUES (1, NOW(), 999);
+SELECT a, c FROM test.st WHERE a = 1;
+a	c
+1	999
+DELETE FROM test.st;
+# --- Case 5: TTL cross-transaction dup MUST still be rejected ---
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+SET time_zone = '+00:00';
+# cb inserts the same PK -> blocks on ca's uncommitted row
+INSERT INTO test.lt VALUES (1, NOW(), 200);
+COMMIT;
+# after ca commits its live row, cb's duplicate insert is rejected
+ERROR 23000: Duplicate entry '1' for key 'lt.PRIMARY'
+# row keeps ca's value (1,100)
+SELECT a, c FROM test.lt WHERE a = 1;
+a	c
+1	100
+# --- Case 6: INSERT..ON DUPLICATE KEY UPDATE, same-txn dup of a LIVE row ---
+# The duplicate must surface (peek or kernel 630) so the UPDATE arm runs;
+# a silent upsert would apply the INSERT values (200) instead of 999.
+INSERT INTO test.lt VALUES (1, NOW(), 100), (1, NOW(), 200)
+ON DUPLICATE KEY UPDATE c = 999;
+SELECT a, c FROM test.lt WHERE a = 1;
+a	c
+1	999
+DELETE FROM test.lt;
+# ...and on the UNIQUE-indexed table (peek locks the key first, then the
+# UPDATE arm runs while this txn holds its own peek lock):
+BEGIN;
+INSERT INTO test.ut VALUES (1, NOW(), 100);
+INSERT INTO test.ut VALUES (1, NOW(), 200) ON DUPLICATE KEY UPDATE c = 999;
+COMMIT;
+SELECT a, c FROM test.ut WHERE a = 1;
+a	c
+1	999
+DELETE FROM test.ut;
+# --- Case 7: REPLACE, same-txn dup of a LIVE row -> row replaced ---
+BEGIN;
+INSERT INTO test.lt VALUES (1, NOW(), 100);
+REPLACE INTO test.lt VALUES (1, NOW(), 200);
+COMMIT;
+SELECT a, c FROM test.lt WHERE a = 1;
+a	c
+1	200
+DELETE FROM test.lt;
+# ...and on the UNIQUE-indexed table (peek + delete + re-insert path):
+BEGIN;
+INSERT INTO test.ut VALUES (1, NOW(), 100);
+REPLACE INTO test.ut VALUES (1, NOW(), 200);
+COMMIT;
+SELECT a, c FROM test.ut WHERE a = 1;
+a	c
+1	200
+SELECT a, c FROM test.ut WHERE c = 200;
+a	c
+1	200
+DELETE FROM test.ut;
+# --- Case 8: INSERT IGNORE, same-txn dup of a LIVE row -> dup skipped ---
+# The first value must be kept; a silent upsert would leave 200.
+INSERT IGNORE INTO test.lt VALUES (2, NOW(), 100), (2, NOW(), 200);
+Warnings:
+Warning	1062	Duplicate entry '2' for key 'lt.PRIMARY'
+SELECT a, c FROM test.lt WHERE a = 2;
+a	c
+2	100
+DELETE FROM test.lt;
+INSERT IGNORE INTO test.ut VALUES (1, NOW(), 100), (2, NOW(), 100);
+Warnings:
+Warning	1062	Duplicate entry '100' for key 'ut.uk_c'
+SELECT a, c FROM test.ut ORDER BY a;
+a	c
+1	100
+DELETE FROM test.ut;
+# --- Cases 9/10 setup: seed short-TTL rows and let them expire ---
+INSERT INTO test.st VALUES (11, NOW(), 100), (12, NOW(), 100);
+INSERT INTO test.su VALUES (1, NOW(), 100, 1), (2, NOW(), 200, 1);
+# --- Case 9: ON DUP over an EXPIRED row MUST upsert (insert path) ---
+# Expired row is invisible to the peek -> plain insert -> kernel upserts
+# over the expired row. This must succeed even though the statement's
+# own peek lock is a same-transaction lock on the key (the case the
+# DBACC-side attempts broke with 630/893).
+INSERT INTO test.st VALUES (11, NOW(), 555) ON DUPLICATE KEY UPDATE c = 999;
+SELECT a, c FROM test.st WHERE a = 11;
+a	c
+11	555
+# ...and on the UNIQUE-indexed table (same unique value, new payload):
+INSERT INTO test.su VALUES (1, NOW(), 100, 2) ON DUPLICATE KEY UPDATE d = 999;
+SELECT a, c, d FROM test.su WHERE a = 1;
+a	c	d
+1	100	2
+# --- Case 10: REPLACE over an EXPIRED row MUST upsert ---
+REPLACE INTO test.st VALUES (12, NOW(), 777);
+SELECT a, c FROM test.st WHERE a = 12;
+a	c
+12	777
+REPLACE INTO test.su VALUES (2, NOW(), 200, 7);
+SELECT a, c, d FROM test.su WHERE a = 2;
+a	c	d
+2	200	7
+DELETE FROM test.st;
+DELETE FROM test.su;
+DROP TABLE test.nt;
+DROP TABLE test.lt;
+DROP TABLE test.st;
+DROP TABLE test.ut;
+DROP TABLE test.su;
