@@ -1,0 +1,69 @@
+CREATE TABLE t_bfan (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+id INT NOT NULL,
+payload VARCHAR(64),
+PRIMARY KEY (entity_id, ts, id)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:2:4"
+PARTITION BY KEY () PARTITIONS 8;
+CREATE TABLE nums (n INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO t_bfan
+SELECT a.n, b.n, a.n*1000+b.n, CONCAT('p', a.n, '_', b.n)
+FROM nums a, nums b WHERE a.n < 20;
+CREATE TABLE t_broute (
+entity_id INT NOT NULL,
+ts INT NOT NULL,
+PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_broute SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_bfan;
+COUNT(*)
+500
+SELECT COUNT(*) FROM t_broute;
+COUNT(*)
+100
+# Take a backup
+# Drop all tables and restore from the backup
+DROP TABLE t_bfan, t_broute, nums;
+# Restored data is complete
+SELECT COUNT(*) FROM t_bfan;
+COUNT(*)
+500
+SELECT COUNT(*) FROM t_broute;
+COUNT(*)
+100
+SELECT * FROM t_bfan WHERE entity_id = 7 AND ts < 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	p7_3
+7	4	7004	p7_4
+# Base-key equality scans are still pruned after restore
+SELECT * FROM t_bfan FORCE INDEX (PRIMARY) WHERE entity_id = 7 AND ts < 5;
+entity_id	ts	id	payload
+7	0	7000	p7_0
+7	1	7001	p7_1
+7	2	7002	p7_2
+7	3	7003	p7_3
+7	4	7004	p7_4
+ndb_scan_count
+1
+ndb_pruned_scan_count
+1
+# One base key still occupies exactly fanout (4 of 8) fragments
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_broute' AND fixed_elem_count > 0;
+fragments_with_rows
+4
+# Writes to the restored table route correctly
+INSERT INTO t_bfan VALUES (7, 100, 7100, 'after_restore');
+UPDATE t_bfan SET payload = 'updated' WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+DELETE FROM t_bfan WHERE entity_id = 7 AND ts = 4 AND id = 7004;
+SELECT * FROM t_bfan WHERE entity_id = 7 AND ts IN (3, 4, 100);
+entity_id	ts	id	payload
+7	100	7100	after_restore
+7	3	7003	updated
+DROP TABLE t_bfan, t_broute, nums;

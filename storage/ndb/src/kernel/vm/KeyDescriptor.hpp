@@ -38,6 +38,9 @@ struct KeyDescriptor {
   KeyDescriptor() {
     primaryTableId = RNIL;
     noOfKeyAttr = hasCharAttr = noOfDistrKeys = noOfVarKeys = 0;
+    partitionHashBaseKeyCount = 0;
+    partitionHashDetailKeyCount = 0;
+    partitionHashFanout = 1;
   }
 
   Uint32 primaryTableId;
@@ -45,6 +48,9 @@ struct KeyDescriptor {
   Uint8 hasCharAttr;
   Uint8 noOfDistrKeys;
   Uint8 noOfVarKeys;
+  Uint8 partitionHashBaseKeyCount;
+  Uint8 partitionHashDetailKeyCount;
+  Uint16 partitionHashFanout;
   struct KeyAttr {
     Uint32 attributeDescriptor;
     const CHARSET_INFO *charsetInfo;

@@ -38,8 +38,17 @@ var BenchmarkAddRow string
 const BenchAddRow_TABLE_NAME = "TABLE_NAME"
 const BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT"
 
-//go:embed fixed/hopsworks_40_data.sql
+// Curated hopsworks fixture data, dumped at post-DDL schema level.
+// Loaded AFTER the hopsworks-ddl migration patches (see HopsworksScheme).
+//go:embed fixed/hopsworks-data/hopsworks_data.sql
 var HopsworksData string
+
+// Fine-grained FG/FV sharing fixture (RONDB-1088): cleaned import of the
+// live-cluster reference state (docs/fine_grained_recordings/) - hopsworks
+// metadata plus the usera_project online database, all ids >= 100000.
+// Loaded after HopsworksData.
+//go:embed fixed/hopsworks-data/fine_grained_sharing_data.sql
+var FineGrainedSharingData string
 
 //go:embed fixed/hopsworks_40_schema.sql
 var HopsworksSchema string
@@ -52,29 +61,259 @@ var HopsworksSchema string
 //V9-FSTORE-1592-type_column_size.sql
 //V10-FSTORE-1598-FSTORE-1595-avro_schema_fixes.sql
 
-//go:embed fixed/V5-FSTORE-1537-managed_feature_group.sql
+//go:embed fixed/hopsworks-ddl/V5-FSTORE-1537-managed_feature_group.sql
 var V5 string
 
-//go:embed fixed/V6-FSTORE-1507-python_udfs.sql
+//go:embed fixed/hopsworks-ddl/V6-FSTORE-1507-python_udfs.sql
 var V6 string
 
-//go:embed fixed/V7-HWORKS-1627-kube_labels_priorityclasses.sql
+//go:embed fixed/hopsworks-ddl/V7-HWORKS-1627-kube_labels_priorityclasses.sql
 var V7 string
 
-//go:embed fixed/V8-HWORKS-1670-ray_integration.sql
+//go:embed fixed/hopsworks-ddl/V8-HWORKS-1670-ray_integration.sql
 var V8 string
 
-//go:embed fixed/V9-FSTORE-1592-type_column_size.sql
+//go:embed fixed/hopsworks-ddl/V9-FSTORE-1592-type_column_size.sql
 var V9 string
 
-//go:embed fixed/V10-FSTORE-1598-FSTORE-1595-avro_schema_fixes.sql
+//go:embed fixed/hopsworks-ddl/V10-FSTORE-1598-FSTORE-1595-avro_schema_fixes.sql
 var V10 string
 
-var HopsworksScheme string = HopsworksSchema + HopsworksData + V5 + V6 + V7 + V8 + V9 + V10
+//go:embed fixed/hopsworks-ddl/V11-FSTORE-1581-fix_deletion_of_feature_group_transformation_functions.sql
+var V11 string
+
+//go:embed fixed/hopsworks-ddl/V12-HWORKS-1862-fix_subject_deletion.sql
+var V12 string
+
+//go:embed fixed/hopsworks-ddl/V13-FSTORE-1436-foreign_key.sql
+var V13 string
+
+//go:embed fixed/hopsworks-ddl/V14-FSTORE-1642-adding_user_scope_to_serving_api_key.sql
+var V14 string
+
+//go:embed fixed/hopsworks-ddl/V15-FSTORE-1605-adding_path_field_to_s3_storage_connector.sql
+var V15 string
+
+//go:embed fixed/hopsworks-ddl/V16-HWORKS-1885-add_vllm_openai_image.sql
+var V16 string
+
+//go:embed fixed/hopsworks-ddl/V17-FSTORE-1630-output_column_names_transformation_functions.sql
+var V17 string
+
+//go:embed fixed/hopsworks-ddl/V18-HWORKS-1941-replicate_kube_ops.sql
+var V18 string
+
+//go:embed fixed/hopsworks-ddl/V19-FSTORE-1580-onlinefs_observability.sql
+var V19 string
+
+//go:embed fixed/hopsworks-ddl/V20-FSTORE-1672-increase_size_for_output_type_column_transformation_functions.sql
+var V20 string
+
+//go:embed fixed/hopsworks-ddl/V21-FSTORE-1668-alert_for_jobs_that_are_stuck.sql
+var V21 string
+
+//go:embed fixed/hopsworks-ddl/V22-FSTORE-1686-set_default_execution_mode.sql
+var V22 string
+
+//go:embed fixed/hopsworks-ddl/V23-HWORKS-2076-Increase_schema_field_size_to_mediumtext.sql
+var V23 string
+
+//go:embed fixed/hopsworks-ddl/V24-HWORKS-1894-banner.sql
+var V24 string
+
+//go:embed fixed/hopsworks-ddl/V25-FSTORE-1692-add_lastvisitedat_to_userprofile.sql
+var V25 string
+
+//go:embed fixed/hopsworks-ddl/V26-FSTORE-1651-dynamic_query_online_fs.sql
+var V26 string
+
+//go:embed fixed/hopsworks-ddl/V27-FSTORE-1714-increase_feature_name_size_feature_descriptive_statistics_to_allow_fully_qualified_names.sql
+var V27 string
+
+//go:embed fixed/hopsworks-ddl/V28-FSTORE-1698-data_sources.sql
+var V28 string
+
+//go:embed fixed/hopsworks-ddl/V29-LA-101-brewer.sql
+var V29 string
+
+//go:embed fixed/hopsworks-ddl/V30-FSTORE-1751-increase_output_features_size_on_demand_transformations.sql
+var V30 string
+
+//go:embed fixed/hopsworks-ddl/V31-HWORKS-2145-external_access_to_model_deployments.sql
+var V31 string
+
+//go:embed fixed/hopsworks-ddl/V32-FSTORE-1745-add_s3_ro_iam_role.sql
+var V32 string
+
+//go:embed fixed/hopsworks-ddl/V33-FSTORE-1736-Managed_Feature_Groups_on_S3_are_not_properly_index_for_search.sql
+var V33 string
+
+//go:embed fixed/hopsworks-ddl/V34-HWORKS-2183-feature_store_metrics.sql
+var V34 string
+
+//go:embed fixed/hopsworks-ddl/V35-FSTORE-1731-add_ttl_to_feature_group.sql
+var V35 string
+
+//go:embed fixed/hopsworks-ddl/V36-HWORKS-1912-group_to_project_mapping.sql
+var V36 string
+
+//go:embed fixed/hopsworks-ddl/V37-FSTORE-1834-user_generated_charts.sql
+var V37 string
+
+//go:embed fixed/hopsworks-ddl/V38-HWORKS-103-split_serving_entity.sql
+var V38 string
+
+//go:embed fixed/hopsworks-ddl/V39-HWORKS-1186-modelless_deployments.sql
+var V39 string
+
+//go:embed fixed/hopsworks-ddl/V40-FSTORE-1871-adding_type_to_serving_keys.sql
+var V40 string
+
+//go:embed fixed/hopsworks-ddl/V41-HWORKS-2406-git_commit_message_type.sql
+var V41 string
+
+//go:embed fixed/hopsworks-ddl/V42-FSTORE-1918-Change_feature_group_commit_data_types_to_bigint.sql
+var V42 string
+
+//go:embed fixed/hopsworks-ddl/V43-FSTORE-1438-add_key_path_snowflake_connector.sql
+var V43 string
+
+//go:embed fixed/hopsworks-ddl/V44-FSTORE-1901-opensearch_storage_connector.sql
+var V44 string
+
+//go:embed fixed/hopsworks-ddl/V45-FSTORE-1905-column_level_permissions.sql
+var V45 string
+
+//go:embed fixed/hopsworks-ddl/V46-FSTORE-1940-restricted_feature_access.sql
+var V46 string
+
+//go:embed fixed/hopsworks-ddl/V47-FSTORE-1945-add_system_theme.sql
+var V47 string
+
+//go:embed fixed/hopsworks-ddl/V48-HWORKS-2502-kserve_autoscaling_configs.sql
+var V48 string
+
+//go:embed fixed/hopsworks-ddl/V49-HWORKS-2233-mandatory_tags.sql
+var V49 string
+
+//go:embed fixed/hopsworks-ddl/V50-BREWER-152-agent_garden.sql
+var V50 string
+
+//go:embed fixed/hopsworks-ddl/V51-FSTORE-1946-share_datasets.sql
+var V51 string
+
+//go:embed fixed/hopsworks-ddl/V52-HWORKS-2415-operation_logs.sql
+var V52 string
+
+//go:embed fixed/hopsworks-ddl/V53-HWORKS-2558-feature_group_feature_usage.sql
+var V53 string
+
+//go:embed fixed/hopsworks-ddl/V54-HWORKS-2391-dlthub.sql
+var V54 string
+
+//go:embed fixed/hopsworks-ddl/V55-FSTORE-1795-data_source_api_updates.sql
+var V55 string
+
+//go:embed fixed/hopsworks-ddl/V56-HWORKS-2606-shell_terminal.sql
+var V56 string
+
+//go:embed fixed/hopsworks-ddl/V57-FSTORE-1795-rename_rds_to_sql_connector.sql
+var V57 string
+
+//go:embed fixed/hopsworks-ddl/V58-HWORKS-2665-deprecated_environment.sql
+var V58 string
+
+//go:embed fixed/hopsworks-ddl/V59-HWORKS-2525-trino_queries.sql
+var V59 string
+
+//go:embed fixed/hopsworks-ddl/V60-HWORKS-2606-terminal_spark_and_coding_agent.sql
+var V60 string
+
+//go:embed fixed/hopsworks-ddl/V61-FSTORE-2011-merge_oracle_into_sql_connector.sql
+var V61 string
+
+//go:embed fixed/hopsworks-ddl/V62-FSTORE-1967-logical_time_scheduling.sql
+var V62 string
+
+//go:embed fixed/hopsworks-ddl/V63-FSTORE-2017-unity_catalog_connector.sql
+var V63 string
+
+//go:embed fixed/hopsworks-ddl/V64-FSTORE-1967-deployment_env_vars.sql
+var V64 string
+
+//go:embed fixed/hopsworks-ddl/V65-FSTORE-2050-sap_hana_storage_connector.sql
+var V65 string
+
+//go:embed fixed/hopsworks-ddl/V66-HWORKS-2710-user_env_vars.sql
+var V66 string
+
+//go:embed fixed/hopsworks-ddl/V67-HWORKS-2755-vllm_variant_version.sql
+var V67 string
+
+//go:embed fixed/hopsworks-ddl/V68-HWORKS-2667-pass_to_agent_job_alert.sql
+var V68 string
+
+//go:embed fixed/hopsworks-ddl/V69-FSTORE-2028-mongodb_storage_connector.sql
+var V69 string
+
+//go:embed fixed/hopsworks-ddl/V70-FSTORE-2036-uc_oauth_m2m.sql
+var V70 string
+
+//go:embed fixed/hopsworks-ddl/V71-HWORKS-2810-max_queued_executions_per_user_per_job.sql
+var V71 string
+
+//go:embed fixed/hopsworks-ddl/V72-HWORKS-2815-user_env_vars_secret_name.sql
+var V72 string
+
+//go:embed fixed/hopsworks-ddl/V73-HWORKS-2804-add_expiry_to_api_key.sql
+var V73 string
+
+//go:embed fixed/hopsworks-ddl/V74-FSTORE-2030-pit_join_lookback_window.sql
+var V74 string
+
+//go:embed fixed/hopsworks-ddl/V75-FSTORE-2024-default_featurestore_project_name.sql
+var V75 string
+
+//go:embed fixed/hopsworks-ddl/V76-HWORKS-2816-serving_tracing_config.sql
+var V76 string
+
+//go:embed fixed/hopsworks-ddl/V77-HWORKS-2869-python_app_proxy_path_mode.sql
+var V77 string
+
+//go:embed fixed/hopsworks-ddl/V78-FSTORE-1412-feature_monitoring_v2.sql
+var V78 string
+
+//go:embed fixed/hopsworks-ddl/V79-HWORKS-2802-partitioned_by.sql
+var V79 string
+
+//go:embed fixed/hopsworks-ddl/V80-HWORKS-2871-agent_deployments_git_source.sql
+var V80 string
+
+//go:embed fixed/hopsworks-ddl/V81-FSTORE-2047-glue_storage_connector.sql
+var V81 string
+
+//go:embed fixed/hopsworks-ddl/V82-HWORKS-2789-remove_brewer.sql
+var V82 string
+
+//go:embed fixed/hopsworks-ddl/V83-HWORKS-2878-google_sheets_connector.sql
+var V83 string
+
+var HopsworksScheme string = HopsworksSchema +
+	V5 + V6 + V7 + V8 + V9 + V10 +
+	V11 + V12 + V13 + V14 + V15 + V16 + V17 + V18 + V19 + V20 +
+	V21 + V22 + V23 + V24 + V25 + V26 + V27 + V28 + V29 + V30 +
+	V31 + V32 + V33 + V34 + V35 + V36 + V37 + V38 + V39 + V40 +
+	V41 + V42 + V43 + V44 + V45 + V46 + V47 + V48 + V49 + V50 +
+	V51 + V52 + V53 + V54 + V55 + V56 + V57 + V58 + V59 + V60 +
+	V61 + V62 + V63 + V64 + V65 + V66 + V67 + V68 + V69 + V70 +
+	V71 + V72 + V73 + V74 + V75 + V76 + V77 + V78 + V79 + V80 +
+	V81 + V82 + V83 +
+	HopsworksData +
+	FineGrainedSharingData
 
 const HOPSWORKS_DB_NAME = "hopsworks"
 
-//go:embed dynamic/hopsworks_34_add_project.sql
+//go:embed dynamic/hopsworks_add_project.sql
 var HopsworksAddProject string
 
 //go:embed fixed/hopsworks_fs_update.sql
@@ -269,6 +508,34 @@ const FSDB003 = "fsdb003"
 var FSDB004Scheme string
 
 const FSDB004 = "fsdb004"
+
+// Online feature store DB of the fine-grained sharing producer project.
+// Created by FineGrainedSharingData as part of the hopsworks seed - it is
+// deliberately NOT in databaseCreateSchemes (no dynamic project template).
+const USERA_PROJECT = "usera_project"
+
+// Cleartext API keys of the 12 fine-grained sharing test users
+// usera..userl (uids 100000-100011). The matching salted hashes are the
+// api_key rows (ids 100012-100023) in fine_grained_sharing_data.sql.
+// Test-only credentials, recorded from the throwaway reference cluster.
+const (
+	USERA_API_KEY = "ChwGeR9Hb49Krbm8.NhZHfEDKpFKxz1KqZ1dEadX3TGIMbqEJePjganxBTPKFUT0p2IOUI60eTXVO1Ekx"
+	USERB_API_KEY = "NJOTkByOD8jRApvR.OgbInog1SLVtJf4DfoblPehxWDS6oDTJYSGrt12cdUMhRxNBtAXWUwGmmJ0hptqb"
+	USERC_API_KEY = "keFK4Ay0SxBMNjVA.ernb51BTbUwC4mldvnlMw2DydJuLwr6xZ8C9nMjWPrsSSMKVTeTdLb8ZEo2dZ564"
+	USERD_API_KEY = "RmanPkMndlooED6L.ceoXmGl2BLdkYe6MwDESIIZnh4JofHiZbNiKh4ts6T7HdChyFAdZWSS4uwbrf4NT"
+	USERE_API_KEY = "lMweR23LdnqLr56h.wpLMSuJQlDBculzDyfOUqziPbAofJQUHdDAVhP1R4q5chSFhARNKhzlR6dr105o9"
+	USERF_API_KEY = "18OJHwyAFFLOhswO.3ZOnogkLwdFLfBX4fSBqwZlbajPBCaTaoUhxnNfQMEsNjXxeac2iDAwMmk8PhiJL"
+	USERG_API_KEY = "70waGjjDEAC2RjS1.2FIp0APnKgOzOBbCTjMX9OySccqZ6stXwWtoFbV0CEKJkrk2miHS3ckoEDFtpXCf"
+	USERH_API_KEY = "senMNxLu0PggmzGZ.dQhvaSxh2boOa2X7nYDquRVxrBxe4M0IbbDiqAjblnVgFtPNjw6GyjCpfJmxOMuq"
+	USERI_API_KEY = "npUExoYmLz4kJrJM.DcaDL6uzdIRTqguq5zecjGXk2ewdd4W9Pe3PPXCkFcNj8BPkzwy73taT2n7AkgDJ"
+	USERJ_API_KEY = "AI074gWjUl5pZEa8.VoNvwxOoSkbDJFpZI6oQnqCThCRonF2v4gNFXPRhhft5mwMTjAMjBOwyC5EF4Jb2"
+	USERK_API_KEY = "tr80O5ClBpOupXzI.YBxXBwHk0abT0yV9hJ9Jth3Ta2r1sOgSmqx48JFCNi8CHZUTuZg6bxZ1gse6xCmZ"
+	USERL_API_KEY = "yaRas68o9CmUeZDX.Y6AtxyK0bFwqCGZv91YHixP5juKcHeOqNd9JEel64v36itRbNDPNKYaI901SwJ01"
+	// userm (uid 100012): D5 - restricted member of usera_project who also
+	// owns his own (empty) userm_project; customers_fg granted entirely.
+	// See recording_D5.json.
+	USERM_API_KEY = "9mNzTyVuQXb8Bwq3.DnSmbpHdAVbLbS1WZwJPk4m9cGrWmMAO0Gxsl3Ky8qYY87P73ZLsCwDbd1bEeZ6D"
+)
 
 // This is sentinel DB
 // If this exists then we have successfully initialized all the DBs

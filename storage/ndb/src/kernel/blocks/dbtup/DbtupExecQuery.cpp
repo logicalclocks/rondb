@@ -49,6 +49,7 @@
 #include "AggInterpreter.hpp"
 #include "my_time.h"
 #include "my_systime.h"
+#include "ttl_expiry.hpp"
 #include <signaldata/AccLock.hpp>
 #include "rondb_hash.hpp"
 #include "../dbtux/Dbtux.hpp"
@@ -2051,6 +2052,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.agg_n_res_recs = 0;
 
   req_struct.ttl_purge_window_size = 0;
+  req_struct.ttl_now_sec = 0;
 
   if (unlikely(trans_state != TRANS_IDLE)) {
     TUPKEY_abort(&req_struct, 39);
@@ -2125,6 +2127,13 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     }
     req_struct.ttl_purge_window_size = lqhScanPtrP->m_ttl_purge_window_size;
+    /*
+     * TTL related
+     * Reuse the wall-clock "now" sampled once per scan batch in DBLQH instead
+     * of calling my_micro_time() per row in checkTTL. PK/UPDATE/DELETE keep
+     * ttl_now_sec == 0 and read the clock per op.
+     */
+    req_struct.ttl_now_sec = lqhScanPtrP->m_ttl_now_sec;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -2884,48 +2893,6 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
 
 #define MAX_READ (MIN(sizeof(signal->theData), MAX_SEND_MESSAGE_BYTESIZE))
 
-/*
- * TTL related
- * Lock-free replacement for gmtime_r() on the TTL hot path.
- *
- * glibc's gmtime_r()/localtime_r() funnel through __tz_convert(), which
- * unconditionally takes the process-global tzset_lock (a private futex) even
- * for the UTC case. Under concurrent TTL purge scans every LDM thread hits
- * that single lock per row, serializing in the kernel futex path. This routine
- * converts UTC epoch seconds to a broken-down MYSQL_TIME using only the
- * in-tree calendar arithmetic (get_date_from_daynr), so it touches no glibc
- * lock.
- *
- * It is field-for-field equivalent to MySQL's sec_to_TIME(out, t, 0) -- the
- * lock-free Time_zone_offset / my_tz_OFFSET0 path in sql/tztime.cc -- and is
- * reimplemented here because tztime.cc is part of the mysqld server and is not
- * linked into ndbmtd (get_date_from_daynr lives in mysys/my_time.cc, which is).
- * The gmtime_r() path this replaces was a copy of the locking Time_zone_utc
- * variant of the very same UTC conversion.
- */
-static inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
-  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
-  const int64_t EPOCH_DAYNR = 719528;
-  int64_t days = t / 86400;
-  int32_t secs = static_cast<int32_t>(t % 86400);
-  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
-    secs += 86400;
-    days -= 1;
-  }
-  unsigned int year, month, day;
-  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
-  out->neg = false;
-  out->second_part = 0;
-  out->year = year;
-  out->month = month;
-  out->day = day;
-  out->hour = secs / 3600;
-  out->minute = (secs % 3600) / 60;
-  out->second = secs % 60;
-  out->time_zone_displacement = 0;
-  out->time_type = MYSQL_TIMESTAMP_DATETIME;
-}
-
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,
                     bool var_data_prepared,
@@ -2951,148 +2918,121 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
                   size_in_bytes, size_in_words);
   /*
    * TTL related
-   * A DYNAMIC-format TTL column is read by readAttributes() through the
-   * var/dyn row metadata in req_struct->m_var_data. The read path has set
-   * it up (prepare_read()) before coming here; the write paths
-   * (UPDATE/DELETE/converted upsert) skip prepare_read(), so derive it here
-   * for the tuple version this check reads (req_struct->m_tuple_ptr: the
-   * committed row or a chained copy tuple). Both write paths re-derive that
-   * state right after the TTL check (expand_tuple() resp. handleDeleteReq's
-   * own prepare_read()), and the memory-only disk=false call cannot clobber
-   * read-path disk state because it only runs when nothing has prepared
-   * m_var_data yet. Without this, the column read follows uninitialized
-   * pointers -- a data node segfault on UPDATE/DELETE of any row in a TTL
-   * table whose TTL column is COLUMN_FORMAT DYNAMIC.
+   * Read the TTL column. Fast path: a FIXED-format column sits at a static
+   * word offset in the fixed part of the in-memory tuple, so read it in
+   * place -- byte-identical to what readAttributes()'s fixed-size read
+   * functions copy out (see readFixedSizeTHManyWordNotNULL), minus the
+   * per-row read-function dispatch, AttributeHeader setup and memcpy.
+   * DYNAMIC-format columns are not at a static offset; those fall back to
+   * the generic readAttributes() decode. The TTL column is always in-memory
+   * (a disk-based TTL column is rejected at DDL time).
    */
-  if (!var_data_prepared && AttributeDescriptor::getDynamic(TattrDesc1)) {
-    prepare_read(req_struct, regTabPtr, false);
-  }
-  /*
-   * TTL related
-   * Prepare correct attribute id format before passing it to readAttributes
-   */
-  attrId = attrId << 16;
-  Uint32 out_buf[3];
-  /*
-   * TTL related
-   * TODO (Zhao)
-   * Double check whether it's safe to reuse req_struct here or not.
-   */
-  int ret = readAttributes(req_struct,
-      &attrId,
-      1,
-      out_buf,
-      3);
-  AttributeHeader* ahOut = (AttributeHeader*)out_buf;
-  TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                  "Get ttl column data, col_id: %u, "
-                  "byte_size: %u, data_size: %u, is_null: %u",
-                  ahOut->getAttributeId(), ahOut->getByteSize(),
-                  ahOut->getDataSize(), ahOut->isNULL());
-  ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
-
-  int cmp_ret = 0;
+  const Uint32 TattrDesc2 = attrDescriptor[1];
+  ndbrequire(!AttributeDescriptor::getDiskBased(TattrDesc1));
+  Uint32 out_buf[3];  // backing store for ttl_data on the readAttributes path
+  const unsigned char* ttl_data;
+  bool is_null = false;
   *has_error = false;
-  if (ret >= 0) {
-    if (!ahOut->isNULL()) {
-      /*
-       * TTL related
-       * Just need to parse to second part.
-       */
-      MYSQL_TIME dt;
-      if (type_id == NDB_TYPE_TIMESTAMP2) {
-        my_timeval timeval;
-        my_timestamp_from_binary(&timeval,
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        /*
-         * TTL related
-         * Lock-free UTC conversion: avoids glibc gmtime_r()'s tzset_lock,
-         * which serializes all LDM threads on the TTL purge hot path.
-         */
-        const time_t tmp_t = (time_t)timeval.m_tv_sec;
-        ttl_utc_sec_to_TIME(tmp_t, &dt);
-      } else {
-        int64_t dt_bin = my_datetime_packed_from_binary(
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        TIME_from_longlong_datetime_packed(&dt, dt_bin);
-      }
-      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                      "Parsed TTL column data: "
-                      "%u.%u.%u %u:%u:%u",
-                      dt.year, dt.month, dt.day,
-                      dt.hour, dt.minute, dt.second);
-      // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge
-      // window is added on top, so a Uint32 add could wrap and defeat the
-      // date_add_interval() overflow guard below (a wrapped small value would
-      // yield a bogus near-term expiry -> premature purge). date_add_interval()
-      // range-checks the result, so no separate upper-bound clamp is needed.
-      const Uint64 ttl_sec =
-          Uint64(regTabPtr->m_ttl_sec) + req_struct->ttl_purge_window_size;
-      bool valid_future_dt = true;
-      if (ttl_sec != 0) {
-        Interval interval;
-        memset(&interval, 0, sizeof(interval));
-        interval.second = ttl_sec;
-        bool add_ret = date_add_interval(&dt, INTERVAL_SECOND,
-            interval, nullptr);
-        if (add_ret) {
-          g_eventLogger->warning("TTL column adds "
-              "interval overflowing");
-          valid_future_dt = false;
-        }
-      }
-      if (valid_future_dt) {
-        /*
-         * TTL related
-         * Get current utc time
-         */
-        MYSQL_TIME curr_dt;
-        time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-        /*
-         * TTL related
-         * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) to keep the TTL
-         * purge hot path off glibc's global tzset_lock.
-         */
-        ttl_utc_sec_to_TIME(t_now, &curr_dt);
-
-        /*
-         * TTL related
-         * Compare with TTL
-         */
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "Get TTL [%u + (%u) = %llu], "
-                        "expired time: %u.%u.%u %u:%u:%u, "
-                        "current time: %u.%u.%u %u:%u:%u",
-                        regTabPtr->m_ttl_sec,
-                        req_struct->ttl_purge_window_size,
-                        (unsigned long long)ttl_sec,
-                        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-                        curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-                        curr_dt.minute, curr_dt.second);
-        cmp_ret = my_time_compare(dt, curr_dt);
-      } else {
-        // future_dt overflows, we assume this row doesn't expire
-        cmp_ret = 1;
-      }
-    } else {
-      /*
-       * TTL related
-       * TODO (Zhao)
-       * remove the warning log here.
-       */
-#ifdef TTL_DEBUG
-      g_eventLogger->warning("Zard, Read a NULL TTL column");
-#endif  // TTL_DEBUG
-      ndbassert(*has_error == false);
-      // NULL equals no TTL is set on the row
-      cmp_ret = 1;
+  *err_no = 0;
+  if (likely(!AttributeDescriptor::getDynamic(TattrDesc1))) {
+    ttl_data = reinterpret_cast<const unsigned char*>(
+        req_struct->m_tuple_ptr->m_data +
+        AttributeOffset::getOffset(TattrDesc2));
+    if (AttributeDescriptor::getNullable(TattrDesc1)) {
+      const Uint64 attrDes = (Uint64(TattrDesc2) << 32) | Uint64(TattrDesc1);
+      is_null = nullFlagCheck(req_struct, attrDes);
     }
   } else {
-    jam();
-    *has_error = true;
-    *err_no = ret;
+    /*
+     * TTL related
+     * DYNAMIC-format fallback: readAttributes() reads a dynamic column
+     * through the var/dyn row metadata in req_struct->m_var_data. The read
+     * path has set it up (prepare_read()) before coming here; the write
+     * paths (UPDATE/DELETE/converted upsert) skip prepare_read(), so derive
+     * it here for the tuple version this check reads
+     * (req_struct->m_tuple_ptr: the committed row or a chained copy tuple).
+     * Both write paths re-derive that state right after the TTL check
+     * (expand_tuple() resp. handleDeleteReq's own prepare_read()), and the
+     * memory-only disk=false call cannot clobber read-path disk state
+     * because it only runs when nothing has prepared m_var_data yet.
+     * Without this, the column read follows uninitialized pointers -- a
+     * data node segfault on UPDATE/DELETE of any row in a TTL table whose
+     * TTL column is COLUMN_FORMAT DYNAMIC.
+     */
+    if (!var_data_prepared) {
+      prepare_read(req_struct, regTabPtr, false);
+    }
+    Uint32 rd_attrId = attrId << 16;
+    int ret = readAttributes(req_struct,
+        &rd_attrId,
+        1,
+        out_buf,
+        3);
+    if (unlikely(ret < 0)) {
+      jam();
+      *has_error = true;
+      *err_no = ret;
+      return 0;
+    }
+    AttributeHeader* ahOut = (AttributeHeader*)out_buf;
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "Get ttl column data, col_id: %u, "
+                    "byte_size: %u, data_size: %u, is_null: %u",
+                    ahOut->getAttributeId(), ahOut->getByteSize(),
+                    ahOut->getDataSize(), ahOut->isNULL());
+    ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
+    is_null = ahOut->isNULL();
+    ttl_data = reinterpret_cast<const unsigned char*>(ahOut->getDataPtr());
+  }
+
+  if (is_null) {
+    ndbassert(*has_error == false);
+    // NULL equals no TTL is set on the row
+    return 1;
+  }
+
+  /*
+   * TTL related
+   * Expiry decision: integer compare in seconds, replacing the broken-down
+   * time path (ttl_utc_sec_to_TIME / TIME_from_longlong_datetime_packed ->
+   * date_add_interval(INTERVAL_SECOND) -> my_time_compare vs UTC "now"),
+   * whose calendar arithmetic dominated checkTTL's per-row cost. The
+   * decision arithmetic lives in ttl_expiry.hpp (see the equivalence note
+   * there); the differential unit test ttl_expiry-t.cpp asserts it keeps
+   * the exact pre-optimization verdict across a boundary-biased sweep.
+   */
+  // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge window
+  // is added on top, so a Uint32 add could wrap and defeat the expiry
+  // overflow guard (a wrapped small value would yield a bogus near-term
+  // expiry -> premature purge).
+  const Int64 ttl_sec =
+      Int64(regTabPtr->m_ttl_sec) + Int64(req_struct->ttl_purge_window_size);
+  /*
+   * TTL related
+   * Current UTC time: reuse the wall-clock sampled once per scan batch in
+   * DBLQH when available (scans, incl. the purge scan); PK ops keep the
+   * per-op clock read (ttl_now_sec == 0).
+   */
+  const Int64 now_sec = (req_struct->ttl_now_sec != 0)
+                            ? Int64(req_struct->ttl_now_sec)
+                            : Int64(my_micro_time() / 1000000); /* second */
+  int cmp_ret;
+  if (type_id == NDB_TYPE_TIMESTAMP2) {
+    /* TIMESTAMP2(0) stores UTC epoch seconds (4 bytes, big-endian). */
+    my_timeval tv;
+    my_timestamp_from_binary(&tv, ttl_data, 0);
+    cmp_ret = ttl_expiry_cmp_timestamp2(Int64(tv.m_tv_sec), ttl_sec, now_sec);
+  } else {
+    /* DATETIME2(0) holds a UTC wall-clock datetime. */
+    MYSQL_TIME dt;
+    TIME_from_longlong_datetime_packed(
+        &dt, my_datetime_packed_from_binary(ttl_data, 0));
+    bool overflow = false;
+    cmp_ret = ttl_expiry_cmp_datetime2(dt, ttl_sec, now_sec, &overflow);
+    if (unlikely(overflow)) {
+      g_eventLogger->warning("TTL column adds "
+          "interval overflowing");
+    }
   }
   return cmp_ret;
 }
