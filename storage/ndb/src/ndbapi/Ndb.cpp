@@ -350,6 +350,80 @@ Remark:         Computes the distribution hash value for a row with the
                 supplied distribution key values.
                 Only relevant for natively partitioned tables.
 *****************************************************************************/
+static inline bool use_partition_hash_fanout(const NdbTableImpl *impl) {
+  return impl->m_base_partition_fanout > 1;
+}
+
+static Uint32 compute_partition_hash_fanout_value(const char *buf,
+                                                  Uint32 total_words,
+                                                  Uint32 base_words,
+                                                  const NdbTableImpl *impl) {
+  Uint32 base_values[4];
+  Uint32 detail_values[4];
+  rondb_calc_hash(base_values, buf, base_words,
+                  impl->m_use_new_hash_function);
+  rondb_calc_hash(detail_values, buf + (base_words << 2),
+                  total_words - base_words,
+                  impl->m_use_new_hash_function);
+
+  const Uint32 fanout = impl->m_base_partition_fanout;
+  return ((base_values[1] / fanout) * fanout) +
+         (detail_values[1] % fanout);
+}
+
+static bool is_variable_key_type(NdbDictionary::Column::Type type) {
+  return type == NdbDictionary::Column::Varchar ||
+         type == NdbDictionary::Column::Varbinary ||
+         type == NdbDictionary::Column::Longvarchar ||
+         type == NdbDictionary::Column::Longvarbinary;
+}
+
+static bool get_fixed_partition_hash_key_lengths(const NdbTableImpl *impl,
+                                                 Uint32 *total_words,
+                                                 Uint32 *base_words) {
+  const Uint32 base_count = impl->m_base_partition_key_count;
+  const Uint32 detail_count = impl->m_detail_partition_key_count;
+  const Uint32 parts = base_count + detail_count;
+  const NdbColumnImpl *const *cols = impl->m_columns.getBase();
+  const Uint32 colcnt = impl->m_columns.size();
+  Uint32 key_words[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  Uint32 found = 0;
+
+  if (!use_partition_hash_fanout(impl) || base_count == 0 ||
+      detail_count == 0) {
+    return false;
+  }
+
+  for (Uint32 i = 0; i < colcnt && found < parts; i++) {
+    const NdbColumnImpl *col = cols[i];
+    if (!col->m_pk || col->m_keyInfoPos >= parts) {
+      continue;
+    }
+    /*
+     * The raw-key startTransaction() overload has no key-part lengths and is
+     * documented as a best-effort hint for simple aligned keys. For partition
+     * hash fanout, only use it when the base/detail split can be found from
+     * fixed-size non-charset primary-key metadata. Variable or charset keys
+     * should use the Key_part_ptr or NdbRecord overloads for correct hinting.
+     */
+    if (col->m_cs != nullptr || is_variable_key_type(col->m_type)) {
+      return false;
+    }
+    key_words[col->m_keyInfoPos] =
+        (col->m_attrSize * col->m_arraySize + 3) >> 2;
+    found++;
+  }
+  if (found != parts) return false;
+
+  *base_words = 0;
+  *total_words = 0;
+  for (Uint32 i = 0; i < parts; i++) {
+    *total_words += key_words[i];
+    if (i + 1 == base_count) *base_words = *total_words;
+  }
+  return *base_words != 0 && *total_words > *base_words;
+}
+
 int Ndb::computeHash(Uint32 *retval, const NdbDictionary::Table *table,
                      const struct Key_part_ptr *keyData, void *buf,
                      Uint32 bufLen) {
@@ -363,6 +437,9 @@ int Ndb::computeHash(Uint32 *retval, const NdbDictionary::Table *table,
 
   Uint32 colcnt = impl->m_columns.size();
   Uint32 parts = impl->m_noOfDistributionKeys;
+  const bool fanout_hash = use_partition_hash_fanout(impl);
+  const Uint32 base_key_count = impl->m_base_partition_key_count;
+  Uint32 base_len = 0;
 
   if (unlikely(impl->m_fragmentType == NdbDictionary::Object::UserDefined)) {
     /* Calculating native hash on keys in user defined
@@ -371,7 +448,10 @@ int Ndb::computeHash(Uint32 *retval, const NdbDictionary::Table *table,
     goto euserdeftable;
   }
 
-  if (parts == 0) {
+  if (fanout_hash) {
+    parts =
+        impl->m_base_partition_key_count + impl->m_detail_partition_key_count;
+  } else if (parts == 0) {
     parts = impl->m_noOfKeys;
   }
 
@@ -382,11 +462,20 @@ int Ndb::computeHash(Uint32 *retval, const NdbDictionary::Table *table,
   if (unlikely(keyData[parts].ptr != nullptr)) goto emissingnullptr;
 
   const NdbColumnImpl *partcols[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
-  for (Uint32 i = 0; i < colcnt && j < parts; i++) {
-    if (cols[i]->m_distributionKey) {
-      // wl3717_todo
-      // char allowed now as dist key so this case should be tested
-      partcols[j++] = cols[i];
+  if (fanout_hash) {
+    for (Uint32 i = 0; i < colcnt && j < parts; i++) {
+      if (cols[i]->m_pk && cols[i]->m_keyInfoPos < parts) {
+        partcols[cols[i]->m_keyInfoPos] = cols[i];
+        j++;
+      }
+    }
+  } else {
+    for (Uint32 i = 0; i < colcnt && j < parts; i++) {
+      if (cols[i]->m_distributionKey) {
+        // wl3717_todo
+        // char allowed now as dist key so this case should be tested
+        partcols[j++] = cols[i];
+      }
     }
   }
   assert(j == parts);
@@ -408,6 +497,9 @@ int Ndb::computeHash(Uint32 *retval, const NdbDictionary::Table *table,
 
     len = (lb + len + 3) & ~(Uint32)3;
     sumlen += len;
+    if (fanout_hash && i + 1 == base_key_count) {
+      base_len = sumlen;
+    }
   }
 
   while (true) {
@@ -460,15 +552,23 @@ int Ndb::computeHash(Uint32 *retval, const NdbDictionary::Table *table,
   assert((len & 3) == 0);
   require(len <= bufLen);
 
-  Uint32 values[4];
-  rondb_calc_hash(values,
-                  (const char*)buf,
-                  len >> 2,
-                  table->use_new_hash_function());
+  Uint32 hash_value;
+  if (fanout_hash) {
+    assert(base_len != 0);
+    hash_value = compute_partition_hash_fanout_value(
+        (const char *)buf, len >> 2, base_len >> 2, impl);
+  } else {
+    Uint32 values[4];
+    rondb_calc_hash(values,
+                    (const char*)buf,
+                    len >> 2,
+                    table->use_new_hash_function());
+    hash_value = values[1];
+  }
   
   if (retval)
   {
-    * retval = values[1];
+    * retval = hash_value;
   }
 
   if (malloced_buf) free(malloced_buf);
@@ -510,13 +610,25 @@ int Ndb::computeHash(Uint32 *retval, const NdbRecord *keyRec,
   unsigned char *pos, *bufEnd;
   void *malloced_buf = nullptr;
 
+  const NdbTableImpl *impl = keyRec->table;
+  const bool fanout_hash =
+      use_partition_hash_fanout(impl) &&
+      ((keyRec->flags & NdbRecord::RecIsIndex) == 0);
   Uint32 parts = keyRec->distkey_index_length;
+  const Uint32 base_key_count = impl->m_base_partition_key_count;
+  Uint32 base_len = 0;
 
   if (unlikely(keyRec->flags & NdbRecord::RecHasUserDefinedPartitioning)) {
     /* Calculating native hash on keys in user defined
      * partitioned table is probably part of a bug
      */
     goto euserdeftable;
+  }
+
+  if (fanout_hash) {
+    parts =
+        impl->m_base_partition_key_count + impl->m_detail_partition_key_count;
+    if (unlikely(keyRec->key_index_length < parts)) goto ebuftosmall;
   }
 
   if (!buf) {
@@ -536,7 +648,8 @@ int Ndb::computeHash(Uint32 *retval, const NdbRecord *keyRec,
 
   for (Uint32 i = 0; i < parts; i++) {
     const struct NdbRecord::Attr &keyAttr =
-        keyRec->columns[keyRec->distkey_indexes[i]];
+        keyRec->columns[fanout_hash ? keyRec->key_indexes[i]
+                                    : keyRec->distkey_indexes[i]];
 
     Uint32 len;
     Uint32 maxlen = keyAttr.maxSize;
@@ -597,20 +710,31 @@ int Ndb::computeHash(Uint32 *retval, const NdbRecord *keyRec,
       *(pos + len++) = 0;
     }
     pos += len;
+    if (fanout_hash && i + 1 == base_key_count) {
+      base_len = Uint32(UintPtr(pos) - UintPtr(buf));
+    }
   }
   len = Uint32(UintPtr(pos) - UintPtr(buf));
   assert((len & 3) == 0);
   require(len <= bufLen);
 
-  Uint32 values[4];
-  rondb_calc_hash(values,
-                  (const char*)buf,
-                  len >> 2,
-                  keyRec->table->m_use_new_hash_function);
+  Uint32 hash_value;
+  if (fanout_hash) {
+    assert(base_len != 0);
+    hash_value = compute_partition_hash_fanout_value(
+        (const char *)buf, len >> 2, base_len >> 2, impl);
+  } else {
+    Uint32 values[4];
+    rondb_calc_hash(values,
+                    (const char*)buf,
+                    len >> 2,
+                    keyRec->table->m_use_new_hash_function);
+    hash_value = values[1];
+  }
   
   if (retval)
   {
-    * retval = values[1];
+    * retval = hash_value;
   }
 
   if (malloced_buf) free(malloced_buf);
@@ -813,7 +937,14 @@ NdbTransaction *Ndb::startTransaction(const NdbDictionary::Table *table,
     if (unlikely(table != nullptr && keyData != nullptr)) {
       NdbTableImpl *impl = &NdbTableImpl::getImpl(*table);
       Uint32 hashValue;
-      {
+      Uint32 total_words = 0;
+      Uint32 base_words = 0;
+      if (get_fixed_partition_hash_key_lengths(impl, &total_words,
+                                               &base_words) &&
+          keyLen >= (total_words << 2)) {
+        hashValue = compute_partition_hash_fanout_value(
+            keyData, total_words, base_words, impl);
+      } else {
         Uint32 values[4];
         rondb_calc_hash(values,
                         (const char*)keyData,

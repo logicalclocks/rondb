@@ -302,6 +302,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       Uint32 rdma_retry_count = 0;
       Uint32 rdma_rnr_retry_count = 0;
       Uint32 rdma_overload_limit = 0;
+      Uint32 rdma_log_level = 2;
       const char *rdma_device_name = nullptr;
 
       if (iter.get(CFG_RDMA_SEND_BUFFER_SIZE, &rdma_send_buf)) break;
@@ -318,6 +319,10 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       if (iter.get(CFG_RDMA_RNR_RETRY_COUNT, &rdma_rnr_retry_count)) break;
       iter.get(CFG_CONNECTION_OVERLOAD, &rdma_overload_limit);
       iter.get(CFG_RDMA_DEVICE_NAME, &rdma_device_name);
+      /* Optional parameter: keep the default (INFO=2) if an older
+       * configuration omits the key. iter.get() leaves the target
+       * unchanged when the id is absent. */
+      iter.get(CFG_RDMA_LOG_LEVEL, &rdma_log_level);
 
       conf.rdma.sendBufferSize = rdma_send_buf;
       conf.rdma.recvBufferSize = rdma_recv_buf;
@@ -332,6 +337,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       conf.rdma.retryCount = rdma_retry_count;
       conf.rdma.rnrRetryCount = rdma_rnr_retry_count;
       conf.rdma.overloadLimit = rdma_overload_limit;
+      conf.rdma.logLevel = rdma_log_level;
       conf.rdma.deviceName = rdma_device_name;
 
       conf.type = tt_RDMA_TRANSPORTER;

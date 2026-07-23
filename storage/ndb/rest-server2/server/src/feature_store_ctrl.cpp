@@ -676,8 +676,9 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
-    // Validate access right to ALL feature stores including shared feature
-    auto status = authenticate(api_key, metadata->featureStoreNames);
+    // Validate access to the FV's store and to every constituent feature
+    // group's table/columns (shared and restricted grants included)
+    auto status = authenticate(api_key, *metadata);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));

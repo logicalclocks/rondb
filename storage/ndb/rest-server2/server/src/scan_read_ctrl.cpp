@@ -30,6 +30,7 @@
 #include <cstring>
 #include <drogon/HttpTypes.h>
 #include <iostream>
+#include <functional>
 #include <memory>
 #include <simdjson.h>
 #include <EventLogger.hpp>
@@ -167,11 +168,41 @@ void ScanReadCtrl::ScanRead(
   }
 
   // Authenticate
-  std::vector<std::string_view> db_vector;
-  db_vector.push_back(reqStruct.path.db);
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, db_vector);
+    // A scan with no explicit read columns returns whole rows, so the
+    // whole table must be granted. Filter and index-key columns expose
+    // data too (their values are compared), so they are checked as well.
+    std::vector<std::string_view> columns;
+    for (const ScanReadColumn &readColumn : reqStruct.readColumns) {
+      columns.push_back(readColumn.column);
+    }
+    if (!reqStruct.readColumns.empty()) {
+      std::function<void(const std::shared_ptr<FilterNode>&)> collect =
+        [&](const std::shared_ptr<FilterNode> &node) {
+          if (node == nullptr) {
+            return;
+          }
+          if (!node->column.empty()) {
+            columns.push_back(node->column);
+          }
+          for (const std::shared_ptr<FilterNode> &child : node->children) {
+            collect(child);
+          }
+        };
+      collect(reqStruct.filterRoot);
+      if (reqStruct.index != std::nullopt) {
+        for (const std::string &column : reqStruct.index->columns) {
+          columns.push_back(column);
+        }
+      }
+    }
+    TableAccessRequest accessReq;
+    accessReq.db = reqStruct.path.db;
+    accessReq.table = reqStruct.path.table;
+    accessReq.columns = reqStruct.readColumns.empty() ? nullptr : &columns;
+    status = authenticate(api_key,
+                          std::vector<TableAccessRequest>{accessReq});
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));

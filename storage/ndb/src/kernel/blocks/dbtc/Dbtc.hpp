@@ -171,6 +171,7 @@
 
 #define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
+#define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2203
 
 // ----------------------------------------
 // Error Codes for transactions
@@ -1653,6 +1654,9 @@ class Dbtc : public SimulatedBlock {
     TableRecord()
     {
       databaseRecord = RNIL64;
+      m_partition_hash_base_key_count = 0;
+      m_partition_hash_detail_key_count = 0;
+      m_partition_hash_fanout = 1;
     }
     Uint64 databaseRecord;
     Uint32 currentSchemaVersion;
@@ -1703,6 +1707,9 @@ class Dbtc : public SimulatedBlock {
     Uint8 noOfDistrKeys;
     Uint8 hasVarKeys;
     Uint8 m_disk_based;
+    Uint8 m_partition_hash_base_key_count;
+    Uint8 m_partition_hash_detail_key_count;
+    Uint16 m_partition_hash_fanout;
     Uint32 m_ttl_sec;
     Uint32 m_ttl_col_no;
     Uint32 m_primary_table_id;
@@ -1950,6 +1957,15 @@ class Dbtc : public SimulatedBlock {
     // processes when they are ready for the next fragment
     Uint32 scanNextFragId;
 
+    /*
+     * For partition-hash fanout pruning this is the first raw hash value in
+     * the fanout interval. scanNextFragId remains a relative interval offset.
+     * DBTC sends firstHash + offset to DIH with distr_key_indicator = 0 so DIH
+     * applies the current table distribution mapping. This intentionally does
+     * not assume that fanout divides the current fragment count.
+     */
+    Uint32 scanFirstHashValue;
+
     // Total number of fragments in the table we are scanning
     Uint32 scanNoFrag;
 
@@ -1998,9 +2014,22 @@ class Dbtc : public SimulatedBlock {
     bool m_read_committed_base;
 
     /**
-     *
+     * m_scan_dist_key_flag: scan is pruned, m_scan_dist_key holds the prune
+     * value from ScanTabReq::distributionKey.
+     * m_scan_dist_key_interval_flag: m_scan_dist_key is a grouped
+     * partition-hash base hash and the scan covers the fanout interval of
+     * fragments starting at it. Only valid together with
+     * m_scan_dist_key_flag on tables with partition hash fanout > 1.
+     * Without it a pruned scan always covers exactly one fragment.
+     * m_scan_dist_key_part_id_flag: m_scan_dist_key is a distinct fragment
+     * id and the scan covers exactly that fragment. Set by explicit scan
+     * partitioning (SO_PARTITION_ID, setPartitionId()), also allowed on
+     * tables with partition hash fanout (e.g. TTL purge scans). Never
+     * valid together with m_scan_dist_key_interval_flag.
      */
     bool m_scan_dist_key_flag;
+    bool m_scan_dist_key_interval_flag;
+    bool m_scan_dist_key_part_id_flag;
     bool m_par_ordered_scan_flag;
     Uint32 m_scan_dist_key;
     Uint32 m_read_any_node;
@@ -2336,6 +2365,12 @@ class Dbtc : public SimulatedBlock {
                            const Uint32 tabPtrI,
                            bool distr,
                            bool use_new_hash_function);
+  bool handle_partition_hash(Uint32 dstHash[4],
+                             const Uint32 *src,
+                             Uint32 srcLen,
+                             const Uint32 tabPtrI,
+                             const Uint32 *keyPartLen,
+                             bool use_new_hash_function);
   
   void initApiConnect(Signal* signal);
   void initApiConnectRec(Signal* signal, 

@@ -1,0 +1,482 @@
+--source include/have_ndb.inc
+
+# RONDB-1074: PARTITION_HASH=base_keys:detail_keys:fanout comment modifier.
+# The primary key is split into base keys [0,x) and detail keys [x,x+y),
+# routing hash = ((base_hash/z)*z) + (detail_hash%z) so that all rows with
+# the same base key land in an interval of z fragments, and base-key
+# equality scans are pruned to that interval.
+
+--echo #
+--echo # Positive create cases
+--echo #
+
+CREATE TABLE t1 (
+  a INT NOT NULL,
+  PRIMARY KEY (a)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:0:1";
+SHOW CREATE TABLE t1;
+
+CREATE TABLE t2 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  PRIMARY KEY (a,b)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2";
+SHOW CREATE TABLE t2;
+
+# Explicit partition count that is a multiple of the fanout
+CREATE TABLE t3 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  c INT NOT NULL,
+  PRIMARY KEY (a,b,c)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:2:4"
+PARTITION BY KEY () PARTITIONS 8;
+SHOW CREATE TABLE t3;
+
+CREATE TABLE t4 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  c INT NOT NULL,
+  PRIMARY KEY (a,b,c)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=2:1:4"
+PARTITION BY KEY () PARTITIONS 4;
+SHOW CREATE TABLE t4;
+
+# TTL and PARTITION_HASH may be combined (TTL purge scans use the
+# distinct-partition-id scan mode which works on fanout tables)
+CREATE TABLE t5 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (a,b)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@created_at,PARTITION_HASH=1:1:2";
+SHOW CREATE TABLE t5;
+DROP TABLE t5;
+
+--echo #
+--echo # No generated PARTITION_HASH comment when not specified
+--echo #
+
+CREATE TABLE t_plain (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  PRIMARY KEY (a,b)
+) ENGINE=NDB;
+SHOW CREATE TABLE t_plain;
+
+CREATE TABLE t_rb (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  PRIMARY KEY (a,b)
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1";
+SHOW CREATE TABLE t_rb;
+DROP TABLE t_rb;
+
+--echo #
+--echo # Negative create cases: malformed modifier values
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:-1:2";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2:3";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL PRIMARY KEY) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=abc";
+
+--echo #
+--echo # Negative create cases: invalid values
+--echo #
+
+# base key count zero
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=0:1:2";
+# fanout zero
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:0";
+# key counts do not match the primary key column count
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, c INT NOT NULL,
+                 PRIMARY KEY (a,b,c)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=2:2:2";
+# fanout > 1 requires detail key columns
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:0:2";
+# no explicit primary key
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:0:1";
+
+--echo #
+--echo # Negative create cases: partition count interaction
+--echo #
+
+# fanout larger than the explicit partition count
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 2;
+# fanout does not need to divide the partition count, only the hash map
+# bucket count: fanout 3 with 4 partitions is valid
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:3"
+PARTITION BY KEY () PARTITIONS 4;
+DROP TABLE tx;
+# fanout that does not divide the hash map bucket count (3840) is
+# rejected below the SQL layer at DBDICT parse time
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:7"
+PARTITION BY KEY () PARTITIONS 7;
+SHOW WARNINGS;
+# fanout that exceeds the compact metadata is caught below the SQL
+# layer (default partitioning, so the SQL layer does not know the count)
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:70000";
+SHOW WARNINGS;
+
+--echo #
+--echo # Negative create cases: unsupported table types
+--echo #
+
+# user-defined partitioning
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY RANGE (a)
+(PARTITION p0 VALUES LESS THAN (10),
+ PARTITION p1 VALUES LESS THAN (20));
+# explicit partition key columns (a proper subset of the primary key):
+# fanout routing ignores them and the distribution key flags would
+# mislead pre-fanout clients into pruning on them
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY (b);
+# declaring all primary key columns is equivalent to the default
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY (a,b);
+DROP TABLE tx;
+# fully replicated table
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE tx (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a,b)) ENGINE=NDB
+COMMENT="NDB_TABLE=FULLY_REPLICATED=1,PARTITION_HASH=1:1:2";
+
+--echo #
+--echo # Alter tests: PARTITION_HASH is preserved across unrelated alters
+--echo #
+
+# Unrelated comment change preserves PARTITION_HASH
+ALTER TABLE t2 COMMENT="unrelated comment";
+SHOW CREATE TABLE t2;
+
+# Changing another NDB_TABLE modifier preserves PARTITION_HASH
+ALTER TABLE t2 ALGORITHM=INPLACE, COMMENT="NDB_TABLE=READ_BACKUP=1";
+SHOW CREATE TABLE t2;
+
+# Online add column preserves PARTITION_HASH
+ALTER TABLE t2 ALGORITHM=INPLACE, ADD COLUMN extra INT COLUMN_FORMAT DYNAMIC;
+SHOW CREATE TABLE t2;
+
+--echo #
+--echo # Alter tests: rejected changes
+--echo #
+
+# Changing PARTITION_HASH online is rejected
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t2 ALGORITHM=INPLACE, COMMENT="NDB_TABLE=PARTITION_HASH=2:0:1";
+
+# Changing PARTITION_HASH with a copying alter (table rebuild) is allowed
+ALTER TABLE t2 ALGORITHM=COPY, COMMENT="NDB_TABLE=PARTITION_HASH=2:0:1";
+SHOW CREATE TABLE t2;
+
+# Altering to a partition count that is not a multiple of the fanout is
+# allowed (the fanout only has to divide the hash map bucket count)
+ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 6;
+SHOW CREATE TABLE t3;
+
+# Altering to a partition count smaller than the fanout is rejected
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 PARTITION BY KEY () PARTITIONS 3;
+
+# Altering to explicit partition key columns on a fanout table is rejected
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 PARTITION BY KEY (b);
+
+# Making a PARTITION_HASH table fully replicated is rejected.
+# Use t2 (default partitioning): on t3 the explicit PARTITIONS 8 gives
+# PARTITION_BALANCE=SPECIFIC, so a comment-changing alter is stopped by the
+# PARTITION_BALANCE merge check before PARTITION_HASH validation is reached.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t2 COMMENT="NDB_TABLE=FULLY_REPLICATED=1,PARTITION_HASH=2:0:1";
+
+DROP TABLE t1, t2, t3, t4, t_plain;
+
+--echo #
+--echo # Data correctness: fanout table vs full-PK-hash twin
+--echo #
+
+CREATE TABLE tf (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  id INT NOT NULL,
+  payload VARCHAR(64),
+  PRIMARY KEY (entity_id, ts, id)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:2:4"
+PARTITION BY KEY () PARTITIONS 8;
+
+CREATE TABLE tn (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  id INT NOT NULL,
+  payload VARCHAR(64),
+  PRIMARY KEY (entity_id, ts, id)
+) ENGINE=NDB
+PARTITION BY KEY () PARTITIONS 8;
+
+# 20 base keys x 25 detail rows
+CREATE TABLE nums (n INT PRIMARY KEY) ENGINE=NDB;
+--disable_query_log
+let $i=0;
+while ($i < 25)
+{
+  eval INSERT INTO nums VALUES ($i);
+  inc $i;
+}
+--enable_query_log
+INSERT INTO tf
+  SELECT a.n, b.n, a.n*1000+b.n, CONCAT('p', a.n, '_', b.n)
+  FROM nums a, nums b WHERE a.n < 20;
+INSERT INTO tn SELECT * FROM tf;
+
+SELECT COUNT(*) FROM tf;
+SELECT COUNT(*) FROM tn;
+# Every row in tf has an identical row in tn
+SELECT COUNT(*) FROM tf JOIN tn USING (entity_id, ts, id)
+WHERE tf.payload <=> tn.payload;
+
+--echo #
+--echo # Scan pruning: base-key equality scans are pruned
+--echo #
+
+# Equality on the base key: pruned to the fanout interval
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM tf FORCE INDEX (PRIMARY) WHERE entity_id = 7 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# Base-key equality plus detail range: still pruned
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM tf FORCE INDEX (PRIMARY)
+WHERE entity_id = 7 AND ts BETWEEN 3 AND 6;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# Ordered result on the detail key: still pruned
+--source suite/ndb/include/ndb_init_scan_counts.inc
+SELECT * FROM tf FORCE INDEX (PRIMARY)
+WHERE entity_id = 7 ORDER BY ts, id LIMIT 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# Equality only on a detail key: not pruned
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM tf WHERE ts = 24 AND entity_id < 3;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# Multiple base keys (MRR): ranges map to different intervals
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM tf FORCE INDEX (PRIMARY)
+WHERE entity_id IN (3, 11) AND ts = 2;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# Full primary key equality: key lookup, no scan at all
+--source suite/ndb/include/ndb_init_scan_counts.inc
+SELECT * FROM tf WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+--echo #
+--echo # Result equality with the twin table
+--echo #
+
+--sorted_result
+SELECT * FROM tn FORCE INDEX (PRIMARY) WHERE entity_id = 7 AND ts < 5;
+--sorted_result
+SELECT * FROM tn FORCE INDEX (PRIMARY)
+WHERE entity_id = 7 AND ts BETWEEN 3 AND 6;
+--sorted_result
+SELECT * FROM tn WHERE ts = 24 AND entity_id < 3;
+
+--echo #
+--echo # Writes through the SQL layer
+--echo #
+
+UPDATE tf SET payload = 'updated' WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+UPDATE tn SET payload = 'updated' WHERE entity_id = 7 AND ts = 3 AND id = 7003;
+DELETE FROM tf WHERE entity_id = 8 AND ts = 4 AND id = 8004;
+DELETE FROM tn WHERE entity_id = 8 AND ts = 4 AND id = 8004;
+# Base-key wide update and delete
+UPDATE tf SET payload = 'wide' WHERE entity_id = 9;
+UPDATE tn SET payload = 'wide' WHERE entity_id = 9;
+DELETE FROM tf WHERE entity_id = 10;
+DELETE FROM tn WHERE entity_id = 10;
+
+SELECT COUNT(*) FROM tf;
+SELECT COUNT(*) FROM tn;
+SELECT COUNT(*) FROM tf JOIN tn USING (entity_id, ts, id)
+WHERE tf.payload <=> tn.payload;
+
+--echo #
+--echo # Pushed join on a fanout table: DBSPJ child PK lookups route by
+--echo # the composed fanout hash, scans run without SPJ pruning
+--echo #
+
+set @save_ndb_join_pushdown = @@session.ndb_join_pushdown;
+set ndb_join_pushdown = on;
+
+FLUSH STATUS;
+--sorted_result
+SELECT t1.entity_id, t1.ts, t1.id, t2.payload
+FROM tf t1 JOIN tf t2
+  ON t2.entity_id = t1.entity_id AND t2.ts = t1.ts AND t2.id = t1.id
+WHERE t1.entity_id = 7 AND t1.ts < 5;
+SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed';
+
+# Twin table gives the expected result for the same join
+--sorted_result
+SELECT t1.entity_id, t1.ts, t1.id, t2.payload
+FROM tn t1 JOIN tn t2
+  ON t2.entity_id = t1.entity_id AND t2.ts = t1.ts AND t2.id = t1.id
+WHERE t1.entity_id = 7 AND t1.ts < 5;
+
+set ndb_join_pushdown = @save_ndb_join_pushdown;
+
+--echo #
+--echo # Physical routing: one base key occupies exactly fanout fragments
+--echo #
+
+CREATE TABLE t_route (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:4"
+PARTITION BY KEY () PARTITIONS 8;
+
+INSERT INTO t_route SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_route;
+
+# All 100 rows of base key 1 must be stored in exactly 4 (= fanout)
+# distinct fragments out of 8
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_route' AND fixed_elem_count > 0;
+
+# The twin without PARTITION_HASH spreads one base key over all fragments
+CREATE TABLE t_route_n (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_route_n SELECT * FROM t_route;
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_route_n' AND fixed_elem_count > 0;
+
+--echo #
+--echo # fanout = 1 is equivalent to a plain table (full-PK hash routing)
+--echo #
+
+CREATE TABLE t_f1 (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:1"
+PARTITION BY KEY () PARTITIONS 8;
+INSERT INTO t_f1 SELECT 1, n FROM nums;
+
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM t_f1 FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# With fanout = 1 all hash paths use the legacy full-PK hash, so one base
+# key spreads over all fragments and base-key scans are not pruned
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_f1' AND fixed_elem_count > 0;
+
+--echo #
+--echo # Online reorg: ADD PARTITION on a fanout table
+--echo #
+
+CREATE TABLE t_reorg (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY (entity_id, ts)
+) ENGINE=NDB COMMENT="NDB_TABLE=PARTITION_HASH=1:1:2"
+PARTITION BY KEY () PARTITIONS 4;
+
+# Single base key: occupies exactly 2 (= fanout) of the 4 fragments
+INSERT INTO t_reorg SELECT 1, a.n*25+b.n FROM nums a, nums b WHERE a.n < 4;
+SELECT COUNT(*) FROM t_reorg;
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+
+# Online add partition to a count that stays a multiple of the fanout.
+# Row movement decisions go through the composed routing hash in
+# DBTC/DIH, so the interval property must survive the reorg.
+ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 4;
+
+SELECT COUNT(*) FROM t_reorg;
+
+# Base-key scans are still pruned after the reorg
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM t_reorg FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# The base key still occupies exactly fanout fragments (of now 8)
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+
+# Adding partitions to a count that is not a multiple of the fanout is
+# allowed: the fanout only has to divide the hash map bucket count. The
+# base key must still occupy exactly fanout fragments afterwards.
+ALTER TABLE t_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 3;
+
+SELECT COUNT(*) FROM t_reorg;
+
+# Base-key scans are still pruned after the non-multiple reorg
+--source suite/ndb/include/ndb_init_scan_counts.inc
+--sorted_result
+SELECT * FROM t_reorg FORCE INDEX (PRIMARY) WHERE entity_id = 1 AND ts < 5;
+--source suite/ndb/include/ndb_scan_counts.inc
+
+# The base key still occupies exactly fanout fragments (of now 11)
+SELECT COUNT(DISTINCT fragment_num) AS fragments_with_rows
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t_reorg' AND fixed_elem_count > 0;
+
+DROP TABLE t_reorg;
+
+DROP TABLE tf, tn, t_route, t_route_n, t_f1, nums;

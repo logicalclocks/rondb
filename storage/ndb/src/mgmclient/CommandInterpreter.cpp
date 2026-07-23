@@ -161,6 +161,7 @@ class CommandInterpreter {
   int executeSet(int processId, const char *parameters, bool all);
   int executeSetMaxDiskWriteSpeed(int processId, const char *value_str,
                                   bool all);
+  int executeSetRdmaLogLevel(int processId, const char *value_str, bool all);
   Uint64 parse_size_value(const char *str, bool &ok);
   int executeSetDomain(int processId, const char *parameters, bool all);
   int executeHostname(int processId, const char *parameters, bool all);
@@ -2714,7 +2715,7 @@ CommandInterpreter::executeSet(int processId,
   if (!parameters || *parameters == '\0')
   {
     ndbout_c("Usage: <id> SET <parameter> <value>");
-    ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+    ndbout_c("Supported parameters: MaxDiskWriteSpeed, RdmaLogLevel");
     return -1;
   }
 
@@ -2725,7 +2726,7 @@ CommandInterpreter::executeSet(int processId,
   if (command_list.size() < 2)
   {
     ndbout_c("Usage: <id> SET <parameter> <value>");
-    ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+    ndbout_c("Supported parameters: MaxDiskWriteSpeed, RdmaLogLevel");
     return -1;
   }
 
@@ -2737,8 +2738,13 @@ CommandInterpreter::executeSet(int processId,
     return executeSetMaxDiskWriteSpeed(processId, value_str, all);
   }
 
+  if (native_strcasecmp(param_name, "RdmaLogLevel") == 0)
+  {
+    return executeSetRdmaLogLevel(processId, value_str, all);
+  }
+
   ndbout_c("Unknown SET parameter: '%s'", param_name);
-  ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+  ndbout_c("Supported parameters: MaxDiskWriteSpeed, RdmaLogLevel");
   return -1;
 }
 
@@ -2861,6 +2867,148 @@ CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
   else
     ndbout_c("MaxDiskWriteSpeed set to %llu on node %d",
              (unsigned long long)new_value, processId);
+
+  return 0;
+}
+
+int
+CommandInterpreter::executeSetRdmaLogLevel(int processId,
+                                           const char *value_str,
+                                           bool all)
+{
+  /*
+   * RdmaLogLevel is a small enum: 0=errors only, 1=warnings,
+   * 2=info (default), 3=debug. Accept only a plain integer in that range.
+   */
+  if (value_str == nullptr || *value_str == '\0')
+  {
+    ndbout_c("Usage: <id>|ALL SET RdmaLogLevel <0..3>");
+    return -1;
+  }
+  errno = 0;
+  char *end_ptr = nullptr;
+  long parsed = strtol(value_str, &end_ptr, 10);
+  if (errno != 0 || end_ptr == value_str || *end_ptr != '\0' ||
+      parsed < 0 || parsed > 3)
+  {
+    ndbout_c("RdmaLogLevel must be an integer between 0 and 3 "
+             "(0=errors, 1=warnings, 2=info, 3=debug)");
+    return -1;
+  }
+  const Uint32 level = (Uint32)parsed;
+
+  /*
+   * Step 1: persist the new value in the management server's stored
+   * configuration so it survives node restarts. RdmaLogLevel is a
+   * per-connection ([RDMA] section) parameter, so we update every RDMA
+   * connection section (for ALL) or only those that involve the target
+   * node. This mirrors executeSetMaxDiskWriteSpeed()'s config-update step
+   * (the established online-config-change path).
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                          NDB_VERSION);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config_values);
+  bool found_any = false;
+  for (int i = 0; iter.openSection(CFG_SECTION_CONNECTION, i); i++)
+  {
+    Uint32 conn_type = 0;
+    iter.get(CFG_TYPE_OF_SECTION, &conn_type);
+    if (conn_type != (Uint32)CONNECTION_TYPE_RDMA)
+    {
+      iter.closeSection();
+      continue;
+    }
+    if (!all)
+    {
+      Uint32 n1 = 0, n2 = 0;
+      iter.get(CFG_CONNECTION_NODE_1, &n1);
+      iter.get(CFG_CONNECTION_NODE_2, &n2);
+      if ((int)n1 != processId && (int)n2 != processId)
+      {
+        iter.closeSection();
+        continue;
+      }
+    }
+    iter.set(CFG_RDMA_LOG_LEVEL, level);
+    iter.closeSection();
+    found_any = true;
+  }
+
+  if (!found_any)
+  {
+    ndbout_c("No RDMA connections found in configuration%s",
+             all ? "" : " for the specified node");
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  ndb_mgm_destroy_configuration(conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to update configuration");
+    printError();
+    return -1;
+  }
+
+  /*
+   * Step 2: apply the change to the running data nodes immediately via the
+   * CmvmiSetRdmaLogLevel dump code, so the persisted value takes effect
+   * without a restart. The literal below mirrors
+   * DumpStateOrd::CmvmiSetRdmaLogLevel; it is kept as a literal to avoid
+   * pulling a kernel signaldata header into the mgm client. We dump per
+   * data node, matching the behaviour of 'ALL DUMP <code>'.
+   */
+  const int dump_code = 103020;  // DumpStateOrd::CmvmiSetRdmaLogLevel
+  int params[2] = {dump_code, (int)level};
+  struct ndb_mgm_reply reply;
+  int runtime_rc = 0;
+  if (all)
+  {
+    struct ndb_mgm_cluster_state *cl = ndb_mgm_get_status(m_mgmsrv);
+    if (cl == 0)
+    {
+      ndbout_c("Configuration saved, but could not get node status to apply "
+               "the change at runtime. Restart nodes for it to take effect.");
+      printError();
+      return -1;
+    }
+    NdbAutoPtr<char> ap((char *)cl);
+    int nodeId = 0;
+    while (get_next_nodeid(cl, &nodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (ndb_mgm_dump_state(m_mgmsrv, nodeId, params, 2, &reply) != 0)
+      {
+        runtime_rc = -1;
+      }
+    }
+  }
+  else
+  {
+    runtime_rc = ndb_mgm_dump_state(m_mgmsrv, processId, params, 2, &reply);
+  }
+
+  if (runtime_rc != 0)
+  {
+    ndbout_c("Warning: configuration saved but failed to apply RdmaLogLevel "
+             "to one or more running nodes. Restart affected nodes for the "
+             "change to take effect.");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("RdmaLogLevel set to %u on all RDMA connections/nodes",
+             (unsigned)level);
+  else
+    ndbout_c("RdmaLogLevel set to %u for node %d", (unsigned)level, processId);
 
   return 0;
 }
