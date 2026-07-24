@@ -700,6 +700,20 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "32" },
 
   {
+    CFG_DB_RESTART_BARRIER_TIMEOUT,
+    "RestartBarrierTimeout",
+    DB_TOKEN,
+    "Max time in ms a node restart waits at the restart barrier in start "
+    "phase 110 for other restarting nodes to complete their recovery "
+    "before proceeding on its own. 0=Wait forever",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "0",
+    "0",
+    STR_VALUE(MAX_INT_RNIL) },
+
+  {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
     "MaxNoOfSchemaObjects",
     DB_TOKEN,
