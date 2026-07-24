@@ -7206,6 +7206,18 @@ bool Ndbcntr::is_node_starting(NodeId node_id) {
   }
 }
 
+bool Ndbcntr::is_any_node_below_restart_barrier() {
+  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+    if (is_node_starting(n) && !c_recoveredNodeSet.get(n)) {
+      jam();
+      jamLine(Uint16(n));
+      return true;
+    }
+  }
+  jam();
+  return false;
+}
+
 bool Ndbcntr::is_node_started(NodeId node_id) {
   /**
    * A node that has reached the restart barrier in start phase 110 is

@@ -34,6 +34,7 @@
 
 #include "Configuration.hpp"
 #include "Dbdih.hpp"
+#include "../ndbcntr/Ndbcntr.hpp"
 
 #include <signaldata/AllocNodeId.hpp>
 #include <signaldata/BlockCommitOrd.hpp>
@@ -1881,6 +1882,7 @@ void Dbdih::execSTTOR(Signal *signal) {
   switch (signal->theData[1]) {
     case 1:
       jam();
+      c_ndbcntr = (Ndbcntr *)globalData.getBlock(NDBCNTR);
       createMutexes(signal, 0);
       init_lcp_pausing_module();
 #ifdef DEBUG_LCP_COMP
@@ -27693,6 +27695,29 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
                  StopPermRef::SignalLength, JBB);
       return;
     }  // if
+
+    if (c_ndbcntr->is_any_node_below_restart_barrier()) {
+      jam();
+      /**
+       * A node restart is still below the restart barrier in start
+       * phase 110 (RONDB-1096). A graceful stop of a started node
+       * would kill that restarting node, so the stop permission is
+       * refused; the requester retries every 100 ms until the
+       * restarting node has reached the barrier (where it survives
+       * node stops), completed its start or failed. Nodes queued
+       * waiting to start do not block the stop. Note that the early
+       * restart window is already covered by the activeState check
+       * above; this check covers the long database recovery part of
+       * the restart. Aborting stops bypass the STOP_PERM protocol
+       * entirely, and a SIGTERM initiated stop escalates to an
+       * immediate stop after GracefulShutdownTimeout.
+       */
+      ref->senderData = senderData;
+      ref->errorCode = StopPermRef::NodeStartInProgress;
+      sendSignal(senderRef, GSN_STOP_PERM_REF, signal,
+                 StopPermRef::SignalLength, JBB);
+      return;
+    }
 
     /**
      * Lock
