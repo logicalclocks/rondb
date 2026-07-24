@@ -3086,6 +3086,9 @@ NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb, NdbDictionary::Dictionary &f)
 }
 
 NdbDictionaryImpl::~NdbDictionaryImpl() {
+  if (m_globalHash) {
+    releaseStaleTableReferences();
+  }
   /* Release local table references back to the global cache */
   NdbElement_t<Ndb_local_table_info> *curr =
       m_localHash.m_tableHash.getNext(nullptr);
@@ -5561,6 +5564,53 @@ int NdbDictionaryImpl::removeCachedObject(NdbTableImpl &impl) {
   m_globalHash->release(&impl);
   m_globalHash->unlock();
   DBUG_RETURN(0);
+}
+
+/*
+ * Evict a stale local cache entry but PARK the global-cache reference
+ * instead of releasing it: Table/Column/NdbRecord pointers previously
+ * returned through this Ndb are backed by that reference, and this Ndb
+ * cannot know whether the application is still using them. Releasing
+ * inline can delete the object under the application's feet (observed
+ * use-after-free when a batch read touches one table twice around a
+ * drop+recreate). Parked references are released by
+ * releaseStaleTableReferences().
+ */
+void NdbDictionaryImpl::park_stale_object(const BaseString &internalName,
+                                          NdbTableImpl *impl) {
+  DBUG_ENTER("NdbDictionaryImpl::park_stale_object");
+  DBUG_PRINT("enter", ("internal_name: %s", internalName.c_str()));
+  m_localHash.drop(internalName);  // destroys the wrapper, not the impl
+  if (unlikely(m_staleTableImpls.push_back(impl) != 0)) {
+    // Out of memory: release inline rather than lose track of the object
+    // (best effort - reintroduces the inline-release hazard for this one
+    // object under memory pressure).
+    m_globalHash->lock();
+    m_globalHash->release(impl, 1);
+    m_globalHash->unlock();
+  }
+  DBUG_VOID_RETURN;
+}
+
+/*
+ * Release the parked global-cache references of stale table/index objects
+ * evicted by getTable()/getIndex() after schema changes. Runs from the
+ * destructor at the latest; applications with known safe points (no
+ * previously returned Table/Column/NdbRecord pointers in use, e.g. a
+ * connection pool between requests) may call it earlier through
+ * NdbDictionary::Dictionary::releaseStaleTableReferences() to bound the
+ * number of parked objects under schema churn.
+ */
+void NdbDictionaryImpl::releaseStaleTableReferences() {
+  DBUG_ENTER("NdbDictionaryImpl::releaseStaleTableReferences");
+  while (m_staleTableImpls.size() > 0) {
+    NdbTableImpl *stale_impl = m_staleTableImpls.back();
+    m_staleTableImpls.erase(m_staleTableImpls.size() - 1);
+    m_globalHash->lock();
+    m_globalHash->release(stale_impl, 1);
+    m_globalHash->unlock();
+  }
+  DBUG_VOID_RETURN;
 }
 
 int NdbDictInterface::create_index_obj_from_table(NdbIndexImpl **dst,
