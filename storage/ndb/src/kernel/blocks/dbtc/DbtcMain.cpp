@@ -2309,8 +2309,16 @@ void Dbtc::execTCSEIZEREQ(Signal *signal) {
 
   {
     {
+      /**
+       * A node parked at the restart barrier in start phase 110 is
+       * fully recovered and can coordinate transactions for remote
+       * API nodes although it has not yet reported started
+       * (RONDB-1096). Local block seizes are allowed during the
+       * whole start as before.
+       */
       if (!(sl == NodeState::SL_STARTED ||
-            (sl == NodeState::SL_STARTING && local == true))) {
+            (sl == NodeState::SL_STARTING &&
+             (local == true || getNodeState().getNodeRecovered())))) {
         jam();
 
         Uint32 errCode = 0;
