@@ -5613,7 +5613,17 @@ void Suma::sendSUB_GCP_COMPLETE_REP(Signal *signal) {
 
     if (m_switchover_buckets.isclear()) {
       jam();
+      /**
+       * The SL_STARTING condition below ends the STTOR phase 101 wait
+       * for the startup handover. A node parked at the restart barrier
+       * in start phase 110 is still SL_STARTING with empty
+       * m_handover_nodes, but its phase 101 STTORRY was already sent;
+       * a bucket switchover completing while parked (e.g. taking over
+       * the buckets of a gracefully stopping peer) must not send a
+       * second STTORRY (RONDB-1096).
+       */
       if (getNodeState().startLevel == NodeState::SL_STARTING &&
+          !getNodeState().getNodeRecovered() &&
           c_startup.m_handover_nodes.isclear()) {
         jam();
         sendSTTORRY(signal);

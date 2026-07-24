@@ -3753,8 +3753,16 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
   c_startedNodeSet.bitANDC(allFailed);
   c_recoveredNodeSet.bitANDC(allFailed);
 
+  /**
+   * A node parked at the restart barrier in start phase 110 is fully
+   * recovered and must not die here; it takes the full started-node
+   * path below so that the failure is handled by all blocks (QMGR and
+   * DBDIH are informed, DBDIH sends NDB_FAILCONF when the failure
+   * handling completes) instead of the short-circuit reply used by
+   * nodes that are still restarting (RONDB-1096).
+   */
   const NodeState &st = getNodeState();
-  if (st.startLevel == st.SL_STARTING) {
+  if (st.startLevel == st.SL_STARTING && !st.getNodeRecovered()) {
     jam();
 
     const Uint32 phase = st.starting.startPhase;
@@ -7178,7 +7186,13 @@ bool Ndbcntr::is_node_starting(NodeId node_id) {
 }
 
 bool Ndbcntr::is_node_started(NodeId node_id) {
-  if (c_startedNodeSet.get(node_id)) {
+  /**
+   * A node that has reached the restart barrier in start phase 110 is
+   * a fully synchronized replica and is counted as started here, so
+   * that e.g. the arbitration check counts it among the previously
+   * alive nodes (RONDB-1096).
+   */
+  if (c_startedNodeSet.get(node_id) || c_recoveredNodeSet.get(node_id)) {
     jam();
     return true;
   } else {
