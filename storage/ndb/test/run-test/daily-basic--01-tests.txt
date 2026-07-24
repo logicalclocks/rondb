@@ -148,3 +148,23 @@ cmd: testSystemRestart
 args: -n SR1 T1
 max-time: 4140
 
+
+cmd: testNodeRestart
+args: -n RestartBarrierWaitRelease T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierStarterFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierStartedNodeFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierMasterFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierTimeout T1
+max-time: 900

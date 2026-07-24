@@ -142,6 +142,8 @@ class DumpStateOrd {
     NdbcntrTestStopOnError = 25,
     NdbcntrStopNodes = 70,
     NdbcntrStallStartPhase = 71,
+    // Set RestartBarrierTimeout (ms) at runtime, arg 1 = new value
+    NdbcntrSetRestartBarrierTimeout = 72,
     // 100-105 TUP and ACC
     // 200-240 UTIL
     // 300-305 TRIX

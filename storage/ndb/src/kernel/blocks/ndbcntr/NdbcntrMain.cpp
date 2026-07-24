@@ -4444,6 +4444,15 @@ void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
 #endif
   }
 
+  if (arg == DumpStateOrd::NdbcntrSetRestartBarrierTimeout) {
+    if (signal->getLength() == 2) {
+      c_restart_barrier_timeout_ms = signal->theData[1];
+      g_eventLogger->info(
+          "NDBCNTR: DUMP 72 set RestartBarrierTimeout to %u ms",
+          c_restart_barrier_timeout_ms);
+    }
+  }
+
 }  // Ndbcntr::execDUMP_STATE_ORD()
 
 void Ndbcntr::updateNodeState(Signal *signal, const NodeState &newState) const {
