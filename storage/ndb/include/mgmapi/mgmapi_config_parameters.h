@@ -302,6 +302,7 @@
 #define CFG_DB_MAX_RR_GROUP_SIZE      701
 #define CFG_DB_NUM_LQHKEYREQ_COUNTS   702
 #define CFG_DB_NUM_SCAN_FRAGREQ_COUNTS 703
+#define CFG_DB_RESTART_BARRIER_TIMEOUT 704
 
 /* End RonDB only configuration parameters */
 

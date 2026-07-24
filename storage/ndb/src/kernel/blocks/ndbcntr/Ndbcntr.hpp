@@ -71,6 +71,7 @@
 #define ZSTART_PHASE_7 7
 #define ZSTART_PHASE_8 8
 #define ZSTART_PHASE_9 9
+#define ZSTART_PHASE_110 110
 #define ZSTART_PHASE_END 255
 #endif
 
@@ -348,6 +349,17 @@ class Ndbcntr : public SimulatedBlock {
   bool wait_sp(Signal *, Uint32 sp);
   void wait_sp_rep(Signal *);
 
+  /**
+   * Restart barrier in start phase 110 (RONDB-1096): a node restart
+   * parks fully recovered, before reporting started, until all
+   * concurrently restarting nodes have completed their recovery.
+   * The barrier release is coordinated by the NDBCNTR master.
+   */
+  void handle_start_phase_110(Signal *);
+  void restart_barrier_rep(Signal *);
+  void check_restart_barrier(Signal *);
+  void leave_restart_barrier(Signal *, const char *reason);
+
   void execSTART_COPYREF(Signal *);
   void execSTART_COPYCONF(Signal *);
 
@@ -452,6 +464,20 @@ class Ndbcntr : public SimulatedBlock {
    */
   NdbNodeBitmask c_cntr_startedNodeSet;
   NdbNodeBitmask c_startedNodeSet;
+
+  /**
+   * c_recoveredNodeSet contains the nodes that have reported reaching
+   * the restart barrier in start phase 110, i.e. nodes that have
+   * completed the database recovery of a node restart but have not
+   * necessarily completed the start yet (RONDB-1096). Bits are cleared
+   * when a node fails or begins a new restart. The set is maintained
+   * on all nodes so that a new master taking over has the reports of
+   * all barrier waiters without any re-registration.
+   */
+  NdbNodeBitmask c_recoveredNodeSet;
+  bool m_restart_barrier_waiting;
+  NDB_TICKS m_restart_barrier_entry_time;
+  Uint32 c_restart_barrier_timeout_ms;
   
  public:
   struct StopRecord {

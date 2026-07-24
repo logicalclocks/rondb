@@ -590,6 +590,22 @@ ndbd_send_started_bitmask(Uint32 x)
   return x >= NDBD_SEND_STARTED_BITMASK;
 }
 
+/**
+ * RonDB: node restarts park at the restart barrier in start phase 110
+ * until all concurrently restarting nodes have completed recovery
+ * (RONDB-1096). The barrier is only used when the NDBCNTR master and
+ * the peer NDBCNTRs support it; against older nodes we fail open and
+ * complete the start immediately as before.
+ */
+#define NDBD_RESTART_PHASE_110_BARRIER NDB_MAKE_VERSION(25,10,16)
+static
+inline
+int
+ndbd_restart_phase_110_barrier(Uint32 x)
+{
+  return x >= NDBD_RESTART_PHASE_110_BARRIER;
+}
+
 // New limitations from WL#12757
 
 #define NDBD_80_PROTOCOL_ACCEPT_74 NDB_MAKE_VERSION(7,4,6)
