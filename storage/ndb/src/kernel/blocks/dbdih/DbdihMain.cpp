@@ -9531,7 +9531,13 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
     startLcpMasterTakeOver(signal, oldMasterId);
     startGcpMasterTakeOver(signal, oldMasterId);
 
-    if (getNodeState().getNodeRestartInProgress()) {
+    /**
+     * A node parked at the restart barrier in start phase 110 is
+     * fully recovered and can take over as master like a started
+     * node, so it must not die here (RONDB-1096).
+     */
+    if (getNodeState().getNodeRestartInProgress() &&
+        !getNodeState().getNodeRecovered()) {
       jam();
       progError(__LINE__, NDBD_EXIT_MASTER_FAILURE_DURING_NR);
     }
