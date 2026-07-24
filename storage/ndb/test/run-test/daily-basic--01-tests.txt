@@ -168,3 +168,7 @@ max-time: 900
 cmd: testNodeRestart
 args: -n RestartBarrierTimeout T1
 max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierServeWhileParked T1
+max-time: 900

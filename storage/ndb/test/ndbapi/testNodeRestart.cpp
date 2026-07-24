@@ -10584,6 +10584,63 @@ int runRestartBarrierMasterFail(NDBT_Context *ctx, NDBT_Step *step) {
   return restartBarrierRecoverAll(res);
 }
 
+int runRestartBarrierServeWhileParked(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /**
+   * A node parked at the restart barrier must serve transactions as
+   * TC although it still reports "starting" to the MGM server: the
+   * NDB API marks it alive on the next API_REGCONF heartbeat and
+   * DBTC accepts remote TCSEIZEREQ at start phase >= 110. Start
+   * transactions hinted at the parked node (the hint is only honored
+   * if the API considers the node usable) and execute a committed
+   * read through it.
+   */
+  Ndb *pNdb = GETNDB(step);
+  HugoOperations hugoOps(*ctx->getTab());
+  bool served = false;
+  for (int retry = 0; retry < 60 && !served; retry++) {
+    if (hugoOps.startTransaction(pNdb, parkedNode, 0) == 0) {
+      if (hugoOps.getTransaction()->getConnectedNodeId() ==
+          (Uint32)parkedNode) {
+        if (hugoOps.pkReadRecord(pNdb, 0) != 0) {
+          hugoOps.closeTransaction(pNdb);
+          return NDBT_FAILED;
+        }
+        if (hugoOps.execute_Commit(pNdb) == 0) {
+          served = true;
+        }
+      }
+      hugoOps.closeTransaction(pNdb);
+    }
+    if (!served) NdbSleep_SecSleep(1);
+  }
+  if (!served) {
+    g_err << "Parked node " << parkedNode
+          << " did not serve any transaction as TC" << endl;
+    return NDBT_FAILED;
+  }
+  ndbout_c("parked node %u served a committed read as TC", parkedNode);
+
+  /* While serving, the node must still report "starting" to the MGMd */
+  if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+    g_err << "Node " << parkedNode
+          << " no longer reports starting while parked" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Release the stalled node and finish */
+  if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
+  if (res.waitClusterStarted(600)) return NDBT_FAILED;
+  return NDBT_OK;
+}
+
 int runRestartBarrierTimeout(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter res;
   int r = restartBarrierCheckPrereqs(res);
@@ -11470,6 +11527,14 @@ TESTCASE("RestartBarrierTimeout",
          "own (fail open) although another node is still restarting "
          "(RONDB-1096)") {
   INITIALIZER(runRestartBarrierTimeout);
+}
+TESTCASE("RestartBarrierServeWhileParked",
+         "Verify that a node parked at the restart barrier serves "
+         "transactions as TC while still reporting starting to the MGM "
+         "server (RONDB-1096)") {
+  INITIALIZER(runLoadTable);
+  INITIALIZER(runRestartBarrierServeWhileParked);
+  FINALIZER(runClearTable);
 }
 NDBT_TESTSUITE_END(testNodeRestart)
 
