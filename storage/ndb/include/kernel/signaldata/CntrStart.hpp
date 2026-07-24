@@ -115,7 +115,10 @@ struct CntrWaitRep {
     ZWAITPOINT_6_2 = 6,
     ZWAITPOINT_7_1 = 7,
     ZWAITPOINT_7_2 = 8,
-    ZWAITPOINT_4_2_TO = 9  // We are forced to TO (during SR)
+    ZWAITPOINT_4_2_TO = 9,  // We are forced to TO (during SR)
+    // Restart barrier in start phase 110, node restarts wait for
+    // each other before reporting started (RONDB-1096)
+    ZWAITPOINT_RESTART_BARRIER = 10
   };
 };
 
