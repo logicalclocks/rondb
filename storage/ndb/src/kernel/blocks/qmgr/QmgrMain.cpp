@@ -493,6 +493,10 @@ void Qmgr::execREAD_CONFIG_REQ(Signal *signal) {
       m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
+  m_graceful_shutdown_timeout_ms = 27000;
+  ndb_mgm_get_int_parameter(p, CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT,
+                            &m_graceful_shutdown_timeout_ms);
+
   m_num_multi_trps = 0;
   if (globalData.ndbMtSendThreads) {
     ndb_mgm_get_int_parameter(p, CFG_DB_NODE_GROUP_TRANSPORTERS,
@@ -3253,12 +3257,24 @@ void Qmgr::handle_graceful_shutdown(Signal *signal)
   NDB_TICKS now = NdbTick_getCurrentTicks();
   if (m_graceful_shutdown_started)
   {
-    Uint32 elapsed = NdbTick_Elapsed(m_graceful_shutdown_start_time, now).seconds();
-    if (elapsed > 27)
+    /**
+     * The deadline is configurable through GracefulShutdownTimeout
+     * (0 = wait forever) since a graceful stop can legitimately be
+     * delayed by the cluster, e.g. while another node restart is
+     * below the restart barrier in start phase 110 (RONDB-1096).
+     * The default of 27000 ms fits within the default Kubernetes
+     * terminationGracePeriodSeconds of 30 seconds.
+     */
+    Uint64 elapsed =
+        NdbTick_Elapsed(m_graceful_shutdown_start_time, now).milliSec();
+    if (m_graceful_shutdown_timeout_ms != 0 &&
+        elapsed > Uint64(m_graceful_shutdown_timeout_ms))
     {
       jam();
-      g_eventLogger->info("We initiated a graceful shutdown after kill -TERM, more than 30"
-                          " seconds passed without completion, we stop now");
+      g_eventLogger->info("We initiated a graceful shutdown after kill -TERM,"
+                          " more than %u milliseconds passed without"
+                          " completion, we stop now",
+                          m_graceful_shutdown_timeout_ms);
       childReportSignal(15);
       globalData.theRestartFlag = perform_stop;
     }

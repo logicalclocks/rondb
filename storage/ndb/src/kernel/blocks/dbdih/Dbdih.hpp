@@ -2425,6 +2425,9 @@ class Dbdih : public SimulatedBlock {
   BlockReference clocalqlqhblockref;
   BlockReference clocaltcblockref;
   BlockReference cmasterdihref;
+  // Direct pointer to NDBCNTR (same thread), used to check the
+  // restart barrier state in STOP_PERM handling (RONDB-1096)
+  class Ndbcntr *c_ndbcntr;
   Uint16 cownNodeId;
   BlockReference cndbStartReqBlockref;
   BlockReference cntrlblockref;

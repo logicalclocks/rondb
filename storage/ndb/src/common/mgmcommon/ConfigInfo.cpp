@@ -748,6 +748,21 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     STR_VALUE(MAX_INT_RNIL) },
 
   {
+    CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT,
+    "GracefulShutdownTimeout",
+    DB_TOKEN,
+    "Max time in ms a graceful shutdown initiated by SIGTERM may take "
+    "before it escalates into an immediate stop. A graceful stop can be "
+    "delayed by the cluster, e.g. while another node restart is below the "
+    "restart barrier in start phase 110. 0=Wait forever",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "27000",
+    "0",
+    STR_VALUE(MAX_INT_RNIL) },
+
+  {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
     "MaxNoOfSchemaObjects",
     DB_TOKEN,

@@ -44,6 +44,7 @@
   { ndbout << "DIH::" << x << endl; }
 
 void Dbdih::initData() {
+  c_ndbcntr = nullptr;
   c_any_node_waiting_for_lcp = false;
   c_start_tab_queued = 0;
   c_end_tab_queued = 0;

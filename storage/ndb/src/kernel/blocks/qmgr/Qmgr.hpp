@@ -880,6 +880,8 @@ class Qmgr : public SimulatedBlock {
   bool m_hb_order_config_used;
   bool m_graceful_shutdown_started;
   NDB_TICKS m_graceful_shutdown_start_time;
+  // GracefulShutdownTimeout in ms, 0 = wait forever (RONDB-1096)
+  Uint32 m_graceful_shutdown_timeout_ms;
 
 #ifdef ERROR_INSERT
   Uint32 nodeFailCount;

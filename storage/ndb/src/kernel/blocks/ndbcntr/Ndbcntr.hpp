@@ -515,6 +515,14 @@ class Ndbcntr : public SimulatedBlock {
   bool is_node_started(NodeId);
   bool is_node_starting(NodeId);
 
+  /**
+   * Is any node restart still below the restart barrier in start
+   * phase 110, i.e. actively recovering and not yet able to survive
+   * the stop of another node. Nodes queued waiting to start are not
+   * counted (RONDB-1096).
+   */
+  bool is_any_node_below_restart_barrier();
+
  private:
   bool is_nodegroup_starting(Signal *, NodeId);
   void get_node_group_mask(Signal *, NodeId, NdbNodeBitmask &);
