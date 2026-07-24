@@ -4939,8 +4939,15 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
   ptrCheckGuard(nodePtr, MAX_NODES, nodeRec);
 
   char buf[500];
+  /**
+   * A node that has reached the restart barrier in start phase 110 is
+   * fully recovered although it has not yet reported started; it
+   * survives the disconnect and participates in the normal node
+   * failure handling instead of dying here (RONDB-1096).
+   */
   if (nodeInfo.getType() == NodeInfo::DB &&
-      getNodeState().startLevel < NodeState::SL_STARTED) {
+      getNodeState().startLevel < NodeState::SL_STARTED &&
+      !getNodeState().getNodeRecovered()) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
@@ -5871,7 +5878,12 @@ void Qmgr::failReportLab(Signal *signal, Uint16 aFailedNode,
     return;
   }  // if
 
-  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+  /**
+   * A node parked at the restart barrier in start phase 110 is fully
+   * recovered and survives failures of other nodes (RONDB-1096).
+   */
+  if (getNodeState().startLevel < NodeState::SL_STARTED &&
+      !getNodeState().getNodeRecovered()) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
@@ -6027,7 +6039,13 @@ void Qmgr::execPREP_FAILREQ(Signal *signal) {
     return;
   }  // if
 
-  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+  /**
+   * A node parked at the restart barrier in start phase 110 is fully
+   * recovered and participates in the failure protocol as a normal
+   * cluster citizen (RONDB-1096).
+   */
+  if (getNodeState().startLevel < NodeState::SL_STARTED &&
+      !getNodeState().getNodeRecovered()) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
