@@ -1,9 +1,12 @@
 "[shutting down mysqld 1]"
 "[shutting down mysqld 2]"
 # Barrier holds while a node is below phase 110, wave releases together
+# Consecutive waves reset barrier and dictionary lock state
 # Failure of the stalled starter releases the barrier
 # Parked node survives the crash of a started node group peer
 # Parked node survives a master failure, barrier state survives takeover
+# Parked master reconstructs its node-restart dictionary lock
+# Remote master reconstructs the parked node's node-restart dictionary lock
 # RestartBarrierTimeout releases a parked node on its own (fail open)
 # Parked node serves transactions while still reporting starting
 "[dropping NDBT test table]"
