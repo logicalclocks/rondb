@@ -1,0 +1,90 @@
+# RONDB-1096: restart barrier at start phase 110
+#
+# Runs the six RestartBarrier* cases from the testNodeRestart NDBT
+# program against a cluster with 4 data nodes in 2 node groups (see
+# ndb_restart_barrier.cnf). The cases stall one restarting node below
+# the barrier with DUMP 71 (error insert 1002) and verify that a node
+# restarting in another node group parks at start phase 110, that
+# parked nodes survive node failures, that the barrier releases
+# correctly, that RestartBarrierTimeout fails open, and that a parked
+# node serves transactions while still reporting "starting".
+#
+# The stall mechanism needs error-insert capable ndbmtd binaries, and
+# the testNodeRestart binary is only present in WITH_NDB_TEST builds.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its test table (TEST_DB.T1) directly via
+# the NDB API. Tables created outside of the MySQL Server crash the
+# MySQL Server, so both MySQL Servers are shut down while the NDBT
+# cases run and started again after the NDBT table has been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # Barrier holds while a node is below phase 110, wave releases together
+--exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Failure of the stalled starter releases the barrier
+--exec $TEST_NODE_RESTART -n RestartBarrierStarterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Parked node survives the crash of a started node group peer
+--exec $TEST_NODE_RESTART -n RestartBarrierStartedNodeFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Parked node survives a master failure, barrier state survives takeover
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # RestartBarrierTimeout releases a parked node on its own (fail open)
+--exec $TEST_NODE_RESTART -n RestartBarrierTimeout T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Parked node serves transactions while still reporting starting
+--exec $TEST_NODE_RESTART -n RestartBarrierServeWhileParked T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo "[dropping NDBT test table]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--echo # All restart barrier tests passed
