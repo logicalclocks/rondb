@@ -1,13 +1,15 @@
 # RONDB-1096: restart barrier at start phase 110
 #
-# Runs the six RestartBarrier* cases from the testNodeRestart NDBT
+# Runs the nine RestartBarrier* cases from the testNodeRestart NDBT
 # program against a cluster with 4 data nodes in 2 node groups (see
 # ndb_restart_barrier.cnf). The cases stall one restarting node below
 # the barrier with DUMP 71 (error insert 1002) and verify that a node
 # restarting in another node group parks at start phase 110, that
-# parked nodes survive node failures, that the barrier releases
-# correctly, that RestartBarrierTimeout fails open, and that a parked
-# node serves transactions while still reporting "starting".
+# parked nodes survive node failures, that consecutive waves reset
+# their state, that the barrier releases correctly, that dictionary
+# lock state survives local and remote master takeover, that
+# RestartBarrierTimeout fails open, and that a parked node serves
+# transactions while still reporting "starting".
 #
 # The stall mechanism needs error-insert capable ndbmtd binaries, and
 # the testNodeRestart binary is only present in WITH_NDB_TEST builds.
@@ -59,6 +61,9 @@ EOF
 --echo # Barrier holds while a node is below phase 110, wave releases together
 --exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
+--echo # Consecutive waves reset barrier and dictionary lock state
+--exec $TEST_NODE_RESTART -n RestartBarrierRepeatedWaves T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
 --echo # Failure of the stalled starter releases the barrier
 --exec $TEST_NODE_RESTART -n RestartBarrierStarterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
@@ -67,6 +72,12 @@ EOF
 
 --echo # Parked node survives a master failure, barrier state survives takeover
 --exec $TEST_NODE_RESTART -n RestartBarrierMasterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Parked master reconstructs its node-restart dictionary lock
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFailDictLock T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Remote master reconstructs the parked node's node-restart dictionary lock
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFailRemoteDictLock T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 --echo # RestartBarrierTimeout releases a parked node on its own (fail open)
 --exec $TEST_NODE_RESTART -n RestartBarrierTimeout T1 >> $NDB_TOOLS_OUTPUT 2>&1
