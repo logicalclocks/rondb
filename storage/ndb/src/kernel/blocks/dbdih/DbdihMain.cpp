@@ -5522,7 +5522,22 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
       /* State generated in DBDIH */
       jam();
       /* This state change will be reported in all nodes at all times */
-      ndbrequire(nodePtr.p->nodeRecoveryStatus == NodeRecord::NODE_FAILED);
+      if (nodePtr.p->nodeRecoveryStatus != NodeRecord::NODE_FAILED) {
+        jam();
+        jamLine(nodePtr.p->nodeRecoveryStatus);
+        /**
+         * We completed our own start between the node failure and the
+         * completion of its failure handling: the NODE_FAILED
+         * transition was ignored above since we were not yet started
+         * at that time. This is reachable since the restart barrier
+         * (RONDB-1096) allows a node restart to survive node
+         * failures, complete its start and only then see the tail of
+         * the failure handling. We got into the game too late for
+         * this node failure, so the transition is ignored, as is done
+         * for other transitions we arrive too late for.
+         */
+        return;
+      }
       nodePtr.p->nodeFailCompletedTime = current_time;
       break;
     case NodeRecord::ALLOCATED_NODE_ID:
