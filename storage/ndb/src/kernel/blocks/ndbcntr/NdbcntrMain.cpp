@@ -2399,6 +2399,12 @@ void Ndbcntr::execCNTR_START_REQ(Signal *signal) {
       rep->nodeId = nodeId;
       EXECUTE_DIRECT(DBDIH, GSN_NDBCNTR_START_WAIT_REP, signal,
                      NdbcntrStartWaitRep::SignalLength);
+      /**
+       * The node has been queued waiting to start and no longer
+       * holds the restart barrier closed, re-evaluate it
+       * (RONDB-1096).
+       */
+      check_restart_barrier(signal);
       return;
     }
   }
@@ -2410,6 +2416,11 @@ void Ndbcntr::execCNTR_START_REQ(Signal *signal) {
     jam();
     startWaitingNodes(signal);
   }
+  /**
+   * Queueing or granting the node may have changed the set of nodes
+   * the restart barrier waits for, re-evaluate it (RONDB-1096).
+   */
+  check_restart_barrier(signal);
   return;
 }
 
@@ -3569,7 +3580,7 @@ void Ndbcntr::check_restart_barrier(Signal *signal) {
   }
   NdbNodeBitmask waiters;
   for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
-    if (!is_node_starting(n)) continue;
+    if (!is_node_restarting(n)) continue;
     if (!c_recoveredNodeSet.get(n)) {
       jam();
       jamLine(Uint16(n));
@@ -4444,10 +4455,16 @@ void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
   if (arg == DumpStateOrd::NdbcntrStallStartPhase) {
 #ifdef ERROR_INSERT
     if (signal->getLength() == 2) {
-      c_error_insert_extra = signal->theData[1];
+      /**
+       * SET_ERROR_INSERT_VALUE resets c_error_insert_extra, so the
+       * stall phase must be assigned together with the error insert
+       * value using SET_ERROR_INSERT_VALUE2, not before it. With the
+       * old order the stall phase was always overwritten with 0 and
+       * the stall never engaged.
+       */
+      SET_ERROR_INSERT_VALUE2(1002, signal->theData[1]);
       g_eventLogger->info("NDBCNTR: DUMP 71 stalling start phase %u",
                           c_error_insert_extra);
-      SET_ERROR_INSERT_VALUE(1002);
     } else if (ERROR_INSERTED(1002)) {
       g_eventLogger->info("NDBCNTR: DUMP 71 clearing start phase stall");
       CLEAR_ERROR_INSERT_VALUE;
@@ -7184,8 +7201,14 @@ bool Ndbcntr::is_nodegroup_starting(Signal *signal, NodeId node_id) {
     if (mask.get(i) && i != getOwnNodeId()) {
       jam();
       jamLine(Uint16(i));
-      /* Node i is in same node group */
-      if (is_node_starting(i)) {
+      /**
+       * Node i is in same node group. is_node_restarting() rather
+       * than is_node_starting() so that a master that took over
+       * during another node's restart (e.g. with a node parked at
+       * the restart barrier) does not grant a second start in the
+       * same node group (RONDB-1096).
+       */
+      if (is_node_restarting(i)) {
         jam();
         return true;
       }
@@ -7206,9 +7229,36 @@ bool Ndbcntr::is_node_starting(NodeId node_id) {
   }
 }
 
+bool Ndbcntr::is_node_restarting(NodeId node_id) {
+  /**
+   * Is the node somewhere in a restart. Unlike is_node_starting()
+   * this is maintained on ALL nodes: c_clusterNodes through
+   * CM_ADD_REP / READ_NODESCONF and c_startedNodeSet through the
+   * CNTR_START_REP broadcast, both pruned on node failure on every
+   * node. A master taking over after a master failure therefore has
+   * the correct view, whereas c_start.m_starting and
+   * c_cntr_startedNodeSet are only maintained on the master and on
+   * the starting node itself, which made restarting nodes invisible
+   * to a new master (RONDB-1096).
+   *
+   * Nodes queued waiting to start (m_waiting) are excluded: a
+   * same-node-group waiter cannot start until a parked node has
+   * completed, so counting it would deadlock the restart barrier.
+   */
+  if (c_start.m_waiting.get(node_id)) {
+    jam();
+    return false;
+  }
+  if (c_start.m_starting.get(node_id)) {
+    jam();
+    return true;
+  }
+  return c_clusterNodes.get(node_id) && !c_startedNodeSet.get(node_id);
+}
+
 bool Ndbcntr::is_any_node_below_restart_barrier() {
   for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
-    if (is_node_starting(n) && !c_recoveredNodeSet.get(n)) {
+    if (is_node_restarting(n) && !c_recoveredNodeSet.get(n)) {
       jam();
       jamLine(Uint16(n));
       return true;
