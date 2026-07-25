@@ -53,7 +53,12 @@ class DictLockReq {
     DropFileLock = 10,
     DropFilegroupLock = 11,
     SumaStartMe = 12,
-    SumaHandOver = 13
+    SumaHandOver = 13,
+    /**
+     * Re-register NodeRestartLock state after DICT master takeover.
+     * userPtr == RNIL reports that the sender holds no restart lock.
+     */
+    NodeRestartLockTakeover = 14
   };
 
  private:

@@ -2717,12 +2717,14 @@ class Dbdih : public SimulatedBlock {
 
   // slave
   void sendDictLockReq(Signal *signal, Uint32 lockType, Callback c);
+  void sendDictLockTakeoverReq(Signal *signal, Uint32 delayMillis = 0);
   void recvDictLockConf(Signal *signal);
   void sendDictUnlockOrd(Signal *signal, Uint32 lockSlavePtrI);
 
   // NR
   Uint32 c_dictLockSlavePtrI_nodeRestart;  // userPtr for NR
   void recvDictLockConf_nodeRestart(Signal *signal, Uint32 data, Uint32 ret);
+  void releaseDictLock_nodeRestart(Signal *signal);
 
   Uint32 c_error_7181_ref;
 

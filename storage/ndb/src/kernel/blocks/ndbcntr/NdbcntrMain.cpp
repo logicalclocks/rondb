@@ -2036,13 +2036,25 @@ void Ndbcntr::execREAD_NODESCONF(Signal *signal) {
 
 void Ndbcntr::execCM_ADD_REP(Signal *signal) {
   jamEntry();
-  ndbrequire(signal->theData[0] < MAX_NDB_NODES);
-  c_clusterNodes.set(signal->theData[0]);
+  const NodeId nodeId = signal->theData[0];
+  ndbrequire(nodeId < MAX_NDB_NODES);
+  c_clusterNodes.set(nodeId);
   /**
    * A node joining the cluster starts a new restart, it is not
    * recovered until it reports reaching the restart barrier again.
    */
-  c_recoveredNodeSet.clear(signal->theData[0]);
+  c_recoveredNodeSet.clear(nodeId);
+
+  if (m_restart_barrier_waiting &&
+      !ndbd_restart_phase_110_barrier(getNodeInfo(nodeId).m_version)) {
+    jam();
+    g_eventLogger->info(
+        "Node %u, which does not support the restart barrier, joined"
+        " while this node was waiting; completing start without waiting",
+        nodeId);
+    leave_restart_barrier(
+        signal, "a data node without restart barrier support joined");
+  }
 }
 
 void Ndbcntr::sendCntrStartReq(Signal *signal) {
@@ -3488,17 +3500,26 @@ void Ndbcntr::handle_start_phase_110(Signal *signal) {
       return;
   }
 
-  if (!ndbd_restart_phase_110_barrier(getNodeInfo(cmasterNodeId).m_version)) {
+  NdbNodeBitmask unsupportedNodes;
+  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+    if (c_clusterNodes.get(n) &&
+        !ndbd_restart_phase_110_barrier(getNodeInfo(n).m_version)) {
+      unsupportedNodes.set(n);
+    }
+  }
+  if (!unsupportedNodes.isclear()) {
     jam();
     /**
-     * The master does not know about the restart barrier. Fail open
-     * and complete the start immediately as before the barrier
-     * existed.
+     * Every current data-node member must understand both the barrier
+     * report and the recovered-node semantics. Any member can become
+     * master or president after a failure, so checking only the current
+     * master is insufficient in a mixed-version cluster.
      */
+    char buf[NdbNodeBitmask::TextLength + 1];
     g_eventLogger->info(
-        "Master node %u does not support the restart barrier,"
+        "Data nodes %s do not support the restart barrier,"
         " completing start without waiting",
-        cmasterNodeId);
+        unsupportedNodes.getText(buf));
     sendSttorry(signal);
     return;
   }
@@ -3909,7 +3930,19 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
    * barrier reports are broadcast to all NDBCNTRs so we already have
    * them in c_recoveredNodeSet.
    */
-  check_restart_barrier(signal);
+  if (tMasterFailed && m_restart_barrier_waiting &&
+      !ndbd_restart_phase_110_barrier(
+          getNodeInfo(cmasterNodeId).m_version)) {
+    jam();
+    g_eventLogger->info(
+        "New master node %u does not support the restart barrier,"
+        " completing start without waiting",
+        cmasterNodeId);
+    leave_restart_barrier(
+        signal, "new master does not support the restart barrier");
+  } else {
+    check_restart_barrier(signal);
+  }
 
   return;
 }  // Ndbcntr::execNODE_FAILREP()
@@ -4642,7 +4675,9 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
                JBB);
     return;
   } else if (!singleuser) {
-    if (StopReq::getSystemStop(c_stopRec.stopReq.requestInfo)) {
+    const bool systemStop =
+        StopReq::getSystemStop(c_stopRec.stopReq.requestInfo);
+    if (systemStop) {
       jam();
       if (StopReq::getPerformRestart(c_stopRec.stopReq.requestInfo)) {
         ((Configuration &)m_ctx.m_config).stopOnError(false);
@@ -4653,6 +4688,21 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
       jam();
       return;
     }
+
+    if (!systemStop) {
+      /**
+       * Obtain permission before leaving SL_STARTED. In particular, a
+       * restart below the phase-110 barrier can then postpone this stop
+       * without making this node unavailable to the cluster.
+       */
+      StopPermReq *permReq = (StopPermReq *)&signal->theData[0];
+      permReq->senderRef = reference();
+      permReq->senderData = 12;
+      sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
+                 StopPermReq::SignalLength, JBB);
+      return;
+    }
+
     signal->theData[0] = NDB_LE_NDBStopStarted;
     signal->theData[1] =
         StopReq::getSystemStop(c_stopRec.stopReq.requestInfo) ? 1 : 0;
@@ -4780,7 +4830,8 @@ bool Ndbcntr::StopRecord::checkNodeFail(Signal *signal) {
 
   stopReq.senderRef = 0;
 
-  if (cntr.getNodeState().startLevel != NodeState::SL_SINGLEUSER) {
+  if (cntr.getNodeState().startLevel != NodeState::SL_SINGLEUSER &&
+      cntr.getNodeState().startLevel != NodeState::SL_STARTED) {
     NodeState newState(NodeState::SL_STARTED);
     cntr.updateNodeState(signal, newState);
     cntr.send_node_started_rep(signal);
@@ -4861,11 +4912,11 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
       }
     } else {
       jam();
-      StopPermReq *req = (StopPermReq *)&signal->theData[0];
+      AbortAllReq *req = (AbortAllReq *)&signal->theData[0];
       req->senderRef = cntr.reference();
       req->senderData = 12;
-      cntr.sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
-                      StopPermReq::SignalLength, JBB);
+      cntr.sendSignal(DBTC_REF, GSN_ABORT_ALL_REQ, signal,
+                      AbortAllReq::SignalLength, JBB);
     }
     return;
   }
@@ -4874,22 +4925,46 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
 }
 
 void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
-  // StopPermRef* const ref = (StopPermRef*)&signal->theData[0];
-
   jamEntry();
 
-  signal->theData[0] = ZSHUTDOWN;
-  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
+  if (c_stopRec.stopReq.senderRef == 0) {
+    jam();
+    return;
+  }
+
+  if (!c_stopRec.checkNodeFail(signal)) {
+    jam();
+    return;
+  }
+
+  StopPermReq *req = (StopPermReq *)&signal->theData[0];
+  req->senderRef = reference();
+  req->senderData = 12;
+  sendSignalWithDelay(DBDIH_REF, GSN_STOP_PERM_REQ, signal, 100,
+                      StopPermReq::SignalLength);
 }
 
 void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
   jamEntry();
 
-  AbortAllReq *req = (AbortAllReq *)&signal->theData[0];
-  req->senderRef = reference();
-  req->senderData = 12;
-  sendSignal(DBTC_REF, GSN_ABORT_ALL_REQ, signal, AbortAllReq::SignalLength,
-             JBB);
+  if (c_stopRec.stopReq.senderRef == 0) {
+    jam();
+    return;
+  }
+
+  ndbrequire(getNodeState().startLevel == NodeState::SL_STARTED);
+
+  signal->theData[0] = NDB_LE_NDBStopStarted;
+  signal->theData[1] = 0;
+  sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
+
+  DEB_NODE_STOP(("Setting node state to SL_STOPPING_1"));
+  NodeState newState(NodeState::SL_STOPPING_1, false);
+  updateNodeState(signal, newState);
+
+  c_stopRec.stopInitiatedTime = NdbTick_getCurrentTicks();
+  signal->theData[0] = ZSHUTDOWN;
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
 }
 
 void Ndbcntr::execABORT_ALL_CONF(Signal *signal) {
