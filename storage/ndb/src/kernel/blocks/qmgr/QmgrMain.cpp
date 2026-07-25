@@ -8335,6 +8335,26 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
       }
     }
   }
+
+  if (signal->theData[0] == DumpStateOrd::QmgrSetDynamicId &&
+      signal->getLength() == 3) {
+    const NodeId nodeId = signal->theData[1];
+    const Uint32 dynamicId = signal->theData[2];
+    if (nodeId > 0 && nodeId < MAX_NDB_NODES &&
+        dynamicId > 0 && dynamicId <= 0xFFFF) {
+      NodeRecPtr nodePtr;
+      nodePtr.i = nodeId;
+      ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRec);
+      if (nodePtr.p->phase == ZRUNNING) {
+        const UintR oldDynamicId = nodePtr.p->ndynamicId;
+        nodePtr.p->ndynamicId =
+            (oldDynamicId & ~(UintR)0xFFFF) | dynamicId;
+        g_eventLogger->info(
+            "QMGR: DUMP 937 changed node %u dynamic ID from %u to %u",
+            nodeId, (Uint32)(oldDynamicId & 0xFFFF), dynamicId);
+      }
+    }
+  }
 #endif
 
   if (signal->theData[0] == 900 && signal->getLength() == 2) {
