@@ -10410,12 +10410,30 @@ static int restartBarrierStallAndPark(NdbRestarter &res, int stalledNode,
   if (res.restartOneDbNode(parkedNode, false, true, true)) return NDBT_FAILED;
   if (res.waitNodesNoStart(&parkedNode, 1)) return NDBT_FAILED;
 
-  /* Stall the first node's restart below the barrier phase */
+  /**
+   * Start the first node and stall its restart below the barrier
+   * phase. The stall (DUMP 71) is set once the node is visibly
+   * restarting: a node waiting in not-started state does not reliably
+   * process the DUMP. A restarting node spends a long time in the
+   * copy fragment / LCP wait part of the restart, reported as start
+   * phase <= 4, so the DUMP arrives well before the stall phase 100
+   * is reached.
+   */
+  if (res.startNodes(&stalledNode, 1)) return NDBT_FAILED;
+  if (res.waitNodesStartPhase(&stalledNode, 1, 2, 300)) return NDBT_FAILED;
   int dump[] = {DumpStateOrd::NdbcntrStallStartPhase,
                 RESTART_BARRIER_STALL_PHASE};
   if (res.dumpStateOneNode(stalledNode, dump, 2)) return NDBT_FAILED;
-  if (res.startNodes(&stalledNode, 1)) return NDBT_FAILED;
-  if (res.waitNodesStartPhase(&stalledNode, 1, 5, 300)) return NDBT_FAILED;
+
+  /**
+   * Confirm the stall engaged: a node stalled entering phase 100
+   * reports "starting" with last completed phase 99 and stays there.
+   * If the node races to started state instead, the stall was set
+   * too late and the wait below times out.
+   */
+  if (res.waitNodesStartPhase(&stalledNode, 1, RESTART_BARRIER_STALL_PHASE - 1,
+                              300))
+    return NDBT_FAILED;
 
   /* Restart the second node, it must park at the barrier */
   if (res.startNodes(&parkedNode, 1)) return NDBT_FAILED;
