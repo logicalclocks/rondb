@@ -2180,10 +2180,7 @@ void Dbdih::execNODE_START_REP(Signal *signal) {
      *   started
      */
     jam();
-    if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
-      sendDictUnlockOrd(signal, c_dictLockSlavePtrI_nodeRestart);
-      c_dictLockSlavePtrI_nodeRestart = RNIL;
-    }
+    releaseDictLock_nodeRestart(signal);
   }
 
   // Request max lag recalculation to reflect new cluster scale
@@ -2496,11 +2493,39 @@ void Dbdih::nodeRestartPh2Lab(Signal *signal) {
 
 void Dbdih::recvDictLockConf_nodeRestart(Signal *signal, Uint32 data,
                                          Uint32 ret) {
-  ndbrequire(c_dictLockSlavePtrI_nodeRestart == RNIL);
   ndbrequire(data != RNIL);
+
+  if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
+    jam();
+    ndbrequire(data == c_dictLockSlavePtrI_nodeRestart);
+    g_eventLogger->info(
+        "NodeRestart DICT lock re-registered with master node %u",
+        cmasterNodeId);
+    if (getNodeState().getStarted()) {
+      jam();
+      releaseDictLock_nodeRestart(signal);
+    }
+    return;
+  }
+
   c_dictLockSlavePtrI_nodeRestart = data;
 
   nodeRestartPh2Lab2(signal);
+}
+
+void Dbdih::releaseDictLock_nodeRestart(Signal *signal) {
+  if (c_dictLockSlavePtrI_nodeRestart == RNIL) return;
+
+  DictLockSlavePtr lockPtr;
+  ndbrequire(c_dictLockSlavePool.getPtr(
+      lockPtr, c_dictLockSlavePtrI_nodeRestart));
+  if (!lockPtr.p->locked) {
+    jam();
+    return;
+  }
+
+  sendDictUnlockOrd(signal, c_dictLockSlavePtrI_nodeRestart);
+  c_dictLockSlavePtrI_nodeRestart = RNIL;
 }
 
 void Dbdih::nodeRestartPh2Lab2(Signal *signal) {
@@ -9557,6 +9582,25 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
         !getNodeState().getNodeRecovered()) {
       jam();
       progError(__LINE__, NDBD_EXIT_MASTER_FAILURE_DURING_NR);
+    }
+
+    /**
+     * The DICT lock queue was local to the failed master. Every
+     * surviving DIH reports whether it held NodeRestartLock so that
+     * the new master can reconstruct the queue before accepting DDL.
+     */
+    if (ndbd_restart_phase_110_barrier(
+            getNodeInfo(cmasterNodeId).m_version)) {
+      jam();
+      if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
+        DictLockSlavePtr lockPtr;
+        ndbrequire(c_dictLockSlavePool.getPtr(
+            lockPtr, c_dictLockSlavePtrI_nodeRestart));
+        ndbrequire(lockPtr.p->lockType == DictLockReq::NodeRestartLock);
+        lockPtr.p->lockPtr = RNIL;
+        lockPtr.p->locked = false;
+      }
+      sendDictLockTakeoverReq(signal);
     }
   }
 
@@ -28830,6 +28874,22 @@ void Dbdih::sendDictLockReq(Signal *signal, Uint32 lockType, Callback c) {
              DictLockReq::SignalLength, JBB);
 }
 
+void Dbdih::sendDictLockTakeoverReq(Signal *signal, Uint32 delayMillis) {
+  DictLockReq *req = (DictLockReq *)&signal->theData[0];
+  req->userPtr = c_dictLockSlavePtrI_nodeRestart;
+  req->lockType = DictLockReq::NodeRestartLockTakeover;
+  req->userRef = reference();
+
+  BlockReference dictMasterRef = calcDictBlockRef(cmasterNodeId);
+  if (delayMillis != 0) {
+    sendSignalWithDelay(dictMasterRef, GSN_DICT_LOCK_REQ, signal,
+                        delayMillis, DictLockReq::SignalLength);
+  } else {
+    sendSignal(dictMasterRef, GSN_DICT_LOCK_REQ, signal,
+               DictLockReq::SignalLength, JBB);
+  }
+}
+
 void Dbdih::execDICT_LOCK_CONF(Signal *signal) {
   jamEntry();
   recvDictLockConf(signal);
@@ -28837,6 +28897,17 @@ void Dbdih::execDICT_LOCK_CONF(Signal *signal) {
 
 void Dbdih::execDICT_LOCK_REF(Signal *signal) {
   jamEntry();
+  const DictLockRef *ref =
+      (const DictLockRef *)&signal->theData[0];
+
+  if (ref->lockType == DictLockReq::NodeRestartLockTakeover &&
+      (ref->errorCode == DictLockRef::NotMaster ||
+       ref->errorCode == DictLockRef::TooManyRequests)) {
+    jam();
+    sendDictLockTakeoverReq(signal, 10);
+    return;
+  }
+
   ndbabort();
 }
 

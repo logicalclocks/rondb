@@ -148,6 +148,8 @@ class DumpStateOrd {
     // 300-305 TRIX
     QmgrErr935 = 935,
     QmgrSetNodeInactive = 936,
+    // Test only: set the low 16 bits of one data node's dynamic ID.
+    QmgrSetDynamicId = 937,
     NdbfsDumpFileStat = 400,
     NdbfsDumpAllFiles = 401,
     NdbfsDumpOpenFiles = 402,

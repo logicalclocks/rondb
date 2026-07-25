@@ -10814,6 +10814,18 @@ int runRestartBarrierMasterFail(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
 
   /**
+   * A restarted node normally has the newest dynamic ID and therefore
+   * cannot become president. Make the parked node the deterministic
+   * successor on every QMGR before crashing the current master.
+   */
+  int dynamicId[] = {DumpStateOrd::QmgrSetDynamicId, parkedNode, 1};
+  if (res.dumpStateAllNodes(dynamicId, 3)) {
+    g_err << "Failed to make parked node " << parkedNode
+          << " the next master" << endl;
+    return NDBT_FAILED;
+  }
+
+  /**
    * Crash the master. The parked node must survive the master
    * takeover (previously it died in DBDIH with
    * NDBD_EXIT_MASTER_FAILURE_DURING_NR or in QMGR with 2308). The
@@ -10826,6 +10838,13 @@ int runRestartBarrierMasterFail(NDBT_Context *ctx, NDBT_Step *step) {
   if (res.restartOneDbNode(master, false, true, true)) return NDBT_FAILED;
   if (restartBarrierCheckSurvived(res, parkedNode)) return NDBT_FAILED;
   if (res.waitNodesStarted(&parkedNode, 1, 300)) return NDBT_FAILED;
+
+  if (res.getMasterNodeId() != parkedNode) {
+    g_err << "Parked node " << parkedNode
+          << " did not become master; master is "
+          << res.getMasterNodeId() << endl;
+    return NDBT_FAILED;
+  }
 
   return restartBarrierRecoverAll(res);
 }
