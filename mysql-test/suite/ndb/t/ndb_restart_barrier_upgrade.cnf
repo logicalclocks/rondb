@@ -1,0 +1,1 @@
+!include suite/ndb/t/ndb_restart_barrier.cnf
