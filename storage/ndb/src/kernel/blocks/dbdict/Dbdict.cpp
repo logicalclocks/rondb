@@ -21379,6 +21379,19 @@ void Dbdict::execDICT_UNLOCK_ORD(Signal *signal) {
       jam();
       sendDictLockInfoEvent(signal, &lockReq, "lock request removed by node");
       return;
+    case UtilUnlockRef::NotInLockQueue:
+      jam();
+      /**
+       * Legitimate after a DICT master takeover, see the comment in
+       * dict_lock_unlock (RONDB-1096).
+       */
+      sendDictLockInfoEvent(signal, &lockReq,
+                            "unlock for lock unknown after master takeover");
+      g_eventLogger->info(
+          "DICT: ignoring unlock from node %u for a lock not in the"
+          " lock queue (lock queue was lost in DICT master takeover)",
+          refToNode(req.userRef));
+      return;
     default:
       ndbassert(false);
   }
@@ -22412,7 +22425,17 @@ Uint32 Dbdict::dict_lock_unlock(Signal *signal, const DictLockReq *_req,
     case UtilUnlockRef::NotLockOwner:
       break;
     case UtilUnlockRef::NotInLockQueue:
-      ndbassert(false);
+      jam();
+      /**
+       * The lock queue is master local. After a DICT master takeover
+       * an unlock can legitimately arrive for a lock that was granted
+       * by the failed master and thus is unknown to us: since the
+       * restart barrier (RONDB-1096) a node restart survives a master
+       * failure, and such a node still holds a NodeRestartLock that
+       * only existed in the failed master's queue. Unlocking a lock
+       * that does not exist is harmless, so this is no longer treated
+       * as an internal error.
+       */
       return res;
   }
 

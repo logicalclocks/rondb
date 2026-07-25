@@ -514,6 +514,7 @@ class Ndbcntr : public SimulatedBlock {
   };
   bool is_node_started(NodeId);
   bool is_node_starting(NodeId);
+  bool is_node_restarting(NodeId);
 
   /**
    * Is any node restart still below the restart barrier in start
