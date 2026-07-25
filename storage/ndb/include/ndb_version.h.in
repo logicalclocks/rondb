@@ -596,6 +596,14 @@ ndbd_send_started_bitmask(Uint32 x)
  * (RONDB-1096). The barrier is only used when the NDBCNTR master and
  * the peer NDBCNTRs support it; against older nodes we fail open and
  * complete the start immediately as before.
+ *
+ * NOTE: set to the current development tree version so that the
+ * feature is active in development builds. Before merging into a
+ * release, this must be aligned with the first release that actually
+ * ships RONDB-1096 (and the rondb-helm rondb.supportsRestartBarrier
+ * helper must use the same version), otherwise released versions
+ * without the feature would be assumed to support the new
+ * CNTR_WAITREP waitpoint.
  */
 #define NDBD_RESTART_PHASE_110_BARRIER NDB_MAKE_VERSION(25,10,16)
 static
