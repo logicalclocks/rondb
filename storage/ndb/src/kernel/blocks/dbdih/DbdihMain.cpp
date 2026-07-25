@@ -5458,13 +5458,18 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
     nodePtr.p->is_pausable = false;
   }
 
-  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+  const bool track_failure_at_restart_barrier =
+      getNodeState().getNodeRecovered() &&
+      (new_status == NodeRecord::NODE_FAILED ||
+       new_status == NodeRecord::NODE_FAILURE_COMPLETED);
+  if (getNodeState().startLevel < NodeState::SL_STARTED &&
+      !track_failure_at_restart_barrier) {
     jam();
     /**
-     * We will ignore all state transitions until we are started ourselves
-     * before we even attempt to record state transitions. This means we
-     * have no view into system restarts currently and initial starts. We
-     * only worry about node restarts for now.
+     * Ignore state transitions until we are started ourselves. A node
+     * parked at the restart barrier is fully recovered and participates
+     * in normal node-failure handling, so it must record both halves of
+     * that handling even though it is still SL_STARTING.
      */
     return;
   }
@@ -5547,22 +5552,7 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
       /* State generated in DBDIH */
       jam();
       /* This state change will be reported in all nodes at all times */
-      if (nodePtr.p->nodeRecoveryStatus != NodeRecord::NODE_FAILED) {
-        jam();
-        jamLine(nodePtr.p->nodeRecoveryStatus);
-        /**
-         * We completed our own start between the node failure and the
-         * completion of its failure handling: the NODE_FAILED
-         * transition was ignored above since we were not yet started
-         * at that time. This is reachable since the restart barrier
-         * (RONDB-1096) allows a node restart to survive node
-         * failures, complete its start and only then see the tail of
-         * the failure handling. We got into the game too late for
-         * this node failure, so the transition is ignored, as is done
-         * for other transitions we arrive too late for.
-         */
-        return;
-      }
+      ndbrequire(nodePtr.p->nodeRecoveryStatus == NodeRecord::NODE_FAILED);
       nodePtr.p->nodeFailCompletedTime = current_time;
       break;
     case NodeRecord::ALLOCATED_NODE_ID:
