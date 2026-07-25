@@ -206,71 +206,66 @@ Uint32 Ndb_cluster_connection_impl::get_next_node(
   DBUG_PRINT("enter", ("cur_pos: %u, start_index: %u",
   iter.cur_pos, iter.start_index));
 
+  /**
+   * Iterate over all data nodes, first the live nodes in our own
+   * location domain, then the live nodes outside of it. Each phase
+   * visits every node exactly once, starting from iter.start_state
+   * to spread the load over the nodes: iter.cur_pos counts the
+   * candidates consumed in the current phase and iter.start_index
+   * selects the phase.
+   *
+   * The iteration must terminate (return 0) once every node has been
+   * visited: the previous implementation reset its position to
+   * iter.start_state on every call, which made it return the same
+   * node forever. That was harmless as long as an alive node always
+   * accepted a TC seize, but a node that is alive yet does not accept
+   * (or cannot be sent to) then made Ndb::doConnect spin forever,
+   * e.g. against a node parked at the restart barrier (RONDB-1096).
+   */
   Ndb_cluster_connection_impl::Node *nodes = m_nodes_comm_group.getBase();
-  Uint32 start = iter.start_index;
-  if (start == 0  && m_my_location_domain_id != 0) {
+  const Uint32 n = no_db_nodes();
+  if (n == 0) {
+    iter.reset_state();
+    DBUG_RETURN(0);
+  }
+  const Uint32 base = iter.start_state % n;
+
+  if (iter.start_index == 0 && m_my_location_domain_id != 0) {
     /* First search for live nodes in the same location domain */
-    for (Uint32 j = iter.cur_pos; j < no_db_nodes(); j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
+    while (iter.cur_pos < n) {
+      Uint32 j = iter.cur_pos + base;
+      if (j >= n) j -= n;
+      iter.cur_pos++;
+      NodeId curr_node_id = nodes[j].nodeId;
       bool same_domain =
         m_my_location_domain_id == m_location_domain_id[curr_node_id];
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && same_domain) {
-        iter.cur_pos = j + 1;
+      if (same_domain && impl_ndb->get_node_alive(curr_node_id)) {
         DBUG_PRINT("exit", ("1: node: %u, cur_pos: %u",
           curr_node_id, iter.cur_pos));
         DBUG_RETURN(curr_node_id);
       }
     }
-    for (Uint32 j = 0; j < iter.cur_pos; j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
-      bool same_domain =
-        m_my_location_domain_id == m_location_domain_id[curr_node_id];
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && same_domain) {
-        iter.cur_pos = j + 1;
-        DBUG_PRINT("exit", ("2: node: %u, cur_pos: %u",
-          curr_node_id, iter.cur_pos));
-        DBUG_RETURN(curr_node_id);
-      }
+  }
+  if (iter.start_index == 0) {
+    /* Enter the second phase, nodes outside of our location domain */
+    iter.start_index = 1;
+    iter.cur_pos = 0;
+  }
+  while (iter.cur_pos < n) {
+    Uint32 j = iter.cur_pos + base;
+    if (j >= n) j -= n;
+    iter.cur_pos++;
+    NodeId curr_node_id = nodes[j].nodeId;
+    bool same_domain =
+      (m_my_location_domain_id != 0 &&
+       m_my_location_domain_id == m_location_domain_id[curr_node_id]);
+    if (!same_domain && impl_ndb->get_node_alive(curr_node_id)) {
+      DBUG_PRINT("exit", ("2: node: %u, cur_pos: %u",
+        curr_node_id, iter.cur_pos));
+      DBUG_RETURN(curr_node_id);
     }
   }
-  iter.cur_pos = iter.start_state;
-  iter.start_index = 1;
-  {
-    /* No node found in same domain, now search outside of our domain */
-    for (Uint32 j = iter.cur_pos; j < no_db_nodes(); j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
-      bool same_domain =
-        (m_my_location_domain_id == m_location_domain_id[curr_node_id] &&
-         m_my_location_domain_id != 0);
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && !same_domain) {
-        iter.cur_pos = j + 1;
-        DBUG_PRINT("exit", ("3: node: %u, cur_pos: %u",
-          curr_node_id, iter.cur_pos));
-        DBUG_RETURN(curr_node_id);
-      }
-    }
-    for (Uint32 j = 0; j < iter.cur_pos; j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
-      bool same_domain =
-        (m_my_location_domain_id == m_location_domain_id[curr_node_id] &&
-         m_my_location_domain_id != 0);
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && !same_domain) {
-        iter.cur_pos = j + 1;
-        DBUG_PRINT("exit", ("4: node: %u, cur_pos: %u",
-          curr_node_id, iter.cur_pos));
-        DBUG_RETURN(curr_node_id);
-      }
-    }
-  }
-  /* No live node found anywhere in cluster */
+  /* No usable node found anywhere in cluster */
   iter.reset_state();
   DBUG_RETURN(0);
 }
