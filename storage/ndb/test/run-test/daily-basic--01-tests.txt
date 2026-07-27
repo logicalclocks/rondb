@@ -154,6 +154,10 @@ args: -n RestartBarrierWaitRelease T1
 max-time: 900
 
 cmd: testNodeRestart
+args: -n RestartBarrierRepeatedWaves T1
+max-time: 900
+
+cmd: testNodeRestart
 args: -n RestartBarrierStarterFail T1
 max-time: 900
 
@@ -163,6 +167,14 @@ max-time: 900
 
 cmd: testNodeRestart
 args: -n RestartBarrierMasterFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierMasterFailDictLock T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierMasterFailRemoteDictLock T1
 max-time: 900
 
 cmd: testNodeRestart
