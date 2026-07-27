@@ -9601,6 +9601,12 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
         ndbrequire(lockPtr.p->lockType == DictLockReq::NodeRestartLock);
         lockPtr.p->lockPtr = RNIL;
         lockPtr.p->locked = false;
+        /**
+         * execute() nulled the callback when the original grant was
+         * delivered, so re-arm it for the re-registration CONF.
+         */
+        Callback c = {safe_cast(&Dbdih::recvDictLockConf_nodeRestart), 0};
+        lockPtr.p->callback = c;
       }
       sendDictLockTakeoverReq(signal);
     }
