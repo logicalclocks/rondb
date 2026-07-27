@@ -1,17 +1,17 @@
-# RONDB-1096: restart barrier at start phase 110
+# RONDB-1096: restart barrier at start phase 110, dictionary lock and
+# transaction cases
 #
-# Runs the basic barrier semantics cases from the testNodeRestart NDBT
-# program against a cluster with 4 data nodes in 2 node groups (see
-# ndb_restart_barrier.cnf). The cases stall one restarting node below
-# the barrier with DUMP 71 (error insert 1002) and verify that a node
-# restarting in another node group parks at start phase 110, that the
-# wave releases together, that consecutive waves reset their state and
-# that the failure of the stalled starter releases the barrier.
+# Runs the dictionary lock takeover and transaction cases from the
+# testNodeRestart NDBT program against a cluster with 4 data nodes in
+# 2 node groups (see ndb_restart_barrier.cnf). The cases verify that
+# the node-restart dictionary lock of a parked node is reconstructed
+# in the new master after a master failure, both when the parked node
+# itself becomes master and when the new master is remote, and that a
+# parked node serves transactions while still reporting "starting".
 #
-# The node failure and dictionary lock takeover cases run in
-# ndb_restart_barrier_failures and ndb_restart_barrier_dictlock; the
-# nine cases are split over three tests to keep each test's runtime
-# down.
+# The basic barrier semantics and node failure cases run in
+# ndb_restart_barrier and ndb_restart_barrier_failures; the nine cases
+# are split over three tests to keep each test's runtime down.
 #
 # The stall mechanism needs error-insert capable ndbmtd binaries, and
 # the testNodeRestart binary is only present in WITH_NDB_TEST builds.
@@ -60,14 +60,14 @@ EOF
 
 --connection default
 
---echo # Barrier holds while a node is below phase 110, wave releases together
---exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Parked master reconstructs its node-restart dictionary lock
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFailDictLock T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Consecutive waves reset barrier and dictionary lock state
---exec $TEST_NODE_RESTART -n RestartBarrierRepeatedWaves T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Remote master reconstructs the parked node's node-restart dictionary lock
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFailRemoteDictLock T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Failure of the stalled starter releases the barrier
---exec $TEST_NODE_RESTART -n RestartBarrierStarterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Parked node serves transactions while still reporting starting
+--exec $TEST_NODE_RESTART -n RestartBarrierServeWhileParked T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 --echo "[dropping NDBT test table]"
 --exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1
@@ -82,4 +82,4 @@ EOF
 --let $mysqld_name=mysqld.2.1
 --source include/start_mysqld.inc
 
---echo # All restart barrier tests passed
+--echo # All restart barrier dictionary lock tests passed

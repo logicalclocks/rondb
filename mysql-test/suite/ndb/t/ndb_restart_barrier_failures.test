@@ -1,17 +1,15 @@
-# RONDB-1096: restart barrier at start phase 110
+# RONDB-1096: restart barrier at start phase 110, node failure cases
 #
-# Runs the basic barrier semantics cases from the testNodeRestart NDBT
-# program against a cluster with 4 data nodes in 2 node groups (see
-# ndb_restart_barrier.cnf). The cases stall one restarting node below
-# the barrier with DUMP 71 (error insert 1002) and verify that a node
-# restarting in another node group parks at start phase 110, that the
-# wave releases together, that consecutive waves reset their state and
-# that the failure of the stalled starter releases the barrier.
+# Runs the node failure cases from the testNodeRestart NDBT program
+# against a cluster with 4 data nodes in 2 node groups (see
+# ndb_restart_barrier.cnf). The cases verify that a node parked at the
+# barrier survives the crash of a started node group peer and of the
+# master, and that RestartBarrierTimeout releases a parked node on its
+# own (fail open) although another node is still restarting.
 #
-# The node failure and dictionary lock takeover cases run in
-# ndb_restart_barrier_failures and ndb_restart_barrier_dictlock; the
-# nine cases are split over three tests to keep each test's runtime
-# down.
+# The basic barrier semantics and dictionary lock takeover cases run
+# in ndb_restart_barrier and ndb_restart_barrier_dictlock; the nine
+# cases are split over three tests to keep each test's runtime down.
 #
 # The stall mechanism needs error-insert capable ndbmtd binaries, and
 # the testNodeRestart binary is only present in WITH_NDB_TEST builds.
@@ -60,14 +58,14 @@ EOF
 
 --connection default
 
---echo # Barrier holds while a node is below phase 110, wave releases together
---exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Parked node survives the crash of a started node group peer
+--exec $TEST_NODE_RESTART -n RestartBarrierStartedNodeFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Consecutive waves reset barrier and dictionary lock state
---exec $TEST_NODE_RESTART -n RestartBarrierRepeatedWaves T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Parked node survives a master failure, barrier state survives takeover
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Failure of the stalled starter releases the barrier
---exec $TEST_NODE_RESTART -n RestartBarrierStarterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # RestartBarrierTimeout releases a parked node on its own (fail open)
+--exec $TEST_NODE_RESTART -n RestartBarrierTimeout T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 --echo "[dropping NDBT test table]"
 --exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1
@@ -82,4 +80,4 @@ EOF
 --let $mysqld_name=mysqld.2.1
 --source include/start_mysqld.inc
 
---echo # All restart barrier tests passed
+--echo # All restart barrier failure tests passed
