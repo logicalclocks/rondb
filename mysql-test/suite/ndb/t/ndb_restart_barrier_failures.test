@@ -67,8 +67,11 @@ EOF
 --echo # RestartBarrierTimeout releases a parked node on its own (fail open)
 --exec $TEST_NODE_RESTART -n RestartBarrierTimeout T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
+# The NDBT framework drops its auto-created table when a case
+# completes cleanly, so the table only exists here if the last case
+# left it behind; a missing table is not an error.
 --echo "[dropping NDBT test table]"
---exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
 
 --echo "[starting mysqld 1]"
 --let $_expect_file_name= $expect_mysqld1_file_name
