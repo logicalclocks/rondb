@@ -5462,6 +5462,40 @@ void Dbdict::execNODE_FAILREP(Signal *signal) {
     return;
   }
 
+  if (ownNodePtr.p->nodeState == NodeRecord::NDB_MASTER_TAKEOVER) {
+    jam();
+    /**
+     * A further node failure arrived while we, as new master, still
+     * defer the master-failure handling (schema-trans takeover and/or
+     * outstanding NodeRestartLock takeover reports).
+     *
+     * Dead nodes send no takeover report, so drop them from the
+     * expected set or the deferred NF_COMPLETEREP never runs. This
+     * failure's own handling must not be swallowed by the deferral
+     * gate in send_nf_complete_rep either: fold the failed nodes into
+     * the stored NodeFailRep so the deferred replay handles every
+     * failed node.
+     */
+    NdbNodeBitmask stored;
+    stored.assign(NdbNodeBitmask::Size, ownNodePtr.p->nodeFailRep.theNodes);
+    stored.bitOR(failedNodes);
+    stored.copyto(NdbNodeBitmask::Size, ownNodePtr.p->nodeFailRep.theNodes);
+    ownNodePtr.p->nodeFailRep.noOfNodes = stored.count();
+    ownNodePtr.p->nodeFailRep.failNo = nodeFail->failNo;
+
+    c_restartLockTakeoverNodes.bitANDC(failedNodes);
+    if (c_restartLockTakeoverNodes.isclear() &&
+        c_restartLockTakeoverReady) {
+      jam();
+      /**
+       * The failed node was the last outstanding reporter, trigger
+       * the deferred completion now.
+       */
+      send_nf_complete_rep(signal, &ownNodePtr.p->nodeFailRep);
+    }
+    return;
+  }
+
   send_nf_complete_rep(signal, &nodeFailRep);
   return;
 }  // execNODE_FAILREP()
