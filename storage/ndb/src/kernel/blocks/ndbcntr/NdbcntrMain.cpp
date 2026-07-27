@@ -3803,6 +3803,20 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
    * DBDIH are informed, DBDIH sends NDB_FAILCONF when the failure
    * handling completes) instead of the short-circuit reply used by
    * nodes that are still restarting (RONDB-1096).
+   *
+   * No mixed-version check is needed to survive here: being parked
+   * implies that every data node in the cluster supports the restart
+   * barrier, so every survivor of this failure, including a successor
+   * master, can handle a restarting node that outlives it. The
+   * invariant holds because handle_start_phase_110 refuses to park
+   * while any incompatible node is a member, execCM_ADD_REP unparks
+   * the moment one joins (QMGR delivers CM_ADD_REP before any later
+   * cluster event, so there is no window where we act as parked in a
+   * mixed cluster), and a member cannot change version without
+   * rejoining. A recovered node that is NOT parked (it bailed out of
+   * parking in a mixed cluster or already left the barrier) can face
+   * an old-version successor master; that case keeps the pre-barrier
+   * behaviour and dies in Dbdih::execNODE_FAILREP on master takeover.
    */
   const NodeState &st = getNodeState();
   if (st.startLevel == st.SL_STARTING && !st.getNodeRecovered()) {
