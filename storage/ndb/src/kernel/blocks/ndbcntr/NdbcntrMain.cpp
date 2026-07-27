@@ -3478,11 +3478,54 @@ void Ndbcntr::wait_sp_rep(Signal *signal) {
  * The barrier-entry report is broadcast to all NDBCNTRs (not only the
  * master) into c_recoveredNodeSet, so that a master taking over after
  * a master failure already has the reports of all barrier waiters.
- * The release condition is evaluated over is_node_starting(), which
- * covers the whole restart from CNTR_START_CONF grant until
- * CNTR_START_REP, but excludes nodes merely queued in
+ * The release condition is evaluated over is_node_restarting(), which
+ * covers the whole restart from QMGR membership (CM_ADD_REP) until
+ * the CNTR_START_REP broadcast, but excludes nodes merely queued in
  * c_start.m_waiting (a same-node-group waiter cannot start until the
  * parked node completes, so waiting for it would deadlock).
+ *
+ * Example flow: 6 data nodes, NG0 = {1,2,3}, NG1 = {4,5,6}, NDBCNTR
+ * master = node 1, nodes 3 and 6 restarting concurrently:
+ *
+ * Node 3 (NG0)          Node 6 (NG1)          Master (1)      Nodes 2,4,5
+ *   |                     |                    |                |
+ *   | phases 2..101       | phases 2..101      |                |
+ *   | (restore, REDO,     | (slower)           |                |
+ *   |  copy frag, SUMA)   |                    |                |
+ *   |                     |                    |                |
+ *   | STTOR sp 110: all 6 members barrier-capable -> PARK       |
+ *   |   m_restart_barrier_waiting = true                        |
+ *   |   NodeState = SL_STARTING sp 110                          |
+ *   |   (MGM shows "starting", k8s pod not ready,               |
+ *   |    but TC is open: node serves API transactions)          |
+ *   |                     |                    |                |
+ *   |-- CNTR_WAITREP(WaitFor, node=3) broadcast to 1..6 + self -|
+ *   |                     |                    |                |
+ *   |   every receiver: c_recoveredNodeSet.set(3)               |
+ *   |                    check_restart_barrier()                |
+ *   |   nodes 2..6:  not master -> return                       |
+ *   |   master (1):  restarting = {3,6}                         |
+ *   |                6 not recovered -> BARRIER STAYS CLOSED    |
+ *   |                     |                    |                |
+ *   |  (parked, serving   | STTOR sp 110 -> PARK                |
+ *   |   traffic)          |                    |                |
+ *   |                     |-- CNTR_WAITREP(WaitFor, node=6) --> |
+ *   |                     |                    |                |
+ *   |   every receiver: c_recoveredNodeSet.set(6)               |
+ *   |   master (1):  restarting = {3,6}, all recovered          |
+ *   |                -> RELEASE                                 |
+ *   |                     |                    |                |
+ *   |<---- CNTR_WAITREP(Grant) to receiver group {3,6} ---------|
+ *   |                     |<-------------------|                |
+ *   |                     |                    |                |
+ *   | leave_restart_barrier("all restarting nodes have          |
+ *   |   recovered") -> sendSttorry, phases 111..255             |
+ *   |                     |                    |                |
+ *   |-- CNTR_START_REP(3) broadcast: c_startedNodeSet.set(3) -->|
+ *   |                     |-- CNTR_START_REP(6) idem ---------->|
+ *   |                     |                    |                |
+ *   | SL_STARTED, MGM "started", pod ready -> rolling restart   |
+ *   | may proceed to the next pod in each StatefulSet           |
  */
 void Ndbcntr::handle_start_phase_110(Signal *signal) {
   switch (ctypeOfStart) {
@@ -3540,19 +3583,16 @@ void Ndbcntr::handle_start_phase_110(Signal *signal) {
       " until all restarting nodes have completed their recovery");
   infoEvent("Waiting at restart barrier for all restarting nodes");
 
-  NdbNodeBitmask receivers;
-  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
-    if (c_clusterNodes.get(n) &&
-        ndbd_restart_phase_110_barrier(getNodeInfo(n).m_version)) {
-      receivers.set(n);
-    }
-  }
+  /**
+   * Every current member supports the barrier (checked above), so
+   * the barrier-entry report goes to all of them.
+   */
   CntrWaitRep *rep = (CntrWaitRep *)signal->getDataPtrSend();
   rep->nodeId = getOwnNodeId();
   rep->waitPoint = CntrWaitRep::ZWAITPOINT_RESTART_BARRIER;
   rep->request = CntrWaitRep::WaitFor;
   rep->sp = ZSTART_PHASE_110;
-  NodeReceiverGroup rg(NDBCNTR, receivers);
+  NodeReceiverGroup rg(NDBCNTR, c_clusterNodes);
   sendSignal(rg, GSN_CNTR_WAITREP, signal, CntrWaitRep::SignalLength, JBB);
 }
 
