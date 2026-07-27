@@ -9814,9 +9814,18 @@ void Qmgr::execNODE_STATE_REP(Signal *signal) {
   SimulatedBlock::execNODE_STATE_REP(signal);
   const NodeState newState = getNodeState();
 
-  /* Check whether we are changing state */
+  /* Check whether we are changing state.
+   *
+   * Reaching the restart barrier (RONDB-1096) flips
+   * getNodeRecovered() without changing the start level. API nodes
+   * gate their view of us as alive on that predicate and otherwise
+   * only refresh it on their API_REGREQ heartbeat (up to
+   * HeartbeatIntervalDbApi late), so push the state to them just as
+   * for the started transition.
+   */
   if (prevState.startLevel != newState.startLevel ||
-      prevState.nodeGroup != newState.nodeGroup) {
+      prevState.nodeGroup != newState.nodeGroup ||
+      prevState.getNodeRecovered() != newState.getNodeRecovered()) {
     jam();
     /* Inform APIs */
     signal->theData[0] = ZNOTIFY_STATE_CHANGE;
