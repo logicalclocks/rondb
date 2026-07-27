@@ -4220,6 +4220,7 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
   const NDB_TICKS alloc_start = NdbTick_getCurrentTicks();
   const Uint32 alloc_deadline_ms = (timeout_ms != 0) ? timeout_ms : 20000;
   Uint32 consecutive_not_master = 0;
+  Uint32 consecutive_busy = 0;
   while (1)
   {
     if (NdbTick_Elapsed(alloc_start, NdbTick_getCurrentTicks()).milliSec() >
@@ -4319,6 +4320,10 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
           consecutive_not_master++;
         else
           consecutive_not_master = 0;
+        if (ref->errorCode == AllocNodeIdRef::Busy)
+          consecutive_busy++;
+        else
+          consecutive_busy = 0;
         if (ref->errorCode == AllocNodeIdRef::NotMaster ||
             ref->errorCode == AllocNodeIdRef::Busy ||
             ref->errorCode == AllocNodeIdRef::NodeFailureHandlingNotCompleted) {
@@ -4338,7 +4343,30 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
           /* sleep for a while before retrying */
           ss.unlock();
           if (ref->errorCode == AllocNodeIdRef::Busy) {
-            NdbSleep_MilliSleep(100);
+            /**
+             * The master processes one node id allocation at a time (a
+             * single operation record in Qmgr) and answers Busy to all
+             * concurrent requests. The previous fixed 100 ms retry delay
+             * added ~50 ms average pickup latency per allocation even
+             * when the slot freed up immediately, which serialized mass
+             * API (re)connects at ~10-20 allocations/s cluster wide.
+             * Retry quickly at first so an uncontended slot is picked up
+             * with low latency, and back off exponentially towards the
+             * previous fixed delay while Busy answers keep coming
+             * (heavily contended master). The jitter breaks lock-step
+             * retries from sessions all rejected in the same round.
+             *
+             * consecutive_busy >= 1 here (incremented above), giving
+             * sleep ranges 2, 3-4, 5-8, 9-16, ... capped at 65-128 ms.
+             */
+            const Uint32 shift =
+                (consecutive_busy < 7) ? (consecutive_busy - 1) : 6;
+            const Uint32 max_ms = Uint32(2) << shift; /* 2, 4, ... 128 */
+            const Uint32 min_ms = (max_ms / 2) + 1;
+            const Uint64 now_ns = NdbTick_getCurrentTicks().getUint64();
+            const Uint32 jitter_ms =
+                Uint32(now_ns % Uint64(max_ms - min_ms + 1));
+            NdbSleep_MilliSleep(min_ms + jitter_ms);
           } else if (ref->errorCode == AllocNodeIdRef::NotMaster) {
             if (refFromMaster) {
               /* AllocNodeIdReq sent to master node, but master not ready
@@ -4658,6 +4686,54 @@ int MgmtSrvr::try_alloc(NodeId id, ndb_mgm_node_type type, Uint32 timeout_ms,
 }
 
 /**
+ * Minimum number of equally preferred API node id candidates in a scan
+ * segment before the scan start is rotated by alloc_scan_offset().
+ * Below this the traditional deterministic lowest-free-id order is
+ * kept, so small configurations (typical test setups and existing
+ * deployments) see unchanged node id assignment.
+ */
+static constexpr unsigned MIN_API_CANDIDATES_FOR_SCAN_SPREAD = 64;
+
+/**
+ * Compute the start offset for scanning a segment of equally preferred
+ * node id candidates in try_alloc_from_list().
+ *
+ * Returns 0 (traditional order: lowest candidate first) except for API
+ * node allocation over a large candidate segment. There the scan start
+ * is rotated so that
+ *  - different ndb_mgmd's derive well separated start points (own node
+ *    id scaled by a large odd constant), and
+ *  - consecutive allocations through the same ndb_mgmd advance the
+ *    start position (round robin token).
+ *
+ * Without this every management server scans from the lowest free id,
+ * so during mass API (re)connects concurrent sessions race for the
+ * same candidate. Each lost race is discovered only after a
+ * reservation round trip to the data node master
+ * (AllocNodeIdRef::NodeReserved), serializing allocation. The rotation
+ * makes concurrent scans start in different parts of the id space
+ * while still visiting every candidate of the segment.
+ *
+ * @param type  Node type being allocated
+ * @param count Number of candidates in the scan segment
+ * @return      Start offset in [0, count), 0 unless spreading applies
+ */
+unsigned MgmtSrvr::alloc_scan_offset(ndb_mgm_node_type type, unsigned count) {
+  if (type != NDB_MGM_NODE_TYPE_API ||
+      count < MIN_API_CANDIDATES_FOR_SCAN_SPREAD) {
+    return 0;
+  }
+  /* Relaxed ordering: tokens only need to differ between requests, no
+   * synchronization with any other data is implied. */
+  const Uint32 token =
+      m_alloc_scan_token.fetch_add(1, std::memory_order_relaxed);
+  /* 2654435761 = 2^32 / golden ratio (Knuth's multiplicative hash
+   * constant), spreads small consecutive mgmd node ids far apart. */
+  const Uint32 spread = Uint32(_ownNodeId) * 2654435761u + token;
+  return spread % count;
+}
+
+/**
  * try_alloc_from_list
  *
  * returns :
@@ -4678,9 +4754,34 @@ MgmtSrvr::try_alloc_from_list(NodeId& nodeid,
     Guard g(m_local_config_mutex);
     m_local_config->get_nodemask(active_nodes);
   }
-  for (unsigned i = 0; i < nodes.size(); i++)
+
+  /**
+   * The candidate list holds exact host matches first, then wildcard
+   * matches (see match_client_addr_to_config_nodes()). Preserve that
+   * preference by scanning the segments in order, but rotate the start
+   * position inside large segments (see alloc_scan_offset()). Every
+   * candidate is still visited exactly once.
+   */
+  const unsigned num_nodes = nodes.size();
+  unsigned num_exact = 0;
+  while (num_exact < num_nodes && nodes[num_exact].exact_match) {
+    num_exact++;
+  }
+  const unsigned num_wildcard = num_nodes - num_exact;
+  const unsigned exact_offset = alloc_scan_offset(type, num_exact);
+  const unsigned wildcard_offset = alloc_scan_offset(type, num_wildcard);
+
+  for (unsigned i = 0; i < num_nodes; i++)
   {
-    const unsigned id= nodes[i].id;
+    unsigned idx;
+    if (i < num_exact) {
+      /* num_exact > 0 in this branch, modulo is safe */
+      idx = (i + exact_offset) % num_exact;
+    } else {
+      /* num_wildcard > 0 in this branch, modulo is safe */
+      idx = num_exact + ((i - num_exact + wildcard_offset) % num_wildcard);
+    }
+    const unsigned id= nodes[idx].id;
     if (theFacade->ext_isConnected(id))
     {
       // Node is already reserved(connected via transporter)
