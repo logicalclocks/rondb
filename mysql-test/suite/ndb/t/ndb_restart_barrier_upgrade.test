@@ -1,7 +1,7 @@
 # RONDB-1096: restart barrier during a rolling upgrade.
 #
 # The cluster starts with all data nodes running ndbmtd_v2. The old
-# binary must predate restart-barrier support (25.10.16). The test
+# binary must predate restart-barrier support (26.2.9). The test
 # upgrades one node in each node group and verifies that old live data
 # nodes disable the barrier. It then completes the rolling upgrade and
 # verifies that the barrier becomes active.
@@ -27,9 +27,9 @@ my $version_id = $1 * 10000 + $2 * 100 + $3;
 my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
 open(my $include, '>', "$vardir/tmp/restart_barrier_upgrade_version.inc")
   or die "$!";
-if ($version_id >= 251016) {
+if ($version_id >= 260209) {
   print $include
-    "--skip Requires an ndbmtd_v2 binary older than 25.10.16\n";
+    "--skip Requires an ndbmtd_v2 binary older than 26.2.9\n";
 }
 close($include);
 EOF
