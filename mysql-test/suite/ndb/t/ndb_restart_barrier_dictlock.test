@@ -85,4 +85,6 @@ EOF
 --let $mysqld_name=mysqld.2.1
 --source include/start_mysqld.inc
 
+--remove_file $NDB_TOOLS_OUTPUT
+
 --echo # All restart barrier dictionary lock tests passed
