@@ -7629,6 +7629,15 @@ sub start_servers($) {
       mark_testcase_start_in_logs_rdrs($rdrs, $tinfo);
       next;
     }
+    if (!$ENV{'HAVE_RDRS2'}) {
+      # The rdrs2 binary is only built when WITH_RDRS is enabled. Fail
+      # only this test with an actionable message instead of aborting
+      # the entire test run in rdrs_start()'s required binary lookup.
+      $tinfo->{'comment'} =
+        "Test requires the 'rdrs2' binary which is not available " .
+        "(build with WITH_RDRS to run this test)";
+      return 1;
+    }
     rdrs_start($rdrs, $tinfo);
   }
 
