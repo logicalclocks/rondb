@@ -1,0 +1,11 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Parked node survives the crash of a started node group peer
+# Parked node survives a master failure, barrier state survives takeover
+# RestartBarrierTimeout releases a parked node on its own (fail open)
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All restart barrier failure tests passed
