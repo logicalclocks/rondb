@@ -239,7 +239,8 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
      * completed, so no dictionary pointers from it are in use any more.
      * Release the stale dictionary objects parked by schema changes so
      * they do not accumulate on this long-lived Ndb (memory optimization;
-     * safety does not depend on it - see NdbDictionary.hpp).
+     * safety does not depend on it - see
+     * NdbDictionaryImpl::park_stale_object).
      */
     NdbDictionaryImpl::getImpl(*(*ndb_object)->getDictionary())
       .releaseStaleTableReferences();

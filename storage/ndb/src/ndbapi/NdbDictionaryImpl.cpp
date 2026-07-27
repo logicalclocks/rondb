@@ -3065,6 +3065,7 @@ NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb)
       m_ndb(ndb) {
   m_globalHash = nullptr;
   m_local_table_data_size = 0;
+  m_staleLocalTableInfoHead = nullptr;
   static_assert(
       (int)WarnUndobufferRoundUp ==
           (int)CreateFilegroupConf::WarnUndobufferRoundUp &&
@@ -3083,6 +3084,7 @@ NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb, NdbDictionary::Dictionary &f)
       m_ndb(ndb) {
   m_globalHash = nullptr;
   m_local_table_data_size = 0;
+  m_staleLocalTableInfoHead = nullptr;
 }
 
 NdbDictionaryImpl::~NdbDictionaryImpl() {
@@ -5576,39 +5578,36 @@ int NdbDictionaryImpl::removeCachedObject(NdbTableImpl &impl) {
  * drop+recreate). Parked references are released by
  * releaseStaleTableReferences().
  */
-void NdbDictionaryImpl::park_stale_object(const BaseString &internalName,
-                                          NdbTableImpl *impl) {
+void NdbDictionaryImpl::park_stale_object(const BaseString &internalName) {
   DBUG_ENTER("NdbDictionaryImpl::park_stale_object");
   DBUG_PRINT("enter", ("internal_name: %s", internalName.c_str()));
-  m_localHash.drop(internalName);  // destroys the wrapper, not the impl
-  if (unlikely(m_staleTableImpls.push_back(impl) != 0)) {
-    // Out of memory: release inline rather than lose track of the object
-    // (best effort - reintroduces the inline-release hazard for this one
-    // object under memory pressure).
-    m_globalHash->lock();
-    m_globalHash->release(impl, 1);
-    m_globalHash->unlock();
-  }
+  // Unlink the wrapper from the local hash without destroying it and thread it
+  // onto this Ndb's stale list, reusing the wrapper as the list node so that
+  // parking needs no allocation and cannot fail.
+  Ndb_local_table_info *info = m_localHash.remove(internalName);
+  info->m_next_stale = m_staleLocalTableInfoHead;
+  m_staleLocalTableInfoHead = info;
   DBUG_VOID_RETURN;
 }
 
 /*
  * Release the parked global-cache references of stale table/index objects
  * evicted by getTable()/getIndex() after schema changes. Runs from the
- * destructor at the latest; applications with known safe points (no
- * previously returned Table/Column/NdbRecord pointers in use, e.g. a
- * connection pool between requests) may call it earlier through
- * NdbDictionary::Dictionary::releaseStaleTableReferences() to bound the
+ * destructor at the latest. A caller with a known safe point (no previously
+ * returned Table/Column/NdbRecord pointers still in use, e.g. a connection
+ * pool between requests) may invoke it earlier via
+ * NdbDictionaryImpl::getImpl(dict).releaseStaleTableReferences() to bound the
  * number of parked objects under schema churn.
  */
 void NdbDictionaryImpl::releaseStaleTableReferences() {
   DBUG_ENTER("NdbDictionaryImpl::releaseStaleTableReferences");
-  while (m_staleTableImpls.size() > 0) {
-    NdbTableImpl *stale_impl = m_staleTableImpls.back();
-    m_staleTableImpls.erase(m_staleTableImpls.size() - 1);
+  while (m_staleLocalTableInfoHead != nullptr) {
+    Ndb_local_table_info *info = m_staleLocalTableInfoHead;
+    m_staleLocalTableInfoHead = info->m_next_stale;
     m_globalHash->lock();
-    m_globalHash->release(stale_impl, 1);
+    m_globalHash->release(info->m_table_impl, 1);
     m_globalHash->unlock();
+    Ndb_local_table_info::destroy(info);
   }
   DBUG_VOID_RETURN;
 }

@@ -1070,12 +1070,15 @@ class NdbDictionaryImpl : public NdbDictionary::Dictionary {
   LocalDictCache m_localHash;
   GlobalDictCache *m_globalHash;
   /*
-   * Stale table/index objects evicted from the local cache whose
-   * global-cache release is deferred (see park_stale_object). Released by
-   * releaseStaleTableReferences(), at the latest from the destructor.
+   * Head of this Ndb's singly-linked list of stale table/index cache entries
+   * evicted from the local hash whose global-cache release is deferred (see
+   * park_stale_object). The list is linked through the evicted
+   * Ndb_local_table_info entries themselves (their m_next_stale pointer), so
+   * parking one needs no allocation. Released by releaseStaleTableReferences(),
+   * at the latest from the destructor.
    */
-  Vector<NdbTableImpl *> m_staleTableImpls;
-  void park_stale_object(const BaseString &internalName, NdbTableImpl *impl);
+  Ndb_local_table_info *m_staleLocalTableInfoHead;
+  void park_stale_object(const BaseString &internalName);
 
   static NdbDictionaryImpl &getImpl(NdbDictionary::Dictionary &t);
   static const NdbDictionaryImpl &getImpl(const NdbDictionary::Dictionary &t);
@@ -1399,7 +1402,7 @@ inline Ndb_local_table_info *NdbDictionaryImpl::get_local_table_info(
     const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
     if (unlikely(st == NdbDictionary::Object::Invalid ||
                  st == NdbDictionary::Object::Altered)) {
-      park_stale_object(internalTableName, info->m_table_impl);
+      park_stale_object(internalTableName);
       info = nullptr;
     }
   }
@@ -1566,7 +1569,7 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
     const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
     if (unlikely(st == NdbDictionary::Object::Invalid ||
                  st == NdbDictionary::Object::Altered)) {
-      park_stale_object(internal_indexname, info->m_table_impl);
+      park_stale_object(internal_indexname);
       info = nullptr;
     }
   }
@@ -1601,7 +1604,7 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
     // for future callers, but park our reference instead of releasing it
     // inline - earlier pointers from this Ndb may still be in use.
     tab->m_status = NdbDictionary::Object::Invalid;
-    park_stale_object(internal_indexname, tab);
+    park_stale_object(internal_indexname);
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
@@ -1618,7 +1621,7 @@ retry:
     const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
     if (unlikely(st == NdbDictionary::Object::Invalid ||
                  st == NdbDictionary::Object::Altered)) {
-      park_stale_object(old_internal_indexname, info->m_table_impl);
+      park_stale_object(old_internal_indexname);
       info = nullptr;
     }
   }
@@ -1642,7 +1645,7 @@ retry:
     }
     // Same wrong-incarnation handling as for the new name format above.
     tab->m_status = NdbDictionary::Object::Invalid;
-    park_stale_object(old_internal_indexname, tab);
+    park_stale_object(old_internal_indexname);
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
