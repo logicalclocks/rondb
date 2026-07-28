@@ -1,0 +1,78 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.stale;
+CREATE TABLE test.stale (
+col_a INT PRIMARY KEY,
+col_b TIMESTAMP NULL DEFAULT NULL,
+col_c INT,
+UNIQUE KEY uk_c (col_c)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@col_b";
+#
+# Phase 1 (immediate path): refresh-over-expired changing the unique
+# value must delete the old value's index entry
+#
+INSERT INTO test.stale VALUES (1, NOW(), 100);
+INSERT INTO test.stale VALUES (1, NOW(), 200);
+# UK lookup of the NEW value returns the refreshed row:
+SELECT col_a, col_c FROM test.stale WHERE col_c = 200;
+col_a	col_c
+1	200
+# UK lookup of the OLD value is empty (was: returned (1,200)):
+SELECT col_a, col_c FROM test.stale WHERE col_c = 100;
+col_a	col_c
+# The old value is reusable by another row (was: ER_DUP_ENTRY):
+INSERT INTO test.stale VALUES (5, NOW(), 100);
+SELECT col_a, col_c FROM test.stale ORDER BY col_a;
+col_a	col_c
+1	200
+5	100
+#
+# Phase 2: deleting the refreshed owner leaves no orphaned entry
+#
+DELETE FROM test.stale WHERE col_a = 1;
+# The deleted row's value is immediately reusable (was: ER_DUP_ENTRY
+# against the orphaned stale entry, even on an empty table):
+INSERT INTO test.stale VALUES (9, NOW(), 200);
+SELECT col_a, col_c FROM test.stale ORDER BY col_a;
+col_a	col_c
+5	100
+9	200
+DELETE FROM test.stale;
+#
+# Phase 3 (deferred path): same refresh with ndb_deferred_constraints=1
+#
+SET ndb_deferred_constraints = 1;
+INSERT INTO test.stale VALUES (21, NOW(), 2100);
+INSERT INTO test.stale VALUES (21, NOW(), 2200);
+# UK lookup of the OLD value is empty (deferred path):
+SELECT col_a, col_c FROM test.stale WHERE col_c = 2100;
+col_a	col_c
+# UK lookup of the NEW value returns the refreshed row:
+SELECT col_a, col_c FROM test.stale WHERE col_c = 2200;
+col_a	col_c
+21	2200
+# The old value is reusable (deferred path):
+INSERT INTO test.stale VALUES (25, NOW(), 2100);
+SELECT col_a, col_c FROM test.stale ORDER BY col_a;
+col_a	col_c
+21	2200
+25	2100
+SET ndb_deferred_constraints = 0;
+DELETE FROM test.stale;
+#
+# Phase 4: preserved semantics
+#
+INSERT INTO test.stale VALUES (31, NOW(), 3100);
+# A DIFFERENT row inserting the expired-unpurged row's unique value is
+# still rejected (same-owner check unchanged):
+INSERT INTO test.stale VALUES (35, NOW(), 3100);
+ERROR 23000: Duplicate entry '3100' for key 'stale.uk_c'
+# The owner itself can still refresh with the SAME value (suppressed
+# maintenance; entry untouched):
+INSERT INTO test.stale VALUES (31, NOW(), 3100);
+SELECT col_a, col_c FROM test.stale WHERE col_c = 3100;
+col_a	col_c
+31	3100
+SELECT col_a, col_c FROM test.stale ORDER BY col_a;
+col_a	col_c
+31	3100
+DROP TABLE test.stale;

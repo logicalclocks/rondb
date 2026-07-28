@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -442,6 +442,23 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.rest.enable) {
     g_ttl_purger = TTLPurger::CreateTTLPurger();
     g_ttl_purger->Run();
+    // Start TTL purger, API key cache, and FS cache only when REST is enabled
+    g_ttl_purger = TTLPurger::CreateTTLPurger();
+    if (g_ttl_purger != nullptr) {
+      // Seed the runtime purge config from the config file; the REST config
+      // API can change it later at runtime.
+      TTLPurgeConfig ttl_purge_config = g_ttl_purger->GetConfig();
+      ttl_purge_config.enabled = globalConfigs.ttlPurge.enable;
+      TTLPurge::parseActiveWindow(globalConfigs.ttlPurge.activeWindow,
+                                  &ttl_purge_config.active_window_start_min,
+                                  &ttl_purge_config.active_window_end_min);
+      g_ttl_purger->SetConfig(ttl_purge_config);
+      g_ttl_purger->Run();
+    } else {
+      // The TTL purge endpoints will report 503; everything else still works
+      std::cerr << "Failed to initialize the TTL purger; TTL purging is "
+                   "not running on this node.\n";
+    }
 
     if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
       apiKeyCachePtr->preload_all_keys();

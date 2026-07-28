@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -156,17 +156,26 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
       requestInfo,
       theReadCommittedBaseIndicator & static_cast<Uint8>(longSignal));
   TcKeyReq::setNoWaitFlag(requestInfo, (m_flags & OF_NOWAIT) != 0);
-  /*
-   * TTL related
-   */
-  TcKeyReq::setTTLIgnoreFlag(requestInfo,
-                          (m_flags & OF_TTL_IGNORE) != 0);
-  TcKeyReq::setTTLOnlyExpiredFlag(requestInfo,
-                          (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
+
   TcKeyReq::setRingBufferOpFlag(requestInfo,
                           (m_flags & OF_RING_BUFFER_OP) != 0);
   TcKeyReq::setRingBufferShowMetaFlag(requestInfo,
                           (m_flags & OF_RING_BUFFER_SHOW_META) != 0);
+
+  /*
+   * TTL related.
+   * Gated on longSignal like ReadCommittedBase above: the TTL bits (26/28)
+   * live inside the short-signal key-length field (bits 20-31), so a short
+   * TCKEYREQ overwrites them with the key length in doSendKeyReq(), and DBTC
+   * ignores TTL for short requests regardless. Keep them out of the short
+   * request so the bits never leak into the key-length field transiently.
+   */
+  TcKeyReq::setTTLIgnoreFlag(
+      requestInfo,
+      ((m_flags & OF_TTL_IGNORE) != 0) & static_cast<Uint8>(longSignal));
+  TcKeyReq::setTTLOnlyExpiredFlag(
+      requestInfo,
+      ((m_flags & OF_TTL_ONLY_EXPIRED) != 0) & static_cast<Uint8>(longSignal));
   req->requestInfo = requestInfo;
 }
 

@@ -1,0 +1,134 @@
+# ==========================================================================
+# ttl_purge_rotation.test
+#
+# Finding #15 (rotation): the purge worker's per-table partition rotation
+# pointer (TTLInfo.part_id) lives only in its round-local copy of the TTL
+# cache. Every TTL-relevant schema event sets cache_updated_ and makes the
+# worker reload that copy from the shared cache, whose entries carry
+# part_id = 0 -- so under TTL-DDL churn the rotation restarts from the
+# beginning (nodeId % partition_count offset, or partition 0 in sharded
+# mode) and high partitions starve.
+#
+# The fix carries part_id/batch_size/part_id_offset_applied forward across
+# the reload for tables whose key and table_id are unchanged.
+#
+# Deterministic probe (twice, at two different rotation phases):
+#   1. disable purging and wait for 'disabled' (the pointer is frozen: the
+#      published current_partition only changes at a round boundary)
+#   2. read current_partition p and the expected continuation (p+1)%count
+#   3. ALTER another TTL table's comment (TTL-relevant ndb_schema event ->
+#      cache_updated_) while the worker is idle
+#   4. re-enable and wait for the next published value q
+#   5. rotation carried over  -> q == (p+1)%count       (fix)
+#      rotation reset         -> q == nodeId%count + 1  (bug; catching one
+#      coincidental match is why the probe runs twice, >=3 rotations apart)
+# Rounds are slowed to ~3s (sleep_interval_ms=3000) so the 1s poll in
+# ttl_purge_wait_partition.inc cannot skip a published value.
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/have_rdrs_curl.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+
+SET time_zone = '+00:00';
+
+CREATE DATABASE recon3;
+# The rotating table: several partitions, long TTL (rotation advances every
+# round even when nothing is expired).
+CREATE TABLE recon3.rot (id INT PRIMARY KEY, ts DATETIME) ENGINE=NDB
+  COMMENT="NDB_TABLE=TTL=600@ts"
+  PARTITION BY KEY(id) PARTITIONS 8;
+# The touch table: its TTL ALTERs generate the cache_updated_ reloads.
+CREATE TABLE recon3.t_touch (id INT PRIMARY KEY, ts DATETIME) ENGINE=NDB
+  COMMENT="NDB_TABLE=TTL=600@ts";
+
+--let $wait_db = recon3
+--let $wait_table = rot
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--let $wait_db = recon3
+--let $wait_table = t_touch
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Slow rounds; no periodic reconcile interference.
+--exec $ttl_purge_put_config '{"sleep_interval_ms": 3000, "reconcile_interval_sec": 0}' > /dev/null 2>&1
+
+# Let the rotation demonstrably advance once before probing.
+--let $wait_db = recon3
+--let $wait_table = rot
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $partition_prev = $partition_value
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+
+--echo #
+--echo # Probe 1: cache reload while rotation is at an arbitrary phase
+--echo #
+--exec $ttl_purge_put_config '{"enabled": false}' > /dev/null 2>&1
+--let $wait_state_target = disabled
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+# Frozen pointer + expected continuation. 'disabled' is reported before the
+# interrupted round's final metrics publication, so require a STABLE read.
+--let $partition_stable = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $p1 = $partition_value
+--let $expect1 = $partition_next
+
+# TTL-relevant event -> cache_updated_ (processed by the watcher while the
+# worker is idle). Wait for the watcher's own log line (new TTL value 601)
+# instead of a blind sleep, so the reload is provably pending on re-enable.
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+ALTER TABLE recon3.t_touch COMMENT="NDB_TABLE=TTL=601@ts";
+--let $log_pattern = Update TTL of table recon3.t_touch in cache: .*601@
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rdrs_log.inc
+
+--exec $ttl_purge_put_config '{"enabled": true}' > /dev/null 2>&1
+--let $wait_state_target = running
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--let $partition_prev = $p1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $assert_text = Rotation continued across reload (probe 1)
+--let $assert_cond = $partition_value = $expect1
+--source include/assert.inc
+
+# Advance >=3 rotations so probe 2 runs at a different phase (a reset-to-
+# offset bug cannot coincide with the expected continuation twice).
+--let $partition_prev = $partition_value
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $partition_prev = $partition_value
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $partition_prev = $partition_value
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+
+--echo #
+--echo # Probe 2: same check at a different rotation phase
+--echo #
+--exec $ttl_purge_put_config '{"enabled": false}' > /dev/null 2>&1
+--let $wait_state_target = disabled
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--let $partition_stable = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $p2 = $partition_value
+--let $expect2 = $partition_next
+
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+ALTER TABLE recon3.t_touch COMMENT="NDB_TABLE=TTL=602@ts";
+--let $log_pattern = Update TTL of table recon3.t_touch in cache: .*602@
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rdrs_log.inc
+
+--exec $ttl_purge_put_config '{"enabled": true}' > /dev/null 2>&1
+--let $wait_state_target = running
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--let $partition_prev = $p2
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_partition.inc
+--let $assert_text = Rotation continued across reload (probe 2)
+--let $assert_cond = $partition_value = $expect2
+--source include/assert.inc
+
+# --- Cleanup ---
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--exec $ttl_purge_put_config '{"reconcile_interval_sec": 30}' > /dev/null 2>&1
+DROP DATABASE recon3;
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

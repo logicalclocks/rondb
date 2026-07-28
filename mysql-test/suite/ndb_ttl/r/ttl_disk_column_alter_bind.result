@@ -1,0 +1,80 @@
+CREATE LOGFILE GROUP lg_1
+ADD UNDOFILE 'lg_1_undofile.dat'
+  INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE 1M
+ENGINE NDB;
+CREATE TABLESPACE ts_1
+ADD DATAFILE 'ts_1_datafile.dat'
+  USE LOGFILE GROUP lg_1
+INITIAL_SIZE 64M
+ENGINE NDB;
+SET time_zone='+00:00';
+DROP TABLE IF EXISTS test.sz1;
+DROP TABLE IF EXISTS test.sz2;
+DROP TABLE IF EXISTS test.sz3;
+#
+# Baseline: CREATE forbids binding TTL to an on-disk column.
+# (Also proves col_b really is on disk -- else this CREATE would pass.)
+#
+CREATE TABLE test.sz2 (
+col_a INT,
+col_b TIMESTAMP STORAGE DISK,
+col_c INT,
+PRIMARY KEY(col_a)
+) TABLESPACE ts_1, ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=5@col_b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column can't be an on-disk column'
+#
+# #8: a table with a DISK-stored TIMESTAMP column, no TTL yet
+#
+CREATE TABLE test.sz1 (
+col_a INT,
+col_b TIMESTAMP STORAGE DISK,
+col_c INT,
+PRIMARY KEY(col_a)
+) TABLESPACE ts_1, ENGINE = NDB;
+# ALGORITHM=INPLACE add-TTL on the on-disk column -> rejected by the fix
+# (inplace_parse_comment; no COPY fallback under explicit INPLACE)
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=5@col_b", ALGORITHM=INPLACE;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: TTL column can't be an on-disk column. Try ALGORITHM=COPY.
+# ALGORITHM=COPY add-TTL on the on-disk column -> rejected by CREATE path
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=5@col_b", ALGORITHM=COPY;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column can't be an on-disk column'
+# default algorithm: the inplace check reports unsupported, MySQL falls
+# back to COPY, and the CREATE path then rejects it.
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=5@col_b";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column can't be an on-disk column'
+# sz1 is unchanged (no TTL comment)
+SHOW CREATE TABLE sz1;
+Table	Create Table
+sz1	CREATE TABLE `sz1` (
+  `col_a` int NOT NULL,
+  `col_b` timestamp NULL /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `col_c` int DEFAULT NULL,
+  PRIMARY KEY (`col_a`)
+) /*!50100 TABLESPACE `ts_1` */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+#
+# Negative control: binding TTL to a MEMORY timestamp column still works,
+# even when the table has an unrelated on-disk column (col_c).
+#
+CREATE TABLE test.sz3 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT STORAGE DISK,
+PRIMARY KEY(col_a)
+) TABLESPACE ts_1, ENGINE = NDB;
+ALTER TABLE sz3 COMMENT="NDB_TABLE=TTL=5@col_b";
+# sz3 now has TTL bound to the in-memory col_b
+SHOW CREATE TABLE sz3;
+Table	Create Table
+sz3	CREATE TABLE `sz3` (
+  `col_a` int NOT NULL,
+  `col_b` timestamp NULL DEFAULT NULL,
+  `col_c` int /*!50606 STORAGE DISK */ DEFAULT NULL,
+  PRIMARY KEY (`col_a`)
+) /*!50100 TABLESPACE `ts_1` */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=5@col_b'
+DROP TABLE IF EXISTS test.sz1;
+DROP TABLE IF EXISTS test.sz3;
+ALTER TABLESPACE ts_1 DROP DATAFILE 'ts_1_datafile.dat';
+DROP TABLESPACE ts_1;
+DROP LOGFILE GROUP lg_1 ENGINE NDB;

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2319,6 +2319,10 @@ void NdbScanOperation::close(bool forceSend, bool releaseOp) {
     */
     PollGuard poll_guard(*theNdb->theImpl);
     close_impl(forceSend, &poll_guard);
+
+    for (uint i = 0; i < m_allocated_receivers; i++) {
+      m_receivers[i]->release();
+    }
   }
 
   /* Free buffer used to store scan result set.
@@ -3006,6 +3010,17 @@ NdbOperation *NdbScanOperation::takeOverScanOp(OperationType opType,
     newOp->theDistrKeyIndicator_ = 1;
     newOp->theDistributionKey = tTakeOverFragment;
   }
+
+  /*
+   * TTL related
+   * A take-over operation inherits the scan's only-expired marker: a row
+   * taken over from an SF_OnlyExpiredScan (the TTL purge) can only be an
+   * expired row. Downstream blocks use the marker to classify the operation,
+   * e.g. DBTUP excludes only-expired deletes from the fragment's
+   * committed-changes counter so that the TTL purge does not abort a
+   * concurrent copying ALTER TABLE via its commit-count change detection.
+   */
+  newOp->m_flags |= (m_flags & OF_TTL_ONLY_EXPIRED);
 
   // Copy the first 8 words of key info from KEYINF20 into TCKEYREQ
   TcKeyReq *tcKeyReq = CAST_PTR(TcKeyReq, newOp->theTCREQ->getDataPtrSend());

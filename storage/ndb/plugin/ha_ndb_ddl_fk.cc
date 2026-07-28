@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2026, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1587,6 +1587,22 @@ int ha_ndbcluster::copy_fk_for_offline_alter(THD *thd, Ndb *ndb,
     if (found) {
       // FK is on drop list. Skip copying.
       continue;
+    }
+
+    // A TTL table may not participate in a foreign key. The inplace add-TTL
+    // path rejects this (ha_ndbcluster.cc, m_ttl_fk check), but an explicit
+    // ALGORITHM=COPY skips that whole inplace analysis (sql_table.cc), so the
+    // prohibition must be re-enforced here for every FK that survives the
+    // alter. dsttab is the table being altered and is always a participant
+    // (parent or child) of each FK in this list, so a single check on it
+    // covers both roles. This runs AFTER the drop-list skip above, so
+    // dropping the FK and enabling TTL in the same COPY alter stays valid.
+    // Mirrors the create_fk() check on isTTLEnabled().
+    if (dsttab.get_table()->isTTLEnabled()) {
+      push_warning_printf(thd, Sql_condition::SL_WARNING,
+                          ER_CANNOT_ADD_FOREIGN,
+                          "Can not use foreign key on TTL table");
+      return HA_ERR_CANNOT_ADD_FOREIGN;
     }
 
     // flags for CreateForeignKey

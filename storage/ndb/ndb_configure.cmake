@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2026, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -235,16 +235,48 @@ OPTION(WITH_NDB_RDMA
   "Build the experimental RonDB native RDMA transporter (requires libibverbs)"
   OFF)
 SET(NDB_RDMA_LIBRARIES "")
+SET(NDB_RDMA_INCLUDE_DIRS "")
 IF(WITH_NDB_RDMA)
-  CHECK_INCLUDE_FILES("infiniband/verbs.h" HAVE_INFINIBAND_VERBS_H)
-  FIND_LIBRARY(IBVERBS_LIBRARY ibverbs)
+  # Locate libibverbs. On RPM-based distros the header infiniband/verbs.h and
+  # the linkable libibverbs.so live in the rdma-core-devel package (which also
+  # Provides the virtual name libibverbs-devel); on Debian/Ubuntu they are in
+  # libibverbs-dev. rdma-core ships a libibverbs.pc, so prefer pkg-config: it
+  # is re-evaluated on every configure run and therefore is not subject to the
+  # sticky negative caching of CHECK_INCLUDE_FILES -- a header probe made
+  # before the package was installed caches HAVE_INFINIBAND_VERBS_H=false and
+  # is then skipped (never re-run) on every subsequent reconfigure.
+  FIND_PACKAGE(PkgConfig QUIET)
+  IF(PKG_CONFIG_FOUND)
+    PKG_CHECK_MODULES(PC_IBVERBS QUIET libibverbs)
+  ENDIF()
+
+  IF(PC_IBVERBS_FOUND)
+    # Trust pkg-config. Assign a *normal* variable so it shadows any stale
+    # INTERNAL cache entry left by an earlier (pre-install) CHECK_INCLUDE_FILES
+    # -- this lets a freshly-installed rdma-core-devel be picked up by a plain
+    # reconfigure, without anyone having to clear CMakeCache.txt.
+    SET(HAVE_INFINIBAND_VERBS_H 1)
+  ELSE()
+    # No pkg-config data; probe the default system include paths directly.
+    CHECK_INCLUDE_FILES("infiniband/verbs.h" HAVE_INFINIBAND_VERBS_H)
+  ENDIF()
+
+  # FIND_LIBRARY re-searches whenever its cached result is *-NOTFOUND, so unlike
+  # the header check it is not affected by a stale negative cache. Feed it the
+  # pkg-config library dir as a hint for non-standard prefixes.
+  FIND_LIBRARY(IBVERBS_LIBRARY ibverbs HINTS ${PC_IBVERBS_LIBRARY_DIRS})
   IF(NOT HAVE_INFINIBAND_VERBS_H OR NOT IBVERBS_LIBRARY)
     MESSAGE(FATAL_ERROR
-      "WITH_NDB_RDMA=ON but libibverbs (infiniband/verbs.h and -libverbs) "
-      "could not be located. Install rdma-core development packages "
-      "or set WITH_NDB_RDMA=OFF.")
+      "WITH_NDB_RDMA=ON but libibverbs (infiniband/verbs.h and -libibverbs) "
+      "could not be located. Install the libibverbs development files: "
+      "'rdma-core-devel' on RPM-based distros (dnf/yum; it provides "
+      "libibverbs-devel) or 'libibverbs-dev' on Debian/Ubuntu. If they are "
+      "already installed, a stale CMake cache may be hiding them -- run "
+      "'cmake -U HAVE_INFINIBAND_VERBS_H .' (or delete CMakeCache.txt) and "
+      "re-run cmake. Alternatively set WITH_NDB_RDMA=OFF.")
   ENDIF()
   SET(NDB_RDMA_LIBRARIES "${IBVERBS_LIBRARY}")
+  SET(NDB_RDMA_INCLUDE_DIRS "${PC_IBVERBS_INCLUDE_DIRS}")
   SET(NDB_RDMA_TRANSPORTER_SUPPORTED 1)
   ADD_DEFINITIONS(-DNDB_RDMA_TRANSPORTER_SUPPORTED=1)
   MESSAGE(STATUS "Building RonDB RDMA transporter using ${IBVERBS_LIBRARY}")

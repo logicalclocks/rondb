@@ -1,5 +1,5 @@
-/* Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+/* Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1498,22 +1498,34 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
   }
 
   Uint32 op = opbits & Operationrec::OP_MASK;
+  /*
+   * TTL related
+   * Convert ZINSERT to ZWRITE for TTL table
+   * NOTICE:
+   * we only need change the operation to ZWRITE in DbAcc::Operationrec
+   * to make the following steps pass. The operation in DBLQH is
+   * unchanged
+   *
+   * EXCEPTION: LCP-restore-originated inserts (NoTTLDupConvert) must NOT be
+   * converted. During restore a relocated key can be replayed (in rowid order)
+   * while an older, expired copy of the same key is still present; converting
+   * the duplicate into an in-place TTL update would let restore count the
+   * INSERT (+1) while TUP does not create a row (+0), causing an LCP row-count
+   * mismatch (error 2352). Leaving it as ZINSERT makes the duplicate return
+   * 630, which restore's delete-by-PK + reinsert recovery reconciles (just as
+   * on a non-TTL table).
+   */
+  if (op == ZINSERT && found && is_ttl &&
+      !AccKeyReq::getNoTTLDupConvert(req->requestInfo)) {
+    ndbrequire((operationRecPtr.p->m_op_bits & (Uint32)Operationrec::OP_MASK) ==
+               ZINSERT);
+    op = ZWRITE;
+    Uint32 tmp_opbits = operationRecPtr.p->m_op_bits;
+	  tmp_opbits &= ~(Uint32)Operationrec::OP_MASK;
+	  tmp_opbits |= op;
+	  operationRecPtr.p->m_op_bits = tmp_opbits;
+  }
   if (found == ZTRUE) {
-    /*
-     * TTL related
-     * Convert ZINSERT-on-existing to ZWRITE for TTL tables. The switch
-     * arm for ZWRITE then converts to ZUPDATE in the lock-free path. The
-     * operation in DBLQH is unchanged.
-     */
-    if (op == ZINSERT && is_ttl) {
-      ndbrequire((operationRecPtr.p->m_op_bits &
-                  (Uint32)Operationrec::OP_MASK) == ZINSERT);
-      op = ZWRITE;
-      Uint32 tmp_opbits = operationRecPtr.p->m_op_bits;
-      tmp_opbits &= ~(Uint32)Operationrec::OP_MASK;
-      tmp_opbits |= op;
-      operationRecPtr.p->m_op_bits = tmp_opbits;
-    }
     switch (op) {
     case ZREAD:
     case ZUPDATE:
@@ -2037,22 +2049,60 @@ conf:
   nextOp.p->m_op_bits = nextbits;
   nextOp.p->localdata = lastOp.p->localdata;
   validate_lock_queue(lastOp);
-  release_frag_mutex_hash(fragrecptr.p, hash);
-  
-  if (unlikely(nextop == ZSCAN_OP &&
-              (nextbits & Operationrec::OP_LOCK_REQ) == 0))
-  {
-    jam();
-    ndbabort();
-    takeOutScanLockQueue(nextOp.p->scanRecPtr);
-    putReadyScanQueue(nextOp.p->scanRecPtr);
-  } else {
-    jam();
-    fragrecptr.i = nextOp.p->fragptr;
-    ndbrequire(c_fragment_pool.getPtr(fragrecptr));
 
-    sendAcckeyconf(signal, operationRecPtr.p);
-    sendSignal(nextOp.p->userblockref, GSN_ACCKEYCONF, signal, 6, JBB);
+  /*
+   * TTL related (read-what-you-locked on a DEFERRED grant).
+   * accIsLockedLab computes the same-transaction TTL-ignore visibility when
+   * the op is queued, but discards it when the op is placed on the SERIAL
+   * queue. This is the deferred grant of such an op, so recompute it here and
+   * deliver it via ACCKEYCONF, mirroring the immediate-grant path -- otherwise
+   * the granted op would fail checkTTL (626) on a row its own transaction
+   * already holds a lock on. Computed while the fragment mutex is still held
+   * (released just below), same as accIsLockedLab / WhetherSkipTTL. ignore_ttl
+   * is true iff another op of nextOp's transaction is already in the lock
+   * owner's parallel queue (nextOp itself is excluded -- it was appended to
+   * the queue above, so counting it would set ignore_ttl unconditionally).
+   * Wrapped in its own scope so the 'goto ref' paths above do not jump across
+   * these initializations.
+   */
+  {
+    bool ignore_ttl = false;
+    if (is_ttl_table(fragrecptr.p)) {
+      OperationrecPtr ownerPtr;
+      if (lastOp.p->m_op_bits & Operationrec::OP_LOCK_OWNER) {
+        ownerPtr = lastOp;
+      } else {
+        ownerPtr.i = lastOp.p->m_lock_owner_ptr_i;
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(ownerPtr));
+      }
+      OperationrecPtr loopPtr = ownerPtr;
+      while (loopPtr.i != RNIL) {
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+        if (loopPtr.i != nextOp.i && loopPtr.p->is_same_trans(nextOp.p)) {
+          ignore_ttl = true;
+          break;
+        }
+        loopPtr.i = loopPtr.p->nextParallelQue;
+      }
+    }
+
+    release_frag_mutex_hash(fragrecptr.p, hash);
+
+    if (unlikely(nextop == ZSCAN_OP &&
+                (nextbits & Operationrec::OP_LOCK_REQ) == 0))
+    {
+      jam();
+      ndbabort();
+      takeOutScanLockQueue(nextOp.p->scanRecPtr);
+      putReadyScanQueue(nextOp.p->scanRecPtr);
+    } else {
+      jam();
+      fragrecptr.i = nextOp.p->fragptr;
+      ndbrequire(c_fragment_pool.getPtr(fragrecptr));
+
+      sendAcckeyconf(signal, operationRecPtr.p, ignore_ttl);
+      sendSignal(nextOp.p->userblockref, GSN_ACCKEYCONF, signal, 6, JBB);
+    }
   }
 
   operationRecPtr = save;
@@ -3697,7 +3747,16 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
 {
   jamEntryDebug();
   bool skip = false;
-  
+
+  /*
+   * TTL related
+   * This runs re-entrantly from DBTUP in the middle of a scan read, so the
+   * block member operationRecPtr (which the code below points at the local
+   * scratch record) must be preserved for whatever ACC-level processing the
+   * enclosing signal chain resumes after the read returns.
+   */
+  const OperationrecPtr saveOperationRecPtr = operationRecPtr;
+
   // Make up AccLockReq
   AccLockReq* sig = (AccLockReq*)signal->getDataPtrSend();
   AccLockReq reqCopy = *sig;
@@ -3875,6 +3934,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
           ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
           if (loopPtr.p->is_same_trans(operationRecPtr.p)) {
             skip = true;
+            break;
           }
           loopPtr.i = loopPtr.p->nextParallelQue;
         } while (loopPtr.i != RNIL);
@@ -3885,6 +3945,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
   } // execACCKEYREQ()
   req->returnCode = AccLockReq::Success;
   req->accOpPtr = RNIL;
+  operationRecPtr = saveOperationRecPtr;
   return skip;
 }
 

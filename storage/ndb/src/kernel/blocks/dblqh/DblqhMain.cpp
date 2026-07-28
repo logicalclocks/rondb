@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -124,6 +124,7 @@
 #include <TransporterRegistry.hpp>
 
 #include <EventLogger.hpp>
+#include "my_systime.h"  // my_micro_time() for per-scan-batch TTL clock sampling
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ABORT_TRANS 1
@@ -4737,12 +4738,53 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
             t_tabptr.p->m_ttl_col_no != RNIL);
   }
 }
+
 bool Dblqh::is_ring_buffer_table(Uint32 table_id) {
   TablerecPtr t_tabptr;
   t_tabptr.i = table_id;
   ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
   return (t_tabptr.p->m_ring_buffer_size != RNIL);
 }
+
+/*
+ * TTL related
+ * Sample wall-clock "now" once per scan batch and reuse it for every row's
+ * TTL expiry check (Dbtup::checkTTL), instead of calling my_micro_time()
+ * (a gettimeofday, which is a real syscall on VMs without a TSC clocksource)
+ * once per scanned row. Sampled at every point a batch starts evaluating
+ * rows: scan start (initScanrec), each SCAN_NEXTREQ, a queued scan's
+ * restart, and the start of a prefetched batch (parallel ordered scans).
+ * This is a deliberate relaxation of the old per-row clock read: the value
+ * can be stale by up to one batch's execution time (for selective scans,
+ * the time to examine -- not return -- a batch's worth of rows). A stale
+ * "now" errs only toward "not yet expired": an expired row can stay visible
+ * to the batch (or be skipped by a purge round and caught by the next one),
+ * but a row can never expire or be purged early. That one-sidedness assumes
+ * the wall clock (gettimeofday) is never stepped backward mid-batch: NTP
+ * slewing preserves it, while a hard backward step leaves the cached value
+ * ahead of the corrected clock until the next batch boundary -- the same
+ * exposure any wall-clock-based expiry already has, widened by at most one
+ * batch. Only relevant when this
+ * scan actually evaluates TTL: a TTL table whose expiry check is enabled
+ * (m_ttl_ignore == 0), i.e. normal user scans and the background purge scan.
+ * Otherwise leave it 0 so checkTTL keeps its per-row clock read (it isn't
+ * called for non-TTL/ignored scans anyway) and non-TTL scans pay no TTL cost.
+ */
+void Dblqh::set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id) {
+  if (scanPtr->m_ttl_ignore == 0 && is_ttl_table(table_id)) {
+    scanPtr->m_ttl_now_sec = (Uint32)(my_micro_time() / 1000000);
+  } else {
+    scanPtr->m_ttl_now_sec = 0;
+  }
+}
+
+bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
+  TablerecPtr t_tabptr;
+  t_tabptr.i = table_id;
+  ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
+  return t_tabptr.p->tableType == DictTabInfo::UniqueHashIndex;
+}
+
 void
 Dblqh::release_frag_array(Tablerec *tabPtrP)
 {
@@ -7186,6 +7228,7 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr,
   locTcConnectptr.p->ttl_only_expired = 0;
   locTcConnectptr.p->ring_buffer_op = 0;
   locTcConnectptr.p->ring_buffer_show_meta = 0;
+  locTcConnectptr.p->m_restore_op = 0;
 
   tcConnectptr = locTcConnectptr;
   ndbrequire(Magic::check_ptr(locTcConnectptr.p->tupConnectPtrP));
@@ -9377,6 +9420,21 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    * TTL related
    */
   regTcPtr->ttl_ignore = LqhKeyReq::getTTLIgnoreFlag(Treqinfo);
+  /*
+   * TTL related (same-transaction unique-dup gap fix). At request setup the wire
+   * ttl_ignore reflects GENUINE TTL-ignore intent -- explicit OO_TTL_IGNORE,
+   * replication apply, or a recovery op forwarded from the primary. The DBACC
+   * same-transaction "read-what-you-locked" value is added LATER (execACCKEYCONF),
+   * not here, so recording the bypass from the request-time ttl_ignore captures
+   * only genuine recovery/replication intent, never same-transaction visibility.
+   * (A forwarded same-transaction op can carry ttl_ignore=1 from the primary's
+   * merge, but such ops are always same-owner refreshes the primary already
+   * allowed -- a different-owner duplicate is rejected on the primary before
+   * forwarding -- so setting bypass here is harmless.)
+   */
+  if (regTcPtr->ttl_ignore) {
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
+  }
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
   regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(Treqinfo);
   regTcPtr->ring_buffer_show_meta = LqhKeyReq::getRingBufferShowMetaFlag(Treqinfo);
@@ -9655,6 +9713,31 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->tableref = tabptr.i;
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
+  /*
+   * TTL related. LCP restore is a PHYSICAL reconstruction from full row images,
+   * NOT a replay of incremental changes: every row present in the restored LCP
+   * -- including one whose last change during the LCP was an UPDATE -- is
+   * reinstalled wholesale via insert-by-rowid, and a row deleted during the LCP
+   * is recorded as DELETE BY ROWID (restore.cpp parse_record; a WRITE_TYPE
+   * change record carries the full after-image and is installed as ZINSERT). So
+   * restore issues only two op types -- never ZUPDATE/ZWRITE, hence there is no
+   * update case to handle here -- and each must bypass TTL's logical read/purge
+   * policy:
+   *   INSERT: must NOT be converted by DBACC into an in-place TTL upsert on a
+   *     duplicate. m_restore_op makes exec_acckeyreq set
+   *     AccKeyReq::NoTTLDupConvert, so a duplicate surfaces as 630 and restore's
+   *     delete-by-PK + reinsert recovery keeps the row count consistent.
+   *   DELETE: can target an EXPIRED row (the duplicate-key recovery deletes the
+   *     stale copy by PK -- restore.cpp; normal replay issues DELETE BY ROWID).
+   *     Without ignoring TTL the delete returns 626 on the expired row and
+   *     breaks recovery, so it must be expiry-blind (ttl_ignore=1) and -- being
+   *     genuine recovery intent -- exempt from the same-owner check.
+   */
+  regTcPtr->m_restore_op = (senderBlockNo == getRESTORE()) ? 1 : 0;
+  if (regTcPtr->m_restore_op && op == ZDELETE) {
+    regTcPtr->ttl_ignore = 1;
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
+  }
   // Both of the original branches did the same update; merged.
   // m_disk_table is a 0/1 bool (Uint8), so `&= !flag` either clears
   // (when flag is set) or is a no-op (when flag is unset).
@@ -10192,7 +10275,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
     ndbassert(activeCreat == Fragrecord::AC_IGNORED);
     if (TRACENR_FLAG)
       TRACENR(" IGNORING (activeCreat == 2)" << endl);
-    
+
     regTcPtr->transactionState = TcConnectionrec::WAIT_ACC_ABORT;
     signal->theData[0] = regTcPtr->tupConnectrec;
     c_tup->do_tup_abortreq(signal, 0);
@@ -10392,6 +10475,24 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
     taccreq = AccKeyReq::setNoWait(
         taccreq, ((regTcPtr.p->m_flags & TcConnectionrec::OP_NOWAIT) != 0));
     taccreq = AccKeyReq::setLockReq(taccreq, false);
+    /*
+     * TTL related. Tell DBACC not to convert a duplicate ZINSERT into an
+     * in-place TTL update for LCP-restore-originated operations.
+     *
+     * NOTE: this is deliberately NOT extended to REDO replay
+     * (c_executing_redo_log). An insert that replaced an expired row commits as
+     * ZINSERT_TTL (= ZINSERT | 0x08 = 10), but LqhKeyReq's operation field is
+     * only 3 bits, so readLogHeader replays it as a plain ZINSERT. Suppressing
+     * the conversion for REDO would make that replayed insert return 630 and be
+     * skipped by logLqhkeyrefLab -> the committed replacement is dropped and the
+     * node aborts during recovery. REDO must instead ALLOW the conversion so the
+     * upsert overwrites the (always-expired) existing row, reconstructing the
+     * committed state. ttl_ignore=1 (set for REDO in initReqinfoExecSr) makes
+     * that overwrite unconditional, which is correct here because a replayed
+     * duplicate insert in chronological REDO can only land on the expired row it
+     * replaced (a plain insert onto a live row is preceded by its delete).
+     */
+    taccreq = AccKeyReq::setNoTTLDupConvert(taccreq, regTcPtr.p->m_restore_op);
 
     AccKeyReq * const req = reinterpret_cast<AccKeyReq*>(&signal->theData[0]);
     req->requestInfo = taccreq;
@@ -10479,7 +10580,13 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                       "so set it to 1! "
                       "table id: %u",
                       tabptr.i);
-      /* IMPORTANT */
+      /*
+       * IMPORTANT (same-transaction unique-dup gap fix): set the EFFECTIVE
+       * ttl_ignore from the DBACC same-transaction "read-what-you-locked"
+       * response, but NEVER set OP_TTL_OWNER_CHECK_BYPASS here. A same-
+       * transaction duplicate is not recovery intent and must still be rejected
+       * by the DBTUP same-owner check.
+       */
       regTcPtr.p->ttl_ignore = signal->theData[5];
     } else if (regTcPtr.p->ttl_ignore && signal->theData[5]) {
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
@@ -10708,7 +10815,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * This is a normal operation in a starting node which is currently being
      * synchronised with the live node.
      */
-    if (!match && op != ZINSERT) {
+    if (!match && op != ZINSERT &&
+        !(op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))) {
       /**
        * We are performing an UPDATE or a DELETE and the row id position
        * doesn't contain the correct primary key.
@@ -10716,6 +10824,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        * Either there was no row in this row id, or it is an old row which
        * which haven't yet seen the copy row. We can safely ignore this
        * one.
+       *
+       * Exception: on a TTL table a live write of a new key is forwarded to
+       * replicas as ZWRITE (so replicas skip checkTTL), not ZINSERT. Such a
+       * ZWRITE with !match is effectively a new-key insert and must be treated
+       * like ZINSERT below - it cannot be ignored, otherwise if its (possibly
+       * reused) row id is below the copy scan pointer the forward scan never
+       * re-delivers it and the row is permanently lost on the starting node.
        */
       jam();
       if (TRACENR_FLAG) TRACENR(" IGNORE " << endl);
@@ -10749,7 +10864,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * same manner as if it was a copy row coming. It might be redone later
      * but this is not a problem with consistency.
      */
-    ndbassert(!match && op == ZINSERT);
+    ndbassert(!match && (op == ZINSERT ||
+                         (op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))));
 
     /**
      * Perform the following action (same as above for copy row case)
@@ -11724,7 +11840,13 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
                       "so set it to 1! "
                       "table id: %u",
                       tabptr.i);
-      /* IMPORTANT */
+      /*
+       * IMPORTANT (same-transaction unique-dup gap fix): set the EFFECTIVE
+       * ttl_ignore from the DBACC same-transaction "read-what-you-locked"
+       * response, but NEVER set OP_TTL_OWNER_CHECK_BYPASS here. A same-
+       * transaction duplicate is not recovery intent and must still be rejected
+       * by the DBTUP same-owner check.
+       */
       regTcPtr->ttl_ignore = signal->theData[5];
     } else if (regTcPtr->ttl_ignore && signal->theData[5]) {
       TTL_RONDB_TRACE(tabptr.i, "Dblqh::execACCKEYCONF[2], ttl_ignore in "
@@ -11833,8 +11955,16 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
   {
     /*
      * TTL related
-     * TODO (Zhao)
-     * maybe need to handle this code path for TTL
+     * No TTL-specific handling is needed on the disk-table path: it only
+     * DEFERS the TUPKEYREQ until the disk page is loaded, and all TTL
+     * state (the ACC-converted operation, ttl_ignore/ttl_only_expired,
+     * original_operation) lives on the TcConnectionrec, which survives the
+     * asynchronous page load unchanged. checkTTL in DBTUP reads only the
+     * TTL column, which is always an in-memory column (DDL rejects binding
+     * TTL to a disk column). Covered by ndb_ttl.ttl_disk_expired_write:
+     * insert-over-expired refresh, REPLACE/ON-DUP over expired, delete and
+     * update of expired, and the same-transaction duplicate reject all
+     * behave identically to the in-memory-table paths.
      */
     jamDebug();
     jamDataDebug(localKey1);
@@ -12691,14 +12821,31 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   LqhKeyReq::setRowidFlag(Treqinfo, regTcPtr->m_use_rowid);
 
   /*
-   * TTL related
-   * TODO (Zhao)
-   * Double check that it needs to set ttl_ignore for LqhKeyReq
-   * in other places as well
+   * TTL related. Serialize the EFFECTIVE ttl_ignore (NOT the owner-check-bypass
+   * provenance). The downstream replica needs ttl_ignore to suppress its own
+   * checkTTL: e.g. a scan-takeover DELETE of an expired row during online reorg
+   * or TTL purge gets ttl_ignore=1 from the same-transaction lock and must not be
+   * rejected with 626 on the backup. The unique-index same-owner check (Bug
+   * same-transaction-dup fix) does NOT need the bypass bit on the wire: it is
+   * enforced authoritatively on the PRIMARY replica, which rejects a different
+   * owner with 630 BEFORE forwarding, so the only same-transaction ops a backup
+   * ever receives are same-owner refreshes the primary already allowed -- the
+   * backup deriving its bypass from this ttl_ignore (execLQHKEYREQ) is therefore
+   * safe.
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
   LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
+
+  /*
+   * TTL related. Serialize ttl_only_expired too: every replica must classify
+   * an only-expired (TTL purge) delete identically when committing, because
+   * DBTUP excludes such deletes from the fragment's committed-changes counter
+   * (the COMMIT_COUNT pseudo column used by copying ALTER TABLE change
+   * detection). Without the bit the counters would diverge between primary
+   * and backup replicas.
+   */
+  LqhKeyReq::setTTLOnlyExpiredFlag(Treqinfo, regTcPtr->ttl_only_expired);
 
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
@@ -12724,9 +12871,18 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * I explain the reason there. Check [TTL Replication ZWRITE to replicas]
    * there for more details
    *
+   * This conversion is only needed (and only valid) on the PRIMARY replica.
+   * continueACCKEYCONF() rewrites regTcPtr->reqinfo (hence Treqinfo) from ZWRITE
+   * back to the real ZINSERT/ZUPDATE ONLY when seqNoReplica==0, so the
+   * ndbrequire below holds there. On a backup replica that rewrite is skipped,
+   * so reqinfo/Treqinfo still carries ZWRITE and is forwarded to the next
+   * replica unchanged -- running this block on a MIDDLE replica (which exists
+   * only at NoOfReplicas>=3 and forwards onward) would trip the ndbrequire on
+   * the already-ZWRITE op and crash the node.
    */
   if (is_ttl_table(fragptr.p->tabRef) &&
-      regTcPtr->original_operation == ZWRITE) {
+      regTcPtr->original_operation == ZWRITE &&
+      regTcPtr->seqNoReplica == 0) {
     ndbrequire(LqhKeyReq::getOperation(Treqinfo) == ZINSERT ||
                LqhKeyReq::getOperation(Treqinfo) == ZUPDATE);
     TTL_RONDB_TRACE(fragptr.p->tabRef, "set LqhKeyReq op to ZWRITE from %u in order to "
@@ -14505,6 +14661,7 @@ void Dblqh::releaseTcrec(Signal *signal, TcConnectionrecPtr locTcConnectptr) {
   locTcConnectptr.p->original_operation = 0xFF;
   locTcConnectptr.p->ttl_ignore = 0;
   locTcConnectptr.p->ttl_only_expired = 0;
+  locTcConnectptr.p->m_restore_op = 0;
   Dblqh *lqh = m_curr_lqh;
   if (likely(locTcConnectptr.i < lqh->ctcConnectReserved))
   {
@@ -17550,6 +17707,15 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   }
   scanPtr->m_max_batch_size_rows = max_rows;
 
+  // TTL: refresh the per-batch "now" cache for the rows fetched by this
+  // SCAN_NEXTREQ (covers both the lock-release and direct continue paths).
+  // Skip while a prefetched batch is in flight or ready (parallel ordered
+  // scans): its timestamp was sampled when the prefetch started, and the
+  // batch after it resamples at its own start in sendScanFragConf.
+  if (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) {
+    set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+  }
+
   /* --------------------------------------------------------------------
    * If scanLockHold = true we need to unlock previous round of
    * scanned records.
@@ -19013,7 +19179,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     LinearSectionPtr ptr[3];
     ptr[0].p = buf;
     ptr[0].sz = pos;
- 
+
     DEB_JOIN_AGG(("(%u)DBLQH 1:Sending TRANSID_AI to 0x%x, receiverId:"
                   " %u, size: %u",
       getThreadId(),
@@ -23893,6 +24059,10 @@ void Dblqh::restart_queued_scan(Signal *signal, Uint32 scanPtrI) {
   ndbrequire(loc_scanptr.p->copyPtr == RNIL);
   setup_scan_pointers(scanPtrI, __LINE__);
   m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 8;
+  // TTL: this scan may have waited in the scan queue arbitrarily long;
+  // resample the per-batch "now" so its first batch doesn't evaluate TTL
+  // expiry with the clock read back at SCAN_FRAGREQ time (initScanrec).
+  set_scan_ttl_now_sec(loc_scanptr.p, m_tc_connect_ptr.p->tableref);
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
   jamDebug();
@@ -23973,6 +24143,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_ttl_only_expired = ttl_only_expired;
   scanPtr->m_ring_buffer_show_meta =
       ScanFragReq::getRingBufferShowMetaFragFlag(reqinfo);
+  // Sample "now" for the first batch; resampled at every later batch start
+  // (execSCAN_NEXTREQ, queued-scan restart, prefetched-batch start).
+  set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
   Uint32 tupScan = ScanFragReq::getTupScanFlag(reqinfo);
@@ -24554,6 +24727,10 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   scanPtr->scanType = ScanRecord::ST_IDLE;
   scanPtr->scanTcWaiting = 0;
   scanPtr->scan_lastSeen = __LINE__;
+  // TTL: keep the per-batch "now" cache defined for every (re)used scan record,
+  // including the NR copy-fragment scan, which is set up directly and bypasses
+  // initScanrec (it runs with m_ttl_ignore=1, so checkTTL never reads this).
+  scanPtr->m_ttl_now_sec = 0;
   /*
    * PA related
    * reset aggregation variables
@@ -25391,6 +25568,10 @@ void Dblqh::sendScanFragConf(Signal *signal,
                ScanRecord::CONTINOUS_SCAN_IDLE);
     scanPtr->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_ACTIVE;
     scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
+    // TTL: the prefetched next batch starts scanning now; resample the
+    // per-batch "now" so its rows don't reuse the timestamp sampled when
+    // the batch just sent to the API began.
+    set_scan_ttl_now_sec(scanPtr, regTcPtr->tableref);
 
     DEB_CONT_SCAN(("(%u) LQH SCAN_FRAGCONF sent scanPtrI: %u, "
                    "CONT_SCAN_IDLE -> CONT_SCAN_ACTIVE"
@@ -27600,6 +27781,22 @@ void Dblqh::initCopyTc(Signal *signal, Operation_t op,
   LqhKeyReq::setNrCopyFlag(reqinfo, 1);
   /* AILen in LQHKEYREQ  IS ZERO */
   regTcPtr->reqinfo = reqinfo;
+  /*
+   * TTL related
+   * A copy-fragment op physically replicates the live node's row (including
+   * expired-but-not-yet-purged TTL rows). It must NOT re-apply TTL expiry on the
+   * starting node, otherwise the converted copy ZUPDATE / delete-by-rowid ZDELETE
+   * hits checkTTL -> 626 -> COPY_FRAGREF -> the starting node is shut down in
+   * start phase 5 (error 2303). execCOPY_FRAGREQ sets the copy scan's
+   * m_ttl_ignore=1 unconditionally for every copy-fragment scan, so assert that
+   * invariant and ignore TTL here; packLqhkeyreqLab serializes it to the starting
+   * node. Copy-fragment is genuine recovery intent, so also mark the owner-check
+   * bypass (same-transaction unique-dup gap fix); m_flags is cleared once per
+   * copy op at NR copy setup, so it is correct that all copied rows carry it.
+   */
+  ndbrequire(scanptr.p->m_ttl_ignore == 1);
+  regTcPtr->ttl_ignore = 1;
+  regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   /* ------------------------------------------------------------------------ */
   /* THE RECEIVING NODE WILL EXPECT THAT IT IS THE LAST NODE AND WILL         */
   /* SEND COMPLETED AS THE RESPONSE SIGNAL SINCE DIRTY_OP BIT IS SET.         */
@@ -38268,6 +38465,19 @@ void Dblqh::initReqinfoExecSr(Signal *signal,
    */
   regTcPtr->ring_buffer_op =
       is_ring_buffer_table(regTcPtr->tableref) ? 1 : 0;
+  /*
+   * TTL related. REDO replay physically reconstructs already-committed state
+   * and must NOT re-apply TTL expiry. Without this, a replayed UPDATE/DELETE
+   * whose pre-image row has expired (wall clock) since the restored LCP hits
+   * checkTTL -> 626, which logLqhkeyrefLab "tolerates" by SKIPPING the op,
+   * silently dropping a still-live row (e.g. an UPDATE that refreshed ttl_col).
+   * Same principle as copy-fragment (a6519fdcdd4) and LCP restore (37f1c92c75e).
+   * packLqhkeyreqLab serializes this into the replayed LQHKEYREQ (TTLIgnoreFlag).
+   */
+  regTcPtr->ttl_ignore = 1;
+  /* Genuine recovery intent -> exempt from the same-owner check (provenance).
+   * m_flags was cleared just above; packLqhkeyreqLab serializes this bit. */
+  regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
 }  // Dblqh::initReqinfoExecSr()
 
 Uint32
@@ -38833,6 +39043,23 @@ void Dblqh::readLogHeader(LogPageRecordPtr &logPagePtr,
     tcConnectptr.p->m_row_id.m_page_idx =
         readLogwordExec(logPagePtr, logPartPtrP);
   }  // if
+  /*
+   * ZINSERT_TTL (an insert that overwrote an expired row) is an internal DBLQH
+   * operation stored verbatim in old REDO records, but the value 10 does not fit
+   * LqhKeyReq's 3-bit operation field. Replay it as the underlying ZINSERT
+   * (m_use_rowid is derived from this just below): on replay DBACC finds the
+   * LCP-restored expired row as a duplicate and re-derives ZINSERT_TTL via its
+   * expiry-blind dup-conversion, and ttl_ignore=1 (set for REDO in
+   * initReqinfoExecSr) forces the overwrite -- reconstructing the committed
+   * state.
+   * Deliberately ZINSERT, NOT ZUPDATE: ZINSERT preserves the logged rowid
+   * placement and, in the corner case where the target row is absent, inserts it
+   * rather than dropping it -- a ZUPDATE on a missing tuple is tolerated as 626
+   * (logLqhkeyrefLab) and would silently lose the committed row.
+   */
+  if (tcConnectptr.p->operation == ZINSERT_TTL) {
+    tcConnectptr.p->operation = ZINSERT;
+  }
   tcConnectptr.p->m_use_rowid = (tcConnectptr.p->operation == ZINSERT);
 }  // Dblqh::readLogHeader()
 
@@ -39207,7 +39434,15 @@ void Dblqh::sendLqhTransconf(Signal *signal, LqhTransConf::OperationStatus stat,
   LqhTransConf::setLastReplicaNo(reqInfo, tcConnectptr.p->lastReplicaNo);
   LqhTransConf::setSimpleFlag(reqInfo, tcConnectptr.p->opSimple);
   LqhTransConf::setDirtyFlag(reqInfo, tcConnectptr.p->dirtyOp);
-  LqhTransConf::setOperation(reqInfo, tcConnectptr.p->operation);
+  /*
+   * ZINSERT_TTL (=10) does not fit this 3-bit operation field; carry the
+   * underlying ZINSERT (10 & LTC_OPERATION_MASK == 2), consistent with REDO
+   * replay in readLogHeader. The TTL upsert semantics are re-derived downstream
+   * (dup-conversion + ttl_ignore), not encoded in the protocol op. (Not ZUPDATE
+   * -- see readLogHeader.)
+   */
+  LqhTransConf::setOperation(
+      reqInfo, tcConnectptr.p->operation & LTC_OPERATION_MASK);
   
   DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrILQH: %u, old_node: %u",

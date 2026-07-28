@@ -26,23 +26,23 @@ connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
 
 ###############################################################################
 --echo #
---echo # Case 47: Unique index behavior with TTL and re-insert
+--echo # Case 47: Unique index + TTL -- expired-but-unpurged value not reusable
 --echo #
-# Thread A: INSERT PK=1 col_c=100, wait for TTL, verify expired,
-#           INSERT PK=2 col_c=100 (same unique value), wait for TTL,
-#           re-INSERT PK=2 col_c=100, verify row present.
-# Thread B: At T+5s verify PK=1 visible (before TTL expires),
-#           then after TTL verify PK=2, then verify all expired.
+# Strict unique-index TTL semantics (Bug #2 fix): a row that has expired is still
+# physically present (and still holds its unique value in the index) until the
+# RDRS purge removes it. Reusing that unique value on a NEW primary key must be
+# rejected with ER_DUP_ENTRY until the purge runs. No purge worker runs in this
+# suite, so the expired owner's unique value stays reserved for the whole test.
 #
-# The Python test ran two threads concurrently with timed sleeps.
-# In mysqltest we serialize the operations, preserving the logical
-# sequence and timing.
+# Thread A: INSERT PK=1 col_c=100, wait for TTL expiry, then attempt to reuse
+#           col_c=100 on PK=2 -> must fail ER_DUP_ENTRY (owner still holds it).
+# Thread B: verifies PK=1 visible before expiry and that PK=2 never appears.
 ###############################################################################
 
 connection default;
 DELETE FROM sz;
 
-# --- Thread A: Insert first row ---
+# --- Thread A: Insert first row (live owner of unique value 100) ---
 connection conn_a;
 BEGIN;
 INSERT INTO sz VALUES(1, SYSDATE(), 100);
@@ -52,49 +52,25 @@ COMMIT;
 connection conn_b;
 SELECT col_a, col_c FROM sz WHERE col_a = 1;
 
-# --- Wait for first row to expire (TTL=5s) ---
+# --- Wait for the owner (PK=1) to expire (TTL=5s) ---
 --let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
 --let $ttl_wait_timeout = 15
 --source suite/ndb_ttl/include/ttl_wait_expired.inc
 
-# --- Thread A: Verify expired, then insert PK=2 with same unique col_c=100 ---
+# --- Thread A: the owner is now expired/invisible but NOT purged, so its unique
+#     value 100 is still held in the index. Reusing 100 on a new PK must be
+#     rejected with ER_DUP_ENTRY (strict unique-index TTL semantics). ---
 connection conn_a;
-SELECT COUNT(*) FROM sz;
-
-BEGIN;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+--error ER_DUP_ENTRY
 INSERT INTO sz VALUES(2, SYSDATE(), 100);
-COMMIT;
 
-# --- Thread B: Verify PK=2 is visible ---
-connection conn_b;
+# The rejected insert is fully rolled back: PK=2 is absent.
 SELECT col_a, col_c FROM sz WHERE col_a = 2;
 
-# --- Wait for second row to expire ---
---let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 2
---let $ttl_wait_timeout = 15
---source suite/ndb_ttl/include/ttl_wait_expired.inc
-
-# --- Thread A: Re-insert PK=2 col_c=100 after expiry ---
-connection conn_a;
-BEGIN;
-INSERT INTO sz VALUES(2, SYSDATE(), 100);
-COMMIT;
-
-# Verify: PK=2 is the only row
-SELECT COUNT(*) FROM sz;
-SELECT col_a FROM sz WHERE col_a = 2;
-
-# --- Thread B: Also verify ---
+# --- Thread B: also sees no PK=2 ---
 connection conn_b;
-SELECT COUNT(*) FROM sz;
-SELECT col_a FROM sz WHERE col_a = 2;
-
-# --- Wait for final row to expire ---
---let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 2
---let $ttl_wait_timeout = 15
---source suite/ndb_ttl/include/ttl_wait_expired.inc
-
-SELECT COUNT(*) FROM sz;
+SELECT col_a, col_c FROM sz WHERE col_a = 2;
 
 # Cleanup
 connection default;

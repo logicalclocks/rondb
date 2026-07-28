@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -4506,7 +4506,7 @@ int CommandInterpreter::executeStartBackup(char *parameters, bool interactive) {
   /*
    All the commands list as follow:
    start backup <backupid> nowait | start backup <backupid>
-   snapshotstart/snapshotend nowati | start backup <backupid> nowait
+   snapshotstart/snapshotend nowait | start backup <backupid> nowait
    snapshotstart/snapshotend start backup <backupid> | start backup <backupid>
    wait completed | start backup <backupid> snapshotstart/snapshotend start
    backup <backupid> snapshotstart/snapshotend wait completed | start backup

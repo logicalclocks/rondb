@@ -1,0 +1,75 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.tbs;
+CREATE TABLE test.tbs (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       BLOB
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+#
+# Step 1: insert a 5-part blob (10256 bytes of 'a')
+#
+INSERT INTO test.tbs VALUES (1, NOW(), REPEAT('a', 10256));
+SELECT id, LENGTH(v) FROM test.tbs WHERE id = 1;
+id	LENGTH(v)
+1	10256
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+part_rows_x_replicas
+10
+#
+# Step 2: expire, then re-insert the SAME PK with a 2-part blob (SHRINK)
+#
+INSERT INTO test.tbs VALUES (1, NOW(), REPEAT('b', 4256));
+# data correctness: exactly the new short value
+SELECT id, LENGTH(v), v = REPEAT('b', 4256) AS blob_is_new FROM test.tbs WHERE id = 1;
+id	LENGTH(v)	blob_is_new
+1	4256	1
+# part rows now: exactly 2 parts (= 4 across 2 replicas)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+part_rows_x_replicas
+4
+#
+# Step 3: DELETE the row -- all parts should go
+#
+DELETE FROM test.tbs WHERE id = 1;
+# part rows after delete: 0 (no orphans)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+part_rows_x_replicas
+0
+#
+# Step 4: fresh re-insert of the same PK with the 5-part value again --
+# data must be correct even if orphans were overwritten
+#
+INSERT INTO test.tbs VALUES (1, NOW(), REPEAT('c', 10256));
+SELECT id, LENGTH(v), v = REPEAT('c', 10256) AS blob_is_new FROM test.tbs WHERE id = 1;
+id	LENGTH(v)	blob_is_new
+1	10256	1
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+part_rows_x_replicas
+10
+#
+# Step 5: expire, then refresh with NULL -- all old parts should go
+#
+INSERT INTO test.tbs VALUES (1, NOW(), NULL);
+SELECT id, v IS NULL AS blob_is_null FROM test.tbs WHERE id = 1;
+id	blob_is_null
+1	1
+# part rows after NULL refresh: 0 (all old parts probe-deleted)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbs');
+part_rows_x_replicas
+0
+DROP TABLE test.tbs;

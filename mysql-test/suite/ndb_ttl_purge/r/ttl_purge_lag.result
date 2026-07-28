@@ -1,0 +1,75 @@
+SET time_zone = '+00:00';
+#
+# Phase 1: lag 3600s retains rows that expired ~5 minutes ago
+#
+CREATE TABLE mysql.ttl_purge_ctrl (ctrl_id INT PRIMARY KEY, value INT) ENGINE=NDB;
+INSERT INTO mysql.ttl_purge_ctrl VALUES (1, 3600);
+CREATE DATABASE IF NOT EXISTS ttl_lag;
+DROP TABLE IF EXISTS ttl_lag.t1;
+CREATE TABLE ttl_lag.t1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_lag.t1(ttl_col);
+ALTER TABLE ttl_lag.t1 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (21, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_21');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (22, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_22');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (23, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_23');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (24, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_24');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (25, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_25');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (26, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_26');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (27, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_27');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (28, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_28');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (29, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_29');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (30, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_30');
+include/assert.inc [Rows expired for less than the lag must not be purged]
+#
+# Phase 2: lag lowered to 60s => the rows become purgeable
+#
+UPDATE mysql.ttl_purge_ctrl SET value = 60 WHERE ctrl_id = 1;
+#
+# Phase 3: negative lag is treated as 0, purging continues
+#
+UPDATE mysql.ttl_purge_ctrl SET value = -5 WHERE ctrl_id = 1;
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (100, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_100');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (101, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_101');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (102, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_102');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (103, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_103');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (104, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_104');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (105, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_105');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (106, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_106');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (107, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_107');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (108, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_108');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (109, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_109');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (110, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_110');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (111, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_111');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (112, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_112');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (113, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_113');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (114, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_114');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (115, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_115');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (116, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_116');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (117, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_117');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (118, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_118');
+INSERT INTO ttl_lag.t1 (id, ttl_col, data) VALUES (119, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_119');
+#
+# Cleanup
+#
+DROP TABLE mysql.ttl_purge_ctrl;
+DROP DATABASE ttl_lag;

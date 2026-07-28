@@ -55,8 +55,9 @@ SELECT * FROM t1;
 ## Use ndb_drop_index to drop the unique index on b.
 --exec $NDB_DROP_INDEX -d test t1 b\$unique >> $NDB_TOOLS_OUTPUT
 
- ## First attempt to use dropped index fails with stale metadata
---error ER_TABLE_DEF_CHANGED
+ ## The proactive drop notification has already invalidated the cached index,
+ ## so the first attempt already sees it as unavailable.
+--error ER_NOT_KEYFILE
 SELECT * FROM t1 WHERE b = 3;
 
 ## Second attempt fails with bad index.
@@ -103,8 +104,8 @@ show warnings;
 ## Use ndb_drop_index to drop the index on c.
 --exec $NDB_DROP_INDEX -d test t1 c >> $NDB_TOOLS_OUTPUT
 
-## Stale metadata
---error ER_TABLE_DEF_CHANGED
+## Index already known dropped (proactive invalidation)
+--error ER_NOT_KEYFILE
 select c, count(1) from t1 group by c order by c;
 
 ## Use of index fails
@@ -135,8 +136,8 @@ select c, count(1) from t1 group by c order by c;
 --sorted_result
 SELECT * FROM t1;
 
-## But, try to use the index? Stale metadata.
---error ER_TABLE_DEF_CHANGED
+## d$unique downgrades to an ordered index; the cache is already refreshed, so
+## the query succeeds using the remaining ordered index.
 SELECT * FROM t1 where d = 3;
 
 ## Then it succeeds (the ordered index is still available).
@@ -161,8 +162,9 @@ UPDATE t1 set d = a;
 --sorted_result
 SELECT * FROM t1;
 
-## First attempt to use dropped index fails with stale metadata
---error ER_TABLE_DEF_CHANGED
+## e (ordered) is dropped and downgraded; with the cache already refreshed the
+## query succeeds using the remaining index/scan.
+--sorted_result
 SELECT * FROM t1 where e > 3;
 
 ## Second attempt succeeds.
@@ -192,7 +194,8 @@ select * from t2 where a > 2;
 select * from t2 where a > 2;
 select * from t2 where a > 2;
 --exec $NDB_DROP_INDEX -d test t2 b >> $NDB_TOOLS_OUTPUT
---error ER_TABLE_DEF_CHANGED
+## Proactively refreshed: index b is already known to be gone.
+--error ER_NOT_KEYFILE
 select * from t2 where b = 2;
 --error ER_NOT_KEYFILE
 select * from t2 where b = 2;

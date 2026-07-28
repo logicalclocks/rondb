@@ -1,0 +1,87 @@
+# ttl_deferred_grant_read_locked.test
+#
+# REPRO for TTL review finding #10:
+#   DBACC computes the same-transaction "read-what-you-locked" visibility
+#   (ignore_ttl) in accIsLockedLab, but delivers it (ACCKEYCONF theData[5])
+#   only on the IMMEDIATE grant paths. When an op is placed on the SERIAL
+#   queue and granted LATER (startNext/startNew), the deferred grant sends
+#   theData[5]=0, so DBLQH leaves ttl_ignore=0 and DBTUP's checkTTL rejects a
+#   row the transaction already holds a lock on -> 626, violating
+#   read-what-you-locked.
+#
+# Reachable serial-queue scenario (placeWriteInLockQueue): a WRITE by a txn
+# that already holds a shared lock in the parallel queue is forced to the
+# serial queue when the parallel queue also contains another transaction:
+#   T2: SELECT ... FOR SHARE  (lock owner, shared)
+#   T1: SELECT ... FOR SHARE  (parallel, shared)   -- T1 now holds a lock
+#   T1: UPDATE                 (X upgrade -> serial queue behind T2, blocks)
+#   <row expires while T1's UPDATE waits>
+#   T2: COMMIT                 (release -> deferred grant of T1's UPDATE)
+# Correct: T1 updates its own locked row (read-what-you-locked). Bug: the
+# deferred grant dropped ignore_ttl -> checkTTL sees the row expired -> the
+# UPDATE finds no row.
+#
+# Fix-discriminating: the UPDATE's "Rows matched" and the post-TTL-OFF value
+# of v are the discriminators (matched 1 / v=200 = fixed; matched 0 / v=100 =
+# bug). The fix (DbaccMain::startNext) recomputes the same-transaction
+# ignore_ttl at the deferred grant and delivers it via ACCKEYCONF.
+
+--source include/have_ndb.inc
+
+connect (conn1, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn2, localhost, root,,test,$MASTER_MYPORT,);
+
+--connection default
+SET time_zone='+00:00';
+--disable_warnings
+DROP TABLE IF EXISTS t;
+--enable_warnings
+CREATE TABLE t (
+  id INT PRIMARY KEY,
+  v  INT,
+  ts TIMESTAMP NOT NULL
+) ENGINE=NDB COMMENT='NDB_TABLE=TTL=5@ts';
+INSERT INTO t VALUES (1, 100, SYSDATE());
+
+--echo # T2 takes a shared lock -> becomes the ACC lock owner
+--connection conn2
+SET time_zone='+00:00';
+BEGIN;
+SELECT id, v FROM t WHERE id=1 FOR SHARE;
+
+--echo # T1 takes a shared lock (parallel behind T2) -> T1 now holds a lock,
+--echo # then issues an UPDATE (X). With another txn (T2) in the parallel
+--echo # queue, the UPDATE is forced onto the serial queue and blocks.
+--connection conn1
+SET time_zone='+00:00';
+BEGIN;
+SELECT id, v FROM t WHERE id=1 FOR SHARE;
+--enable_info
+--send
+UPDATE t SET v=200 WHERE id=1;
+
+--echo # Let the row expire (TTL=5) while T1's UPDATE waits on the serial queue
+--connection default
+sleep 7;
+
+--echo # Release T2's lock -> T1's UPDATE is granted (deferred) on the now-expired row
+--connection conn2
+COMMIT;
+
+--echo # Reap T1's UPDATE. Correct (fixed): Rows matched 1 (read-what-you-locked
+--echo # on its own locked row). Bug: matched 0 (deferred grant hid the row).
+--connection conn1
+--reap
+--disable_info
+COMMIT;
+
+--echo # Ground truth: turn TTL off so the (still-expired) row is visible, and
+--echo # check whether the UPDATE applied. v=200 => correct; v=100 => bug.
+--connection default
+ALTER TABLE t COMMENT='NDB_TABLE=TTL=OFF';
+--sorted_result
+SELECT id, v FROM t WHERE id=1;
+
+DROP TABLE t;
+--disconnect conn1
+--disconnect conn2

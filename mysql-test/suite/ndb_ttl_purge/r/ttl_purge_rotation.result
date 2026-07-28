@@ -1,0 +1,18 @@
+SET time_zone = '+00:00';
+CREATE DATABASE recon3;
+CREATE TABLE recon3.rot (id INT PRIMARY KEY, ts DATETIME) ENGINE=NDB
+COMMENT="NDB_TABLE=TTL=600@ts"
+  PARTITION BY KEY(id) PARTITIONS 8;
+CREATE TABLE recon3.t_touch (id INT PRIMARY KEY, ts DATETIME) ENGINE=NDB
+COMMENT="NDB_TABLE=TTL=600@ts";
+#
+# Probe 1: cache reload while rotation is at an arbitrary phase
+#
+ALTER TABLE recon3.t_touch COMMENT="NDB_TABLE=TTL=601@ts";
+include/assert.inc [Rotation continued across reload (probe 1)]
+#
+# Probe 2: same check at a different rotation phase
+#
+ALTER TABLE recon3.t_touch COMMENT="NDB_TABLE=TTL=602@ts";
+include/assert.inc [Rotation continued across reload (probe 2)]
+DROP DATABASE recon3;

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2113,6 +2113,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_use_corr_factor = 0;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
+      ttl_now_sec = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when)
@@ -2130,6 +2131,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_use_corr_factor = 0;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
+      ttl_now_sec = 0;
     }
 
     /*
@@ -2168,6 +2170,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       poison_debug(tup);
       jamBuffer = tup->jamBuffer();
       m_dbtup_ptr = tup;
+      ttl_now_sec = 0;
     }
 
     /*
@@ -2197,6 +2200,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_use_corr_factor = 0;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
+      ttl_now_sec = 0;
     }
 
    private:
@@ -2337,6 +2341,14 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool last_row;
     bool m_use_rowid;
     bool m_nr_copy_or_redo;
+    /*
+     * TTL related (same-transaction unique-dup gap fix). True iff this op carries
+     * genuine TTL-ignore provenance (OP_TTL_OWNER_CHECK_BYPASS): recovery,
+     * replication apply, or explicit OO_TTL_IGNORE. When true, handleUpdateReq
+     * skips the unique-index same-owner duplicate check. NOT set merely because
+     * ttl_ignore == 1 (same-transaction lock visibility leaves this false).
+     */
+    bool m_ttl_owner_check_bypass;
     bool m_deferred_constraints;
     bool m_disable_fk_checks;
 
@@ -2415,6 +2427,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      */
     const Uint32* m_linked_attr_data;
     Uint32 m_linked_attr_len;
+    Uint32 ttl_now_sec;  // per-scan-batch UTC "now" from DBLQH; 0 = read the
+                         // clock in checkTTL (PK ops, unsampled scans)
   };
 
   friend struct Undo_buffer;
@@ -3072,10 +3086,28 @@ private:
                                 LinearSectionPtr ptr[],
                                 Uint32 nptr);
 
+  /*
+   * TTL row-expiry check. var_data_prepared says whether the caller has
+   * already derived the var/dyn row metadata in req_struct->m_var_data
+   * (prepare_read()): true on the read path, false on the write paths
+   * (UPDATE/DELETE/converted upsert), where checkTTL prepares it itself
+   * iff the TTL column is DYNAMIC-format and must go through
+   * readAttributes().
+   */
   int checkTTL(Tablerec* regTabPtr,
                KeyReqStruct *req_struct,
+               bool var_data_prepared,
                bool* has_error,
                int* err_no);
+
+  /*
+   * TTL Bug #2 same-owner check for a converted ZINSERT_TTL on a unique
+   * hash-index table. Returns 0 to allow the in-place overwrite (same base-row
+   * owner), -1 with terrorCode set otherwise. See the definition in
+   * DbtupExecQuery.cpp; must be called after the tuple expand/copy.
+   */
+  int ttlUniqueIndexSameOwnerCheck(KeyReqStruct *req_struct,
+                                   Tablerec *regTabPtr);
 
   void PrepareAccLockReq4RAL(void* scan_rec,
                              Signal* signal);
@@ -3913,11 +3945,17 @@ public:
   bool check_fire_suma(const KeyReqStruct *, const Operationrec *,
                        const Fragrecord *) const;
 
+  /* ttl_as_update: treat a ZINSERT_TTL (insert over an expired-but-unpurged
+   * row, physically an in-place update) as ZUPDATE for before-value reading
+   * and unchanged-value suppression -- used for SECONDARY_INDEX maintenance
+   * so a changed unique value deletes its old index entry (see
+   * executeTrigger's ttl_index_update). */
   bool readTriggerInfo(TupTriggerData *trigPtr, Operationrec *regOperPtr,
                        KeyReqStruct *req_struct, Fragrecord *regFragPtr,
                        Uint32 *keyBuffer, Uint32 &noPrimKey,
                        Uint32 *afterBuffer, Uint32 &noAfterWords,
-                       Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk);
+                       Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk,
+                       bool ttl_as_update = false);
 
   void sendTrigAttrInfo(Signal *signal, Uint32 *data, Uint32 dataLen,
                         bool executeDirect, BlockReference receiverReference);

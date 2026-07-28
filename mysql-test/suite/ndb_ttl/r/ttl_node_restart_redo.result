@@ -1,0 +1,37 @@
+SET time_zone = '+00:00';
+# --- fixed-width TTL table (TTL=30s on ttl_col)
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+# --- fill with fresh rows (spread across both node groups' fragments)
+# --- force an LCP now (captures all rows as the restore base). The tiny
+#     post-LCP workload below stays well under the automatic-LCP trigger, so
+#     the UPDATE/DELETE live in the REDO log and are replayed on restart.
+# --- mutate every row (REDO-only). UPDATE does NOT touch ttl_col, so the
+#     TTL clock keeps running from the INSERT; the rows are still fresh
+#     now so these ops succeed on the live cluster.
+UPDATE test.t1 SET v = v + 1;
+DELETE FROM test.t1 WHERE id <= 50;
+# --- wait past the TTL (30s from the INSERT) so every base row is expired
+#     by the time REDO replays the UPDATE/DELETE onto it
+# --- ABORT system restart: crash all nodes (an abort skips the graceful
+#     final LCP, so the UPDATE/DELETE are recovered from REDO), hold at
+#     not-started, then start. On a buggy build a node would progError while
+#     replaying REDO on the expired rows and never reach STARTED -> the
+#     waiter times out.
+# --- wait for mysqld to reconnect to the restored cluster
+# --- cluster healthy after recovery. Every surviving row is expired (and
+#     the id<=50 rows were deleted), so SELECT * filters them all on read
+#     and returns nothing. Reaching here at all means REDO replay did not
+#     crash the node. (SELECT * not COUNT(*): COUNT may still include
+#     expired-but-unpurged rows, a known TTL visibility quirk.)
+SELECT * FROM test.t1 ORDER BY id;
+id	ttl_col	v
+# --- table is writable post-recovery
+INSERT INTO test.t1 VALUES (1000, NOW(), 7);
+SELECT id, v FROM test.t1 WHERE id = 1000;
+id	v
+1000	7
+DROP TABLE test.t1;

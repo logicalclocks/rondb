@@ -1,0 +1,216 @@
+# ==========================================================================
+# ttl_purge_customer_scenario.test
+#
+# Customer-like end-to-end scenario, scaled for MTR: two TTL tables (the
+# customer has two, with different TTLs), 8 partitions each, a large batch
+# of expired rows MIXED with live rows, and TWO RDRS purge workers (see the
+# matching .cnf) — run through BOTH modes:
+#
+#   Phase 1 (default mode, no mysql.ttl_purge_nodes): all purge workers
+#     work all tables/partitions uncoordinated. Correctness: all expired
+#     rows are physically purged (cross-node rows_purged sums reach the
+#     inserted counts) and NO live row is lost. Efficiency: the sums must
+#     be reached within the poll timeout despite potential lock contention
+#     between the two workers (the 296/499 partition back-off keeps
+#     collisions cheap).
+#
+#   Phase 2 (sharded mode): with ttl_purge_nodes populated, partition-level
+#     ownership splits each table's 8 partitions between the two nodes.
+#     A second batch must be fully purged, BOTH nodes must contribute to
+#     EACH table (delta > 0 per node per table), and live rows survive.
+#
+# Purge activity is asserted via the per-table rows_purged metrics summed
+# across both nodes, NOT via COUNT(*): SQL reads TTL-filter expired rows,
+# so row counts cannot distinguish "expired but retained" from "purged".
+# Live rows (ttl_col one hour in the future) stay visible to COUNT(*), so
+# the "no live row lost" assertion uses plain row counts.
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+
+--echo #
+--echo # Phase 1: default mode (no ttl_purge_nodes), two tables, mixed rows
+--echo #
+
+--let $ttl_db = ttl_cust
+--let $ttl_table = orders
+--let $ttl_seconds = 5
+--let $ttl_partitions = 8
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_cust
+--let $ttl_table = events
+--let $ttl_seconds = 10
+--let $ttl_partitions = 8
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_cust
+--let $wait_table = orders
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--let $wait_db = ttl_cust
+--let $wait_table = events
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# 1000 expired rows (aged 5 minutes) + 200 live rows (expire in >1 hour)
+# per table, in single bulk statements
+INSERT INTO ttl_cust.orders (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+INSERT INTO ttl_cust.orders (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 100001 UNION ALL SELECT n + 1 FROM seq WHERE n < 100200) SELECT n, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT('live_', n) FROM seq;
+INSERT INTO ttl_cust.events (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+INSERT INTO ttl_cust.events (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 100001 UNION ALL SELECT n + 1 FROM seq WHERE n < 100200) SELECT n, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT('live_', n) FROM seq;
+
+# Wait until the cross-node purge sums reach 1000 per table
+--exec echo 'http://$RDRS_HOST:$RDRS_PORT/0.1.0/ttl-purge/tables/ttl_cust' > $MYSQL_TMP_DIR/_cs_base1.txt
+--exec echo 'http://$RDRS_HOST:$RDRS2_PORT/0.1.0/ttl-purge/tables/ttl_cust' > $MYSQL_TMP_DIR/_cs_base2.txt
+--exec echo '1000 1000' > $MYSQL_TMP_DIR/_cs_targets.txt
+
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my @bases = (rd("$tmp/_cs_base1.txt"), rd("$tmp/_cs_base2.txt"));
+my ($t_orders, $t_events) = split / /, rd("$tmp/_cs_targets.txt");
+my %sum;
+my %per_node;
+my $ok = 0;
+for (my $i = 0; $i < 60; $i++) {
+  %sum = (orders => 0, events => 0);
+  for my $n (0, 1) {
+    for my $tbl ('orders', 'events') {
+      my $json = `curl -s $bases[$n]/$tbl 2>/dev/null`;
+      my $v = 0;
+      if (defined $json && $json ne '') {
+        my $d = eval { decode_json($json) };
+        $v = $d->{rows_purged} if $d && defined $d->{rows_purged};
+      }
+      $sum{$tbl} += $v;
+      $per_node{"$n.$tbl"} = $v;
+    }
+  }
+  if ($sum{orders} >= $t_orders && $sum{events} >= $t_events) { $ok = 1; last; }
+  sleep 2;
+}
+# Save the per-node counters as the baseline for the phase 2 delta check
+open my $b, '>', "$tmp/_cs_phase1_counts.txt" or die "Cannot write: $!";
+print $b join(" ", map { $per_node{$_} || 0 } ('0.orders', '0.events', '1.orders', '1.events')), "\n";
+close $b;
+open my $o, '>', "$tmp/_cs_result.inc" or die "Cannot write: $!";
+if ($ok) {
+  print $o "--echo Phase 1: all expired rows purged in default mode\n";
+  print $o "--let \$_cs_ok = 1\n";
+} else {
+  print $o "--echo [customer_scenario] sums orders=$sum{orders} events=$sum{events}\n";
+  print $o "--let \$_cs_ok = 0\n";
+}
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_cs_result.inc
+
+if (!$_cs_ok)
+{
+  --die Default mode did not purge all expired rows in time
+}
+
+# No live row may be lost
+--let $assert_text = All 200 live rows of orders must survive default-mode purge
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_cust.orders WHERE id > 100000] = 200
+--source include/assert.inc
+--let $assert_text = All 200 live rows of events must survive default-mode purge
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_cust.events WHERE id > 100000] = 200
+--source include/assert.inc
+
+--echo #
+--echo # Phase 2: sharded mode, both nodes split each table's partitions
+--echo #
+
+CREATE TABLE mysql.ttl_purge_nodes (node_id INT PRIMARY KEY, last_active DATETIME) ENGINE=NDB;
+INSERT INTO mysql.ttl_purge_nodes WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 255) SELECT n, NULL FROM seq;
+
+# Wait until BOTH purge workers have leased their rows
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) >= 2 FROM mysql.ttl_purge_nodes WHERE last_active IS NOT NULL
+--source include/wait_condition.inc
+
+# Second expired batch per table
+INSERT INTO ttl_cust.orders (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 2000 UNION ALL SELECT n + 1 FROM seq WHERE n < 2999) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+INSERT INTO ttl_cust.events (id, ttl_col, data) WITH RECURSIVE seq (n) AS (SELECT 2000 UNION ALL SELECT n + 1 FROM seq WHERE n < 2999) SELECT n, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT('expired_', n) FROM seq;
+
+# Wait until the sums reach 2000 per table AND both nodes contributed to
+# BOTH tables in this phase (delta > 0 vs the phase 1 baseline): with
+# disjoint 4+4 partition ownership, completion REQUIRES both nodes.
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rd { open my $f, '<', $_[0] or return ''; my $l = <$f>; chomp $l; close $f; return $l; }
+my @bases = (rd("$tmp/_cs_base1.txt"), rd("$tmp/_cs_base2.txt"));
+my @b = split / /, rd("$tmp/_cs_phase1_counts.txt");
+my %base = ('0.orders' => $b[0], '0.events' => $b[1],
+            '1.orders' => $b[2], '1.events' => $b[3]);
+my %sum;
+my %per_node;
+my $ok = 0;
+for (my $i = 0; $i < 60; $i++) {
+  %sum = (orders => 0, events => 0);
+  for my $n (0, 1) {
+    for my $tbl ('orders', 'events') {
+      my $json = `curl -s $bases[$n]/$tbl 2>/dev/null`;
+      my $v = 0;
+      if (defined $json && $json ne '') {
+        my $d = eval { decode_json($json) };
+        $v = $d->{rows_purged} if $d && defined $d->{rows_purged};
+      }
+      $sum{$tbl} += $v;
+      $per_node{"$n.$tbl"} = $v;
+    }
+  }
+  my $deltas_ok = 1;
+  for my $k ('0.orders', '0.events', '1.orders', '1.events') {
+    $deltas_ok = 0 if ($per_node{$k} || 0) <= ($base{$k} || 0);
+  }
+  if ($sum{orders} >= 2000 && $sum{events} >= 2000 && $deltas_ok) {
+    $ok = 1;
+    last;
+  }
+  sleep 2;
+}
+open my $o, '>', "$tmp/_cs_result2.inc" or die "Cannot write: $!";
+if ($ok) {
+  print $o "--echo Phase 2: all expired rows purged, both nodes worked both tables\n";
+  print $o "--let \$_cs_ok = 1\n";
+} else {
+  print $o "--echo [customer_scenario] sums orders=$sum{orders} events=$sum{events} per-node ";
+  print $o join(" ", map { "$_=" . ($per_node{$_} || 0) } ('0.orders', '0.events', '1.orders', '1.events')), "\n";
+  print $o "--let \$_cs_ok = 0\n";
+}
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_cs_result2.inc
+
+if (!$_cs_ok)
+{
+  --die Sharded mode did not purge all expired rows across both nodes in time
+}
+
+--let $assert_text = All 200 live rows of orders must survive sharded-mode purge
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_cust.orders WHERE id > 100000] = 200
+--source include/assert.inc
+--let $assert_text = All 200 live rows of events must survive sharded-mode purge
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_cust.events WHERE id > 100000] = 200
+--source include/assert.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE mysql.ttl_purge_nodes;
+DROP DATABASE ttl_cust;
+--sleep 2
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

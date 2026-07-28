@@ -1,0 +1,129 @@
+# ==========================================================================
+# Coverage guard: pushed joins (DBSPJ) over a TTL + READ_BACKUP table.
+#
+# DBSPJ routes pushed-join child lookups to the LOCAL replica whenever
+# READ_BACKUP allows (Dbspj::getNodes has no TTL awareness), while DBTC
+# forces non-pushed TTL key reads to the primary unless the transaction is
+# a single-op committed read. Review finding #11 suspected this divergence
+# loses same-transaction read-your-writes through pushed joins.
+#
+# Verified NOT a bug (2026-07-07): NDB write-prepare chains through ALL
+# replicas, so a backup replica's DBACC also holds the same-transaction
+# lock element and applies the same-transaction TTL-ignore ("read what you
+# locked") exactly like the primary. A pushed join whose child lookups hit
+# backup replicas therefore sees the transaction's own refresh of expired
+# rows, identical to the non-pushed plan. (Instrumented probe evidence:
+# DBSPJ LOCAL_READS_SENT == child-lookup count with fragment primaries
+# hash-split across nodes, i.e. ~half the lookups were served by a backup
+# replica, and no rows went missing.)
+#
+# This test pins that behavior:
+#   - expired-unpurged rows: pushed and non-pushed join both return 0
+#   - same-txn refresh (insert-over-expired), read back through a join:
+#     pushed and non-pushed both return ALL rows
+#   - after commit: both return all rows
+# A regression here (pushed subset < non-pushed) would mean backup-replica
+# committed reads stopped honoring same-transaction TTL-ignore.
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+# checkTTL compares the TTL column against UTC; align the session tz.
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.drv;
+DROP TABLE IF EXISTS test.tj;
+--enable_warnings
+
+CREATE TABLE test.drv (id INT PRIMARY KEY, ref INT) ENGINE=NDB;
+# TTL child table; READ_BACKUP explicit so replica reads are allowed.
+CREATE TABLE test.tj (id INT PRIMARY KEY, b TIMESTAMP NULL DEFAULT NULL,
+                      v INT)
+  ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1,TTL=2@b";
+
+INSERT INTO test.drv VALUES
+  (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),
+  (9,9),(10,10),(11,11),(12,12),(13,13),(14,14),(15,15),(16,16);
+INSERT INTO test.tj VALUES
+  (1,NOW(),1),(2,NOW(),2),(3,NOW(),3),(4,NOW(),4),
+  (5,NOW(),5),(6,NOW(),6),(7,NOW(),7),(8,NOW(),8),
+  (9,NOW(),9),(10,NOW(),10),(11,NOW(),11),(12,NOW(),12),
+  (13,NOW(),13),(14,NOW(),14),(15,NOW(),15),(16,NOW(),16);
+
+# Wait until every row is expired (invisible to normal reads).
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tj WHERE id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# --------------------------------------------------------------------------
+# Expired-unpurged rows: pushed and non-pushed join agree (0 rows).
+# --------------------------------------------------------------------------
+SET ndb_join_pushdown = on;
+SELECT COUNT(*) AS pushed_expired
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+SET ndb_join_pushdown = off;
+SELECT COUNT(*) AS nonpushed_expired
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+SET ndb_join_pushdown = on;
+
+# --------------------------------------------------------------------------
+# Same-transaction refresh, then read back through a pushed join.
+# Refresh timestamps sit 1h in the future so nothing re-expires mid-test.
+# --------------------------------------------------------------------------
+BEGIN;
+INSERT INTO test.tj VALUES
+  (1,NOW() + INTERVAL 1 HOUR,1),(2,NOW() + INTERVAL 1 HOUR,2),
+  (3,NOW() + INTERVAL 1 HOUR,3),(4,NOW() + INTERVAL 1 HOUR,4),
+  (5,NOW() + INTERVAL 1 HOUR,5),(6,NOW() + INTERVAL 1 HOUR,6),
+  (7,NOW() + INTERVAL 1 HOUR,7),(8,NOW() + INTERVAL 1 HOUR,8),
+  (9,NOW() + INTERVAL 1 HOUR,9),(10,NOW() + INTERVAL 1 HOUR,10),
+  (11,NOW() + INTERVAL 1 HOUR,11),(12,NOW() + INTERVAL 1 HOUR,12),
+  (13,NOW() + INTERVAL 1 HOUR,13),(14,NOW() + INTERVAL 1 HOUR,14),
+  (15,NOW() + INTERVAL 1 HOUR,15),(16,NOW() + INTERVAL 1 HOUR,16);
+
+# The plan must be a pushed join for this test to mean anything.
+--replace_column 10 # 11 #
+EXPLAIN SELECT d.id
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+
+CREATE TEMPORARY TABLE pq0 AS
+  SELECT CAST(variable_value AS UNSIGNED) AS v
+  FROM performance_schema.global_status
+  WHERE variable_name = 'Ndb_pushed_queries_executed';
+
+SELECT COUNT(*) AS pushed_in_txn
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+
+# Prove the query above really executed as a pushed join.
+SELECT (SELECT CAST(variable_value AS UNSIGNED)
+          FROM performance_schema.global_status
+          WHERE variable_name = 'Ndb_pushed_queries_executed') - v
+       AS pushed_queries_executed_delta
+  FROM pq0;
+DROP TEMPORARY TABLE pq0;
+
+--sorted_result
+SELECT d.id AS pushed_ids
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+
+SET ndb_join_pushdown = off;
+SELECT COUNT(*) AS nonpushed_in_txn
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+--sorted_result
+SELECT d.id AS nonpushed_ids
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+COMMIT;
+SET ndb_join_pushdown = on;
+
+# --------------------------------------------------------------------------
+# Post-commit: rows are committed-live (expiry ~1h away). Both plans = 16.
+# --------------------------------------------------------------------------
+SELECT COUNT(*) AS pushed_after_commit
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+SET ndb_join_pushdown = off;
+SELECT COUNT(*) AS nonpushed_after_commit
+  FROM test.drv d JOIN test.tj t ON t.id = d.ref;
+SET ndb_join_pushdown = default;
+
+DROP TABLE test.tj;
+DROP TABLE test.drv;

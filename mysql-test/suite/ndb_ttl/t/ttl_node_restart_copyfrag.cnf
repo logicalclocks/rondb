@@ -1,0 +1,4 @@
+# copyfrag-626 needs NoOfReplicas=2 with exactly 2 data nodes (one node group)
+# so that restarting one node triggers a copy-fragment from the surviving replica.
+# Reuse the canonical 2-replica NDB config.
+!include suite/ndb/my_2rpl.cnf

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,7 @@
 #include <portlib/ndb_prefetch.h>
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
+#include <KeyDescriptor.hpp>
 #include <Checksum.hpp>
 #include <Interpreter.hpp>
 #include <NdbSqlUtil.hpp>
@@ -52,6 +53,7 @@
 #include "dblqh/JoinAggregationState.hpp"
 #include "my_time.h"
 #include "my_systime.h"
+#include "ttl_expiry.hpp"
 #include <signaldata/AccLock.hpp>
 #include "rondb_hash.hpp"
 #include "../dbtux/Dbtux.hpp"
@@ -2124,6 +2126,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.agg_n_res_recs = 0;
 
   req_struct.ttl_purge_window_size = 0;
+  req_struct.ttl_now_sec = 0;
 
   if (unlikely(trans_state != TRANS_IDLE)) {
     TUPKEY_abort(&req_struct, 39);
@@ -2157,6 +2160,8 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.interpreted_exec = interpreted_exec;
     req_struct.interpreted_insert = interpreted_insert;
     req_struct.m_nr_copy_or_redo = 0;
+    /* Scans never reach the ZINSERT_TTL unique-index owner check; default safe. */
+    req_struct.m_ttl_owner_check_bypass = false;
     req_struct.m_use_rowid = 0;
 #ifdef ERROR_INSERT
     /* Insert garbage into rowid, should not be used */
@@ -2199,6 +2204,13 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     }
     req_struct.ttl_purge_window_size = lqhScanPtrP->m_ttl_purge_window_size;
+    /*
+     * TTL related
+     * Reuse the wall-clock "now" sampled once per scan batch in DBLQH instead
+     * of calling my_micro_time() per row in checkTTL. PK/UPDATE/DELETE keep
+     * ttl_now_sec == 0 and read the clock per op.
+     */
+    req_struct.ttl_now_sec = lqhScanPtrP->m_ttl_now_sec;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -2222,6 +2234,13 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_nr_copy_or_redo =
         ((LqhKeyReq::getNrCopyFlag(lqhOpPtrP->reqinfo) |
           c_lqh->c_executing_redo_log) != 0);
+    /*
+     * TTL related (same-transaction unique-dup gap fix). Carry the genuine
+     * TTL-ignore provenance into DBTUP so handleUpdateReq exempts only true
+     * recovery/replication/explicit-ignore replays from the same-owner check.
+     */
+    req_struct.m_ttl_owner_check_bypass =
+        ((flags & Dblqh::TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS) != 0);
     disable_fk_checks = ((flags & Dblqh::TcConnectionrec::OP_DISABLE_FK) != 0);
     deferred_constraints =
         ((flags & Dblqh::TcConnectionrec::OP_DEFERRED_CONSTRAINTS) != 0);
@@ -2955,50 +2974,9 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
 
 #define MAX_READ 524288
 
-/*
- * TTL related
- * Lock-free replacement for gmtime_r() on the TTL hot path.
- *
- * glibc's gmtime_r()/localtime_r() funnel through __tz_convert(), which
- * unconditionally takes the process-global tzset_lock (a private futex) even
- * for the UTC case. Under concurrent TTL purge scans every LDM thread hits
- * that single lock per row, serializing in the kernel futex path. This routine
- * converts UTC epoch seconds to a broken-down MYSQL_TIME using only the
- * in-tree calendar arithmetic (get_date_from_daynr), so it touches no glibc
- * lock.
- *
- * It is field-for-field equivalent to MySQL's sec_to_TIME(out, t, 0) -- the
- * lock-free Time_zone_offset / my_tz_OFFSET0 path in sql/tztime.cc -- and is
- * reimplemented here because tztime.cc is part of the mysqld server and is not
- * linked into ndbmtd (get_date_from_daynr lives in mysys/my_time.cc, which is).
- * The gmtime_r() path this replaces was a copy of the locking Time_zone_utc
- * variant of the very same UTC conversion.
- */
-static inline void ttl_utc_sec_to_TIME(time_t t, MYSQL_TIME *out) {
-  /* calc_daynr(1970, 1, 1) == 719528 (days from year 0 to the Unix epoch) */
-  const int64_t EPOCH_DAYNR = 719528;
-  int64_t days = t / 86400;
-  int32_t secs = static_cast<int32_t>(t % 86400);
-  if (secs < 0) { /* t < 0: normalize into [0, 86400) */
-    secs += 86400;
-    days -= 1;
-  }
-  unsigned int year, month, day;
-  get_date_from_daynr(days + EPOCH_DAYNR, &year, &month, &day);
-  out->neg = false;
-  out->second_part = 0;
-  out->year = year;
-  out->month = month;
-  out->day = day;
-  out->hour = secs / 3600;
-  out->minute = (secs % 3600) / 60;
-  out->second = secs % 60;
-  out->time_zone_displacement = 0;
-  out->time_type = MYSQL_TIMESTAMP_DATETIME;
-}
-
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,
+                    bool var_data_prepared,
                     bool* has_error,
                     int* err_no) {
   Uint32 attrId = (regTabPtr->m_ttl_col_no);
@@ -3021,124 +2999,121 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
                   size_in_bytes, size_in_words);
   /*
    * TTL related
-   * Prepare correct attribute id format before passing it to readAttributes
+   * Read the TTL column. Fast path: a FIXED-format column sits at a static
+   * word offset in the fixed part of the in-memory tuple, so read it in
+   * place -- byte-identical to what readAttributes()'s fixed-size read
+   * functions copy out (see readFixedSizeTHManyWordNotNULL), minus the
+   * per-row read-function dispatch, AttributeHeader setup and memcpy.
+   * DYNAMIC-format columns are not at a static offset; those fall back to
+   * the generic readAttributes() decode. The TTL column is always in-memory
+   * (a disk-based TTL column is rejected at DDL time).
    */
-  attrId = attrId << 16;
-  Uint32 out_buf[3];
-  /*
-   * TTL related
-   * TODO (Zhao)
-   * Double check whether it's safe to reuse req_struct here or not.
-   */
-  int ret = readAttributes(req_struct,
-      &attrId,
-      1,
-      out_buf,
-      3);
-  AttributeHeader* ahOut = (AttributeHeader*)out_buf;
-  TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                  "Get ttl column data, col_id: %u, "
-                  "byte_size: %u, data_size: %u, is_null: %u",
-                  ahOut->getAttributeId(), ahOut->getByteSize(),
-                  ahOut->getDataSize(), ahOut->isNULL());
-  ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
-
-  int cmp_ret = 0;
+  const Uint32 TattrDesc2 = attrDescriptor[1];
+  ndbrequire(!AttributeDescriptor::getDiskBased(TattrDesc1));
+  Uint32 out_buf[3];  // backing store for ttl_data on the readAttributes path
+  const unsigned char* ttl_data;
+  bool is_null = false;
   *has_error = false;
-  if (ret >= 0) {
-    if (!ahOut->isNULL()) {
-      /*
-       * TTL related
-       * Just need to parse to second part.
-       */
-      MYSQL_TIME dt;
-      if (type_id == NDB_TYPE_TIMESTAMP2) {
-        my_timeval timeval;
-        my_timestamp_from_binary(&timeval,
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        /*
-         * TTL related
-         * Lock-free UTC conversion: avoids glibc gmtime_r()'s tzset_lock,
-         * which serializes all LDM threads on the TTL purge hot path.
-         */
-        const time_t tmp_t = (time_t)timeval.m_tv_sec;
-        ttl_utc_sec_to_TIME(tmp_t, &dt);
-      } else {
-        int64_t dt_bin = my_datetime_packed_from_binary(
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        TIME_from_longlong_datetime_packed(&dt, dt_bin);
-      }
-      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                      "Parsed TTL column data: "
-                      "%u.%u.%u %u:%u:%u",
-                      dt.year, dt.month, dt.day,
-                      dt.hour, dt.minute, dt.second);
-      Uint32 ttl_sec = regTabPtr->m_ttl_sec;
-      ttl_sec += req_struct->ttl_purge_window_size;
-      bool valid_future_dt = true;
-      if (ttl_sec != 0) {
-        Interval interval;
-        memset(&interval, 0, sizeof(interval));
-        interval.second = ttl_sec;
-        bool add_ret = date_add_interval(&dt, INTERVAL_SECOND,
-            interval, nullptr);
-        if (add_ret) {
-          g_eventLogger->warning("TTL column adds "
-              "interval overflowing");
-          valid_future_dt = false;
-        }
-      }
-      if (valid_future_dt) {
-        /*
-         * TTL related
-         * Get current utc time
-         */
-        MYSQL_TIME curr_dt;
-        time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-        /*
-         * TTL related
-         * Lock-free UTC conversion (see ttl_utc_sec_to_TIME) to keep the TTL
-         * purge hot path off glibc's global tzset_lock.
-         */
-        ttl_utc_sec_to_TIME(t_now, &curr_dt);
-
-        /*
-         * TTL related
-         * Compare with TTL
-         */
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "Get TTL [%u + (%u) = %u], "
-                        "expired time: %u.%u.%u %u:%u:%u, "
-                        "current time: %u.%u.%u %u:%u:%u",
-                        regTabPtr->m_ttl_sec,
-                        req_struct->ttl_purge_window_size, ttl_sec,
-                        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-                        curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-                        curr_dt.minute, curr_dt.second);
-        cmp_ret = my_time_compare(dt, curr_dt);
-      } else {
-        // future_dt overflows, we assume this row doesn't expire
-        cmp_ret = 1;
-      }
-    } else {
-      /*
-       * TTL related
-       * TODO (Zhao)
-       * remove the warning log here.
-       */
-#ifdef TTL_DEBUG
-      g_eventLogger->warning("Zard, Read a NULL TTL column");
-#endif  // TTL_DEBUG
-      ndbassert(*has_error == false);
-      // NULL equals no TTL is set on the row
-      cmp_ret = 1;
+  *err_no = 0;
+  if (likely(!AttributeDescriptor::getDynamic(TattrDesc1))) {
+    ttl_data = reinterpret_cast<const unsigned char*>(
+        req_struct->m_tuple_ptr->m_data +
+        AttributeOffset::getOffset(TattrDesc2));
+    if (AttributeDescriptor::getNullable(TattrDesc1)) {
+      const Uint64 attrDes = (Uint64(TattrDesc2) << 32) | Uint64(TattrDesc1);
+      is_null = nullFlagCheck(req_struct, attrDes);
     }
   } else {
-    jam();
-    *has_error = true;
-    *err_no = ret;
+    /*
+     * TTL related
+     * DYNAMIC-format fallback: readAttributes() reads a dynamic column
+     * through the var/dyn row metadata in req_struct->m_var_data. The read
+     * path has set it up (prepare_read()) before coming here; the write
+     * paths (UPDATE/DELETE/converted upsert) skip prepare_read(), so derive
+     * it here for the tuple version this check reads
+     * (req_struct->m_tuple_ptr: the committed row or a chained copy tuple).
+     * Both write paths re-derive that state right after the TTL check
+     * (expand_tuple() resp. handleDeleteReq's own prepare_read()), and the
+     * memory-only disk=false call cannot clobber read-path disk state
+     * because it only runs when nothing has prepared m_var_data yet.
+     * Without this, the column read follows uninitialized pointers -- a
+     * data node segfault on UPDATE/DELETE of any row in a TTL table whose
+     * TTL column is COLUMN_FORMAT DYNAMIC.
+     */
+    if (!var_data_prepared) {
+      prepare_read(req_struct, regTabPtr, false);
+    }
+    Uint32 rd_attrId = attrId << 16;
+    int ret = readAttributes(req_struct,
+        &rd_attrId,
+        1,
+        out_buf,
+        3);
+    if (unlikely(ret < 0)) {
+      jam();
+      *has_error = true;
+      *err_no = ret;
+      return 0;
+    }
+    AttributeHeader* ahOut = (AttributeHeader*)out_buf;
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "Get ttl column data, col_id: %u, "
+                    "byte_size: %u, data_size: %u, is_null: %u",
+                    ahOut->getAttributeId(), ahOut->getByteSize(),
+                    ahOut->getDataSize(), ahOut->isNULL());
+    ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
+    is_null = ahOut->isNULL();
+    ttl_data = reinterpret_cast<const unsigned char*>(ahOut->getDataPtr());
+  }
+
+  if (is_null) {
+    ndbassert(*has_error == false);
+    // NULL equals no TTL is set on the row
+    return 1;
+  }
+
+  /*
+   * TTL related
+   * Expiry decision: integer compare in seconds, replacing the broken-down
+   * time path (ttl_utc_sec_to_TIME / TIME_from_longlong_datetime_packed ->
+   * date_add_interval(INTERVAL_SECOND) -> my_time_compare vs UTC "now"),
+   * whose calendar arithmetic dominated checkTTL's per-row cost. The
+   * decision arithmetic lives in ttl_expiry.hpp (see the equivalence note
+   * there); the differential unit test ttl_expiry-t.cpp asserts it keeps
+   * the exact pre-optimization verdict across a boundary-biased sweep.
+   */
+  // Sum in 64-bit: m_ttl_sec can be as large as RNIL-1 and the purge window
+  // is added on top, so a Uint32 add could wrap and defeat the expiry
+  // overflow guard (a wrapped small value would yield a bogus near-term
+  // expiry -> premature purge).
+  const Int64 ttl_sec =
+      Int64(regTabPtr->m_ttl_sec) + Int64(req_struct->ttl_purge_window_size);
+  /*
+   * TTL related
+   * Current UTC time: reuse the wall-clock sampled once per scan batch in
+   * DBLQH when available (scans, incl. the purge scan); PK ops keep the
+   * per-op clock read (ttl_now_sec == 0).
+   */
+  const Int64 now_sec = (req_struct->ttl_now_sec != 0)
+                            ? Int64(req_struct->ttl_now_sec)
+                            : Int64(my_micro_time() / 1000000); /* second */
+  int cmp_ret;
+  if (type_id == NDB_TYPE_TIMESTAMP2) {
+    /* TIMESTAMP2(0) stores UTC epoch seconds (4 bytes, big-endian). */
+    my_timeval tv;
+    my_timestamp_from_binary(&tv, ttl_data, 0);
+    cmp_ret = ttl_expiry_cmp_timestamp2(Int64(tv.m_tv_sec), ttl_sec, now_sec);
+  } else {
+    /* DATETIME2(0) holds a UTC wall-clock datetime. */
+    MYSQL_TIME dt;
+    TIME_from_longlong_datetime_packed(
+        &dt, my_datetime_packed_from_binary(ttl_data, 0));
+    bool overflow = false;
+    cmp_ret = ttl_expiry_cmp_datetime2(dt, ttl_sec, now_sec, &overflow);
+    if (unlikely(overflow)) {
+      g_eventLogger->warning("TTL column adds "
+          "interval overflowing");
+    }
   }
   return cmp_ret;
 }
@@ -3219,7 +3194,15 @@ int Dbtup::handleReadReq(
    * non-TTL tables receiving the unusual ttl_only_expired flag go to
    * the cold handleReadReqOnlyExpiredOnNonTtlTable helper.
    */
-  if (is_ttl_table(regTabPtr)) {
+#ifdef VM_TRACE
+  if (_regOperPtr->ttl_ignore == 1) {
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(Read) Skip checking TTL since "
+                    "ttl ignore is set");
+  }
+#endif
+  if (_regOperPtr->ttl_ignore == 0 &&
+      is_ttl_table(regTabPtr)) {
     if (handleReadReqTtl(signal, _regOperPtr, regTabPtr, req_struct) == -1) {
       return -1;
     }
@@ -3282,84 +3265,80 @@ int Dbtup::handleReadReqTtl(Signal *signal,
                             Operationrec *regOperPtr,
                             Tablerec *regTabPtr,
                             KeyReqStruct *req_struct) {
-  if (regOperPtr->ttl_ignore != 0) {
-    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                    "(Read) Skip checking TTL since "
-                    "ttl ignore is set");
-    return 0;
-  }
-
   bool has_error = false;
   int err_no = 0;
   int cmp_ret = 0;
   TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                   "(READ) handleReadReq TTL check");
-  cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
-  if (unlikely(has_error)) {
+  // Read execution ran prepare_read() before dispatching here.
+  cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/true,
+                     &has_error, &err_no);
+  if (!has_error) {
+    if (regOperPtr->ttl_only_expired == 0) {
+      if (cmp_ret <= 0) {
+        // Expired
+        bool ttl_ignore_for_ral = false;
+        if (req_struct->scan_rec != nullptr) {
+          Dblqh::ScanRecord* scan_rec_ptr =
+            reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
+          if (!scan_rec_ptr->scanLockMode /* X */ &&
+              !scan_rec_ptr->scanLockHold /* S */) {
+             /*
+              * NOTICE:
+              * Dbtc::fk_scanFromChildTable will break this assumption.
+              * Something seems wrong when constructing the scan request
+              * flag there.
+              */
+            // ndbrequire(scan_rec_ptr->readCommitted);
+            if (scan_rec_ptr->scanBlock == this) {
+              PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
+            } else {
+              ndbrequire(reinterpret_cast<const void*>(c_lqh->get_c_tux()) ==
+                  reinterpret_cast<const void*>(
+                    scan_rec_ptr->scanBlock));
+              reinterpret_cast<Dbtux*>(scan_rec_ptr->scanBlock)->
+                PrepareAccLockReq4RAL(
+                    req_struct->scan_rec,
+                    signal);
+            }
+            ttl_ignore_for_ral = c_acc->WhetherSkipTTL(signal);
+            TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                            "Dbtup::handleReadReq() check whether needs "
+                            "to ignore TTL: %d", ttl_ignore_for_ral);
+          } else {
+            TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                            "Dbtup::handleReadReq() skip TTL "
+                            "checking for locking-scan on TTL "
+                            "table");
+          }
+        }
+        if (!ttl_ignore_for_ral) {
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(READ) TTL expired");
+          terrorCode = 626;
+          tupkeyErrorLab(req_struct);
+          return -1;
+        }
+      }
+    } else {
+      if (cmp_ret > 0) {
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(READ) TTL skip non-expired row "
+                        "since only_expired flag is set");
+        terrorCode = 626;
+        tupkeyErrorLab(req_struct);
+        return -1;
+      } else {
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(READ) TTL return expired row "
+                        "since only_expired flag is set");
+      }
+    }
+  } else {
     jam();
     ndbrequire(err_no < 0);
     terrorCode = Uint32(-err_no);
     tupkeyErrorLab(req_struct);
     return -1;
-  }
-
-  if (regOperPtr->ttl_only_expired == 0) {
-    if (cmp_ret <= 0) {
-      // Expired
-      bool ttl_ignore_for_ral = false;
-      if (req_struct->scan_rec != nullptr) {
-        Dblqh::ScanRecord *scan_rec_ptr =
-            reinterpret_cast<Dblqh::ScanRecord *>(req_struct->scan_rec);
-        if (!scan_rec_ptr->scanLockMode /* X */ &&
-            !scan_rec_ptr->scanLockHold /* S */) {
-          /*
-           * NOTICE:
-           * Dbtc::fk_scanFromChildTable will break this assumption.
-           * Something seems wrong when constructing the scan request
-           * flag there.
-           */
-          // ndbrequire(scan_rec_ptr->readCommitted);
-          if (scan_rec_ptr->scanBlock == this) {
-            PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
-          } else {
-            ndbrequire(reinterpret_cast<const void *>(c_lqh->get_c_tux()) ==
-                       reinterpret_cast<const void *>(scan_rec_ptr->scanBlock));
-            reinterpret_cast<Dbtux *>(scan_rec_ptr->scanBlock)
-                ->PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
-          }
-          ttl_ignore_for_ral = c_acc->WhetherSkipTTL(signal);
-          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                          "Dbtup::handleReadReq() check whether needs "
-                          "to ignore TTL: %d",
-                          ttl_ignore_for_ral);
-        } else {
-          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                          "Dbtup::handleReadReq() skip TTL "
-                          "checking for locking-scan on TTL "
-                          "table");
-        }
-      }
-      if (!ttl_ignore_for_ral) {
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "(READ) TTL expired");
-        terrorCode = 626;
-        tupkeyErrorLab(req_struct);
-        return -1;
-      }
-    }
-  } else {
-    if (cmp_ret > 0) {
-      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                      "(READ) TTL skip non-expired row "
-                      "since only_expired flag is set");
-      terrorCode = 626;
-      tupkeyErrorLab(req_struct);
-      return -1;
-    } else {
-      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                      "(READ) TTL return expired row "
-                      "since only_expired flag is set");
-    }
   }
   return 0;
 }
@@ -3404,12 +3383,109 @@ static Uint32 get_reorg_flag(Dbtup::KeyReqStruct *req_struct,
 /* ---------------------------------------------------------------- */
 /* ---------------------------- UPDATE ---------------------------- */
 /* ---------------------------------------------------------------- */
+/*
+ * TTL same-owner check (Bug #2). For a converted ZINSERT_TTL on a TTL table's
+ * internal UNIQUE hash-index, decide whether the incoming index insert refers to
+ * the SAME base row as the existing index entry (a refresh -> allow the in-place
+ * overwrite) or to a different row (genuine duplicate -> 630 -> ER_DUP_ENTRY).
+ *
+ * DBACC converts the dup index ZINSERT to ZINSERT_TTL because is_ttl_table
+ * follows the index's primaryTableId to the TTL base table; DBTUP would
+ * otherwise apply it as an UNCHECKED overwrite (checkTTL is skipped -- the index
+ * table's own m_ttl_sec is RNIL). A different owner must be rejected: a different
+ * live row could silently steal the unique value, and even an expired owner's
+ * slot must not be handed to a new owner (purge deletes the index entry by key
+ * only, with no owner-PK validation -- DbtcMain.cpp).
+ *
+ * The owner is the single trailing NDB$PK attribute (attr id == noOfKeyAttr):
+ * [base fragId][packed base PK]. Decide "same base row" the way NDB compares
+ * primary keys, NOT with a raw memcmp: when the base PK has a character
+ * (collation) column, two byte-different packed PKs can be the SAME key (e.g. a
+ * case-insensitive collation: 'ABC' vs 'abc'), and a ZINSERT_TTL upsert can have
+ * rewritten the stored PK to a collation-equal-but-byte-different value -- a raw
+ * memcmp would then wrongly reject the SAME owner with a spurious 630. Compare
+ * the packed PK only (skip the leading fragId word: PK uniqueness makes the PK
+ * the owner identity, and fragId can change under online reorg). Mirrors
+ * Dblqh::compare_key: cmp_key() (per-column, collation-aware, handles
+ * multi-column and variable-length keys) when the base PK has char attributes, a
+ * binary compare otherwise.
+ *
+ * Returns 0 to allow the overwrite (same owner); -1 with terrorCode set (630, or
+ * a read error) otherwise -- the caller must propagate -1. MUST be called after
+ * the expand/copy in handleUpdateReq so the existing tuple's variable-length
+ * metadata is initialised.
+ */
+int Dbtup::ttlUniqueIndexSameOwnerCheck(KeyReqStruct *req_struct,
+                                        Tablerec *regTabPtr) {
+  const Uint32 ownerAttrId = regTabPtr->noOfKeyAttr;
+  /* Existing owner: read NDB$PK from the existing-valued tuple (m_tuple_ptr)
+   * into the DBTUP read scratch buffer (c_dataBuffer). */
+  Uint32 readReq = (ownerAttrId << 16);
+  Uint32 *const ownerBuf = reinterpret_cast<Uint32 *>(c_dataBuffer);
+  const int rdRet = readAttributes(req_struct, &readReq, 1, ownerBuf,
+                                   Uint32(sizeof(c_dataBuffer) >> 2));
+  if (unlikely(rdRet < 0)) {
+    jam();
+    terrorCode = Uint32(-rdRet);
+    tupkeyErrorLab(req_struct);
+    return -1;
+  }
+  AttributeHeader *const ahExisting = (AttributeHeader *)ownerBuf;
+  const Uint32 *const existingOwner = ahExisting->getDataPtr();
+  const Uint32 existingOwnerWords = ahExisting->getDataSize();
+  /* Incoming owner: locate NDB$PK in the (not-yet-applied) update attrinfo. */
+  const Uint32 *incomingOwner = nullptr;
+  Uint32 incomingOwnerWords = 0;
+  {
+    const Uint32 len = req_struct->attrinfo_len;
+    Uint32 pos = 0;
+    while (pos < len) {
+      const Uint32 ahWord = cinBuffer[pos];
+      const Uint32 dsz = AttributeHeader::getDataSize(ahWord);
+      if (unlikely(pos + 1 + dsz > len)) {
+        break;  // truncated/malformed attrinfo: stop scanning
+      }
+      if (AttributeHeader::getAttributeId(ahWord) == ownerAttrId) {
+        incomingOwner = &cinBuffer[pos + 1];
+        incomingOwnerWords = dsz;
+        break;
+      }
+      pos += 1 + dsz;
+    }
+  }
+  /* A well-formed index insert always carries NDB$PK (built by DBTC). */
+  ndbrequire(incomingOwner != nullptr);
+  /* Owner layout = [base fragId][packed base PK]; need at least the fragId. */
+  ndbrequire(existingOwnerWords >= 1 && incomingOwnerWords >= 1);
+  const Uint32 baseTableId =
+      g_key_descriptor_pool.getPtr(req_struct->fragPtrP->fragTableId)
+          ->primaryTableId;
+  bool same_owner;
+  if (g_key_descriptor_pool.getPtr(baseTableId)->hasCharAttr) {
+    jam();
+    same_owner =
+        (cmp_key(baseTableId, existingOwner + 1, incomingOwner + 1) == 0);
+  } else {
+    jam();
+    same_owner = (existingOwnerWords == incomingOwnerWords) &&
+                 (memcmp(existingOwner + 1, incomingOwner + 1,
+                         size_t(existingOwnerWords - 1) << 2) == 0);
+  }
+  if (!same_owner) {
+    jam();
+    terrorCode = 630;  // ZALREADYEXIST -> ZNOTUNIQUE(893) -> ER_DUP_ENTRY
+    tupkeyErrorLab(req_struct);
+    return -1;
+  }
+  return 0;
+}
+
 int Dbtup::handleUpdateReq(Signal* signal,
                            Operationrec* operPtrP,
                            Fragrecord* regFragPtr,
                            Tablerec* regTabPtr,
                            KeyReqStruct* req_struct,
-                           bool disk) 
+                           bool disk)
 {
   if (unlikely(operPtrP->ttl_ignore == 0 &&
                operPtrP->ttl_only_expired == 1 &&
@@ -3426,72 +3502,6 @@ int Dbtup::handleUpdateReq(Signal* signal,
     }
   }
 
-#ifdef TTL_DEBUG
-  /*
-   * TTL related
-   * Here we check whether the row is expired
-   *
-   * PRECONDITION:
-   * If the original operation is ZWRITE, we skip checking
-   * TTL
-   */
-  if (operPtrP->original_op_type == ZWRITE &&
-      is_ttl_table(regTabPtr)) {
-    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                    "(UPDATE) Skip checking TTL since "
-                    "the original operation is ZWRITE.");
-  }
-  if (operPtrP->ttl_ignore == 1) {
-    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                    "(Update) Skip checking TTL since "
-                     "ttl ignore is set");
-  }
-#endif  // TTL_DEBUG
-  if (operPtrP->ttl_ignore == 0 &&
-      operPtrP->original_op_type != ZWRITE &&
-      is_ttl_table(regTabPtr)) {
-    bool has_error = false;
-    int err_no = 0;
-    int cmp_ret = 0;
-    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                    "(UPDATE) handleUpdateReq TTL check");
-    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
-    if (!has_error) {
-      if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
-        /*
-         * TTL related
-         * 1. Normal update on an already existing but expired row
-         */
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(UPDATE) TTL expired");
-        terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
-        tupkeyErrorLab(req_struct);
-        return -1;
-      } else if (cmp_ret > 0 && operPtrP->op_type == ZINSERT_TTL) {
-        /*
-         * TTL related
-         * 2. Insert an already existing but non-expired row
-         */
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "(UPDATE) ZINSERT_TIL but already "
-                        "existing row hasn't expired");
-        terrorCode = 630; // HA_ERR_FOUND_DUPP_KEY
-        tupkeyErrorLab(req_struct);
-        return -1;
-      }
-      if (cmp_ret <= 0 && operPtrP->op_type == ZINSERT_TTL) {
-        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "(UPDATE) ZINSERT_TTL on an duplicated "
-                        "expired row");
-      }
-    } else {
-      g_eventLogger->warning("(UPDATE) Failed to read a TTL column");
-      jam();
-      ndbrequire(err_no < 0);
-      terrorCode = Uint32(-err_no);
-      tupkeyErrorLab(req_struct);
-      return -1;
-    }
-  }
 #ifdef TTL_DEBUG
   if (operPtrP->op_type == ZINSERT_TTL && !is_ttl_table(regTabPtr)) {
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
@@ -3543,6 +3553,111 @@ int Dbtup::handleUpdateReq(Signal* signal,
     return corruptedTupleDetected(req_struct, regTabPtr);
   }
 
+#ifdef TTL_DEBUG
+  /*
+   * TTL related
+   * Here we check whether the row is expired
+   *
+   * PRECONDITION:
+   * If the original operation is ZWRITE, we skip checking
+   * TTL
+   */
+  if (operPtrP->original_op_type == ZWRITE &&
+      is_ttl_table(regTabPtr)) {
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(UPDATE) Skip checking TTL since "
+                    "the original operation is ZWRITE.");
+  }
+  if (operPtrP->op_type == ZINSERT_TTL
+          ? req_struct->m_ttl_owner_check_bypass
+          : operPtrP->ttl_ignore == 1) {
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(Update) Skip checking TTL since "
+                     "ttl ignore is set");
+  }
+#endif  // TTL_DEBUG
+  /*
+   * TTL related
+   * Row-expiry check. It must run HERE, after org is resolved and its
+   * checksum verified, so that checkTTL() reads the row version this
+   * operation logically operates on: for a first operation org is the
+   * committed base row; for a chained (same-transaction) operation org is
+   * the previous operation's copy tuple. At function entry
+   * req_struct->m_tuple_ptr is always the committed base row, whose data is
+   * uninitialized (ALLOC, committed only in commit_operation()) when the row
+   * was first inserted by this very transaction -- reading the TTL column
+   * there would act on garbage.
+   *
+   * Gate (same-transaction duplicate-PK gap fix; base-table sibling of the
+   * unique-index same-owner check below, see ttlUniqueIndexSameOwnerCheck):
+   * - ZINSERT_TTL (a duplicate-key INSERT converted by the DBACC TTL
+   *   dup-convert): run the check unless the operation carries genuine
+   *   TTL-ignore provenance (m_ttl_owner_check_bypass: recovery, replication
+   *   apply, explicit OO_TTL_IGNORE). ttl_ignore alone must NOT skip it:
+   *   DBACC also raises ttl_ignore for same-transaction lock visibility
+   *   ("read what you locked"), which used to let a same-transaction
+   *   duplicate INSERT of a LIVE row silently upsert instead of returning
+   *   630 (ER_DUP_ENTRY). checkTTL() decides by actual expiry: live row ->
+   *   630; expired row -> upsert allowed, even when this transaction
+   *   peeked/locked the key first (INSERT..ON DUPLICATE KEY UPDATE, REPLACE
+   *   and INSERT IGNORE take a same-transaction peek lock before the
+   *   insert) -- exactly the distinction DBACC cannot make, which is why
+   *   gating the DBACC dup-convert on same-transaction locks is wrong.
+   * - Other op types (ZUPDATE): unchanged gate (ttl_ignore == 0), preserving
+   *   read-what-you-locked semantics for same-transaction operations on a row
+   *   that expires mid-transaction.
+   */
+  if ((operPtrP->op_type == ZINSERT_TTL
+           ? !req_struct->m_ttl_owner_check_bypass
+           : operPtrP->ttl_ignore == 0) &&
+      operPtrP->original_op_type != ZWRITE &&
+      is_ttl_table(regTabPtr)) {
+    bool has_error = false;
+    int err_no = 0;
+    int cmp_ret = 0;
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(UPDATE) handleUpdateReq TTL check");
+    // Write execution skips prepare_read(); checkTTL prepares the var/dyn
+    // metadata itself iff the TTL column is DYNAMIC-format.
+    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
+                       &has_error, &err_no);
+    if (!has_error) {
+      if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
+        /*
+         * TTL related
+         * 1. Normal update on an already existing but expired row
+         */
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(UPDATE) TTL expired");
+        terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
+        tupkeyErrorLab(req_struct);
+        return -1;
+      } else if (cmp_ret > 0 && operPtrP->op_type == ZINSERT_TTL) {
+        /*
+         * TTL related
+         * 2. Insert an already existing but non-expired row
+         */
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(UPDATE) ZINSERT_TIL but already "
+                        "existing row hasn't expired");
+        terrorCode = 630; // HA_ERR_FOUND_DUPP_KEY
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
+      if (cmp_ret <= 0 && operPtrP->op_type == ZINSERT_TTL) {
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(UPDATE) ZINSERT_TTL on an duplicated "
+                        "expired row");
+      }
+    } else {
+      g_eventLogger->warning("(UPDATE) Failed to read a TTL column");
+      jam();
+      ndbrequire(err_no < 0);
+      terrorCode = Uint32(-err_no);
+      tupkeyErrorLab(req_struct);
+      return -1;
+    }
+  }
+
   req_struct->m_tuple_ptr= dst;
   union {
     Uint32 sizes[4];
@@ -3582,6 +3697,26 @@ int Dbtup::handleUpdateReq(Signal* signal,
   } else {
     memcpy(dst, org, 4 * regTabPtr->m_offsets[MM].m_fix_header_size);
     req_struct->m_tuple_ptr->m_header_bits |= Tuple_header::COPY_TUPLE;
+  }
+
+  /*
+   * TTL Bug #2: on a TTL table's internal UNIQUE hash-index, a converted
+   * ZINSERT_TTL would otherwise overwrite the existing index entry UNCHECKED
+   * (the checkTTL block above is skipped -- the index table's own m_ttl_sec is
+   * RNIL). Allow the overwrite only when it refreshes the SAME base-row owner; a
+   * different owner (live OR expired) is a genuine duplicate (-> 630 ->
+   * ER_DUP_ENTRY). Recovery/replication is exempt via m_ttl_owner_check_bypass.
+   * Called HERE, after the expand/copy above, so the existing tuple's
+   * variable-length metadata is initialised (write execution skips
+   * prepare_read()); see ttlUniqueIndexSameOwnerCheck().
+   */
+  if (operPtrP->op_type == ZINSERT_TTL &&
+      !req_struct->m_ttl_owner_check_bypass &&
+      c_lqh->is_unique_hash_index_table(req_struct->fragPtrP->fragTableId)) {
+    jam();
+    if (unlikely(ttlUniqueIndexSameOwnerCheck(req_struct, regTabPtr) < 0)) {
+      return -1;
+    }
   }
 
   tup_version= (tup_version + 1) & ZTUP_VERSION_MASK;
@@ -4700,9 +4835,33 @@ int Dbtup::handleDeleteReq(Signal* signal,
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(DELETE) handleDeleteReq TTL check");
-    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    // Write execution skips prepare_read(); checkTTL prepares the var/dyn
+    // metadata itself iff the TTL column is DYNAMIC-format.
+    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
+                       &has_error, &err_no);
     if (!has_error) {
-      if (cmp_ret <= 0) {
+      if (unlikely(regOperPtr->ttl_only_expired == 1)) {
+        /*
+         * TTL related
+         * An only-expired delete may only remove an EXPIRED row; a live row
+         * is out of its scope and is reported as not-found. Without this
+         * branch the flag's semantics were inverted for a bare key delete:
+         * the normal-delete check below rejected the expired rows it is
+         * meant to reclaim, while live rows were deleted. The TTL purge's
+         * takeover deletes never reach here: they carry ttl_ignore=1 from
+         * the takeover lock (expiry already verified by the only-expired
+         * scan under that lock), on backup replicas too via the serialized
+         * ttl_ignore bit.
+         */
+        if (cmp_ret > 0) {
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                          "(DELETE) only-expired delete on a live row");
+          terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
+          tupkeyErrorLab(req_struct);
+          return -1;
+        }
+        // Expired: fall through and delete the row.
+      } else if (cmp_ret <= 0) {
         /*
          * TTL related
          * 1. Normal deletion on an already existing but expired row
