@@ -2,7 +2,10 @@
   "PIDFile": "@pid-file",
   "REST": {
     "ServerIP": "@bind-address",
-    "ServerPort": @port
+    "ServerPort": @port,
+    "UserRateLimits": true,
+    "RateLimitIdentity": "apikey",
+    "RateLimitFullAPIKey": false
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",

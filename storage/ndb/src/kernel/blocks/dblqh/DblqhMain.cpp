@@ -9064,12 +9064,20 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   Uint32 var_index = 0;
   if (LqhKeyReq::getUserIdFlag(Treqinfo)) {
     jamDebug();
+    /**
+     * The user id word is always present when the flag is set, so var_index
+     * must advance regardless of whether this block has the database record
+     * in its local hash. Query threads (DBQLQH) in particular may not hold
+     * the record; only the accounting via m_user_ptr_i is then skipped. If
+     * var_index were advanced only on a hit, the fixed-length check below
+     * would fail on those blocks and abort the node.
+     */
     DatabaseRecordPtr dbPtr;
     Uint32 user_id = lqhKeyReq->variableData[0];
     DatabaseRecord key(*this, user_id);
+    var_index++;
     if (m_databaseRecordHash.find(dbPtr, key)) {
       jam();
-      var_index++;
       regTcPtr->m_user_ptr_i = dbPtr.i;
     }
   }
@@ -19968,12 +19976,19 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     ScanFragReq::getParallelOrderedScanFlag(reqinfo);
   if (ScanFragReq::getUserIdFlag(reqinfo)) {
     jamDebug();
+    /**
+     * The user id word is always present when the flag is set, so
+     * extra_len_index must advance regardless of whether this block holds
+     * the database record locally (query threads may not). Advancing it
+     * only on a hit would desync the variableData offsets / length on
+     * those blocks. See execLQHKEYREQ for the key-op equivalent.
+     */
     DatabaseRecordPtr dbPtr;
     Uint32 user_id = scanFragReq->variableData[0];
     DatabaseRecord key(*this, user_id);
+    extra_len_index++;
     if (m_databaseRecordHash.find(dbPtr, key)) {
       jam();
-      extra_len_index++;
       regTcPtr->m_user_ptr_i = dbPtr.i;
     }
   }

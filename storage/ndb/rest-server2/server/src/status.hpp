@@ -55,6 +55,25 @@ inline RS_Status __RS_ERROR(const HTTP_CODE http_code,
   return ret;
 }
 
+/**
+ * Quota / rate limit errors (RONDB-978) map to HTTP 429 so that clients
+ * can distinguish throttling from server failures.
+ * 243/2203 = write/read rate limit exceeded
+ * (TcKeyRef::WriteRateOverflowError / ReadRateOverflowError),
+ * 247/248 = too many operations / concurrent transactions for the quota.
+ */
+inline HTTP_CODE __RONDB_ERROR_HTTP_CODE(const struct NdbError &error) {
+  switch (error.code) {
+  case 243:
+  case 2203:
+  case 247:
+  case 248:
+    return TOO_MANY_REQUESTS;
+  default:
+    return SERVER_ERROR;
+  }
+}
+
 inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error,
                                   std::string msg,
                                   int lineNo,
@@ -62,7 +81,7 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error,
   std::string userMsg = "Error: " + msg + " Error: code: " + std::to_string(error.code) +
                         " MySQL Code: " + std::to_string(error.mysql_code) +
                         " Message: " + error.message;
-  return __RS_ERROR(SERVER_ERROR,
+  return __RS_ERROR(__RONDB_ERROR_HTTP_CODE(error),
                     error.status,
                     error.classification,
                     error.code,

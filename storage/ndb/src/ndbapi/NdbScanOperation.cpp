@@ -162,6 +162,14 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   // NOTE! The hupped trans becomes the owner of the operation
   theNdbCon = aScanConnection;
   theNdbCon->theMagicNumber = 0xFE11DF;
+  /**
+   * RONDB-978: the scan executes on a hupped buddy transaction, not on the
+   * caller's transaction. Propagate the rate limit user id so the
+   * ScanTabReq carries it (setUserId was called on myConnection before the
+   * scan operation was created).
+   */
+  theNdbCon->m_user_id = myConnection->m_user_id;
+  theNdbCon->m_user_id_version = myConnection->m_user_id_version;
   return 0;
 }
 

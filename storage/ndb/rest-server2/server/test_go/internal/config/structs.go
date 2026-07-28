@@ -59,9 +59,12 @@ func (g *GRPC) Validate() error {
 }
 
 type REST struct {
-	Enable     bool
-	ServerIP   string
-	ServerPort uint16
+	Enable              bool
+	ServerIP            string
+	ServerPort          uint16
+	UserRateLimits      bool
+	RateLimitIdentity   string
+	RateLimitFullAPIKey bool
 }
 
 func (g *REST) Validate() error {

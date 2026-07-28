@@ -24,6 +24,7 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 #include "scan_metrics.hpp"
 
@@ -168,6 +169,7 @@ void ScanReadCtrl::ScanRead(
   }
 
   // Authenticate
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     // A scan with no explicit read columns returns whole rows, so the
@@ -210,6 +212,7 @@ void ScanReadCtrl::ScanRead(
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
 
   RJ_Document doc;
@@ -223,12 +226,18 @@ void ScanReadCtrl::ScanRead(
 
   uint64_t rows_fetched = 0;
   status = scan_read(reqStruct, currentThreadIndex, (void*)&buf,
+                     rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                     (unsigned int)rl_identity.size(),
                      &rows_fetched, timing_enabled ? &timing : nullptr);
 
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
       drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(status.message));
-    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    /* Rate limit rejections (RONDB-978) must surface as 429, everything
+       else keeps the historical 400 of this endpoint */
+    resp->setStatusCode(status.http_code == TOO_MANY_REQUESTS
+                          ? drogon::HttpStatusCode::k429TooManyRequests
+                          : drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }

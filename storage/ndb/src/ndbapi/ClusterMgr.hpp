@@ -192,6 +192,8 @@ class ClusterMgr : public trp_client {
   void createUserIdHash();
   void releaseUserIdHash();
   void fillingUserIdCache(Uint32 node_id, Uint32 nextDatabaseId);
+  void startUserIdCacheFill(Uint32 node_id);
+  Uint32 calc_user_hash_index(const char *username, Uint32 username_len);
   int insertUserId(const char *username,
                    Uint32 username_len,
                    Uint32 userId,

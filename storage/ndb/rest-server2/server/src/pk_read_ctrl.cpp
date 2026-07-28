@@ -25,6 +25,7 @@
 #include "api_key.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 #include <NdbSleep.h>
 
@@ -114,6 +115,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   // Authenticate
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     status = authenticate(api_key, reqStruct);
@@ -125,6 +127,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
 
   ArenaMalloc amalloc(64 * 1024);
@@ -155,7 +158,9 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                            false,
                            &reqBuff,
                            &respBuff,
-                           currentThreadIndex);
+                           currentThreadIndex,
+                           rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                           (unsigned int)rl_identity.size());
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

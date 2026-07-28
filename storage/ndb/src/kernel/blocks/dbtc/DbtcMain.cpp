@@ -27669,7 +27669,13 @@ bool Dbtc::getAllowStartTransaction(
   }
   if (unlikely(databaseRecordPtr.p != nullptr)) {
     /* implies regApiPtr != nullptr */
-    if (!is_committed_read) {
+    /**
+     * The max-parallel-transactions quota is a DATABASE quota only; user
+     * records carry rate limits only and never get globalDatabaseInstance
+     * set up (CONNECT_TABLE_DB is database-only), so skip this path for
+     * users to avoid dereferencing a null globalDatabaseInstance.
+     */
+    if (!is_committed_read && !databaseRecordPtr.p->m_is_user) {
       jam();
       bool count = false;
       Uint32 transactions = 0;

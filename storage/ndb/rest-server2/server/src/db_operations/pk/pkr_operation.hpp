@@ -65,7 +65,10 @@ class BatchKeyOperations {
   Uint32 m_first_key;
   Uint32 m_last_key;
   bool m_isSuccess;
-  
+  /* Rate limit identity set on every transaction; nullptr = disabled */
+  const char *m_rate_limit_identity;
+  Uint32 m_rate_limit_identity_len;
+
  public:
    BatchKeyOperations();
    ~BatchKeyOperations();
@@ -74,12 +77,15 @@ class BatchKeyOperations {
                                bool is_batch,
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
-                               Ndb *ndb_object);
+                               Ndb *ndb_object,
+                               const char *rate_limit_identity,
+                               Uint32 rate_limit_identity_len);
    RS_Status init_batch_operations(ArenaMalloc*,
                                    Uint32,
                                    bool is_batch,
                                    RS_Buffer *reqBuffer,
                                    Ndb *ndb_object);
+   RS_Status set_transaction_user_id(NdbTransaction *transaction);
    RS_Status setup_primary_keys();
    RS_Status setup_transactions();
    RS_Status setup_read_operations();

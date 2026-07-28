@@ -59,9 +59,12 @@ func newWithDefaults() AllConfigs {
 			ServerPort: 5406,
 		},
 		REST: REST{
-			Enable:     true,
-			ServerIP:   "0.0.0.0",
-			ServerPort: 4406,
+			Enable:              true,
+			ServerIP:            "0.0.0.0",
+			ServerPort:          4406,
+			UserRateLimits:      false,
+			RateLimitIdentity:   "apikey",
+			RateLimitFullAPIKey: false,
 		},
 		RonDB: RonDB{
 			Mgmds: []Mgmd{

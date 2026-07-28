@@ -32994,7 +32994,6 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
   CreateDatabaseRecPtr createDbPtr;
   getOpRec(op_ptr, createDbPtr);
   CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
-  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -33024,6 +33023,13 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
+  /**
+   * is_user travels in the packed properties: the schema op framework
+   * does not propagate the client signal's requestInfo into m_request
+   * (startClientReq only copies requestType), and the restart path
+   * recreates databases from packed pages where IsUser is stored.
+   */
+  bool is_user = db.IsUser;
 
   Uint32 available_rate_limit =
     m_allocated_create_rate_limit - m_current_allocated_rate;
@@ -33996,7 +34002,6 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
   DropDatabaseRecPtr dropDbPtr;
   getOpRec(op_ptr, dropDbPtr);
   DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
-  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -34020,6 +34025,8 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
+  /* is_user travels in the packed properties, see createDatabase_parse */
+  bool is_user = db.IsUser;
   if (is_user) {
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
     db.DatabaseName[0] = '$';
@@ -34602,7 +34609,6 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
-  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -34625,6 +34631,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
+  /* is_user travels in the packed properties, see createDatabase_parse */
+  bool is_user = db.IsUser;
 
   if (is_user) {
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
