@@ -5203,8 +5203,9 @@ void Qmgr::securityDisconnectNode(Signal *signal, Uint32 nodeId) {
     closeCom->failNo = 0;
     closeCom->noOfNodes = 1;
     closeCom->failedNodeId = nodeId;
+    closeCom->m_dbHbSender = cneighbourl;
     sendSignal(TRPMAN_REF, GSN_CLOSE_COMREQ, signal,
-               CloseComReqConf::SignalLength, JBB);
+               CloseComReqConf::SignalLengthDB, JBB);
   } else {
     jam();
     /* API node: fail via api_failed (closes comms, notifies peers). */
