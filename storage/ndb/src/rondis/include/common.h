@@ -133,6 +133,8 @@ Uint32 get_length(char* buf);
 #define REDIS_WRONG_NUMBER_OF_ARGS "wrong number of arguments for '%s' command"
 #define REDIS_NO_SUCH_KEY "$-1\r\n"
 #define REDIS_KEY_TOO_LARGE "key is too large (3000 bytes max)"
+#define REDIS_MAX_VALUE_LEN 512000
+#define REDIS_VALUE_TOO_LARGE "value too large (512000 bytes max)"
 #define REDIS_SYNTAX_ERROR "syntax error"
 #define REDIS_INVALID_INTEGER "value is not an integer or out of range"
 #define REDIS_OFFSET_OUT_OF_RANGE "offset is out of range"

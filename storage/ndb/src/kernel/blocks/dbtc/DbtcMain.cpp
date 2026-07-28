@@ -4542,34 +4542,34 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * body should contain exactly the static header plus optional words.
    * Reject signals that are too short (stale data) or too long (extra data).
    */
-  if (regCachePtr->isLongTcKeyReq) {
-    if (unlikely(signal->getLength() !=
-                 TcKeyReq::StaticLength + TkeyIndex)) {
-      jam();
-      terrorCode = ZSIGNAL_ERROR;
-      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-      disconnectMaliciousNode(signal, senderNodeId,
-          "TCKEYREQ signal length mismatch", __LINE__);
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
-    }
-  } else {
-    /**
-     * For short TCKEYREQ, key and attr data are embedded in the signal
-     * body after the optional words. Verify exact length to prevent
-     * out-of-bounds reads from the signal buffer.
-     */
-    Uint32 keyInfoInSignal = MIN(TkeyLength, TcKeyReq::MaxKeyInfo);
-    if (unlikely(signal->getLength() !=
-                 TcKeyReq::StaticLength + TkeyIndex +
-                 keyInfoInSignal + titcLenAiInTckeyreq)) {
-      jam();
-      terrorCode = ZSIGNAL_ERROR;
-      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
-      disconnectMaliciousNode(signal, senderNodeId,
-          "TCKEYREQ signal length mismatch", __LINE__);
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
+    if (regCachePtr->isLongTcKeyReq) {
+      if (unlikely(signal->getLength() !=
+                   TcKeyReq::StaticLength + TkeyIndex)) {
+        jam();
+        terrorCode = ZSIGNAL_ERROR;
+        NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+        disconnectMaliciousNode(signal, senderNodeId,
+            "TCKEYREQ signal length mismatch", __LINE__);
+        releaseAtErrorLab(signal, apiConnectptr);
+        return;
+      }
+    } else {
+      /**
+       * For short TCKEYREQ, key and attr data are embedded in the signal
+       * body after the optional words. Verify exact length to prevent
+       * out-of-bounds reads from the signal buffer.
+       */
+      Uint32 keyInfoInSignal = MIN(TkeyLength, TcKeyReq::MaxKeyInfo);
+      if (unlikely(signal->getLength() !=
+                   TcKeyReq::StaticLength + TkeyIndex +
+                   keyInfoInSignal + titcLenAiInTckeyreq)) {
+        jam();
+        terrorCode = ZSIGNAL_ERROR;
+        NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+        disconnectMaliciousNode(signal, senderNodeId,
+            "TCKEYREQ signal length mismatch", __LINE__);
+        releaseAtErrorLab(signal, apiConnectptr);
+        return;
     }
   }
 
@@ -16564,7 +16564,14 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   SectionHandle handle(this, signal);
   SegmentedSectionPtr api_op_ptr;
-  ndbrequire(handle.getSection(api_op_ptr, ScanTabReq::ReceiverIdSectionNum));
+  if (unlikely(!handle.getSection(api_op_ptr, ScanTabReq::ReceiverIdSectionNum))) {
+    jam();
+    releaseSections(handle);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "SCAN_TABREQ missing required section 0", __LINE__);
+    return;
+  }
 
   /**
    * Scan parallelism is determined by the number of receiver ids sent
@@ -16613,9 +16620,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    ndbrequire(!passQueueingFlag);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (passQueueingFlag && senderNodeId == getOwnNodeId()) {
+      ndbrequire(false);  // internal queued signal with bad ptr — genuine bug
+    }
     releaseSections(handle);
-    warningHandlerLab(signal, __LINE__);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in SCAN_TABREQ", __LINE__);
     return;
   }  // if
 
