@@ -21123,10 +21123,10 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
   lockReq.lockId = 0;
   lockReq.requestInfo = 0;
   const bool restartLockTakeover =
-      req.lockType == DictLockReq::NodeRestartLockTakeover;
+      req.lockType == (Uint32)DictLockReq::NodeRestartLockTakeover;
   const Uint32 nodeId = refToNode(req.userRef);
   lockReq.extra = restartLockTakeover
-                      ? DictLockReq::NodeRestartLock
+                      ? (Uint32)DictLockReq::NodeRestartLock
                       : req.lockType;
 
   const DictLockType *lt = getDictLockType(lockReq.extra);
