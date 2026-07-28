@@ -468,6 +468,13 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) {
   while (c_aggCompleteRecordPool.startup()) {
     refresh_watch_dog();
   }
+
+  c_cteScanFragHandlePool.init(CteScanFragHandle::TYPE_ID, pc, 0,
+                               UINT32_MAX);
+  while (c_cteScanFragHandlePool.startup()) {
+    refresh_watch_dog();
+  }
+  c_cteScanFragHandleHash.setSize(4096);
 }  // Dbtc::initRecords()
 
 bool Dbtc::getParam(const char *name, Uint32 *count) {
@@ -501,6 +508,7 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   c_maxNumberOfIndexes(0),
   c_fk_hash(c_fk_pool),
   c_currentApiConTimers(NULL),
+  c_cteScanFragHandleHash(c_cteScanFragHandlePool),
   m_commitAckMarkerHash(m_commitAckMarkerPool),
   m_databaseRecordHash(m_databaseRecordPool)
 {
@@ -678,7 +686,9 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
     &c_theDefinedTriggerPool;
   c_transient_pools[DBTC_AGG_COMPLETE_RECORD_TRANSIENT_POOL_INDEX] =
     &c_aggCompleteRecordPool;
-  static_assert(c_transient_pool_count == 16);
+  c_transient_pools[DBTC_CTE_SCAN_FRAG_HANDLE_TRANSIENT_POOL_INDEX] =
+    &c_cteScanFragHandlePool;
+  static_assert(c_transient_pool_count == 17);
   c_transient_pools_shrinking.clear();
 }  // Dbtc::Dbtc()
 

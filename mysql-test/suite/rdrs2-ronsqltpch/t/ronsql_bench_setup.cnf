@@ -1,0 +1,25 @@
+# Benchmark-scale cluster config for rondb-cli RonSQL benchmarks.
+#
+# Inherits the suite config (2 ndbmtd, 2 mysqld, RDRS with and without TLS,
+# auth disabled) and enlarges the data node memory (mirroring
+# suite/ndb/t/ndb_setup_large.cnf) so TPC-H scale factor 1 (~8.6M rows
+# loaded via rondb-cli .load_tpch) fits comfortably.
+#
+# Start the cluster with:
+#   ./mtr --suite=rdrs2-ronsqltpch ronsql_bench_setup --start-and-exit
+
+!include ../my.cnf
+
+[cluster_config.1]
+TotalMemoryConfig=10G
+DataMemory=4G
+DiskPageBufferMemory=400M
+SchemaMemory=200M
+TransactionMemory=200M
+RedoBuffer=100M
+SharedGlobalMemory=450M
+NoOfFragmentLogFiles=16
+FragmentLogFileSize=64M
+BatchSize=990
+BatchByteSize=1M
+MaxScanBatchSize=4M

@@ -73,8 +73,10 @@ struct CtePhaseCompleteRep {
   Uint32 senderRef;     // DBSPJ block reference
   Uint32 senderData;    // ScanFragRec.i in DBTC (echoed from SCAN_FRAGREQ)
   Uint32 phase;         // Which CTE phase completed
+  Uint32 transId1;
+  Uint32 transId2;
 
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 5;
 };
 
 /**

@@ -479,6 +479,7 @@ ErrorBundle ErrorCodes[] = {
   { 1267, DMEC, IE, "CTE evict in CTE materialization leaf" },
   { 1268, DMEC, IE, "CTE lookup filter execution error" },
   { 1269, DMEC, IE, "CTE aggregation feed targets its source CTE state" },
+  { 1270, DMEC, IE, "CTE join aggregation scan received an unexpected intermediate batch boundary" },
 
   /**
    * Application error

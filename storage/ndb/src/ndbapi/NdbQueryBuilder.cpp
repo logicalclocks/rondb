@@ -630,6 +630,24 @@ int NdbQueryOptions::setMaxRows(Uint32 maxRows) {
   return 0;
 }
 
+int NdbQueryOptions::setFragsPerWorker(Uint32 frags) {
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  // Normalize to what the 2-bit log2 wire encoding can carry: round
+  // down to a power of two, cap at 8 (see ScanTabReq::setFragsPerWorker).
+  Uint32 pow2 = 0;
+  if (frags > 0) {
+    pow2 = 1;
+    while (pow2 * 2 <= frags && pow2 < 8) pow2 *= 2;
+  }
+  m_pimpl->m_fragsPerWorker = pow2;
+  return 0;
+}
+
 int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   if (m_pimpl == &defaultOptions) {
     m_pimpl = new NdbQueryOptionsImpl;
@@ -679,7 +697,8 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_aggGbColumns(nullptr),
       m_aggColumns(nullptr),
       m_linkedProjection(src.m_linkedProjection),
-      m_maxRows(src.m_maxRows) {
+      m_maxRows(src.m_maxRows),
+      m_fragsPerWorker(src.m_fragsPerWorker) {
   if (src.m_interpretedCode != nullptr) {
     copyInterpretedCode(*src.m_interpretedCode);
   }

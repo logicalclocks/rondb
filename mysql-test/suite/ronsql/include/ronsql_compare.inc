@@ -1,7 +1,20 @@
 # This include-file, or subroutine, executes a query with both mysql client and
 # ronsql_cli, then compares the results.
+#
+# Optional: $RONSQL_PREFIX — RonSQL-only statement-head syntax (e.g.
+# "FRAGS_PER_WORKER = 4") prepended to the query on the RDRS RonSQL side
+# only; the MySQL baseline runs the bare query.  Requires
+# $suppress_ronsql_cli=yes since the ronsql_cli invocation would need the
+# same prefixing.  Reset at the end like $QUERY.
 --source include/have_util_sed.inc
 --source include/have_util_curl.inc
+if ($RONSQL_PREFIX!='')
+{
+  if ($suppress_ronsql_cli=='')
+  {
+    --die RONSQL_PREFIX requires suppress_ronsql_cli=yes
+  }
+}
 --echo == Query ==
 if ($QUERY!='')
 {
@@ -19,7 +32,15 @@ if ($QUERY=='')
   --let $QUERY_PARAMS = < '$QUERY_FILE'
   --exec cat $QUERY_FILE > $MYSQL_TMP_DIR/ronsql-query.sql
 }
---exec printf '{"query":"' > $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+if ($RONSQL_PREFIX!='')
+{
+  --echo RonSQL-side prefix: $RONSQL_PREFIX
+  --exec printf '{"query":"%s ' '$RONSQL_PREFIX' > $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+}
+if ($RONSQL_PREFIX=='')
+{
+  --exec printf '{"query":"' > $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+}
 --exec perl -pe 's/\\/\\\\/g; s/"/\\"/g; s/\x08/\\b/g; s/\f/\\f/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g;' $MYSQL_TMP_DIR/ronsql-query.sql > $MYSQL_TMP_DIR/ronsql-rdrs-body-2
 --exec printf '","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body-3
 --exec cat $MYSQL_TMP_DIR/ronsql-rdrs-body-1 $MYSQL_TMP_DIR/ronsql-rdrs-body-2 $MYSQL_TMP_DIR/ronsql-rdrs-body-3 > $MYSQL_TMP_DIR/ronsql-rdrs-body
@@ -141,6 +162,7 @@ if ($QUERY=='')
   --remove_file $QUERY_FILE
 }
 --let $QUERY=
+--let $RONSQL_PREFIX=
 --let $canonicalization_script=
 --let $canonicalization_perl=
 --let $skip_sort=

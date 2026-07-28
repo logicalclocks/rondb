@@ -433,26 +433,51 @@ RS_Status BaseBatchOperations::setup_transactions(char *username_ptr) {
 }
 
 RS_Status BaseBatchOperations::execute() {
-  if (m_num_sent_operations > 0) {
-    if (unlikely(m_single_transaction)) {
-      BaseKeyOperation *key_op = get_key_op(0);
-      NdbTransaction *trans = key_op->m_ndbTransaction;
-      // Use AO_IgnoreError to allow transaction to continue even if some
-      // operations fail (e.g., 626 NoDataFound). Each operation's error
-      // is checked individually in create_response().
-      if (unlikely(trans->execute(get_single_transaction_exec_type(),
-                                  NdbOperation::AO_IgnoreError) != 0)) {
-        return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
-          std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
-      }
-    } else {
-      if (m_ndb_object->sendPollNdb(
-          WAITFOR_RESPONSE_TIMEOUT, m_num_sent_operations) <
-            (int)m_num_sent_operations) {
-        return RS_RONDB_SERVER_ERROR(
-          m_ndb_object->getNdbError(),
-          std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
-      }
+  if (unlikely(m_single_transaction)) {
+    BaseKeyOperation *key_op = get_key_op(0);
+    NdbTransaction *trans = key_op->m_ndbTransaction;
+    if (trans == nullptr) {
+      /* No valid operation in the batch so far, nothing to execute */
+      return RS_OK;
+    }
+    /*
+     * Batches larger than internal.batchMaxSize are prepared and executed
+     * in chunks (see the perform_operation loop in the derived classes).
+     * All chunks share this one transaction, so intermediate chunks must
+     * execute with NoCommit and only the final chunk commits. Calling
+     * execute(Commit) again on an already committed transaction fails
+     * (with an empty NdbError).
+     */
+    bool last_chunk = (m_last_key >= m_numOperations);
+    NdbTransaction::ExecType exec_type = get_single_transaction_exec_type();
+    if (exec_type == NdbTransaction::Commit && !last_chunk) {
+      exec_type = NdbTransaction::NoCommit;
+    }
+    if (m_num_sent_operations == 0 &&
+        !(last_chunk && exec_type == NdbTransaction::Commit)) {
+      /*
+       * Nothing new to execute in this chunk and no final commit needed.
+       * The final commit must run even with zero newly prepared operations
+       * (e.g. the last chunk contains only invalid operations) so that
+       * operations from earlier NoCommit chunks are committed.
+       */
+      return RS_OK;
+    }
+    // Use AO_IgnoreError to allow transaction to continue even if some
+    // operations fail (e.g., 626 NoDataFound). Each operation's error
+    // is checked individually in create_response().
+    if (unlikely(trans->execute(exec_type,
+                                NdbOperation::AO_IgnoreError) != 0)) {
+      return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    }
+  } else if (m_num_sent_operations > 0) {
+    if (m_ndb_object->sendPollNdb(
+        WAITFOR_RESPONSE_TIMEOUT, m_num_sent_operations) <
+          (int)m_num_sent_operations) {
+      return RS_RONDB_SERVER_ERROR(
+        m_ndb_object->getNdbError(),
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
     }
   }
   return RS_OK;

@@ -291,12 +291,14 @@ class NdbQueryOptionsImpl {
         m_aggGbColumns(nullptr),
         m_aggColumns(nullptr),
         m_linkedProjection(0),
-        m_maxRows(0) {}
+        m_maxRows(0),
+        m_fragsPerWorker(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
   NdbQueryOptions::ScanOrdering getOrdering() const { return m_scanOrder; }
   Uint32 getMaxRows() const { return m_maxRows; }
+  Uint32 getFragsPerWorker() const { return m_fragsPerWorker; }
 
   bool hasAggregation() const { return m_aggProgramBuffer != nullptr; }
   const Uint32 *getAggProgramBuffer() const { return m_aggProgramBuffer; }
@@ -341,6 +343,11 @@ class NdbQueryOptionsImpl {
   // Per-fragment row limit (0 = unlimited). When > 0, DBSPJ closes
   // the fragment scan after this many rows instead of requesting more.
   Uint32 m_maxRows;
+
+  // Root fragments bundled per SPJ worker for aggregate pushed queries
+  // (0 = unset => 1). Power of two, max 8 (2-bit log2 wire encoding in
+  // SCAN_TABREQ storedProcId bits 16-17); normalized by the setter.
+  Uint32 m_fragsPerWorker;
 
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'

@@ -801,6 +801,9 @@ RonSQLPreparer::parse()
   case ErrState::TOO_LONG_UNALIASED_OUTPUT:
     msg = "Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.";
     break;
+  case ErrState::INVALID_FRAGS_PER_WORKER:
+    msg = "FRAGS_PER_WORKER must be a positive integer.";
+    break;
   case ErrState::PARSER_ERROR:
     if (m_sql.len == 0)
     {
@@ -1627,6 +1630,34 @@ RonSQLPreparer::load_join()
     }
     groupby = groupby->next;
   }
+
+  // Root scan-config selection (join_root_index_scan_plan.md): consider
+  // an ordered-index scan for the main-query root when the
+  // root-classified WHERE conjuncts (join_where_ce[0], final at this
+  // point) can serve as index bounds — e.g. a range on the PK ordered
+  // index or an equality on a secondary-indexed column, shapes
+  // emit_root_op's PK-equality branches cannot serve.  Skipped when the
+  // root PK is fully equality-covered (readTuple / PK-equality index
+  // scan are better) unless a FORCE INDEX hint demands an index scan.
+  // This also makes root index hints on join queries effective — they
+  // were previously parsed but silently ignored because
+  // plan_index_and_filter never runs for join queries.
+  {
+    const TableRef* root_ref = m_context.ast_root.root_table;
+    const TableRef::HintKind root_hint =
+        (root_ref != NULL) ? root_ref->hint_kind
+                           : TableRef::HintKind::HINT_NONE;
+    JoinPlan& jp = m_main_scope.join_plan;
+    if (jp.ops[0].type == JoinOp::TABLE_SCAN &&
+        jp.ops[0].table != NULL &&
+        (root_hint == TableRef::HintKind::HINT_FORCE ||
+         !root_pk_equality_covered(m_main_scope)))
+    {
+      select_root_scan_config(m_main_scope,
+                              m_main_scope.join_where_ce[0],
+                              root_ref);
+    }
+  }
 }
 
 void
@@ -2369,6 +2400,21 @@ RonSQLPreparer::build_scan_config_candidates(
           // Not a "column <op> value" shape; leave it as a residual filter.
           continue;
         }
+        ConditionalExpression* condition_constant = ce->args.right;
+        if (condition_constant == NULL ||
+            (condition_constant->op != T_INT &&
+             condition_constant->op != T_FLOAT &&
+             condition_constant->op != T_STRING &&
+             condition_constant->op != I_MYSQL_TIME &&
+             condition_constant->op != I_SUBQUERY)) {
+          // The right side is not a constant the bound encoder can
+          // serve — e.g. column-vs-column or an expression simplify_ce
+          // couldn't fold.  encode_constant would throw at emit time,
+          // so leave the conjunct as a residual filter.  (I_SUBQUERY
+          // placeholders are substituted with constants before any
+          // emit path runs, so they are bound-eligible.)
+          continue;
+        }
         const char* condition_col_name =
           m_columns[condition_identifier->col_idx].c_str();
         if (strcmp(column_name, condition_col_name) == 0) {
@@ -2658,17 +2704,17 @@ RonSQLPreparer::load_cte_body_indexes(QueryScope& scope,
   return true;
 }
 
-// Phase I.9 (+ composite bounds): pick an ordered index for a
-// single-op CTE body's root scan, mirroring the main-query
+// Phase I.9 (+ composite bounds) / join_root_index_scan_plan.md: pick
+// an ordered index for a scope's root scan, mirroring the single-table
 // scan-config selection at `plan_index_and_filter` but writing to
 // per-scope state instead of `m_indexes` / `m_toplevel_conditions`
 // / `m_scan_config*`.
 //
 // On entry, `scope` has already been planned + column-resolved +
-// where-classified.  If the body has a single op whose root is a
-// real table with available ordered indexes, this function:
-//   1. Loads the source-table indexes into `scope.body_indexes`.
-//   2. Walks the body's WHERE for top-level AND conjuncts and
+// where-classified.  If ops[0] is a real-table TABLE_SCAN with
+// available ordered indexes, this function:
+//   1. Loads the root-table indexes into `scope.body_indexes`.
+//   2. Walks `where_ce` for top-level AND conjuncts and
 //      stashes them in `scope.body_toplevel_conditions`.
 //   3. Generates candidate scan configs via the shared
 //      `build_scan_config_candidates` (one TABLE_SCAN candidate
@@ -2681,6 +2727,12 @@ RonSQLPreparer::load_cte_body_indexes(QueryScope& scope,
 //      `cp.ops[0].type = INDEX_SCAN` and `cp.ops[0].index = idx`
 //      so the emit branch recognises it.
 //
+// Caller contract for `where_ce`: CTE bodies (single-op gate at the
+// call site) pass the body's whole WHERE; the main scope of a join
+// query passes only the root-classified conjuncts
+// (`join_where_ce[0]`) — conjuncts belonging to child ops or
+// cross-table filters must not be offered as root bounds.
+//
 // Bound-vs-residual routing for the emit step lives on
 // `scope.body_scan_config->condition_handling_map[i]`:
 // `-1` => apply conjunct as InterpretedCode filter; otherwise the
@@ -2691,46 +2743,55 @@ RonSQLPreparer::load_cte_body_indexes(QueryScope& scope,
 // inclusivity flag per side correct.
 //
 // Quietly returns without rewriting anything for shapes the
-// optimiser doesn't yet handle (multi-op body, chained CTE,
-// no usable index, no Ndb connection at prepare time).
+// optimiser doesn't yet handle (chained CTE / CTE_SCAN root,
+// no usable index, no Ndb connection at prepare time) — except
+// under a FORCE INDEX hint, where the "no WHERE" and "no ordered
+// index" early-outs fall through to the shared generator so it
+// throws the same FORCE errors as the single-table path.
 void
-RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
-                                             ConditionalExpression* where_ce,
-                                             const TableRef* hint)
+RonSQLPreparer::select_root_scan_config(QueryScope& scope,
+                                        ConditionalExpression* where_ce,
+                                        const TableRef* hint)
 {
   JoinPlan& plan = scope.join_plan;
-  if (plan.num_ops != 1) return;
+  const TableRef::HintKind hint_kind =
+    (hint != NULL) ? hint->hint_kind : TableRef::HintKind::HINT_NONE;
+  const bool hint_force = (hint_kind == TableRef::HintKind::HINT_FORCE);
   if (plan.ops[0].type != JoinOp::TABLE_SCAN) return;
   const NdbDictionary::Table* tab = plan.ops[0].table;
   if (tab == NULL) return;
   if (m_conf.ndb == NULL || m_dict == NULL) return;
-  if (where_ce == NULL) return;
+  if (where_ce == NULL && !hint_force) return;
 
-  // 1. Load this body's source-table indexes — same listIndexes +
+  // 1. Load this scope's root-table indexes — same listIndexes +
   //    schema-cache flow as load_single_table, just writing to
   //    scope.body_indexes.
   if (!load_cte_body_indexes(scope, tab)) return;
-  if (scope.body_indexes.size() == 0) return;
+  if (scope.body_indexes.size() == 0 && !hint_force) return;
 
   // 2. Flatten WHERE to top-level AND conjuncts.  Mirror
   //    `collect_toplevel_conditions` but write to scope state.
-  ConditionalExpression* simplified = simplify_ce(where_ce, -1);
-  // Inline AND-flatten — the existing helper writes to
-  // m_toplevel_conditions; the per-scope shape uses local logic.
-  // Stack of nodes to expand; cap on top-level conjuncts is the
-  // same as the rest of RonSQL's WHERE flattening.
-  ConditionalExpression* stack[MAX_WHERE_CONJUNCTS];
-  Uint32 stack_top = 0;
-  stack[stack_top++] = simplified;
-  while (stack_top > 0) {
-    ConditionalExpression* node = stack[--stack_top];
-    if (node == NULL) continue;
-    if (node->op == T_AND) {
-      if (stack_top + 2 > MAX_WHERE_CONJUNCTS) return;
-      stack[stack_top++] = node->args.right;
-      stack[stack_top++] = node->args.left;
-    } else {
-      scope.body_toplevel_conditions.push(node);
+  //    (With FORCE INDEX and no WHERE the conjunct list stays empty
+  //    and the generator throws the standard FORCE error.)
+  if (where_ce != NULL) {
+    ConditionalExpression* simplified = simplify_ce(where_ce, -1);
+    // Inline AND-flatten — the existing helper writes to
+    // m_toplevel_conditions; the per-scope shape uses local logic.
+    // Stack of nodes to expand; cap on top-level conjuncts is the
+    // same as the rest of RonSQL's WHERE flattening.
+    ConditionalExpression* stack[MAX_WHERE_CONJUNCTS];
+    Uint32 stack_top = 0;
+    stack[stack_top++] = simplified;
+    while (stack_top > 0) {
+      ConditionalExpression* node = stack[--stack_top];
+      if (node == NULL) continue;
+      if (node->op == T_AND) {
+        if (stack_top + 2 > MAX_WHERE_CONJUNCTS) return;
+        stack[stack_top++] = node->args.right;
+        stack[stack_top++] = node->args.left;
+      } else {
+        scope.body_toplevel_conditions.push(node);
+      }
     }
   }
 
@@ -2762,6 +2823,30 @@ RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
     plan.ops[0].type = JoinOp::INDEX_SCAN;
     plan.ops[0].index = scope.body_scan_config->index;
   }
+}
+
+// True when every primary-key column of the scope's root table has an
+// equality against a constant among the root-classified WHERE conjuncts.
+// emit_root_op serves those shapes with readTuple (no scan child) or an
+// equality-bound PRIMARY index scan (scan child), both better than a
+// scan-config index scan — so select_root_scan_config is skipped for
+// them (unless FORCE INDEX overrides).
+bool
+RonSQLPreparer::root_pk_equality_covered(QueryScope& scope)
+{
+  if (scope.join_where_ce[0] == NULL) return false;
+  const NdbDictionary::Table* tab = scope.join_plan.ops[0].table;
+  if (tab == NULL) return false;
+  int nkeys = tab->getNoOfPrimaryKeys();
+  if (nkeys <= 0) return false;
+  ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
+  ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
+  collect_pk_equalities(w, tab, pk_const);
+  for (int k = 0; k < nkeys; k++) {
+    if (pk_const[k] == NULL) return false;
+  }
+  return true;
 }
 
 /*
@@ -3870,12 +3955,14 @@ RonSQLPreparer::build_cte_scopes()
     reject_index_hints_on_joins(cte->stmt->joins);
     // Phase I.9: try to convert this CTE body's root scan into an
     // ordered index scan when the body's WHERE has bounds on an
-    // indexed column.  Operates only on single-op real-table bodies;
-    // chained CTEs (CTE_SCAN root) and multi-table bodies fall
-    // through unchanged.  The root table's index hint (if any) constrains
+    // indexed column.  Operates only on single-op real-table bodies
+    // (the whole body WHERE belongs to the root op then); chained
+    // CTEs (CTE_SCAN root) and multi-table bodies fall through
+    // unchanged.  The root table's index hint (if any) constrains
     // index selection.
-    select_cte_body_scan_config(*scope, cte->stmt->where_expression,
-                                cte->stmt->root_table);
+    if (scope->join_plan.num_ops == 1)
+      select_root_scan_config(*scope, cte->stmt->where_expression,
+                              cte->stmt->root_table);
     // Phase I.10: scalar MIN/MAX over a NOT NULL indexed column can
     // materialise through a full ordered index scan with maxRows=1.
     select_cte_body_minmax_index(*scope, cte);
@@ -6042,19 +6129,23 @@ RonSQLPreparer::execute_join()
       qb->beginCteSubtree(c);
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
       if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::TABLE_SCAN) {
-        // Single-table CTE body: emit the "self-join" pattern the NDB API
-        // expects — scanTable + readTuple(linked_pk) with the aggregator
-        // on the readTuple. The normal emit_child_ops path would start
-        // at i=1 and never attach the aggregator when there are no
-        // joined children.
+        // Single-table CTE body: attach the aggregator directly on the
+        // root scan.  The scan is then a T_CTE_SCAN node with no
+        // T_AGGREGATE_LEAF child below it, so DBSPJ sets JoinAggFlag on
+        // the SCAN_FRAGREQ and DBLQH/DBTUP feed each scanned row into
+        // the CTE hash table in place (handleJoinAggRow) — no per-row
+        // PK round trip through DBSPJ and no second read of the row.
+        // The aggregation program itself travels via defineCte(); the
+        // aggregator on the op only marks it NI_AGGREGATE_LEAF.
         const NdbDictionary::Table* srcTab = cp.ops[0].table;
         require_run(srcTab != NULL, "CTE body root has no physical table.");
 
         // Attach the CTE body WHERE filter (pre-GROUP BY) to the root
         // scan when present. build_cte_scopes classifies the CTE body's
         // WHERE into cs.join_where_ce; emit_root_op handles this for
-        // multi-op bodies, but the single-table self-lookup path below
-        // must do it inline.
+        // multi-op bodies, but the single-table path must do it inline.
+        // The WHERE interpreter runs before the aggregation feed, so
+        // only passing rows aggregate.
         NdbQueryOptions rootOpts;
         NdbInterpretedCode rootCode(srcTab);
         if (cs.join_where_ce[0] != NULL) {
@@ -6068,47 +6159,35 @@ RonSQLPreparer::execute_join()
           rootCode.finalise();
           rootOpts.setInterpretedCode(rootCode);
         }
+        require_run(rootOpts.setAggregation(*cteAgg) == 0,
+                    "Failed to attach aggregator to CTE body scan root.");
         cteOpDefs[0] = qb->scanTable(srcTab, &rootOpts);
         require_run(cteOpDefs[0] != NULL,
                     "Failed to create CTE body scan root.");
-        const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-        int nkeys = srcTab->getNoOfPrimaryKeys();
-        for (int k = 0; k < nkeys; k++) {
-          const char* pk_name = srcTab->getPrimaryKey(k);
-          keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
-          require_run(keys[k] != NULL,
-                      "Failed to create CTE body self-join linked key.");
-        }
-        keys[nkeys] = nullptr;
-        NdbQueryOptions leafOpts;
-        leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-        require_run(leafOpts.setAggregation(*cteAgg) == 0,
-                    "Failed to attach aggregator to CTE body leaf.");
-        cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
-        require_run(cteOpDefs[1] != NULL,
-                    "Failed to create CTE body self-join leaf.");
       } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::INDEX_SCAN) {
         // Phase I.9: single-table CTE body via ordered index.  Same
-        // self-join materialisation pattern as the TABLE_SCAN branch,
-        // but use scanIndex(idx, srcTab, &bound) for the root and
-        // route bound conjuncts to NdbQueryIndexBound, residual
-        // conjuncts to the InterpretedCode filter.  Bound vs residual
-        // routing comes from select_cte_body_scan_config's per-scope
-        // condition_handling_map.
+        // in-place aggregation feed as the TABLE_SCAN branch, but use
+        // scanIndex(idx, srcTab, &bound) for the root and route bound
+        // conjuncts to NdbQueryIndexBound, residual conjuncts to the
+        // InterpretedCode filter.  Bound vs residual routing comes from
+        // select_root_scan_config's per-scope condition_handling_map,
+        // and the bound/filter emit itself is the shared
+        // emit_index_scan_root (also used for main-query roots, see
+        // join_root_index_scan_plan.md).
         const NdbDictionary::Table* srcTab = cp.ops[0].table;
         const NdbDictionary::Index* idx = cp.ops[0].index;
         require_run(srcTab != NULL,
                     "CTE body INDEX_SCAN root has no physical table.");
         require_run(idx != NULL,
                     "CTE body INDEX_SCAN root has no index.");
-        if (cs.body_minmax_kind == QueryScope::MinMaxKind::NONE) {
-          require_run(cs.body_scan_config != NULL &&
-                      cs.body_scan_config->index == idx,
-                      "CTE body INDEX_SCAN missing scan-config metadata.");
-        }
 
         NdbQueryOptions rootOpts;
         if (cs.body_minmax_kind != QueryScope::MinMaxKind::NONE) {
+          // Phase I.10 scalar MIN/MAX: ordered scan + maxRows=1.  Keep
+          // the readTuple(linked_pk) self-join here — the early close
+          // relies on scan rows reaching DBSPJ for the maxRows
+          // accounting, which an in-place aggregation scan (0 reported
+          // rows) would defeat.
           if (cs.body_minmax_kind == QueryScope::MinMaxKind::MAX_DESC) {
             rootOpts.setOrdering(NdbQueryOptions::ScanOrdering_descending);
           } else {
@@ -6118,126 +6197,31 @@ RonSQLPreparer::execute_join()
           cteOpDefs[0] = qb->scanIndex(idx, srcTab, NULL, &rootOpts);
           require_run(cteOpDefs[0] != NULL,
                       "Failed to create CTE body index-scan root.");
+
+          const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+          int nkeys = srcTab->getNoOfPrimaryKeys();
+          for (int k = 0; k < nkeys; k++) {
+            const char* pk_name = srcTab->getPrimaryKey(k);
+            keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
+            require_run(keys[k] != NULL,
+                        "Failed to create CTE body self-join linked key.");
+          }
+          keys[nkeys] = nullptr;
+          NdbQueryOptions leafOpts;
+          leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+          require_run(leafOpts.setAggregation(*cteAgg) == 0,
+                      "Failed to attach aggregator to CTE body leaf.");
+          cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
+          require_run(cteOpDefs[1] != NULL,
+                      "Failed to create CTE body self-join leaf.");
         } else {
-
-          // Build NdbQueryIndexBound key arrays.  Two independent
-          // pointer chains terminated by nullptr — one for low
-          // bounds, one for high.  select_cte_body_scan_config
-          // guarantees consecutive leading-column coverage starting
-          // at column 0 (no gaps): equality-bound columns sit at
-          // the head of both chains; an optional half-open range
-          // can extend exactly one further column on either side.
-          // lowIncl / highIncl reflect the inclusivity of the LAST
-          // entry on each chain (NdbQueryIndexBound uses one bool
-          // per side, applied uniformly).
-          Uint32 idx_col_count = idx->getNoOfColumns();
-          const NdbQueryOperand* lowKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-          const NdbQueryOperand* highKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-          Uint32 lowFill = 0, highFill = 0;
-          bool lowIncl = true, highIncl = true;
-          for (Uint32 k = 0; k < idx_col_count; k++) {
-            const NdbDictionary::Column* idx_col = idx->getColumn(k);
-            ndbrequire(idx_col != NULL);
-            const NdbDictionary::Column* tab_col =
-                srcTab->getColumn(idx_col->getName());
-            require_run(tab_col != NULL,
-                        "CTE body INDEX_SCAN: index column missing on table.");
-
-            const NdbQueryOperand* low_op = NULL;
-            const NdbQueryOperand* high_op = NULL;
-            bool k_low_incl = true, k_high_incl = true;
-            for (Uint32 ci = 0; ci < cs.body_toplevel_conditions.size();
-                 ci++) {
-              if ((Uint32)cs.body_scan_config->condition_handling_map[ci]
-                  != k) continue;
-              ConditionalExpression* ce = cs.body_toplevel_conditions[ci];
-              ConditionalExpression* right_const = ce->args.right;
-              raw_value rv = encode_constant(right_const, tab_col);
-              const NdbQueryOperand* operand = qb->constValue(rv.val, rv.len);
-              require_run(operand != NULL,
-                          "Failed to create const value for CTE body bound.");
-              TokenKind op = ce->op;
-              if (op == T_EQUALS || op == T_GE || op == T_GT) {
-                low_op = operand;
-                if (op == T_GT) k_low_incl = false;
-              }
-              if (op == T_EQUALS || op == T_LE || op == T_LT) {
-                high_op = operand;
-                if (op == T_LT) k_high_incl = false;
-              }
-            }
-            if (low_op == NULL && high_op == NULL) break;
-            if (low_op != NULL) {
-              lowKeys[lowFill++] = low_op;
-              lowIncl = k_low_incl;
-            }
-            if (high_op != NULL) {
-              highKeys[highFill++] = high_op;
-              highIncl = k_high_incl;
-            }
-            // A half-open last column truncates further coverage on
-            // both sides — select_cte_body_scan_config already
-            // enforces this via later_columns_blocked, but make the
-            // emit-side invariant explicit too.
-            if (low_op == NULL || high_op == NULL) break;
-          }
-          lowKeys[lowFill] = nullptr;
-          highKeys[highFill] = nullptr;
-
-          // Residual conjuncts (cmh[i] == -1) go through the
-          // InterpretedCode filter, mirroring the TABLE_SCAN branch.
-          NdbInterpretedCode rootCode(srcTab);
-          bool has_residual = false;
-          ConditionalExpression* residual_root = NULL;
-          for (Uint32 ci = 0; ci < cs.body_toplevel_conditions.size(); ci++) {
-            if (cs.body_scan_config->condition_handling_map[ci] != -1)
-              continue;
-            ConditionalExpression* ce = cs.body_toplevel_conditions[ci];
-            if (residual_root == NULL) {
-              residual_root = ce;
-            } else {
-              ConditionalExpression* combined =
-                  m_amalloc->alloc_exc<ConditionalExpression>(1);
-              combined->op = T_AND;
-              combined->args.left = residual_root;
-              combined->args.right = ce;
-              residual_root = combined;
-            }
-            has_residual = true;
-          }
-          if (has_residual) {
-            NdbScanFilter filter(&rootCode);
-            filter.setSqlCmpSemantics();
-            filter.begin(NdbScanFilter::AND);
-            apply_filter(&filter, cs, residual_root);
-            filter.end();
-            rootCode.finalise();
-            rootOpts.setInterpretedCode(rootCode);
-          }
-
-          NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
-          cteOpDefs[0] = qb->scanIndex(idx, srcTab, &bound, &rootOpts);
-          require_run(cteOpDefs[0] != NULL,
-                      "Failed to create CTE body index-scan root.");
+          // Aggregator directly on the index-scan root — same in-place
+          // feed as the TABLE_SCAN branch; bounds and residual filter
+          // come from emit_index_scan_root.
+          require_run(rootOpts.setAggregation(*cteAgg) == 0,
+                      "Failed to attach aggregator to CTE body scan root.");
+          cteOpDefs[0] = emit_index_scan_root(qb, cs, srcTab, idx, rootOpts);
         }
-
-        // readTuple(linked_pk) leaf, identical to the TABLE_SCAN branch.
-        const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-        int nkeys = srcTab->getNoOfPrimaryKeys();
-        for (int k = 0; k < nkeys; k++) {
-          const char* pk_name = srcTab->getPrimaryKey(k);
-          keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
-          require_run(keys[k] != NULL,
-                      "Failed to create CTE body self-join linked key.");
-        }
-        keys[nkeys] = nullptr;
-        NdbQueryOptions leafOpts;
-        leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-        require_run(leafOpts.setAggregation(*cteAgg) == 0,
-                    "Failed to attach aggregator to CTE body leaf.");
-        cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
-        require_run(cteOpDefs[1] != NULL,
-                    "Failed to create CTE body self-join leaf.");
       } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::CTE_SCAN) {
         // Chained CTE body whose root is a CTE_SCAN reading a
         // predecessor CTE.  emit_root_op already handles CTE_SCAN
@@ -6678,9 +6662,128 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   }
 }
 
+// Shared emit for a scan-config-selected index-scan root (Phase I.9
+// CTE bodies + join_root_index_scan_plan.md main-query roots).
+//
+// Builds the NdbQueryIndexBound key arrays from the scope's flattened
+// conjuncts (`body_toplevel_conditions`) and the chosen candidate's
+// `condition_handling_map`.  Two independent pointer chains terminated
+// by nullptr — one for low bounds, one for high.
+// select_root_scan_config guarantees consecutive leading-column
+// coverage starting at column 0 (no gaps): equality-bound columns sit
+// at the head of both chains; an optional half-open range can extend
+// exactly one further column on either side.  lowIncl / highIncl
+// reflect the inclusivity of the LAST entry on each chain
+// (NdbQueryIndexBound uses one bool per side, applied uniformly).
+// Residual conjuncts (map == -1) go through an InterpretedCode filter
+// on rootOpts.
+const NdbQueryOperationDef*
+RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
+                                     QueryScope& scope,
+                                     const NdbDictionary::Table* tab,
+                                     const NdbDictionary::Index* idx,
+                                     NdbQueryOptions& rootOpts)
+{
+  require_run(scope.body_scan_config != NULL &&
+              scope.body_scan_config->index == idx,
+              "Index-scan root missing scan-config metadata.");
+
+  Uint32 idx_col_count = idx->getNoOfColumns();
+  const NdbQueryOperand* lowKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+  const NdbQueryOperand* highKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+  Uint32 lowFill = 0, highFill = 0;
+  bool lowIncl = true, highIncl = true;
+  for (Uint32 k = 0; k < idx_col_count; k++) {
+    const NdbDictionary::Column* idx_col = idx->getColumn(k);
+    ndbrequire(idx_col != NULL);
+    const NdbDictionary::Column* tab_col =
+        tab->getColumn(idx_col->getName());
+    require_run(tab_col != NULL,
+                "Index-scan root: index column missing on table.");
+
+    const NdbQueryOperand* low_op = NULL;
+    const NdbQueryOperand* high_op = NULL;
+    bool k_low_incl = true, k_high_incl = true;
+    for (Uint32 ci = 0; ci < scope.body_toplevel_conditions.size();
+         ci++) {
+      if ((Uint32)scope.body_scan_config->condition_handling_map[ci]
+          != k) continue;
+      ConditionalExpression* ce = scope.body_toplevel_conditions[ci];
+      ConditionalExpression* right_const = ce->args.right;
+      raw_value rv = encode_constant(right_const, tab_col);
+      const NdbQueryOperand* operand = qb->constValue(rv.val, rv.len);
+      require_run(operand != NULL,
+                  "Failed to create const value for index-scan root bound.");
+      TokenKind op = ce->op;
+      if (op == T_EQUALS || op == T_GE || op == T_GT) {
+        low_op = operand;
+        if (op == T_GT) k_low_incl = false;
+      }
+      if (op == T_EQUALS || op == T_LE || op == T_LT) {
+        high_op = operand;
+        if (op == T_LT) k_high_incl = false;
+      }
+    }
+    if (low_op == NULL && high_op == NULL) break;
+    if (low_op != NULL) {
+      lowKeys[lowFill++] = low_op;
+      lowIncl = k_low_incl;
+    }
+    if (high_op != NULL) {
+      highKeys[highFill++] = high_op;
+      highIncl = k_high_incl;
+    }
+    // A half-open last column truncates further coverage on
+    // both sides — select_root_scan_config already
+    // enforces this via later_columns_blocked, but make the
+    // emit-side invariant explicit too.
+    if (low_op == NULL || high_op == NULL) break;
+  }
+  lowKeys[lowFill] = nullptr;
+  highKeys[highFill] = nullptr;
+
+  // Residual conjuncts (cmh[i] == -1) go through the
+  // InterpretedCode filter, mirroring the TABLE_SCAN branch.
+  NdbInterpretedCode rootCode(tab);
+  bool has_residual = false;
+  ConditionalExpression* residual_root = NULL;
+  for (Uint32 ci = 0; ci < scope.body_toplevel_conditions.size(); ci++) {
+    if (scope.body_scan_config->condition_handling_map[ci] != -1)
+      continue;
+    ConditionalExpression* ce = scope.body_toplevel_conditions[ci];
+    if (residual_root == NULL) {
+      residual_root = ce;
+    } else {
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = residual_root;
+      combined->args.right = ce;
+      residual_root = combined;
+    }
+    has_residual = true;
+  }
+  if (has_residual) {
+    NdbScanFilter filter(&rootCode);
+    filter.setSqlCmpSemantics();
+    filter.begin(NdbScanFilter::AND);
+    apply_filter(&filter, scope, residual_root);
+    filter.end();
+    rootCode.finalise();
+    rootOpts.setInterpretedCode(rootCode);
+  }
+
+  NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
+  const NdbQueryOperationDef* def = qb->scanIndex(idx, tab, &bound, &rootOpts);
+  require_run(def != NULL, "Failed to create index-scan root.");
+  return def;
+}
+
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
 // lookup when WHERE fully covers the PK and no child is a scan; ordered
 // index scan with equality bounds when PK-covered with a scan child;
+// scan-config-selected index scan with WHERE bounds when
+// select_root_scan_config flipped ops[0] to INDEX_SCAN;
 // table scan with WHERE filter otherwise.
 void
 RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
@@ -6690,6 +6793,19 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
 {
   JoinPlan& plan = scope.join_plan;
   NdbQueryOptions rootOpts;
+
+  // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
+  // SPJ worker for aggregate pushed queries.  Applied to the main-query
+  // root options only (rootOpts is shared with emit_index_scan_root);
+  // CTE-body emission is deliberately untouched — the value is
+  // query-global, carried in SCAN_TABREQ.  The NDB API normalizes
+  // (power of two, cap 8), clamps to the per-node fragment count, and
+  // ignores it for non-aggregate queries, ordered/pruned scans and
+  // scanCte-containing queries (see frags_per_worker_plan.md).
+  if (m_context.ast_root.frags_per_worker > 0)
+  {
+    rootOpts.setFragsPerWorker((Uint32)m_context.ast_root.frags_per_worker);
+  }
 
   // Dispatch CTE_SCAN root before the real-table logic. Reuses the
   // CTE_LOOKUP filter helper (same opcode family — verified by
@@ -6910,6 +7026,25 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   }
 
   const NdbDictionary::Table* root_table = plan.ops[0].table;
+
+  // Scan-config-selected index-scan root (join_root_index_scan_plan.md):
+  // select_root_scan_config flipped ops[0] to INDEX_SCAN because the
+  // root WHERE conjuncts bind an ordered index — range or
+  // secondary-index predicates the PK-equality branches below cannot
+  // serve.  Those branches keep priority by construction: the selector
+  // skips fully-PK-equality-covered roots unless FORCE INDEX overrides.
+  // Bounds come from condition_handling_map; residual conjuncts go to
+  // the interpreted filter inside the helper, so join_where_ce[0] must
+  // NOT also be applied wholesale (no scanTable fallthrough).
+  if (plan.ops[0].type == JoinOp::INDEX_SCAN &&
+      scope.body_scan_config != NULL &&
+      scope.body_scan_config->index == plan.ops[0].index)
+  {
+    opDefs[0] = emit_index_scan_root(qb, scope, root_table,
+                                     plan.ops[0].index, rootOpts);
+    return;
+  }
+
   ConditionalExpression* where_ce = NULL;
   bool pk_covered = false;
   bool has_scan_child = false;
@@ -11366,6 +11501,12 @@ RonSQLPreparer::print()
 {
   std::basic_ostream<char>& out = *m_conf.out_stream;
 
+  if (m_context.ast_root.frags_per_worker > 0) {
+    out << "FRAGS_PER_WORKER = " << m_context.ast_root.frags_per_worker
+        << " (requested; the NDB API normalizes to a power of two <= 8 and"
+           " may clamp or ignore it, see frags_per_worker_plan.md)\n\n";
+  }
+
   // Print CTE definitions
   if (m_has_ctes) {
     out << "CTE definitions:\n";
@@ -11472,6 +11613,54 @@ RonSQLPreparer::print()
           out << op.index->getColumn(c)->getName();
         }
         out << ")\n";
+      }
+      // Root scan-config conditions (join_root_index_scan_plan.md):
+      // show bound-vs-filter routing for a scan-config-selected
+      // index-scan root, in the same style as the single-table
+      // CONDITIONS block.
+      if (op.is_root && op.index != NULL &&
+          m_main_scope.body_scan_config != NULL &&
+          m_main_scope.body_scan_config->index == op.index) {
+        const ScanConfig& sc = *m_main_scope.body_scan_config;
+        Uint32 cond_cnt = m_main_scope.body_toplevel_conditions.size();
+        Uint32 filter_cnt = 0;
+        for (Uint32 ci = 0; ci < cond_cnt; ci++) {
+          if (sc.condition_handling_map[ci] == -1) filter_cnt++;
+        }
+        Uint32 bound_cnt = cond_cnt - filter_cnt;
+        out << indent << "  CONDITIONS (" << bound_cnt << " bound"
+            << (bound_cnt == 1 ? "" : "s");
+        if (filter_cnt > 0) {
+          out << " and " << filter_cnt << " filter"
+              << (filter_cnt == 1 ? "" : "s");
+        }
+        out << "):\n";
+        LexString outer = LexString{indent, strlen(indent)}
+                              .concat(LexString{"  ", 2}, m_amalloc);
+        for (Uint32 ci = 0; ci < cond_cnt; ci++) {
+          bool cond_last = (ci + 1 == cond_cnt);
+          out << outer << (cond_last ? "╰─ " : "├─ ");
+          int handling = sc.condition_handling_map[ci];
+          Uint32 labellen;
+          if (handling == -1) {
+            out << "FILTER: ";
+            labellen = 11;
+          } else {
+            out << "INDEX[" << handling << "]: ";
+            labellen = 13;
+            if (handling > 9) {
+              labellen++;
+            }
+          }
+          // Continuation prefix: op indent + tree continuation +
+          // spaces aligning under the label (same widths as the
+          // single-table CONDITIONS block).
+          LexString cont = outer.concat(
+              cond_last ? LexString{"              ", labellen}
+                        : LexString{"│             ", labellen + 2},
+              m_amalloc);
+          print(m_main_scope.body_toplevel_conditions[ci], cont);
+        }
       }
       if (!op.is_root && op.num_key_cols > 0) {
         out << indent << "  Key: ";

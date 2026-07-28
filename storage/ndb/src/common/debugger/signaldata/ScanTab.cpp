@@ -76,6 +76,10 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
     fprintf(output, " ttlPurgeWindowSize: %u\n",
             sig->ttlPurgeWindowSize);
   }
+  if (sig->getJoinAggFlag(requestInfo)) {
+    fprintf(output, " fragsPerWorker: %u\n",
+            ScanTabReq::getFragsPerWorker(sig->storedProcId));
+  }
   return false;
 }
 

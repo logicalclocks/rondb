@@ -1638,6 +1638,11 @@ Trpman::distribute_signal(SignalHeader * const header,
     return get_scan_fragreq_ref(handle, instance_no);
   } else if (gsn == GSN_JOIN_AGG_COMPLETE_REQ) {
     return get_scan_fragreq_ref(handle, instance_no);
+  } else if (gsn == GSN_CTE_LOOKUP_REQ) {
+    /* CTE hash-table probe: read-only on the source state once
+     * CTE_READY, agg feed is per-thread — safe on any worker in the
+     * addressed LDM instance's round-robin group. */
+    return get_lqhkeyreq_ref(handle, instance_no);
   } else {
     return 0;
   }

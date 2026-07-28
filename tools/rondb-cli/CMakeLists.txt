@@ -49,12 +49,19 @@ if(GO_EXECUTABLE)
     "${RONDB_CLI_SOURCE_DIR}/go.sum"
   )
 
+  set(RONDB_CLI_RONSQL_BENCH_TIMEOUT_SECONDS "120")
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(RONDB_CLI_RONSQL_BENCH_TIMEOUT_SECONDS "300")
+  endif()
+
   # Custom command to build rondb-cli
   add_custom_command(
     OUTPUT ${RONDB_CLI_BINARY}
     COMMAND ${CMAKE_COMMAND} -E env
             GOFLAGS=-mod=readonly
-            ${GO_EXECUTABLE} build -o ${RONDB_CLI_BINARY} .
+            ${GO_EXECUTABLE} build
+              -ldflags "-X github.com/logicalclocks/rondb/tools/rondb-cli/internal/shell.ronsqlBenchTimeoutSeconds=${RONDB_CLI_RONSQL_BENCH_TIMEOUT_SECONDS}"
+              -o ${RONDB_CLI_BINARY} .
     WORKING_DIRECTORY ${RONDB_CLI_SOURCE_DIR}
     DEPENDS ${RONDB_CLI_GO_SOURCES}
     COMMENT "Building rondb-cli..."

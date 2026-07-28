@@ -441,9 +441,6 @@ int main(int argc, char *argv[]) {
   // Start TTL purger, API key cache, and FS cache only when REST is enabled
   if (globalConfigs.rest.enable) {
     g_ttl_purger = TTLPurger::CreateTTLPurger();
-    g_ttl_purger->Run();
-    // Start TTL purger, API key cache, and FS cache only when REST is enabled
-    g_ttl_purger = TTLPurger::CreateTTLPurger();
     if (g_ttl_purger != nullptr) {
       // Seed the runtime purge config from the config file; the REST config
       // API can change it later at runtime.
