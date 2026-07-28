@@ -112,8 +112,15 @@ Uint32 ndbGetOwnVersion();
 
 #define NDB_DISK_V2 NDB_MAKE_VERSION(7,6,0)
 /**
+ * From this version each disk data UNDO log page carries a checksum in
+ * the m_checksum field of the v2 page format. The file format layout is
+ * unchanged from NDB_DISK_V2, the per-page m_ndb_version stamp decides
+ * whether the checksum field is valid to verify.
+ */
+#define NDB_DISK_V3 NDB_MAKE_VERSION(26,4,2)
+/**
  * From which version do we support rowid
- */ 
+ */
 #define NDBD_ROWID_VERSION (NDB_MAKE_VERSION(5,1,6))
 #define NDBD_FRAGID_VERSION (NDB_MAKE_VERSION(5,1,6))
 
