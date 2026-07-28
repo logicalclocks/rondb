@@ -4970,6 +4970,193 @@ testMultiFragment(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 23: fragsPerWorker result equality                             */
+/*                                                                     */
+/* SQL equivalent (same as Test 18):                                   */
+/*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
+/*   FROM t18_parent p JOIN t18_child c ON c.parent_id = p.id          */
+/*   GROUP BY p.grp                                                    */
+/*                                                                     */
+/* Reuses t18 tables (2000 rows, 16 fragments, 20 groups). Runs the    */
+/* query with NdbQueryOptions::setFragsPerWorker on the root scan set  */
+/* to unset / 1 / 2 / 4 / 8 and verifies the closed-form expected      */
+/* results for every run: bundling K fragments per SPJ worker must be  */
+/* invisible in the aggregate output. Values that don't divide the     */
+/* per-node fragment count are halved by the API; 0 means unset.       */
+/* (frags_per_worker_plan.md Phase 8.)                                 */
+/* ------------------------------------------------------------------ */
+
+static int
+runTest23Query(Ndb *ndb, Uint32 fragsPerWorker,
+               std::map<Int32, std::pair<Int64, Int64>> &actual)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *parentTab = dict->getTable(T18_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T18_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  NdbQueryOptions rootOpts;
+  if (fragsPerWorker > 0) {
+    if (rootOpts.setFragsPerWorker(fragsPerWorker) != 0) {
+      printf("FAILED (setFragsPerWorker(%u))\n", fragsPerWorker);
+      qb->destroy();
+      return -1;
+    }
+  }
+  const NdbQueryTableScanOperationDef *parentOp =
+      qb->scanTable(parentTab, &rootOpts);
+  if (parentOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[grpVal] = {sumVal, cntVal};
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  return 0;
+}
+
+static int
+testFragsPerWorker(Ndb *ndb)
+{
+  printf("Test 23: fragsPerWorker result equality (unset/1/2/4/8) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T18_PARENT);
+  dict->invalidateTable(T18_CHILD);
+
+  /* 0 = option unset */
+  const Uint32 kValues[] = {0, 1, 2, 4, 8};
+  for (Uint32 i = 0; i < NDB_ARRAY_SIZE(kValues); i++) {
+    const Uint32 k = kValues[i];
+    std::map<Int32, std::pair<Int64, Int64>> actual;
+    if (runTest23Query(ndb, k, actual) != 0) {
+      printf("  (fragsPerWorker=%u)\n", k);
+      return -1;
+    }
+
+    if (actual.size() != 20) {
+      printf("FAILED (fragsPerWorker=%u: expected 20 groups, got %zu)\n",
+             k, actual.size());
+      return -1;
+    }
+    /* Group g -> SUM(val) = 1000*g + 990000, COUNT = 100 (see Test 18) */
+    for (Int32 g = 1; g <= 20; g++) {
+      auto it = actual.find(g);
+      if (it == actual.end()) {
+        printf("FAILED (fragsPerWorker=%u: missing group %d)\n", k, g);
+        return -1;
+      }
+      Int64 expectedSum = (Int64)g * 1000 + 990000;
+      if (it->second.first != expectedSum || it->second.second != 100) {
+        printf("FAILED (fragsPerWorker=%u: group %d: "
+               "expected SUM=%lld COUNT=100, got SUM=%lld COUNT=%lld)\n",
+               k, g, (long long)expectedSum,
+               (long long)it->second.first, (long long)it->second.second);
+        return -1;
+      }
+    }
+    V("  fragsPerWorker=%u: 20 groups OK\n", k);
+  }
+
+  printf("OK (identical results for all fragsPerWorker values)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test 19: Multi-fragment + eviction (ERROR_INSERT 5116)               */
 /*                                                                     */
 /* SQL equivalent:                                                     */
@@ -6044,6 +6231,16 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest14Tables(conn);
+        }
+
+        /* Test 23: fragsPerWorker result equality */
+        if (shouldRun(23)) {
+          if (createTest18Tables(conn) == 0 && insertTest18Data(conn) == 0) {
+            if (testFragsPerWorker(&ndb) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest18Tables(conn);
         }
 
         mysql_close(conn);

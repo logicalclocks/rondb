@@ -3748,6 +3748,31 @@ bool TransporterFacade::ext_hasConnectedDbNode() const {
   return false;
 }
 
+bool TransporterFacade::ext_hasConfirmedDbNode() const {
+  if (theClusterMgr == nullptr) return false;
+  for (NodeId n = 1; n < ABS_MAX_NDB_NODES; n++) {
+    const trp_node &node = theClusterMgr->theNodes[n];
+    if (!node.defined) continue;
+    if (node.m_info.m_type != NodeInfo::DB) continue;
+    if (!node.is_connected()) continue;
+    if (node.is_confirmed()) return true;
+  }
+  return false;
+}
+
+bool TransporterFacade::ext_hasStartedDbNode() const {
+  if (theClusterMgr == nullptr) return false;
+  for (NodeId n = 1; n < ABS_MAX_NDB_NODES; n++) {
+    const trp_node &node = theClusterMgr->theNodes[n];
+    if (!node.defined) continue;
+    if (node.m_info.m_type != NodeInfo::DB) continue;
+    if (!node.is_connected()) continue;
+    /* m_state is SL_NOTHING until the node reports via API_REGCONF. */
+    if (node.m_state.getStarted()) return true;
+  }
+  return false;
+}
+
 bool TransporterFacade::setupWakeup() {
   /* Ask TransporterRegistry to setup wakeup sockets */
   bool rc;

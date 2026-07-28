@@ -72,12 +72,19 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 #define DEBUG_TRANSID_AI 1
+//#define DEBUG_TRANSID_AI_DETAIL 1
 //#define DEBUG_AGGREGATION 1
 //#define DEBUG_STAR_AGG 1
 //#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_MATCH 1
 //#define DEBUG_SCAN_PARENT_ROW 1
 //#define DEBUG_CTE 1
+#define DEBUG_CTE_PHASE 1
+/* DEBUG_CTE_PHASE_VERBOSE traces every batch-completion check.  This is
+ * useful for stuck outstanding/cnt_active debugging, but too chatty for
+ * normal CTE phase tracing. */
+//#define DEBUG_CTE_PHASE_VERBOSE 1
+#define DEBUG_SCAN_HB_SEND 1
 /* DEBUG_CTE_BUILD: per-node flag dump emitted at the end of each
  * TreeNode build (typed name, m_cteId, m_bits with named flags).
  * Very verbose — one line per built node per incoming SCAN_FRAGREQ —
@@ -95,6 +102,32 @@
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CTE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CTE_PHASE
+#define DEB_CTE_PHASE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE_PHASE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CTE_PHASE_VERBOSE
+#define DEB_CTE_PHASE_VERBOSE(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE_PHASE_VERBOSE(arglist) do { } while (0)
+#endif
+
+/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
+ * Unconditionally enabled, also in release builds — grep "AGGT" in the
+ * node out-logs and diff the logger's own µs timestamps.
+ * Remove all AGGT sites when the investigation is done. */
+#define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+
+#ifdef DEBUG_SCAN_HB_SEND
+#define DEB_SCAN_HB_SEND(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SCAN_HB_SEND(arglist) do { } while (0)
 #endif
 
 /* m_cnt_active is the SPJ request's count of tree nodes still in
@@ -153,6 +186,12 @@
 #define DEB_TRANSID_AI(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_TRANSID_AI(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_TRANSID_AI_DETAIL
+#define DEB_TRANSID_AI_DETAIL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRANSID_AI_DETAIL(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -1501,14 +1540,42 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
 
     Uint32 sectionCnt = handle.m_cnt;
     Uint32 fragIdsPtrI = RNIL;
-    if (ScanFragReq::getMultiFragFlag(req->requestInfo)) {
+    /**
+     * With both MultiFrag and JoinAgg set, DBTC packs the fragId list
+     * and the aggKeys into ONE trailing section
+     * [fragCount, fragIds..., aggKeys...], since AttrInfo + optional
+     * KeyInfo would otherwise make 4 sections (a signal carries at
+     * most 3).  aggKeysReadOffset marks where the aggKeys part starts
+     * within that combined section (0 = separate sections, the
+     * pre-fragsPerWorker layout).
+     */
+    Uint32 aggKeysReadOffset = 0;
+    const bool multiFragReq = ScanFragReq::getMultiFragFlag(req->requestInfo);
+    const bool joinAggReq = ScanFragReq::getJoinAggFlag(req->requestInfo);
+    if (multiFragReq) {
       jam();
       sectionCnt--;
       fragIdsPtrI = handle.m_ptr[sectionCnt].i;
       SectionReader fragsReader(fragIdsPtrI, getSectionSegmentPool());
 
+      Uint32 fragCnt;
+      if (joinAggReq) {
+        jam();
+        /* Combined section: explicit count word first */
+        if (unlikely(!fragsReader.getWord(&fragCnt)) ||
+            unlikely(fragCnt > MAX_NDB_PARTITIONS)) {
+          jam();
+          err = DbspjErr::InvalidRequest;
+          break;
+        }
+        aggKeysReadOffset = 1 + fragCnt;
+      } else {
+        /* Pure fragId list: section size == count */
+        fragCnt = fragsReader.getSize();
+      }
+
       // Unpack into extended signal memory:
-      const Uint32 fragCnt = signal->theData[25] = fragsReader.getSize();
+      signal->theData[25] = fragCnt;
       if (unlikely(!fragsReader.getWords(&signal->theData[26], fragCnt))) {
         jam();
         err = DbspjErr::InvalidRequest;
@@ -1539,18 +1606,31 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
     Uint32 parsedCteMetaCount = 0;
 
     Uint32 aggKeysPtrI = RNIL;
-    if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
+    if (joinAggReq) {
       jam();
-      sectionCnt--;
-      aggKeysPtrI = handle.m_ptr[sectionCnt].i;
-      SectionReader reader(aggKeysPtrI, getSectionSegmentPool());
+      Uint32 aggReadPtrI;
+      if (multiFragReq) {
+        jam();
+        /* Combined section (see above); aggKeysPtrI stays RNIL so the
+         * release below frees the shared section exactly once (via
+         * fragIdsPtrI). */
+        aggReadPtrI = fragIdsPtrI;
+      } else {
+        sectionCnt--;
+        aggKeysPtrI = handle.m_ptr[sectionCnt].i;
+        aggReadPtrI = aggKeysPtrI;
+      }
+      SectionReader reader(aggReadPtrI, getSectionSegmentPool());
+      if (aggKeysReadOffset > 0) {
+        ndbrequire(reader.step(aggKeysReadOffset));
+      }
 
       /**
        * Read main aggregation [nodeId, aggStateKey] pairs until we hit
        * CTE_KEYS_MARKER or exhaust the section.
        */
       static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-      const Uint32 totalWords = reader.getSize();
+      const Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
       Uint32 wordsRead = 0;
       while (wordsRead + 2 <= totalWords) {
         Uint32 word0;
@@ -3503,6 +3583,15 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
  * execution, *must* call ::checkBatchComplete() before returning.
  */
 void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
+  DEB_CTE_PHASE_VERBOSE(
+      ("(%u) checkBatchComplete: outstanding=%u cnt_active=%u "
+       "CTE_PHASE=%d state=0x%x completed=0x%x active=0x%x suspended=0x%x",
+       instance(), requestPtr.p->m_outstanding, requestPtr.p->m_cnt_active,
+       !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+       requestPtr.p->m_state,
+       requestPtr.p->m_completed_tree_nodes.rep.data[0],
+       requestPtr.p->m_active_tree_nodes.rep.data[0],
+       requestPtr.p->m_suspended_tree_nodes.rep.data[0]));
   /* Unconditional counter trace: logged on EVERY reply handler's tail, so a
    * hang shows exactly which value m_outstanding sticks at (and which handler
    * stopped decrementing it).  The DEB_CTE below only fires once outstanding
@@ -3563,6 +3652,13 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
      */
     if (requestPtr.p->m_cnt_active != 0) {
       jam();
+      DEB_CTE_PHASE(("(%u) batchComplete: RT_CTE_PHASE next batch, "
+                     "cnt_active=%u rows=%u completed=0x%x active=0x%x",
+                     instance(),
+                     requestPtr.p->m_cnt_active,
+                     requestPtr.p->m_rows,
+                     requestPtr.p->m_completed_tree_nodes.rep.data[0],
+                     requestPtr.p->m_active_tree_nodes.rep.data[0]));
       DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE more batches, "
                "cnt_active=%u rows=%u -> restart next batch in DBSPJ",
                instance(),
@@ -3577,6 +3673,15 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
              requestPtr.p->m_outstanding,
              requestPtr.p->m_cnt_active,
              requestPtr.p->m_rows));
+    DEB_CTE_PHASE(("(%u) batchComplete: RT_CTE_PHASE complete, "
+                   "outstanding=%u cnt_active=%u rows=%u completed=0x%x "
+                   "active=0x%x",
+                   instance(),
+                   requestPtr.p->m_outstanding,
+                   requestPtr.p->m_cnt_active,
+                   requestPtr.p->m_rows,
+                   requestPtr.p->m_completed_tree_nodes.rep.data[0],
+                   requestPtr.p->m_active_tree_nodes.rep.data[0]));
     handleCtePhaseComplete(signal, requestPtr);
     return;
   }
@@ -3597,7 +3702,27 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
     jam();
 
     if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0) {
-      ndbassert(is_complete);
+      if (!is_complete) {
+        jam();
+        /*
+         * During abort, no further work will be started.  Once all
+         * outstanding signals have drained, remaining active nodes only
+         * represent scan state that was stopped by abort handling.  Mark
+         * them inactive so the request can send SCAN_FRAGREF and clean up.
+         */
+        Ptr<TreeNode> nodePtr;
+        Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+        for (list.first(nodePtr); !nodePtr.isNull(); list.next(nodePtr)) {
+          if (nodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+            jam();
+            DEC_CNT_ACTIVE(requestPtr.p, "batchComplete_abort_done",
+                           nodePtr.p->m_node_no);
+            nodePtr.p->m_state = TreeNode::TN_INACTIVE;
+          }
+        }
+        ndbassert(requestPtr.p->m_cnt_active == 0);
+        is_complete = true;
+      }
     }
 
     // Remember the active treeNodes the completed scan returned rows from
@@ -3647,6 +3772,13 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
 
           const Uint32 bs_rows = 1;
           const Uint32 bs_bytes = (org->batch_size_bytes - data.m_totalBytes);
+          /**
+           * A sorted-order root is never a MultiFrag bundle: the API
+           * forces fragsPerWorker = 1 for ordered scans, and JoinAgg
+           * queries (the only scans that may bundle > 1 root fragment
+           * per request since fragsPerWorker became configurable) never
+           * set T_SORTED_ORDER. Hence exactly one root fragment here.
+           */
           ndbassert(requestPtr.p->m_rootFragCnt == 1);
           scanFrag_send_NEXTREQ(signal, requestPtr, treeRootPtr, 1, bs_bytes,
                                 bs_rows);
@@ -3701,6 +3833,11 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
  */
 void
 Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  /* TEMPORARY fs_batch phase-timing probe — see AGGT in DbtcMain.cpp. */
+  g_eventLogger->info("AGGT(%u) SPJ agg self-continue request=%u rows=%u "
+                      "outstanding=%u",
+                      instance(), requestPtr.i, requestPtr.p->m_rows,
+                      requestPtr.p->m_outstanding);
   cleanupBatch(requestPtr, /*done=*/false);
 
   /**
@@ -3713,12 +3850,29 @@ Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
     if (NdbTick_Elapsed(requestPtr.p->m_lastHbrepTicks, now).milliSec()
             >= 20) {
       jam();
+      Uint32 save[4];
+      save[0] = signal->theData[0];
+      save[1] = signal->theData[1];
+      save[2] = signal->theData[2];
+      save[3] = signal->getLength();
+
       signal->theData[0] = requestPtr.p->m_senderData;
       signal->theData[1] = requestPtr.p->m_transId[0];
       signal->theData[2] = requestPtr.p->m_transId[1];
       sendSignal(requestPtr.p->m_senderRef, GSN_SCAN_HBREP, signal, 3,
                  JBB);
       requestPtr.p->m_lastHbrepTicks = now;
+      DEB_SCAN_HB_SEND(
+          ("(%u)DBSPJ send SCAN_HBREP next-batch: senderRef=0x%x "
+           "senderData=%u transid=(0x%x,0x%x) request=%u rows=%u",
+           instance(), requestPtr.p->m_senderRef,
+           requestPtr.p->m_senderData, requestPtr.p->m_transId[0],
+           requestPtr.p->m_transId[1], requestPtr.i,
+           requestPtr.p->m_rows));
+      signal->theData[0] = save[0];
+      signal->theData[1] = save[1];
+      signal->theData[2] = save[2];
+      signal->setLength(save[3]);
     }
   }
 
@@ -4692,6 +4846,13 @@ void Dbspj::execSCAN_HBREP(Signal *signal) {
   signal->theData[0] = requestPtr.p->m_senderData;
   signal->theData[1] = transid1;
   signal->theData[2] = transid2;
+  DEB_SCAN_HB_SEND(
+      ("(%u)DBSPJ forward SCAN_HBREP: fromRef=0x%x fromSenderData=%u "
+       "toRef=0x%x toSenderData=%u transid=(0x%x,0x%x) request=%u "
+       "treeNode=%u scanFragHandle=%u",
+       instance(), senderRef, senderData, ref, requestPtr.p->m_senderData,
+       transid1, transid2, requestPtr.i, treeNodePtr.p->m_node_no,
+       scanFragHandlePtr.i));
   sendSignal(ref, GSN_SCAN_HBREP, signal, 3, JBB);
 }
 
@@ -4941,8 +5102,12 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   if (unlikely(
           !(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI))) {
     jam();
-    DEB_TRANSID_AI(("(%u) unexpected execTRANSID_AI node: %u, requestPtrI: %u",
-      instance(), treeNodePtr.p->m_node_no, requestPtr.i));
+    DEB_TRANSID_AI(("(%u) unexpected execTRANSID_AI node: %u, requestPtrI: %u"
+                    ", bits: 0x%x",
+      instance(),
+      treeNodePtr.p->m_node_no,
+      requestPtr.i,
+      treeNodePtr.p->m_bits));
     if (signal->getNoOfSections() > 0) {
       SectionHandle handle(this, signal);
       releaseSections(handle);
@@ -4950,7 +5115,7 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     return;
   }
 
-  DEB_TRANSID_AI(("(%u) execTRANSID_AI node: %u, requestPtrI: %u",
+  DEB_TRANSID_AI_DETAIL(("(%u) execTRANSID_AI node: %u, requestPtrI: %u",
     instance(), treeNodePtr.p->m_node_no, requestPtr.i));
   DEBUG("execTRANSID_AI"
         << ", node: " << treeNodePtr.p->m_node_no
@@ -4982,7 +5147,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     linearPtr.p = m_buffer1;
     linearPtr.sz = dataPtr.sz;
     releaseSections(handle);
-    DEB_TRANSID_AI(("(%u) Dbspj::TRANSID_AI: len: %u", instance(), dataPtr.sz));
+    DEB_TRANSID_AI_DETAIL(("(%u) Dbspj::TRANSID_AI: len: %u",
+      instance(), dataPtr.sz));
   }
   jamDataDebug(linearPtr.sz);
 
@@ -6733,7 +6899,27 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       cnt = 1;
     }
 
-    Uint32 ref = numberToRef(DBLQH, targetOwnerInstance, targetNodeId);
+    /* CTE_LOOKUP_REQ may execute on any query worker: the source CTE
+     * hash table is immutable once CTE_READY, the probe hashes in the
+     * executing thread's xfrm scratch (D26), and an agg feed lands in
+     * the executing thread's per-thread interpreter (MUTEX_FREE),
+     * merged at the target's COMPLETE.  Distribute across the owner
+     * LDM's round-robin group instead of serializing every probe on
+     * the owner instance: local sends pick a worker via
+     * get_lqhkeyreq_ref (as JOIN_AGG_NULL_ROW_REQ does), remote sends
+     * address V_QUERY so the receiver's Trpman::distribute_signal
+     * picks the worker (as LQHKEYREQ does).  Owner pinning remains
+     * for the state-mutating signals (JOIN_AGG_COMPLETE /
+     * REDISTRIBUTE / RELEASE). */
+    Uint32 ref;
+    if (targetNodeId == getOwnNodeId()) {
+      jam();
+      ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle,
+                              targetOwnerInstance);
+    } else {
+      jam();
+      ref = numberToRef(V_QUERY, targetOwnerInstance, targetNodeId);
+    }
     DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
              "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x "
              "resultData=0x%x rootResultData=0x%x cnt=%u joinAgg=%u",
@@ -6809,9 +6995,31 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
   // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
   // outstanding results mismatch.
-  // Skip for aggregate leaf (result fed to aggregation) and for nodes
-  // inside CTE subtrees (result feeds enclosing CTE's aggregator, not API).
-  if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+  //
+  // Skip for requests with a MAIN aggregation program.  A join with
+  // non-clear m_aggNodes IS an aggregate join: m_aggNodes is populated
+  // only from the main [nodeId, aggStateKey] pairs (aggregating CTE
+  // bodies never set it), so it is non-clear exactly when the main
+  // SELECT aggregates.  T_AGGREGATE_LEAF is the wrong test for that:
+  // it only marks the aggregation FEED POINT — the one op carrying the
+  // aggregation program — while an aggregate join can have tree nodes
+  // that are not T_AGGREGATE_LEAF, e.g. an internal CTE_LOOKUP whose
+  // columns reach the leaf's feed via linked projections.  Rows of
+  // such nodes never reach the API either, so counting them here
+  // (the old !T_AGGREGATE_LEAF check did) inflates m_rows with rows
+  // the API will never see.
+  //
+  // In an aggregate join the API receives nothing per batch, and the
+  // same m_aggNodes rule is applied in scanFrag_execSCAN_FRAGCONF.  A
+  // non-zero m_rows would defeat the handleJoinAggNextBatch()
+  // self-continue in batchComplete() and emit a mid-fragment
+  // SCAN_FRAGCONF that DBTC must not act on — the API never gets an
+  // intermediate SCAN_TABCONF for such scans, so DBTC would park the
+  // fragment in DELIVERED with no possible continuation (query hang).
+  //
+  // Also skip for nodes inside CTE subtrees (result feeds the
+  // enclosing CTE's aggregator, not the API).
+  if (requestPtr.p->m_aggNodes.isclear() &&
       treeNodePtr.p->m_cteId == RNIL) {
     requestPtr.p->m_rows++;
   }
@@ -7433,6 +7641,15 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * table scans (scanFrag_start) are different: each LDM instance
    * scans its own local fragment partition. */
   ndbrequire(m_numDataNodes > 0);
+  /* This virtual-fragment -> data-node mapping keys on the request's
+   * single m_rootFragId and assumes exactly one root fragment per
+   * request: a fragsPerWorker > 1 bundle would make the set of
+   * m_rootFragId values (first fragId of each chunk) fail to cover
+   * 0..numDataNodes-1, silently skipping CTE partitions.  The API
+   * therefore pins fragsPerWorker = 1 for any query containing a
+   * CTE_SCAN (scanCte) operation — only CTE_LOOKUP-probed CTEs may
+   * bundle.  Tripwire: */
+  ndbassert(requestPtr.p->m_rootFragCnt <= 1);
   if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
     jam();
     DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
@@ -7984,6 +8201,16 @@ void Dbspj::handleCtePhaseComplete(Signal *signal, Ptr<Request> requestPtr) {
   rep->senderRef = reference();
   rep->senderData = requestPtr.p->m_senderData;
   rep->phase = requestPtr.p->m_cteCurrentPhase;
+  rep->transId1 = requestPtr.p->m_transId[0];
+  rep->transId2 = requestPtr.p->m_transId[1];
+  DEB_CTE_PHASE(("(%u)DBSPJ send CTE_PHASE_COMPLETE_REP: "
+                 "senderData=%u phase=%u transid=(0x%x,0x%x) outstanding=%u "
+                 "cnt_active=%u completed=0x%x active=0x%x",
+                 instance(), rep->senderData, rep->phase,
+                 rep->transId1, rep->transId2,
+                 requestPtr.p->m_outstanding, requestPtr.p->m_cnt_active,
+                 requestPtr.p->m_completed_tree_nodes.rep.data[0],
+                 requestPtr.p->m_active_tree_nodes.rep.data[0]));
   sendSignal(requestPtr.p->m_senderRef, GSN_CTE_PHASE_COMPLETE_REP,
              signal, CtePhaseCompleteRep::SignalLength, JBB);
 }
@@ -10745,15 +10972,17 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
     } else if (ctx.m_cteSubtreeRemaining > 0 &&
                !(treeBits & DABits::NI_HAS_PARENT)) {
       /**
-       * CTE root scan — scan exactly the same single fragment as the main
+       * CTE root scan — scan exactly the same fragment set as the main
        * query root scan.  Without this, each DBSPJ instance would ask DIH
        * for ALL fragments of the CTE source table, producing duplicate
        * aggregation into the same DBLQH hash table and wrong results.
        *
        * A CTE executes the same way as a normal aggregate query: DBTC
-       * distributes fragments across DBSPJ instances via SCAN_FRAGREQ,
-       * each instance scans one fragment.  The CTE root scan reuses the
-       * fragment that DBTC assigned to this instance (m_rootFragId).
+       * distributes fragments across DBSPJ instances via SCAN_FRAGREQ.
+       * Without fragsPerWorker bundling each instance scans one fragment
+       * (m_rootFragId); with MultiFrag (fragsPerWorker > 1) the request
+       * carries a list of node-local fragIds and the CTE body must scan
+       * all of them, mirroring the main-root MultiFrag branch above.
        *
        * Only the CTE root scan (no parent) is affected.  Child scans
        * within the CTE subtree (NI_HAS_PARENT set) still need the
@@ -10774,37 +11003,80 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
       data.m_null_row_outstanding = 0;
       data.m_agg_range_cnt = 0;
 
+      /* CTE subtrees build before the main query root consumes the
+       * start_signal, so the root REQuest (and the MultiFrag fragId list
+       * unpacked into extended signal memory by execSCAN_FRAGREQ) is
+       * still available here. */
+      ndbassert(ctx.m_start_signal != NULL);
+      const ScanFragReq *const rootReq =
+          reinterpret_cast<const ScanFragReq *>(
+              ctx.m_start_signal->getDataPtr());
+
       {
         Local_ScanFragHandle_list list(m_scanfraghandle_pool, data.m_fragments);
-        Ptr<ScanFragHandle> fragPtr;
-        data.m_fragCount = 1;
 
-        const Uint32 ref = numberToRef(
-            get_query_block_no(getOwnNodeId()),
-            getInstance(node->tableId, rootFragId), getOwnNodeId());
+        if (ScanFragReq::getMultiFragFlag(rootReq->requestInfo)) {
+          jam();
+          Uint32 variableLen = 25;
+          data.m_fragCount = ctx.m_start_signal->theData[variableLen++];
+          for (Uint32 i = 0; i < data.m_fragCount; i++) {
+            jam();
+            Ptr<ScanFragHandle> fragPtr;
+            const Uint32 fragId =
+                ctx.m_start_signal->theData[variableLen++];
+            const Uint32 ref = numberToRef(
+                get_query_block_no(getOwnNodeId()),
+                getInstance(node->tableId, fragId), getOwnNodeId());
 
-        if (!ERROR_INSERTED_CLEAR(17004) &&
-            likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
-                                               fragPtr))) {
-          jam();
-          fragPtr.p->init(rootFragId, readBackup);
-          fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
-          fragPtr.p->m_ref = ref;
-          fragPtr.p->m_next_ref = ref;
-          list.addLast(fragPtr);
-          insertGuardedPtr(requestPtr, fragPtr);
-        } else {
-          jam();
-          err = DbspjErr::OutOfQueryMemory;
-          return err;
+            if (!ERROR_INSERTED_CLEAR(17004) &&
+                likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
+                                                   fragPtr))) {
+              fragPtr.p->init(fragId, readBackup);
+              fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
+              fragPtr.p->m_ref = ref;
+              fragPtr.p->m_next_ref = ref;
+              list.addLast(fragPtr);
+              insertGuardedPtr(requestPtr, fragPtr);
+            } else {
+              jam();
+              err = DbspjErr::OutOfQueryMemory;
+              return err;
+            }
+          }
+        } else  // 'not getMultiFragFlag(rootReq->requestInfo)'
+        {
+          Ptr<ScanFragHandle> fragPtr;
+          data.m_fragCount = 1;
+
+          const Uint32 ref = numberToRef(
+              get_query_block_no(getOwnNodeId()),
+              getInstance(node->tableId, rootFragId), getOwnNodeId());
+
+          if (!ERROR_INSERTED_CLEAR(17004) &&
+              likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
+                                                 fragPtr))) {
+            jam();
+            fragPtr.p->init(rootFragId, readBackup);
+            fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
+            fragPtr.p->m_ref = ref;
+            fragPtr.p->m_next_ref = ref;
+            list.addLast(fragPtr);
+            insertGuardedPtr(requestPtr, fragPtr);
+          } else {
+            jam();
+            err = DbspjErr::OutOfQueryMemory;
+            return err;
+          }
         }
       }
 
-      /* Set m_rootFragCnt for CTE compound queries. Only set
-       * once (first CTE root scan). CTE scans use single fragment
-       * per DBSPJ instance, so m_rootFragCnt = 1. */
+      /* Set m_rootFragCnt for CTE compound queries. Only set once
+       * (first CTE root scan). Matches this request's fragment count:
+       * 1 unless fragsPerWorker bundling is in effect (the main query
+       * root, built after the CTE subtrees, sets the same count from
+       * the same MultiFrag list). */
       if (requestPtr.p->m_rootFragCnt == 0) {
-        requestPtr.p->m_rootFragCnt = 1;
+        requestPtr.p->m_rootFragCnt = data.m_fragCount;
       }
 
       dst->tableId = node->tableId;
@@ -12786,6 +13058,17 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
        * is the last request in which case they can be freed. If
        * the last request is a local send then a copy is avoided.
        */
+      AGGT(("AGGT(%u) SPJ frag send node=%u tab=%u frag=%u ref=0x%x "
+            "aggFlag=%u cte=%u aggLeaf=%u indirect=%u aggKey=0x%x "
+            "bsRows=%u bsBytes=%u",
+            instance(), treeNodePtr.p->m_node_no, req->tableId,
+            fragPtr.p->m_fragId, ref,
+            ScanFragReq::getJoinAggFlag(req->requestInfo),
+            !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN),
+            !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
+            !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_INDIRECT_FEED),
+            agg_extra ? req->variableData[var_index + 2] : 0,
+            req->batch_size_rows, req->batch_size_bytes));
       {
         jam();
         sendBatchedFragmentedSignal(

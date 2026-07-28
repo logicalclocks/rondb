@@ -1,0 +1,148 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== fpw-1: fs_batch shape, baseline (no FRAGS_PER_WORKER) ===
+== Query ==
+WITH cust_features AS (
+SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_shippriority) AS prio_sum,
+MAX(o_orderdate) AS last_order
+FROM orders WHERE o_custkey >= 100 AND o_custkey < 200
+GROUP BY o_custkey)
+SELECT c.c_custkey, COUNT(*), SUM(cust_features.order_cnt),
+SUM(cust_features.prio_sum), MAX(cust_features.last_order)
+FROM customer AS c JOIN cust_features ON cust_features.k = c.c_custkey
+WHERE c.c_custkey >= 100 AND c.c_custkey < 200
+GROUP BY c.c_custkey;
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-2: fs_batch shape, FRAGS_PER_WORKER = 1 ===
+== Query ==
+WITH cust_features AS (
+SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_shippriority) AS prio_sum,
+MAX(o_orderdate) AS last_order
+FROM orders WHERE o_custkey >= 100 AND o_custkey < 200
+GROUP BY o_custkey)
+SELECT c.c_custkey, COUNT(*), SUM(cust_features.order_cnt),
+SUM(cust_features.prio_sum), MAX(cust_features.last_order)
+FROM customer AS c JOIN cust_features ON cust_features.k = c.c_custkey
+WHERE c.c_custkey >= 100 AND c.c_custkey < 200
+GROUP BY c.c_custkey;
+RonSQL-side prefix: FRAGS_PER_WORKER = 1
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-3: fs_batch shape, FRAGS_PER_WORKER = 2 ===
+== Query ==
+WITH cust_features AS (
+SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_shippriority) AS prio_sum,
+MAX(o_orderdate) AS last_order
+FROM orders WHERE o_custkey >= 100 AND o_custkey < 200
+GROUP BY o_custkey)
+SELECT c.c_custkey, COUNT(*), SUM(cust_features.order_cnt),
+SUM(cust_features.prio_sum), MAX(cust_features.last_order)
+FROM customer AS c JOIN cust_features ON cust_features.k = c.c_custkey
+WHERE c.c_custkey >= 100 AND c.c_custkey < 200
+GROUP BY c.c_custkey;
+RonSQL-side prefix: FRAGS_PER_WORKER = 2
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-4: fs_batch shape, FRAGS_PER_WORKER = 4 ===
+== Query ==
+WITH cust_features AS (
+SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_shippriority) AS prio_sum,
+MAX(o_orderdate) AS last_order
+FROM orders WHERE o_custkey >= 100 AND o_custkey < 200
+GROUP BY o_custkey)
+SELECT c.c_custkey, COUNT(*), SUM(cust_features.order_cnt),
+SUM(cust_features.prio_sum), MAX(cust_features.last_order)
+FROM customer AS c JOIN cust_features ON cust_features.k = c.c_custkey
+WHERE c.c_custkey >= 100 AND c.c_custkey < 200
+GROUP BY c.c_custkey;
+RonSQL-side prefix: FRAGS_PER_WORKER = 4
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-5: non-CTE join aggregate, FRAGS_PER_WORKER = 4 ===
+== Query ==
+SELECT c.c_nationkey, COUNT(*), SUM(o.o_shippriority)
+FROM customer AS c JOIN orders AS o ON o.o_custkey = c.c_custkey
+GROUP BY c.c_nationkey;
+RonSQL-side prefix: FRAGS_PER_WORKER = 4
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-6: root-lookup CTE query (WHERE pk = const), FRAGS_PER_WORKER = 4 ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, SUM(sums.t)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey
+WHERE c.c_custkey = 42
+GROUP BY c.c_custkey;
+RonSQL-side prefix: FRAGS_PER_WORKER = 4
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-7: scanCte main root (pinned to 1), FRAGS_PER_WORKER = 4 ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders WHERE o_custkey >= 100 AND o_custkey < 200
+GROUP BY o_custkey)
+SELECT MAX(sums.t), COUNT(*)
+FROM sums;
+RonSQL-side prefix: FRAGS_PER_WORKER = 4
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== fpw-8: EXPLAIN prints the requested value ===
+== Explain Query ==
+FRAGS_PER_WORKER = 4 (requested
+
+=== fpw-9: FRAGS_PER_WORKER = 0 is a parse error ===
+FRAGS_PER_WORKER must be a positive integer

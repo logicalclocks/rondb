@@ -184,6 +184,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_WITH
 %token T_KW_LEFT T_KW_OUTER
 %token T_FORCE T_USE T_IGNORE T_INDEX T_KEY
+%token T_FRAGS_PER_WORKER
 
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
@@ -234,6 +235,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_COMMA
 
 %type<bval> explain_opt
+%type<bival> frags_per_worker_opt
 %type<str> identifier
 %type<str_c> identifier_c
 %type<groupby_cols> groupby_opt groupby_cols groupby_col
@@ -261,23 +263,24 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %%
 
 selectstatement:
-  explain_opt cte_opt T_SELECT outputlist from_clause where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
+  explain_opt frags_per_worker_opt cte_opt T_SELECT outputlist from_clause where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
-    context->ast_root.cte_list = $2.head;
-    context->ast_root.outputs = $4.head;
-    context->ast_root.root_table = $5.root_table;
-    if ($5.root_table != NULL) {
-      context->ast_root.table = $5.root_table->name;
+    context->ast_root.frags_per_worker = $2;
+    context->ast_root.cte_list = $3.head;
+    context->ast_root.outputs = $5.head;
+    context->ast_root.root_table = $6.root_table;
+    if ($6.root_table != NULL) {
+      context->ast_root.table = $6.root_table->name;
     }
-    if ($5.joins != NULL) {
-      context->ast_root.joins = $5.joins;
+    if ($6.joins != NULL) {
+      context->ast_root.joins = $6.joins;
     }
-    context->ast_root.where_expression = $6;
-    context->ast_root.groupby_columns = $7;
-    context->ast_root.having_expression = $8;
-    context->ast_root.orderby_columns = $9;
-    context->ast_root.limit = $10;
+    context->ast_root.where_expression = $7;
+    context->ast_root.groupby_columns = $8;
+    context->ast_root.having_expression = $9;
+    context->ast_root.orderby_columns = $10;
+    context->ast_root.limit = $11;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -337,6 +340,9 @@ cte_def:
     $$->stmt->having_expression = $12;
     $$->stmt->orderby_columns = $13;
     $$->stmt->limit = $14;
+    /* alloc_exc does not run default member initializers; the
+     * FRAGS_PER_WORKER hint is main-statement-only. */
+    $$->stmt->frags_per_worker = 0;
     $$->stmt->sql_begin = (@5).begin;
     $$->stmt->sql_end = (@14).end;
     $$->next = NULL;
@@ -345,6 +351,26 @@ cte_def:
 explain_opt:
   %empty                                { $$ = false; }
 | T_EXPLAIN                             { $$ = true; }
+
+/* Statement-level execution hint: bundle N root fragments per SPJ worker
+ * for aggregate pushed queries (frags_per_worker_plan.md).  0 = unset.
+ * The NDB API normalizes (power of two, cap 8) and clamps the value;
+ * non-aggregate queries and scanCte-containing queries ignore it. */
+frags_per_worker_opt:
+  %empty                                { $$ = 0; }
+| T_FRAGS_PER_WORKER T_EQUALS T_INT
+  {
+    if ($3 < 1)
+    {
+      context->set_err_state(
+        RonSQLPreparer::ErrState::INVALID_FRAGS_PER_WORKER,
+        (@$).begin,
+        (@$).end - (@$).begin
+      );
+      YYERROR;
+    }
+    $$ = $3;
+  }
 
 /* The outputlist rule is left-recursive in order to save both memory and cpu
  * cycles. Naively, this would produce a linked list in reverse order, so we use
@@ -742,6 +768,9 @@ subquery:
     $$->having_expression = $9;
     $$->orderby_columns = $10;
     $$->limit = $11;
+    /* alloc_exc does not run default member initializers; the
+     * FRAGS_PER_WORKER hint is main-statement-only. */
+    $$->frags_per_worker = 0;
     $$->sql_begin = (@2).begin;
     $$->sql_end = (@11).end;
   }

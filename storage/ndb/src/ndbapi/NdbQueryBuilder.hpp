@@ -267,6 +267,25 @@ class NdbQueryOptions {
    */
   int setMaxRows(Uint32 maxRows);
 
+  /**
+   * Hint: bundle this many root fragments into each SPJ worker
+   * (SCAN_FRAGREQ) for an aggregate pushed query. Fewer workers means
+   * fewer DBSPJ requests and API receivers, reducing the per-fragment
+   * fixed cost of pushed aggregation; the fragments of a bundle are
+   * still scanned by their owning LDM threads.
+   *
+   * Only meaningful on the root scan operation of an aggregate query;
+   * silently ignored for non-aggregate queries, lookups, ordered or
+   * pruned scans. The value is rounded down to a power of two, capped
+   * at 8, and clamped at execute time to a divisor of the number of
+   * fragments per data node. Forced to 1 when any data node runs a
+   * version without ndbd_support_joinagg_frags_per_worker().
+   *
+   * @param frags Fragments per worker (0 = unset, meaning 1).
+   * @return 0 if ok, -1 in case of error.
+   */
+  int setFragsPerWorker(Uint32 frags);
+
   int setParameters(const NdbQueryOperand *const parameters[]);
 
   const NdbQueryOptionsImpl &getImpl() const;

@@ -484,6 +484,115 @@ JOIN reviews r ON VECTOR_SEARCH(r.embedding, p.query_vector, 10);
 - Aggregation over vector search results (e.g., AVG similarity score
   per product category)
 
+### Future: Complete RonSQL Join-Root Index Scan Follow-Ups (Priority: Medium)
+
+Commit `82729085179` added scan-config-selected ordered-index scans for
+main-query roots in join queries. The committed envelope is useful but still
+root-focused; a review on July 2026 found the following follow-up items.
+
+**Correctness / optimizer TODOs:**
+
+1. **Fix composite root bound discovery when residual predicates appear first.**
+   `build_scan_config_candidates()` currently sets `later_columns_blocked` when
+   a condition does not match the current index column. This makes composite
+   bound discovery sensitive to WHERE conjunct order. Example:
+
+   ```sql
+   WHERE residual_col > 0 AND indexed_a = 1 AND indexed_b >= 2
+   ```
+
+   On index `(indexed_a, indexed_b)`, the residual conjunct can prevent the
+   second bound from being discovered. The block should happen only after all
+   conjuncts have been scanned and no usable bound was found for the current
+   index column.
+
+2. **Discover constant bounds for non-root scans.**
+   Non-root `INDEX_SCAN` operations are selected only from join-key columns by
+   `QueryPlanner::findOrderedIndex()`. Child-local WHERE predicates are emitted
+   as interpreted filters. Missing shape:
+
+   ```sql
+   ... JOIN orders o ON o.o_custkey = c.c_custkey
+   WHERE o.o_orderdate >= '1998-01-01'
+   ```
+
+   With an ordered index `(o_custkey, o_orderdate)`, the date predicate should
+   become a constant range bound after the linked join-key prefix instead of a
+   post-scan filter.
+
+3. **Choose the best child ordered index, not the first matching prefix.**
+   If both `(join_key)` and `(join_key, filter_col)` exist,
+   `findOrderedIndex()` can return the shorter first match and lose the
+   opportunity to bind the constant child predicate. Child index selection needs
+   scoring similar to scan-config selection, using join-key coverage plus
+   additional linked or constant bounds.
+
+4. **Enable multi-op CTE body root index scans.**
+   `build_cte_scopes()` still calls `select_root_scan_config()` only when
+   `scope->join_plan.num_ops == 1`. Multi-op CTE bodies should use the same
+   root selection once they pass only `scope.join_where_ce[0]`, not the whole
+   CTE WHERE.
+
+5. **Tighten plan regression tests.**
+   `body_main_root_index.inc` currently keeps EXPLAIN greps non-fatal with
+   `|| true`. Once the plan output is stable, make these assertions hard
+   failures so a regression back to TABLE_SCAN is caught.
+
+**Implementation notes:**
+
+- Add per-op scan-config metadata before supporting child local bounds; the
+  current `body_scan_config` state is root-scoped.
+- Extend child bound representation to handle constant bounds as well as the
+  existing parent-linked `RangeBound`s.
+- Revisit joined-table index hints after child scan-config selection exists:
+  either support `FORCE/USE/IGNORE INDEX` on joined tables or reject with a
+  message that reflects the remaining limitation.
+- Add MTR coverage for reordered residual/root composite predicates,
+  child composite constant bounds, child best-index choice, and multi-op CTE
+  body root bounds.
+
+### Future: Reduce Fixed Overhead for Small-Range CTE Queries (RonSQL) (Priority: Low)
+
+Observed July 2026 with the `fs_batch` benchmark (customer JOIN aggregating
+CTE over orders, 100-key range, ~1,128 orders rows): even with the root
+INDEX_SCAN fix (commit 82729085179), MySQL is ~2x faster using ~2x less CPU.
+Both engines push the two scans identically (pushed condition + MRR); the gap
+is entirely the join/aggregation execution locus. At this selectivity the
+query is overhead-bound — the distributed CTE machinery has a fixed cost
+floor that MySQL's "ship ~1,200 rows to mysqld, join via in-memory temp
+table" plan doesn't pay:
+
+1. **Two serialized phases with a cluster-wide barrier** — JOIN_AGG_SETUP to
+   every node, full CTE materialisation on all fragments, group merge +
+   redistribute, JOIN_AGG_COMPLETE round trips, and only then the main scan.
+2. **Per-row CTE_LOOKUP signaling** — one signal chain per probe row, routed
+   (often cross-node) to the group's hash-owner, vs a local hashtable probe
+   in mysqld.
+3. **Fan-out fixed costs** — aggregate queries force `m_fragsPerWorker = 1`;
+   every LDM on every node instantiates aggregator state (hash table, chunk
+   allocator, ~8 KB query memory) for source CTE agg + target CTE state +
+   main agg, then tears it down at RELEASE — the 2x CPU.
+4. **Per-request envelope** — RDRS HTTP/JSON plus full parse → prepare →
+   NdbQueryBuilder build per execution.
+
+The pushdown's value is proportional to rows *not shipped*; at ~1,200 rows
+there is nothing to save while the orchestration still costs full price.
+The crossover should invert at larger ranges (10k–100k keys) — verify with
+widened `fs_batch` spans or the `offline_fs_*` variants, and use the
+phase-timing instrumentation planned in `ronsql_cli_benchmarks.md` to split
+barrier latency from per-row signaling.
+
+**Candidate optimizations (real projects, not tweaks):**
+- **Skip/short-circuit the redistribute round** when the CTE produced few
+  enough groups that shipping them all directly to the DBTC-co-located owner
+  is cheaper — the scalar path from Phase I.17e already has the
+  `keyLen == 0` JoinAggRedistributeReq variant to build on.
+- **Batch CTE_LOOKUPs per owner node** instead of one signal chain per probe
+  row.
+
+Only worth pursuing if the small-range interactive case matters for the
+feature-store workload.
+
 ### 5b. 64-bit rowsExamined (Priority: Low)
 
 For very large joins (millions of leaf rows), the 32-bit rowsExamined

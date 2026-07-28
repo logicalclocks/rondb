@@ -262,6 +262,9 @@ struct SelectStatement
   struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
+  Int64 frags_per_worker = 0; // FRAGS_PER_WORKER hint: root fragments bundled
+                              // per SPJ worker for aggregate pushed queries.
+                              // 0 = unset; the NDB API normalizes and clamps.
   Int32 sentinel_agg_slot = -1; // Hidden COUNT slot for cross-table filter
                                 // semantics: groups where this is 0 had no
                                 // rows pass the filter and must be suppressed.

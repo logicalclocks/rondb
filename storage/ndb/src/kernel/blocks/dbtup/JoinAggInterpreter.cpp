@@ -665,8 +665,12 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
   }
   m_processed_rows++;
-  DEB_CTE(("(0x%p)->m_processed_rows = %llu, ProcessRec",
-    this, m_processed_rows));
+#ifdef DEBUG_CTE
+  if ((m_processed_rows % 128) == 0) {
+    DEB_CTE(("(0x%p)->m_processed_rows = %llu, ProcessRec",
+      this, m_processed_rows));
+  }
+#endif
   return 0;
 }
 

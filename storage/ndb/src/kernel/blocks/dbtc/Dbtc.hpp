@@ -172,6 +172,15 @@
 #define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 
+/**
+ * A CTE JoinAgg main scan (CTEs + main aggregation program) received a
+ * mid-fragment SCAN_FRAGCONF.  DBSPJ owns batch continuation for such
+ * scans (handleJoinAggNextBatch); DBTC receiving one means broken row
+ * accounting upstream.  Same error family as DBLQH's
+ * ZCTE_AGG_FEED_SELF_REFERENCE (1269).
+ */
+#define ZCTE_AGG_BATCH_PROTOCOL_ERROR 1270
+
 // ----------------------------------------
 // Error Codes for transactions
 // ----------------------------------------
@@ -1894,6 +1903,65 @@ class Dbtc : public SimulatedBlock {
   typedef LocalDLList<ScanFragRec_pool> Local_ScanFragRec_dllist;
 
   /**
+   * Stable DBTC-owned handle for a DBSPJ CTE request.
+   *
+   * DBSPJ currently uses the originating SCAN_FRAGREQ senderData as
+   * Request::m_senderData and echoes it in CTE phase control signals.
+   * That value is a ScanFragRec pool index today, but this record treats
+   * it as an opaque DBSPJ request key so CTE coordination is not tied to
+   * ScanFragRec lifetime.
+   *
+   * The active/complete masks are reserved for future parallel CTE
+   * scheduling where multiple CTE groups may be in flight independently.
+   */
+  struct CteScanFragHandle {
+    static constexpr Uint32 TYPE_ID = RT_DBTC_CTE_SCAN_FRAG_HANDLE;
+
+    CteScanFragHandle()
+        : m_magic(Magic::make(TYPE_ID)),
+          nextList(RNIL),
+          nextHash(RNIL),
+          prevHash(RNIL),
+          m_scanFragPtrI(RNIL),
+          m_dbspjRef(0),
+          m_scanPtrI(RNIL),
+          m_transId1(0),
+          m_transId2(0),
+          m_activeMask(0),
+          m_lastCompletePhase(RNIL),
+          m_completeMask(0) {}
+
+    Uint32 m_magic;
+    Uint32 nextList;
+    Uint32 nextHash;
+    Uint32 prevHash;
+    Uint32 m_scanFragPtrI;
+    BlockReference m_dbspjRef;
+    Uint32 m_scanPtrI;
+    Uint32 m_transId1;
+    Uint32 m_transId2;
+    Uint32 m_activeMask;
+    Uint32 m_lastCompletePhase;
+    Uint32 m_completeMask;
+
+    Uint32 hashValue() const {
+      return m_scanFragPtrI ^ m_transId1 ^ m_transId2;
+    }
+    bool equal(const CteScanFragHandle &handle) const {
+      return m_scanFragPtrI == handle.m_scanFragPtrI &&
+             m_transId1 == handle.m_transId1 &&
+             m_transId2 == handle.m_transId2;
+    }
+  };
+  typedef Ptr<CteScanFragHandle> CteScanFragHandlePtr;
+  typedef TransientPool<CteScanFragHandle> CteScanFragHandle_pool;
+  static constexpr Uint32 DBTC_CTE_SCAN_FRAG_HANDLE_TRANSIENT_POOL_INDEX = 16;
+  typedef SLFifoList<CteScanFragHandle_pool> CteScanFragHandle_list;
+  typedef LocalSLFifoList<CteScanFragHandle_pool>
+      Local_CteScanFragHandle_list;
+  typedef DLHashTable<CteScanFragHandle_pool> CteScanFragHandle_hash;
+
+  /**
    * Each scan allocates one ScanRecord to store information
    * about the current scan
    *
@@ -2062,6 +2130,14 @@ class Dbtc : public SimulatedBlock {
     bool m_hasMainAggProgram;      // True if main query has an agg program
     bool m_aggPhaseFailed;         // Error received during current agg phase
     Uint32 m_aggErrorCode;         // Error code from first failure
+    /**
+     * Root fragments bundled per SPJ worker (SCAN_FRAGREQ) for JoinAgg
+     * queries. Decoded from SCAN_TABREQ storedProcId bits 16-17
+     * (ScanTabReq::getFragsPerWorker); 1 unless the API opted in to
+     * multi-fragment bundling. Drives the chunked SPJ-instance
+     * assignment in sendDihGetNodesLab.
+     */
+    Uint32 m_fragsPerWorker;
 
     /**
      * Per-node join agg state, dynamically allocated via
@@ -2110,6 +2186,7 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
 
     // CTE COMPLETE coordination (Step 3)
+    CteScanFragHandle_list::Head m_cteScanFragHandles;
     Uint32 m_cteScanReportsExpected;  // DBSPJ instances that will report
     Uint32 m_cteScanReportsReceived;  // CTE_SCAN_COMPLETE_REPs received
 
@@ -2548,6 +2625,15 @@ class Dbtc : public SimulatedBlock {
   bool sendScanFragReq(Signal *, ScanRecordPtr, ScanFragRecPtr,
                        ScanFragLocationPtr &fragLocationPtr,
                        ApiConnectRecordPtr const apiConnectptr);
+  bool registerCteScanFragHandle(ScanRecordPtr, ScanFragRecPtr,
+                                 ApiConnectRecordPtr const);
+  bool getCteScanFragForTimer(ScanRecordPtr, CteScanFragHandlePtr,
+                              ScanFragRecPtr &);
+  void stopCteScanFragTimer(ScanRecordPtr, CteScanFragHandlePtr);
+  void startCteScanFragTimer(ScanRecordPtr, CteScanFragHandlePtr,
+                             ApiConnectRecordPtr const);
+  bool isCteScanFragTimerStopped(ScanRecordPtr, ScanFragRecPtr);
+
   void sendScanTabConf(Signal* signal, ScanRecordPtr, ApiConnectRecordPtr);
   void send_close_scan(Signal*, ScanFragRecPtr, const ApiConnectRecordPtr);
   void close_scan_req(Signal*, ScanRecordPtr, bool received_req, ApiConnectRecordPtr apiConnectptr);
@@ -3064,6 +3150,11 @@ class Dbtc : public SimulatedBlock {
   AggCompleteRecord_pool c_aggCompleteRecordPool;
   RSS_AP_SNAPSHOT(c_aggCompleteRecordPool);
 
+  /* Stable CTE request handles, owned by ScanRecord lifecycle. */
+  CteScanFragHandle_pool c_cteScanFragHandlePool;
+  CteScanFragHandle_hash c_cteScanFragHandleHash;
+  RSS_AP_SNAPSHOT(c_cteScanFragHandlePool);
+
   BlockReference cndbcntrblockref;
   BlockInstance cspjInstanceRR;  // SPJ instance round-robin counter
 
@@ -3152,7 +3243,7 @@ class Dbtc : public SimulatedBlock {
   CommitAckMarker_hash m_commitAckMarkerHash;
   RSS_AP_SNAPSHOT(m_commitAckMarkerPool);
   
-  static const Uint32 c_transient_pool_count = 16;
+  static const Uint32 c_transient_pool_count = 17;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 

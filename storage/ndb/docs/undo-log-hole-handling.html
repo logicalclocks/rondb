@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LGMAN: Handling of Holes in the Disk Data UNDO Log</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1d21;
+    --muted: #5b6470;
+    --line: #d3d9e0;
+    --panel: #f5f7fa;
+    --accent: #2456a6;
+    --written: #b7d7b0;
+    --written-edge: #4a7d43;
+    --hole: #f2b8b5;
+    --hole-edge: #b3423c;
+    --filler: #f7dfa5;
+    --filler-edge: #a87f1f;
+    --unwritten: #e2e6ea;
+    --unwritten-edge: #9aa4ae;
+    --head: #2456a6;
+    --code-bg: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16191d;
+      --fg: #dde2e8;
+      --muted: #9aa4ae;
+      --line: #3a4149;
+      --panel: #1f242a;
+      --accent: #7aa7e8;
+      --written: #33502f;
+      --written-edge: #7fb377;
+      --hole: #5a2a28;
+      --hole-edge: #d98781;
+      --filler: #55451c;
+      --filler-edge: #d9b45e;
+      --unwritten: #272c32;
+      --unwritten-edge: #6a747e;
+      --head: #7aa7e8;
+      --code-bg: #23282e;
+    }
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0 auto;
+    padding: 2rem 1.25rem 5rem;
+    max-width: 62rem;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 0.3rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 0.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 0.5rem; }
+  p.subtitle { color: var(--muted); margin-top: 0; }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    border-radius: 4px;
+  }
+  code { padding: 0.1em 0.35em; }
+  pre { padding: 0.8em 1em; overflow-x: auto; line-height: 1.5; }
+  pre code { padding: 0; background: none; }
+  figure { margin: 1.6rem 0; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption {
+    font-size: 0.88rem; color: var(--muted);
+    margin-top: 0.5rem; text-align: center;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.93rem; }
+  th, td { border: 1px solid var(--line); padding: 0.45rem 0.65rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); }
+  .note {
+    background: var(--panel);
+    border-left: 4px solid var(--accent);
+    padding: 0.7rem 1rem;
+    margin: 1.2rem 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 1.1rem; margin: 0.8rem 0 0.2rem; font-size: 0.88rem; }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .swatch { width: 1.05em; height: 1.05em; border-radius: 3px; display: inline-block; border: 1.5px solid; }
+  .sw-written { background: var(--written); border-color: var(--written-edge); }
+  .sw-hole { background: var(--hole); border-color: var(--hole-edge); }
+  .sw-filler { background: var(--filler); border-color: var(--filler-edge); }
+  .sw-unwritten { background: var(--unwritten); border-color: var(--unwritten-edge); }
+  nav.toc { background: var(--panel); border-radius: 8px; padding: 1rem 1.4rem; margin: 1.6rem 0; }
+  nav.toc ol { margin: 0.3rem 0 0; padding-left: 1.3rem; }
+  nav.toc a { color: var(--accent); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  a { color: var(--accent); }
+  /* SVG text */
+  svg text { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: var(--fg); }
+  svg .muted { fill: var(--muted); }
+  svg .page-w { fill: var(--written); stroke: var(--written-edge); stroke-width: 1.5; }
+  svg .page-h { fill: var(--hole); stroke: var(--hole-edge); stroke-width: 1.5; }
+  svg .page-f { fill: var(--filler); stroke: var(--filler-edge); stroke-width: 1.5; }
+  svg .page-u { fill: var(--unwritten); stroke: var(--unwritten-edge); stroke-width: 1.5; }
+  svg .arrow { stroke: var(--fg); stroke-width: 1.6; fill: none; }
+  svg .arrow-accent { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  svg .accent { fill: var(--accent); }
+  svg .brace { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+</style>
+</head>
+<body>
+
+<h1>Handling of Holes in the Disk Data UNDO Log</h1>
+<p class="subtitle">LGMAN restart logic: end-of-log search, backward hole scan, filler
+pages and UNDO log execution across holes (RONDB-1090, Phases&nbsp;1&nbsp;and&nbsp;2).</p>
+
+<nav class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#background">Why holes exist</a></li>
+  <li><a href="#classification">What counts as a hole</a></li>
+  <li><a href="#restart">The restart sequence</a></li>
+  <li><a href="#forward">Finding the end of the log (binary search + forward end check)</a></li>
+  <li><a href="#backward">The backward hole scan</a></li>
+  <li><a href="#fillers">Filler pages and LSN assignment</a></li>
+  <li><a href="#execution">UNDO log execution across holes and fillers</a></li>
+  <li><a href="#checksums">Page checksums (NDB_DISK_V3)</a></li>
+  <li><a href="#edge-cases">Edge cases</a></li>
+  <li><a href="#testing">Testing</a></li>
+</ol>
+</nav>
+
+<div class="legend">
+  <span><span class="swatch sw-written"></span>written page (current lap)</span>
+  <span><span class="swatch sw-hole"></span>hole (unwritten or old lap)</span>
+  <span><span class="swatch sw-filler"></span>filler page (UNDO_NOOP)</span>
+  <span><span class="swatch sw-unwritten"></span>beyond the log head</span>
+</div>
+
+<h2 id="background">1. Why holes exist</h2>
+
+<p>LGMAN writes the UNDO log strictly sequentially, but with three properties that
+together make holes possible after a crash:</p>
+
+<ul>
+  <li>Up to <code>MAX_UNDO_PAGES_OUTSTANDING</code> = 512 pages (16&nbsp;MByte) are
+      written in a single <code>FSWRITEREQ</code>
+      (<code>write_log_pages()</code>).</li>
+  <li>Only one write is outstanding per file at a time, and files are opened with
+      <code>OM_SYNC</code> (or O_DIRECT with sync semantics), so each write chunk is
+      durable before the next chunk is issued.</li>
+  <li>Within one chunk the file system may persist the pages in <em>any order</em>.
+      A crash in the middle of a chunk can therefore leave any subset of that
+      chunk's pages on disk.</li>
+</ul>
+
+<p>Consequently the durable file after a crash is always a fully written prefix of
+completed chunks, followed by <em>one</em> partially persisted chunk in which holes
+can appear at arbitrary positions, followed by pages never reached this lap.
+The WAL protocol guarantees that no record in the partially persisted chunk was
+ever relied upon: <code>m_last_synced_lsn</code> only advances when a chunk
+completes, and PGMAN only flushes a data page after the UNDO log is synced up to
+that page's LSN.</p>
+
+<figure>
+<svg viewBox="0 0 960 190" role="img" aria-label="On-disk state after a crash">
+  <text x="10" y="20" font-size="13" class="muted">On-disk state after a crash during the write of chunk 1001&#8211;1512 (example from RONDB-1090)</text>
+  <!-- page strip -->
+  <g font-size="11" text-anchor="middle">
+    <rect x="20"  y="60" width="150" height="44" class="page-w"/>
+    <text x="95" y="86">&#8230; 1 &#8211; 1000 &#8230;</text>
+    <rect x="170" y="60" width="120" height="44" class="page-w"/>
+    <text x="230" y="86">1001&#8211;1004</text>
+    <rect x="290" y="60" width="50" height="44" class="page-h"/>
+    <text x="315" y="86">1005</text>
+    <rect x="340" y="60" width="130" height="44" class="page-w"/>
+    <text x="405" y="86">1006&#8211;1010</text>
+    <rect x="470" y="60" width="470" height="44" class="page-u"/>
+    <text x="705" y="86">1011 &#8211; 1512 &#8230; (never written this lap)</text>
+  </g>
+  <!-- LSN labels -->
+  <g font-size="10.5" text-anchor="middle" class="muted">
+    <text x="95"  y="122">LSNs &#8230; 40000</text>
+    <text x="230" y="122">40001 &#8211; 40195</text>
+    <text x="315" y="122">lost LSNs</text>
+    <text x="405" y="122">40206 &#8211; 40450</text>
+  </g>
+  <!-- braces -->
+  <path class="brace" d="M20 50 L20 44 L170 44 L170 50"/>
+  <text x="95" y="38" font-size="11" text-anchor="middle" class="muted">durable prefix (synced)</text>
+  <path class="brace" d="M170 50 L170 44 L470 44 L470 50"/>
+  <text x="320" y="38" font-size="11" text-anchor="middle" class="muted">partially persisted chunk</text>
+  <!-- head marker -->
+  <path class="arrow-accent" d="M470 150 L470 108" marker-end="url(#ah1)"/>
+  <text x="470" y="168" font-size="12" text-anchor="middle" class="accent">log head found at 1010 (LSN 40450)</text>
+  <defs>
+    <marker id="ah1" markerWidth="8" markerHeight="8" refX="4" refY="7" orient="0">
+      <path d="M0,8 L4,0 L8,8 Z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Figure 1: A crash mid-chunk leaves a hole at page 1005 with written pages
+1006&#8211;1010 (higher LSNs) after it. The LSNs that were in page 1005 are lost
+forever &#8212; and, by WAL, provably never needed.</figcaption>
+</figure>
+
+<h2 id="classification">2. What counts as a hole</h2>
+
+<p>A hole page below the log head takes one of two on-disk forms:</p>
+
+<table>
+<tr><th>Form</th><th>On disk</th><th>When it occurs</th></tr>
+<tr>
+  <td>Unwritten</td>
+  <td>All zeros, page type <code>PT_Unallocated</code>. When read during restart,
+      LGMAN patches the in-memory copy to page LSN 0 with a synthetic
+      <code>UNDO_END</code> record (<code>execFSREADCONF</code>).</td>
+  <td>First lap of the log &#8212; the page was zero-initialized at file creation and
+      the write that should have filled it never persisted.</td>
+</tr>
+<tr>
+  <td>Old-lap page</td>
+  <td>A valid <code>PT_Undopage</code> whose page LSN is <em>lower</em> than the
+      LSN of the first page of the file from the current lap.</td>
+  <td>After the log has wrapped &#8212; the lost write should have overwritten data
+      from a previous lap.</td>
+</tr>
+</table>
+
+<p>Both forms are recognized by a single rule, used consistently by the end-of-log
+search, the backward hole scan and UNDO log execution:</p>
+
+<div class="note">
+<strong>Hole rule.</strong> A page in file <em>F</em> is a hole if and only if
+<code>page_lsn &lt; F.m_start_lsn</code>, where <code>m_start_lsn</code> is the page
+LSN of the file's first page as read during the file sort at restart. Unwritten
+pages (patched to LSN 0) and old-lap pages both satisfy this; every page written in
+the current lap has <code>page_lsn &ge; m_start_lsn</code>.</div>
+
+<p>The rule depends on <code>m_start_lsn &gt; 0</code>, i.e. on page 1 of the file
+being intact. Page 1 is written and fsynced at file creation (with an
+<code>UNDO_END</code> record) and rewritten as a <em>single-page</em> write at the
+start of every lap (<code>write_log_pages()</code> forces the first write in a file
+to one page), so <code>m_start_lsn == 0</code> only occurs on a damaged file.
+See <a href="#edge-cases">edge case E8</a>.</p>
+
+<h2 id="restart">3. The restart sequence</h2>
+
+<p>During a node or system restart, LGMAN processes each logfile group through the
+following phases before UNDO log execution begins:</p>
+
+<pre><code>1. Sort         read page 1 of every file, sort files by start LSN
+                (FS_SORTING)
+2. Binary search  locate a written&#8594;unwritten boundary in the newest file
+                (FS_SEARCHING, find_log_head_in_file)
+3. Forward end check  scan forward from the boundary, adopt any written page
+                with a higher LSN as the new head
+                (FS_SEARCHING_END, find_log_head_end_check)
+4. Backward hole scan  scan up to 512 pages below the head, rewrite holes
+                with filler pages
+                (FS_SEARCHING_BACKWARD, start_backward_hole_scan)
+5. Final read   reread the head page into the buffer
+                (FS_SEARCHING_FINAL_READ, issue_final_head_read)
+6. Execution    apply the UNDO log backwards down to the restored LCP
+                (init_run_undo_log, get_next_undo_record)</code></pre>
+
+<h2 id="forward">4. Finding the end of the log</h2>
+
+<p>The binary search compares each probed page's LSN against the highest LSN found
+so far: higher means "move forward", lower or unwritten means "move backward". In a
+file with holes the written&#8594;unwritten boundary is not unique, so the search
+converges on <em>some</em> boundary &#8212; possibly below the true head.</p>
+
+<p>The forward end check then reads pages one by one after the boundary. Whenever it
+finds a written page whose LSN is higher than the highest seen so far, it adopts
+that page as the new head. Two details are essential (both fixed in RONDB-1090
+Phase&nbsp;1):</p>
+
+<ul>
+  <li><strong>The adopted page's LSN is recorded</strong>
+      (<code>m_online.m_lsn = last_lsn</code>) so that <code>m_next_lsn</code>,
+      <code>m_last_read_lsn</code> and <code>m_last_synced_lsn</code> are derived
+      from the true head. A stale LSN here fails the page LSN validation when
+      execution starts, and &#8212; worse &#8212; resumes logging with LSNs that
+      already exist in the file, breaking the LSN monotonicity that the next
+      restart's binary search depends on.</li>
+  <li><strong>The scan window restarts at every adoption</strong>
+      (<code>scanned_pages = 0</code>). If the binary search converged on a hole
+      left behind by an <em>earlier</em> crash, the true head can be far more than
+      512 pages ahead; without the reset the scan would stop in the middle of a
+      written region and adopt a false head, silently skipping synced UNDO
+      records.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 960 210" role="img" aria-label="Forward end check">
+  <text x="10" y="20" font-size="13" class="muted">Forward end check after the binary search converged at page 1004</text>
+  <g font-size="11" text-anchor="middle">
+    <rect x="20"  y="70" width="220" height="44" class="page-w"/>
+    <text x="130" y="96">&#8230; 1001 &#8211; 1004</text>
+    <rect x="240" y="70" width="50" height="44" class="page-h"/>
+    <text x="265" y="96">1005</text>
+    <rect x="290" y="70" width="55" height="44" class="page-w"/>
+    <text x="317" y="96">1006</text>
+    <rect x="345" y="70" width="145" height="44" class="page-w"/>
+    <text x="417" y="96">1007&#8211;1010</text>
+    <rect x="490" y="70" width="450" height="44" class="page-u"/>
+    <text x="715" y="96">1011 &#8230; (scan up to 512 pages past the last adoption)</text>
+  </g>
+  <path class="arrow-accent" d="M240 58 L240 40 L130 40" marker-end="url(#ah2rev)"/>
+  <text x="132" y="34" font-size="11" class="muted">binary search boundary: head = 1004</text>
+  <!-- adoption arrows -->
+  <path class="arrow-accent" d="M265 130 L317 130" marker-end="url(#ah2)"/>
+  <path class="arrow-accent" d="M330 145 L417 145" marker-end="url(#ah2)"/>
+  <text x="24" y="136" font-size="11">read 1005: hole, keep scanning</text>
+  <text x="24" y="160" font-size="11">read 1006: LSN 40206 &gt; 40195 &#8594; adopt as head,</text>
+  <text x="24" y="178" font-size="11">record its LSN, reset scan window &#8230; head ends at 1010 (LSN 40450)</text>
+  <defs>
+    <marker id="ah2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="var(--accent)"/>
+    </marker>
+    <marker id="ah2rev" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto">
+      <path d="M8,0 L0,4 L8,8 Z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Figure 2: The forward end check walks past the hole, adopting each
+written page with a new highest LSN. The final head is the last written page of the
+fuzzy chunk; <code>m_next_lsn</code> ends up above every LSN on disk.</figcaption>
+</figure>
+
+<h2 id="backward">5. The backward hole scan</h2>
+
+<p>Holes below the head are harmless for the restart that finds them &#8212; but
+they are never rewritten during normal operation (the head only moves forward until
+the log wraps), so they would survive to hurt a <em>later</em> restart in two ways:
+its binary search can converge on the old hole, and its UNDO execution treats a
+hole encountered after records have been applied as a corrupt log
+(<code>NDBD_EXIT_SR_UNDOLOG</code>). The backward hole scan removes the problem at
+its source by making the log contiguous on disk again before execution starts.</p>
+
+<p><code>read_backward_scan_page()</code> walks one page at a time from the head
+downward, switching to the previous file in the group when it steps below page 1
+(the same traversal as <code>update_consumer_file_pos()</code>). For each page
+read, <code>find_log_head_backward_check()</code> applies the hole rule:</p>
+
+<ul>
+  <li><strong>Hole</strong>: remember the top of the current run
+      (<code>m_hole_top_idx</code>) and keep scanning.</li>
+  <li><strong>Written page, no run pending</strong>: keep scanning.</li>
+  <li><strong>Written page directly below a run</strong>: the run is resolved.
+      Its pages are rewritten with filler pages (section 6), then the scan resumes
+      below the written page.</li>
+</ul>
+
+<p>The scan limit is the UNDO log <em>buffer size in pages</em> (at least 512); the
+scan also terminates earlier when the next step would land on the head itself
+(possible only when the whole log is smaller than the window). The buffer-size
+limit, rather than the single-write limit of 512 pages, is needed because of file
+boundaries: the one-outstanding-write rule is per <em>file</em>, and buffer pages
+are only released by the in-file-order reply processing in
+<code>execFSWRITECONF()</code>. When the log head crosses a file boundary, the
+chunk is split &#8212; a large tail write into the old file, a solo page-1 write
+into the new file &#8212; and writes into the new file continue while the old
+file's tail write is still in flight. A crash in this state leaves the head in the
+new file with holes in the <em>previous</em> file's tail (this is the use case that
+requires the backward scan to cross file boundaries at all). In the extreme, one
+slow outstanding write per file leaves a partially persisted chunk at the tail of
+each of several consecutive files; the total is bounded by the number of buffer
+pages that existed at the crash, which is why the current buffer size is used as
+the scan limit.</p>
+
+<figure>
+<svg viewBox="0 0 960 250" role="img" aria-label="Backward hole scan">
+  <text x="10" y="20" font-size="13" class="muted">Backward hole scan: run detection and resolution (two-hole example)</text>
+  <g font-size="11" text-anchor="middle">
+    <rect x="60"  y="60" width="130" height="44" class="page-w"/>
+    <text x="125" y="80">page 3</text>
+    <text x="125" y="96" class="muted">page LSN 100</text>
+    <rect x="190" y="60" width="130" height="44" class="page-h"/>
+    <text x="255" y="80">page 4</text>
+    <text x="255" y="96" class="muted">hole</text>
+    <rect x="320" y="60" width="130" height="44" class="page-h"/>
+    <text x="385" y="80">page 5</text>
+    <text x="385" y="96" class="muted">hole</text>
+    <rect x="450" y="60" width="160" height="44" class="page-w"/>
+    <text x="530" y="80">page 6</text>
+    <text x="530" y="96" class="muted">LSNs 111..120</text>
+    <rect x="610" y="60" width="140" height="44" class="page-w"/>
+    <text x="680" y="80">page 7 = head</text>
+    <text x="680" y="96" class="muted">LSNs 121..130</text>
+  </g>
+  <!-- scan direction -->
+  <path class="arrow-accent" d="M680 120 L610 120 M610 120 L530 120 M530 120 L385 132 M385 132 L255 132 M255 132 L125 144" marker-end="url(#ah3)"/>
+  <text x="700" y="124" font-size="11" class="accent">scan</text>
+  <g font-size="11">
+    <text x="60" y="175">1. read 6: written, no run pending</text>
+    <text x="60" y="193">2. read 5: hole &#8594; run top = 5</text>
+    <text x="60" y="211">3. read 4: hole &#8594; run grows (top stays 5)</text>
+    <text x="60" y="229">4. read 3: written, LSN 100 &#8594; resolve run [4..5]: fillers get LSNs 101, 102, then resume below 3</text>
+  </g>
+  <defs>
+    <marker id="ah3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M8,0 L0,4 L8,8 Z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Figure 3: Scanning backward from the head. A run of holes is closed by
+the first written page found below it; that page's LSN anchors the filler LSNs.</figcaption>
+</figure>
+
+<h2 id="fillers">6. Filler pages and LSN assignment</h2>
+
+<p>A resolved run of <em>k</em> holes above a written page with page LSN
+<em>L</em> is rewritten bottom-up with filler pages carrying page LSNs
+<em>L</em>+1, <em>L</em>+2, &#8230; <em>L</em>+<em>k</em>. Each filler is a valid
+<code>PT_Undopage</code> with <code>m_words_used = 1</code> and a single record:</p>
+
+<pre><code>data[0] = ((UNDO_NOOP | UNDO_NEXT_LSN) &lt;&lt; 16) | 1</code></pre>
+
+<p>i.e. a Type-1 record of length 1 whose LSN is implicitly "previous record's LSN
+minus one". <code>UNDO_NOOP</code> (= 18) is skipped without action by
+<code>execute_undo_record()</code>.</p>
+
+<div class="note">
+<strong>Why ascending LSNs are always safe.</strong> Every written UNDO page
+contains at least one record (a record that does not fit in a page is placed
+entirely in the next page &#8212; records never span pages). The k lost pages of
+the run therefore contained at least k records, whose LSNs lay strictly between
+<em>L</em> and <em>F</em>, the LSN of the <em>first</em> record of the written page
+above the run. Hence <em>F</em> &ge; <em>L</em>+<em>k</em>+1, and the filler LSNs
+<em>L</em>+1 &#8230; <em>L</em>+<em>k</em> fit in the gap without colliding with
+any real LSN, keep the file strictly LSN-monotone for future binary searches, and
+form a contiguous chain with the page below. No duplicate LSNs are created, so the
+debug-build assertion in <code>get_next_undo_record()</code>
+(<code>ndbassert(page_lsn &lt; m_last_read_lsn - 1)</code>) is never violated.</div>
+
+<p>Fillers are written one page at a time through the shared restart buffer page,
+each write completing (including fsync, files are <code>OM_SYNC</code>) before the
+next is issued. Completions are routed by file state
+(<code>FS_SEARCHING_BACKWARD</code>) in <code>execFSWRITECONF()</code> to
+<code>hole_filler_write_conf()</code>.</p>
+
+<h2 id="execution">7. UNDO log execution across holes and fillers</h2>
+
+<p>Execution consumes pages backward from the head. On entering a new page,
+<code>get_next_undo_record()</code> validates the page LSN against the expected
+value <code>m_last_read_lsn - 1</code>:</p>
+
+<ul>
+  <li><strong>Exact match</strong>: normal case, consume the page.</li>
+  <li><strong>Lower, but &ge; the file's start LSN</strong>: pages were lost above
+      this page (the LSN gap). Accept, log
+      <em>"Continue applying log records in written page"</em>, and resynchronize
+      <code>m_last_read_lsn = page_lsn + 1</code>.</li>
+  <li><strong>Lower than the file's start LSN</strong>: a hole. Allowed only while
+      no record has been applied yet (<code>m_applied == false</code>) &#8212; by
+      WAL, every record in the fuzzy region is a no-op in DBTUP, so real
+      applications can only start below it. A hole after an applied record is a
+      corrupt log: <code>progError(NDBD_EXIT_SR_UNDOLOG)</code>.</li>
+  <li><strong>Higher than expected</strong>: forbidden
+      (<code>ndbrequire</code> at the page LSN validation) &#8212; this is what the
+      Phase&nbsp;1 fix prevents from triggering spuriously.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 960 260" role="img" aria-label="Execution across filler pages">
+  <text x="10" y="20" font-size="13" class="muted">Execution across the rewritten run of Figure 3 (fillers at pages 4 and 5)</text>
+  <g font-size="11" text-anchor="middle">
+    <rect x="60"  y="60" width="150" height="44" class="page-w"/>
+    <text x="135" y="80">page 3</text>
+    <text x="135" y="96" class="muted">page LSN 100</text>
+    <rect x="210" y="60" width="150" height="44" class="page-f"/>
+    <text x="285" y="80">page 4 filler</text>
+    <text x="285" y="96" class="muted">page LSN 101</text>
+    <rect x="360" y="60" width="150" height="44" class="page-f"/>
+    <text x="435" y="80">page 5 filler</text>
+    <text x="435" y="96" class="muted">page LSN 102</text>
+    <rect x="510" y="60" width="180" height="44" class="page-w"/>
+    <text x="600" y="80">page 6</text>
+    <text x="600" y="96" class="muted">records 111..120</text>
+  </g>
+  <path class="arrow-accent" d="M600 120 L435 120 M435 120 L285 120 M285 120 L135 120" marker-end="url(#ah4)"/>
+  <text x="710" y="124" font-size="11" class="accent">consume backwards</text>
+  <g font-size="11">
+    <text x="60" y="170">1. page 6 consumed down to record LSN 111; expected next page LSN = 110</text>
+    <text x="60" y="190">2. page 5: LSN 102 &lt; 110 and &ge; start LSN &#8594; gap branch, resync to 103; UNDO_NOOP consumed as LSN 102</text>
+    <text x="60" y="210">3. page 4: LSN 101 == expected 101 &#8594; normal entry; UNDO_NOOP consumed as LSN 101</text>
+    <text x="60" y="230">4. page 3: LSN 100 == expected 100 &#8594; normal entry; real records continue</text>
+  </g>
+  <defs>
+    <marker id="ah4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M8,0 L0,4 L8,8 Z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Figure 4: Only the topmost filler of a run is entered via the LSN-gap
+branch; from there the chain is contiguous down into the real log. UNDO_NOOP
+records are skipped without touching DBTUP, so <code>m_applied</code> is
+unaffected.</figcaption>
+</figure>
+
+<h2 id="checksums">8. Page checksums (NDB_DISK_V3)</h2>
+
+<p>The remaining exposure after hole rewriting is a page that is <em>partially</em>
+persisted at sub-page (sector) granularity: its header sectors &#8212; page type,
+page LSN, <code>m_words_used</code> &#8212; are intact, but its tail sectors still
+hold stale data. Such a torn page passes every LSN-based check and would be parsed
+as a valid record chain. Page checksums close this gap.</p>
+
+<h3>Format</h3>
+
+<p>The v2 page layout already reserves <code>m_checksum</code> (previously always
+written as 0). From <code>NDB_DISK_V3</code> (26.4.2) every UNDO page write stamps
+the page's <code>m_ndb_version</code> field with <code>NDB_DISK_V3</code> and sets
+<code>m_checksum</code> such that the XOR over the complete 32&nbsp;KByte page
+becomes zero (<code>computeXorChecksum</code>, the same primitive used for REDO log
+pages). Stamping is the last step after all other fields are set
+(<code>stamp_undo_page_checksum()</code>); verification is a single XOR pass
+(<code>verify_undo_page_checksum()</code>). The file format layout is unchanged
+&#8212; the per-page version stamp alone decides whether the checksum field is
+meaningful, so pages written before and after an upgrade coexist in one file, and
+older binaries (which never verify) read V3 pages without issue.</p>
+
+<p>Checksums are stamped at all three places that write UNDO pages: the normal
+write path (<code>write_log_pages()</code>), page 1 initialization at file creation
+(<code>execFSWRITEREQ</code>), and filler pages
+(<code>write_hole_filler_page()</code>). The zero page keeps its
+<code>NDB_DISK_V2</code> stamp: its version field is an exact-match handshake in
+<code>completed_zero_page_read()</code>. v1-format files are unaffected (the fields
+do not exist in that layout).</p>
+
+<h3>Verification: a bad checksum is a hole</h3>
+
+<p>A page whose stamp is <code>&ge; NDB_DISK_V3</code> but whose page XOR is not
+zero is treated <em>exactly like an unwritten page</em>, at the two points that
+cover all reads:</p>
+
+<ul>
+  <li><strong>Restart reads</strong> (sort, binary search, forward end check,
+      backward scan, final read): <code>execFSREADCONF()</code> verifies after the
+      <code>PT_Unallocated</code> patch and, on mismatch, logs and patches the page
+      the same way (<code>patch_unwritten_undo_page()</code>, page LSN 0). The end
+      search will not adopt it, and the backward hole scan classifies it as a hole
+      and <strong>rewrites it with a filler page</strong>.</li>
+  <li><strong>Execution reads</strong> (the bulk producer reads bypass the restart
+      read validation): <code>get_next_undo_record()</code> verifies when entering
+      a new page and forces <code>page_lsn = 0</code> on mismatch, which lands in
+      the existing hole classification &#8212; tolerated while
+      <code>m_applied == false</code> (a torn page in the fuzzy region), fatal
+      <code>NDBD_EXIT_SR_UNDOLOG</code> after records have been applied (real
+      corruption in the durable region).</li>
+</ul>
+
+<p>This yields the intended semantics with no new code paths: <em>inside</em> the
+window where partial writes can occur, a bad-checksum page is repaired like any
+hole; <em>outside</em> it, it is fatal &#8212; and the failure is now an explicit
+checksum report instead of an attempt to parse stale bytes.</p>
+
+<h2 id="edge-cases">9. Edge cases</h2>
+
+<p>All edge cases handled by the new code, with the mechanism that covers each:</p>
+
+<table>
+<tr><th></th><th>Edge case</th><th>Handling</th></tr>
+<tr>
+  <td><strong>E1</strong></td>
+  <td><strong>Binary search converges below the last written page</strong> (e.g. at
+      the boundary before a hole).</td>
+  <td>The forward end check adopts every written page with a new highest LSN,
+      records its LSN, and restarts its 512-page window at each adoption, so the
+      true head is always reached &#8212; even when the convergence point is a
+      leftover hole from an earlier crash with more than 512 written pages beyond
+      it.</td>
+</tr>
+<tr>
+  <td><strong>E2</strong></td>
+  <td><strong>Binary search converges directly on the true head.</strong></td>
+  <td>The end check finds no higher page; the binary search branch already recorded
+      the head LSN. Both convergence paths produce identical state before the
+      backward scan starts.</td>
+</tr>
+<tr>
+  <td><strong>E3</strong></td>
+  <td><strong>Multiple hole runs below the head</strong> (e.g. written&#8211;hole&#8211;written&#8211;hole&#8211;written).</td>
+  <td>Each run is resolved independently by the written page directly below it and
+      rewritten before the scan continues. Filler LSNs of different runs cannot
+      collide since each run's fillers stay within its own LSN gap.</td>
+</tr>
+<tr>
+  <td><strong>E4</strong></td>
+  <td><strong>A run of several adjacent holes.</strong></td>
+  <td>Rewritten bottom-up with ascending LSNs <em>L</em>+1 &#8230;
+      <em>L</em>+<em>k</em>; the &ge;-one-record-per-page argument guarantees the
+      LSNs fit below the first record of the page above (see section 6).</td>
+</tr>
+<tr>
+  <td><strong>E5</strong></td>
+  <td><strong>Run still pending when the scan crosses a file boundary.</strong></td>
+  <td>Impossible for a genuine partial-write hole: page 1 of every file is written
+      and fsynced in a single-page write of its own before any other page of that
+      file, so a hole at page 1 implies the head cannot be above it in that file.
+      A pending run at a boundary is therefore never-written territory; it is
+      dropped with a log message and nothing is rewritten.</td>
+</tr>
+<tr>
+  <td><strong>E6</strong></td>
+  <td><strong>Run still pending when the scan limit is reached</strong> (buffer
+      size in pages, minimum 512).</td>
+  <td>Same reasoning: real holes always have a written page below them within the
+      window (the durable prefix). The pending run is first-lap never-written
+      territory (the log has not wrapped yet) and is left untouched. If the buffer
+      size was <em>reduced</em> since the crash, a hole beyond the smaller window
+      could be missed &#8212; benign: it is simply left unrewritten, i.e. the
+      behaviour of versions without the backward scan.</td>
+</tr>
+<tr>
+  <td><strong>E7</strong></td>
+  <td><strong>The whole log is smaller than the scan window</strong> (young log, or
+      small wrapped single-file log).</td>
+  <td>The scan stops when the next step would land on the head page itself. Without
+      this guard the scan would continue circularly <em>above</em> the head and
+      could rewrite pages in the forward region &#8212; where new logging resumes
+      &#8212; with LSNs that collide with upcoming <code>m_next_lsn</code>
+      values.</td>
+</tr>
+<tr>
+  <td><strong>E8</strong></td>
+  <td><strong><code>m_start_lsn == 0</code></strong> &#8212; the file's first page
+      reads as unallocated (only possible on a damaged file; observed in the
+      original RONDB-1090 incident as storage-level write loss).</td>
+  <td>With start LSN 0 the hole rule cannot distinguish holes from written pages
+      (every LSN is &ge; 0), so the scan classifies every page as
+      indeterminate and rewrites <em>nothing</em> in that file. No run is ever
+      started there. Recovery proceeds as before Phase&nbsp;2.</td>
+</tr>
+<tr>
+  <td><strong>E9</strong></td>
+  <td><strong>Scan crosses into the previous file of the group.</strong>
+      Required use case: a crash while the log head crossed a file boundary &#8212;
+      the split chunk leaves the head in the new file (page 1 is written in a solo
+      write, and further writes into the new file proceed while the old file's
+      large tail write is still in flight) with holes from that tail write in the
+      previous file.</td>
+  <td>The scan follows the same file traversal as execution
+      (<code>files.prev</code>, wrapping to <code>files.last</code>). The left
+      file's state is restored to <code>FS_EXECUTING</code>; the entered file is
+      set to <code>FS_SEARCHING_BACKWARD</code> so read/write completions route
+      correctly. Hole classification uses the entered file's own
+      <code>m_start_lsn</code>, and hole runs still resolve within a single file
+      (E5). The scan limit is sized by the buffer (section 5) so that the tails of
+      several consecutive files are covered.</td>
+</tr>
+<tr>
+  <td><strong>E10</strong></td>
+  <td><strong>Previous file was not written in the current lap</strong> (multi-file
+      group, head early in the circular order).</td>
+  <td>Its pages carry LSNs &ge; its own (old) <code>m_start_lsn</code>, so they are
+      classified as written and nothing is rewritten &#8212; correct, since that
+      file's content is internally consistent old data that execution never
+      reaches.</td>
+</tr>
+<tr>
+  <td><strong>E11</strong></td>
+  <td><strong>Head at page 1 of a file.</strong></td>
+  <td>The first backward step immediately switches to the previous file's last
+      page. (Also handled downstream: <code>find_log_head_complete()</code> places
+      the tail in the previous file.)</td>
+</tr>
+<tr>
+  <td><strong>E12</strong></td>
+  <td><strong>Crash while filler pages are being written.</strong></td>
+  <td>Idempotent. Completed fillers are ordinary written pages for the next
+      recovery; remaining holes are found and rewritten again. A torn filler is
+      harmless: its single record and <code>m_words_used = 1</code> live in the
+      first sectors of the page, and the rest of the page is unused.</td>
+</tr>
+<tr>
+  <td><strong>E13</strong></td>
+  <td><strong>Old hole crossed by execution after records were applied</strong>
+      (crash&#8211;restart&#8211;crash with no LCP in between &#8212; the multi-restart false
+      positive).</td>
+  <td>Cannot occur anymore: the hole was rewritten during the earlier restart, so
+      execution sees a written filler page and takes the tolerant LSN-gap branch,
+      which is legal regardless of <code>m_applied</code>. This is why the gap
+      branch must stay lenient for written pages.</td>
+</tr>
+<tr>
+  <td><strong>E14</strong></td>
+  <td><strong>Hole directly below the head page.</strong></td>
+  <td>First scanned page starts a run immediately; the page above the run is the
+      head itself, whose first-record LSN bounds the filler LSNs exactly as in the
+      general case.</td>
+</tr>
+<tr>
+  <td><strong>E15</strong></td>
+  <td><strong>End of log with no LCP ever completed.</strong></td>
+  <td>Unchanged from before: execution stops at the initialization-time
+      <code>UNDO_END</code> record in page 1. Fillers never contain
+      <code>UNDO_END</code>, so they can never terminate execution early.</td>
+</tr>
+<tr>
+  <td><strong>E16</strong></td>
+  <td><strong>Downgrade.</strong></td>
+  <td>An UNDO log containing <code>UNDO_NOOP</code> filler records cannot be
+      executed by binaries without RONDB-1090 Phase&nbsp;2 &#8212; they hit the
+      unknown-type <code>ndbabort()</code> in <code>execute_undo_record()</code>.
+      A downgrade requires an initial node restart (or a log guaranteed free of
+      fillers). V3 checksum stamps themselves are downgrade-safe: older binaries
+      never verify the checksum field and accept any page version
+      <code>&ge; NDB_DISK_V2</code>.</td>
+</tr>
+<tr>
+  <td><strong>E17</strong></td>
+  <td><strong>Torn page: header sectors persisted, tail sectors stale.</strong></td>
+  <td>Detected by checksum verification (V3 pages only). Treated exactly as an
+      unwritten page: repaired by the backward hole scan when inside the scan
+      window, fatal with <code>NDBD_EXIT_SR_UNDOLOG</code> when encountered by
+      execution after records have been applied (section 8). A torn
+      <em>filler</em> page is re-detected the same way and rewritten again
+      (idempotent, extends E12).</td>
+</tr>
+<tr>
+  <td><strong>E18</strong></td>
+  <td><strong>Corruption hits the page's version stamp itself</strong>, making a V3
+      page look like a pre-V3 page.</td>
+  <td>Checksum verification is skipped, so detection degrades to the pre-existing
+      LSN validation: a garbage page LSN is either below the file start LSN
+      (classified as a hole) or fails the page LSN checks in
+      <code>get_next_undo_record()</code>. Detection is weaker but never silent
+      acceptance of a monotone-looking LSN &#8212; the same exposure as before
+      checksums existed.</td>
+</tr>
+<tr>
+  <td><strong>E19</strong></td>
+  <td><strong>Mixed V2/V3 pages in one file after an upgrade.</strong></td>
+  <td>Verification is gated per page by the <code>m_ndb_version</code> stamp: old
+      V2 pages (checksum field written as 0) are never verified, new V3 pages
+      always are. No file conversion is needed; the file becomes fully
+      checksummed as the log wraps.</td>
+</tr>
+</table>
+
+<h2 id="testing">10. Testing</h2>
+
+<p>Error inserts (LGMAN range 15000&#8211;15999):</p>
+
+<table>
+<tr><th>Code</th><th>Effect</th></tr>
+<tr>
+  <td><code>15002</code></td>
+  <td>On the next fully-in-file UNDO log write of &ge; 3 pages: zero the
+      second-to-last page of the chunk in the buffer before the write (creating a
+      durable hole with a written, higher-LSN page after it) and arm 15003.</td>
+</tr>
+<tr>
+  <td><code>15003</code></td>
+  <td>Crash the node in <code>execFSWRITECONF()</code> once the tampered write
+      (including fsync) has completed &#8212; guaranteeing the hole geometry is on
+      disk.</td>
+</tr>
+<tr>
+  <td><code>15004</code></td>
+  <td>On the next fully-in-file UNDO log write of &ge; 3 pages: corrupt data words
+      in the second half of the second-to-last page of the chunk <em>after</em> the
+      checksum has been stamped (simulating a torn page with intact header and
+      stale tail sectors), and arm 15003.</td>
+</tr>
+</table>
+
+<p>Test cases in <code>testSystemRestart</code> (autotest suite
+<code>daily-basic--04</code>, disk table D2):</p>
+
+<ul>
+  <li><code>SR_DD_UndoHole</code> &#8212; load disk data rows, arm 15002 on a
+      random node, update until it crashes itself, restart it across the hole,
+      verify the data, then perform a clean second restart to prove logging resumed
+      with correct LSNs.</li>
+  <li><code>SR_DD_UndoHoleMulti</code> &#8212; the same crash/restart cycle
+      repeated back to back (default 3 cycles, property <code>HoleCycles</code>) on
+      the <em>same</em> node, so later cycles recover over an UNDO log that already
+      contains filler pages from earlier cycles, followed by a final clean
+      restart.</li>
+  <li><code>SR_DD_UndoTornPage</code> &#8212; as <code>SR_DD_UndoHole</code> but
+      with error insert 15004: the restart must detect the torn page through
+      checksum verification, treat it as a hole and rewrite it with a filler
+      page.</li>
+</ul>
+
+<p>Log signatures of the mechanisms in a node's out-log:</p>
+
+<pre><code>LGMAN: ERROR_INSERT 15002: zeroing page P in write of N pages ...   (crash setup)
+LGMAN: ERROR_INSERT 15004: tearing page P in write of N pages ...   (crash setup)
+LGMAN: Found written page after end found by binary search ...      (forward end check)
+LGMAN: Checksum mismatch in UNDO log page P in file F, treating
+       page as unwritten                                            (restart reads)
+LGMAN: Checksum mismatch in UNDO log page P during UNDO log
+       execution, treating page as unwritten                        (execution reads)
+LGMAN: Rewriting UNDO log hole pages X to Y in file F with filler
+       pages, first filler LSN L                                    (backward scan)
+LGMAN: Rewrote N UNDO log hole pages with filler pages              (scan summary)
+LGMAN: Backward scan dropping unresolved hole run up to page P ...  (E5/E6)</code></pre>
+
+<hr style="border: none; border-top: 1px solid var(--line); margin-top: 3rem;">
+<p style="font-size: 0.85rem; color: var(--muted);">
+Source: <code>storage/ndb/src/kernel/blocks/lgman.cpp</code>
+(<code>find_log_head_in_file</code>, <code>find_log_head_end_check</code>,
+<code>start_backward_hole_scan</code>, <code>read_backward_scan_page</code>,
+<code>find_log_head_backward_check</code>, <code>write_hole_filler_page</code>,
+<code>hole_filler_write_conf</code>, <code>issue_final_head_read</code>,
+<code>get_next_undo_record</code>, <code>execute_undo_record</code>,
+<code>patch_unwritten_undo_page</code>, <code>stamp_undo_page_checksum</code>,
+<code>verify_undo_page_checksum</code>),
+<code>diskpage.hpp</code> (<code>UNDO_NOOP</code>),
+<code>ndb_version.h.in</code> (<code>NDB_DISK_V3</code>).
+Branch RONDB-1090: Phase&nbsp;1 (end-of-log search fixes), Phase&nbsp;2 (backward
+hole scan and filler pages), Phase&nbsp;3 (page checksums).</p>
+
+</body>
+</html>

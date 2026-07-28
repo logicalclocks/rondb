@@ -166,6 +166,20 @@ class ScanTabReq {
   static void setUserIdFlag(Uint32 &requestInfo, Uint32 val);
   static Uint8 getJoinAggFlag(const UintR &requestInfo);
   static void setJoinAggFlag(UintR &requestInfo, Uint32 val);
+
+  /**
+   * Extended flags carried in the upper 16 bits of storedProcId
+   * (requestInfo is full).  Long SCAN_TABREQ senders set
+   * storedProcId = 0xFFFF, so the upper half is unused on the wire
+   * and reads as zero from old-version senders.
+   *
+   * Bits 16-17: log2 of fragsPerWorker — the number of root fragments
+   * bundled per SPJ worker (0 => 1, 1 => 2, 2 => 4, 3 => 8).  Valid
+   * only when the JoinAgg flag is set; senders must gate values > 1
+   * on ndbd_support_joinagg_frags_per_worker().
+   */
+  static Uint32 getFragsPerWorker(const UintR &storedProcId);
+  static void setFragsPerWorker(UintR &storedProcId, Uint32 frags);
 };
 
 /**
@@ -263,6 +277,10 @@ class ScanTabReq {
 #define SCAN_USER_ID_SHIFT     (0)
 
 #define SCAN_JOIN_AGG_SHIFT    (1)
+
+/* storedProcId extended flags (see class comment on setFragsPerWorker) */
+#define SCAN_FRAGS_PER_WORKER_SHIFT (16)
+#define SCAN_FRAGS_PER_WORKER_MASK (3)
 
 inline Uint8 ScanTabReq::getReadCommittedBaseFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> SCAN_READ_COMMITTED_BASE_SHIFT) & 1);
@@ -520,6 +538,23 @@ inline void ScanTabReq::setJoinAggFlag(UintR &requestInfo, Uint32 val) {
   ASSERT_BOOL(val, "ScanTabReq::setJoinAggFlag");
   requestInfo = (requestInfo & ~(Uint32(1) << SCAN_JOIN_AGG_SHIFT)) |
                 (val << SCAN_JOIN_AGG_SHIFT);
+}
+
+inline Uint32 ScanTabReq::getFragsPerWorker(const UintR &storedProcId) {
+  return Uint32(1) << ((storedProcId >> SCAN_FRAGS_PER_WORKER_SHIFT) &
+                       SCAN_FRAGS_PER_WORKER_MASK);
+}
+
+inline void ScanTabReq::setFragsPerWorker(UintR &storedProcId, Uint32 frags) {
+  assert(frags > 0 && (frags & (frags - 1)) == 0);  // power of two
+  Uint32 log2frags = 0;
+  while ((Uint32(1) << log2frags) < frags) log2frags++;
+  ASSERT_MAX(log2frags, SCAN_FRAGS_PER_WORKER_MASK,
+             "ScanTabReq::setFragsPerWorker");
+  storedProcId =
+      (storedProcId &
+       ~(Uint32(SCAN_FRAGS_PER_WORKER_MASK) << SCAN_FRAGS_PER_WORKER_SHIFT)) |
+      (log2frags << SCAN_FRAGS_PER_WORKER_SHIFT);
 }
 
 inline void

@@ -51,6 +51,12 @@ std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
 #define DEB_STAR_AGG(arglist) do { } while (0)
 #endif
 
+/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
+ * Unconditionally enabled, also in release builds — grep "AGGT" in the
+ * node out-logs and diff the logger's own µs timestamps.
+ * Remove all AGGT sites when the investigation is done. */
+#define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+
 #ifdef DEBUG_EXEC_SR
 #define DEB_EXEC_SR(arglist)     \
   do {                           \
@@ -2363,6 +2369,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   }
 #endif
 
+  AGGT(("AGGT(%u) PROXY SETUP recv cteIndex=%u",
+        instance(), req->cteIndex));
   // Seize a JoinAggregationState record from the static pool
   Uint32 key = seizeJoinAggState();
   if (key == RNIL) {
@@ -2847,6 +2855,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     }
   }
 
+  AGGT(("AGGT(%u) PROXY SETUP done key=%u cte=%u",
+        instance(), key, (Uint32)state->m_cte_mode));
   // Send CONF with the pool key
   JoinAggSetupConf *conf =
     (JoinAggSetupConf *)signal->getDataPtrSend();

@@ -157,6 +157,8 @@ public:
       FS_SEARCHING_FINAL_READ = 0x800  // Searched for log end, read last page
       ,
       FS_READ_ZERO_PAGE = 0x1000  // Reading zero page
+      ,
+      FS_SEARCHING_BACKWARD = 0x2000  // Scanning for holes below log head
     };
 
     union {
@@ -261,6 +263,22 @@ public:
     Buffer_idx m_tail_pos[2]; // 0 is cut point, 1 is current LCP cut point
     Buffer_idx m_file_pos[2]; // 0 tail, 1 head = { file_ptr_i, page_no }
     Buffer_idx m_consumer_file_pos;
+
+    /**
+     * State for the backward hole scan performed during restart after
+     * the end of the UNDO log has been located. Holes (unwritten pages
+     * or pages from an older lap of the log) below the log head are
+     * rewritten with filler pages so that the UNDO log on disk becomes
+     * contiguous again. See start_backward_hole_scan.
+     */
+    Buffer_idx m_backward_pos;        // { file ptr.i, page idx } being read
+    Uint32 m_backward_scanned_pages;  // Pages scanned backward so far
+    Uint32 m_hole_top_idx;            // Highest page idx of current hole run,
+                                      // 0 when no run is pending
+    Uint32 m_fill_pos_idx;            // Next hole page to rewrite
+    Uint32 m_fill_top_idx;            // Last hole page to rewrite
+    Uint64 m_fill_lsn;                // Page LSN of next filler page
+    Uint32 m_holes_filled;            // Filler pages written this restart
     Uint64 m_free_log_words;  // Free log words in logfile group
     Uint32 m_last_log_level_reported;
     
@@ -403,6 +421,19 @@ public:
   void find_log_head(Signal *signal, Ptr<Logfile_group> ptr);
   void find_log_head_in_file(Signal *, Ptr<Logfile_group>, Ptr<Undofile>,
                              Uint64);
+  static void patch_unwritten_undo_page(
+      File_formats::Undofile::Undo_page_v2 *page);
+  static void stamp_undo_page_checksum(
+      File_formats::Undofile::Undo_page_v2 *page);
+  static bool verify_undo_page_checksum(
+      const File_formats::Undofile::Undo_page_v2 *page);
+  void start_backward_hole_scan(Signal *, Ptr<Logfile_group>, Ptr<Undofile>);
+  void read_backward_scan_page(Signal *, Ptr<Logfile_group>);
+  void find_log_head_backward_check(Signal *, Ptr<Logfile_group>,
+                                    Ptr<Undofile>, Uint64 lsn);
+  void write_hole_filler_page(Signal *, Ptr<Logfile_group>);
+  void hole_filler_write_conf(Signal *, Ptr<Logfile_group>, Ptr<Undofile>);
+  void issue_final_head_read(Signal *, Ptr<Logfile_group>);
   void find_log_head_end_check(Signal *, Ptr<Logfile_group>, Ptr<Undofile>,
                                Uint64);
   void find_log_head_complete(Signal *, Ptr<Logfile_group>, Ptr<Undofile>);

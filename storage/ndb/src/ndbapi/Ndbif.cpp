@@ -428,6 +428,32 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
   const Uint32 tWaitState = theWaiter.get_state();
   Uint32 tNewState = tWaitState;
 
+#ifdef VM_TRACE
+  Uint32 invalidTransidAiReceiverType = RNIL;
+  Uint32 invalidTransidAiReceiverId = RNIL;
+  Uint32 invalidTransidAiMagic = 0;
+  Uint32 invalidTransidAiExpectedMagic = 0;
+  Uint32 invalidTransidAiSections = aSignal->m_noOfSections;
+  Uint32 invalidTransidAiTransOk = 0;
+  Uint32 invalidTransidAiTransId1 = 0;
+  Uint32 invalidTransidAiTransId2 = 0;
+  void *invalidTransidAiOwner = nullptr;
+  void *invalidTransidAiTransaction = nullptr;
+  bool invalidTransidAiDecoded = false;
+
+  bool invalidScanTabRefDecoded = false;
+  void *invalidScanTabRefTransaction = nullptr;
+  Uint32 invalidScanTabRefMagicCheck = RNIL;
+  Uint32 invalidScanTabRefSendStatus = RNIL;
+  Uint32 invalidScanTabRefLen = tLen;
+  Uint32 invalidScanTabRefFirstData = tFirstData;
+  Uint32 invalidScanTabRefWord0 = 0;
+  Uint32 invalidScanTabRefWord1 = 0;
+  Uint32 invalidScanTabRefWord2 = 0;
+  Uint32 invalidScanTabRefWord3 = 0;
+  Uint32 invalidScanTabRefWord4 = 0;
+#endif
+
   /* Update cached Min Db node version */
   myNdb->theCachedMinDbNodeVersion =
       m_transporter_facade->getMinDbNodeVersion();
@@ -515,6 +541,19 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
         Uint32 magicNumber = tRec->getMagicNumberFromObject();
         Uint32 num_sections = aSignal->m_noOfSections;
         NdbReceiver::ReceiverType type = tRec->getType();
+#ifdef VM_TRACE
+        invalidTransidAiDecoded = true;
+        invalidTransidAiReceiverType = (Uint32)type;
+        invalidTransidAiReceiverId = tRec->getId();
+        invalidTransidAiMagic = magicNumber;
+        invalidTransidAiExpectedMagic = tRec->getMagicNumber();
+        invalidTransidAiSections = num_sections;
+        invalidTransidAiTransId1 =
+            ((const TransIdAI *)tDataPtr)->transId[0];
+        invalidTransidAiTransId2 =
+            ((const TransIdAI *)tDataPtr)->transId[1];
+        invalidTransidAiOwner = (void *)tRec->getOwner();
+#endif
 
         if (unlikely(magicNumber != tRec->getMagicNumber())) {
 #ifdef NDB_NO_DROPPED_SIGNAL
@@ -525,9 +564,14 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
           return;
         }
         tCon = tRec->getTransaction(type);
-        if (likely(((tCon != nullptr) &&
-                    tCon->checkState_TransId(
-                        ((const TransIdAI *)tDataPtr)->transId)))) {
+        const bool transOk =
+            tCon != nullptr &&
+            tCon->checkState_TransId(((const TransIdAI *)tDataPtr)->transId);
+#ifdef VM_TRACE
+        invalidTransidAiTransaction = tCon;
+        invalidTransidAiTransOk = transOk ? 1 : 0;
+#endif
+        if (likely(transOk)) {
           void *owner = (void *)tRec->getOwner();
           Uint32 com;
           if (num_sections > 0) {
@@ -888,11 +932,32 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       return;
     }
     case GSN_SCAN_TABREF: {
+#ifdef VM_TRACE
+      invalidScanTabRefDecoded = true;
+      invalidScanTabRefLen = tLen;
+      invalidScanTabRefFirstData = tFirstData;
+      if (tLen > 0) invalidScanTabRefWord0 = tDataPtr[0];
+      if (tLen > 1) invalidScanTabRefWord1 = tDataPtr[1];
+      if (tLen > 2) invalidScanTabRefWord2 = tDataPtr[2];
+      if (tLen > 3) invalidScanTabRefWord3 = tDataPtr[3];
+      if (tLen > 4) invalidScanTabRefWord4 = tDataPtr[4];
+#endif
       if (tFirstDataPtr == nullptr) {
         goto InvalidSignal;
       }
       tCon = void2con(tFirstDataPtr);
-      if (tCon->checkMagicNumber() == 0) {
+#ifdef VM_TRACE
+      invalidScanTabRefTransaction = tCon;
+      invalidScanTabRefMagicCheck = tCon->checkMagicNumber();
+      invalidScanTabRefSendStatus = (Uint32)tCon->theSendStatus;
+#endif
+      if (
+#ifdef VM_TRACE
+          invalidScanTabRefMagicCheck == 0
+#else
+          tCon->checkMagicNumber() == 0
+#endif
+      ) {
         tReturnCode = tCon->receiveSCAN_TABREF(aSignal);
         if (tReturnCode != -1 && tWaitState == WAIT_SCAN) {
           tNewState = NO_WAIT;
@@ -1387,13 +1452,61 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
 
 InvalidSignal:
 #ifdef VM_TRACE
-  g_eventLogger->warning(
-      "Ndbif: Error Invalid Signal received NdbImpl::trp_deliver_signal "
-      "(tFirstDataPtr=%p, GSN=%d, theWaiter.m_state=%d)"
-      " sender = (Block: %d Node: %d)",
-      tFirstDataPtr, tSignalNumber, tWaitState,
-      refToBlock(aSignal->theSendersBlockRef),
-      refToNode(aSignal->theSendersBlockRef));
+  if (tSignalNumber == GSN_TRANSID_AI) {
+    g_eventLogger->warning(
+        "Ndbif: Error Invalid TRANSID_AI received "
+        "NdbImpl::trp_deliver_signal "
+        "(tFirstDataPtr=%p, theWaiter.m_state=%d) "
+        "sender = (Block: %d Node: %d), decoded=%u receiverType=%u "
+        "receiverId=0x%x magic=0x%x expectedMagic=0x%x sections=%u "
+        "owner=%p transaction=%p transOk=%u transid=(%u,%u)",
+        tFirstDataPtr,
+        tWaitState,
+        refToBlock(aSignal->theSendersBlockRef),
+        refToNode(aSignal->theSendersBlockRef),
+        invalidTransidAiDecoded ? 1 : 0,
+        invalidTransidAiReceiverType,
+        invalidTransidAiReceiverId,
+        invalidTransidAiMagic,
+        invalidTransidAiExpectedMagic,
+        invalidTransidAiSections,
+        invalidTransidAiOwner,
+        invalidTransidAiTransaction,
+        invalidTransidAiTransOk,
+        invalidTransidAiTransId1,
+        invalidTransidAiTransId2);
+  } else if (tSignalNumber == GSN_SCAN_TABREF) {
+    g_eventLogger->warning(
+        "Ndbif: Error Invalid SCAN_TABREF received "
+        "NdbImpl::trp_deliver_signal "
+        "(tFirstDataPtr=%p, theWaiter.m_state=%d) "
+        "sender = (Block: %d Node: %d), decoded=%u transaction=%p "
+        "magicCheck=%u sendStatus=%u len=%u firstData=0x%x "
+        "words=(0x%x,0x%x,0x%x,0x%x,0x%x)",
+        tFirstDataPtr,
+        tWaitState,
+        refToBlock(aSignal->theSendersBlockRef),
+        refToNode(aSignal->theSendersBlockRef),
+        invalidScanTabRefDecoded ? 1 : 0,
+        invalidScanTabRefTransaction,
+        invalidScanTabRefMagicCheck,
+        invalidScanTabRefSendStatus,
+        invalidScanTabRefLen,
+        invalidScanTabRefFirstData,
+        invalidScanTabRefWord0,
+        invalidScanTabRefWord1,
+        invalidScanTabRefWord2,
+        invalidScanTabRefWord3,
+        invalidScanTabRefWord4);
+  } else {
+    g_eventLogger->warning(
+        "Ndbif: Error Invalid Signal received NdbImpl::trp_deliver_signal "
+        "(tFirstDataPtr=%p, GSN=%d, theWaiter.m_state=%d)"
+        " sender = (Block: %d Node: %d)",
+        tFirstDataPtr, tSignalNumber, tWaitState,
+        refToBlock(aSignal->theSendersBlockRef),
+        refToNode(aSignal->theSendersBlockRef));
+  }
 #endif
 #ifdef NDB_NO_DROPPED_SIGNAL
   abort();
