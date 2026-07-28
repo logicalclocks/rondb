@@ -1,0 +1,90 @@
+# ==========================================================================
+# Bug (D1): REDO replay DROPS a committed INSERT that replaced an expired row
+# ==========================================================================
+#
+# This targets the FLAW in the NoTTLDupConvert-during-REDO change. An INSERT
+# that replaces an expired row is committed as an in-place TTL upsert and is
+# recorded with operation = ZINSERT_TTL (= ZINSERT | 0x08 = 10). But LqhKeyReq's
+# operation field is only 3 bits, so on REDO replay that op arrives at DBACC as
+# a plain ZINSERT (10 & 7 = 2). If REDO sets NoTTLDupConvert, DBACC then refuses
+# to convert the duplicate, returns 630, and Dblqh::logLqhkeyrefLab tolerates /
+# SKIPS it -> the replacement row is dropped and the stale expired row is kept.
+#
+# Scenario:
+#   1. INSERT row A (id=7, TTL=30s), force an LCP so A is captured.
+#   2. Wait past A's TTL so A is expired.
+#   3. INSERT id=7 again with data 'B' and a far-future ttl_col. Since A is
+#      expired this is the TTL insert-over-expired upsert: B replaces A and is
+#      the live committed row. The op is logged in REDO (after the LCP).
+#   4. SYSTEM restart -> every node recovers from LCP (=A) + REDO (replay of B).
+#
+# Correct: B is the committed row and must survive the restart (SELECT returns
+# id=7,'B'). Buggy (NoTTLDupConvert during REDO): the replay drops B and keeps
+# the expired A -> after restart id=7 is gone (the expired A is hidden on read).
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+SET time_zone = '+00:00';
+
+CREATE TABLE t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  data    VARCHAR(20)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=30@ttl_col";
+
+--echo # --- row A (id=7), expires 30s from now
+INSERT INTO t1 VALUES (7, NOW(), 'A');
+
+--echo # --- force an LCP so the (soon-to-expire) A is captured
+--exec $NDB_MGM -e "all dump 7099" > /dev/null 2>&1
+--sleep 8
+
+--echo # --- wait past A's 30s TTL so A is expired
+--sleep 40
+
+--echo # --- INSERT id=7 again ('B', far-future ttl): A is expired, so this is the
+--echo #     TTL insert-over-expired upsert. B replaces A and is logged in REDO.
+INSERT INTO t1 VALUES (7, NOW() + INTERVAL 1 HOUR, 'B');
+
+--echo # --- B is the live committed row before the restart
+SELECT id, data FROM t1 WHERE id = 7;
+
+--echo # --- SYSTEM restart: recover from LCP (A) + REDO (replay of the B upsert)
+--exec $NDB_MGM -e "all restart -n" > /dev/null 2>&1
+--exec $NDB_WAITER --not-started --timeout=90 > /dev/null 2>&1
+--exec $NDB_MGM -e "all start" > /dev/null 2>&1
+--exec $NDB_WAITER --timeout=180 > /dev/null 2>&1
+
+--source include/ndb_wait_connected.inc
+--disable_query_log
+--disable_result_log
+let $mysql_errno= 1;
+let $counter= 600;
+while ($mysql_errno)
+{
+  --error 0,1296,4009
+  SELECT data FROM t1 WHERE id = 7;
+  if ($mysql_errno)
+  {
+    if (!$counter)
+    {
+      die Timed out waiting for test.t1 to become queryable after restart;
+    }
+    dec $counter;
+    --sleep 0.1
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo # --- the committed replacement B must still be present after recovery.
+--echo #     On the buggy build REDO dropped it, so id=7 is gone = bug reproduced.
+SELECT id, data FROM t1 WHERE id = 7;
+
+DROP TABLE t1;

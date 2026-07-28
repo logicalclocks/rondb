@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1006,7 +1006,7 @@ MgmApiSession::setUser(Parser_t::Context &,
     m_output->println("%s", "");
     return;
   }
-  
+
   m_output->println("set user reply");
   m_output->println("result: Ok");
   m_output->println("%s", "");
@@ -1050,7 +1050,7 @@ MgmApiSession::alterUser(Parser_t::Context &,
     m_output->println("%s", "");
     return;
   }
-  
+
   m_output->println("alter user reply");
   m_output->println("result: Ok");
   m_output->println("%s", "");
@@ -1076,7 +1076,7 @@ MgmApiSession::dropUser(Parser_t::Context &,
     m_output->println("%s", "");
     return;
   }
-  
+
   m_output->println("drop user reply");
   m_output->println("result: Ok");
   m_output->println("%s", "");

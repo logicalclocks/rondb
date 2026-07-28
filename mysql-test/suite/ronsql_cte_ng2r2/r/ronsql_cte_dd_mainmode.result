@@ -1,0 +1,2029 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== MM7: P-GB — main SUM over CTE leaf, GROUP BY parent mktsegment (INNER) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.t), SUM(cust.n)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.t), SUM(cust.n)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+c_mktsegment	SUM(cust.t)	SUM(cust.n)
+AUTOMOBILE	0	300
+BUILDING	300	300
+FURNITURE	600	300
+HOUSEHOLD	900	300
+MACHINERY	1200	300
+
+=== MM8: P-GB with LEFT JOIN — unmatched parents NULL-injected (filtered CTE) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.t), SUM(cust.n)
+FROM customer AS c
+LEFT JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.t), SUM(cust.n)
+FROM customer AS c
+LEFT JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+c_mktsegment	SUM(cust.t)	SUM(cust.n)
+AUTOMOBILE	0	30
+BUILDING	30	30
+FURNITURE	60	30
+HOUSEHOLD	90	30
+MACHINERY	120	30
+
+=== MM9: P-GB — GROUP BY parent c_nationkey over CTE leaf (INNER) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(cust.t), COUNT(*)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, SUM(cust.t), COUNT(*)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	SUM(cust.t)	COUNT(*)
+0	0	12
+1	60	12
+10	0	12
+11	60	12
+12	120	12
+13	180	12
+14	240	12
+15	0	12
+16	60	12
+17	120	12
+18	180	12
+19	240	12
+2	120	12
+20	0	12
+21	60	12
+22	120	12
+23	180	12
+24	240	12
+3	180	12
+4	240	12
+5	0	12
+6	60	12
+7	120	12
+8	180	12
+9	240	12
+
+=== MM10: P-GB — main MIN/MAX over CTE agg columns, GROUP BY mktsegment ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, MIN(cust.t), MAX(cust.t), MAX(cust.n)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, MIN(cust.t), MAX(cust.t), MAX(cust.n)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+c_mktsegment	MIN(cust.t)	MAX(cust.t)	MAX(cust.n)
+AUTOMOBILE	0	0	5
+BUILDING	5	5	5
+FURNITURE	10	10	5
+HOUSEHOLD	15	15	5
+MACHINERY	20	20	5
+
+=== MM11: aggregating main, scalar (no GROUP BY) over CTE leaf ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT SUM(cust.t), SUM(cust.n), COUNT(*)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT SUM(cust.t), SUM(cust.n), COUNT(*)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey|
+SUM(cust.t)	SUM(cust.n)	COUNT(*)
+3000	1500	300
+
+=== MM12: aggregating cte JOIN real_table (CTE parent), GROUP BY parent col ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.t)
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.t)
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k
+GROUP BY c.c_mktsegment|
+c_mktsegment	SUM(cust.t)
+AUTOMOBILE	0
+BUILDING	300
+FURNITURE	600
+HOUSEHOLD	900
+MACHINERY	1200
+
+=== MM15: multi-batch — aggregating main GROUP BY parent custkey (~300 rows) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, SUM(cust.t), SUM(cust.n)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_custkey;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, SUM(cust.t), SUM(cust.n)
+FROM customer AS c
+JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_custkey|
+c_custkey	SUM(cust.t)	SUM(cust.n)
+1	5	5
+10	0	5
+100	0	5
+101	5	5
+102	10	5
+103	15	5
+104	20	5
+105	0	5
+106	5	5
+107	10	5
+108	15	5
+109	20	5
+11	5	5
+110	0	5
+111	5	5
+112	10	5
+113	15	5
+114	20	5
+115	0	5
+116	5	5
+117	10	5
+118	15	5
+119	20	5
+12	10	5
+120	0	5
+121	5	5
+122	10	5
+123	15	5
+124	20	5
+125	0	5
+126	5	5
+127	10	5
+128	15	5
+129	20	5
+13	15	5
+130	0	5
+131	5	5
+132	10	5
+133	15	5
+134	20	5
+135	0	5
+136	5	5
+137	10	5
+138	15	5
+139	20	5
+14	20	5
+140	0	5
+141	5	5
+142	10	5
+143	15	5
+144	20	5
+145	0	5
+146	5	5
+147	10	5
+148	15	5
+149	20	5
+15	0	5
+150	0	5
+151	5	5
+152	10	5
+153	15	5
+154	20	5
+155	0	5
+156	5	5
+157	10	5
+158	15	5
+159	20	5
+16	5	5
+160	0	5
+161	5	5
+162	10	5
+163	15	5
+164	20	5
+165	0	5
+166	5	5
+167	10	5
+168	15	5
+169	20	5
+17	10	5
+170	0	5
+171	5	5
+172	10	5
+173	15	5
+174	20	5
+175	0	5
+176	5	5
+177	10	5
+178	15	5
+179	20	5
+18	15	5
+180	0	5
+181	5	5
+182	10	5
+183	15	5
+184	20	5
+185	0	5
+186	5	5
+187	10	5
+188	15	5
+189	20	5
+19	20	5
+190	0	5
+191	5	5
+192	10	5
+193	15	5
+194	20	5
+195	0	5
+196	5	5
+197	10	5
+198	15	5
+199	20	5
+2	10	5
+20	0	5
+200	0	5
+201	5	5
+202	10	5
+203	15	5
+204	20	5
+205	0	5
+206	5	5
+207	10	5
+208	15	5
+209	20	5
+21	5	5
+210	0	5
+211	5	5
+212	10	5
+213	15	5
+214	20	5
+215	0	5
+216	5	5
+217	10	5
+218	15	5
+219	20	5
+22	10	5
+220	0	5
+221	5	5
+222	10	5
+223	15	5
+224	20	5
+225	0	5
+226	5	5
+227	10	5
+228	15	5
+229	20	5
+23	15	5
+230	0	5
+231	5	5
+232	10	5
+233	15	5
+234	20	5
+235	0	5
+236	5	5
+237	10	5
+238	15	5
+239	20	5
+24	20	5
+240	0	5
+241	5	5
+242	10	5
+243	15	5
+244	20	5
+245	0	5
+246	5	5
+247	10	5
+248	15	5
+249	20	5
+25	0	5
+250	0	5
+251	5	5
+252	10	5
+253	15	5
+254	20	5
+255	0	5
+256	5	5
+257	10	5
+258	15	5
+259	20	5
+26	5	5
+260	0	5
+261	5	5
+262	10	5
+263	15	5
+264	20	5
+265	0	5
+266	5	5
+267	10	5
+268	15	5
+269	20	5
+27	10	5
+270	0	5
+271	5	5
+272	10	5
+273	15	5
+274	20	5
+275	0	5
+276	5	5
+277	10	5
+278	15	5
+279	20	5
+28	15	5
+280	0	5
+281	5	5
+282	10	5
+283	15	5
+284	20	5
+285	0	5
+286	5	5
+287	10	5
+288	15	5
+289	20	5
+29	20	5
+290	0	5
+291	5	5
+292	10	5
+293	15	5
+294	20	5
+295	0	5
+296	5	5
+297	10	5
+298	15	5
+299	20	5
+3	15	5
+30	0	5
+300	0	5
+31	5	5
+32	10	5
+33	15	5
+34	20	5
+35	0	5
+36	5	5
+37	10	5
+38	15	5
+39	20	5
+4	20	5
+40	0	5
+41	5	5
+42	10	5
+43	15	5
+44	20	5
+45	0	5
+46	5	5
+47	10	5
+48	15	5
+49	20	5
+5	0	5
+50	0	5
+51	5	5
+52	10	5
+53	15	5
+54	20	5
+55	0	5
+56	5	5
+57	10	5
+58	15	5
+59	20	5
+6	5	5
+60	0	5
+61	5	5
+62	10	5
+63	15	5
+64	20	5
+65	0	5
+66	5	5
+67	10	5
+68	15	5
+69	20	5
+7	10	5
+70	0	5
+71	5	5
+72	10	5
+73	15	5
+74	20	5
+75	0	5
+76	5	5
+77	10	5
+78	15	5
+79	20	5
+8	15	5
+80	0	5
+81	5	5
+82	10	5
+83	15	5
+84	20	5
+85	0	5
+86	5	5
+87	10	5
+88	15	5
+89	20	5
+9	20	5
+90	0	5
+91	5	5
+92	10	5
+93	15	5
+94	20	5
+95	0	5
+96	5	5
+97	10	5
+98	15	5
+99	20	5
+
+=== MM1: proj-only INNER over complete-key CTE_LOOKUP (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20|
+c_custkey	c_mktsegment	t	n
+1	BUILDING	5	5
+10	AUTOMOBILE	0	5
+11	BUILDING	5	5
+12	FURNITURE	10	5
+13	HOUSEHOLD	15	5
+14	MACHINERY	20	5
+15	AUTOMOBILE	0	5
+16	BUILDING	5	5
+17	FURNITURE	10	5
+18	HOUSEHOLD	15	5
+19	MACHINERY	20	5
+2	FURNITURE	10	5
+20	AUTOMOBILE	0	5
+3	HOUSEHOLD	15	5
+4	MACHINERY	20	5
+5	AUTOMOBILE	0	5
+6	BUILDING	5	5
+7	FURNITURE	10	5
+8	HOUSEHOLD	15	5
+9	MACHINERY	20	5
+
+=== MM2: proj-only LEFT over complete-key CTE_LOOKUP (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 20|
+c_custkey	c_mktsegment	t	n
+1	BUILDING	5	5
+10	AUTOMOBILE	0	5
+11	BUILDING	5	5
+12	FURNITURE	10	5
+13	HOUSEHOLD	15	5
+14	MACHINERY	20	5
+15	AUTOMOBILE	0	5
+16	BUILDING	5	5
+17	FURNITURE	10	5
+18	HOUSEHOLD	15	5
+19	MACHINERY	20	5
+2	FURNITURE	10	5
+20	AUTOMOBILE	0	5
+3	HOUSEHOLD	15	5
+4	MACHINERY	20	5
+5	AUTOMOBILE	0	5
+6	BUILDING	5	5
+7	FURNITURE	10	5
+8	HOUSEHOLD	15	5
+9	MACHINERY	20	5
+
+=== MM3: proj-only LEFT with unmatched parents (NULL-injected) (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 200;
+
+Number of output lines, including header: 201
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 150 GROUP BY o_custkey)
+SELECT c.c_custkey, c.c_mktsegment, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 200|
+c_custkey	c_mktsegment	t	n
+1	BUILDING	1	1
+10	AUTOMOBILE	0	1
+100	AUTOMOBILE	0	1
+101	BUILDING	1	1
+102	FURNITURE	2	1
+103	HOUSEHOLD	3	1
+104	MACHINERY	4	1
+105	AUTOMOBILE	0	1
+106	BUILDING	1	1
+107	FURNITURE	2	1
+108	HOUSEHOLD	3	1
+109	MACHINERY	4	1
+11	BUILDING	1	1
+110	AUTOMOBILE	0	1
+111	BUILDING	1	1
+112	FURNITURE	2	1
+113	HOUSEHOLD	3	1
+114	MACHINERY	4	1
+115	AUTOMOBILE	0	1
+116	BUILDING	1	1
+117	FURNITURE	2	1
+118	HOUSEHOLD	3	1
+119	MACHINERY	4	1
+12	FURNITURE	2	1
+120	AUTOMOBILE	0	1
+121	BUILDING	1	1
+122	FURNITURE	2	1
+123	HOUSEHOLD	3	1
+124	MACHINERY	4	1
+125	AUTOMOBILE	0	1
+126	BUILDING	1	1
+127	FURNITURE	2	1
+128	HOUSEHOLD	3	1
+129	MACHINERY	4	1
+13	HOUSEHOLD	3	1
+130	AUTOMOBILE	0	1
+131	BUILDING	1	1
+132	FURNITURE	2	1
+133	HOUSEHOLD	3	1
+134	MACHINERY	4	1
+135	AUTOMOBILE	0	1
+136	BUILDING	1	1
+137	FURNITURE	2	1
+138	HOUSEHOLD	3	1
+139	MACHINERY	4	1
+14	MACHINERY	4	1
+140	AUTOMOBILE	0	1
+141	BUILDING	1	1
+142	FURNITURE	2	1
+143	HOUSEHOLD	3	1
+144	MACHINERY	4	1
+145	AUTOMOBILE	0	1
+146	BUILDING	1	1
+147	FURNITURE	2	1
+148	HOUSEHOLD	3	1
+149	MACHINERY	4	1
+15	AUTOMOBILE	0	1
+150	AUTOMOBILE	0	1
+151	BUILDING	NULL	NULL
+152	FURNITURE	NULL	NULL
+153	HOUSEHOLD	NULL	NULL
+154	MACHINERY	NULL	NULL
+155	AUTOMOBILE	NULL	NULL
+156	BUILDING	NULL	NULL
+157	FURNITURE	NULL	NULL
+158	HOUSEHOLD	NULL	NULL
+159	MACHINERY	NULL	NULL
+16	BUILDING	1	1
+160	AUTOMOBILE	NULL	NULL
+161	BUILDING	NULL	NULL
+162	FURNITURE	NULL	NULL
+163	HOUSEHOLD	NULL	NULL
+164	MACHINERY	NULL	NULL
+165	AUTOMOBILE	NULL	NULL
+166	BUILDING	NULL	NULL
+167	FURNITURE	NULL	NULL
+168	HOUSEHOLD	NULL	NULL
+169	MACHINERY	NULL	NULL
+17	FURNITURE	2	1
+170	AUTOMOBILE	NULL	NULL
+171	BUILDING	NULL	NULL
+172	FURNITURE	NULL	NULL
+173	HOUSEHOLD	NULL	NULL
+174	MACHINERY	NULL	NULL
+175	AUTOMOBILE	NULL	NULL
+176	BUILDING	NULL	NULL
+177	FURNITURE	NULL	NULL
+178	HOUSEHOLD	NULL	NULL
+179	MACHINERY	NULL	NULL
+18	HOUSEHOLD	3	1
+180	AUTOMOBILE	NULL	NULL
+181	BUILDING	NULL	NULL
+182	FURNITURE	NULL	NULL
+183	HOUSEHOLD	NULL	NULL
+184	MACHINERY	NULL	NULL
+185	AUTOMOBILE	NULL	NULL
+186	BUILDING	NULL	NULL
+187	FURNITURE	NULL	NULL
+188	HOUSEHOLD	NULL	NULL
+189	MACHINERY	NULL	NULL
+19	MACHINERY	4	1
+190	AUTOMOBILE	NULL	NULL
+191	BUILDING	NULL	NULL
+192	FURNITURE	NULL	NULL
+193	HOUSEHOLD	NULL	NULL
+194	MACHINERY	NULL	NULL
+195	AUTOMOBILE	NULL	NULL
+196	BUILDING	NULL	NULL
+197	FURNITURE	NULL	NULL
+198	HOUSEHOLD	NULL	NULL
+199	MACHINERY	NULL	NULL
+2	FURNITURE	2	1
+20	AUTOMOBILE	0	1
+200	AUTOMOBILE	NULL	NULL
+21	BUILDING	1	1
+22	FURNITURE	2	1
+23	HOUSEHOLD	3	1
+24	MACHINERY	4	1
+25	AUTOMOBILE	0	1
+26	BUILDING	1	1
+27	FURNITURE	2	1
+28	HOUSEHOLD	3	1
+29	MACHINERY	4	1
+3	HOUSEHOLD	3	1
+30	AUTOMOBILE	0	1
+31	BUILDING	1	1
+32	FURNITURE	2	1
+33	HOUSEHOLD	3	1
+34	MACHINERY	4	1
+35	AUTOMOBILE	0	1
+36	BUILDING	1	1
+37	FURNITURE	2	1
+38	HOUSEHOLD	3	1
+39	MACHINERY	4	1
+4	MACHINERY	4	1
+40	AUTOMOBILE	0	1
+41	BUILDING	1	1
+42	FURNITURE	2	1
+43	HOUSEHOLD	3	1
+44	MACHINERY	4	1
+45	AUTOMOBILE	0	1
+46	BUILDING	1	1
+47	FURNITURE	2	1
+48	HOUSEHOLD	3	1
+49	MACHINERY	4	1
+5	AUTOMOBILE	0	1
+50	AUTOMOBILE	0	1
+51	BUILDING	1	1
+52	FURNITURE	2	1
+53	HOUSEHOLD	3	1
+54	MACHINERY	4	1
+55	AUTOMOBILE	0	1
+56	BUILDING	1	1
+57	FURNITURE	2	1
+58	HOUSEHOLD	3	1
+59	MACHINERY	4	1
+6	BUILDING	1	1
+60	AUTOMOBILE	0	1
+61	BUILDING	1	1
+62	FURNITURE	2	1
+63	HOUSEHOLD	3	1
+64	MACHINERY	4	1
+65	AUTOMOBILE	0	1
+66	BUILDING	1	1
+67	FURNITURE	2	1
+68	HOUSEHOLD	3	1
+69	MACHINERY	4	1
+7	FURNITURE	2	1
+70	AUTOMOBILE	0	1
+71	BUILDING	1	1
+72	FURNITURE	2	1
+73	HOUSEHOLD	3	1
+74	MACHINERY	4	1
+75	AUTOMOBILE	0	1
+76	BUILDING	1	1
+77	FURNITURE	2	1
+78	HOUSEHOLD	3	1
+79	MACHINERY	4	1
+8	HOUSEHOLD	3	1
+80	AUTOMOBILE	0	1
+81	BUILDING	1	1
+82	FURNITURE	2	1
+83	HOUSEHOLD	3	1
+84	MACHINERY	4	1
+85	AUTOMOBILE	0	1
+86	BUILDING	1	1
+87	FURNITURE	2	1
+88	HOUSEHOLD	3	1
+89	MACHINERY	4	1
+9	MACHINERY	4	1
+90	AUTOMOBILE	0	1
+91	BUILDING	1	1
+92	FURNITURE	2	1
+93	HOUSEHOLD	3	1
+94	MACHINERY	4	1
+95	AUTOMOBILE	0	1
+96	BUILDING	1	1
+97	FURNITURE	2	1
+98	HOUSEHOLD	3	1
+99	MACHINERY	4	1
+
+=== MM4: proj-only INNER, single CTE agg column (int) (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, MAX(o_shippriority) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.mx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 15;
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, MAX(o_shippriority) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.mx
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 15|
+c_custkey	mx
+1	1
+10	0
+11	1
+12	2
+13	3
+14	4
+15	0
+2	2
+3	3
+4	4
+5	0
+6	1
+7	2
+8	3
+9	4
+
+=== MM5: proj-only INNER + main WHERE on a CTE aggregate output (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 60 AND cust.n >= 5;
+
+Number of output lines, including header: 61
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_custkey <= 60 AND cust.n >= 5|
+c_custkey	t	n
+1	5	5
+10	0	5
+11	5	5
+12	10	5
+13	15	5
+14	20	5
+15	0	5
+16	5	5
+17	10	5
+18	15	5
+19	20	5
+2	10	5
+20	0	5
+21	5	5
+22	10	5
+23	15	5
+24	20	5
+25	0	5
+26	5	5
+27	10	5
+28	15	5
+29	20	5
+3	15	5
+30	0	5
+31	5	5
+32	10	5
+33	15	5
+34	20	5
+35	0	5
+36	5	5
+37	10	5
+38	15	5
+39	20	5
+4	20	5
+40	0	5
+41	5	5
+42	10	5
+43	15	5
+44	20	5
+45	0	5
+46	5	5
+47	10	5
+48	15	5
+49	20	5
+5	0	5
+50	0	5
+51	5	5
+52	10	5
+53	15	5
+54	20	5
+55	0	5
+56	5	5
+57	10	5
+58	15	5
+59	20	5
+6	5	5
+60	0	5
+7	10	5
+8	15	5
+9	20	5
+
+=== MM6: proj-only cte JOIN real_table (CTE_SCAN root + child) (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, c.c_mktsegment
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k
+WHERE cust.k <= 25;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, c.c_mktsegment
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k
+WHERE cust.k <= 25|
+k	t	c_mktsegment
+1	5	BUILDING
+10	0	AUTOMOBILE
+11	5	BUILDING
+12	10	FURNITURE
+13	15	HOUSEHOLD
+14	20	MACHINERY
+15	0	AUTOMOBILE
+16	5	BUILDING
+17	10	FURNITURE
+18	15	HOUSEHOLD
+19	20	MACHINERY
+2	10	FURNITURE
+20	0	AUTOMOBILE
+21	5	BUILDING
+22	10	FURNITURE
+23	15	HOUSEHOLD
+24	20	MACHINERY
+25	0	AUTOMOBILE
+3	15	HOUSEHOLD
+4	20	MACHINERY
+5	0	AUTOMOBILE
+6	5	BUILDING
+7	10	FURNITURE
+8	15	HOUSEHOLD
+9	20	MACHINERY
+
+=== MM13: multi-batch proj-only over full 300-group CTE (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey|
+k	t
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+=== MM14: multi-batch proj-only CTE_SCAN root (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, cust.n
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cust.k, cust.t, cust.n
+FROM cust JOIN customer AS c ON c.c_custkey = cust.k|
+k	t	n
+1	5	5
+10	0	5
+100	0	5
+101	5	5
+102	10	5
+103	15	5
+104	20	5
+105	0	5
+106	5	5
+107	10	5
+108	15	5
+109	20	5
+11	5	5
+110	0	5
+111	5	5
+112	10	5
+113	15	5
+114	20	5
+115	0	5
+116	5	5
+117	10	5
+118	15	5
+119	20	5
+12	10	5
+120	0	5
+121	5	5
+122	10	5
+123	15	5
+124	20	5
+125	0	5
+126	5	5
+127	10	5
+128	15	5
+129	20	5
+13	15	5
+130	0	5
+131	5	5
+132	10	5
+133	15	5
+134	20	5
+135	0	5
+136	5	5
+137	10	5
+138	15	5
+139	20	5
+14	20	5
+140	0	5
+141	5	5
+142	10	5
+143	15	5
+144	20	5
+145	0	5
+146	5	5
+147	10	5
+148	15	5
+149	20	5
+15	0	5
+150	0	5
+151	5	5
+152	10	5
+153	15	5
+154	20	5
+155	0	5
+156	5	5
+157	10	5
+158	15	5
+159	20	5
+16	5	5
+160	0	5
+161	5	5
+162	10	5
+163	15	5
+164	20	5
+165	0	5
+166	5	5
+167	10	5
+168	15	5
+169	20	5
+17	10	5
+170	0	5
+171	5	5
+172	10	5
+173	15	5
+174	20	5
+175	0	5
+176	5	5
+177	10	5
+178	15	5
+179	20	5
+18	15	5
+180	0	5
+181	5	5
+182	10	5
+183	15	5
+184	20	5
+185	0	5
+186	5	5
+187	10	5
+188	15	5
+189	20	5
+19	20	5
+190	0	5
+191	5	5
+192	10	5
+193	15	5
+194	20	5
+195	0	5
+196	5	5
+197	10	5
+198	15	5
+199	20	5
+2	10	5
+20	0	5
+200	0	5
+201	5	5
+202	10	5
+203	15	5
+204	20	5
+205	0	5
+206	5	5
+207	10	5
+208	15	5
+209	20	5
+21	5	5
+210	0	5
+211	5	5
+212	10	5
+213	15	5
+214	20	5
+215	0	5
+216	5	5
+217	10	5
+218	15	5
+219	20	5
+22	10	5
+220	0	5
+221	5	5
+222	10	5
+223	15	5
+224	20	5
+225	0	5
+226	5	5
+227	10	5
+228	15	5
+229	20	5
+23	15	5
+230	0	5
+231	5	5
+232	10	5
+233	15	5
+234	20	5
+235	0	5
+236	5	5
+237	10	5
+238	15	5
+239	20	5
+24	20	5
+240	0	5
+241	5	5
+242	10	5
+243	15	5
+244	20	5
+245	0	5
+246	5	5
+247	10	5
+248	15	5
+249	20	5
+25	0	5
+250	0	5
+251	5	5
+252	10	5
+253	15	5
+254	20	5
+255	0	5
+256	5	5
+257	10	5
+258	15	5
+259	20	5
+26	5	5
+260	0	5
+261	5	5
+262	10	5
+263	15	5
+264	20	5
+265	0	5
+266	5	5
+267	10	5
+268	15	5
+269	20	5
+27	10	5
+270	0	5
+271	5	5
+272	10	5
+273	15	5
+274	20	5
+275	0	5
+276	5	5
+277	10	5
+278	15	5
+279	20	5
+28	15	5
+280	0	5
+281	5	5
+282	10	5
+283	15	5
+284	20	5
+285	0	5
+286	5	5
+287	10	5
+288	15	5
+289	20	5
+29	20	5
+290	0	5
+291	5	5
+292	10	5
+293	15	5
+294	20	5
+295	0	5
+296	5	5
+297	10	5
+298	15	5
+299	20	5
+3	15	5
+30	0	5
+300	0	5
+31	5	5
+32	10	5
+33	15	5
+34	20	5
+35	0	5
+36	5	5
+37	10	5
+38	15	5
+39	20	5
+4	20	5
+40	0	5
+41	5	5
+42	10	5
+43	15	5
+44	20	5
+45	0	5
+46	5	5
+47	10	5
+48	15	5
+49	20	5
+5	0	5
+50	0	5
+51	5	5
+52	10	5
+53	15	5
+54	20	5
+55	0	5
+56	5	5
+57	10	5
+58	15	5
+59	20	5
+6	5	5
+60	0	5
+61	5	5
+62	10	5
+63	15	5
+64	20	5
+65	0	5
+66	5	5
+67	10	5
+68	15	5
+69	20	5
+7	10	5
+70	0	5
+71	5	5
+72	10	5
+73	15	5
+74	20	5
+75	0	5
+76	5	5
+77	10	5
+78	15	5
+79	20	5
+8	15	5
+80	0	5
+81	5	5
+82	10	5
+83	15	5
+84	20	5
+85	0	5
+86	5	5
+87	10	5
+88	15	5
+89	20	5
+9	20	5
+90	0	5
+91	5	5
+92	10	5
+93	15	5
+94	20	5
+95	0	5
+96	5	5
+97	10	5
+98	15	5
+99	20	5
+
+=== MM16: multi-batch LEFT join proj-only, all 300 custkeys (was D3 hang) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, cust.t, cust.n
+FROM customer AS c LEFT JOIN cust ON cust.k = c.c_custkey|
+c_custkey	t	n
+1	5	5
+10	0	5
+100	0	5
+101	5	5
+102	10	5
+103	15	5
+104	20	5
+105	0	5
+106	5	5
+107	10	5
+108	15	5
+109	20	5
+11	5	5
+110	0	5
+111	5	5
+112	10	5
+113	15	5
+114	20	5
+115	0	5
+116	5	5
+117	10	5
+118	15	5
+119	20	5
+12	10	5
+120	0	5
+121	5	5
+122	10	5
+123	15	5
+124	20	5
+125	0	5
+126	5	5
+127	10	5
+128	15	5
+129	20	5
+13	15	5
+130	0	5
+131	5	5
+132	10	5
+133	15	5
+134	20	5
+135	0	5
+136	5	5
+137	10	5
+138	15	5
+139	20	5
+14	20	5
+140	0	5
+141	5	5
+142	10	5
+143	15	5
+144	20	5
+145	0	5
+146	5	5
+147	10	5
+148	15	5
+149	20	5
+15	0	5
+150	0	5
+151	5	5
+152	10	5
+153	15	5
+154	20	5
+155	0	5
+156	5	5
+157	10	5
+158	15	5
+159	20	5
+16	5	5
+160	0	5
+161	5	5
+162	10	5
+163	15	5
+164	20	5
+165	0	5
+166	5	5
+167	10	5
+168	15	5
+169	20	5
+17	10	5
+170	0	5
+171	5	5
+172	10	5
+173	15	5
+174	20	5
+175	0	5
+176	5	5
+177	10	5
+178	15	5
+179	20	5
+18	15	5
+180	0	5
+181	5	5
+182	10	5
+183	15	5
+184	20	5
+185	0	5
+186	5	5
+187	10	5
+188	15	5
+189	20	5
+19	20	5
+190	0	5
+191	5	5
+192	10	5
+193	15	5
+194	20	5
+195	0	5
+196	5	5
+197	10	5
+198	15	5
+199	20	5
+2	10	5
+20	0	5
+200	0	5
+201	5	5
+202	10	5
+203	15	5
+204	20	5
+205	0	5
+206	5	5
+207	10	5
+208	15	5
+209	20	5
+21	5	5
+210	0	5
+211	5	5
+212	10	5
+213	15	5
+214	20	5
+215	0	5
+216	5	5
+217	10	5
+218	15	5
+219	20	5
+22	10	5
+220	0	5
+221	5	5
+222	10	5
+223	15	5
+224	20	5
+225	0	5
+226	5	5
+227	10	5
+228	15	5
+229	20	5
+23	15	5
+230	0	5
+231	5	5
+232	10	5
+233	15	5
+234	20	5
+235	0	5
+236	5	5
+237	10	5
+238	15	5
+239	20	5
+24	20	5
+240	0	5
+241	5	5
+242	10	5
+243	15	5
+244	20	5
+245	0	5
+246	5	5
+247	10	5
+248	15	5
+249	20	5
+25	0	5
+250	0	5
+251	5	5
+252	10	5
+253	15	5
+254	20	5
+255	0	5
+256	5	5
+257	10	5
+258	15	5
+259	20	5
+26	5	5
+260	0	5
+261	5	5
+262	10	5
+263	15	5
+264	20	5
+265	0	5
+266	5	5
+267	10	5
+268	15	5
+269	20	5
+27	10	5
+270	0	5
+271	5	5
+272	10	5
+273	15	5
+274	20	5
+275	0	5
+276	5	5
+277	10	5
+278	15	5
+279	20	5
+28	15	5
+280	0	5
+281	5	5
+282	10	5
+283	15	5
+284	20	5
+285	0	5
+286	5	5
+287	10	5
+288	15	5
+289	20	5
+29	20	5
+290	0	5
+291	5	5
+292	10	5
+293	15	5
+294	20	5
+295	0	5
+296	5	5
+297	10	5
+298	15	5
+299	20	5
+3	15	5
+30	0	5
+300	0	5
+31	5	5
+32	10	5
+33	15	5
+34	20	5
+35	0	5
+36	5	5
+37	10	5
+38	15	5
+39	20	5
+4	20	5
+40	0	5
+41	5	5
+42	10	5
+43	15	5
+44	20	5
+45	0	5
+46	5	5
+47	10	5
+48	15	5
+49	20	5
+5	0	5
+50	0	5
+51	5	5
+52	10	5
+53	15	5
+54	20	5
+55	0	5
+56	5	5
+57	10	5
+58	15	5
+59	20	5
+6	5	5
+60	0	5
+61	5	5
+62	10	5
+63	15	5
+64	20	5
+65	0	5
+66	5	5
+67	10	5
+68	15	5
+69	20	5
+7	10	5
+70	0	5
+71	5	5
+72	10	5
+73	15	5
+74	20	5
+75	0	5
+76	5	5
+77	10	5
+78	15	5
+79	20	5
+8	15	5
+80	0	5
+81	5	5
+82	10	5
+83	15	5
+84	20	5
+85	0	5
+86	5	5
+87	10	5
+88	15	5
+89	20	5
+9	20	5
+90	0	5
+91	5	5
+92	10	5
+93	15	5
+94	20	5
+95	0	5
+96	5	5
+97	10	5
+98	15	5
+99	20	5
+
+=== MM17: projection-only main SELECT over a CTE_LOOKUP child with no CTE cols selected (was D23 crash) ===
+== Query ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.c_custkey <= 20|
+c_custkey
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+3
+4
+5
+6
+7
+8
+9

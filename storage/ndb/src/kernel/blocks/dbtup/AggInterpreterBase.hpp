@@ -136,7 +136,11 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_memory_budget(0), m_budget_increment(0),
       m_total_available(0),
       m_gb_types(nullptr), m_gb_types_inited(false),
-      m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
+      m_load_column_meta(nullptr), m_load_column_meta_count(0),
+      m_load_column_meta_capacity(0),
+      m_column_meta(nullptr), m_column_meta_count(0),
+      m_column_meta_capacity(0),
+      m_column_meta_hash(nullptr), m_column_meta_hash_size(0) {
     memset(m_decimal_buf, 0,
            sizeof(decimal_digit_t) * AGG_DECIMAL_BUFF_LENGTH);
     m_decimal.buf = m_decimal_buf;
@@ -374,6 +378,22 @@ class AggInterpreterBase : public PushdownInterpreter {
    */
   static bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 
+ public:
+  /* Decode the column type from a kOpLoadCol instruction word.
+   * The type is 6 bits: the low 5 bits live in the historical position
+   * (instruction bits 21-25), and the most-significant 6th bit lives in
+   * bit 20 (previously unused, between the reg-id and type fields).
+   * Every NDB type that existed before DATETIME2 (32) / TIMESTAMP2 (33)
+   * is <= 31, so its bit 20 is 0 and the encoding is byte-identical to
+   * the old 5-bit form — a kOpLoadCol built by any prior version decodes
+   * unchanged here, and only DATETIME2/TIMESTAMP2 set bit 20.  The API
+   * encoder (NdbAggregator) mirrors this layout.  Public + static so the
+   * PushdownInterpreter optimize pass and file-static helpers can share it. */
+  static inline Uint32 decodeLoadColType(Uint32 word) {
+    return ((word >> 21) & 0x1F) | (((word >> 20) & 0x1) << 5);
+  }
+
+ protected:
   /* Shared aggregation kernels — definitions in AggInterpreterBase.cpp.
    * `print` is consumed only inside DEBUG_PA_INTERP debug-trace blocks. */
   static bool TypeSupported(DataType type);
@@ -459,6 +479,22 @@ class AggInterpreterBase : public PushdownInterpreter {
   JoinGBHashTable* m_gb_map;
   Uint32 m_n_groups;
 
+  struct LoadColumnMeta {
+    Uint32 programOffset;
+    Uint32 typeId;
+    Uint32 maxBytes;
+    Uint32 csNumber;
+  };
+  struct ColumnMeta {
+    Uint32 tableId;
+    Uint32 tableVersion;
+    Uint32 columnId;
+    Uint32 typeId;
+    Uint32 maxBytes;
+    Uint32 csNumber;
+    Uint32 nextIndex;
+  };
+
   /* Step 2b — shared GROUP BY type-metadata initializer.
    * Resolves AttributeDescriptor / linked-attr metadata for each GB
    * column into m_gb_types[], allocates m_xfrm_buf if any column has
@@ -466,14 +502,39 @@ class AggInterpreterBase : public PushdownInterpreter {
    *
    * linked_attr_data / linked_attr_len are the per-row linked-attr
    * buffer JoinAgg passes in for join queries.  AggInterpreter
-   * (normal scan) passes nullptr / 0; the linked-attr resolution
-   * branches are dead code on that path (the JoinAgg-only attr_id
-   * bit 0x8000 never appears in normal-scan GB cols). */
+   * (normal scan) passes nullptr / 0 and requireMetadata=false, so local
+   * GROUP BY metadata can still come from the scanned table descriptor.
+   * JoinAgg passes requireMetadata=true and must have setup-time metadata. */
   Int32 initGBTypes(Dbtup* block_tup,
                     Dbtup::KeyReqStruct* req_struct,
                     const Uint32* linked_attr_data,
                     Uint32 linked_attr_len,
+                    bool requireMetadata,
                     EmulatedJamBuffer *jamBuf);
+  Int32 initGBTypesFromMetadata(const Uint32* metadata,
+                                Uint32 metadataLen,
+                                EmulatedJamBuffer *jamBuf);
+  Int32 initStringAggSlotFromMetadata(Uint32 aggIndex,
+                                      Uint32 typeId,
+                                      Uint32 maxBytes,
+                                      Uint32 csNumber);
+  Int32 initLoadColumnMetaFromMetadata(Uint32 programOffset,
+                                       Uint32 typeId,
+                                       Uint32 maxBytes,
+                                       Uint32 csNumber,
+                                       Uint32 entryCapacity);
+  Int32 initColumnMetaFromMetadata(Uint32 tableId,
+                                   Uint32 tableVersion,
+                                   Uint32 columnId,
+                                   Uint32 typeId,
+                                   Uint32 maxBytes,
+                                   Uint32 csNumber,
+                                   Uint32 entryCapacity);
+  const LoadColumnMeta* findLoadColumnMeta(Uint32 programOffset) const;
+  const ColumnMeta* findColumnMeta(Uint32 tableId,
+                                   Uint32 tableVersion,
+                                   Uint32 columnId) const;
+  Int32 publishGBTypes(EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.
    * `initBufBlock` allocates one combined block from RG_QUERY_MEMORY
@@ -513,8 +574,18 @@ class AggInterpreterBase : public PushdownInterpreter {
    * GBHashTable uses these for charset-aware hash + comparison. */
   GBColTypeInfo* m_gb_types;
   bool m_gb_types_inited;
-  uchar* m_xfrm_buf;       // scratch buffer for strnxfrm_hash
-  Uint32 m_xfrm_buf_len;   // size in bytes
+  /* D26: the strnxfrm scratch buffer is no longer owned by this (thread-
+   * shared) interpreter — the group-key hash takes a per-LDM-thread buffer
+   * (Dbtup::getAggXfrmBuf) as a required argument instead. */
+
+  LoadColumnMeta* m_load_column_meta;
+  Uint32 m_load_column_meta_count;
+  Uint32 m_load_column_meta_capacity;
+  ColumnMeta* m_column_meta;
+  Uint32 m_column_meta_count;
+  Uint32 m_column_meta_capacity;
+  Uint32* m_column_meta_hash;
+  Uint32 m_column_meta_hash_size;
 };
 
 #endif  // AGGINTERPRETERBASE_H_

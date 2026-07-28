@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1703,7 +1703,7 @@ class alignas(NDB_CL) SimulatedBlock
 
 #define AVERAGE_SIGNAL_SIZE 16
 #define MIN_QUERY_INSTANCES_PER_RR_GROUP 4
-#define MAX_QUERY_INSTANCES_PER_RR_GROUP 18
+#define MAX_QUERY_INSTANCES_PER_RR_GROUP 32
 #define LOAD_SCAN_FRAGREQ 4
 #define RR_LOAD_REFRESH_COUNT 48
 #define NUM_LQHKEYREQ_COUNTS 4

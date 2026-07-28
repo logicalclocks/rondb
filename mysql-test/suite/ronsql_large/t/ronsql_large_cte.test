@@ -1,0 +1,167 @@
+# ronsql_large_cte — large-data aggregating-CTE coverage.
+#
+# Few queries, big volume.  Data (20000 customers, 100000 orders) is bulk-
+# loaded by the deterministic load_ronsql_large program (block_unit_test),
+# reachable as $NDB_PUSH_AGG_DIR/load_ronsql_large (NDB_PUSH_AGG_DIR is
+# derived by mtr from the testJoinAgg binary's directory).  Every query is run
+# through the differential harness (mysql client baseline vs RonSQL via RDRS,
+# sorted TSV, strict_diff) so any divergence at scale fails the test.
+#
+# Scale rationale: 20000 distinct GROUP BY keys cross the 256-row API batch
+# boundary many times over, and on this suite's 2-NG x 2-rep (4 data node)
+# topology each customer's rows spread across fragments in both node groups,
+# so the per-node partial aggregates must be redistributed and merged.
+#
+# Shapes are restricted to the proven CTE envelope:
+#   (A) aggregation over a CTE complete-key lookup leaf joined to a real table
+#       (real_table JOIN cte, main GROUP BY a parent dimension), and
+#   (B) re-aggregation over a CTE_SCAN root (WITH x AS (...agg...) SELECT agg
+#       FROM x).
+# Direct projection over a CTE_SCAN root (SELECT cols FROM cte) is NOT in the
+# envelope, so every main SELECT here re-aggregates.
+#
+# Aggregates are restricted to INTEGER / DECIMAL / DATE columns (never
+# FLOAT/DOUBLE SUM): DECIMAL and integer addition are associative, so RonSQL's
+# partial-sum order matches MySQL exactly under strict_diff.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Join queries: ronsql_cli does not refresh its NDB dictionary cache for
+# joins, so we compare the mysql client against RDRS only (the CTE-suite
+# convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--echo
+--echo === Row-count sanity ===
+SELECT COUNT(*) AS lg_cust   FROM lg_cust;
+SELECT COUNT(*) AS lg_orders FROM lg_orders;
+SELECT COUNT(DISTINCT lg_cust) AS distinct_custs FROM lg_orders;
+
+--echo
+--echo === Q1 (form B): high-cardinality CTE GROUP BY (20000 groups), scalar
+--echo ===     reduce over CTE_SCAN root — multi-batch + cross-NG redistribution ===
+DELIMITER |;
+let $QUERY=
+WITH per_cust AS (
+  SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust)
+SELECT SUM(s) AS total_amount, SUM(c) AS total_rows, COUNT(*) AS group_count
+FROM per_cust;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH per_cust AS (
+  SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust)
+SELECT SUM(s) AS total_amount, SUM(c) AS total_rows, COUNT(*) AS group_count
+FROM per_cust|
+DELIMITER ;|
+
+--echo
+--echo === Q2 (form A): high-cardinality CTE complete-key lookup leaf (20000
+--echo ===     lookups) joined to a real table, main re-aggregation GROUP BY
+--echo ===     region (per-region MIN/MAX over DECIMAL + SUM + COUNT) ===
+DELIMITER |;
+let $QUERY=
+WITH per_cust AS (
+  SELECT lg_cust AS k, SUM(lg_amount) AS s, MIN(lg_amount) AS mn,
+         MAX(lg_amount) AS mx, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, SUM(per_cust.s) AS region_total, MIN(per_cust.mn) AS region_min,
+       MAX(per_cust.mx) AS region_max, SUM(per_cust.c) AS region_rows
+FROM lg_cust AS c JOIN per_cust ON per_cust.k = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH per_cust AS (
+  SELECT lg_cust AS k, SUM(lg_amount) AS s, MIN(lg_amount) AS mn,
+         MAX(lg_amount) AS mx, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, SUM(per_cust.s) AS region_total, MIN(per_cust.mn) AS region_min,
+       MAX(per_cust.mx) AS region_max, SUM(per_cust.c) AS region_rows
+FROM lg_cust AS c JOIN per_cust ON per_cust.k = c.lc_id
+GROUP BY c.lc_region|
+DELIMITER ;|
+
+--echo
+--echo === Q3 (form B): filtered CTE body (WHERE lg_status='O') + high-cardinality
+--echo ===     GROUP BY, scalar reduce ===
+DELIMITER |;
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+WITH open_orders AS (
+  SELECT lg_cust AS k, COUNT(*) AS c, SUM(lg_qty) AS q
+  FROM lg_orders WHERE lg_status = 'O' GROUP BY lg_cust)
+SELECT COUNT(*) AS active_custs, SUM(c) AS active_orders, SUM(q) AS total_qty
+FROM open_orders;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH open_orders AS (
+  SELECT lg_cust AS k, COUNT(*) AS c, SUM(lg_qty) AS q
+  FROM lg_orders WHERE lg_status = 'O' GROUP BY lg_cust)
+SELECT COUNT(*) AS active_custs, SUM(c) AS active_orders, SUM(q) AS total_qty
+FROM open_orders|
+DELIMITER ;|
+
+--echo
+--echo === Q4 (form B): multi-column GROUP BY (lg_cust, lg_status) — up to 60000
+--echo ===     groups, heavy redistribution, scalar reduce ===
+DELIMITER |;
+let $QUERY=
+WITH g AS (
+  SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust, lg_status)
+SELECT COUNT(*) AS group_count, SUM(q) AS total_qty, SUM(c) AS total_rows
+FROM g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH g AS (
+  SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust, lg_status)
+SELECT COUNT(*) AS group_count, SUM(q) AS total_qty, SUM(c) AS total_rows
+FROM g|
+DELIMITER ;|
+
+--echo
+--echo === Q5 (form B): temporal MIN/MAX (DATE) over a high-cardinality CTE,
+--echo ===     re-aggregated over a CTE_SCAN root ===
+DELIMITER |;
+let $QUERY=
+WITH per_cust AS (
+  SELECT lg_cust AS k, MIN(lg_date) AS mn, MAX(lg_date) AS mx, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust)
+SELECT MIN(mn) AS first_d, MAX(mx) AS last_d, SUM(c) AS total_rows,
+       COUNT(*) AS group_count
+FROM per_cust;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH per_cust AS (
+  SELECT lg_cust AS k, MIN(lg_date) AS mn, MAX(lg_date) AS mx, COUNT(*) AS c
+  FROM lg_orders GROUP BY lg_cust)
+SELECT MIN(mn) AS first_d, MAX(mx) AS last_d, SUM(c) AS total_rows,
+       COUNT(*) AS group_count
+FROM per_cust|
+DELIMITER ;|
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

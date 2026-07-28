@@ -94,8 +94,7 @@ class GBHashTable {
   GBHashTable()
     : m_size(0), m_bucket_count(BUCKET_COUNT),
       m_bucket_mask(BUCKET_COUNT - 1),
-      m_col_types(nullptr), m_n_gb_cols(0),
-      m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
+      m_col_types(nullptr), m_n_gb_cols(0) {
     memset(m_buckets, 0, sizeof(m_buckets));
   }
 
@@ -111,22 +110,31 @@ class GBHashTable {
     m_size = 0;
   }
 
-  char* find(const char* key, Uint32 key_len) const {
-    Uint32 b = hashKey(key, key_len);
+  /* D26: find()/insert()/erase()/insertRaw()/hashKey()/hashKeyFull() all
+   * REQUIRE a caller-supplied per-LDM-thread strnxfrm scratch buffer
+   * (Dbtup::getAggXfrmBuf).  This hash table is shared across LDM threads, so
+   * the buffer must never be a member of it — making the param mandatory (no
+   * default) means the compiler rejects any call that would compute a group-key
+   * hash in a buffer another thread could clobber. */
+  char* find(const char* key, Uint32 key_len,
+             uchar* xfrm_buf, Uint32 xfrm_buf_len) const {
+    Uint32 b = hashKey(key, key_len, xfrm_buf, xfrm_buf_len);
     return findInBucket(b, key, key_len);
   }
 
-  void insert(char* data_ptr, Uint32 key_len) {
+  void insert(char* data_ptr, Uint32 key_len,
+              uchar* xfrm_buf, Uint32 xfrm_buf_len) {
     char* raw = data_ptr - OVERHEAD;
-    Uint32 b = hashKey(data_ptr, key_len);
+    Uint32 b = hashKey(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
     hashNext(raw) = m_buckets[b];
     m_buckets[b] = raw;
     m_size++;
   }
 
-  void erase(char* data_ptr, Uint32 key_len) {
+  void erase(char* data_ptr, Uint32 key_len,
+             uchar* xfrm_buf, Uint32 xfrm_buf_len) {
     char* raw = data_ptr - OVERHEAD;
-    Uint32 b = hashKey(data_ptr, key_len);
+    Uint32 b = hashKey(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
     char** prev = &m_buckets[b];
     while (*prev != nullptr) {
       if (*prev == raw) {
@@ -221,10 +229,11 @@ class GBHashTable {
     return raw + OVERHEAD;
   }
 
-  void insertRaw(char* data_ptr) {
+  void insertRaw(char* data_ptr,
+                 uchar* xfrm_buf, Uint32 xfrm_buf_len) {
     char* raw = data_ptr - OVERHEAD;
     Uint32 key_len = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
-    Uint32 b = hashKey(data_ptr, key_len);
+    Uint32 b = hashKey(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
     hashNext(raw) = m_buckets[b];
     m_buckets[b] = raw;
     m_size++;
@@ -232,16 +241,20 @@ class GBHashTable {
 
   bool bucketEmpty(Uint32 b) const { return m_buckets[b] == nullptr; }
 
-  void setTypeMeta(const GBColTypeInfo *types, Uint32 nCols,
-                   uchar *xfrm_buf, Uint32 xfrm_buf_len) {
+  void setTypeMeta(const GBColTypeInfo *types, Uint32 nCols) {
     m_col_types = types;
     m_n_gb_cols = nCols;
-    m_xfrm_buf = xfrm_buf;
-    m_xfrm_buf_len = xfrm_buf_len;
   }
 
-  Uint64 hashKeyFull(const char* key, Uint32 len) const;
-  Uint32 hashKey(const char* key, Uint32 len) const;
+  /* D26: the strnxfrm scratch buffer is NOT a member of this (thread-shared)
+   * hash table — every hash-computing method REQUIRES the caller to pass a
+   * per-LDM-thread buffer (Dbtup::getAggXfrmBuf).  No default: the compiler
+   * forbids any call that would otherwise fall back to a shared buffer and
+   * race a concurrent thread's hash computation. */
+  Uint64 hashKeyFull(const char* key, Uint32 len,
+                     uchar* xfrm_buf, Uint32 xfrm_buf_len) const;
+  Uint32 hashKey(const char* key, Uint32 len,
+                 uchar* xfrm_buf, Uint32 xfrm_buf_len) const;
   char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const;
 
  private:
@@ -251,8 +264,6 @@ class GBHashTable {
   Uint32 m_bucket_mask;
   const GBColTypeInfo *m_col_types;
   Uint32 m_n_gb_cols;
-  uchar *m_xfrm_buf;              // scratch buffer for strnxfrm_hash
-  Uint32 m_xfrm_buf_len;          // size in bytes
 
   static char*& hashNext(char* raw) {
     return *reinterpret_cast<char**>(raw + HASH_NEXT_OFFSET);
@@ -280,11 +291,18 @@ using JoinGBHashTable = GBHashTable<JOIN_AGG_HASH_BUCKET_COUNT>;
  */
 template<Uint32 BUCKET_COUNT>
 Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
-                                              Uint32 len) const {
+                                              Uint32 len,
+                                              uchar* xfrm_buf,
+                                              Uint32 xfrm_buf_len) const {
   if (m_col_types == nullptr) {
     return rondb_xxhash_std(key, len);
   }
 
+  /* D26: hash strictly into the caller-supplied per-LDM-thread scratch
+   * (xfrm_buf).  strnxfrm_hash is deterministic, so the hash value is identical
+   * regardless of which (sufficiently large) buffer is used — stored and
+   * looked-up keys still land in the same bucket, but no buffer is shared
+   * across threads. */
   // Type-aware path: hash column-by-column
   Uint64 hash = 0;
   const Uint32* p = reinterpret_cast<const Uint32*>(key);
@@ -303,11 +321,11 @@ Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
       Uint32 defLen = maxBytes - lb;
       int n = NdbSqlUtil::strnxfrm_hash(m_col_types[i].cs,
                                          m_col_types[i].typeId,
-                                         m_xfrm_buf, m_xfrm_buf_len,
+                                         xfrm_buf, xfrm_buf_len,
                                          src + lb, srcLen, defLen);
       if (n > 0) {
-        Uint64 colHash = rondb_xxhash_std(reinterpret_cast<const char*>(m_xfrm_buf),
-                                          n);
+        Uint64 colHash = rondb_xxhash_std(
+            reinterpret_cast<const char*>(xfrm_buf), n);
         hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
       }
     } else {
@@ -335,8 +353,11 @@ Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
 }
 
 template<Uint32 BUCKET_COUNT>
-Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
-  return static_cast<Uint32>(hashKeyFull(key, len)) & m_bucket_mask;
+Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len,
+                                          uchar* xfrm_buf,
+                                          Uint32 xfrm_buf_len) const {
+  return static_cast<Uint32>(
+             hashKeyFull(key, len, xfrm_buf, xfrm_buf_len)) & m_bucket_mask;
 }
 
 template<Uint32 BUCKET_COUNT>

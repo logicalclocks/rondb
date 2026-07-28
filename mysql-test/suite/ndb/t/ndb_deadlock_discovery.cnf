@@ -1,0 +1,9 @@
+!include suite/ndb/my.cnf
+
+[cluster_config.1]
+# RONDB-1062 proactive deadlock discovery test.
+# Set the transaction deadlock detection timeout very high so that a deadlock
+# which is resolved quickly proves that PROACTIVE detection fired (DBACC ->
+# DBTC wait-for edges), rather than the slow timeout backstop.
+TransactionDeadlockDetectionTimeout = 60000
+EnableProactiveDeadlockDetection = 1

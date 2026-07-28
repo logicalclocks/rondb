@@ -180,6 +180,9 @@ struct TableMeta {
   Uint32 fragCount;
   std::vector<Uint32> fragNodes;
   std::map<std::string, Uint32> attrIds;
+  std::map<std::string, Uint32> types;
+  std::map<std::string, Uint32> maxBytes;
+  std::map<std::string, Uint32> charsetNumbers;
 };
 
 /* ------------------------------------------------------------------ */
@@ -274,6 +277,38 @@ buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
 
   assert(pos == PROG_LEN);
   return prog;
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadataContainer_Q12(const TableMeta &lineitemMeta)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(1);  /* one GROUP BY metadata entry */
+
+  block.push_back(JOIN_AGG_META_SOURCE_LINKED_COLUMN);
+  block.push_back(0);  /* linked position 0 = l_shipmode */
+  block.push_back(8);  /* GROUP BY program word */
+  block.push_back(0);  /* GROUP BY slot */
+  block.push_back(lineitemMeta.tableId);
+  block.push_back(lineitemMeta.schemaVersion);
+  block.push_back(lineitemMeta.attrIds.at("l_shipmode"));
+  block.push_back(lineitemMeta.types.at("l_shipmode"));
+  block.push_back(lineitemMeta.maxBytes.at("l_shipmode"));
+  block.push_back(lineitemMeta.charsetNumbers.at("l_shipmode"));
+  block.push_back(0);  /* precision/scale */
+  block.push_back(JOIN_AGG_META_FLAG_GROUP_BY);
+
+  std::vector<Uint32> container;
+  container.push_back(JOIN_AGG_META_MARKER);
+  container.push_back(JOIN_AGG_META_VERSION);
+  container.push_back(1);  /* one metadata block */
+  container.push_back(JOIN_AGG_META_KIND_MAIN);
+  container.push_back(RNIL);
+  container.push_back((Uint32)block.size());
+  container.insert(container.end(), block.begin(), block.end());
+  return container;
 }
 
 /* ------------------------------------------------------------------ */
@@ -652,6 +687,10 @@ loadTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta)
   for (int i = 0; i < ptab->getNoOfColumns(); i++) {
     const NdbDictionary::Column *col = ptab->getColumn(i);
     meta.attrIds[col->getName()] = col->getAttrId();
+    meta.types[col->getName()] = col->getType();
+    meta.maxBytes[col->getName()] = col->getSizeInBytes();
+    meta.charsetNumbers[col->getName()] =
+        col->getCharset() != nullptr ? col->getCharsetNumber() : 0;
   }
 
   meta.fragNodes.resize(meta.fragCount);
@@ -940,6 +979,7 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
                const TableMeta &scanMeta,
                const std::vector<Uint32> &queryTree,
                const std::vector<Uint32> &aggProgram,
+               const std::vector<Uint32> &columnMeta,
                Uint32 receiverIdBase, Uint32 parallelism,
                Uint32 numRecvIds)
 {
@@ -978,6 +1018,7 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back(0);  // boundsLen = 0 (no bounds)
   aggSection.push_back(receiverIdBase);
   aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
+  aggSection.insert(aggSection.end(), columnMeta.begin(), columnMeta.end());
 
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = &dummyReceiverId;
@@ -993,9 +1034,10 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   }
 
   V("  Sent SCAN_TABREQ: requestInfo=0x%08x, parallelism=%u, "
-    "receivers=%u, queryTree=%zu words, aggProgram=%zu words\n",
+    "receivers=%u, queryTree=%zu words, aggProgram=%zu words, "
+    "columnMeta=%zu words\n",
     requestInfo, parallelism, numRecvIds,
-    queryTree.size(), aggProgram.size());
+    queryTree.size(), aggProgram.size(), columnMeta.size());
   return 0;
 }
 
@@ -1319,6 +1361,8 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   Uint32 localPriorityAttrId = ordersMeta.attrIds.at("o_orderpriority");
   std::vector<Uint32> aggProgram =
     buildAggProgram_Q12(linkedShipmodeAttrId, localPriorityAttrId);
+  std::vector<Uint32> columnMeta =
+    buildJoinAggMetadataContainer_Q12(lineitemMeta);
 
   V("ScanFilter: %zu words, QueryTree: %zu words, AggProgram: %zu words\n",
     scanFilter.size(), queryTree.size(), aggProgram.size());
@@ -1341,7 +1385,7 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   /* Send SCAN_TABREQ */
   int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
                           lineitemMeta, queryTree, aggProgram,
-                          receiverId, scanParallel, numReceivers);
+                          columnMeta, receiverId, scanParallel, numReceivers);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
     return -1;
@@ -1720,7 +1764,8 @@ int main(int argc, char **argv)
   ndb_end(0);
 
   if (result == 0) {
-    write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) result = 1;
   }
   close(mtr_fd);
 

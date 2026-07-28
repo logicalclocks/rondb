@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -633,6 +633,7 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   addRecSignal(GSN_JOIN_AGG_SEND_REQ, &Dbtc::execJOIN_AGG_SEND_REQ);
   addRecSignal(GSN_CTE_SCAN_COMPLETE_REP, &Dbtc::execCTE_SCAN_COMPLETE_REP);
   addRecSignal(GSN_CTE_PHASE_COMPLETE_REP, &Dbtc::execCTE_PHASE_COMPLETE_REP);
+  addRecSignal(GSN_DBACC_WAITFOR_REP, &Dbtc::execDBACC_WAITFOR_REP);
 
   hostRecord = 0;
   tableRecord = 0;

@@ -1,5 +1,5 @@
 #
-# Case 1: Basic backup/restore — data rows preserved
+# Case 1: Basic backup/restore - data rows preserved
 #
 CREATE TABLE test.rb (
 client_id INT NOT NULL,
@@ -29,7 +29,7 @@ client_id	ring_idx	event_data
 1	3	ev_C
 DROP TABLE test.rb;
 #
-# Case 2: Wrapped ring backup/restore — wrapped state preserved
+# Case 2: Wrapped ring backup/restore - wrapped state preserved
 #
 CREATE TABLE test.rb_wrap (
 id INT NOT NULL,
@@ -275,7 +275,7 @@ id	ring_idx	code
 3	1	500
 DROP TABLE test.rb_nn_uniq;
 #
-# Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+# Case 9: NOT NULL + unique index - 4-step restore with rebuild-indexes
 #
 CREATE TABLE test.rb_nn_rebuild (
 id INT NOT NULL,

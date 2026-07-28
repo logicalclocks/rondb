@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -3269,6 +3269,30 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
     }
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(15002) && pages >= 3 && max > pages) {
+    /**
+     * Test of restart with a hole in the UNDO log. Zero one page near the
+     * end of this multi-page write to simulate a write that was only
+     * partially persisted at a crash (up to 16 MByte can be outstanding
+     * and the file system can persist those pages in any order). The
+     * zeroed page reads back as PT_Unallocated, with a written page
+     * carrying higher LSNs following it. Error insert 15003 then crashes
+     * the node when this write (including its fsync) has completed, so
+     * the hole is guaranteed to be durable on disk.
+     */
+    jam();
+    Uint32 hole_idx = pages - 2;
+    GlobalPage *zero_page = m_shared_page_pool.getPtr(pageId + hole_idx);
+    memset(zero_page, 0, GLOBAL_PAGE_SIZE);
+    g_eventLogger->info("LGMAN: ERROR_INSERT 15002: zeroing page %u in write"
+                        " of %u pages starting at file page %u, crash at"
+                        " write completion",
+                        1 + head.m_idx + hole_idx, pages, 1 + head.m_idx);
+    SET_ERROR_INSERT_VALUE(15003);
+  }
+#endif
+
   FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
   req->filePointer = filePtr.p->m_fd;
   req->userReference = reference();
@@ -3379,6 +3403,13 @@ void Lgman::execFSWRITEREF(Signal *signal) {
 
 void Lgman::execFSWRITECONF(Signal *signal) {
   jamEntry();
+  /**
+   * Error insert 15002 zeroed a page in the just completed UNDO log
+   * write. Crash now that the write and its fsync are done, so that
+   * the node restart finds a durable hole in the UNDO log followed
+   * by a written page with higher LSNs.
+   */
+  CRASH_INSERTION(15003);
   client_lock(number(), __LINE__, this);
   FsConf *conf = (FsConf *)signal->getDataPtr();
   Ptr<Undofile> file_ptr;
@@ -4113,6 +4144,7 @@ void Lgman::find_log_head(Signal *signal, Ptr<Logfile_group> lg_ptr) {
      */
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding = page_id;
+    file_ptr.p->m_online.m_read_page_idx = 1;
 
     DEB_LGMAN_START(("Read page 1 in file %u", file_ptr.p->m_file_id));
     FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
@@ -4155,6 +4187,7 @@ void Lgman::find_log_head(Signal *signal, Ptr<Logfile_group> lg_ptr) {
 
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding = page_id;
+    file_ptr.p->m_online.m_read_page_idx = lg_ptr.p->m_file_pos[HEAD].m_ptr_i;
 
     FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
     req->filePointer = file_ptr.p->m_fd;
@@ -4251,7 +4284,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
   {
     jam();
     DEB_LGMAN_START(("Read page %u in file %u, PT_Unallocated",
-      file_ptr.p->m_online.m_outstanding,
+      file_ptr.p->m_online.m_read_page_idx,
       file_ptr.p->m_file_id));
 
     page->m_page_header.m_page_lsn_hi = 0;
@@ -4269,7 +4302,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
     page->m_page_header.m_page_type = File_formats::PT_Undopage;
   } else {
     DEB_LGMAN_START_EXTRA(("Read page %u in file %u, page_type: %u",
-      file_ptr.p->m_online.m_outstanding,
+      file_ptr.p->m_online.m_read_page_idx,
       file_ptr.p->m_file_id,
       page->m_page_header.m_type));
   }
@@ -4432,6 +4465,7 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
 
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding = page_id;
+    file_ptr.p->m_online.m_read_page_idx = curr;
 
     FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
     req->filePointer = file_ptr.p->m_fd;
@@ -4533,6 +4567,18 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
           " search, binary search head found: %u",
           lg_ptr.p->m_file_pos[HEAD].m_idx);
     }
+    /**
+     * The written page becomes the new end of the log, so we must also
+     * record its LSN as the highest LSN found so far. Failure to do so
+     * leaves m_next_lsn, m_last_read_lsn and m_last_synced_lsn at the
+     * LSN found by the binary search. Starting UNDO log execution at
+     * this page with those stale LSNs fails the page LSN validation in
+     * get_next_undo_record. Even worse, resuming logging with a stale
+     * m_next_lsn writes new records with LSNs that already exist in
+     * this page, breaking the LSN monotonicity that the binary search
+     * in a later restart depends upon.
+     */
+    file_ptr.p->m_online.m_lsn = last_lsn;
     lg_ptr.p->m_file_pos[HEAD].m_idx = curr;
     lg_ptr.p->m_file_pos[TAIL].m_idx = curr - 1;
 
@@ -4551,6 +4597,20 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
                           lg_ptr.p->m_last_read_lsn,
                           lg_ptr.p->m_last_synced_lsn);
     }
+    /**
+     * Restart the scan window at the new head. The binary search can
+     * converge on a hole left behind by an earlier crash (an unwritten
+     * page followed by written pages with higher LSNs that was never
+     * rewritten since it is behind the log head). In that case the true
+     * end of the log can be much more than MAX_UNDO_PAGES_OUTSTANDING
+     * pages ahead of the position found by the binary search. Every
+     * page adopted as new head restarts the window, so the scan always
+     * continues until MAX_UNDO_PAGES_OUTSTANDING pages have been seen
+     * after the last written page with a new highest LSN. The scan
+     * still terminates since each reset requires a strictly higher
+     * page LSN and the file is finite.
+     */
+    scanned_pages = 0;
   }
 
   curr++;
@@ -4562,6 +4622,7 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
     jam();
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding = page_id;
+    file_ptr.p->m_online.m_read_page_idx = curr;
 
     FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
     req->filePointer = file_ptr.p->m_fd;
@@ -4590,6 +4651,7 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
   Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
   file_ptr.p->m_online.m_outstanding = page_id;
   curr = lg_ptr.p->m_file_pos[HEAD].m_idx;
+  file_ptr.p->m_online.m_read_page_idx = curr;
 
   FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
   req->filePointer = file_ptr.p->m_fd;

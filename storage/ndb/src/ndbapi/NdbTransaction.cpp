@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -38,6 +38,7 @@
 #include <signaldata/TcKeyConf.hpp>
 #include <signaldata/TcKeyFailConf.hpp>
 #include <signaldata/TcRollbackRep.hpp>
+#include <signaldata/TcDeadlockRep.hpp>
 #include <signaldata/QueryDatabase.hpp>
 #include <signaldata/DropDatabase.hpp>
 
@@ -360,6 +361,11 @@ NdbTransaction::NdbTransaction(Ndb *aNdb)
       m_current_username(nullptr) {
   theListState = NotInList;
   theError.code = 0;
+  // RONDB-1062: deadlock detail starts empty (init() re-clears on reuse).
+  theDeadlockDetailValid = false;
+  theDeadlockTableId1 = RNIL;
+  theDeadlockTableId2 = RNIL;
+  theDeadlockOperation = nullptr;
   // theId = NdbObjectIdMap::InvalidId;
   theId = theNdb->theImpl->mapRecipient(this);
 
@@ -412,6 +418,12 @@ int NdbTransaction::init() {
   theError.code		  = 0;
   theErrorLine		  = 0;
   theErrorOperation	  = nullptr;
+
+  // RONDB-1062: clear any cached deadlock detail from a prior use.
+  theDeadlockDetailValid  = false;
+  theDeadlockTableId1     = RNIL;
+  theDeadlockTableId2     = RNIL;
+  theDeadlockOperation    = nullptr;
 
   theReleaseOnClose       = false;
   theSimpleState          = true;
@@ -2664,6 +2676,72 @@ transactions.
 
   DBUG_RETURN(-1);
 }  // NdbTransaction::receiveTCROLLBACKREP()
+
+/**
+ * RONDB-1062 proactive deadlock discovery: cache the optional detail reported
+ * via GSN_TC_DEADLOCK_REP, which DBTC sends just before the abort signal when
+ * it detects a deadlock cycle (and the data node is new enough).  Validated by
+ * transaction id.  The victim op handle is an NdbReceiver object-map id; we
+ * resolve it here, while the operation is still live, and verify it belongs to
+ * this transaction.  The cached values back wasDeadlock() /
+ * getDeadlockTableIds() / getDeadlockOperation() and are cleared in init().
+ */
+void NdbTransaction::receiveTcDeadlockRep(const TcDeadlockRep *rep) {
+  const Uint64 reportTransId =
+      ((Uint64)rep->transId2 << 32) | (Uint64)rep->transId1;
+  if (theTransactionId != reportTransId) {
+    return;  // stale or mismatched report; ignore
+  }
+  theDeadlockDetailValid =
+      (rep->deadlockReason & TcDeadlockRep::RealDeadlock) != 0;
+  theDeadlockTableId1 = rep->tableId1;
+  theDeadlockTableId2 = rep->tableId2;
+  theDeadlockOperation = nullptr;
+  if (rep->victimOpRef != RNIL) {
+    void *const p = theNdb->theImpl->int2void(rep->victimOpRef);
+    if (p != nullptr) {
+      NdbReceiver *const rec = NdbImpl::void2rec(p);
+      if (rec != nullptr && rec->checkMagicNumber()) {
+        const NdbReceiver::ReceiverType t = rec->getType();
+        if ((t == NdbReceiver::NDB_OPERATION ||
+             t == NdbReceiver::NDB_INDEX_OPERATION) &&
+            rec->getTransaction(t) == this) {
+          theDeadlockOperation = (const NdbOperation *)rec->getOwner();
+        }
+      }
+    }
+  }
+  NdbTransaction *owner = nullptr;
+  if (theScanningOp != nullptr) {
+    owner = theScanningOp->getNdbTransaction();
+  } else if (m_scanningQuery != nullptr) {
+    owner = &m_scanningQuery->getNdbTransaction();
+  }
+  if (owner != nullptr && owner != this) {
+    owner->receiveTcDeadlockRep(rep);
+  }
+}  // NdbTransaction::receiveTcDeadlockRep()
+
+bool NdbTransaction::wasDeadlock() const { return theDeadlockDetailValid; }
+
+int NdbTransaction::getDeadlockTableIds(Uint32 tableIds[2]) const {
+  if (!theDeadlockDetailValid) {
+    return 0;
+  }
+  int count = 0;
+  if (theDeadlockTableId1 != RNIL) {
+    tableIds[count++] = theDeadlockTableId1;
+  }
+  if (theDeadlockTableId2 != RNIL &&
+      theDeadlockTableId2 != theDeadlockTableId1) {
+    tableIds[count++] = theDeadlockTableId2;
+  }
+  return count;
+}  // NdbTransaction::getDeadlockTableIds()
+
+const NdbOperation *NdbTransaction::getDeadlockOperation() const {
+  return theDeadlockOperation;
+}  // NdbTransaction::getDeadlockOperation()
 
 /*******************************************************************************
 int  receiveTCKEYCONF(NdbApiSignal* aSignal, Uint32 long_short_ind);

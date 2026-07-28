@@ -415,6 +415,107 @@ struct TableMeta {
   Uint32 fragCount;
 };
 
+static void
+appendLocalBigintMetaEntry(std::vector<Uint32> &block,
+                           const TableMeta &tableMeta,
+                           Uint32 columnId,
+                           Uint32 programOffset,
+                           Uint32 slotIndex,
+                           Uint32 flags)
+{
+  block.push_back(JOIN_AGG_META_SOURCE_LOCAL_COLUMN);
+  block.push_back(columnId);
+  block.push_back(programOffset);
+  block.push_back(slotIndex);
+  block.push_back(tableMeta.tableId);
+  block.push_back(tableMeta.schemaVersion);
+  block.push_back(columnId);
+  block.push_back(COL_TYPE_BIGINT);
+  block.push_back(8);
+  block.push_back(0);
+  block.push_back(0);
+  block.push_back(flags);
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadataBlock(const std::vector<Uint32> &aggProgram,
+                          const TableMeta &tableMeta)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(0);
+
+  if (aggProgram.size() < 8 || (aggProgram[0] >> 16) != AGG_MAGIC) {
+    return block;
+  }
+
+  Uint32 entryCount = 0;
+  const Uint32 nGbCols = aggProgram[1] >> 16;
+  for (Uint32 i = 0; i < nGbCols && (8 + i) < aggProgram.size(); i++) {
+    const Uint32 programOffset = 8 + i;
+    const Uint32 columnId = (aggProgram[programOffset] >> 16) & 0xFFFF;
+    appendLocalBigintMetaEntry(block, tableMeta, columnId, programOffset, i,
+                               JOIN_AGG_META_FLAG_GROUP_BY);
+    entryCount++;
+  }
+
+  for (Uint32 i = 8 + nGbCols; i < aggProgram.size(); i++) {
+    const Uint32 op = (aggProgram[i] >> 26) & 0x3F;
+    if (op != kOpLoadCol) continue;
+    const Uint32 columnId = aggProgram[i] & 0xFFFF;
+    appendLocalBigintMetaEntry(block, tableMeta, columnId, i, RNIL,
+                               JOIN_AGG_META_FLAG_LOAD_COLUMN);
+    entryCount++;
+  }
+
+  block[2] = entryCount;
+  return block;
+}
+
+static void
+appendJoinAggMetadataBlock(std::vector<Uint32> &section,
+                           Uint32 kind,
+                           Uint32 cteIndex,
+                           const std::vector<Uint32> &block)
+{
+  section.push_back(kind);
+  section.push_back(cteIndex);
+  section.push_back(static_cast<Uint32>(block.size()));
+  section.insert(section.end(), block.begin(), block.end());
+}
+
+static void
+appendJoinAggMetadataContainer(std::vector<Uint32> &section,
+                               const TableMeta &meta,
+                               const std::vector<Uint32> *mainAggProgram,
+                               const std::vector<Uint32> *cte0AggProgram,
+                               const std::vector<Uint32> *cte1AggProgram)
+{
+  const Uint32 blockCount = (mainAggProgram != nullptr ? 1 : 0) +
+                            (cte0AggProgram != nullptr ? 1 : 0) +
+                            (cte1AggProgram != nullptr ? 1 : 0);
+  section.push_back(JOIN_AGG_META_MARKER);
+  section.push_back(JOIN_AGG_META_VERSION);
+  section.push_back(blockCount);
+
+  if (mainAggProgram != nullptr) {
+    const std::vector<Uint32> block =
+      buildJoinAggMetadataBlock(*mainAggProgram, meta);
+    appendJoinAggMetadataBlock(section, JOIN_AGG_META_KIND_MAIN, RNIL, block);
+  }
+  if (cte0AggProgram != nullptr) {
+    const std::vector<Uint32> block =
+      buildJoinAggMetadataBlock(*cte0AggProgram, meta);
+    appendJoinAggMetadataBlock(section, JOIN_AGG_META_KIND_CTE, 0, block);
+  }
+  if (cte1AggProgram != nullptr) {
+    const std::vector<Uint32> block =
+      buildJoinAggMetadataBlock(*cte1AggProgram, meta);
+    appendJoinAggMetadataBlock(section, JOIN_AGG_META_KIND_CTE, 1, block);
+  }
+}
+
 static int
 sqlExec(MYSQL *conn, const char *query)
 {
@@ -535,18 +636,28 @@ seizeTcConnect(SignalSender &ss, Uint32 nodeId,
     fprintf(stderr, "sendSignal TCSEIZEREQ failed\n");
     return -1;
   }
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCSEIZECONF");
-  if (resp == nullptr) return -1;
-  int gsn = getGsn(resp);
-  if (gsn == GSN_TCSEIZECONF) {
-    apiConnectPtrOut = resp->getDataPtr()[1];
-    tcRefOut = resp->getDataPtr()[2];
-    V("TCSEIZECONF: apiConnectPtr=%u tcRef=0x%08x\n",
-      apiConnectPtrOut, tcRefOut);
-    return 0;
+
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCSEIZECONF");
+    if (resp == nullptr) return -1;
+
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TCSEIZECONF) {
+      apiConnectPtrOut = resp->getDataPtr()[1];
+      tcRefOut = resp->getDataPtr()[2];
+      V("TCSEIZECONF: apiConnectPtr=%u tcRef=0x%08x\n",
+        apiConnectPtrOut, tcRefOut);
+      return 0;
+    }
+    if (gsn == GSN_TCSEIZEREF) {
+      fprintf(stderr, "TCSEIZEREF: errorCode=%u\n",
+              resp->getDataPtr()[1]);
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCSEIZECONF\n", gsn);
   }
-  fprintf(stderr, "Unexpected GSN %d waiting for TCSEIZECONF\n", gsn);
-  return -1;
 }
 
 static int
@@ -560,9 +671,22 @@ releaseTcConnect(SignalSender &ss, Uint32 nodeId,
   data[2] = 0;
   ssig.set(ss, 0, refToBlock(tcRef), GSN_TCRELEASEREQ, 3);
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) return -1;
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCRELEASECONF");
-  if (resp == nullptr) return -1;
-  return (getGsn(resp) == GSN_TCRELEASECONF) ? 0 : -1;
+
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCRELEASECONF");
+    if (resp == nullptr) return -1;
+
+    const int gsn = getGsn(resp);
+    if (gsn == GSN_TCRELEASECONF) {
+      return 0;
+    }
+    if (gsn == GSN_TCRELEASEREF) {
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCRELEASECONF\n", gsn);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -655,6 +779,8 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back((Uint32)cte1AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte1AggProgram.begin(), cte1AggProgram.end());
+  appendJoinAggMetadataContainer(aggSection, meta, &mainAggProgram,
+                                 &cte0AggProgram, &cte1AggProgram);
 
   ssig.header.m_noOfSections = 3;
   /* Provide fragCount receiver IDs (unused for JoinAgg, but DBTC's
@@ -746,6 +872,8 @@ sendScanTabReqWithCtesMultiPhase(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back((Uint32)cte1AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte1AggProgram.begin(), cte1AggProgram.end());
+  appendJoinAggMetadataContainer(aggSection, meta, &mainAggProgram,
+                                 &cte0AggProgram, &cte1AggProgram);
 
   ssig.header.m_noOfSections = 3;
   std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
@@ -1188,6 +1316,8 @@ sendScanTabReqWithCteLookup(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back((Uint32)cte0AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte0AggProgram.begin(), cte0AggProgram.end());
+  appendJoinAggMetadataContainer(aggSection, meta, nullptr,
+                                 &cte0AggProgram, nullptr);
 
   ssig.header.m_noOfSections = 3;
   std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
@@ -2825,7 +2955,8 @@ int main(int argc, char *argv[])
   ndb_end(0);
 
   if (result == 0) {
-    write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) result = 1;
   }
   close(mtr_fd);
 

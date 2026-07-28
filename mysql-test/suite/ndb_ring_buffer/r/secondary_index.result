@@ -19,7 +19,7 @@ INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'refund', 30)
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (2, 'login', 5);
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (2, 'purchase', 100);
 #
-# Case 1: SELECT via secondary index on VARCHAR — meta rows hidden
+# Case 1: SELECT via secondary index on VARCHAR - meta rows hidden
 #
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
 WHERE event_type = 'login'
@@ -29,7 +29,7 @@ client_id	ring_idx	event_type	amount
 1	3	login	20
 2	1	login	5
 #
-# Case 2: SELECT via secondary index on INT — meta rows hidden
+# Case 2: SELECT via secondary index on INT - meta rows hidden
 #
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
 WHERE amount >= 20
@@ -40,7 +40,7 @@ client_id	ring_idx	event_type	amount
 1	4	refund	30
 2	2	purchase	100
 #
-# Case 3: COUNT via secondary index — correct count (no meta rows)
+# Case 3: COUNT via secondary index - correct count (no meta rows)
 #
 SELECT COUNT(*) AS cnt FROM test.rb_idx WHERE event_type = 'login';
 cnt
@@ -49,7 +49,7 @@ SELECT COUNT(*) AS cnt FROM test.rb_idx WHERE amount > 0;
 cnt
 6
 #
-# Case 4: Range scan via secondary index — meta rows hidden
+# Case 4: Range scan via secondary index - meta rows hidden
 #
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
 WHERE amount BETWEEN 10 AND 50
@@ -60,7 +60,7 @@ client_id	ring_idx	event_type	amount
 1	4	refund	30
 1	2	purchase	50
 #
-# Case 5: After wrap — secondary index scan still filters meta rows
+# Case 5: After wrap - secondary index scan still filters meta rows
 #
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'login', 60);
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'purchase', 70);
@@ -78,7 +78,7 @@ client_id	ring_idx	event_type	amount
 1	2	purchase	70
 2	2	purchase	100
 #
-# Case 6: UPDATE via secondary index WHERE on user column — allowed
+# Case 6: UPDATE via secondary index WHERE on user column - allowed
 #
 UPDATE test.rb_idx SET amount = amount + 1000
 WHERE event_type = 'refund';
@@ -91,7 +91,7 @@ client_id	ring_idx	event_type	amount
 1	3	login	20
 1	4	refund	1030
 #
-# Case 7: GROUP BY with secondary index — meta rows excluded
+# Case 7: GROUP BY with secondary index - meta rows excluded
 #
 SELECT event_type, COUNT(*) AS cnt, SUM(amount) AS total
 FROM test.rb_idx
@@ -102,7 +102,7 @@ login	3	85
 purchase	2	170
 refund	1	1030
 #
-# Case 8: show_meta=ON — meta rows visible even via secondary index scan
+# Case 8: show_meta=ON - meta rows visible even via secondary index scan
 #
 SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
@@ -183,7 +183,7 @@ id	ring_idx	category
 2	1	alpha
 DROP TABLE test.rb_add_idx;
 #
-# Case 11: Duplicate unique value in same PK prefix — ER_DUP_ENTRY
+# Case 11: Duplicate unique value in same PK prefix - ER_DUP_ENTRY
 #
 CREATE TABLE test.rb_uniq_dup_same (
 id INT NOT NULL,
@@ -208,7 +208,7 @@ INSERT INTO test.rb_uniq_dup_same (id, code, val) VALUES (2, 'BBB', 40);
 ERROR 23000: Duplicate entry 'BBB' for key 'rb_uniq_dup_same.idx_code'
 DROP TABLE test.rb_uniq_dup_same;
 #
-# Case 12: Wrap-time collision with active slot — ER_DUP_ENTRY
+# Case 12: Wrap-time collision with active slot - ER_DUP_ENTRY
 #
 CREATE TABLE test.rb_uniq_wrap_dup (
 id INT NOT NULL,

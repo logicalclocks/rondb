@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2026, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -25,11 +25,6 @@ INCLUDE_DIRECTORIES(
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi)
 # NOTE: SimSIMD include path is injected at storage/ndb/ scope already.
-
-# Ensure every TU compiled from this directory sees the runtime-dispatch path.
-if (WITH_SIMSIMD)
-  add_compile_definitions(SIMSIMD_DYNAMIC_DISPATCH=1)
-endif()
 
 ADD_CONVENIENCE_LIBRARY(ndbapi
   AssembleFragments.cpp
@@ -86,14 +81,6 @@ ADD_CONVENIENCE_LIBRARY(ndbapi
   trp_node.cpp
   LINK_LIBRARIES ext::zlib
   )
-
-# --- SimSIMD integration for NDB API -----------------------------------------
-# Make every TU in this target see the runtime-dispatch path in SimSIMD headers
-# and link the SimSIMD runtime (c/lib.c compiled into libsimsimd.*).
-if (WITH_SIMSIMD)
-  # Pull in the SimSIMD runtime library for symbol resolution at final link.
-  target_link_libraries(ndbapi simsimd::simsimd)
-endif()
 
 IF(MY_COMPILER_IS_GNU AND CMAKE_BUILD_TYPE_UPPER STREQUAL "RELWITHDEBINFO")
   ADD_COMPILE_FLAGS(Ndb.cpp

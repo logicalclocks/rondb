@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -27,6 +27,7 @@
 #include "DblqhCommon.hpp"
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
+#include <ndbapi/NdbAggregationCommon.hpp>
 
 // Static definition for node failure counter
 std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
@@ -2290,6 +2291,9 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
       if (state->m_all_programs_buf != nullptr) {
         lc_ndbd_pool_free(state->m_all_programs_buf);
       }
+      if (state->m_column_meta_buf != nullptr) {
+        lc_ndbd_pool_free(state->m_column_meta_buf);
+      }
       if (state->m_leaf_programs != nullptr) {
         lc_ndbd_pool_free(state->m_leaf_programs);
       }
@@ -2391,6 +2395,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_leaf_programs = nullptr;
   state->m_total_agg_results = 0;
   state->m_all_programs_buf = nullptr;
+  state->m_column_meta_buf = nullptr;
+  state->m_column_meta_len = 0;
   state->m_outer_join_agg_scan = false;
   state->m_apiRef = 0;
   state->m_memory_budget_pages = 0;
@@ -2451,6 +2457,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_complete_senderRef = 0;
     state->m_cte_complete_senderData = 0;
     state->m_cte_complete_requestId = 0;
+    state->m_cte_complete_transid[0] = 0;
+    state->m_cte_complete_transid[1] = 0;
+    state->m_cte_complete_hb_scanFragPtrI = RNIL;
+    state->m_cte_complete_last_hb_time = NDB_TICKS();
     state->m_cteScan_transId[0] = 0;
     state->m_cteScan_transId[1] = 0;
     state->m_cteScan_groupsSent = 0;
@@ -2496,10 +2506,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_leaf_programs = nullptr;
   state->m_total_agg_results = 0;
   state->m_all_programs_buf = nullptr;
+  state->m_column_meta_buf = nullptr;
+  state->m_column_meta_len = 0;
   state->m_receiverIds = nullptr;
   state->m_numReceiverIds = 0;
   {
-    if (unlikely(signal->getNoOfSections() != 2)) {
+    const Uint32 noOfSections = signal->getNoOfSections();
+    if (unlikely(noOfSections != 2 && noOfSections != 3)) {
       jam();
       SectionHandle handle(this, signal);
       releaseSections(handle);
@@ -2633,6 +2646,59 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_receiverIds = idsBuf;
     state->m_numReceiverIds = numIds;
 
+    if (noOfSections == 3) {
+      jam();
+      SegmentedSectionPtr metaPtr;
+      ndbrequire(handle.getSection(
+          metaPtr, JoinAggSetupReq::ColumnMetaSectionNum));
+      const Uint32 metaWords = metaPtr.sz;
+      if (unlikely(metaWords < 3)) {
+        jam();
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+
+      Uint32 *metaBuf =
+          (Uint32 *)lc_ndbd_pool_malloc(metaWords * sizeof(Uint32),
+                                        RG_QUERY_MEMORY, getThreadId(), false);
+      if (unlikely(metaBuf == nullptr)) {
+        jam();
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::OutOfQueryMemory, __LINE__, key);
+        return;
+      }
+      copy(metaBuf, metaPtr);
+
+      const Uint32 entryCount = metaBuf[2];
+      if (unlikely(entryCount == 0 ||
+                   entryCount > (metaWords - 3) / JOIN_AGG_META_ENTRY_WORDS)) {
+        jam();
+        lc_ndbd_pool_free(metaBuf);
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+      const Uint32 expectedWords =
+          3 + (entryCount * JOIN_AGG_META_ENTRY_WORDS);
+      if (unlikely(metaBuf[0] != JOIN_AGG_META_MARKER ||
+                   metaBuf[1] != JOIN_AGG_META_VERSION ||
+                   expectedWords != metaWords)) {
+        jam();
+        lc_ndbd_pool_free(metaBuf);
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+
+      state->m_column_meta_buf = metaBuf;
+      state->m_column_meta_len = metaWords;
+    }
+
     releaseSections(handle);
   }
 
@@ -2685,6 +2751,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                     req->tableId,
                                     0,
                                     getThreadId());
+    state->m_agg_interpreter = interp;
     interp->Init(leaf0.m_agg_program);
     if (state->m_num_leaves > 1) {
       interp->setTotalAggResults(state->m_total_agg_results);
@@ -2693,8 +2760,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     }
     interp->setUseMutex(true);
     interp->setCteMode(state->m_cte_mode);
+    if (state->m_column_meta_buf != nullptr) {
+      Int32 ret = interp->initGBTypesFromMetadata(state->m_column_meta_buf,
+                                                  state->m_column_meta_len,
+                                                  jamBuffer());
+      if (unlikely(ret != 0)) {
+        jam();
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+    }
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
-    state->m_agg_interpreter = interp;
   } else {
     jam();
     Uint32 num_threads = state->m_num_threads;
@@ -2729,6 +2806,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                       req->tableId,
                                       0,
                                       getThreadId());
+      arr[i] = interp;
       interp->Init(leaf0.m_agg_program);
       if (state->m_num_leaves > 1) {
         interp->setTotalAggResults(state->m_total_agg_results);
@@ -2736,9 +2814,19 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                       state->m_num_leaves);
       }
       interp->setCteMode(state->m_cte_mode);
+      if (state->m_column_meta_buf != nullptr) {
+        Int32 ret = interp->initGBTypesFromMetadata(state->m_column_meta_buf,
+                                                    state->m_column_meta_len,
+                                                    jamBuffer());
+        if (unlikely(ret != 0)) {
+          jam();
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key);
+          return;
+        }
+      }
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
-      arr[i] = interp;
     }
   }
 
@@ -2798,6 +2886,11 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     if (state->m_all_programs_buf != nullptr) {
       lc_ndbd_pool_free(state->m_all_programs_buf);
       state->m_all_programs_buf = nullptr;
+    }
+    if (state->m_column_meta_buf != nullptr) {
+      lc_ndbd_pool_free(state->m_column_meta_buf);
+      state->m_column_meta_buf = nullptr;
+      state->m_column_meta_len = 0;
     }
     if (state->m_leaf_programs != nullptr) {
       lc_ndbd_pool_free(state->m_leaf_programs);

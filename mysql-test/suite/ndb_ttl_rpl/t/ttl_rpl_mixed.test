@@ -24,7 +24,11 @@
 #         DELETE WHERE col_c >= 100 -> sync -> slave sees 0 rows
 #
 # Note: Original Python used "UPDATE sz SET col_c = 200" which would violate
-# the UNIQUE KEY on col_c. We use "UPDATE sz SET col_c = col_c + 100" instead.
+# the UNIQUE KEY on col_c. We shift by a DISJOINT offset, "col_c = col_c + 1000"
+# ({100,200} -> {1100,1200}): a smaller offset like +100 yields {200,300}, where
+# 100->200 transiently collides with the live 200. NDB does not defer such a
+# transient unique collision (it fails on a plain non-TTL table too), so the
+# offset must keep old and new value ranges disjoint.
 ###############################################################################
 
 --echo #
@@ -50,7 +54,7 @@ SELECT col_a, col_c FROM test.sz ORDER BY col_a;
 --connection master
 sleep 3;
 BEGIN;
-UPDATE test.sz SET col_c = col_c + 100;
+UPDATE test.sz SET col_c = col_c + 1000;
 COMMIT;
 
 SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
@@ -175,19 +179,23 @@ INSERT INTO test.sz VALUES
 sleep 11;
 
 # FOR UPDATE: lock rows with col_c >= 7 (rows 7,8,9,10)
+# ORDER BY col_a: NDB returns rows in an unspecified order, so order
+# explicitly to keep the result deterministic (otherwise this flakes).
 SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 ORDER BY col_a FOR UPDATE;
 
-# UPDATE: set col_c = 100 where col_c <= 3 (rows 1,2,3)
-UPDATE test.sz SET col_c = 100 WHERE col_c <= 3;
+# UPDATE rows 1,2,3 to DISTINCT high values (col_c + 100 -> 101,102,103).
+# Setting them all to a single value (e.g. 100) would violate the UNIQUE KEY
+# on col_c; the original Python test only "worked" because of the unique-index
+# TTL bypass bug -- see Case 43's note above.
+UPDATE test.sz SET col_c = col_c + 100 WHERE col_c <= 3;
 SELECT ROW_COUNT();
 
 # FOR SHARE: verify updated rows
 SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 ORDER BY col_a FOR SHARE;
 
-# DELETE: remove rows with col_c >= 20 (none match since max is 100 or 10)
-# Original Python: DELETE FROM sz WHERE col_c >= 20 (deletes rows with col_c=100)
-# After UPDATE: rows 1,2,3 have col_c=100; rows 7,8,9,10 have col_c=7,8,9,10
-# So col_c >= 20 deletes the 3 rows with col_c=100
+# DELETE rows with col_c >= 20: after the UPDATE, rows 1,2,3 have col_c
+# 101,102,103 (>= 20) while rows 4..10 keep col_c 4..10 (< 20), so exactly the
+# 3 updated rows are removed.
 DELETE FROM test.sz WHERE col_c >= 20;
 SELECT ROW_COUNT();
 

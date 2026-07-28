@@ -6327,13 +6327,13 @@ DECIMAL(5,2): JSON format GROUP BY
 
 DECIMAL(5,2): JSON format aggregated
 {"data":
-[{"foo":-2,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":0.00}
 ,{"foo":-1,"MAX(val)":999.99}
 ,{"foo":0,"MAX(val)":-999.99}
-,{"foo":1,"MAX(val)":1.5}
-,{"foo":2,"MAX(val)":1.5}
+,{"foo":1,"MAX(val)":1.50}
+,{"foo":2,"MAX(val)":1.50}
 ,{"foo":3,"MAX(val)":-999.99}
-,{"foo":4,"MAX(val)":0}
+,{"foo":4,"MAX(val)":0.00}
 ]
 }
 ==========
@@ -6811,13 +6811,13 @@ DECIMAL(15,4): JSON format GROUP BY
 
 DECIMAL(15,4): JSON format aggregated
 {"data":
-[{"foo":-2,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":0.0000}
 ,{"foo":-1,"MAX(val)":99999999999.9999}
 ,{"foo":0,"MAX(val)":-99999999999.9999}
-,{"foo":1,"MAX(val)":1.5}
-,{"foo":2,"MAX(val)":1.5}
+,{"foo":1,"MAX(val)":1.5000}
+,{"foo":2,"MAX(val)":1.5000}
 ,{"foo":3,"MAX(val)":-99999999999.9999}
-,{"foo":4,"MAX(val)":0}
+,{"foo":4,"MAX(val)":0.0000}
 ]
 }
 ==========
@@ -8287,13 +8287,13 @@ DECIMAL(10,10): JSON format GROUP BY
 
 DECIMAL(10,10): JSON format aggregated
 {"data":
-[{"foo":-2,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":0.0000000000}
 ,{"foo":-1,"MAX(val)":0.9999999999}
 ,{"foo":0,"MAX(val)":-0.9999999999}
-,{"foo":1,"MAX(val)":0.5}
-,{"foo":2,"MAX(val)":0.5}
+,{"foo":1,"MAX(val)":0.5000000000}
+,{"foo":2,"MAX(val)":0.5000000000}
 ,{"foo":3,"MAX(val)":-0.9999999999}
-,{"foo":4,"MAX(val)":0}
+,{"foo":4,"MAX(val)":0.0000000000}
 ]
 }
 ==========
@@ -14988,11 +14988,7 @@ The program for post-processing and output has 5 instructions.
 
 VARCHAR(767) CHARACTER SET utf8mb4: Add indexes
 ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);
-Warnings:
-Warning	1296	Specified key 'idx_val_foo' was too long (max = 3056 bytes); statistics will not be generated
 ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);
-Warnings:
-Warning	1296	Specified key 'idx_foo_val' was too long (max = 3056 bytes); statistics will not be generated
 VARCHAR(767) CHARACTER SET utf8mb4: Index scan equality. Expect INDEX SCAN on idx_val_foo.
 == Query ==
 SELECT COUNT(*) as cnt FROM tbl WHERE val = 'val1';

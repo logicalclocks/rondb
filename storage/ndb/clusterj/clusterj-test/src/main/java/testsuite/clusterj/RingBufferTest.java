@@ -172,7 +172,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         testDtoCacheReadAfterInsert();
         testDtoCacheWithoutCache();
 
-        // P4: DynamicObject reflection path — schema-driven DTOs used by
+        // P4: DynamicObject reflection path - schema-driven DTOs used by
         // frameworks (e.g. Hopsworks Feature Store) that don't know the
         // table shape at compile time. Distinct from the annotation-interface
         // path: top-half goes through columnMetadata + set(int, Object)
@@ -186,14 +186,14 @@ public class RingBufferTest extends AbstractClusterJTest {
         testDynamicObjectDtoCacheInsert();
         testDynamicObjectNotNullColumns();
         // Round out DTO-layer parity with the annotation-interface path:
-        // read, update, delete, query — each exercises a DTO code path
+        // read, update, delete, query - each exercises a DTO code path
         // distinct from the write-only coverage above.
         testDynamicObjectRead();
         testDynamicObjectUpdate();
         testDynamicObjectDelete();
         testDynamicObjectQueryScan();
 
-        // Concurrent tests (SamePrefix runs last — its normalized state
+        // Concurrent tests (SamePrefix runs last - its normalized state
         // is checked by the SQL diagnostic queries in the .test file)
         testConcurrentDifferentPrefixes();
         testConcurrentWithSessionCache();
@@ -1347,9 +1347,9 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
 
         // After 13 inserts with ring_size=5, slots cycle through:
-        // i=0→s1, i=1→s2, i=2→s3, i=3→s4, i=4→s5,
-        // i=5→s1, i=6→s2, i=7→s3, i=8→s4, i=9→s5,
-        // i=10→s1, i=11→s2, i=12→s3
+        // i=0->s1, i=1->s2, i=2->s3, i=3->s4, i=4->s5,
+        // i=5->s1, i=6->s2, i=7->s3, i=8->s4, i=9->s5,
+        // i=10->s1, i=11->s2, i=12->s3
         // Final: Slot 1=i10(ts=32010,val=10), Slot 2=i11(ts=32011,val=11),
         //        Slot 3=i12(ts=32012,val=12), Slot 4=i8(ts=32008,val=8),
         //        Slot 5=i9(ts=32009,val=9)
@@ -1929,7 +1929,7 @@ public class RingBufferTest extends AbstractClusterJTest {
                         + " slot " + slot + " not null", true, r != null);
             }
             // Last 5 inserts: indices 5..9 map to slots that wrap
-            // After 10 inserts: slot layout is insert 5→s1, 6→s2, 7→s3, 8→s4, 9→s5
+            // After 10 inserts: slot layout is insert 5->s1, 6->s2, 7->s3, 8->s4, 9->s5
             for (int slot = 1; slot <= RING_SIZE; slot++) {
                 long expectedTs = 60000L + t * 1000
                         + (INSERTS_PER_THREAD - RING_SIZE) + (slot - 1);
@@ -1968,7 +1968,7 @@ public class RingBufferTest extends AbstractClusterJTest {
                         for (int i = 0; i < INSERTS_PER_THREAD; i++) {
                             // Retry loop: concurrent first-inserts for the same
                             // PK prefix can fail with NDB error 630 (duplicate
-                            // meta row).  This is expected — NDB cannot lock a
+                            // meta row).  This is expected - NDB cannot lock a
                             // non-existent row, so two transactions may both see
                             // 626 and race on insertTuple.  Retry with a fresh
                             // session like a real application should.
@@ -2328,7 +2328,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         @Override public String table() { return "ring_buffer_notnull"; }
     }
 
-    // ring_idx and ring_meta are system-managed — leaving their mask bits
+    // ring_idx and ring_meta are system-managed - leaving their mask bits
     // clear lets RingBufferWriter own them (same convention as the
     // annotation-interface tests, which never call setRingIdx()).
     private void setSensorFields(DynamicObject e, int sensorId, long ts, double val) {
@@ -2361,7 +2361,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         }
     }
 
-    /** Dump columnMetadata for ring_buffer_sensor — shows the reflection
+    /** Dump columnMetadata for ring_buffer_sensor - shows the reflection
      *  view a framework client would see, and asserts all expected
      *  columns (including system-managed ones) are exposed. */
     private void testDynamicObjectColumnMetadata() {
@@ -2406,7 +2406,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** 7 inserts, ring_size=5 — same wrap pattern as testFillRing.
+    /** 7 inserts, ring_size=5 - same wrap pattern as testFillRing.
      *  Final: slot 1=42005, 2=42006, 3=42002, 4=42003, 5=42004. */
     private void testDynamicObjectFillRing() {
         cleanup();
@@ -2431,7 +2431,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** 3 rows, same PK, one transaction — batched by RingBufferWriter. */
+    /** 3 rows, same PK, one transaction - batched by RingBufferWriter. */
     private void testDynamicObjectBatchInsert() {
         cleanup();
         tx.begin();
@@ -2452,7 +2452,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** 8 rows (ring_size=5) in one transaction — exercises multiple
+    /** 8 rows (ring_size=5) in one transaction - exercises multiple
      *  batchMeta.advance() wraps before flushBatch. Final: slot 1=44005,
      *  2=44006, 3=44007, 4=44003, 5=44004. */
     private void testDynamicObjectBatchExceedingRingSize() {
@@ -2479,7 +2479,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** Prefix change within one transaction — forces flushBatch() for
+    /** Prefix change within one transaction - forces flushBatch() for
      *  the first prefix and a fresh readMetaRow() for the second. */
     private void testDynamicObjectMixedPrefixes() {
         cleanup();
@@ -2512,8 +2512,8 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** DynamicObject + DTO cache (releaseCache) — routes through
-     *  SmartValueHandler → NdbRecordOperationImpl.insert(), i.e. the
+    /** DynamicObject + DTO cache (releaseCache) - routes through
+     *  SmartValueHandler -> NdbRecordOperationImpl.insert(), i.e. the
      *  Path B that triggers the isRingBuffer() guard rather than the
      *  NdbRecordRingBufferInsertOperationImpl subclass. */
     private void testDynamicObjectDtoCacheInsert() {
@@ -2607,7 +2607,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         }
     }
 
-    /** Read back via DynamicObject path — exercises `e.get(i)` through
+    /** Read back via DynamicObject path - exercises `e.get(i)` through
      *  `DynamicObjectDelegateImpl`, not the annotated-getter proxy.
      *  Writes go through DynamicObject and reads also go through
      *  DynamicObject, so both halves of the value buffer are
@@ -2651,11 +2651,11 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** Update via DynamicObject — `session.updatePersistent(dto)` where
+    /** Update via DynamicObject - `session.updatePersistent(dto)` where
      *  the DTO's mask bits are set via `set(i, val)` for a subset of
      *  columns. Parallels `testUpdateViaClusterJ`: update path is NOT
      *  intercepted by ring buffer code, so either it succeeds or throws
-     *  — ring state must remain intact either way. */
+     *  - ring state must remain intact either way. */
     private void testDynamicObjectUpdate() {
         cleanup();
         tx.begin();
@@ -2710,7 +2710,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** Delete via DynamicObject — parallels `testDeleteViaClusterJ`:
+    /** Delete via DynamicObject - parallels `testDeleteViaClusterJ`:
      *  ring buffer delete without OO_RING_BUFFER_OP may fail; if it
      *  does, other slots stay intact; ring must still accept new
      *  inserts afterward. */
@@ -2761,9 +2761,9 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** QueryBuilder + QueryDomainType<RingSensorDTO> — for DynamicObject
+    /** QueryBuilder + QueryDomainType<RingSensorDTO> - for DynamicObject
      *  types, `dobj.get()` uses the SQL column name directly (not a
-     *  JavaBean property name — that's the annotation-interface form).
+     *  JavaBean property name - that's the annotation-interface form).
      *  Confirms the kernel meta-row filter also applies to scans driven
      *  through the reflection type. */
     private void testDynamicObjectQueryScan() {

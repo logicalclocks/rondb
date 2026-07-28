@@ -1,5 +1,5 @@
-# Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-# Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -37,7 +37,7 @@ Next DBTUP 4041
 Next DBLQH 5119
 Next DBDICT 6229
 Next DBDIH 7251
-Next DBTC 8127
+Next DBTC 8128
 Next DBTC 8308 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
@@ -45,7 +45,7 @@ Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
 Next BACKUP 10061
 Next PGMAN 11010
-Next DBTUX 12010
+Next DBTUX 12011
 Next SUMA 13063
 Next LGMAN 15002
 Next TSMAN 16002
@@ -653,8 +653,8 @@ Backup Stuff:
 10034: define backup reply error
 10035: Fail to allocate buffers
 
-10039: Halt backup for table >= 2
-10040: Resume backup (from 10039)
+10039: Halt backup during fragment scans (prior to most fragment scans)
+10040: Halt backup while waiting for Stop GCI (after most scans, while recording log)
 10038: Receive abort backup in the middle of locking tables.
 10041: delay backup after create trigger. for testing undo log file.
 10042: Send SCAN_NEXTREQ with 10ms delay

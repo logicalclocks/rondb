@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -34,6 +34,7 @@
 #include <CteLinkedAttr.hpp>
 #include <Interpreter.hpp>
 #include <KeyDescriptor.hpp>
+#include <NdbSqlUtil.hpp>
 #include <SectionReader.hpp>
 #include <kernel/ViolationType.hpp>
 #include <cstring>
@@ -71,12 +72,12 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 #define DEBUG_TRANSID_AI 1
-#define DEBUG_AGGREGATION 1
-#define DEBUG_STAR_AGG 1
-#define DEBUG_JOIN_AGG_TRACE 1
-#define DEBUG_MATCH 1
-#define DEBUG_SCAN_PARENT_ROW 1
-#define DEBUG_CTE 1
+//#define DEBUG_AGGREGATION 1
+//#define DEBUG_STAR_AGG 1
+//#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_MATCH 1
+//#define DEBUG_SCAN_PARENT_ROW 1
+//#define DEBUG_CTE 1
 /* DEBUG_CTE_BUILD: per-node flag dump emitted at the end of each
  * TreeNode build (typed name, m_cteId, m_bits with named flags).
  * Very verbose — one line per built node per incoming SCAN_FRAGREQ —
@@ -87,7 +88,7 @@
  * Logs bound expansion, fixup, stored range count, and SCAN_FRAGREQ
  * send state.  Enable when debugging scanCte parent + scanIndex child
  * paths such as Phase N.1. */
-#define DEBUG_CTE_INDEX 1
+//#define DEBUG_CTE_INDEX 1
 #endif
 
 #ifdef DEBUG_CTE
@@ -118,8 +119,21 @@
  * which TreeNodes are still TN_ACTIVE.  That identifies the path that
  * incremented but never decremented without slowing the race window
  * enough to mask the bug. */
+#ifdef DEBUG_CNT_ACTIVE
+/* Verbose counter trace: log every m_cnt_active mutation with its site label,
+ * node number, and the resulting m_cnt_active / m_outstanding.  Used to chase
+ * CTE hangs (a counter that never returns to 0 → checkBatchComplete never
+ * trips → no terminal SCAN_FRAGCONF).  Debug/ERROR_INSERT builds only. */
+#define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; \
+  g_eventLogger->info("(%u) INC_CNT_ACTIVE[%s] node=%u -> cnt_active=%u outstanding=%u", \
+    instance(), (site), (Uint32)(nodeNo), (reqP)->m_cnt_active, (reqP)->m_outstanding); } while (0)
+#define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; \
+  g_eventLogger->info("(%u) DEC_CNT_ACTIVE[%s] node=%u -> cnt_active=%u outstanding=%u", \
+    instance(), (site), (Uint32)(nodeNo), (reqP)->m_cnt_active, (reqP)->m_outstanding); } while (0)
+#else
 #define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; } while (0)
 #define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; } while (0)
+#endif
 
 #ifdef DEBUG_CTE_BUILD
 #define DEB_CTE_BUILD(arglist) \
@@ -1248,6 +1262,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_cteScanAllNodes = false;
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
+  requestP->m_cteAggOwnerInstances = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -1554,7 +1569,9 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
 
       /**
        * Parse CTE aggStateKeys if CTE_KEYS_MARKER is present.
-       * Format: MARKER | numCtes | { cteId, numNodes, [nodeId, key]... }...
+       * Format: MARKER | numCtes | flags |
+       *         { cteId, depMask, flags, phase, numNodes,
+       *           [nodeId, key, ownerInstance]... }...
        */
       Uint32 peekWord;
       if (wordsRead < totalWords &&
@@ -1574,7 +1591,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteScanAllNodes = (cteFlags & 0x1) != 0;
 
         const Uint32 max_nodes = MAX_NDB_NODES;
-        const size_t alloc_size = numCtes * max_nodes * sizeof(Uint32);
+        const size_t alloc_size = 2 * numCtes * max_nodes * sizeof(Uint32);
         void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
                                         getThreadId(), true);
         if (unlikely(mem == nullptr)) {
@@ -1583,6 +1600,8 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
           break;
         }
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
+        requestPtr.p->m_cteAggOwnerInstances =
+            requestPtr.p->m_cteAggStateKeys + numCtes * max_nodes;
 
         for (Uint32 c = 0; c < numCtes; c++) {
           Uint32 cteId, perCteFlags, phase, cteNodeCount;
@@ -1606,11 +1625,14 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
           m.singleNodeId = 0;
 
           for (Uint32 n = 0; n < cteNodeCount; n++) {
-            Uint32 nodeId, cteAggKey;
+            Uint32 nodeId, cteAggKey, ownerInstance;
             ndbrequire(reader.getWord(&nodeId));
             ndbrequire(reader.getWord(&cteAggKey));
+            ndbrequire(reader.getWord(&ownerInstance));
             ndbrequire(nodeId < max_nodes);
             requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
+            requestPtr.p->m_cteAggOwnerInstances[c * max_nodes + nodeId] =
+                ownerInstance;
             DEB_CTE(("(%u) CTE aggStateKey: cte[%u] node=%u key=%u",
                      instance(), c, nodeId, cteAggKey));
             /* Track single-row CTE's node */
@@ -1757,6 +1779,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_cteScanAllNodes = false;
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
+  requestP->m_cteAggOwnerInstances = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -3480,6 +3503,20 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
  * execution, *must* call ::checkBatchComplete() before returning.
  */
 void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
+  /* Unconditional counter trace: logged on EVERY reply handler's tail, so a
+   * hang shows exactly which value m_outstanding sticks at (and which handler
+   * stopped decrementing it).  The DEB_CTE below only fires once outstanding
+   * already reached 0, which is useless when it never does. */
+  DEB_CTE(("(%u) checkBatchComplete: outstanding=%u cnt_active=%u "
+           "CTE_PHASE=%d state=0x%x completed=0x%x active=0x%x suspended=0x%x",
+           instance(),
+           requestPtr.p->m_outstanding,
+           requestPtr.p->m_cnt_active,
+           !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+           requestPtr.p->m_state,
+           requestPtr.p->m_completed_tree_nodes.rep.data[0],
+           requestPtr.p->m_active_tree_nodes.rep.data[0],
+           requestPtr.p->m_suspended_tree_nodes.rep.data[0]));
   if (unlikely(requestPtr.p->m_outstanding == 0)) {
     jam();
     DEB_CTE(("(%u) checkBatchComplete: outstanding=0, "
@@ -3512,6 +3549,28 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
    */
   if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
     jam();
+    /**
+     * Report CTE-phase completion only after the materialisation scan has
+     * genuinely finished (EndOfData).  A multi-batch CTE scan reaches
+     * m_outstanding==0 at every batch boundary while its scan node is still
+     * TN_ACTIVE (m_cnt_active != 0).  CTE materialisation rows are fed to the
+     * DBLQH aggregator, never sent to the API, so there is no API round-trip
+     * to drive the next batch.  Instead of consulting DBTC per batch (high
+     * latency, and the SCAN_FRAGCONF→SCAN_NEXTREQ continuation is suppressed
+     * for CTE scans), restart the next batch directly here via
+     * handleCtePhaseNextBatch() — the CTE-phase analogue of the JoinAgg
+     * no-rows-to-API continuation.
+     */
+    if (requestPtr.p->m_cnt_active != 0) {
+      jam();
+      DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE more batches, "
+               "cnt_active=%u rows=%u -> restart next batch in DBSPJ",
+               instance(),
+               requestPtr.p->m_cnt_active,
+               requestPtr.p->m_rows));
+      handleCtePhaseNextBatch(signal, requestPtr);
+      return;
+    }
     DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE set, "
              "outstanding=%u cnt_active=%u rows=%u",
              instance(),
@@ -3675,6 +3734,44 @@ Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
     }
   }
   ndbassert(requestPtr.p->m_outstanding > 0);
+}
+
+/**
+ * Restart the next batch of a multi-batch CTE materialisation scan directly
+ * in DBSPJ (no DBTC / API round-trip).  Used from batchComplete() when a CTE
+ * phase reaches m_outstanding==0 at a batch boundary while its scan node is
+ * still TN_ACTIVE.
+ *
+ * Unlike the main-query path we must NOT use prepareNextBatch(): its
+ * RT_REPEAT_SCAN_RESULT branch invokes scanFrag_parent_batch_repeat() on scan
+ * nodes positioned after the active node, which ndbasserts m_parentPtrI !=
+ * RNIL.  During a CTE phase the m_nodes list also holds *inactive* root scan
+ * nodes belonging to other phases (the main-query root, sibling CTE
+ * materialisation roots), so that assert fires.  Here we only need to continue
+ * the currently-active scan node(s), so we register them as cursor nodes
+ * directly — mirroring prepareNextBatch()'s non-REPEAT registration, which
+ * never calls parent_batch_repeat — and then drive SCAN_NEXTREQ via
+ * handleJoinAggNextBatch().
+ */
+void
+Dbspj::handleCtePhaseNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  ndbassert(requestPtr.p->m_suspended_tree_nodes.isclear());
+  requestPtr.p->m_cursor_nodes.init();
+  requestPtr.p->m_active_tree_nodes.clear();
+  requestPtr.p->m_suspended_tree_nodes.clear();
+
+  Ptr<TreeNode> nodePtr;
+  Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+  TreeNodeBitMask predecessors_of_active;
+  for (list.last(nodePtr); !nodePtr.isNull(); list.prev(nodePtr)) {
+    if (nodePtr.p->m_state == TreeNode::TN_ACTIVE &&
+        !predecessors_of_active.get(nodePtr.p->m_node_no)) {
+      jam();
+      registerActiveCursor(requestPtr, nodePtr);
+      predecessors_of_active.bitOR(nodePtr.p->m_predecessors);
+    }
+  }
+  handleJoinAggNextBatch(signal, requestPtr);
 }
 
 /**
@@ -4327,6 +4424,7 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
   if (requestPtr.p->m_cteAggStateKeys != nullptr) {
     lc_ndbd_pool_free(requestPtr.p->m_cteAggStateKeys);
     requestPtr.p->m_cteAggStateKeys = nullptr;
+    requestPtr.p->m_cteAggOwnerInstances = nullptr;
   }
   if (requestPtr.p->m_cteContexts != nullptr) {
     /* Release any cached single-row CTE sections */
@@ -4887,6 +4985,49 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     DEB_TRANSID_AI(("(%u) Dbspj::TRANSID_AI: len: %u", instance(), dataPtr.sz));
   }
   jamDataDebug(linearPtr.sz);
+
+#ifdef DEBUG_TRANSID_AI
+  if (linearPtr.sz >= 4) {
+    const Uint32 markerId = linearPtr.p[0] >> 16;
+    if (markerId == AttributeHeader::AGG_RESULT ||
+        markerId == AttributeHeader::AGG_CHAR_RESULT) {
+      const Uint32 nGbCols = linearPtr.p[1] >> 16;
+      const Uint32 nAggResults = linearPtr.p[1] & 0xFFFF;
+      const Uint32 nRows = linearPtr.p[2];
+      const Uint32 keyLen = linearPtr.p[3] >> 16;
+      const Uint32 valLen = linearPtr.p[3] & 0xFFFF;
+      const Uint32 keyWords = (keyLen + 3) >> 2;
+      const Uint32 key0 =
+          (keyWords > 0 && linearPtr.sz > 4) ? linearPtr.p[4] : 0;
+      const Uint32 key1 =
+          (keyWords > 1 && linearPtr.sz > 5) ? linearPtr.p[5] : 0;
+
+      DEB_TRANSID_AI(("(%u) DBSPJ recv AGG TRANSID_AI: senderRef=0x%x "
+                      "connectPtr=%u node=%u requestPtrI=%u marker=%u "
+                      "nRows=%u nGbCols=%u nAggResults=%u keyLen=%u "
+                      "valLen=%u keyWords=%u key[0]=0x%x key[1]=0x%x "
+                      "state=%u outstanding=%u completed=0x%x bits=0x%x",
+        instance(),
+        signal->getSendersBlockRef(),
+        ptrI,
+        treeNodePtr.p->m_node_no,
+        requestPtr.i,
+        markerId,
+        nRows,
+        nGbCols,
+        nAggResults,
+        keyLen,
+        valLen,
+        keyWords,
+        key0,
+        key1,
+        requestPtr.p->m_state,
+        requestPtr.p->m_outstanding,
+        requestPtr.p->m_completed_tree_nodes.rep.data[0],
+        treeNodePtr.p->m_bits));
+    }
+  }
+#endif
 
 #if defined(DEBUG_LQHKEYREQ) || defined(DEBUG_SCAN_FRAGREQ)
   printf("execTRANSID_AI: ");
@@ -6192,6 +6333,17 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
     // CTE not ready — queue this lookup for later.
     // When the CTE transitions to READY, all pending lookups will be flushed.
     treeNodePtr.p->m_cteLookup_data.m_pendingCount++;
+    // Hang diagnostic: parked rows must later be flushed (and turned into
+    // outstanding lookups) when the CTE reaches READY.  If pendingCount keeps
+    // climbing and is never drained, request m_outstanding never returns to 0
+    // and checkBatchComplete never fires → hang.  Watch this vs the flush site.
+    DEB_CTE(("(%u) cte_lookup_parent_row: PARKED (cte_state=%u) "
+             "pendingCount=%u node_outstanding=%u req_outstanding=%u cnt_active=%u",
+             instance(), cteCtx->m_state,
+             treeNodePtr.p->m_cteLookup_data.m_pendingCount,
+             treeNodePtr.p->m_cteLookup_data.m_outstanding,
+             requestPtr.p->m_outstanding,
+             requestPtr.p->m_cnt_active));
     break;
 
   case CteContext::CTE_FAILED:
@@ -6233,6 +6385,68 @@ void Dbspj::cte_lookup_serve_cached_row(Signal *signal,
   lsp[0].sz = cteCtx.m_cachedRowLen;
   sendSignal(reference(), GSN_TRANSID_AI, signal,
              TransIdAI::HeaderLength, JBB, lsp, 1);
+}
+
+Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
+                                  const char *key,
+                                  Uint32 keyLen,
+                                  Uint32 nGbCols) {
+  const GBColTypeInfo *colTypes = interp->gb_types();
+  if (colTypes == nullptr) {
+    return rondb_xxhash_std(key, keyLen);
+  }
+
+  bool hasCharset = false;
+  for (Uint32 i = 0; i < nGbCols; i++) {
+    if (colTypes[i].cs != nullptr) {
+      hasCharset = true;
+      break;
+    }
+  }
+  if (!hasCharset) {
+    return rondb_xxhash_std(key, keyLen);
+  }
+
+  uchar *xfrmBuf = reinterpret_cast<uchar *>(m_buffer0);
+  const Uint32 xfrmBufLen = sizeof(m_buffer0);
+  Uint64 hash = 0;
+  const Uint32 *p = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 *end = reinterpret_cast<const Uint32 *>(key + keyLen);
+  for (Uint32 i = 0; i < nGbCols && p < end; i++) {
+    AttributeHeader ah(*p);
+    const Uint32 dataSize = ah.getDataSize();
+    if (colTypes[i].cs != nullptr && dataSize > 0) {
+      const uchar *src = reinterpret_cast<const uchar *>(p + 1);
+      const Uint32 byteSize = ah.getByteSize();
+      Uint32 lb, srcLen;
+      NdbSqlUtil::get_var_length(colTypes[i].typeId, src, byteSize,
+                                 lb, srcLen);
+      const Uint32 maxBytes = colTypes[i].maxBytes;
+      ndbrequire(maxBytes >= lb);
+      const Uint32 defLen = maxBytes - lb;
+      ndbrequire(NdbSqlUtil::strnxfrm_hash_len(colTypes[i].cs, defLen) <=
+                 xfrmBufLen);
+      const int n = NdbSqlUtil::strnxfrm_hash(colTypes[i].cs,
+                                              colTypes[i].typeId,
+                                              xfrmBuf, xfrmBufLen,
+                                              src + lb, srcLen, defLen);
+      if (n > 0) {
+        const Uint64 colHash =
+            rondb_xxhash_std(reinterpret_cast<const char *>(xfrmBuf), n);
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      }
+    } else if (dataSize > 0) {
+      const Uint32 byteSize = ah.getByteSize();
+      const Uint64 colHash =
+          rondb_xxhash_std(reinterpret_cast<const char *>(p + 1), byteSize);
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    } else {
+      const Uint64 colHash = 0xDEADBEEFDEADBEEFULL;
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    }
+    p += 1 + dataSize;
+  }
+  return hash;
 }
 
 /**
@@ -6336,21 +6550,29 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
           kp += 1 + dataSize;
         }
-        const Uint64 h = localCteInterp->hashGroupKey(
-            reinterpret_cast<const char *>(keyBuf), keyLenBytes);
+        const Uint64 h = cte_lookup_hash_key(
+            localCteInterp, reinterpret_cast<const char *>(keyBuf),
+            keyLenBytes, nGbCols);
         const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
         targetNodeId = m_dataNodeList[ownerIdx];
+      } else {
+        jam();
+        /* D8: scalar CTE (no GROUP BY) cross-join child.  Its cluster-wide
+         * merged m_agg_results lives ONLY at the redistribute owner, which
+         * DBLQH continueJoinAggRedistribute sets to the coordinating DBTC node
+         * (owner = refToNode(state->m_senderRef)); non-owner nodes keep only
+         * their local partial.  Route the lookup to that same owner —
+         * getOwnNodeId() would read this node's un-merged partial (e.g. a
+         * per-fragment MIN), which is wrong on multi-node topologies. */
+        targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
     }
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+    Uint32 targetOwnerInstance =
+        requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + targetNodeId];
+    ndbrequire(targetOwnerInstance > 0);
     Uint32 lookupFlags = 0;
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
-    /* Production sends directly to the CTE hash owner.  Keep the old
-     * DBLQH re-route path reachable in debug builds as a diagnostic
-     * fallback if DBSPJ ever computes the wrong owner. */
-    lookupFlags |= CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
-#endif
 
     /* Anti-join: parseDA sets T_FIRST_MATCH from NI_ANTI_JOIN, but
      * SEMI_JOIN (FirstMatch over INNER) sets both T_FIRST_MATCH and
@@ -6511,7 +6733,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       cnt = 1;
     }
 
-    Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
+    Uint32 ref = numberToRef(DBLQH, targetOwnerInstance, targetNodeId);
     DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
              "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x "
              "resultData=0x%x rootResultData=0x%x cnt=%u joinAgg=%u",
@@ -7064,6 +7286,7 @@ Dbspj::cte_scan_findOrAddNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
   }
   CteScanData::NodeSlot *slot = &data.m_nodeSlots[data.m_numNodeSlots++];
   slot->m_sourceNodeId = sourceNodeId;
+  slot->m_ownerInstance = 1;
   slot->m_scanIterI = RNIL;
   slot->m_endOfData = false;
   slot->m_close_pending = false;
@@ -7073,6 +7296,7 @@ Dbspj::cte_scan_findOrAddNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
 void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
                               Ptr<TreeNode> treeNodePtr,
                               Uint32 sourceNodeId, Uint32 aggStateKey,
+                              Uint32 ownerInstance,
                               Uint32 joinAggStateKey, Uint32 scanIterI) {
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
 
@@ -7117,7 +7341,8 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
   const Uint32 length =
       (scanIterI == RNIL) ? CteScanReq::SignalLength
                           : CteScanReq::SignalLengthContinue;
-  Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
+  ndbrequire(ownerInstance > 0);
+  Uint32 ref = numberToRef(DBLQH, ownerInstance, sourceNodeId);
   sendSignal(ref, GSN_CTE_SCAN_REQ, signal, length, JBB,
              cnt > 0 ? &handle : nullptr);
 
@@ -7274,13 +7499,16 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
      * (targetNodeId = m_dataNodeList[rootFragId]); may be remote. */
     data.m_aggStateKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+    const Uint32 ownerInstance =
+        requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + targetNodeId];
 
     CteScanData::NodeSlot *slot =
         cte_scan_findOrAddNodeSlot(data, targetNodeId);
     ndbrequire(slot != nullptr);
+    slot->m_ownerInstance = ownerInstance;
 
     cte_scan_sendReq(signal, requestPtr, treeNodePtr, targetNodeId,
-                     data.m_aggStateKey, joinAggStateKey,
+                     data.m_aggStateKey, ownerInstance, joinAggStateKey,
                      /*scanIterI=*/ RNIL);
   } else {
     jam();
@@ -7291,13 +7519,17 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       Uint32 aggKey =
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
       if (aggKey == 0) continue;  /* No CTE state on this node */
+      const Uint32 ownerInstance =
+          requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + nodeId];
+      ndbrequire(ownerInstance > 0);
 
       CteScanData::NodeSlot *slot =
           cte_scan_findOrAddNodeSlot(data, nodeId);
       ndbrequire(slot != nullptr);
+      slot->m_ownerInstance = ownerInstance;
 
       cte_scan_sendReq(signal, requestPtr, treeNodePtr, nodeId,
-                       aggKey, joinAggStateKey,
+                       aggKey, ownerInstance, joinAggStateKey,
                        /*scanIterI=*/ RNIL);
     }
   }
@@ -7376,7 +7608,7 @@ void Dbspj::cte_scan_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
     const Uint32 aggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * (Uint32)MAX_NDB_NODES + srcNode];
     cte_scan_sendReq(signal, requestPtr, treeNodePtr, srcNode,
-                     aggKey, data.m_joinAggStateKey,
+                     aggKey, slot.m_ownerInstance, data.m_joinAggStateKey,
                      slot.m_scanIterI);
     sent++;
   }
@@ -7426,6 +7658,7 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   CteScanData::NodeSlot *slot =
       cte_scan_findOrAddNodeSlot(data, sourceNodeId);
   ndbrequire(slot != nullptr);
+  slot->m_ownerInstance = refToInstance(conf->senderRef);
   slot->m_scanIterI = conf->scanIterI;
 
   /* Three accounting paths:
@@ -7494,7 +7727,8 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     slot->m_close_pending = false;
     slot->m_scanIterI = RNIL;  // ownership handed to the close REQ
     cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
-                          sourceNodeId, conf->scanIterI);
+                          sourceNodeId, slot->m_ownerInstance,
+                          conf->scanIterI);
   }
 
   /* Intermediate CONF (EndOfData=0): nothing to do here.  Another REQ
@@ -7581,6 +7815,7 @@ void Dbspj::cte_scan_cleanup(Ptr<Request> requestPtr,
 void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
                                    Ptr<TreeNode> treeNodePtr,
                                    Uint32 sourceNodeId,
+                                   Uint32 ownerInstance,
                                    Uint32 scanIterI) {
   ndbrequire(scanIterI != RNIL);
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
@@ -7598,7 +7833,8 @@ void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
   req->scanIterI = scanIterI;
   req->flags = CteScanReq::CloseFlag;
 
-  Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
+  ndbrequire(ownerInstance > 0);
+  Uint32 ref = numberToRef(DBLQH, ownerInstance, sourceNodeId);
   sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
              CteScanReq::SignalLengthClose, JBB);
 
@@ -7644,7 +7880,8 @@ void Dbspj::cte_scan_abort(Signal *signal, Ptr<Request> requestPtr,
        * pool record DBLQH still holds.  Safe to close it now. */
       jam();
       cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
-                            slot.m_sourceNodeId, slot.m_scanIterI);
+                            slot.m_sourceNodeId, slot.m_ownerInstance,
+                            slot.m_scanIterI);
       slot.m_scanIterI = RNIL;
     } else {
       /* Either a REQ is in flight for SOME slot (we can't tell which
@@ -9765,10 +10002,17 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   if (treeNodePtr.p->m_info == &g_CteLookupOpInfo) {
     jam();
     const Uint32 nCols = treeNodePtr.p->m_cteLookup_data.m_numResultCols;
+    const Uint32 *virtTypeInfo =
+        treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo;
+    if (unlikely(nCols > 0 && virtTypeInfo == nullptr)) {
+      jam();
+      releaseSection(linkedPtrI);
+      return DbspjErr::InvalidTreeNodeSpecification;
+    }
     for (Uint32 i = 0; i < nCols; i++) {
       Uint32 entry[3];
-      entry[0] = 0;  // tableId
-      entry[1] = 0;  // schemaVersion
+      entry[0] = virtTypeInfo[i * 2];
+      entry[1] = virtTypeInfo[i * 2 + 1];
       AttributeHeader::init(&entry[2], i, 0);  // byteSize=0 → NULL
       if (unlikely(!appendToSection(linkedPtrI, entry, 3))) {
         jam();
@@ -12480,7 +12724,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
               signal_size += handle.m_ptr[i].sz;
             }
             signal_size += NDB_ARRAY_SIZE(data.m_scanFragReq) + 1;
-             
+
             if (signal_size <= MAX_SIZE_SINGLE_SIGNAL) {
               jam();
               /* Single signals can be sent to virtual blocks. */
@@ -14060,34 +14304,18 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
 /**
  * emitNullAttrinfo
  *
- * Emit a NULL attribute for a given attrId: optional table metadata
- * (2 prefix words) followed by an AttributeHeader with length 0.
- *
- * Default (cteOrigin = true): emit a CTE-marker prefix encoding a
- * neutral inline type (NDB_TYPE_BIGINT / 8 bytes / no charset).  A
- * NULL entry has no payload, so the choice of typeId is metadata-
- * only — BIGINT gives the receiver a non-null cmpFn fallback if
- * initGBTypes ever caches type info from this entry.  Both
- * JoinAggInterpreter::initGBTypes and initGBTypesForNullLocal decode
- * the CTE branch cleanly.
- *
- * Legacy mode (cteOrigin = false): emit `[0][0]` — produces a
- * tableId=0 prefix that initGBTypes rejects with require(tableId !=
- * 0).  Retained for callers that explicitly opt out (none today);
- * the chained-outer-join null path picks up the safe default.  See
- * cte_filter_phase_e1k_site4.md.
+ * Emit a synthetic NULL attribute for a given attrId: optional
+ * CteLinkedAttr typed prefix followed by an AttributeHeader with length 0.
+ * Synthetic NULL linked columns must be distinguishable from real table
+ * linked columns, so they never use a raw [0][0] metadata prefix.
  */
 Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                                bool &hasNull, bool addTableMeta,
-                                bool cteOrigin) {
+                                bool &hasNull, bool addTableMeta) {
   jam();
   if (addTableMeta) {
-    Uint32 meta[2] = {0, 0};
-    if (cteOrigin) {
-      jam();
-      meta[0] = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
-      meta[1] = CteLinkedAttr::encodeWord1(0);
-    }
+    Uint32 meta[2];
+    meta[0] = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    meta[1] = CteLinkedAttr::encodeWord1(0);
     if (unlikely(!appendToSection(dst, meta, 2)))
       return DbspjErr::OutOfSectionMemory;
   }
@@ -14109,7 +14337,7 @@ Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
 Uint32 Dbspj::emitNullFromParent(
     Uint32 &dst, Local_pattern_store &pattern,
     Local_pattern_store::ConstDataBufferIterator &it,
-    bool &hasNull, bool addTableMeta, bool cteOrigin) {
+    bool &hasNull, bool addTableMeta) {
   jam();
   if (unlikely(it.isNull())) {
     DEBUG_CRASH();
@@ -14121,7 +14349,7 @@ Uint32 Dbspj::emitNullFromParent(
   pattern.next(it);
 
   if (subType == QueryPattern::P_ATTRINFO) {
-    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta, cteOrigin);
+    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta);
   }
   if (subType == QueryPattern::P_COL) {
     hasNull = true;
@@ -14363,11 +14591,11 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
           /**
            * Null propagation path: direct P_ATTRINFO references the leaf's
            * parent, but rowRef is from the scan ancestor. The leaf's parent
-           * is an unmatched or unreachable intermediate whose columns
-           * should be NULL.  emitNullAttrinfo's default cteOrigin=true now
-           * emits a safe CTE-marker prefix with a neutral inline type, so
-           * both real-table and CTE-virt-col intermediates are handled
-           * correctly.  See cte_filter_phase_e1k_site4.md.
+           * is an unmatched or unreachable intermediate whose columns should
+           * be NULL.  emitNullAttrinfo emits a distinct typed synthetic NULL
+           * marker rather than the legacy 0/0 prefix.  The marker uses a
+           * neutral BIGINT type because this path does not currently carry
+           * enough source-node metadata to recover the exact column type.
            */
           err = emitNullAttrinfo(dst, val, hasNull, addTableMeta);
         } else if (addTableMeta) {

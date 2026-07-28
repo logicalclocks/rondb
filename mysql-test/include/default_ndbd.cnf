@@ -22,6 +22,12 @@ BackupDataBufferSize=          2M
 BackupLogBufferSize=           2M
 TwoPassInitialNodeRestartCopy=1
 TransactionDeadlockDetectionTimeout=3000
+# RONDB-1062: proactive deadlock discovery defaults to OFF in production, but
+# MTR runs with it ON so the deadlock test suite exercises it.  Tests that must
+# hold a deadlock open (e.g. ndbinfo_cluster_locks) override this back to 0 in
+# their own .cnf.
+# Temporarily disabled Deadlock Discovery in MTR
+EnableProactiveDeadlockDetection=0
 Checksum=1
 SpinMethod=CostBasedSpinning
 AutomaticThreadConfig=0

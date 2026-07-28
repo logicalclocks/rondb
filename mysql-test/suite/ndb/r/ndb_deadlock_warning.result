@@ -1,0 +1,17 @@
+# RONDB-1062: a proactively detected deadlock is surfaced as
+# ER_LOCK_DEADLOCK (1213), with extra detail in SHOW WARNINGS.
+# con1 holds row 1 and wants row 2; con2 holds row 2 and wants row 1, a
+# true 2-cycle on table t1.  Exactly one transaction is aborted with 1213;
+# on that connection SHOW WARNINGS carries the "Deadlock detected by NDB"
+# detail line - the victim operation's table name and the contended table
+# id (masked below as it is not stable across runs).
+# SHOW WARNINGS on the victim connection (contended table id masked).  It
+# carries the standard temporary-error warning, the RONDB-1062 deadlock
+# detail, the 1213 deadlock error, and the NDB transaction rollback
+# diagnostic.  (SHOW WARNINGS does not clear the diagnostics area, so the
+# victim's warnings are still present here.)
+Level	Code	Message
+Warning	1297	Got temporary error 266 'Time-out in NDB, probably caused by deadlock' from NDB
+Warning	1297	Got temporary error 266 'Deadlock detected by NDB; victim operation on table 't1'; table involved (id): #' from NDB
+Error	1213	Deadlock found when trying to get lock; try restarting transaction
+Error	1622	Storage engine NDB does not support rollback for this statement. Transaction rolled back and must be restarted

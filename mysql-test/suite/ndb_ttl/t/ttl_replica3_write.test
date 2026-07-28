@@ -1,0 +1,70 @@
+# suite/ndb_ttl/t/ttl_replica3_write.test
+#
+# Regression test for the TTL DBLQH middle-replica ZWRITE-forwarding crash.
+#
+# At NoOfReplicas>=3 a write to a TTL table (REPLACE / writeTuple, and the
+# applier's WRITE_ROWS) chains primary -> backup1(middle) -> backup2. On the
+# primary, continueACCKEYCONF() rewrites regTcPtr->reqinfo back to the real op
+# ONLY because seqNoReplica==0; on the middle replica that rewrite is skipped,
+# so reqinfo keeps op==ZWRITE. When the middle replica then forwards to the
+# third replica, packLqhkeyreqLab() executes, for a TTL table with
+# original_operation==ZWRITE:
+#     ndbrequire(getOperation(Treqinfo)==ZINSERT || ==ZUPDATE);
+# with op==ZWRITE, so the middle data node crashes (NDBD_EXIT_NDBREQUIRE).
+#
+# This is invisible at NoOfReplicas=2 (the single backup is the last replica and
+# never forwards), which is why the rest of the suite never caught it. This test
+# needs a 3-data-node, NoOfReplicas=3 cluster (see ttl_replica3_write.cnf).
+#
+# Pre-fix:  a single REPLACE crashes the middle replica (MTR flags the node
+#           failure / ndbrequire in the data node log).
+# Post-fix: every REPLACE succeeds and all three data nodes stay STARTED.
+
+--source include/have_ndb.inc
+
+# TTL compares against UTC; nothing should expire during this test regardless
+# (TTL is 600s), but keep the suite convention.
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz;
+--enable_warnings
+
+# A TTL table (is_ttl_table() must be true to reach the buggy path). Long TTL so
+# no row expires while the test runs -- this test is about write forwarding, not
+# expiry. PK only; REPLACE maps to writeTuple -> ZWRITE.
+CREATE TABLE test.sz (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=600@col_b";
+
+# Let the schema settle on all three data nodes.
+sleep 2;
+
+--echo # Baseline: all data nodes STARTED before any write.
+SELECT COUNT(*) = 3 AS all_data_nodes_started
+  FROM ndbinfo.nodes WHERE status = 'STARTED';
+
+--echo #
+--echo # Writes that chain through the middle replica. On an unfixed build the
+--echo # first REPLACE already crashes the middle data node.
+--echo #
+# ZWRITE over a non-existent PK  (primary: ZWRITE -> ZINSERT, forwards ZWRITE)
+REPLACE INTO test.sz VALUES (1, SYSDATE(), 100);
+# ZWRITE over an existing PK      (primary: ZWRITE -> ZUPDATE, forwards ZWRITE)
+REPLACE INTO test.sz VALUES (1, SYSDATE(), 101);
+# Another fresh PK
+REPLACE INTO test.sz VALUES (2, SYSDATE(), 200);
+
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--echo #
+--echo # All three data nodes must still be STARTED (no middle-replica crash).
+--echo #
+SELECT COUNT(*) = 3 AS all_data_nodes_started
+  FROM ndbinfo.nodes WHERE status = 'STARTED';
+
+DROP TABLE test.sz;

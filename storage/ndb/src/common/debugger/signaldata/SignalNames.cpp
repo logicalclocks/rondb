@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1088,6 +1088,8 @@ const GsnName SignalNames[] = {
   ,{ GSN_CTE_SCAN_REQ, "CTE_SCAN_REQ" }
   ,{ GSN_CTE_SCAN_CONF, "CTE_SCAN_CONF" }
   ,{ GSN_CTE_SCAN_REF, "CTE_SCAN_REF" }
+  ,{ GSN_DBACC_WAITFOR_REP, "DBACC_WAITFOR_REP" }
+  ,{ GSN_TC_DEADLOCK_REP, "TC_DEADLOCK_REP" }
   ,{ GSN_MALICIOUS_SIGNAL_REPORT, "MALICIOUS_SIGNAL_REPORT" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames) / sizeof(GsnName);

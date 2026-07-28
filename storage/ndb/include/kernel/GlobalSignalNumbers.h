@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 979;
+const GlobalSignalNumber MAX_GSN = 981;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1318,7 +1318,11 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_CTE_SCAN_REQ                976
 #define GSN_CTE_SCAN_CONF               977
 #define GSN_CTE_SCAN_REF                978
+/* Proactive deadlock discovery (DBACC → DBTC wait-for edge) — RONDB-1062 */
+#define GSN_DBACC_WAITFOR_REP           979
+/* Deadlock detail report (DBTC → NDB API), version-gated — RONDB-1062 */
+#define GSN_TC_DEADLOCK_REP             980
 
 /* Data node security: block reports a malicious/malformed signal to QMGR */
-#define GSN_MALICIOUS_SIGNAL_REPORT     979
+#define GSN_MALICIOUS_SIGNAL_REPORT     981
 #endif

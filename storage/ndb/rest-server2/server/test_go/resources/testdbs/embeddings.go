@@ -221,6 +221,12 @@ const DB025 = "db025"
 //go:embed fixed/DB025-Update.sql
 var DB025UpdateScheme string
 
+//go:embed fixed/DB025-Perm.sql
+var DB025PermScheme string
+
+//go:embed fixed/DB025-Perm-Update.sql
+var DB025PermUpdateScheme string
+
 //go:embed fixed/DB026.sql
 var DB026Scheme string
 

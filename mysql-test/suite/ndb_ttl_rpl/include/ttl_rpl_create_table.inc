@@ -7,10 +7,18 @@
 #   col_b TIMESTAMP       -- TTL column
 #   col_c INT UNIQUE KEY
 #
-# TTL is set to 10 seconds on col_b (matching original Python test timing).
+# TTL defaults to 10 seconds on col_b (matching original Python test timing).
+# A test that needs a longer, jitter-tolerant TTL can override it by setting
+#   --let $ttl_rpl_ttl = <seconds>
+# before sourcing this file (see ttl_rpl_upsert.test).
 #
 # The table is first created with TTL=66s to prevent premature
 # expiry during setup, then altered to the test TTL value.
+
+if (!$ttl_rpl_ttl)
+{
+  --let $ttl_rpl_ttl = 10
+}
 
 --disable_warnings
 DROP TABLE IF EXISTS test.sz;
@@ -28,8 +36,11 @@ CREATE TABLE test.sz (
 # Wait for schema to propagate to all nodes
 sleep 3;
 
-# Switch to the test TTL value
-ALTER TABLE test.sz COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+# Switch to the test TTL value (eval expands $ttl_rpl_ttl in the query)
+eval ALTER TABLE test.sz COMMENT="NDB_TABLE=NOLOGGING=0,TTL=$ttl_rpl_ttl@col_b";
 
 # Wait for ALTER to propagate
 sleep 3;
+
+# Reset for the next caller
+--let $ttl_rpl_ttl =

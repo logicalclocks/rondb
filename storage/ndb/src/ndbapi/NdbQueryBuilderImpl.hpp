@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2026, Oracle and/or its affiliates.
    Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -713,9 +713,14 @@ class NdbQueryDefImpl {
     Uint32 cteId;
     Uint32 tableId;
     Uint32 schemaVersion;
+    const NdbDictionary::Table *sourceTable;
+    const NdbTableImpl *aggTable;
     Uint64 depMask;
     Uint32 flags;
     Vector<Uint32> aggProgram;
+    Vector<const NdbDictionary::Column *> gbColumns;
+    Vector<const NdbDictionary::Column *> aggColumns;
+    Vector<const NdbLinkedOperandImpl *> linkedProjection;
   };
 
   explicit NdbQueryDefImpl(const Ndb *ndb,

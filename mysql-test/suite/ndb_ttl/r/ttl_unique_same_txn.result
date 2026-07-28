@@ -1,0 +1,79 @@
+SET time_zone = '+00:00';
+# ---- Case 1: multi-row INSERT, two PKs sharing one unique value ----
+CREATE TABLE t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+# the second tuple duplicates the first tuple's unique value -> must fail
+INSERT INTO t1 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+ERROR 23000: Duplicate entry '100' for key 't1.ux'
+# atomic: NEITHER tuple is present, base and unique index agree
+SELECT id, u FROM t1 ORDER BY id;
+id	u
+SELECT id, u FROM t1 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+id	u
+DROP TABLE t1;
+# ---- Case 2: INSERT ... SELECT producing duplicate unique values ----
+CREATE TABLE src (id INT PRIMARY KEY, u INT NOT NULL);
+INSERT INTO src VALUES (1, 100), (2, 100);
+CREATE TABLE t2 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO t2 (id, ttl_col, u)
+SELECT id, DATE_ADD(NOW(), INTERVAL 10 YEAR), u FROM src;
+ERROR 23000: Duplicate entry '100' for key 't2.ux'
+SELECT id, u FROM t2 ORDER BY id;
+id	u
+SELECT id, u FROM t2 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+id	u
+DROP TABLE t2;
+DROP TABLE src;
+# ---- Case 3: multi-row UPDATE moving two rows to the same unique value ----
+CREATE TABLE t3 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO t3 VALUES
+(1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 1),
+(2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 2);
+# collapsing both rows onto u=9 is a unique collision -> must fail
+UPDATE t3 SET u = 9 WHERE id IN (1, 2);
+ERROR 23000: Duplicate entry '9' for key 't3.ux'
+# originals preserved, base and unique index agree
+SELECT id, u FROM t3 ORDER BY id;
+id	u
+1	1
+2	2
+SELECT id, u FROM t3 FORCE INDEX (ux) WHERE u IN (1, 2, 9) ORDER BY id;
+id	u
+1	1
+2	2
+DROP TABLE t3;
+# ---- Case 4: explicit transaction, two separate inserts collide ----
+CREATE TABLE t4 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+u       INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+BEGIN;
+INSERT INTO t4 VALUES (1, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+# second insert in the same transaction reuses the unique value -> fails
+INSERT INTO t4 VALUES (2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+ERROR 23000: Duplicate entry '100' for key 't4.ux'
+ROLLBACK;
+# nothing committed, base and unique index agree
+SELECT id, u FROM t4 ORDER BY id;
+id	u
+SELECT id, u FROM t4 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+id	u
+DROP TABLE t4;

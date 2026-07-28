@@ -1,0 +1,92 @@
+SET time_zone = '+00:00';
+CREATE LOGFILE GROUP lg_probe
+ADD UNDOFILE 'lg_probe_undofile.dat'
+  INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE 1M
+ENGINE NDB;
+CREATE TABLESPACE ts_probe
+ADD DATAFILE 'ts_probe_datafile.dat'
+  USE LOGFILE GROUP lg_probe
+INITIAL_SIZE 64M
+ENGINE NDB;
+CREATE TABLE test.td (
+id INT PRIMARY KEY,
+b TIMESTAMP NULL DEFAULT NULL,
+v INT,
+d INT STORAGE DISK
+) TABLESPACE ts_probe, ENGINE=NDB, COMMENT="NDB_TABLE=TTL=2@b";
+#
+# Seed: rows 1-4 expire in ~2s; row 5 stays live (future timestamp)
+#
+INSERT INTO test.td VALUES
+(1, NOW(), 100, 10000),
+(2, NOW(), 200, 20000),
+(3, NOW(), 300, 30000),
+(4, NOW(), 400, 40000),
+(5, NOW() + INTERVAL 1 HOUR, 500, 50000);
+#
+# INSERT over the expired row 1: refresh with NEW memory + disk values
+#
+INSERT INTO test.td VALUES (1, NOW() + INTERVAL 1 HOUR, 111, 11111);
+SELECT id, v, d FROM test.td WHERE id = 1;
+id	v	d
+1	111	11111
+#
+# REPLACE over the expired row 2
+#
+REPLACE INTO test.td VALUES (2, NOW() + INTERVAL 1 HOUR, 222, 22222);
+SELECT id, v, d FROM test.td WHERE id = 2;
+id	v	d
+2	222	22222
+#
+# INSERT .. ON DUPLICATE KEY UPDATE over the expired row 3
+# (row is expired -> NOT a duplicate -> the insert arm refreshes it)
+#
+INSERT INTO test.td VALUES (3, NOW() + INTERVAL 1 HOUR, 333, 33333)
+ON DUPLICATE KEY UPDATE v = 999, d = 99999;
+SELECT id, v, d FROM test.td WHERE id = 3;
+id	v	d
+3	333	33333
+#
+# DELETE and UPDATE of the still-expired row 4: both see no row
+#
+DELETE FROM test.td WHERE id = 4;
+SELECT ROW_COUNT() AS delete_affected;
+delete_affected
+0
+UPDATE test.td SET v = 444, d = 44444 WHERE id = 4;
+SELECT ROW_COUNT() AS update_affected;
+update_affected
+0
+SELECT id, v, d FROM test.td WHERE id = 4;
+id	v	d
+#
+# Same-transaction duplicate INSERT of the LIVE row 5 -> ER_DUP_ENTRY
+#
+BEGIN;
+INSERT INTO test.td VALUES (5, NOW(), 555, 55555);
+ERROR 23000: Duplicate entry '5' for key 'td.PRIMARY'
+COMMIT;
+SELECT id, v, d FROM test.td WHERE id = 5;
+id	v	d
+5	500	50000
+#
+# Full scan: refreshed rows and the live row, disk values correct
+#
+SELECT id, v, d FROM test.td ORDER BY id;
+id	v	d
+1	111	11111
+2	222	22222
+3	333	33333
+5	500	50000
+#
+# Cluster still healthy (no data node crashed on the disk TTL paths)
+#
+SELECT COUNT(*) = 2 AS all_data_nodes_started
+FROM ndbinfo.nodes WHERE status = 'STARTED';
+all_data_nodes_started
+1
+DROP TABLE test.td;
+ALTER TABLESPACE ts_probe DROP DATAFILE 'ts_probe_datafile.dat';
+DROP TABLESPACE ts_probe;
+DROP LOGFILE GROUP lg_probe ENGINE NDB;

@@ -1,4 +1,4 @@
-# Copyright (c) 2014, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2014, 2026, Oracle and/or its affiliates.
 # Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -36,8 +36,6 @@ FOREACH(warning
     STRING_APPEND(CMAKE_C_FLAGS " ${HAS_WARN_FLAG}")
   ENDIF()
 ENDFOREACH()
-
-add_compile_definitions(SIMSIMD_DYNAMIC_DISPATCH=1)
 
 # NdbApi examples
 ADD_EXECUTABLE(ndb_ndbapi_array_simple
@@ -100,8 +98,6 @@ SET(EXAMPLES
   ndb_ndbapi_simple_index
   ndb_ndbapi_agg
   ndb_ndbapi_agg_update
-  ndb_ndbapi_vss
-  ndb_ndbapi_vss_test
   ndb_ndbapi_agg_test
   ndb_ndbapi_ring_buffer_test
   ndb_ndbapi_ring_buffer_concurrent_test
@@ -113,10 +109,15 @@ FOREACH(EXAMPLE ${EXAMPLES})
   SET_TARGET_PROPERTIES(${EXAMPLE} PROPERTIES ENABLE_EXPORTS TRUE)
   TARGET_LINK_LIBRARIES(${EXAMPLE} libmysql)
   TARGET_LINK_LIBRARIES(${EXAMPLE} ndbclient_so)
-
-  if(WITH_SIMSIMD)
-  TARGET_LINK_LIBRARIES(${EXAMPLE} simsimd::simsimd)
-  endif()
 ENDFOREACH()
+
+if(WITH_SIMSIMD)
+  foreach(EXAMPLE ndb_ndbapi_vss ndb_ndbapi_vss_test)
+    SET_TARGET_PROPERTIES(${EXAMPLE} PROPERTIES ENABLE_EXPORTS TRUE)
+    TARGET_LINK_LIBRARIES(${EXAMPLE} libmysql)
+    TARGET_LINK_LIBRARIES(${EXAMPLE} ndbclient_so)
+    TARGET_LINK_LIBRARIES(${EXAMPLE} simsimd::simsimd)
+  endforeach()
+endif()
 FIND_PACKAGE(Threads REQUIRED)
 TARGET_LINK_LIBRARIES(ndb_ndbapi_ring_buffer_concurrent_test Threads::Threads)

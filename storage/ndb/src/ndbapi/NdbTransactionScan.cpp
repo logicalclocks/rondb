@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,7 +34,8 @@
 #include <NdbOut.hpp>
 #include <NdbQueryOperationImpl.hpp>
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+//#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
 #endif
 
@@ -44,6 +45,15 @@
 #define DEB_CTE_API(...) \
   do {                   \
   } while (0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_API
+#define DEB_JOIN_AGG_API(...) do {      \
+  fprintf(stderr, __VA_ARGS__);         \
+  fflush(stderr);                       \
+} while (0)
+#else
+#define DEB_JOIN_AGG_API(...) do { } while (0)
 #endif
 
 /***************************************************************************
@@ -165,6 +175,38 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
           if (queryOp->execSCAN_TABCONF(tcPtrI, rowCount, moreMask, activeMask,
                                         tOp))
             retVal = 0;  // We have result data, wakeup receiver
+        } else if (tOp->getType() == NdbReceiver::NDB_AGG_RECEIVER) {
+          /*
+           * Aggregate receivers are used by pushed join aggregation and are
+           * owned by NdbQueryImpl. Their SCAN_TABCONF op-data follows the
+           * query/SPJ layout, not the legacy scan receiver rows|len layout.
+           */
+          const Uint32 rowCount = *ops++;
+          const Uint32 moreMask =
+              *ops++;  // consumed for query/SPJ SCAN_TABCONF layout
+          const Uint32 tcNodeId = getConnectedNodeId();
+          const Uint32 nodeVersion =
+              theNdb->theImpl->getNodeNdbVersion(tcNodeId);
+          assert(nodeVersion != 0);
+          const bool hasActiveMask = ndbd_send_active_bitmask(nodeVersion);
+          const Uint32 activeMask = hasActiveMask ? *ops++ : 0;
+
+          NdbQueryImpl *query = (NdbQueryImpl *)tOp->m_owner;
+#ifdef DEBUG_JOIN_AGG_API
+          DEB_JOIN_AGG_API("[AGG_API] receiveSCAN_TABCONF agg: "
+                           "tcPtrI=0x%x rowCount=%u moreMask=0x%x "
+                           "activeMask=0x%x recvId=0x%x query=%p "
+                           "isEod=%u\n",
+                           tcPtrI, rowCount, moreMask, activeMask,
+                           tOp->getId(), static_cast<void*>(query),
+                           tcPtrI == RNIL ? 1 : 0);
+#else
+          (void)moreMask;
+          (void)activeMask;
+#endif
+
+          if (query->execAggSCAN_TABCONF(tcPtrI, rowCount, tOp))
+            retVal = 0;
         } else {
           const Uint32 info = *ops++;
           Uint32 opCount = ScanTabConf::getRows(info);

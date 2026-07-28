@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -161,6 +161,9 @@ class CommandInterpreter {
   int executeSet(int processId, const char *parameters, bool all);
   int executeSetMaxDiskWriteSpeed(int processId, const char *value_str,
                                   bool all);
+  int executeSetEnableProactiveDeadlockDetection(int processId,
+                                                 const char *value_str,
+                                                 bool all);
   Uint64 parse_size_value(const char *str, bool &ok);
   int executeSetDomain(int processId, const char *parameters, bool all);
   int executeHostname(int processId, const char *parameters, bool all);
@@ -533,10 +536,17 @@ static const char* helpTextSet =
 "Supported parameters:\n"
 "  MaxDiskWriteSpeed          Max bytes/sec for LCP and backup disk writes.\n"
 "                             Value supports K, M, G suffixes (e.g., 100M).\n"
-"                             Range: 1M to 1024G.\n\n"
+"                             Range: 1M to 1024G.\n"
+"  EnableProactiveDeadlockDetection\n"
+"                             Proactive deadlock discovery on/off.\n"
+"                             Value: 0/1 (also on/off, true/false).\n"
+"                             Updates the saved config (so new and restarting\n"
+"                             nodes pick it up) and toggles running nodes now.\n\n"
 "Examples:\n"
 "  ALL SET MaxDiskWriteSpeed 100M    Set on all data nodes to 100 MB/s\n"
 "  1 SET MaxDiskWriteSpeed 50M       Set on node 1 to 50 MB/s\n"
+"  ALL SET EnableProactiveDeadlockDetection 1   Enable on all data nodes\n"
+"  ALL SET EnableProactiveDeadlockDetection 0   Disable on all data nodes\n"
 ;
 
 static const char* helpTextHostname =
@@ -2809,7 +2819,8 @@ CommandInterpreter::executeSet(int processId,
   if (!parameters || *parameters == '\0')
   {
     ndbout_c("Usage: <id> SET <parameter> <value>");
-    ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+    ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
+             "EnableProactiveDeadlockDetection");
     return -1;
   }
 
@@ -2820,7 +2831,8 @@ CommandInterpreter::executeSet(int processId,
   if (command_list.size() < 2)
   {
     ndbout_c("Usage: <id> SET <parameter> <value>");
-    ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+    ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
+             "EnableProactiveDeadlockDetection");
     return -1;
   }
 
@@ -2831,9 +2843,14 @@ CommandInterpreter::executeSet(int processId,
   {
     return executeSetMaxDiskWriteSpeed(processId, value_str, all);
   }
+  if (native_strcasecmp(param_name, "EnableProactiveDeadlockDetection") == 0)
+  {
+    return executeSetEnableProactiveDeadlockDetection(processId, value_str, all);
+  }
 
   ndbout_c("Unknown SET parameter: '%s'", param_name);
-  ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+  ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
+           "EnableProactiveDeadlockDetection");
   return -1;
 }
 
@@ -2956,6 +2973,177 @@ CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
   else
     ndbout_c("MaxDiskWriteSpeed set to %llu on node %d",
              (unsigned long long)new_value, processId);
+
+  return 0;
+}
+
+/*
+ * RONDB-1062: enable/disable proactive deadlock discovery online.
+ *
+ * Like executeSetMaxDiskWriteSpeed this first updates the permanent
+ * configuration on the management server (so nodes that (re)start later pick up
+ * the new value), then applies it to the running nodes.  The running-node part
+ * uses the DUMP code DumpStateOrd::DeadlockDetection (handled by DBTC and DBACC)
+ * rather than ndb_mgm_set_config_param, since the runtime toggle is a simple
+ * on/off flag rather than a value read continuously from config.
+ */
+int
+CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
+    int processId, const char *value_str, bool all)
+{
+  Uint32 new_value;
+  if (native_strcasecmp(value_str, "1") == 0 ||
+      native_strcasecmp(value_str, "on") == 0 ||
+      native_strcasecmp(value_str, "true") == 0)
+  {
+    new_value = 1;
+  }
+  else if (native_strcasecmp(value_str, "0") == 0 ||
+           native_strcasecmp(value_str, "off") == 0 ||
+           native_strcasecmp(value_str, "false") == 0)
+  {
+    new_value = 0;
+  }
+  else
+  {
+    ndbout_c("Invalid value: '%s'. Use 0/1 (also on/off, true/false)",
+             value_str);
+    return -1;
+  }
+
+  /*
+   * EnableProactiveDeadlockDetection is a data-node-only parameter, so when a
+   * specific node is given it must be a valid data node id.
+   */
+  if (!all && (processId == 0 || processId > ABS_MAX_NDB_NODES))
+  {
+    ndbout_c("Node %d is not a valid data node id (1..%d)", processId,
+             ABS_MAX_NDB_NODES);
+    return -1;
+  }
+
+  /*
+   * Step 1: Update the permanent configuration on the management server so the
+   * value survives node (re)starts.  Only data node sections are searched
+   * (data node ids are within ABS_MAX_NDB_NODES).
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                          NDB_VERSION);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config_values);
+  bool found_any = false;
+
+  if (all)
+  {
+    for (int i = 0; i < ABS_MAX_NDB_NODES; i++)
+    {
+      if (!iter.openSection(CFG_SECTION_NODE, i))
+        continue;
+      Uint32 node_type = 0;
+      iter.get(CFG_TYPE_OF_SECTION, &node_type);
+      if (node_type != (Uint32)NODE_TYPE_DB)
+      {
+        iter.closeSection();
+        continue;
+      }
+      iter.set(CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION, new_value);
+      iter.closeSection();
+      found_any = true;
+    }
+  }
+  else
+  {
+    bool ret = get_node_section(iter, processId, 0);
+    if (!ret)
+    {
+      printError();
+      ndbout_c("Failed to get configuration of node %d", processId);
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    iter.set(CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION, new_value);
+    iter.closeSection();
+    found_any = true;
+  }
+
+  if (!found_any)
+  {
+    ndbout_c("No data nodes found in configuration");
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  ndb_mgm_destroy_configuration(conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to update configuration");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("Configuration updated for all data nodes");
+  else
+    ndbout_c("Configuration updated for node %d", processId);
+
+  /*
+   * Step 2: Toggle the running nodes now via
+   * DUMP DumpStateOrd::DeadlockDetection <0|1>.  ndb_mgm_dump_state targets one
+   * node at a time, so for ALL we loop over the running data nodes (nodes that
+   * are down will use the saved config value above when they next start).
+   */
+  int params[2];
+  params[0] = (int)DumpStateOrd::DeadlockDetection;
+  params[1] = (int)new_value;
+  struct ndb_mgm_reply reply;
+  int dump_failures = 0;
+
+  if (all)
+  {
+    struct ndb_mgm_cluster_state *cl = ndb_mgm_get_status(m_mgmsrv);
+    if (cl == 0)
+    {
+      ndbout_c("Warning: configuration saved, but could not get cluster status "
+               "to toggle running nodes. Restart nodes for the change to take "
+               "effect.");
+      printError();
+      return -1;
+    }
+    NdbAutoPtr<char> ap1((char *)cl);
+    int nodeId = 0;
+    while (get_next_nodeid(cl, &nodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (ndb_mgm_dump_state(m_mgmsrv, nodeId, params, 2, &reply) != 0)
+        dump_failures++;
+    }
+  }
+  else
+  {
+    if (ndb_mgm_dump_state(m_mgmsrv, processId, params, 2, &reply) != 0)
+      dump_failures++;
+  }
+
+  if (dump_failures != 0)
+  {
+    ndbout_c("Warning: configuration saved, but failed to toggle %d running "
+             "node(s). Restart them for the change to take effect.",
+             dump_failures);
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("EnableProactiveDeadlockDetection set to %u on all data nodes",
+             new_value);
+  else
+    ndbout_c("EnableProactiveDeadlockDetection set to %u on node %d",
+             new_value, processId);
 
   return 0;
 }
@@ -4318,7 +4506,7 @@ int CommandInterpreter::executeStartBackup(char *parameters, bool interactive) {
   /*
    All the commands list as follow:
    start backup <backupid> nowait | start backup <backupid>
-   snapshotstart/snapshotend nowati | start backup <backupid> nowait
+   snapshotstart/snapshotend nowait | start backup <backupid> nowait
    snapshotstart/snapshotend start backup <backupid> | start backup <backupid>
    wait completed | start backup <backupid> snapshotstart/snapshotend start
    backup <backupid> snapshotstart/snapshotend wait completed | start backup

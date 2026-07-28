@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -124,6 +124,7 @@
 #include <TransporterRegistry.hpp>
 
 #include <EventLogger.hpp>
+#include "my_systime.h"  // my_micro_time() for per-scan-batch TTL clock sampling
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ABORT_TRANS 1
@@ -167,9 +168,9 @@
 //#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
-//#define DEBUG_JOIN_AGG 1
-#define DEBUG_MATCH 1
-#define DEBUG_CTE 1
+#define DEBUG_JOIN_AGG 1
+//#define DEBUG_MATCH 1
+//#define DEBUG_CTE 1
 #endif
 
 #ifdef DEBUG_CTE
@@ -4737,12 +4738,53 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
             t_tabptr.p->m_ttl_col_no != RNIL);
   }
 }
+
 bool Dblqh::is_ring_buffer_table(Uint32 table_id) {
   TablerecPtr t_tabptr;
   t_tabptr.i = table_id;
   ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
   return (t_tabptr.p->m_ring_buffer_size != RNIL);
 }
+
+/*
+ * TTL related
+ * Sample wall-clock "now" once per scan batch and reuse it for every row's
+ * TTL expiry check (Dbtup::checkTTL), instead of calling my_micro_time()
+ * (a gettimeofday, which is a real syscall on VMs without a TSC clocksource)
+ * once per scanned row. Sampled at every point a batch starts evaluating
+ * rows: scan start (initScanrec), each SCAN_NEXTREQ, a queued scan's
+ * restart, and the start of a prefetched batch (parallel ordered scans).
+ * This is a deliberate relaxation of the old per-row clock read: the value
+ * can be stale by up to one batch's execution time (for selective scans,
+ * the time to examine -- not return -- a batch's worth of rows). A stale
+ * "now" errs only toward "not yet expired": an expired row can stay visible
+ * to the batch (or be skipped by a purge round and caught by the next one),
+ * but a row can never expire or be purged early. That one-sidedness assumes
+ * the wall clock (gettimeofday) is never stepped backward mid-batch: NTP
+ * slewing preserves it, while a hard backward step leaves the cached value
+ * ahead of the corrected clock until the next batch boundary -- the same
+ * exposure any wall-clock-based expiry already has, widened by at most one
+ * batch. Only relevant when this
+ * scan actually evaluates TTL: a TTL table whose expiry check is enabled
+ * (m_ttl_ignore == 0), i.e. normal user scans and the background purge scan.
+ * Otherwise leave it 0 so checkTTL keeps its per-row clock read (it isn't
+ * called for non-TTL/ignored scans anyway) and non-TTL scans pay no TTL cost.
+ */
+void Dblqh::set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id) {
+  if (scanPtr->m_ttl_ignore == 0 && is_ttl_table(table_id)) {
+    scanPtr->m_ttl_now_sec = (Uint32)(my_micro_time() / 1000000);
+  } else {
+    scanPtr->m_ttl_now_sec = 0;
+  }
+}
+
+bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
+  TablerecPtr t_tabptr;
+  t_tabptr.i = table_id;
+  ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
+  return t_tabptr.p->tableType == DictTabInfo::UniqueHashIndex;
+}
+
 void
 Dblqh::release_frag_array(Tablerec *tabPtrP)
 {
@@ -7186,6 +7228,7 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr,
   locTcConnectptr.p->ttl_only_expired = 0;
   locTcConnectptr.p->ring_buffer_op = 0;
   locTcConnectptr.p->ring_buffer_show_meta = 0;
+  locTcConnectptr.p->m_restore_op = 0;
 
   tcConnectptr = locTcConnectptr;
   ndbrequire(Magic::check_ptr(locTcConnectptr.p->tupConnectPtrP));
@@ -9377,6 +9420,21 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    * TTL related
    */
   regTcPtr->ttl_ignore = LqhKeyReq::getTTLIgnoreFlag(Treqinfo);
+  /*
+   * TTL related (same-transaction unique-dup gap fix). At request setup the wire
+   * ttl_ignore reflects GENUINE TTL-ignore intent -- explicit OO_TTL_IGNORE,
+   * replication apply, or a recovery op forwarded from the primary. The DBACC
+   * same-transaction "read-what-you-locked" value is added LATER (execACCKEYCONF),
+   * not here, so recording the bypass from the request-time ttl_ignore captures
+   * only genuine recovery/replication intent, never same-transaction visibility.
+   * (A forwarded same-transaction op can carry ttl_ignore=1 from the primary's
+   * merge, but such ops are always same-owner refreshes the primary already
+   * allowed -- a different-owner duplicate is rejected on the primary before
+   * forwarding -- so setting bypass here is harmless.)
+   */
+  if (regTcPtr->ttl_ignore) {
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
+  }
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
   regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(Treqinfo);
   regTcPtr->ring_buffer_show_meta = LqhKeyReq::getRingBufferShowMetaFlag(Treqinfo);
@@ -9655,6 +9713,31 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->tableref = tabptr.i;
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
+  /*
+   * TTL related. LCP restore is a PHYSICAL reconstruction from full row images,
+   * NOT a replay of incremental changes: every row present in the restored LCP
+   * -- including one whose last change during the LCP was an UPDATE -- is
+   * reinstalled wholesale via insert-by-rowid, and a row deleted during the LCP
+   * is recorded as DELETE BY ROWID (restore.cpp parse_record; a WRITE_TYPE
+   * change record carries the full after-image and is installed as ZINSERT). So
+   * restore issues only two op types -- never ZUPDATE/ZWRITE, hence there is no
+   * update case to handle here -- and each must bypass TTL's logical read/purge
+   * policy:
+   *   INSERT: must NOT be converted by DBACC into an in-place TTL upsert on a
+   *     duplicate. m_restore_op makes exec_acckeyreq set
+   *     AccKeyReq::NoTTLDupConvert, so a duplicate surfaces as 630 and restore's
+   *     delete-by-PK + reinsert recovery keeps the row count consistent.
+   *   DELETE: can target an EXPIRED row (the duplicate-key recovery deletes the
+   *     stale copy by PK -- restore.cpp; normal replay issues DELETE BY ROWID).
+   *     Without ignoring TTL the delete returns 626 on the expired row and
+   *     breaks recovery, so it must be expiry-blind (ttl_ignore=1) and -- being
+   *     genuine recovery intent -- exempt from the same-owner check.
+   */
+  regTcPtr->m_restore_op = (senderBlockNo == getRESTORE()) ? 1 : 0;
+  if (regTcPtr->m_restore_op && op == ZDELETE) {
+    regTcPtr->ttl_ignore = 1;
+    regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
+  }
   // Both of the original branches did the same update; merged.
   // m_disk_table is a 0/1 bool (Uint8), so `&= !flag` either clears
   // (when flag is set) or is a no-op (when flag is unset).
@@ -10192,7 +10275,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
     ndbassert(activeCreat == Fragrecord::AC_IGNORED);
     if (TRACENR_FLAG)
       TRACENR(" IGNORING (activeCreat == 2)" << endl);
-    
+
     regTcPtr->transactionState = TcConnectionrec::WAIT_ACC_ABORT;
     signal->theData[0] = regTcPtr->tupConnectrec;
     c_tup->do_tup_abortreq(signal, 0);
@@ -10392,6 +10475,24 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
     taccreq = AccKeyReq::setNoWait(
         taccreq, ((regTcPtr.p->m_flags & TcConnectionrec::OP_NOWAIT) != 0));
     taccreq = AccKeyReq::setLockReq(taccreq, false);
+    /*
+     * TTL related. Tell DBACC not to convert a duplicate ZINSERT into an
+     * in-place TTL update for LCP-restore-originated operations.
+     *
+     * NOTE: this is deliberately NOT extended to REDO replay
+     * (c_executing_redo_log). An insert that replaced an expired row commits as
+     * ZINSERT_TTL (= ZINSERT | 0x08 = 10), but LqhKeyReq's operation field is
+     * only 3 bits, so readLogHeader replays it as a plain ZINSERT. Suppressing
+     * the conversion for REDO would make that replayed insert return 630 and be
+     * skipped by logLqhkeyrefLab -> the committed replacement is dropped and the
+     * node aborts during recovery. REDO must instead ALLOW the conversion so the
+     * upsert overwrites the (always-expired) existing row, reconstructing the
+     * committed state. ttl_ignore=1 (set for REDO in initReqinfoExecSr) makes
+     * that overwrite unconditional, which is correct here because a replayed
+     * duplicate insert in chronological REDO can only land on the expired row it
+     * replaced (a plain insert onto a live row is preceded by its delete).
+     */
+    taccreq = AccKeyReq::setNoTTLDupConvert(taccreq, regTcPtr.p->m_restore_op);
 
     AccKeyReq * const req = reinterpret_cast<AccKeyReq*>(&signal->theData[0]);
     req->requestInfo = taccreq;
@@ -10479,7 +10580,13 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                       "so set it to 1! "
                       "table id: %u",
                       tabptr.i);
-      /* IMPORTANT */
+      /*
+       * IMPORTANT (same-transaction unique-dup gap fix): set the EFFECTIVE
+       * ttl_ignore from the DBACC same-transaction "read-what-you-locked"
+       * response, but NEVER set OP_TTL_OWNER_CHECK_BYPASS here. A same-
+       * transaction duplicate is not recovery intent and must still be rejected
+       * by the DBTUP same-owner check.
+       */
       regTcPtr.p->ttl_ignore = signal->theData[5];
     } else if (regTcPtr.p->ttl_ignore && signal->theData[5]) {
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
@@ -10708,7 +10815,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * This is a normal operation in a starting node which is currently being
      * synchronised with the live node.
      */
-    if (!match && op != ZINSERT) {
+    if (!match && op != ZINSERT &&
+        !(op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))) {
       /**
        * We are performing an UPDATE or a DELETE and the row id position
        * doesn't contain the correct primary key.
@@ -10716,6 +10824,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        * Either there was no row in this row id, or it is an old row which
        * which haven't yet seen the copy row. We can safely ignore this
        * one.
+       *
+       * Exception: on a TTL table a live write of a new key is forwarded to
+       * replicas as ZWRITE (so replicas skip checkTTL), not ZINSERT. Such a
+       * ZWRITE with !match is effectively a new-key insert and must be treated
+       * like ZINSERT below - it cannot be ignored, otherwise if its (possibly
+       * reused) row id is below the copy scan pointer the forward scan never
+       * re-delivers it and the row is permanently lost on the starting node.
        */
       jam();
       if (TRACENR_FLAG) TRACENR(" IGNORE " << endl);
@@ -10749,7 +10864,8 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * same manner as if it was a copy row coming. It might be redone later
      * but this is not a problem with consistency.
      */
-    ndbassert(!match && op == ZINSERT);
+    ndbassert(!match && (op == ZINSERT ||
+                         (op == ZWRITE && is_ttl_table(regTcPtr.p->tableref))));
 
     /**
      * Perform the following action (same as above for copy row case)
@@ -11724,7 +11840,13 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
                       "so set it to 1! "
                       "table id: %u",
                       tabptr.i);
-      /* IMPORTANT */
+      /*
+       * IMPORTANT (same-transaction unique-dup gap fix): set the EFFECTIVE
+       * ttl_ignore from the DBACC same-transaction "read-what-you-locked"
+       * response, but NEVER set OP_TTL_OWNER_CHECK_BYPASS here. A same-
+       * transaction duplicate is not recovery intent and must still be rejected
+       * by the DBTUP same-owner check.
+       */
       regTcPtr->ttl_ignore = signal->theData[5];
     } else if (regTcPtr->ttl_ignore && signal->theData[5]) {
       TTL_RONDB_TRACE(tabptr.i, "Dblqh::execACCKEYCONF[2], ttl_ignore in "
@@ -11833,8 +11955,16 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
   {
     /*
      * TTL related
-     * TODO (Zhao)
-     * maybe need to handle this code path for TTL
+     * No TTL-specific handling is needed on the disk-table path: it only
+     * DEFERS the TUPKEYREQ until the disk page is loaded, and all TTL
+     * state (the ACC-converted operation, ttl_ignore/ttl_only_expired,
+     * original_operation) lives on the TcConnectionrec, which survives the
+     * asynchronous page load unchanged. checkTTL in DBTUP reads only the
+     * TTL column, which is always an in-memory column (DDL rejects binding
+     * TTL to a disk column). Covered by ndb_ttl.ttl_disk_expired_write:
+     * insert-over-expired refresh, REPLACE/ON-DUP over expired, delete and
+     * update of expired, and the same-transaction duplicate reject all
+     * behave identically to the in-memory-table paths.
      */
     jamDebug();
     jamDataDebug(localKey1);
@@ -12691,14 +12821,31 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   LqhKeyReq::setRowidFlag(Treqinfo, regTcPtr->m_use_rowid);
 
   /*
-   * TTL related
-   * TODO (Zhao)
-   * Double check that it needs to set ttl_ignore for LqhKeyReq
-   * in other places as well
+   * TTL related. Serialize the EFFECTIVE ttl_ignore (NOT the owner-check-bypass
+   * provenance). The downstream replica needs ttl_ignore to suppress its own
+   * checkTTL: e.g. a scan-takeover DELETE of an expired row during online reorg
+   * or TTL purge gets ttl_ignore=1 from the same-transaction lock and must not be
+   * rejected with 626 on the backup. The unique-index same-owner check (Bug
+   * same-transaction-dup fix) does NOT need the bypass bit on the wire: it is
+   * enforced authoritatively on the PRIMARY replica, which rejects a different
+   * owner with 630 BEFORE forwarding, so the only same-transaction ops a backup
+   * ever receives are same-owner refreshes the primary already allowed -- the
+   * backup deriving its bypass from this ttl_ignore (execLQHKEYREQ) is therefore
+   * safe.
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
   LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
+
+  /*
+   * TTL related. Serialize ttl_only_expired too: every replica must classify
+   * an only-expired (TTL purge) delete identically when committing, because
+   * DBTUP excludes such deletes from the fragment's committed-changes counter
+   * (the COMMIT_COUNT pseudo column used by copying ALTER TABLE change
+   * detection). Without the bit the counters would diverge between primary
+   * and backup replicas.
+   */
+  LqhKeyReq::setTTLOnlyExpiredFlag(Treqinfo, regTcPtr->ttl_only_expired);
 
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
@@ -12724,9 +12871,18 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * I explain the reason there. Check [TTL Replication ZWRITE to replicas]
    * there for more details
    *
+   * This conversion is only needed (and only valid) on the PRIMARY replica.
+   * continueACCKEYCONF() rewrites regTcPtr->reqinfo (hence Treqinfo) from ZWRITE
+   * back to the real ZINSERT/ZUPDATE ONLY when seqNoReplica==0, so the
+   * ndbrequire below holds there. On a backup replica that rewrite is skipped,
+   * so reqinfo/Treqinfo still carries ZWRITE and is forwarded to the next
+   * replica unchanged -- running this block on a MIDDLE replica (which exists
+   * only at NoOfReplicas>=3 and forwards onward) would trip the ndbrequire on
+   * the already-ZWRITE op and crash the node.
    */
   if (is_ttl_table(fragptr.p->tabRef) &&
-      regTcPtr->original_operation == ZWRITE) {
+      regTcPtr->original_operation == ZWRITE &&
+      regTcPtr->seqNoReplica == 0) {
     ndbrequire(LqhKeyReq::getOperation(Treqinfo) == ZINSERT ||
                LqhKeyReq::getOperation(Treqinfo) == ZUPDATE);
     TTL_RONDB_TRACE(fragptr.p->tabRef, "set LqhKeyReq op to ZWRITE from %u in order to "
@@ -14505,6 +14661,7 @@ void Dblqh::releaseTcrec(Signal *signal, TcConnectionrecPtr locTcConnectptr) {
   locTcConnectptr.p->original_operation = 0xFF;
   locTcConnectptr.p->ttl_ignore = 0;
   locTcConnectptr.p->ttl_only_expired = 0;
+  locTcConnectptr.p->m_restore_op = 0;
   Dblqh *lqh = m_curr_lqh;
   if (likely(locTcConnectptr.i < lqh->ctcConnectReserved))
   {
@@ -15310,7 +15467,8 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
   Int32 evict_ret = interp->evictOneGroup(
       cevictBuffer,
       sizeof(cevictBuffer) / sizeof(Uint32),
-      &words_written);
+      &words_written,
+      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   ndbrequire(evict_ret == 0);
 
   TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
@@ -15318,7 +15476,9 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
     Uint32 key_len = cevictBuffer[3] >> 16;
     const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
     transIdAI->connectPtr =
-        state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
+        state->selectReceiverData(interp->hashGroupKey(
+            key_data, key_len,
+            c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
   }
   transIdAI->transId[0] = state->m_transid[0];
   transIdAI->transId[1] = state->m_transid[1];
@@ -15400,11 +15560,13 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   }
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(c_tup,
+  Int32 ret = interp->processNullExtendedRow(c_tup->getAggAttrReadBuf(),
                                              linked_data,
                                              linked_len,
                                              getThreadId(),
                                              jamBuffer(),
+                                             c_tup->getAggXfrmBuf(),  // D26
+                                             c_tup->getAggXfrmBufLen(),
                                              leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
@@ -17545,6 +17707,15 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   }
   scanPtr->m_max_batch_size_rows = max_rows;
 
+  // TTL: refresh the per-batch "now" cache for the rows fetched by this
+  // SCAN_NEXTREQ (covers both the lock-release and direct continue paths).
+  // Skip while a prefetched batch is in flight or ready (parallel ordered
+  // scans): its timestamp was sampled when the prefetch started, and the
+  // batch after it resamples at its own start in sendScanFragConf.
+  if (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) {
+    set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+  }
+
   /* --------------------------------------------------------------------
    * If scanLockHold = true we need to unlock previous round of
    * scanned records.
@@ -18435,6 +18606,44 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
              ScanFragRef::SignalLength, JBB);
 }
 
+void
+Dblqh::sendJoinAggCompleteHeartbeat(Signal *signal,
+                                    JoinAggregationState *state) {
+  if (state->m_cte_complete_hb_scanFragPtrI == RNIL ||
+      state->m_cte_complete_senderRef == 0) {
+    return;
+  }
+
+  const NDB_TICKS now = getHighResTimer();
+  const NDB_TICKS last = state->m_cte_complete_last_hb_time;
+  if (last.getUint64() != 0 &&
+      NdbTick_Elapsed(last, now).milliSec() < 20) {
+    return;
+  }
+
+  jam();
+  state->m_cte_complete_last_hb_time = now;
+
+  Uint32 save[5];
+  save[0] = signal->theData[0];
+  save[1] = signal->theData[1];
+  save[2] = signal->theData[2];
+  save[3] = signal->theData[3];
+  save[4] = signal->getLength();
+
+  signal->theData[0] = state->m_cte_complete_hb_scanFragPtrI;
+  signal->theData[1] = state->m_cte_complete_transid[0];
+  signal->theData[2] = state->m_cte_complete_transid[1];
+  signal->theData[3] = state->m_cte_complete_requestId;
+  sendSignal(state->m_cte_complete_senderRef, GSN_SCAN_HBREP, signal, 4, JBB);
+
+  signal->theData[0] = save[0];
+  signal->theData[1] = save[1];
+  signal->theData[2] = save[2];
+  signal->theData[3] = save[3];
+  signal->setLength(save[4]);
+}
+
 void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   jamEntry();
   if (unlikely(!assembleFragments(signal))) {
@@ -18600,6 +18809,16 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   releaseSections(handle);
 
   state->m_max_batch_rows = maxBatchRows;
+  state->m_cte_complete_transid[0] = req->transid[0];
+  state->m_cte_complete_transid[1] = req->transid[1];
+  state->m_cte_complete_senderRef = senderRef;
+  state->m_cte_complete_senderData = senderData;
+  state->m_cte_complete_requestId = requestId;
+  state->m_cte_complete_hb_scanFragPtrI =
+      ((requestId & 0x80000000) != 0)
+          ? req->heartbeatScanFragPtrI
+          : RNIL;
+  state->m_cte_complete_last_hb_time = NDB_TICKS();
   state->m_state.store(JoinAggregationState::FINALIZING);
 
   /*
@@ -18724,17 +18943,32 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(c_tup,
+  Int32 ret = interp->processNullExtendedRow(c_tup->getAggAttrReadBuf(),
                                              cattrInfoBuffer,
                                              linked_len,
                                              getThreadId(),
-                                             jamBuffer());
+                                             jamBuffer(),
+                                             c_tup->getAggXfrmBuf(),  // D26
+                                             c_tup->getAggXfrmBufLen());
   if (ret == AGG_EVICT_NEEDED) {
     jam();
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
   }
-  ndbrequire(ret == 0);
+  if (unlikely(ret != 0)) {
+    jam();
+    JoinAggNullRowRef *ref =
+      (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_INTERPRETER_ERROR;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
+               signal, JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
   state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
   /* Send CONF back to DBSPJ */
@@ -18759,6 +18993,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
+  sendJoinAggCompleteHeartbeat(signal, state);
 
   /*
    * MUTEX_FREE merge phase: merge per-thread interpreters into [0].
@@ -18777,13 +19012,15 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
     while (merge_idx < num_threads) {
       jam();
+      sendJoinAggCompleteHeartbeat(signal, state);
       if (interps[merge_idx] != nullptr) {
         const auto *other_map = interps[merge_idx]->gb_map();
         Uint32 other_size = (other_map != nullptr) ? other_map->size() : 0;
         Uint32 batch = (other_size > MERGE_GROUPS_PER_BATCH) ?
                        MERGE_GROUPS_PER_BATCH : 0;
         Uint32 remaining = interps[0]->mergeFrom(
-            interps[merge_idx], batch);
+            interps[merge_idx], batch,
+            c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
         if (remaining > 0) {
           jam();
           signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
@@ -18860,10 +19097,6 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       DEB_CTE(("(%u) CTE COMPLETE: multi-node redistribution starting, "
                "aggStateKey=%u cte_num_nodes=%u",
                instance(), aggStateKey, state->m_cte_num_nodes));
-      state->m_cte_complete_senderRef = senderRef;
-      state->m_cte_complete_senderData = senderData;
-      state->m_cte_complete_requestId = requestId;
-
       /* Check for node failure since SETUP */
       if (JoinAggregationState::s_node_fail_count.load(
               std::memory_order_relaxed) != state->m_cte_node_fail_count) {
@@ -18946,7 +19179,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     LinearSectionPtr ptr[3];
     ptr[0].p = buf;
     ptr[0].sz = pos;
- 
+
     DEB_JOIN_AGG(("(%u)DBLQH 1:Sending TRANSID_AI to 0x%x, receiverId:"
                   " %u, size: %u",
       getThreadId(),
@@ -18994,6 +19227,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
+  sendJoinAggCompleteHeartbeat(signal, state);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
@@ -19012,6 +19246,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   if (gb_map != nullptr) {
     for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
+      sendJoinAggCompleteHeartbeat(signal, state);
       const Uint32 key_len = iter.keyLen();
       AggResItem* slots = reinterpret_cast<AggResItem*>(
           iter.data() + key_len);
@@ -19037,7 +19272,9 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       {
         const char *key_data = reinterpret_cast<const char*>(iter.data());
         transIdAI->connectPtr =
-            state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
+            state->selectReceiverData(interp->hashGroupKey(
+                key_data, key_len,
+                c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
       }
       transIdAI->transId[0] = state->m_transid[0];
       transIdAI->transId[1] = state->m_transid[1];
@@ -19046,12 +19283,33 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       ptr[0].p = buf;
       ptr[0].sz = pos;
 
+#ifdef DEBUG_JOIN_AGG
+      const Uint32 keyWordsForDebug = (key_len + 3) >> 2;
+      const Uint32 *keyBufForDebug =
+          reinterpret_cast<const Uint32*>(iter.data());
+      const Uint32 key0ForDebug =
+          keyWordsForDebug > 0 ? keyBufForDebug[0] : 0;
+      const Uint32 key1ForDebug =
+          keyWordsForDebug > 1 ? keyBufForDebug[1] : 0;
+#endif
+
       DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
-                    " size: %u",
+                    " size: %u aggStateKey=%u keyLen=%u keyWords=%u"
+                    " key[0]=0x%x key[1]=0x%x rowNo=%u totalBytes=%u"
+                    " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
         transIdAI->connectPtr,
-        pos));
+        pos,
+        aggStateKey,
+        key_len,
+        keyWordsForDebug,
+        key0ForDebug,
+        key1ForDebug,
+        num_result_rows,
+        total_bytes,
+        interp->processed_rows(),
+        gb_map->size()));
 
       sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength, JBB, ptr, 1);
@@ -19776,7 +20034,8 @@ bool Dblqh::routeCteLookup(Signal *signal,
                             const CteLookupReq *req) {
   const Uint32 keyLen = req->keyLen;
   Uint64 h = interp->hashGroupKey(
-      reinterpret_cast<const char *>(keyBuf), keyLen);
+      reinterpret_cast<const char *>(keyBuf), keyLen,
+      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
   Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
   if (ownerNode == getOwnNodeId()) {
@@ -19785,6 +20044,8 @@ bool Dblqh::routeCteLookup(Signal *signal,
   }
   jam();
   Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
+  Uint32 remoteOwner = state->m_cte_remote_ownerInstances[ownerNode];
+  ndbrequire(remoteOwner > 0);
   DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
            "(hash=0x%llx ownerIdx=%u)",
            instance(), ownerNode, remoteAggKey,
@@ -19822,7 +20083,7 @@ bool Dblqh::routeCteLookup(Signal *signal,
     fwdHandle.m_cnt = 2;
   }
 
-  Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
+  Uint32 ref = numberToRef(DBLQH, remoteOwner, ownerNode);
   sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
              CteLookupReq::SignalLength, JBB, &fwdHandle);
   return true;
@@ -19970,6 +20231,12 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
    * or linkedValues (source attrId), so incoming keys are inconsistent.
    * Matches the insertion-time normalization in JoinAggInterpreter
    * when m_cte_mode is set. Preserves byteSize + NULL bit (low 16). */
+#ifdef DEBUG_JOIN_AGG
+  const Uint32 keyWordsForDebug = (req.keyLen + 3) >> 2;
+  const Uint32 rawKey0ForDebug = keyWordsForDebug > 0 ? keyBuf[0] : 0;
+  const Uint32 rawKey1ForDebug = keyWordsForDebug > 1 ? keyBuf[1] : 0;
+#endif
+
   {
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 keyWords = (req.keyLen + 3) >> 2;
@@ -20003,12 +20270,25 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     const_cast<CteLookupReq &>(req).keyLen = 0;
   } else {
     groupData = interp->lookupGroup(
-        reinterpret_cast<const char *>(keyBuf), req.keyLen);
+        reinterpret_cast<const char *>(keyBuf), req.keyLen,
+        c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
-           instance(), keyBuf[0], req.keyLen,
-           groupData ? "FOUND" : "NOT_FOUND"));
+#ifdef DEBUG_JOIN_AGG
+  DEB_JOIN_AGG(("(%u) DBLQH CTE_LOOKUP result: "
+                "aggStateKey=%u state=%u keyLen=%u keyWords=%u "
+                "rawKey[0]=0x%x rawKey[1]=0x%x "
+                "normKey[0]=0x%x normKey[1]=0x%x result=%s "
+                "joinAgg=%u flags=0x%x corr=0x%x senderRef=0x%x",
+                instance(), req.aggStateKey,
+                (Uint32)state->m_state.load(), req.keyLen,
+                keyWordsForDebug, rawKey0ForDebug, rawKey1ForDebug,
+                keyWordsForDebug > 0 ? keyBuf[0] : 0,
+                keyWordsForDebug > 1 ? keyBuf[1] : 0,
+                groupData ? "FOUND" : "NOT_FOUND",
+                req.joinAggStateKey, req.flags, req.correlation,
+                req.senderRef));
+#endif
 
   if (groupData == nullptr) {
     jam();
@@ -21037,7 +21317,8 @@ void Dblqh::abortCteRedistribution(Signal *signal,
 void Dblqh::sendScalarRedistributeReq(Signal* signal,
                                        JoinAggregationState* state,
                                        JoinAggInterpreter* interp,
-                                       Uint32 ownerNode) {
+                                       Uint32 ownerNode,
+                                       Uint32 senderAggStateKey) {
   const AggResItem* accumulators = interp->agg_results();
   const Uint32 valLen = interp->redistributionValueLen(accumulators);
 
@@ -21048,6 +21329,9 @@ void Dblqh::sendScalarRedistributeReq(Signal* signal,
   JoinAggRedistributeReq* req =
       (JoinAggRedistributeReq*)signal->getDataPtrSend();
   req->aggStateKey = dstKey;
+  /* D25: even though no CONF is requested below, the receiver echoes this in
+   * an error REF, so set it to our own state key. */
+  req->senderAggStateKey = senderAggStateKey;
   req->keyLen = 0;
   req->valueLen = valLen;
   /* No NEED_CONF: scalar payload is a single small message; flow
@@ -21127,6 +21411,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
     return;
   }
 
+  sendJoinAggCompleteHeartbeat(signal, state);
+
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
@@ -21143,7 +21429,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       Uint32 ownerNode = refToNode(state->m_senderRef);
       if (ownerNode != getOwnNodeId()) {
         jam();
-        sendScalarRedistributeReq(signal, state, interp, ownerNode);
+        sendScalarRedistributeReq(signal, state, interp, ownerNode,
+                                  aggStateKey);
       } else {
         jam();
         DEB_CTE(("(%u) CTE REDIST: scalar — this node is owner "
@@ -21174,6 +21461,7 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
 
     for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
+      sendJoinAggCompleteHeartbeat(signal, state);
       const char *data = reinterpret_cast<const char *>(iter.data());
       const Uint32 keyLen = iter.keyLen();
       const AggResItem* slots = reinterpret_cast<const AggResItem*>(
@@ -21181,7 +21469,9 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       const Uint32 valLen = interp->redistributionValueLen(slots);
 
       /* Determine hash owner (type-aware for complex character sets) */
-      Uint64 h = interp->hashGroupKey(data, keyLen);
+      Uint64 h = interp->hashGroupKey(data, keyLen,
+                                      c_tup->getAggXfrmBuf(),
+                                      c_tup->getAggXfrmBufLen());  // D26
       Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
       Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
 
@@ -21219,6 +21509,10 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       JoinAggRedistributeReq *req =
         (JoinAggRedistributeReq *)signal->getDataPtrSend();
       req->aggStateKey = dstKey;
+      /* D25: carry our own state key so the receiver echoes it in the CONF/REF
+       * and we resume the right state (the CONF returns to this owner LDM, but
+       * dstKey would resolve to the wrong local state). */
+      req->senderAggStateKey = aggStateKey;
       req->keyLen = keyLen;
       req->valueLen = valLen;
       req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
@@ -21237,6 +21531,12 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       lsp[1].sz = (valLen + 3) >> 2;
 
       BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
+      DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ send: "
+                    "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u "
+                    "dstOwner=%u keyLen=%u valueLen=%u needConf=%u "
+                    "batchBytes=%u sigBytes=%u",
+                    instance(), aggStateKey, dstKey, ownerNode, dstOwner,
+                    keyLen, valLen, needConf, batch_bytes, sigBytes));
       sendBatchedFragmentedSignal(remoteRef,
                                   GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
                                   JoinAggRedistributeReq::SignalLength,
@@ -21286,6 +21586,11 @@ redistribution_done:
         rep->aggStateKey = dstKey;
         rep->senderNodeId = ownNodeId;
 
+        DEB_JOIN_AGG(("(%u) DBLQH FINAL_REP send: "
+                      "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u "
+                      "dstOwner=%u",
+                      instance(), aggStateKey, dstKey, dstNode, dstOwner));
+
         BlockReference remoteRef = numberToRef(DBLQH, dstOwner, dstNode);
         sendSignal(remoteRef, GSN_JOIN_AGG_FINAL_REP, signal,
                    JoinAggFinalRep::SignalLength, JBB);
@@ -21315,6 +21620,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   const JoinAggRedistributeReq *req =
     (const JoinAggRedistributeReq *)signal->getDataPtr();
   const Uint32 aggStateKey = req->aggStateKey;
+  /* D25: echo the sender's own state key back in the CONF/REF so the sender
+   * resumes the correct state (it looks the state up by this key, not ours). */
+  const Uint32 senderAggStateKey = req->senderAggStateKey;
   const Uint32 keyLen = req->keyLen;
   const Uint32 valueLen = req->valueLen;
   const bool needConf =
@@ -21348,6 +21656,19 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   copy(valBuf, valueSection);
   releaseSections(handle);
 
+  JoinAggregationState::State curState = state->m_state.load();
+  DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ recv: "
+                "aggStateKey=%u senderAggStateKey=%u senderNode=%u "
+                "senderRef=0x%x state=%u keyLen=%u valueLen=%u "
+                "keyWords=%u valueWords=%u needConf=%u queueCount=%u "
+                "redistDone=%u",
+                instance(), aggStateKey, senderAggStateKey,
+                refToNode(signal->getSendersBlockRef()),
+                signal->getSendersBlockRef(), (Uint32)curState, keyLen,
+                valueLen, keySection.sz, valueSection.sz, needConf,
+                state->m_redist_queue_count,
+                state->m_cte_redistribution_done));
+
   /* Send CONF immediately if requested so the sender can resume
    * without waiting for our merge to complete. */
   if (needConf) {
@@ -21356,11 +21677,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       (JoinAggRedistributeConf *)signal->getDataPtrSend();
     conf->aggStateKey = aggStateKey;
     conf->senderNodeId = getOwnNodeId();
+    conf->senderAggStateKey = senderAggStateKey;  // D25
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_CONF,
                signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
-
-  JoinAggregationState::State curState = state->m_state.load();
 
   /* If in ERROR state, send REF */
   if (curState == JoinAggregationState::ERROR ||
@@ -21371,6 +21691,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     ref->aggStateKey = aggStateKey;
     ref->senderNodeId = getOwnNodeId();
     ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->senderAggStateKey = senderAggStateKey;  // D25
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
@@ -21396,6 +21717,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       ref->aggStateKey = aggStateKey;
       ref->senderNodeId = getOwnNodeId();
       ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      ref->senderAggStateKey = senderAggStateKey;  // D25
       sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                  signal, JoinAggRedistributeRef::SignalLength, JBB);
       return;
@@ -21403,14 +21725,20 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     entry->next = nullptr;
     entry->keyLen = keyLen;
     entry->valueLen = valueLen;
-    memcpy(entry->data, keyBuf, keySection.sz);
-    memcpy(entry->data + keyWords, valBuf, valueSection.sz);
+    memcpy(entry->data, keyBuf, keyWords * sizeof(Uint32));
+    memcpy(entry->data + keyWords, valBuf, valWords * sizeof(Uint32));
     if (state->m_redist_queue_tail != nullptr)
       state->m_redist_queue_tail->next = entry;
     else
       state->m_redist_queue_head = entry;
     state->m_redist_queue_tail = entry;
     state->m_redist_queue_count++;
+    DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ queued: "
+                  "aggStateKey=%u senderAggStateKey=%u state=%u "
+                  "keyLen=%u valueLen=%u queueCount=%u",
+                  instance(), aggStateKey, senderAggStateKey,
+                  (Uint32)curState, keyLen, valueLen,
+                  state->m_redist_queue_count));
     return;
   }
   /* Process immediately: merge into local hash table */
@@ -21419,7 +21747,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
 
   Int32 ret = interp->mergeOneGroup(
       reinterpret_cast<const char *>(keyBuf), keyLen,
-      reinterpret_cast<const char *>(valBuf), valueLen);
+      reinterpret_cast<const char *>(valBuf), valueLen,
+      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   if (unlikely(ret != 0)) {
     jam();
     abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
@@ -21428,10 +21757,17 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     ref->aggStateKey = aggStateKey;
     ref->senderNodeId = getOwnNodeId();
     ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+    ref->senderAggStateKey = senderAggStateKey;  // D25
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
   }
+  DEB_JOIN_AGG(("(%u) DBLQH REDIST_REQ merged: "
+                "aggStateKey=%u senderAggStateKey=%u state=%u "
+                "keyLen=%u valueLen=%u queueCount=%u redistDone=%u",
+                instance(), aggStateKey, senderAggStateKey,
+                (Uint32)curState, keyLen, valueLen,
+                state->m_redist_queue_count, state->m_cte_redistribution_done));
 }
 
 /**
@@ -21441,7 +21777,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
   jamEntry();
   const JoinAggRedistributeConf *conf =
     (const JoinAggRedistributeConf *)signal->getDataPtr();
-  const Uint32 aggStateKey = conf->aggStateKey;
+  /* D25: resume the SENDER's state (echoed back), not conf->aggStateKey which
+   * is the destination node's pool index and would resolve to the wrong
+   * local state here. */
+  const Uint32 aggStateKey = conf->senderAggStateKey;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
@@ -21464,7 +21803,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
   jamEntry();
   const JoinAggRedistributeRef *ref =
     (const JoinAggRedistributeRef *)signal->getDataPtr();
-  const Uint32 aggStateKey = ref->aggStateKey;
+  /* D25: abort the SENDER's state (echoed back), not ref->aggStateKey which is
+   * the destination node's pool index. */
+  const Uint32 aggStateKey = ref->senderAggStateKey;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
@@ -21501,11 +21842,13 @@ void Dblqh::processRedistQueue(Signal *signal,
   auto *entry = state->m_redist_queue_head;
   while (entry != nullptr) {
     jam();
+    sendJoinAggCompleteHeartbeat(signal, state);
     Uint32 keyWords = (entry->keyLen + 3) >> 2;
     Int32 ret = interp->mergeOneGroup(
         reinterpret_cast<const char *>(entry->data), entry->keyLen,
         reinterpret_cast<const char *>(entry->data + keyWords),
-        entry->valueLen);
+        entry->valueLen,
+        c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread
     if (unlikely(ret != 0)) {
       jam();
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
@@ -21611,6 +21954,12 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
   ndbassert(state->m_owner_instance == instance());
 
   state->m_cte_nodes_finalized.set(senderNodeId);
+  DEB_JOIN_AGG(("(%u) DBLQH FINAL_REP recv: "
+                "aggStateKey=%u senderNode=%u state=%u "
+                "queueCount=%u redistDone=%u",
+                instance(), aggStateKey, senderNodeId,
+                (Uint32)state->m_state.load(), state->m_redist_queue_count,
+                state->m_cte_redistribution_done));
   checkCteReady(signal, state);
 }
 
@@ -21638,6 +21987,11 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
     ndbassert(false);
     return;
   }
+  DEB_JOIN_AGG(("(%u) DBLQH checkCteReady: state=%u "
+                "redistributionDone=%u queueCount=%u numNodes=%u",
+                instance(), (Uint32)state->m_state.load(),
+                state->m_cte_redistribution_done,
+                state->m_redist_queue_count, state->m_cte_num_nodes));
   DEB_CTE(("(%u) checkCteReady: redistribution_done=%u",
            instance(), state->m_cte_redistribution_done));
   if (!state->m_cte_redistribution_done) {
@@ -21650,6 +22004,10 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
     if (state->m_cte_node_list[i] != ownNodeId &&
         !state->m_cte_nodes_finalized.get(state->m_cte_node_list[i])) {
       jam();
+      DEB_JOIN_AGG(("(%u) DBLQH checkCteReady: "
+                    "waiting for node %u ownNode=%u",
+                    instance(), state->m_cte_node_list[i],
+                    ownNodeId));
       DEB_CTE(("(%u) checkCteReady: waiting for node %u",
                instance(), state->m_cte_node_list[i]));
       return;
@@ -21658,6 +22016,9 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
 
   /* All done — transition to CTE_READY and send COMPLETE_CONF */
   jam();
+  DEB_JOIN_AGG(("(%u) DBLQH checkCteReady: "
+                "all nodes done, transition to CTE_READY queueCount=%u",
+                instance(), state->m_redist_queue_count));
   DEB_CTE(("(%u) checkCteReady: all nodes done → CTE_READY", instance()));
   state->m_state.store(JoinAggregationState::CTE_READY);
 
@@ -23698,6 +24059,10 @@ void Dblqh::restart_queued_scan(Signal *signal, Uint32 scanPtrI) {
   ndbrequire(loc_scanptr.p->copyPtr == RNIL);
   setup_scan_pointers(scanPtrI, __LINE__);
   m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 8;
+  // TTL: this scan may have waited in the scan queue arbitrarily long;
+  // resample the per-batch "now" so its first batch doesn't evaluate TTL
+  // expiry with the clock read back at SCAN_FRAGREQ time (initScanrec).
+  set_scan_ttl_now_sec(loc_scanptr.p, m_tc_connect_ptr.p->tableref);
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
   jamDebug();
@@ -23778,6 +24143,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_ttl_only_expired = ttl_only_expired;
   scanPtr->m_ring_buffer_show_meta =
       ScanFragReq::getRingBufferShowMetaFragFlag(reqinfo);
+  // Sample "now" for the first batch; resampled at every later batch start
+  // (execSCAN_NEXTREQ, queued-scan restart, prefetched-batch start).
+  set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
   Uint32 tupScan = ScanFragReq::getTupScanFlag(reqinfo);
@@ -24359,6 +24727,10 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   scanPtr->scanType = ScanRecord::ST_IDLE;
   scanPtr->scanTcWaiting = 0;
   scanPtr->scan_lastSeen = __LINE__;
+  // TTL: keep the per-batch "now" cache defined for every (re)used scan record,
+  // including the NR copy-fragment scan, which is set up directly and bypasses
+  // initScanrec (it runs with m_ttl_ignore=1, so checkTTL never reads this).
+  scanPtr->m_ttl_now_sec = 0;
   /*
    * PA related
    * reset aggregation variables
@@ -25196,6 +25568,10 @@ void Dblqh::sendScanFragConf(Signal *signal,
                ScanRecord::CONTINOUS_SCAN_IDLE);
     scanPtr->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_ACTIVE;
     scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
+    // TTL: the prefetched next batch starts scanning now; resample the
+    // per-batch "now" so its rows don't reuse the timestamp sampled when
+    // the batch just sent to the API began.
+    set_scan_ttl_now_sec(scanPtr, regTcPtr->tableref);
 
     DEB_CONT_SCAN(("(%u) LQH SCAN_FRAGCONF sent scanPtrI: %u, "
                    "CONT_SCAN_IDLE -> CONT_SCAN_ACTIVE"
@@ -27405,6 +27781,22 @@ void Dblqh::initCopyTc(Signal *signal, Operation_t op,
   LqhKeyReq::setNrCopyFlag(reqinfo, 1);
   /* AILen in LQHKEYREQ  IS ZERO */
   regTcPtr->reqinfo = reqinfo;
+  /*
+   * TTL related
+   * A copy-fragment op physically replicates the live node's row (including
+   * expired-but-not-yet-purged TTL rows). It must NOT re-apply TTL expiry on the
+   * starting node, otherwise the converted copy ZUPDATE / delete-by-rowid ZDELETE
+   * hits checkTTL -> 626 -> COPY_FRAGREF -> the starting node is shut down in
+   * start phase 5 (error 2303). execCOPY_FRAGREQ sets the copy scan's
+   * m_ttl_ignore=1 unconditionally for every copy-fragment scan, so assert that
+   * invariant and ignore TTL here; packLqhkeyreqLab serializes it to the starting
+   * node. Copy-fragment is genuine recovery intent, so also mark the owner-check
+   * bypass (same-transaction unique-dup gap fix); m_flags is cleared once per
+   * copy op at NR copy setup, so it is correct that all copied rows carry it.
+   */
+  ndbrequire(scanptr.p->m_ttl_ignore == 1);
+  regTcPtr->ttl_ignore = 1;
+  regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   /* ------------------------------------------------------------------------ */
   /* THE RECEIVING NODE WILL EXPECT THAT IT IS THE LAST NODE AND WILL         */
   /* SEND COMPLETED AS THE RESPONSE SIGNAL SINCE DIRTY_OP BIT IS SET.         */
@@ -38073,6 +38465,19 @@ void Dblqh::initReqinfoExecSr(Signal *signal,
    */
   regTcPtr->ring_buffer_op =
       is_ring_buffer_table(regTcPtr->tableref) ? 1 : 0;
+  /*
+   * TTL related. REDO replay physically reconstructs already-committed state
+   * and must NOT re-apply TTL expiry. Without this, a replayed UPDATE/DELETE
+   * whose pre-image row has expired (wall clock) since the restored LCP hits
+   * checkTTL -> 626, which logLqhkeyrefLab "tolerates" by SKIPPING the op,
+   * silently dropping a still-live row (e.g. an UPDATE that refreshed ttl_col).
+   * Same principle as copy-fragment (a6519fdcdd4) and LCP restore (37f1c92c75e).
+   * packLqhkeyreqLab serializes this into the replayed LQHKEYREQ (TTLIgnoreFlag).
+   */
+  regTcPtr->ttl_ignore = 1;
+  /* Genuine recovery intent -> exempt from the same-owner check (provenance).
+   * m_flags was cleared just above; packLqhkeyreqLab serializes this bit. */
+  regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
 }  // Dblqh::initReqinfoExecSr()
 
 Uint32
@@ -38638,6 +39043,23 @@ void Dblqh::readLogHeader(LogPageRecordPtr &logPagePtr,
     tcConnectptr.p->m_row_id.m_page_idx =
         readLogwordExec(logPagePtr, logPartPtrP);
   }  // if
+  /*
+   * ZINSERT_TTL (an insert that overwrote an expired row) is an internal DBLQH
+   * operation stored verbatim in old REDO records, but the value 10 does not fit
+   * LqhKeyReq's 3-bit operation field. Replay it as the underlying ZINSERT
+   * (m_use_rowid is derived from this just below): on replay DBACC finds the
+   * LCP-restored expired row as a duplicate and re-derives ZINSERT_TTL via its
+   * expiry-blind dup-conversion, and ttl_ignore=1 (set for REDO in
+   * initReqinfoExecSr) forces the overwrite -- reconstructing the committed
+   * state.
+   * Deliberately ZINSERT, NOT ZUPDATE: ZINSERT preserves the logged rowid
+   * placement and, in the corner case where the target row is absent, inserts it
+   * rather than dropping it -- a ZUPDATE on a missing tuple is tolerated as 626
+   * (logLqhkeyrefLab) and would silently lose the committed row.
+   */
+  if (tcConnectptr.p->operation == ZINSERT_TTL) {
+    tcConnectptr.p->operation = ZINSERT;
+  }
   tcConnectptr.p->m_use_rowid = (tcConnectptr.p->operation == ZINSERT);
 }  // Dblqh::readLogHeader()
 
@@ -39012,7 +39434,15 @@ void Dblqh::sendLqhTransconf(Signal *signal, LqhTransConf::OperationStatus stat,
   LqhTransConf::setLastReplicaNo(reqInfo, tcConnectptr.p->lastReplicaNo);
   LqhTransConf::setSimpleFlag(reqInfo, tcConnectptr.p->opSimple);
   LqhTransConf::setDirtyFlag(reqInfo, tcConnectptr.p->dirtyOp);
-  LqhTransConf::setOperation(reqInfo, tcConnectptr.p->operation);
+  /*
+   * ZINSERT_TTL (=10) does not fit this 3-bit operation field; carry the
+   * underlying ZINSERT (10 & LTC_OPERATION_MASK == 2), consistent with REDO
+   * replay in readLogHeader. The TTL upsert semantics are re-derived downstream
+   * (dup-conversion + ttl_ignore), not encoded in the protocol op. (Not ZUPDATE
+   * -- see readLogHeader.)
+   */
+  LqhTransConf::setOperation(
+      reqInfo, tcConnectptr.p->operation & LTC_OPERATION_MASK);
   
   DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrILQH: %u, old_node: %u",

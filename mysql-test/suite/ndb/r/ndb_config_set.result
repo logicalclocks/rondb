@@ -25,10 +25,10 @@ MaxDiskWriteSpeed must be between 1M and 1024G
 Invalid value: '100X'. Use a number with optional K, M, or G suffix (e.g., 100M)
 
 Usage: <id> SET <parameter> <value>
-Supported parameters: MaxDiskWriteSpeed
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection
 
 Unknown SET parameter: 'FooBar'
-Supported parameters: MaxDiskWriteSpeed
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection
 
 select node_id, config_value
 from ndbinfo.config_values

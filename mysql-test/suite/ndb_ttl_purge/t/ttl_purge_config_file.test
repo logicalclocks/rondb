@@ -1,0 +1,164 @@
+# ==========================================================================
+# ttl_purge_config_file.test
+#
+# Per-node TTL purge settings from the RDRS config file (see the matching
+# .cnf: .TTLPurge.Enable=false, .TTLPurge.ActiveWindow="03:00-05:00"):
+#   1. The purge worker starts disabled (config-file Enable=false) and the
+#      config-file window is parsed and reported by GET /config.
+#   2. Enabling via REST with a per-node window far from now => the worker
+#      idles in outside_window, /status reports source "config".
+#   3. A valid cluster-wide window in mysql.ttl_purge_ctrl that covers now
+#      takes precedence over the per-node config window => purging runs,
+#      /status reports source "ttl_purge_ctrl".
+#   4. An invalid active_window in PUT /config is rejected with an error.
+#   5. Clearing the per-node window (active_window:"") resumes purging.
+#
+# Purge activity is asserted via the purger's rows_purged_total metric
+# (snapshot + delta), NOT via COUNT(*): SQL reads TTL-filter expired rows,
+# so row counts cannot distinguish "expired but retained" from "purged".
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+
+SET time_zone = '+00:00';
+
+--echo #
+--echo # Phase 1: purger starts disabled, config-file window is reported
+--echo #
+
+--let $wait_state_target = disabled
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--exec curl -s $ttl_purge_base/config > $MYSQL_TMP_DIR/cf_config.json
+--let $json_file = $MYSQL_TMP_DIR/cf_config.json
+--let $json_field = enabled
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Purging must be disabled from the config file
+--let $assert_cond = "$json_value" = "false"
+--source include/assert.inc
+
+--let $json_file = $MYSQL_TMP_DIR/cf_config.json
+--let $json_field = active_window
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = The config-file active window must be reported
+--let $assert_cond = "$json_value" = "03:00-05:00"
+--source include/assert.inc
+
+# Baseline of the cumulative purge counter (fresh RDRS: normally 0)
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/cf_m.json
+--let $json_file = $MYSQL_TMP_DIR/cf_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $purged_base = $json_value
+
+--let $ttl_db = ttl_cf
+--let $ttl_table = t1
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_cf
+--let $wait_table = t1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_cf
+--let $insert_table = t1
+--let $insert_count = 20
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--sleep 5
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/cf_m.json
+--let $json_file = $MYSQL_TMP_DIR/cf_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = A disabled purger must not purge any rows
+--let $assert_cond = $json_value = $purged_base
+--source include/assert.inc
+
+--echo #
+--echo # Phase 2: enabled via REST, per-node window far from now => idle
+--echo #
+
+# Per-node window [now+4h, now+6h) (mod 24h) as an "HH:MM-HH:MM" spec
+--let $win_far = `SELECT CONCAT(TIME_FORMAT(SEC_TO_TIME(((HOUR(UTC_TIME())*60+MINUTE(UTC_TIME()) + 240) % 1440) * 60), '%H:%i'), '-', TIME_FORMAT(SEC_TO_TIME(((HOUR(UTC_TIME())*60+MINUTE(UTC_TIME()) + 360) % 1440) * 60), '%H:%i'))`
+--exec $ttl_purge_put_config '{"enabled":true,"active_window":"$win_far"}' > /dev/null 2>&1
+
+--let $wait_state_target = outside_window
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--exec curl -s $ttl_purge_base/status > $MYSQL_TMP_DIR/cf_status.json
+--let $json_file = $MYSQL_TMP_DIR/cf_status.json
+--let $json_field = active_window_source
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = The effective window must come from the per-node config
+--let $assert_cond = "$json_value" = "config"
+--source include/assert.inc
+
+--sleep 3
+--exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/cf_m.json
+--let $json_file = $MYSQL_TMP_DIR/cf_m.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = No rows may be purged outside the per-node window
+--let $assert_cond = $json_value = $purged_base
+--source include/assert.inc
+
+--echo #
+--echo # Phase 3: cluster-wide ctrl window over now takes precedence
+--echo #
+
+CREATE TABLE mysql.ttl_purge_ctrl (ctrl_id INT PRIMARY KEY, value INT) ENGINE=NDB;
+SET @now_min = HOUR(UTC_TIME()) * 60 + MINUTE(UTC_TIME());
+INSERT INTO mysql.ttl_purge_ctrl VALUES (2, (@now_min + 1380) % 1440), (3, (@now_min + 60) % 1440);
+
+--let $expected_purge_total = `SELECT $purged_base + 20`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+
+--let $purge_db = ttl_cf
+--let $purge_table = t1
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--exec curl -s $ttl_purge_base/status > $MYSQL_TMP_DIR/cf_status2.json
+--let $json_file = $MYSQL_TMP_DIR/cf_status2.json
+--let $json_field = active_window_source
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = The effective window must come from the ctrl table
+--let $assert_cond = "$json_value" = "ttl_purge_ctrl"
+--source include/assert.inc
+
+--echo #
+--echo # Phase 4: invalid active_window via REST is rejected
+--echo #
+
+# Assert on the HTTP status code: the error message body contains both
+# quote styles' worth of trouble for assert.inc/eval.inc interpolation
+--exec curl -s -o $MYSQL_TMP_DIR/cf_bad.json -w "%{http_code}" -X PUT -H "Content-Type: application/json" $ttl_purge_base/config -d '{"active_window":"25:99"}' > $MYSQL_TMP_DIR/cf_bad_code.txt
+--exec grep -q '^400$' $MYSQL_TMP_DIR/cf_bad_code.txt
+--echo invalid active_window rejected with HTTP 400
+
+--echo #
+--echo # Phase 5: clearing the per-node window resumes purging
+--echo #
+
+DROP TABLE mysql.ttl_purge_ctrl;
+
+# Back on the (far) per-node config window => idle again
+--let $wait_state_target = outside_window
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--exec $ttl_purge_put_config '{"active_window":""}' > /dev/null 2>&1
+
+--let $wait_state_target = running
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_state.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+DROP DATABASE ttl_cf;
+--sleep 2
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

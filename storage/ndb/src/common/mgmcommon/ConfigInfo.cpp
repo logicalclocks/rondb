@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -963,7 +963,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_HEARTBEAT_INTERVAL, "HeartbeatIntervalDbDb", DB_TOKEN,
      "Time between " DB_TOKEN_PRINT "-" DB_TOKEN_PRINT
-     " heartbeats. " DB_TOKEN_PRINT " considered dead after 3 missed HBs",
+     " heartbeats. " DB_TOKEN_PRINT " considered dead after 4 missed HBs",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT,
 #if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
      "1500",
@@ -987,7 +987,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_API_HEARTBEAT_INTERVAL, "HeartbeatIntervalDbApi", DB_TOKEN,
      "Time between " API_TOKEN_PRINT "-" DB_TOKEN_PRINT
-     " heartbeats. " API_TOKEN_PRINT " connection closed after 3 missed HBs",
+     " heartbeats. " DB_TOKEN_PRINT
+     " connection closed by API after 3 missed HBs. " API_TOKEN_PRINT
+     " connection closed by DB after 4 missed HBs.",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "1500", "100",
      STR_VALUE(MAX_INT_RNIL)},
 
@@ -1116,6 +1118,15 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "1200", "50",
      STR_VALUE(MAX_INT_RNIL)},
 
+    {CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION,
+     "EnableProactiveDeadlockDetection", DB_TOKEN,
+     "RONDB-1062: enable proactive deadlock discovery.  When true, DBACC reports "
+     "lock wait-for edges to DBTC, which detects deadlock cycles and aborts a "
+     "victim immediately instead of waiting for "
+     "TransactionDeadlockDetectionTimeout.  When false (default), only the "
+     "timeout backstop resolves deadlocks (the pre-RONDB-1062 behaviour).",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
     {CFG_DB_DISCLESS, "Diskless", DB_TOKEN, "Run wo/ disk", ConfigInfo::CI_USED,
      CI_RESTART_INITIAL | CI_RESTART_SYSTEM, ConfigInfo::CI_BOOL, "false",
      "false", "true"},
@@ -1185,9 +1196,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "Transporter, heartbeat errors printed on stdout", ConfigInfo::CI_USED,
      false, ConfigInfo::CI_INT, "8", "0", "15"},
 
-    {CFG_LOGLEVEL_INFO, "LogLevelInfo", DB_TOKEN,
-     "Heartbeat and log info printed on stdout", ConfigInfo::CI_USED, false,
-     ConfigInfo::CI_INT, "0", "0", "15"},
+    {CFG_LOGLEVEL_INFO, "LogLevelInfo", DB_TOKEN, "Log info printed on stdout",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "15"},
 
     {CFG_LOGLEVEL_BACKUP, "LogLevelBackup", DB_TOKEN,
      "Backup info printed on stdout", ConfigInfo::CI_USED, false,

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -385,6 +385,9 @@ class Dbtup : public SimulatedBlock {
   Tsman* c_tsman;
   Lgman* c_lgman;
   Pgman* c_pgman;
+  /* RONDB-1062 deadlock discovery: full-table ScanOp index -> LQH scan record
+   * index (ScanOp::m_userPtr).  Called cross-instance from DBACC. */
+  bool get_scan_lqh_ptr(Uint32 scanPtrI, Uint32& lqhScanPtr);
   Dbacc* c_acc;
   Dbtux* c_tux;
   Suma* c_suma;
@@ -2110,6 +2113,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_use_corr_factor = 0;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
+      ttl_now_sec = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when)
@@ -2127,6 +2131,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_use_corr_factor = 0;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
+      ttl_now_sec = 0;
     }
 
     /*
@@ -2165,6 +2170,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       poison_debug(tup);
       jamBuffer = tup->jamBuffer();
       m_dbtup_ptr = tup;
+      ttl_now_sec = 0;
     }
 
     /*
@@ -2194,6 +2200,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_use_corr_factor = 0;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
+      ttl_now_sec = 0;
     }
 
    private:
@@ -2334,6 +2341,14 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool last_row;
     bool m_use_rowid;
     bool m_nr_copy_or_redo;
+    /*
+     * TTL related (same-transaction unique-dup gap fix). True iff this op carries
+     * genuine TTL-ignore provenance (OP_TTL_OWNER_CHECK_BYPASS): recovery,
+     * replication apply, or explicit OO_TTL_IGNORE. When true, handleUpdateReq
+     * skips the unique-index same-owner duplicate check. NOT set merely because
+     * ttl_ignore == 1 (same-transaction lock visibility leaves this false).
+     */
+    bool m_ttl_owner_check_bypass;
     bool m_deferred_constraints;
     bool m_disable_fk_checks;
 
@@ -2412,6 +2427,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      */
     const Uint32* m_linked_attr_data;
     Uint32 m_linked_attr_len;
+    Uint32 ttl_now_sec;  // per-scan-batch UTC "now" from DBLQH; 0 = read the
+                         // clock in checkTTL (PK ops, unsampled scans)
   };
 
   friend struct Undo_buffer;
@@ -3069,10 +3086,28 @@ private:
                                 LinearSectionPtr ptr[],
                                 Uint32 nptr);
 
+  /*
+   * TTL row-expiry check. var_data_prepared says whether the caller has
+   * already derived the var/dyn row metadata in req_struct->m_var_data
+   * (prepare_read()): true on the read path, false on the write paths
+   * (UPDATE/DELETE/converted upsert), where checkTTL prepares it itself
+   * iff the TTL column is DYNAMIC-format and must go through
+   * readAttributes().
+   */
   int checkTTL(Tablerec* regTabPtr,
                KeyReqStruct *req_struct,
+               bool var_data_prepared,
                bool* has_error,
                int* err_no);
+
+  /*
+   * TTL Bug #2 same-owner check for a converted ZINSERT_TTL on a unique
+   * hash-index table. Returns 0 to allow the in-place overwrite (same base-row
+   * owner), -1 with terrorCode set otherwise. See the definition in
+   * DbtupExecQuery.cpp; must be called after the tuple expand/copy.
+   */
+  int ttlUniqueIndexSameOwnerCheck(KeyReqStruct *req_struct,
+                                   Tablerec *regTabPtr);
 
   void PrepareAccLockReq4RAL(void* scan_rec,
                              Signal* signal);
@@ -3910,11 +3945,17 @@ public:
   bool check_fire_suma(const KeyReqStruct *, const Operationrec *,
                        const Fragrecord *) const;
 
+  /* ttl_as_update: treat a ZINSERT_TTL (insert over an expired-but-unpurged
+   * row, physically an in-place update) as ZUPDATE for before-value reading
+   * and unchanged-value suppression -- used for SECONDARY_INDEX maintenance
+   * so a changed unique value deletes its old index entry (see
+   * executeTrigger's ttl_index_update). */
   bool readTriggerInfo(TupTriggerData *trigPtr, Operationrec *regOperPtr,
                        KeyReqStruct *req_struct, Fragrecord *regFragPtr,
                        Uint32 *keyBuffer, Uint32 &noPrimKey,
                        Uint32 *afterBuffer, Uint32 &noAfterWords,
-                       Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk);
+                       Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk,
+                       bool ttl_as_update = false);
 
   void sendTrigAttrInfo(Signal *signal, Uint32 *data, Uint32 dataLen,
                         bool executeDirect, BlockReference receiverReference);
@@ -4530,6 +4571,27 @@ private:
   Uint32* getAggAttrReadBuf() { return m_agg_attr_read_buf; }
   static constexpr Uint32 AGG_ATTR_READ_BUF_WORD_SIZE =
       MAX_TUPLE_SIZE_IN_WORDS;
+
+  /* D26: per-LDM-thread scratch buffer for the strnxfrm_hash computation in
+   * AggHashTable::hashKeyFull on the CTE lookup/find path.  The CTE
+   * JoinAggInterpreter (and its single AggHashTable) is shared across LDM
+   * threads, so the interpreter's own m_xfrm_buf must NOT be used by the
+   * mutex-free lookup path — concurrent strnxfrm_hash calls from different
+   * threads would overwrite one scratch buffer mid-computation, corrupt the
+   * hash, route to the wrong bucket and spuriously miss an existing group.
+   * Dbtup is a per-LDM-thread block instance, so this buffer is automatically
+   * per-thread without locking (the same rationale as m_agg_attr_read_buf and
+   * Dbspj::cte_lookup_hash_key's m_buffer0).  Sized to the worst-case
+   * strnxfrm_hash output of a single GROUP BY key column: a column is bounded
+   * by MAX_KEY_SIZE_IN_WORDS words and strnxfrm_hash_len() expands by at most
+   * strxfrm_multiply (<= 8), so 8 * MAX_KEY_SIZE_IN_WORDS words is always
+   * large enough for any pushed-down GROUP BY key.  Accessed cross-block by
+   * Dblqh via c_tup on the same thread. */
+  Uint32 m_agg_xfrm_buf[8 * MAX_KEY_SIZE_IN_WORDS];
+  static constexpr Uint32 AGG_XFRM_BUF_BYTE_SIZE =
+      8 * MAX_KEY_SIZE_IN_WORDS * 4;
+  uchar* getAggXfrmBuf() { return reinterpret_cast<uchar*>(m_agg_xfrm_buf); }
+  Uint32 getAggXfrmBufLen() { return AGG_XFRM_BUF_BYTE_SIZE; }
  private:
 
   /*

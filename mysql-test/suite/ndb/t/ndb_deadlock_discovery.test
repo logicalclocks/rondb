@@ -1,0 +1,92 @@
+--source include/have_ndb.inc
+
+--echo # RONDB-1062: proactive deadlock discovery.
+--echo # TransactionDeadlockDetectionTimeout is set to 60s (see .cnf), so a
+--echo # deadlock that resolves in well under that proves that proactive
+--echo # detection fired (DBACC -> DBTC wait-for edges) rather than the slow
+--echo # timeout backstop.
+
+# The transactional choreography below is non-deterministic in which
+# connection becomes the deadlock victim (the victim is chosen by
+# hash(transid)), so the query/result logs are disabled around it.  The
+# deterministic checks are: (a) the test does not hang (the cycle is broken),
+# (b) it resolves quickly (the timing assertion below), and (c) the committed
+# data is consistent (the final SELECT).
+--disable_query_log
+--disable_result_log
+
+connect (con1,localhost,root,,test);
+connect (con2,localhost,root,,test);
+
+connection default;
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20);
+
+# --- Scenario 1: a plain lock wait (no cycle) must NOT be aborted as a
+# deadlock.  con2 simply waits until con1 releases the row-1 lock. ---
+connection con1;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+connection con2;
+BEGIN;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+connection con1;
+COMMIT;
+connection con2;
+--reap
+COMMIT;
+
+# --- Scenario 2: a true 2-cycle deadlock.  con1 holds row 1 and waits for
+# row 2; con2 holds row 2 and waits for row 1.  Exactly one transaction is
+# aborted with ER_LOCK_WAIT_TIMEOUT (NDB error 266); the other proceeds. ---
+connection con1;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+connection con2;
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 2;
+connection con1;
+--send UPDATE t1 SET b = b + 1 WHERE a = 2
+connection con2;
+--send UPDATE t1 SET b = b + 1 WHERE a = 1
+
+connection default;
+SET @t0 = NOW(6);
+connection con1;
+--error 0,1205,1213
+--reap
+connection con2;
+--error 0,1205,1213
+--reap
+connection default;
+SET @t1 = NOW(6);
+
+# With a 60s deadlock-detection timeout, resolving within 20s can only be
+# proactive detection.  A regression that falls back to the timeout would take
+# ~60s and trip this assertion.
+if (`SELECT TIMESTAMPDIFF(SECOND, @t0, @t1) >= 20`)
+{
+  --die Deadlock not resolved promptly; proactive deadlock detection may have regressed (fell back to the timeout)
+}
+
+# Clean up both transactions (the victim is already aborted).
+connection con1;
+rollback;
+connection con2;
+rollback;
+
+connection default;
+--enable_result_log
+--enable_query_log
+
+--echo # Committed data is consistent: scenario 1 left row 1 at 12 (two
+--echo # committed increments); scenario 2 was rolled back on both sides.
+SELECT * FROM t1 ORDER BY a;
+
+--disable_query_log
+--disable_result_log
+DROP TABLE t1;
+disconnect con1;
+disconnect con2;
+--enable_result_log
+--enable_query_log

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1021,6 +1021,40 @@ private:
   Uint32 placeReadInLockQueue(OperationrecPtr lockOwnerPtr) const;
   Uint32 placeWriteInLockQueue(OperationrecPtr lockOwnerPtr) const;
   void placeSerialQueue(OperationrecPtr lockOwner, OperationrecPtr op) const;
+  /* RONDB-1062 deadlock discovery.  One endpoint of a wait-for edge. */
+  struct DeadlockEndpoint {
+    Uint32 transId1;
+    Uint32 transId2;
+    /* Kind of the requesting operation: a key op / taken-over lock held to
+     * commit (isScan == false) vs an ordered-index (DBTUX) or full-table
+     * (DBTUP) scan lock (isScan == true).  Set from the requesting block in
+     * userblockref; see describe_deadlock_endpoint. */
+    bool isScan;
+    /* The coordinating transaction's TC handle.  For a key op: TC ref + LQH
+     * op index.  For a scan: the scan's TC ref (clientBlockref) + ScanFragRec
+     * id.  tcRef == 0 means the endpoint could not be resolved and the edge is
+     * dropped (the timeout backstop still applies). */
+    Uint32 tcOprec;
+    Uint32 tcRef;
+  };
+  /* Fill a DeadlockEndpoint from an ACC operation: transid, kind, and the
+   * coordinating transaction's TC ref + op index (key op) or scan TC ref +
+   * ScanFragRec id (scan), resolved through the instance in userblockref. */
+  void describe_deadlock_endpoint(const Operationrec *opP,
+                                  DeadlockEndpoint &ep);
+  /* Send one wait-for edge (waiter -> owner) to the collector TC.  The
+   * collector is the non-scan (key-op) endpoint when exactly one endpoint is
+   * a scan (so a scan<->key-op deadlock aborts the key-op side), else the
+   * smaller-hash endpoint (incl. scan<->scan, which aborts a scan).  An edge
+   * with an unresolved collector (tcRef == 0) is dropped.  Reuses
+   * signal->theData. */
+  void send_deadlock_waitfor(Signal *signal, const DeadlockEndpoint &waiter,
+                             const DeadlockEndpoint &owner,
+                             Uint32 contendedTableId);
+  /* RONDB-1062: when false (config EnableProactiveDeadlockDetection=false), do
+   * not capture or send wait-for edges; the DBTC timeout backstop resolves
+   * deadlocks.  Read from config in execREAD_CONFIG_REQ (default false). */
+  bool c_proactive_deadlock_detect = false;
   void abortSerieQueueOperation(Signal* signal,
                                 OperationrecPtr op,
                                 Uint32 hash);

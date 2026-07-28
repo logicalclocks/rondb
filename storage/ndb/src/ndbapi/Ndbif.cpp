@@ -1,4 +1,4 @@
-/* Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -40,6 +40,7 @@
 #include <signaldata/TcIndx.hpp>
 #include <signaldata/TcKeyConf.hpp>
 #include <signaldata/TcKeyFailConf.hpp>
+#include <signaldata/TcDeadlockRep.hpp>
 #include <signaldata/TestOrd.hpp>
 #include <signaldata/TransIdAI.hpp>
 
@@ -519,6 +520,8 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
 #ifdef NDB_NO_DROPPED_SIGNAL
           abort();
 #endif
+          g_eventLogger->warning(
+              "Received TRANSID_AI with wrong magic number: %u", magicNumber);
           return;
         }
         tCon = tRec->getTransaction(type);
@@ -537,8 +540,7 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
                 com = impl_owner->execTRANSID_AI(ptr[0].p, ptr[0].sz);
               } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
                 NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
-                queryImpl->execAggTRANSID_AI(ptr[0].p, ptr[0].sz);
-                com = 0;
+                com = queryImpl->execAggTRANSID_AI(ptr[0].p, ptr[0].sz);
               } else {
                 com = tRec->execTRANSID_AI(ptr[0].p, ptr[0].sz);
               }
@@ -554,9 +556,8 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
                                                  totalLen);
               } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
                 NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
-                queryImpl->execAggTRANSID_AI_frag(
+                com = queryImpl->execAggTRANSID_AI_frag(
                     ptr[0].p, ptr[0].sz, aSignal->m_fragmentInfo);
-                com = 0;
               } else {
                 com = tRec->execTRANSID_AI(ptr[0].p,
                                            ptr[0].sz,
@@ -587,10 +588,9 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
                                              tLen - TransIdAI::HeaderLength);
             } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
               NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
-              queryImpl->execAggTRANSID_AI(
+              com = queryImpl->execAggTRANSID_AI(
                   tDataPtr + TransIdAI::HeaderLength,
                   tLen - TransIdAI::HeaderLength);
-              com = 0;
             } else {
               com = tRec->execTRANSID_AI(tDataPtr + TransIdAI::HeaderLength,
                                          tLen - TransIdAI::HeaderLength);
@@ -1322,6 +1322,44 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
        * nodes.
        */
       m_start_time = NdbTick_getCurrentTicks();
+      break;
+    }
+
+    case GSN_TC_DEADLOCK_REP:
+    {
+      /**
+       * RONDB-1062 proactive deadlock discovery: optional, version-gated detail
+       * about a deadlock the data node detected.  The abort itself still
+       * arrives via TCROLLBACKREP (266) / SCAN_TABREF (296) as before; this
+       * report (sent just before it) only carries the involved tables and the
+       * deadlocking operation.  Cache it on the matching transaction, validated
+       * by transaction id, for the wasDeadlock()/getDeadlockTableIds()/
+       * getDeadlockOperation() accessors.  theData[0] is the API connection id,
+       * resolved the same way as the other TC->API signals.
+       */
+      const TcDeadlockRep *const rep =
+          CAST_CONSTPTR(TcDeadlockRep, aSignal->getDataPtr());
+      const Uint32 buddyApiConnectPtr = rep->buddyApiConnectPtr;
+      if (tFirstDataPtr != nullptr) {
+        tCon = void2con(tFirstDataPtr);
+        if (tCon->checkMagicNumber() == 0) {
+          tCon->receiveTcDeadlockRep(rep);
+          if (buddyApiConnectPtr != RNIL && buddyApiConnectPtr != tFirstData) {
+            void *const buddyPtr = int2void(buddyApiConnectPtr);
+            if (buddyPtr != nullptr) {
+              NdbTransaction *const buddyCon = void2con(buddyPtr);
+              if (buddyCon->checkMagicNumber() == 0) {
+                buddyCon->receiveTcDeadlockRep(rep);
+              }
+            }
+          }
+          if (tWaitState == WAIT_SCAN) {
+            // The report does not complete the scan, but wake the scan wait loop
+            // so the detail is consumed before the caller observes SCAN_TABREF.
+            tNewState = NO_WAIT;
+          }
+        }
+      }
       break;
     }
 

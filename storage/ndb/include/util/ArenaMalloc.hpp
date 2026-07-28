@@ -26,6 +26,7 @@
 #define STORAGE_NDB_SRC_RONSQL_ARENAMALLOC_HPP 1
 
 #include <assert.h>
+#include <new>
 #include <stdexcept>
 #include <cstddef>
 #include <cstdint>
@@ -117,6 +118,10 @@ ArenaMalloc::alloc(Uint32 items) noexcept
 
 /*
  * Like ArenaMalloc::alloc(), but throw an exception on failure.
+ * Throws std::bad_alloc so callers can distinguish out-of-memory from
+ * other runtime errors (RonSQL's exception handler treats it as a clean
+ * permanent "out of memory" failure rather than misreading it as an NDB
+ * error).
  */
 template <typename T>
 inline T*
@@ -126,7 +131,7 @@ ArenaMalloc::alloc_exc(Uint32 items)
   if(likely(ret)) {
     return ret;
   }
-  throw std::runtime_error("ArenaMalloc: Cannot allocate");
+  throw std::bad_alloc();
 }
 
 /*
@@ -184,7 +189,7 @@ ArenaMalloc::realloc_exc(const T* ptr, Uint32 items, Uint32 original_items)
   if(likely(ret)) {
     return ret;
   }
-  throw std::runtime_error("ArenaMalloc: Cannot allocate");
+  throw std::bad_alloc();
 }
 
 /*

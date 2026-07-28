@@ -7,14 +7,14 @@
 # Key implementation detail: ha_ndbcluster.cc checks
 # !thd_ndb->get_applier() before entering ring buffer write path,
 # so the replica applies replicated rows directly via normal NDB
-# write path — this is correct behavior.
+# write path - this is correct behavior.
 
 --source include/have_ndb.inc
 --source include/have_binlog_format_mixed_or_row.inc
 --source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
 
 ###############################################################################
-# Case 1: CREATE TABLE DDL replicates — SHOW CREATE TABLE on slave
+# Case 1: CREATE TABLE DDL replicates - SHOW CREATE TABLE on slave
 ###############################################################################
 
 --echo #
@@ -39,7 +39,7 @@ CREATE TABLE test.rb (
 SHOW CREATE TABLE test.rb;
 
 ###############################################################################
-# Case 2: Basic INSERT replicates — data visible, meta rows hidden
+# Case 2: Basic INSERT replicates - data visible, meta rows hidden
 ###############################################################################
 
 --echo #
@@ -166,7 +166,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 2 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 7: DELETE replicates — ring cleared on slave
+# Case 7: DELETE replicates - ring cleared on slave
 ###############################################################################
 
 --echo #
@@ -189,7 +189,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 3 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 8: Meta rows on slave — visible with ndb_ring_buffer_show_meta
+# Case 8: Meta rows on slave - visible with ndb_ring_buffer_show_meta
 ###############################################################################
 
 --echo #
@@ -214,7 +214,7 @@ SELECT client_id, ring_idx FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
-# Case 9: TRUNCATE TABLE replicates — slave also cleared
+# Case 9: TRUNCATE TABLE replicates - slave also cleared
 ###############################################################################
 
 --echo #

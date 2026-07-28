@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -665,7 +665,37 @@ class NdbTransaction {
    */
   const NdbOperation *getNextCompletedOperation(const NdbOperation *op) const;
 
+  /**
+   * RONDB-1062 proactive deadlock discovery.  Optional, best-effort detail
+   * about a deadlock the data nodes *detected* (as opposed to the plain
+   * lock-wait-timeout backstop), available after this transaction is aborted
+   * with a lock-wait-timeout (NDB error 266 for a key operation, 296 for a
+   * scan; both map to HA_ERR_LOCK_WAIT_TIMEOUT / MySQL 1205).  The error code
+   * itself is unchanged, so existing retry logic is unaffected; these methods
+   * only expose extra information when the data node is new enough to report
+   * it.  Use them after execute() fails and before closing the transaction.
+   *
+   * @return wasDeadlock(): true iff a real deadlock cycle was reported for this
+   *         transaction (false for the plain timeout backstop or an old node).
+   */
+  bool wasDeadlock() const;
+  /**
+   * Table ids involved in the detected deadlock.  Writes up to two distinct
+   * ids into tableIds[2] and returns the count (0, 1 or 2).  Map ids to names
+   * via the dictionary if needed.  Returns 0 if no deadlock detail is present.
+   */
+  int getDeadlockTableIds(Uint32 tableIds[2]) const;
+  /**
+   * The aborted victim's deadlocking operation, or nullptr if it was a scan
+   * victim, could not be resolved, or no deadlock detail was received.
+   */
+  const NdbOperation *getDeadlockOperation() const;
+
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
+  /* RONDB-1062: cache a received GSN_TC_DEADLOCK_REP (validated by transid)
+   * for the accessors above.  Called from NdbImpl::trp_deliver_signal. */
+  void receiveTcDeadlockRep(const struct TcDeadlockRep *rep);
+
   const NdbOperation *getFirstDefinedOperation() const {
     return theFirstOpInList;
   }
@@ -1126,6 +1156,13 @@ class NdbTransaction {
   mutable NdbError theError;  // Errorcode on transaction
   int theErrorLine;           // Method number of last error in NdbOperation
   NdbOperation *theErrorOperation;  // The NdbOperation where the error occurred
+
+  // RONDB-1062 proactive deadlock discovery: optional detail received via
+  // GSN_TC_DEADLOCK_REP just before the abort.  Reset in init().
+  bool theDeadlockDetailValid;        // a deadlock report arrived for this txn
+  Uint32 theDeadlockTableId1;         // first contended table (RNIL if unknown)
+  Uint32 theDeadlockTableId2;         // second contended table (RNIL/dup)
+  const NdbOperation *theDeadlockOperation;  // resolved victim op, or nullptr
 
   Ndb *theNdb;              // Pointer to Ndb object
   NdbTransaction *theNext;  // Next pointer. Used in idle list.

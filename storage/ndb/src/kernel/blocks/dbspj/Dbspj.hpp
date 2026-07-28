@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -43,6 +43,7 @@
 #define JAM_FILE_ID 481
 
 class SectionReader;
+class JoinAggInterpreter;
 struct QueryNode;
 struct QueryNodeParameters;
 
@@ -702,6 +703,7 @@ class Dbspj : public SimulatedBlock {
      * Slots are compact: m_numNodeSlots in [0, MAX_CTE_SCAN_NODE_SLOTS]. */
     struct NodeSlot {
       Uint32 m_sourceNodeId;   // DBLQH nodeId this slot tracks
+      Uint32 m_ownerInstance;  // DBLQH instance that owns scanIterI
       Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
                                // first REQ and after EndOfData CONF
       bool m_endOfData;        // Final CONF seen from this node
@@ -1496,6 +1498,7 @@ class Dbspj : public SimulatedBlock {
      * when CTE keys are parsed from the aggKeys section.
      */
     Uint32 *m_cteAggStateKeys;
+    Uint32 *m_cteAggOwnerInstances;
 
     ArenaHead m_arena;
 
@@ -1710,6 +1713,7 @@ class Dbspj : public SimulatedBlock {
   void checkBatchComplete(Signal *, Ptr<Request>);
   void batchComplete(Signal *, Ptr<Request>);
   void handleJoinAggNextBatch(Signal *, Ptr<Request>);
+  void handleCtePhaseNextBatch(Signal *, Ptr<Request>);
   void prepareNextBatch(Signal *, Ptr<Request>);
   void sendConf(Signal *, Ptr<Request>, bool is_complete);
   void complete(Signal *, Ptr<Request>);
@@ -1813,17 +1817,15 @@ class Dbspj : public SimulatedBlock {
                           Uint64 nullNodes = 0);
   /**
    * Emit a NULL attribute entry.  When addTableMeta is true, prepend
-   * the per-entry 2-word header: zeros for a real-table NULL,
-   * CteLinkedAttr::MARKER_BIT for a CTE virt-column NULL (cteOrigin =
-   * true).  See cte_filter_phase_e1k.md.
+   * the per-entry 2-word CteLinkedAttr typed-NULL header.  Real table
+   * NULL linked columns keep their table id/schema in appendFromParent().
+   * Synthetic NULL linked columns must never use a raw 0/0 prefix.
    */
   Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                          bool &hasNull, bool addTableMeta,
-                          bool cteOrigin = true);
+                          bool &hasNull, bool addTableMeta);
   Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
-                             bool &hasNull, bool addTableMeta,
-                             bool cteOrigin = true);
+                             bool &hasNull, bool addTableMeta);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
                 Uint32 parentLevelAdjust = 0,
@@ -1902,6 +1904,8 @@ class Dbspj : public SimulatedBlock {
   void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
   void cte_lookup_serve_cached_row(Signal *, Ptr<Request>,
                                    Ptr<TreeNode>, const CteContext &);
+  Uint64 cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
+                             Uint32, Uint32);
   void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
                        const RowPtr &);
   void execCTE_LOOKUP_CONF(Signal *);
@@ -1945,7 +1949,8 @@ class Dbspj : public SimulatedBlock {
   void cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
                         Ptr<TreeNode> treeNodePtr,
                         Uint32 sourceNodeId, Uint32 aggStateKey,
-                        Uint32 joinAggStateKey, Uint32 scanIterI);
+                        Uint32 ownerInstance, Uint32 joinAggStateKey,
+                        Uint32 scanIterI);
 
   /* Round-trip close REQ: tells DBLQH to free the CteScanIterState
    * pool record for scanIterI and reply with an EndOfData CONF.
@@ -1953,7 +1958,8 @@ class Dbspj : public SimulatedBlock {
    * close CONF drains them via the normal execCTE_SCAN_CONF path. */
   void cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr,
-                             Uint32 sourceNodeId, Uint32 scanIterI);
+                             Uint32 sourceNodeId, Uint32 ownerInstance,
+                             Uint32 scanIterI);
 
   /* Abort handler: tears down any CteScanIterState pool records held
    * by DBLQH for open slots (scanIterI != RNIL, !m_endOfData). */

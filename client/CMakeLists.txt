@@ -1,6 +1,6 @@
-# Copyright (c) 2006, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2006, 2026, Oracle and/or its affiliates.
 # Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
-# 
+#
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -136,7 +136,7 @@ ADD_SHARED_LIBRARY(json_binlog
   NO_UNDEFINED
   )
 
-if(WITH_RDRS) 
+if(WITH_RDRS)
   ADD_LIBRARY(rdrs_string STATIC
     ${CMAKE_SOURCE_DIR}/sql-common/sql_string.cc
     ${CMAKE_SOURCE_DIR}/mysys/my_time.cc

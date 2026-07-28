@@ -1,0 +1,73 @@
+SET time_zone='+00:00';
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE IF EXISTS child;
+DROP TABLE IF EXISTS parent;
+SET FOREIGN_KEY_CHECKS=1;
+CREATE TABLE parent (
+id  INT PRIMARY KEY,
+pts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=NDB;
+CREATE TABLE child (
+id  INT PRIMARY KEY,
+pid INT,
+ts  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+KEY(pid),
+CONSTRAINT child_fk FOREIGN KEY(pid) REFERENCES parent(id)
+) ENGINE=NDB;
+#
+# #6: add-TTL on an FK CHILD must be rejected regardless of ALGORITHM
+#
+# (a) inplace (default) -> rejected by the m_ttl_fk inplace guard
+ALTER TABLE child COMMENT='NDB_TABLE=TTL=5@ts';
+ERROR 0A000: Adding TTL on table which has fk restrictions is not supported. Reason: Table has fk restrictions, can not add TTL. Try drop the foreign keys from all the children tables.
+# (b) ALGORITHM=COPY -> previously the bypass; must now be rejected
+ALTER TABLE child COMMENT='NDB_TABLE=TTL=5@ts', ALGORITHM=COPY;
+ERROR HY000: Cannot add foreign key constraint
+# child is unchanged (no TTL comment, FK intact)
+SHOW CREATE TABLE child;
+Table	Create Table
+child	CREATE TABLE `child` (
+  `id` int NOT NULL,
+  `pid` int DEFAULT NULL,
+  `ts` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `pid` (`pid`),
+  CONSTRAINT `child_fk` FOREIGN KEY (`pid`) REFERENCES `parent` (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+#
+# #6: add-TTL on an FK PARENT must be rejected regardless of ALGORITHM
+#
+# (a) inplace (default)
+ALTER TABLE parent COMMENT='NDB_TABLE=TTL=5@pts';
+ERROR 0A000: Adding TTL on table which has fk restrictions is not supported. Reason: Table has fk restrictions, can not add TTL. Try drop the foreign keys from all the children tables.
+# (b) ALGORITHM=COPY
+ALTER TABLE parent COMMENT='NDB_TABLE=TTL=5@pts', ALGORITHM=COPY;
+ERROR HY000: Cannot add foreign key constraint
+# parent is unchanged (no TTL comment)
+SHOW CREATE TABLE parent;
+Table	Create Table
+parent	CREATE TABLE `parent` (
+  `id` int NOT NULL,
+  `pts` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+#
+# Negative control: dropping the FK and enabling TTL in the SAME COPY
+# alter is legitimate (no FK survives) and must still succeed.
+#
+ALTER TABLE child DROP FOREIGN KEY child_fk,
+COMMENT='NDB_TABLE=TTL=5@ts', ALGORITHM=COPY;
+# child is now a TTL table with no foreign key
+SHOW CREATE TABLE child;
+Table	Create Table
+child	CREATE TABLE `child` (
+  `id` int NOT NULL,
+  `pid` int DEFAULT NULL,
+  `ts` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `pid` (`pid`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=5@ts'
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE IF EXISTS child;
+DROP TABLE IF EXISTS parent;
+SET FOREIGN_KEY_CHECKS=1;

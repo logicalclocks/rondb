@@ -1,0 +1,29 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Requires the testDeadlock NDB API program (built with -DWITH_NDB_TEST=1).
+let $have_bin= `SELECT LENGTH('$NDB_TEST_DEADLOCK_BINARY') > 0`;
+if (!$have_bin)
+{
+  --skip Requires the testDeadlock NDB API test program (WITH_NDB_TEST)
+}
+
+--echo # RONDB-1062: deterministic scan<->scan deadlock (testDeadlock -scan s).
+--echo # Two exclusive ordered index scans (ascending/descending, batch 2) on a
+--echo # single-fragment table run concurrently.  A DBTUX error insert (12010)
+--echo # makes each scan stall after locking its first row until the program
+--echo # clears it, so both still hold a row when they collide on each other's,
+--echo # forming a scan<->scan cycle.  With TransactionDeadlockDetectionTimeout
+--echo # = 60s (see .cnf), the program asserts the cycle is resolved in well
+--echo # under that (one scan aborted with a lock-wait/timeout error, the other
+--echo # survives) - which proves proactive detection.  The program's exit code
+--echo # is the pass/fail signal; its output is logged to NDB_TOOLS_OUTPUT, not
+--echo # the result file.
+
+# Redirect to a private file (removed on success) rather than the shared
+# $NDB_TOOLS_OUTPUT, so the test leaves no new file behind for check-testcase.
+# On failure the --exec aborts the test (the file is kept for inspection).
+--exec NDB_CONNECTSTRING="$NDB_CONNECTSTRING" $NDB_TEST_DEADLOCK_BINARY -scan s > $MYSQL_TMP_DIR/ndb_deadlock_scan_scan.out 2>&1
+--remove_file $MYSQL_TMP_DIR/ndb_deadlock_scan_scan.out
+
+--echo # scan<->scan deadlock detected and resolved proactively.

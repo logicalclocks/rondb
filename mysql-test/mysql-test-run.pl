@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # -*- cperl -*-
 
-# Copyright (c) 2004, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2004, 2026, Oracle and/or its affiliates.
 # Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -282,6 +282,43 @@ our @DEFAULT_SUITES = qw(
 );
 
 our $DEFAULT_SUITES = join ',', @DEFAULT_SUITES;
+
+# RonDB aggregate suite alias. This is intentionally not represented as a
+# physical mysql-test/suite/rondb directory since the tests keep their own
+# suite-local my.cnf, suite.opt, disabled files, and result directories.
+our @RONDB_SUITES = qw(
+  ndb
+  ndbcluster
+  ndb_binlog
+  ndb_ddl
+  ndb_opt
+  ndb_push_agg
+  ndb_push_agg_dist
+  ndb_quota
+  ndb_ring_buffer
+  ndb_rpl
+  ndb_tls
+  ndb_ttl
+  ndb_ttl_rpl
+  ndb_ttl_purge
+  rpl_ndb
+  gcol_ndb
+  json_ndb
+  rondis
+  rondb-cli
+  rdrs2-golang
+  rdrs2-ronsqltpch
+  ronsql
+  ronsql_cte
+  ronsql_large
+  ronsql_cte_ng1r3
+  ronsql_cte_ng2r2
+  ronsql_cte_ng2r3
+  ronsql_cte_ng4r2
+  myrouter
+  myrouter_ndb
+  rondb_big
+);
 
 # End of list of default suites
 
@@ -584,6 +621,8 @@ sub main {
       }
     }
   }
+
+  expand_suite_aliases();
 
   my $mtr_suites = $opt_suites;
   # Skip suites which don't match the --do-suite filter
@@ -3212,6 +3251,21 @@ sub get_all_suites {
 }
 
 #
+# Expand logical suite aliases into concrete MTR suites before filtering,
+# de-duplication, and collection.
+#
+sub expand_suite_aliases {
+  return if not $opt_suites;
+
+  my @expanded_suites;
+  for my $suite (split(",", $opt_suites)) {
+    push(@expanded_suites,
+         lc($suite) eq "rondb" ? @RONDB_SUITES : $suite);
+  }
+  $opt_suites = join(",", @expanded_suites);
+}
+
+#
 # Remove specified suite from the comma separated suite list
 #
 sub remove_suite_from_list {
@@ -3385,6 +3439,15 @@ sub environment_setup {
     if ($test_join_agg_binary) {
       $ENV{'NDB_PUSH_AGG_DIR'} = dirname($test_join_agg_binary);
       mtr_verbose("NDB_PUSH_AGG_DIR: $ENV{'NDB_PUSH_AGG_DIR'}");
+    }
+
+    # RONDB-1062: testDeadlock NDB API program (scan<->scan deadlock test)
+    my $test_deadlock_binary =
+      my_find_bin($bindir, [ "runtime_output_directory", "bin" ],
+                  "testDeadlock", NOT_REQUIRED);
+    if ($test_deadlock_binary) {
+      $ENV{'NDB_TEST_DEADLOCK_BINARY'} = $test_deadlock_binary;
+      mtr_verbose("NDB_TEST_DEADLOCK_BINARY: $test_deadlock_binary");
     }
 
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2005, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -3469,4 +3469,15 @@ Dbtup::lcp_frag_watchdog_print(Uint32 tableId, Uint32 fragId)
         " last seen line %u",
         tableId, fragId, scanPtr.p->m_state, scanPtr.p->m_last_seen);
   }
+}
+
+/* RONDB-1062 deadlock discovery: ScanOp index -> LQH scan record index. */
+bool Dbtup::get_scan_lqh_ptr(Uint32 scanPtrI, Uint32& lqhScanPtr) {
+  ScanOpPtr scanPtr;
+  scanPtr.i = scanPtrI;
+  if (!c_scanOpPool.getValidPtr(scanPtr)) {
+    return false;
+  }
+  lqhScanPtr = scanPtr.p->m_userPtr;
+  return true;
 }

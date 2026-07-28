@@ -1,0 +1,91 @@
+# ==========================================================================
+# Repro + guard for the ndb_restore backup-log-replay TTL divergence bug (#4).
+# ==========================================================================
+#
+# ndb_restore replays the backup log (changes committed during the backup)
+# via updateTuple/deleteTuple. Those ops carried no TTL-ignore, so if a row
+# has expired-but-not-been-purged by restore time, DBTUP checkTTL returns 626
+# and the log entry is silently dropped (consumer_restore's async callback
+# accepts NoDataFound) -> the restored data diverges from the backup's
+# committed end state. The snapshot/data phase uses writeTuple (ZWRITE) and is
+# unaffected; only log replay is exposed.
+#
+# This test refreshes an expiring row via a LOGGED update during the backup
+# window, then ages the snapshot copy past its TTL before restoring. The
+# refresh (col_c 200 -> 222, col_b far future) must survive restore: seeing
+# row 2 with col_c=222 proves the log UPDATE was both captured AND applied
+# through TTL. BUG: row 2 is lost (log UPDATE dropped; snapshot copy expired).
+# Fix: consumer_restore sets OF_TTL_IGNORE (op->set_ttl_ignore()) on every
+# log-replay op, so restore faithfully replays committed history (same
+# principle as the kernel LCP-restore m_restore_op fix).
+#
+# Requires a debug/ERROR_INSERT build: error 10040 pauses the backup at WAIT_GCP
+# AFTER the fragment scan, so the scan captures row 2's original col_b and the
+# refresh UPDATE lands ONLY in the backup log (a quiescent backup log is empty).
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+--source suite/ndb_ttl/include/ttl_backup_restore_setup.inc
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz;
+--enable_warnings
+
+CREATE TABLE test.sz (
+  col_a INT PRIMARY KEY,
+  col_b TIMESTAMP NULL DEFAULT NULL,
+  col_c INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=10@col_b";
+# let the schema propagate
+sleep 3;
+
+--echo # anchor row 1 (col_b NULL -> never expires, control) + row 2 (expires)
+INSERT INTO test.sz VALUES (1, NULL,   100);
+INSERT INTO test.sz VALUES (2, NOW(),  200);
+
+--echo # --- stall backup AFTER the fragment scan (error 10040 pauses at the
+--echo #     WAIT_GCP phase): the scan captures row 2's ORIGINAL col_b, and the
+--echo #     refresh UPDATE below then lands ONLY in the backup log (so the
+--echo #     restored snapshot copy is the expiring one, exercising log replay).
+--exec $NDB_MGM -e "all error 10040" >> $NDB_TOOLS_OUTPUT 2>&1
+--source suite/ndb/t/ndb_backup_nowait_start.inc
+--echo # let the (instant, 2-row) fragment scan finish before mutating row 2
+sleep 2;
+
+--echo # --- refresh row 2 while it is still live on the source: col_c 200->222
+--echo #     and col_b far into the future. Queues as an UPDATE in the backup log.
+UPDATE test.sz SET col_c = 222, col_b = NOW() + INTERVAL 1 HOUR WHERE col_a = 2;
+
+--echo # --- allow backup to complete.
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT 2>&1
+--source suite/ndb/t/ndb_backup_nowait_wait.inc
+
+--echo # backup committed end-state: rows 1(100) and 2(222)
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--echo # --- age row 2's SNAPSHOT copy (col_b = NOW()@t0) past its 10s TTL, so at
+--echo #     restore time it is expired and the log UPDATE(2) hits checkTTL.
+sleep 15;
+
+--echo # --- drop and restore (metadata + data + log replay).
+DROP TABLE test.sz;
+sleep 3;
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m --include-tables=test.sz $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --include-tables=test.sz $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --include-tables=test.sz $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+--let $ttl_sync_db = test
+--let $ttl_sync_table = sz
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+--echo # --- restored state MUST equal the backup end-state: rows 1(100), 2(222).
+--echo #     BUG drops the log UPDATE(2) -> row 2 stays expired-hidden -> lost.
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+###############################################################################
+# Cleanup
+###############################################################################
+DROP TABLE test.sz;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb/include/backup_restore_cleanup.inc

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -723,7 +723,8 @@ class Dblqh : public SimulatedBlock {
       m_outer_join_agg_scan(0),
       m_local_matched_ranges(nullptr),
       m_local_matched_words(0),
-      m_ttl_purge_window_size(0)
+      m_ttl_purge_window_size(0),
+      m_ttl_now_sec(0)
     {
     }
 
@@ -880,6 +881,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ttl_only_expired;   // Only be insterested in expired rows
     Uint32 m_ttl_purge_window_size;
     Uint8 m_ring_buffer_show_meta;
+    Uint32 m_ttl_now_sec;       // wall-clock "now" (UTC epoch sec) sampled once
+                                // per scan batch for TTL expiry checks; 0 = unset
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2780,6 +2783,12 @@ class Dblqh : public SimulatedBlock {
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);
   bool is_ring_buffer_table(Uint32 table_id);
+  void set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id);
+  // TTL related (Bug #2). True iff table_id is an internal UNIQUE hash index.
+  // Used by DBTUP's same-owner check to scope the duplicate-vs-live-owner
+  // rejection to unique indexes (NOT BLOB part-tables, which also have
+  // primaryTableId != self but must keep the TTL upsert conversion).
+  bool is_unique_hash_index_table(Uint32 table_id);
   void release_frag_array(Tablerec*);
   Uint32 findFreeFragEntry(Uint32 num_fragments_in_array);
   bool seize_frag_array(Tablerec*,
@@ -2958,7 +2967,8 @@ class Dblqh : public SimulatedBlock {
       original_operation(0xFF),
       ttl_ignore(0),
       ttl_only_expired(0),
-      ring_buffer_op(0)
+      ring_buffer_op(0),
+      m_restore_op(0)
     {
       m_dealloc_data.m_unused = RNIL;
 #ifdef DEBUG_USAGE_COUNT
@@ -3109,7 +3119,18 @@ class Dblqh : public SimulatedBlock {
       OP_DISABLE_FK = 0x20,
       OP_NO_TRIGGERS = 0x40,
       OP_NOWAIT = 0x80,
-      OP_REPLICA_APPLIER = 0x100
+      OP_REPLICA_APPLIER = 0x100,
+      /*
+       * TTL related (same-transaction unique-dup gap fix). Genuine TTL-ignore
+       * PROVENANCE: set ONLY from explicit request/recovery intent (API
+       * OO_TTL_IGNORE, replication apply, a recovery op forwarded from the
+       * primary, copy-fragment, REDO replay). It is NEVER set from the DBACC
+       * same-transaction "read-what-you-locked" response (execACCKEYCONF). DBTUP
+       * uses it to exempt a ZINSERT_TTL on a unique-hash-index table from the
+       * same-owner duplicate check, so genuine recovery/replication replays stay
+       * exempt while an ordinary same-transaction duplicate is still rejected.
+       */
+      OP_TTL_OWNER_CHECK_BYPASS = 0x200
     };
     Uint32 m_flags;
     LogPartRecord *m_log_part_ptr_p;
@@ -3153,6 +3174,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 ttl_only_expired;
     Uint8 ring_buffer_op; /* Ring Buffer related */
     Uint8 ring_buffer_show_meta;
+    Uint8 m_restore_op; /* TTL related, op originates from LCP restore */
   };                 /* p2c: size = 308 bytes */
 
   static constexpr Uint32 DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;
@@ -3366,6 +3388,8 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void sendJoinAggCompleteHeartbeat(Signal* signal,
+                                    JoinAggregationState *state);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
@@ -3380,7 +3404,8 @@ private:
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
-   * Each entry is [tableId=0][schemaVersion=0][AttrHeader][data...].
+   * CTE result entries use the CteLinkedAttr typed 2-word header followed
+   * by [AttrHeader][data...].
    * Shared by cteLookupAggFeed (downstream agg feed) and the filter
    * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
   void buildCteLinkedBuffer(const JoinAggInterpreter *interp,
@@ -3473,7 +3498,8 @@ private:
   void sendScalarRedistributeReq(Signal* signal,
                                   JoinAggregationState* state,
                                   JoinAggInterpreter* interp,
-                                  Uint32 ownerNode);
+                                  Uint32 ownerNode,
+                                  Uint32 senderAggStateKey);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
@@ -5650,6 +5676,22 @@ private:
   void get_tc_ref(Uint32 tcPtrI,
                   Uint32 & tcOprec,
                   Uint32 & tcRef);
+  /* Guarded variant of get_tc_ref: returns false (without crashing) if the
+   * op index does not resolve to a valid TcConnectionrec, e.g. when the lock
+   * holder is a scan op rather than a key op.  Used by deadlock discovery
+   * (RONDB-1062) where the lock owner may be any kind of operation. */
+  bool try_get_tc_ref(Uint32 tcPtrI,
+                      Uint32 & tcOprec,
+                      Uint32 & tcRef);
+  /* Resolve a locking scan to its coordinating TC: given an LQH ScanRecord
+   * index (as stored in DBACC ScanRec::scanUserptr), follow scanTcrec to the
+   * scan's TcConnectionrec and return its TC ref + oprec (the oprec is the
+   * TC ScanFragRec id).  Returns false (no crash) if the index is not a valid
+   * ScanRecord of this LQH instance (e.g. a query-thread instance) or the
+   * scan has no TC.  Used for scan<->scan deadlock detection (RONDB-1062). */
+  bool try_get_scan_tc_ref(Uint32 scanPtrI,
+                           Uint32 & tcOprec,
+                           Uint32 & tcRef);
 
   bool is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP);
 
@@ -6282,6 +6324,50 @@ inline void Dblqh::get_tc_ref(Uint32 tcPtrI,
   ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
   tcOprec = tcConnectptr.p->tcOprec;
   tcRef = tcConnectptr.p->tcBlockref;
+}
+
+inline bool Dblqh::try_get_tc_ref(Uint32 tcPtrI,
+                                  Uint32 & tcOprec,
+                                  Uint32 & tcRef)
+{
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = tcPtrI;
+  if (!tcConnect_pool.getValidPtr(tcConnectptr))
+  {
+    return false;
+  }
+  tcOprec = tcConnectptr.p->tcOprec;
+  tcRef = tcConnectptr.p->tcBlockref;
+  return true;
+}
+
+inline bool Dblqh::try_get_scan_tc_ref(Uint32 scanPtrI,
+                                       Uint32 & tcOprec,
+                                       Uint32 & tcRef)
+{
+  ScanRecordPtr sp;
+  sp.i = scanPtrI;
+  if (!c_scanRecordPool.getValidPtr(sp))
+  {
+    return false;
+  }
+  if (sp.p->scanTcrec == RNIL)
+  {
+    return false;
+  }
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = sp.p->scanTcrec;
+  if (!tcConnect_pool.getValidPtr(tcConnectptr))
+  {
+    return false;
+  }
+  /* For a scan the coordinating TC is the SCAN_FRAGCONF destination
+   * (clientBlockref), and the TC-side handle is clientConnectrec (the TC
+   * ScanFragRec id).  A scan does NOT set tcBlockref/tcOprec the way a key op
+   * does, so using those (as try_get_tc_ref would) routes to an unknown node. */
+  tcOprec = tcConnectptr.p->clientConnectrec;
+  tcRef = tcConnectptr.p->clientBlockref;
+  return true;
 }
 
 inline bool Dblqh::have_frag_scan_access() const {

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -303,6 +303,7 @@
 #define CFG_DB_NUM_LQHKEYREQ_COUNTS   702
 #define CFG_DB_NUM_SCAN_FRAGREQ_COUNTS 703
 #define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 704
+#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 705
 
 /* End RonDB only configuration parameters */
 

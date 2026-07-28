@@ -1,0 +1,60 @@
+# D19 regression (was a hang — now green; name kept like ronsql_cte_dd_d3_hang
+# to document the original finding).  Finding D19 / fix-plan H4.
+#
+# real_table JOIN cte(agg-leaf) with a main-query WHERE on a PARENT column.
+# EXPLAIN showed the plan is identical with or without the parent WHERE: ROOT
+# TABLE_SCAN customer + INNER CTE_LOOKUP cust (aggregation leaf, key
+# k = c.c_custkey), main SUM(cust.t) GROUP BY cust.k; the only delta is a WHERE
+# filter on the root TABLE_SCAN.  D19 was recorded as a hang against a stale
+# rdrs2/ndbmtd during parallel suite authoring; it does NOT reproduce on the
+# current build (CTE join-agg routing/teardown hardening was already in HEAD).
+# Both variants now execute correctly and match MySQL.
+#
+#   base : no parent WHERE        — full 300-group result.
+#   D19a : WHERE c.c_nationkey=5  — 12 nationkey-5 groups.
+#
+# Run: ../debug_build/mysql-test/mtr --suite=ronsql_cte ronsql_cte_dd_d19_hang
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+DELIMITER |;
+
+--echo
+--echo === D19 base: no parent WHERE (green) ===
+let $QUERY=
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY cust.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY cust.k|
+
+--echo
+--echo === D19a: WHERE c.c_nationkey = 5 (parent-column filter, green) ===
+let $QUERY=
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_nationkey = 5 GROUP BY cust.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_nationkey = 5 GROUP BY cust.k|
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

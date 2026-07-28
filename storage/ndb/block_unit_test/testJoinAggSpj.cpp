@@ -247,6 +247,77 @@ struct TableMeta {
   std::vector<Uint32> fragNodes;
 };
 
+static void
+appendLocalBigintMetaEntry(std::vector<Uint32> &block,
+                           const TableMeta &tableMeta,
+                           Uint32 columnId,
+                           Uint32 programOffset,
+                           Uint32 slotIndex,
+                           Uint32 flags)
+{
+  block.push_back(JOIN_AGG_META_SOURCE_LOCAL_COLUMN);
+  block.push_back(columnId);
+  block.push_back(programOffset);
+  block.push_back(slotIndex);
+  block.push_back(tableMeta.tableId);
+  block.push_back(tableMeta.schemaVersion);
+  block.push_back(columnId);
+  block.push_back(COL_TYPE_BIGINT);
+  block.push_back(8);
+  block.push_back(0);
+  block.push_back(0);
+  block.push_back(flags);
+}
+
+static std::vector<Uint32>
+buildJoinAggMetadataBlock(const std::vector<Uint32> &aggProgram,
+                          const TableMeta &tableMeta)
+{
+  std::vector<Uint32> block;
+  block.push_back(JOIN_AGG_META_MARKER);
+  block.push_back(JOIN_AGG_META_VERSION);
+  block.push_back(0);
+
+  if (aggProgram.size() < 8 || (aggProgram[0] >> 16) != AGG_MAGIC) {
+    return block;
+  }
+
+  Uint32 entryCount = 0;
+  const Uint32 nGbCols = aggProgram[1] >> 16;
+  for (Uint32 i = 0; i < nGbCols && (8 + i) < aggProgram.size(); i++) {
+    const Uint32 programOffset = 8 + i;
+    const Uint32 columnId = (aggProgram[programOffset] >> 16) & 0xFFFF;
+    appendLocalBigintMetaEntry(block, tableMeta, columnId, programOffset, i,
+                               JOIN_AGG_META_FLAG_GROUP_BY);
+    entryCount++;
+  }
+
+  for (Uint32 i = 8 + nGbCols; i < aggProgram.size(); i++) {
+    const Uint32 op = (aggProgram[i] >> 26) & 0x3F;
+    if (op != kOpLoadCol) continue;
+    const Uint32 columnId = aggProgram[i] & 0xFFFF;
+    appendLocalBigintMetaEntry(block, tableMeta, columnId, i, RNIL,
+                               JOIN_AGG_META_FLAG_LOAD_COLUMN);
+    entryCount++;
+  }
+
+  block[2] = entryCount;
+  return block;
+}
+
+static void
+appendJoinAggMetadataContainer(std::vector<Uint32> &section,
+                               const std::vector<Uint32> &block)
+{
+  section.push_back(JOIN_AGG_META_MARKER);
+  section.push_back(JOIN_AGG_META_VERSION);
+  section.push_back(1);
+  section.push_back(JOIN_AGG_META_KIND_MAIN);
+  section.push_back(RNIL);
+  section.push_back(static_cast<Uint32>(block.size()));
+  section.insert(section.end(), block.begin(), block.end());
+}
+
 /*
  * Create/drop tables and insert data via MySQL.
  * Tables must be created through MySQL (not NDB API) to be visible
@@ -738,19 +809,21 @@ releaseTcConnect(SignalSender &ss, Uint32 nodeId,
     return -1;
   }
 
-  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "TCRELEASECONF");
-  if (resp == nullptr) return -1;
+  while (true) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TCRELEASECONF");
+    if (resp == nullptr) return -1;
 
-  int gsn = getGsn(resp);
-  if (gsn == GSN_TCRELEASECONF) {
-    V("TCRELEASECONF received\n");
-    return 0;
-  } else if (gsn == GSN_TCRELEASEREF) {
-    fprintf(stderr, "TCRELEASEREF: errorCode=%u\n", resp->getDataPtr()[1]);
-    return -1;
-  } else {
-    fprintf(stderr, "Unexpected GSN %d waiting for TCRELEASECONF\n", gsn);
-    return -1;
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TCRELEASECONF) {
+      V("TCRELEASECONF received\n");
+      return 0;
+    } else if (gsn == GSN_TCRELEASEREF) {
+      fprintf(stderr, "TCRELEASEREF: errorCode=%u\n", resp->getDataPtr()[1]);
+      return -1;
+    }
+
+    V("  Ignoring GSN %d while waiting for TCRELEASECONF\n", gsn);
   }
 }
 
@@ -818,6 +891,11 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back(0);  // boundsLen = 0 (no bounds)
   aggSection.push_back(receiverId);
   aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
+  if (!aggProgram.empty() && (aggProgram[0] >> 16) == AGG_MAGIC) {
+    const std::vector<Uint32> metadataBlock =
+      buildJoinAggMetadataBlock(aggProgram, meta);
+    appendJoinAggMetadataContainer(aggSection, metadataBlock);
+  }
 
   ssig.header.m_noOfSections = 3;
   /* Section 0: single dummy receiver ID (DBTC ignores section 0 for JoinAgg;
@@ -1876,7 +1954,8 @@ int main(int argc, char *argv[])
   ndb_end(0);
 
   if (result == 0) {
-    write(mtr_fd, "PASSED\n", 7);
+    ssize_t written = write(mtr_fd, "PASSED\n", 7);
+    if (written != 7) result = 1;
   }
   close(mtr_fd);
 

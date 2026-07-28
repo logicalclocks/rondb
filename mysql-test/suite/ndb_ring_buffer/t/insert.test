@@ -19,7 +19,7 @@ CREATE TABLE test.rb (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 --echo #
---echo # Case 1: Single-row insert — first insert for PK prefix
+--echo # Case 1: Single-row insert - first insert for PK prefix
 --echo # Expected: ring_idx=1 assigned, meta row created
 --echo #
 
@@ -43,7 +43,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 3: Ring wraps — oldest entry overwritten
+--echo # Case 3: Ring wraps - oldest entry overwritten
 --echo # 5th insert should overwrite slot 1
 --echo #
 
@@ -55,7 +55,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 4: Additional wrap — slot 2 overwritten
+--echo # Case 4: Additional wrap - slot 2 overwritten
 --echo #
 
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
@@ -65,7 +65,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 5: Different PK prefix — independent ring
+--echo # Case 5: Different PK prefix - independent ring
 --echo #
 
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_A');
@@ -123,7 +123,7 @@ SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
---echo # Case 11: Ring size = 1 (single slot — every insert overwrites)
+--echo # Case 11: Ring size = 1 (single slot - every insert overwrites)
 --echo #
 
 CREATE TABLE test.rb1 (

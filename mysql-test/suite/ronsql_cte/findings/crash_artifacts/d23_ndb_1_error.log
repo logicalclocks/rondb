@@ -1,0 +1,16 @@
+Current byte-offset of file-pointer is: 1067                      
+
+
+Time: Monday 8 June 2026 - 17:53:52
+Status: Temporary error, restart node
+Message: Error OS signal received (Internal error, programming error or missing error message, please report a bug)
+Error: 6000
+Error data: Signal 11 received; Segmentation fault: 11
+Error object: /Users/mikael/mysql_trees/rondb_1072_CTE_test/storage/ndb/src/kernel/ndbd.cpp
+Program: ndbmtd
+Pid: 42533 thr: 3
+Version: RonDB-26.04.1
+Trace file name: ndb_1_trace.log.1_t3
+Trace file path: /Users/mikael/mysql_trees/rondb_1072_CTE_test/debug_build/mysql-test/var/mysql_cluster.1/ndbd.1/ndb_1_trace.log.1 [t1..t11]
+***EOM***
+                                                                                                                                                                                                                                                                                                                                                                                                                  

@@ -7,7 +7,7 @@
 --source include/have_ndb.inc
 
 --echo #
---echo # Case 1: Basic CREATE TABLE with MAX_ROWS_PER_PK — success
+--echo # Case 1: Basic CREATE TABLE with MAX_ROWS_PER_PK - success
 --echo #
 
 CREATE TABLE test.t1 (
@@ -24,7 +24,7 @@ SHOW CREATE TABLE test.t1;
 DROP TABLE test.t1;
 
 --echo #
---echo # Case 2: MAX_ROWS_PER_PK with INT UNSIGNED ring_idx — success
+--echo # Case 2: MAX_ROWS_PER_PK with INT UNSIGNED ring_idx - success
 --echo #
 
 CREATE TABLE test.t2 (
@@ -40,7 +40,7 @@ SHOW CREATE TABLE test.t2;
 DROP TABLE test.t2;
 
 --echo #
---echo # Case 3: MAX_ROWS_PER_PK with size = 1 (minimum) — success
+--echo # Case 3: MAX_ROWS_PER_PK with size = 1 (minimum) - success
 --echo #
 
 CREATE TABLE test.t3 (
@@ -56,7 +56,7 @@ SHOW CREATE TABLE test.t3;
 DROP TABLE test.t3;
 
 --echo #
---echo # Case 4: MAX_ROWS_PER_PK with large size (2147483647) — success
+--echo # Case 4: MAX_ROWS_PER_PK with large size (2147483647) - success
 --echo #
 
 CREATE TABLE test.t4 (
@@ -72,7 +72,7 @@ SHOW CREATE TABLE test.t4;
 DROP TABLE test.t4;
 
 --echo #
---echo # Case 5: MAX_ROWS_PER_PK = OFF — success (no ring buffer set)
+--echo # Case 5: MAX_ROWS_PER_PK = OFF - success (no ring buffer set)
 --echo #
 
 CREATE TABLE test.t5 (
@@ -88,7 +88,7 @@ SHOW CREATE TABLE test.t5;
 DROP TABLE test.t5;
 
 --echo #
---echo # Case 6: Combined COMMENT with PARTITION_BALANCE — success
+--echo # Case 6: Combined COMMENT with PARTITION_BALANCE - success
 --echo #
 
 CREATE TABLE test.t6 (
@@ -105,7 +105,7 @@ SHOW CREATE TABLE test.t6;
 DROP TABLE test.t6;
 
 --echo #
---echo # Case 7: Error — ring_idx column is not INT type (BIGINT)
+--echo # Case 7: Error - ring_idx column is not INT type (BIGINT)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -118,7 +118,7 @@ CREATE TABLE test.t7 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
---echo # Case 8: Error — ring_idx column is not the last PK column
+--echo # Case 8: Error - ring_idx column is not the last PK column
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -131,7 +131,7 @@ CREATE TABLE test.t8 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
---echo # Case 9: Error — ring_meta column is not VARBINARY (VARCHAR used)
+--echo # Case 9: Error - ring_meta column is not VARBINARY (VARCHAR used)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -144,7 +144,7 @@ CREATE TABLE test.t9 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
---echo # Case 10: Error — ring_meta column VARBINARY too small (< 16)
+--echo # Case 10: Error - ring_meta column VARBINARY too small (< 16)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -157,7 +157,7 @@ CREATE TABLE test.t10 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
---echo # Case 11: Error — ring_meta column is NOT NULL (must be nullable)
+--echo # Case 11: Error - ring_meta column is NOT NULL (must be nullable)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -170,7 +170,7 @@ CREATE TABLE test.t11 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
---echo # Case 12: Error — size = 0 (below minimum)
+--echo # Case 12: Error - size = 0 (below minimum)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -183,7 +183,7 @@ CREATE TABLE test.t12 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0@ring_idx@ring_meta";
 
 --echo #
---echo # Case 13: Error — size exceeds maximum (2147483648)
+--echo # Case 13: Error - size exceeds maximum (2147483648)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -196,7 +196,7 @@ CREATE TABLE test.t13 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483648@ring_idx@ring_meta";
 
 --echo #
---echo # Case 14: Error — malformed format (missing second @)
+--echo # Case 14: Error - malformed format (missing second @)
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -209,7 +209,7 @@ CREATE TABLE test.t14 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx";
 
 --echo #
---echo # Case 15: Error — ring_idx column not found in table
+--echo # Case 15: Error - ring_idx column not found in table
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -222,7 +222,7 @@ CREATE TABLE test.t15 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@nonexistent@ring_meta";
 
 --echo #
---echo # Case 16: Error — ring_meta column not found in table
+--echo # Case 16: Error - ring_meta column not found in table
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -235,7 +235,7 @@ CREATE TABLE test.t16 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@nonexistent";
 
 --echo #
---echo # Case 17: Error — TTL and MAX_ROWS_PER_PK mutual exclusion
+--echo # Case 17: Error - TTL and MAX_ROWS_PER_PK mutual exclusion
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -249,7 +249,7 @@ CREATE TABLE test.t17 (
   COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
---echo # Case 18: Error — size is not a number
+--echo # Case 18: Error - size is not a number
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -262,7 +262,7 @@ CREATE TABLE test.t18 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=abc@ring_idx@ring_meta";
 
 --echo #
---echo # Case 19: Error — ring_idx column has no DEFAULT value
+--echo # Case 19: Error - ring_idx column has no DEFAULT value
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -275,18 +275,18 @@ CREATE TABLE test.t19 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 ###############################################################################
-# Case 20: FOREIGN KEY on ring buffer table — blocked
+# Case 20: FOREIGN KEY on ring buffer table - blocked
 ###############################################################################
 
 --echo #
---echo # Case 20: FOREIGN KEY on ring buffer table — blocked
+--echo # Case 20: FOREIGN KEY on ring buffer table - blocked
 --echo #
 
 CREATE TABLE test.fk_parent (
     id INT NOT NULL PRIMARY KEY
 ) ENGINE = NDB;
 
-# Ring buffer as FK child — blocked
+# Ring buffer as FK child - blocked
 --error ER_CANNOT_ADD_FOREIGN
 CREATE TABLE test.rb_fk_child (
     id INT NOT NULL,
@@ -298,7 +298,7 @@ CREATE TABLE test.rb_fk_child (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-# Ring buffer as FK parent — blocked
+# Ring buffer as FK parent - blocked
 CREATE TABLE test.rb_fk_parent (
     id INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
@@ -320,11 +320,11 @@ DROP TABLE test.rb_fk_parent;
 DROP TABLE test.fk_parent;
 
 ###############################################################################
-# Case 21: NOT NULL BLOB/TEXT on ring buffer table — blocked
+# Case 21: NOT NULL BLOB/TEXT on ring buffer table - blocked
 ###############################################################################
 
 --echo #
---echo # Case 21: NOT NULL BLOB/TEXT on ring buffer table — blocked
+--echo # Case 21: NOT NULL BLOB/TEXT on ring buffer table - blocked
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -348,11 +348,11 @@ CREATE TABLE test.rb_nn_blob2 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 ###############################################################################
-# Case 22: Size only — default column names (ring_idx, ring_meta)
+# Case 22: Size only - default column names (ring_idx, ring_meta)
 ###############################################################################
 
 --echo #
---echo # Case 22: Size only — default column names (ring_idx, ring_meta)
+--echo # Case 22: Size only - default column names (ring_idx, ring_meta)
 --echo #
 
 CREATE TABLE test.t22 (
@@ -366,7 +366,7 @@ CREATE TABLE test.t22 (
 
 SHOW CREATE TABLE test.t22;
 
-# Verify ring buffer works — insert 5 rows, only last 3 should remain
+# Verify ring buffer works - insert 5 rows, only last 3 should remain
 INSERT INTO test.t22 (client_id, data) VALUES (1, 'a');
 INSERT INTO test.t22 (client_id, data) VALUES (1, 'b');
 INSERT INTO test.t22 (client_id, data) VALUES (1, 'c');
@@ -397,7 +397,7 @@ CREATE TABLE test.t23 (
 
 SHOW CREATE TABLE test.t23;
 
-# Verify ring buffer works — insert 5 rows, only last 3 should remain
+# Verify ring buffer works - insert 5 rows, only last 3 should remain
 INSERT INTO test.t23 (client_id, data) VALUES (1, 'a');
 INSERT INTO test.t23 (client_id, data) VALUES (1, 'b');
 INSERT INTO test.t23 (client_id, data) VALUES (1, 'c');

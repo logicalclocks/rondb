@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2005, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2026, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -253,13 +253,15 @@ enum Ndb_logevent_type {
    * of total, max and alloc'ed bytes to 64-bit values
    */
   ,
-  NDB_LE_EventBufferStatus3 = 87
+  NDB_LE_EventBufferStatus3 = 87,
+
+  /** NDB_MGM_EVENT_CATEGORY_ERROR */
+  NDB_LE_LateHeartbeat = 88,
 
   /** NDB_MGM_EVENT_CATEGORY_ERROR */
   /** Data node security: a malformed/malicious signal was detected and reported
    * to QMGR. Rendered as "SECURITY_EVENT: tier=... node_id=... violation=...". */
-  ,
-  NDB_LE_SecurityEvent = 88
+  NDB_LE_SecurityEvent = 89
 };
 
 /**
@@ -638,6 +640,10 @@ struct ndb_logevent_MissedHeartbeat {
 struct ndb_logevent_DeadDueToHeartbeat {
   unsigned node;
 };
+struct ndb_logevent_LateHeartbeat {
+  unsigned node;
+  unsigned ms;
+};
 struct ndb_logevent_WarningEvent {
   /* TODO */
   unsigned _unused;
@@ -970,6 +976,7 @@ struct ndb_logevent {
     struct ndb_logevent_TransporterError TransporterError;
     struct ndb_logevent_TransporterWarning TransporterWarning;
     struct ndb_logevent_MissedHeartbeat MissedHeartbeat;
+    struct ndb_logevent_LateHeartbeat LateHeartbeat;
     struct ndb_logevent_DeadDueToHeartbeat DeadDueToHeartbeat;
     struct ndb_logevent_WarningEvent WarningEvent;
     struct ndb_logevent_SecurityEvent SecurityEvent;

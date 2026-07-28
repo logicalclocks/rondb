@@ -213,6 +213,51 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
                       "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
                       m_registers[reg_index].value.val_uint64);
       return 0;
+    case NDB_TYPE_DATE:
+      // D17: identical to MEDIUMUNSIGNED — a DATE is stored as the
+      // 3-byte little-endian packed value w = (year<<9)|(month<<5)|day.
+      // Register type is BIGINT (AlignedType) with is_unsigned set, so
+      // unsigned MIN/MAX over w == DATE MIN/MAX.  RonSQL unpacks the
+      // resulting w back to YYYY-MM-DD for display.
+      m_registers[reg_index].value.val_uint64 =
+          uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_DATE %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_YEAR:
+      // Temporal: YEAR is a single unsigned byte (year - 1900, 0 = 0000).
+      // Identical to TINYUNSIGNED; RonSQL adds the 1900 offset for display.
+      m_registers[reg_index].value.val_uint64 =
+          *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_YEAR %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2: {
+      // Temporal: DATETIME2 (5+flen bytes), TIME2 (3+flen bytes) and
+      // TIMESTAMP2 (4+flen bytes) are
+      // stored big-endian in MySQL's memcmp-comparable packed binary, where
+      // flen = (1+precision)/2.  Read the column's exact byte width (from the
+      // AttributeHeader — no padding, getByteSize == 5+flen / 3+flen) MSB-first
+      // into the register so the unsigned compare reproduces memcmp order
+      // (== chronological order).  RonSQL reconstructs the bytes from this
+      // value and decodes via my_*_packed_from_binary for display.
+      const unsigned char* src = reinterpret_cast<const unsigned char*>(
+          &m_attr_read_buf[m_attr_read_pos + 1]);
+      const Uint32 nbytes = header->getByteSize();
+      Uint64 v = 0;
+      for (Uint32 i = 0; i < nbytes; i++) {
+        v = (v << 8) | static_cast<Uint64>(src[i]);
+      }
+      m_registers[reg_index].value.val_uint64 = v;
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_DATETIME2/TIME2 (%u bytes) %llu",
+                      nbytes, m_registers[reg_index].value.val_uint64);
+      return 0;
+    }
     case NDB_TYPE_UNSIGNED:
       m_registers[reg_index].value.val_uint64 =
           uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
@@ -369,11 +414,10 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
     case NDB_TYPE_LONGVARCHAR: {
       /* Phase I.6 (F.2-K.4b): stash a read-only view into
        * m_attr_read_buf for a subsequent kOpMin / kOpMax to compare and
-       * copy without re-walking the AttributeDescriptor.  CTE linked-
-       * attr branch (Phase I.6 F.4-K.3, JoinAgg-only) reads the type
-       * metadata from the two linked-attr header words.  AggInterpreter
-       * never enters that branch (attrDescriptor is always non-null on
-       * its prelude path). */
+       * copy without re-walking the AttributeDescriptor.  JoinAgg passes
+       * attrDescriptor == nullptr and linked_cte_attr == true when string
+       * metadata comes from JOIN_AGG_SETUP_REQ or a typed CTE linked attr.
+       * AggInterpreter keeps the normal table-descriptor path. */
       const CHARSET_INFO* cs = nullptr;
       Uint32 declared = 0;
       if (attrDescriptor != nullptr) {
@@ -460,6 +504,7 @@ void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
   Uint32 hdr0 = prog[0];
   assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
   assert((hdr0 & 0xFFFF) == m_prog_len);
+  (void)hdr0;
 
   Uint32 hdr1 = prog[1];
   m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
@@ -555,7 +600,7 @@ bool AggInterpreterBase::scanAndValidateEmbeddedPrograms(
     } else if (op == kOpLoadConst) {
       scan_pos += 3;  /* header + 2 constant value words */
     } else if (op == kOpLoadCol) {
-      Uint32 type = (w & 0x03E00000) >> 21;
+      Uint32 type = decodeLoadColType(w);
       scan_pos += (type == NDB_TYPE_DECIMAL ||
                    type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
     } else {
@@ -712,6 +757,28 @@ bool AggInterpreterBase::TypeSupported(DataType type) {
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
 
+    // D17: MIN/MAX over DATE.  A DATE is a 3-byte little-endian
+    // uint3korr packed value (w = (year<<9)|(month<<5)|day) that is
+    // monotonic with chronological order, so it is handled exactly
+    // like NDB_TYPE_MEDIUMUNSIGNED at the numeric level (unsigned,
+    // AlignedType → BIGINT).  Only the result *display* differs —
+    // RonSQL unpacks w → YYYY-MM-DD.  Sum/Avg over DATE stay rejected
+    // (meaningless); see cte_date_minmax_plan.md.
+    case NDB_TYPE_DATE:
+
+    // Temporal extension: YEAR (1-byte unsigned, like TINYUNSIGNED),
+    // and DATETIME2 / TIME2 (big-endian memcmp-comparable packed bytes,
+    // read MSB-first into the register so unsigned compare == memcmp ==
+    // chronological order).  All three reduce to an unsigned integer for
+    // MIN/MAX; RonSQL decodes the result for display.  Sum/Avg rejected.
+    // TIMESTAMP2 is also big-endian memcmp-comparable; its on-disk epoch
+    // ordering is absolute (timezone-independent), so MIN/MAX is exact and
+    // TZ only matters at display time (handled in RonSQL).
+    case NDB_TYPE_YEAR:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2:
+
     // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
     // Sum is rejected separately (see Sum()).  Count is
     // type-agnostic and works for any column type.  String
@@ -735,6 +802,16 @@ bool AggInterpreterBase::IsUnsigned(DataType type) {
     case NDB_TYPE_UNSIGNED:
     case NDB_TYPE_BIGUNSIGNED:
     case NDB_TYPE_DECIMALUNSIGNED:
+    // D17: DATE packed value is an unsigned 3-byte integer; the
+    // unsigned compare path (val_uint64) sorts 0000-00-00 (w=0)
+    // lowest, as MySQL DATE MIN/MAX requires.
+    case NDB_TYPE_DATE:
+    // Temporal extension: YEAR / DATETIME2 / TIME2 / TIMESTAMP2 all compare
+    // as unsigned (big-endian memcmp order for the "2" types).
+    case NDB_TYPE_YEAR:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2:
       return true;
     default:
       return false;
@@ -755,6 +832,16 @@ DataType AggInterpreterBase::AlignedType(DataType type, int scale) {
     case NDB_TYPE_MEDIUMUNSIGNED:
     case NDB_TYPE_UNSIGNED:
     case NDB_TYPE_BIGUNSIGNED:
+
+    // D17: DATE is held as the unsigned 3-byte packed value in a
+    // BIGINT register (is_unsigned set via IsUnsigned).
+    case NDB_TYPE_DATE:
+    // Temporal extension: YEAR (1 byte) and DATETIME2 / TIME2 / TIMESTAMP2
+    // (big-endian packed value) are likewise held as an unsigned BIGINT.
+    case NDB_TYPE_YEAR:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_TIMESTAMP2:
 
       return NDB_TYPE_BIGINT;
     case NDB_TYPE_FLOAT:
@@ -2111,15 +2198,16 @@ void AggInterpreterBase::freeAllChunks() {
  * linked_attr_data / linked_attr_len are the per-row linked-attr
  * buffer JoinAgg passes for join queries (kOpLoadCol-equivalent
  * linked-GB columns).  AggInterpreter (normal scan) passes
- * nullptr / 0; the linked branches below are dead code on that
- * path because the attr_id 0x8000 bit never appears in a
- * normal-scan GB column.
+ * nullptr / 0 and requireMetadata=false, so local GROUP BY metadata
+ * can still come from the scanned table descriptor.  JoinAgg passes
+ * requireMetadata=true and must have setup-time metadata.
  */
 Int32 AggInterpreterBase::initGBTypes(
-    Dbtup* block_tup,
+    Dbtup* /*block_tup*/,
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
+    bool requireMetadata,
     EmulatedJamBuffer *jamBuf) {
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     thrjamDebug(jamBuf);
@@ -2167,54 +2255,44 @@ Int32 AggInterpreterBase::initGBTypes(
         thrjamDebug(jamBuf);
         Uint32 tableId = word0;
         Uint32 tableVersion = word1;
-        require(tableId != 0);
-
-        Dblqh* lqh = block_tup->c_lqh;
-        if (unlikely(tableId >= lqh->ctabrecFileSize)) {
-          g_eventLogger->debug("initGBTypes: tableId %u out of range "
-              "(max=%u)", tableId, lqh->ctabrecFileSize);
-          return ZINVALID_SCHEMA_VERSION;
-        }
-        if (unlikely(table_version_major(tableVersion) !=
-                     table_version_major(
-                         lqh->tablerec[tableId].schemaVersion))) {
-          g_eventLogger->debug("initGBTypes: schema version mismatch for "
-              "tableId %u: linked=%u, current=%u",
-              tableId, tableVersion, lqh->tablerec[tableId].schemaVersion);
-          return ZINVALID_SCHEMA_VERSION;
-        }
-
-        if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
-          g_eventLogger->debug("initGBTypes: tableId %u out of range for "
-              "DBTUP (max=%u)", tableId, block_tup->cnoOfTablerec);
-          return ZINVALID_SCHEMA_VERSION;
-        }
-        Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
         Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
-        const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
-        info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-        info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
-        info.cs = nullptr;
-        if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-          thrjamDebug(jamBuf);
-          Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-          info.cs = tab->charsetArray[csPos];
+        if (unlikely(tableId == 0 || tableId == RNIL)) {
+          g_eventLogger->debug("initGBTypes: linked GROUP BY column has "
+              "untyped synthetic metadata prefix tableId=%u schemaVersion=%u",
+              tableId, tableVersion);
+          return ZAGG_OTHER_ERROR;
         }
+        const ColumnMeta *meta =
+            findColumnMeta(tableId, tableVersion, linkedAttrId);
+        if (meta != nullptr) {
+          info.typeId = meta->typeId;
+          info.maxBytes = meta->maxBytes;
+          info.cs = nullptr;
+          if (meta->csNumber != 0) {
+            thrjamDebug(jamBuf);
+            info.cs = all_charsets[meta->csNumber];
+          }
+          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+          info.cmpFn = sqlType.m_cmp;
+          continue;
+        }
+        g_eventLogger->debug("initGBTypes: missing metadata for linked "
+            "GROUP BY column tableId=%u schemaVersion=%u columnId=%u",
+            tableId, tableVersion, linkedAttrId);
+        return ZAGG_OTHER_ERROR;
       }
     } else {
       thrjam(jamBuf);
-      /* Normal (non-linked) GROUP BY column.  Resolving its type needs a
-       * valid tablePtrP, which only a real scanned-table request supplies.
-       * A CTE_LOOKUP / CTE_SCAN agg feed has no scanned table (the row comes
-       * from the linked buffer) and sets tablePtrP == nullptr, so reaching
-       * here means the aggregator references a normal column in a context
-       * that cannot supply one.  Abort the query cleanly rather than
-       * dereference a null/poisoned tablePtrP. */
+      if (requireMetadata) {
+        g_eventLogger->debug("initGBTypes: missing metadata for local "
+            "GROUP BY column attr_id=%u", attr_id);
+        return ZAGG_OTHER_ERROR;
+      }
       if (unlikely(req_struct == nullptr ||
                    req_struct->tablePtrP == nullptr)) {
         g_eventLogger->debug(
-            "initGBTypes: normal GROUP BY column attr_id=%u referenced in a "
-            "CTE agg-feed with no scanned table — aborting query", attr_id);
+            "initGBTypes: local GROUP BY column attr_id=%u has no table "
+            "metadata source", attr_id);
         return ZAGG_OTHER_ERROR;
       }
       const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
@@ -2231,36 +2309,406 @@ Int32 AggInterpreterBase::initGBTypes(
     const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
     info.cmpFn = sqlType.m_cmp;
   }
+  return publishGBTypes(jamBuf);
+}
+
+Int32 AggInterpreterBase::initGBTypesFromMetadata(
+    const Uint32* metadata,
+    Uint32 metadataLen,
+    EmulatedJamBuffer *jamBuf) {
+  if (metadata == nullptr || metadataLen == 0) {
+    return 0;
+  }
+  if (unlikely(metadataLen < 3 ||
+               metadata[0] != JOIN_AGG_META_MARKER ||
+               metadata[1] != JOIN_AGG_META_VERSION)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  const Uint32 entryCount = metadata[2];
+  if (unlikely(entryCount == 0 ||
+               entryCount > (metadataLen - 3) / JOIN_AGG_META_ENTRY_WORDS ||
+               metadataLen != 3 + entryCount * JOIN_AGG_META_ENTRY_WORDS)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  bool found[MAX_AGG_N_GROUPBY_COLS];
+  memset(found, 0, sizeof(found));
+  Uint32 foundCount = 0;
+  bool haveGroupByMetadata = false;
+  const Uint32* entry = metadata + 3;
+  for (Uint32 e = 0; e < entryCount; e++) {
+    const Uint32 sourceKind = entry[0];
+    const Uint32 tableId = entry[4];
+    const Uint32 tableVersion = entry[5];
+    const Uint32 columnId = entry[6];
+    const Uint32 slotIndex = entry[3];
+    const Uint32 typeId = entry[7];
+    const Uint32 maxBytes = entry[8];
+    const Uint32 csNumber = entry[9];
+    const Uint32 flags = entry[11];
+    const Uint32 knownFlags = JOIN_AGG_META_FLAG_UNSIGNED |
+                              JOIN_AGG_META_FLAG_NULLABLE |
+                              JOIN_AGG_META_FLAG_GROUP_BY |
+                              JOIN_AGG_META_FLAG_LOAD_COLUMN;
+    const bool isGroupBy =
+        (flags & JOIN_AGG_META_FLAG_GROUP_BY) != 0;
+    const bool isLoadColumn =
+        (flags & JOIN_AGG_META_FLAG_LOAD_COLUMN) != 0;
+
+    if (unlikely(sourceKind != JOIN_AGG_META_SOURCE_LOCAL_COLUMN &&
+                 sourceKind != JOIN_AGG_META_SOURCE_LINKED_COLUMN &&
+                 sourceKind != JOIN_AGG_META_SOURCE_CTE_COLUMN)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    if (unlikely((flags & ~knownFlags) != 0 ||
+                 isGroupBy == isLoadColumn)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    Int32 ret = initColumnMetaFromMetadata(tableId, tableVersion, columnId,
+                                           typeId, maxBytes, csNumber,
+                                           entryCount);
+    if (unlikely(ret != 0)) {
+      return ret;
+    }
+
+    if (isGroupBy) {
+      haveGroupByMetadata = true;
+      if (m_gb_types_inited) {
+        entry += JOIN_AGG_META_ENTRY_WORDS;
+        continue;
+      }
+      if (unlikely(m_gb_map == nullptr ||
+                   slotIndex >= m_n_gb_cols ||
+                   slotIndex >= MAX_AGG_N_GROUPBY_COLS ||
+                   found[slotIndex])) {
+        return ZAGG_OTHER_ERROR;
+      }
+
+      GBColTypeInfo &info = m_gb_types[slotIndex];
+      info.typeId = typeId;
+      info.maxBytes = maxBytes;
+      info.cs = nullptr;
+      if (csNumber != 0) {
+        if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                     all_charsets[csNumber] == nullptr)) {
+          return ZAGG_OTHER_ERROR;
+        }
+        info.cs = all_charsets[csNumber];
+      }
+      const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+      info.cmpFn = sqlType.m_cmp;
+      found[slotIndex] = true;
+      foundCount++;
+    }
+    if (isLoadColumn) {
+      ret = initLoadColumnMetaFromMetadata(entry[2], typeId, maxBytes,
+                                           csNumber, entryCount);
+      if (unlikely(ret != 0)) {
+        return ret;
+      }
+      if (slotIndex != RNIL) {
+        ret = initStringAggSlotFromMetadata(slotIndex, typeId, maxBytes,
+                                            csNumber);
+        if (unlikely(ret != 0)) {
+          return ret;
+        }
+      }
+    }
+    entry += JOIN_AGG_META_ENTRY_WORDS;
+  }
+
+  if (m_gb_types_inited || !haveGroupByMetadata) {
+    return 0;
+  }
+  if (unlikely(foundCount != m_n_gb_cols)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  return publishGBTypes(jamBuf);
+}
+
+Int32 AggInterpreterBase::publishGBTypes(EmulatedJamBuffer *jamBuf) {
+  if (m_gb_types_inited || m_n_gb_cols == 0) {
+    return 0;
+  }
+  if (unlikely(m_gb_map == nullptr)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
   Uint32 max_xfrm_len = 0;
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     thrjamDebug(jamBuf);
     if (m_gb_types[i].cs != nullptr) {
-      thrjamDebug(jamBuf);
       Uint32 lb = 0;
       if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
       else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
+      if (unlikely(m_gb_types[i].maxBytes < lb)) {
+        return ZAGG_OTHER_ERROR;
+      }
       Uint32 defLen = m_gb_types[i].maxBytes - lb;
       Uint32 xfrm_len = NdbSqlUtil::strnxfrm_hash_len(m_gb_types[i].cs,
                                                        defLen);
       if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
     }
   }
-  if (max_xfrm_len > 0) {
-    thrjamDebug(jamBuf);
-    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
-                                  m_thread_id, false);
-    if (unlikely(p == nullptr)) {
-      g_eventLogger->debug("initGBTypes: failed to allocate xfrm buffer "
-          "(%u bytes)", max_xfrm_len);
-      return ZAGG_OTHER_ERROR;
-    }
-    m_xfrm_buf = static_cast<uchar*>(p);
-    m_xfrm_buf_len = max_xfrm_len;
+  /* D26: the group-key hash (AggHashTable::hashKeyFull) no longer uses a
+   * scratch buffer owned by this thread-shared interpreter.  Every hash call
+   * instead passes a per-LDM-thread buffer (Dbtup::getAggXfrmBuf,
+   * AGG_XFRM_BUF_BYTE_SIZE), eliminating the cross-thread race.  That fixed
+   * per-thread buffer must hold the widest single-column strnxfrm output;
+   * reject a (pathological) GROUP BY key that would overflow it rather than
+   * silently truncating the hash and corrupting bucket placement.  No buffer
+   * is allocated here anymore. */
+  if (unlikely(max_xfrm_len > Dbtup::AGG_XFRM_BUF_BYTE_SIZE)) {
+    return ZAGG_OTHER_ERROR;
   }
 
   m_gb_types_inited = true;
-  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols);
   return 0;
+}
+
+Int32 AggInterpreterBase::initStringAggSlotFromMetadata(
+    Uint32 aggIndex,
+    Uint32 typeId,
+    Uint32 maxBytes,
+    Uint32 csNumber) {
+  if (typeId != NDB_TYPE_CHAR &&
+      typeId != NDB_TYPE_VARCHAR &&
+      typeId != NDB_TYPE_LONGVARCHAR) {
+    return 0;
+  }
+  if (unlikely(aggIndex >= m_n_agg_results ||
+               aggIndex >= MAX_AGG_N_RESULTS)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  const Uint32 prefix =
+      typeId == NDB_TYPE_CHAR ? 0 :
+      typeId == NDB_TYPE_VARCHAR ? 1 : 2;
+  if (unlikely(maxBytes < prefix || maxBytes > UINT16_MAX)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  const CHARSET_INFO *cs = nullptr;
+  if (csNumber != 0) {
+    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                 all_charsets[csNumber] == nullptr)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    cs = all_charsets[csNumber];
+  }
+
+  if (m_string_results == nullptr) {
+    Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+    m_string_results = static_cast<StringResult*>(
+        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
+    if (m_string_results == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+  }
+
+  StringResult &slot = m_string_results[aggIndex];
+  if (unlikely(slot.ptr != nullptr)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  slot.length = 0;
+  slot.size = 0;
+  slot.prefix_bytes = static_cast<Uint16>(prefix);
+  slot.declared_size = static_cast<Uint16>(maxBytes);
+  slot.charset = cs;
+  return 0;
+}
+
+Int32 AggInterpreterBase::initLoadColumnMetaFromMetadata(
+    Uint32 programOffset,
+    Uint32 typeId,
+    Uint32 maxBytes,
+    Uint32 csNumber,
+    Uint32 entryCapacity) {
+  if (unlikely(programOffset == RNIL)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  if (csNumber != 0) {
+    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                 all_charsets[csNumber] == nullptr)) {
+      return ZAGG_OTHER_ERROR;
+    }
+  }
+
+  for (Uint32 i = 0; i < m_load_column_meta_count; i++) {
+    LoadColumnMeta &meta = m_load_column_meta[i];
+    if (meta.programOffset == programOffset) {
+      if (unlikely(meta.typeId != typeId ||
+                   meta.maxBytes != maxBytes ||
+                   meta.csNumber != csNumber)) {
+        return ZAGG_OTHER_ERROR;
+      }
+      return 0;
+    }
+  }
+
+  if (m_load_column_meta == nullptr) {
+    if (unlikely(entryCapacity == 0)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    m_load_column_meta = static_cast<LoadColumnMeta*>(
+        lc_ndbd_pool_malloc(entryCapacity * sizeof(LoadColumnMeta),
+                            RG_QUERY_MEMORY, m_thread_id, false));
+    if (m_load_column_meta == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    m_load_column_meta_capacity = entryCapacity;
+    m_load_column_meta_count = 0;
+  }
+  if (unlikely(m_load_column_meta_count >= m_load_column_meta_capacity)) {
+    return ZAGG_OTHER_ERROR;
+  }
+
+  LoadColumnMeta &meta = m_load_column_meta[m_load_column_meta_count++];
+  meta.programOffset = programOffset;
+  meta.typeId = typeId;
+  meta.maxBytes = maxBytes;
+  meta.csNumber = csNumber;
+  return 0;
+}
+
+static Uint32 joinAggColumnMetaHash(Uint32 tableId,
+                                    Uint32 tableVersion,
+                                    Uint32 columnId) {
+  Uint32 h = tableId * 2654435761U;
+  h ^= table_version_major(tableVersion) * 2246822519U;
+  h ^= columnId * 3266489917U;
+  h ^= h >> 16;
+  return h;
+}
+
+static Uint32 joinAggColumnMetaHashSize(Uint32 entryCapacity) {
+  Uint32 hashSize = 8;
+  while (hashSize < entryCapacity * 2) {
+    hashSize <<= 1;
+  }
+  return hashSize;
+}
+
+Int32 AggInterpreterBase::initColumnMetaFromMetadata(
+    Uint32 tableId,
+    Uint32 tableVersion,
+    Uint32 columnId,
+    Uint32 typeId,
+    Uint32 maxBytes,
+    Uint32 csNumber,
+    Uint32 entryCapacity) {
+  if (tableId == RNIL || tableId == 0 || tableVersion == 0) {
+    return 0;
+  }
+  if (csNumber != 0) {
+    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
+                 all_charsets[csNumber] == nullptr)) {
+      return ZAGG_OTHER_ERROR;
+    }
+  }
+
+  if (m_column_meta == nullptr) {
+    if (unlikely(entryCapacity == 0)) {
+      return ZAGG_OTHER_ERROR;
+    }
+    const Uint32 hashSize = joinAggColumnMetaHashSize(entryCapacity);
+    m_column_meta = static_cast<ColumnMeta*>(
+        lc_ndbd_pool_malloc(entryCapacity * sizeof(ColumnMeta),
+                            RG_QUERY_MEMORY, m_thread_id, false));
+    if (m_column_meta == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    m_column_meta_hash = static_cast<Uint32*>(
+        lc_ndbd_pool_malloc(hashSize * sizeof(Uint32),
+                            RG_QUERY_MEMORY, m_thread_id, false));
+    if (m_column_meta_hash == nullptr) {
+      lc_ndbd_pool_free(m_column_meta);
+      m_column_meta = nullptr;
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    for (Uint32 i = 0; i < hashSize; i++) {
+      m_column_meta_hash[i] = RNIL;
+    }
+    m_column_meta_capacity = entryCapacity;
+    m_column_meta_hash_size = hashSize;
+    m_column_meta_count = 0;
+  }
+
+  const Uint32 hash =
+      joinAggColumnMetaHash(tableId, tableVersion, columnId) &
+      (m_column_meta_hash_size - 1);
+  Uint32 metaIndex = m_column_meta_hash[hash];
+  while (metaIndex != RNIL) {
+    ColumnMeta &meta = m_column_meta[metaIndex];
+    if (meta.tableId == tableId &&
+        table_version_major(meta.tableVersion) ==
+            table_version_major(tableVersion) &&
+        meta.columnId == columnId) {
+      if (unlikely(meta.typeId != typeId ||
+                   meta.maxBytes != maxBytes ||
+                   meta.csNumber != csNumber)) {
+        return ZAGG_OTHER_ERROR;
+      }
+      return 0;
+    }
+    metaIndex = meta.nextIndex;
+  }
+
+  if (unlikely(m_column_meta_count >= m_column_meta_capacity)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  ColumnMeta &meta = m_column_meta[m_column_meta_count];
+  meta.tableId = tableId;
+  meta.tableVersion = tableVersion;
+  meta.columnId = columnId;
+  meta.typeId = typeId;
+  meta.maxBytes = maxBytes;
+  meta.csNumber = csNumber;
+  meta.nextIndex = m_column_meta_hash[hash];
+  m_column_meta_hash[hash] = m_column_meta_count;
+  m_column_meta_count++;
+  return 0;
+}
+
+const AggInterpreterBase::LoadColumnMeta*
+AggInterpreterBase::findLoadColumnMeta(Uint32 programOffset) const {
+  for (Uint32 i = 0; i < m_load_column_meta_count; i++) {
+    if (m_load_column_meta[i].programOffset == programOffset) {
+      return &m_load_column_meta[i];
+    }
+  }
+  return nullptr;
+}
+
+const AggInterpreterBase::ColumnMeta*
+AggInterpreterBase::findColumnMeta(Uint32 tableId,
+                                   Uint32 tableVersion,
+                                   Uint32 columnId) const {
+  if (m_column_meta_hash == nullptr ||
+      m_column_meta_hash_size == 0 ||
+      tableId == RNIL ||
+      tableId == 0 ||
+      tableVersion == 0) {
+    return nullptr;
+  }
+  const Uint32 hash =
+      joinAggColumnMetaHash(tableId, tableVersion, columnId) &
+      (m_column_meta_hash_size - 1);
+  Uint32 metaIndex = m_column_meta_hash[hash];
+  while (metaIndex != RNIL) {
+    const ColumnMeta &meta = m_column_meta[metaIndex];
+    if (meta.tableId == tableId &&
+        table_version_major(meta.tableVersion) ==
+            table_version_major(tableVersion) &&
+        meta.columnId == columnId) {
+      return &meta;
+    }
+    metaIndex = meta.nextIndex;
+  }
+  return nullptr;
 }
 
 /*
@@ -2341,10 +2789,24 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
     m_current_chunk = nullptr;
     m_total_chunk_bytes = 0;
   }
-  /* Phase 4: xfrm scratch (one-shot, idempotent). */
-  if (m_xfrm_buf != nullptr) {
-    lc_ndbd_pool_free(m_xfrm_buf);
-    m_xfrm_buf = nullptr;
+  /* D26: m_xfrm_buf removed — the group-key hash now uses a per-LDM-thread
+   * Dbtup scratch (getAggXfrmBuf), so there is nothing to free here. */
+  if (m_load_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_load_column_meta);
+    m_load_column_meta = nullptr;
+    m_load_column_meta_count = 0;
+    m_load_column_meta_capacity = 0;
+  }
+  if (m_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_column_meta);
+    m_column_meta = nullptr;
+    m_column_meta_count = 0;
+    m_column_meta_capacity = 0;
+  }
+  if (m_column_meta_hash != nullptr) {
+    lc_ndbd_pool_free(m_column_meta_hash);
+    m_column_meta_hash = nullptr;
+    m_column_meta_hash_size = 0;
   }
   return true;
 }
@@ -2381,13 +2843,22 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
 AggInterpreterBase::~AggInterpreterBase() {
   ndbrequire(m_gb_map == nullptr || m_gb_map->empty());
   ndbrequire(m_chunks == nullptr);
-  /* m_string_results / m_xfrm_buf may be present; both are O(1).
-   * release_string_results' scalar slot walk is bounded by
-   * m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also O(1). */
+  /* m_string_results may be present; O(1).  release_string_results' scalar
+   * slot walk is bounded by m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also
+   * O(1).  D26: m_xfrm_buf removed (group-key hash uses a per-LDM-thread
+   * Dbtup scratch), so nothing to free for it. */
   release_string_results();
-  if (m_xfrm_buf != nullptr) {
-    lc_ndbd_pool_free(m_xfrm_buf);
-    m_xfrm_buf = nullptr;
+  if (m_load_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_load_column_meta);
+    m_load_column_meta = nullptr;
+  }
+  if (m_column_meta != nullptr) {
+    lc_ndbd_pool_free(m_column_meta);
+    m_column_meta = nullptr;
+  }
+  if (m_column_meta_hash != nullptr) {
+    lc_ndbd_pool_free(m_column_meta_hash);
+    m_column_meta_hash = nullptr;
   }
   if (m_buf_block != nullptr) {
     lc_ndbd_pool_free(m_buf_block);

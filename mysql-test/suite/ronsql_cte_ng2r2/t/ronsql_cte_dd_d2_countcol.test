@@ -1,0 +1,74 @@
+# D2 probe — COUNT(<column>) in a CTE body.
+#
+# Finding D2 (cte_test_driven_findings.md) / fix-plan H2: COUNT(o_clerk) in a
+# CTE body was observed to HANG.  BUT the original repro (agg-02) was also a
+# projection-only main SELECT over a CTE_LOOKUP — i.e. the D3 shape, now fixed.
+# This test separates the two so we learn whether COUNT(<col>) is itself broken:
+#
+#   D2a: COUNT(o_clerk) feeding an AGGREGATING main SELECT (no projection-only
+#        path).  If this hangs, COUNT(<column>) is genuinely broken.
+#   D2b: COUNT(o_clerk) feeding a PROJECTION-ONLY main SELECT (the original D2 /
+#        agg-02 shape).  If D2a passes and this passes too, D2 was just D3 and
+#        is resolved by the D3 fix.
+#
+# COUNT(o_clerk) counts only non-NULL o_clerk (NULL when o_orderkey % 7 == 0).
+# Run against the (D3-fixed) build; use --testcase-timeout to bound a hang:
+#   ../debug_build/mysql-test/mtr --suite=ronsql_cte ronsql_cte_dd_d2_countcol \
+#       --testcase-timeout=2
+# If both pass, --record it as a regression test.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+DELIMITER |;
+
+--echo
+--echo === D2a: COUNT(<col>) in CTE, AGGREGATING main (isolates COUNT(col) from the projection path) ===
+let $QUERY=
+WITH ord AS (
+  SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(ord.n_all), SUM(ord.n_clerk)
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+GROUP BY c.c_mktsegment;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ord AS (
+  SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(ord.n_all), SUM(ord.n_clerk)
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+
+--echo
+--echo === D2b: COUNT(<col>) in CTE, PROJECTION-ONLY main (original D2/agg-02 shape) ===
+let $QUERY=
+WITH ord AS (
+  SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+  FROM orders GROUP BY o_custkey)
+SELECT ord.k, ord.n_all, ord.n_clerk
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ord AS (
+  SELECT o_custkey AS k, COUNT(*) AS n_all, COUNT(o_clerk) AS n_clerk
+  FROM orders GROUP BY o_custkey)
+SELECT ord.k, ord.n_all, ord.n_clerk
+FROM customer AS c JOIN ord ON ord.k = c.c_custkey
+WHERE c.c_custkey <= 20|
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

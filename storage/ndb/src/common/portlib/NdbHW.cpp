@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,7 @@
 #include <ndb_limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <File.hpp>
 #include <NdbHW.hpp>
 #include <UtilBuffer.hpp>
@@ -74,6 +75,434 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *);
 static int Ndb_ReloadHWInfo(struct ndb_hwinfo *);
 static int NdbHW_Init_platform();
 static void NdbHW_End_platform();
+
+#if defined(HAVE_LINUX_SCHEDULING) || defined(TEST_NDBHW)
+struct cgroup_paths
+{
+  char cgroup2_mount[512];
+  char cgroup2_path[512];
+  char memory_mount[512];
+  char memory_path[512];
+  char cpu_mount[512];
+  char cpu_path[512];
+  char cpuset_mount[512];
+  char cpuset_path[512];
+};
+
+static void
+cgroup_copy(char *dst, size_t dst_len, const char *src, size_t src_len)
+{
+  require(dst_len > 0);
+  size_t copy_len = MIN(dst_len - 1, src_len);
+  memcpy(dst, src, copy_len);
+  dst[copy_len] = 0;
+}
+
+static bool
+cgroup_has_controller(const char *controllers,
+                      size_t controllers_len,
+                      const char *controller)
+{
+  size_t controller_len = strlen(controller);
+  const char *pos = controllers;
+  const char *end = controllers + controllers_len;
+  while (pos < end)
+  {
+    const char *comma = (const char*)memchr(pos, ',', end - pos);
+    const char *next = comma == nullptr ? end : comma;
+    if ((size_t)(next - pos) == controller_len &&
+        memcmp(pos, controller, controller_len) == 0)
+    {
+      return true;
+    }
+    if (comma == nullptr)
+    {
+      break;
+    }
+    pos = comma + 1;
+  }
+  return false;
+}
+
+static void
+cgroup_parse_proc_cgroup(const char *content, struct cgroup_paths *paths)
+{
+  const char *line = content;
+  while (*line != 0)
+  {
+    const char *line_end = strchr(line, '\n');
+    if (line_end == nullptr)
+    {
+      line_end = line + strlen(line);
+    }
+    const char *first_colon = (const char*)memchr(line, ':', line_end - line);
+    if (first_colon != nullptr)
+    {
+      const char *second_colon =
+        (const char*)memchr(first_colon + 1,
+                            ':',
+                            line_end - first_colon - 1);
+      if (second_colon != nullptr)
+      {
+        const char *controllers = first_colon + 1;
+        size_t controllers_len = second_colon - controllers;
+        const char *path = second_colon + 1;
+        size_t path_len = line_end - path;
+        if (controllers_len == 0)
+        {
+          cgroup_copy(paths->cgroup2_path,
+                      sizeof(paths->cgroup2_path),
+                      path,
+                      path_len);
+        }
+        if (cgroup_has_controller(controllers,
+                                  controllers_len,
+                                  "memory"))
+        {
+          cgroup_copy(paths->memory_path,
+                      sizeof(paths->memory_path),
+                      path,
+                      path_len);
+        }
+        if (cgroup_has_controller(controllers,
+                                  controllers_len,
+                                  "cpu"))
+        {
+          cgroup_copy(paths->cpu_path,
+                      sizeof(paths->cpu_path),
+                      path,
+                      path_len);
+        }
+        if (cgroup_has_controller(controllers,
+                                  controllers_len,
+                                  "cpuset"))
+        {
+          cgroup_copy(paths->cpuset_path,
+                      sizeof(paths->cpuset_path),
+                      path,
+                      path_len);
+        }
+      }
+    }
+    line = *line_end == '\n' ? line_end + 1 : line_end;
+  }
+}
+
+static void
+cgroup_parse_mountinfo(const char *content, struct cgroup_paths *paths)
+{
+  const char *line = content;
+  while (*line != 0)
+  {
+    char mount_point[512];
+    char fs_type[64];
+    char super_options[512];
+    mount_point[0] = 0;
+    fs_type[0] = 0;
+    super_options[0] = 0;
+
+    const char *line_end = strchr(line, '\n');
+    if (line_end == nullptr)
+    {
+      line_end = line + strlen(line);
+    }
+    const char *separator = strstr(line, " - ");
+    if (separator != nullptr && separator < line_end)
+    {
+      sscanf(line,
+             "%*s %*s %*s %*s %511s",
+             mount_point);
+      sscanf(separator + 3,
+             "%63s %*s %511s",
+             fs_type,
+             super_options);
+      if (strcmp(fs_type, "cgroup2") == 0)
+      {
+        cgroup_copy(paths->cgroup2_mount,
+                    sizeof(paths->cgroup2_mount),
+                    mount_point,
+                    strlen(mount_point));
+      }
+      else if (strcmp(fs_type, "cgroup") == 0)
+      {
+        size_t len = strlen(super_options);
+        if (cgroup_has_controller(super_options, len, "memory"))
+        {
+          cgroup_copy(paths->memory_mount,
+                      sizeof(paths->memory_mount),
+                      mount_point,
+                      strlen(mount_point));
+        }
+        if (cgroup_has_controller(super_options, len, "cpu"))
+        {
+          cgroup_copy(paths->cpu_mount,
+                      sizeof(paths->cpu_mount),
+                      mount_point,
+                      strlen(mount_point));
+        }
+        if (cgroup_has_controller(super_options, len, "cpuset"))
+        {
+          cgroup_copy(paths->cpuset_mount,
+                      sizeof(paths->cpuset_mount),
+                      mount_point,
+                      strlen(mount_point));
+        }
+      }
+    }
+    line = *line_end == '\n' ? line_end + 1 : line_end;
+  }
+}
+
+static void
+cgroup_append_path(char *dst,
+                   size_t dst_len,
+                   const char *mount,
+                   const char *cgroup_path,
+                   const char *file_name)
+{
+  require(dst_len > 0);
+  if (strcmp(cgroup_path, "/") == 0)
+  {
+    snprintf(dst, dst_len, "%s/%s", mount, file_name);
+  }
+  else
+  {
+    snprintf(dst, dst_len, "%s%s/%s", mount, cgroup_path, file_name);
+  }
+}
+
+static bool
+cgroup_parse_memory_limit(const char *buf, Uint64 *memory_size)
+{
+  if (memcmp(buf, "max", 3) == 0)
+  {
+    return false;
+  }
+
+  Uint64 limit = 0;
+  if (sscanf(buf, "%llu", &limit) != 1)
+  {
+    return false;
+  }
+
+  /*
+    Cgroup v1 reports very large sentinel values for unlimited memory on
+    some kernels. The common sentinel is the page-aligned LONG_MAX value
+    0x7FFFFFFFFFFFF000 (9223372036854771712), which is just below
+    Uint64(~0)/2, so use a ceiling well below any real machine's memory
+    (2^62 bytes ~= 4.6 EB) to catch all such sentinels. Treat those as
+    unlimited and use /proc/meminfo instead.
+  */
+  const Uint64 unlimited_limit = Uint64(1) << 62;
+  if (limit == 0 || limit >= unlimited_limit)
+  {
+    return false;
+  }
+
+  *memory_size = limit;
+  return true;
+}
+
+static bool
+cgroup_compute_quota_cpus(Int64 quota, Int64 period, Uint32 *quota_cpus)
+{
+  if (quota <= 0 || period <= 0)
+  {
+    return false;
+  }
+  Int64 cpus = (quota + period - 1) / period;
+  if (cpus <= 0)
+  {
+    return false;
+  }
+  *quota_cpus = (Uint32)cpus;
+  return true;
+}
+
+static bool
+cgroup_parse_v2_cpu_max(const char *buf,
+                        Uint32 *quota_us,
+                        Uint32 *period_us,
+                        Uint32 *quota_cpus)
+{
+  if (memcmp(buf, "max", 3) == 0)
+  {
+    return false;
+  }
+  Int64 quota = 0;
+  Int64 period = 0;
+  if (sscanf(buf, "%lld %lld", &quota, &period) != 2)
+  {
+    return false;
+  }
+  if (!cgroup_compute_quota_cpus(quota, period, quota_cpus))
+  {
+    return false;
+  }
+  *quota_us = (Uint32)quota;
+  *period_us = (Uint32)period;
+  return true;
+}
+
+static bool
+cgroup_parse_v1_cpu_quota(const char *quota_buf,
+                          const char *period_buf,
+                          Uint32 *quota_us,
+                          Uint32 *period_us,
+                          Uint32 *quota_cpus)
+{
+  Int64 quota = 0;
+  Int64 period = 0;
+  if (sscanf(quota_buf, "%lld", &quota) != 1 ||
+      sscanf(period_buf, "%lld", &period) != 1)
+  {
+    return false;
+  }
+  if (!cgroup_compute_quota_cpus(quota, period, quota_cpus))
+  {
+    return false;
+  }
+  *quota_us = (Uint32)quota;
+  *period_us = (Uint32)period;
+  return true;
+}
+
+#ifdef HAVE_LINUX_SCHEDULING
+static bool
+cgroup_read_file(const char *path, char *buf, size_t buf_len)
+{
+  FILE *file = fopen(path, "r");
+  if (file == nullptr)
+  {
+    return false;
+  }
+  FileGuard g(file);
+  if (fgets(buf, buf_len, file) == nullptr)
+  {
+    return false;
+  }
+  return true;
+}
+
+static bool
+cgroup_get_paths(struct cgroup_paths *paths)
+{
+  char proc_cgroup[8192];
+  char mountinfo[32768];
+  proc_cgroup[0] = 0;
+  mountinfo[0] = 0;
+
+  FILE *file = fopen("/proc/self/cgroup", "r");
+  if (file == nullptr)
+  {
+    return false;
+  }
+  {
+    FileGuard g(file);
+    size_t bytes = fread(proc_cgroup, 1, sizeof(proc_cgroup) - 1, file);
+    proc_cgroup[bytes] = 0;
+  }
+
+  file = fopen("/proc/self/mountinfo", "r");
+  if (file == nullptr)
+  {
+    return false;
+  }
+  {
+    FileGuard g(file);
+    size_t bytes = fread(mountinfo, 1, sizeof(mountinfo) - 1, file);
+    mountinfo[bytes] = 0;
+  }
+
+  memset(paths, 0, sizeof(*paths));
+  cgroup_parse_proc_cgroup(proc_cgroup, paths);
+  cgroup_parse_mountinfo(mountinfo, paths);
+  return true;
+}
+
+static bool
+cgroup_get_cpu_quota(struct cgroup_paths *paths,
+                     Uint32 *quota_us,
+                     Uint32 *period_us,
+                     Uint32 *quota_cpus)
+{
+  char buf[1024];
+
+  if (paths->cgroup2_mount[0] != 0 &&
+      paths->cgroup2_path[0] != 0)
+  {
+    char cpu_max_path[1024];
+    cgroup_append_path(cpu_max_path,
+                       sizeof(cpu_max_path),
+                       paths->cgroup2_mount,
+                       paths->cgroup2_path,
+                       "cpu.max");
+    if (cgroup_read_file(cpu_max_path, buf, sizeof(buf)) &&
+        cgroup_parse_v2_cpu_max(buf, quota_us, period_us, quota_cpus))
+    {
+      return true;
+    }
+  }
+
+  if (paths->cpu_mount[0] != 0 &&
+      paths->cpu_path[0] != 0)
+  {
+    char quota_path[1024];
+    char period_path[1024];
+    char quota_buf[1024];
+    char period_buf[1024];
+    cgroup_append_path(quota_path,
+                       sizeof(quota_path),
+                       paths->cpu_mount,
+                       paths->cpu_path,
+                       "cpu.cfs_quota_us");
+    cgroup_append_path(period_path,
+                       sizeof(period_path),
+                       paths->cpu_mount,
+                       paths->cpu_path,
+                       "cpu.cfs_period_us");
+    if (cgroup_read_file(quota_path, quota_buf, sizeof(quota_buf)) &&
+        cgroup_read_file(period_path, period_buf, sizeof(period_buf)) &&
+        cgroup_parse_v1_cpu_quota(quota_buf,
+                                  period_buf,
+                                  quota_us,
+                                  period_us,
+                                  quota_cpus))
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/*
+  Retrieve the cgroup CPU quota (cgroup v1 cpu.cfs_quota_us/cpu.cfs_period_us
+  or cgroup v2 cpu.max) and store it in the hwinfo struct. The quota is only
+  recorded for now; it is intentionally not applied to cpu_cnt or
+  total_cpu_capacity. How to make use of the quota is decided elsewhere.
+*/
+static void
+retrieve_cgroup_cpu_quota(struct ndb_hwinfo *hwinfo)
+{
+  struct cgroup_paths paths;
+  Uint32 quota_us = 0;
+  Uint32 period_us = 0;
+  Uint32 quota_cpus = 0;
+
+  if (!cgroup_get_paths(&paths) ||
+      !cgroup_get_cpu_quota(&paths, &quota_us, &period_us, &quota_cpus))
+  {
+    return;
+  }
+
+  hwinfo->is_running_in_container = 1;
+  hwinfo->cpu_quota_us = quota_us;
+  hwinfo->cpu_period_us = period_us;
+  hwinfo->cpu_quota_cpus = quota_cpus;
+}
+#endif
+#endif
 
 Uint32 is_avx2_supported()
 {
@@ -2163,28 +2592,9 @@ get_cpu_throughput(struct ndb_hwinfo *hwinfo)
 }
 
 static int
-get_meminfo(struct ndb_hwinfo *hwinfo)
+read_host_memory_size(Uint64 *memory_size)
 {
   char buf[1024];
-  FILE * cgroup_meminfo = fopen("/sys/fs/cgroup/memory.max", "r");
-  int ret_code = 0;
-  if (cgroup_meminfo != nullptr) {
-    hwinfo->is_running_in_container = 1;
-    FileGuard g(cgroup_meminfo); // close at end...
-    if (fgets(buf, sizeof(buf), cgroup_meminfo)) {
-      if (memcmp(buf, "max", 3) != 0) {
-        Uint64 memory_size = 0;
-        ret_code = sscanf(buf, "%llu", &memory_size);
-        if (ret_code == 1) {
-          hwinfo->hw_memory_size = memory_size;
-          return 0;
-        }
-        perror("failed to read /sys/fs/cgroup/memory.max");
-        return -1;
-      }
-    }
-  }
-  hwinfo->is_running_in_container = 0;
   FILE *meminfo = fopen("/proc/meminfo", "r");
   if (meminfo == nullptr)
   {
@@ -2210,7 +2620,84 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
             "Total memory is %llu MBytes\n",
             memory_size_kb / 1024));
   /* Memory is in kBytes */
-  hwinfo->hw_memory_size = memory_size_kb * 1024; // hw_memory_size in bytes
+  *memory_size = memory_size_kb * 1024; // memory_size in bytes
+  return 0;
+}
+
+static int
+get_meminfo(struct ndb_hwinfo *hwinfo)
+{
+  char buf[1024];
+
+  /*
+    Read the host's physical memory first. Any cgroup limit found below is
+    capped to this value, so that we never report (and subsequently try to
+    allocate) more memory than the host actually has, even if the container
+    has been configured with a memory limit larger than physical memory.
+  */
+  Uint64 host_memory_size = 0;
+  if (read_host_memory_size(&host_memory_size) != 0)
+  {
+    return -1;
+  }
+
+  struct cgroup_paths paths;
+  if (cgroup_get_paths(&paths))
+  {
+    Uint64 memory_size = 0;
+    bool have_limit = false;
+
+    if (paths.cgroup2_mount[0] != 0 &&
+        paths.cgroup2_path[0] != 0)
+    {
+      char memory_max_path[1024];
+      cgroup_append_path(memory_max_path,
+                         sizeof(memory_max_path),
+                         paths.cgroup2_mount,
+                         paths.cgroup2_path,
+                         "memory.max");
+      if (cgroup_read_file(memory_max_path, buf, sizeof(buf)) &&
+          cgroup_parse_memory_limit(buf, &memory_size))
+      {
+        have_limit = true;
+      }
+    }
+
+    if (!have_limit &&
+        paths.memory_mount[0] != 0 &&
+        paths.memory_path[0] != 0)
+    {
+      char memory_limit_path[1024];
+      cgroup_append_path(memory_limit_path,
+                         sizeof(memory_limit_path),
+                         paths.memory_mount,
+                         paths.memory_path,
+                         "memory.limit_in_bytes");
+      if (cgroup_read_file(memory_limit_path, buf, sizeof(buf)) &&
+          cgroup_parse_memory_limit(buf, &memory_size))
+      {
+        have_limit = true;
+      }
+    }
+
+    if (have_limit)
+    {
+      hwinfo->is_running_in_container = 1;
+      if (memory_size > host_memory_size)
+      {
+        fprintf(stderr,
+                "cgroup memory limit %llu MB exceeds host memory %llu MB,"
+                " capping to host memory\n",
+                (unsigned long long)(memory_size / (1024 * 1024)),
+                (unsigned long long)(host_memory_size / (1024 * 1024)));
+        memory_size = host_memory_size;
+      }
+      hwinfo->hw_memory_size = memory_size;
+      return 0;
+    }
+  }
+
+  hwinfo->hw_memory_size = host_memory_size;
   return 0;
 }
 
@@ -2644,6 +3131,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo *hwinfo) {
   }
   hwinfo->num_shared_l3_caches = num_shared_l3_caches;
   check_cpu_online(hwinfo);
+  retrieve_cgroup_cpu_quota(hwinfo);
   return get_meminfo(hwinfo);
 }
 
@@ -2700,6 +3188,105 @@ static const bool g_verbose_test_output = true;
 #else
 static const bool g_verbose_test_output = false;
 #endif
+
+static void
+test_cgroup_parser()
+{
+  printf("Start cgroup parser test\n");
+  struct cgroup_paths paths;
+  Uint64 memory_size = 0;
+  Uint32 quota_us = 0;
+  Uint32 period_us = 0;
+  Uint32 quota_cpus = 0;
+  memset(&paths, 0, sizeof(paths));
+
+  cgroup_parse_proc_cgroup(
+    "0::/kubepods.slice/pod1\n",
+    &paths);
+  cgroup_parse_mountinfo(
+    "36 29 0:32 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime - "
+    "cgroup2 cgroup rw\n",
+    &paths);
+  OK(strcmp(paths.cgroup2_path, "/kubepods.slice/pod1") == 0);
+  OK(strcmp(paths.cgroup2_mount, "/sys/fs/cgroup") == 0);
+  char full_path[512];
+  cgroup_append_path(full_path,
+                     sizeof(full_path),
+                     paths.cgroup2_mount,
+                     paths.cgroup2_path,
+                     "memory.max");
+  OK(strcmp(full_path,
+            "/sys/fs/cgroup/kubepods.slice/pod1/memory.max") == 0);
+
+  memset(&paths, 0, sizeof(paths));
+  cgroup_parse_proc_cgroup(
+    "11:memory:/docker/abc\n"
+    "10:cpu,cpuacct:/docker/abc\n"
+    "9:cpuset:/docker/abc\n",
+    &paths);
+  cgroup_parse_mountinfo(
+    "28 23 0:25 / /sys/fs/cgroup/memory rw,relatime - "
+    "cgroup cgroup rw,memory\n"
+    "29 23 0:26 / /sys/fs/cgroup/cpu,cpuacct rw,relatime - "
+    "cgroup cgroup rw,cpu,cpuacct\n"
+    "30 23 0:27 / /sys/fs/cgroup/cpuset rw,relatime - "
+    "cgroup cgroup rw,cpuset\n",
+    &paths);
+  OK(strcmp(paths.memory_path, "/docker/abc") == 0);
+  OK(strcmp(paths.cpu_path, "/docker/abc") == 0);
+  OK(strcmp(paths.cpuset_path, "/docker/abc") == 0);
+  OK(strcmp(paths.memory_mount, "/sys/fs/cgroup/memory") == 0);
+  OK(strcmp(paths.cpu_mount, "/sys/fs/cgroup/cpu,cpuacct") == 0);
+  OK(strcmp(paths.cpuset_mount, "/sys/fs/cgroup/cpuset") == 0);
+  cgroup_append_path(full_path,
+                     sizeof(full_path),
+                     paths.memory_mount,
+                     paths.memory_path,
+                     "memory.limit_in_bytes");
+  OK(strcmp(full_path,
+            "/sys/fs/cgroup/memory/docker/abc/"
+            "memory.limit_in_bytes") == 0);
+
+  memory_size = 0;
+  OK(cgroup_parse_memory_limit("1073741824\n", &memory_size));
+  OK(memory_size == 1073741824);
+  OK(!cgroup_parse_memory_limit("max\n", &memory_size));
+  OK(!cgroup_parse_memory_limit("0\n", &memory_size));
+  OK(!cgroup_parse_memory_limit("18446744073709551615\n", &memory_size));
+  /* cgroup v1 page-aligned LONG_MAX unlimited sentinel */
+  OK(!cgroup_parse_memory_limit("9223372036854771712\n", &memory_size));
+
+  quota_us = 0;
+  period_us = 0;
+  quota_cpus = 0;
+  OK(cgroup_parse_v2_cpu_max("200000 100000\n",
+                             &quota_us, &period_us, &quota_cpus));
+  OK(quota_us == 200000);
+  OK(period_us == 100000);
+  OK(quota_cpus == 2);
+  OK(cgroup_parse_v2_cpu_max("150000 100000\n",
+                             &quota_us, &period_us, &quota_cpus));
+  OK(quota_us == 150000);
+  OK(period_us == 100000);
+  OK(quota_cpus == 2);
+  OK(!cgroup_parse_v2_cpu_max("max 100000\n",
+                              &quota_us, &period_us, &quota_cpus));
+  OK(!cgroup_parse_v2_cpu_max("-1 100000\n",
+                              &quota_us, &period_us, &quota_cpus));
+
+  quota_us = 0;
+  period_us = 0;
+  quota_cpus = 0;
+  OK(cgroup_parse_v1_cpu_quota("250000\n", "100000\n",
+                               &quota_us, &period_us, &quota_cpus));
+  OK(quota_us == 250000);
+  OK(period_us == 100000);
+  OK(quota_cpus == 3);
+  OK(!cgroup_parse_v1_cpu_quota("-1\n", "100000\n",
+                                &quota_us, &period_us, &quota_cpus));
+
+  printf("cgroup parser test passed\n");
+}
 
 struct test_cpumap_data {
   Uint32 num_l3_caches;
@@ -3871,6 +4458,7 @@ void printdata(const struct ndb_hwinfo *data, Uint32 cpu) {
 TAPTEST(NdbCPU) {
   printf("Start NdbHW test\n");
   test_create_cpumap();
+  test_cgroup_parser();
   int res = NdbHW_Init();
   if (res < 0) {
     OK(1);
@@ -3906,7 +4494,14 @@ TAPTEST(NdbCPU) {
    */
   OK(info != nullptr);
   if (sysconf_ncpu_conf) {
-    OK(sysconf_ncpu_conf == (long)info->cpu_cnt);
+    if (info->is_running_in_container)
+    {
+      OK((long)info->cpu_cnt <= sysconf_ncpu_conf);
+    }
+    else
+    {
+      OK(sysconf_ncpu_conf == (long)info->cpu_cnt);
+    }
   }
   Ndb_FreeHWInfo();
   NdbHW_End();

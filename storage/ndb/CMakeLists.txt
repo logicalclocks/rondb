@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2026, Oracle and/or its affiliates.
 # Copyright (c) 2022, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -133,10 +133,6 @@ IF(NOT WITHOUT_SERVER)
     extra::rapidjson
     extra::unordered_dense
   )
-
-  if(WITH_SIMSIMD)
-    list(APPEND NDBCLUSTER_LINK_LIBS simsimd::simsimd)
-  endif()
 
   MYSQL_ADD_PLUGIN(ndbcluster ${NDBCLUSTER_SOURCES} STORAGE_ENGINE
     DEFAULT STATIC_ONLY

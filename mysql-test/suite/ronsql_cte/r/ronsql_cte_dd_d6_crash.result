@@ -1,0 +1,58 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== control (agg-04 shape): scalar agg over CTE keyed by o_custkey/300 -> small parent (known GREEN) ===
+== Query ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey|
+SUM(cust.t)
+3000
+
+=== D6a: CTE_LOOKUP child of large orders root, high-cardinality lineitem CTE (agg-06) ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li AS (SELECT l_orderkey AS k, MIN(l_quantity) AS mn, MAX(l_quantity) AS mx, SUM(l_quantity) AS sq
+FROM lineitem GROUP BY l_orderkey)
+SELECT MIN(li.mn), MAX(li.mx), SUM(li.sq) FROM orders AS o JOIN li ON li.k = o.o_orderkey|
+MIN(li.mn)	MAX(li.mx)	SUM(li.sq)
+1	50	76500
+
+=== D6b: scalar agg over a high-cardinality lineitem CTE_SCAN root (agg-19 shape) ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.sq), MAX(li.sq) FROM li;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li AS (SELECT l_orderkey AS k, SUM(l_quantity) AS sq FROM lineitem GROUP BY l_orderkey)
+SELECT COUNT(*), SUM(li.sq), MIN(li.sq), MAX(li.sq) FROM li|
+COUNT(*)	SUM(li.sq)	MIN(li.sq)	MAX(li.sq)
+1500	76500	3	99

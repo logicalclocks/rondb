@@ -1,0 +1,33 @@
+SET time_zone='+00:00';
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+ttl_col DATETIME,
+u INT NOT NULL,
+UNIQUE KEY ux (u)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+# Owner id=1 is born already expired (ttl_col far in the past).
+INSERT INTO t1 VALUES (1, '2000-01-01 00:00:00', 100);
+# It is expired and hidden from reads, but still physically holds u=100.
+SELECT id, u FROM t1 ORDER BY id;
+id	u
+# While the expired owner is still physically present, a DIFFERENT PK may
+# NOT reuse its unique value -- the same-owner check rejects it.
+INSERT INTO t1 VALUES (2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+ERROR 23000: Duplicate entry '100' for key 't1.ux'
+# Physically remove the expired owner (simulates a completed purge):
+# disable TTL so the expired row becomes visible, delete it, re-enable TTL.
+ALTER TABLE t1 COMMENT="NDB_TABLE=TTL=OFF";
+SELECT id, u FROM t1 ORDER BY id;
+id	u
+1	100
+DELETE FROM t1 WHERE id = 1;
+ALTER TABLE t1 COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+# The unique value is now free: a different PK can reuse it.
+INSERT INTO t1 VALUES (2, DATE_ADD(NOW(), INTERVAL 10 YEAR), 100);
+SELECT id, u FROM t1 ORDER BY id;
+id	u
+2	100
+SELECT id, u FROM t1 FORCE INDEX (ux) WHERE u = 100 ORDER BY id;
+id	u
+2	100
+DROP TABLE t1;

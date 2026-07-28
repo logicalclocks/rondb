@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -97,6 +97,11 @@ class Dbtux : public SimulatedBlock {
   Dbtux* m_ldm_instance_used;
   void execTUX_BOUND_INFO(Signal* signal);
   void execREAD_PSEUDO_REQ(Uint32 scanPtrI, Uint32 attrId, Uint32* out, Uint32 out_words);
+  /* RONDB-1062 deadlock discovery: given an ordered-index ScanOp index (as
+   * held in a DBACC scan-lock op's userptr), return the LQH scan record index
+   * (ScanOp::m_userPtr).  Returns false if the index is not a valid ScanOp of
+   * this instance.  Called cross-instance from DBACC. */
+  bool get_scan_lqh_ptr(Uint32 scanPtrI, Uint32& lqhScanPtr);
 
 private:
   // sizes are in words (Uint32)

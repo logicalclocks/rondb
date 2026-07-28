@@ -1,0 +1,15 @@
+!include suite/ndb/my.cnf
+
+[cluster_config.1]
+# RONDB-1062: a high deadlock-detection timeout so that the scan<->scan
+# deadlock created by testDeadlock -scan s, when resolved quickly, proves
+# proactive detection rather than the timeout backstop.
+TransactionDeadlockDetectionTimeout = 60000
+EnableProactiveDeadlockDetection = 1
+
+[mysqld]
+# testDeadlock -scan s creates its table through the NDB API, which the NDB
+# metadata-change monitor would try to sync into the data dictionary (and
+# currently asserts on an API-created schema).  This test does not exercise
+# metadata sync, so turn the monitor off - as the ndb_ddl suite does.
+ndb_metadata_check = false

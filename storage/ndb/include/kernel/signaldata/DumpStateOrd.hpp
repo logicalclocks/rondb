@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,7 +48,7 @@ class DumpStateOrd {
    * Sender(s)
    */
   friend class MgmtSrvr;
-  
+
   /**
    * Reciver(s)
    */
@@ -141,7 +141,7 @@ class DumpStateOrd {
     NdbcntrTestStopOnError = 25,
     NdbcntrStopNodes = 70,
     NdbcntrStallStartPhase = 71,
-    // 100-105 TUP and ACC  
+    // 100-105 TUP and ACC
     // 200-240 UTIL
     // 300-305 TRIX
     QmgrErr935 = 935,
@@ -161,6 +161,7 @@ class DumpStateOrd {
     // 1222-1225 DICT
     DictDumpLockQueue = 1228,
     DictDumpGetTabInfoQueue = 1229,
+    DictDumpSchemaTransactions = 1230,
     LqhDumpAllDefinedTabs = 1332,
     LqhDumpNoLogPages = 1333,
     LqhDumpOneScanRec = 2300,
@@ -262,13 +263,13 @@ class DumpStateOrd {
     // 7011 DIH
     // 7012 DIH
     DihDumpLCPState = 7013,
-    DihDumpLCPMasterTakeOver = 7014,    
+    DihDumpLCPMasterTakeOver = 7014,
     // 7015 DIH
     DihAllAllowNodeStart = 7016,
     DihMinTimeBetweenLCP = 7017,
     DihMaxTimeBetweenLCP = 7018,
     // Check if blocks are done with handling the failure of another node.
-    DihTcSumaNodeFailCompleted = 7019, // DIH+TC+SUMA
+    LogNodeFailProgress = 7019,  // Sent to multiple block types
     // 7020
     // 7021
     // 7022
@@ -277,7 +278,7 @@ class DumpStateOrd {
       Checks whether add frag failure was cleaned up.
       Should NOT be used while commands involving addFragReq
       are being performed.
-      NB: This value is only intended for use in test cases. If used 
+      NB: This value is only intended for use in test cases. If used
       interactively, it is likely to crash the node. It should therefore
       *not* be described in end-user documentation.
     */
@@ -302,14 +303,14 @@ class DumpStateOrd {
     TuxMetaDataJunk = 12009,
     TuxSetTransientPoolMaxSize = 12010,
     TuxResetTransientPoolMaxSize = 12011,
-    
+
     DumpTsman = 9800,
- 
+
     DumpLgman = 10000,
     LgmanDumpUndoStateClusterLog = 10001,
     LgmanDumpUndoStateLocalLog = 10002,
     LgmanCheckCallbacksClear = 10003,
-    
+
     DumpPgman = 11000,
     DumpBackup = 13000,
     DumpBackupSetCompressed = 13001,
@@ -321,6 +322,13 @@ class DumpStateOrd {
     DbinfoListColumns = 14002,
     DbinfoScanTable = 14003,
 
+    /* RONDB-1062: runtime enable/disable of proactive deadlock discovery.
+     * "ALL DUMP 16000 1" enables it, "ALL DUMP 16000 0" disables it.  Handled
+     * by both DBTC and DBACC (it is < OneBlockOnly so CMVMI fans it out to all
+     * blocks).  Overrides the EnableProactiveDeadlockDetection config at
+     * runtime until the next node (re)start. */
+    DeadlockDetection = 16000,
+
     SchemaResourceSnapshot = 4000, // Save resource consumption
     SchemaResourceCheckLeak = 4001, // check same as snapshot
 
@@ -329,7 +337,7 @@ class DumpStateOrd {
 
     RestoreRates = 30000
   };
-  
+
  public:
   Uint32 args[25];          // Generic argument
 };

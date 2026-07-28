@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2026, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -75,6 +75,16 @@ struct ndb_hwinfo {
   Uint32 cpu_cnt_max;
   Uint32 cpu_cnt;
   Uint32 total_cpu_capacity;
+  /**
+   * cgroup CPU quota as retrieved from cgroup v1
+   * (cpu.cfs_quota_us / cpu.cfs_period_us) or cgroup v2 (cpu.max).
+   * These are informational only for now and are NOT applied to
+   * cpu_cnt or total_cpu_capacity; how to use them is decided
+   * elsewhere. All zero when no quota is configured.
+   */
+  Uint32 cpu_quota_us;    /* CPU quota in microseconds, 0 = none */
+  Uint32 cpu_period_us;   /* CPU period in microseconds, 0 = none */
+  Uint32 cpu_quota_cpus;  /* ceil(quota/period), 0 = no quota */
   Uint32 num_cpu_cores;
   Uint32 num_cpu_sockets;
   Uint32 num_cpu_per_core;

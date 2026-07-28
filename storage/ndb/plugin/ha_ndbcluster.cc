@@ -1,4 +1,4 @@
-/* Copyright (c) 2004, 2025, Oracle and/or its affiliates.
+/* Copyright (c) 2004, 2026, Oracle and/or its affiliates.
    Copyright (c) 2022, 2026, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
@@ -35,6 +35,7 @@
 #include <algorithm>  // std::min(),std::max()
 #include <memory>
 #include <sstream>
+#include <stdexcept>  // std::out_of_range
 #include <string>
 
 #include "my_config.h"  // WORDS_BIGENDIAN
@@ -849,6 +850,46 @@ int ndb_to_mysql_error(const NdbError *ndberr) {
   return error;
 }
 
+/*
+  RONDB-1062 proactive deadlock discovery: when a transaction was aborted as a
+  *detected* deadlock victim (not merely a lock-wait timeout), the data node
+  reports extra detail via the NDB API.  Surface it as an additional warning so
+  SHOW WARNINGS carries the victim operation's table and the table ids involved
+  in the cycle.  This is best-effort and additive: nothing is pushed for a plain
+  timeout or when talking to an older data node (wasDeadlock() is then false).
+*/
+static void ndb_push_deadlock_warning(THD *thd, NdbTransaction *trans) {
+  if (!trans->wasDeadlock()) {
+    return;
+  }
+  Uint32 table_ids[2];
+  const int n = trans->getDeadlockTableIds(table_ids);
+  const NdbOperation *const op = trans->getDeadlockOperation();
+  const char *const op_table = (op != nullptr) ? op->getTableName() : nullptr;
+
+  char tables[128];
+  tables[0] = '\0';
+  if (n == 2) {
+    snprintf(tables, sizeof(tables), "; tables involved (id): %u, %u",
+             table_ids[0], table_ids[1]);
+  } else if (n == 1) {
+    snprintf(tables, sizeof(tables), "; table involved (id): %u", table_ids[0]);
+  }
+
+  char detail[256];
+  if (op_table != nullptr && op_table[0] != '\0') {
+    snprintf(detail, sizeof(detail),
+             "Deadlock detected by NDB; victim operation on table '%s'%s",
+             op_table, tables);
+  } else {
+    snprintf(detail, sizeof(detail), "Deadlock detected by NDB%s", tables);
+  }
+
+  push_warning_printf(thd, Sql_condition::SL_WARNING, ER_GET_TEMPORARY_ERRMSG,
+                      ER_THD(thd, ER_GET_TEMPORARY_ERRMSG),
+                      trans->getNdbError().code, detail, "NDB");
+}
+
 ulong opt_ndb_slave_conflict_role;
 ulong opt_ndb_applier_conflict_role;
 
@@ -1264,6 +1305,12 @@ int ha_ndbcluster::ndb_err(NdbTransaction *trans) {
   const int res = ndb_to_mysql_error(&err);
   DBUG_PRINT("info", ("transformed ndbcluster error %d to mysql error %d",
                       err.code, res));
+  if (res == HA_ERR_LOCK_WAIT_TIMEOUT && trans->wasDeadlock()) {
+    // RONDB-1062: DBTC detected a real deadlock cycle, not just the timeout
+    // backstop. Surface that through MySQL's deadlock error code.
+    ndb_push_deadlock_warning(current_thd, trans);
+    return HA_ERR_LOCK_DEADLOCK;
+  }
   if (res == HA_ERR_FOUND_DUPP_KEY) {
     char *error_data = err.details;
     uint dupkey = MAX_KEY;
@@ -2471,7 +2518,7 @@ int ha_ndbcluster::open_index_ndb_record(NdbDictionary::Dictionary *dict,
   DBUG_TRACE;
   NdbDictionary::RecordSpecification spec[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 2];
   NdbRecord *rec;
-  assert(key_info->user_defined_key_parts < 
+  assert(key_info->user_defined_key_parts <
     (NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 2));
 
   Uint32 offset = 0;
@@ -3637,10 +3684,8 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     poptions = &options;
   }
 
-  /*
-   * TTL related
-   */
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
@@ -3914,10 +3959,8 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_PARTITION_ID;
     }
 
-    /*
-     * TTL related
-     */
-    if (m_ttl_ignore) {
+    /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+    if (should_ignore_ttl()) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
     if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
@@ -4050,10 +4093,8 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
   NdbScanOperation::ScanOptions options;
   options.optionsPresent = (NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                             NdbScanOperation::ScanOptions::SO_PARALLEL);
-  /*
-   * TTL related
-   */
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
   if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
@@ -5902,7 +5943,8 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_update_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -6253,7 +6295,8 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
-  if (m_ttl_ignore) {
+  /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+  if (should_ignore_ttl()) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_delete_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
@@ -7488,6 +7531,23 @@ int ha_ndbcluster::reset() {
   m_ring_buffer_delete_allowed = false;
 
   return 0;
+}
+
+handler *ha_ndbcluster::clone(const char *name, MEM_ROOT *mem_root) {
+  handler *new_handler = handler::clone(name, mem_root);
+  if (new_handler != nullptr) {
+    /*
+     * TTL related
+     * Carry the statement-scoped TTL-ignore over to the clone: plans that
+     * read through cloned handlers (e.g. index_merge) must see the same
+     * expired-row visibility as the primary handler, or a DELETE running
+     * with ttl_expired_rows_visible_in_delete silently skips the expired
+     * rows it was asked to remove. (The binlog applier is unaffected: its
+     * ignore comes from the Thd_ndb applier state, not this member.)
+     */
+    (static_cast<ha_ndbcluster *>(new_handler))->m_ttl_ignore = m_ttl_ignore;
+  }
+  return new_handler;
 }
 
 int ha_ndbcluster::flush_bulk_insert(bool allow_batch) {
@@ -9546,9 +9606,15 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       }
 
       char old_ttl_str[256] = {0};
-      strncpy(old_ttl_str,
+      // Bound by the buffer, not only by the source length: a valid stored
+      // TTL value is always far shorter, but don't rely on that here.
+      size_t old_ttl_len = old_table_modifiers.get("TTL")->m_val_str.len;
+      if (old_ttl_len > sizeof(old_ttl_str) - 1) {
+        old_ttl_len = sizeof(old_ttl_str) - 1;
+      }
+      memcpy(old_ttl_str,
              old_table_modifiers.get("TTL")->m_val_str.str,
-             old_table_modifiers.get("TTL")->m_val_str.len);
+             old_ttl_len);
 
       table_modifiers.set("TTL", old_ttl_str);
       ndb_log_info("No new TTL comment is set, will use the old one: %s",
@@ -10096,8 +10162,19 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
               "Invalid TTL format, please use: 'Seconds@Column (uint@string)'");
         }
       }
-      ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
-      if (ttl_sec_raw > RNIL) {
+      // A value beyond LLONG_MAX makes std::stoll throw std::out_of_range;
+      // uncaught, that aborts mysqld (any CREATE/ALTER user could crash the
+      // server). The value is already validated as non-empty and all-digits,
+      // so an out-of-range value is the only parse failure to expect here --
+      // treat it as "too large" and reject with the same error as the >= RNIL
+      // check below.
+      try {
+        ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      } catch (const std::out_of_range &) {
+        return create.failed_illegal_create_option(
+            "The maximum ttl is 4294967039 seconds");
+      }
+      if (ttl_sec_raw >= RNIL) {
         return create.failed_illegal_create_option(
             "The maximum ttl is 4294967039 seconds");
       } else {
@@ -14470,10 +14547,8 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
 
         options.optionsPresent = NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                                  NdbScanOperation::ScanOptions::SO_PARALLEL;
-        /*
-         * TTL related
-         */
-        if (m_ttl_ignore) {
+        /* TTL related (see ha_ndbcluster::should_ignore_ttl) */
+        if (should_ignore_ttl()) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
         if (ndb_ring_buffer::show_meta_active(
@@ -14659,7 +14734,7 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
   }
 
   if (any_real_read && execute_no_commit_ie(m_thd_ndb, trans))
-    ERR_RETURN(trans->getNdbError());
+    return ndb_err(trans);
 
   if (!m_range_res) {
     DBUG_PRINT("info",
@@ -16801,6 +16876,27 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
             "drop the foreign keys from all the children tables");
         return HA_ALTER_ERROR;
       }
+      if (new_tab.isTTLEnabled() &&
+          (alter_flags & Alter_inplace_info::ADD_FOREIGN_KEY)) {
+        /*
+         * TTL related
+         * Same-statement ADD FOREIGN KEY + TTL comment would slip BOTH
+         * prohibition checks: create_fks() runs in the prepare phase
+         * against the OLD dictionary object (TTL not applied until
+         * alterTableGlobal in the commit phase), and the m_ttl_fk guard
+         * above only reflects pre-statement foreign keys. Reject the
+         * combination here; each half alone keeps its existing check
+         * (create_fk rejects an FK on a TTL table, the guard above
+         * rejects TTL on an FK table). The COPY path is already rejected
+         * by copy_fk_for_offline_alter.
+         */
+        ha_alter_info->unsupported_reason =
+            "Cannot add a foreign key and TTL in the same statement";
+        ha_alter_info->report_unsupported_error(
+            "Adding a foreign key together with TTL",
+            "TTL tables may not participate in foreign keys");
+        return HA_ALTER_ERROR;
+      }
     }
 
     if (max_rows_changed) {
@@ -16923,6 +17019,74 @@ enum_alter_inplace_result ha_ndbcluster::check_if_supported_inplace_alter(
         return HA_ALTER_ERROR;
       }
     }
+
+    /*
+     * Renaming the TTL column must not slip through either: the kernel keeps
+     * expiring by column NUMBER, but the stored comment still names the OLD
+     * column, so (a) SHOW CREATE emits DDL that cannot be re-created
+     * (mysqldump/restore of the table fails), and (b) if a new column later
+     * reuses the old name, the next comment re-parse (any copying ALTER)
+     * silently rebinds TTL to the WRONG column -- live rows can then expire
+     * and be purged by the wrong timestamp. This wrapper also runs before a
+     * COPY fallback, so the same statement MAY legitimately fix the comment
+     * (rename + COMMENT='...TTL=n@<new name>' is never inplace -- the
+     * ALTER_COLUMN_NAME exclusivity above sends it to COPY) or remove TTL
+     * altogether: allow those, reject only a rename that leaves the comment
+     * pointing at the old name.
+     */
+    if (ha_alter_info->handler_flags &
+        Alter_inplace_info::ALTER_COLUMN_NAME) {
+      const uint fields = std::min(table->s->fields, altered_table->s->fields);
+      for (uint i = 0; i < fields; i++) {
+        Field *old_field = table->field[i];
+        Field *new_field = altered_table->field[i];
+        if (strcmp(old_field->field_name, new_field->field_name) != 0 &&
+            !my_strcasecmp(system_charset_info, ttl_column.c_str(),
+                           old_field->field_name)) {
+          bool comment_rebinds = false;
+          const HA_CREATE_INFO *new_create_info = ha_alter_info->create_info;
+          NDB_Modifiers new_modifiers(ndb_table_modifier_prefix,
+                                      ndb_table_modifiers);
+          if (new_modifiers.loadComment(new_create_info->comment.str,
+                                        new_create_info->comment.length) !=
+              -1) {
+            const NDB_Modifier *new_mod_ttl = new_modifiers.get("TTL");
+            if (!new_mod_ttl->m_found) {
+              // TTL removed in the same statement. (NOTE: this arm is
+              // near-unreachable in practice -- update_comment_info() has
+              // already re-injected the old TTL into any new comment that
+              // does not set one, so e.g. COMMENT="" still carries the stale
+              // binding and is correctly rejected below.)
+              comment_rebinds = true;
+            } else {
+              std::string new_ttl_comment(new_mod_ttl->m_val_str.str,
+                                          new_mod_ttl->m_val_str.len);
+              std::size_t at = new_ttl_comment.find('@');
+              if (at == std::string::npos) {
+                if (!my_strcasecmp(system_charset_info,
+                                   new_mod_ttl->m_val_str.str, "off")) {
+                  // TTL=OFF: TTL disabled in the same statement
+                  comment_rebinds = true;
+                }
+              } else if (!my_strcasecmp(system_charset_info,
+                                        new_ttl_comment.substr(at + 1).c_str(),
+                                        new_field->field_name)) {
+                // Comment re-bound to the column's new name
+                comment_rebinds = true;
+              }
+            }
+          }
+          if (!comment_rebinds) {
+            ha_alter_info->unsupported_reason = "It's used as the TTL column";
+            ha_alter_info->report_unsupported_error(
+                "Renaming the TTL column without updating the TTL comment",
+                "renaming it and updating the comment in one ALTER TABLE "
+                "... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement");
+            return HA_ALTER_ERROR;
+          }
+        }
+      }
+    }
   }
   return result;
 }
@@ -16986,8 +17150,17 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
           return true;
         }
       }
-      new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
-      if (new_ttl_sec_raw > RNIL) {
+      // See ha_ndbcluster::create: a value beyond LLONG_MAX makes std::stoll
+      // throw std::out_of_range; uncaught, that aborts mysqld. The prefix is
+      // already validated as non-empty all-digits, so an out-of-range value is
+      // the only parse failure to expect here -- treat it as "too large".
+      try {
+        new_ttl_sec_raw = std::stoll(std::string(mod_ttl->m_val_str.str, pos));
+      } catch (const std::out_of_range &) {
+        *reason = "The maximum ttl is 4294967039 seconds";
+        return true;
+      }
+      if (new_ttl_sec_raw >= RNIL) {
           *reason = "The maximum ttl is 4294967039 seconds";
           return true;
       } else {
@@ -17004,6 +17177,13 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
                  ttl_col->getType() != NdbDictionary::Column::Type::Timestamp2) {
         *reason = "Invalid TTL format, column type "
                  "must be DATETIME/TIMESTAMP";
+        return true;
+      } else if (ttl_col->getStorageType() ==
+                 NdbDictionary::Column::StorageTypeDisk) {
+        // Mirror the CREATE-path rejection: checkTTL reads the TTL column
+        // without attaching the disk page, so an on-disk TTL column is
+        // unusable. This inplace path validated only the column type.
+        *reason = "TTL column can't be an on-disk column";
         return true;
       }
       ndb_log_info("[API]parse TTL successfully: TTL = %u sec, "

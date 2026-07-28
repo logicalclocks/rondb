@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2022, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2026, Oracle and/or its affiliates.
    Copyright (c) 2020, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -518,6 +518,58 @@ THRConfig::get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads)
   }
 }
 
+/**
+ * Deal LDM thread instances to LDM slots so that the Round Robin group
+ * cycles as the LDM instance number increases. ldm_slot_rr_group[] holds the
+ * Round Robin group of each LDM slot in the order the slots are assigned along
+ * the CPU map. We hand out instances 0,1,2,... by cycling through the Round
+ * Robin groups in order 0,1,...,num_rr_groups-1, skipping any group that has
+ * no slot left.
+ *
+ * On return ldm_thread_order[slot] holds the LDM instance bound to that slot
+ * and inst_rr_group[instance] holds that instance's Round Robin group. Because
+ * consecutive instances are handed to consecutive groups, a table whose
+ * fragments land on F consecutive LDM instances uses min(F, num_rr_groups)
+ * Round Robin groups. Groups with uneven slot counts simply run out earlier;
+ * the cycling keeps the spread as even as the topology allows.
+ */
+static void
+deal_ldm_thread_rr_groups(const Uint32 *ldm_slot_rr_group,
+                          Uint32 num_ldm_slots,
+                          Uint32 num_rr_groups,
+                          Uint32 *ldm_thread_order,
+                          Uint32 *inst_rr_group)
+{
+  Uint32 group_scan_pos[MAX_NUM_CPUS];
+  for (Uint32 g = 0; g < num_rr_groups; g++)
+  {
+    group_scan_pos[g] = 0;
+  }
+  Uint32 next_ldm_instance = 0;
+  while (next_ldm_instance < num_ldm_slots)
+  {
+    for (Uint32 g = 0; g < num_rr_groups; g++)
+    {
+      Uint32 slot = group_scan_pos[g];
+      while (slot < num_ldm_slots && ldm_slot_rr_group[slot] != g)
+      {
+        slot++;
+      }
+      if (slot < num_ldm_slots)
+      {
+        ldm_thread_order[slot] = next_ldm_instance;
+        inst_rr_group[next_ldm_instance] = g;
+        next_ldm_instance++;
+        group_scan_pos[g] = slot + 1;
+      }
+      else
+      {
+        group_scan_pos[g] = num_ldm_slots;
+      }
+    }
+  }
+}
+
 int
 THRConfig::do_parse_auto(unsigned realtime,
                          unsigned spintime,
@@ -697,23 +749,97 @@ THRConfig::do_parse_auto(unsigned realtime,
     assert(num_only_ldms_in_group <= count_ldm_threads);
 
     Uint32 ldm_thread_order[MAX_NDBMT_LQH_WORKERS];
-    Uint32 ldm_thread_order_count = 0;
     Uint32 assigned_ldm_threads = 0;
-    Uint32 num_ldm_rows =
-      (ldm_threads + num_rr_groups - 1) / num_rr_groups;
-    for (Uint32 col = 0; col < num_rr_groups; col++)
+    /**
+     * Decide which LDM thread instance is bound to each LDM slot in the CPU
+     * map. A table spreads its fragments over consecutive LDM instances
+     * (Dbdih assigns fragments using instanceKey++), and the query threads
+     * that may assist an LDM are exactly those in the LDM's Round Robin
+     * group. So, to let every table use as many Round Robin groups as
+     * possible, we make the Round Robin group cycle as the LDM instance
+     * number increases. A table with F fragments then uses
+     * min(F, num_rr_groups) Round Robin groups instead of only a subset of
+     * them.
+     *
+     * Step 1: Replay the CPU map walk performed by the assignment loop below
+     * to find, for each LDM slot in the order it is assigned, which Round
+     * Robin group that slot belongs to. This must stay in sync with that
+     * loop (same start CPU, same "only LDM" prefix, same even-position LDM
+     * rule), so any change to the loop must be mirrored here.
+     */
+    Uint32 ldm_slot_rr_group[MAX_NDBMT_LQH_WORKERS] = {};
+    Uint32 num_ldm_slots = 0;
     {
-      for (Uint32 row = 0; row < num_ldm_rows; row++)
+      Uint32 walk_cpu_id = next_cpu_id;
+      Uint32 walk_rr_group = rr_group;
+      Uint32 walk_num_only = num_only_ldms_in_group;
+      Uint32 walk_count_ldm = ldm_threads;
+      for (Uint32 i = exclusive_io_cpus; i < num_cpus; i++)
       {
-        Uint32 ldm_inx = (row * num_rr_groups) + col;
-        if (ldm_inx < ldm_threads)
+        if (i != exclusive_io_cpus)
         {
-          ldm_thread_order[ldm_thread_order_count++] =
-            ldm_threads - ldm_inx - 1;
+          walk_cpu_id = Ndb_GetNextCPUInMap(walk_cpu_id, walk_rr_group);
+        }
+        bool is_ldm = false;
+        if (walk_num_only > 0)
+        {
+          walk_num_only--;
+          walk_count_ldm--;
+          is_ldm = true;
+        }
+        else if (((i & 1) == 0) && walk_count_ldm > 0)
+        {
+          walk_count_ldm--;
+          is_ldm = true;
+        }
+        if (is_ldm)
+        {
+          require(num_ldm_slots < ldm_threads);
+          ldm_slot_rr_group[num_ldm_slots++] = walk_rr_group;
         }
       }
     }
-    require(ldm_thread_order_count == ldm_threads);
+    require(num_ldm_slots == ldm_threads);
+    /**
+     * Step 2: Deal LDM instances 0,1,2,... to the slots by cycling through
+     * the Round Robin groups in order 0,1,...,num_rr_groups-1, skipping any
+     * group that has no slot left. ldm_thread_order[slot] then holds the LDM
+     * instance that the assignment loop binds to that slot, and
+     * inst_rr_group[instance] is that instance's Round Robin group. Groups
+     * with uneven slot counts simply run out earlier; the cycling keeps the
+     * spread as even as the topology allows.
+     */
+    Uint32 inst_rr_group[MAX_NDBMT_LQH_WORKERS];
+    deal_ldm_thread_rr_groups(ldm_slot_rr_group,
+                              num_ldm_slots,
+                              num_rr_groups,
+                              ldm_thread_order,
+                              inst_rr_group);
+    /* Self-check: ldm_thread_order must be a permutation of all instances */
+    {
+      bool ldm_assigned[MAX_NDBMT_LQH_WORKERS];
+      for (Uint32 i = 0; i < ldm_threads; i++)
+      {
+        ldm_assigned[i] = false;
+      }
+      for (Uint32 slot = 0; slot < num_ldm_slots; slot++)
+      {
+        Uint32 inst = ldm_thread_order[slot];
+        require(inst < ldm_threads);
+        require(!ldm_assigned[inst]);
+        ldm_assigned[inst] = true;
+      }
+    }
+    /* Log the LDM instance -> Round Robin group mapping for diagnostics */
+    {
+      BaseString ldm_rr_map;
+      for (Uint32 i = 0; i < ldm_threads; i++)
+      {
+        ldm_rr_map.appfmt("%s%u", (i == 0) ? "" : ",", inst_rr_group[i]);
+      }
+      g_eventLogger->info("LDM instance -> RR group mapping: [%s]",
+                          ldm_rr_map.c_str());
+    }
 
     for (Uint32 i = exclusive_io_cpus; i < num_cpus; i++) {
       Uint32 thread_type = T_SEND; // T_SEND silences compiler
@@ -1594,6 +1720,142 @@ template class Vector<THRConfig::T_Thread>;
 
 #include <NdbTap.hpp>
 
+/**
+ * Verify that deal_ldm_thread_rr_groups() spreads consecutive LDM instances
+ * over as many Round Robin groups as possible. Each scenario describes the
+ * Round Robin group of every LDM slot in the order do_parse_auto walks the
+ * CPU map. The CPU map hands out two CPUs (one HT core pair) per virtual L3
+ * cache at a time, so a balanced topology yields the "paired" sequence
+ * 0,0,1,1,...,G-1,G-1 repeated -- exactly the input that used to limit a
+ * table to half the Round Robin groups before the deal cycled the groups.
+ */
+static void test_ldm_rr_group_spread() {
+  const Uint32 NUM_SCEN = 5;
+  for (Uint32 s = 0; s < NUM_SCEN; s++) {
+    Uint32 num_rr_groups = 0;
+    Uint32 num_ldm_slots = 0;
+    Uint32 ldm_slot_rr_group[MAX_NDBMT_LQH_WORKERS];
+    const char *name = "";
+    switch (s) {
+      case 0:
+        name = "64 CPUs: 8 RR groups, 32 LDM (paired)";
+        num_rr_groups = 8;
+        num_ldm_slots = 32;
+        for (Uint32 j = 0; j < num_ldm_slots; j++)
+          ldm_slot_rr_group[j] = (j / 2) % num_rr_groups;
+        break;
+      case 1:
+        name = "subset: 6 RR groups, 24 LDM (paired)";
+        num_rr_groups = 6;
+        num_ldm_slots = 24;
+        for (Uint32 j = 0; j < num_ldm_slots; j++)
+          ldm_slot_rr_group[j] = (j / 2) % num_rr_groups;
+        break;
+      case 2:
+        name = "subset: 4 RR groups, 16 LDM (paired)";
+        num_rr_groups = 4;
+        num_ldm_slots = 16;
+        for (Uint32 j = 0; j < num_ldm_slots; j++)
+          ldm_slot_rr_group[j] = (j / 2) % num_rr_groups;
+        break;
+      case 3:
+        /**
+         * Odd number of LDMs per Round Robin group: 16 "only LDM" slots arrive
+         * as HT pairs and the remaining 8 phase-2 slots arrive singly, giving
+         * 3 LDMs per group.
+         */
+        name = "odd LDM/group: 8 RR groups, 24 LDM (3/group)";
+        num_rr_groups = 8;
+        num_ldm_slots = 24;
+        for (Uint32 j = 0; j < 16; j++)
+          ldm_slot_rr_group[j] = (j / 2) % num_rr_groups;
+        for (Uint32 j = 16; j < 24; j++)
+          ldm_slot_rr_group[j] = (j - 16) % num_rr_groups;
+        break;
+      case 4:
+        /**
+         * Uneven group sizes (slots not a multiple of 2 * num_rr_groups):
+         * groups 0-5 get 4 slots, groups 6-7 only 2.
+         */
+        name = "uneven groups: 8 RR groups, 28 LDM";
+        num_rr_groups = 8;
+        num_ldm_slots = 28;
+        for (Uint32 j = 0; j < num_ldm_slots; j++)
+          ldm_slot_rr_group[j] = (j / 2) % num_rr_groups;
+        break;
+    }
+
+    Uint32 ldm_thread_order[MAX_NDBMT_LQH_WORKERS];
+    Uint32 inst_rr_group[MAX_NDBMT_LQH_WORKERS];
+    deal_ldm_thread_rr_groups(ldm_slot_rr_group, num_ldm_slots, num_rr_groups,
+                              ldm_thread_order, inst_rr_group);
+
+    /* Per-group slot counts and whether all non-empty groups are equal */
+    Uint32 slot_count[MAX_NDBMT_LQH_WORKERS];
+    for (Uint32 g = 0; g < num_rr_groups; g++) slot_count[g] = 0;
+    for (Uint32 j = 0; j < num_ldm_slots; j++)
+      slot_count[ldm_slot_rr_group[j]]++;
+    Uint32 num_nonempty = 0;
+    Uint32 ref_count = 0;
+    bool balanced = true;
+    for (Uint32 g = 0; g < num_rr_groups; g++) {
+      if (slot_count[g] > 0) {
+        if (num_nonempty == 0)
+          ref_count = slot_count[g];
+        else if (slot_count[g] != ref_count)
+          balanced = false;
+        num_nonempty++;
+      }
+    }
+
+    /* A: ldm_thread_order is a permutation of all LDM instances */
+    bool seen[MAX_NDBMT_LQH_WORKERS];
+    for (Uint32 i = 0; i < num_ldm_slots; i++) seen[i] = false;
+    for (Uint32 slot = 0; slot < num_ldm_slots; slot++) {
+      Uint32 inst = ldm_thread_order[slot];
+      OK(inst < num_ldm_slots);
+      OK(!seen[inst]);
+      seen[inst] = true;
+    }
+
+    /* B: the instance bound to a slot has that slot's Round Robin group */
+    for (Uint32 slot = 0; slot < num_ldm_slots; slot++)
+      OK(inst_rr_group[ldm_thread_order[slot]] == ldm_slot_rr_group[slot]);
+
+    /* C: conservation -- per-group instance count equals slot count */
+    Uint32 inst_count[MAX_NDBMT_LQH_WORKERS];
+    for (Uint32 g = 0; g < num_rr_groups; g++) inst_count[g] = 0;
+    for (Uint32 i = 0; i < num_ldm_slots; i++) inst_count[inst_rr_group[i]]++;
+    for (Uint32 g = 0; g < num_rr_groups; g++)
+      OK(inst_count[g] == slot_count[g]);
+
+    /**
+     * D: the first num_nonempty instances all land in distinct Round Robin
+     * groups, i.e. a table with up to num_nonempty fragments uses every
+     * available group. This holds for balanced and uneven topologies alike.
+     */
+    bool grp_seen[MAX_NDBMT_LQH_WORKERS];
+    for (Uint32 g = 0; g < num_rr_groups; g++) grp_seen[g] = false;
+    for (Uint32 i = 0; i < num_nonempty; i++) {
+      OK(!grp_seen[inst_rr_group[i]]);
+      grp_seen[inst_rr_group[i]] = true;
+    }
+
+    /**
+     * E: with balanced groups the instance number cycles the groups exactly,
+     * so every window of num_rr_groups consecutive instances covers all
+     * groups -- the property the change is about.
+     */
+    if (balanced) {
+      for (Uint32 i = 0; i < num_ldm_slots; i++)
+        OK(inst_rr_group[i] == (i % num_rr_groups));
+    }
+
+    printf("LDM -> RR spread: %s (%s) -> OK\n", name,
+           balanced ? "balanced" : "uneven");
+  }
+}
+
 TAPTEST(thr_config) {
   ndb_init();
   {
@@ -1858,6 +2120,8 @@ TAPTEST(thr_config) {
         "rep: 1 => sum: %u\n",
         i, l, t, s, r, 2 + l + t + s + r);
   }
+
+  test_ldm_rr_group_spread();
 
   ndb_end(0);
   return 1;

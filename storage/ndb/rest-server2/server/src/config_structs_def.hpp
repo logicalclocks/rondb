@@ -380,6 +380,32 @@ CLASS
 )
 
 CLASS
+(TTLPurge,
+ CM(bool, enable, Enable, true,
+    "Whether this RDRS node runs the TTL purge worker. Purging can also be"
+    " enabled/disabled at runtime via the /ttl-purge/config REST API; this"
+    " setting provides the state at startup.")
+ CM(std::string, activeWindow, ActiveWindow, "",
+    "Daily TTL purge active window in UTC, formatted \"HH:MM-HH:MM\", e.g."
+    " \"03:00-05:00\". The window may wrap past midnight (start > end)."
+    " Purging only runs inside the window. Empty means no window: purging"
+    " runs around the clock. A valid cluster-wide window in"
+    " mysql.ttl_purge_ctrl (ctrl_id 2/3) takes precedence over this setting.")
+ PROBLEM(value.hasActiveWindowProblem(),
+         ".TTLPurge.ActiveWindow must be \"HH:MM-HH:MM\" (UTC, hours 00-23,"
+         " minutes 00-59, start != end) or empty")
+ CLASSDEFS
+ (
+  // Parse a "HH:MM-HH:MM" window spec into minutes since UTC midnight.
+  // Returns false (outputs untouched) for an empty or malformed spec.
+  static bool parseActiveWindow(const std::string &spec,
+                                Int32 *start_min,
+                                Int32 *end_min);
+  bool hasActiveWindowProblem() const;
+ )
+)
+
+CLASS
 (LogConfig,
  CM(std::string, level, Level, "warn", "")
  CM(std::string, filePath, FilePath, "", "")
@@ -468,6 +494,7 @@ CLASS
     " config file, then it will be set to .RonDB")
  CM(Security, security, Security, Security(), "")
  CM(FeatureStore, featureStore, FeatureStore, FeatureStore(), "")
+ CM(TTLPurge, ttlPurge, TTLPurge, TTLPurge(), "TTL purge worker settings.")
  CM(LogConfig, log, Log, LogConfig(), "")
  CM(Testing, testing, Testing, Testing(),
     "Connetivity necessary for testing. rdrs2 will validate but not use these"

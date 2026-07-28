@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2026, Oracle and/or its affiliates.
 #  Use is subject to license terms.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -22,4 +22,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-
+# Differential oracle for the TTL expiry decision (ttl_expiry.hpp):
+# asserts the optimized integer compare in Dbtup::checkTTL keeps the exact
+# verdict of the original mysys/my_time.cc calendar path.
+NDB_ADD_TEST(ttl_expiry-t ttl_expiry-t.cpp LIBS ndbgeneral)

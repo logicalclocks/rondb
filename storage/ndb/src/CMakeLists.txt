@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2026, Oracle and/or its affiliates.
 # Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -75,13 +75,6 @@ IF(WITH_EXT_BACKTRACE)
   LIST(APPEND LIBS_TO_MERGE backtrace)
 ENDIF()
 
-# When SimSIMD is enabled, link its runtime into both static and shared ndbclient.
-# We append to LIBS_TO_LINK so all subsequent MERGE/ADD_* macros pick it up
-# via their LINK_LIBRARIES argument (avoids mixing plain/keyword signatures).
-IF (WITH_SIMSIMD)
-  LIST(APPEND LIBS_TO_LINK simsimd::simsimd)
-ENDIF()
-
 MESSAGE(STATUS "LIBS_TO_MERGE ${LIBS_TO_MERGE}")
 
 IF(NOT WITH_NDB)
@@ -101,13 +94,7 @@ ENDIF()
 # Build test program to check linking against ndclient_static
 ADD_EXECUTABLE(ndbclient_static_link_test ndbclient_link_test.cpp)
 SET_TARGET_PROPERTIES(ndbclient_static_link_test PROPERTIES ENABLE_EXPORTS TRUE)
-# Ensure the test also links SimSIMD when enabled, since static archives
-# typically don’t propagate link interface requirements.
-IF (WITH_SIMSIMD)
-  TARGET_LINK_LIBRARIES(ndbclient_static_link_test ndbclient_static simsimd::simsimd)
-ELSE()
-  TARGET_LINK_LIBRARIES(ndbclient_static_link_test ndbclient_static)
-ENDIF()
+TARGET_LINK_LIBRARIES(ndbclient_static_link_test ndbclient_static)
 
 IF(NOT WITHOUT_SERVER)
   ADD_SUBDIRECTORY(kernel)
@@ -173,7 +160,7 @@ ELSE()
     EXPORTS _ndbclient_exports
     COMPONENT Development
     DESTINATION "${INSTALL_LIBDIR}"
-    LINK_LIBRARIES ${NDBJTIE_LIB} ${LIBS_TO_LINK} # includes simsimd::simsimd when enabled
+    LINK_LIBRARIES ${NDBJTIE_LIB} ${LIBS_TO_LINK}
     OUTPUT_NAME ndbclient
     SOVERSION ${NDB_SHARED_LIB_VERSION}
     )

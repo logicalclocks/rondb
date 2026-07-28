@@ -41,11 +41,11 @@ INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_Y');
 INSERT INTO test.clients VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
 
 ###############################################################################
-# Section 1: Joins — meta rows must not leak through joins
+# Section 1: Joins - meta rows must not leak through joins
 ###############################################################################
 
 --echo #
---echo # Case 1: INNER JOIN with regular table — meta rows hidden
+--echo # Case 1: INNER JOIN with regular table - meta rows hidden
 --echo #
 
 SELECT c.name, r.client_id, r.ring_idx, r.event_data
@@ -54,7 +54,7 @@ SELECT c.name, r.client_id, r.ring_idx, r.event_data
     ORDER BY r.client_id, r.ring_idx;
 
 --echo #
---echo # Case 2: LEFT JOIN — clients without ring data appear, no meta rows
+--echo # Case 2: LEFT JOIN - clients without ring data appear, no meta rows
 --echo #
 
 SELECT c.name, r.client_id, r.ring_idx, r.event_data
@@ -63,7 +63,7 @@ SELECT c.name, r.client_id, r.ring_idx, r.event_data
     ORDER BY c.client_id, r.ring_idx;
 
 --echo #
---echo # Case 3: Self-join on ring-buffer table — meta rows hidden
+--echo # Case 3: Self-join on ring-buffer table - meta rows hidden
 --echo #
 
 SELECT a.client_id, a.ring_idx AS idx_a, a.event_data AS data_a,
@@ -75,11 +75,11 @@ SELECT a.client_id, a.ring_idx AS idx_a, a.event_data AS data_a,
     ORDER BY a.ring_idx, b.ring_idx;
 
 ###############################################################################
-# Section 2: Subqueries — meta rows must not leak
+# Section 2: Subqueries - meta rows must not leak
 ###############################################################################
 
 --echo #
---echo # Case 4: Subquery with IN — meta rows hidden from inner query
+--echo # Case 4: Subquery with IN - meta rows hidden from inner query
 --echo #
 
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -89,7 +89,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY client_id, ring_idx;
 
 --echo #
---echo # Case 5: EXISTS subquery — only clients with data rows
+--echo # Case 5: EXISTS subquery - only clients with data rows
 --echo #
 
 SELECT c.name FROM test.clients c
@@ -111,7 +111,7 @@ SELECT d.client_id, d.cnt
     ORDER BY d.client_id;
 
 --echo #
---echo # Case 7: UNION ALL — meta rows hidden in both branches
+--echo # Case 7: UNION ALL - meta rows hidden in both branches
 --echo #
 
 (SELECT client_id, event_data FROM test.rb WHERE client_id = 1)
@@ -120,11 +120,11 @@ UNION ALL
 ORDER BY client_id, event_data;
 
 ###############################################################################
-# Section 3: Aggregations — counts must exclude meta rows
+# Section 3: Aggregations - counts must exclude meta rows
 ###############################################################################
 
 --echo #
---echo # Case 8: GROUP BY with COUNT — per-prefix data row count
+--echo # Case 8: GROUP BY with COUNT - per-prefix data row count
 --echo #
 
 SELECT client_id, COUNT(*) AS cnt FROM test.rb
@@ -151,7 +151,7 @@ SELECT client_id, COUNT(*) AS cnt FROM test.rb
     ORDER BY client_id;
 
 --echo #
---echo # Case 11: SUM(1) as alternative to bare COUNT(*) — correct count
+--echo # Case 11: SUM(1) as alternative to bare COUNT(*) - correct count
 --echo #
 
 SELECT client_id, SUM(1) AS cnt FROM test.rb
@@ -175,7 +175,7 @@ SELECT COUNT(*) AS all_rows FROM test.rb WHERE 1=1;
 SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
---echo # Case 13: Re-INSERT after TRUNCATE — fresh rings, wrapping works
+--echo # Case 13: Re-INSERT after TRUNCATE - fresh rings, wrapping works
 --echo #
 
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_A');
@@ -240,7 +240,7 @@ DROP TABLE test.rb_types;
 ###############################################################################
 
 --echo #
---echo # Case 15: BEGIN + INSERT + COMMIT — data persists
+--echo # Case 15: BEGIN + INSERT + COMMIT - data persists
 --echo #
 
 CREATE TABLE test.rb_tx (
@@ -260,7 +260,7 @@ COMMIT;
 SELECT id, ring_idx, val FROM test.rb_tx ORDER BY ring_idx;
 
 --echo #
---echo # Case 16: BEGIN + INSERT + ROLLBACK — data reverted, meta reverted
+--echo # Case 16: BEGIN + INSERT + ROLLBACK - data reverted, meta reverted
 --echo #
 
 BEGIN;
@@ -313,7 +313,7 @@ INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'date', 40);
 INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'elderberry', 50);
 
 --echo #
---echo # Case 18: ORDER BY + LIMIT — top 3 by num descending
+--echo # Case 18: ORDER BY + LIMIT - top 3 by num descending
 --echo #
 
 SELECT id, ring_idx, val, num FROM test.rb_sel
@@ -322,7 +322,7 @@ SELECT id, ring_idx, val, num FROM test.rb_sel
     LIMIT 3;
 
 --echo #
---echo # Case 19: ORDER BY + LIMIT + OFFSET — pagination
+--echo # Case 19: ORDER BY + LIMIT + OFFSET - pagination
 --echo #
 
 SELECT id, ring_idx, val, num FROM test.rb_sel
@@ -334,7 +334,7 @@ SELECT id, ring_idx, val, num FROM test.rb_sel
 --echo # Case 20: SELECT DISTINCT on user column after wrap
 --echo #
 
-# 6th insert wraps — overwrites slot 1 with duplicate value 'apple'
+# 6th insert wraps - overwrites slot 1 with duplicate value 'apple'
 INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'apple', 60);
 
 SELECT DISTINCT val FROM test.rb_sel
@@ -358,7 +358,7 @@ DROP TABLE test.rb_sel;
 ###############################################################################
 
 --echo #
---echo # Case 22: Insert → grow → bulk insert → update → delete → re-insert
+--echo # Case 22: Insert -> grow -> bulk insert -> update -> delete -> re-insert
 --echo #
 
 CREATE TABLE test.rb_seq (
@@ -374,7 +374,7 @@ CREATE TABLE test.rb_seq (
 INSERT INTO test.rb_seq (id, data) VALUES (1, 's1'), (1, 's2'), (1, 's3');
 SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 
-# Step 2: Grow 3 → 6
+# Step 2: Grow 3 -> 6
 ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
 
 # Step 3: Bulk insert into expanded ring (fills slots 4-6)
@@ -396,7 +396,7 @@ SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 DROP TABLE test.rb_seq;
 
 --echo #
---echo # Case 23: Insert → TRUNCATE → re-insert → wrap → verify
+--echo # Case 23: Insert -> TRUNCATE -> re-insert -> wrap -> verify
 --echo #
 
 CREATE TABLE test.rb_trunc (
@@ -424,7 +424,7 @@ SELECT id, ring_idx, data FROM test.rb_trunc ORDER BY ring_idx;
 DROP TABLE test.rb_trunc;
 
 --echo #
---echo # Case 24: Bulk INSERT → DELETE prefix → bulk INSERT fresh
+--echo # Case 24: Bulk INSERT -> DELETE prefix -> bulk INSERT fresh
 --echo #
 
 CREATE TABLE test.rb_bd (
@@ -524,7 +524,7 @@ INSERT INTO test.rb_boundary (id, val) VALUES (0, 'zero');
 
 SELECT id, ring_idx, val FROM test.rb_boundary ORDER BY id;
 
-# Each prefix has independent ring — add second row to each
+# Each prefix has independent ring - add second row to each
 INSERT INTO test.rb_boundary (id, val) VALUES (2147483647, 'max_int_2');
 INSERT INTO test.rb_boundary (id, val) VALUES (-2147483648, 'min_int_2');
 INSERT INTO test.rb_boundary (id, val) VALUES (0, 'zero_2');
@@ -534,7 +534,7 @@ SELECT id, ring_idx, val FROM test.rb_boundary ORDER BY id, ring_idx;
 DROP TABLE test.rb_boundary;
 
 ###############################################################################
-# Section 10: Multi-session — show_meta is session-scoped
+# Section 10: Multi-session - show_meta is session-scoped
 ###############################################################################
 
 --echo #
@@ -567,13 +567,13 @@ SELECT COUNT(*) AS cnt FROM test.rb_sess WHERE id = 1;
 --connection default
 --disconnect con1
 
-# Default session still has show_meta=ON — count includes meta row
+# Default session still has show_meta=ON - count includes meta row
 SELECT COUNT(*) AS cnt_with_meta FROM test.rb_sess WHERE id = 1;
 
 SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
---echo # Case 29: INSERT from second session on same prefix — ring consistent
+--echo # Case 29: INSERT from second session on same prefix - ring consistent
 --echo #
 
 connect(con2, localhost, root,,test);
@@ -619,7 +619,7 @@ INSERT INTO test.rb_show (id, val) VALUES (1, 'fresh');
 SHOW CREATE TABLE test.rb_show;
 
 --echo #
---echo # Case 31: CREATE VIEW on ring-buffer table — meta rows hidden
+--echo # Case 31: CREATE VIEW on ring-buffer table - meta rows hidden
 --echo #
 
 INSERT INTO test.rb_show (id, val) VALUES (1, 'view_b');

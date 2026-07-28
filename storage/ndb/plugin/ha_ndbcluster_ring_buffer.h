@@ -22,10 +22,10 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 /*
-  Ring Buffer Table — support code extracted from ha_ndbcluster.cc to keep
+  Ring Buffer Table - support code extracted from ha_ndbcluster.cc to keep
   that file's delta against upstream minimal. Member function bodies
   (ha_ndbcluster::ndb_ring_buffer_write_row and ::flush_ring_buffer_batch)
-  live in the corresponding .cc file alongside these helpers — they are
+  live in the corresponding .cc file alongside these helpers - they are
   declared in ha_ndbcluster.h.
 */
 
@@ -37,7 +37,7 @@
 
 /*
   NdbDictionary is a class (not a namespace) with nested Table/Column.
-  The public API below takes NdbDictionary::Table* by pointer — we need
+  The public API below takes NdbDictionary::Table* by pointer - we need
   the full declaration for that to work from both consumer TUs.
 */
 #include "storage/ndb/include/ndbapi/NdbDictionary.hpp"

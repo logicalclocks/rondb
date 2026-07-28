@@ -1,0 +1,109 @@
+# ==========================================================================
+# ttl_purge_dropped_table.test
+#
+# Finding #15 (escalation rider): when a TTL table vanishes mid-round
+# (dropped out of band -- no ndb_schema event, and here the periodic
+# reconcile is disabled so nothing prunes it), the purge worker's per-table
+# getTable fails every round. Before the fix that burned a 1s retry sleep
+# per round forever (and, if the drop landed mid-batch, escalated through
+# kMaxTrxRetryTimes into killing the whole worker). The fix classifies the
+# failure (723/permanent = table gone) and drops the table from the worker's
+# round-local cache instead, logging:
+#   [TTL PWorker] Table <db>/<table> is gone (error ...), removing from the
+#   local purge cache
+#
+# This test drives the real path: purge two tables, ndb_drop_table one of
+# them, and asserts (a) the classified removal is logged, (b) the survivor
+# keeps purging, (c) the purger stays healthy. On an unfixed binary (a) never
+# happens and the test times out there.
+# ==========================================================================
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl_purge/include/have_rdrs_curl.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+
+SET time_zone = '+00:00';
+
+CREATE DATABASE recon2;
+
+# Reconcile off: the out-of-band drop must reach the WORKER's getTable, not
+# be pruned first by the watcher's periodic reconcile.
+--exec $ttl_purge_put_config '{"reconcile_interval_sec": 0}' > /dev/null 2>&1
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/_drop_cfg.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/_drop_cfg.json
+--let $json_field = reconcile_interval_sec
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = reconcile_interval_sec = 0 was applied
+--let $assert_cond = $json_value = 0
+--source include/assert.inc
+
+# rows_purged_total is cumulative over the server lifetime: make the purge
+# targets baseline-relative so earlier activity cannot satisfy them.
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/_drop_metrics.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/_drop_metrics.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $purge_target_1 = `SELECT $json_value + 10`
+--let $purge_target_2 = `SELECT $json_value + 15`
+
+--let $ttl_db = recon2
+--let $ttl_table = keeper
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_db = recon2
+--let $ttl_table = victim
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = recon2
+--let $insert_table = keeper
+--let $insert_count = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_db = recon2
+--let $insert_table = victim
+--let $insert_count = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Worker demonstrably purging BOTH tables (so victim is in its local cache).
+--let $expected_purge_total = $purge_target_1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--echo Both tables purged
+
+# Drop the victim from NDB only: no ndb_schema event, no reconcile -> only
+# the purge worker's own getTable can notice. Mark the log first so only
+# lines appended AFTER the drop can satisfy the wait.
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+--exec $NDB_DROP_TABLE -d recon2 victim >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The classified removal must show up in the RDRS log within a few rounds.
+--let $log_pattern = Table recon2/victim is gone \(error \d+\), removing from the local purge cache
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rdrs_log.inc
+--echo Vanished table classified and removed from the purge round
+
+# The survivor keeps purging after the removal...
+--let $insert_db = recon2
+--let $insert_table = keeper
+--let $insert_count = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $expected_purge_total = $purge_target_2
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--echo Surviving table still being purged
+
+# ...and the purger never escalated to the error state.
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/_drop_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/_drop_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Purge state is not error after the mid-round drop
+--let $assert_cond = "$json_value" <> "error"
+--source include/assert.inc
+
+# --- Cleanup ---
+--exec $ttl_purge_put_config '{"reconcile_interval_sec": 30}' > /dev/null 2>&1
+--disable_warnings
+DROP TABLE recon2.keeper;
+# recon2.victim is gone from NDB (ndb_drop_table); drop the orphaned DD entry.
+DROP DATABASE recon2;
+--enable_warnings
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

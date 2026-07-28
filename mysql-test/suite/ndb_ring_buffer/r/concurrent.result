@@ -10,7 +10,7 @@ PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 #
-# Case 1: Two sessions inserting to different PK prefixes — no conflict
+# Case 1: Two sessions inserting to different PK prefixes - no conflict
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_B');
@@ -28,7 +28,7 @@ client_id	ring_idx	event_data
 2	2	con2_B
 2	3	con2_C
 #
-# Case 2: Two sessions inserting to same PK prefix — sequential
+# Case 2: Two sessions inserting to same PK prefix - sequential
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con1_X');
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con1_Y');
@@ -82,7 +82,7 @@ client_id	ring_idx	HEX(ring_meta)
 3	0	010000000300000008000000000000000A000000000000000000000000000000
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 4: One session inserts, another reads — meta rows never visible
+# Case 4: One session inserts, another reads - meta rows never visible
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (4, 'read_test_A');
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -104,7 +104,7 @@ SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
 cnt
 2
 #
-# Case 5: Transaction isolation — committed data visible to other session
+# Case 5: Transaction isolation - committed data visible to other session
 #
 BEGIN;
 INSERT INTO test.rb (client_id, event_data) VALUES (5, 'tx_A');
@@ -117,7 +117,7 @@ client_id	ring_idx	event_data
 5	1	tx_A
 5	2	tx_B
 #
-# Case 6: Transaction isolation — rolled back data not visible
+# Case 6: Transaction isolation - rolled back data not visible
 #
 BEGIN;
 INSERT INTO test.rb (client_id, event_data) VALUES (6, 'rollback_A');
