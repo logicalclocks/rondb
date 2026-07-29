@@ -2237,6 +2237,62 @@ int runTestArbitratorGateNotReady(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+static void set_env(const char *name, const char *value) {
+#ifdef _WIN32
+  _putenv_s(name, value);
+#else
+  setenv(name, value, 1);
+#endif
+}
+
+int runTestMgmTransporterConvertRetry(NDBT_Context *ctx, NDBT_Step *step) {
+  NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+  BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
+  Properties config = ConfigFactory::create();
+  CHECK(ConfigFactory::write_config_ini(config, cfg_path.c_str()));
+
+  Mgmd mgmd(1);
+  Ndbd ndbd(2);
+
+  CHECK(mgmd.start_from_config_ini(wd.path()));
+  CHECK(mgmd.connect(config));
+  CHECK(mgmd.wait_confirmed_config());
+
+  /**
+   * Widen the window between the data node's configuration fetch and
+   * its mgm transporter conversion (the delay is inherited by the
+   * spawned process), then restart the mgmd inside the window.  The
+   * data node must retry the conversion against the restarted mgmd
+   * and complete its start; without the bounded retry it dies with
+   * the permanent error NDBD_EXIT_CONNECTION_SETUP_FAILED.
+   */
+  set_env("NDB_TEST_DELAY_MGM_CONVERT", "30");
+  bool ndbd_started = ndbd.start(wd.path(), mgmd.connectstring(config));
+  set_env("NDB_TEST_DELAY_MGM_CONVERT", "");
+  CHECK(ndbd_started);
+
+  /**
+   * Give the data node time to allocate its nodeid and fetch the
+   * configuration (the first thing it does, normally well under 10 s),
+   * then take the mgmd away inside the widened window.  If a slow
+   * machine makes the node miss the mgmd outage entirely, the config
+   * fetch retry hides it and the test still passes, just without
+   * exercising the conversion retry.
+   */
+  NdbSleep_SecSleep(10);
+  CHECK(mgmd.stop());
+  CHECK(mgmd.start_from_config_ini(wd.path()));
+  CHECK(mgmd.connect(config));
+
+  /* The node wakes with a dead mgm session and must reconnect */
+  NdbMgmHandle handle = mgmd.handle();
+  CHECK(ndbd.wait_started(handle, 120));
+
+  CHECK(ndbd.stop());
+  CHECK(mgmd.stop());
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testMgmd);
 DRIVER(DummyDriver); /* turn off use of NdbApi */
 
@@ -2365,6 +2421,12 @@ TESTCASE("ArbitratorGateNotReady",
          "Check that the arbitrator startup gate refuses non-bootstrap "
          "commands with a retryable error and keeps the session open") {
   INITIALIZER(runTestArbitratorGateNotReady);
+}
+
+TESTCASE("MgmTransporterConvertRetry",
+         "Restart the mgmd between a data node's configuration fetch and "
+         "its mgm transporter conversion, check that the node still starts") {
+  INITIALIZER(runTestMgmTransporterConvertRetry);
 }
 
 NDBT_TESTSUITE_END(testMgmd)
