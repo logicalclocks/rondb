@@ -78,6 +78,10 @@ UPDATE t1 SET ttl_col = NOW() + INTERVAL 1 HOUR WHERE id = 1;
 
 --echo # --- wait for mysqld to reconnect; poll until test.t1 is queryable
 --source include/ndb_wait_connected.inc
+# NDB DDL stays refused ("Schema distribution is not ready") until the binlog
+# thread re-creates its ndb_schema event subscriptions; gate on it so the
+# final DROP TABLE cannot hit the transient refusal.
+--source include/ndb_not_readonly.inc
 --disable_query_log
 --disable_result_log
 let $mysql_errno= 1;
