@@ -199,7 +199,7 @@ private:
 
   TFBuffer *m_send_buffers;
 
-  void ensure_send_buffer_capacity(TrpId trp_id);
+  bool ensure_send_buffer_capacity(TrpId trp_id);
 
   /**
    * The m_flushed_trps_mask are the aggregated set of transporters
