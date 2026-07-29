@@ -428,6 +428,31 @@ static const Properties *handle_authorization_failure(NdbMgmHandle handle,
   return nullptr;
 }
 
+static const Properties *handle_not_ready_reply(NdbMgmHandle handle,
+                                                InputStream &in) {
+  /*
+   * The server is up but refuses this command while it is still
+   * starting (e.g. the arbitrator startup gate).  The session stays
+   * open server-side; parse and drain the details block so the stream
+   * is in sync for a retry on the same connection.
+   */
+  const ParserRow<ParserDummy> details[] = {
+      MGM_CMD(NDB_MGM_NOT_READY_REPLY, nullptr, ""),
+      MGM_ARG("Error", String, Mandatory, "Error message"), MGM_END()};
+
+  Parser_t::Context ctx;
+  ParserDummy session(handle->socket);
+  Parser_t parser(details, in);
+  const Properties *reply = parser.parse(ctx, session);
+
+  const char *reason = "";
+  if (reply) reply->get("Error", &reason);
+  setError(handle, NDB_MGM_SERVER_NOT_READY, __LINE__, "%s", reason);
+
+  delete reply;
+  return nullptr;
+}
+
 /*
   ndb_mgm_call
 
@@ -560,6 +585,12 @@ static const Properties *ndb_mgm_call(
       if (strcmp(ctx.m_tokenBuffer, "Authorization failed") == 0) {
         RewindInputStream str(in, ctx.m_tokenBuffer);
         DBUG_RETURN(handle_authorization_failure(handle, str));
+      }
+
+      /* Check for server refusing the command while starting up */
+      if (strcmp(ctx.m_tokenBuffer, NDB_MGM_NOT_READY_REPLY) == 0) {
+        RewindInputStream str(in, ctx.m_tokenBuffer);
+        DBUG_RETURN(handle_not_ready_reply(handle, str));
       }
 
       /**
@@ -1198,6 +1229,11 @@ extern "C" struct ndb_mgm_cluster_state *ndb_mgm_get_status2(
     (void)handle_authorization_failure(handle, str);
     DBUG_RETURN(nullptr);
   }
+  if (strcmp(NDB_MGM_NOT_READY_REPLY "\n", buf) == 0) {
+    RewindInputStream str(in, buf);
+    (void)handle_not_ready_reply(handle, str);
+    DBUG_RETURN(nullptr);
+  }
   if (strcmp("node status\n", buf) != 0) {
     CHECK_TIMEDOUT_RET(handle, in, out, nullptr, get_status_str);
     ndbout << in.timedout() << " " << out.timedout() << buf << endl;
@@ -1408,6 +1444,11 @@ extern "C" struct ndb_mgm_cluster_state2 *ndb_mgm_get_status3(
   if (strcmp("Authorization failed\n", buf) == 0) {
     RewindInputStream str(in, buf);
     (void)handle_authorization_failure(handle, str);
+    DBUG_RETURN(nullptr);
+  }
+  if (strcmp(NDB_MGM_NOT_READY_REPLY "\n", buf) == 0) {
+    RewindInputStream str(in, buf);
+    (void)handle_not_ready_reply(handle, str);
     DBUG_RETURN(nullptr);
   }
   if (strcmp("node status\n", buf) != 0) {

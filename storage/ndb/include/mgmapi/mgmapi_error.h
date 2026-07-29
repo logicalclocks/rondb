@@ -29,6 +29,15 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * First reply line sent by a management server that refuses a command
+ * while it is still starting up (e.g. while the arbitrator startup
+ * gate is active).  Shared between server and client so the client
+ * can map the refusal to NDB_MGM_SERVER_NOT_READY.
+ */
+#define NDB_MGM_NOT_READY_REPLY "Management server not ready"
+
 /**
  *    Error codes
  */
@@ -65,6 +74,8 @@ enum ndb_mgm_error {
   NDB_MGM_TLS_HANDSHAKE_FAILED = 1016,
   /** NdbMgmHandle is already connected */
   NDB_MGM_ALREADY_CONNECTED = 1017,
+  /** Server is starting and does not accept this command yet; retry later */
+  NDB_MGM_SERVER_NOT_READY = 1018,
 
   /* Alloc node id failures */
   /** Generic error, retry may succeed */

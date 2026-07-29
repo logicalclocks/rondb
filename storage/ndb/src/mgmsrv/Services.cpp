@@ -524,10 +524,16 @@ void MgmApiSession::reportArbitratorStartupGateBlocked(const char *cmd_name) {
   g_eventLogger->debug(
       "%s: blocked '%s' while waiting for arbitrator selection",
       name(), cmd_name ? cmd_name : "<NULL>");
-  m_output->println(
-      "result: Management server is waiting for arbitrator selection");
+  /*
+   * Well-formed refusal modeled on the "Authorization failed" reply,
+   * and the session stays open: mgmapi maps this reply to the
+   * retryable NDB_MGM_SERVER_NOT_READY instead of an illegal-reply
+   * protocol error, so pollers can retry on the same connection once
+   * the gate lifts.
+   */
+  m_output->println("%s", NDB_MGM_NOT_READY_REPLY);
+  m_output->println("Error: Waiting for arbitrator selection");
   m_output->print("\n");
-  m_stop = true;
 }
 
 MgmApiSession::~MgmApiSession() {
