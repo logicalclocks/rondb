@@ -36,12 +36,15 @@ insert into t1 select * from t1;
 create temporary table t1_8192(a varchar(1024));
 insert into t1_8192 select * from t1 limit 8192;
 
-# ~32M 
---error 0,1297
+# ~32M
+# Redo overload can surface as 1297 (NDB 410, redo log files overloaded)
+# or as 1205 (NDB 1221 "REDO buffers overloaded" maps to lock wait
+# timeout, as do 266 transaction timeouts under the same load).
+--error 0,1297,1205
 insert into t1 select * from t1_8192;
---error 0,1297
+--error 0,1297,1205
 insert into t1 select * from t1_8192;
---error 0,1297
+--error 0,1297,1205
 insert into t1 select * from t1_8192;
 
 --echo Continuing insert/delete until redo is full
@@ -52,7 +55,7 @@ let $mysql_errno= 0;
 let $counter= 100;
 while (!$mysql_errno)
 {
-  --error 0,1297
+  --error 0,1297,1205
   insert into t1 select * from t1_8192;
 
   if (!$mysql_errno)
@@ -65,7 +68,7 @@ while (!$mysql_errno)
 
     # Delete the inserted rows to avoid table full
     # and of course creating even more REDO log
-    --error 0,1297
+    --error 0,1297,1205
     delete from t1 limit 8192;
   }
 }
@@ -81,7 +84,7 @@ let $mysql_errno= 1;
 let $counter= 600;
 while ($mysql_errno)
 {
-  --error 0,1297
+  --error 0,1297,1205
   insert into t1 select * from t1_8192;
 
   if ($mysql_errno)
