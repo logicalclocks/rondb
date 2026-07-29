@@ -224,25 +224,48 @@ void Ndb::connected(Uint32 ref) {
 
   /**
    * Transaction id layout (64 bits):
-   *   bits  0-37  serial counter (only bits 0-31 are ever incremented:
-   *               the wrap logic in Ndb::startTransactionLocal() and
+   *   bits  0-31  serial counter (the wrap logic in
+   *               Ndb::startTransactionLocal() and
    *               Ndb::allocate_transaction_id() cycles the low 32 bits,
    *               and get_next_transid()/set_next_transid() carry over a
-   *               Uint32, so bits 32-37 stay zero)
-   *   bits 38-51  own API node id (14 bits, node ids up to 16383)
-   *   bits 52-63  own API block number
+   *               Uint32, so nothing ever carries into bit 32)
+   *   bits 32-37  spare, always zero
+   *   bit  38     bit 12 of the dynamic API block index
+   *   bit  39     bit 12 of the own API node id
+   *   bits 40-51  bits 0-11 of the own API node id
+   *   bits 52-63  bits 0-11 of the dynamic API block index
    *
-   * Nothing ever decodes the node id or block number back out of a
-   * transaction id (neither kernel blocks nor API) - the only requirement
-   * is that transaction ids from different Ndb objects anywhere in the
-   * cluster never collide. The node id therefore must not carry into the
-   * block number field: with the previous 12-bit field (shift 40) a node
-   * id >= 4096 aliased into the block number, so node 4097 with block b
-   * produced the same prefix as node 1 with block b+1, breaking TC's
-   * duplicate-transaction detection and commit-ack bookkeeping once node
-   * ids above 4095 are in use.
+   * Nothing ever decodes the node id or block index back out of a
+   * transaction id (neither kernel blocks nor API) - the only
+   * requirement is that transaction ids from different Ndb objects
+   * anywhere in the cluster never collide. The (node id, block index)
+   * pair must therefore map injectively into bits 38-63, which the
+   * require()s below enforce (node ids and block indexes each fit
+   * 13 bits: ABS_MAX_NODES is 8192 and TransporterFacade permits 4711
+   * concurrent clients).
+   *
+   * The released layout was 'serial 0-39 | node id 40-51 | block
+   * number 52-63'. It broke uniqueness twice at the new limits:
+   * - a node id >= 4096 carried into the block field, so node 4097
+   *   with block b produced the prefix of node 1 with block b+1;
+   * - the block *number* (0x8000 + index) silently lost its high bits
+   *   in the 12-bit field, so two Ndb objects in one process with
+   *   block indexes idx and idx + 4096 produced identical prefixes.
+   * Splitting the two overflow bits into the always-zero bits 38/39
+   * fixes both. Crucially it stays bit-for-bit identical to the
+   * released layout whenever node id and block index are both below
+   * 4096 - which covers every released node id tier - so there is no
+   * mixed-version hazard during a rolling upgrade: a new-layout node
+   * can never emit the prefix of any old-layout node.
    */
-  theFirstTransId += ((Uint64)tBlockNo << 52) + ((Uint64)tmpTheNode << 38);
+  require(tBlockNo >= MIN_API_BLOCK_NO);
+  const Uint64 tBlockIdx = tBlockNo - MIN_API_BLOCK_NO;
+  require(tBlockIdx < (Uint64(1) << 13));
+  require(tmpTheNode > 0 && tmpTheNode < (Uint32(1) << 13));
+  const Uint64 transid_prefix =
+      ((tBlockIdx & 0xFFF) << 52) | ((tBlockIdx >> 12) << 38) |
+      ((Uint64(tmpTheNode) & 0xFFF) << 40) | ((Uint64(tmpTheNode) >> 12) << 39);
+  theFirstTransId += transid_prefix;
   DBUG_PRINT(
       "info",
       ("connected with ref=%x, id=%d, no_db_nodes=%d, first_trans_id: 0x%lx",
