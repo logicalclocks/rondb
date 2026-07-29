@@ -1047,6 +1047,38 @@ Configuration::get_send_buffer(const ndb_mgm_configuration_iterator *p)
     Uint32 num_threads = get_num_threads();
     mem = globalTransporterRegistry.get_total_max_send_buffer();
     mem += (Uint64(2) * MBYTE64 * num_threads);
+    /**
+     * The sum above grows with the number of configured transporters
+     * (SendBufferMemory, default 8 MByte, per transporter). With
+     * thousands of configured API node slots that reaches tens of
+     * GBytes, which a node with a few CPUs can never fill: send data
+     * is produced by the block threads, so the number of CPUs bounds
+     * how much send buffer can meaningfully be in use at any time.
+     * Cap the automatically derived value at 32 MByte per CPU, with a
+     * floor of 1 GByte so that clusters of ~128 transporters or fewer
+     * (every normal cluster size) keep exactly the traditional sizing
+     * regardless of CPU count. An explicitly configured
+     * TotalSendBufferMemory (branch above) is never capped.
+     */
+    struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
+    Uint32 num_cpus = hwinfo->cpu_cnt ? hwinfo->cpu_cnt : hwinfo->cpu_cnt_max;
+    if (num_cpus != 0)
+    {
+      Uint64 cpu_bound = Uint64(32) * MBYTE64 * Uint64(num_cpus);
+      cpu_bound = MAX(cpu_bound, Uint64(1024) * MBYTE64);
+      if (mem > cpu_bound)
+      {
+        g_eventLogger->info(
+            "Automatic send buffer size %llu MBytes (from %u transporters)"
+            " capped to %llu MBytes based on %u CPUs, set"
+            " TotalSendBufferMemory to override",
+            mem / MBYTE64,
+            globalTransporterRegistry.get_transporter_count(),
+            cpu_bound / MBYTE64,
+            num_cpus);
+        mem = cpu_bound;
+      }
+    }
   }
   return mem;
 }
