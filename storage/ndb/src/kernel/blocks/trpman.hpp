@@ -115,10 +115,23 @@ public:
   bool m_init_continueb;
 
   TrpBitmask m_recv_data;  // Bit will be set on when transporter receives data
-  struct {
+  struct TrpActivity {
     NDB_TICKS last_recv;
     Uint32 hist_bins[TRP_ACTIVITY_HIST_BIN_COUNT];
-  } m_trp_activity[MAX_NTRANSPORTERS];
+  };
+  /**
+   * Per-transporter receive activity, indexed by TrpId. Allocated in
+   * execREAD_CONFIG_REQ() with mt_get_num_trp_ids() entries (runtime
+   * sized from the configured max node id) instead of being embedded
+   * with the compile-time MAX_NTRANSPORTERS ceiling, which costs
+   * ~730 KB per TRPMAN instance (one per receive thread) at the 8192
+   * node id ceiling regardless of the actual cluster size.
+   */
+  TrpActivity *m_trp_activity;
+  Uint32 m_num_trp_ids;
+
+ public:
+  ~Trpman() override;
 };
 
 class TrpmanProxy : public LocalProxy {

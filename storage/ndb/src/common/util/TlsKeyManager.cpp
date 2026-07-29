@@ -52,6 +52,7 @@ void TlsKeyManager::free_path_strings() {
 TlsKeyManager::~TlsKeyManager() {
   if (m_ctx) SSL_CTX_free(m_ctx);
   free_path_strings();
+  delete[] m_cert_table;
   NdbMutex_Deinit(&m_cert_table_mutex);
 }
 
@@ -443,6 +444,10 @@ void TlsKeyManager::cert_table_set(int node_id, X509 *cert) {
   assert(node_id < ABS_MAX_NODES);
   if (node_id == 0) return;  // Client certs do not go into table
 
+  /* Allocate the table on first use (cert_record default-initializes
+     all members, matching the previous zero-initialized static array) */
+  if (m_cert_table == nullptr) m_cert_table = new cert_record[ABS_MAX_NODES];
+
   /* In the case of a multi-transporter, the entry may already be active */
   struct cert_record &entry = m_cert_table[node_id];
   if (!entry.active) {
@@ -454,6 +459,7 @@ void TlsKeyManager::cert_table_set(int node_id, X509 *cert) {
 void TlsKeyManager::cert_table_clear(int node_id) {
   Guard mutex_guard(&m_cert_table_mutex);
   assert(node_id < ABS_MAX_NODES);
+  if (m_cert_table == nullptr) return;  // never allocated, nothing to clear
 
   struct cert_record &entry = m_cert_table[node_id];
   entry.serial[0] = '\0';
@@ -475,7 +481,7 @@ bool TlsKeyManager::iterate_cert_table(int &node, cert_table_entry *client) {
   Guard mutex_guard(&m_cert_table_mutex);
 
   if (node < 0) node = 0;
-  if (m_ctx) {
+  if (m_ctx && m_cert_table != nullptr) {
     while (node < MAX_NODES_ID) {
       node += 1;
       const cert_record &row = m_cert_table[node];

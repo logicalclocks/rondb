@@ -10025,6 +10025,8 @@ Uint32 mt_get_recv_thread_idx(TrpId trp_id) {
   return g_trp_to_recv_thr_map[trp_id];
 }
 
+Uint32 mt_get_num_trp_ids() { return glob_num_trp_ids; }
+
 Uint32
 mt_map_api_node_to_recv_instance(NodeId node_id)
 {

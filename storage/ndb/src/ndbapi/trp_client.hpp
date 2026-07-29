@@ -185,12 +185,21 @@ private:
    * This is used for sending.
    * m_send_trps_* are the transporters we have pending unflushed
    * messages to. (In m_send_buffers, indexed by the 'trps')
+   *
+   * m_send_buffers[] and m_send_trps_list[] hold m_num_trp_ids
+   * entries and grow on demand (see ensure_send_buffer_capacity()):
+   * a client only pays for the transporter ids it actually sends to,
+   * instead of embedding MAX_TRPS (8192) entries (~213 KB) in every
+   * trp_client (one per Ndb object).
    */
   TrpBitmask m_send_trps_mask;
   Uint32 m_send_trps_cnt;
-  TrpId m_send_trps_list[MAX_TRPS];
+  Uint32 m_num_trp_ids;
+  TrpId *m_send_trps_list;
 
   TFBuffer *m_send_buffers;
+
+  void ensure_send_buffer_capacity(TrpId trp_id);
 
   /**
    * The m_flushed_trps_mask are the aggregated set of transporters
