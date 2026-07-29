@@ -1059,23 +1059,42 @@ Configuration::get_send_buffer(const ndb_mgm_configuration_iterator *p)
      * (every normal cluster size) keep exactly the traditional sizing
      * regardless of CPU count. An explicitly configured
      * TotalSendBufferMemory (branch above) is never capped.
+     *
+     * This function is called both when computing the
+     * RG_TRANSPORTER_BUFFERS reservation and when computing the
+     * SharedGlobalMemory contribution; those must be derived from the
+     * same numbers. The CPU count reported by the HW info layer can
+     * change at runtime (cgroup CPU-limit changes are reflected on
+     * reload), so read it once and cache it for all later calls.
      */
-    struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
-    Uint32 num_cpus = hwinfo->cpu_cnt ? hwinfo->cpu_cnt : hwinfo->cpu_cnt_max;
+    static Uint32 cached_num_cpus = 0;
+    if (cached_num_cpus == 0)
+    {
+      struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
+      cached_num_cpus =
+        hwinfo->cpu_cnt ? hwinfo->cpu_cnt : hwinfo->cpu_cnt_max;
+    }
+    const Uint32 num_cpus = cached_num_cpus;
     if (num_cpus != 0)
     {
       Uint64 cpu_bound = Uint64(32) * MBYTE64 * Uint64(num_cpus);
       cpu_bound = MAX(cpu_bound, Uint64(1024) * MBYTE64);
       if (mem > cpu_bound)
       {
-        g_eventLogger->info(
-            "Automatic send buffer size %llu MBytes (from %u transporters)"
-            " capped to %llu MBytes based on %u CPUs, set"
-            " TotalSendBufferMemory to override",
-            mem / MBYTE64,
-            globalTransporterRegistry.get_transporter_count(),
-            cpu_bound / MBYTE64,
-            num_cpus);
+        /* Log once; this function is called from several places */
+        static bool cap_logged = false;
+        if (!cap_logged)
+        {
+          cap_logged = true;
+          g_eventLogger->info(
+              "Automatic send buffer size %llu MBytes (from %u transporters)"
+              " capped to %llu MBytes based on %u CPUs, set"
+              " TotalSendBufferMemory to override",
+              mem / MBYTE64,
+              globalTransporterRegistry.get_transporter_count(),
+              cpu_bound / MBYTE64,
+              num_cpus);
+        }
         mem = cpu_bound;
       }
     }
