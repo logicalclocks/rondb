@@ -222,8 +222,27 @@ void Ndb::connected(Uint32 ref) {
       theImpl->m_ndb_cluster_connection.get_db_nodes(theImpl->theDBnodes);
   theImpl->theNoOfDBnodes = cnt;
 
-  theFirstTransId += ((Uint64)tBlockNo << 52) + ((Uint64)tmpTheNode << 40);
-  //      assert(0);
+  /**
+   * Transaction id layout (64 bits):
+   *   bits  0-37  serial counter (only bits 0-31 are ever incremented:
+   *               the wrap logic in Ndb::startTransactionLocal() and
+   *               Ndb::allocate_transaction_id() cycles the low 32 bits,
+   *               and get_next_transid()/set_next_transid() carry over a
+   *               Uint32, so bits 32-37 stay zero)
+   *   bits 38-51  own API node id (14 bits, node ids up to 16383)
+   *   bits 52-63  own API block number
+   *
+   * Nothing ever decodes the node id or block number back out of a
+   * transaction id (neither kernel blocks nor API) - the only requirement
+   * is that transaction ids from different Ndb objects anywhere in the
+   * cluster never collide. The node id therefore must not carry into the
+   * block number field: with the previous 12-bit field (shift 40) a node
+   * id >= 4096 aliased into the block number, so node 4097 with block b
+   * produced the same prefix as node 1 with block b+1, breaking TC's
+   * duplicate-transaction detection and commit-ack bookkeeping once node
+   * ids above 4095 are in use.
+   */
+  theFirstTransId += ((Uint64)tBlockNo << 52) + ((Uint64)tmpTheNode << 38);
   DBUG_PRINT(
       "info",
       ("connected with ref=%x, id=%d, no_db_nodes=%d, first_trans_id: 0x%lx",
