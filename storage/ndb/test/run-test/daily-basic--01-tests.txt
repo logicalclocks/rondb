@@ -188,3 +188,7 @@ max-time: 900
 cmd: testMgmd
 args: -n ArbitratorGateNotReady
 max-time: 300
+
+cmd: testMgmd
+args: -n MgmTransporterConvertRetry
+max-time: 300

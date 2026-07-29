@@ -1218,6 +1218,24 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
+  {
+    /**
+     * Test hook: widen the window between the configuration fetch and
+     * the mgm transporter conversion below, so tests can restart the
+     * mgmd inside it (testMgmd -n MgmTransporterConvertRetry).
+     */
+    char buf[32];
+    const char *delay =
+        NdbEnv_GetEnv("NDB_TEST_DELAY_MGM_CONVERT", buf, sizeof(buf));
+    if (delay != nullptr && atoi(delay) > 0)
+    {
+      g_eventLogger->info(
+          "Test hook: delaying mgm transporter conversion %d seconds",
+          atoi(delay));
+      NdbSleep_SecSleep(atoi(delay));
+    }
+  }
+
   // Re-use the mgm handle as a transporter
   g_eventLogger->info("Reuse connection to NDB management server");
   if (!globalTransporterRegistry.connect_client(
