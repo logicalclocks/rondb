@@ -57,6 +57,12 @@ class TlsKeyManager {
   TlsKeyManager();
   ~TlsKeyManager();
 
+  /* m_cert_table, m_path_string and m_search_path are owning raw
+     pointers freed in the destructor; an accidental copy would double
+     free them. */
+  TlsKeyManager(const TlsKeyManager &) = delete;
+  TlsKeyManager &operator=(const TlsKeyManager &) = delete;
+
   /* TlsKeyManager::init() for NDB nodes.
      All error and info messages are logged to g_EventLogger.
      You can test whether init() has succeeded by calling ctx().
