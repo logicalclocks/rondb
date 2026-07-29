@@ -1837,6 +1837,16 @@ class Dbspj : public SimulatedBlock {
   Uint32 parseDA(Build_context &, Ptr<Request>, Ptr<TreeNode>, DABuffer &tree,
                  Uint32 treeBits, DABuffer &param, Uint32 paramBits);
 
+  /**
+   * Data node security: flag a tree-parse protocol violation on ctx so the
+   * caller reports it after the early-ref epilogue (see execLQHKEYREQ /
+   * execSCAN_FRAGREQ; the signal buffer is still needed for the REF here).
+   * Returns errCode so each check site reads: err = flagMaliciousTreeNode(...);
+   * break;  Call jam() at the site (preserved for per-site crash tracing).
+   */
+  Uint32 flagMaliciousTreeNode(Build_context &ctx, Uint32 violationType,
+                               Uint32 errCode);
+
   Uint32 getResultRef(Ptr<Request> requestPtr);
 
   Uint32 checkTableError(Ptr<TreeNode> treeNodePtr) const;

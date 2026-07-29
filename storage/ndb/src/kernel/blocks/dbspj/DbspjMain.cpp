@@ -11160,6 +11160,16 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
   return err;
 }
 
+Uint32 Dbspj::flagMaliciousTreeNode(Build_context &ctx, Uint32 violationType,
+                                    Uint32 errCode) {
+  // jam() is left at each call site so a crash trace still points at the exact
+  // violating check. This is a pure setter; the deferred report is sent by the
+  // execLQHKEYREQ / execSCAN_FRAGREQ epilogue via reportMaliciousSignal().
+  ctx.m_maliciousViolationType = violationType;
+  ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
+  return errCode;
+}
+
 Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr, DABuffer tree,
                             Uint32 treeBits, DABuffer param, Uint32 paramBits) {
@@ -11202,9 +11212,8 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
               ((cnt == 0) != ((treeBits & Node::SF_PRUNE_PARAMS) == 0)) ||
               ((cnt == 0) != ((paramBits & Params::SFP_PRUNE_PARAMS) == 0)))) {
         jam();
-        ctx.m_maliciousViolationType = VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY;
-        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-        err = DbspjErr::InvalidTreeParametersSpecificationIncorrectKeyParamCount;
+        err = flagMaliciousTreeNode(ctx, VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY,
+                                    DbspjErr::InvalidTreeParametersSpecificationIncorrectKeyParamCount);
         break;
       }
 
@@ -11212,9 +11221,8 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
       // a MAX_ATTRIBUTES_IN_TABLE-sized stack array with no cap -- Tier A.
       if (unlikely(cnt > MAX_ATTRIBUTES_IN_TABLE)) {
         jam();
-        ctx.m_maliciousViolationType = VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS;
-        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-        err = DbspjErr::InvalidTreeNodeSpecification;
+        err = flagMaliciousTreeNode(ctx, VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS,
+                                    DbspjErr::InvalidTreeNodeSpecification);
         break;
       }
 
@@ -15205,9 +15213,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         // dst[i] must reference an already-built earlier node.
         if (unlikely(dst[i] >= ctx.m_cnt)) {
           jam();
-          ctx.m_maliciousViolationType = VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS;
-          ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-          err = DbspjErr::InvalidTreeNodeSpecification;
+          err = flagMaliciousTreeNode(ctx, VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS,
+                                      DbspjErr::InvalidTreeNodeSpecification);
           break;
         }
         Ptr<TreeNode> parentPtr = ctx.m_node_list[dst[i]];
@@ -15246,9 +15253,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       // The length header word itself must be inside the tree section.
       if (unlikely(tree.ptr >= tree.end)) {
         jam();
-        ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-        err = DbspjErr::InvalidTreeNodeSpecification;
+        err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                    DbspjErr::InvalidTreeNodeSpecification);
         break;
       }
       Uint32 len_cnt = *tree.ptr++;
@@ -15258,9 +15264,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       // Declared key-pattern length must not exceed the tree section.
       if (unlikely(len > (Uint32)(tree.end - tree.ptr))) {
         jam();
-        ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-        err = DbspjErr::InvalidTreeNodeSpecification;
+        err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                    DbspjErr::InvalidTreeNodeSpecification);
         break;
       }
 
@@ -15276,9 +15281,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       // a MAX_ATTRIBUTES_IN_TABLE-sized stack array with no cap -- Tier A.
       if (unlikely(cnt > MAX_ATTRIBUTES_IN_TABLE)) {
         jam();
-        ctx.m_maliciousViolationType = VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS;
-        ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-        err = DbspjErr::InvalidTreeNodeSpecification;
+        err = flagMaliciousTreeNode(ctx, VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS,
+                                    DbspjErr::InvalidTreeNodeSpecification);
         break;
       }
 
@@ -15391,9 +15395,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           // The length header word itself must be inside the tree section.
           if (unlikely(tree.ptr >= tree.end)) {
             jam();
-            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-            err = DbspjErr::InvalidTreeNodeSpecification;
+            err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                        DbspjErr::InvalidTreeNodeSpecification);
             break;
           }
           Uint32 len2 = *tree.ptr++;
@@ -15416,9 +15419,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             // Declared program length must not exceed the tree section.
             if (unlikely(len_prg > (Uint32)(tree.end - tree.ptr))) {
               jam();
-              ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-              ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-              err = DbspjErr::InvalidTreeNodeSpecification;
+              err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                          DbspjErr::InvalidTreeNodeSpecification);
               break;
             }
             err = DbspjErr::OutOfSectionMemory;
@@ -15444,9 +15446,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           // (tree.ptr has already advanced past the interpret program above.)
           if (unlikely(len_pattern > (Uint32)(tree.end - tree.ptr))) {
             jam();
-            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-            err = DbspjErr::InvalidTreeNodeSpecification;
+            err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                        DbspjErr::InvalidTreeNodeSpecification);
             break;
           }
 
@@ -15515,9 +15516,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           // The length header word itself must be inside the param section.
           if (unlikely(param.ptr >= param.end)) {
             jam();
-            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-            err = DbspjErr::InvalidTreeParametersSpecification;
+            err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                        DbspjErr::InvalidTreeParametersSpecification);
             break;
           }
           const Uint32 len2 = *param.ptr++;
@@ -15535,9 +15535,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           // Declared program length must not exceed the param section.
           if (unlikely(program_len > (Uint32)(param.end - param.ptr))) {
             jam();
-            ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-            ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-            err = DbspjErr::InvalidTreeParametersSpecification;
+            err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                        DbspjErr::InvalidTreeParametersSpecification);
             break;
           }
           err = DbspjErr::OutOfSectionMemory;
@@ -15563,9 +15562,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             // Declared subroutine length must not exceed the param section.
             if (unlikely(subroutine_len > (Uint32)(param.end - param.ptr))) {
               jam();
-              ctx.m_maliciousViolationType = VT_SPJ_SECTION_LENGTH_MISMATCH;
-              ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-              err = DbspjErr::InvalidTreeParametersSpecification;
+              err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                          DbspjErr::InvalidTreeParametersSpecification);
               break;
             }
             err = DbspjErr::OutOfSectionMemory;
@@ -15640,9 +15638,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         // Declared length must not exceed what's left in the param section.
         if (unlikely(param.ptr >= param.end)) {
           jam();
-          ctx.m_maliciousViolationType = VT_SPJ_ATTR_LIST_LENGTH_MISMATCH;
-          ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-          err = DbspjErr::InvalidTreeParametersSpecification;
+          err = flagMaliciousTreeNode(ctx, VT_SPJ_ATTR_LIST_LENGTH_MISMATCH,
+                                      DbspjErr::InvalidTreeParametersSpecification);
           break;
         }
         Uint32 len = *param.ptr++;
@@ -15650,9 +15647,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
 
         if (unlikely(len > (Uint32)(param.end - param.ptr))) {
           jam();
-          ctx.m_maliciousViolationType = VT_SPJ_ATTR_LIST_LENGTH_MISMATCH;
-          ctx.m_maliciousNodeId = refToNode(ctx.m_resultRef);
-          err = DbspjErr::InvalidTreeParametersSpecification;
+          err = flagMaliciousTreeNode(ctx, VT_SPJ_ATTR_LIST_LENGTH_MISMATCH,
+                                      DbspjErr::InvalidTreeParametersSpecification);
           break;
         }
 

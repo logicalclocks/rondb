@@ -5149,42 +5149,60 @@ void Qmgr::execMALICIOUS_SIGNAL_REPORT(Signal *signal) {
     tier = TIER_A;
   }
 
-  /* Emit SECURITY_EVENT cluster log line, one per report, deliberately NOT
-   * throttled or sampled. The offending node id is recorded ONLY here —
-   * m_violationCounts[] is keyed by violation type and tagged with the detecting
-   * node (reporting_node_id), so it carries no offender attribution. Any
-   * in-kernel sampling/throttling would discard the sole per-offender forensic
-   * record, and bounding log volume while preserving that attribution would
-   * require per-(node,type) state — exactly the ~260 KB removed in the lean
-   * redesign.
-   *
-   * KNOWN, ACCEPTED RISK (audited 2026, see tiered_response_policy.md): there is
-   * NO in-kernel or upstream rate limiter on this path. The per-database
-   * ActivateRateLimits quota is off by default, per-database, and charged by
-   * DBLQH execution work, so it never sees a request rejected here in DBTC. Tier
-   * A self-limits (offender disconnected on first strike), but Tier B is log-only
-   * forever: a connected, authenticated client can sustain a high rate of
-   * cheaply-rejected Tier B
-   * violations, each emitting one unthrottled line and churning the rotating
-   * cluster log. Worst case is post-auth forensic-integrity loss, NOT node crash
-   * or memory exhaustion (the counter array is fixed size). Operators must bound
-   * the inflow with connection-level controls and monitor the always-exact
-   * ndbinfo.security_violation_counts via the external metrics stack.
+  /* Rate-limit the SECURITY_EVENT cluster-log emission to bound MGM load. A
+   * connected, authenticated client can cheaply trigger a high rate of Tier B
+   * violations; each accepted report would otherwise emit one EVENT_REP to every
+   * MGM subscriber. We cap Tier B emission to MAX_SECURITY_EVENTS_PER_SEC per a
+   * single GLOBAL 1-second window and, when the window rolls, emit one summary
+   * line stating how many were suppressed. m_violationCounts is ALWAYS
+   * incremented above, so ndbinfo.security_violation_counts stays exact — only
+   * the log line is throttled, never the forensic count. Tier A is never
+   * suppressed: it self-limits (offender disconnected on first strike), so its
+   * log line always gets through. See tiered_response_policy.md. */
+  bool emit = true;
+  if (tier != TIER_A) {
+    jam();
+    const NDB_TICKS now = NdbTick_getCurrentTicks();
+    if (NdbTick_Elapsed(m_securityEventWindowStart, now).milliSec() >= 1000) {
+      jam();
+      if (m_securityEventsSuppressed > 0) {
+        jam();
+        infoEvent("SECURITY_EVENT suppressed %u events in last 1s (cap %u/s)",
+                  m_securityEventsSuppressed, MAX_SECURITY_EVENTS_PER_SEC);
+      }
+      m_securityEventWindowStart = now;
+      m_securityEventsInWindow = 0;
+      m_securityEventsSuppressed = 0;
+    }
+    if (m_securityEventsInWindow < MAX_SECURITY_EVENTS_PER_SEC) {
+      jam();
+      m_securityEventsInWindow++;
+    } else {
+      jam();
+      m_securityEventsSuppressed++;
+      emit = false;
+    }
+  }
+
+  /* Emit the SECURITY_EVENT line unless suppressed by the Tier B cap above.
    * Rendered by getTextSecurityEvent in EventLogger.cpp; theData layout must
    * match the formatter and the mgmapi body descriptor (ndb_logevent.cpp). */
-  const Uint32 nodeType = (Uint32)getNodeInfo(nodeId).getType();
-  signal->theData[0] = NDB_LE_SecurityEvent;
-  signal->theData[1] = tier;
-  signal->theData[2] = nodeId;
-  signal->theData[3] = nodeType;
-  signal->theData[4] = vtype;
-  sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 5, JBB);
+  if (emit) {
+    jam();
+    const Uint32 nodeType = (Uint32)getNodeInfo(nodeId).getType();
+    signal->theData[0] = NDB_LE_SecurityEvent;
+    signal->theData[1] = tier;
+    signal->theData[2] = nodeId;
+    signal->theData[3] = nodeType;
+    signal->theData[4] = vtype;
+    sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 5, JBB);
+  }
 
   if (tier == TIER_A) {
     jam();
     securityDisconnectNode(signal, nodeId);
   }
-  /* Tier B: counted and logged, not disconnected. */
+  /* Tier B: counted, rate-capped in the cluster log, not disconnected. */
 }
 
 void Qmgr::securityDisconnectNode(Signal *signal, Uint32 nodeId) {

@@ -41,7 +41,7 @@ The first 4 fields are byte-for-byte identical to the kernel format. `node_id=0`
 
 RONDIS logs to its own stdout, not the NDB cluster log. Configure your log collector to scrape both streams.
 
-**Tier B flood caveat:** there is no in-kernel or upstream rate limiter on `SECURITY_EVENT:` emission. A connected, authenticated client can sustain high Tier B violation rates, each emitting one line, churning the 6×1 MB rotating cluster log. Tier A self-limits (offender disconnected on first strike). For Tier B, the worst case is forensic-integrity loss, not crash or OOM. Bound inflow via connection-level controls; monitor `ndbinfo.security_violation_counts` for persistent elevation.
+**Tier B flood caveat:** Tier B `SECURITY_EVENT:` emission is rate-capped to 10/s per data node (global 1-second window in `Qmgr::execMALICIOUS_SIGNAL_REPORT`; RONDIS caps per worker thread). When a throttled window rolls, a `SECURITY_EVENT suppressed N events in last 1s` summary line is emitted, so operators can detect that a flood occurred. The cap throttles the **log line only** — `ndbinfo.security_violation_counts` is incremented on every violation and stays exact, so it remains the authoritative source under flood (individual log lines may be dropped once the 10/s cap is hit). Tier A self-limits (offender disconnected on first strike) and is never suppressed. Still bound inflow via connection-level controls; alert on both the `suppressed N events` line and persistent `security_violation_counts` elevation.
 
 ---
 

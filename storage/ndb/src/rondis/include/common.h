@@ -169,13 +169,26 @@ Uint32 get_length(char* buf);
  * it names *who* triggered it, not just *that* it happened. client= is empty
  * when there is no connection context.
  *
+ * Rate-limited: a client can cheaply trigger a high rate of these, and each is
+ * a printf to the shared stdout. rondis_security_event_gate() caps emission to
+ * RONDIS_MAX_SECURITY_EVENTS_PER_SEC per worker thread per 1-second bucket and
+ * prints a one-line "suppressed N" summary when a throttled bucket rolls over
+ * (see common.cc). This mirrors the kernel-side per-second cap in
+ * Qmgr::execMALICIOUS_SIGNAL_REPORT.
+ *
  * Usage: RONDIS_SECURITY_EVENT("rondis_oversize_value");
  */
+static constexpr int RONDIS_MAX_SECURITY_EVENTS_PER_SEC = 10;
+// Returns true if a SECURITY_EVENT may be printed now (per-worker 1s window);
+// emits the rolled-window "suppressed N" summary itself. Defined in common.cc.
+bool rondis_security_event_gate();
 #define RONDIS_SECURITY_EVENT(violation)                                  \
   do {                                                                    \
-    printf("SECURITY_EVENT: tier=B node_id=0 node_type=API "              \
-           "violation=" violation " client=%s worker=%d\n",              \
-           g_client_ip_port.c_str(), g_dbg_worker_id);                    \
+    if (rondis_security_event_gate()) {                                   \
+      printf("SECURITY_EVENT: tier=B node_id=0 node_type=API "            \
+             "violation=" violation " client=%s worker=%d\n",            \
+             g_client_ip_port.c_str(), g_dbg_worker_id);                  \
+    }                                                                     \
   } while (0)
 
 #endif

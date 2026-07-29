@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 #include <stdarg.h>
+#include <time.h>
 #include "redis_conn.h"
 #include <ndbapi/NdbApi.hpp>
 #include <ndbapi/Ndb.hpp>
@@ -41,6 +42,40 @@ thread_local std::string g_client_ip_port;
 
 // NDB error code behind the most recent error reply (see common.h).
 thread_local int g_last_ndb_error_code = 0;
+
+// SECURITY_EVENT log rate-limit state, per worker thread (see common.h). A
+// client can cheaply trigger a high rate of Tier B violations; unthrottled each
+// is a printf to the shared stdout. We cap emission to
+// RONDIS_MAX_SECURITY_EVENTS_PER_SEC per 1-second wall-clock bucket per worker,
+// and print one summary line when a bucket that suppressed events rolls over.
+thread_local time_t g_sec_event_window = 0;  // tv_sec of current 1s bucket
+thread_local int g_sec_event_in_window = 0;
+thread_local int g_sec_event_suppressed = 0;
+
+bool rondis_security_event_gate()
+{
+  const time_t now = time(nullptr);
+  if (now != g_sec_event_window)
+  {
+    if (g_sec_event_suppressed > 0)
+    {
+      printf("SECURITY_EVENT suppressed %d events in last 1s (cap %d/s) "
+             "worker=%d\n",
+             g_sec_event_suppressed, RONDIS_MAX_SECURITY_EVENTS_PER_SEC,
+             g_dbg_worker_id);
+    }
+    g_sec_event_window = now;
+    g_sec_event_in_window = 0;
+    g_sec_event_suppressed = 0;
+  }
+  if (g_sec_event_in_window < RONDIS_MAX_SECURITY_EVENTS_PER_SEC)
+  {
+    g_sec_event_in_window++;
+    return true;
+  }
+  g_sec_event_suppressed++;
+  return false;
+}
 
 //#define DEBUG_ERROR 1
 

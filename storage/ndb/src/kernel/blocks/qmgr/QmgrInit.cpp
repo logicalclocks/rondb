@@ -336,6 +336,11 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
   // Data node security: per-violation counters start zero.
   memset(m_violationCounts, 0, sizeof(m_violationCounts));
 
+  // Data node security: SECURITY_EVENT log rate-limit window starts now, empty.
+  m_securityEventWindowStart = NdbTick_getCurrentTicks();
+  m_securityEventsInWindow = 0;
+  m_securityEventsSuppressed = 0;
+
   initData();
 }  // Qmgr::Qmgr()
 
