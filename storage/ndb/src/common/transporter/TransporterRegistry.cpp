@@ -384,6 +384,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
   theNodeIdMultiTransporters = new Multi_Transporter *[ABS_MAX_NODES];
   performStates = new PerformState[maxTransporters];
   nodeActiveStates    = new bool              [ABS_MAX_NODES];
+  m_nodeType          = new Uint8             [ABS_MAX_NODES];
   ioStates = new IOState[maxTransporters];
   peerUpIndicators = new bool[maxTransporters];
   connectingTime = new Uint32[maxTransporters];
@@ -407,6 +408,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
     theNodeIdTransporters[i] = nullptr;
     theNodeIdMultiTransporters[i] = nullptr;
     nodeActiveStates[i]   = true;
+    m_nodeType[i]         = 255;  // unknown until IPCConfig calls set_node_type
     peerUpIndicators[i] = true;  // Assume all nodes are up, will be
                                  // cleared at first connect attempt
     connectingTime[i] = 0;
@@ -489,6 +491,7 @@ TransporterRegistry::~TransporterRegistry() {
   delete[] theNodeIdMultiTransporters;
   delete[] performStates;
   delete[] nodeActiveStates;
+  delete[] m_nodeType;
   delete[] ioStates;
   delete[] peerUpIndicators;
   delete[] connectingTime;
@@ -831,6 +834,18 @@ bool TransporterRegistry::connect_server(NdbSocket &&socket, BaseString &msg,
   if (authResult) {
     msg.assfmt("TLS %s (for node %d [%s])", TlsKeyError::message(authResult),
                nodeId, t->remoteHostName);
+    socket.close_with_reset();
+    DBUG_RETURN(false);
+  }
+
+  /* Cert node-type check: verify the peer cert's declared node type matches
+   * the type configured for this NodeId slot.  Runs when TLS is active,
+   * regardless of whether the cert carries hostname SANs.
+   */
+  if (int typeErr =
+          m_tls_keys.check_cert_node_type(socket, m_nodeType[nodeId])) {
+    msg.assfmt("TLS cert node type mismatch for node %d: %s", nodeId,
+               TlsKeyError::message(typeErr));
     socket.close_with_reset();
     DBUG_RETURN(false);
   }
@@ -4485,6 +4500,10 @@ TransporterRegistry::set_active_node(Uint32 node_id,
       g_eventLogger->info("Activating Node %u", node_id);
     }
   }
+}
+
+void TransporterRegistry::set_node_type(Uint32 node_id, Uint32 node_type) {
+  if (node_id < ABS_MAX_NODES) m_nodeType[node_id] = (Uint8)node_type;
 }
 
 bool TransporterRegistry::is_inactive_trp(TrpId trpId) const {

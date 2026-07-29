@@ -34,6 +34,8 @@
 #include <ndb_version.h>
 #include <version.h>
 #include <NodeState.hpp>
+#include <kernel/ViolationType.hpp>
+#include <mgmapi_config_parameters.h>  // NODE_TYPE_* for SECURITY_EVENT rendering
 #include <signaldata/ArbitSignalData.hpp>
 #include <signaldata/FailRep.hpp>
 
@@ -681,6 +683,24 @@ void getTextDeadDueToHeartbeat(char *m_text, size_t m_text_len,
   BaseString::snprintf(m_text, m_text_len,
                        "Node %d declared dead due to missed heartbeat",
                        theData[1]);
+}
+void getTextSecurityEvent(char *m_text, size_t m_text_len, const Uint32 *theData,
+                          Uint32 /*len*/) {
+  /* theData layout set by Qmgr::execMALICIOUS_SIGNAL_REPORT:
+   * [1]=tier [2]=node_id [3]=node_type [4]=violation_type.
+   * node_type and violation_type are rendered human-readable here. */
+  const char *node_type;
+  switch (theData[3]) {
+    case NODE_TYPE_DB:  node_type = "DB";  break;
+    case NODE_TYPE_API: node_type = "API"; break;
+    case NODE_TYPE_MGM: node_type = "MGM"; break;
+    default:            node_type = "UNKNOWN"; break;
+  }
+  BaseString::snprintf(
+      m_text, m_text_len,
+      "SECURITY_EVENT: tier=%s node_id=%u node_type=%s violation=%s",
+      (theData[1] == TIER_A) ? "A" : "B", theData[2], node_type,
+      violation_reason(theData[4]));
 }
 void getTextJobStatistic(char *m_text, size_t m_text_len, const Uint32 *theData,
                          Uint32 /*len*/) {
@@ -1560,6 +1580,7 @@ const EventLoggerBase::EventRepLogLevelMatrix EventLoggerBase::matrix[] = {
     ROW(DeadDueToHeartbeat, LogLevel::llError, 8, Logger::LL_ALERT),
     ROW(WarningEvent, LogLevel::llError, 2, Logger::LL_WARNING),
     ROW(SubscriptionStatus, LogLevel::llError, 4, Logger::LL_WARNING),
+    ROW(SecurityEvent, LogLevel::llError, 8, Logger::LL_WARNING),
     // INFO
     ROW(SentHeartbeat, LogLevel::llInfo, 12, Logger::LL_INFO),
     ROW(CreateLogBytes, LogLevel::llInfo, 11, Logger::LL_INFO),

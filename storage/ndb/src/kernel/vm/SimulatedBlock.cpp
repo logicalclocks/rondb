@@ -53,9 +53,11 @@
 #include <signaldata/FsRef.hpp>
 #include <signaldata/LocalRouteOrd.hpp>
 #include <signaldata/NodeStateSignalData.hpp>
+#include <signaldata/MaliciousSignalReport.hpp>
 #include <signaldata/SignalDroppedRep.hpp>
 #include <signaldata/Sync.hpp>
 #include <signaldata/TransIdAI.hpp>
+#include <kernel/ViolationType.hpp>
 #include "LongSignal.hpp"
 #include "SimulatedBlock.hpp"
 #include "ndbd_malloc.hpp"
@@ -145,9 +147,12 @@ SimulatedBlock::SimulatedBlock(BlockNumber blockNumber,
   clearTimes();
 #endif
 
+  // Scopes come from the central table (SignalScopes.hpp); a GSN with no entry
+  // there is Unclassified, which is unrestricted at runtime. addRecSignal may
+  // narrow an entry further via addSignalScopeImpl.
   for (GlobalSignalNumber i = 0; i <= MAX_GSN; i++) {
     theSignalHandlerArray[i].m_execFunction = nullptr;
-    theSignalHandlerArray[i].m_signalScope = SignalScope::External;
+    theSignalHandlerArray[i].m_signalScope = g_signal_scope_table.m_scope[i];
   }
 
   installSimulatedBlockFunctions();
@@ -224,6 +229,13 @@ SimulatedBlock::~SimulatedBlock() {
   theInstanceList = 0;
 }
 
+/*
+  Note that these handlers are installed by direct assignment, bypassing
+  addRecSignal and therefore addSignalScopeImpl. Their scopes are not set here:
+  they come from the central table (SignalScopes.hpp) via the constructor. Do
+  not reintroduce a per-handler m_signalScope assignment - it would be a second
+  source of truth, invisible to the scope audit.
+*/
 void SimulatedBlock::installSimulatedBlockFunctions() {
   FunctionAndScope *a = theSignalHandlerArray;
   a[GSN_NODE_STATE_REP].m_execFunction = &SimulatedBlock::execNODE_STATE_REP;
@@ -249,19 +261,12 @@ void SimulatedBlock::installSimulatedBlockFunctions() {
   a[GSN_UTIL_UNLOCK_CONF].m_execFunction =
       &SimulatedBlock::execUTIL_UNLOCK_CONF;
   a[GSN_FSOPENREF].m_execFunction = &SimulatedBlock::execFSOPENREF;
-  a[GSN_FSOPENREF].m_signalScope = SignalScope::Local;
   a[GSN_FSCLOSEREF].m_execFunction = &SimulatedBlock::execFSCLOSEREF;
-  a[GSN_FSCLOSEREF].m_signalScope = SignalScope::Local;
   a[GSN_FSWRITEREF].m_execFunction = &SimulatedBlock::execFSWRITEREF;
-  a[GSN_FSWRITEREF].m_signalScope = SignalScope::Local;
   a[GSN_FSREADREF].m_execFunction = &SimulatedBlock::execFSREADREF;
-  a[GSN_FSREADREF].m_signalScope = SignalScope::Local;
   a[GSN_FSREMOVEREF].m_execFunction = &SimulatedBlock::execFSREMOVEREF;
-  a[GSN_FSREMOVEREF].m_signalScope = SignalScope::Local;
   a[GSN_FSSYNCREF].m_execFunction = &SimulatedBlock::execFSSYNCREF;
-  a[GSN_FSSYNCREF].m_signalScope = SignalScope::Local;
   a[GSN_FSAPPENDREF].m_execFunction = &SimulatedBlock::execFSAPPENDREF;
-  a[GSN_FSAPPENDREF].m_signalScope = SignalScope::Local;
   a[GSN_NODE_START_REP].m_execFunction = &SimulatedBlock::execNODE_START_REP;
   a[GSN_API_START_REP].m_execFunction = &SimulatedBlock::execAPI_START_REP;
   a[GSN_SEND_PACKED].m_execFunction = &SimulatedBlock::execSEND_PACKED;
@@ -290,15 +295,19 @@ void SimulatedBlock::addSignalScopeImpl(GlobalSignalNumber gsn,
                                         SignalScope scope) {
   FunctionAndScope &fas = theSignalHandlerArray[gsn];
 
-  if (!(scope == SignalScope::Local || scope == SignalScope::Remote ||
-        scope == SignalScope::Management || scope == SignalScope::External)) {
+  // Unsigned compare, so a negative value from a bad cast is caught too (and
+  // no -Wtype-limits if the enum's underlying type is unsigned).
+  if (Uint32(scope) > Uint32(SignalScope::Unclassified)) {
     warningEvent(
         "SimulatedBlock::addSignalScopeImpl, incorrect use, SignalScope out of "
         "range %u",
         scope);
     require(false);
   }
-  // If scope is defined multiple times we assume the most restrictive
+  // If scope is defined multiple times we assume the most restrictive. This
+  // relies on the enum running least -> most permissive (static_assert in
+  // SignalData.hpp), so registering the Unclassified default can never loosen
+  // an existing classification.
   fas.m_signalScope = MIN(fas.m_signalScope, scope);
 }
 
@@ -2479,6 +2488,18 @@ void SimulatedBlock::infoEvent(const char *msg, ...) const {
 #endif
 }
 
+void SimulatedBlock::reportMaliciousSignal(Signal *signal,
+                                           NodeId offendingNodeId,
+                                           Uint32 violationType) {
+  jam();
+  MaliciousSignalReport *rep =
+      CAST_PTR(MaliciousSignalReport, signal->getDataPtrSend());
+  rep->offendingNodeId = offendingNodeId;
+  rep->violationType = violationType;
+  sendSignal(QMGR_REF, GSN_MALICIOUS_SIGNAL_REPORT, signal,
+             MaliciousSignalReport::SignalLength, JBB);
+}
+
 void SimulatedBlock::warningEvent(const char *msg, ...) {
   if (msg == 0) return;
 
@@ -2831,51 +2852,52 @@ ATTRIBUTE_NOINLINE
 void SimulatedBlock::handle_sender_error(GlobalSignalNumber gsn, Signal *signal,
                                          SignalScope scope) {
   const BlockReference ref = (signal->senderBlockRef());
-  Uint32 nodeId = refToNode(ref);
-  char errorMsg[255];
+  const Uint32 nodeId = refToNode(ref);
+
+  Uint32 violationType;
+  const char *scopeName;
   switch (scope) {
-    case SignalScope::Local: {
+    case SignalScope::Local:
+      // Debug-only forced-crash hook (e.g. ndb_backup_nodefail.test). Compiles
+      // to nothing in production builds, where the signal is instead dropped
+      // and reported below.
       CRASH_INSERTION(10054);
-      BaseString::snprintf(errorMsg, 255,
-                           "Illegal signal %s received for SignalScope::Local "
-                           "(GSN %d from node %d, block 0x%X to 0x%X)",
-                           getSignalName(gsn), gsn, nodeId, refToMain(ref),
-                           refToMain(reference()));
-      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+      violationType = VT_SIGNAL_SCOPE_LOCAL;
+      scopeName = "Local";
       break;
-    }
-    case SignalScope::Remote: {
-      BaseString::snprintf(errorMsg, 255,
-                           "Illegal signal %s received for SignalScope::Remote "
-                           "(GSN %d from node %d, block 0x%X to 0x%X)",
-                           getSignalName(gsn), gsn, nodeId, refToMain(ref),
-                           refToMain(reference()));
-      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+    case SignalScope::Remote:
+      violationType = VT_SIGNAL_SCOPE_REMOTE;
+      scopeName = "Remote";
       break;
-    }
-    case SignalScope::Management: {
-      BaseString::snprintf(
-          errorMsg, 255,
-          "Illegal signal %s received for SignalScope::Management (GSN %d from "
-          "API node %d, block 0x%X to 0x%X)",
-          getSignalName(gsn), gsn, nodeId, refToMain(ref),
-          refToMain(reference()));
-      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+    case SignalScope::Management:
+      violationType = VT_SIGNAL_SCOPE_MANAGEMENT;
+      scopeName = "Management";
       break;
-    }
     case SignalScope::External:
-      // Should not be reachable
+    case SignalScope::Unclassified:
+    default:
+      // Unreachable: checkSignalSender does not check the unrestricted scopes.
       ndbassert(false);
-      BaseString::snprintf(
-          errorMsg, 255,
-          "Illegal signal %s eceived for SignalScope::External (GSN %d from "
-          "API node %d, block 0x%X to 0x%X)",
-          getSignalName(gsn), gsn, nodeId, refToMain(ref),
-          refToMain(reference()));
-      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+      violationType = VT_UNKNOWN;
+      scopeName = "unrestricted";
       break;
   }
-  ndbabort();
+
+  g_eventLogger->warning(
+      "Block 0x%X: signal %s (GSN %u) with scope %s received from node %u "
+      "(block 0x%X); dropping and reporting to security system",
+      refToMain(reference()), getSignalName(gsn), gsn, scopeName, nodeId,
+      refToMain(ref));
+
+  // Drop the offending signal. Release any attached sections first: the
+  // dispatcher does not auto-release them and the normal handler that would
+  // consume them will not run. reportMaliciousSignal reuses the signal buffer
+  // and requires an immediate return, so it must be the last action (mirrors
+  // assembleFragmentsSlow). The SectionHandle ctor also zeroes the signal's
+  // section count, leaving the buffer clean for the report send.
+  SectionHandle handle(this, signal);
+  releaseSections(handle);
+  reportMaliciousSignal(signal, nodeId, violationType);
 }
 
 // MT LQH callback CONF via signal
@@ -3039,6 +3061,19 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
        * Fragment hash full — cannot accommodate more concurrent assemblies.
        * Release incoming sections and drop the signal. Subsequent fragments
        * for this signal will hit the "fragment not found" case below.
+       *
+       * Deliberately NOT reported to the security system: a full hash can be
+       * caused by aggregate load, and the node whose signal we drop here may be
+       * an innocent victim rather than the abuser, so a violation report would
+       * risk punishing the wrong node.
+       *
+       * KNOWN GAP (flagged for the later security audit): incomplete fragment
+       * trains from a still-connected node are only reclaimed on node failure
+       * (doCleanupFragInfo, keyed by failedNodeId; FragmentInfo has no age
+       * field). A node that opens many trains and never completes them can wedge
+       * this hash, after which all fragmented signals to this block are dropped
+       * until that node disconnects — and that wedge is invisible to the
+       * security counters. See claude_files/data_node_security/.
        */
       g_eventLogger->warning(
           "Block %u: Fragment info hash full, dropping signal from node %u",
@@ -3058,7 +3093,11 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         jam();
         /**
          * Invalid sectionNo — would write out of bounds into
-         * m_sectionPtrI[]. Release everything and mark as dropped.
+         * m_sectionPtrI[]. A section number outside [0,2] is structurally
+         * impossible from honest code, so report it to the security system
+         * before dropping. Release all sections first: reportMaliciousSignal
+         * reuses the signal buffer and requires an immediate return, so no
+         * further header writes are performed after the report.
          */
         g_eventLogger->warning(
             "Block %u: Invalid sectionNo %u in fragment from node %u",
@@ -3067,8 +3106,8 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         fragPtr.p->m_sectionPtrI[0] = RNIL;
         fragPtr.p->m_sectionPtrI[1] = RNIL;
         fragPtr.p->m_sectionPtrI[2] = RNIL;
-        signal->header.m_fragmentInfo = 0;
-        signal->header.m_noOfSections = 0;
+        reportMaliciousSignal(signal, refToNode(senderRef),
+                              VT_FRAGMENT_INVALID_SECTION_NO);
         return false;
       }
       fragPtr.p->m_sectionPtrI[sectionNo] = sectionPtr[i];
@@ -3096,9 +3135,13 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         if (unlikely(sectionNo >= 3)) {
           jam();
           /**
-           * Invalid sectionNo from subsequent fragment.
-           * Release incoming sections and mark as dropped so remaining
-           * fragments are also discarded.
+           * Invalid sectionNo from subsequent fragment. A section number
+           * outside [0,2] is structurally impossible from honest code, so
+           * report it to the security system before dropping. Release both the
+           * incoming sections and the partially accumulated ones first:
+           * reportMaliciousSignal reuses the signal buffer and requires an
+           * immediate return, so no further header writes are performed after
+           * the report.
            */
           g_eventLogger->warning(
               "Block %u: Invalid sectionNo %u in fragment from node %u",
@@ -3110,8 +3153,8 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
               fragPtr.p->m_sectionPtrI[s] = RNIL;
             }
           }
-          signal->header.m_fragmentInfo = 0;
-          signal->header.m_noOfSections = 0;
+          reportMaliciousSignal(signal, refToNode(senderRef),
+                                VT_FRAGMENT_INVALID_SECTION_NO);
           return false;
         }
         Uint32 sectionPtrI = sectionPtr[i];

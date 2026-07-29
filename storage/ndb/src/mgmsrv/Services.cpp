@@ -1300,6 +1300,15 @@ void MgmApiSession::startBackup(Parser<MgmApiSession>::Context &,
     args.get("encryption_password", &encryption_password);
     assert(args.contains("password_length"));
     args.get("password_length", &password_length);
+    if (encryption_password != nullptr &&
+        password_length > (Uint32)strlen(encryption_password)) {
+      m_output->println("start backup reply");
+      m_output->println("result: %s",
+                        "Backup encryption password length exceeds actual "
+                        "password length");
+      m_output->println("%s", "");
+      DBUG_VOID_RETURN;
+    }
   }
   result =
       m_mgmsrv.startBackup(backupId, completed, input_backupId, backuppoint,
@@ -2492,8 +2501,9 @@ void MgmApiSession::report_event(Parser_t::Context &ctx,
   Vector<BaseString> item;
   tmp.split(item, " ");
   if (length > MAX_EVENT_LENGTH)
-    // Data is going to be truncated
     length = MAX_EVENT_LENGTH;
+  if (length > (Uint32)item.size())
+    length = (Uint32)item.size();
   for (int i = 0; (Uint32)i < length; i++) {
     sscanf(item[i].c_str(), "%u", data + i);
   }

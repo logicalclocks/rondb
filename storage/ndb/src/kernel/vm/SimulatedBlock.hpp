@@ -515,10 +515,12 @@ class alignas(NDB_CL) SimulatedBlock
   FunctionAndScope theSignalHandlerArray[MAX_GSN + 1];
 
   void addSignalScopeImpl(GlobalSignalNumber gsn, SignalScope scope);
-  void checkSignalSender(GlobalSignalNumber gsn, Signal *signal,
+  // Returns false if the signal violated its scope (already dropped + reported);
+  // the caller must then NOT execute the signal handler.
+  bool checkSignalSender(GlobalSignalNumber gsn, Signal *signal,
                          SignalScope scope);
-  [[noreturn]] void handle_sender_error(GlobalSignalNumber gsn, Signal *signal,
-                                        SignalScope scope);
+  void handle_sender_error(GlobalSignalNumber gsn, Signal *signal,
+                           SignalScope scope);
 
  public:
   typedef void (SimulatedBlock::*CallbackFunction)(Signal *,
@@ -1231,6 +1233,20 @@ class alignas(NDB_CL) SimulatedBlock
   [[noreturn]] void progError(int line, int err_code,
                               const char *extradata = NULL,
                               const char *check = "") const;
+
+  /**
+   * Data node security: report a detected malformed/malicious signal to QMGR.
+   * QMGR owns the per-violation counters and the disconnect decision (Tier A)
+   * or log-only handling (Tier B). The violation type is the location key —
+   * grep VT_X to find the detection site; no line number is stored.
+   *
+   * Contract: the caller MUST return immediately after this call — it reuses
+   * the passed signal's data buffer.
+   *
+   * Design reference: claude_files/data_node_security/tiered_response_policy.md
+   */
+  void reportMaliciousSignal(Signal *signal, NodeId offendingNodeId,
+                             Uint32 violationType);
 
  private:
   [[noreturn]] void signal_error(Uint32, Uint32, Uint32, const char *,
@@ -2385,7 +2401,7 @@ inline void SimulatedBlock::executeFunction_async(GlobalSignalNumber gsn,
     handle_execute_error(gsn);
     return;
   }
-  checkSignalSender(gsn, signal, fas.m_signalScope);
+  if (unlikely(!checkSignalSender(gsn, signal, fas.m_signalScope))) return;
   executeFunction(gsn, signal, fas.m_execFunction);
 }
 
@@ -2401,38 +2417,55 @@ inline void SimulatedBlock::executeFunction(GlobalSignalNumber gsn,
   executeFunction(gsn, signal, f);
 }
 
-inline void SimulatedBlock::checkSignalSender(GlobalSignalNumber gsn,
+inline bool SimulatedBlock::checkSignalSender(GlobalSignalNumber gsn,
                                               Signal *signal,
                                               SignalScope scope) {
-  // Signals with no restriction on scope do not need to be checked
-  if (scope == SignalScope::External) return;
+  // Signals with no restriction on scope do not need to be checked. External
+  // (audited open) and Unclassified (not yet audited) are both unrestricted,
+  // and the enum ordering makes them the two highest rungs (static_assert in
+  // SignalData.hpp), so one comparison covers both.
+  if (scope >= SignalScope::External) return true;
 
   BlockReference ref = (signal->senderBlockRef());
   const Uint32 nodeId = refToNode(ref);
   // Avoid any overhead since local signals are always allowed
-  if (likely(nodeId == theNodeId)) return;
+  if (likely(nodeId == theNodeId)) return true;
+  // System/internal-origin signals carry no real sender node (senderBlockRef
+  // resolves to node 0), e.g. the first START_ORD injected from "SYS" during
+  // startphase 0. These are trusted and must bypass the node-type lookup, which
+  // would otherwise ndbrequire-fail in getNodeInfo(0).
+  if (nodeId == 0) return true;
 
-  // Check if signal is allowed to be received
+  // Check if signal is allowed to be received. On a violation the signal is
+  // dropped and reported (Tier A) by handle_sender_error; return false so the
+  // caller does not execute the handler.
   switch (scope) {
     case SignalScope::Local: {
       handle_sender_error(gsn, signal, scope);
-      break;
+      return false;
     }
     case SignalScope::Remote: {
       const NodeInfo::NodeType nodeType = getNodeInfo(nodeId).getType();
-      if (unlikely(nodeType != NodeInfo::DB))
+      if (unlikely(nodeType != NodeInfo::DB)) {
         handle_sender_error(gsn, signal, scope);
+        return false;
+      }
       break;
     }
     case SignalScope::Management: {
       const NodeInfo::NodeType nodeType = getNodeInfo(nodeId).getType();
-      if (nodeType != NodeInfo::DB && nodeType != NodeInfo::MGM)
+      if (nodeType != NodeInfo::DB && nodeType != NodeInfo::MGM) {
         handle_sender_error(gsn, signal, scope);
+        return false;
+      }
       break;
     }
     case SignalScope::External:
+    case SignalScope::Unclassified:
+      // Unreachable, handled by the early return above.
       break;
   }
+  return true;
 }
 
 inline void SimulatedBlock::executeFunction(GlobalSignalNumber gsn,

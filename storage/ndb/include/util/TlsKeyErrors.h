@@ -39,7 +39,8 @@ class TlsKeyError {
     auth2_bad_common_name = 7,
     auth2_bad_hostname = 8,
     auth2_resolver_error = 9,
-    /* space for 3 more auth errors */
+    auth2_wrong_node_type = 10,  // cert node type does not match expected slot type
+    /* space for 2 more auth errors */
     verification_error = 13,
     signing_error = 14,
     lifetime_error = 15,
@@ -93,7 +94,7 @@ class TlsKeyError {
       "authorization failure: subject common name is non-conforming",
       "authorization failure: bad hostname",
       "authorization failure: resolver error",
-      "(unused code 10)",
+      "authorization failure: cert node type does not match expected node type",
       "(unused code 11)",
       "(unused code 12)",
 

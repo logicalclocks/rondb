@@ -30,6 +30,7 @@
 #include <kernel/GlobalSignalNumbers.h>
 #include <kernel/kernel_types.h>
 #include <kernel/ndb_limits.h>
+#include <kernel/signaldata/SignalScopes.hpp>
 #include <ndb_global.h>
 
 #define JAM_FILE_ID 61
@@ -437,51 +438,68 @@ GSN_PRINT_SIGNATURE(printDISCONNECT_TABLE_DB_REF);
    signals. To achieve this we distinguish between remote and local signals and
    add checks when particular signals are received.
 
-   The signals can be defined with the following signal sending scopes:
+   The signals can be defined with the following signal sending scopes. A
+   violation does not restart the receiving node: the offending signal is
+   dropped and reported to QMGR as a Tier A violation, which disconnects the
+   sending node (see SimulatedBlock::handle_sender_error).
 
    Local:
    This signal should only be received from blocks on the same data node, this
-   can be effectively checked. Any such signal received from another node will
-   cause an error (normally controlled restart of the receiving node).
+   can be effectively checked. Any such signal received from another node is a
+   violation.
 
    Remote:
    This specifies a signal can be received from any data node. Any such signal
-   received from an API/MGM node will cause an error (normally controlled
-   restart of the receiving node).
+   received from an API/MGM node is a violation.
 
    Management:
    This specifies a signal can only be received from an MGM node or a data node,
-   but not an API node. Any such signal sent from an API node will cause an
-   error (normally controlled restart of the receiving node).
+   but not an API node. Any such signal sent from an API node is a violation.
 
    External:
-   This specifies the signal can be received from any node. This has the same
-   semantics as if the signal has no scope defined. It is primarily for
-   documenting the signal.
+   This specifies the signal can be received from any node. No check is done.
+   It has the same runtime semantics as Unclassified, but records that the
+   signal's send sites were audited and found to be legitimately open.
+
+   Unclassified:
+   The default for a GSN with no entry in SignalScopes.hpp: nobody has audited
+   its send sites yet. Unrestricted at runtime (fail open) - it exists purely to
+   distinguish "reviewed and deliberately open" (External) from "never looked
+   at", so audit progress is measurable. The audit work-list is exactly the
+   GSNs defined in GlobalSignalNumbers.h that have no SIGNAL_SCOPES entry.
 
    The signal scope is defined in conjunction with setting up signal handler
    functions for a block during node startup. This is done by the addRecSignal
    calls.
 
-   The signal scope for individual signals are defined together with the signal
-   classes. Signals without specific classes have their signal scope defined
-   below.
-
-   The format is as follows:
+   All per-GSN signal scopes are declared centrally in SignalScopes.hpp (the
+   single source of truth), as entries of the form:
 
    DECLARE_SIGNAL_SCOPE(GlobalSignalNumber, SignalScope)
 
-   For example, after definition of class FailRep
-
-   DECLARE_SIGNAL_SCOPE(GSN_FAIL_REP, Remote);
+   That list is expanded below into signal_property<> specialisations and into
+   g_signal_scope_table, which seeds every block's signal handler array.
 */
-enum SignalScope { Local, Remote, Management, External };
+enum SignalScope { Local, Remote, Management, External, Unclassified };
+
+/*
+  The ordinals must run least -> most permissive, and the two unrestricted
+  scopes must be the highest ones. Two things depend on it:
+   - SimulatedBlock::addSignalScopeImpl resolves duplicate registrations with
+     MIN(), i.e. most restrictive wins. With Unclassified last, an explicit
+     classification always beats the default; it can never loosen one.
+   - SimulatedBlock::checkSignalSender skips the check with a single
+     (scope >= External) comparison.
+*/
+static_assert(Local < Remote && Remote < Management && Management < External &&
+                  External < Unclassified,
+              "SignalScope ordinals must run least->most permissive");
 
 template <GlobalSignalNumber GSN>
 struct signal_property {
-  static constexpr SignalScope scope =
-      External;  // Default value if there is no GSN-specific specialisation is
-                 // External
+  // A GSN with no specialisation (i.e. no SignalScopes.hpp entry) has not been
+  // audited yet. Unrestricted at runtime, same as External.
+  static constexpr SignalScope scope = Unclassified;
 };
 
 // Macro to define a template specialisation for a specific GSN
@@ -492,13 +510,48 @@ struct signal_property {
   }
 
 /*
- Define all generic signal scopes for signals with no
- unique signal classes below. All other signal scopes are defined
- with the respective signal classes.
+  Expand the central scope list (SignalScopes.hpp) into a signal_property<>
+  specialisation per GSN. Because SignalData.hpp is included by every block,
+  every translation unit sees every specialisation.
 */
+#define DECLARE_SIGNAL_SCOPE_ENTRY(gsn, theScope) \
+  DECLARE_SIGNAL_SCOPE(gsn, theScope);
+SIGNAL_SCOPES(DECLARE_SIGNAL_SCOPE_ENTRY)
+#undef DECLARE_SIGNAL_SCOPE_ENTRY
 
-DECLARE_SIGNAL_SCOPE(GSN_CONTINUEB, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSSUSPENDORD, Local);
+/*
+  The same list as a GSN-indexed table, so a scope can be looked up at runtime
+  from a GSN that is only known as a value. SimulatedBlock uses it to seed
+  every block's signal handler array, which makes SignalScopes.hpp authoritative
+  regardless of how a block installs its handler: addRecSignal applies the scope
+  through signal_property<>, but handlers installed by direct assignment (see
+  installSimulatedBlockFunctions) bypass that path and would otherwise silently
+  ignore their classification.
+*/
+struct SignalScopeTable {
+  SignalScope m_scope[MAX_GSN + 1];
+  constexpr SignalScopeTable() : m_scope() {
+    for (GlobalSignalNumber i = 0; i <= MAX_GSN; i++) m_scope[i] = Unclassified;
+#define SIGNAL_SCOPE_TABLE_ENTRY(gsn, theScope) m_scope[gsn] = theScope;
+    SIGNAL_SCOPES(SIGNAL_SCOPE_TABLE_ENTRY)
+#undef SIGNAL_SCOPE_TABLE_ENTRY
+  }
+};
+inline constexpr SignalScopeTable g_signal_scope_table{};
+
+/*
+  The FS*REF signals are the only classified GSNs whose handlers are installed
+  by direct assignment rather than addRecSignal. They used to carry a hand
+  written scope there; this pins that the table still supplies it.
+*/
+static_assert(g_signal_scope_table.m_scope[GSN_FSOPENREF] == Local &&
+                  g_signal_scope_table.m_scope[GSN_FSCLOSEREF] == Local &&
+                  g_signal_scope_table.m_scope[GSN_FSWRITEREF] == Local &&
+                  g_signal_scope_table.m_scope[GSN_FSREADREF] == Local &&
+                  g_signal_scope_table.m_scope[GSN_FSREMOVEREF] == Local &&
+                  g_signal_scope_table.m_scope[GSN_FSSYNCREF] == Local &&
+                  g_signal_scope_table.m_scope[GSN_FSAPPENDREF] == Local,
+              "The FS*REF signals must stay Local in SignalScopes.hpp");
 
 GSN_PRINT_SIGNATURE(printCOPY_ACTIVEREQ);
 GSN_PRINT_SIGNATURE(printCOPY_ACTIVECONF);

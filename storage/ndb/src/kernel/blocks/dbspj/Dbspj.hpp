@@ -456,6 +456,12 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteSubtreeRemaining;  // Embedded nodes remaining in current CTE
     Uint32 m_cteSubtreeCteId;      // CTE identifier for current subtree
 
+    // Set by parseDA on a protocol violation; NUM_VIOLATION_TYPES = none.
+    // Reported by the caller after the early-ref epilogue (deferred: signal
+    // buffer is still needed for the REF at that point).
+    Uint32 m_maliciousViolationType;
+    Uint32 m_maliciousNodeId;  // offending API node
+
     // Used for resolving dependencies
     Ptr<TreeNode> m_node_list[NDB_SPJ_MAX_TREE_NODES];
   };
@@ -1830,6 +1836,16 @@ class Dbspj : public SimulatedBlock {
                 DABuffer &pattern, Uint32 len, DABuffer &param, Uint32 cnt);
   Uint32 parseDA(Build_context &, Ptr<Request>, Ptr<TreeNode>, DABuffer &tree,
                  Uint32 treeBits, DABuffer &param, Uint32 paramBits);
+
+  /**
+   * Data node security: flag a tree-parse protocol violation on ctx so the
+   * caller reports it after the early-ref epilogue (see execLQHKEYREQ /
+   * execSCAN_FRAGREQ; the signal buffer is still needed for the REF here).
+   * Returns errCode so each check site reads: err = flagMaliciousTreeNode(...);
+   * break;  Call jam() at the site (preserved for per-site crash tracing).
+   */
+  Uint32 flagMaliciousTreeNode(Build_context &ctx, Uint32 violationType,
+                               Uint32 errCode);
 
   Uint32 getResultRef(Ptr<Request> requestPtr);
 

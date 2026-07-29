@@ -298,6 +298,11 @@ struct Ndb_logevent_body_row ndb_logevent_body[] = {
 
     ROW(DeadDueToHeartbeat, "node", 1, node),
 
+    ROW(SecurityEvent, "tier", 1, tier),
+    ROW(SecurityEvent, "node_id", 2, node_id),
+    ROW(SecurityEvent, "node_type", 3, node_type),
+    ROW(SecurityEvent, "violation_type", 4, violation_type),
+
     /* TODO */
     //  ROW( WarningEvent),
 

@@ -36,6 +36,13 @@
 // other.
 extern thread_local int g_dbg_worker_id;
 
+// Client attribution for SECURITY_EVENT lines: RondisConn::DealMessage sets
+// this to the connection's "ip:port" on entry (and clears it on return) so a
+// security event fired anywhere down the call stack can name which client
+// connection triggered it. Thread-local, mirroring g_dbg_worker_id. Empty
+// string means "no connection context" (e.g. a violation outside a command).
+extern thread_local std::string g_client_ip_port;
+
 // NDB error code behind the most recent error reply written by the
 // assign_*_to_response helpers; 0 for a non-NDB error or no error.
 // rondb_redis_handler reads it to decide whether to retry a temporary
@@ -93,7 +100,7 @@ Uint32 get_length(char* buf);
 #define FAILED_MALLOC "Failed to allocate memory for operation"
 #define FAILED_INCRBY_DECRBY_PARAMETER "value is not an integer or out of range"
 #define FAILED_SELECT_COMMAND "Wrong parameter to SELECT command"
-#define FAILED_SELECT_NO_SUCH_DATABASE "The database selected doesn't exist"
+#define FAILED_SELECT_NO_SUCH_DATABASE "DB index is out of range"
 
 // NDB interpreted-code runtime error codes that we surface specially.
 // Mirrors entries in storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp.
@@ -132,11 +139,56 @@ Uint32 get_length(char* buf);
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"
 #define REDIS_WRONG_NUMBER_OF_ARGS "wrong number of arguments for '%s' command"
 #define REDIS_NO_SUCH_KEY "$-1\r\n"
-#define REDIS_KEY_TOO_LARGE "key is too large (3000 bytes max)"
+// Note: error strings deliberately omit the exact limit so the wire response
+// does not disclose the internal threshold to clients (security finding 2).
+#define REDIS_KEY_TOO_LARGE "key too large"
 #define REDIS_MAX_VALUE_LEN 512000
-#define REDIS_VALUE_TOO_LARGE "value too large (512000 bytes max)"
+#define REDIS_VALUE_TOO_LARGE "value too large"
 #define REDIS_SYNTAX_ERROR "syntax error"
 #define REDIS_INVALID_INTEGER "value is not an integer or out of range"
 #define REDIS_OFFSET_OUT_OF_RANGE "offset is out of range"
 #define REDIS_INVALID_EXPIRE_TIME "invalid expire time in set"
+
+/**
+ * Data node security: emit a structured SECURITY_EVENT line in the same format
+ * as the kernel side (see EventLogger::getTextSecurityEvent), so operators get a
+ * unified stream when monitoring `SECURITY_EVENT:` across kernel + RONDIS logs.
+ *
+ * RONDIS is architecturally separate from the NDB transporter and does not
+ * route through QMGR — it writes directly to its own stdout (the established
+ * RONDIS logging mechanism). `node_id=0` indicates "no NDB NodeId at this
+ * granularity"; all RONDIS violations are Tier B (log-only) per the policy doc.
+ *
+ * The leading four fields (tier, node_id, node_type, violation) are byte-for-
+ * byte identical to the kernel SECURITY_EVENT line (EventLogger.cpp), so a
+ * single parser keyed on those fields handles both streams. RONDIS appends two
+ * extra attribution fields the kernel path has no equivalent for:
+ * `client=<ip:port>` and `worker=<id>` name the specific Redis connection (set
+ * by RondisConn::DealMessage / rondb_redis_handler). For RONDIS the client
+ * attribution IS the forensic signal — there is no node-level disconnect — so
+ * it names *who* triggered it, not just *that* it happened. client= is empty
+ * when there is no connection context.
+ *
+ * Rate-limited: a client can cheaply trigger a high rate of these, and each is
+ * a printf to the shared stdout. rondis_security_event_gate() caps emission to
+ * RONDIS_MAX_SECURITY_EVENTS_PER_SEC per worker thread per 1-second bucket and
+ * prints a one-line "suppressed N" summary when a throttled bucket rolls over
+ * (see common.cc). This mirrors the kernel-side per-second cap in
+ * Qmgr::execMALICIOUS_SIGNAL_REPORT.
+ *
+ * Usage: RONDIS_SECURITY_EVENT("rondis_oversize_value");
+ */
+static constexpr int RONDIS_MAX_SECURITY_EVENTS_PER_SEC = 10;
+// Returns true if a SECURITY_EVENT may be printed now (per-worker 1s window);
+// emits the rolled-window "suppressed N" summary itself. Defined in common.cc.
+bool rondis_security_event_gate();
+#define RONDIS_SECURITY_EVENT(violation)                                  \
+  do {                                                                    \
+    if (rondis_security_event_gate()) {                                   \
+      printf("SECURITY_EVENT: tier=B node_id=0 node_type=API "            \
+             "violation=" violation " client=%s worker=%d\n",            \
+             g_client_ip_port.c_str(), g_dbg_worker_id);                  \
+    }                                                                     \
+  } while (0)
+
 #endif

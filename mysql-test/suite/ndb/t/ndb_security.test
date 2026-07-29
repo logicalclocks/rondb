@@ -1,0 +1,59 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+#
+# Data node security: end-to-end injection test for the tiered malicious-input
+# response framework (claude_files/data_node_security/tiered_response_policy.md).
+#
+# Uses a test-only DUMP_STATE_ORD code added in QMGR (debug builds only):
+#   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious-signal report
+#
+# We dump to data node 1 only, so per-violation counts are deterministic on node 1.
+# This test covers the non-disconnecting paths only (Tier B counting, catalog and
+# public-view queries). Tier A enforcement disconnect is covered by
+# ndb_security_enforce.test, which targets a spare connection-pool node.
+#
+
+--echo #
+--echo # Test 1: Tier B injection (vtype=5 = KEYINFO_SIGNAL_LENGTH) against
+--echo #   API NodeId 192. Tier B is log-only - counter increments, no disconnect.
+--echo #
+--exec $NDB_MGM -e "1 dump 9100 192 5" >> $NDB_TOOLS_OUTPUT
+
+# NB: wait via the public view (no `$` in the name). Inside a
+# `let $wait_condition= `...`` mysqltest expands variables, and the `$` in the
+# base table ndb$security_violation_counts is taken as an (empty) variable,
+# collapsing the name to `ndbinfo.ndb`. The public view exposes the aggregated
+# column as total_count.
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM ndbinfo.security_violation_counts
+  WHERE reporting_node_id=1 AND violation_id=5 AND total_count >= 1;
+--source include/wait_condition.inc
+
+# Query the base table (ndb$security_violation_counts) for the injected violation.
+SELECT reporting_node_id, violation_id, count
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=5;
+
+--echo #
+--echo # Test 2: Verify static violation catalog is queryable.
+--echo #
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE violation_id=5;
+
+--echo #
+--echo # Test 3: Public view (ndbinfo.security_violation_counts) exposes
+--echo #   reporting_node_id so Prometheus can label counts per data node.
+--echo #   This is the query that mysqld_exporter runs for Prometheus scraping.
+--echo #
+SELECT reporting_node_id, violation_id, tier, reason,
+       total_count > 0 AS has_count
+FROM ndbinfo.security_violation_counts
+WHERE reporting_node_id=1 AND violation_id=5;
+
+--echo #
+--echo # Sanity: mysqld is still connected after all injections.
+--echo #
+SELECT 1 AS still_connected;
+
+--remove_file $NDB_TOOLS_OUTPUT

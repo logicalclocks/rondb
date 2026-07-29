@@ -59,7 +59,6 @@ struct BuildIndxReq {
   Uint32 parallelism;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_BUILDINDXREQ, Local);
 
 struct BuildIndxConf {
   static constexpr Uint32 SignalLength = 6;
@@ -74,7 +73,6 @@ struct BuildIndxConf {
   Uint32 indexType;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_BUILDINDXCONF, Local);
 
 struct BuildIndxRef {
   enum ErrorCode {
@@ -110,7 +108,6 @@ struct BuildIndxRef {
   Uint32 masterNodeId;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_BUILDINDXREF, Local);
 
 #undef JAM_FILE_ID
 

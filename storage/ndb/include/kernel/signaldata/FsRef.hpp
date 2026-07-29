@@ -86,13 +86,6 @@ struct FsRef {
   static void setErrorCode(UintR &errorcode, UintR errorcodetype);
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_FSOPENREF, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSCLOSEREF, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSREADREF, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSWRITEREF, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSSYNCREF, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSREMOVEREF, Local);
-DECLARE_SIGNAL_SCOPE(GSN_FSAPPENDREF, Local);
 
 inline FsRef::NdbfsErrorCodeType FsRef::getErrorCode(const UintR &errorcode) {
   return (NdbfsErrorCodeType)errorcode;

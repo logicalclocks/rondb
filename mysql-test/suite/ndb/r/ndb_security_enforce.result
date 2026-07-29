@@ -1,0 +1,7 @@
+# Sanity: API node 1600 is currently connected.
+# Inject a Tier A violation (vtype=0 = UNEXPECTED_API_STATE) against the
+# connected API node 1600.
+# Tier A => node 1600 is disconnected (leaves processes).
+# (API node 1600 disconnected: OK)
+# Cleanup: wait for the pool to reconnect 1600 so the cluster is healthy
+# again for any following test.

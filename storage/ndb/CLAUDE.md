@@ -17,4 +17,8 @@ Detailed documentation is organized by topic in `claude_files/`. Read the releva
 
 ### data_node_security
 
-- `tckeyreq_security.md` — Plan for securing TCKEYREQ handling: disconnect malicious senders instead of crashing
+- `tiered_response_policy.md` — Two-tier response policy, full design (v2, FINAL)
+- `audit_implementation_guide.md` — Step-by-step for adding new violation sites; API reference and pre-commit checklist
+- `monitoring.md` — Prometheus scrape config, Loki/Splunk filters, alerting recommendations
+- `fragmented_signal_security.md` — Phase 1 hardening (done) + Phase 2 protocol extension (planned)
+- `tckeyreq_security.md` — Historical plan for TCKEYREQ/KEYINFO/ATTRINFO hardening (implemented)

@@ -129,6 +129,17 @@ class TlsKeyManager {
   static int check_socket_for_auth(const NdbSocket &socket,
                                    ClientAuthorization **pAuth);
 
+  /* check_cert_node_type() verifies that the peer cert's declared node type
+     matches expected_node_type (NODE_TYPE_DB / NODE_TYPE_API / NODE_TYPE_MGM).
+     Returns 0 (pass) when:
+       - socket has no TLS, or
+       - expected_node_type is unknown (not 0/1/2).
+     Returns TlsKeyError::auth2_wrong_node_type on mismatch.
+     Must be called after check_socket_for_auth() succeeds.
+  */
+  static int check_cert_node_type(const NdbSocket &socket,
+                                  int expected_node_type);
+
   /* test harness */
   static ClientAuthorization *test_client_auth(struct x509_st *,
                                                const struct addrinfo *);

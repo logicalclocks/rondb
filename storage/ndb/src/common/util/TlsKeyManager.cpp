@@ -27,6 +27,7 @@
 #include <cinttypes>  // PRIuPTR
 #include <cstdint>
 #include <memory>
+#include <mgmapi/mgmapi_config_parameters.h>
 
 #include "openssl/err.h"
 #include "openssl/ssl.h"
@@ -424,6 +425,27 @@ int TlsKeyManager::perform_client_host_auth(ClientAuthorization *auth) {
   int r = auth->run();
   delete auth;
   return r;
+}
+
+int TlsKeyManager::check_cert_node_type(const NdbSocket &socket,
+                                        int expected_node_type) {
+  if (!socket.has_tls()) return 0;
+
+  /* cert_type[] maps NODE_TYPE_DB/API/MGM (0/1/2) to Node::Type bitmask.
+     Indices outside [0,2] mean the slot type is unknown — skip the check. */
+  if (expected_node_type < 0 || expected_node_type > 2) return 0;
+  const Node::Type expected = cert_type[expected_node_type];
+
+  X509 *cert = socket.peer_certificate();
+  if (!cert) return 0;  // No peer cert — already caught by check_socket_for_auth
+
+  const NodeCertificate *nc = NodeCertificate::for_peer(cert);
+  Certificate::free(cert);
+  const Node::Type actual = nc->node_type();
+  delete nc;
+
+  if (actual != expected) return TlsKeyError::auth2_wrong_node_type;
+  return 0;
 }
 
 /*

@@ -1,0 +1,51 @@
+--source include/have_ndb.inc
+
+# ============================================================================
+# Data node security: ndbinfo.security_violation_counts must require the
+# PROCESS privilege (it exposes cumulative per-violation-type strike counts).
+# The static security_violations catalog is public (no sensitive state).
+# Enforced in ha_ndbinfo::rnd_init via check_global_access(thd, PROCESS_ACL).
+# ============================================================================
+
+--echo # Create a user with SELECT on ndbinfo.* but WITHOUT the PROCESS privilege
+CREATE USER 'sec_noproc'@'localhost';
+GRANT SELECT ON ndbinfo.* TO 'sec_noproc'@'localhost';
+
+connect (noproc, localhost, sec_noproc,,);
+
+connection noproc;
+--echo # Without PROCESS: reading security_violation_counts (view) is denied
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT * FROM ndbinfo.security_violation_counts;
+
+--echo # Without PROCESS: the underlying base table is denied too
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT * FROM ndbinfo.`ndb$security_violation_counts`;
+
+--echo # The static violations catalog is readable without PROCESS
+--disable_result_log
+SELECT COUNT(*) >= 0 FROM ndbinfo.security_violations;
+--enable_result_log
+--echo # (ndbinfo.security_violations readable without PROCESS: OK)
+
+--echo # A non-sensitive ndbinfo table remains readable without PROCESS
+--disable_result_log
+SELECT COUNT(*) >= 0 FROM ndbinfo.blocks;
+--enable_result_log
+--echo # (ndbinfo.blocks readable without PROCESS: OK)
+
+connection default;
+--echo # Grant PROCESS and the same user can now read security_violation_counts
+GRANT PROCESS ON *.* TO 'sec_noproc'@'localhost';
+
+connect (proc, localhost, sec_noproc,,);
+connection proc;
+--echo # With PROCESS: query succeeds (count may be non-zero from prior injections)
+--disable_result_log
+SELECT COUNT(*) AS violation_count_rows FROM ndbinfo.security_violation_counts;
+--enable_result_log
+
+connection default;
+disconnect noproc;
+disconnect proc;
+DROP USER 'sec_noproc'@'localhost';

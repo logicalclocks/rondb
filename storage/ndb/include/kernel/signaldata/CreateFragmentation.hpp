@@ -65,7 +65,6 @@ class CreateFragmentationReq {
   Uint32 partitionCount;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_CREATE_FRAGMENTATION_REQ, Local);
 
 class CreateFragmentationRef {
   /**
@@ -97,7 +96,6 @@ class CreateFragmentationRef {
   Uint32 errorCode;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_CREATE_FRAGMENTATION_REF, Local);
 
 class CreateFragmentationConf {
   /**
@@ -124,7 +122,6 @@ class CreateFragmentationConf {
   Uint32 noOfFragments;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_CREATE_FRAGMENTATION_CONF, Local);
 
 #undef JAM_FILE_ID
 

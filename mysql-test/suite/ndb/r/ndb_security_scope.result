@@ -1,0 +1,23 @@
+#
+# Test 1: the three signal-scope violation types are present in the static
+#   catalog, all Tier A (tier=0), with the expected reason strings.
+#
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE violation_id IN (31,32,33) ORDER BY violation_id;
+violation_id	tier	reason
+31	A	signal_scope_local_violation
+32	A	signal_scope_remote_violation
+33	A	signal_scope_management_violation
+#
+# Test 2: a Tier A scope-violation report (vtype=33 =
+#   VT_SIGNAL_SCOPE_MANAGEMENT) reported to data node 1 against the
+#   connected API node 1600 disconnects it. (Same spare connection-pool
+#   target as ndb_security_enforce.test.)
+#
+# Sanity: API node 1600 is currently connected.
+# Tier A => node 1600 is disconnected (leaves processes).
+# (API node 1600 disconnected on scope violation: OK)
+# The violation was counted on the reporting data node (node 1).
+# (scope violation counted on node 1: OK)
+# Cleanup: wait for the pool to reconnect 1600 so the cluster is healthy
+# again for any following test.

@@ -1,0 +1,45 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+#
+# Data node security: ENFORCEMENT-MODE disconnect test.
+#
+# ndb_security.test only covers the non-disconnecting paths (Tier B counting,
+# catalog/view queries). This test covers the core security behaviour it does
+# not: a Tier A violation always disconnects the offending API node.
+#
+# Target: NodeId 1600 - one of the three NDB API nodes in the SECOND mysqld's
+# connection pool (ndb-cluster-connection-pool-nodeids=1600,322,483 in my.cnf).
+# It is a genuinely connected API node, so Qmgr::api_failed runs for real; but
+# server_2 keeps operating through its other two pool members (322,483), so the
+# test harness is unharmed, and the pool transparently reconnects 1600 after.
+#
+# Observable: a connected node has rows in ndbinfo.processes; the disconnect
+# removes node_id=1600 from that view until the pool reconnects it.
+#
+# DUMP code (debug builds only, see Qmgr::execDUMP_STATE_ORD):
+#   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious report
+#
+
+--echo # Sanity: API node 1600 is currently connected.
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM ndbinfo.processes WHERE node_id=1600;
+--source include/wait_condition.inc
+
+--echo # Inject a Tier A violation (vtype=0 = UNEXPECTED_API_STATE) against the
+--echo # connected API node 1600.
+--exec $NDB_MGM -e "1 dump 9100 1600 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Tier A => node 1600 is disconnected (leaves processes).
+let $wait_condition=
+  SELECT COUNT(*) = 0 FROM ndbinfo.processes WHERE node_id=1600;
+--source include/wait_condition.inc
+--echo # (API node 1600 disconnected: OK)
+
+--echo # Cleanup: wait for the pool to reconnect 1600 so the cluster is healthy
+--echo # again for any following test.
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM ndbinfo.processes WHERE node_id=1600;
+--source include/wait_condition.inc
+
+--remove_file $NDB_TOOLS_OUTPUT

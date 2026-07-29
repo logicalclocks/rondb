@@ -685,6 +685,7 @@ class TransporterRegistry {
    */
   PerformState* performStates;
   bool*         nodeActiveStates;
+  Uint8*        m_nodeType;          // NODE_TYPE_DB/API/MGM per NodeId; 255=unknown
   int*          m_disconnect_errnum;
   Uint32*       m_disconnect_enomem_error;
   IOState*      ioStates;
@@ -852,6 +853,7 @@ public:
 
   void set_active_node(Uint32 nodeId, Uint32 active, bool log);
   bool get_active_node(Uint32 nodeId);
+  void set_node_type(Uint32 nodeId, Uint32 node_type);
 #ifdef ERROR_INSERT
   /* Utils for testing latency issues */
   bool isBlocked(TrpId trpId) const;

@@ -1090,5 +1090,6 @@ const GsnName SignalNames[] = {
   ,{ GSN_CTE_SCAN_REF, "CTE_SCAN_REF" }
   ,{ GSN_DBACC_WAITFOR_REP, "DBACC_WAITFOR_REP" }
   ,{ GSN_TC_DEADLOCK_REP, "TC_DEADLOCK_REP" }
+  ,{ GSN_MALICIOUS_SIGNAL_REPORT, "MALICIOUS_SIGNAL_REPORT" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames) / sizeof(GsnName);

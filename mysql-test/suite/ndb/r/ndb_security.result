@@ -1,0 +1,33 @@
+#
+# Test 1: Tier B injection (vtype=5 = KEYINFO_SIGNAL_LENGTH) against
+#   API NodeId 192. Tier B is log-only - counter increments, no disconnect.
+#
+SELECT reporting_node_id, violation_id, count
+FROM `ndbinfo`.`ndb$security_violation_counts`
+WHERE reporting_node_id=1 AND violation_id=5;
+reporting_node_id	violation_id	count
+1	5	1
+#
+# Test 2: Verify static violation catalog is queryable.
+#
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE violation_id=5;
+violation_id	tier	reason
+5	B	keyinfo_signal_length_mismatch
+#
+# Test 3: Public view (ndbinfo.security_violation_counts) exposes
+#   reporting_node_id so Prometheus can label counts per data node.
+#   This is the query that mysqld_exporter runs for Prometheus scraping.
+#
+SELECT reporting_node_id, violation_id, tier, reason,
+total_count > 0 AS has_count
+FROM ndbinfo.security_violation_counts
+WHERE reporting_node_id=1 AND violation_id=5;
+reporting_node_id	violation_id	tier	reason	has_count
+1	5	B	keyinfo_signal_length_mismatch	1
+#
+# Sanity: mysqld is still connected after all injections.
+#
+SELECT 1 AS still_connected;
+still_connected
+1

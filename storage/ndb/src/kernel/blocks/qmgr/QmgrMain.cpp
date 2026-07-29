@@ -40,6 +40,8 @@
 #include <signaldata/CheckNodeGroups.hpp>
 #include <signaldata/CloseComReqConf.hpp>
 #include <signaldata/DihRestart.hpp>
+#include <signaldata/MaliciousSignalReport.hpp>
+#include <kernel/ViolationType.hpp>
 #include <signaldata/DisconnectRep.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/EnableCom.hpp>
@@ -3416,6 +3418,7 @@ void Qmgr::timerHandlingLab(Signal *signal) {
     jam();
     handle_graceful_shutdown(signal);
   }
+
   //--------------------------------------------------
   // Resend this signal with 10 milliseconds delay.
   //--------------------------------------------------
@@ -5119,6 +5122,112 @@ void Qmgr::execUPGRADE_PROTOCOL_ORD(Signal *signal) {
       jam();
       m_micro_gcp_enabled = true;
       return;
+  }
+}
+
+void Qmgr::execMALICIOUS_SIGNAL_REPORT(Signal *signal) {
+  jamEntry();
+  const MaliciousSignalReport *rep =
+      CAST_CONSTPTR(MaliciousSignalReport, signal->getDataPtr());
+  const Uint32 nodeId = rep->offendingNodeId;
+  const Uint32 vtype = rep->violationType;
+
+  /* Defensive: ignore an obviously malformed report (buggy sender). */
+  if (nodeId == 0 || nodeId >= MAX_NODES || nodeId == getOwnNodeId()) {
+    jam();
+    return;
+  }
+
+  /* Increment the per-violation-type counter; out-of-range → VT_UNKNOWN. */
+  const Uint32 countIdx = (vtype < NUM_VIOLATION_TYPES) ? vtype : VT_UNKNOWN;
+  m_violationCounts[countIdx]++;
+
+  /* Derive tier locally; data-node senders always escalate to Tier A. */
+  Uint32 tier = violation_tier(vtype);
+  if (getNodeInfo(nodeId).getType() == NodeInfo::DB) {
+    jam();
+    tier = TIER_A;
+  }
+
+  /* Rate-limit the SECURITY_EVENT cluster-log emission to bound MGM load. A
+   * connected, authenticated client can cheaply trigger a high rate of Tier B
+   * violations; each accepted report would otherwise emit one EVENT_REP to every
+   * MGM subscriber. We cap Tier B emission to MAX_SECURITY_EVENTS_PER_SEC per a
+   * single GLOBAL 1-second window and, when the window rolls, emit one summary
+   * line stating how many were suppressed. m_violationCounts is ALWAYS
+   * incremented above, so ndbinfo.security_violation_counts stays exact — only
+   * the log line is throttled, never the forensic count. Tier A is never
+   * suppressed: it self-limits (offender disconnected on first strike), so its
+   * log line always gets through. See tiered_response_policy.md. */
+  bool emit = true;
+  if (tier != TIER_A) {
+    jam();
+    const NDB_TICKS now = NdbTick_getCurrentTicks();
+    if (NdbTick_Elapsed(m_securityEventWindowStart, now).milliSec() >= 1000) {
+      jam();
+      if (m_securityEventsSuppressed > 0) {
+        jam();
+        infoEvent("SECURITY_EVENT suppressed %u events in last 1s (cap %u/s)",
+                  m_securityEventsSuppressed, MAX_SECURITY_EVENTS_PER_SEC);
+      }
+      m_securityEventWindowStart = now;
+      m_securityEventsInWindow = 0;
+      m_securityEventsSuppressed = 0;
+    }
+    if (m_securityEventsInWindow < MAX_SECURITY_EVENTS_PER_SEC) {
+      jam();
+      m_securityEventsInWindow++;
+    } else {
+      jam();
+      m_securityEventsSuppressed++;
+      emit = false;
+    }
+  }
+
+  /* Emit the SECURITY_EVENT line unless suppressed by the Tier B cap above.
+   * Rendered by getTextSecurityEvent in EventLogger.cpp; theData layout must
+   * match the formatter and the mgmapi body descriptor (ndb_logevent.cpp). */
+  if (emit) {
+    jam();
+    const Uint32 nodeType = (Uint32)getNodeInfo(nodeId).getType();
+    signal->theData[0] = NDB_LE_SecurityEvent;
+    signal->theData[1] = tier;
+    signal->theData[2] = nodeId;
+    signal->theData[3] = nodeType;
+    signal->theData[4] = vtype;
+    sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 5, JBB);
+  }
+
+  if (tier == TIER_A) {
+    jam();
+    securityDisconnectNode(signal, nodeId);
+  }
+  /* Tier B: counted, rate-capped in the cluster log, not disconnected. */
+}
+
+void Qmgr::securityDisconnectNode(Signal *signal, Uint32 nodeId) {
+  jam();
+  /* Reuse the existing malicious-node disconnect mechanics (cf. DUMP 900/939). */
+  if (getNodeInfo(nodeId).getType() == NodeInfo::DB) {
+    jam();
+    /**
+     * Data node: force-close communication via TRPMAN; QMGR's normal failure
+     * detection then runs node_failed() through the standard DISCONNECT_REP path.
+     */
+    CloseComReqConf *closeCom =
+        CAST_PTR(CloseComReqConf, signal->getDataPtrSend());
+    closeCom->xxxBlockRef = reference();
+    closeCom->requestType = CloseComReqConf::RT_NO_REPLY;
+    closeCom->failNo = 0;
+    closeCom->noOfNodes = 1;
+    closeCom->failedNodeId = nodeId;
+    closeCom->m_dbHbSender = cneighbourl;
+    sendSignal(TRPMAN_REF, GSN_CLOSE_COMREQ, signal,
+               CloseComReqConf::SignalLengthDB, JBB);
+  } else {
+    jam();
+    /* API node: fail via api_failed (closes comms, notifies peers). */
+    api_failed(signal, nodeId, AFC_Notification, reference());
   }
 }
 
@@ -8439,6 +8548,35 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
       c_apiFailureTimeoutSecs = signal->theData[1];
     }
   }
+#ifdef ERROR_INSERT
+  /**
+   * Data node security test injector (debug builds only): synthesize a
+   * MALICIOUS_SIGNAL_REPORT against a node, exercising the QMGR-side path
+   * (counter increment, SECURITY_EVENT log emission, and Tier A disconnect)
+   * from `ndb_mgm`. Used by mysql-test/suite/ndb/ndb_security* — obviates
+   * writing a custom NDB-API client just to craft malformed signals.
+   *
+   *   DUMP 9100 <offendingNodeId> <violationType>
+   *
+   * The tier is derived from the violation type via g_violation_info[].
+   * Returns immediately after invoking the handler to avoid further dump-code
+   * checks running against the clobbered signal buffer.
+   */
+  if (signal->theData[0] == 9100 && signal->getLength() == 3) {
+    jam();
+    const Uint32 offendingNodeId = signal->theData[1];
+    const Uint32 vtype = signal->theData[2];
+    g_eventLogger->info(
+        "Security test injection: nodeId=%u violation_type=%u",
+        offendingNodeId, vtype);
+    MaliciousSignalReport *rep =
+        CAST_PTR(MaliciousSignalReport, signal->getDataPtrSend());
+    rep->offendingNodeId = offendingNodeId;
+    rep->violationType = vtype;
+    execMALICIOUS_SIGNAL_REPORT(signal);
+    return;
+  }
+#endif
 }  // Qmgr::execDUMP_STATE_ORD()
 
 void Qmgr::execAPI_BROADCAST_REP(Signal *signal) {
@@ -9590,6 +9728,31 @@ void Qmgr::execDBINFO_SCANREQ(Signal *signal) {
             ndbinfo_send_row(signal, req, row, rl);
           }
         }
+      }
+      break;
+    }
+    case Ndbinfo::SECURITY_VIOLATIONS_TABLEID: {
+      jam();
+      /* One row per violation type — static catalog from g_violation_info[]. */
+      for (Uint32 i = 0; i < NUM_VIOLATION_TYPES; i++) {
+        Ndbinfo::Row row(signal, req);
+        row.write_uint32(i);                          // violation_id
+        row.write_uint32(g_violation_info[i].tier);   // tier
+        row.write_string(g_violation_info[i].reason); // reason
+        ndbinfo_send_row(signal, req, row, rl);
+      }
+      break;
+    }
+    case Ndbinfo::SECURITY_VIOLATION_COUNTS_TABLEID: {
+      jam();
+      /* One row per violation type that has at least one strike. */
+      for (Uint32 i = 0; i < NUM_VIOLATION_TYPES; i++) {
+        if (m_violationCounts[i] == 0) continue;
+        Ndbinfo::Row row(signal, req);
+        row.write_uint32(getOwnNodeId());      // reporting_node_id
+        row.write_uint32(i);                   // violation_id
+        row.write_uint64(m_violationCounts[i]);// count
+        ndbinfo_send_row(signal, req, row, rl);
       }
       break;
     }
