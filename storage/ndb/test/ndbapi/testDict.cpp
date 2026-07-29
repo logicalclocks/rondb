@@ -3791,6 +3791,8 @@ int RandSchemaOp::drop_tab(Ndb *ndb) {
   Uint32 type = (1 << NdbDictionary::Object::UserTable);
   Obj *obj = get_obj(type);
   if (obj == nullptr) {
+    g_err << "drop_tab failed on line " << __LINE__ << ": no table available"
+          << endl;
     return NDBT_FAILED;  // No table available
   }
   return drop_obj(ndb, obj);
@@ -3823,6 +3825,8 @@ int RandSchemaOp::create_table(Ndb *ndb) {
     pTab.setName(buf);
     if (pDict->createTable(pTab)) {
       m_error = pDict->getNdbError();
+      g_err << "create table " << pTab.getName() << " failed on line "
+            << __LINE__ << ", error: " << m_error << endl;
       return NDBT_FAILED;
     }
   } else {
@@ -3912,6 +3916,8 @@ int RandSchemaOp::drop_obj(Ndb *ndb, Obj *obj) {
      */
     if (pDict->dropTable(obj->m_name.c_str())) {
       m_error = pDict->getNdbError();
+      g_err << "drop table " << obj->m_name.c_str() << " failed on line "
+            << __LINE__ << ", error: " << m_error << endl;
       return NDBT_FAILED;
     }
     while (obj->m_dependant.size()) {
@@ -3923,6 +3929,9 @@ int RandSchemaOp::drop_obj(Ndb *ndb, Obj *obj) {
     ndbout_c("drop index %s", obj->m_name.c_str());
     if (pDict->dropIndex(obj->m_name.c_str(), obj->m_parent->m_name.c_str())) {
       m_error = pDict->getNdbError();
+      g_err << "drop index " << obj->m_name.c_str() << " on table "
+            << obj->m_parent->m_name.c_str() << " failed on line " << __LINE__
+            << ", error: " << m_error << endl;
       return NDBT_FAILED;
     }
     remove_obj(obj);
@@ -4108,7 +4117,11 @@ int runDictRestart(NDBT_Context *ctx, NDBT_Step *step) {
          * current operation is discarded, a drop table or drop index operation
          * is used instead and test continue.
          */
-        if (dict.getNdbError().code != 708) return NDBT_FAILED;
+        if (dict.getNdbError().code != 708) {
+          g_err << "schema_op failed on line " << __LINE__
+                << ", error: " << dict.getNdbError() << endl;
+          return NDBT_FAILED;
+        }
         dict.clearNdbError();
         if (dict.drop_tab(pNdb) == NDBT_FAILED) {
           return NDBT_FAILED;
