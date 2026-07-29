@@ -10021,7 +10021,10 @@ void ThreadConfig::init() {
  *   (or ABS_MAX_NODES is none)
  */
 Uint32 mt_get_recv_thread_idx(TrpId trp_id) {
-  assert(trp_id < NDB_ARRAY_SIZE(g_trp_to_recv_thr_map));
+  /* Callers index the runtime sized (glob_num_trp_ids) send buffer and
+     receive arrays with this id, so enforce the runtime bound and not
+     just the compile-time ceiling of the map itself. */
+  require(trp_id < glob_num_trp_ids);
   return g_trp_to_recv_thr_map[trp_id];
 }
 
@@ -10074,6 +10077,16 @@ assign_receiver_threads(void)
       max_trp_id = std::max(max_trp_id, trp_id);
     }
   }
+  /**
+   * Every transporter id handed out by the registry must fit the
+   * runtime sized (glob_num_trp_ids) trp-id indexed arrays in this
+   * file. The sizing formula mirrors MAX_NTRANSPORTERS (configured max
+   * node id + the node-group multi-transporter margin), so this holds
+   * today with a margin of one. Enforce it at configure time so that a
+   * future extra transporter becomes a clean crash here instead of
+   * silent heap corruption in the send path.
+   */
+  require(max_trp_id < glob_num_trp_ids);
   /**
    * We sort the assignment after LocationDomainId. This ensures that we
    * are well distributed on the receive threads for each of the location
@@ -10130,6 +10143,9 @@ assign_receiver_threads(void)
 }
 
 void mt_assign_recv_thread_new_trp(TrpId trp_id) {
+  /* New (node group multi-transporter) ids must also fit the runtime
+     sized trp-id indexed arrays, see assign_receiver_threads(). */
+  require(trp_id < glob_num_trp_ids);
   if (g_trp_to_recv_thr_map[trp_id] != MAX_NTRANSPORTERS) {
     /* Already assigned in the past, keep assignment */
     return;
@@ -10183,12 +10199,14 @@ mt_epoll_add_trp(Uint32 self, TrpId trp_id)
   unsigned recv_thread_idx = thr_no - g_first_receiver_thread_no;
   TransporterReceiveHandleKernel *recvdata =
     g_trp_receive_handle_ptr[recv_thread_idx];
+  /* Guard before the first trp-id indexed access, not only before the
+     runtime sized send buffer array below. */
+  require(trp_id < glob_num_trp_ids);
   if (recv_thread_idx != g_trp_to_recv_thr_map[trp_id])
   {
     return false;
   }
   Transporter *t = globalTransporterRegistry.get_transporter(trp_id);
-  require(trp_id < glob_num_trp_ids);
   lock(&rep->m_send_buffers[trp_id].m_send_lock);
   lock(&rep->m_receive_lock[recv_thread_idx]);
   require(recvdata->epoll_add(t));
@@ -10206,6 +10224,7 @@ mt_is_recv_thread_for_new_trp(Uint32 self,
   unsigned thr_no = selfptr->m_thr_no;
   require(thr_no >= g_first_receiver_thread_no);
   Uint32 recv_thread_idx = thr_no - g_first_receiver_thread_no;
+  require(trp_id < glob_num_trp_ids);
   if (recv_thread_idx != g_trp_to_recv_thr_map[trp_id])
   {
     return false;
