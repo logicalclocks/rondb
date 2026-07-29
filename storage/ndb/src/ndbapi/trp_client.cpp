@@ -39,6 +39,8 @@ trp_client::trp_client()
       m_enabled_trps_mask(),
       m_send_trps_mask(),
       m_send_trps_cnt(0),
+      m_num_trp_ids(0),
+      m_send_trps_list(nullptr),
       m_send_buffers(nullptr),
       m_flushed_trps_mask() {
   m_mutex = NdbMutex_Create();
@@ -46,7 +48,8 @@ trp_client::trp_client()
   // global TransporterFacade:::m_send_buffers[].
   // -> Both need to be able to handle the same 'MAX_TRPS'
   static_assert(trp_client::MAX_TRPS == TransporterFacade::MAX_TRPS);
-  m_send_buffers = new TFBuffer[trp_client::MAX_TRPS];
+  // m_send_buffers/m_send_trps_list are allocated on demand, sized by
+  // the transporter ids actually used (see ensure_send_buffer_capacity)
 }
 
 trp_client::~trp_client() {
@@ -57,6 +60,37 @@ trp_client::~trp_client() {
   assert(m_send_trps_cnt == 0);
   assert(m_locked_for_poll == false);
   delete[] m_send_buffers;
+  delete[] m_send_trps_list;
+}
+
+/**
+ * Grow m_send_buffers[]/m_send_trps_list[] to cover 'trp_id'.
+ * Called under m_mutex (same protection as all buffer accesses).
+ * Growth is rare: it happens the first time this client sends to a
+ * transporter id beyond the current capacity, after which the arrays
+ * stay at that size for the lifetime of the client.
+ */
+void trp_client::ensure_send_buffer_capacity(TrpId trp_id) {
+  require(trp_id < MAX_TRPS);
+  Uint32 new_num = (m_num_trp_ids == 0) ? 16 : 2 * m_num_trp_ids;
+  if (new_num <= trp_id) new_num = trp_id + 8;
+  if (new_num > MAX_TRPS) new_num = MAX_TRPS;
+
+  TFBuffer *new_buffers = new TFBuffer[new_num];
+  TrpId *new_list = new TrpId[new_num];
+  for (Uint32 i = 0; i < m_num_trp_ids; i++) {
+    new_buffers[i] = m_send_buffers[i];
+  }
+  /* Distinct trp ids with pending data never exceed the id capacity */
+  assert(m_send_trps_cnt <= m_num_trp_ids);
+  for (Uint32 i = 0; i < m_send_trps_cnt; i++) {
+    new_list[i] = m_send_trps_list[i];
+  }
+  delete[] m_send_buffers;
+  delete[] m_send_trps_list;
+  m_send_buffers = new_buffers;
+  m_send_trps_list = new_list;
+  m_num_trp_ids = new_num;
 }
 
 trp_client::PollQueue::PollQueue()
@@ -321,6 +355,9 @@ Uint32 *trp_client::getWritePtr(TrpId trp_id, Uint32 lenBytes,
   assert(prio == 1 /* JBB */);
   assert(isSendEnabled(trp_id));
 
+  if (unlikely(trp_id >= m_num_trp_ids)) {
+    ensure_send_buffer_capacity(trp_id);
+  }
   TFBuffer *b = m_send_buffers + trp_id;
   TFBufferGuard g0(*b);
   bool found = m_send_trps_mask.get(trp_id);

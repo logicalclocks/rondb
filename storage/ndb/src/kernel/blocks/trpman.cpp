@@ -82,7 +82,11 @@ Trpman::Trpman(Block_context &ctx, Uint32 instanceno)
   addRecSignal(GSN_TIME_SIGNAL, &Trpman::execTIME_SIGNAL);
   m_distribution_handler_inited = false;
   m_init_continueb = false;
+  m_trp_activity = nullptr;
+  m_num_trp_ids = 0;
 }
+
+Trpman::~Trpman() { delete[] m_trp_activity; }
 
 BLOCK_FUNCTIONS(Trpman)
 
@@ -168,6 +172,7 @@ void Trpman::set_db_hb_sender(NodeId dbHbSender) {
     if (m_dbHbSenderTrp != dbHbSenderTrp) {
       jam();
       m_dbHbSenderTrp = dbHbSenderTrp;
+      ndbassert(m_dbHbSenderTrp < m_num_trp_ids);
       /*
        * Skip late heartbeat detection for next receive.
        * As an acceptable side effect activity histogram will skip count next
@@ -1168,7 +1173,20 @@ void Trpman::execREAD_CONFIG_REQ(Signal *signal) {
   ndbassert(verify_histogram(m_hbDbApi,
                              {m_hbDbApi_bin_bounds, m_hbDbApi_bin_count}) == 0);
 
-  memset(m_trp_activity, 0, sizeof(m_trp_activity));
+  /**
+   * Size the per-transporter activity array from the runtime
+   * configuration (same bound as the trp-id indexed send buffer
+   * arrays in mt.cpp). All accesses use transporter ids handed out
+   * by the TransporterRegistry, which is sized from the same
+   * configuration, so the bound holds for every access.
+   */
+  if (m_trp_activity == nullptr) {
+    m_num_trp_ids = mt_get_num_trp_ids();
+    ndbrequire(m_num_trp_ids > 0);
+    ndbrequire(m_num_trp_ids <= MAX_NTRANSPORTERS);
+    m_trp_activity = new TrpActivity[m_num_trp_ids];
+  }
+  memset(m_trp_activity, 0, sizeof(TrpActivity) * m_num_trp_ids);
 
   ReadConfigConf *conf = (ReadConfigConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
@@ -1723,6 +1741,7 @@ void Trpman::execTIME_SIGNAL(Signal *signal) {
        trp_id != m_recv_data.NotFound;
        trp_id = m_recv_data.find_next(trp_id + 1)) {
     ndbassert(handles_this_trp(trp_id));
+    ndbassert(trp_id < m_num_trp_ids);
     if (!globalTransporterRegistry.is_connected(trp_id)) continue;
 
     NDB_TICKS trp_last_recv = globalTransporterRegistry.get_last_recv(trp_id);

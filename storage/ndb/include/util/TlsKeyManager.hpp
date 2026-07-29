@@ -47,9 +47,9 @@ class TlsKeyManager {
     static constexpr size_t SN_buf_len = 65;
     static constexpr size_t CN_buf_len = 65;
 
-    char serial[SN_buf_len];
-    char name[CN_buf_len];
-    struct tm exp_tm;
+    char serial[SN_buf_len]{};
+    char name[CN_buf_len]{};
+    struct tm exp_tm{};
     time_t expires{0};
     bool active{false};
   };
@@ -156,7 +156,14 @@ class TlsKeyManager {
   PkiFile::PathName m_key_file, m_cert_file;
   char *m_path_string{nullptr};
   TlsSearchPath *m_search_path{nullptr};
-  cert_record m_cert_table[ABS_MAX_NODES];
+  /**
+   * Certificate table indexed by node id. Allocated lazily on the
+   * first cert_table_set() call (under m_cert_table_mutex), so only
+   * processes actually receiving TLS connections pay for the table
+   * (~1.6 MB at the 8192 node id ceiling) instead of every process
+   * embedding it.
+   */
+  cert_record *m_cert_table{nullptr};
   NodeCertificate m_node_cert;
   NdbMutex m_cert_table_mutex;
   int m_error{0};
