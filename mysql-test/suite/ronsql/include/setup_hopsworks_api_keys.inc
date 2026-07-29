@@ -75,6 +75,7 @@ CREATE TABLE `api_key` (
     `name` varchar(45) COLLATE latin1_general_cs NOT NULL,
     `user_id` int NOT NULL,
     `reserved` tinyint(1) DEFAULT '0',
+    `expiry` datetime DEFAULT NULL,
     PRIMARY KEY (`id`),
     UNIQUE KEY `prefix_UNIQUE` (`prefix`),
     UNIQUE KEY `index4` (`user_id`, `name`),
@@ -144,7 +145,8 @@ VALUES
         '2022-06-14 10:27:03',
         'myapikey1',
         10000,
-        0
+        0,
+        NULL
     );
 
 let $HOPSWORKS_TEST_API_KEY=bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub;
