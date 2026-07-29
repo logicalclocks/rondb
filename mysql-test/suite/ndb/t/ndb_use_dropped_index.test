@@ -164,6 +164,7 @@ SELECT * FROM t1;
 
 ## e (ordered) is dropped and downgraded; with the cache already refreshed the
 ## query succeeds using the remaining index/scan.
+--sorted_result
 SELECT * FROM t1 where e > 3;
 
 ## Second attempt succeeds.
