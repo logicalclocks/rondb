@@ -21348,6 +21348,16 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
   if (restartLockTakeover &&
       !c_restartLockTakeoverNodes.get(nodeId)) {
     jam();
+    if (req.userPtr == RNIL) {
+      jam();
+      /**
+       * Duplicate "holds no NodeRestartLock" report, e.g. a delayed
+       * retry that crossed a master takeover whose fresh report was
+       * already accepted. The report is idempotent - drop it, a REF
+       * would crash the reporter.
+       */
+      return;
+    }
     err = DictLockRef::TooLate;
     goto ref;
   }
