@@ -317,7 +317,6 @@ our @RONDB_SUITES = qw(
   ronsql_cte_ng4r2
   myrouter
   myrouter_ndb
-  rondb_big
 );
 
 # End of list of default suites

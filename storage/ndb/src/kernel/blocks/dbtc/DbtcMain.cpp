@@ -18180,18 +18180,28 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
        scanptr.p->m_read_committed_base)) {
     jamDebug();
     Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
+    if (!scanptr.p->m_joinAgg) {
+      /* Prefer a readable replica on our own node when one exists. */
+      for (Uint32 i = 1; i < count; i++) {
+        if (conf->nodes[i] == ownNodeId) {
+          jamDebug();
+          nodeId = ownNodeId;
+          break;
+        }
+      }
+    }
     if (nodeId != ownNodeId) {
       Uint32 node;
       jamDebug();
       Uint16 nodes[4];
       Uint32 loc_count = 0;
       /*
-       * Do not prefer the local node for READ_BACKUP scans here.  CTE
-       * materialisation scans can otherwise collapse all fragments onto
-       * the TC-local node when each fragment has a local readable backup.
-       *
-       * Keep the location-domain preference, but only among non-local
-       * replicas.  If no such replica exists, retain DIH's primary node.
+       * JoinAgg (CTE materialisation) scans must not prefer the local
+       * node: with a readable backup on the TC node every fragment
+       * would collapse onto it, serialising the materialisation. For
+       * those scans the location-domain preference considers only
+       * non-local replicas; if none exists, retain DIH's primary node.
+       * Ordinary READ_BACKUP scans take the local replica above.
        */
       for (Uint32 i = 0; i < count && loc_count < NDB_ARRAY_SIZE(nodes); i++) {
         if (conf->nodes[i] != ownNodeId) {

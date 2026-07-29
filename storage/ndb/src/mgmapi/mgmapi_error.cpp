@@ -38,6 +38,7 @@ const struct Ndb_Mgm_Error_Msg ndb_mgm_error_msgs[] = {
     {NDB_MGM_SERVER_NOT_CONNECTED, "Management server not connected"},
     {NDB_MGM_COULD_NOT_CONNECT_TO_SOCKET, "Could not connect to socket"},
     {NDB_MGM_ILLEGAL_BIND_ADDRESS, "Illegal bind address"},
+    {NDB_MGM_SERVER_NOT_READY, "Management server not ready"},
 
     /* Authorization Failure */
     {NDB_MGM_NOT_AUTHORIZED, "Not Authorized"},

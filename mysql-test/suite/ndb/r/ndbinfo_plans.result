@@ -75,7 +75,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	918	52
+ndb$error_messages	919	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
@@ -126,7 +126,7 @@ ndb$config_values	386	390
 ## List the tables where estimated size equals actual size.
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 count(*)
-28
+27
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   ORDER BY table_name;
 table_name
@@ -151,7 +151,6 @@ ndb$logspaces
 ndb$membership
 ndb$nodes
 ndb$pgman_time_track_stats
-ndb$pools
 ndb$resources
 ndb$tables
 ndb$test

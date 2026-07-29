@@ -47,7 +47,12 @@
 ConfigRetriever::ConfigRetriever(const char *_connect_string, int force_nodeid,
                                  Uint32 version, ndb_mgm_node_type node_type,
                                  const char *_bindaddress, int timeout_ms)
-    : m_end_session(true), m_version(version), m_node_type(node_type) {
+    : m_end_session(true),
+      m_version(version),
+      m_node_type(node_type),
+      m_has_bind_address(_bindaddress != nullptr),
+      m_force_nodeid(force_nodeid),
+      m_timeout_ms(timeout_ms) {
   DBUG_ENTER("ConfigRetriever::ConfigRetriever");
   DBUG_PRINT("enter", ("connect_string: '%s', force_nodeid: %d",
                        _connect_string, force_nodeid));
@@ -71,6 +76,13 @@ ConfigRetriever::ConfigRetriever(const char *_connect_string, int force_nodeid,
     DBUG_VOID_RETURN;
   }
 
+  {
+    /* Capture the resolved connectstring for reconnect(). */
+    char buf[1024];
+    m_connect_string.assign(
+        ndb_mgm_get_connectstring(m_handle, buf, sizeof(buf)));
+  }
+
   if (force_nodeid &&
       ndb_mgm_set_configuration_nodeid(m_handle, force_nodeid)) {
     setError(CR_ERROR, "Failed to set forced nodeid");
@@ -78,6 +90,7 @@ ConfigRetriever::ConfigRetriever(const char *_connect_string, int force_nodeid,
   }
 
   if (_bindaddress) {
+    m_bind_address.assign(_bindaddress);
     if (ndb_mgm_set_bindaddress(m_handle, _bindaddress)) {
       setError(CR_ERROR, ndb_mgm_get_latest_error_desc(m_handle));
       DBUG_VOID_RETURN;
@@ -145,6 +158,42 @@ int ConfigRetriever::do_connect(int no_retries, int retry_delay_in_seconds,
 }
 
 int ConfigRetriever::disconnect() { return ndb_mgm_disconnect(m_handle); }
+
+int ConfigRetriever::reconnect(int no_retries, int retry_delay_in_seconds,
+                               int verbose) {
+  if (m_handle != nullptr) {
+    /* The state of the old session is unknown, force a fresh one. */
+    if (ndb_mgm_is_connected(m_handle)) ndb_mgm_disconnect(m_handle);
+  } else {
+    /* The handle was destroyed (a failed transporter conversion does
+     * this), recreate it from the settings captured at construction. */
+    m_handle = ndb_mgm_create_handle();
+    if (m_handle == nullptr) {
+      setError(CR_ERROR, "Unable to allocate mgm handle");
+      return -2;
+    }
+    ndb_mgm_set_timeout(m_handle, m_timeout_ms);
+    if (ndb_mgm_set_connectstring(m_handle, m_connect_string.c_str())) {
+      BaseString tmp(ndb_mgm_get_latest_error_msg(m_handle));
+      tmp.append(" : ");
+      tmp.append(ndb_mgm_get_latest_error_desc(m_handle));
+      setError(CR_ERROR, tmp.c_str());
+      return -2;
+    }
+    if (m_force_nodeid &&
+        ndb_mgm_set_configuration_nodeid(m_handle, m_force_nodeid)) {
+      setError(CR_ERROR, "Failed to set forced nodeid");
+      return -2;
+    }
+    if (m_has_bind_address &&
+        ndb_mgm_set_bindaddress(m_handle, m_bind_address.c_str())) {
+      setError(CR_ERROR, ndb_mgm_get_latest_error_desc(m_handle));
+      return -2;
+    }
+    ndb_mgm_set_ssl_ctx(m_handle, m_tlsKeyManager.ctx());
+  }
+  return do_connect(no_retries, retry_delay_in_seconds, verbose);
+}
 
 bool ConfigRetriever::is_connected(void) {
   return (ndb_mgm_is_connected(m_handle) != 0);
