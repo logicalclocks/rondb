@@ -184,3 +184,7 @@ max-time: 900
 cmd: testNodeRestart
 args: -n RestartBarrierServeWhileParked T1
 max-time: 900
+
+cmd: testMgmd
+args: -n ArbitratorGateNotReady
+max-time: 300
