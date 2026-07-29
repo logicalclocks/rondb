@@ -3391,8 +3391,10 @@ private:
   void sendJoinAggCompleteHeartbeat(Signal* signal,
                                     JoinAggregationState *state);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
+  void joinAggNullRowReqImpl(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
+  void cteLookupReqImpl(Signal* signal);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   bool routeCteLookup(Signal* signal,
                       const JoinAggregationState *state,
@@ -3471,6 +3473,7 @@ private:
                         Uint32 errorCode, Uint32 correlation,
                         SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
+  void cteScanReqImpl(Signal* signal);
   /* cinBuf + attrInfoLen carry the AttrInfo section needed to run a
    * CTE filter program per group.  On the initial CTE_SCAN_REQ the
    * caller passes the AttrInfo bound into the incoming signal; on a
@@ -5367,6 +5370,7 @@ public:
   bool instance_completed_restore(Uint32 instance);
   void setup_query_thread_for_key_access(Uint32);
   void setup_query_thread_for_scan_access(Uint32);
+  void setup_query_thread_for_cte_access();
   void setup_query_thread_for_restore_access(Uint32, Uint32);
   void reset_query_thread_access();
   void reset_restore_thread_access();

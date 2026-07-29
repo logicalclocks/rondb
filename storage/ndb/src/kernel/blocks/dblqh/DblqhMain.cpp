@@ -1149,6 +1149,10 @@ void Dblqh::execCONTINUEB(Signal *signal) {
   case ZCONTINUE_CTE_SCAN_AGG_FEED:
   {
     jam();
+    if (m_is_query_block) {
+      jamDebug();
+      setup_query_thread_for_cte_access();
+    }
     const char *rawPtr = reinterpret_cast<const char *>(
         (uintptr_t)signal->theData[6] |
         ((uintptr_t)signal->theData[7] << 32));
@@ -1166,6 +1170,10 @@ void Dblqh::execCONTINUEB(Signal *signal) {
                    signal->theData[8],   // groupsSent
                    nullptr, 0,           // cinBuf, attrInfoLen
                    signal->theData[9]);  // aggFeedStateI (RNIL if none)
+    if (m_is_query_block) {
+      jamDebug();
+      reset_query_thread_access();
+    }
     return;
   }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
@@ -16976,6 +16984,39 @@ void Dblqh::setup_query_thread_for_scan_access(Uint32 instanceNo) {
     tux_block->c_indexPool.getArrayPtr());
 }
 
+/**
+ * setup_query_thread_for_cte_access
+ *
+ * CTE lookups/scans and join aggregation feeds evaluate interpreter
+ * programs (the WHERE-filter gate and embedded aggregation programs)
+ * whose BRANCH_MEM_OP_ARG instructions resolve parent-table type and
+ * charset metadata through c_tup->tablerec and (for the schema version
+ * check) this->tablerec.  Query thread blocks have no table metadata of
+ * their own: the counts (cnoOfTablerec / ctabrecFileSize) are copied
+ * from LDM instance 1 at STTOR, but the record arrays stay nullptr
+ * until setup_query_thread_for_key/scan_access borrows them from an
+ * LDM instance for a fragment operation.  A CTE signal can arrive on a
+ * query worker before any such access has run, so borrow the pointers
+ * here as well.
+ *
+ * Unlike key/scan access there is no fragment to derive the LDM
+ * instance from, and none is needed: CREATE_TAB_REQ is proxy-broadcast
+ * (SsParallel) to every LDM worker, so all LDM instances hold identical
+ * table metadata for every defined table — only fragment records are
+ * instance-specific.  Borrow from LDM instance 1, mirroring the STTOR
+ * count copy.  Races with concurrent schema operations are handled by
+ * the DEFINED / schemaVersion guards in the interpreter, which fail the
+ * query with a clean error.
+ */
+void Dblqh::setup_query_thread_for_cte_access() {
+  Dblqh *lqh_block = (Dblqh *)globalData.getBlock(DBLQH, 1);
+  Dbtup *tup_block = (Dbtup *)globalData.getBlock(DBTUP, 1);
+  this->m_ldm_instance_used = lqh_block;
+  this->tablerec = lqh_block->tablerec;
+  c_tup->m_ldm_instance_used = tup_block;
+  c_tup->tablerec = tup_block->tablerec;
+}
+
 void
 Dblqh::reset_query_thread_access()
 {
@@ -18922,6 +18963,20 @@ bool Dblqh::checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
  */
 void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   jamEntry();
+  /* Same borrow/reset bracket as execCTE_LOOKUP_REQ. */
+  const bool is_query_thread = m_is_query_block;
+  if (is_query_thread) {
+    jamDebug();
+    setup_query_thread_for_cte_access();
+  }
+  joinAggNullRowReqImpl(signal);
+  if (is_query_thread) {
+    jamDebug();
+    reset_query_thread_access();
+  }
+}
+
+void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
   const JoinAggNullRowReq *req =
     (const JoinAggNullRowReq *)signal->getDataPtr();
 
@@ -20193,7 +20248,23 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     jam();
     return;
   }
+  /* Borrow LDM table metadata for the filter gate / agg feed
+   * interpreters, and drop the borrowed pointers again on the way
+   * out so a missed setup elsewhere fails deterministically instead
+   * of riding on whatever the previous operation left behind. */
+  const bool is_query_thread = m_is_query_block;
+  if (is_query_thread) {
+    jamDebug();
+    setup_query_thread_for_cte_access();
+  }
+  cteLookupReqImpl(signal);
+  if (is_query_thread) {
+    jamDebug();
+    reset_query_thread_access();
+  }
+}
 
+void Dblqh::cteLookupReqImpl(Signal *signal) {
   const CteLookupReq req =
       *(const CteLookupReq *)signal->getDataPtr();
 
@@ -21089,7 +21160,20 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     jam();
     return;
   }
+  /* Same borrow/reset bracket as execCTE_LOOKUP_REQ. */
+  const bool is_query_thread = m_is_query_block;
+  if (is_query_thread) {
+    jamDebug();
+    setup_query_thread_for_cte_access();
+  }
+  cteScanReqImpl(signal);
+  if (is_query_thread) {
+    jamDebug();
+    reset_query_thread_access();
+  }
+}
 
+void Dblqh::cteScanReqImpl(Signal *signal) {
   const CteScanReq req =
       *(const CteScanReq *)signal->getDataPtr();
 

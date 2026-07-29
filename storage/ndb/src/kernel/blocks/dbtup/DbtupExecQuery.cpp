@@ -8235,7 +8235,22 @@ struct Dbtup::InterpreterContext {
     // Look up the parent table by tableId for type/charset info.
     // Validate table exists, is DEFINED, and schemaVersion matches
     // (via DBLQH's table record which tracks schema versions).
-    if (unlikely(tableId >= ctx.tup->cnoOfTablerec)) {
+    // On query thread blocks the record arrays are borrowed from an
+    // LDM instance per operation (setup_query_thread_for_cte_access)
+    // while the counts are copied once at STTOR — so a null array
+    // with a nonzero count means a caller missed that setup; fail the
+    // program instead of dereferencing.
+    if (unlikely(ctx.tup->tablerec == nullptr ||
+                 tableId >= ctx.tup->cnoOfTablerec)) {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      // ndbassert equivalent with an explicit block pointer (static
+      // handler has no `this`).
+      if (ctx.tup->tablerec == nullptr) {
+        jamNoBlock();
+        ctx.tup->progError(__LINE__, NDBD_EXIT_NDBASSERT, __FILE__,
+                           "ctx.tup->tablerec != nullptr");
+      }
+#endif
       thrjam(ctx.tup->jamBuffer());
       return -40;
     }
@@ -8244,9 +8259,17 @@ struct Dbtup::InterpreterContext {
       thrjam(ctx.tup->jamBuffer());
       return -40;
     }
-    if (unlikely(tableId >= ctx.tup->c_lqh->ctabrecFileSize ||
+    if (unlikely(ctx.tup->c_lqh->tablerec == nullptr ||
+                 tableId >= ctx.tup->c_lqh->ctabrecFileSize ||
                  ctx.tup->c_lqh->tablerec[tableId].schemaVersion !=
                      schemaVersion)) {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      if (ctx.tup->c_lqh->tablerec == nullptr) {
+        jamNoBlock();
+        ctx.tup->progError(__LINE__, NDBD_EXIT_NDBASSERT, __FILE__,
+                           "ctx.tup->c_lqh->tablerec != nullptr");
+      }
+#endif
       thrjam(ctx.tup->jamBuffer());
       return -40;
     }
