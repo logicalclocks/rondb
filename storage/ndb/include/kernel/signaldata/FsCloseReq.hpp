@@ -80,7 +80,6 @@ class FsCloseReq {
   static void setRemoveFileFlag(UintR &fileflag, bool removefile);
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_FSCLOSEREQ, Local);
 
 inline bool FsCloseReq::getRemoveFileFlag(const UintR &fileflag) {
   return (fileflag == 1);

@@ -606,6 +606,10 @@ static struct view {
     {"ndbinfo", "restart_info",
      "SELECT * "
      "FROM `ndbinfo`.`ndb$restart_info`"},
+    /* security_violation_counts: the catalog base table ndb$security_violations
+       emits the full static catalog once per data node, so joining it raw would
+       multiply each per-node count row by the number of data nodes. Dedupe it
+       with a DISTINCT subquery (tier kept as the raw integer for the CASE). */
     {"ndbinfo", "security_violation_counts",
      "SELECT c.reporting_node_id, "
      "v.violation_id, "
@@ -613,7 +617,8 @@ static struct view {
      "v.reason, "
      "c.count AS total_count "
      "FROM `ndbinfo`.`ndb$security_violation_counts` c "
-     "JOIN `ndbinfo`.`ndb$security_violations` v "
+     "JOIN (SELECT DISTINCT violation_id, tier, reason "
+     "      FROM `ndbinfo`.`ndb$security_violations`) v "
      "  ON c.violation_id = v.violation_id "
      "ORDER BY c.reporting_node_id, v.violation_id"},
     {"ndbinfo", "security_violations",

@@ -107,8 +107,13 @@ enum ViolationType : Uint32 {
   VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY = 30, // B: parseScanFrag SF_PRUNE_PATTERN cnt==0 disagrees
                                             //    with SF_PRUNE_PARAMS/SFP_PRUNE_PARAMS flags
 
-  VT_UNKNOWN = 31,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 32              // sentinel — keep last
+  // ---- Signal scope (checkSignalSender; see SignalScopes.hpp) ----
+  VT_SIGNAL_SCOPE_LOCAL = 31,      // A: Local-scope signal received from another node
+  VT_SIGNAL_SCOPE_REMOTE = 32,     // A: Remote-scope signal received from a non-DB node
+  VT_SIGNAL_SCOPE_MANAGEMENT = 33, // A: Management-scope signal received from an API node
+
+  VT_UNKNOWN = 34,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 35              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -170,6 +175,9 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_SPJ_SECTION_LENGTH_MISMATCH,   TIER_B,"spj_section_length_mismatch"},
     {VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS,TIER_A,"spj_key_param_count_out_of_bounds"},
     {VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY,TIER_B,"spj_scan_frag_flag_inconsistency"},
+    {VT_SIGNAL_SCOPE_LOCAL,        TIER_A, "signal_scope_local_violation"},
+    {VT_SIGNAL_SCOPE_REMOTE,       TIER_A, "signal_scope_remote_violation"},
+    {VT_SIGNAL_SCOPE_MANAGEMENT,   TIER_A, "signal_scope_management_violation"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 

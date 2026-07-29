@@ -85,7 +85,6 @@ class FsRemoveReq {
   UintR ownDirectory;
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_FSREMOVEREQ, Local);
 
 #undef JAM_FILE_ID
 

@@ -20,9 +20,14 @@
 --echo #
 --exec $NDB_MGM -e "1 dump 9100 192 5" >> $NDB_TOOLS_OUTPUT
 
+# NB: wait via the public view (no `$` in the name). Inside a
+# `let $wait_condition= `...`` mysqltest expands variables, and the `$` in the
+# base table ndb$security_violation_counts is taken as an (empty) variable,
+# collapsing the name to `ndbinfo.ndb`. The public view exposes the aggregated
+# column as total_count.
 let $wait_condition=
-  SELECT COUNT(*) > 0 FROM `ndbinfo`.`ndb$security_violation_counts`
-  WHERE reporting_node_id=1 AND violation_id=5 AND count >= 1;
+  SELECT COUNT(*) > 0 FROM ndbinfo.security_violation_counts
+  WHERE reporting_node_id=1 AND violation_id=5 AND total_count >= 1;
 --source include/wait_condition.inc
 
 # Query the base table (ndb$security_violation_counts) for the injected violation.

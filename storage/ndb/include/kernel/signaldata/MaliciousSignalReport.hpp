@@ -48,7 +48,6 @@ struct MaliciousSignalReport {
   Uint32 violationType;    // ViolationType enum; QMGR resolves tier + reason
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_MALICIOUS_SIGNAL_REPORT, Local);
 
 #undef JAM_FILE_ID
 
