@@ -2168,6 +2168,75 @@ int runTestRequireTls(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runTestArbitratorGateNotReady(NDBT_Context *ctx, NDBT_Step *step) {
+  NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+  BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
+  Properties config = ConfigFactory::create();
+  CHECK(ConfigFactory::write_config_ini(config, cfg_path.c_str()));
+
+  Mgmd mgmd(1);
+
+  /**
+   * With no data node ever started, the arbitrator startup gate is
+   * active from before the MGM port opens until the mgmd's cold-start
+   * check (3 s), so a status poll right after connecting lands inside
+   * the gate window.  Restart the mgmd and probe again in case this
+   * process was descheduled past the window.
+   */
+  bool observed_gate = false;
+  for (int attempt = 0; attempt < 3 && !observed_gate; attempt++) {
+    if (attempt > 0) {
+      g_err << "Missed the gate window, restarting mgmd" << endl;
+      CHECK(mgmd.stop());
+    }
+    CHECK(mgmd.start_from_config_ini(wd.path()));
+    CHECK(mgmd.connect(config));
+
+    ndb_mgm_cluster_state *state = ndb_mgm_get_status(mgmd.handle());
+    if (state != nullptr) {
+      free(state);
+      continue;
+    }
+    observed_gate = true;
+  }
+  CHECK(observed_gate);
+  CHECK(ndb_mgm_get_latest_error(mgmd.handle()) == NDB_MGM_SERVER_NOT_READY);
+
+  /* The ndb_mgm -e show path (get status v3) is refused the same way */
+  ndb_mgm_cluster_state2 *state3 = ndb_mgm_get_status3(mgmd.handle(), nullptr);
+  CHECK(state3 == nullptr);
+  CHECK(ndb_mgm_get_latest_error(mgmd.handle()) == NDB_MGM_SERVER_NOT_READY);
+
+  /**
+   * Data node bootstrap commands are allowlisted: fetching the
+   * configuration succeeds during the gate, on the same session that
+   * was just refused.
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(mgmd.handle(), 0);
+  CHECK(conf != nullptr);
+  ndb_mgm_destroy_configuration(conf);
+
+  /**
+   * The session survived the refusals: the same handle starts working
+   * once the cold-start check opens the gate.
+   */
+  bool gate_opened = false;
+  for (int i = 0; i < 100; i++) {
+    ndb_mgm_cluster_state *state = ndb_mgm_get_status(mgmd.handle());
+    if (state != nullptr) {
+      free(state);
+      gate_opened = true;
+      break;
+    }
+    CHECK(ndb_mgm_get_latest_error(mgmd.handle()) == NDB_MGM_SERVER_NOT_READY);
+    NdbSleep_MilliSleep(200);
+  }
+  CHECK(gate_opened);
+
+  CHECK(mgmd.stop());
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testMgmd);
 DRIVER(DummyDriver); /* turn off use of NdbApi */
 
@@ -2291,6 +2360,12 @@ TESTCASE("SshKeySigning",
 }
 
 #endif
+
+TESTCASE("ArbitratorGateNotReady",
+         "Check that the arbitrator startup gate refuses non-bootstrap "
+         "commands with a retryable error and keeps the session open") {
+  INITIALIZER(runTestArbitratorGateNotReady);
+}
 
 NDBT_TESTSUITE_END(testMgmd)
 

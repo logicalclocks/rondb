@@ -148,3 +148,6 @@ cmd: testSystemRestart
 args: -n SR1 T1
 max-time: 4140
 
+cmd: testMgmd
+args: -n ArbitratorGateNotReady
+max-time: 300
