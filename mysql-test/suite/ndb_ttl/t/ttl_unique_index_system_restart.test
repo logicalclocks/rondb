@@ -45,6 +45,11 @@ INSERT INTO t1 VALUES
 --exec $NDB_WAITER --timeout=180 > /dev/null 2>&1
 
 --source include/ndb_wait_connected.inc
+# NDB DDL is refused with "Schema distribution is not ready" until the binlog
+# thread has re-created its ndb_schema event subscriptions after the restart;
+# ndb_not_readonly.inc retries an ENGINE=NDB create until that gate is open,
+# so the final DROP TABLE cannot hit the transient refusal.
+--source include/ndb_not_readonly.inc
 --disable_query_log
 --disable_result_log
 let $mysql_errno= 1;

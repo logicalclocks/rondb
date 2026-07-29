@@ -107,6 +107,10 @@ DELETE FROM test.t1 WHERE id <= 50;
 
 --echo # --- wait for mysqld to reconnect to the restored cluster
 --source include/ndb_wait_connected.inc
+# NDB DDL stays refused ("Schema distribution is not ready") until the binlog
+# thread re-creates its ndb_schema event subscriptions; gate on it so the
+# final DROP TABLE cannot hit the transient refusal.
+--source include/ndb_not_readonly.inc
 
 # After a full-cluster restart the existing table is briefly not queryable
 # (NDB error 4009 / "schema distribution is not ready") until schema
