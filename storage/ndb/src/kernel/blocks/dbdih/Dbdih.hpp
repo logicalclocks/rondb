@@ -2726,6 +2726,14 @@ class Dbdih : public SimulatedBlock {
   void recvDictLockConf_nodeRestart(Signal *signal, Uint32 data, Uint32 ret);
   void releaseDictLock_nodeRestart(Signal *signal);
 
+  /**
+   * Generation of NodeRestartLockTakeover requests, bumped for each
+   * master takeover. A pending delayed retry whose generation no longer
+   * matches is dropped instead of duplicating the fresh request the new
+   * takeover already sent.
+   */
+  Uint32 c_dictLockTakeoverGen;
+
   Uint32 c_error_7181_ref;
 
 #ifdef ERROR_INSERT

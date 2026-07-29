@@ -88,6 +88,7 @@ void Dbdih::initData() {
 
   c_dictLockSlavePool.setSize(1);  // assert single usage
   c_dictLockSlavePtrI_nodeRestart = RNIL;
+  c_dictLockTakeoverGen = 0;
 
   cgcpOrderBlocked = 0;
   c_lcpState.ctcCounter = 0;
