@@ -36,18 +36,6 @@ select count(*) from api_scan;
 count(*)
 1000
 USE test;
-Warnings:
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warnings:
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warnings:
-Warning	1681	Integer display width is deprecated and will be removed in a future release.
 ===== Compare RDRS and CLI =====
 == RDRS: Query both tables without API key check. ==
 {"data":

@@ -83,6 +83,115 @@ CREATE TABLE `api_key` (
     CONSTRAINT `fk_api_key_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`uid`) ON DELETE CASCADE
 ) ENGINE = ndbcluster;
 
+# The RDRS API key grant lookup (find_user_databases) also scans the
+# fine-grained feature-store sharing tables introduced with RonDB-1088, so
+# they must exist even though they stay empty here: the test key's access
+# comes from project_team membership alone. DDL copied from the Go test
+# fixtures (hopsworks_40_schema.sql plus migrations V45/V46); latin1 is
+# required since RDRS asserts on the byte size of the name columns. The
+# feature_group FKs to on_demand/cached/stream feature group tables are
+# dropped as those tables are not part of this fixture.
+
+CREATE TABLE `feature_store` (
+    `id` int NOT NULL AUTO_INCREMENT,
+    `name` varchar(100) COLLATE latin1_general_cs NOT NULL,
+    `project_id` int NOT NULL,
+    `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `project_id` (`project_id`),
+    CONSTRAINT `FK_883_662` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+CREATE TABLE `feature_group` (
+    `id` int NOT NULL AUTO_INCREMENT,
+    `name` varchar(63) NOT NULL,
+    `feature_store_id` int NOT NULL,
+    `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+    `creator` int NOT NULL,
+    `version` int NOT NULL,
+    `description` varchar(1000) NULL,
+    `feature_group_type` int NOT NULL DEFAULT '0',
+    `on_demand_feature_group_id` int NULL,
+    `cached_feature_group_id` int NULL,
+    `stream_feature_group_id` int NULL,
+    `event_time` varchar(63) DEFAULT NULL,
+    `online_enabled` tinyint(1) NULL,
+    `topic_name` varchar(255) DEFAULT NULL,
+    `notification_topic_name` varchar(255) DEFAULT NULL,
+    `deprecated` boolean DEFAULT FALSE,
+    `for_log` tinyint(1) NOT NULL DEFAULT '0',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `name_version` (`feature_store_id`, `name`, `version`),
+    KEY `feature_store_id` (`feature_store_id`),
+    KEY `creator` (`creator`),
+    CONSTRAINT `FK_1012_790` FOREIGN KEY (`creator`) REFERENCES `users` (`uid`) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT `FK_656_740` FOREIGN KEY (`feature_store_id`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+CREATE TABLE `shared_feature_store` (
+    `id` int AUTO_INCREMENT PRIMARY KEY,
+    `feature_store` int NOT NULL,
+    `shared_by` int NOT NULL,
+    `shared_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `shared_with_project` int NOT NULL,
+    `shared_entirely` tinyint(1) NOT NULL DEFAULT 1,
+    CONSTRAINT `sfs_fs_fk` FOREIGN KEY (`feature_store`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sfs_user_fk` FOREIGN KEY (`shared_by`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sfs_project_fk` FOREIGN KEY (`shared_with_project`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+CREATE TABLE `shared_feature_group` (
+    `id` int AUTO_INCREMENT PRIMARY KEY,
+    `feature_store` int NOT NULL,
+    `feature_group` int NOT NULL,
+    `shared_by` int NOT NULL,
+    `shared_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `shared_with_project` int NOT NULL,
+    `shared_entirely` tinyint(1) NOT NULL DEFAULT 1,
+    CONSTRAINT `sfg_fs_fk` FOREIGN KEY (`feature_store`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sfg_fg_fk` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sfg_user_fk` FOREIGN KEY (`shared_by`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sfg_project_fk` FOREIGN KEY (`shared_with_project`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+CREATE TABLE `shared_feature` (
+    `id` int AUTO_INCREMENT PRIMARY KEY,
+    `feature_group` int NOT NULL,
+    `feature` varchar(63) NOT NULL,
+    `shared_by` int NOT NULL,
+    `shared_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `shared_with_project` int NOT NULL,
+    CONSTRAINT `sft_fg_fk` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sft_user_fk` FOREIGN KEY (`shared_by`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `sft_project_fk` FOREIGN KEY (`shared_with_project`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+CREATE TABLE `restricted_feature_group_access` (
+    `id` int AUTO_INCREMENT PRIMARY KEY,
+    `feature_store` int NOT NULL,
+    `feature_group` int NOT NULL,
+    `granted_by` int NOT NULL,
+    `granted_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `granted_to_user` int NOT NULL,
+    `can_access_entirely` tinyint(1) NOT NULL DEFAULT 1,
+    CONSTRAINT `rfga_fs_fk` FOREIGN KEY (`feature_store`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `rfga_fg_fk` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `rfga_granted_by_fk` FOREIGN KEY (`granted_by`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `rfga_granted_to_user_fk` FOREIGN KEY (`granted_to_user`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+CREATE TABLE `restricted_feature_access` (
+    `id` int AUTO_INCREMENT PRIMARY KEY,
+    `restricted_feature_group_access` int NOT NULL,
+    `feature` varchar(63) NOT NULL,
+    `granted_by` int NOT NULL,
+    `granted_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `granted_to_user` int NOT NULL,
+    CONSTRAINT `rfa_rfga_fk` FOREIGN KEY (`restricted_feature_group_access`) REFERENCES `restricted_feature_group_access` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `rfa_granted_by_fk` FOREIGN KEY (`granted_by`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION,
+    CONSTRAINT `rfa_granted_to_user_fk` FOREIGN KEY (`granted_to_user`) REFERENCES `users` (`uid`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
 INSERT INTO
     `users`
 VALUES
