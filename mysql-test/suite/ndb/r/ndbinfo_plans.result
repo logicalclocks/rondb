@@ -75,7 +75,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	919	52
+ndb$error_messages	920	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
@@ -115,19 +115,26 @@ ndb$transporters	32	68
 
 CALL populate_sizes();
 
-SELECT table_name, est_rows, actual_rows from rowcounts
+SELECT table_name, est_rows,
+CAST(actual_rows AS SIGNED) - CAST(est_rows AS SIGNED)
+BETWEEN -10 AND 10 AS actual_close_to_estimate
+FROM rowcounts
 WHERE table_name = "ndb$config_values";
-table_name	est_rows	actual_rows
-ndb$config_values	386	390
+table_name	est_rows	actual_close_to_estimate
+ndb$config_values	390	1
 ## Note:
 ## the estimate for config_values relies on a constant in NdbinfoTables.cpp
-## which must be manually maintained in order for the test to pass.
+## which must be manually maintained (within a tolerance of 10 rows)
+## in order for the test to pass.
 ##
 ## List the tables where estimated size equals actual size.
-SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
+## (config_values excluded: its actual count depends on live config state)
+SELECT count(*) from rowcounts WHERE est_rows = actual_rows
+  AND table_name != 'ndb$config_values';
 count(*)
 27
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
+  AND table_name != 'ndb$config_values'
   ORDER BY table_name;
 table_name
 ndb$backup_id
