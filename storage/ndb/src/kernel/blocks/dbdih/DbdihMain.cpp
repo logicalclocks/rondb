@@ -770,6 +770,16 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       removeNodeFromTable(signal, nodeId, tabPtr);
       return;
     }
+    case DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY: {
+      jam();
+      if (signal->theData[1] != c_dictLockTakeoverGen) {
+        jam();
+        /* Superseded by a fresh request from a later master takeover. */
+        return;
+      }
+      sendDictLockTakeoverReq(signal);
+      return;
+    }
     case DihContinueB::ZCOPY_NODE: {
       jam();
       Uint32 decrement_outstanding = signal->theData[1];
@@ -9594,6 +9604,11 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
     if (ndbd_restart_phase_110_barrier(
             getNodeInfo(cmasterNodeId).m_version)) {
       jam();
+      /**
+       * Invalidate any delayed retry still aimed at the previous
+       * master before sending the fresh request.
+       */
+      c_dictLockTakeoverGen++;
       if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
         DictLockSlavePtr lockPtr;
         ndbrequire(c_dictLockSlavePool.getPtr(
@@ -28879,19 +28894,28 @@ void Dbdih::sendDictLockReq(Signal *signal, Uint32 lockType, Callback c) {
 }
 
 void Dbdih::sendDictLockTakeoverReq(Signal *signal, Uint32 delayMillis) {
+  if (delayMillis != 0) {
+    jam();
+    /**
+     * sendSignalWithDelay delivers to the local block regardless of the
+     * node id in the reference, so a delayed retry must bounce off our
+     * own CONTINUEB and do the real send when it fires. The generation
+     * number drops the retry if a new master takeover sends a fresh
+     * request while it is pending.
+     */
+    signal->theData[0] = DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY;
+    signal->theData[1] = c_dictLockTakeoverGen;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, delayMillis, 2);
+    return;
+  }
   DictLockReq *req = (DictLockReq *)&signal->theData[0];
   req->userPtr = c_dictLockSlavePtrI_nodeRestart;
   req->lockType = DictLockReq::NodeRestartLockTakeover;
   req->userRef = reference();
 
   BlockReference dictMasterRef = calcDictBlockRef(cmasterNodeId);
-  if (delayMillis != 0) {
-    sendSignalWithDelay(dictMasterRef, GSN_DICT_LOCK_REQ, signal,
-                        delayMillis, DictLockReq::SignalLength);
-  } else {
-    sendSignal(dictMasterRef, GSN_DICT_LOCK_REQ, signal,
-               DictLockReq::SignalLength, JBB);
-  }
+  sendSignal(dictMasterRef, GSN_DICT_LOCK_REQ, signal,
+             DictLockReq::SignalLength, JBB);
 }
 
 void Dbdih::execDICT_LOCK_CONF(Signal *signal) {
