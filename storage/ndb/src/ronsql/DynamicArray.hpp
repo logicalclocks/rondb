@@ -112,7 +112,7 @@ public:
   }
   const T& operator[](Uint32 index) const
   {
-    assert(0 <= index && index < item_count);
+    assert(index < item_count);
     return pages[index >> BITS][index & IDX_MASK];
   }
   /*

@@ -2168,6 +2168,131 @@ int runTestRequireTls(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runTestArbitratorGateNotReady(NDBT_Context *ctx, NDBT_Step *step) {
+  NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+  BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
+  Properties config = ConfigFactory::create();
+  CHECK(ConfigFactory::write_config_ini(config, cfg_path.c_str()));
+
+  Mgmd mgmd(1);
+
+  /**
+   * With no data node ever started, the arbitrator startup gate is
+   * active from before the MGM port opens until the mgmd's cold-start
+   * check (3 s), so a status poll right after connecting lands inside
+   * the gate window.  Restart the mgmd and probe again in case this
+   * process was descheduled past the window.
+   */
+  bool observed_gate = false;
+  for (int attempt = 0; attempt < 3 && !observed_gate; attempt++) {
+    if (attempt > 0) {
+      g_err << "Missed the gate window, restarting mgmd" << endl;
+      CHECK(mgmd.stop());
+    }
+    CHECK(mgmd.start_from_config_ini(wd.path()));
+    CHECK(mgmd.connect(config));
+
+    ndb_mgm_cluster_state *state = ndb_mgm_get_status(mgmd.handle());
+    if (state != nullptr) {
+      free(state);
+      continue;
+    }
+    observed_gate = true;
+  }
+  CHECK(observed_gate);
+  CHECK(ndb_mgm_get_latest_error(mgmd.handle()) == NDB_MGM_SERVER_NOT_READY);
+
+  /* The ndb_mgm -e show path (get status v3) is refused the same way */
+  ndb_mgm_cluster_state2 *state3 = ndb_mgm_get_status3(mgmd.handle(), nullptr);
+  CHECK(state3 == nullptr);
+  CHECK(ndb_mgm_get_latest_error(mgmd.handle()) == NDB_MGM_SERVER_NOT_READY);
+
+  /**
+   * Data node bootstrap commands are allowlisted: fetching the
+   * configuration succeeds during the gate, on the same session that
+   * was just refused.
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(mgmd.handle(), 0);
+  CHECK(conf != nullptr);
+  ndb_mgm_destroy_configuration(conf);
+
+  /**
+   * The session survived the refusals: the same handle starts working
+   * once the cold-start check opens the gate.
+   */
+  bool gate_opened = false;
+  for (int i = 0; i < 100; i++) {
+    ndb_mgm_cluster_state *state = ndb_mgm_get_status(mgmd.handle());
+    if (state != nullptr) {
+      free(state);
+      gate_opened = true;
+      break;
+    }
+    CHECK(ndb_mgm_get_latest_error(mgmd.handle()) == NDB_MGM_SERVER_NOT_READY);
+    NdbSleep_MilliSleep(200);
+  }
+  CHECK(gate_opened);
+
+  CHECK(mgmd.stop());
+  return NDBT_OK;
+}
+
+static void set_env(const char *name, const char *value) {
+#ifdef _WIN32
+  _putenv_s(name, value);
+#else
+  setenv(name, value, 1);
+#endif
+}
+
+int runTestMgmTransporterConvertRetry(NDBT_Context *ctx, NDBT_Step *step) {
+  NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+  BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
+  Properties config = ConfigFactory::create();
+  CHECK(ConfigFactory::write_config_ini(config, cfg_path.c_str()));
+
+  Mgmd mgmd(1);
+  Ndbd ndbd(2);
+
+  CHECK(mgmd.start_from_config_ini(wd.path()));
+  CHECK(mgmd.connect(config));
+  CHECK(mgmd.wait_confirmed_config());
+
+  /**
+   * Widen the window between the data node's configuration fetch and
+   * its mgm transporter conversion (the delay is inherited by the
+   * spawned process), then restart the mgmd inside the window.  The
+   * data node must retry the conversion against the restarted mgmd
+   * and complete its start; without the bounded retry it dies with
+   * the permanent error NDBD_EXIT_CONNECTION_SETUP_FAILED.
+   */
+  set_env("NDB_TEST_DELAY_MGM_CONVERT", "30");
+  bool ndbd_started = ndbd.start(wd.path(), mgmd.connectstring(config));
+  set_env("NDB_TEST_DELAY_MGM_CONVERT", "");
+  CHECK(ndbd_started);
+
+  /**
+   * Give the data node time to allocate its nodeid and fetch the
+   * configuration (the first thing it does, normally well under 10 s),
+   * then take the mgmd away inside the widened window.  If a slow
+   * machine makes the node miss the mgmd outage entirely, the config
+   * fetch retry hides it and the test still passes, just without
+   * exercising the conversion retry.
+   */
+  NdbSleep_SecSleep(10);
+  CHECK(mgmd.stop());
+  CHECK(mgmd.start_from_config_ini(wd.path()));
+  CHECK(mgmd.connect(config));
+
+  /* The node wakes with a dead mgm session and must reconnect */
+  NdbMgmHandle handle = mgmd.handle();
+  CHECK(ndbd.wait_started(handle, 120));
+
+  CHECK(ndbd.stop());
+  CHECK(mgmd.stop());
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testMgmd);
 DRIVER(DummyDriver); /* turn off use of NdbApi */
 
@@ -2291,6 +2416,18 @@ TESTCASE("SshKeySigning",
 }
 
 #endif
+
+TESTCASE("ArbitratorGateNotReady",
+         "Check that the arbitrator startup gate refuses non-bootstrap "
+         "commands with a retryable error and keeps the session open") {
+  INITIALIZER(runTestArbitratorGateNotReady);
+}
+
+TESTCASE("MgmTransporterConvertRetry",
+         "Restart the mgmd between a data node's configuration fetch and "
+         "its mgm transporter conversion, check that the node still starts") {
+  INITIALIZER(runTestMgmTransporterConvertRetry);
+}
 
 NDBT_TESTSUITE_END(testMgmd)
 

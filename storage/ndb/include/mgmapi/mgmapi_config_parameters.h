@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -302,6 +302,8 @@
 #define CFG_DB_MAX_RR_GROUP_SIZE      701
 #define CFG_DB_NUM_LQHKEYREQ_COUNTS   702
 #define CFG_DB_NUM_SCAN_FRAGREQ_COUNTS 703
+#define CFG_DB_RESTART_BARRIER_TIMEOUT 704
+#define CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT 705
 
 /* End RonDB only configuration parameters */
 

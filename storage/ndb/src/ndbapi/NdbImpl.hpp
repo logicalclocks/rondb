@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -637,9 +637,16 @@ inline bool NdbImpl::getIsNodeSendable(NodeId n) const {
   const NodeInfo::NodeType node_type = node.m_info.getType();
   assert(node_type == NodeInfo::DB || node_type == NodeInfo::MGM);
 
+  /**
+   * getNodeRecovered(): a data node parked at the restart barrier in
+   * start phase 110 (RONDB-1096) is fully recovered and serves
+   * transactions although it still reports SL_STARTING; it must be
+   * sendable or TCSEIZEREQ to it can never even be delivered.
+   */
   return node.compatible &&
          (startLevel == NodeState::SL_STARTED ||
           startLevel == NodeState::SL_STOPPING_1 ||
+          node.m_state.getNodeRecovered() ||
           node.m_state.getSingleUserMode() || node_type == NodeInfo::MGM);
 }
 

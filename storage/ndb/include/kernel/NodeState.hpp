@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -172,6 +172,24 @@ struct NodeStatePOD {
   bool getSystemRestartInProgress() const;
 
   /**
+   * Start phase of the restart barrier (RONDB-1096). A node restart
+   * parks in this phase when it is fully recovered, before reporting
+   * started, until all concurrently restarting nodes have completed
+   * their recovery.
+   */
+  static constexpr Uint32 RESTART_BARRIER_START_PHASE = 110;
+
+  /**
+   * Has this node completed its database recovery. True when started,
+   * and also while a node restart has reached the restart barrier in
+   * start phase 110, where the node is a fully synchronized replica
+   * but has not yet reported started (RONDB-1096). A recovered node
+   * survives failures of other nodes and participates in the normal
+   * node failure handling.
+   */
+  bool getNodeRecovered() const;
+
+  /**
    * Are we started
    */
   bool getStarted() const {
@@ -259,6 +277,12 @@ inline Uint32 NodeStatePOD::getSingleUserApi() const { return singleUserApi; }
 
 inline bool NodeStatePOD::getSystemRestartInProgress() const {
   return startLevel == SL_STARTING && starting.restartType == ST_SYSTEM_RESTART;
+}
+
+inline bool NodeStatePOD::getNodeRecovered() const {
+  if (startLevel == SL_STARTED || startLevel == SL_SINGLEUSER) return true;
+  return getNodeRestartInProgress() &&
+         starting.startPhase >= RESTART_BARRIER_START_PHASE;
 }
 
 inline NdbOut &operator<<(NdbOut &ndbout, const NodeStatePOD &state) {

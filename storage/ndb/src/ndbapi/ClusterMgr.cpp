@@ -1141,8 +1141,23 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
      */
     DBUG_PRINT("info", ("DB node, startLevel: %u, singleMode: %u",
       node.m_state.startLevel, node.m_state.getSingleUserMode()));
+    /**
+     * A data node that reports SL_STARTING with start phase >= 110 is
+     * parked at the restart barrier (RONDB-1096): it is fully
+     * recovered and accepts transactions although it does not yet
+     * report started (which keeps e.g. Kubernetes orchestration
+     * waiting for it). Treat such a node as alive. Version guarded:
+     * only data nodes that support the restart barrier accept remote
+     * TCSEIZEREQ in this state, older nodes would refuse with error
+     * 203.
+     */
+    const bool recovered_at_barrier =
+      node.m_state.startLevel == NodeState::SL_STARTING &&
+      node.m_state.getNodeRecovered() &&
+      ndbd_restart_phase_110_barrier(node.m_info.m_version);
     if (node.compatible && (node.m_state.startLevel == NodeState::SL_STARTED ||
-                            node.m_state.getSingleUserMode()))
+                            node.m_state.getSingleUserMode() ||
+                            recovered_at_barrier))
     {
       NdbMutex_Lock(m_node_state_mutex);
       if (!get_node_alive(node))
@@ -1155,7 +1170,9 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
           char node_buf[128];
           const char *started_ptr =
             (node.m_state.startLevel == NodeState::SL_STARTED) ?
-              "started" : "in single user mode";
+              "started" : (recovered_at_barrier ?
+                "recovered, waiting at the restart barrier" :
+                "in single user mode");
           const char *our_version_ptr =
             ndbGetVersionString(NDB_VERSION,
                                 0,
