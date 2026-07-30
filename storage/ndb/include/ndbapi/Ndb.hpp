@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2146,9 +2147,6 @@ class Ndb {
   void remove_sent_list(Uint32);
   Uint32 insert_completed_list(NdbTransaction *);
   Uint32 insert_sent_list(NdbTransaction *);
-
-  int sendRecSignal(Uint16 aNodeId, Uint32 aWaitState, NdbApiSignal *aSignal,
-                    Uint32 nodeSequence, Uint32 *ret_conn_seq = nullptr);
 
   // Get block number of this NDBAPI object
   int getBlockNumber();

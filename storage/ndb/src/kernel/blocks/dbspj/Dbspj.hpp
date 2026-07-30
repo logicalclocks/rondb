@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1248,6 +1248,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_rootFragId;
     Uint32 m_rootFragCnt;
     Uint32 m_transId[2];
+    Uint32 m_user_id;
     TreeNode_list::Head m_nodes;
     TreeNodeCursor_list::Head m_cursor_nodes;
     Uint32 m_cnt_active;  // No of "running" nodes

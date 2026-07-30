@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -586,8 +586,9 @@ private:
   } m_reserved_nodes;
   NdbMutex *m_reserved_nodes_mutex;
 
-  int check_quota_version();
+  int check_quota_version(bool is_user);
   int set_quotas(const char *database_name,
+                 bool is_user,
                  Uint32 in_memory_size,
                  Uint32 on_disk_size,
                  Uint32 rate_per_sec,
@@ -597,6 +598,7 @@ private:
                  NdbOut& out);
 
   int alter_quotas(const char *database_name,
+                   bool is_user,
                    Uint32 in_memory_size,
                    Uint32 on_disk_size,
                    Uint32 rate_per_sec,
@@ -605,10 +607,10 @@ private:
                    Uint32 max_parallel_complex_queries,
                    NdbOut& out);
 
-  int drop_quotas(const char *database_name, NdbOut& out);
-  void get_quotas(const char *database_name, NdbOut& out);
-  void list_quotas(Uint32 nextDatabaseId, NdbOut& out);
-  void backup_quotas(Uint32 nextDatabaseId, NdbOut& out);
+  int drop_quotas(const char *database_name, bool is_user, NdbOut& out);
+  void get_quotas(const char *database_name, bool is_user, NdbOut& out);
+  void list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
+  void backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
 
   void release_local_nodeid_reservation(NodeId nodeid);
   struct PossibleNode {

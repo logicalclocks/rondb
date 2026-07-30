@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,9 +34,12 @@
 #include <signaldata/TcCommit.hpp>
 #include <signaldata/TcHbRep.hpp>
 #include <signaldata/TcIndx.hpp>
+#include <signaldata/TcKeyRef.hpp>
 #include <signaldata/TcKeyConf.hpp>
 #include <signaldata/TcKeyFailConf.hpp>
 #include <signaldata/TcRollbackRep.hpp>
+#include <signaldata/QueryDatabase.hpp>
+#include <signaldata/DropDatabase.hpp>
 
 static const Uint64 InvalidTransactionId = ~Uint64(0);
 
@@ -350,7 +353,11 @@ NdbTransaction::NdbTransaction(Ndb *aNdb)
       m_scanningQuery(nullptr),
       //
       m_tcRef(numberToRef(DBTC, 0)),
-      m_enable_schema_obj_owner_check(false) {
+      m_enable_schema_obj_owner_check(false),
+      m_user_id(RNIL),
+      m_user_id_version(0),
+      m_current_username_len(0),
+      m_current_username(nullptr) {
   theListState = NotInList;
   theError.code = 0;
   // theId = NdbObjectIdMap::InvalidId;
@@ -468,6 +475,120 @@ void NdbTransaction::setOperationErrorCodeAbort(int error) {
   }  // if
   setErrorCode(error);
   DBUG_VOID_RETURN;
+}
+
+void NdbTransaction::rateOverflowError() {
+  DBUG_ENTER("NdbTransaction::rateOverflowError");
+  TransporterFacade *facade = theNdb->theImpl->m_transporter_facade;
+  if (m_user_id != RNIL) {
+    facade->rateOverflowError(m_current_username,
+                              m_current_username_len);
+  }
+  DBUG_VOID_RETURN;
+}
+
+int NdbTransaction::setUserId(const char *username, Uint32 username_len) {
+  DBUG_ENTER("NdbTransaction::setUserId");
+  TransporterFacade *facade = theNdb->theImpl->m_transporter_facade;
+  m_current_username = username;
+  m_current_username_len = username_len;
+  if (username_len > MAX_DB_NAME_SIZE) {
+    setErrorCode(DropDatabaseRef::DatabaseNameTooLong);
+    DBUG_RETURN(-1);
+  }
+  Uint32 node_id = getConnectedNodeId();
+  {
+    int ret_code = facade->retrieveUserId(username,
+                                          username_len,
+                                          m_user_id,
+                                          m_user_id_version,
+                                          node_id);
+    if (ret_code == 0) {
+      /* Successful retrieve of user id */
+      DBUG_RETURN(0);
+    }
+    if (ret_code > 1) {
+      setErrorCode(ret_code);
+      DBUG_RETURN(-1);
+    }
+  }
+  /* No entry was found in database, we will search for it in RonDB data node */
+  Uint32 databaseName[MAX_DB_NAME_SIZE/4 + 1];
+  char *databaseNamePtr = (char*)&databaseName[0];
+  memcpy((char*)&databaseName[0], username, username_len);
+  databaseNamePtr[username_len] = 0;
+  DBUG_PRINT("info", ("Get User for %s", databaseNamePtr));
+  LinearSectionPtr ptr[3];
+  Uint32 secs = 1;
+  ptr[0].p = (const Uint32*)&databaseName[0];
+  ptr[0].sz = (username_len + 4) / 4;
+
+  Uint32 conn_seq = theNodeSequence;
+  NdbApiSignal tSignal(theNdb->theMyRef);
+  tSignal.setSignal(GSN_GET_DATABASE_REQ, 0);
+  tSignal.setData(theNdb->theMyRef, 1);
+  tSignal.setData(ptr2int(), 2);
+  tSignal.setData(1, 3); // requestInfo, 1 == is_user true
+  theMagicNumber = getMagicNumber();
+  int ret_code = theNdb->theImpl->sendRecSignal(node_id,
+                                                WAIT_GET_DATABASE_REQ,
+                                                &tSignal,
+                                                conn_seq,
+                                                nullptr,
+                                                secs,
+                                                &ptr);
+  if (likely(ret_code == 0)) {
+    DBUG_RETURN(0);
+  }
+  m_user_id = RNIL;
+  m_user_id_version = 0;
+  if (ret_code == -1) {
+    TRACE_DEBUG("Time-out when GET_DATABASE_REQ sent");
+  } else if (ret_code == -2) {
+    TRACE_DEBUG("Node failed when GET_DATABASE_REQ sent");
+  } else if (ret_code == -3) {
+    TRACE_DEBUG("Send failed when GET_DATABASE_REQ sent");
+  } else if (ret_code == -4) {
+    TRACE_DEBUG("Send buffer full when GET_DATABASE_REQ sent");
+  } else if (ret_code == -5) {
+    TRACE_DEBUG("Node stopping when GET_DATABASE_REQ sent");
+  } else {
+    g_eventLogger->info("Impossible return from sendRecSignal for"
+                        " GET_DATABASE_REQ");
+    abort();
+  }  // if
+  DBUG_RETURN(0);
+}
+
+int NdbTransaction::receiveGET_DATABASE_CONF(const NdbApiSignal *signal) {
+  DBUG_ENTER("NdbTransaction::receiveGET_DATABASE_CONF");
+  const GetDatabaseConf *conf = (const GetDatabaseConf*)signal->getDataPtr();
+  m_user_id = conf->databaseId;
+  m_user_id_version = conf->databaseVersion;
+  TransporterFacade *facade = theNdb->theImpl->m_transporter_facade;
+  int ret_code = facade->updateUserId(m_current_username,
+                                      m_current_username_len,
+                                      m_user_id,
+                                      m_user_id_version);
+  if (ret_code != 0) {
+    m_user_id = RNIL;
+    m_user_id_version = 0;
+  }
+  DBUG_RETURN(0);
+}
+
+int NdbTransaction::receiveGET_DATABASE_REF(const NdbApiSignal *signal) {
+  DBUG_ENTER("NdbTransaction::receiveGET_DATABASE_REF");
+  (void)signal;
+  TRACE_DEBUG("GET_DATABASE_REF received");
+  TransporterFacade *facade = theNdb->theImpl->m_transporter_facade;
+  m_user_id = RNIL;
+  m_user_id_version = 0;
+  facade->deleteUserId(m_current_username,
+                       m_current_username_len,
+                       RNIL,
+                       0);
+  DBUG_RETURN(0);
 }
 
 /*****************************************************************************
@@ -2475,8 +2596,12 @@ Parameters:    aSignal: The signal object pointer.
 Remark:        
 *******************************************************************************/
 int NdbTransaction::receiveTCROLLBACKREF(const NdbApiSignal *aSignal) {
+  Uint32 errorCode = aSignal->readData(4);
+  if (unlikely(errorCode == TcKeyRef::WriteRateOverflowError)) {
+    rateOverflowError();
+  }
   if (checkState_TransId(aSignal->getDataPtr() + 1)) {
-    setOperationErrorCodeAbort(aSignal->readData(4));
+    setOperationErrorCodeAbort(errorCode);
     theCommitStatus = Aborted;
     theCompletionStatus = CompletedFailure;
     theReturnStatus = ReturnFailure;
@@ -2503,13 +2628,17 @@ Remark:         Handles the reception of the ROLLBACKREP signal.
 int NdbTransaction::receiveTCROLLBACKREP(const NdbApiSignal *aSignal) {
   DBUG_ENTER("NdbTransaction::receiveTCROLLBACKREP");
 
+  Uint32 errorCode = aSignal->readData(4);
+  if (unlikely(errorCode == TcKeyRef::WriteRateOverflowError)) {
+    rateOverflowError();
+  }
   /****************************************************************************
 Check that we are expecting signals from this transaction and that it doesn't
 belong to a transaction already completed. Simply ignore messages from other 
 transactions.
   ****************************************************************************/
   if (checkState_TransId(aSignal->getDataPtr() + 1)) {
-    theError.code = aSignal->readData(4);  // Override any previous errors
+    theError.code = errorCode;  // Override any previous errors
     if (aSignal->getLength() == TcRollbackRep::SignalLength) {
       // Signal may contain additional error data
       theError.details = (char *)UintPtr(aSignal->readData(5));

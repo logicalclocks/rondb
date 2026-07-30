@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -566,6 +567,18 @@ class NdbTransaction {
   Uint64 getTransactionId();
 
   /**
+   * Set User Id of this transaction.
+   * The user has rate limit imposed.
+   */
+  int setUserId(const char *username, Uint32 username_len);
+
+  /**
+   * The query got an rate overflow error, can be used to stop even
+   * attempting new transactions for that user for a while.
+   */
+  void rateOverflowError();
+
+  /**
    * The commit status of the transaction.
    */
   enum CommitStatusType {
@@ -1016,6 +1029,8 @@ class NdbTransaction {
   int receiveTCINDXREF(const NdbApiSignal *);
   int receiveSCAN_TABREF(const NdbApiSignal *);
   int receiveSCAN_TABCONF(const NdbApiSignal *, const Uint32 *, Uint32 len);
+  int receiveGET_DATABASE_CONF(const NdbApiSignal*);
+  int receiveGET_DATABASE_REF(const NdbApiSignal*);
 
   int doSend();          // Send all operations
   int sendROLLBACK();    // Send of an ROLLBACK
@@ -1246,6 +1261,10 @@ class NdbTransaction {
   Uint32 m_tcRef;
 
   bool m_enable_schema_obj_owner_check;
+  Uint32 m_user_id;
+  Uint32 m_user_id_version;
+  Uint32 m_current_username_len;
+  const char *m_current_username;
 };
 
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL

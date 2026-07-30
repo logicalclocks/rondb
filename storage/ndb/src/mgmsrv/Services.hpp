@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -94,6 +94,13 @@ class MgmApiSession : public SocketServer::Session {
   void getQuotas(Parser_t::Context &ctx, const class Properties &args);
   void listQuotas(Parser_t::Context &ctx, const class Properties &args);
   void backupQuotas(Parser_t::Context &ctx, const class Properties &args);
+
+  void setUser(Parser_t::Context &ctx, const class Properties &args);
+  void alterUser(Parser_t::Context &ctx, const class Properties &args);
+  void dropUser(Parser_t::Context &ctx, const class Properties &args);
+  void getUser(Parser_t::Context &ctx, const class Properties &args);
+  void listUsers(Parser_t::Context &ctx, const class Properties &args);
+  void backupUsers(Parser_t::Context &ctx, const class Properties &args);
 
   void getConfig(Parser_t::Context &ctx, const class Properties &args, bool v2);
   void getConfig_v1(Parser_t::Context &ctx, const class Properties &args);

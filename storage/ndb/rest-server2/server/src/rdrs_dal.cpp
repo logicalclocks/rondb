@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -163,7 +163,9 @@ RS_Status pk_batch_read(void *amalloc_void,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
-                        unsigned int threadIndex) {
+                        unsigned int threadIndex,
+                        const char *rate_limit_identity,
+                        unsigned int rate_limit_identity_len) {
   ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
@@ -178,7 +180,9 @@ RS_Status pk_batch_read(void *amalloc_void,
                                       is_batch,
                                       req_buffs,
                                       resp_buffs,
-                                      ndb_object);
+                                      ndb_object,
+                                      rate_limit_identity,
+                                      rate_limit_identity_len);
   )
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,
@@ -1749,6 +1753,8 @@ class TransactionGuard {
 };
 
 RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_str_buf,
+                       const char *rate_limit_identity,
+                       unsigned int rate_limit_identity_len,
                        uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
   // Clear the JSON buffer in case this is a retry
   RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
@@ -1842,6 +1848,22 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
 
   // Guard will automatically close transaction when function exits
   TransactionGuard txn_guard(ndb_object, transaction);
+
+  /* RONDB-978: tag the scan transaction with the rate limit identity;
+     during the rate overflow backoff window setUserId fails with the
+     rate limit error (mapped to HTTP 429) */
+  if (rate_limit_identity != nullptr) {
+    if (unlikely(transaction->setUserId(rate_limit_identity,
+                                        rate_limit_identity_len) != 0)) {
+      RS_Status err = RS_RONDB_SERVER_ERROR(
+          transaction->getNdbError(),
+          std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
+          std::string("Failed to start transaction.") +
+          std::string(" Database: ") + db +
+          std::string(" Table: ") + scan_params.path.table);
+      return err;
+    }
+  }
 
   // End of start_transaction phase
   if (timing_enabled) {
@@ -2288,6 +2310,8 @@ void ResetScanParams(ScanReadParams& scan_params) {
 }
 
 RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex, void* doc,
+                    const char *rate_limit_identity,
+                    unsigned int rate_limit_identity_len,
                     uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
   bool timing_enabled = (timing != nullptr);
   NDB_TICKS phase_start;
@@ -2309,7 +2333,9 @@ RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex, void*
   }
 
   DATA_OP_RETRY_HANDLER(
-    status = perform_scan(scan_params, ndb_object, doc, rows_fetched_out, timing);
+    status = perform_scan(scan_params, ndb_object, doc,
+                          rate_limit_identity, rate_limit_identity_len,
+                          rows_fetched_out, timing);
     HandleSchemaErrors(ndb_object,
                        status,
                        {std::make_tuple(std::string(scan_params.path.db),

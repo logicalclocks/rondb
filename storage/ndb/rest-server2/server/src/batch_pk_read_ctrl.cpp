@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,6 +24,7 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 
 #include <cstring>
@@ -172,6 +173,7 @@ void BatchPKReadCtrl::batchPKRead(
   }
 
   // Authenticate
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     // One access request per (db, table) of the batch. An operation with
@@ -216,6 +218,7 @@ void BatchPKReadCtrl::batchPKRead(
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
   ArenaMalloc amalloc(256 * 1024);
   // Execute
@@ -267,7 +270,9 @@ void BatchPKReadCtrl::batchPKRead(
                            true,
                            reqBuffs.data(),
                            respBuffs.data(),
-                           currentThreadIndex);
+                           currentThreadIndex,
+                           rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                           (unsigned int)rl_identity.size());
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
 

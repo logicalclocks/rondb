@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -122,5 +122,7 @@ const std::shared_ptr<RestErrorCode> READ_FROM_DB_FAIL_BAD_INPUT =
     std::make_shared<RestErrorCode>(18, "Reading from db failed.", 400, "");
 const std::shared_ptr<RestErrorCode> DESERIALISE_FEATURE_FAIL =
     std::make_shared<RestErrorCode>(19, "Deserialising complex feature failed.", 500, "");
+const std::shared_ptr<RestErrorCode> RATE_LIMIT_EXCEEDED =
+    std::make_shared<RestErrorCode>(20, "Rate limit exceeded.", 429, "");
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_ERROR_CODE_HPP_

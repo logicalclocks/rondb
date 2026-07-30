@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -885,8 +885,8 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_CREATE_DATABASE_REQ         645
 #define GSN_CREATE_DATABASE_REF         646
 #define GSN_CREATE_DATABASE_CONF        647
+#define GSN_CREATE_DATABASE_REP         648
 
-#define GSN_648
 #define GSN_649
 
 #define GSN_SET_WAKEUP_THREAD_ORD       657
@@ -950,8 +950,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_DROP_DATABASE_REQ           686
 #define GSN_DROP_DATABASE_REF           687
 #define GSN_DROP_DATABASE_CONF          689
-
-/* not used                             690 */
+#define GSN_DROP_DATABASE_REP           690
 
 /**
  * SUMA restart protocol

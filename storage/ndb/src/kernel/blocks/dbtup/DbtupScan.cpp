@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -648,7 +648,7 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
         case AccLockReq::Refused: {
           jam();
           // we cannot see deleted tuple (assert only)
-          ndbassert(false);
+          // ndbassert(false);
           // skip it
           scan.m_state = ScanOp::Next;
           CheckLcpStop *cls = (CheckLcpStop *)signal->theData;

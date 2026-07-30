@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -258,6 +258,7 @@ DictDatabaseInfo::Mapping[] = {
   DDBI_MAP_INT64(Database, MaxTransactionSize, MaxTransactionSize),
   DDBI_MAP_INT64(Database, MaxParallelTransactions, MaxParallelTransactions),
   DDBI_MAP_INT64(Database, MaxParallelComplexQueries, MaxParallelComplexQueries),
+  DDBI_MAP_INT(Database, IsUser, IsUser),
 
   DDBIBREAK(ParameterEnd)
 };
@@ -276,6 +277,7 @@ DictDatabaseInfo::Database::init(){
   MaxTransactionSize = 0;
   MaxParallelTransactions = 0;
   MaxParallelComplexQueries = 0;
+  IsUser = false;
 }
 
 //static 

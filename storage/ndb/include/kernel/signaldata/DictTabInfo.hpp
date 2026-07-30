@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -460,7 +460,7 @@ class DictTabInfo {
 
   // Attribute data interpretation
   struct Attribute {
-    char AttributeName[MAX_TAB_NAME_SIZE];
+    char AttributeName[MAX_ATTR_NAME_SIZE];
     Uint32 AttributeId;
     Uint32 AttributeType;  // for osu 4.1->5.0.x
     Uint32 AttributeSize;
@@ -722,6 +722,7 @@ struct DictDatabaseInfo {
     MaxTransactionSize= 103,
     MaxParallelTransactions = 104,
     MaxParallelComplexQueries = 105,
+    IsUser = 106,
     ParameterEnd = 199,
   };
   struct Database {
@@ -736,6 +737,7 @@ struct DictDatabaseInfo {
     Uint64 MaxTransactionSize;
     Uint64 MaxParallelTransactions;
     Uint64 MaxParallelComplexQueries;
+    bool IsUser;
     Database() {}
     void init();
   };

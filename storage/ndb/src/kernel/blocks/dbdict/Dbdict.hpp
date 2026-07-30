@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -722,6 +722,7 @@ class Dbdict : public SimulatedBlock {
     Uint32 m_max_transaction_size;
     Uint32 m_max_parallel_transactions;
     Uint32 m_max_parallel_complex_queries;
+    bool m_is_user;
   };
   typedef Ptr<Database> DatabasePtr;
   typedef RecordPool<RWPool<Database> > Database_pool;

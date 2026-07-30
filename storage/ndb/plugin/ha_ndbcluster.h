@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -588,6 +588,8 @@ class ha_ndbcluster : public handler, public Partition_handler {
                              ha_rows *rows_out);
   int ndb_index_stat_set_rpk(uint inx);
   int ndb_index_stat_analyze(uint *inx_list, uint inx_count);
+
+  int set_user_id(NdbTransaction*, int &error);
 
   NdbTransaction *start_transaction_part_id(uint32 part_id, int &error);
   inline NdbTransaction *get_transaction_part_id(uint32 part_id, int &error) {

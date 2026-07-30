@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -526,21 +526,29 @@ int NdbOperation::prepareSend(Uint32 aTC_ConnectPtr, Uint64 aTransId,
   m_abortOption = abortOption;
 
   tcKeyReq->setNoDiskFlag(tReqInfo, (m_flags & OF_NO_DISK) != 0);
-  tcKeyReq->requestInfo = tReqInfo;
 
   //-------------------------------------------------------------
-  // The next step is to fill in the up to three conditional words.
+  // The next step is to fill in the up to four conditional words.
   //-------------------------------------------------------------
-  Uint32 *tOptionalDataPtr = &tcKeyReq->scanInfo;
+  Uint32 *tOptionalDataPtr = &tcKeyReq->userId;
+  Uint32 var_index = 0;
+  Uint32 user_id = theNdbCon->m_user_id;
+  if (user_id != RNIL && tcKeyReq->getStartFlag(tReqInfo)) {
+    tcKeyReq->setUserIdFlag(tReqInfo, 1);
+    tOptionalDataPtr[0] = user_id;
+    tOptionalDataPtr[1] = theNdbCon->m_user_id_version;
+    var_index += 2;
+  }
+  tcKeyReq->requestInfo = tReqInfo;
   Uint32 tScanInfo = theScanInfo;
   Uint32 tDistrKeyIndex = tScanInfo & 1;
 
   Uint32 tDistrKey = theDistributionKey;
 
-  tOptionalDataPtr[0] = tScanInfo;
-  tOptionalDataPtr[tDistrKeyIndex] = tDistrKey;
+  tOptionalDataPtr[var_index] = tScanInfo;
+  tOptionalDataPtr[var_index + tDistrKeyIndex] = tDistrKey;
 
-  theTCREQ->setLength(TcKeyReq::StaticLength +
+  theTCREQ->setLength(TcKeyReq::StaticLength + var_index +
                       tDistrKeyIndex +         // 1 for scan info present
                       theDistrKeyIndicator_);  // 1 for distr key present
 
@@ -1441,17 +1449,26 @@ Uint32 NdbOperation::fillTcKeyReqHdr(TcKeyReq *tcKeyReq, Uint32 connectPtr,
   TcKeyReq::setInterpretedFlag(reqInfo, (m_interpreted_code != nullptr));
   TcKeyReq::setInterpretedInsertFlag(reqInfo, theInterpretInsertIndicator);
   // AbortOption set later in prepareSendNdbRecord()
-  tcKeyReq->requestInfo = reqInfo;
 
   tcKeyReq->transId1 = (Uint32)transId;
   tcKeyReq->transId2 = (Uint32)(transId >> 32);
 
   /*
-    The next four words are optional, and included or not based on the flags
-    passed earlier. At most two of them are possible here.
+    The optional words follow, included based on flags. userId/version (when
+    the transaction carries a rate limit user id, RONDB-978) occupy the first
+    optional slot(s); scanInfo and distributionKey follow, exactly as in the
+    non-NdbRecord path NdbOperation::prepareSend. Their offsets are implied by
+    the flags in requestInfo, so the userId words must come first.
   */
-  hdrLen = 8;
-  hdrPtr = &(tcKeyReq->scanInfo);
+  hdrLen = TcKeyReq::StaticLength;
+  hdrPtr = &(tcKeyReq->scanInfo);  // == &userId (union)
+  Uint32 user_id = theNdbCon->m_user_id;
+  if (user_id != RNIL) {
+    TcKeyReq::setUserIdFlag(reqInfo, 1);
+    *hdrPtr++ = user_id;
+    *hdrPtr++ = theNdbCon->m_user_id_version;
+    hdrLen += 2;
+  }
   if (theScanInfo & 1) {
     *hdrPtr++ = theScanInfo;
     hdrLen++;
@@ -1460,6 +1477,8 @@ Uint32 NdbOperation::fillTcKeyReqHdr(TcKeyReq *tcKeyReq, Uint32 connectPtr,
     *hdrPtr++ = theDistributionKey;
     hdrLen++;
   }
+
+  tcKeyReq->requestInfo = reqInfo;
 
   return hdrLen;
 }
@@ -1672,7 +1691,8 @@ int NdbOperation::receiveTCKEYREF(const NdbApiSignal *aSignal) {
     return -1;
   }  // if
 
-  setErrorCode(aSignal->readData(4));
+  Uint32 errorCode = aSignal->readData(4);
+  setErrorCode(errorCode);
   if (aSignal->getLength() == TcKeyRef::SignalLength) {
     // Signal may contain additional error data
     theError.details = (char *)UintPtr(aSignal->readData(5));
@@ -1681,6 +1701,9 @@ int NdbOperation::receiveTCKEYREF(const NdbApiSignal *aSignal) {
   theStatus = Finished;
   theReceiver.m_received_result_length = ~0;
 
+  if (errorCode == TcKeyRef::WriteRateOverflowError) {
+    theNdbCon->rateOverflowError();
+  }
   // not dirty read
   if (!(theOperationType == ReadRequest && theDirtyIndicator)) {
     theNdbCon->OpCompleteFailure();

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -162,6 +162,14 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   // NOTE! The hupped trans becomes the owner of the operation
   theNdbCon = aScanConnection;
   theNdbCon->theMagicNumber = 0xFE11DF;
+  /**
+   * RONDB-978: the scan executes on a hupped buddy transaction, not on the
+   * caller's transaction. Propagate the rate limit user id so the
+   * ScanTabReq carries it (setUserId was called on myConnection before the
+   * scan operation was created).
+   */
+  theNdbCon->m_user_id = myConnection->m_user_id;
+  theNdbCon->m_user_id_version = myConnection->m_user_id_version;
   return 0;
 }
 
@@ -2774,7 +2782,6 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   ScanTabReq::setTTLIgnoreFlag(reqInfo, (m_flags & OF_TTL_IGNORE) != 0);
   ScanTabReq::setTTLOnlyExpiredFlag(reqInfo, (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
 
-  req->requestInfo = reqInfo;
   req->distributionKey = theDistributionKey;
   theSCAN_TABREQ->setLength(ScanTabReq::StaticLength + theDistrKeyIndicator_);
 
@@ -2783,6 +2790,15 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
     theSCAN_TABREQ->setLength(ScanTabReq::StaticLength +
                               2 /* 1 field padding for theDistributionKey */);
   }
+  Uint32 user_id = theNdbCon->m_user_id;
+  if (user_id != RNIL) {
+    /* Extend length to fit all optional fields including user id + version */
+    theSCAN_TABREQ->setLength(ScanTabReq::StaticLength + 4);
+    req->userId = user_id;
+    req->userIdVersion = theNdbCon->m_user_id_version;
+    ScanTabReq::setUserIdFlag(reqInfo, 1);
+  }
+  req->requestInfo = reqInfo;
 
   /* All scans use NdbRecord internally */
   assert(theStatus == UseNdbRecord);
