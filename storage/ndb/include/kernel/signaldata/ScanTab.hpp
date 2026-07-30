@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -122,6 +122,8 @@ class ScanTabReq {
    */
   Uint32 distributionKey;
   UintR ttlPurgeWindowSize;
+  Uint32 userId;
+  Uint32 userIdVersion;
 
   /**
    * Get:ers for requestInfo
@@ -150,6 +152,7 @@ class ScanTabReq {
   static Uint32 getTTLIgnoreFlag(const Uint32 &requestInfo);
   static Uint32 getTTLOnlyExpiredFlag(const Uint32 &requestInfo);
   static Uint32 getParallelOrderedScanFlag(const Uint32 &requestInfo);
+  static Uint32 getUserIdFlag(const Uint32 &requestInfo);
   static Uint32 getRingBufferShowMetaFlag(const Uint32 &requestInfo);
 
   /**
@@ -180,6 +183,7 @@ class ScanTabReq {
   static void setTTLOnlyExpiredFlag(Uint32 &requestInfo, Uint32 val);
   static void setParallelOrderedScanFlag(Uint32 &requestInfo, Uint32 val);
   static void setRingBufferShowMetaFlag(Uint32 &requestInfo, Uint32 val);
+  static void setUserIdFlag(Uint32 &requestInfo, Uint32 val);
 };
 
 /**
@@ -213,12 +217,12 @@ class ScanTabReq {
  I = IgnoreTTL             - 1  Bit 3
  e = TTL only expired      - 1  Bit 4
  r = Four receiver/part    - 1  Bit 2
- M = Ring Buffer Show Meta - 1  Bit 5
+ M = Ring Buffer Show Meta - 1  Bit 0
+ u = User Id flag          - 1  Bit 5
 
            1111111111222222222233
  01234567890123456789012345678901
- pppppppplnhcktzxbbbbbbbbbbdjafR
-   rIeMPg
+ M rIeuPglnhcktzxbbbbbbbbbbdjafR
 */
 
 #define PARALLEL_SHIFT (0)
@@ -278,7 +282,11 @@ class ScanTabReq {
 
 #define SCAN_TTL_IGNORE_SHIFT (3)
 #define SCAN_TTL_ONLY_EXPIRED_SHIFT (4)
-#define SCAN_RING_BUFFER_SHOW_META_SHIFT (5)
+/* Show Meta moved to bit 0: bit 5 is taken by the 26.02 UserId flag and
+   on a bit conflict the lower version always wins */
+#define SCAN_RING_BUFFER_SHOW_META_SHIFT (0)
+
+#define SCAN_USER_ID_SHIFT     (5)
 
 inline Uint8 ScanTabReq::getReadCommittedBaseFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> SCAN_READ_COMMITTED_BASE_SHIFT) & 1);
@@ -555,6 +563,12 @@ ScanTabReq::setTTLOnlyExpiredFlag(UintR & requestInfo, Uint32 flag) {
 }
 
 inline
+Uint32
+ScanTabReq::getUserIdFlag(const UintR & requestInfo) {
+  return (requestInfo >> SCAN_USER_ID_SHIFT) & 1;
+}
+
+inline
 UintR
 ScanTabReq::getRingBufferShowMetaFlag(const UintR & requestInfo) {
   return (requestInfo >> SCAN_RING_BUFFER_SHOW_META_SHIFT) & 1;
@@ -566,6 +580,14 @@ ScanTabReq::setRingBufferShowMetaFlag(UintR & requestInfo, Uint32 flag) {
   ASSERT_BOOL(flag, "ScanTabReq::setRingBufferShowMetaFlag");
   requestInfo= (requestInfo & ~(1 << SCAN_RING_BUFFER_SHOW_META_SHIFT)) |
                (flag << SCAN_RING_BUFFER_SHOW_META_SHIFT);
+}
+
+inline
+void
+ScanTabReq::setUserIdFlag(UintR & requestInfo, Uint32 flag) {
+  ASSERT_BOOL(flag, "TcKeyReq::setUserIdFlag");
+  requestInfo= (requestInfo & ~(1 << SCAN_USER_ID_SHIFT)) |
+               (flag << SCAN_USER_ID_SHIFT);
 }
 
 /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024, 2025 Hopsworks AB
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -27,6 +27,7 @@
 #include "json_parser.hpp"
 #include "metadata.hpp"
 #include "pk_data_structs.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 
 #include <drogon/HttpTypes.h>
@@ -159,6 +160,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   }
 
   // Authenticate
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     if (unlikely(err != nullptr)) {
@@ -177,6 +179,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
 
   // Execute
@@ -261,7 +264,9 @@ void BatchFeatureStoreCtrl::batch_featureStore(
                            true,
                            reqBuffs.data(),
                            respBuffs.data(),
-                           currentThreadIndex);
+                           currentThreadIndex,
+                           rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                           (unsigned int)rl_identity.size());
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       DEB_BFS_CTRL("pk_batch_read failed: http_code: %u, message: %s",

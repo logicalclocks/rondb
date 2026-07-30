@@ -214,6 +214,10 @@ bool printCONTINUEB_DBDIH(FILE *output, const Uint32 *theData, Uint32 len,
     case DihContinueB::ZGET_TABINFO_SEND:
       fprintf(output, " Get Tabinfo Send\n");
       break;
+    case DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY:
+      fprintf(output, " Dict lock takeover retry, generation: %u\n",
+              theData[1]);
+      break;
     default:
       fprintf(output, " Default system error lab...\n");
       break;

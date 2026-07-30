@@ -17,10 +17,15 @@ USE db2;
 --source suite/ronsql/include/ronsql_create_table_api_scan.inc
 USE test;
 
-# Create necessary hopsworks tables to authorize the test api key for db1
+# Create necessary hopsworks tables to authorize the test api key for db1.
+# Warnings are disabled too: the fixture's Hopsworks DDL uses deprecated
+# integer display widths, and its warning blocks would otherwise clutter the
+# result file and shift it on every fixture change.
 --disable_query_log
+--disable_warnings
 --source suite/ronsql/include/setup_hopsworks_api_keys.inc
 USE test;
+--enable_warnings
 --enable_query_log
 
 let $rdrs_ronsql = curl --no-progress-meter --fail-with-body -X POST

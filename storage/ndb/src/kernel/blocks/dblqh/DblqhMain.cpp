@@ -156,7 +156,7 @@
 //#define DEBUG_RATE 1
 //#define DEBUG_RATE_SEND 1
 //#define DEBUG_RATE_DETAIL 1
-//#define DEBUG_QUOTAS 1
+#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 #endif
@@ -5434,14 +5434,15 @@ void Dblqh::earlyKeyReqAbort(Signal *signal, const LqhKeyReq *lqhKeyReq,
 
   /* Now perform signalling */
 
+  Uint32 var_index = LqhKeyReq::getUserIdFlag(reqInfo);
   if (LqhKeyReq::getDirtyFlag(reqInfo) &&
       LqhKeyReq::getOperation(reqInfo) == ZREAD &&
       !LqhKeyReq::getNormalProtocolFlag(reqInfo)) {
     jam();
     /* Dirty read sends TCKEYREF direct to client, and nothing to TC */
     ndbrequire(LqhKeyReq::getApplicationAddressFlag(reqInfo));
-    const Uint32 apiRef = lqhKeyReq->variableData[0];
-    const Uint32 apiOpRec = lqhKeyReq->variableData[1];
+    const Uint32 apiRef = lqhKeyReq->variableData[var_index];
+    const Uint32 apiOpRec = lqhKeyReq->variableData[var_index + 1];
 
     TcKeyRef *const tcKeyRef = (TcKeyRef *)signal->getDataPtrSend();
 
@@ -5460,9 +5461,9 @@ void Dblqh::earlyKeyReqAbort(Signal *signal, const LqhKeyReq *lqhKeyReq,
     Uint32 TcOprec = clientPtr;
     if (LqhKeyReq::getSameClientAndTcFlag(reqInfo) == 1) {
       if (LqhKeyReq::getApplicationAddressFlag(reqInfo))
-        TcOprec = lqhKeyReq->variableData[2];
+        TcOprec = lqhKeyReq->variableData[var_index + 2];
       else
-        TcOprec = lqhKeyReq->variableData[0];
+        TcOprec = lqhKeyReq->variableData[var_index];
     }
 
     LqhKeyRef *const ref = (LqhKeyRef *)signal->getDataPtrSend();
@@ -5641,6 +5642,7 @@ void Dblqh::LQHKEY_error(Signal *signal, int errortype,
   }  // switch
   g_eventLogger->info("(%u)Protocol error in LQHKEYREQ: %u", instance(),
                       errortype);
+  ndbabort();
   abortErrorLab(signal, tcConnectptr, ZLQHKEY_PROTOCOL_ERROR);
   reset_curr_ldm();
 }  // Dblqh::LQHKEY_error()
@@ -6094,6 +6096,7 @@ void Dblqh::execTUPKEYCONF(Signal *signal) {
                         SCAN_READ_RATE * readLen +
                         INTERPRETER_RATE * numExecInstructions;
           m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                                 regTcPtr.p->m_user_ptr_i,
                                                  rate);
         }
       }
@@ -6126,6 +6129,7 @@ void Dblqh::execTUPKEYCONF(Signal *signal) {
                         KEY_WRITE_RATE * writeLen +
                         INTERPRETER_RATE * numExecInstructions;
         m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                               regTcPtr.p->m_user_ptr_i,
                                                rate);
       }
       tupkeyConfLab(signal, regTcPtr, readLen, writeLen);
@@ -6220,6 +6224,7 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
           Uint32 rate = SCAN_REF_RATE +
                           INTERPRETER_RATE * tupKeyRef->noExecInstructions;
           m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                                 tcConnectptr.p->m_user_ptr_i,
                                                  rate);
         }
       }
@@ -6239,6 +6244,7 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
                       READ_KEY_REF_RATE : WRITE_KEY_REF_RATE) +
                         INTERPRETER_RATE * tupKeyRef->noExecInstructions;
         m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                               tcConnectptr.p->m_user_ptr_i,
                                                rate);
       }
       if (unlikely(tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY)) {
@@ -6990,9 +6996,10 @@ bool Dblqh::checkTransporterOverloaded(Signal *signal, const NodeBitmask &all,
   if (tc_node < MAX_NODES)  // not worth to crash here
     mask.set(tc_node);
   const Uint8 op = LqhKeyReq::getOperation(req->requestInfo);
+  Uint32 var_index = LqhKeyReq::getUserIdFlag(req->requestInfo);
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK) {
     // the receiver
-    Uint32 api_node = refToNode(req->variableData[0]);
+    Uint32 api_node = refToNode(req->variableData[var_index]);
     if (api_node < MAX_NODES)  // not worth to crash here
       mask.set(api_node);
   } else {
@@ -7021,7 +7028,7 @@ bool Dblqh::checkTransporterOverloaded(Signal *signal, const NodeBitmask &all,
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK) {
     jam();
     // the receiver
-    Uint32 api_node = refToNode(req->variableData[0]);
+    Uint32 api_node = refToNode(req->variableData[var_index]);
     if ((api_node < MAX_NODES) &&  // not worth to crash here
         (all.get(api_node))) {
       jam();
@@ -9084,12 +9091,34 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->currTupAiLen = 0;
   regTcPtr->logWriteState = TcConnectionrec::NOT_STARTED;
   regTcPtr->fragmentptr = RNIL64;
+  regTcPtr->m_user_ptr_i = RNIL64;
 
   sig0 = lqhKeyReq->fragmentData;
   sig1 = lqhKeyReq->transId1;
   sig2 = lqhKeyReq->transId2;
-  sig3 = lqhKeyReq->variableData[0];
-  sig4 = lqhKeyReq->variableData[1];
+
+  Uint32 var_index = 0;
+  if (LqhKeyReq::getUserIdFlag(Treqinfo)) {
+    jamDebug();
+    /**
+     * The user id word is always present when the flag is set, so var_index
+     * must advance regardless of whether this block has the database record
+     * in its local hash. Query threads (DBQLQH) in particular may not hold
+     * the record; only the accounting via m_user_ptr_i is then skipped. If
+     * var_index were advanced only on a hit, the fixed-length check below
+     * would fail on those blocks and abort the node.
+     */
+    DatabaseRecordPtr dbPtr;
+    Uint32 user_id = lqhKeyReq->variableData[0];
+    DatabaseRecord key(*this, user_id);
+    var_index++;
+    if (m_databaseRecordHash.find(dbPtr, key)) {
+      jam();
+      regTcPtr->m_user_ptr_i = dbPtr.i;
+    }
+  }
+  sig3 = lqhKeyReq->variableData[var_index];
+  sig4 = lqhKeyReq->variableData[var_index + 1];
 
   regTcPtr->fragmentid = LqhKeyReq::getFragmentId(sig0);
   regTcPtr->nextReplica = LqhKeyReq::getNextReplicaNodeId(sig0);
@@ -9214,7 +9243,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   }
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
-  regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(Treqinfo);
+  regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(attrLenFlags);
   regTcPtr->ring_buffer_show_meta = LqhKeyReq::getRingBufferShowMetaFlag(Treqinfo);
   TTL_RONDB_TRACE(tabptr.i, "Dblqh::execLQHKEYREQ(), ttl_ignore: %u, only_expired: %u",
                   regTcPtr->ttl_ignore,
@@ -9235,7 +9264,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->numFiredTriggers = lqhKeyReq->numFiredTriggers;
 
   UintR TapplAddressInd = LqhKeyReq::getApplicationAddressFlag(Treqinfo);
-  UintR nextPos = (TapplAddressInd << 1);
+  UintR nextPos = (TapplAddressInd << 1) + var_index;
   UintR TsameClientAndTcOprec = LqhKeyReq::getSameClientAndTcFlag(Treqinfo);
   if (TsameClientAndTcOprec == 1) {
     regTcPtr->tcOprec = lqhKeyReq->variableData[nextPos];
@@ -9290,7 +9319,6 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
 
   UintR TitcKeyLen = 0;
-  UintR TreclenAiLqhkey = 0;
 
   if (likely(handle.m_cnt > 0)) {
     jamDebug();
@@ -9313,7 +9341,6 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     }
 
     jamDataDebug(totalAttrInfoLen);
-    regTcPtr->reclenAiLqhkey = 0;
     regTcPtr->currReclenAi = totalAttrInfoLen;
     regTcPtr->totReclenAi = totalAttrInfoLen;
     regTcPtr->primKeyLen = TitcKeyLen;
@@ -9338,9 +9365,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     }
     jamDebug();
     ndbrequire((LqhKeyReq::getRowidFlag(Treqinfo) != 0) &&
-               (LqhKeyReq::getNrCopyFlag(Treqinfo) != 0) &&
-               (LqhKeyReq::getAIInLqhKeyReq(Treqinfo) == 0));
-    regTcPtr->reclenAiLqhkey = 0;
+               (LqhKeyReq::getNrCopyFlag(Treqinfo) != 0));
     regTcPtr->currReclenAi = 0;
     regTcPtr->totReclenAi = 0;
     regTcPtr->primKeyLen = 0;
@@ -9383,10 +9408,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
               regTcPtr->seqNoReplica != 0);
   }
 
-  if (unlikely((LqhKeyReq::FixedSignalLength + nextPos + TreclenAiLqhkey) !=
+  if (unlikely((LqhKeyReq::FixedSignalLength + nextPos) !=
                signal->length())) {
-    g_eventLogger->info("nextPos: %u, TreclenAiLqhkey: %u, siglen: %u", nextPos,
-                        TreclenAiLqhkey, signal->length());
+    g_eventLogger->info("nextPos: %u, siglen: %u", nextPos, signal->length());
     LQHKEY_error(signal, 2, tcConnectptr);
     return;
   }  // if
@@ -12540,7 +12564,6 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   Treqinfo = preComputedRequestInfoMask & regTcPtr->reqinfo;
 
   jam();
-  UintR TAiLen = 0;
   /* Long LQHKeyReq uses section size for key length */
   Uint32 lqhKeyLen = 0;
 
@@ -12548,7 +12571,6 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   LqhKeyReq::setApplicationAddressFlag(Treqinfo, TapplAddressIndicator);
   LqhKeyReq::setInterpretedFlag(Treqinfo, regTcPtr->opExec);
   LqhKeyReq::setSeqNoReplica(Treqinfo, regTcPtr->nextSeqNoReplica);
-  LqhKeyReq::setAIInLqhKeyReq(Treqinfo, TAiLen);
   LqhKeyReq::setKeyLen(Treqinfo, lqhKeyLen);
 
   regTcPtr->m_use_rowid |=
@@ -12569,7 +12591,6 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * safe.
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
-  LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
 
   /*
@@ -12661,10 +12682,23 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
 
   lqhKeyReq->clientConnectPtr = sig0;
   lqhKeyReq->attrLen = TotReclenAi;
+  /* The Ring Buffer Op flag lives in the attrLen word (requestInfo is
+     full), so it can only be set once attrLen has been filled in */
+  LqhKeyReq::setRingBufferOpFlag(lqhKeyReq->attrLen, regTcPtr->ring_buffer_op);
   lqhKeyReq->savePointId = sig1;
   lqhKeyReq->hashValue = sig2;
-  lqhKeyReq->requestInfo = Treqinfo;
   lqhKeyReq->tcBlockref = sig4;
+  Uint32 var_index = 0;
+  if (regTcPtr->m_user_ptr_i != RNIL64) {
+    DatabaseRecordPtr dbPtr;
+    dbPtr.i = regTcPtr->m_user_ptr_i;
+    jam();
+    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+    lqhKeyReq->variableData[0] = dbPtr.p->m_database_id;
+    LqhKeyReq::setUserIdFlag(Treqinfo, 1);
+    var_index++;
+  }
+  lqhKeyReq->requestInfo = Treqinfo;
 
   sig0 = regTcPtr->tableref + ((regTcPtr->schemaVersion << 16) & 0xFFFF0000);
   sig1 = regTcPtr->fragmentid + (regTcPtr->nodeAfterNext[0] << 16);
@@ -12673,16 +12707,16 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   sig4 = regTcPtr->applRef;
   sig5 = regTcPtr->applOprec;
   sig6 = regTcPtr->tcOprec;
-  UintR nextPos = (TapplAddressIndicator << 1);
+  UintR nextPos = (TapplAddressIndicator << 1) + var_index;
 
   lqhKeyReq->tableSchemaVersion = sig0;
   lqhKeyReq->fragmentData = sig1;
   lqhKeyReq->transId1 = sig2;
   lqhKeyReq->transId2 = sig3;
   lqhKeyReq->numFiredTriggers = regTcPtr->numFiredTriggers;
-  lqhKeyReq->variableData[0] = sig4;
-  lqhKeyReq->variableData[1] = sig5;
-  lqhKeyReq->variableData[2] = sig6;
+  lqhKeyReq->variableData[var_index] = sig4;
+  lqhKeyReq->variableData[var_index + 1] = sig5;
+  lqhKeyReq->variableData[var_index + 2] = sig6;
 
   nextPos += TsameLqhAndClient;
 
@@ -15039,6 +15073,7 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
         Uint32 rate = (tcPtr->operation == ZREAD ?
                         READ_KEY_REF_RATE : WRITE_KEY_REF_RATE);
         m_ldm_instance_used->update_rate_usage(fragptr.p->tabRef,
+                                               tcPtr->m_user_ptr_i,
                                                rate);
       }
       if (!m_is_in_query_thread) {
@@ -18274,8 +18309,10 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
       /**
        * Correlation factor for SPJ
        */
-      const Uint32 corrFactorHi = scanFragReq->variableData[1];
-      regTcPtr->m_corrFactorLo = scanFragReq->variableData[0];
+      Uint32 var_index = ScanFragReq::getUserIdFlag(reqinfo);
+      const Uint32 corrFactorLo = scanFragReq->variableData[var_index];
+      const Uint32 corrFactorHi = scanFragReq->variableData[var_index + 1];
+      regTcPtr->m_corrFactorLo = corrFactorLo;
       regTcPtr->m_corrFactorHi = corrFactorHi;
     }
     jamLineDebug((Uint16)aiLen);
@@ -19978,12 +20015,29 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_par_ordered_scan_flag = false;
   scanPtr->m_max_batch_size_rows = max_rows;
   scanPtr->m_max_batch_size_bytes = max_bytes;
-
+  Uint32 extra_len_index = 0;
   const Uint32 par_ordered_scan_flag =
     ScanFragReq::getParallelOrderedScanFlag(reqinfo);
-  Uint32 extra_len_index = 0;
+  if (ScanFragReq::getUserIdFlag(reqinfo)) {
+    jamDebug();
+    /**
+     * The user id word is always present when the flag is set, so
+     * extra_len_index must advance regardless of whether this block holds
+     * the database record locally (query threads may not). Advancing it
+     * only on a hit would desync the variableData offsets / length on
+     * those blocks. See execLQHKEYREQ for the key-op equivalent.
+     */
+    DatabaseRecordPtr dbPtr;
+    Uint32 user_id = scanFragReq->variableData[0];
+    DatabaseRecord key(*this, user_id);
+    extra_len_index++;
+    if (m_databaseRecordHash.find(dbPtr, key)) {
+      jam();
+      regTcPtr->m_user_ptr_i = dbPtr.i;
+    }
+  }
   if (ScanFragReq::getCorrFactorFlag(reqinfo)) {
-    extra_len_index = 2;
+    extra_len_index += 2;
   }
   if (!ttl_only_expired) {
     scanPtr->m_ttl_purge_window_size = 0;
@@ -20238,7 +20292,6 @@ void Dblqh::initScanTc(const ScanFragReq *req, Uint32 transid1, Uint32 transid2,
   regTcPtr->lastReplicaNo = 0; // not used in scan
   regTcPtr->errorCode = 0;
   regTcPtr->currTupAiLen = 0;
-  regTcPtr->reclenAiLqhkey = 0;
   regTcPtr->m_scan_curr_range_no = 0;
   regTcPtr->m_dealloc_state = TcConnectionrec::DA_IDLE;
   regTcPtr->m_dealloc_data.m_dealloc_ref_count = RNIL;
@@ -34255,7 +34308,6 @@ void Dblqh::readAttrinfo(LogPageRecordPtr &logPagePtr,
                          const TcConnectionrecPtr tcConnectptr,
                          LogPartRecord *logPartPtrP) {
   Uint32 remainingLen = tcConnectptr.p->totSendlenAi;
-  tcConnectptr.p->reclenAiLqhkey = 0;
   if (remainingLen == 0) {
     jam();
     return;
@@ -36077,9 +36129,8 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
         tcRec.p->transactionState, tcRec.p->operation, tcRec.p->tcNodeFailrec,
         tcRec.p->seqNoReplica);
 
-    g_eventLogger->info(" replicaType = %u reclenAiLqhkey = %u opExec = %u",
-                        tcRec.p->replicaType, tcRec.p->reclenAiLqhkey,
-                        tcRec.p->opExec);
+    g_eventLogger->info(" replicaType = %u opExec = %u",
+                        tcRec.p->replicaType, tcRec.p->opExec);
 
     g_eventLogger->info(" opSimple = %u nextSeqNoReplica = %u lockType = %u",
                         tcRec.p->opSimple, tcRec.p->nextSeqNoReplica,
@@ -38985,9 +39036,10 @@ Dblqh::execCREATE_DB_REQ(Signal *signal) {
   CreateDbReq req = *(CreateDbReq*)signal->getDataPtr();
   DatabaseRecord key(*this, req.databaseId);
   DatabaseRecordPtr dbPtr;
-  DEB_QUOTAS(("(%u) DBLQH Create Database id: %u",
+  DEB_QUOTAS(("(%u) DBLQH Create Database id: %u, isUser: %u",
               instance(),
-              req.databaseId));
+              req.databaseId,
+              req.isUser));
 
   if (m_databaseRecordHash.find(dbPtr, key)) {
     jam();
@@ -39033,6 +39085,7 @@ Dblqh::execCREATE_DB_REQ(Signal *signal) {
   dbPtr.p->m_is_memory_quota_exceeded = false;
   dbPtr.p->m_is_disk_quota_exceeded = false;
   dbPtr.p->m_continue_delay = 0;
+  dbPtr.p->m_is_user = req.isUser;
   change_report_limits(dbPtr.p,
                        req.ratePerSec,
                        req.inMemorySizeMB,
@@ -39073,6 +39126,7 @@ Dblqh::execALTER_DB_REQ(Signal *signal) {
                AlterDbRef::SignalLength, JBB);
     return;
   }
+  ndbrequire(dbPtr.p->m_is_user == req.isUser);
   lock_database_hash();
   change_report_limits(dbPtr.p,
                        req.ratePerSec,
@@ -39198,9 +39252,10 @@ Dblqh::execDROP_DB_REQ(Signal *signal) {
   DropDbReq req = *(DropDbReq*)signal->getDataPtr();
   DatabaseRecord key(*this, req.databaseId);
   DatabaseRecordPtr dbPtr;
-  DEB_QUOTAS(("(%u) DBLQH Drop Database id: %u",
+  DEB_QUOTAS(("(%u) DBLQH Drop Database id: %u, isUser: %u",
               instance(),
-              req.databaseId));
+              req.databaseId,
+              req.isUser));
 
   if (!m_databaseRecordHash.find(dbPtr, key)) {
     jam();
@@ -39217,6 +39272,9 @@ Dblqh::execDROP_DB_REQ(Signal *signal) {
                DropDbRef::SignalLength, JBB);
     return;
   }
+  DEB_QUOTAS(("(%u) Database m_is_user: %u",
+    instance(), dbPtr.p->m_is_user));
+  ndbrequire(dbPtr.p->m_is_user == req.isUser);
   lock_database_hash();
   m_databaseRecordHash.remove(dbPtr);
   m_databaseRecordPool.release(dbPtr);
@@ -39365,40 +39423,54 @@ Dblqh::update_disk_space_usage(Uint32 tableId,
 
 void
 Dblqh::update_rate_usage(Uint32 tableId,
+                         Uint64 userId,
                          Uint32 added_rate_ns) {
-  TablerecPtr tabPtr;
-  tabPtr.i = tableId;
-  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
   if (!m_restart_completed) return;
   if (unlikely(m_is_query_block)) {
     lock_database_hash();
   }
-  if (tabPtr.p->databaseRecord != RNIL64) {
-    DatabaseRecordPtr dbPtr;
-    dbPtr.i = tabPtr.p->databaseRecord;
-    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
-    Uint64 rate_usage = dbPtr.p->m_rate_usage += added_rate_ns;
+  DatabaseRecordPtr dbPtr;
+  if (userId != RNIL64) {
+    dbPtr.i = userId;
+  } else {
+    TablerecPtr tabPtr;
+    tabPtr.i = tableId;
+    ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+    if (tabPtr.p->databaseRecord != RNIL64) {
+      dbPtr.i = tabPtr.p->databaseRecord;
+    } else {
+      if (unlikely(m_is_query_block)) {
+        unlock_database_hash();
+      }
+      return;
+    }
+  }
+  if (unlikely(!m_databaseRecordPool.getPtr(dbPtr))) {
+    if (unlikely(m_is_query_block)) {
+      unlock_database_hash();
+    }
+    return;
+  }
+  Uint64 rate_usage = dbPtr.p->m_rate_usage += added_rate_ns;
 #ifdef DEBUG_RATE_DETAIL
-    {
-      DEB_RATE_DETAIL(("(%u)(%u) db: %u, rate, added %u ns, tot: %llu ns",
-                       m_is_query_block,
-                       instance(),
-                       dbPtr.p->m_database_id,
-                       added_rate_ns,
-                       rate_usage));
-    }
+  {
+    DEB_RATE_DETAIL(("(%u)(%u) db: %u, rate, added %u ns, tot: %llu ns",
+                     m_is_query_block,
+                     instance(),
+                     dbPtr.p->m_database_id,
+                     added_rate_ns,
+                     rate_usage));
+  }
 #endif
-
-    NDB_TICKS now = getHighResTimer();
-    Uint64 milli_secs =
-      NdbTick_Elapsed(dbPtr.p->m_last_quota_report_time, now).milliSec();
-    if ((dbPtr.p->m_rate_report_limit_ns > 0) &&
-          ((rate_usage >= Uint64(dbPtr.p->m_rate_report_limit_ns)) ||
-          (milli_secs >= 50))) {
-      /* Send report about changes to DBTC */
-      jam();
-      send_database_quota_rep(dbPtr, now);
-    }
+  NDB_TICKS now = getHighResTimer();
+  Uint64 milli_secs =
+    NdbTick_Elapsed(dbPtr.p->m_last_quota_report_time, now).milliSec();
+  if ((dbPtr.p->m_rate_report_limit_ns > 0) &&
+        ((rate_usage >= Uint64(dbPtr.p->m_rate_report_limit_ns)) ||
+        (milli_secs >= 50))) {
+    /* Send report about changes to DBTC */
+    jam();
+    send_database_quota_rep(dbPtr, now);
   }
   if (unlikely(m_is_query_block)) {
     unlock_database_hash();

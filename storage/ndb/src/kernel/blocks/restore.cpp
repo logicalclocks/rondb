@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3036,7 +3036,6 @@ void Restore::execute_operation(Signal *signal, FilePtr file_ptr, Uint32 keyLen,
   LqhKeyReq::setOperation(tmp, op_type);
   LqhKeyReq::setSameClientAndTcFlag(tmp, 0);
   if (short_lqhkeyreq) {
-    LqhKeyReq::setAIInLqhKeyReq(tmp, 0);
     req->hashValue = 0;
   } else {
     Uint32 tableId = file_ptr.p->m_table_id;
@@ -3066,7 +3065,7 @@ void Restore::execute_operation(Signal *signal, FilePtr file_ptr, Uint32 keyLen,
    * tables. Setting this flag unconditionally is harmless for non-ring-buffer
    * tables since the guard only checks it for ring buffer tables.
    */
-  LqhKeyReq::setRingBufferOpFlag(tmp, 1);
+  LqhKeyReq::setRingBufferOpFlag(req->attrLen, 1);
   req->clientConnectPtr = (file_ptr.i + (header_type << 28));
   req->tcBlockref = reference();
   req->savePointId = 0;

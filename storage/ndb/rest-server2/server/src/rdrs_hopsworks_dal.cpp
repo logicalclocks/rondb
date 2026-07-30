@@ -157,7 +157,10 @@ RS_Status find_api_key_int(Ndb *ndb_object,
   NdbRecAttr *salt = scanOp->getValue("salt");
   NdbRecAttr *name = scanOp->getValue("name");
   NdbRecAttr *expiry = scanOp->getValue("expiry");
-  unsigned expiry_prec = table_dict->getColumn("expiry")->getPrecision();
+  // getColumn() is nullptr on a pre-V73 schema without api_key.expiry; the
+  // getValue() above is then nullptr too and the check below reports it.
+  const NdbDictionary::Column *expiry_col = table_dict->getColumn("expiry");
+  unsigned expiry_prec = expiry_col != nullptr ? expiry_col->getPrecision() : 0;
 
   assert(API_KEY_SECRET_SIZE ==
          (Uint32)table_dict->getColumn("secret")->getSizeInBytes());
@@ -296,7 +299,10 @@ RS_Status find_all_api_keys_int(Ndb *ndb_object,
   NdbRecAttr *salt_attr = scanOp->getValue("salt");
   NdbRecAttr *user_id_attr = scanOp->getValue("user_id");
   NdbRecAttr *expiry_attr = scanOp->getValue("expiry");
-  unsigned expiry_prec = table_dict->getColumn("expiry")->getPrecision();
+  // getColumn() is nullptr on a pre-V73 schema without api_key.expiry; the
+  // getValue() above is then nullptr too and the check below reports it.
+  const NdbDictionary::Column *expiry_col = table_dict->getColumn("expiry");
+  unsigned expiry_prec = expiry_col != nullptr ? expiry_col->getPrecision() : 0;
 
   if (unlikely(prefix_attr == nullptr ||
                secret_attr == nullptr ||
@@ -423,7 +429,10 @@ static RS_Status find_api_key_by_id_int(Ndb *ndb_object,
   NdbRecAttr *salt_attr   = op->getValue("salt");
   NdbRecAttr *user_id_attr = op->getValue("user_id");
   NdbRecAttr *expiry_attr = op->getValue("expiry");
-  unsigned expiry_prec = table_dict->getColumn("expiry")->getPrecision();
+  // getColumn() is nullptr on a pre-V73 schema without api_key.expiry; the
+  // getValue() above is then nullptr too and the check below reports it.
+  const NdbDictionary::Column *expiry_col = table_dict->getColumn("expiry");
+  unsigned expiry_prec = expiry_col != nullptr ? expiry_col->getPrecision() : 0;
 
   if (unlikely(prefix_attr == nullptr ||
                secret_attr == nullptr ||

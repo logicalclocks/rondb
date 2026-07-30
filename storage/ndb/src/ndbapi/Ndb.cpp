@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -171,7 +171,11 @@ int Ndb::NDB_connect(Uint32 tNode, Uint32 instance) {
   tNdbCon->Status(NdbTransaction::Connecting);  // Set status to connecting
   tNdbCon->theDBnode = tNode;
   Uint32 nodeSequence;
-  tReturnCode = sendRecSignal(tNode, WAIT_TC_SEIZE, tSignal, 0, &nodeSequence);
+  tReturnCode = theImpl->sendRecSignal(tNode,
+                                       WAIT_TC_SEIZE,
+                                       tSignal,
+                                       0,
+                                       &nodeSequence);
   releaseSignal(tSignal);
   if ((tReturnCode == 0) && (tNdbCon->Status() == NdbTransaction::Connected)) {
     //************************************************
@@ -1076,6 +1080,7 @@ NdbTransaction *Ndb::startTransactionLocal(Uint32 aPriority, Uint32 nodeId,
   tConnection->next(tConNext);       // Add the active connection object
   tConnection->setTransactionId(tFirstTransId);
   tConnection->thePriority = aPriority;
+  tConnection->m_user_id = RNIL;
   if ((tFirstTransId & 0xFFFFFFFF) == 0xFFFFFFFF) {
     //---------------------------------------------------
     // Transaction id rolling round. We will start from

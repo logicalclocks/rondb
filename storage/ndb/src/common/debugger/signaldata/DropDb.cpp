@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -37,7 +37,9 @@ bool printDROP_DB_REQ(FILE *output,
 	  sig->senderRef, sig->senderData);
   fprintf(output, " databaseId: %.8u, databaseVersion: %.8u\n", 
 	  sig->databaseId, sig->databaseVersion);
-  fprintf(output, " requestType: H\'%.8x\n", sig->requestType);
+  fprintf(output, " requestType: H\'%.8x, isUser: H\'%.8x\n",
+          sig->requestType,
+          sig->isUser);
   return true;
 }
 

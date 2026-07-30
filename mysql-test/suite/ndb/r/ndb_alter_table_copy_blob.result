@@ -4,11 +4,13 @@ Variable_name	Value
 ndb_use_copying_alter_table	OFF
 ndb_use_exact_count	OFF
 ndb_use_transactions	ON
+ndb_user_rate_limits	OFF
 set ndb_use_transactions=OFF;
 show variables like '%ndb_use%';
 Variable_name	Value
 ndb_use_copying_alter_table	OFF
 ndb_use_exact_count	OFF
 ndb_use_transactions	OFF
+ndb_user_rate_limits	OFF
 alter table t1 modify column b bigint NOT NULL;
 drop table t1;

@@ -52,6 +52,15 @@ class ConfigRetriever {
   bool is_connected();
 
   /**
+   * Re-establish the connection to the management server after the
+   * session was lost or the handle destroyed (a failed transporter
+   * conversion destroys it).  Recreates the handle from the settings
+   * captured at construction when needed, then connects with the
+   * given retry budget.  Returns 0 on success.
+   */
+  int reconnect(int no_retries, int retry_delay_in_seconds, int verbose);
+
+  /**
    * Get configuration for current node.
    * 
    * Configuration is fetched from one MGM server configured in local config 
@@ -118,6 +127,14 @@ class ConfigRetriever {
   Uint32 m_version;
   ndb_mgm_node_type m_node_type;
   NdbMgmHandle m_handle;
+
+  /* Settings captured at construction so reconnect() can recreate the
+   * handle after it has been destroyed. */
+  BaseString m_connect_string;
+  BaseString m_bind_address;
+  bool m_has_bind_address{false};
+  int m_force_nodeid{0};
+  int m_timeout_ms{30000};
   bool check_duplicate_hostname_port(const struct ndb_mgm_configuration *conf,
                                      char *buf);
   int m_tls_req_level{0};

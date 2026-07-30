@@ -45,6 +45,7 @@
 #include "ndb_stacktrace.h"
 #include "ndbd.hpp"
 
+#include <ConfigRetriever.hpp>
 #include <TransporterRegistry.hpp>
 
 #include <LogLevel.hpp>
@@ -1217,12 +1218,58 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
+  {
+    /**
+     * Test hook: widen the window between the configuration fetch and
+     * the mgm transporter conversion below, so tests can restart the
+     * mgmd inside it (testMgmd -n MgmTransporterConvertRetry).
+     */
+    char buf[32];
+    const char *delay =
+        NdbEnv_GetEnv("NDB_TEST_DELAY_MGM_CONVERT", buf, sizeof(buf));
+    if (delay != nullptr && atoi(delay) > 0)
+    {
+      g_eventLogger->info(
+          "Test hook: delaying mgm transporter conversion %d seconds",
+          atoi(delay));
+      NdbSleep_SecSleep(atoi(delay));
+    }
+  }
+
   // Re-use the mgm handle as a transporter
   g_eventLogger->info("Reuse connection to NDB management server");
   if (!globalTransporterRegistry.connect_client(
           theConfig->get_mgm_handle_ptr()))
-    ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
-              "Failed to convert mgm connection to a transporter", __FILE__);
+  {
+    /**
+     * The mgm connection was lost between the configuration fetch and
+     * the transporter conversion (e.g. the mgmd restarted).  The
+     * connectstring is proven working, the configuration was just
+     * fetched over it, so retry with a fresh connection for a bounded
+     * time before treating this as a permanent error.
+     */
+    const int max_attempts = 12;
+    const int retry_delay_secs = 5;
+    int attempts_left = max_attempts;
+    bool connected = false;
+    while (!connected && attempts_left > 0)
+    {
+      g_eventLogger->warning(
+          "Failed to convert mgm connection to a transporter, "
+          "reconnecting to management server (%d attempts left)",
+          attempts_left);
+      attempts_left--;
+      NdbSleep_SecSleep(retry_delay_secs);
+      connected =
+          theConfig->get_config_retriever()->reconnect(0, 0, 0) == 0 &&
+          globalTransporterRegistry.connect_client(
+              theConfig->get_mgm_handle_ptr());
+    }
+    if (!connected)
+      ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
+                "Failed to convert mgm connection to a transporter", __FILE__);
+    g_eventLogger->info("Reconnected to NDB management server");
+  }
   NdbThread *pTrp = globalTransporterRegistry.start_clients();
   if (pTrp == 0) {
     g_eventLogger->info("globalTransporterRegistry.start_clients() failed");

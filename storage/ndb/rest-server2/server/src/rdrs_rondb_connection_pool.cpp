@@ -24,6 +24,10 @@
 
 #include <util/require.h>
 #include <EventLogger.hpp>
+// Internal NDB dictionary impl: the stale-object purge is an internal
+// optimization with no public NdbDictionary API, so drive it through the
+// impl accessor rather than exposing it on NdbDictionary::Dictionary.
+#include "NdbDictionaryImpl.hpp"
 
 extern EventLogger *g_eventLogger;
 
@@ -230,6 +234,16 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
     *ndb_object = thread_context->m_ndb_object;
     thread_context->m_is_ndb_object_in_use = true;
     NdbMutex_Unlock(m_thread_context[threadIndex]->m_thread_context_mutex);
+    /**
+     * Request boundary: the previous request on this Ndb object has
+     * completed, so no dictionary pointers from it are in use any more.
+     * Release the stale dictionary objects parked by schema changes so
+     * they do not accumulate on this long-lived Ndb (memory optimization;
+     * safety does not depend on it - see
+     * NdbDictionaryImpl::park_stale_object).
+     */
+    NdbDictionaryImpl::getImpl(*(*ndb_object)->getDictionary())
+      .releaseStaleTableReferences();
     DEB_POOL("GetNdbObject(%u), success", threadIndex);
     return RS_OK;
   }
@@ -278,7 +292,13 @@ RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object,
 }
 
 RS_Status RDRSRonDBConnectionPool::GetMetadataNdbObject(Ndb **ndb_object) {
-  return metadataConnection->GetNdbObject(ndb_object);
+  RS_Status status = metadataConnection->GetNdbObject(ndb_object);
+  if (likely(status.http_code == SUCCESS)) {
+    /* Request boundary - see GetNdbObject */
+    NdbDictionaryImpl::getImpl(*(*ndb_object)->getDictionary())
+      .releaseStaleTableReferences();
+  }
+  return status;
 }
 
 RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,

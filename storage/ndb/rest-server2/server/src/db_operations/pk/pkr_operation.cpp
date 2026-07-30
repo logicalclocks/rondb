@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -375,6 +375,27 @@ RS_Status BatchKeyOperations::setup_primary_keys() {
   return RS_OK;
 }
 
+/**
+ * RONDB-978: tag a freshly started transaction with the rate limit
+ * identity of the request. The data nodes meter usage per identity and
+ * reject new transactions when the rate limit is exhausted; during the
+ * overload backoff window setUserId itself fails with the rate overflow
+ * error (mapped to HTTP 429). Transactions left open on failure are
+ * closed by handle_ndb_error() -> close_transaction().
+ */
+RS_Status BatchKeyOperations::set_transaction_user_id(
+  NdbTransaction *transaction) {
+  if (m_rate_limit_identity == nullptr) {
+    return RS_OK;
+  }
+  if (unlikely(transaction->setUserId(m_rate_limit_identity,
+                                      m_rate_limit_identity_len) != 0)) {
+    return RS_RONDB_SERVER_ERROR(transaction->getNdbError(),
+      std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+  }
+  return RS_OK;
+}
+
 RS_Status BatchKeyOperations::setup_transactions() {
   Uint32 tmp[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
   char *buf = (char *)&tmp[0];
@@ -402,8 +423,12 @@ RS_Status BatchKeyOperations::setup_transactions() {
         buf,
         sizeof(tmp));
       if (unlikely(key_op->m_ndbTransaction == nullptr)) {
-        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+      }
+      RS_Status status = set_transaction_user_id(key_op->m_ndbTransaction);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;
       }
     }
   } else {
@@ -419,8 +444,12 @@ RS_Status BatchKeyOperations::setup_transactions() {
         buf,
         sizeof(tmp));
       if (unlikely(key_op->m_ndbTransaction == nullptr)) {
-        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
             std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+      }
+      RS_Status status = set_transaction_user_id(key_op->m_ndbTransaction);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;
       }
     }
   }
@@ -1188,8 +1217,12 @@ RS_Status BatchKeyOperations::perform_operation(
   bool is_batch,
   RS_Buffer *reqBuffer,
   RS_Buffer *respBuffer,
-  Ndb *ndb_object) {
+  Ndb *ndb_object,
+  const char *rate_limit_identity,
+  Uint32 rate_limit_identity_len) {
 
+  m_rate_limit_identity = rate_limit_identity;
+  m_rate_limit_identity_len = rate_limit_identity_len;
   DEB_NDB_BE("init_batch_operations");
   RS_Status status = init_batch_operations(
     amalloc,

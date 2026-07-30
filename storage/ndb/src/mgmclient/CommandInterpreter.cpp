@@ -194,6 +194,14 @@ class CommandInterpreter {
   int executeDropNodeGroup(char *parameters);
   int executeStartTls();
   void executeShowTlsInfo(const char *parameters);
+  int executeUserSet(char* parameters);
+  int executeUserAlter(char* parameters);
+  int executeUserDrop(char* parameters);
+  int executeUserGet(char* parameters);
+  int executeUserList(char* parameters);
+  int executeUserBackup(char* parameters);
+  int executeUserRestore(char* parameters);
+  int executeUser(char* parameters, int);
   int executeDatabaseQuotaSet(char* parameters);
   int executeDatabaseQuotaAlter(char* parameters);
   int executeDatabaseQuotaDrop(char* parameters);
@@ -823,13 +831,57 @@ static const char* helpDatabaseQuota =
 " specific table fragment. This means single-table scans as well as complex\n"
 " queries joining multiple tables. RonDB will allow such queries to go over\n"
 " the rates. However after such a query the rate allowed will be cut to 50%\n"
-"of the rate set here. It will continue to have a lower rate until the\n"
+" of the rate set here. It will continue to have a lower rate until the\n"
 " overflow rate have been returned through a temporary lower rate. Queries\n"
 " running over the rates can be handled by slowing down the execution and in\n"
 " case the RonDB cluster is overloaded such queries can also be aborted.\n\n"
+" Rate limits can be applied on a per user level as well as on a database.\n\n"
 " The full documentation of database quotas is documented in a section on\n"
 " docs.rondb.com\n\n"
 ;
+
+static const char* helpUser =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for USER command\n"
+"---------------------------------------------------------------------------\n"
+"USER SET Set rate limit on a user in RonDB\n\n"
+"USER ALTER Alter rate limits on a user in RonDB\n\n"
+"USER DROP Drop rate limit on a user in RonDB\n\n"
+"USER GET Retrieve rate information for specific user\n\n"
+"USER LIST Retrieve quota information for all users\n\n"
+"USER BACKUP Backup quota information for all users\n\n"
+"  The following properties can be set (altered):\n"
+"    --rate-per-sec = VALUE\n"
+"      The maximum rate per second a user is allowed to perform\n\n"
+"    --max-transaction-size = VALUE\n"
+"      Max number of rows changed in transactions involving this user\n\n"
+"    --max-parallel-transactions = VALUE\n"
+"      Max number of concurrent transactions involving this user\n\n"
+"    --max-parallel-complex-queries = VALUE\n"
+"      Max number of complex queries concurrently running in this user\n\n\n"
+" rate-per-sec is based on a fixed cost per read/write lookup and scans\n"
+" with additional cost per kByte of data transferred to/from RonDB. Using\n"
+" on-disk columns in a lookup will increase the cost of the lookups. Scans\n"
+" will have a fixed cost per table fragment they touch (thus scans using the\n"
+" partition key in the condition will be a lot cheaper than scans using all\n"
+" table fragments. Scans will have a fixed cost for every row they scan\n"
+" and a cost per kByte they transfer back to the requester\n\n"
+" Limiting the concurrent changes a user can be involved in at any point\n"
+" in time ensures that a single user cannot seriously affect latency and\n"
+" throughput of other users in the RonDB cluster.\n\n"
+" Complex queries are any queries involving scans that are not targeting a\n"
+" specific table fragment. This means single-table scans as well as complex\n"
+" queries joining multiple tables. RonDB will allow such queries to go over\n"
+" the rates. However after such a query the rate allowed will be cut to 50%\n"
+" of the rate set here. It will continue to have a lower rate until the\n"
+" overflow rate have been returned through a temporary lower rate. Queries\n"
+" running over the rates can be handled by slowing down the execution and in\n"
+" case the RonDB cluster is overloaded such queries can also be aborted.\n\n"
+" Rate limits can also be applied on a per database.\n\n"
+" The full documentation of users is documented in a section on\n"
+" docs.rondb.com\n\n"
+;
+
 #ifdef VM_TRACE // DEBUG ONLY
 static const char* helpTextDebug =
 "---------------------------------------------------------------------------\n"
@@ -892,6 +944,7 @@ struct st_cmd_help {
                   {"QUIT", helpTextQuit, NULL},
                   {"PROMPT", helpTextPrompt, NULL},
                   {"DATABASE QUOTA", helpDatabaseQuota, NULL},
+                  {"USER", helpUser, NULL},
 #ifdef VM_TRACE  // DEBUG ONLY
                   {"DEBUG", helpTextDebug, NULL},
 #endif  // VM_TRACE
@@ -1621,6 +1674,48 @@ bool CommandInterpreter::execute_impl(const char *_line, bool interactive) {
 	    native_strncasecmp(allAfterFirstToken, "QUOTA RESTORE",
                       sizeof("QUOTA RESTORE") - 1) == 0) {
     m_error = executeDatabaseQuotaRestore(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "SET",
+                      sizeof("SET") - 1) == 0) {
+    m_error = executeUserSet(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "ALTER",
+                      sizeof("ALTER") - 1) == 0) {
+    m_error = executeUserAlter(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "DROP",
+                      sizeof("DROP") - 1) == 0) {
+    m_error = executeUserDrop(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "GET",
+                      sizeof("GET") - 1) == 0) {
+    m_error = executeUserGet(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "LIST",
+                      sizeof("LIST") - 1) == 0) {
+    m_error = executeUserList(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "BACKUP",
+                      sizeof("BACKUP") - 1) == 0) {
+    m_error = executeUserBackup(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "RESTORE",
+                      sizeof("RESTORE") - 1) == 0) {
+    m_error = executeUserRestore(allAfterFirstToken);
     DBUG_RETURN(true);
   } else if (native_strcasecmp(firstToken, "ALL") == 0) {
     m_error = analyseAfterFirstToken(-1, allAfterFirstToken);
@@ -4697,6 +4792,401 @@ int CommandInterpreter::setDefaultBackupPassword(const char backup_password[]) {
 
 int CommandInterpreter::setAlwaysEncryptBackup(bool on) {
   m_always_encrypt_backup = on;
+  return 0;
+}
+
+int CommandInterpreter::executeUserGet(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected a username as parameter" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 2) {
+    ndbout << "Expected a username as parameter, nothing more" << endl;
+    return -1;
+  }
+  const char *user_name = command_list[1].c_str();
+  int result = 0;
+  char *result_buf = nullptr;
+  result = ndb_mgm_get_user(m_mgmsrv, user_name, &result_buf);
+  if (result == 0) {
+    fprintf(stdout, "%s", result_buf);
+    free(result_buf);
+  } else {
+    ndbout << "USER GET" << " command failed: Error:" << endl;
+    printError();
+  }
+  return result;
+}
+
+static const char *user_backup_magic_str = "##USER BACKUP%%";
+
+int CommandInterpreter::executeUserRestore(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected USER RESTORE file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 2) {
+    ndbout << "Expected only a file parameter in this command" << endl;
+    return -1;
+  }
+  errno = 0;
+  const char *restore_file_name = command_list[1].c_str();
+  std::ifstream input(restore_file_name);
+  std::string str;
+  if (input.fail()) {
+    int error_code = errno;
+    std::perror("Error: ");
+    ndbout << "Failed to open file: " << restore_file_name;
+    ndbout << " with errno: " << error_code << endl;
+    return -1;
+  }
+  while (std::getline(input, str, '\n')) {
+    if (input.fail()) {
+      ndbout << "Malformed restore file" << endl;
+      return -1;
+    }
+    const char *c_str = str.c_str();
+    char *line = strdup(c_str);
+    if (memcmp(line, user_backup_magic_str, 15) == 0) {
+      ; // Skip magic string
+    } else {
+      ndbout << "Execute " << c_str << endl;
+      char* firstToken = strtok(line, " ");
+      char* allAfterFirstToken = strtok(NULL, "");
+      if (native_strcasecmp(firstToken, "USER") == 0 &&
+          allAfterFirstToken != NULL) {
+        int error_code = executeUserSet(allAfterFirstToken);
+        if (error_code != 0) {
+          ndbout << "USER SET command failed" << endl;
+          ndbout << "Will continue with next command" << endl;
+        } else {
+          ndbout << "USER SET command succeeded for RESTORE" << endl;
+        }
+      } else {
+        ndbout << "Command not supported, will quit" << endl;
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
+int CommandInterpreter::executeUserBackup(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected USER BACKUP file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 2) {
+    ndbout << "Expected only a file parameter in this command" << endl;
+    return -1;
+  }
+  const char *backup_file_name = command_list[1].c_str();
+  FILE *fd = fopen(backup_file_name, "w");
+  if (fd == NULL) {
+    int error_code = errno;
+    ndbout << "Failed to open file: " << backup_file_name;
+    ndbout << " with errno: " << error_code << endl;
+    return -1;
+  }
+  {
+    /* Write an indication of what file it is */
+    int res = fprintf(fd, "%s\n", user_backup_magic_str);
+    if (res == -1) {
+      int error_code = errno;
+      ndbout << "Failed to write backup file with errno: " << error_code;
+      ndbout << endl;
+      return -1;
+    }
+  }
+  Uint32 nextUserId = 0;
+  int result = 0;
+  do {
+    char *result_buf = nullptr;
+    result = ndb_mgm_backup_users(m_mgmsrv, &nextUserId, &result_buf);
+    if (result == 0) {
+      if (nextUserId == RNIL) {
+        free(result_buf);
+        fprintf(stdout, "User Backup command completed\n");
+        break;
+      }
+      int res = fprintf(fd, "%s", result_buf);
+      if (res == -1) {
+        int error_code = errno;
+        ndbout << "Failed to write backup file with errno: " << error_code;
+        ndbout << endl;
+        return -1;
+      }
+      free(result_buf);
+    } else {
+      ndbout << "USER BACKUP" << " command failed: Error:" << endl;
+      printError();
+      break;
+    }
+  } while (true);
+  fclose(fd);
+  return result;
+}
+
+int CommandInterpreter::executeUserList(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected LIST in this command, should never happen" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 1) {
+    ndbout << "Expected no parameters in this command" << endl;
+    return -1;
+  }
+  Uint32 nextUserId = 0;
+  int result = 0;
+  do {
+    char *result_buf = nullptr;
+    result = ndb_mgm_list_users(m_mgmsrv, &nextUserId, &result_buf);
+    if (result == 0) {
+      if (nextUserId == RNIL) {
+        free(result_buf);
+        fprintf(stdout, "User List command completed\n");
+        break;
+      }
+      fprintf(stdout, "%s", result_buf);
+      free(result_buf);
+    } else {
+      ndbout << "USER LIST" << " command failed: Error:" << endl;
+      printError();
+      break;
+    }
+  } while (true);
+  return result;
+}
+
+#define SET_USER 0
+#define ALTER_USER 1
+#define DROP_USER 2
+
+int CommandInterpreter::executeUserSet(char* parameters) {
+  return executeUser(parameters, SET_USER);
+}
+
+int CommandInterpreter::executeUserAlter(char* parameters) {
+  return executeUser(parameters, ALTER_USER);
+}
+
+int CommandInterpreter::executeUserDrop(char* parameters) {
+  return executeUser(parameters, DROP_USER);
+}
+
+int CommandInterpreter::executeUser(char* parameters, int type) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected at least a username as parameter" << endl;
+    return -1;
+  }
+
+  const char *type_str = nullptr;
+  if (type == SET_USER) {
+    type_str = "SET";
+  } else if (type == ALTER_USER) {
+    type_str = "ALTER";
+  } else {
+    require(type == DROP_USER);
+    type_str = "DROP";
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_pos = 0;
+  Uint32 command_list_size = command_list.size();
+  Uint32 remaining_commands = command_list_size;
+  const char *read_type_str = command_list[command_pos++].c_str();
+  if (native_strncasecmp(type_str, read_type_str, strlen(type_str)) != 0) {
+    ndbout << "Command inconsistency for USER "
+           << type_str
+           << " command"
+           << endl;
+    return -1;
+  }
+  remaining_commands--;
+  if (remaining_commands == 0) {
+    ndbout << "USER "
+           << type_str
+           << " should have a database name as parameter at a minimum"
+           << endl;
+    return -1;
+  }
+  const char *user_name = command_list[command_pos++].c_str();
+  remaining_commands--;
+
+  Uint32 rate_per_sec = 0;
+  Uint32 max_transaction_size = 0;
+  Uint32 max_parallel_transactions = 0;
+  Uint32 max_parallel_complex_queries = 0;
+
+  if (type == ALTER_USER) {
+    rate_per_sec = RNIL;
+    max_transaction_size = RNIL;
+    max_parallel_transactions = RNIL;
+    max_parallel_complex_queries = RNIL;
+  }
+  for (Uint32 i = 0; user_name[i] != 0; i++) {
+    if (user_name[i] == '/') {
+      ndbout << "USER " << type_str << " " << user_name
+             << " have a / in the database name, not allowed"
+             << endl;
+      return -1;
+    }
+  }
+  if (type == DROP_USER && (remaining_commands > 0)) {
+    ndbout <<
+      "USER DROP should only have a username as parameter"
+      << endl;
+    return -1;
+  }
+  bool found_change = false;
+  bool any_parameter_set = false;
+  while (remaining_commands >= 3) {
+    remaining_commands -= 3; /* key = value */
+    const char *key = command_list[command_pos++].c_str();
+    const char *equal_str = command_list[command_pos++].c_str();
+    const char *val_str = command_list[command_pos++].c_str();
+
+    if (native_strncasecmp(equal_str, "=", 1) != 0) {
+      ndbout << "USER "
+             << type_str
+             << " user with key = value, was missing a = here"
+             << endl;
+      return -1;
+    }
+    if (val_str == nullptr) {
+      ndbout << "USER "
+             << type_str
+             << " command missing a value for a key parameter" << endl;
+      return -1;
+    }
+    Uint64 val = 0;
+    if (!convert_string_to_uint64(val_str, val, false)) {
+      ndbout << "Value in USER "
+             << type_str
+             << " must be a number, can be using"
+             << " k, M, G and T, e.g. 1k meaning 1 * 1024" << endl;
+      return -1;
+    }
+    if (native_strncasecmp(key, "--", 2) != 0) {
+      ndbout << "Parameters should always start with --" << endl;
+      return -1;
+    }
+    key+= 2; //Move past the --
+    if (native_strncasecmp(key,
+                        "RATE-PER-SEC",
+                        sizeof("RATE-PER-SEC") - 1) == 0) {
+      rate_per_sec = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key,
+                        "MAX-TRANSACTION-SIZE",
+                        sizeof("MAX-TRANSACTION-SIZE") - 1) == 0) {
+      max_transaction_size = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key, "MAX-PARALLEL-TRANSACTIONS",
+                        sizeof("MAX-PARALLEL-TRANSACTIONS") - 1) == 0) {
+      max_parallel_transactions = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key,
+                        "MAX-PARALLEL-COMPLEX-QUERIES",
+                        sizeof("MAX-PARALLEL-COMPLEX-QUERIES") - 1) == 0) {
+      max_parallel_complex_queries = val;
+    } else {
+      ndbout << "Wrong key: " << key << ", choose one of:" << endl
+             << "rate-per-sec, in-memory-size, on-disk-size" << endl
+             << "max-transaction-size, max-parallel-transactions" << endl
+             << "max-parallel-complex-queries" << endl;
+      return -1;
+    }
+    any_parameter_set = true;
+  }
+  if (remaining_commands > 0) {
+    ndbout << "Wrong number of parameters to USER "
+           << type_str
+           << " command" << endl;
+    return -1;
+  }
+  if (!found_change && type == SET_USER) {
+    ndbout << "At least one parameter needs to have non-zero value" << endl;
+    return -1;
+  }
+  if (!any_parameter_set && type == ALTER_USER) {
+    ndbout << "At least one parameter needs to change its value in ALTER"
+           << endl;
+    return -1;
+  }
+#if 0
+  ndbout << "Successful execution of USER "
+         << type_str
+         << " "
+         << user_name
+         << " rate-per-sec = "
+         << rate_per_second
+         << endl
+         << " max-transaction-size = "
+         << max_transaction_size
+         << endl
+         << " max-parallel-transactions = "
+         << max_parallel_transactions
+         << endl
+         << " max-parallel-complex-queries = "
+         << max_parallel_complex_queries
+         << endl;
+#endif
+  int result = 0;
+  if (type == SET_USER) {
+    result = ndb_mgm_set_user(m_mgmsrv,
+                              user_name,
+                              rate_per_sec,
+                              max_transaction_size,
+                              max_parallel_transactions,
+                              max_parallel_complex_queries);
+  } else if (type == ALTER_USER) {
+    result = ndb_mgm_alter_user(m_mgmsrv,
+                                user_name,
+                                rate_per_sec,
+                                max_transaction_size,
+                                max_parallel_transactions,
+                                max_parallel_complex_queries);
+  } else {
+    require(type == DROP_USER);
+    result = ndb_mgm_drop_user(m_mgmsrv,
+                               user_name);
+  }
+  if (result == -1) {
+    ndbout << "USER "
+           << type_str
+           << " command failed: Error:" << endl;
+    printError();
+    return -1;
+  }
+  ndbout << "USER "
+         << type_str
+         << " successfully executed"
+         << endl;
   return 0;
 }
 

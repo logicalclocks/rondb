@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2168,7 +2168,7 @@ DblqhProxy::sendDROP_DB_REQ(Signal* signal,
   req->senderRef = reference();
   req->senderData = ssId;
   sendSignalNoRelease(workerRef(ss.m_worker), GSN_DROP_DB_REQ,
-                      signal, ConnectTableDbReq::SignalLength, JBB, handle);
+                      signal, DropDbReq::SignalLength, JBB, handle);
 }
 
 void

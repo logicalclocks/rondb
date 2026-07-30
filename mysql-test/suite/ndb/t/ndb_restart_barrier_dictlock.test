@@ -1,0 +1,90 @@
+# RONDB-1096: restart barrier at start phase 110, dictionary lock and
+# transaction cases
+#
+# Runs the dictionary lock takeover and transaction cases from the
+# testNodeRestart NDBT program against a cluster with 4 data nodes in
+# 2 node groups (see ndb_restart_barrier.cnf). The cases verify that
+# the node-restart dictionary lock of a parked node is reconstructed
+# in the new master after a master failure, both when the parked node
+# itself becomes master and when the new master is remote, and that a
+# parked node serves transactions while still reporting "starting".
+#
+# The basic barrier semantics and node failure cases run in
+# ndb_restart_barrier and ndb_restart_barrier_failures; the nine cases
+# are split over three tests to keep each test's runtime down.
+#
+# The stall mechanism needs error-insert capable ndbmtd binaries, and
+# the testNodeRestart binary is only present in WITH_NDB_TEST builds.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its test table (TEST_DB.T1) directly via
+# the NDB API. Tables created outside of the MySQL Server crash the
+# MySQL Server, so both MySQL Servers are shut down while the NDBT
+# cases run and started again after the NDBT table has been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # Parked master reconstructs its node-restart dictionary lock
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFailDictLock T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Remote master reconstructs the parked node's node-restart dictionary lock
+--exec $TEST_NODE_RESTART -n RestartBarrierMasterFailRemoteDictLock T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Parked node serves transactions while still reporting starting
+--exec $TEST_NODE_RESTART -n RestartBarrierServeWhileParked T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops its auto-created table when a case
+# completes cleanly, so the table only exists here if the last case
+# left it behind; a missing table is not an error.
+--echo "[dropping NDBT test table]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # All restart barrier dictionary lock tests passed

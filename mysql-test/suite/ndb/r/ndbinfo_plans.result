@@ -5,7 +5,7 @@ use ndbinfo;
 ##
 ## ndb$tables
 select count(*) from ndb$tables;
-count(*)	56
+count(*)	57
 explain select count(*) from ndb$tables;
 id	1
 select_type	SIMPLE
@@ -63,7 +63,7 @@ ndb$acc_operations	15	64
 ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$certificates	34	44
-ndb$columns	592	44
+ndb$columns	609	44
 ndb$config_nodes	34	28
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
@@ -75,7 +75,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	887	52
+ndb$error_messages	893	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
@@ -89,6 +89,7 @@ ndb$operations	10	48
 ndb$pgman_time_track_stats	200	48
 ndb$pools	384	84
 ndb$processes	34	68
+ndb$rdma_transporters	32	120
 ndb$resources	26	28
 ndb$restart_info	2	100
 ndb$stored_tables	100	80
@@ -100,7 +101,7 @@ ndb$table_map	100	36
 ndb$table_memory_usage	100	44
 ndb$table_replicas	800	64
 ndb$table_replicas_all	400	64
-ndb$tables	56	40
+ndb$tables	57	40
 ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
 ndb$threadblock_details	124	24
@@ -118,7 +119,7 @@ CALL populate_sizes();
 SELECT table_name, est_rows, actual_rows from rowcounts
 WHERE table_name = "ndb$config_values";
 table_name	est_rows	actual_rows
-ndb$config_values	386	386
+ndb$config_values	386	390
 ## Note:
 ## the estimate for config_values relies on a constant in NdbinfoTables.cpp
 ## which must be manually maintained in order for the test to pass.
@@ -126,7 +127,7 @@ ndb$config_values	386	386
 ## List the tables where estimated size equals actual size.
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 count(*)
-29
+28
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   ORDER BY table_name;
 table_name
@@ -135,7 +136,6 @@ ndb$blocks
 ndb$columns
 ndb$config_nodes
 ndb$config_params
-ndb$config_values
 ndb$counters
 ndb$dblqh_tcconnect_state
 ndb$dbtc_apiconnect_state

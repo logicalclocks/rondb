@@ -357,7 +357,8 @@ ErrorBundle ErrorCodes[] = {
    * OverloadError
    */
   { 239,  DMEC, OL, "Memory quota reached for database, delete data before write again" },
-  { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
+  { 243,  DMEC, OL, "Write Rate limit reached and queues are overloaded for database" },
+  { 2203,  DMEC, OL, "Read Rate limit reached and queues are overloaded for database" },
   { 247,  DMEC, OL, "Too many operations in a transaction in database" },
   { 248,  DMEC, OL, "Too many concurrent transactions in database" },
   { 929,  DMEC, OL, "Disk quota reached for database, delete data before write again" },
@@ -408,6 +409,9 @@ ErrorBundle ErrorCodes[] = {
   { 809,  DMEC, IE, "809" },
   { 812,  DMEC, IE, "812" },
   { 833,  DMEC, IE, "833" },
+  /**
+   * Application errors
+   */
   { 846,  DMEC, AE, "Read/Write interpreter in/output index error" },
   { 871,  DMEC, AE, "No such interpreter instruction" },
   { 882,  DMEC, AE, "Inconsistent sizes of interpreter code sections" },
@@ -424,6 +428,7 @@ ErrorBundle ErrorCodes[] = {
   { 938,  DMEC, AE, "Too much input parameters" },
   { 939,  DMEC, AE, "Wrong column for input parameters" },
   { 940,  DMEC, AE, "Direct write to ring-buffer table not allowed. Use MySQL handler INSERT/UPDATE/DELETE." },
+  { 942,  DMEC, AE, "Database name too long" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },
