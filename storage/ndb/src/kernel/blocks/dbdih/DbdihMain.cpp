@@ -26836,6 +26836,27 @@ void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
     }
     infoEvent("cgcpOrderBlocked = %d", cgcpOrderBlocked);
   }  // if
+  if (arg == DumpStateOrd::DihDumpStopPermInfo) {
+    /**
+     * Graceful stop permission state. A permission left behind by a node
+     * that abandoned its stop refuses every later graceful stop, so this
+     * is the first thing to look at when a stop hangs or is refused with
+     * NodeShutdownInProgress for no apparent reason.
+     */
+    char buf[NdbNodeBitmask::TextLength + 1];
+    infoEvent(
+        "StopPerm master: clientRef = H'%08x, clientData = %u,"
+        " returnValue = %u, stoppingNodes = %s",
+        c_stopPermMaster.clientRef, c_stopPermMaster.clientData,
+        c_stopPermMaster.returnValue,
+        c_stopPermMaster.stoppingNodes.getText(buf));
+    infoEvent(
+        "StopPerm proxy: clientRef = H'%08x, masterRef = H'%08x;"
+        " c_nodeStartMaster.activeState = %u, switch replica waiting = %u",
+        c_stopPermProxy.clientRef, c_stopPermProxy.masterRef,
+        (Uint32)c_nodeStartMaster.activeState,
+        c_DIH_SWITCH_REPLICA_REQ_Counter.getCount());
+  }  // if
   if (arg == DumpStateOrd::DihDumpNodeStatusInfo) {
     NodeRecordPtr localNodePtr;
     infoEvent("Printing nodeStatus of all nodes");
@@ -27810,11 +27831,11 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
        * restart window is already covered by the activeState check
        * above; this check covers the long database recovery part of
        * the restart. Aborting stops bypass the STOP_PERM protocol
-       * entirely, and a SIGTERM initiated stop escalates to an
-       * immediate stop after GracefulShutdownTimeout.
+       * entirely, and a stop that waited longer than
+       * GracefulShutdownTimeout is given up by the requester.
        */
       ref->senderData = senderData;
-      ref->errorCode = StopPermRef::NodeStartInProgress;
+      ref->errorCode = StopPermRef::NodeBelowRestartBarrier;
       sendSignal(senderRef, GSN_STOP_PERM_REF, signal,
                  StopPermRef::SignalLength, JBB);
       return;
@@ -27884,6 +27905,86 @@ void Dbdih::execSTOP_PERM_CONF(Signal *signal) {
   sendSignal(c_stopPermProxy.clientRef, GSN_STOP_PERM_CONF, signal, 1, JBB);
   c_stopPermProxy.clientRef = 0;
 }  // Dbdih::execSTOP_PERM_CONF()
+
+/**
+ * NDBCNTR abandoned a graceful stop it had asked permission for, so the
+ * permission is handed back while the node is still alive.
+ *
+ * Without this the master only ever releases when the stopping node
+ * fails (checkStopPermMaster), so an abandoned stop would leave the node
+ * in c_stopPermMaster.stoppingNodes for good and every later graceful
+ * stop in the cluster would be refused with NodeShutdownInProgress.
+ */
+void Dbdih::execSTOP_PERM_REL(Signal *signal) {
+  jamEntry();
+
+  const StopPermRel *const rel = (StopPermRel *)&signal->theData[0];
+  const BlockReference senderRef = rel->senderRef;
+  const NodeId nodeId = refToNode(senderRef);
+
+  if (isMaster()) {
+    jam();
+    releaseStopPermMaster(signal, nodeId);
+    return;
+  }
+
+  /**
+   * Proxy part. Stop proxying for the abandoned request and pass the
+   * release on to the master, which holds the permission.
+   */
+  jam();
+  if (c_stopPermProxy.clientRef != 0 &&
+      refToNode(c_stopPermProxy.clientRef) == nodeId) {
+    jam();
+    c_stopPermProxy.clientRef = 0;
+  }
+
+  StopPermRel *req = (StopPermRel *)&signal->theData[0];
+  req->senderRef = senderRef;
+  req->senderData = rel->senderData;
+  sendSignal(cmasterdihref, GSN_STOP_PERM_REL, signal,
+             StopPermRel::SignalLength, JBB);
+}  // Dbdih::execSTOP_PERM_REL()
+
+/**
+ * Give up the master side stop permission held for nodeId. Mirrors the
+ * refusal teardown at the end of switchReplica().
+ */
+void Dbdih::releaseStopPermMaster(Signal *signal, NodeId nodeId) {
+  if (c_stopPermMaster.clientRef != 0 &&
+      refToNode(c_stopPermMaster.clientRef) == nodeId) {
+    jam();
+    if (c_DIH_SWITCH_REPLICA_REQ_Counter.done() == false) {
+      jam();
+      /**
+       * Switching primary replicas away from the node is still running.
+       * Fail the round instead of tearing its state down underneath it;
+       * switchReplica() then unlocks and clears everything as it does
+       * for any other refusal, and the STOP_PERM_REF it sends is
+       * discarded by an NDBCNTR that has already given up.
+       */
+      c_stopPermMaster.returnValue = StopPermRef::NF_CausedAbortOfStopProcedure;
+      return;
+    }
+
+    c_nodeStartMaster.activeState = false;
+    c_stopPermMaster.clientRef = 0;
+    c_stopPermMaster.clientData = 0;
+    c_stopPermMaster.returnValue = 0;
+    c_stopPermMaster.stoppingNodes.clear(nodeId);
+
+    Mutex mutex(signal, c_mutexMgr, c_switchPrimaryMutexHandle);
+    mutex.unlock();  // ignore result
+    return;
+  }
+
+  /**
+   * Permission was granted and the switch replica round has already
+   * finished, so only the stopping bitmap is still held.
+   */
+  jam();
+  c_stopPermMaster.stoppingNodes.clear(nodeId);
+}  // Dbdih::releaseStopPermMaster()
 
 void Dbdih::execDIH_SWITCH_REPLICA_REQ(Signal *signal) {
   jamEntry();

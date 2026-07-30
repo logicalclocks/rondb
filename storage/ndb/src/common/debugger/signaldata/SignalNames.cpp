@@ -407,6 +407,7 @@ const GsnName SignalNames [] = {
   ,{ GSN_STOP_PERM_REQ,           "STOP_PERM_REQ" }
   ,{ GSN_STOP_PERM_REF,           "STOP_PERM_REF" }
   ,{ GSN_STOP_PERM_CONF,          "STOP_PERM_CONF" }
+  ,{ GSN_STOP_PERM_REL,           "STOP_PERM_REL" }
 
   ,{ GSN_STOP_ME_REQ,             "STOP_ME_REQ" }
   ,{ GSN_STOP_ME_REF,             "STOP_ME_REF" }

@@ -273,6 +273,14 @@ class Ndbcntr : public SimulatedBlock {
   void execSTOP_PERM_REF(Signal *signal);
   void execSTOP_PERM_CONF(Signal *signal);
 
+  /**
+   * Ask DIH for permission to stop gracefully, and hand the permission
+   * back when the stop is abandoned (RONDB-1096).
+   */
+  void request_stop_permission(Signal *signal);
+  void release_stop_permission(Signal *signal);
+  bool use_early_stop_permission() const;
+
   void execSTOP_ME_REF(Signal *signal);
   void execSTOP_ME_CONF(Signal *signal);
   
@@ -478,18 +486,61 @@ class Ndbcntr : public SimulatedBlock {
   bool m_restart_barrier_waiting;
   NDB_TICKS m_restart_barrier_entry_time;
   Uint32 c_restart_barrier_timeout_ms;
-  
+
+  /**
+   * GracefulShutdownTimeout, the longest a graceful stop may be delayed
+   * by the cluster before it is given up. 0 = wait forever. QMGR uses
+   * the same parameter to escalate a SIGTERM initiated stop into an
+   * immediate stop; here it bounds the wait for stop permission so that
+   * a stop requested over the MGM API cannot wait forever either.
+   */
+  Uint32 c_graceful_stop_timeout_ms;
+
+
  public:
   struct StopRecord {
   public:
-    StopRecord(Ndbcntr &_cntr) : cntr(_cntr) { stopReq.senderRef = 0; }
+    StopRecord(Ndbcntr &_cntr) : cntr(_cntr) {
+      stopReq.senderRef = 0;
+      m_stop_perm = SP_NONE;
+      m_stop_perm_polling = false;
+      m_stop_perm_ref_logged = false;
+    }
 
     Ndbcntr &cntr;
     StopReq stopReq;          // Signal data
     NDB_TICKS stopInitiatedTime; // When was the stop initiated
-    
+
+    /**
+     * Graceful stop permission state (RONDB-1096). In either non-NONE
+     * state the permission must be handed back with STOP_PERM_REL if the
+     * stop is abandoned, otherwise the master keeps this node in
+     * c_stopPermMaster.stoppingNodes until it fails, which blocks every
+     * later graceful stop in the cluster.
+     */
+    enum StopPermState {
+      SP_NONE = 0,      // No permission asked for
+      SP_REQUESTED = 1, // STOP_PERM_REQ outstanding, or being retried
+      SP_GRANTED = 2    // STOP_PERM_CONF received, permission held
+    } m_stop_perm;
+
+    /**
+     * True while the ZSHUTDOWN CONTINUEB is policing the wait for stop
+     * permission from SL_STARTED. Exactly one CONTINUEB chain must be in
+     * flight, so whoever leaves SL_STARTED takes the chain over rather
+     * than starting a second one.
+     */
+    bool m_stop_perm_polling;
+
+    /**
+     * A refusal is retried every 100 ms, so only the first one of a stop
+     * attempt is logged; the retries themselves say nothing new.
+     */
+    bool m_stop_perm_ref_logged;
+
     bool checkNodeFail(Signal *signal);
     void checkTimeout(Signal *signal);
+    void checkStopPermTimeout(Signal *signal);
     void checkApiTimeout(Signal *signal);
     void checkTcTimeout(Signal *signal);
     void checkLqhTimeout_1(Signal *signal);

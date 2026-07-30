@@ -93,11 +93,48 @@ class StopPermRef {
     StopOK = 0,
     NodeStartInProgress = 1,
     NodeShutdownInProgress = 2,
-    NF_CausedAbortOfStopProcedure = 3
+    NF_CausedAbortOfStopProcedure = 3,
+    /**
+     * A node restart is still below the restart barrier in start phase
+     * 110 (RONDB-1096). Kept distinct from NodeStartInProgress so that
+     * the requester can tell an ordinary node start, which completes on
+     * its own, apart from a barrier wait, which is unbounded by default
+     * (RestartBarrierTimeout defaults to 0 = wait forever).
+     */
+    NodeBelowRestartBarrier = 4
   };
 
  private:
   Uint32 errorCode;
+  Uint32 senderData;
+};
+
+/**
+ * Sent by Ndbcntr to local DIH when it abandons a graceful stop after
+ * having requested or been granted stop permission. Local DIH forwards
+ * it to the master and stops acting as a proxy.
+ *
+ * Without it the master holds the permission until the requesting node
+ * fails, which blocks every later graceful stop in the cluster.
+ *
+ * @see StopPermReq
+ */
+class StopPermRel {
+  /**
+   * Sender(s) / Reciver(s)
+   */
+  friend class Dbdih;
+
+  /**
+   * Sender
+   */
+  friend class Ndbcntr;
+
+ public:
+  static constexpr Uint32 SignalLength = 2;
+
+ public:
+  Uint32 senderRef;
   Uint32 senderData;
 };
 

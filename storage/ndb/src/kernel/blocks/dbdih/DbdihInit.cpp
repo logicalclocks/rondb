@@ -320,6 +320,7 @@ Dbdih::Dbdih(Block_context &ctx)
   addRecSignal(GSN_STOP_PERM_REQ, &Dbdih::execSTOP_PERM_REQ);
   addRecSignal(GSN_STOP_PERM_REF, &Dbdih::execSTOP_PERM_REF);
   addRecSignal(GSN_STOP_PERM_CONF, &Dbdih::execSTOP_PERM_CONF);
+  addRecSignal(GSN_STOP_PERM_REL, &Dbdih::execSTOP_PERM_REL);
 
   addRecSignal(GSN_STOP_ME_REQ, &Dbdih::execSTOP_ME_REQ);
   addRecSignal(GSN_STOP_ME_REF, &Dbdih::execSTOP_ME_REF);

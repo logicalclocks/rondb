@@ -1509,6 +1509,15 @@ void Ndbcntr::execREAD_CONFIG_REQ(Signal *signal) {
                             &restart_barrier_timeout);
   c_restart_barrier_timeout_ms = restart_barrier_timeout;
 
+  /**
+   * Same parameter QMGR uses to escalate a SIGTERM initiated stop, see
+   * Qmgr::handle_graceful_shutdown(). Here it bounds the wait for stop
+   * permission so that a stop requested over the MGM API is delayed by
+   * the cluster for no longer than a SIGTERM initiated one would be.
+   */
+  ndb_mgm_get_int_parameter(p, CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT,
+                            &c_graceful_stop_timeout_ms);
+
   Uint32 encrypted_filesystem = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_ENCRYPTED_FILE_SYSTEM,
                             &encrypted_filesystem);
@@ -4816,6 +4825,9 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
 
   c_stopRec.stopReq = *req;
   c_stopRec.stopInitiatedTime = NdbTick_getCurrentTicks();
+  c_stopRec.m_stop_perm = StopRecord::SP_NONE;
+  c_stopRec.m_stop_perm_polling = false;
+  c_stopRec.m_stop_perm_ref_logged = false;
 
   if (ERROR_INSERTED(1022) || ERROR_INSERTED(1023) || ERROR_INSERTED(1024)) {
     jam();
@@ -4859,17 +4871,22 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
       return;
     }
 
-    if (!systemStop) {
+    if (!systemStop && use_early_stop_permission()) {
       /**
        * Obtain permission before leaving SL_STARTED. In particular, a
        * restart below the phase-110 barrier can then postpone this stop
        * without making this node unavailable to the cluster.
+       *
+       * The wait is bounded by checkStopPermTimeout(), driven by the
+       * ZSHUTDOWN CONTINUEB armed here. Without it neither the restart
+       * barrier, which is unbounded by default, nor a permission left
+       * behind on the master would ever be reported back to whoever
+       * asked for the stop.
        */
-      StopPermReq *permReq = (StopPermReq *)&signal->theData[0];
-      permReq->senderRef = reference();
-      permReq->senderData = 12;
-      sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
-                 StopPermReq::SignalLength, JBB);
+      request_stop_permission(signal);
+      c_stopRec.m_stop_perm_polling = true;
+      signal->theData[0] = ZSHUTDOWN;
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
       return;
     }
 
@@ -4899,6 +4916,18 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
 void Ndbcntr::StopRecord::checkTimeout(Signal *signal) {
   jamEntry();
 
+  if (stopReq.senderRef == 0) {
+    jam();
+    /**
+     * No stop in progress, so this is a ZSHUTDOWN left over from one
+     * that completed or was given up, e.g. by execSTOP_PERM_REF() while
+     * this CONTINUEB was already on its way. There is nothing left to
+     * police, and checkNodeFail() below would answer a request that is
+     * no longer there.
+     */
+    return;
+  }
+
   if (!cntr.getNodeState().getSingleUserMode())
     if (!checkNodeFail(signal)) {
       jam();
@@ -4906,6 +4935,14 @@ void Ndbcntr::StopRecord::checkTimeout(Signal *signal) {
     }
 
   switch (cntr.getNodeState().startLevel) {
+    case NodeState::SL_STARTED:
+      /**
+       * Still started, so we are waiting for stop permission before
+       * leaving SL_STARTED (RONDB-1096). Any other reason to be here in
+       * SL_STARTED means there is no stop to police.
+       */
+      checkStopPermTimeout(signal);
+      break;
     case NodeState::SL_STOPPING_1:
       checkApiTimeout(signal);
       break;
@@ -4923,6 +4960,62 @@ void Ndbcntr::StopRecord::checkTimeout(Signal *signal) {
     default:
       ndbabort();
   }
+}
+
+/**
+ * Bound the wait for stop permission. A graceful stop may legitimately
+ * be delayed by the cluster, e.g. while another node restart is below
+ * the restart barrier in start phase 110, but the delay must not be
+ * unbounded: the barrier wait itself has no natural timeout
+ * (RestartBarrierTimeout defaults to 0 = wait forever), whereas a STOP
+ * is expected to conclude within its configured budget.
+ *
+ * On expiry the stop is given up rather than forced through, since
+ * forcing it would kill the very node the barrier protects. The node
+ * stays SL_STARTED and whoever asked for the stop is told why, so it
+ * can retry or escalate to an aborting stop, which bypasses the
+ * permission protocol entirely.
+ */
+void Ndbcntr::StopRecord::checkStopPermTimeout(Signal *signal) {
+  if (stopReq.senderRef == 0 || !m_stop_perm_polling) {
+    jam();
+    return;
+  }
+
+  const Uint32 timeout = cntr.c_graceful_stop_timeout_ms;
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (timeout != 0 &&
+      NdbTick_Elapsed(stopInitiatedTime, now).milliSec() > Uint64(timeout)) {
+    jam();
+    g_eventLogger->warning(
+        "Gave up waiting for permission to stop gracefully after %u ms"
+        " (GracefulShutdownTimeout), the node remains started",
+        timeout);
+    cntr.warningEvent(
+        "Gave up waiting for permission to stop gracefully after %u ms"
+        " (GracefulShutdownTimeout), the node remains started",
+        timeout);
+
+    const Uint32 senderRef = stopReq.senderRef;
+    const Uint32 senderData = stopReq.senderData;
+    cntr.release_stop_permission(signal);
+    stopReq.senderRef = 0;
+    m_stop_perm_polling = false;
+
+    if (senderRef != RNIL) {
+      jam();
+      StopRef *const ref = (StopRef *)&signal->theData[0];
+      ref->senderData = senderData;
+      ref->errorCode = StopRef::NodeShutdownPermissionTimeout;
+      ref->masterNodeId = cntr.cmasterNodeId;
+      cntr.sendSignal(senderRef, GSN_STOP_REF, signal, StopRef::SignalLength,
+                      JBB);
+    }
+    return;
+  }
+
+  signal->theData[0] = ZSHUTDOWN;
+  cntr.sendSignalWithDelay(cntr.reference(), GSN_CONTINUEB, signal, 100, 1);
 }
 
 bool Ndbcntr::StopRecord::checkNodeFail(Signal *signal) {
@@ -4999,6 +5092,14 @@ bool Ndbcntr::StopRecord::checkNodeFail(Signal *signal) {
     cntr.sendSignal(bref, GSN_STOP_REF, signal, StopRef::SignalLength, JBB);
 
   stopReq.senderRef = 0;
+
+  /**
+   * The stop is given up but this node stays alive, so any stop
+   * permission must be handed back. DIH would otherwise hold it until
+   * this node fails and refuse every later graceful stop meanwhile.
+   */
+  m_stop_perm_polling = false;
+  cntr.release_stop_permission(signal);
 
   if (cntr.getNodeState().startLevel != NodeState::SL_SINGLEUSER &&
       cntr.getNodeState().startLevel != NodeState::SL_STARTED) {
@@ -5080,6 +5181,14 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
         cntr.sendSignal(DBDIH_REF, GSN_WAIT_GCP_REQ, signal,
                         WaitGCPReq::SignalLength, JBB);
       }
+    } else if (m_stop_perm != SP_GRANTED) {
+      jam();
+      /**
+       * Against a master that predates RONDB-1096 the permission was not
+       * taken before leaving SL_STARTED, so take it here as before. The
+       * CONTINUEB chain rests until STOP_PERM_CONF or STOP_PERM_REF.
+       */
+      cntr.request_stop_permission(signal);
     } else {
       jam();
       AbortAllReq *req = (AbortAllReq *)&signal->theData[0];
@@ -5094,8 +5203,56 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
   cntr.sendSignalWithDelay(cntr.reference(), GSN_CONTINUEB, signal, 100, 1);
 }
 
+/**
+ * Acquiring stop permission before leaving SL_STARTED (RONDB-1096) is
+ * only safe against a master that also knows how to give the permission
+ * back, see release_stop_permission(). Both arrived in the same version,
+ * so the restart barrier support flag answers for them together. Against
+ * an older master the permission is acquired the old way instead, from
+ * checkTcTimeout() once the node is already stopping.
+ */
+bool Ndbcntr::use_early_stop_permission() const {
+  return ndbd_restart_phase_110_barrier(getNodeInfo(cmasterNodeId).m_version);
+}
+
+void Ndbcntr::request_stop_permission(Signal *signal) {
+  StopPermReq *req = (StopPermReq *)&signal->theData[0];
+  req->senderRef = reference();
+  req->senderData = 12;
+  sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal, StopPermReq::SignalLength,
+             JBB);
+  c_stopRec.m_stop_perm = StopRecord::SP_REQUESTED;
+  c_stopRec.m_stop_perm_ref_logged = false;
+}
+
+/**
+ * Hand the stop permission back when the stop is abandoned while this
+ * node stays alive. DIH otherwise releases it only when the stopping
+ * node fails, so an abandoned stop would leave this node in the master's
+ * c_stopPermMaster.stoppingNodes for good and every later graceful stop
+ * in the cluster would be refused.
+ */
+void Ndbcntr::release_stop_permission(Signal *signal) {
+  if (c_stopRec.m_stop_perm == StopRecord::SP_NONE) {
+    jam();
+    return;
+  }
+
+  c_stopRec.m_stop_perm = StopRecord::SP_NONE;
+  c_stopRec.m_stop_perm_ref_logged = false;
+
+  StopPermRel *rel = (StopPermRel *)&signal->theData[0];
+  rel->senderRef = reference();
+  rel->senderData = 12;
+  sendSignal(DBDIH_REF, GSN_STOP_PERM_REL, signal, StopPermRel::SignalLength,
+             JBB);
+}
+
 void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
   jamEntry();
+
+  const StopPermRef *const ref = (StopPermRef *)&signal->theData[0];
+  const Uint32 errorCode = ref->errorCode;
 
   if (c_stopRec.stopReq.senderRef == 0) {
     jam();
@@ -5107,11 +5264,46 @@ void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
     return;
   }
 
-  StopPermReq *req = (StopPermReq *)&signal->theData[0];
-  req->senderRef = reference();
-  req->senderData = 12;
-  sendSignalWithDelay(DBDIH_REF, GSN_STOP_PERM_REQ, signal, 100,
-                      StopPermReq::SignalLength);
+  if (!c_stopRec.m_stop_perm_ref_logged) {
+    jam();
+    c_stopRec.m_stop_perm_ref_logged = true;
+    const char *reason =
+        (errorCode == StopPermRef::NodeBelowRestartBarrier)
+            ? "a node restart has not yet reached the restart barrier"
+            : ((errorCode == StopPermRef::NodeStartInProgress)
+                   ? "a node start is in progress"
+                   : "another node shutdown is in progress");
+    g_eventLogger->info(
+        "Waiting for permission to stop gracefully, refused because %s"
+        " (error %u), retrying",
+        reason, errorCode);
+    infoEvent(
+        "Waiting for permission to stop gracefully, refused because %s"
+        " (error %u), retrying",
+        reason, errorCode);
+  }
+
+  if (c_stopRec.m_stop_perm_polling) {
+    jam();
+    /**
+     * Waiting from SL_STARTED. Retry, checkStopPermTimeout() bounds it.
+     */
+    StopPermReq *req = (StopPermReq *)&signal->theData[0];
+    req->senderRef = reference();
+    req->senderData = 12;
+    sendSignalWithDelay(DBDIH_REF, GSN_STOP_PERM_REQ, signal, 100,
+                        StopPermReq::SignalLength);
+    return;
+  }
+
+  jam();
+  /**
+   * Already stopping, so resume the shutdown state machine and let
+   * checkTcTimeout() ask again.
+   */
+  c_stopRec.m_stop_perm = StopRecord::SP_NONE;
+  signal->theData[0] = ZSHUTDOWN;
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
 }
 
 void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
@@ -5119,10 +5311,28 @@ void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
 
   if (c_stopRec.stopReq.senderRef == 0) {
     jam();
+    /**
+     * The stop was abandoned while the request was in flight. The
+     * permission has already been handed back with STOP_PERM_REL.
+     */
     return;
   }
 
-  ndbrequire(getNodeState().startLevel == NodeState::SL_STARTED);
+  c_stopRec.m_stop_perm = StopRecord::SP_GRANTED;
+
+  if (getNodeState().startLevel != NodeState::SL_STARTED) {
+    jam();
+    /**
+     * Permission obtained the old way, from checkTcTimeout() while
+     * already stopping. Carry on aborting transactions as before.
+     */
+    AbortAllReq *req = (AbortAllReq *)&signal->theData[0];
+    req->senderRef = reference();
+    req->senderData = 12;
+    sendSignal(DBTC_REF, GSN_ABORT_ALL_REQ, signal, AbortAllReq::SignalLength,
+               JBB);
+    return;
+  }
 
   signal->theData[0] = NDB_LE_NDBStopStarted;
   signal->theData[1] = 0;
@@ -5133,6 +5343,18 @@ void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
   updateNodeState(signal, newState);
 
   c_stopRec.stopInitiatedTime = NdbTick_getCurrentTicks();
+
+  if (c_stopRec.m_stop_perm_polling) {
+    jam();
+    /**
+     * The CONTINUEB that policed the permission wait is still in flight
+     * and drives the shutdown from here, so do not start a second one.
+     */
+    c_stopRec.m_stop_perm_polling = false;
+    return;
+  }
+
+  jam();
   signal->theData[0] = ZSHUTDOWN;
   sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
 }

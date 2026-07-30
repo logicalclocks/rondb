@@ -118,7 +118,13 @@ class StopRef {
     NodeShutdownWouldCauseSystemCrash = 3,
     TransactionAbortFailed = 4,
     UnsupportedNodeShutdown = 5,
-    MultiNodeShutdownNotMaster = 6
+    MultiNodeShutdownNotMaster = 6,
+    /**
+     * The node did not obtain permission to stop within the time a
+     * graceful stop may be delayed (GracefulShutdownTimeout). The node
+     * stays started and the stop must be retried, or forced with abort.
+     */
+    NodeShutdownPermissionTimeout = 7
   };
 
  public:

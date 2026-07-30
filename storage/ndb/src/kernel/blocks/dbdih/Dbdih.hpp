@@ -1299,6 +1299,8 @@ class Dbdih : public SimulatedBlock {
   void execSTOP_PERM_REQ(Signal *);
   void execSTOP_PERM_REF(Signal *);
   void execSTOP_PERM_CONF(Signal *);
+  void execSTOP_PERM_REL(Signal *);
+  void releaseStopPermMaster(Signal *, NodeId nodeId);
 
   void execSTOP_ME_REQ(Signal *);
   void execSTOP_ME_REF(Signal *);
