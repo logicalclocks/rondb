@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024, 2025 Hopsworks AB
+ * Copyright (C) 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -20,13 +20,16 @@
 #include "../src/api_key.hpp"
 #include "../src/config_structs.hpp"
 #include "connection.hpp"
-#include "resources/embeddings.hpp"
+#include "resources/seed_check.hpp"
+#include "resources/test_constants.hpp"
 #include "rdrs_dal.h"
 #include "rdrs_hopsworks_dal.h"
 #include "rdrs_rondb_connection.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
 #include <NdbMutex.h>
+#include <my_time.h>
 
+#include <functional>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <memory>
@@ -79,12 +82,35 @@ static void prepare_medium_varchar(char *buf, const char *str, size_t len) {
 }
 
 // Insert a row into hopsworks.api_key via NDB API (for event tests)
+// Encode a unix epoch as the 5-byte packed DATETIME(0) NDB storage format
+// Encode an epoch into the DATETIME column as a UTC wall-clock, mirroring how
+// Hopsworks stores api_key.expiry (JVM default timezone = UTC in the standard
+// deployment). Using UTC here - not localtime - keeps the round-trip through
+// datetime_attr_to_epoch() timezone-independent, so the test is stable
+// regardless of the dev box's local timezone.
+static void encode_datetime(time_t epoch, unsigned char *buf) {
+  struct tm utc_tm;
+  gmtime_r(&epoch, &utc_tm);
+  MYSQL_TIME mysql_time;
+  memset(&mysql_time, 0, sizeof(mysql_time));
+  mysql_time.year = utc_tm.tm_year + 1900;
+  mysql_time.month = utc_tm.tm_mon + 1;
+  mysql_time.day = utc_tm.tm_mday;
+  mysql_time.hour = utc_tm.tm_hour;
+  mysql_time.minute = utc_tm.tm_min;
+  mysql_time.second = utc_tm.tm_sec;
+  mysql_time.time_type = MYSQL_TIMESTAMP_DATETIME;
+  longlong packed = TIME_to_longlong_datetime_packed(mysql_time);
+  my_datetime_packed_to_binary(packed, buf, 0);
+}
+
 static bool ndb_insert_api_key(int id,
                                 const char *prefix,
                                 const char *secret,
                                 const char *salt,
                                 const char *name,
-                                int user_id) {
+                                int user_id,
+                                time_t expiry_epoch = 0) {
   Ndb *ndb = nullptr;
   RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
   if (rs.http_code != SUCCESS) {
@@ -192,8 +218,75 @@ static bool ndb_insert_api_key(int id,
     return false;
   }
 
+  // expiry (nullable DATETIME) - left NULL (= never expires) unless given
+  if (expiry_epoch != 0) {
+    unsigned char expiry_buf[8];
+    memset(expiry_buf, 0, sizeof(expiry_buf));
+    encode_datetime(expiry_epoch, expiry_buf);
+    if (op->setValue("expiry", (const char *)expiry_buf) != 0) {
+      ndb->closeTransaction(tx);
+      rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+      return false;
+    }
+  }
+
   if (tx->execute(NdbTransaction::Commit) != 0) {
     std::cerr << "NDB insert failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Update the expiry column of a row in hopsworks.api_key by PK (id) via NDB API
+static bool ndb_update_api_key_expiry(int id, time_t expiry_epoch) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(API_KEY);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->updateTuple() != 0 || op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  unsigned char expiry_buf[8];
+  memset(expiry_buf, 0, sizeof(expiry_buf));
+  encode_datetime(expiry_epoch, expiry_buf);
+  if (op->setValue("expiry", (const char *)expiry_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB update failed: " << tx->getNdbError().code
               << " " << tx->getNdbError().message << std::endl;
     ndb->closeTransaction(tx);
     rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
@@ -320,10 +413,284 @@ static bool ndb_delete_api_key_by_id(int id) {
   return true;
 }
 
+// Insert a row into hopsworks.shared_feature_store via NDB API
+// (for feature-store sharing tests)
+static bool ndb_insert_shared_feature_store(int id,
+                                            int feature_store_id,
+                                            int shared_with_project,
+                                            int shared_entirely) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(SHARED_FEATURE_STORE);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->insertTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // PK: id (int)
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // feature_store (int, FK -> feature_store.id)
+  if (op->setValue("feature_store", feature_store_id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_by (int, FK -> users.uid): the api key user macho
+  if (op->setValue("shared_by", (Int32)10000) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_on (timestamp - 4-byte seconds since epoch)
+  Uint32 now = (Uint32)time(nullptr);
+  if (op->setValue("shared_on", now) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_with_project (int, FK -> project.id)
+  if (op->setValue("shared_with_project", shared_with_project) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // shared_entirely (tinyint)
+  if (op->setValue("shared_entirely", (Int32)shared_entirely) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB insert failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Delete a row from hopsworks.shared_feature_store by primary key (id)
+static bool ndb_delete_shared_feature_store(int id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(SHARED_FEATURE_STORE);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->deleteTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB delete failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Shared plumbing for the fine-grained grant-table rows: insert one row
+// with integer PK 'id'; set_columns sets the non-PK columns on the
+// operation and returns 0 on success.
+static bool ndb_insert_row(const char *table_name,
+                           int id,
+                           const std::function<int(NdbOperation*)> &set_columns) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+  bool ok = false;
+  NdbTransaction *tx = nullptr;
+  do {
+    if (ndb->setDatabaseName(HOPSWORKS) != 0) break;
+    const NdbDictionary::Table *tab =
+        ndb->getDictionary()->getTable(table_name);
+    if (tab == nullptr) break;
+    tx = ndb->startTransaction();
+    if (tx == nullptr) break;
+    NdbOperation *op = tx->getNdbOperation(tab);
+    if (op == nullptr || op->insertTuple() != 0) break;
+    if (op->equal("id", id) != 0) break;
+    if (set_columns(op) != 0) break;
+    if (tx->execute(NdbTransaction::Commit) != 0) {
+      std::cerr << "NDB insert into " << table_name << " failed: "
+                << tx->getNdbError().code << " "
+                << tx->getNdbError().message << std::endl;
+      break;
+    }
+    ok = true;
+  } while (false);
+  if (tx != nullptr) {
+    ndb->closeTransaction(tx);
+  }
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return ok;
+}
+
+// Delete one row by integer PK 'id' (fine-grained grant tables)
+static bool ndb_delete_row(const char *table_name, int id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+  bool ok = false;
+  NdbTransaction *tx = nullptr;
+  do {
+    if (ndb->setDatabaseName(HOPSWORKS) != 0) break;
+    const NdbDictionary::Table *tab =
+        ndb->getDictionary()->getTable(table_name);
+    if (tab == nullptr) break;
+    tx = ndb->startTransaction();
+    if (tx == nullptr) break;
+    NdbOperation *op = tx->getNdbOperation(tab);
+    if (op == nullptr || op->deleteTuple() != 0) break;
+    if (op->equal("id", id) != 0) break;
+    if (tx->execute(NdbTransaction::Commit) != 0) break;
+    ok = true;
+  } while (false);
+  if (tx != nullptr) {
+    ndb->closeTransaction(tx);
+  }
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return ok;
+}
+
+// hopsworks.shared_feature_group: FG shared with a project, whole
+// (shared_entirely = 1) or feature-wise (0, columns in shared_feature)
+static bool ndb_insert_shared_feature_group(int id,
+                                            int feature_store_id,
+                                            int feature_group_id,
+                                            int shared_with_project,
+                                            int shared_entirely) {
+  return ndb_insert_row(SHARED_FEATURE_GROUP, id, [&](NdbOperation *op) {
+    Uint32 now = (Uint32)time(nullptr);
+    return op->setValue("feature_store", feature_store_id) |
+           op->setValue("feature_group", feature_group_id) |
+           op->setValue("shared_by", (Int32)10000) |
+           op->setValue("shared_on", now) |
+           op->setValue("shared_with_project", shared_with_project) |
+           op->setValue("shared_entirely", (Int32)shared_entirely);
+  });
+}
+
+// hopsworks.shared_feature: one column of a feature-wise FG share
+static bool ndb_insert_shared_feature(int id,
+                                      int feature_group_id,
+                                      const char *feature,
+                                      int shared_with_project) {
+  return ndb_insert_row(SHARED_FEATURE, id, [&](NdbOperation *op) {
+    char feature_buf[SHARED_FEATURE_NAME_SIZE];
+    memset(feature_buf, 0, sizeof(feature_buf));
+    prepare_short_varchar(feature_buf, feature, strlen(feature));
+    Uint32 now = (Uint32)time(nullptr);
+    return op->setValue("feature_group", feature_group_id) |
+           op->setValue("feature", feature_buf) |
+           op->setValue("shared_by", (Int32)10000) |
+           op->setValue("shared_on", now) |
+           op->setValue("shared_with_project", shared_with_project);
+  });
+}
+
+// hopsworks.restricted_feature_group_access: per-user FG grant, whole
+// (can_access_entirely = 1) or feature-wise (0, columns in
+// restricted_feature_access)
+static bool ndb_insert_restricted_feature_group_access(int id,
+                                                       int feature_store_id,
+                                                       int feature_group_id,
+                                                       int granted_to_user,
+                                                       int can_access_entirely) {
+  return ndb_insert_row(RESTRICTED_FEATURE_GROUP_ACCESS, id,
+                        [&](NdbOperation *op) {
+    Uint32 now = (Uint32)time(nullptr);
+    return op->setValue("feature_store", feature_store_id) |
+           op->setValue("feature_group", feature_group_id) |
+           op->setValue("granted_by", (Int32)10000) |
+           op->setValue("granted_on", now) |
+           op->setValue("granted_to_user", granted_to_user) |
+           op->setValue("can_access_entirely", (Int32)can_access_entirely);
+  });
+}
+
 class APIKeyTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     printf("Set up TestSuite\n");
+    RequireSeededTestDatabases();
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
                                                               globalConfigs.ronDBMetadataCluster,
                                                               4);
@@ -366,42 +733,32 @@ void test_key(APIKeyCache *cache) {
 
   std::string apiKey =
       "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
-  char username[USERNAME_SIZE + 1];
-  char *username_ptr = &username[0];
-  RS_Status status = cache->validate_api_key(apiKey,
-                                             {existentDB},
-                                             username_ptr);
+  RS_Status status = cache->validate_api_key(apiKey, {existentDB});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Wrong prefix was falsely validated";
 
   apiKey = "bkYjEz6OTZyevbqT";
-  status = cache->validate_api_key(apiKey, {}, username_ptr);
+  status = cache->validate_api_key(apiKey, std::vector<std::string_view>{});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Missing secret was falsely validated";
 
   apiKey = "bkYjEz6OTZyevbq.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
-  status = cache->validate_api_key(apiKey, {}, username_ptr);
+  status = cache->validate_api_key(apiKey, std::vector<std::string_view>{});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Wrong length prefix was falsely validated";
 
   // correct api key but wrong db. this api key can not access test3 db
-  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY,
-                                   {fakeDB},
-                                   username_ptr);
+  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY, {fakeDB});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Inexistent database was falsely validated";
 
   // correct api key
-  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY,
-                                   {existentDB},
-                                   username_ptr);
+  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY, {existentDB});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 
   // no errors
-  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY,
-                                   {existentDB, existentDB2},
-                                   username_ptr);
+  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY, {existentDB, existentDB2});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 }
@@ -429,12 +786,12 @@ TEST_F(APIKeyTest, TestPreload) {
       << "Cache should have preloaded entries";
 
   // Verify the known test key works after preload (no lazy load needed)
-  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Preloaded key should validate: " << status.message;
 
   // Verify unauthorized DB still fails
-  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {"nonexistent_db"}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {"nonexistent_db"});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Unauthorized DB should be rejected";
 
@@ -442,7 +799,7 @@ TEST_F(APIKeyTest, TestPreload) {
   std::ostringstream oss;
   oss << std::setw(16) << std::setfill('0') << 0 << "." << HopsworksAPIKey_SECRET;
   std::string generatedKey = oss.str();
-  status = apiKeyCachePtr->validate_api_key(generatedKey, {DB001}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(generatedKey, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Preloaded generated key should validate: " << status.message;
 
@@ -454,9 +811,7 @@ void test_update_cache_every_n_seconds(APIKeyCache *cache,
   std::string apiKey = HOPSWORKS_TEST_API_KEY;
   std::vector<std::string_view> databases = {DB001, DB002};
 
-  char username[USERNAME_SIZE + 1];
-  char *username_ptr = &username[0];
-  RS_Status status = cache->validate_api_key(apiKey, databases, username_ptr);
+  RS_Status status = cache->validate_api_key(apiKey, databases);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 
@@ -466,7 +821,7 @@ void test_update_cache_every_n_seconds(APIKeyCache *cache,
   auto lastUpdated2 = cache->last_updated(apiKey);
   EXPECT_NE(lastUpdated1, lastUpdated2) << "Cache entry was not updated";
 
-  status = cache->validate_api_key(apiKey, databases, username_ptr);
+  status = cache->validate_api_key(apiKey, databases);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 }
@@ -495,9 +850,7 @@ void test_update_cache_every_n_seconds_unauthorized(APIKeyCache *cache,
   std::string apiKey    = HOPSWORKS_TEST_API_KEY;
   const std::string db3 = "test3";
 
-  char username[USERNAME_SIZE + 1];
-  char *username_ptr = &username[0];
-  RS_Status status = cache->validate_api_key(apiKey, {db3}, username_ptr);
+  RS_Status status = cache->validate_api_key(apiKey, {db3});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Database should not exist. Expected test to fail";
 
@@ -547,9 +900,7 @@ void test_load(APIKeyCache *cache, const AllConfigs &conf) {
 
       auto DB = DB001;
 
-      char username[USERNAME_SIZE + 1];
-      char *username_ptr = &username[0];
-      RS_Status status = cache->validate_api_key(apiKey, {DB}, username_ptr);
+      RS_Status status = cache->validate_api_key(apiKey, {DB});
       if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
         std::cout << "validation failed for api key: " << apiKey << "; error: " << status.message
                   << std::endl;
@@ -683,9 +1034,7 @@ void test_load_with_bad_keys(APIKeyCache *cache, const AllConfigs &conf) {
 
       auto DB = DB001;
 
-      char username[USERNAME_SIZE + 1];
-      char *username_ptr = &username[0];
-      RS_Status status = cache->validate_api_key(apiKey, {DB}, username_ptr);
+      RS_Status status = cache->validate_api_key(apiKey, {DB});
       if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
         ch.push(true);
       } else {
@@ -788,12 +1137,12 @@ TEST_F(APIKeyTest, TestEventInsert) {
 
   // Verify the key validates
   std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Event-inserted key should validate: " << status.message;
 
   // Verify unauthorized DB still fails
-  status = apiKeyCachePtr->validate_api_key(fullKey, {"nonexistent_db"}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(fullKey, {"nonexistent_db"});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Unauthorized DB should be rejected for event-inserted key";
 
@@ -831,7 +1180,7 @@ TEST_F(APIKeyTest, TestEventDelete) {
   std::string fullKey = std::string(delete_prefix) + "." + HopsworksAPIKey_SECRET;
 
   // Verify key IS in cache (preloaded) and validates
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Preloaded key should validate before delete: " << status.message;
 
@@ -846,7 +1195,7 @@ TEST_F(APIKeyTest, TestEventDelete) {
 
   // The event watcher marks deleted entries as IS_INVALID (the refresh thread
   // handles actual eviction). Verify the key no longer validates.
-  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Deleted key should fail validation";
 
@@ -889,7 +1238,7 @@ TEST_F(APIKeyTest, TestEventUpdate) {
   std::string fullKey = std::string(update_prefix) + "." + HopsworksAPIKey_SECRET;
 
   // Verify key validates before update
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Preloaded key should validate before update: " << status.message;
 
@@ -903,7 +1252,7 @@ TEST_F(APIKeyTest, TestEventUpdate) {
   NdbSleep_MilliSleep(3000);
 
   // Verify the key no longer validates (hash mismatch: stored secret changed)
-  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Key should fail validation after secret was updated in DB";
 
@@ -939,7 +1288,7 @@ TEST_F(APIKeyTest, TestLazyLoadFallback) {
       << "Cache should be empty before any validation";
 
   // Validate — should trigger lazy load path (update_cache)
-  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Lazy load should validate key from DB: " << status.message;
 
@@ -948,12 +1297,12 @@ TEST_F(APIKeyTest, TestLazyLoadFallback) {
       << "Cache should have an entry after lazy load";
 
   // Second validation should hit cache (no lazy load)
-  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Cached key should validate on second call: " << status.message;
 
   // Unauthorized DB still fails
-  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {"nonexistent_db"}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {"nonexistent_db"});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Unauthorized DB should be rejected even after lazy load";
 
@@ -989,7 +1338,7 @@ TEST_F(APIKeyTest, TestPreloadIdempotent) {
       << "First: " << size_after_first << ", Second: " << size_after_second;
 
   // Verify keys still validate after double preload
-  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Key should still validate after double preload: " << status.message;
 
@@ -1021,7 +1370,7 @@ TEST_F(APIKeyTest, TestHashMismatch) {
 
   // Validate against an authorized DB — should fail with "bad API key"
   // (not "not authorized to access DB")
-  RS_Status status = apiKeyCachePtr->validate_api_key(badKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(badKey, {DB001});
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Bad secret should be rejected";
   EXPECT_NE(std::string(status.message).find("bad API key"), std::string::npos)
@@ -1059,7 +1408,7 @@ TEST_F(APIKeyTest, TestConcurrentSameKey) {
     threads.push_back(std::thread([&results] {
       // All threads validate the SAME key against the SAME database
       RS_Status status =
-          apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+          apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
       results.push(status.http_code ==
                    static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
     }));
@@ -1111,7 +1460,7 @@ TEST_F(APIKeyTest, TestConcurrentLazyLoad) {
   for (int i = 0; i < numThreads; ++i) {
     threads.push_back(std::thread([&results] {
       RS_Status status =
-          apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+          apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
       results.push(status.http_code ==
                    static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
     }));
@@ -1174,7 +1523,7 @@ TEST_F(APIKeyTest, TestRefreshEviction) {
 
   // Do NOT preload — lazy-load just this one key to keep cache small
   std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Test key should validate via lazy load: " << status.message;
   ASSERT_EQ(apiKeyCachePtr->size(), 1u) << "Only the test key should be cached";
@@ -1231,7 +1580,7 @@ TEST_F(APIKeyTest, TestReconnectPreloadPicksUpNewEntry) {
 
   // Verify the new key is usable
   std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Reconnect-preloaded key should validate: " << status.message;
 
@@ -1275,7 +1624,7 @@ TEST_F(APIKeyTest, TestReconnectRefreshEvictsMissedDelete) {
 
   // Verify key validates
   std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   ASSERT_EQ(status.http_code,
             static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Preloaded key should validate: " << status.message;
@@ -1300,7 +1649,7 @@ TEST_F(APIKeyTest, TestReconnectRefreshEvictsMissedDelete) {
       << "Refresh thread should have evicted the deleted key";
 
   // Key should no longer validate
-  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   EXPECT_NE(status.http_code,
             static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Deleted key should not validate after refresh eviction";
@@ -1346,7 +1695,7 @@ TEST_F(APIKeyTest, TestEndToEndReconnect) {
 
   // Verify the key was picked up by reconnect preload
   std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
-  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
   EXPECT_EQ(status.http_code,
             static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Reconnect preload should have picked up the new key: "
@@ -1354,6 +1703,452 @@ TEST_F(APIKeyTest, TestEndToEndReconnect) {
 
   // Cleanup
   ndb_delete_api_key_by_id(test_id);
+  stop_api_key_cache();
+}
+
+// Test cross-project feature-store sharing (hopsworks.shared_feature_store):
+// a store shared entirely with one of the key user's projects becomes an
+// allowed database; placeholder rows (shared_entirely = 0) and shares with
+// other projects grant nothing; deleting the share revokes access.
+// fsdb_isolate is the only seeded store the key user cannot already reach.
+// There is no NDB event watcher on shared_feature_store — changes propagate
+// via the refresh thread, so the test waits ~3 refresh cycles after each
+// change.
+TEST_F(APIKeyTest, TestSharedFeatureStoreAccess) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so share changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  const int share_id = 88888;
+  const int other_share_id = 88887;
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_shared_feature_store(share_id);
+  ndb_delete_shared_feature_store(other_share_id);
+
+  // Baseline (lazy load): member DBs accessible, the isolated store not
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
+  ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Member DB should be accessible: " << status.message;
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  ASSERT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared store must be rejected";
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Share the isolated store entirely with the key user's home project
+  ASSERT_TRUE(ndb_insert_shared_feature_store(share_id,
+                                              FSDB_ISOLATE_STORE_ID,
+                                              HOME_PROJECT_ID,
+                                              1))
+      << "Failed to insert shared_feature_store row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Store shared entirely should be accessible: " << status.message;
+  // Member and shared DBs in the same request
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001, FSDB_ISOLATE});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Member DB + shared store together should be accessible: " << status.message;
+
+  // Unshare: access revoked on the next refresh
+  ASSERT_TRUE(ndb_delete_shared_feature_store(share_id))
+      << "Failed to delete shared_feature_store row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared store should be rejected again";
+
+  // A placeholder row (shared_entirely = 0, created by Hopsworks when only
+  // individual feature groups are shared) grants nothing; neither does a
+  // share with a project the key user is not a member of
+  ASSERT_TRUE(ndb_insert_shared_feature_store(share_id,
+                                              FSDB_ISOLATE_STORE_ID,
+                                              HOME_PROJECT_ID,
+                                              0))
+      << "Failed to insert placeholder share row via NDB";
+  ASSERT_TRUE(ndb_insert_shared_feature_store(other_share_id,
+                                              FSDB_ISOLATE_STORE_ID,
+                                              FSDB_ISOLATE_PROJECT_ID,
+                                              1))
+      << "Failed to insert foreign-project share row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {FSDB_ISOLATE});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Placeholder / foreign-project shares must not grant access";
+
+  // Member access unaffected throughout
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Member DB should still be accessible: " << status.message;
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_shared_feature_store(share_id))
+      << "Failed to cleanup placeholder share row";
+  ASSERT_TRUE(ndb_delete_shared_feature_store(other_share_id))
+      << "Failed to cleanup foreign-project share row";
+
+  stop_api_key_cache();
+}
+
+// Fine-grained sharing (RONDB-1088): shared_feature_group / shared_feature
+// grant table- and column-level access to another project's online tables;
+// restricted_feature_group_access is the per-user mirror. Targets the
+// usera_project entities of the imported fixture
+// (fine_grained_sharing_data.sql, ids >= 100000) - a store the key user
+// macho has no access to. Like shared_feature_store, the grant tables have
+// no NDB event watcher: changes propagate via the refresh thread.
+TEST_F(APIKeyTest, TestFineGrainedSharedAccess) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so grant changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Producer entities of the fine-grained sharing fixture
+  const std::string_view usera_db = "usera_project";
+  const std::string_view customers_table = "usera_customers_fg_1";
+  const std::string_view transactions_table = "usera_transactions_fg_1";
+  const int usera_store_id = 100000;
+  const int customers_fg_id = 100000;
+  const int transactions_fg_id = 100001;
+
+  const int fg_share_id = 88886;         // customers FG shared whole
+  const int fg_subset_share_id = 88885;  // transactions FG shared feature-wise
+  const int feature_share_id1 = 88884;
+  const int feature_share_id2 = 88883;
+  const int restricted_id = 88882;       // transactions granted to the user
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_row(SHARED_FEATURE_GROUP, fg_share_id);
+  ndb_delete_row(SHARED_FEATURE_GROUP, fg_subset_share_id);
+  ndb_delete_row(SHARED_FEATURE, feature_share_id1);
+  ndb_delete_row(SHARED_FEATURE, feature_share_id2);
+  ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS, restricted_id);
+
+  auto table_request = [](const std::string_view &db,
+                          const std::string_view &table,
+                          const std::vector<std::string_view> *columns) {
+    TableAccessRequest accessReq;
+    accessReq.db = db;
+    accessReq.table = table;
+    accessReq.columns = columns;
+    return std::vector<TableAccessRequest>{accessReq};
+  };
+
+  // Baseline (lazy load): no access to the producer's tables or database
+  RS_Status status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, customers_table, nullptr));
+  ASSERT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared table must be rejected";
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Whole-FG share: the FG's table becomes readable, nothing else
+  ASSERT_TRUE(ndb_insert_shared_feature_group(fg_share_id,
+                                              usera_store_id,
+                                              customers_fg_id,
+                                              HOME_PROJECT_ID,
+                                              1))
+      << "Failed to insert shared_feature_group row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, customers_table, nullptr));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Wholly shared FG table should be accessible: " << status.message;
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "FG share must not open the store's other tables";
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY,
+                                            {usera_db});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "FG share must not grant database-level access";
+
+  // Feature-wise share: only the shared columns are readable
+  ASSERT_TRUE(ndb_insert_shared_feature_group(fg_subset_share_id,
+                                              usera_store_id,
+                                              transactions_fg_id,
+                                              HOME_PROJECT_ID,
+                                              0))
+      << "Failed to insert feature-wise shared_feature_group row via NDB";
+  ASSERT_TRUE(ndb_insert_shared_feature(feature_share_id1,
+                                        transactions_fg_id,
+                                        "customer_id",
+                                        HOME_PROJECT_ID))
+      << "Failed to insert shared_feature row via NDB";
+  ASSERT_TRUE(ndb_insert_shared_feature(feature_share_id2,
+                                        transactions_fg_id,
+                                        "num_transactions_30d",
+                                        HOME_PROJECT_ID))
+      << "Failed to insert shared_feature row via NDB";
+  NdbSleep_MilliSleep(3000);
+  const std::vector<std::string_view> granted_columns =
+    {"customer_id", "num_transactions_30d"};
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &granted_columns));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Shared columns should be accessible: " << status.message;
+  const std::vector<std::string_view> ungranted_columns = {"total_spend_30d"};
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &ungranted_columns));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared column must be rejected";
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Whole-row read of a column-shared table must be rejected";
+
+  // Restricted per-user grant: same ladder, keyed by user instead of project
+  ASSERT_TRUE(ndb_insert_restricted_feature_group_access(restricted_id,
+                                                         usera_store_id,
+                                                         transactions_fg_id,
+                                                         10000 /*macho*/,
+                                                         1))
+      << "Failed to insert restricted_feature_group_access row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Restricted whole-FG grant should open the table: " << status.message;
+
+  // Revoking the restricted grant drops back to the column subset
+  ASSERT_TRUE(ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS, restricted_id))
+      << "Failed to delete restricted_feature_group_access row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY, table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Revoked restricted grant must reject whole-row reads again";
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE_GROUP, fg_share_id));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE_GROUP, fg_subset_share_id));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, feature_share_id1));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, feature_share_id2));
+
+  stop_api_key_cache();
+}
+
+// A feature-wise share (shared_entirely/can_access_entirely = 0) whose
+// column rows are missing must grant NOTHING. Hopsworks commits the parent
+// and child rows in separate transactions and validates the feature names
+// only after the parent is committed, so a parent row without children is
+// reachable both mid-write and permanently (share request with a bad
+// feature name). Resolving it as an empty column set would mean "whole
+// table granted" - a privilege escalation.
+TEST_F(APIKeyTest, TestOrphanSubsetGrantFailsClosed) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so grant changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Producer entities of the fine-grained sharing fixture
+  const std::string_view usera_db = "usera_project";
+  const std::string_view transactions_table = "usera_transactions_fg_1";
+  const int usera_store_id = 100000;
+  const int transactions_fg_id = 100001;
+
+  const int orphan_share_id = 88881;       // subset share without columns
+  const int orphan_restricted_id = 88880;  // restricted grant without columns
+  const int late_feature_id = 88879;       // column row committed later
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_row(SHARED_FEATURE_GROUP, orphan_share_id);
+  ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS, orphan_restricted_id);
+  ndb_delete_row(SHARED_FEATURE, late_feature_id);
+
+  auto table_request = [](const std::string_view &db,
+                          const std::string_view &table,
+                          const std::vector<std::string_view> *columns) {
+    TableAccessRequest accessReq;
+    accessReq.db = db;
+    accessReq.table = table;
+    accessReq.columns = columns;
+    return std::vector<TableAccessRequest>{accessReq};
+  };
+  const std::vector<std::string_view> one_column = {"num_transactions_30d"};
+
+  // Baseline (lazy load): no access to the producer's table
+  RS_Status status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, nullptr));
+  ASSERT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unshared table must be rejected";
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Orphan feature-wise share: parent row committed, column rows absent
+  ASSERT_TRUE(ndb_insert_shared_feature_group(orphan_share_id,
+                                              usera_store_id,
+                                              transactions_fg_id,
+                                              HOME_PROJECT_ID,
+                                              0))
+      << "Failed to insert orphan shared_feature_group row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Orphan subset share must not grant whole-row reads";
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &one_column));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Orphan subset share must not grant any column";
+
+  // Orphan restricted grant: same fail-closed rule on the per-user ladder
+  ASSERT_TRUE(ndb_insert_restricted_feature_group_access(orphan_restricted_id,
+                                                         usera_store_id,
+                                                         transactions_fg_id,
+                                                         10000 /*macho*/,
+                                                         0))
+      << "Failed to insert orphan restricted_feature_group_access row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &one_column));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Orphan restricted grant must not grant any column";
+
+  // The writer finishes: the column row lands and only that column opens up
+  ASSERT_TRUE(ndb_insert_shared_feature(late_feature_id,
+                                        transactions_fg_id,
+                                        "num_transactions_30d",
+                                        HOME_PROJECT_ID))
+      << "Failed to insert shared_feature row via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, &one_column));
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Completed share should grant the shared column: " << status.message;
+  status = apiKeyCachePtr->validate_api_key(
+    HOPSWORKS_TEST_API_KEY,
+    table_request(usera_db, transactions_table, nullptr));
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Completed subset share must not grant whole-row reads";
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE_GROUP, orphan_share_id));
+  ASSERT_TRUE(ndb_delete_row(RESTRICTED_FEATURE_GROUP_ACCESS,
+                             orphan_restricted_id));
+  ASSERT_TRUE(ndb_delete_row(SHARED_FEATURE, late_feature_id));
+
+  stop_api_key_cache();
+}
+
+// api_key.expiry enforcement, mirroring Hopsworks
+// (ApiKeyUtilities.getApiKeyCheckingExpiry): NULL never expires, otherwise
+// the key is rejected once expiry is strictly before now. Also covers
+// expiry changes on an already-cached key propagating via the background
+// threads (api_key UPDATE event / refresh sweep).
+TEST_F(APIKeyTest, TestAPIKeyExpiry) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Fast refresh so expiry changes propagate quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  const int past_id = 99996;
+  const int future_id = 99995;
+  const int null_id = 99994;
+  const char *past_prefix = "EXPIRY_PAST_TEST";    // 16 chars
+  const char *future_prefix = "EXPIRY_FUTR_TEST";  // 16 chars
+  const char *null_prefix = "EXPIRY_NULL_TEST";    // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+  const time_t now = time(nullptr);
+
+  // Cleanup leftovers from any previous failed run
+  ndb_delete_api_key_by_id(past_id);
+  ndb_delete_api_key_by_id(future_id);
+  ndb_delete_api_key_by_id(null_id);
+
+  ASSERT_TRUE(ndb_insert_api_key(past_id, past_prefix, test_secret,
+                                 test_salt, "expiry_past", test_user_id,
+                                 now - 3600))
+      << "Failed to insert expired API key";
+  ASSERT_TRUE(ndb_insert_api_key(future_id, future_prefix, test_secret,
+                                 test_salt, "expiry_future", test_user_id,
+                                 now + 3600))
+      << "Failed to insert not-yet-expired API key";
+  ASSERT_TRUE(ndb_insert_api_key(null_id, null_prefix, test_secret,
+                                 test_salt, "expiry_null", test_user_id))
+      << "Failed to insert never-expiring API key";
+
+  // Expired key: correct secret, but rejected with the Hopsworks message
+  std::string pastKey = std::string(past_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(pastKey, {DB001});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Expired API key must be rejected";
+  EXPECT_NE(std::string(status.message).find("expired"), std::string::npos)
+      << "Denial should name the expiry, got: " << status.message;
+
+  // Expiry in the future: works like any valid key
+  std::string futureKey =
+      std::string(future_prefix) + "." + HopsworksAPIKey_SECRET;
+  status = apiKeyCachePtr->validate_api_key(futureKey, {DB001});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Not-yet-expired API key should validate: " << status.message;
+
+  // NULL expiry: never expires
+  std::string nullKey = std::string(null_prefix) + "." + HopsworksAPIKey_SECRET;
+  status = apiKeyCachePtr->validate_api_key(nullKey, {DB001});
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "API key without expiry should validate: " << status.message;
+
+  // Shortening a cached key's expiry into the past must revoke it via the
+  // background threads (UPDATE event or refresh sweep)
+  apiKeyCachePtr->start_background_threads();
+  NdbSleep_MilliSleep(2000);  // let the event watcher subscribe
+  ASSERT_TRUE(ndb_update_api_key_expiry(future_id, now - 60))
+      << "Failed to update API key expiry via NDB";
+  NdbSleep_MilliSleep(3000);
+  status = apiKeyCachePtr->validate_api_key(futureKey, {DB001});
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Key expired after caching must be rejected";
+  EXPECT_NE(std::string(status.message).find("expired"), std::string::npos)
+      << "Denial should name the expiry, got: " << status.message;
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_api_key_by_id(past_id));
+  ASSERT_TRUE(ndb_delete_api_key_by_id(future_id));
+  ASSERT_TRUE(ndb_delete_api_key_by_id(null_id));
+
   stop_api_key_cache();
 }
 

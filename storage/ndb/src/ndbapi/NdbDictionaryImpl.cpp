@@ -59,6 +59,81 @@
 
 #define INCOMPATIBLE_VERSION -2
 
+static int validate_partition_hash_metadata(const NdbTableImpl &impl,
+                                            Uint32 partition_count,
+                                            bool partition_count_known,
+                                            NdbError &error) {
+  const Uint32 primary_key_count = impl.m_noOfKeys;
+  const Uint32 base_count = impl.getPartitionHashBaseKeyCount();
+  const Uint32 detail_count = impl.getPartitionHashDetailKeyCount();
+  const Uint32 fanout = impl.getPartitionHashFanout();
+
+  if (base_count > 0xff || detail_count > 0xff || fanout > 0xffff ||
+      fanout == 0) {
+    error.code = CreateTableRef::InvalidPartitionHash;
+    return -1;
+  }
+
+  if (primary_key_count == 0 && base_count == 0 && detail_count == 0 &&
+      fanout == 1) {
+    return 0;
+  }
+
+  if (base_count == 0 || base_count + detail_count != primary_key_count) {
+    error.code = CreateTableRef::InvalidPartitionHash;
+    return -1;
+  }
+
+  if (fanout > 1) {
+    if (detail_count == 0) {
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    if (impl.getFullyReplicated()) {
+      error.code = CreateTableRef::WrongPartitionBalanceFullyReplicated;
+      return -1;
+    }
+    if (impl.m_fragmentType != NdbDictionary::Object::HashMapPartition) {
+      /* Fanout routing works through a hash map. */
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    /**
+     * Fanout routing hashes the first base_count primary key columns
+     * in key order and ignores declared distribution keys, and the
+     * distribution key flags would mislead pre-fanout clients into
+     * pruning on them. Reject a proper distribution key subset
+     * (computeAggregates normalizes an all-primary-key declaration
+     * to zero, the default).
+     */
+    if (impl.m_noOfDistributionKeys != 0 &&
+        impl.m_noOfDistributionKeys != primary_key_count) {
+      error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    if (partition_count_known && fanout > partition_count) {
+      error.code = CreateTableRef::InvalidFanout;
+      return -1;
+    }
+    /**
+     * Every base key spreads over a block of fanout consecutive hash
+     * map buckets, so the fanout must divide the bucket count or a
+     * block could wrap the bucket ring and collide on a partition.
+     * m_hash_map is only populated on table objects fetched from the
+     * kernel (the alter path); at create time the map need not exist
+     * yet and DBDICT validates the bucket count of the actual map at
+     * parse time.
+     */
+    const Uint32 hash_map_size = impl.m_hash_map.size();
+    if (hash_map_size != 0 && (hash_map_size % fanout) != 0) {
+      error.code = CreateTableRef::InvalidFanout;
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
 /**
  * Signal response timeouts
  *
@@ -977,6 +1052,9 @@ void NdbTableImpl::init() {
   m_partitionBalance = NdbDictionary::Object::PartitionBalance_ForRPByLDM;
   m_fragmentCount = 0;
   m_partitionCount = 0;
+  m_base_partition_key_count = 0;
+  m_detail_partition_key_count = 0;
+  m_base_partition_fanout = 1;
   m_index = nullptr;
   m_indexType = NdbDictionary::Object::TypeUndefined;
   m_noOfKeys = 0;
@@ -1216,6 +1294,19 @@ bool NdbTableImpl::equal(const NdbTableImpl &obj) const {
     DBUG_RETURN(false);
   }
 
+  if (m_base_partition_key_count != obj.m_base_partition_key_count)
+  {
+    DBUG_RETURN(false);
+  }
+  if (m_detail_partition_key_count != obj.m_detail_partition_key_count)
+  {
+    DBUG_RETURN(false);
+  }
+  if (m_base_partition_fanout != obj.m_base_partition_fanout)
+  {
+    DBUG_RETURN(false);
+  }
+
   if (m_ttl_sec != obj.m_ttl_sec)
   {
     DBUG_RETURN(false);
@@ -1304,6 +1395,9 @@ int NdbTableImpl::assign(const NdbTableImpl &org) {
   m_keyLenInWords = org.m_keyLenInWords;
   m_fragmentCount = org.m_fragmentCount;
   m_partitionCount = org.m_partitionCount;
+  m_base_partition_key_count = org.m_base_partition_key_count;
+  m_detail_partition_key_count = org.m_detail_partition_key_count;
+  m_base_partition_fanout = org.m_base_partition_fanout;
   m_partitionBalance = org.m_partitionBalance;
   m_single_user_mode = org.m_single_user_mode;
   m_extra_row_gci_bits = org.m_extra_row_gci_bits;
@@ -1485,6 +1579,15 @@ void NdbTableImpl::computeAggregates() {
       n--;
     }
   }
+
+  if (m_base_partition_key_count == 0 &&
+      m_detail_partition_key_count == 0 &&
+      m_base_partition_fanout == 1) {
+    const Uint32 base_key_count =
+        (m_noOfDistributionKeys == 0) ? m_noOfKeys : m_noOfDistributionKeys;
+    m_base_partition_key_count = base_key_count;
+    m_detail_partition_key_count = m_noOfKeys - base_key_count;
+  }
 }
 
 // TODO add error checks
@@ -1503,6 +1606,25 @@ void NdbTableImpl::setFragmentCount(Uint32 count) { m_fragmentCount = count; }
 Uint32 NdbTableImpl::getFragmentCount() const { return m_fragmentCount; }
 
 Uint32 NdbTableImpl::getPartitionCount() const { return m_partitionCount; }
+
+void NdbTableImpl::setPartitionHash(Uint32 base_key_count,
+                                    Uint32 detail_key_count, Uint32 fanout) {
+  m_base_partition_key_count = base_key_count;
+  m_detail_partition_key_count = detail_key_count;
+  m_base_partition_fanout = fanout;
+}
+
+Uint32 NdbTableImpl::getPartitionHashBaseKeyCount() const {
+  return m_base_partition_key_count;
+}
+
+Uint32 NdbTableImpl::getPartitionHashDetailKeyCount() const {
+  return m_detail_partition_key_count;
+}
+
+Uint32 NdbTableImpl::getPartitionHashFanout() const {
+  return m_base_partition_fanout;
+}
 
 int NdbTableImpl::setFrm(const void *data, Uint32 len) {
   return m_frm.assign(data, len);
@@ -2978,6 +3100,7 @@ NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb)
       m_ndb(ndb) {
   m_globalHash = nullptr;
   m_local_table_data_size = 0;
+  m_staleLocalTableInfoHead = nullptr;
   static_assert(
       (int)WarnUndobufferRoundUp ==
           (int)CreateFilegroupConf::WarnUndobufferRoundUp &&
@@ -2996,9 +3119,13 @@ NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb, NdbDictionary::Dictionary &f)
       m_ndb(ndb) {
   m_globalHash = nullptr;
   m_local_table_data_size = 0;
+  m_staleLocalTableInfoHead = nullptr;
 }
 
 NdbDictionaryImpl::~NdbDictionaryImpl() {
+  if (m_globalHash) {
+    releaseStaleTableReferences();
+  }
   /* Release local table references back to the global cache */
   NdbElement_t<Ndb_local_table_info> *curr =
       m_localHash.m_tableHash.getNext(nullptr);
@@ -3877,6 +4004,9 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
       (NdbDictionary::Object::PartitionBalance)tableDesc->PartitionBalance;
   impl->m_read_backup = tableDesc->ReadBackupFlag == 0 ? false : true;
   impl->m_partitionCount = tableDesc->PartitionCount;
+  impl->setPartitionHash(tableDesc->PartitionHashBaseKeyCount,
+                         tableDesc->PartitionHashDetailKeyCount,
+                         tableDesc->PartitionHashFanout);
   impl->m_fully_replicated =
     tableDesc->FullyReplicatedFlag == 0 ? false : true;
   impl->m_use_varsized_disk_data =
@@ -4249,7 +4379,29 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
 
   DBUG_ENTER("NdbDictInterface::createTable");
 
+  impl.computeAggregates();
+
+  /**
+   * Old data nodes silently ignore unknown table properties, so a
+   * partition hash fanout table created against an old cluster would
+   * come into existence as an ordinary table while this API client
+   * believes it has fanout routing. Refuse instead.
+   */
+  if (impl.getPartitionHashFanout() > 1 &&
+      !ndbd_support_partition_hash_fanout(ndb.getMinDbNodeVersion())) {
+    m_error.code = 794;  // Schema feature requires data node upgrade
+    DBUG_RETURN(-1);
+  }
+
   if (impl.m_fragmentType == NdbDictionary::Object::HashMapPartition) {
+    const bool partition_count_known =
+        impl.getPartitionBalance() == NDB_PARTITION_BALANCE_SPECIFIC;
+    const Uint32 partition_count =
+        partition_count_known ? impl.getFragmentCount() : 0;
+    if (validate_partition_hash_metadata(impl, partition_count,
+                                         partition_count_known, m_error) != 0) {
+      DBUG_RETURN(-1);
+    }
     if (impl.m_hash_map_id == RNIL && impl.m_hash_map_version == ~(Uint32)0) {
       /**
        * Make sure that hashmap exists (i.e after upgrade or similar)
@@ -4281,6 +4433,9 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
       impl.m_hash_map_version = hashmap.m_version;
     }
   } else {
+    if (validate_partition_hash_metadata(impl, 0, false, m_error) != 0) {
+      DBUG_RETURN(-1);
+    }
     DBUG_PRINT("info", ("Hashmap already defined"));
   }
 
@@ -4453,6 +4608,14 @@ int NdbDictInterface::alterTable(Ndb &ndb, const NdbTableImpl &old_impl,
   ret = compChangeMask(old_impl, impl, change_mask);
   if (ret != 0) DBUG_RETURN(ret);
 
+  impl.computeAggregates();
+  if (validate_partition_hash_metadata(
+          impl, impl.getFragmentCount(),
+          impl.getPartitionBalance() == NDB_PARTITION_BALANCE_SPECIFIC,
+          m_error) != 0) {
+    DBUG_RETURN(-1);
+  }
+
   UtilBufferWriter w(m_buffer);
   ret = serializeTableDesc(impl, w);
   if (ret != 0) DBUG_RETURN(ret);
@@ -4524,6 +4687,10 @@ int NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
       impl.m_tablespace_name != old_impl.m_tablespace_name ||
       impl.m_tablespace_id != old_impl.m_tablespace_id ||
       impl.m_tablespace_version != old_impl.m_tablespace_version ||
+      impl.m_base_partition_key_count != old_impl.m_base_partition_key_count ||
+      impl.m_detail_partition_key_count !=
+          old_impl.m_detail_partition_key_count ||
+      impl.m_base_partition_fanout != old_impl.m_base_partition_fanout ||
       impl.m_id != old_impl.m_id || impl.m_version != old_impl.m_version ||
       sz < old_sz ||
       impl.m_extra_row_gci_bits != old_impl.m_extra_row_gci_bits ||
@@ -4777,6 +4944,9 @@ int NdbDictInterface::serializeTableDesc(NdbTableImpl &impl,
   tmpTab->PartitionBalance = (Uint32)impl.m_partitionBalance;
   tmpTab->FragmentCount = impl.m_fragmentCount;
   tmpTab->PartitionCount = impl.m_partitionCount;
+  tmpTab->PartitionHashBaseKeyCount = impl.m_base_partition_key_count;
+  tmpTab->PartitionHashDetailKeyCount = impl.m_detail_partition_key_count;
+  tmpTab->PartitionHashFanout = impl.m_base_partition_fanout;
   tmpTab->TableLoggedFlag = impl.m_logging;
   tmpTab->TableTemporaryFlag = impl.m_temporary;
   tmpTab->RowGCIFlag = impl.m_row_gci;
@@ -5443,6 +5613,50 @@ int NdbDictionaryImpl::removeCachedObject(NdbTableImpl &impl) {
   m_globalHash->release(&impl);
   m_globalHash->unlock();
   DBUG_RETURN(0);
+}
+
+/*
+ * Evict a stale local cache entry but PARK the global-cache reference
+ * instead of releasing it: Table/Column/NdbRecord pointers previously
+ * returned through this Ndb are backed by that reference, and this Ndb
+ * cannot know whether the application is still using them. Releasing
+ * inline can delete the object under the application's feet (observed
+ * use-after-free when a batch read touches one table twice around a
+ * drop+recreate). Parked references are released by
+ * releaseStaleTableReferences().
+ */
+void NdbDictionaryImpl::park_stale_object(const BaseString &internalName) {
+  DBUG_ENTER("NdbDictionaryImpl::park_stale_object");
+  DBUG_PRINT("enter", ("internal_name: %s", internalName.c_str()));
+  // Unlink the wrapper from the local hash without destroying it and thread it
+  // onto this Ndb's stale list, reusing the wrapper as the list node so that
+  // parking needs no allocation and cannot fail.
+  Ndb_local_table_info *info = m_localHash.remove(internalName);
+  info->m_next_stale = m_staleLocalTableInfoHead;
+  m_staleLocalTableInfoHead = info;
+  DBUG_VOID_RETURN;
+}
+
+/*
+ * Release the parked global-cache references of stale table/index objects
+ * evicted by getTable()/getIndex() after schema changes. Runs from the
+ * destructor at the latest. A caller with a known safe point (no previously
+ * returned Table/Column/NdbRecord pointers still in use, e.g. a connection
+ * pool between requests) may invoke it earlier via
+ * NdbDictionaryImpl::getImpl(dict).releaseStaleTableReferences() to bound the
+ * number of parked objects under schema churn.
+ */
+void NdbDictionaryImpl::releaseStaleTableReferences() {
+  DBUG_ENTER("NdbDictionaryImpl::releaseStaleTableReferences");
+  while (m_staleLocalTableInfoHead != nullptr) {
+    Ndb_local_table_info *info = m_staleLocalTableInfoHead;
+    m_staleLocalTableInfoHead = info->m_next_stale;
+    m_globalHash->lock();
+    m_globalHash->release(info->m_table_impl, 1);
+    m_globalHash->unlock();
+    Ndb_local_table_info::destroy(info);
+  }
+  DBUG_VOID_RETURN;
 }
 
 int NdbDictInterface::create_index_obj_from_table(NdbIndexImpl **dst,

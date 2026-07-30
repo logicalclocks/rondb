@@ -19,6 +19,7 @@
 
 #include "api_key.hpp"
 #include "config_structs.hpp"
+#include "metadata.hpp"
 #include "ndb_event_utils.hpp"
 #include "pk_data_structs.hpp"
 #include "rdrs_dal.hpp"
@@ -27,6 +28,7 @@
 #include "db_operations/pk/common.hpp"
 
 #include <chrono>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <openssl/evp.h>
@@ -162,45 +164,117 @@ void APIKeyCache::cleanup() {
   DEB_AUTH("Cleanup finished");
 }
 
+RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
+  std::vector<std::string_view> columns;
+  TableAccessRequest accessReq;
+  accessReq.db = params.path.db;
+  accessReq.table = params.path.table;
+  if (params.readColumns.empty()) {
+    // no explicit read columns = the whole row is returned
+    accessReq.columns = nullptr;
+  } else {
+    // filter (primary key) columns expose data too - check them like the
+    // batch and scan endpoints do
+    columns.reserve(params.readColumns.size() + params.filters.size());
+    for (const PKReadReadColumn &readColumn : params.readColumns) {
+      columns.push_back(readColumn.column);
+    }
+    for (const PKReadFilter &filter : params.filters) {
+      columns.push_back(filter.column);
+    }
+    accessReq.columns = &columns;
+  }
+  return apiKeyCache->validate_api_key(apiKey,
+    std::vector<TableAccessRequest>{accessReq});
+}
+
+RS_Status authenticate_empty(const std::string &apiKey) {
+  return apiKeyCache->validate_api_key(apiKey,
+    std::vector<std::string_view>{});
+}
+
+RS_Status authenticate(const std::string &apiKey, const std::string_view & db) {
+  return apiKeyCache->validate_api_key(apiKey,
+    std::vector<std::string_view>{db});
+}
+
 RS_Status authenticate(const std::string &apiKey,
-                       PKReadParams &params,
-                       char *username_ptr) {
-  return apiKeyCache->validate_api_key(apiKey,
-                                       {params.path.db},
-                                       username_ptr);
-}
-
-RS_Status authenticate_empty(const std::string &apiKey,
-                             char *username_ptr) {
-  return apiKeyCache->validate_api_key(apiKey,
-                                       {},
-                                       username_ptr);
+                       const std::vector<std::string_view> &dbs) {
+  return apiKeyCache->validate_api_key(apiKey, dbs);
 }
 
 RS_Status authenticate(const std::string &apiKey,
-                       const std::string_view & db,
-                       char *username_ptr) {
-  return apiKeyCache->validate_api_key(apiKey,
-                                       {db},
-                                       username_ptr);
+                       const std::vector<TableAccessRequest> &accessReqs) {
+  return apiKeyCache->validate_api_key(apiKey, accessReqs);
 }
 
+/*
+Serving a feature view requires the FV's own store to be at least visible
+(members, restricted members, shared and placeholder-shared stores) and
+every constituent feature group's online table to be readable for exactly
+the features the FV serves. Spine feature groups have no online table -
+their store only needs visibility.
+*/
 RS_Status authenticate(const std::string &apiKey,
-                       const std::vector<std::string_view> &dbs,
-                       char *username_ptr) {
-  return apiKeyCache->validate_api_key(apiKey,
-                                       dbs,
-                                       username_ptr);
+                       const metadata::FeatureViewMetadata &fvMetadata) {
+  const auto &fgFeatures = fvMetadata.featureGroupFeatures;
+  // owners of the table-name strings and column lists the requests point at
+  std::vector<std::string> tableNames;
+  std::vector<std::vector<std::string_view>> columnLists;
+  tableNames.reserve(fgFeatures.size());
+  columnLists.reserve(fgFeatures.size());
+
+  std::vector<TableAccessRequest> accessReqs;
+  accessReqs.reserve(fgFeatures.size() + 1);
+  TableAccessRequest storeReq;
+  storeReq.db = fvMetadata.featureStoreName;
+  storeReq.metadata_only = true;
+  accessReqs.push_back(storeReq);
+  for (const metadata::FeatureGroupFeatures &fgf : fgFeatures) {
+    TableAccessRequest accessReq;
+    accessReq.db = fgf.featureStoreName;
+    if (fgf.isSpine()) {
+      accessReq.metadata_only = true;
+      accessReqs.push_back(accessReq);
+      continue;
+    }
+    tableNames.push_back(fgf.featureGroupName + "_" +
+                         std::to_string(fgf.featureGroupVersion));
+    accessReq.table = tableNames.back();
+    columnLists.emplace_back();
+    columnLists.back().reserve(fgf.features.size());
+    for (const metadata::FeatureMetadata &feature : fgf.features) {
+      columnLists.back().push_back(feature.name);
+    }
+    accessReq.columns = &columnLists.back();
+    accessReqs.push_back(accessReq);
+  }
+  return apiKeyCache->validate_api_key(apiKey, accessReqs);
 }
 
-RS_Status APIKeyCache::validate_api_key(
-  const std::string &apiKey,
-  const std::vector<std::string_view> &dbs,
-  char *username_ptr) {
+/*
+Database-only access checks: full-database access required for each db
+*/
+RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
+                                        const std::vector<std::string_view> &dbs) {
+  std::vector<TableAccessRequest> accessReqs;
+  accessReqs.reserve(dbs.size());
+  for (const std::string_view &db : dbs) {
+    TableAccessRequest accessReq;
+    accessReq.db = db;
+    accessReqs.push_back(accessReq);
+  }
+  return validate_api_key(apiKey, accessReqs);
+}
+
+RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
+                                        const std::vector<TableAccessRequest> &accessReqs) {
 #ifdef DEBUG_AUTH
   DEB_AUTH("authenticate apiKey: %s", apiKey.c_str());
-  for (const auto &db : dbs) {
-    DEB_AUTH("validate db: %s", std::string(db).c_str());
+  for (const auto &accessReq : accessReqs) {
+    DEB_AUTH("validate db: %s table: %s",
+             std::string(accessReq.db).c_str(),
+             std::string(accessReq.table).c_str());
   }
 #endif
 
@@ -230,10 +304,9 @@ RS_Status APIKeyCache::validate_api_key(
                                        clientSecret,
                                        keyFoundInCache,
                                        allowedAccess,
-                                       dbs,
+                                       accessReqs,
                                        hash,
-                                       false,
-                                       username_ptr);
+                                       false);
 
   if (keyFoundInCache) {
     if (allowedAccess) {
@@ -258,10 +331,9 @@ RS_Status APIKeyCache::validate_api_key(
                              clientSecret,
                              keyFoundInCache,
                              allowedAccess,
-                             dbs,
+                             accessReqs,
                              hash,
-                             true,
-                             username_ptr);
+                             true);
   return status;
 }
 
@@ -281,14 +353,132 @@ RS_Status APIKeyCache::verify_api_key_hash(const std::string &clientSecret,
   return CRS_Status::SUCCESS.status;
 }
 
+/*
+Checks one access request against the cached grants of the key user.
+The grant ladder mirrors the per-user MySQL GRANTs Hopsworks maintains for
+online reads: full database (member / store shared entirely), whole table
+(FG shared or restricted-granted entirely) and column subset. On denial the
+returned message names the blocking object - database, table or column(s) -
+like MySQL errors 1044/1142/1143 do.
+
+The three grant tiers live in UserDBs (see api_key.hpp): userDBs (full-db),
+visibleDBs (FV-metadata visibility only) and fineGrants
+(db -> table -> columns, where an EMPTY column set means the whole table).
+The request shape is encoded in TableAccessRequest (see api_key.hpp).
+
+Fail-closed by construction: access_ok starts false and is only ever set true
+at one of three explicit allow points (steps 2, 6, 8); every other exit is a
+401. Names are lowercased before comparison (Hopsworks compares them case-
+insensitively). The branches, in order:
+
+  1. Default deny (access_ok = false).
+  2. Tier 1 - full database: db in userDBs -> ALLOW (columns irrelevant).
+  3. metadata_only request: ALLOW iff db in visibleDBs or the key has any
+     fineGrants entry for db (any relationship lets the caller resolve FV
+     metadata); otherwise deny naming the database. This branch never grants
+     row data.
+  4. No data grant in this db: table empty (db-level request) or db absent
+     from fineGrants -> deny naming the database (MySQL 1044).
+  5. Table not granted: table absent from fineGrants[db] -> deny naming
+     db/table (MySQL 1142).
+  6. Tier 2 - whole table: fineGrants[db][table] is the EMPTY set -> ALLOW.
+     (The DAL guarantees a partial grant always carries >=1 column, so an
+     empty set unambiguously means "whole table", never an orphaned partial
+     grant - see find_fine_grained_grants_int.)
+  7. Whole-row read against a column subset: grant is a non-empty subset but
+     accessReq.columns == nullptr -> deny "all columns" (this is what makes a
+     SELECT *-style read fail closed on a column-granted table).
+  8. Tier 3 - per column: any requested column not in the granted set -> deny
+     naming the column(s) (MySQL 1143); otherwise ALLOW.
+*/
+static RS_Status check_access(const UserDBs *userDBs,
+                              const TableAccessRequest &accessReq,
+                              bool *access_ok) {
+  *access_ok = false;
+  // in HW database name comparison is case insensitive
+  std::string lower_db = std::string(accessReq.db);
+  if (contains_upper(lower_db)) {
+    std::transform(lower_db.begin(), lower_db.end(), lower_db.begin(),
+               [](unsigned char c) { return std::tolower(c); });
+  }
+  if (userDBs->userDBs.find(lower_db) != userDBs->userDBs.end()) {
+    *access_ok = true;
+    return CRS_Status::SUCCESS.status;
+  }
+  auto db_grants = userDBs->fineGrants.find(lower_db);
+  if (accessReq.metadata_only) {
+    // feature-view metadata resolution: any relationship with the db is
+    // enough (restricted membership, placeholder share or a table grant)
+    if (userDBs->visibleDBs.find(lower_db) != userDBs->visibleDBs.end() ||
+        db_grants != userDBs->fineGrants.end()) {
+      *access_ok = true;
+      return CRS_Status::SUCCESS.status;
+    }
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
+      ("API key not authorized to access " +
+      std::string(accessReq.db)).c_str()).status;
+  }
+  if (accessReq.table.empty() || db_grants == userDBs->fineGrants.end()) {
+    // database-only request, or no grant at all in this database
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
+      ("API key not authorized to access " +
+      std::string(accessReq.db)).c_str()).status;
+  }
+  std::string lower_table = std::string(accessReq.table);
+  if (contains_upper(lower_table)) {
+    std::transform(lower_table.begin(), lower_table.end(), lower_table.begin(),
+               [](unsigned char c) { return std::tolower(c); });
+  }
+  auto table_grant = db_grants->second.find(lower_table);
+  if (table_grant == db_grants->second.end()) {
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
+      ("API key not authorized to access " + std::string(accessReq.db) +
+      "/" + std::string(accessReq.table)).c_str()).status;
+  }
+  const std::unordered_set<std::string> &granted_columns = table_grant->second;
+  if (granted_columns.empty()) {
+    // the whole table is granted
+    *access_ok = true;
+    return CRS_Status::SUCCESS.status;
+  }
+  if (accessReq.columns == nullptr) {
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
+      ("API key not authorized to access all columns of " +
+      std::string(accessReq.db) + "/" +
+      std::string(accessReq.table)).c_str()).status;
+  }
+  std::string denied_columns;
+  for (const std::string_view &column : *accessReq.columns) {
+    std::string lower_column = std::string(column);
+    if (contains_upper(lower_column)) {
+      std::transform(lower_column.begin(), lower_column.end(),
+                 lower_column.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+    }
+    if (granted_columns.find(lower_column) == granted_columns.end()) {
+      if (!denied_columns.empty()) {
+        denied_columns += ", ";
+      }
+      denied_columns += std::string(column);
+    }
+  }
+  if (!denied_columns.empty()) {
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
+      ("API key not authorized to access column(s) " + denied_columns +
+      " of " + std::string(accessReq.db) + "/" +
+      std::string(accessReq.table)).c_str()).status;
+  }
+  *access_ok = true;
+  return CRS_Status::SUCCESS.status;
+}
+
 RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
                                          const std::string &clientSecret,
                                          bool &keyFoundInCache,
                                          bool &allowedAccess,
-                                         const std::vector<std::string_view> &dbs,
+                                         const std::vector<TableAccessRequest> &accessReqs,
                                          Uint32 hash,
-                                         bool inc_refcount_done,
-                                         char *username_ptr) {
+                                         bool inc_refcount_done) {
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
   m_rwLock[key_cache_id].lock_shared();
   if (m_stopped) {
@@ -350,35 +540,26 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
   require(userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
 
-  // Copy secret+salt out so we can verify outside the lock
+  // Copy secret+salt+expiry out so we can verify outside the lock
   std::string secret = userDBs->m_secret;
   std::string salt = userDBs->m_salt;
+  long long expiry_epoch = userDBs->m_expiry_epoch;
 
-  // Check database access while we hold the lock (fast hash set lookup).
+  // Check database/table/column access while we hold the lock.
   // Store the result instead of returning early — the hash check must
   // come first to prevent a timing side-channel where an attacker with
   // a valid prefix but wrong secret can enumerate authorized databases.
   bool db_access_ok = true;
   RS_Status db_error_status = CRS_Status::SUCCESS.status;
-  if (!dbs.empty()) {
-    for (const auto &db : dbs) {
-      // lower case the database name
-      // in HW database name comparison is case insensitive
-      std::string lower_db = std::string(db);
-      if (contains_upper(lower_db)) {
-        std::transform(lower_db.begin(), lower_db.end(), lower_db.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-      }
-
-      if (userDBs->userDBs.find(lower_db) == userDBs->userDBs.end()) {
-        db_access_ok = false;
-        db_error_status = CRS_Status(HTTP_CODE::AUTH_ERROR,
-          ("API key not authorized to access " +
-          std::string(db)).c_str()).status;
-        DEB_AUTH("API Key not authorized for db: %s, Line: %u",
-                 std::string(db).c_str(), __LINE__);
-        break;
-      }
+  for (const TableAccessRequest &accessReq : accessReqs) {
+    bool access_ok = false;
+    RS_Status access_status = check_access(userDBs, accessReq, &access_ok);
+    if (!access_ok) {
+      db_access_ok = false;
+      db_error_status = access_status;
+      DEB_AUTH("API Key not authorized for db: %s, Line: %u",
+               std::string(accessReq.db).c_str(), __LINE__);
+      break;
     }
   }
   // Release the per-entry lock before SHA256 computation
@@ -394,6 +575,15 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
   if (hashStatus.http_code != HTTP_CODE::SUCCESS) {
     DEB_AUTH("API Key hash mismatch, Line: %u", __LINE__);
     return hashStatus;
+  }
+
+  // Expiry check mirrors Hopsworks (ApiKeyUtilities.getApiKeyCheckingExpiry):
+  // NULL never expires, otherwise expired when strictly before now. Checked
+  // after the hash so an unauthenticated caller cannot probe expiry dates,
+  // and before authorization errors like Hopsworks checks it before scopes.
+  if (expiry_epoch != 0 && expiry_epoch < (long long)time(nullptr)) {
+    DEB_AUTH("API Key expired, Line: %u", __LINE__);
+    return CRS_Status(HTTP_CODE::AUTH_ERROR, "API key has expired").status;
   }
 
   if (!db_access_ok) {
@@ -451,12 +641,9 @@ RS_Status APIKeyCache::update_cache(const std::string &prefix,
     fail = true;
   }
 
-  std::vector<std::string_view> dbs;
-  char **db_ptrs = nullptr;
-  char *username_ptr = nullptr;
+  HopsworksUserGrants grants;
   if (!fail && !m_stopped) {
-    RS_Status status = get_user_databases(key.user_id, dbs, &db_ptrs,
-                                          &username_ptr);
+    RS_Status status = get_user_databases(key.user_id, grants);
     if (status.http_code != HTTP_CODE::SUCCESS) {
       DEB_AUTH("get_user_databases failed for user_id=%d: http_code=%d, message=%s",
                key.user_id, status.http_code, status.message);
@@ -471,22 +658,21 @@ RS_Status APIKeyCache::update_cache(const std::string &prefix,
     // IS_INVALID while we were resolving permissions (between releasing
     // m_rwLock and acquiring m_waitLock). Don't overwrite back to IS_VALID.
     if (newUserDBs->m_state == UserDBs::IS_INVALID) {
-      free(db_ptrs);
       DEB_AUTH("Lazy load raced with DELETE event for prefix: %s", prefix.c_str());
     } else {
       newUserDBs->m_secret = key.secret;
       newUserDBs->m_salt = key.salt;
       newUserDBs->m_user_id = key.user_id;
+      newUserDBs->m_expiry_epoch = key.expiry_epoch;
       newUserDBs->m_lastUsed = now;
       newUserDBs->m_state = UserDBs::IS_VALID;
-      update_record(dbs, newUserDBs, db_ptrs, username_ptr);
+      update_record(grants, newUserDBs);
       DEB_AUTH("Valid API Key inserted via lazy load: %s", prefix.c_str());
     }
   } else {
     newUserDBs->m_lastUsed = now;
     newUserDBs->m_lastUpdated = now;
     newUserDBs->m_state = UserDBs::IS_INVALID;
-    free(db_ptrs);
     DEB_AUTH("Invalid API Key via lazy load: %s", prefix.c_str());
   }
   NdbCondition_Broadcast(newUserDBs->m_waitCond);
@@ -495,29 +681,58 @@ RS_Status APIKeyCache::update_cache(const std::string &prefix,
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
-                                     UserDBs *userDBs,
-                                     char **db_ptrs,
-                                     char *user_ptr) {
+// lower case in place: name comparisons are case insensitive in HW
+static void to_lower(std::string &str) {
+  if (contains_upper(str)) {
+    std::transform(str.begin(), str.end(), str.begin(),
+               [](unsigned char c) { return std::tolower(c); });
+  }
+}
+
+RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
+                                     UserDBs *userDBs) {
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
   userDBs->userDBs.clear();
-  userDBs->userDBs.insert(dbs.begin(), dbs.end());
+  for (std::string &db : grants.full_dbs) {
+    to_lower(db);
+    userDBs->userDBs.insert(std::move(db));
+  }
+  userDBs->visibleDBs.clear();
+  for (std::string &db : grants.visible_dbs) {
+    to_lower(db);
+    userDBs->visibleDBs.insert(std::move(db));
+  }
+  userDBs->fineGrants.clear();
+  for (HopsworksFineGrant &grant : grants.fine_grants) {
+    to_lower(grant.db);
+    to_lower(grant.table);
+    auto &tables = userDBs->fineGrants[grant.db];
+    auto table_it = tables.find(grant.table);
+    if (table_it == tables.end()) {
+      table_it = tables.emplace(grant.table,
+                                std::unordered_set<std::string>()).first;
+    } else if (table_it->second.empty() || grant.columns.empty()) {
+      // grants merged onto the same table: whole-table (empty set) wins
+      table_it->second.clear();
+      continue;
+    }
+    for (std::string &column : grant.columns) {
+      to_lower(column);
+      table_it->second.insert(std::move(column));
+    }
+  }
   userDBs->m_lastUpdated = lastUpdated;
   assert(userDBs->m_state == UserDBs::IS_VALIDATING ||
          userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_state = UserDBs::IS_VALID;
-  if (userDBs->m_db_ptrs) {
-    free(userDBs->m_db_ptrs);
-  }
-  userDBs->m_db_ptrs = db_ptrs;
-  userDBs->m_user_ptr = user_ptr;
   return CRS_Status::SUCCESS.status;
 }
 
 void APIKeyCache::load_single_key(const std::string &prefix,
                                   const std::string &secret,
                                   const std::string &salt,
-                                  int user_id) {
+                                  int user_id,
+                                  long long expiry_epoch) {
 #if (NUM_API_KEY_CACHES == 1)
   Uint32 key_cache_id = 0;
 #else
@@ -543,14 +758,13 @@ void APIKeyCache::load_single_key(const std::string &prefix,
   newUserDBs->m_secret = secret;
   newUserDBs->m_salt = salt;
   newUserDBs->m_user_id = user_id;
+  newUserDBs->m_expiry_epoch = expiry_epoch;
   m_key_cache[key_cache_id][prefix] = newUserDBs;
   m_rwLock[key_cache_id].unlock();
 
   // Resolve permissions
-  std::vector<std::string_view> dbs;
-  char **db_ptrs = nullptr;
-  char *username_ptr = nullptr;
-  RS_Status status = get_user_databases(user_id, dbs, &db_ptrs, &username_ptr);
+  HopsworksUserGrants grants;
+  RS_Status status = get_user_databases(user_id, grants);
 
   NDB_TICKS now = NdbTick_getCurrentTicks();
   NdbMutex_Lock(newUserDBs->m_waitLock);
@@ -558,20 +772,18 @@ void APIKeyCache::load_single_key(const std::string &prefix,
     // Guard against resurrection: a DELETE event may have marked this entry
     // IS_INVALID while we were resolving permissions.
     if (newUserDBs->m_state == UserDBs::IS_INVALID) {
-      free(db_ptrs);
       DEB_AUTH("load_single_key raced with DELETE event for prefix: %s",
                prefix.c_str());
     } else {
       newUserDBs->m_lastUsed = now;
       newUserDBs->m_state = UserDBs::IS_VALID;
-      update_record(dbs, newUserDBs, db_ptrs, username_ptr);
+      update_record(grants, newUserDBs);
       DEB_AUTH("Preloaded API Key: %s", prefix.c_str());
     }
   } else {
     newUserDBs->m_lastUsed = now;
     newUserDBs->m_lastUpdated = now;
     newUserDBs->m_state = UserDBs::IS_INVALID;
-    free(db_ptrs);
     DEB_AUTH("Failed to preload API Key: %s", prefix.c_str());
   }
   NdbCondition_Broadcast(newUserDBs->m_waitCond);
@@ -591,7 +803,8 @@ void APIKeyCache::preload_all_keys() {
   Uint32 num_threads = globalConfigs.security.apiKey.preloadThreads;
   if (num_threads <= 1 || keys.size() <= 1) {
     for (const auto &entry : keys) {
-      load_single_key(entry.prefix, entry.secret, entry.salt, entry.user_id);
+      load_single_key(entry.prefix, entry.secret, entry.salt, entry.user_id,
+                      entry.expiry_epoch);
     }
   } else {
     if (num_threads > keys.size()) {
@@ -603,7 +816,8 @@ void APIKeyCache::preload_all_keys() {
       threads.emplace_back([this, &keys, t, num_threads]() {
         for (size_t i = t; i < keys.size(); i += num_threads) {
           load_single_key(keys[i].prefix, keys[i].secret,
-                          keys[i].salt, keys[i].user_id);
+                          keys[i].salt, keys[i].user_id,
+                          keys[i].expiry_epoch);
         }
       });
     }
@@ -631,7 +845,7 @@ extern "C" void* api_key_event_thread_main(void *arg) {
 void APIKeyCache::start_background_threads() {
   m_refresh_thread = NdbThread_Create(api_key_refresh_thread_main,
                                        (NDB_THREAD_ARG *)this,
-                                       1024 * 1024,
+                                       128 * 1024,
                                        "API Key Refresh",
                                        NDB_THREAD_PRIO_LOW);
   if (m_refresh_thread == nullptr) {
@@ -640,7 +854,7 @@ void APIKeyCache::start_background_threads() {
 
   m_event_watcher_thread = NdbThread_Create(api_key_event_thread_main,
                                              (NDB_THREAD_ARG *)this,
-                                             1024 * 1024,
+                                             128 * 1024,
                                              "API Key Event",
                                              NDB_THREAD_PRIO_LOW);
   if (m_event_watcher_thread == nullptr) {
@@ -737,21 +951,24 @@ void APIKeyCache::refresh_job() {
             }
           } else {
             // Key still exists — update and re-resolve permissions
-            std::vector<std::string_view> dbs;
-            char **db_ptrs = nullptr;
-            char *username_ptr = nullptr;
-            RS_Status status = get_user_databases(key.user_id, dbs, &db_ptrs,
-                                                  &username_ptr);
+            HopsworksUserGrants grants;
+            RS_Status status = get_user_databases(key.user_id, grants);
 
             NdbMutex_Lock(userDBs->m_waitLock);
-            userDBs->m_secret = key.secret;
-            userDBs->m_salt = key.salt;
-            userDBs->m_user_id = key.user_id;
-            if (status.http_code == HTTP_CODE::SUCCESS) {
-              update_record(dbs, userDBs, db_ptrs, username_ptr);
+            // Guard against resurrection: a DELETE event may have marked
+            // this entry IS_INVALID while we were resolving permissions
+            // (same guard as update_cache and load_single_key).
+            if (userDBs->m_state == UserDBs::IS_INVALID) {
+              DEB_AUTH_THREAD("Refresh raced with DELETE event for prefix: %s",
+                              prefix.c_str());
+            } else if (status.http_code == HTTP_CODE::SUCCESS) {
+              userDBs->m_secret = key.secret;
+              userDBs->m_salt = key.salt;
+              userDBs->m_user_id = key.user_id;
+              userDBs->m_expiry_epoch = key.expiry_epoch;
+              update_record(grants, userDBs);
               DEB_AUTH_THREAD("Refreshed API Key: %s", prefix.c_str());
             } else {
-              free(db_ptrs);
               DEB_AUTH_THREAD("Failed to refresh API Key: %s", prefix.c_str());
             }
             NdbMutex_Unlock(userDBs->m_waitLock);
@@ -786,7 +1003,9 @@ void APIKeyCache::event_watcher_job() {
   NdbRecAttr *secret_val = nullptr;
   NdbRecAttr *salt_val = nullptr;
   NdbRecAttr *user_id_val = nullptr;
+  NdbRecAttr *expiry_val = nullptr;
   NdbRecAttr *prefix_pre_val = nullptr;
+  unsigned expiry_prec = 0;
 
 retry:
   ndb = nullptr;
@@ -820,6 +1039,15 @@ retry:
                              dict->getNdbError().message);
       goto err;
     }
+
+    const NdbDictionary::Column *expiry_col = tab->getColumn("expiry");
+    if (expiry_col == nullptr) {
+      g_eventLogger->warning(
+        "[API Key Event] Failed to get expiry column "
+        "(schema may have changed). Retry...");
+      goto err;
+    }
+    expiry_prec = expiry_col->getPrecision();
 
     NdbDictionary::Event event(EVENT_NAME);
     event.setTable(*tab);
@@ -861,6 +1089,7 @@ retry:
   secret_val = ev_op->getValue("secret");
   salt_val = ev_op->getValue("salt");
   user_id_val = ev_op->getValue("user_id");
+  expiry_val = ev_op->getValue("expiry");
 
   // Pre-values must be registered for all columns that have after-values.
   // NDB requires matching getValue/getPreValue pairs to properly consume
@@ -870,11 +1099,13 @@ retry:
   (void)ev_op->getPreValue("secret");
   (void)ev_op->getPreValue("salt");
   (void)ev_op->getPreValue("user_id");
+  (void)ev_op->getPreValue("expiry");
 
   // Null-check all NdbRecAttr pointers (schema may have changed)
   if (id_val == nullptr || prefix_val == nullptr ||
       secret_val == nullptr || salt_val == nullptr ||
-      user_id_val == nullptr || prefix_pre_val == nullptr) {
+      user_id_val == nullptr || expiry_val == nullptr ||
+      prefix_pre_val == nullptr) {
     g_eventLogger->warning(
       "[API Key Event] Failed to register event columns "
       "(schema may have changed). Retry...");
@@ -960,11 +1191,13 @@ retry:
           std::string salt(salt_start, salt_bytes);
 
           int user_id = user_id_val->int32_value();
+          long long expiry_epoch = datetime_attr_to_epoch(expiry_val,
+                                                          expiry_prec);
 
           g_eventLogger->info(
             "[API Key Event] INSERT detected for prefix: %s",
             prefix.c_str());
-          load_single_key(prefix, secret, salt, user_id);
+          load_single_key(prefix, secret, salt, user_id, expiry_epoch);
           break;
         }
         case NdbDictionary::Event::TE_UPDATE: {
@@ -1005,6 +1238,7 @@ retry:
             userDBs->m_secret = upd_secret;
             userDBs->m_salt = upd_salt;
             userDBs->m_user_id = upd_user_id;
+            userDBs->m_expiry_epoch = upd_key.expiry_epoch;
             NdbMutex_Unlock(userDBs->m_waitLock);
             m_rwLock[upd_cache_id].unlock_shared();
             g_eventLogger->info(
@@ -1012,7 +1246,8 @@ retry:
               upd_prefix.c_str());
           } else {
             m_rwLock[upd_cache_id].unlock_shared();
-            load_single_key(upd_prefix, upd_secret, upd_salt, upd_user_id);
+            load_single_key(upd_prefix, upd_secret, upd_salt, upd_user_id,
+                            upd_key.expiry_epoch);
           }
           break;
         }
@@ -1103,32 +1338,9 @@ done:
 }
 
 RS_Status APIKeyCache::get_user_databases(int user_id,
-                                          std::vector<std::string_view> &dbs,
-                                          char ***db_ptrs,
-                                          char **username_ptr) {
-  int count = 0;
-  char **projects = nullptr;
-  char *username = nullptr;
-  RS_Status status = find_all_projects(user_id, &projects, &count, &username);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return status;
-  }
-  for (int i = 0; i < count; i++) {
-    char *db_str = projects[i];
-
-    // lower case the database name inplace
-    std::string_view str(db_str, strlen(db_str));
-    if (contains_upper(str)) {
-      for (char* p = db_str; *p != '\0'; ++p) {
-          *p = std::tolower(static_cast<unsigned char>(*p));
-      }
-    }
-
-    dbs.push_back(str);
-  }
-  *db_ptrs = projects;
-  *username_ptr = username;
-  return CRS_Status::SUCCESS.status;
+                                          HopsworksUserGrants &grants) {
+  // name lowercasing happens in update_record
+  return find_user_databases(user_id, &grants);
 }
 
 RS_Status computeHash(const std::string &unhashed, std::string &hashed) {

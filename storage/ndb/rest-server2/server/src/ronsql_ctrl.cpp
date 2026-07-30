@@ -25,8 +25,6 @@
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "api_key.hpp"
 #include <metrics.hpp>
-#include "logger.hpp"
-#include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SQL_CTRL 1
@@ -98,7 +96,6 @@ void RonSQLCtrl::ronsql(
 
   ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
   RonSQLExecParams params;
-  params.schema_cache = g_schema_cache;
 
   std::string& database = reqStruct.database;
   status = ronsql_validate_database_name(database);
@@ -109,22 +106,6 @@ void RonSQLCtrl::ronsql(
     callback(resp);
     DEB_TRACE();
     return;
-  }
-
-  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
-  char *username_ptr = nullptr;
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
-    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    username_ptr = &username[0];
-    status = authenticate(api_key, database, username_ptr);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
-      callback(resp);
-      DEB_TRACE();
-      return;
-    }
   }
 
   std::ostringstream out_stream;
@@ -146,6 +127,53 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
+  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    /*
+     * Parse the query (no NDB access) to learn the referenced table and
+     * columns, then authorize against the caller's grants using the same
+     * ladder as the other endpoints: full database, whole table or column
+     * subset. A parse failure is reported like an execution-time parse
+     * failure; the schema is never touched before authorization succeeds.
+     */
+    try {
+      RonSQLPreparer parser(params, RonSQLPreparer::ParseOnly{});
+      LexCString table = parser.get_table_name();
+      const DynamicArray<LexCString>& referenced_columns =
+        parser.get_referenced_columns();
+      std::vector<std::string_view> columns;
+      columns.reserve(referenced_columns.size());
+      for (Uint32 i = 0; i < referenced_columns.size(); i++) {
+        columns.push_back(std::string_view(referenced_columns[i].str,
+                                           referenced_columns[i].len));
+      }
+      TableAccessRequest accessReq;
+      accessReq.db = database;
+      accessReq.table = std::string_view(table.str, table.len);
+      accessReq.columns = &columns;
+      status = authenticate(api_key,
+                            std::vector<TableAccessRequest>{accessReq});
+    }
+    catch (std::exception& e) {
+      err_stream << "Caught exception: " << e.what() << "\n";
+      resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+      resp->setContentTypeCodeAndCustomString(
+        drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+      resp->setBody(err_stream.str());
+      callback(resp);
+      DEB_TRACE();
+      return;
+    }
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      callback(resp);
+      DEB_TRACE();
+      return;
+    }
+  }
+
   bool json_output = params.output_format ==
                        RonSQLExecParams::OutputFormat::JSON ||
                      params.output_format ==
@@ -161,10 +189,6 @@ void RonSQLCtrl::ronsql(
   }
 
   DEB_TRACE();
-  if (globalConfigs.log.logQueries) {
-    std::string msg = "RonSQL query [" + database + "]: " + reqStruct.query;
-    rdrs_logger::info(msg);
-  }
   status = ronsql_dal(database.c_str(),
                       &params,
                       currentThreadIndex);

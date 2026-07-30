@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -302,8 +302,13 @@
 #define CFG_DB_MAX_RR_GROUP_SIZE      701
 #define CFG_DB_NUM_LQHKEYREQ_COUNTS   702
 #define CFG_DB_NUM_SCAN_FRAGREQ_COUNTS 703
-#define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 704
-#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 705
+#define CFG_DB_RESTART_BARRIER_TIMEOUT 704
+#define CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT 705
+/* 704/705 belong to the restart barrier / graceful shutdown timeouts in
+   released 26.02: on an id conflict the lower version always wins, so
+   these two moved to 706/707 */
+#define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 706
+#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 707
 
 /* End RonDB only configuration parameters */
 
@@ -392,6 +397,7 @@
 #define CFG_RDMA_RETRY_COUNT          530
 #define CFG_RDMA_RNR_RETRY_COUNT      531
 #define CFG_RDMA_SERVICE_LEVEL        532
+#define CFG_RDMA_LOG_LEVEL            533
 
 /**
  * No longer used, deprecated

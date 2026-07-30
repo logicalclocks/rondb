@@ -1455,17 +1455,26 @@ Uint32 NdbOperation::fillTcKeyReqHdr(TcKeyReq *tcKeyReq, Uint32 connectPtr,
   TcKeyReq::setInterpretedFlag(reqInfo, (m_interpreted_code != nullptr));
   TcKeyReq::setInterpretedInsertFlag(reqInfo, theInterpretInsertIndicator);
   // AbortOption set later in prepareSendNdbRecord()
-  tcKeyReq->requestInfo = reqInfo;
 
   tcKeyReq->transId1 = (Uint32)transId;
   tcKeyReq->transId2 = (Uint32)(transId >> 32);
 
   /*
-    The next four words are optional, and included or not based on the flags
-    passed earlier. At most two of them are possible here.
+    The optional words follow, included based on flags. userId/version (when
+    the transaction carries a rate limit user id, RONDB-978) occupy the first
+    optional slot(s); scanInfo and distributionKey follow, exactly as in the
+    non-NdbRecord path NdbOperation::prepareSend. Their offsets are implied by
+    the flags in requestInfo, so the userId words must come first.
   */
   hdrLen = TcKeyReq::StaticLength;
-  hdrPtr = &(tcKeyReq->scanInfo);
+  hdrPtr = &(tcKeyReq->scanInfo);  // == &userId (union)
+  Uint32 user_id = theNdbCon->m_user_id;
+  if (user_id != RNIL) {
+    TcKeyReq::setUserIdFlag(reqInfo, 1);
+    *hdrPtr++ = user_id;
+    *hdrPtr++ = theNdbCon->m_user_id_version;
+    hdrLen += 2;
+  }
   if (theScanInfo & 1) {
     *hdrPtr++ = theScanInfo;
     hdrLen++;
@@ -1474,6 +1483,8 @@ Uint32 NdbOperation::fillTcKeyReqHdr(TcKeyReq *tcKeyReq, Uint32 connectPtr,
     *hdrPtr++ = theDistributionKey;
     hdrLen++;
   }
+
+  tcKeyReq->requestInfo = reqInfo;
 
   return hdrLen;
 }

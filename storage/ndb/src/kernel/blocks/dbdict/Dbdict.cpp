@@ -1205,6 +1205,12 @@ void Dbdict::packTableIntoPages(SimpleProperties::Writer &w,
         !!(tablePtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData));
   w.add(DictTabInfo::HashFunctionFlag,
         ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0));
+  w.add(DictTabInfo::PartitionHashBaseKeyCount,
+        tablePtr.p->partitionHashBaseKeyCount);
+  w.add(DictTabInfo::PartitionHashDetailKeyCount,
+        tablePtr.p->partitionHashDetailKeyCount);
+  w.add(DictTabInfo::PartitionHashFanout,
+        tablePtr.p->partitionHashFanout);
 
   DEB_HASH(("1: dict_tab(%u) HashFunctionFlag: %u",
             tablePtr.p->tableId,
@@ -2612,6 +2618,8 @@ void Dbdict::initCommonData() {
   c_initialNodeRestart = false;
   c_nodeRestart = false;
   c_takeOverInProgress = false;
+  c_restartLockTakeoverNodes.clear();
+  c_restartLockTakeoverReady = false;
 
   m_current_allocated_rate = 0;
   m_current_allocated_memory_quota_mb = 0;
@@ -5453,10 +5461,54 @@ void Dbdict::execNODE_FAILREP(Signal *signal) {
       rollforward or rollback.
      */
     jam();
+    c_restartLockTakeoverNodes = c_aliveNodes;
+    for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+      if (c_restartLockTakeoverNodes.get(nodeId) &&
+          !ndbd_restart_phase_110_barrier(
+              getNodeInfo(nodeId).m_version)) {
+        c_restartLockTakeoverNodes.clear(nodeId);
+      }
+    }
+    c_restartLockTakeoverReady = false;
+
     ownNodePtr.p->nodeState = NodeRecord::NDB_MASTER_TAKEOVER;
     ownNodePtr.p->nodeFailRep = nodeFailRep;
     infoEvent("Node %u taking over as DICT master", c_masterNodeId);
     handle_master_takeover(signal);
+    return;
+  }
+
+  if (ownNodePtr.p->nodeState == NodeRecord::NDB_MASTER_TAKEOVER) {
+    jam();
+    /**
+     * A further node failure arrived while we, as new master, still
+     * defer the master-failure handling (schema-trans takeover and/or
+     * outstanding NodeRestartLock takeover reports).
+     *
+     * Dead nodes send no takeover report, so drop them from the
+     * expected set or the deferred NF_COMPLETEREP never runs. This
+     * failure's own handling must not be swallowed by the deferral
+     * gate in send_nf_complete_rep either: fold the failed nodes into
+     * the stored NodeFailRep so the deferred replay handles every
+     * failed node.
+     */
+    NdbNodeBitmask stored;
+    stored.assign(NdbNodeBitmask::Size, ownNodePtr.p->nodeFailRep.theNodes);
+    stored.bitOR(failedNodes);
+    stored.copyto(NdbNodeBitmask::Size, ownNodePtr.p->nodeFailRep.theNodes);
+    ownNodePtr.p->nodeFailRep.noOfNodes = stored.count();
+    ownNodePtr.p->nodeFailRep.failNo = nodeFail->failNo;
+
+    c_restartLockTakeoverNodes.bitANDC(failedNodes);
+    if (c_restartLockTakeoverNodes.isclear() &&
+        c_restartLockTakeoverReady) {
+      jam();
+      /**
+       * The failed node was the last outstanding reporter, trigger
+       * the deferred completion now.
+       */
+      send_nf_complete_rep(signal, &ownNodePtr.p->nodeFailRep);
+    }
     return;
   }
 
@@ -5466,13 +5518,21 @@ void Dbdict::execNODE_FAILREP(Signal *signal) {
 
 void Dbdict::send_nf_complete_rep(Signal *signal, const NodeFailRep *nodeFail) {
   jam();
+  NodeRecordPtr ownNodePtr;
+  c_nodes.getPtr(ownNodePtr, getOwnNodeId());
+  if (ownNodePtr.p->nodeState == NodeRecord::NDB_MASTER_TAKEOVER &&
+      !c_restartLockTakeoverNodes.isclear()) {
+    jam();
+    c_restartLockTakeoverReady = true;
+    return;
+  }
+  c_restartLockTakeoverReady = false;
+
   Uint32 theFailedNodes[NdbNodeBitmask::Size];
   memcpy(theFailedNodes, nodeFail->theNodes, sizeof(theFailedNodes));
   NdbNodeBitmask tmp;
   tmp.assign(NdbNodeBitmask::Size, theFailedNodes);
 
-  NodeRecordPtr ownNodePtr;
-  c_nodes.getPtr(ownNodePtr, getOwnNodeId());
   ownNodePtr.p->nodeState = NodeRecord::NDB_NODE_ALIVE;  // reset take-over
 
   for (unsigned i = 1; i < MAX_NDB_NODES; i++) {
@@ -5503,6 +5563,21 @@ void Dbdict::send_nf_complete_rep(Signal *signal, const NodeFailRep *nodeFail) {
 
   c_sub_startstop_lock.bitANDC(tmp);
 }  // send_nf_complete_rep
+
+void Dbdict::restartLockTakeoverReport(Signal *signal, Uint32 nodeId) {
+  ndbrequire(c_restartLockTakeoverNodes.get(nodeId));
+  c_restartLockTakeoverNodes.clear(nodeId);
+
+  if (c_restartLockTakeoverNodes.isclear() &&
+      c_restartLockTakeoverReady) {
+    jam();
+    NodeRecordPtr ownNodePtr;
+    c_nodes.getPtr(ownNodePtr, getOwnNodeId());
+    ndbrequire(ownNodePtr.p->nodeState ==
+               NodeRecord::NDB_MASTER_TAKEOVER);
+    send_nf_complete_rep(signal, &ownNodePtr.p->nodeFailRep);
+  }
+}
 
 void Dbdict::handle_master_takeover(Signal *signal) {
   /*
@@ -6219,6 +6294,99 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
 
   tablePtr.p->ttlSec = c_tableDesc.TTLSec;
   tablePtr.p->ttlColumnNo = c_tableDesc.TTLColumnNo;
+  Uint32 partitionHashBaseKeyCount = c_tableDesc.PartitionHashBaseKeyCount;
+  Uint32 partitionHashDetailKeyCount = c_tableDesc.PartitionHashDetailKeyCount;
+  Uint32 partitionHashFanout = c_tableDesc.PartitionHashFanout;
+  Uint32 partitionHashPrimaryKeyCount = c_tableDesc.NoOfKeyAttr;
+  if (DictTabInfo::isOrderedIndex(c_tableDesc.TableType) &&
+      c_tableDesc.PrimaryTableId != RNIL) {
+    TableRecordPtr basePtr;
+    if (!find_object(basePtr, c_tableDesc.PrimaryTableId) ||
+        !basePtr.p->isTable()) {
+      jam();
+      parseP->errorCode = CreateIndxRef::InvalidPrimaryTable;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    partitionHashPrimaryKeyCount = basePtr.p->noOfPrimkey;
+  }
+  if (partitionHashPrimaryKeyCount != 0 && partitionHashBaseKeyCount == 0 &&
+      partitionHashDetailKeyCount == 0 && partitionHashFanout == 1) {
+    partitionHashBaseKeyCount = partitionHashPrimaryKeyCount;
+  }
+  if (partitionHashBaseKeyCount > 0xff ||
+      partitionHashDetailKeyCount > 0xff || partitionHashFanout > 0xffff ||
+      partitionHashFanout == 0) {
+    jam();
+    parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+    parseP->errorLine = __LINE__;
+    return;
+  }
+  if (partitionHashPrimaryKeyCount != 0 &&
+      (partitionHashBaseKeyCount == 0 ||
+       partitionHashBaseKeyCount + partitionHashDetailKeyCount !=
+           partitionHashPrimaryKeyCount)) {
+    jam();
+    parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+    parseP->errorLine = __LINE__;
+    return;
+  }
+  if (partitionHashFanout > 1) {
+    if (partitionHashDetailKeyCount == 0) {
+      jam();
+      parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    if ((tablePtr.p->m_bits & TableRecord::TR_FullyReplicated) != 0) {
+      jam();
+      parseP->errorCode = CreateTableRef::WrongPartitionBalanceFullyReplicated;
+      parseP->errorLine = __LINE__;
+      return;
+    }
+    /**
+     * Ordered index tables inherit the base table's partitioning
+     * implicitly (fragment type DistrKeyOrderedIndex, no hash map
+     * object of their own) while carrying copies of the base table's
+     * partition hash metadata. The base table was already validated,
+     * so the checks below only apply to real tables.
+     */
+    if (!DictTabInfo::isOrderedIndex(c_tableDesc.TableType)) {
+      if (tablePtr.p->fragmentType != DictTabInfo::HashMapPartition) {
+        jam();
+        /* Fanout routing works through a hash map. */
+        parseP->errorCode = CreateTableRef::InvalidPartitionHash;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+      if (partitionHashFanout > tablePtr.p->partitionCount) {
+        jam();
+        parseP->errorCode = CreateTableRef::InvalidFanout;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+      /**
+       * Every base key spreads over a block of partitionHashFanout
+       * consecutive hash map buckets. The fanout must divide the
+       * bucket count or a block could wrap the bucket ring and two
+       * hash values of one base key could collide on a partition.
+       * The map was resolved above for all HashMapPartition tables.
+       */
+      HashMapRecordPtr hm_ptr;
+      ndbrequire(find_object(hm_ptr, tablePtr.p->hashMapObjectId));
+      Ptr<Hash2FragmentMap> mapptr;
+      ndbrequire(g_hash_map.getPtr(mapptr, hm_ptr.p->m_map_ptr_i));
+      if ((mapptr.p->m_cnt % partitionHashFanout) != 0) {
+        jam();
+        parseP->errorCode = CreateTableRef::InvalidFanout;
+        parseP->errorLine = __LINE__;
+        return;
+      }
+    }
+  }
+  tablePtr.p->partitionHashBaseKeyCount = (Uint8)partitionHashBaseKeyCount;
+  tablePtr.p->partitionHashDetailKeyCount = (Uint8)partitionHashDetailKeyCount;
+  tablePtr.p->partitionHashFanout = (Uint16)partitionHashFanout;
 
   tablePtr.p->ringBufferSize = c_tableDesc.RingBufferSize;
   tablePtr.p->ringIdxColNo = c_tableDesc.RingIdxColumnNo;
@@ -6429,6 +6597,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   SimpleProperties::UnpackStatus status;
 
   Uint32 keyCount = 0;
+  Uint32 distKeyCount = 0;
   Uint32 keyLength = 0;
   Uint32 attrCount = tablePtr.p->noOfAttributes;
   Uint32 nullCount = 0;
@@ -6638,6 +6807,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     }
 
     keyCount += attrDesc.AttributeKeyFlag;
+    distKeyCount += (attrDesc.AttributeKeyFlag && attrDesc.AttributeDKey);
     nullCount += attrDesc.AttributeNullableFlag;
 
     const Uint32 aSz = (1 << attrDesc.AttributeSize);
@@ -6801,6 +6971,22 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
              CreateTableRef::TooLargeVarsizePart);
   tabRequire(disk_recordLength <= MAX_DISK_VAR_SIZE_IN_WORDS,
              CreateTableRef::TooLargeDiskSizePart);
+
+  /**
+   * Fanout routing hashes the first base_count primary key columns in
+   * key order and ignores declared distribution keys, and the
+   * distribution key flags would mislead pre-fanout clients into
+   * pruning on them. Reject a proper distribution key subset on
+   * fanout tables (all primary key columns flagged is the default).
+   * Ordered index tables inherit the base table's metadata and were
+   * validated through the base table.
+   */
+  tabRequire(tablePtr.p->partitionHashFanout <= 1 ||
+                 DictTabInfo::isOrderedIndex(tableDesc.TableType) ||
+                 distKeyCount == 0 || distKeyCount == keyCount,
+             CreateTableRef::InvalidPartitionHash);
+
+
   tabRequire(recordLength <= MAX_TUPLE_SIZE_IN_WORDS,
              CreateTableRef::RecordTooBig);
   tabRequire(attrCount <= MAX_ATTRIBUTES_IN_TABLE,
@@ -7643,6 +7829,9 @@ void Dbdict::createTab_local(Signal *signal, SchemaOpPtr op_ptr,
     KeyDescriptor *desc =
         g_key_descriptor_pool.getPtr(createTabPtr.p->m_request.tableId);
     new (desc) KeyDescriptor();
+    desc->partitionHashBaseKeyCount = tabPtr.p->partitionHashBaseKeyCount;
+    desc->partitionHashDetailKeyCount = tabPtr.p->partitionHashDetailKeyCount;
+    desc->partitionHashFanout = tabPtr.p->partitionHashFanout;
 
     if (tabPtr.p->primaryTableId == RNIL) {
       jam();
@@ -8199,6 +8388,10 @@ void Dbdict::execTAB_COMMITCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->partitionHash =
+        packPartitionHash(tabPtr.p->partitionHashBaseKeyCount,
+                          tabPtr.p->partitionHashDetailKeyCount,
+                          tabPtr.p->partitionHashFanout);
     req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("3: dict_tab(%u) HashFunctionFlag: %u",
@@ -8464,6 +8657,10 @@ void Dbdict::execTC_SCHVERCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->partitionHash =
+        packPartitionHash(tabPtr.p->partitionHashBaseKeyCount,
+                          tabPtr.p->partitionHashDetailKeyCount,
+                          tabPtr.p->partitionHashFanout);
     req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("4: dict_tab(%u) HashFunctionFlag: %u",
@@ -13386,6 +13583,13 @@ void Dbdict::createIndex_toCreateTable(Signal *signal, SchemaOpPtr op_ptr) {
                ~tablePtr.p->hashMapObjectId != 0);
     w.add(DictTabInfo::HashMapObjectId, tablePtr.p->hashMapObjectId);
     w.add(DictTabInfo::HashMapVersion, tablePtr.p->hashMapVersion);
+  }
+  if (createIndexPtr.p->m_request.indexType == DictTabInfo::OrderedIndex) {
+    w.add(DictTabInfo::PartitionHashBaseKeyCount,
+          tablePtr.p->partitionHashBaseKeyCount);
+    w.add(DictTabInfo::PartitionHashDetailKeyCount,
+          tablePtr.p->partitionHashDetailKeyCount);
+    w.add(DictTabInfo::PartitionHashFanout, tablePtr.p->partitionHashFanout);
   }
 
   w.add(DictTabInfo::TableTypeVal, createIndexPtr.p->m_request.indexType);
@@ -21249,9 +21453,14 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
   lockReq.senderData = req.userPtr;
   lockReq.lockId = 0;
   lockReq.requestInfo = 0;
-  lockReq.extra = req.lockType;
+  const bool restartLockTakeover =
+      req.lockType == (Uint32)DictLockReq::NodeRestartLockTakeover;
+  const Uint32 nodeId = refToNode(req.userRef);
+  lockReq.extra = restartLockTakeover
+                      ? (Uint32)DictLockReq::NodeRestartLock
+                      : req.lockType;
 
-  const DictLockType *lt = getDictLockType(req.lockType);
+  const DictLockType *lt = getDictLockType(lockReq.extra);
 
   Uint32 err;
   if (req.lockType == DictLockReq::SumaStartMe ||
@@ -21288,7 +21497,7 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
     return;
   }
 
-  if (req.lockType == DictLockReq::NodeRestartLock) {
+  if (lockReq.extra == DictLockReq::NodeRestartLock) {
     jam();
     lockReq.requestInfo |= UtilLockReq::SharedLock;
   }
@@ -21314,10 +21523,33 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
     goto ref;
   }
 
-  if (c_aliveNodes.get(refToNode(req.userRef))) {
+  if (restartLockTakeover &&
+      !c_restartLockTakeoverNodes.get(nodeId)) {
+    jam();
+    if (req.userPtr == RNIL) {
+      jam();
+      /**
+       * Duplicate "holds no NodeRestartLock" report, e.g. a delayed
+       * retry that crossed a master takeover whose fresh report was
+       * already accepted. The report is idempotent - drop it, a REF
+       * would crash the reporter.
+       */
+      return;
+    }
+    err = DictLockRef::TooLate;
+    goto ref;
+  }
+
+  if (c_aliveNodes.get(nodeId) && !restartLockTakeover) {
     jam();
     err = DictLockRef::TooLate;
     goto ref;
+  }
+
+  if (restartLockTakeover && req.userPtr == RNIL) {
+    jam();
+    restartLockTakeoverReport(signal, nodeId);
+    return;
   }
 
   res = m_dict_lock.lock(this, m_dict_lock_pool, &lockReq, 0);
@@ -21343,8 +21575,8 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
 
 ref : {
   DictLockRef *ref = (DictLockRef *)signal->getDataPtrSend();
-  ref->userPtr = lockReq.senderData;
-  ref->lockType = lockReq.extra;
+  ref->userPtr = req.userPtr;
+  ref->lockType = req.lockType;
   ref->errorCode = err;
   sendSignal(lockReq.senderRef, GSN_DICT_LOCK_REF, signal,
              DictLockRef::SignalLength, JBB);
@@ -21360,6 +21592,10 @@ conf : {
 
   sendSignal(lockReq.senderRef, GSN_DICT_LOCK_CONF, signal,
              DictLockConf::SignalLength, JBB);
+
+  if (restartLockTakeover) {
+    restartLockTakeoverReport(signal, refToNode(lockReq.senderRef));
+  }
 }
   return;
 }
@@ -22456,7 +22692,6 @@ Uint32 Dbdict::dict_lock_unlock(Signal *signal, const DictLockReq *_req,
       break;
     case UtilUnlockRef::NotInLockQueue:
       ndbassert(false);
-      return res;
   }
 
   LockQueue::Iterator iter;
@@ -32933,7 +33168,6 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
   CreateDatabaseRecPtr createDbPtr;
   getOpRec(op_ptr, createDbPtr);
   CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
-  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -32963,6 +33197,13 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
+  /**
+   * is_user travels in the packed properties: the schema op framework
+   * does not propagate the client signal's requestInfo into m_request
+   * (startClientReq only copies requestType), and the restart path
+   * recreates databases from packed pages where IsUser is stored.
+   */
+  bool is_user = db.IsUser;
 
   Uint32 available_rate_limit =
     m_allocated_create_rate_limit - m_current_allocated_rate;
@@ -33757,12 +33998,14 @@ Dbdict::createDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
     char *dbNamePtr = (char*)&dbName[0];
     name.copy(dbNamePtr, sizeof(dbName));
     Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
+    /* Strip the leading '$': char-based move, &dbName[1] would shift by
+       4 bytes and garble the username sent to the API nodes */
     db_name_len--;
-    memmove(&dbName[0], &dbName[1], db_name_len);
-    dbName[db_name_len] = 0;
+    memmove(&dbNamePtr[0], &dbNamePtr[1], db_name_len);
+    dbNamePtr[db_name_len] = 0;
     LinearSectionPtr lsPtr[3];
     lsPtr[0].p = &dbName[0];
-    lsPtr[0].sz = db_name_len + 1;
+    lsPtr[0].sz = (db_name_len + 4) / 4;
     CreateDatabaseRep* rep = (CreateDatabaseRep*)signal->getDataPtrSend();
     rep->databaseId = db_ptr.p->key;
     rep->databaseVersion = db_ptr.p->m_version;
@@ -33935,7 +34178,6 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
   DropDatabaseRecPtr dropDbPtr;
   getOpRec(op_ptr, dropDbPtr);
   DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
-  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -33959,6 +34201,8 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
+  /* is_user travels in the packed properties, see createDatabase_parse */
+  bool is_user = db.IsUser;
   if (is_user) {
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
     db.DatabaseName[0] = '$';
@@ -34347,11 +34591,13 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
     name.copy(dbNamePtr, sizeof(dbName));
     Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
     LinearSectionPtr lsPtr[3];
+    /* Strip the leading '$': char-based move, &dbName[1] would shift by
+       4 bytes and garble the username sent to the API nodes */
     db_name_len--;
-    memmove(&dbName[0], &dbName[1], db_name_len);
-    dbName[db_name_len] = 0;
+    memmove(&dbNamePtr[0], &dbNamePtr[1], db_name_len);
+    dbNamePtr[db_name_len] = 0;
     lsPtr[0].p = &dbName[0];
-    lsPtr[0].sz = db_name_len + 1;
+    lsPtr[0].sz = (db_name_len + 4) / 4;
     DropDatabaseRep* rep = (DropDatabaseRep*)signal->getDataPtrSend();
     rep->databaseId = db_ptr.p->key;
     rep->databaseVersion = db_ptr.p->m_version;
@@ -34541,7 +34787,6 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
-  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -34564,6 +34809,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
+  /* is_user travels in the packed properties, see createDatabase_parse */
+  bool is_user = db.IsUser;
 
   if (is_user) {
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);

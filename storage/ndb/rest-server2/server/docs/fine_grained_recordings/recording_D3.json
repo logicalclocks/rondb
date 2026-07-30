@@ -1,0 +1,427 @@
+{
+  "scenario": "D3",
+  "generated": "2026-07-16T10:32:15.512367+00:00",
+  "hopsworks_version": "5.0.1",
+  "generator": "t2_scenarios.py",
+  "setup": {
+    "purpose": "Reference recordings of how a real Hopsworks cluster enforces feature-store/feature-group/feature sharing, captured to define the target behavior for the RonDB REST server (RDRS) fine-grained sharing implementation. Test design: docs/fg_fv_sharing_fine_grained_test_design.md.",
+    "cluster": "Live Hopsworks 5.0.1 on kubernetes; REST API at https://10.115.253.130/hopsworks-api/api; online feature store = RonDB, external mysqld LoadBalancer at 10.115.253.126:3306; prod RDRS (pre-fix, member-only authorization) at https://10.115.253.124:4406. All auto-increment counters were floored to 100000 before any test data was created, so every id in these recordings is >= 100000 and imports into the RDRS test fixtures without remapping.",
+    "producer": {
+      "project": "usera_project (owned by usera@lc.com, Data owner; the ONLY project with content - everything is shared FROM here)",
+      "feature_groups": {
+        "usera_customers_fg": "online-enabled, 4 rows; columns: customer_id (PK), age, country, is_premium, event_time (event-time col); online table usera_project.usera_customers_fg_1",
+        "usera_transactions_fg": "online-enabled, 4 rows; columns: customer_id (PK), num_transactions_30d, total_spend_30d, avg_transaction_value_30d, event_time; online table usera_project.usera_transactions_fg_1"
+      },
+      "feature_views": {
+        "usera_customers_transactions_fv": "joins BOTH FGs on customer_id and selects ALL their columns - serving it needs full access to both FGs",
+        "usera_txncount_fv": "joins both FGs but selects only customer_id, age from customers and num_transactions_30d from transactions - the instrument for partial grants: works when only num_transactions_30d is granted while the full FV fails"
+      }
+    },
+    "users": "12 users usera..userl@lc.com (uids 100000..100011), all with password Pass123 and one api key each (identical scopes: FEATURESTORE PROJECT JOB KAFKA SERVING DATASET_VIEW/CREATE/DELETE). Consumers userb..userf own empty projects userb_project..userf_project (empty on purpose: anything their key can read from usera's data is provably reachable only via the grant under test). Grant granularity decreases alphabetically: userb = entire store, userc = both FGs whole, userd = one FG whole, usere = whole FG + feature subset, userf = nothing (outsider). userj/userk/userl own no projects and are members of usera_project with project_team role 'Feature store restricted': userj = no grants, userk = one FG full, userl = one FG full + feature subset. userg/h/i exist but are unused (reserved).",
+    "how_reads_authenticate": "Every read is performed with the READER's own api key. hsfs reads log in through the reader's own project (restricted users log in through usera_project itself - they own none); RDRS reads pass the key in the X-API-KEY header; the mysql probe uses the reader's per-user online-store account (<project>_<username>) fetched via their storage connector.",
+    "enforcement_model_observed": "Hopsworks enforces online sharing exclusively at the MySQL GRANT layer: store-entirely share => GRANT SELECT ON <producer_db>.*; whole-FG share => table-level GRANT on that FG's online table; feature-level share => column-level GRANT SELECT (PK, event_time, granted cols). Metadata endpoints (feature view, prepared statements) are NOT enforced. Denials surface as SQL errors at read time: 1044 no DB access, 1142 table denied, 1143 column denied. The restricted_* system mirrors the same ladder per-user instead of per-project."
+  },
+  "context": {
+    "test": "Restricted member granted one full FG + part of the other - the restricted twin of scenario C.",
+    "projects_involved": "usera_project only (in-project scenario).",
+    "who_shares_what_with_whom": "usera grants the USER userl@lc.com (restricted member): (1) usera_customers_fg entirely, and (2) usera_transactions_fg restricted to num_transactions_30d (?user=userl@lc.com&feature=num_transactions_30d).",
+    "who_reads": "userl, using userl's api key, hsfs login via usera_project.",
+    "verifies": "narrow FV works, full FV denies with SQL error 1143 naming total_spend_30d; metadata = can_access_entirely=0 row plus restricted_feature_access child rows force-including customer_id and event_time; MySQL column-level grant identical in shape to usere's cross-project one (C4)."
+  },
+  "reads_legend": {
+    "hsfs_full_fv": "hopsworks python client, logged in AS THE READER with their own api key through their login project: get_feature_store('usera_project_featurestore') -> get_feature_view('usera_customers_transactions_fv', 1) -> get_feature_vector({'customer_id': 1}). This FV needs ALL columns of BOTH FGs.",
+    "hsfs_narrow_fv": "same as hsfs_full_fv but on 'usera_txncount_fv' which only needs num_transactions_30d from usera_transactions_fg (plus customers columns).",
+    "rdrs_full_fv": "POST /0.1.0/feature_store on the PROD RDRS server (pre-fix build with member-only authorization - recorded to document the gap, NOT the target behavior) with the reader's api key in X-API-KEY; featureStoreName=usera_project, featureViewName=usera_customers_transactions_fv.",
+    "rdrs_narrow_fv": "same as rdrs_full_fv but featureViewName=usera_txncount_fv.",
+    "rdrs_batch_full_fv": "POST /0.1.0/batch_feature_store on prod RDRS, one entry, full FV.",
+    "rdrs_pkread_customers": "POST /0.1.0/usera_project/usera_customers_fg_1/pk-read on prod RDRS with the reader's api key - direct online-table access.",
+    "rdrs_pkread_transactions": "POST /0.1.0/usera_project/usera_transactions_fg_1/pk-read on prod RDRS with the reader's api key.",
+    "rdrs_batch_pkread_customers": "POST /0.1.0/batch with two pk-read operations on the customers table, prod RDRS, reader's api key.",
+    "mysql_grants_probe": "the enforcement layer itself: fetch the reader's per-user online-store MySQL account via THEIR storage-connector REST endpoint, then SHOW GRANTS plus four probe SELECTs against the online DB (all columns of each FG table; only the shared column; only an unshared column). Hopsworks enforces sharing online exclusively through these MySQL GRANTs."
+  },
+  "description": "restricted userl: customers full + transactions {num_transactions_30d}; narrow FV allowed, full denied",
+  "grants": [
+    {
+      "action": "grant_restricted",
+      "fg": "usera_customers_fg",
+      "user": "userl@lc.com",
+      "features": [],
+      "result": {
+        "status": 200,
+        "body_text": ""
+      }
+    },
+    {
+      "action": "grant_restricted",
+      "fg": "usera_transactions_fg",
+      "user": "userl@lc.com",
+      "features": [
+        "num_transactions_30d"
+      ],
+      "result": {
+        "status": 200,
+        "body_text": ""
+      }
+    }
+  ],
+  "sharing_tables": {
+    "shared_feature_store": [
+      {
+        "id": "100002",
+        "feature_store": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100003",
+        "shared_entirely": "0"
+      },
+      {
+        "id": "100003",
+        "feature_store": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100002",
+        "shared_entirely": "0"
+      },
+      {
+        "id": "100004",
+        "feature_store": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100004",
+        "shared_entirely": "0"
+      },
+      {
+        "id": "100001",
+        "feature_store": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100001",
+        "shared_entirely": "1"
+      }
+    ],
+    "shared_feature_group": [
+      {
+        "id": "100000",
+        "feature_store": "100000",
+        "feature_group": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100003",
+        "shared_entirely": "1"
+      },
+      {
+        "id": "100002",
+        "feature_store": "100000",
+        "feature_group": "100001",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100002",
+        "shared_entirely": "1"
+      },
+      {
+        "id": "100003",
+        "feature_store": "100000",
+        "feature_group": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100002",
+        "shared_entirely": "1"
+      },
+      {
+        "id": "100004",
+        "feature_store": "100000",
+        "feature_group": "100000",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100004",
+        "shared_entirely": "1"
+      },
+      {
+        "id": "100005",
+        "feature_store": "100000",
+        "feature_group": "100001",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100004",
+        "shared_entirely": "0"
+      }
+    ],
+    "shared_feature": [
+      {
+        "id": "100001",
+        "feature_group": "100001",
+        "feature": "event_time",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100004"
+      },
+      {
+        "id": "100000",
+        "feature_group": "100001",
+        "feature": "customer_id",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100004"
+      },
+      {
+        "id": "100002",
+        "feature_group": "100001",
+        "feature": "num_transactions_30d",
+        "shared_by": "100000",
+        "shared_on": "2026-07-16 00:00:00",
+        "shared_with_project": "100004"
+      }
+    ],
+    "restricted_feature_group_access": [
+      {
+        "id": "100000",
+        "feature_store": "100000",
+        "feature_group": "100000",
+        "granted_by": "100000",
+        "granted_on": "2026-07-16 00:00:00",
+        "granted_to_user": "100010",
+        "can_access_entirely": "1"
+      },
+      {
+        "id": "100002",
+        "feature_store": "100000",
+        "feature_group": "100000",
+        "granted_by": "100000",
+        "granted_on": "2026-07-16 00:00:00",
+        "granted_to_user": "100011",
+        "can_access_entirely": "1"
+      },
+      {
+        "id": "100003",
+        "feature_store": "100000",
+        "feature_group": "100001",
+        "granted_by": "100000",
+        "granted_on": "2026-07-16 00:00:00",
+        "granted_to_user": "100011",
+        "can_access_entirely": "0"
+      }
+    ],
+    "restricted_feature_access": [
+      {
+        "id": "100001",
+        "restricted_feature_group_access": "100003",
+        "feature": "customer_id",
+        "granted_by": "100000",
+        "granted_on": "2026-07-16 00:00:00",
+        "granted_to_user": "100011"
+      },
+      {
+        "id": "100000",
+        "restricted_feature_group_access": "100003",
+        "feature": "num_transactions_30d",
+        "granted_by": "100000",
+        "granted_on": "2026-07-16 00:00:00",
+        "granted_to_user": "100011"
+      },
+      {
+        "id": "100002",
+        "restricted_feature_group_access": "100003",
+        "feature": "event_time",
+        "granted_by": "100000",
+        "granted_on": "2026-07-16 00:00:00",
+        "granted_to_user": "100011"
+      }
+    ]
+  },
+  "reads": {
+    "userl": {
+      "hsfs_full_fv": {
+        "get_feature_store": "ok",
+        "get_feature_view": "ok",
+        "exception": "OperationalError",
+        "message": "(1143, \"SELECT command denied to user 'usera_project_userl000'@'10.244.0.0' for column 'total_spend_30d' in table 'usera_transactions_fg_1'\")"
+      },
+      "hsfs_narrow_fv": {
+        "get_feature_store": "ok",
+        "get_feature_view": "ok",
+        "get_feature_vector": "ok",
+        "vector": [
+          "1",
+          "25",
+          "3"
+        ]
+      },
+      "rdrs_full_fv": {
+        "status": 200,
+        "body": {
+          "features": [
+            1,
+            25,
+            "SE",
+            0,
+            1,
+            3,
+            120.5,
+            40.17
+          ],
+          "metadata": [],
+          "status": "COMPLETE",
+          "detailedStatus": null
+        }
+      },
+      "rdrs_narrow_fv": {
+        "status": 200,
+        "body": {
+          "features": [
+            1,
+            25,
+            3
+          ],
+          "metadata": [],
+          "status": "COMPLETE",
+          "detailedStatus": null
+        }
+      },
+      "rdrs_batch_full_fv": {
+        "status": 200,
+        "body": {
+          "features": [
+            [
+              1,
+              25,
+              "SE",
+              0,
+              1,
+              3,
+              120.5,
+              40.17
+            ]
+          ],
+          "metadata": [
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            },
+            {
+              "featureName": null,
+              "featureType": null
+            }
+          ],
+          "status": [
+            "COMPLETE"
+          ],
+          "detailedStatus": []
+        }
+      },
+      "rdrs_pkread_customers": {
+        "status": 200,
+        "code": 200,
+        "body": {
+          "code": 200,
+          "operationId": "",
+          "data": {
+            "customer_id": 1,
+            "age": 25,
+            "country": "SE",
+            "is_premium": 0,
+            "event_time": "2026-07-16 08:53:35"
+          }
+        }
+      },
+      "rdrs_pkread_transactions": {
+        "status": 200,
+        "code": 200,
+        "body": {
+          "code": 200,
+          "operationId": "",
+          "data": {
+            "customer_id": 1,
+            "num_transactions_30d": 3,
+            "total_spend_30d": 120.5,
+            "avg_transaction_value_30d": 40.17,
+            "event_time": "2026-07-16 08:53:35"
+          }
+        }
+      },
+      "rdrs_batch_pkread_customers": {
+        "status": 200,
+        "body": {
+          "result": [
+            {
+              "code": 200,
+              "body": {
+                "operationId": "",
+                "data": {
+                  "customer_id": 1,
+                  "age": 25,
+                  "country": "SE",
+                  "is_premium": 0,
+                  "event_time": "2026-07-16 08:53:35"
+                }
+              }
+            },
+            {
+              "code": 200,
+              "body": {
+                "operationId": "",
+                "data": {
+                  "customer_id": 2,
+                  "age": 41,
+                  "country": "PK",
+                  "is_premium": 1,
+                  "event_time": "2026-07-16 08:53:35"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "mysql_grants_probe": {
+        "mysql_account": "usera_project_userl000",
+        "grants": [
+          "GRANT USAGE ON *.* TO `usera_project_userl000`@`%`",
+          "GRANT NDB_STORED_USER ON *.* TO `usera_project_userl000`@`%`",
+          "GRANT SELECT ON `usera_project`.`usera_customers_fg_1` TO `usera_project_userl000`@`%`",
+          "GRANT SELECT (`customer_id`, `event_time`, `num_transactions_30d`) ON `usera_project`.`usera_transactions_fg_1` TO `usera_project_userl000`@`%`"
+        ],
+        "queries": {
+          "customers_all_cols": {
+            "ok": true,
+            "output": "customer_id\tage\tcountry\tis_premium\tevent_time\n1\t25\tSE\t0\t2026-07-16 08:53:35"
+          },
+          "transactions_all_cols": {
+            "ok": false,
+            "output": "ERROR 1142 (42000) at line 1: SELECT command denied to user 'usera_project_userl000'@'10.244.0.0' for table 'usera_transactions_fg_1'"
+          },
+          "transactions_shared_col": {
+            "ok": true,
+            "output": "customer_id\tnum_transactions_30d\n1\t3"
+          },
+          "transactions_unshared_col": {
+            "ok": false,
+            "output": "ERROR 1143 (42000) at line 1: SELECT command denied to user 'usera_project_userl000'@'10.244.0.0' for column 'total_spend_30d' in table 'usera_transactions_fg_1'"
+          }
+        }
+      }
+    }
+  }
+}

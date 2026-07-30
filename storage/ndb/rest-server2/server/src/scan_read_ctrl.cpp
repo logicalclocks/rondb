@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2026 Hopsworks AB
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,12 +24,14 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 #include "scan_metrics.hpp"
 
 #include <cstring>
 #include <drogon/HttpTypes.h>
 #include <iostream>
+#include <functional>
 #include <memory>
 #include <simdjson.h>
 #include <EventLogger.hpp>
@@ -167,14 +169,42 @@ void ScanReadCtrl::ScanRead(
   }
 
   // Authenticate
-  std::vector<std::string_view> db_vector;
-  db_vector.push_back(reqStruct.path.db);
-  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
-  char *username_ptr = nullptr;
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    username_ptr = &username[0];
-    status = authenticate(api_key, db_vector, username_ptr);
+    // A scan with no explicit read columns returns whole rows, so the
+    // whole table must be granted. Filter and index-key columns expose
+    // data too (their values are compared), so they are checked as well.
+    std::vector<std::string_view> columns;
+    for (const ScanReadColumn &readColumn : reqStruct.readColumns) {
+      columns.push_back(readColumn.column);
+    }
+    if (!reqStruct.readColumns.empty()) {
+      std::function<void(const std::shared_ptr<FilterNode>&)> collect =
+        [&](const std::shared_ptr<FilterNode> &node) {
+          if (node == nullptr) {
+            return;
+          }
+          if (!node->column.empty()) {
+            columns.push_back(node->column);
+          }
+          for (const std::shared_ptr<FilterNode> &child : node->children) {
+            collect(child);
+          }
+        };
+      collect(reqStruct.filterRoot);
+      if (reqStruct.index != std::nullopt) {
+        for (const std::string &column : reqStruct.index->columns) {
+          columns.push_back(column);
+        }
+      }
+    }
+    TableAccessRequest accessReq;
+    accessReq.db = reqStruct.path.db;
+    accessReq.table = reqStruct.path.table;
+    accessReq.columns = reqStruct.readColumns.empty() ? nullptr : &columns;
+    status = authenticate(api_key,
+                          std::vector<TableAccessRequest>{accessReq});
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -182,6 +212,7 @@ void ScanReadCtrl::ScanRead(
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
 
   RJ_Document doc;
@@ -195,12 +226,18 @@ void ScanReadCtrl::ScanRead(
 
   uint64_t rows_fetched = 0;
   status = scan_read(reqStruct, currentThreadIndex, (void*)&buf,
+                     rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                     (unsigned int)rl_identity.size(),
                      &rows_fetched, timing_enabled ? &timing : nullptr);
 
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
       drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(status.message));
-    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    /* Rate limit rejections (RONDB-978) must surface as 429, everything
+       else keeps the historical 400 of this endpoint */
+    resp->setStatusCode(status.http_code == TOO_MANY_REQUESTS
+                          ? drogon::HttpStatusCode::k429TooManyRequests
+                          : drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }

@@ -1588,6 +1588,32 @@ void Cmvmi::execDUMP_STATE_ORD(Signal *signal) {
           Uint32 val = signal->theData[1];
           setRecvQueryThreadDistance(val);
         }
+        else if (val == DumpStateOrd::CmvmiSetRdmaLogLevel)
+        {
+          /*
+           * Runtime control of the RDMA transporter self-logging
+           * verbosity (RdmaLogLevel). theData[1] carries the new level
+           * (0=errors..3=debug); values above 3 are clamped. The change
+           * is applied to every RDMA transporter on this node via the
+           * transporter registry. Typically sent to all data nodes with
+           * 'ALL DUMP 103020 <level>' or the 'SET RdmaLogLevel' MGM
+           * command.
+           */
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 level = signal->theData[1];
+          if (level > 3)
+          {
+            jam();
+            level = 3;
+          }
+          globalTransporterRegistry.set_rdma_log_level(level);
+          infoEvent("Set RdmaLogLevel=%u on all RDMA transporters", level);
+        }
       }
     } else if (check_block(THRMAN, val)) {
       sendSignal(THRMAN_REF, GSN_DUMP_STATE_ORD, signal, signal->length(), JBB);

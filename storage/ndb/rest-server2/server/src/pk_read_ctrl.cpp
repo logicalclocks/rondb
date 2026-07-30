@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -25,6 +25,7 @@
 #include "api_key.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 #include <NdbSleep.h>
 
@@ -114,12 +115,10 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   // Authenticate
-  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
-  char *username_ptr = nullptr;
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    username_ptr = &username[0];
-    status = authenticate(api_key, reqStruct, username_ptr);
+    status = authenticate(api_key, reqStruct);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -128,6 +127,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
 
   ArenaMalloc amalloc(64 * 1024);
@@ -159,7 +159,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                            &reqBuff,
                            &respBuff,
                            currentThreadIndex,
-                           username_ptr);
+                           rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                           (unsigned int)rl_identity.size());
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

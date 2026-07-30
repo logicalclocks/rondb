@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2026 Hopsworks AB
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -28,12 +28,13 @@ extern "C" {
 #include <stdint.h>
 
 typedef enum HTTP_CODE {
-  SUCCESS      = 200,
-  CLIENT_ERROR = 400,
-  AUTH_ERROR   = 401,
-  NOT_FOUND    = 404,
-  CONFLICT     = 409,
-  SERVER_ERROR = 500
+  SUCCESS           = 200,
+  CLIENT_ERROR      = 400,
+  AUTH_ERROR        = 401,
+  NOT_FOUND         = 404,
+  CONFLICT          = 409,
+  TOO_MANY_REQUESTS = 429,
+  SERVER_ERROR      = 500
 } HTTP_CODE;
 
 // Status
@@ -189,7 +190,8 @@ RS_Status pk_batch_read(void *amalloc,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
                         unsigned int threadIndex,
-                        char *username_ptr);
+                        const char *rate_limit_identity,
+                        unsigned int rate_limit_identity_len);
 
 /**
  * Batched primary key delete operation
@@ -201,7 +203,8 @@ RS_Status pk_batch_delete(void *amalloc,
                           RS_Buffer *req_buffs,
                           RS_Buffer *resp_buffs,
                           unsigned int threadIndex,
-                          char *username_ptr);
+                          const char *rate_limit_identity,
+                          unsigned int rate_limit_identity_len);
 
 /**
  * Batched primary key write operation
@@ -213,7 +216,8 @@ RS_Status pk_batch_write(void *amalloc,
                          RS_Buffer *req_buffs,
                          RS_Buffer *resp_buffs,
                          unsigned int threadIndex,
-                         char *username_ptr);
+                         const char *rate_limit_identity,
+                         unsigned int rate_limit_identity_len);
 
 /**
  * RonSQL query
@@ -238,7 +242,10 @@ void return_rdrs_ndb_object(void *ndb_object, int thread_index);
 class ScanReadParams;
 struct ScanPhaseTiming;
 RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex,
-                    void* json_string_buf, uint64_t* rows_fetched_out = nullptr,
+                    void* json_string_buf,
+                    const char *rate_limit_identity,
+                    unsigned int rate_limit_identity_len,
+                    uint64_t* rows_fetched_out = nullptr,
                     ScanPhaseTiming* timing = nullptr);
 
 #endif

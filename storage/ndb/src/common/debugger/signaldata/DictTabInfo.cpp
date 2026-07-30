@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -95,6 +95,9 @@ DictTabInfo::TableMapping[] = {
   DTI_MAP_INT(Table, HashFunctionFlag, HashFunctionFlag),
   DTI_MAP_INT(Table, TTLSec, TTLSec),
   DTI_MAP_INT(Table, TTLColumnNo, TTLColumnNo),
+  DTI_MAP_INT(Table, PartitionHashBaseKeyCount, PartitionHashBaseKeyCount),
+  DTI_MAP_INT(Table, PartitionHashDetailKeyCount, PartitionHashDetailKeyCount),
+  DTI_MAP_INT(Table, PartitionHashFanout, PartitionHashFanout),
   DTI_MAP_INT(Table, RingBufferSize, RingBufferSize),
   DTI_MAP_INT(Table, RingIdxColumnNo, RingIdxColumnNo),
   DTI_MAP_INT(Table, RingMetaColumnNo, RingMetaColumnNo),
@@ -219,6 +222,10 @@ void DictTabInfo::Table::init() {
 
   TTLSec = RNIL;
   TTLColumnNo = RNIL;
+
+  PartitionHashBaseKeyCount = 0;
+  PartitionHashDetailKeyCount = 0;
+  PartitionHashFanout = 1;
 
   RingBufferSize = RNIL;
   RingIdxColumnNo = RNIL;

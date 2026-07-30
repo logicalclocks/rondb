@@ -99,8 +99,17 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define API_KEY                  "api_key"
 #define USERS                    "users"
 #define PROJECT_TEAM             "project_team"
+#define SHARED_FEATURE_STORE     "shared_feature_store"
+#define SHARED_FEATURE_GROUP     "shared_feature_group"
+#define SHARED_FEATURE           "shared_feature"
+#define RESTRICTED_FEATURE_GROUP_ACCESS "restricted_feature_group_access"
+#define RESTRICTED_FEATURE_ACCESS       "restricted_feature_access"
 #define FEATURE_GROUP            "feature_group"
 #define ON_DEMAND_FEATURE_GROUP  "on_demand_feature_group"
+
+// project_team.team_role value that routes a member to the restricted_*
+// per-user grant tables instead of full member access
+#define FEATURE_STORE_RESTRICTED_ROLE "Feature store restricted"
 
 // Update the following constants if there are changes in the hopsworks schema
 #define API_KEY_PREFIX_SIZE                45 + 1    /* +1 for ndb len or '\0'*/
@@ -110,6 +119,8 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define USERS_EMAIL_SIZE                   150 + 1   /* +1 for ndb len or '\0'*/
 #define USERNAME_SIZE                      10 + 1   /* +1 for ndb len or '\0'*/
 #define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1   /* +1 for ndb len or '\0'*/
+#define PROJECT_TEAM_TEAM_ROLE_SIZE        32 + 1    /* +1 for ndb len or '\0'*/
+#define SHARED_FEATURE_NAME_SIZE           63 + 1    /* +1 for ndb len or '\0'*/
 #define PROJECT_PROJECTNAME_SIZE           100 + 1   /* +1 for ndb len or '\0'*/
 #define FEATURE_STORE_NAME_SIZE            100 + 1   /* +1 for ndb len or '\0'*/
 #define FEATURE_VIEW_NAME_SIZE             63 + 1    /* +1 for ndb len or '\0'*/

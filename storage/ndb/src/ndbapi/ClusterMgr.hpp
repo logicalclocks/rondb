@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -192,6 +192,8 @@ class ClusterMgr : public trp_client {
   void createUserIdHash();
   void releaseUserIdHash();
   void fillingUserIdCache(Uint32 node_id, Uint32 nextDatabaseId);
+  void startUserIdCacheFill(Uint32 node_id);
+  Uint32 calc_user_hash_index(const char *username, Uint32 username_len);
   int insertUserId(const char *username,
                    Uint32 username_len,
                    Uint32 userId,

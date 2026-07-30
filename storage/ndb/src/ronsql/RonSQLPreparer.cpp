@@ -201,6 +201,51 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   }
 }
 
+RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly):
+  m_conf(conf),
+  m_parse_only(true),
+  m_amalloc(conf.amalloc),
+  m_context(*this),
+  m_columns(conf.amalloc),
+  m_column_qualifiers(conf.amalloc),
+  m_col_is_inner(conf.amalloc),
+  m_col_is_alias(conf.amalloc),
+  m_main_scope(conf.amalloc),
+  m_indexes(conf.amalloc),
+  m_toplevel_conditions(conf.amalloc),
+  m_greatest_least_pair_loads(conf.amalloc),
+  m_scan_config_candidates(conf.amalloc),
+  m_select_subquery_leaves(conf.amalloc),
+  m_merged_leaves(conf.amalloc),
+  m_subquery_infos(conf.amalloc),
+  m_cte_scopes(conf.amalloc)
+{
+  ndbrequire(m_status == Status::BEGIN);
+  try {
+    configure();
+    parse();
+    m_status = Status::PARSED;
+  }
+  catch (...) {
+    m_status = Status::FAILED;
+    handle_ronsql_exception(std::current_exception());
+  }
+}
+
+LexCString
+RonSQLPreparer::get_table_name()
+{
+  ndbrequire(m_status == Status::PARSED || m_status == Status::PREPARED);
+  return m_context.ast_root.table;
+}
+
+const DynamicArray<LexCString>&
+RonSQLPreparer::get_referenced_columns()
+{
+  ndbrequire(m_status == Status::PARSED || m_status == Status::PREPARED);
+  return m_columns;
+}
+
 // require or fail without retry
 static inline void
 require_prm(bool condition, const char* msg)
@@ -408,7 +453,7 @@ RonSQLPreparer::configure()
              m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII ||
              m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT ||
              m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT_NOHEADER);
-  if (may_query)
+  if (may_query && !m_parse_only)
   {
     ndbrequire(m_conf.ndb != NULL);
   }

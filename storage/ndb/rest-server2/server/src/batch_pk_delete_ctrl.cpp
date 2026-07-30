@@ -24,6 +24,7 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
+#include "rate_limit.hpp"
 #include "metrics.hpp"
 #include "error_response.hpp"
 
@@ -31,6 +32,7 @@
 #include <drogon/HttpTypes.h>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <simdjson.h>
 #include <EventLogger.hpp>
 #include <ArenaMalloc.hpp>
@@ -167,18 +169,32 @@ void BatchPKDeleteCtrl::batchPKDelete(
   }
 
   // Authenticate
-  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
-  char *username_ptr = nullptr;
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    username_ptr = &username[0];
-    status = authenticate(api_key, db_vector, username_ptr);
+    // One access request per (db, table) of the batch. Modifying data
+    // requires access to the whole table, so no per-column check applies.
+    std::set<std::pair<std::string_view, std::string_view>> table_accesses;
+    for (auto &reqStruct : reqStructs) {
+      table_accesses.insert({reqStruct.path.db, reqStruct.path.table});
+    }
+    std::vector<TableAccessRequest> accessReqs;
+    accessReqs.reserve(table_accesses.size());
+    for (auto &entry : table_accesses) {
+      TableAccessRequest accessReq;
+      accessReq.db = entry.first;
+      accessReq.table = entry.second;
+      accessReq.columns = nullptr;
+      accessReqs.push_back(accessReq);
+    }
+    status = authenticate(api_key, accessReqs);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
   ArenaMalloc amalloc(256 * 1024);
   // Execute
@@ -230,7 +246,8 @@ void BatchPKDeleteCtrl::batchPKDelete(
                              reqBuffs.data(),
                              respBuffs.data(),
                              currentThreadIndex,
-                             username_ptr);
+                             rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                             (unsigned int)rl_identity.size());
 
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {

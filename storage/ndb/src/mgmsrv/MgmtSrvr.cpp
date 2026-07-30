@@ -5932,6 +5932,12 @@ MgmtSrvr::set_quotas(const char *database_name,
   }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
+  /**
+   * is_user must travel in the packed properties: the schema op
+   * framework does not propagate the signal's requestInfo to the
+   * parse functions (startClientReq only copies requestType).
+   */
+  db_obj.IsUser = is_user;
   db_obj.DatabaseId = 0;      //Ignored
   db_obj.DatabaseVersion = 0; //Ignored
   db_obj.InMemorySize = in_memory_size;
@@ -6070,6 +6076,12 @@ MgmtSrvr::alter_quotas(const char *database_name,
   }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
+  /**
+   * is_user must travel in the packed properties: the schema op
+   * framework does not propagate the signal's requestInfo to the
+   * parse functions (startClientReq only copies requestType).
+   */
+  db_obj.IsUser = is_user;
   db_obj.DatabaseId = 0;      //Ignored
   db_obj.DatabaseVersion = 0; //Ignored
   db_obj.InMemorySize = in_memory_size;
@@ -6200,6 +6212,12 @@ int MgmtSrvr::drop_quotas(const char *database_name, bool is_user, NdbOut& out) 
   }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
+  /**
+   * is_user must travel in the packed properties: the schema op
+   * framework does not propagate the signal's requestInfo to the
+   * parse functions (startClientReq only copies requestType).
+   */
+  db_obj.IsUser = is_user;
   db_obj.DatabaseId = 0;      //Ignored
   db_obj.DatabaseVersion = 0; //Ignored
   db_obj.InMemorySize = 0;

@@ -1,4 +1,5 @@
 -- Copyright (c) 2008, 2026, Oracle and/or its affiliates.
+-- Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 --
 -- This program is free software; you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License, version 2.0,
@@ -84,8 +85,11 @@ BEGIN
         -- List dict objects in NDB, skip objects created by ndbcluster plugin
         -- and HashMap's since those can't be dropped after having been
         -- created by test
+        -- Also skip $-prefixed USER rate limit entities (RONDB-978): they
+        -- are internal quota metadata, not test data
         SELECT /*+SET_VAR(use_secondary_engine=OFF)*/ id, indented_name FROM ndbinfo.dict_obj_tree
           WHERE root_type != 24 AND  -- HashMap
+                root_name NOT LIKE '$%' AND
                 root_name NOT IN ( 'mysql/def/ndb_schema',
                                    'mysql/def/ndb_schema_result',
                                    'mysql/def/ndb_index_stat_head',

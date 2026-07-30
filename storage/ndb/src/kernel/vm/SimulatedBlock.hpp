@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -565,7 +565,25 @@ class alignas(NDB_CL) SimulatedBlock
   Uint32 getExecThreadSignalId(Uint32 thr_no, Uint32 sender_thread_no);
   Uint32 getFirstQueryThreadId()
   {
-    return globalData.ndbMtMainThreads;
+    /*
+     * Query workers (DBQLQH and the other Q* blocks) are co-located with
+     * the LDM/other block threads. mt_add_thr_map() maps DBQLQH instance
+     * 'inst' to global thread id 'inst - 1' (see the DBQLQH case in
+     * mt.cpp), exactly like the LDM blocks. There is one query worker per
+     * block thread, so they occupy the whole block-thread range
+     * [0, glob_num_threads); the first query thread is global thread id 0.
+     *
+     * This MUST stay 0. Returning ndbMtMainThreads (assumed by an older
+     * thread layout where the main threads came first) shifts every
+     * query-worker thread id up by that amount, so the highest round-robin
+     * group members computed in set_up_qt_our_rr_group() run off the end
+     * of the block-thread range into the send-thread ids. That tripped
+     * require(thr_no < glob_num_threads) in mt_get_exec_thread_signal_id()
+     * on the SEND_PUSH_ABORTREQ / query-thread abort-ordering path and
+     * aborted the data node (signal 6 / error 6000). It also made the
+     * abort-ordering check consult the wrong query workers.
+     */
+    return 0;
   }
 
   Uint32 getFirstReceiveThreadId()
