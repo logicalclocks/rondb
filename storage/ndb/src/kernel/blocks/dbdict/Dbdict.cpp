@@ -33824,12 +33824,14 @@ Dbdict::createDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
     char *dbNamePtr = (char*)&dbName[0];
     name.copy(dbNamePtr, sizeof(dbName));
     Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
+    /* Strip the leading '$': char-based move, &dbName[1] would shift by
+       4 bytes and garble the username sent to the API nodes */
     db_name_len--;
-    memmove(&dbName[0], &dbName[1], db_name_len);
-    dbName[db_name_len] = 0;
+    memmove(&dbNamePtr[0], &dbNamePtr[1], db_name_len);
+    dbNamePtr[db_name_len] = 0;
     LinearSectionPtr lsPtr[3];
     lsPtr[0].p = &dbName[0];
-    lsPtr[0].sz = db_name_len + 1;
+    lsPtr[0].sz = (db_name_len + 4) / 4;
     CreateDatabaseRep* rep = (CreateDatabaseRep*)signal->getDataPtrSend();
     rep->databaseId = db_ptr.p->key;
     rep->databaseVersion = db_ptr.p->m_version;
@@ -34415,11 +34417,13 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
     name.copy(dbNamePtr, sizeof(dbName));
     Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
     LinearSectionPtr lsPtr[3];
+    /* Strip the leading '$': char-based move, &dbName[1] would shift by
+       4 bytes and garble the username sent to the API nodes */
     db_name_len--;
-    memmove(&dbName[0], &dbName[1], db_name_len);
-    dbName[db_name_len] = 0;
+    memmove(&dbNamePtr[0], &dbNamePtr[1], db_name_len);
+    dbNamePtr[db_name_len] = 0;
     lsPtr[0].p = &dbName[0];
-    lsPtr[0].sz = db_name_len + 1;
+    lsPtr[0].sz = (db_name_len + 4) / 4;
     DropDatabaseRep* rep = (DropDatabaseRep*)signal->getDataPtrSend();
     rep->databaseId = db_ptr.p->key;
     rep->databaseVersion = db_ptr.p->m_version;

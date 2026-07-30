@@ -1245,20 +1245,16 @@ int ClusterMgr::retrieveUserId(const char *username,
     entry = theUserIdHash[inx];
     first = false;
   }
-  if (m_initialised_user_id_cache) {
-    /**
-     * When the user id cache is fully initialised we treat a missing
-     * entry as no user with that name exists.
-     */
-    NdbMutex_Unlock(theUserIdMutex);
-    userId = RNIL;
-    userIdVersion = 0;
-    DBUG_RETURN(0);
-  }
   /**
-   * The cache is still being initialised and has no entry for this user.
-   * The user thread resolves this user itself with GET_DATABASE_REQ;
-   * the reply inserts the entry into the cache (updateUserId).
+   * No entry for this user, whether the cache is fully initialised or
+   * not. The user thread resolves the user itself with GET_DATABASE_REQ;
+   * the reply inserts the entry into the cache (updateUserId), so only
+   * the first transaction pays the round trip. This must not depend on
+   * the cache initialisation state: a user created after the cache was
+   * initialised would otherwise be unresolvable for the lifetime of the
+   * process (and thus never rate limited). A username with no user at
+   * all pays a GET_DATABASE round trip per transaction, which is the
+   * price of being unprovisioned.
    */
   NdbMutex_Unlock(theUserIdMutex);
   if (start_cache_fill) {
@@ -1326,16 +1322,31 @@ int ClusterMgr::updateUserId(const char *username,
       DBUG_RETURN(0);
     }
   }
+  /**
+   * No entry to update: insert one. This is the normal case for a user
+   * resolved with GET_DATABASE_REQ (a cache miss), and it is what makes
+   * the cache self-healing when a user is created after the cache was
+   * initialised: the first transaction pays a GET_DATABASE round trip
+   * and inserts the entry here, later transactions hit the cache.
+   */
+  struct UserIdHashEntry *new_entry = (struct UserIdHashEntry*)
+    malloc(sizeof(struct UserIdHashEntry) + username_len + 1);
+  if (new_entry == nullptr) {
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(-1);
+  }
+  new_entry->next_entry = theUserIdHash[inx];
+  new_entry->m_username_len = username_len;
+  new_entry->m_user_id = userId;
+  new_entry->m_user_id_version = userIdVersion;
+  new_entry->m_wait_for_entry = false;
+  NdbTick_Invalidate(&new_entry->m_error_time);
+  std::memcpy(&new_entry->m_username[0],
+              username,
+              username_len + 1);
+  theUserIdHash[inx] = new_entry;
   NdbMutex_Unlock(theUserIdMutex);
-#ifdef DEBUG_USER
-  g_eventLogger->info("Failed to update user id, "
-                      "name: %s, namelen: %u, id: %u, version: %u",
-    username,
-    username_len,
-    userId,
-    userIdVersion);
-#endif
-  DBUG_RETURN(-1);
+  DBUG_RETURN(0);
 }
 
 void ClusterMgr::deleteUserId(const char *username,
