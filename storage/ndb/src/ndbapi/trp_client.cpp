@@ -25,6 +25,7 @@
 */
 
 #include "trp_client.hpp"
+#include <new>
 #include <EventLogger.hpp>
 #include "TransporterFacade.hpp"
 #include "util/require.h"
@@ -39,6 +40,8 @@ trp_client::trp_client()
       m_enabled_trps_mask(),
       m_send_trps_mask(),
       m_send_trps_cnt(0),
+      m_num_trp_ids(0),
+      m_send_trps_list(nullptr),
       m_send_buffers(nullptr),
       m_flushed_trps_mask() {
   m_mutex = NdbMutex_Create();
@@ -46,7 +49,8 @@ trp_client::trp_client()
   // global TransporterFacade:::m_send_buffers[].
   // -> Both need to be able to handle the same 'MAX_TRPS'
   static_assert(trp_client::MAX_TRPS == TransporterFacade::MAX_TRPS);
-  m_send_buffers = new TFBuffer[trp_client::MAX_TRPS];
+  // m_send_buffers/m_send_trps_list are allocated on demand, sized by
+  // the transporter ids actually used (see ensure_send_buffer_capacity)
 }
 
 trp_client::~trp_client() {
@@ -57,6 +61,52 @@ trp_client::~trp_client() {
   assert(m_send_trps_cnt == 0);
   assert(m_locked_for_poll == false);
   delete[] m_send_buffers;
+  delete[] m_send_trps_list;
+}
+
+/**
+ * Grow m_send_buffers[]/m_send_trps_list[] to cover 'trp_id'.
+ * Called under m_mutex (same protection as all buffer accesses).
+ * Growth is rare: it happens the first time this client sends to a
+ * transporter id beyond the current capacity, after which the arrays
+ * stay at that size for the lifetime of the client.
+ *
+ * Returns false if memory could not be allocated. This is called from
+ * getWritePtr(), a TransporterRegistry send callback with a defined
+ * out-of-resources contract (*error = SEND_BUFFER_FULL), so it must
+ * not throw: a std::bad_alloc would unwind through prepareSend() and
+ * NDB API code that releases trp_client::m_mutex by explicit
+ * unlock()/complete_poll() rather than RAII, leaking the mutex.
+ */
+bool trp_client::ensure_send_buffer_capacity(TrpId trp_id) {
+  require(trp_id < MAX_TRPS);
+  Uint32 new_num = (m_num_trp_ids == 0) ? 16 : 2 * m_num_trp_ids;
+  if (new_num <= trp_id) new_num = trp_id + 8;
+  if (new_num > MAX_TRPS) new_num = MAX_TRPS;
+
+  TFBuffer *new_buffers = new (std::nothrow) TFBuffer[new_num];
+  if (unlikely(new_buffers == nullptr)) {
+    return false;
+  }
+  TrpId *new_list = new (std::nothrow) TrpId[new_num];
+  if (unlikely(new_list == nullptr)) {
+    delete[] new_buffers;
+    return false;
+  }
+  for (Uint32 i = 0; i < m_num_trp_ids; i++) {
+    new_buffers[i] = m_send_buffers[i];
+  }
+  /* Distinct trp ids with pending data never exceed the id capacity */
+  assert(m_send_trps_cnt <= m_num_trp_ids);
+  for (Uint32 i = 0; i < m_send_trps_cnt; i++) {
+    new_list[i] = m_send_trps_list[i];
+  }
+  delete[] m_send_buffers;
+  delete[] m_send_trps_list;
+  m_send_buffers = new_buffers;
+  m_send_trps_list = new_list;
+  m_num_trp_ids = new_num;
+  return true;
 }
 
 trp_client::PollQueue::PollQueue()
@@ -157,6 +207,11 @@ void trp_client::enable_send(TrpId trp) {
 void trp_client::disable_send(TrpId trp) {
   assert(m_poll.m_locked || NdbMutex_Trylock(m_mutex) != 0);
   if (m_send_trps_mask.get(trp)) {
+    /* A bit in m_send_trps_mask is only ever set by getWritePtr() after
+       the arrays have grown to cover 'trp', so the index is in bounds.
+       (A disconnect *before* the first send arrives here with the mask
+       bit clear and must not index the possibly empty arrays.) */
+    assert(trp < m_num_trp_ids);
     // Discard any buffered data to disabled transporter.
     TFBuffer *b = m_send_buffers + trp;
     TFBufferGuard g0(*b);
@@ -321,6 +376,16 @@ Uint32 *trp_client::getWritePtr(TrpId trp_id, Uint32 lenBytes,
   assert(prio == 1 /* JBB */);
   assert(isSendEnabled(trp_id));
 
+  if (unlikely(trp_id >= m_num_trp_ids)) {
+    if (unlikely(!ensure_send_buffer_capacity(trp_id))) {
+      /* Out of memory while growing the send buffer arrays: report it
+         through the callback's defined out-of-resources contract. The
+         caller (TransporterRegistry::prepareSendTemplate()) retries and
+         eventually reports the send buffer as full. */
+      *error = SEND_BUFFER_FULL;
+      return nullptr;
+    }
+  }
   TFBuffer *b = m_send_buffers + trp_id;
   TFBufferGuard g0(*b);
   bool found = m_send_trps_mask.get(trp_id);
@@ -332,6 +397,10 @@ Uint32 *trp_client::getWritePtr(TrpId trp_id, Uint32 lenBytes,
     }
   } else {
     const Uint32 cnt = m_send_trps_cnt;
+    /* The list holds distinct trp ids, each < m_num_trp_ids, so when a
+       new id is appended cnt < m_num_trp_ids must hold: the heap write
+       below is in bounds. */
+    assert(cnt < m_num_trp_ids);
     m_send_trps_mask.set(trp_id);
     m_send_trps_list[cnt] = trp_id;
     m_send_trps_cnt = cnt + 1;
@@ -373,6 +442,9 @@ Uint32 *trp_client::getWritePtr(TrpId trp_id, Uint32 lenBytes,
 Uint32 trp_client::updateWritePtr(TrpId trp_id, Uint32 lenBytes,
                                   Uint32 prio [[maybe_unused]]) {
   assert(prio == 1 /* JBB */);
+  /* By contract updateWritePtr() follows a successful getWritePtr(),
+     which grew the arrays to cover 'trp_id'. */
+  assert(trp_id < m_num_trp_ids);
   TFBuffer *b = m_send_buffers + trp_id;
   TFBufferGuard g0(*b);
   assert(m_send_trps_mask.get(trp_id));

@@ -1,0 +1,39 @@
+SELECT VARIABLE_VALUE IN ('2040', '8000', '8191')
+AS server1_uses_high_nodeid
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Ndb_cluster_node_id';
+server1_uses_high_nodeid
+1
+SELECT VARIABLE_VALUE IN ('63', '127', '2039')
+AS server2_uses_low_nodeid
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Ndb_cluster_node_id';
+server2_uses_low_nodeid
+1
+CREATE TABLE t1 (
+a INT PRIMARY KEY,
+b VARCHAR(32)
+) ENGINE=ndbcluster;
+INSERT INTO t1 VALUES (1, 'created on high id');
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	created on high id
+INSERT INTO t1 VALUES (2, 'written on low id');
+CREATE TABLE t2 (a INT PRIMARY KEY) ENGINE=ndbcluster;
+INSERT INTO t2 VALUES (1);
+SELECT * FROM t2 ORDER BY a;
+a
+1
+ALTER TABLE t1 ADD COLUMN c INT;
+Warnings:
+Warning	1478	Converted FIXED field 'c' to DYNAMIC to enable online ADD COLUMN
+INSERT INTO t1 VALUES (3, 'after alter', 3);
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	created on high id	NULL
+2	written on low id	NULL
+3	after alter	3
+DROP TABLE t1;
+DROP TABLE t2;
+SELECT * FROM t1;
+ERROR 42S02: Table 'test.t1' doesn't exist

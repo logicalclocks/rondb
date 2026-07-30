@@ -3322,6 +3322,9 @@ sub environment_setup {
     }
 
     # Tools not supporting --defaults-file=xxx, only define NDB_PROG_EXE
+    # NOTE: these are treated as optional since ronsql_cli is only built
+    # when WITH_RDRS is enabled; tests using them will fail with an
+    # undefined environment variable instead of blocking every ndb test.
     @ndb_tools = qw(
       ndb_print_file
       ndb_print_sys_file
@@ -3331,7 +3334,9 @@ sub environment_setup {
     foreach my $tool ( @ndb_tools)
     {
       my $exe =
-        my_find_bin($bindir, [ "runtime_output_directory", "bin" ], $tool);
+        my_find_bin($bindir, [ "runtime_output_directory", "bin" ], $tool,
+                    NOT_REQUIRED);
+      next unless $exe;
 
       $ENV{uc($tool)} = "${exe}";
       $ENV{uc($tool)."_EXE"} = "${exe}";
@@ -7623,6 +7628,15 @@ sub start_servers($) {
       # Already started, write start of testcase to log file
       mark_testcase_start_in_logs_rdrs($rdrs, $tinfo);
       next;
+    }
+    if (!$ENV{'HAVE_RDRS2'}) {
+      # The rdrs2 binary is only built when WITH_RDRS is enabled. Fail
+      # only this test with an actionable message instead of aborting
+      # the entire test run in rdrs_start()'s required binary lookup.
+      $tinfo->{'comment'} =
+        "Test requires the 'rdrs2' binary which is not available " .
+        "(build with WITH_RDRS to run this test)";
+      return 1;
     }
     rdrs_start($rdrs, $tinfo);
   }

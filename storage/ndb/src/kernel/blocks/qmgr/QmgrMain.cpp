@@ -1329,6 +1329,20 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
     }
   }
 
+  if (MAX_NODES > (PREV_MAX_NODES + 1)) {
+    jam();
+    if (!ndbd_support_8k_api_nodes(startingVersion)) {
+      /**
+       * The configuration contains node ids above 2039 (the 8k tier).
+       * Every joining data node must run a version supporting it.
+       */
+      jam();
+      sendCmRegrefLab(signal, Tblockref, CmRegRef::ZINCOMPATIBLE_VERSION,
+                      startingVersion);
+      return;
+    }
+  }
+
   if (check_start_type(start_type, c_start.m_start_type)) {
     jam();
     DEB_STARTUP(("Incompatible start types"));
@@ -3600,7 +3614,7 @@ void Qmgr::execSET_DOMAIN_ID_REQ(Signal *signal)
                 changeNodeId,
                 locationDomainId));
 
-  if (changeNodeId > MAX_NODES ||
+  if (changeNodeId >= MAX_NODES ||
       changeNodeId == 0 ||
       m_activate_state != ActivateState::IDLE)
   {
@@ -5267,32 +5281,53 @@ void Qmgr::api_failed(Signal *signal, Uint32 nodeId, ApiFailureCause afc,
              CloseComReqConf::SignalLengthDB, JBB);
 }  // api_failed
 
-bool Qmgr::check_all_nodes_support_high_node_ids() {
-  Uint32 min_version = 0xFFFFFFFF;
+bool Qmgr::check_all_nodes_support_high_node_ids(Uint32 highest_node_id) {
   /**
    * If a node with a high node id tries to connect, then all nodes
-   * in the cluster must run the version supporting it no matter
+   * in the cluster must run a version supporting it no matter
    * what node type they are.
+   *
+   * Scan ALL connected nodes and evaluate the required version
+   * predicate(s) per node. Note there is intentionally no early exit
+   * for nodes with high node ids: a node connected at id 256..2039
+   * proves 2k support by being connected, but says nothing about its
+   * 8k support. Version predicates are branch-aware, so a minimum
+   * version number cannot be used either. Registration is rare, the
+   * full scan cost is negligible.
    */
+  bool all_support_2k = true;
+  bool all_support_8k = true;
   for (Uint32 node = 1; node < MAX_NODES; node++) {
-    if (node > OLD_MAX_NODES) {
-      /* Nodes with high node ids obviously have support for it */
-      break;
-    }
     if (!c_connectedNodes.get(node)) {
       /* Node isn't connected, so no need to check its version */
       continue;
     }
     Uint32 node_version = getNodeInfo(node).m_version;
-    if (node_version != 0 && node_version < min_version) {
+    if (node_version == 0) {
+      continue;
+    }
+    if (!ndbd_support_2k_api_nodes(node_version)) {
       jam();
       jamData(node);
-      min_version = node_version;
+      all_support_2k = false;
+    }
+    if (!ndbd_support_8k_api_nodes(node_version)) {
+      jamData(node);
+      all_support_8k = false;
     }
   }
-  if (!ndbd_support_2k_api_nodes(min_version)) {
-    g_eventLogger->info("Min Version 0x%x of is not compatible",
-      min_version);
+  if (highest_node_id > OLD_MAX_NODES && !all_support_2k) {
+    g_eventLogger->info(
+        "Node id %u refused, a connected node lacks support for"
+        " node ids above %u",
+        highest_node_id, OLD_MAX_NODES);
+    return false;
+  }
+  if (highest_node_id > PREV_MAX_NODES && !all_support_8k) {
+    g_eventLogger->info(
+        "Node id %u refused, a connected node lacks support for"
+        " node ids above %u",
+        highest_node_id, PREV_MAX_NODES);
     return false;
   }
   return true;
@@ -5372,7 +5407,7 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
   }
 
   if (compatability_check && apiNodePtr.i > OLD_MAX_NODES) {
-    if (!check_all_nodes_support_high_node_ids()) {
+    if (!check_all_nodes_support_high_node_ids(apiNodePtr.i)) {
       compatability_check = false;
     }
   }
@@ -5385,6 +5420,17 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
      */
     if (!ndbd_support_2k_api_nodes(version)) {
       g_eventLogger->info("Version 0x%x of node %u is not compatible",
+        version, apiNodePtr.i);
+      compatability_check = false;
+    }
+  }
+  if (compatability_check && (MAX_NODES > (PREV_MAX_NODES + 1))) {
+    /**
+     * The configuration contains node ids above 2039 (the 8k tier).
+     * Every registering API/MGM node must run a version supporting it.
+     */
+    if (!ndbd_support_8k_api_nodes(version)) {
+      g_eventLogger->info("Version 0x%x of node %u lacks 8k node id support",
         version, apiNodePtr.i);
       compatability_check = false;
     }

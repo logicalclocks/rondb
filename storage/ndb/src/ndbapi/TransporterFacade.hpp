@@ -35,6 +35,7 @@
 #include <ndb_limits.h>
 #include <TransporterRegistry.hpp>
 #include <Vector.hpp>
+#include <atomic>
 #include "DictCache.hpp"
 #include "NdbApiSignal.hpp"
 #include "SectionIterators.hpp"
@@ -42,6 +43,7 @@
 #include "portlib/ndb_sockaddr.h"
 #include "transporter/TransporterCallback.hpp"
 #include "trp_buffer.hpp"
+#include "util/require.h"
 
 class Ndb_cluster_connection_impl;
 class ClusterMgr;
@@ -132,8 +134,9 @@ class TransporterFacade : public TransporterCallback,
   int sendFragmentedSignal(trp_client *, const NdbApiSignal *, NodeId,
                            const GenericSectionPtr ptr[3], Uint32 secs);
 
-  /* Support routine to configure */
-  void set_up_node_active_in_send_buffers(NodeId nodeId,
+  /* Support routine to configure. Returns false on allocation failure
+     (configure() then fails, which every caller already handles). */
+  bool set_up_node_active_in_send_buffers(NodeId nodeId,
                                           const ndb_mgm_configuration *conf);
 
  public:
@@ -607,7 +610,46 @@ private:
      */
     bool try_lock_send();
     void unlock_send();
-  } m_send_buffers[MAX_TRPS];
+  };
+
+  /**
+   * Send buffer slots, indexed by transporter id. Allocated once per
+   * configured transporter id by set_up_node_active_in_send_buffers()
+   * (inside every ::configure(), initial start and mgmd online
+   * reconfigure alike): 64 KB of pointers plus one ~112 byte slot and
+   * a single mutex initialization per configured id, instead of the
+   * previous embedded TFSendBuffer[MAX_TRPS] array (~0.9 MB plus 8192
+   * NdbMutex_InitWithName calls in every facade instance). Slots are:
+   * - published with a release-store only after the TFSendBuffer,
+   *   including its embedded mutex, is completely initialized, and
+   *   before m_node_active / m_active_trps advertise the id, so
+   *   acquire-loaders never observe a half-built slot;
+   * - never freed or moved until destruction: senders hold the
+   *   embedded m_mutex and the m_sending pseudo-lock across
+   *   performSend(), so entries must stay stable. A node removed from
+   *   the configuration keeps its slot; memory stays bounded by the
+   *   set of ids ever configured.
+   */
+  std::atomic<TFSendBuffer *> m_send_buffers[MAX_TRPS];
+
+  /**
+   * Slot lookup. Every access site passes a transporter id that went
+   * through set_up_node_active_in_send_buffers() in the ::configure()
+   * call that created the transporter (own trp id, or ids gated on
+   * m_active_trps / m_enabled_trps_mask / m_has_data_trps / live
+   * transporters), so a missing slot is a broken invariant: crash
+   * deliberately rather than corrupt the send path.
+   */
+  TFSendBuffer *get_send_buffer(TrpId trp_id) {
+    require(trp_id < MAX_TRPS);
+    TFSendBuffer *b = m_send_buffers[trp_id].load(std::memory_order_acquire);
+    require(b != nullptr);
+    return b;
+  }
+
+  /* Slot creation, only from set_up_node_active_in_send_buffers().
+     Returns nullptr on allocation failure. */
+  TFSendBuffer *get_or_create_send_buffer(TrpId trp_id);
 
   bool m_error_print;
 

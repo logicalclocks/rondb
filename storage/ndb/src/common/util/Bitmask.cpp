@@ -112,9 +112,11 @@ void BitmaskImpl::setFieldImpl(Uint32 dst[], unsigned shiftL, unsigned len,
 
 template struct BitmaskPOD<1>;
 template struct BitmaskPOD<2>;
-template struct BitmaskPOD<5>;   // NdbNodeBitmask
-template struct BitmaskPOD<64>;   // NodeBitmask
-template struct BitmaskPOD<68>;  // TrpBitmask
+template struct BitmaskPOD<5>;    // NdbNodeBitmask
+template struct BitmaskPOD<64>;   // NodeBitmask2K (frozen legacy mask)
+template struct BitmaskPOD<68>;   // legacy TrpBitmask size
+template struct BitmaskPOD<256>;  // NodeBitmask
+template struct BitmaskPOD<260>;  // TrpBitmask
 template struct BitmaskPOD<16>;
 
 #ifdef TEST_BITMASK
@@ -298,6 +300,56 @@ TAPTEST(Bitmask) {
   OK(mask_length_test.getPackedLengthInWords() == 8);
   mask_length_test.clear();
   OK(mask_length_test.getPackedLengthInWords() == 0);
+
+  // bitmask_assign_checked: checked assignment from an untrusted
+  // length-prefixed buffer (e.g. a signal section)
+  {
+    Bitmask<8> dst;
+    Uint32 src[9];
+    for (Uint32 i = 0; i < 9; i++) src[i] = 0xAAAAAAAA;
+
+    // len == 0: accepted, leaves the mask fully cleared
+    dst.set();
+    OK(bitmask_assign_checked(dst, src, 0));
+    OK(dst.isclear());
+
+    // len == 1: accepted, words above len are zero-filled
+    dst.set();
+    OK(bitmask_assign_checked(dst, src, 1));
+    OK(dst.getWord(0) == 0xAAAAAAAA);
+    for (Uint32 i = 1; i < 8; i++) {
+      OK(dst.getWord(i) == 0);
+    }
+    OK(dst.count() == 16);
+
+    // len == size: accepted, full mask
+    dst.clear();
+    OK(bitmask_assign_checked(dst, src, 8));
+    OK(dst.count() == 8 * 16);
+
+    // len == size + 1: rejected, destination unmodified
+    const Bitmask<8> before = dst;
+    OK(!bitmask_assign_checked(dst, src, 9));
+    OK(dst.equal(before));
+  }
+
+  // Same checks at the NodeBitmask sizes seen on the wire: 64 words
+  // (legacy full mask), 65 (first word above the legacy mask),
+  // 256 (current full mask) accepted; 257 rejected.
+  {
+    Bitmask<256> dst;
+    static Uint32 big_src[257];
+    for (Uint32 i = 0; i < 257; i++) big_src[i] = 1;  // one bit per word
+
+    OK(bitmask_assign_checked(dst, big_src, 64));
+    OK(dst.count() == 64);
+    OK(bitmask_assign_checked(dst, big_src, 65));
+    OK(dst.count() == 65);
+    OK(bitmask_assign_checked(dst, big_src, 256));
+    OK(dst.count() == 256);
+    OK(!bitmask_assign_checked(dst, big_src, 257));
+    OK(dst.count() == 256);  // unmodified by the rejected call
+  }
 
   return 1;  // OK
 }

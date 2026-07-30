@@ -26,6 +26,7 @@
 
 #include <ndb_global.h>
 #include <ndb_limits.h>
+#include <new>
 #include <util/version.h>
 
 #include <kernel/GlobalSignalNumbers.h>
@@ -116,6 +117,7 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
   noOfConnectedDBNodes(0),
   minDbVersion(0),
   minApiVersion(0),
+  m_configured(false),
   theClusterMgrThread(nullptr),
   m_process_info(nullptr),
   m_cluster_state(CS_waiting_for_clean_cache),
@@ -126,6 +128,9 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
   m_node_change_count(0)
 {
   DBUG_ENTER("ClusterMgr::ClusterMgr");
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
+    theNodes[i].store(nullptr, std::memory_order_relaxed);
+  }
   clusterMgrThreadMutex = NdbMutex_Create();
   m_node_state_mutex = NdbMutex_Create();
   waitForHBCond= NdbCondition_Create();
@@ -149,6 +154,15 @@ ClusterMgr::~ClusterMgr() {
     delete theArbitMgr;
     theArbitMgr = nullptr;
   }
+  /**
+   * The receive/send/ClusterMgr threads were stopped before we get
+   * here (TransporterFacade::stop_instance()), so the node slots can
+   * now be freed: this is the only place they are ever deleted.
+   */
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
+    delete theNodes[i].load(std::memory_order_relaxed);
+    theNodes[i].store(nullptr, std::memory_order_relaxed);
+  }
   NdbCondition_Destroy(waitForHBCond);
   NdbMutex_Destroy(clusterMgrThreadMutex);
   NdbMutex_Destroy(m_node_state_mutex);
@@ -157,12 +171,56 @@ ClusterMgr::~ClusterMgr() {
 }
 
 /**
- * This method is called from start of cluster connection instance and
- * before we have started any socket services and thus it needs no
- * mutex protection since the ClusterMgr object isn't known by any other
- * thread at this point in time.
+ * ::configure()
+ *
+ * Called in two different contexts:
+ *
+ * 1) Initial start of the cluster connection instance
+ *    (TransporterFacade::start_instance()), before any socket services
+ *    have been started: the ClusterMgr object isn't known by any other
+ *    thread yet, so no mutex protection is needed.
+ *
+ * 2) mgmd online configuration change (MgmtSrvr::config_changed() ->
+ *    TransporterFacade::configure()) while the ClusterMgr thread, the
+ *    receive thread and MGM sessions are live and reading theNodes[]
+ *    (mostly lock-free). For this path the change is:
+ *    - growth-only: node additions are applied online; node removals,
+ *      node type changes and changes to our own arbitration settings
+ *      are refused by returning false, which MgmtSrvr answers with its
+ *      existing 'this node need a restart' fallback (m_need_restart);
+ *    - transactional: all new node slots are allocated (non-throwing)
+ *      and fully initialized before anything is published; on
+ *      allocation failure nothing has become visible and false is
+ *      returned;
+ *    - safely published: a slot pointer is release-stored only after
+ *      the Node is completely initialized (including 'defined'), so
+ *      the lock-free acquire-loaders never observe a half-built node.
+ *      Slots are never freed or moved again (readers keep plain
+ *      references across their work, see theNodes[]).
+ *    In-place updates of already published nodes (the m_node_active
+ *    flag) are done under the ClusterMgr lock like every other writer.
+ *    Note that this serializes the *writers*; the long-standing
+ *    lock-free *reads* of node state remain exactly as before.
  */
-void ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
+bool ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
+  const bool live_reconfig = m_configured;
+
+  /**
+   * Phase 1: parse the node sections into a plan, without side effects.
+   * plan[nodeId].defined == 0 means the node id is not in the new
+   * configuration.
+   */
+  struct NodePlan {
+    Uint8 defined;
+    Uint8 has_type;
+    Uint8 type;  // NodeInfo::NodeType value, valid when has_type == 1
+    Uint8 active;
+  };
+  NodePlan *plan = new (std::nothrow) NodePlan[ABS_MAX_NODES]();
+  if (unlikely(plan == nullptr)) {
+    return false;
+  }
+
   ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
   for (iter.first(); iter.valid(); iter.next()) {
     Uint32 nodeId = 0;
@@ -170,83 +228,225 @@ void ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
 
     // Check array bounds + don't allow node 0 to be touched
     assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
-    trp_node &theNode = theNodes[nodeId];
-    theNode.defined = true;
+    if (nodeId == 0 || nodeId >= ABS_MAX_NODES) continue;
+
+    plan[nodeId].defined = 1;
+    plan[nodeId].active = 1;
 
     unsigned type;
-    if (iter.get(CFG_TYPE_OF_SECTION, &type)) continue;
-
-    switch (type) {
-      case NODE_TYPE_DB:
-        theNode.m_info.m_type = NodeInfo::DB;
-        break;
-      case NODE_TYPE_API:
-        theNode.m_info.m_type = NodeInfo::API;
-        break;
-      case NODE_TYPE_MGM:
-        theNode.m_info.m_type = NodeInfo::MGM;
-        break;
-      default:
-        break;
+    if (iter.get(CFG_TYPE_OF_SECTION, &type) == 0) {
+      switch (type) {
+        case NODE_TYPE_DB:
+          plan[nodeId].has_type = 1;
+          plan[nodeId].type = Uint8(NodeInfo::DB);
+          break;
+        case NODE_TYPE_API:
+          plan[nodeId].has_type = 1;
+          plan[nodeId].type = Uint8(NodeInfo::API);
+          break;
+        case NODE_TYPE_MGM:
+          plan[nodeId].has_type = 1;
+          plan[nodeId].type = Uint8(NodeInfo::MGM);
+          break;
+        default:
+          break;
+      }
     }
     Uint32 is_active = 1;
     iter.get(CFG_NODE_ACTIVE, &is_active);
-    theNode.m_node_active = (is_active == 1);
+    plan[nodeId].active = Uint8(is_active == 1);
   }
 
-  /* Mark all non existing nodes as not defined */
-  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
-    if (iter.first()) continue;
+  /* Own node section: arbitration, heartbeat and backoff settings */
+  Uint32 rank = 0;
+  Uint32 delay = 0;
+  unsigned hbCheckInterval = 0;
+  Uint32 start_backoff_max_time = 0;
+  Uint32 conn_backoff_max_time = 0;
+  iter.first();
+  iter.find(CFG_NODE_ID, nodeId);  // let not found in config mean rank=0
+  iter.get(CFG_NODE_ARBIT_RANK, &rank);
+  iter.get(CFG_NODE_ARBIT_DELAY, &delay);
+  iter.get(CFG_MGMD_MGMD_HEARTBEAT_INTERVAL, &hbCheckInterval);
+  iter.get(CFG_START_CONNECT_BACKOFF_MAX_TIME, &start_backoff_max_time);
+  iter.get(CFG_CONNECT_BACKOFF_MAX_TIME, &conn_backoff_max_time);
 
-    if (iter.find(CFG_NODE_ID, i)) theNodes[i] = Node();
+  /**
+   * Phase 2: growth-only validation for a live reconfiguration.
+   * Slot pointers are monotonic and only this function publishes them,
+   * and MgmtSrvr serializes config changes (m_local_config_mutex), so
+   * reading them here without the ClusterMgr lock is stable.
+   */
+  if (live_reconfig) {
+    for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
+      Node *slot = theNodes[i].load(std::memory_order_acquire);
+      if (slot == nullptr) continue;
+      if (!plan[i].defined) {
+        g_eventLogger->info(
+            "ClusterMgr: node %u was removed from the configuration, "
+            "online node removal is not supported",
+            i);
+        delete[] plan;
+        return false;
+      }
+      if (plan[i].has_type &&
+          slot->m_info.m_type != NodeInfo::NodeType(plan[i].type)) {
+        g_eventLogger->info(
+            "ClusterMgr: node %u changed type in the configuration, "
+            "this cannot be applied online",
+            i);
+        delete[] plan;
+        return false;
+      }
+    }
+    /**
+     * Our own arbitration settings cannot change online: stopping or
+     * (re)starting the ArbitMgr thread from here would race with the
+     * kernel-driven start/stop and deadlock on the ClusterMgr lock
+     * (the arbitrator thread sends its final signals through
+     * ClusterMgr::lock()).
+     */
+    const bool have_arbit = (theArbitMgr != nullptr);
+    if (have_arbit != (rank > 0) ||
+        (have_arbit && (theArbitMgr->getRank() != rank ||
+                        theArbitMgr->getDelay() != delay))) {
+      g_eventLogger->info(
+          "ClusterMgr: arbitration settings changed in the configuration, "
+          "this cannot be applied online");
+      delete[] plan;
+      return false;
+    }
   }
+
+  /**
+   * Phase 3: stage heap allocation of all new node slots before
+   * anything is published, so an allocation failure leaves no partial
+   * configuration behind. A slot is ~184 bytes, allocated once per
+   * configured node id and never freed or moved again until
+   * destruction; memory is monotonic in the set of ids ever
+   * configured, bounded and tiny compared to the previous embedded
+   * 1.5 MB array.
+   */
+  Uint32 new_cnt = 0;
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
+    if (plan[i].defined &&
+        theNodes[i].load(std::memory_order_relaxed) == nullptr) {
+      new_cnt++;
+    }
+  }
+  Node **staged = nullptr;
+  NodeId *staged_ids = nullptr;
+  Uint32 staged_cnt = 0;
+  if (new_cnt > 0) {
+    staged = new (std::nothrow) Node *[new_cnt];
+    staged_ids = new (std::nothrow) NodeId[new_cnt];
+    if (staged == nullptr || staged_ids == nullptr) {
+      delete[] staged;
+      delete[] staged_ids;
+      delete[] plan;
+      return false;
+    }
+    for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
+      if (!plan[i].defined ||
+          theNodes[i].load(std::memory_order_relaxed) != nullptr) {
+        continue;
+      }
+      Node *node = new (std::nothrow) Node();
+      if (unlikely(node == nullptr)) {
+        for (Uint32 n = 0; n < staged_cnt; n++) delete staged[n];
+        delete[] staged;
+        delete[] staged_ids;
+        delete[] plan;
+        return false;
+      }
+      /* Initialize completely before publication, 'defined' included */
+      node->defined = true;
+      if (plan[i].has_type) {
+        node->m_info.m_type = NodeInfo::NodeType(plan[i].type);
+      }
+      node->m_node_active = (plan[i].active == 1);
+      staged[staged_cnt] = node;
+      staged_ids[staged_cnt] = NodeId(i);
+      staged_cnt++;
+    }
+    assert(staged_cnt == new_cnt);
+  }
+
+  /* Initial-start-only arbitrator setup (validated unchanged above for
+     a live reconfiguration) */
+  if (!live_reconfig) {
+    if (rank > 0) {
+      // The arbitrator should be active
+      if (!theArbitMgr) theArbitMgr = new (std::nothrow) ArbitMgr(*this);
+      if (unlikely(theArbitMgr == nullptr)) {
+        for (Uint32 n = 0; n < staged_cnt; n++) delete staged[n];
+        delete[] staged;
+        delete[] staged_ids;
+        delete[] plan;
+        return false;
+      }
+      theArbitMgr->setRank(rank);
+      theArbitMgr->setDelay(delay);
+    } else if (theArbitMgr) {
+      // No arbitrator should be started
+      theArbitMgr->doStop(nullptr);
+      delete theArbitMgr;
+      theArbitMgr = nullptr;
+    }
+  }
+
+  /**
+   * Phase 4: commit. Publication of a staged slot is a release-store
+   * of a completely initialized Node; in-place updates of already
+   * published nodes take the ClusterMgr lock (writers policy) when
+   * other threads are live.
+   */
+  if (live_reconfig) lock();
+
+  for (Uint32 n = 0; n < staged_cnt; n++) {
+    theNodes[staged_ids[n]].store(staged[n], std::memory_order_release);
+  }
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
+    if (!plan[i].defined) continue;
+    Node *slot = theNodes[i].load(std::memory_order_relaxed);
+    assert(slot != nullptr);  // published above or pre-existing
+    const bool active = (plan[i].active == 1);
+    if (slot->m_node_active != active) {
+      slot->m_node_active = active;
+    }
+  }
+
+  // Configure heartbeats.
+  m_hbCheckInterval = static_cast<Uint32>(hbCheckInterval);
+
+  // Configure max backoff time for connection attempts to first
+  // data node.
+  start_connect_backoff_max_time = start_backoff_max_time;
+
+  // Configure max backoff time for connection attempts to data
+  // nodes.
+  connect_backoff_max_time = conn_backoff_max_time;
+
+  m_configured = true;
+
+  if (live_reconfig) unlock();
 
 #if 0
   print_nodes("init");
 #endif
 
-  // Configure arbitrator
-  Uint32 rank = 0;
-  iter.first();
-  iter.find(CFG_NODE_ID, nodeId);  // let not found in config mean rank=0
-  iter.get(CFG_NODE_ARBIT_RANK, &rank);
-
-  if (rank > 0) {
-    // The arbitrator should be active
-    if (!theArbitMgr) theArbitMgr = new ArbitMgr(*this);
-    theArbitMgr->setRank(rank);
-
-    Uint32 delay = 0;
-    iter.get(CFG_NODE_ARBIT_DELAY, &delay);
-    theArbitMgr->setDelay(delay);
-  } else if (theArbitMgr) {
-    // No arbitrator should be started
-    theArbitMgr->doStop(nullptr);
-    delete theArbitMgr;
-    theArbitMgr = nullptr;
-  }
-
-  // Configure heartbeats.
-  unsigned hbCheckInterval = 0;
-  iter.get(CFG_MGMD_MGMD_HEARTBEAT_INTERVAL, &hbCheckInterval);
-  m_hbCheckInterval = static_cast<Uint32>(hbCheckInterval);
-
-  // Configure max backoff time for connection attempts to first
-  // data node.
-  Uint32 backoff_max_time = 0;
-  iter.get(CFG_START_CONNECT_BACKOFF_MAX_TIME, &backoff_max_time);
-  start_connect_backoff_max_time = backoff_max_time;
-
-  // Configure max backoff time for connection attempts to data
-  // nodes.
-  backoff_max_time = 0;
-  iter.get(CFG_CONNECT_BACKOFF_MAX_TIME, &backoff_max_time);
-  connect_backoff_max_time = backoff_max_time;
-
   theFacade.get_registry()->set_connect_backoff_max_time_in_ms(
       start_connect_backoff_max_time);
 
-  m_process_info = ProcessInfo::forNodeId(nodeId);
+  /* Keep the ProcessInfo instance across online reconfiguration */
+  if (m_process_info == nullptr) {
+    m_process_info = ProcessInfo::forNodeId(nodeId);
+  }
+
+  delete[] staged;
+  delete[] staged_ids;
+  delete[] plan;
+  return true;
 }
 
 void ClusterMgr::startThread() {
@@ -318,7 +518,8 @@ void ClusterMgr::doStop() {
 void ClusterMgr::startup() {
   assert(theStop == -1);
   Uint32 nodeId = getOwnNodeId();
-  Node &cm_node = theNodes[nodeId];
+  /* Our own node is always configured before the thread starts */
+  Node &cm_node = *get_node_slot(nodeId);
   trp_node &theNode = cm_node;
   assert(theNode.defined);
 
@@ -422,7 +623,14 @@ void ClusterMgr::threadMain() {
       const NodeId nodeId = i;
       // Check array bounds + don't allow node 0 to be touched
       assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
-      Node &cm_node = theNodes[nodeId];
+      /**
+       * Never-configured ids have no slot: the 100 ms full scan now
+       * touches 64 KB of pointers instead of the previous 1.5 MB
+       * sparse array.
+       */
+      Node *slot = theNodes[nodeId].load(std::memory_order_acquire);
+      if (slot == nullptr) continue;
+      Node &cm_node = *slot;
       trp_node &theNode = cm_node;
 
       if (!theNode.defined) continue;
@@ -671,7 +879,9 @@ void ClusterMgr::recalcMinDbVersion() {
   Uint32 newMinDbVersion = ~(Uint32)0;
 
   for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
-    trp_node &node = theNodes[i];
+    Node *slot = theNodes[i].load(std::memory_order_acquire);
+    if (slot == nullptr) continue;
+    trp_node &node = *slot;
 
     if (node.is_connected() && node.is_confirmed() &&
         node.m_info.getType() == NodeInfo::DB) {
@@ -720,8 +930,15 @@ void ClusterMgr::recalcMinDbVersion() {
 void ClusterMgr::recalcMinApiVersion() {
   Uint32 newMinApiVersion = ~(Uint32)0;
 
+  /**
+   * Note: like recalcMinDbVersion() this filters on NodeInfo::DB - a
+   * pre-existing oddity for a minimum *API* version calculation, kept
+   * unchanged here.
+   */
   for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
-    trp_node &node = theNodes[i];
+    Node *slot = theNodes[i].load(std::memory_order_acquire);
+    if (slot == nullptr) continue;
+    trp_node &node = *slot;
 
     if (node.is_connected() && node.is_confirmed() &&
         node.m_info.getType() == NodeInfo::DB) {
@@ -835,7 +1052,7 @@ ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
   Uint32 activateNodeId = activateReq->activateNodeId;
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal signal(ref);
-  if (activateNodeId > ABS_MAX_NODES)
+  if (activateNodeId >= ABS_MAX_NODES)
   {
     ActivateRef * const ref_sig =
       CAST_PTR(ActivateRef, signal.getDataPtrSend());
@@ -877,7 +1094,7 @@ ClusterMgr::execDEACTIVATE_REQ(const Uint32 *theData)
   Uint32 deactivateNodeId = deactivateReq->deactivateNodeId;
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal signal(ref);
-  if (deactivateNodeId > ABS_MAX_NODES)
+  if (deactivateNodeId >= ABS_MAX_NODES)
   {
     DeactivateRef * const ref_sig =
       CAST_PTR(DeactivateRef, signal.getDataPtrSend());
@@ -921,7 +1138,7 @@ ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
   Uint32 senderRef = setHostnameReq->senderRef;
   Uint32 changeNodeId = setHostnameReq->changeNodeId;
   bool ok = true;
-  if (changeNodeId > ABS_MAX_NODES)
+  if (changeNodeId >= ABS_MAX_NODES)
   {
     ok = false;
   }
@@ -1032,7 +1249,10 @@ void ClusterMgr::execAPI_REGREQ(const Uint32 *theData) {
 
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
-  Node &cm_node = theNodes[nodeId];
+  /* Signal-supplied node id: ignore ids outside our configuration view */
+  Node *slot = find_node_slot(nodeId);
+  if (unlikely(slot == nullptr)) return;
+  Node &cm_node = *slot;
   trp_node &node = cm_node;
   assert(node.defined == true);
   assert(node.is_connected() == true);
@@ -1098,7 +1318,10 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
 
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
-  Node & cm_node = theNodes[nodeId];
+  /* Signal-supplied node id: ignore ids outside our configuration view */
+  Node *slot = find_node_slot(nodeId);
+  if (unlikely(slot == nullptr)) return;
+  Node & cm_node = *slot;
   trp_node & node = cm_node;
   bool prev_compatible = node.compatible;
   assert(node.defined == true);
@@ -1109,7 +1332,7 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
     node.m_info.m_version = apiRegConf->version;
     node.m_info.m_mysql_version = apiRegConf->mysql_version;
 
-    if (theNodes[theFacade.ownId()].m_info.m_type == NodeInfo::MGM)
+    if (getNodeInfo(theFacade.ownId()).m_info.m_type == NodeInfo::MGM)
       node.compatible =
           ndbCompatible_mgmt_ndb(NDB_VERSION, node.m_info.m_version);
     else
@@ -1325,7 +1548,10 @@ void ClusterMgr::execAPI_REGREF(const Uint32 *theData) {
 
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
-  Node &cm_node = theNodes[nodeId];
+  /* Signal-supplied node id: ignore ids outside our configuration view */
+  Node *slot = find_node_slot(nodeId);
+  if (unlikely(slot == nullptr)) return;
+  Node &cm_node = *slot;
   trp_node &node = cm_node;
 
   assert(node.is_connected() == true);
@@ -1388,6 +1614,9 @@ void ClusterMgr::execDUMP_STATE_ORD(const NdbApiSignal *signal,
        */
       const Uint32 rep_node_id = data[1];
       const Uint32 node_id = data[2];
+      /* Signal-supplied node ids: never index or send with them
+         unchecked (this is a test/debug path). */
+      if (rep_node_id == 0 || rep_node_id >= ABS_MAX_NODES) return;
       const Uint32 num_secs = signal->m_noOfSections;
       char msg[24 * 4];
       snprintf(msg, sizeof(msg),
@@ -1427,6 +1656,10 @@ void ClusterMgr::execDUMP_STATE_ORD(const NdbApiSignal *signal,
       }
       const Uint32 rep_node_id = data[1];
       const Uint32 node_id = data[2];
+      /* Signal-supplied node ids: never index or send with them
+         unchecked (this is a test/debug path). */
+      if (rep_node_id == 0 || rep_node_id >= ABS_MAX_NODES) return;
+      if (node_id == 0 || node_id >= ABS_MAX_NODES) return;
       const Uint32 fill_word = data[3];
       const Uint32 frag_size = data[4];
       if (frag_size != 0) {
@@ -1465,7 +1698,9 @@ void ClusterMgr::execDUMP_STATE_ORD(const NdbApiSignal *signal,
       }
       dummy_sigdata[2] = getOwnNodeId();
       dummy_signal.theVerId_signalNumber = GSN_DUMP_STATE_ORD;
-      const trp_node &theNode = theNodes[node_id];
+      /* Unconfigured ids yield the default node (defined == false) and
+         the send below is then discarded as SEND_UNKNOWN_NODE. */
+      const trp_node &theNode = getNodeInfo(node_id);
       dummy_signal.theReceiversBlockNumber =
           (theNode.m_info.m_type == NodeInfo::DB) ? CMVMI : API_CLUSTERMGR;
       dummy_signal.theTrace = 0;
@@ -1508,7 +1743,10 @@ void ClusterMgr::execNF_COMPLETEREP(const NdbApiSignal *signal,
   const NodeId nodeId = nfComp->failedNodeId;
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
-  trp_node &node = theNodes[nodeId];
+  /* Signal-supplied node id: ignore ids outside our configuration view */
+  Node *slot = find_node_slot(nodeId);
+  if (unlikely(slot == nullptr)) return;
+  trp_node &node = *slot;
   if (node.nfCompleteRep == false) {
     node.nfCompleteRep = true;
     theFacade.for_each(this, signal, ptr);
@@ -1534,12 +1772,13 @@ void ClusterMgr::reportConnected(NodeId nodeId) {
   if (theFacade.m_poll_owner != this) lock();
 
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
+  /* Registry-driven path: only configured nodes ever connect */
+  Node &cm_node = *get_node_slot(nodeId);
+  trp_node &theNode = cm_node;
+
   if (nodeId != getOwnNodeId()) {
     noOfConnectedNodes++;
   }
-
-  Node &cm_node = theNodes[nodeId];
-  trp_node &theNode = cm_node;
 
   if (theNode.m_info.m_type == NodeInfo::DB) {
     noOfConnectedDBNodes++;
@@ -1613,7 +1852,8 @@ void ClusterMgr::reportDisconnected(NodeId nodeId) {
   if (theFacade.m_poll_owner != this)
     lock();
 
-  Node &cm_node = theNodes[nodeId];
+  /* Registry-driven path: only configured nodes ever connect */
+  Node &cm_node = *get_node_slot(nodeId);
   trp_node &theNode = cm_node;
 
   const bool node_failrep = theNode.m_node_fail_rep;
@@ -1717,12 +1957,19 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
   const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
   NodeBitmask mask;
   if (sig->getLength() == NodeFailRep::SignalLengthLong_v1) {
-    mask.assign(NodeBitmask::Size, rep->theAllNodes);
+    // Legacy fixed-length format, frozen at the 64-word mask
+    mask.assign(NodeBitmask2K::Size, rep->theAllNodes);
   } else if (sig->getLength() == NodeFailRep::SignalLength_v1) {
     mask.assign(NdbNodeBitmask48::Size, rep->theNodes);
   } else {
     assert(sig->m_noOfSections == 1);
-    mask.assign(ptr[0].sz, ptr[0].p);
+    if (!bitmask_assign_checked(mask, ptr[0].p, ptr[0].sz)) {
+      // Malformed section: no version can legitimately send a node
+      // bitmask larger than NodeBitmask::Size. Ignore the signal rather
+      // than copy out of bounds.
+      assert(false);
+      DBUG_VOID_RETURN;
+    }
   }
 
   NdbApiSignal signal(sig->theSendersBlockRef);
@@ -1741,7 +1988,16 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
 
   for (Uint32 i = mask.find_first(); i != NodeBitmask::NotFound;
        i = mask.find_next(i + 1)) {
-    Node &cm_node = theNodes[i];
+    /**
+     * The bitmask arrived in signal data from a data node and nothing
+     * filters it against our configuration view: ids outside it (e.g.
+     * during a mgmd online configuration change) are skipped - the
+     * same policy that keeps data nodes from crashing on
+     * API_VERSION_REQ for unknown node ids.
+     */
+    Node *slot = find_node_slot(NodeId(i));
+    if (unlikely(slot == nullptr)) continue;
+    Node &cm_node = *slot;
     trp_node &theNode = cm_node;
 
     bool node_failrep = theNode.m_node_fail_rep;
@@ -1798,7 +2054,9 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
     rep->from = __LINE__;
 
     for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
-      trp_node &theNode = theNodes[i];
+      Node *slot = theNodes[i].load(std::memory_order_acquire);
+      if (slot == nullptr) continue;
+      trp_node &theNode = *slot;
       if (theNode.defined && theNode.nfCompleteRep == false) {
         rep->failedNodeId = i;
         execNF_COMPLETEREP(&signal, nullptr);
@@ -1838,12 +2096,17 @@ ClusterMgr::is_cluster_completely_unavailable(Int32 &error,
   NdbMutex_Lock(m_node_state_mutex);
   for (NodeId n = 1; n < ABS_MAX_NDB_NODES ; n++)
   {
-    const trp_node& node = theNodes[n];
-    if (!node.defined)
+    const Node *slot = theNodes[n].load(std::memory_order_acquire);
+    if (slot == nullptr)
     {
       /**
        * Node isn't even part of configuration.
        */
+      continue;
+    }
+    const trp_node& node = *slot;
+    if (!node.defined)
+    {
       continue;
     }
     if (node.m_info.m_type != NodeInfo::DB)
@@ -2028,7 +2291,9 @@ void ClusterMgr::setProcessInfoUri(const char *scheme,
 
   /* Set flag to resend ProcessInfo Report */
   for (int i = 1; i < ABS_MAX_NODES; i++) {
-    Node &node = theNodes[i];
+    Node *slot = theNodes[i].load(std::memory_order_acquire);
+    if (slot == nullptr) continue;
+    Node &node = *slot;
     if (node.is_connected()) node.processInfoSent = false;
   }
 }

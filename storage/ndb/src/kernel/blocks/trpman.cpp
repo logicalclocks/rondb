@@ -82,7 +82,11 @@ Trpman::Trpman(Block_context &ctx, Uint32 instanceno)
   addRecSignal(GSN_TIME_SIGNAL, &Trpman::execTIME_SIGNAL);
   m_distribution_handler_inited = false;
   m_init_continueb = false;
+  m_trp_activity = nullptr;
+  m_num_trp_ids = 0;
 }
+
+Trpman::~Trpman() { delete[] m_trp_activity; }
 
 BLOCK_FUNCTIONS(Trpman)
 
@@ -173,7 +177,7 @@ void Trpman::set_db_hb_sender(NodeId dbHbSender) {
        * As an acceptable side effect activity histogram will skip count next
        * receive.
        */
-      NdbTick_Invalidate(&m_trp_activity[m_dbHbSenderTrp].last_recv);
+      NdbTick_Invalidate(&get_trp_activity(m_dbHbSenderTrp)->last_recv);
     }
   }
 }
@@ -253,7 +257,7 @@ void Trpman::execOPEN_COMORD(Signal *signal) {
       signal->theData[1] = tStartingNode;
       sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
       // Clear last receive left from earlier connections
-      NdbTick_Invalidate(&m_trp_activity[trpId].last_recv);
+      NdbTick_Invalidate(&get_trp_activity(trpId)->last_recv);
       //-----------------------------------------------------
     }
   } else {
@@ -284,7 +288,7 @@ void Trpman::execOPEN_COMORD(Signal *signal) {
         signal->theData[1] = i;
         sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
         // Clear last receive left from earlier connections
-        NdbTick_Invalidate(&m_trp_activity[trpId].last_recv);
+        NdbTick_Invalidate(&get_trp_activity(trpId)->last_recv);
       }
     }
   }
@@ -910,7 +914,7 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
           row.write_uint64(upper_bound);
         else
           row.write_null();  // upper_bound
-        Uint64 activity = m_trp_activity[trpId].hist_bins[bin_index];
+        Uint64 activity = get_trp_activity(trpId)->hist_bins[bin_index];
         row.write_uint64(activity);
 
         ndbinfo_send_row(signal, req, row, rl);
@@ -1168,7 +1172,20 @@ void Trpman::execREAD_CONFIG_REQ(Signal *signal) {
   ndbassert(verify_histogram(m_hbDbApi,
                              {m_hbDbApi_bin_bounds, m_hbDbApi_bin_count}) == 0);
 
-  memset(m_trp_activity, 0, sizeof(m_trp_activity));
+  /**
+   * Size the per-transporter activity array from the runtime
+   * configuration (same bound as the trp-id indexed send buffer
+   * arrays in mt.cpp). All accesses use transporter ids handed out
+   * by the TransporterRegistry, which is sized from the same
+   * configuration, so the bound holds for every access.
+   */
+  if (m_trp_activity == nullptr) {
+    m_num_trp_ids = mt_get_num_trp_ids();
+    ndbrequire(m_num_trp_ids > 0);
+    ndbrequire(m_num_trp_ids <= MAX_NTRANSPORTERS);
+    m_trp_activity = new TrpActivity[m_num_trp_ids];
+  }
+  memset(m_trp_activity, 0, sizeof(TrpActivity) * m_num_trp_ids);
 
   ReadConfigConf *conf = (ReadConfigConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
@@ -1723,10 +1740,11 @@ void Trpman::execTIME_SIGNAL(Signal *signal) {
        trp_id != m_recv_data.NotFound;
        trp_id = m_recv_data.find_next(trp_id + 1)) {
     ndbassert(handles_this_trp(trp_id));
+    TrpActivity *const activity = get_trp_activity(trp_id);
     if (!globalTransporterRegistry.is_connected(trp_id)) continue;
 
     NDB_TICKS trp_last_recv = globalTransporterRegistry.get_last_recv(trp_id);
-    if (likely(NdbTick_IsValid(m_trp_activity[trp_id].last_recv))) {
+    if (likely(NdbTick_IsValid(activity->last_recv))) {
       NodeId node_id =
           globalTransporterRegistry.get_transporter_node_id(trp_id);
       bool is_db = (getNodeInfo(node_id).getType() == NODE_TYPE_DB);
@@ -1736,8 +1754,7 @@ void Trpman::execTIME_SIGNAL(Signal *signal) {
        * may be an overestimate by up to 50ms.
        */
       Uint64 elapsed_ms =
-          NdbTick_Elapsed(m_trp_activity[trp_id].last_recv, trp_last_recv)
-              .milliSec();
+          NdbTick_Elapsed(activity->last_recv, trp_last_recv).milliSec();
 
       // Update activity histogram
       unsigned hist_bin_index = 0;
@@ -1753,7 +1770,7 @@ void Trpman::execTIME_SIGNAL(Signal *signal) {
       while (hist_bin_index < hist_bin_count &&
              hist_bin_bounds[hist_bin_index] < elapsed_ms)
         hist_bin_index++;
-      m_trp_activity[trp_id].hist_bins[hist_bin_index]++;
+      activity->hist_bins[hist_bin_index]++;
 
       // Log late heartbeat
       if (!is_db || trp_id == m_dbHbSenderTrp) {
@@ -1770,7 +1787,7 @@ void Trpman::execTIME_SIGNAL(Signal *signal) {
         }
       }
     }
-    m_trp_activity[trp_id].last_recv = trp_last_recv;
+    activity->last_recv = trp_last_recv;
   }
   m_recv_data.clear();
 }

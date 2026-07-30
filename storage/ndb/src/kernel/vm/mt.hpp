@@ -255,6 +255,15 @@ class TransporterReceiveHandle *mt_get_trp_receive_handle(unsigned instance);
  */
 Uint32 mt_get_recv_thread_idx(TrpId trp_id);
 
+/**
+ * Number of valid transporter id slots, computed at startup from the
+ * runtime configured max node id (see glob_num_trp_ids in mt.cpp).
+ * Never exceeds MAX_NTRANSPORTERS. Blocks can use this to size
+ * trp-id indexed structures from the actual configuration instead of
+ * the compile-time ceiling.
+ */
+Uint32 mt_get_num_trp_ids();
+
 #if defined(USE_INIT_GLOBAL_VARIABLES)
 void mt_enable_global_variables(Uint32 self);
 void mt_disable_global_variables(Uint32 self);

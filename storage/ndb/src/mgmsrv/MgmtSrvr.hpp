@@ -624,6 +624,13 @@ private:
                           Uint32 timeout_ms,
                           const Vector<PossibleNode> &nodes_info,
                           int &error_code, BaseString &error_string);
+  unsigned alloc_scan_offset(ndb_mgm_node_type type, unsigned count);
+  /**
+   * Round robin token used by alloc_scan_offset() to rotate the start
+   * position of wildcard API node id scans. Lock free: concurrent MGM
+   * session threads only need distinct values, no ordering is implied.
+   */
+  std::atomic<uint32_t> m_alloc_scan_token{0};
   struct ConfigNode {
     unsigned nodeid;
     BaseString hostname;

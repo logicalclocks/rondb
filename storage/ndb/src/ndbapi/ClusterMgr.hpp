@@ -37,6 +37,7 @@
 #include <signaldata/NodeStateSignalData.hpp>
 #include "trp_client.hpp"
 #include "trp_node.hpp"
+#include "util/require.h"
 
 extern "C" void *runClusterMgr_C(void *me);
 
@@ -63,7 +64,15 @@ class ClusterMgr : public trp_client {
  public:
   ClusterMgr(class TransporterFacade &);
   ~ClusterMgr() override;
-  void configure(Uint32 nodeId, const ndb_mgm_configuration *config);
+
+  /**
+   * (Re)configure the node table. Returns false if the configuration
+   * could not be applied: allocation failure, or an online (mgmd)
+   * change that is not growth-only. The caller then fails
+   * TransporterFacade::configure(), which the mgmd answers with its
+   * existing 'this node need a restart' fallback.
+   */
+  bool configure(Uint32 nodeId, const ndb_mgm_configuration *config);
 
   void reportConnected(NodeId nodeId);
   void reportDisconnected(NodeId nodeId);
@@ -172,7 +181,55 @@ class ClusterMgr : public trp_client {
   Uint32 noOfConnectedDBNodes;
   Uint32 minDbVersion;
   Uint32 minApiVersion;
-  Node theNodes[ABS_MAX_NODES];
+
+  /**
+   * Node slots, indexed by node id. Allocated once per configured node
+   * id by configure(): 64 KB of pointers instead of the previous
+   * 1.5 MB embedded Node[ABS_MAX_NODES] array in every process holding
+   * an Ndb_cluster_connection. Slots are:
+   * - published with a release-store only after the Node is completely
+   *   initialized (including 'defined'), so the lock-free readers
+   *   (getNodeInfo(), hb_received() and the node state getters) that
+   *   acquire-load the pointer never observe a half-built node;
+   * - never freed or moved until destruction: functions keep plain
+   *   Node&/trp_node& references across their work and hb_received()
+   *   writes without any lock, so entries must stay stable even across
+   *   a mgmd online configuration change (growth-only, see
+   *   configure());
+   * - null for ids that were never configured; getNodeInfo() then
+   *   returns a shared immutable default node with 'defined == false',
+   *   preserving the probing semantics of the old embedded array.
+   */
+  std::atomic<Node *> theNodes[ABS_MAX_NODES];
+
+  /* Set once the first configure() has completed; distinguishes the
+     single-threaded initial configuration from a mgmd online
+     reconfiguration with live readers. */
+  bool m_configured;
+
+  /**
+   * Slot access policy:
+   * - get_node_slot(): for internally driven paths where the node id
+   *   comes from our own configuration view (configure(), startup(),
+   *   TransporterRegistry connect/disconnect callbacks). A missing
+   *   slot is a broken invariant: crash deliberately.
+   * - find_node_slot(): for signal driven paths where the node id was
+   *   read out of signal data. Ids outside our configuration view must
+   *   be ignored, never trusted (the same policy that keeps data nodes
+   *   from crashing on API_VERSION_REQ for node ids outside their
+   *   configuration view).
+   */
+  Node *get_node_slot(NodeId nodeId) {
+    require(nodeId > 0 && nodeId < ABS_MAX_NODES);
+    Node *slot = theNodes[nodeId].load(std::memory_order_acquire);
+    require(slot != nullptr);
+    return slot;
+  }
+  Node *find_node_slot(NodeId nodeId) {
+    if (unlikely(nodeId == 0 || nodeId >= ABS_MAX_NODES)) return nullptr;
+    return theNodes[nodeId].load(std::memory_order_acquire);
+  }
+
   NdbThread *theClusterMgrThread;
 
   NdbCondition *waitForHBCond;
@@ -286,9 +343,23 @@ public:
 };
 
 inline const trp_node &ClusterMgr::getNodeInfo(NodeId nodeId) const {
+  /**
+   * Lock-free hot path (node selection per transaction): acquire-load
+   * the slot published by configure(). Ids never configured (or out of
+   * range) return a reference to a shared immutable default node with
+   * 'defined == false', preserving the semantics the embedded array
+   * gave such probes. The default node is const and function-local
+   * (thread-safe initialization); no non-const reference to it may
+   * ever escape - one writer through it would poison every probe in
+   * the process.
+   */
+  static const Node undefined_node;
   // Check array bounds
   assert(nodeId < ABS_MAX_NODES);
-  return theNodes[nodeId];
+  if (unlikely(nodeId >= ABS_MAX_NODES)) return undefined_node;
+  const Node *slot = theNodes[nodeId].load(std::memory_order_acquire);
+  if (unlikely(slot == nullptr)) return undefined_node;
+  return *slot;
 }
 
 inline
@@ -321,7 +392,15 @@ ClusterMgr::getNoOfConnectedNodes() const {
 inline void ClusterMgr::hb_received(NodeId nodeId) {
   // Check array bounds + don't allow node 0 to be touched
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
-  theNodes[nodeId].hbMissed = 0;
+  if (unlikely(nodeId == 0 || nodeId >= ABS_MAX_NODES)) return;
+  /**
+   * Documented as safe without lock: writing hbMissed = 0 through a
+   * stable slot. A heartbeat implies a configured node, so a null slot
+   * is unreachable for real traffic - simply ignore it.
+   */
+  Node *slot = theNodes[nodeId].load(std::memory_order_acquire);
+  if (unlikely(slot == nullptr)) return;
+  slot->hbMissed = 0;
 }
 
 /*****************************************************************************/
@@ -341,6 +420,8 @@ class ArbitMgr {
 
   inline void setRank(unsigned n) { theRank = n; }
   inline void setDelay(unsigned n) { theDelay = n; }
+  inline unsigned getRank() const { return theRank; }
+  inline unsigned getDelay() const { return theDelay; }
 
   void doStart(const Uint32 *theData);
   void doChoose(const Uint32 *theData);

@@ -3400,7 +3400,8 @@ void NdbDictInterface::execSignal(void *dictImpl,
         nbm = ptr[0].p;
         len = ptr[0].sz;
       } else {
-        assert(len == NodeBitmask::Size);  // only full length in ndbapi
+        // inline legacy format is frozen at the 64-word mask
+        assert(len == NodeBitmask2K::Size);
         nbm = rep->theAllNodes;
       }
       for (Uint32 i = BitmaskImpl::find_first(len, nbm);

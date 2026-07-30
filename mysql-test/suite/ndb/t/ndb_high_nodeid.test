@@ -1,0 +1,60 @@
+-- source include/have_multi_ndb.inc
+
+# Schema distribution and basic DML with API node ids above the old
+# 2039 limit (MAX_NODES_ID raised to 8191).
+#
+# server1's mysqld connects with node ids 8191, 2040 and 8000 (all
+# above the old limit), server2's mysqld with 2039, 63 and 127 (all at
+# or below it). DDL is distributed in both directions, so both act as
+# originator, coordinator and participant with a mixed low/high id
+# participant set. High id participants must ack via the
+# ndb_schema_result protocol (they have no bit in the legacy slock
+# column) - a regression here shows up as participant timeouts.
+
+connection server1;
+SELECT VARIABLE_VALUE IN ('2040', '8000', '8191')
+         AS server1_uses_high_nodeid
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Ndb_cluster_node_id';
+
+connection server2;
+SELECT VARIABLE_VALUE IN ('63', '127', '2039')
+         AS server2_uses_low_nodeid
+  FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Ndb_cluster_node_id';
+
+# DDL originated from the high id mysqld ...
+connection server1;
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b VARCHAR(32)
+) ENGINE=ndbcluster;
+INSERT INTO t1 VALUES (1, 'created on high id');
+
+# ... is visible and usable on the low id mysqld
+connection server2;
+SELECT * FROM t1 ORDER BY a;
+INSERT INTO t1 VALUES (2, 'written on low id');
+
+# DDL originated from the low id mysqld ...
+CREATE TABLE t2 (a INT PRIMARY KEY) ENGINE=ndbcluster;
+INSERT INTO t2 VALUES (1);
+
+# ... is visible and usable on the high id mysqld
+connection server1;
+SELECT * FROM t2 ORDER BY a;
+
+# ALTER distributed from the high id mysqld
+ALTER TABLE t1 ADD COLUMN c INT;
+
+connection server2;
+INSERT INTO t1 VALUES (3, 'after alter', 3);
+SELECT * FROM t1 ORDER BY a;
+
+# DROP distributed from the low id mysqld
+DROP TABLE t1;
+DROP TABLE t2;
+
+connection server1;
+--error ER_NO_SUCH_TABLE
+SELECT * FROM t1;
