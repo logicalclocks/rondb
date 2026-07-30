@@ -2656,6 +2656,8 @@ class Dbtc : public SimulatedBlock {
                        ApiConnectRecordPtr const apiConnectptr);
   bool registerCteScanFragHandle(ScanRecordPtr, ScanFragRecPtr,
                                  ApiConnectRecordPtr const);
+  void retireCteScanFragHandle(ScanRecordPtr, Uint32 scanFragPtrI);
+  bool cteAggResponsesOutstanding(ScanRecordPtr);
   bool getCteScanFragForTimer(ScanRecordPtr, CteScanFragHandlePtr,
                               ScanFragRecPtr &);
   void stopCteScanFragTimer(ScanRecordPtr, CteScanFragHandlePtr);
