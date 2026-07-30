@@ -70,6 +70,7 @@ void Ndb_local_table_info::destroy(Ndb_local_table_info *info) {
 Ndb_local_table_info::Ndb_local_table_info(NdbTableImpl *table_impl) {
   m_table_impl = table_impl;
   m_tuple_id_range.reset();
+  m_next_stale = nullptr;
 }
 
 Ndb_local_table_info::~Ndb_local_table_info() {}
@@ -96,6 +97,14 @@ void LocalDictCache::drop(const BaseString &name) {
       m_tableHash.deleteKey(name.c_str(), name.length());
   assert(info != nullptr);
   Ndb_local_table_info::destroy(info);
+}
+
+Ndb_local_table_info *LocalDictCache::remove(const BaseString &name) {
+  ASSERT_NOT_MYSQLD;
+  Ndb_local_table_info *info =
+      m_tableHash.deleteKey(name.c_str(), name.length());
+  assert(info != nullptr);
+  return info;  // unlinked from the hash; caller owns it, NOT destroyed here
 }
 
 /*****************************************************************
