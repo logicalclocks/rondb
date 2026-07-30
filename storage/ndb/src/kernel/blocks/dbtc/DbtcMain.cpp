@@ -12558,6 +12558,8 @@ void Dbtc::timeOutFoundFragLab(Signal *signal, UintR TscanConPtr) {
          */
         ptr.p->scanFragState = ScanFragRec::COMPLETED;
         ptr.p->stopFragTimer();
+        /* Worker's node is gone - no CTE phase report will follow. */
+        retireCteScanFragHandle(scanptr, ptr.i);
         {
           Local_ScanFragRec_dllist run(c_scan_frag_pool,
                                        scanptr.p->m_running_scan_frags);
@@ -13040,6 +13042,8 @@ void Dbtc::checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
           jam();
           curr.p->scanFragState = ScanFragRec::COMPLETED;
           curr.p->stopFragTimer();
+          /* Worker died with its node - no CTE phase report will follow. */
+          retireCteScanFragHandle(scanptr, curr.i);
           run.remove(curr);
           c_scan_frag_pool.release(curr);
           found = true;
@@ -18588,6 +18592,13 @@ void Dbtc::execSCAN_FRAGREF(Signal *signal) {
   scanFragptr.p->scanFragState = ScanFragRec::COMPLETED;
   scanFragptr.p->stopFragTimer();
   time_track_complete_scan_frag_error(scanFragptr.p);
+  /**
+   * DBSPJ refused this worker's request (or has already torn it down),
+   * so it will never send CTE_PHASE_COMPLETE_REP for it.  Retire the
+   * CTE handle before scanError() -> close_scan_req(), which would
+   * otherwise keep deferring the close waiting for that report.
+   */
+  retireCteScanFragHandle(scanptr, scanFragptr.i);
   {
     Local_ScanFragRec_dllist run(c_scan_frag_pool,
                                  scanptr.p->m_running_scan_frags);
@@ -19284,25 +19295,74 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
    * Set failure flag and let the phase handler abort after all
    * responses arrive.
    */
-  if (old == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-      old == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
-      old == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
-      (old == ScanRecord::RUNNING &&
-       scanPtr.p->m_numCtes > 0 &&
-       scanPtr.p->m_cteCurrentPhase < scanPtr.p->m_ctePhaseCount &&
-       scanPtr.p->m_cteScanReportsReceived <
-           scanPtr.p->m_cteScanReportsExpected)) {
+  const bool aggWaitState = (old == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+                             old == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
+                             old == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
+                             (old == ScanRecord::RUNNING &&
+                              scanPtr.p->m_numCtes > 0 &&
+                              scanPtr.p->m_cteCurrentPhase <
+                                  scanPtr.p->m_ctePhaseCount));
+  /**
+   * Sticky: once the API has ordered the close there is no un-ordering
+   * it.  A CTE / JoinAgg scan reaches close_scan_req() more than once -
+   * the API's TCRELEASEREQ or SCAN_NEXTREQ(close) can land while
+   * responses are still outstanding, and the internal completion path
+   * calls in again with req_received == false.  Assigning would clear
+   * the API's request, and close_scan_req_send_conf() would then skip
+   * releaseScanResources() and park the ApiConnectRecord for good.
+   */
+  if (req_received) {
     jam();
-    scanPtr.p->m_close_scan_req = req_received;
-    if (!scanPtr.p->m_aggPhaseFailed) {
-      scanPtr.p->m_aggPhaseFailed = true;
-      scanPtr.p->m_aggErrorCode = ZSCAN_LQH_ERROR;
+    scanPtr.p->m_close_scan_req = true;
+  }
+
+  if (aggWaitState) {
+    if (likely(cteAggResponsesOutstanding(scanPtr))) {
+      jam();
+      if (!scanPtr.p->m_aggPhaseFailed) {
+        scanPtr.p->m_aggPhaseFailed = true;
+        scanPtr.p->m_aggErrorCode = ZSCAN_LQH_ERROR;
+      }
+      return;
     }
-    return;
+    /**
+     * Deferring here would be a permanent park: no response is
+     * outstanding, so nothing will ever call back to finish the close.
+     * Fall through and close now.  Every aggregation response has
+     * already been accounted for, so the aggStateKeys the deferral
+     * exists to protect are complete and releaseScanResources() can
+     * clean up.
+     *
+     * For a RUNNING CTE scan this is a normal outcome: every DBSPJ
+     * worker was retired by SCAN_FRAGREF / node failure / timeout, so
+     * the phase can no longer complete.  The WAIT_JOIN_AGG_* states on
+     * the other hand are only entered with responses outstanding and
+     * leave as soon as the count reaches zero, so reaching them with
+     * nothing in flight means the accounting drifted - log that one
+     * loudly, it is a bug worth chasing.
+     */
+    jam();
+    if (unlikely(old != ScanRecord::RUNNING)) {
+      g_eventLogger->info(
+          "(%u)DBTC close_scan_req: closing JoinAgg scanPtr.i=%u in wait "
+          "state %u with no outstanding responses (numCtes=%u phase=%u/%u "
+          "cteReports=%u/%u aggNodesOutstanding=%u)",
+          instance(), scanPtr.i, (Uint32)old, scanPtr.p->m_numCtes,
+          scanPtr.p->m_cteCurrentPhase, scanPtr.p->m_ctePhaseCount,
+          scanPtr.p->m_cteScanReportsReceived,
+          scanPtr.p->m_cteScanReportsExpected,
+          scanPtr.p->m_aggNodesOutstanding);
+    } else {
+      DEB_JOIN_AGG(("(%u)DBTC close_scan_req: closing CTE scanPtr.i=%u, all "
+                    "workers retired (phase=%u/%u cteReports=%u/%u)",
+                    instance(), scanPtr.i, scanPtr.p->m_cteCurrentPhase,
+                    scanPtr.p->m_ctePhaseCount,
+                    scanPtr.p->m_cteScanReportsReceived,
+                    scanPtr.p->m_cteScanReportsExpected));
+    }
   }
 
   scanPtr.p->scanState = ScanRecord::CLOSING_SCAN;
-  scanPtr.p->m_close_scan_req = req_received;
 
   if (old == ScanRecord::WAIT_FRAGMENT_COUNT)  // Dead state due to direct-exec
   {
@@ -19612,6 +19672,135 @@ bool Dbtc::registerCteScanFragHandle(ScanRecordPtr scanptr,
                 scanptr.p->m_cteScanReportsExpected, scanptr.p->m_numCtes));
 #endif
   return true;
+}
+
+/**
+ * Drop the CTE scan-frag handle belonging to 'scanFragPtrI'.
+ *
+ * Called when a fragment scan of a CTE compound query is retired
+ * without its DBSPJ worker ever reporting phase completion: DBSPJ
+ * refused the request (SCAN_FRAGREF), the worker's node died, or the
+ * fragment scan timed out.  In all three cases no
+ * CTE_PHASE_COMPLETE_REP will ever arrive for this handle.
+ *
+ * Leaving the handle registered keeps m_cteScanReportsExpected above
+ * m_cteScanReportsReceived forever, which makes close_scan_req() defer
+ * the close for good: the scan stays RUNNING, the ApiConnectRecord
+ * stays in CS_START_SCAN, and API node failure handling can never
+ * complete.  QMGR then kills the node once ApiFailureHandlingTimeout
+ * expires (error 7400).
+ */
+void Dbtc::retireCteScanFragHandle(ScanRecordPtr scanptr,
+                                   Uint32 scanFragPtrI) {
+  if (scanptr.p->m_numCtes == 0) {
+    jamDebug();
+    return;
+  }
+
+  /**
+   * m_cteScanFragHandles is a single-linked FIFO, so an entry in the
+   * middle cannot be unlinked directly.  Drain the list into a
+   * temporary head, dropping the retired handle on the way, then move
+   * the survivors back.  The list holds one entry per fragment scan of
+   * this scan record, so a single call stays short.
+   */
+  CteScanFragHandle_list::Head survivors;
+  CteScanFragHandlePtr handlePtr;
+  bool retired = false;
+
+  {
+    Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                         scanptr.p->m_cteScanFragHandles);
+    Local_CteScanFragHandle_list keep(c_cteScanFragHandlePool, survivors);
+    while (handles.removeFirst(handlePtr)) {
+      if (retired || handlePtr.p->m_scanFragPtrI != scanFragPtrI) {
+        jamDebug();
+        keep.addLast(handlePtr);
+        continue;
+      }
+      jam();
+      /**
+       * Keep m_cteScanReportsReceived <= m_cteScanReportsExpected.  A
+       * handle that already reported for the current phase is counted
+       * in 'received', so both counters must drop together - otherwise
+       * 'received' could exceed 'expected' and the '==' test that
+       * advances the phase would never fire again.
+       */
+      if (handlePtr.p->m_lastCompletePhase == scanptr.p->m_cteCurrentPhase &&
+          scanptr.p->m_cteScanReportsReceived > 0) {
+        jam();
+        scanptr.p->m_cteScanReportsReceived--;
+      }
+      ndbassert(scanptr.p->m_cteScanReportsExpected > 0);
+      if (scanptr.p->m_cteScanReportsExpected > 0) {
+        scanptr.p->m_cteScanReportsExpected--;
+      }
+
+      DEB_JOIN_AGG(("(%u)DBTC CTE handle retired: scanPtr.i=%u "
+                    "scanFragPtr.i=%u dbspjRef=0x%x reports=%u/%u",
+                    instance(), scanptr.i, scanFragPtrI,
+                    handlePtr.p->m_dbspjRef,
+                    scanptr.p->m_cteScanReportsReceived,
+                    scanptr.p->m_cteScanReportsExpected));
+
+      c_cteScanFragHandleHash.remove(handlePtr);
+      c_cteScanFragHandlePool.release(handlePtr);
+      retired = true;
+    }
+  }
+
+  {
+    Local_CteScanFragHandle_list keep(c_cteScanFragHandlePool, survivors);
+    Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                         scanptr.p->m_cteScanFragHandles);
+    while (keep.removeFirst(handlePtr)) {
+      jamDebug();
+      handles.addLast(handlePtr);
+    }
+  }
+
+  if (retired) {
+    jam();
+    checkPoolShrinkNeed(DBTC_CTE_SCAN_FRAG_HANDLE_TRANSIENT_POOL_INDEX,
+                        c_cteScanFragHandlePool);
+  }
+}
+
+/**
+ * True while some CTE / join-aggregation response can still arrive for
+ * this scan.
+ *
+ * close_scan_req() must defer the close while this holds: tearing the
+ * scan down early would drop the aggStateKeys needed to release
+ * aggregation state in the LDM / query threads.
+ *
+ * Once it goes false, nothing will ever drive the scan again, so the
+ * close has to proceed instead.  Deferring at that point parks the
+ * ApiConnectRecord in CS_START_SCAN forever, which during API node
+ * failure handling blocks API_FAILCONF until QMGR kills the node.
+ */
+bool Dbtc::cteAggResponsesOutstanding(ScanRecordPtr scanPtr) {
+  if (scanPtr.p->m_aggNodesOutstanding > 0) {
+    jam();
+    /* JOIN_AGG_{SETUP,COMPLETE,RELEASE}_{CONF,REF} still in flight */
+    return true;
+  }
+  ndbassert(scanPtr.p->m_cteScanReportsReceived <=
+            scanPtr.p->m_cteScanReportsExpected);
+  /**
+   * A phase report can only come from a handle that is still
+   * registered, so an empty handle list means nothing is outstanding
+   * however the counters happen to read.
+   */
+  if (scanPtr.p->m_numCtes > 0 &&
+      scanPtr.p->m_cteCurrentPhase < scanPtr.p->m_ctePhaseCount &&
+      scanPtr.p->m_cteScanReportsReceived <
+          scanPtr.p->m_cteScanReportsExpected &&
+      !scanPtr.p->m_cteScanFragHandles.isEmpty()) {
+    jam();
+    return true;
+  }
+  return false;
 }
 
 bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
@@ -31177,12 +31366,38 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
     jam();
     AGGT(("AGGT(%u) CTE phase=%u scans complete scanPtr=%u",
           instance(), scanptr.p->m_cteCurrentPhase, scanptr.i));
+
+    if (scanptr.p->m_aggPhaseFailed) {
+      jam();
+      /**
+       * A worker failed during this phase (SCAN_FRAGREF, node failure
+       * or fragment timeout) and its handle was retired, so the
+       * surviving workers can now complete the report count.  The CTE
+       * result is incomplete - release the aggregation state the
+       * healthy nodes built and abort, rather than advancing the phase
+       * and answering from a partial CTE.
+       */
+      scanptr.p->m_aggPhaseFailed = false;
+      Uint32 errorCode = scanptr.p->m_aggErrorCode;
+
+      if (!scanptr.p->m_joinAggNodes->m_aggNodes.isclear()) {
+        jam();
+        sendJoinAggReleaseReqs(signal, scanptr);
+      } else {
+        jam();
+        ApiConnectRecordPtr apiConnectptr;
+        apiConnectptr.i = scanptr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiConnectptr);
+        abortScanLab(signal, scanptr, errorCode, true, apiConnectptr);
+      }
+      return;
+    }
+
     /**
      * All DBSPJ instances completed this CTE phase.
      * Redistribute this phase's CTEs.
      */
     scanptr.p->scanState = ScanRecord::WAIT_CTE_COMPLETE;
-    scanptr.p->m_aggPhaseFailed = false;
     scanptr.p->m_aggErrorCode = 0;
     sendCteCompleteReqsForPhase(signal, scanptr,
                                 scanptr.p->m_cteCurrentPhase);
