@@ -428,6 +428,31 @@ static const Properties *handle_authorization_failure(NdbMgmHandle handle,
   return nullptr;
 }
 
+static const Properties *handle_not_ready_reply(NdbMgmHandle handle,
+                                                InputStream &in) {
+  /*
+   * The server is up but refuses this command while it is still
+   * starting (e.g. the arbitrator startup gate).  The session stays
+   * open server-side; parse and drain the details block so the stream
+   * is in sync for a retry on the same connection.
+   */
+  const ParserRow<ParserDummy> details[] = {
+      MGM_CMD(NDB_MGM_NOT_READY_REPLY, nullptr, ""),
+      MGM_ARG("Error", String, Mandatory, "Error message"), MGM_END()};
+
+  Parser_t::Context ctx;
+  ParserDummy session(handle->socket);
+  Parser_t parser(details, in);
+  const Properties *reply = parser.parse(ctx, session);
+
+  const char *reason = "";
+  if (reply) reply->get("Error", &reason);
+  setError(handle, NDB_MGM_SERVER_NOT_READY, __LINE__, "%s", reason);
+
+  delete reply;
+  return nullptr;
+}
+
 /*
   ndb_mgm_call
 
@@ -560,6 +585,12 @@ static const Properties *ndb_mgm_call(
       if (strcmp(ctx.m_tokenBuffer, "Authorization failed") == 0) {
         RewindInputStream str(in, ctx.m_tokenBuffer);
         DBUG_RETURN(handle_authorization_failure(handle, str));
+      }
+
+      /* Check for server refusing the command while starting up */
+      if (strcmp(ctx.m_tokenBuffer, NDB_MGM_NOT_READY_REPLY) == 0) {
+        RewindInputStream str(in, ctx.m_tokenBuffer);
+        DBUG_RETURN(handle_not_ready_reply(handle, str));
       }
 
       /**
@@ -1198,6 +1229,11 @@ extern "C" struct ndb_mgm_cluster_state *ndb_mgm_get_status2(
     (void)handle_authorization_failure(handle, str);
     DBUG_RETURN(nullptr);
   }
+  if (strcmp(NDB_MGM_NOT_READY_REPLY "\n", buf) == 0) {
+    RewindInputStream str(in, buf);
+    (void)handle_not_ready_reply(handle, str);
+    DBUG_RETURN(nullptr);
+  }
   if (strcmp("node status\n", buf) != 0) {
     CHECK_TIMEDOUT_RET(handle, in, out, nullptr, get_status_str);
     ndbout << in.timedout() << " " << out.timedout() << buf << endl;
@@ -1408,6 +1444,11 @@ extern "C" struct ndb_mgm_cluster_state2 *ndb_mgm_get_status3(
   if (strcmp("Authorization failed\n", buf) == 0) {
     RewindInputStream str(in, buf);
     (void)handle_authorization_failure(handle, str);
+    DBUG_RETURN(nullptr);
+  }
+  if (strcmp(NDB_MGM_NOT_READY_REPLY "\n", buf) == 0) {
+    RewindInputStream str(in, buf);
+    (void)handle_not_ready_reply(handle, str);
     DBUG_RETURN(nullptr);
   }
   if (strcmp("node status\n", buf) != 0) {
@@ -4188,6 +4229,507 @@ static int set_dynamic_ports_batched(NdbMgmHandle handle, int nodeid,
   reply->get("result", &result);
   if (strcmp(result, "Ok") != 0) {
     SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_get_user(NdbMgmHandle handle,
+                     const char *user_name,
+                     char **result_buf) {
+  DBUG_ENTER("ndb_mgm_get_user");
+  DBUG_PRINT("enter", ("username: %s", user_name));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_get_user");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("username", user_name);
+
+  const ParserRow<ParserDummy> get_user_reply[] = {
+    MGM_CMD("get user reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_ARG("num_rows", Int, Optional, "Number of rows in result"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         get_user_reply,
+                                         "get user",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to get user, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  } else {
+    Uint32 len = 4096;
+    char* buf64 = new char[len];
+    do {
+      Uint32 total_num_rows = 0;
+      if (!reply->get("num_rows", &total_num_rows)) {
+        const char * buf = "expected num_rows";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      if (buf64 == nullptr) {
+        SET_ERROR(handle, errno, "Error malloc Get user");
+        break;
+      }
+      int read = 0;
+      size_t start = 0;
+      Uint32 num_rows = 0;
+      bool new_row_started = true;
+      do {
+        if ((read = handle->socket.read(handle->timeout,
+                                   &buf64[start], (int)(len - start))) < 1) {
+          delete [] buf64;
+          buf64 = nullptr;
+          if (read == 0) {
+            SET_ERROR(handle,
+                      ETIMEDOUT,
+                      "Timeout reading Get user");
+          } else {
+            SET_ERROR(handle, errno, "Error reading Get user");
+          }
+          break;
+        }
+        for (Uint32 i = start; i < (start + read); i++) {
+          if (buf64[i] == '\n') {
+            new_row_started = false;
+            num_rows++;
+          } else {
+            new_row_started = true;
+          }
+        }
+        if (num_rows > total_num_rows ||
+            (num_rows == total_num_rows &&
+             new_row_started)) {
+          SET_ERROR(handle, 1, "Protocol error in Get user");
+          break;
+        } else if (num_rows == total_num_rows) {
+          delete reply;
+          *result_buf = buf64;
+          buf64[start + read] = 0;
+          DBUG_RETURN(0);
+        }
+        start += read;
+      } while (start < len);
+    } while (false);
+    delete reply;
+    free(buf64);
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+}
+
+int ndb_mgm_list_users(NdbMgmHandle handle,
+                       Uint32 *nextUserId,
+                       char **result_buf) {
+  DBUG_ENTER("ndb_mgm_list_users");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_list_users");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextUserId", *nextUserId);
+
+  const ParserRow<ParserDummy> list_user_reply[] = {
+    MGM_CMD("list user reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextUserId", Int, Optional, "next User Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         list_user_reply,
+                                         "list user",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to list user, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  } else {
+    Uint32 len = 4096;
+    char* buf64 = new char[len];
+    do {
+      Uint32 total_num_rows = 0;
+      if (!reply->get("num_rows", &total_num_rows)) {
+        const char * buf = "expected num_rows";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      if (buf64 == nullptr) {
+        SET_ERROR(handle, errno, "Error malloc List user");
+        break;
+      }
+      if (total_num_rows == 0) {
+        /* List command completed */
+        *nextUserId = RNIL;
+        delete reply;
+        DBUG_RETURN(0);
+      }
+      if (!reply->get("nextUserId", nextUserId)) {
+        const char * buf = "expected nextUserId";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      int read = 0;
+      size_t start = 0;
+      Uint32 num_rows = 0;
+      bool new_row_started = true;
+      do {
+        if ((read = handle->socket.read(handle->timeout,
+                                &buf64[start], (int)(len - start))) < 1) {
+          delete [] buf64;
+          buf64 = nullptr;
+          if (read == 0) {
+            SET_ERROR(handle,
+                      ETIMEDOUT,
+                      "Timeout reading List user");
+          } else {
+            SET_ERROR(handle, errno, "Error reading List user");
+          }
+          break;
+        }
+        for (Uint32 i = start; i < (start + read); i++) {
+          if (buf64[i] == '\n') {
+            new_row_started = false;
+            num_rows++;
+          } else {
+            new_row_started = true;
+          }
+        }
+        if (num_rows > total_num_rows ||
+            (num_rows == total_num_rows &&
+             new_row_started)) {
+          SET_ERROR(handle, 1, "Protocol error in List user");
+          break;
+        } else if (num_rows == total_num_rows) {
+          delete reply;
+          *result_buf = buf64;
+          buf64[start + read] = 0;
+          DBUG_RETURN(0);
+        }
+        start += read;
+      } while (start < len);
+    } while (false);
+    delete reply;
+    free(buf64);
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(0);
+  }
+}
+
+int ndb_mgm_backup_users(NdbMgmHandle handle,
+                         Uint32 *nextUserId,
+                         char **result_buf) {
+  DBUG_ENTER("ndb_mgm_backup_users");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_backup_user");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextUserId", *nextUserId);
+
+  const ParserRow<ParserDummy> backup_user_reply[] = {
+    MGM_CMD("backup user reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextUserId", Int, Optional, "next User Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         backup_user_reply,
+                                         "backup user",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to backup user, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  } else {
+    Uint32 len = 4096;
+    char* buf64 = new char[len];
+    do {
+      Uint32 total_num_rows = 0;
+      if (!reply->get("num_rows", &total_num_rows)) {
+        const char * buf = "expected num_rows";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      if (buf64 == nullptr) {
+        SET_ERROR(handle, errno, "Error malloc Backup user");
+        break;
+      }
+      if (total_num_rows == 0) {
+        /* Backup command completed */
+        *nextUserId = RNIL;
+        delete reply;
+        DBUG_RETURN(0);
+      }
+      if (!reply->get("nextUserId", nextUserId)) {
+        const char * buf = "expected nextUserId";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      int read = 0;
+      size_t start = 0;
+      Uint32 num_rows = 0;
+      bool new_row_started = true;
+      do {
+        if ((read = handle->socket.read(handle->timeout,
+                                &buf64[start], (int)(len - start))) < 1) {
+          delete [] buf64;
+          buf64 = nullptr;
+          if (read == 0) {
+            SET_ERROR(handle,
+                      ETIMEDOUT,
+                      "Timeout reading Backup user");
+          } else {
+            SET_ERROR(handle, errno, "Error reading Backup user");
+          }
+          break;
+        }
+        for (Uint32 i = start; i < (start + read); i++) {
+          if (buf64[i] == '\n') {
+            new_row_started = false;
+            num_rows++;
+          } else {
+            new_row_started = true;
+          }
+        }
+        if (num_rows > total_num_rows ||
+            (num_rows == total_num_rows &&
+             new_row_started)) {
+          SET_ERROR(handle, 1, "Protocol error in Backup user");
+          break;
+        } else if (num_rows == total_num_rows) {
+          delete reply;
+          *result_buf = buf64;
+          buf64[start + read] = 0;
+          DBUG_RETURN(0);
+        }
+        start += read;
+      } while (start < len);
+    } while (false);
+    delete reply;
+    free(buf64);
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(0);
+  }
+}
+
+int ndb_mgm_set_user(NdbMgmHandle handle,
+                     const char *user_name,
+                     Uint32 rate_per_sec,
+                     Uint32 max_transaction_size,
+                     Uint32 max_parallel_transactions,
+                     Uint32 max_parallel_complex_queries) {
+  DBUG_ENTER("ndb_mgm_set_user");
+  DBUG_PRINT("enter", ("username: %s, rate_per_sec: %u"
+             ", max_transaction_size: %u"
+             ", max_parallel_transactions: %u"
+             ", max_parallel_complex_queries: %u",
+             user_name,
+             rate_per_sec,
+             max_transaction_size,
+             max_parallel_transactions,
+             max_parallel_complex_queries));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_set_user");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("username", user_name);
+  args.put("rate_per_sec", rate_per_sec);
+  args.put("max_transaction_size", max_transaction_size);
+  args.put("max_parallel_transactions", max_parallel_transactions);
+  args.put("max_parallel_complex_queries", max_parallel_complex_queries);
+
+  const ParserRow<ParserDummy> set_user_reply[] = {
+    MGM_CMD("set user reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         set_user_reply,
+                                         "set user",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to set user, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_alter_user(NdbMgmHandle handle,
+                       const char *user_name,
+                       Uint32 rate_per_sec,
+                       Uint32 max_transaction_size,
+                       Uint32 max_parallel_transactions,
+                       Uint32 max_parallel_complex_queries) {
+  DBUG_ENTER("ndb_mgm_alter_user");
+  DBUG_PRINT("enter", ("username: %s, rate_per_sec: %u"
+             ", max_transaction_size: %u"
+             ", max_parallel_transactions: %u"
+             ", max_parallel_complex_queries: %u",
+             user_name,
+             rate_per_sec,
+             max_transaction_size,
+             max_parallel_transactions,
+             max_parallel_complex_queries));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_alter_user");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("username", user_name);
+  args.put("rate_per_sec", rate_per_sec);
+  args.put("max_transaction_size", max_transaction_size);
+  args.put("max_parallel_transactions", max_parallel_transactions);
+  args.put("max_parallel_complex_queries", max_parallel_complex_queries);
+
+  const ParserRow<ParserDummy> alter_user_reply[] = {
+    MGM_CMD("alter user reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         alter_user_reply,
+                                         "alter user",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to alter user, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_drop_user(NdbMgmHandle handle,
+                      const char *user_name) {
+  DBUG_ENTER("ndb_mgm_drop_user");
+  DBUG_PRINT("enter", ("username: %s", user_name));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_drop_user");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("username", user_name);
+
+  const ParserRow<ParserDummy> drop_user_reply[] = {
+    MGM_CMD("drop user reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         drop_user_reply,
+                                         "drop user",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to drop user, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
     delete reply;
     DBUG_RETURN(-1);
   }

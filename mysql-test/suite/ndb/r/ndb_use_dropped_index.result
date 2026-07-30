@@ -231,8 +231,8 @@ a	b	c	d	e
 ## query succeeds using the remaining index/scan.
 SELECT * FROM t1 where e > 3;
 a	b	c	d	e
-5	5	5	5	5
 4	4	4	4	4
+5	5	5	5	5
 
 ## Second attempt succeeds.
 SELECT * FROM t1 where e > 3 order by e;

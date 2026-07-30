@@ -224,16 +224,21 @@ int main(int argc, char** argv){
   if (retval == -3) {
     return 3;  // Connect to mgmd failed
   }
-  if (_verbose == 1) {
+  if (retval == 0 && _verbose == 1) {
     /*
      * Only print and check final node status for verbose=1.
      * If verbose=0 nothing should be printed.
      * If verbose>1 node status will be printed each time status is checked,
      * no need to print it once again at end.
+     * A failed wait must not have its status overwritten here: with an
+     * empty node list printNodesStatus() reports success.
      */
     retval = printNodesStatus(wait_status);
   }
   if (retval != 0) {
+    if (_verbose > 0)
+      ndberr << "Failed waiting for cluster to enter state "
+             << ndb_mgm_get_node_status_string(wait_status) << endl;
     return NdbToolsProgramExitCode::FAILED;
   }
 
@@ -257,6 +262,11 @@ int getStatus() {
   status = ndb_mgm_get_status(handle);
   if (status == nullptr) {
     MGMERR(handle);
+    if (ndb_mgm_get_latest_error(handle) == NDB_MGM_SERVER_NOT_READY) {
+      /* Mgmd refuses commands until arbitrator selection has settled,
+       * but keeps the session open; retry on the same connection. */
+      return -2;
+    }
     ndb_mgm_disconnect(handle);
     if (ndb_mgm_connect_tls(handle, opt_connect_retries - 1,
                             opt_connect_retry_delay, _verbose > 1,
@@ -269,6 +279,9 @@ int getStatus() {
     status = ndb_mgm_get_status(handle);
     if (status == nullptr) {
       MGMERR(handle);
+      if (ndb_mgm_get_latest_error(handle) == NDB_MGM_SERVER_NOT_READY) {
+        return -2;
+      }
       return -1;
     }
   }
@@ -406,9 +419,11 @@ int waitClusterStatus(const char *_addr, const ndb_mgm_node_status _status) {
       bool waitMore = false;
       /**
        * Make special check if we are waiting for
-       * cluster to become started
+       * cluster to become started.  Requires actual node status;
+       * an empty ndbNodes (status not yet obtainable) must not
+       * extend the wait.
        */
-      if (_status == NDB_MGM_NODE_STATUS_STARTED) {
+      if (_status == NDB_MGM_NODE_STATUS_STARTED && ndbNodes.size() > 0) {
         waitMore = true;
         /**
          * First check if any node is not starting
@@ -449,7 +464,12 @@ int waitClusterStatus(const char *_addr, const ndb_mgm_node_status _status) {
              << endl;
       return -3;
     }
-    if (retval != 0) {
+    if (retval == -2) {
+      /* Not ready yet (waiting for arbitrator selection); ndbNodes is
+       * empty so we fall through and poll again until ready or timeout. */
+      if (_verbose > 1)
+        ndbout << "Management server not ready, retrying" << endl;
+    } else if (retval != 0) {
       return retval;
     }
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -143,8 +143,14 @@ class TcKeyReq {
   //  Conditional part = can be present in signal.
   //  These four words will be sent only if their indicator is set.
   // ----------------------------------------------------------------------
-  UintR scanInfo;             // DATA 8   Various flags for scans, see below
-  UintR distrGroupHashValue;  // DATA 9
+  union {
+    Uint32 scanInfo;             // DATA 8   Various flags for scans, see below
+    Uint32 userId;
+  };
+  union {
+    Uint32 distrGroupHashValue;  // DATA 9
+    Uint32 userIdVersion;
+  };
   UintR distributionKeySize;  // DATA 10
   UintR storedProcId;         // DATA 11
 
@@ -172,6 +178,7 @@ class TcKeyReq {
   static Uint8 getDirtyFlag(const UintR &requestInfo);
   static Uint8 getInterpretedFlag(const UintR &requestInfo);
   static Uint8 getInterpretedInsertFlag(const UintR &requestInfo);
+  static Uint8 getUserIdFlag(const UintR &requestInfo);
   static Uint8 getDistributionKeyFlag(const UintR &requestInfo);
   static Uint8 getViaSPJFlag(const UintR &requestInfo);
   static Uint8 getScanIndFlag(const UintR &requestInfo);
@@ -203,6 +210,7 @@ class TcKeyReq {
   static void setDirtyFlag(UintR &requestInfo, Uint32 flag);
   static void setInterpretedFlag(UintR &requestInfo, Uint32 flag);
   static void setInterpretedInsertFlag(UintR &requestInfo, Uint32 flag);
+  static void setUserIdFlag(UintR &requestInfo, Uint32 flag);
   static void setDistributionKeyFlag(UintR &requestInfo, Uint32 flag);
   static void setViaSPJFlag(UintR &requestInfo, Uint32 flag);
   static void setScanIndFlag(UintR &requestInfo, Uint32 flag);
@@ -396,13 +404,15 @@ class TcKeyReq {
  A = Replica applier       - 1  Bit 25
  I = IgnoreTTL             - 1  Bit 26
  N = Interpreted Insert    - 1  Bit 27
- G = Ring Buffer Op        - 1  Bit 29
+ t = TTL only expired      - 1  Bit 28
+ u - User Id               - 1  Bit 29
  S = Ring Buffer Show Meta - 1  Bit 30
+ G = Ring Buffer Op        - 1  Bit 31
 
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBUQAINGS    (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQAINtuSG  (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -443,16 +453,19 @@ class TcKeyReq {
 
 #define TC_PASS_QUEUEING_SHIFT (24)
 #define TC_REPLICA_APPLIER_SHIFT (25)
+
+#define INTERPRETED_INSERT_SHIFT (27)
 /*
  * TTL related
  */
 #define TC_TTL_IGNORE_SHIFT (26)
-#define INTERPRETED_INSERT_SHIFT (27)
 #define TC_TTL_ONLY_EXPIRED_SHIFT (28)
+#define USER_ID_SHIFT (29)
 /*
- * Ring Buffer related
+ * Ring Buffer related (Op flag moved to bit 31: bit 29 is taken by the
+ * 26.02 UserId flag and on a bit conflict the lower version always wins)
  */
-#define TC_RING_BUFFER_OP_SHIFT (29)
+#define TC_RING_BUFFER_OP_SHIFT (31)
 #define TC_RING_BUFFER_SHOW_META_SHIFT (30)
 
 /**
@@ -535,6 +548,10 @@ inline Uint8 TcKeyReq::getInterpretedFlag(const UintR &requestInfo) {
 
 inline Uint8 TcKeyReq::getInterpretedInsertFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> INTERPRETED_INSERT_SHIFT) & 1);
+}
+
+inline Uint8 TcKeyReq::getUserIdFlag(const UintR &requestInfo) {
+  return (Uint8)((requestInfo >> USER_ID_SHIFT) & 1);
 }
 
 inline Uint8 TcKeyReq::getDistributionKeyFlag(const UintR &requestInfo) {
@@ -621,6 +638,13 @@ inline void TcKeyReq::setInterpretedInsertFlag(UintR &requestInfo,
   ASSERT_BOOL(flag, "TcKeyReq::setInterpretedInsertFlag");
   requestInfo &= ~(1 << INTERPRETED_INSERT_SHIFT);
   requestInfo |= (flag << INTERPRETED_INSERT_SHIFT);
+}
+
+inline void TcKeyReq::setUserIdFlag(UintR &requestInfo,
+                                    Uint32 flag) {
+  ASSERT_BOOL(flag, "TcKeyReq::setUserIdFlag");
+  requestInfo &= ~(1 << USER_ID_SHIFT);
+  requestInfo |= (flag << USER_ID_SHIFT);
 }
 
 inline void TcKeyReq::setDistributionKeyFlag(UintR &requestInfo, Uint32 flag) {

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -95,8 +95,8 @@ bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
     fprintf(output, "Disable FK constraints");
 
   fprintf(output,
-          " AttrLen: %d (%d in this) KeyLen: %d TableId: %d SchemaVer: %d\n",
-          LqhKeyReq::getAttrLen(attrLen), LqhKeyReq::getAIInLqhKeyReq(reqInfo),
+          " AttrLen: %d KeyLen: %d TableId: %d SchemaVer: %d\n",
+          LqhKeyReq::getAttrLen(attrLen),
           LqhKeyReq::getKeyLen(reqInfo),
           LqhKeyReq::getTableId(sig->tableSchemaVersion),
           LqhKeyReq::getSchemaVersion(sig->tableSchemaVersion));
@@ -108,10 +108,18 @@ bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
           LqhKeyReq::getNextReplicaNodeId(sig->fragmentData));
 
   bool printed = false;
-  Uint32 nextPos = LqhKeyReq::getApplicationAddressFlag(reqInfo) << 1;
-  if (nextPos != 0) {
-    fprintf(output, " ApiRef: H\'%.8x ApiOpRef: H\'%.8x", sig->variableData[0],
-            sig->variableData[1]);
+  Uint32 var_index = 0;
+  if (LqhKeyReq::getUserIdFlag(reqInfo)) {
+    fprintf(output, "UserId: %u ", sig->variableData[0]);
+    var_index++;
+    printed = true;
+  }
+  Uint32 nextPos =
+    (LqhKeyReq::getApplicationAddressFlag(reqInfo) << 1) + var_index;
+  if ((nextPos - var_index) != 0) {
+    fprintf(output, " ApiRef: H\'%.8x ApiOpRef: H\'%.8x",
+            sig->variableData[var_index],
+            sig->variableData[var_index + 1]);
     printed = true;
   }
 
@@ -170,28 +178,12 @@ bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
   }
 
   if (LqhKeyReq::getCorrFactorFlag(reqInfo)) {
-    fprintf(output, " corrFactorLo: 0x%x", sig->variableData[nextPos + 0]);
+    fprintf(output, " corrFactorLo: 0x%x", sig->variableData[nextPos]);
     nextPos++;
-    fprintf(output, " corrFactorHi: 0x%x", sig->variableData[nextPos + 0]);
+    fprintf(output, " corrFactorHi: 0x%x", sig->variableData[nextPos]);
     nextPos++;
   }
-  
-  if(!LqhKeyReq::getInterpretedFlag(reqInfo)){
-    printHex(output, &sig->variableData[nextPos],
-             LqhKeyReq::getAIInLqhKeyReq(reqInfo), " AttrInfo:");
-    nextPos += LqhKeyReq::getAIInLqhKeyReq(reqInfo);
-  } else {
-    /* Only have section sizes if it's a short LQHKEYREQ */
-    if (LqhKeyReq::getAIInLqhKeyReq(reqInfo) == LqhKeyReq::MaxAttrInfo) {
-      fprintf(output,
-              " InitialReadSize: %d InterpretedSize: %d "
-              "FinalUpdateSize: %d FinalReadSize: %d SubroutineSize: %d\n",
-              sig->variableData[nextPos + 0], sig->variableData[nextPos + 1],
-              sig->variableData[nextPos + 2], sig->variableData[nextPos + 3],
-              sig->variableData[nextPos + 4]);
-      nextPos += 5;
-    }
-  }
+  fprintf(output, "nextPos = %u\n", nextPos);
   return true;
 }
 

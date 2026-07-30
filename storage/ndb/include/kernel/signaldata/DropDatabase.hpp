@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,6 +30,15 @@
 
 #define JAM_FILE_ID 551
 
+
+struct DropDatabaseRep {
+  static constexpr Uint32 SignalLength = 3;
+
+  Uint32 databaseId;
+  Uint32 databaseVersion;
+  Uint32 databaseNameLen;
+  SECTION( DICT_TAB_INFO = 0 );
+};
 
 struct DropDatabaseReq {
   static constexpr Uint32 SignalLength = 8;
@@ -63,7 +72,8 @@ struct DropDatabaseRef {
   static constexpr Uint32 SignalLength = 9;
 
   enum ErrorCode {
-    InvalidTableState = 1
+    InvalidTableState = 1,
+    DatabaseNameTooLong = 942
   };
 
   union { Uint32 clientRef, senderRef; };

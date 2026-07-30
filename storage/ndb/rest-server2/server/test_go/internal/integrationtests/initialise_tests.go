@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -87,6 +87,16 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 		}
 	}
 
+	//---------------------------- Rate limits --------------------------------
+	// Give the default test API key a high rate limit so all tests exercise
+	// the RONDB-978 identity tagging path without ever being throttled.
+	if conf.REST.UserRateLimits && conf.REST.RateLimitIdentity == "apikey" {
+		if err := testutils.ProvisionDefaultRateLimitUsers(); err != nil {
+			cleanupWrapper(cleanupFNs)()
+			return nil, fmt.Errorf("failed provisioning rate limit users; error: %w", err)
+		}
+	}
+
 	//---------------------------- Prometheus metrics -------------------------
 	_, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
 	cleanupFNs = append(cleanupFNs, rdrsMetricsCleanup)
@@ -105,6 +115,19 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	// some times the servers take some time to start and units tests fail due to connection failures
 	time.Sleep(1000 * time.Millisecond) // need to find a more reliable way to determine if every thing is up
 	log.Debug("Successfully started up servers")
+
+	//---------------------------- API key readiness --------------------------
+	// The server's API key cache converges asynchronously after the hopsworks
+	// database is (re-)seeded; wait until the default key authenticates so no
+	// test races a transiently invalid or grant-less cache entry.
+	if conf.REST.Enable && conf.Security.APIKey.UseHopsworksAPIKeys {
+		url := testutils.NewPKReadURL(testdbs.DB004, "int_table1")
+		body := `{"filters":[{"column":"id0","value":0},{"column":"id1","value":0}]}`
+		if err := testutils.WaitForAPIKeyAuthReady(url, body, 30*time.Second); err != nil {
+			cleanupWrapper(cleanupFNs)()
+			return nil, fmt.Errorf("API key cache not ready; error: %w", err)
+		}
+	}
 
 	// Check if profiling is enabled
 	if profilingEnabled() {

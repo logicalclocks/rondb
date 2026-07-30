@@ -45,6 +45,12 @@ class Ndb_local_table_info {
   // range of cached tuple ids per thread
   Ndb::TupleIdRange m_tuple_id_range;
 
+  // Points to the next entry in the owning Ndb's stale list of evicted cache
+  // entries whose global-cache release is deferred (see park_stale_object).
+  // Only set while this entry is parked; nullptr while it is live in the
+  // local hash.
+  Ndb_local_table_info *m_next_stale;
+
   Uint64 m_local_data[1];  // Must be last member. Used to access extra space.
  private:
   Ndb_local_table_info(NdbTableImpl *table_impl);
@@ -63,6 +69,9 @@ class LocalDictCache {
 
   void put(const BaseString &name, Ndb_local_table_info *);
   void drop(const BaseString &name);
+  // Unlink an entry from the hash and return it WITHOUT destroying it; the
+  // caller takes ownership of the wrapper. Used to park stale entries.
+  Ndb_local_table_info *remove(const BaseString &name);
 
   NdbLinHash<Ndb_local_table_info> m_tableHash;  // On name
 };

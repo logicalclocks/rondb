@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -106,6 +106,7 @@ class ScanFragReq {
   static Uint32 getLcpScanFlag(const Uint32 &requestInfo);
   static Uint32 getStatScanFlag(const Uint32 &requestInfo);
   static Uint32 getPrioAFlag(const Uint32 &requestInfo);
+  static Uint32 getUserIdFlag(const Uint32 &requestInfo);
   /**
    * To ensure backwards compatibility we set the flag when NOT using
    * interpreted mode, previously scans always used interpreted mode. Now
@@ -133,6 +134,7 @@ class ScanFragReq {
   static void setPrioAFlag(Uint32 &requestInfo, Uint32 val);
   static void setNotInterpretedFlag(Uint32 &requestInfo, Uint32 val);
   static void setParallelOrderedScanFlag(Uint32 &requestInfo, Uint32 val);
+  static void setUserIdFlag(Uint32 &requestInfo, Uint32 val);
 
   static void setReorgFlag(Uint32 &requestInfo, Uint32 val);
   static Uint32 getReorgFlag(const Uint32 &requestInfo);
@@ -369,12 +371,13 @@ class ScanFragNextReq {
  * I = TTL ignore flag       - 1  Bit 24
  * e = TTL only expired flag - 1  Bit 25
  * P = Parallel ordered flag - 1  Bit 26
- * M = Ring Buffer Show Meta - 1  Bit 27
+ * u = User Id flag          - 1  Bit 27
+ * M = Ring Buffer Show Meta - 1  Bit 31
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *  oocdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
- *  oocdlxhkrztppppCsaimfqgIePM       Long variant (6.4.0 +)
+ *  oocdlxhkrztppppCsaimfqgIePu   M   Long variant (6.4.0 +)
  */
 #define SF_LOCK_MODE_SHIFT (5)
 #define SF_LOCK_MODE_MASK (1)
@@ -409,7 +412,10 @@ class ScanFragNextReq {
 #define SF_TTL_IGNORE_SHIFT (24)
 #define SF_TTL_ONLY_EXPIRED_SHIFT (25)
 #define SF_PAR_ORDERED_SCAN_SHIFT (26)
-#define SF_RING_BUFFER_SHOW_META_SHIFT (27)
+/* Show Meta moved to bit 31: bit 27 is taken by the 26.02 UserId flag and
+   on a bit conflict the lower version always wins */
+#define SF_RING_BUFFER_SHOW_META_SHIFT (31)
+#define SF_USER_ID_SHIFT (27)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -601,9 +607,18 @@ inline Uint32 ScanFragReq::getPrioAFlag(const Uint32 &requestInfo) {
   return (requestInfo >> SF_PRIO_A_SHIFT) & 1;
 }
 
+inline Uint32 ScanFragReq::getUserIdFlag(const Uint32 &requestInfo) {
+  return (requestInfo >> SF_USER_ID_SHIFT) & 1;
+}
+
 inline void ScanFragReq::setPrioAFlag(UintR &requestInfo, UintR val) {
   ASSERT_BOOL(val, "ScanFragReq::setPrioAFlag");
   requestInfo |= (val << SF_PRIO_A_SHIFT);
+}
+
+inline void ScanFragReq::setUserIdFlag(UintR &requestInfo, UintR val) {
+  ASSERT_BOOL(val, "ScanFragReq::setUserIdFlag");
+  requestInfo |= (val << SF_USER_ID_SHIFT);
 }
 
 inline Uint32 ScanFragReq::getNotInterpretedFlag(const Uint32 &requestInfo) {

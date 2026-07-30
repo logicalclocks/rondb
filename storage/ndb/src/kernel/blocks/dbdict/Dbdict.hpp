@@ -677,6 +677,8 @@ class Dbdict : public SimulatedBlock {
   typedef Ptr<NodeRecord> NodeRecordPtr;
   CArray<NodeRecord> c_nodes;
   NdbNodeBitmask c_aliveNodes;
+  NdbNodeBitmask c_restartLockTakeoverNodes;
+  bool c_restartLockTakeoverReady;
 
   struct PageRecord {
     Uint32 word[8192];
@@ -731,6 +733,7 @@ class Dbdict : public SimulatedBlock {
     Uint32 m_max_transaction_size;
     Uint32 m_max_parallel_transactions;
     Uint32 m_max_parallel_complex_queries;
+    bool m_is_user;
   };
   typedef Ptr<Database> DatabasePtr;
   typedef RecordPool<RWPool<Database> > Database_pool;
@@ -1027,6 +1030,7 @@ class Dbdict : public SimulatedBlock {
   void execNODE_FAILREP(Signal *signal);
 
   void send_nf_complete_rep(Signal *signal, const NodeFailRep *);
+  void restartLockTakeoverReport(Signal *signal, Uint32 nodeId);
 
   void execINCL_NODEREQ(Signal *signal);
   void execAPI_FAILREQ(Signal *signal);

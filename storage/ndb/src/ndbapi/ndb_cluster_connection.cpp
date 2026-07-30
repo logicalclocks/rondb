@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -206,71 +206,97 @@ Uint32 Ndb_cluster_connection_impl::get_next_node(
   DBUG_PRINT("enter", ("cur_pos: %u, start_index: %u",
   iter.cur_pos, iter.start_index));
 
+  /**
+   * Iterate over all data nodes, first the live nodes in our own
+   * location domain, then the live nodes outside of it.
+   *
+   * iter.cur_pos is the next array position to examine, kept wrapped
+   * into [0, n). The position semantics matter beyond this function:
+   * a successful return leaves cur_pos one past the picked node,
+   * which is both the correct continuation point when the caller
+   * rejects the node and keeps iterating, and the round robin seed
+   * for the next iteration (init_get_next_node() snapshots cur_pos
+   * into start_state, whose only remaining use is reset_state()
+   * restoring the seed after an exhausted iteration).
+   *
+   * iter.start_index encodes the iteration state: the low two bits
+   * hold the phase (0 = fresh as left by init_get_next_node(),
+   * 1 = own-domain phase, 2 = outside-domain phase) and the remaining
+   * bits count the candidates consumed in the current phase. A phase
+   * ends once it has consumed n candidates: a full circle from
+   * wherever it started, visiting every node exactly once, wrap
+   * included, ending back at the position where it began.
+   *
+   * The iteration must terminate (return 0) once every node has been
+   * visited: the implementation before RONDB-1096 reset its position
+   * to iter.start_state on every call, which made it return the same
+   * node forever. That was harmless as long as an alive node always
+   * accepted a TC seize, but a node that is alive yet does not accept
+   * (or cannot be sent to) then made Ndb::doConnect spin forever,
+   * e.g. against a node parked at the restart barrier.
+   */
   Ndb_cluster_connection_impl::Node *nodes = m_nodes_comm_group.getBase();
-  Uint32 start = iter.start_index;
-  if (start == 0  && m_my_location_domain_id != 0) {
+  const Uint32 n = no_db_nodes();
+  if (n == 0) {
+    iter.reset_state();
+    DBUG_RETURN(0);
+  }
+
+  Uint32 phase = iter.start_index & 3;
+  Uint32 consumed = iter.start_index >> 2;
+  if (phase == 0) {
+    /**
+     * Fresh iteration: the seed in cur_pos may be out of range (an
+     * external caller can set anything through set_current_pos),
+     * wrap it into the array.
+     */
+    phase = 1;
+    consumed = 0;
+    iter.cur_pos = iter.cur_pos % n;
+  }
+  if (phase == 1 && m_my_location_domain_id != 0) {
     /* First search for live nodes in the same location domain */
-    for (Uint32 j = iter.cur_pos; j < no_db_nodes(); j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
+    while (consumed < n) {
+      const Uint32 j = iter.cur_pos;
+      iter.cur_pos = (j + 1 == n) ? 0 : j + 1;
+      consumed++;
+      NodeId curr_node_id = nodes[j].nodeId;
       bool same_domain =
         m_my_location_domain_id == m_location_domain_id[curr_node_id];
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && same_domain) {
-        iter.cur_pos = j + 1;
+      if (same_domain && impl_ndb->get_node_alive(curr_node_id)) {
+        iter.start_index = 1 | (consumed << 2);
         DBUG_PRINT("exit", ("1: node: %u, cur_pos: %u",
           curr_node_id, iter.cur_pos));
         DBUG_RETURN(curr_node_id);
       }
     }
-    for (Uint32 j = 0; j < iter.cur_pos; j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
-      bool same_domain =
-        m_my_location_domain_id == m_location_domain_id[curr_node_id];
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && same_domain) {
-        iter.cur_pos = j + 1;
-        DBUG_PRINT("exit", ("2: node: %u, cur_pos: %u",
-          curr_node_id, iter.cur_pos));
-        DBUG_RETURN(curr_node_id);
-      }
+  }
+  if (phase == 1) {
+    /* Enter the second phase, nodes outside of our location domain */
+    phase = 2;
+    consumed = 0;
+  }
+  while (consumed < n) {
+    const Uint32 j = iter.cur_pos;
+    iter.cur_pos = (j + 1 == n) ? 0 : j + 1;
+    consumed++;
+    NodeId curr_node_id = nodes[j].nodeId;
+    bool same_domain =
+      (m_my_location_domain_id != 0 &&
+       m_my_location_domain_id == m_location_domain_id[curr_node_id]);
+    if (!same_domain && impl_ndb->get_node_alive(curr_node_id)) {
+      iter.start_index = 2 | (consumed << 2);
+      DBUG_PRINT("exit", ("2: node: %u, cur_pos: %u",
+        curr_node_id, iter.cur_pos));
+      DBUG_RETURN(curr_node_id);
     }
   }
-  iter.cur_pos = iter.start_state;
-  iter.start_index = 1;
-  {
-    /* No node found in same domain, now search outside of our domain */
-    for (Uint32 j = iter.cur_pos; j < no_db_nodes(); j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
-      bool same_domain =
-        (m_my_location_domain_id == m_location_domain_id[curr_node_id] &&
-         m_my_location_domain_id != 0);
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && !same_domain) {
-        iter.cur_pos = j + 1;
-        DBUG_PRINT("exit", ("3: node: %u, cur_pos: %u",
-          curr_node_id, iter.cur_pos));
-        DBUG_RETURN(curr_node_id);
-      }
-    }
-    for (Uint32 j = 0; j < iter.cur_pos; j++) {
-      Ndb_cluster_connection_impl::Node &curr_node = nodes[j];
-      NodeId curr_node_id = curr_node.nodeId;
-      bool same_domain =
-        (m_my_location_domain_id == m_location_domain_id[curr_node_id] &&
-         m_my_location_domain_id != 0);
-      bool available = impl_ndb->get_node_alive(curr_node_id); 
-      if (available && !same_domain) {
-        iter.cur_pos = j + 1;
-        DBUG_PRINT("exit", ("4: node: %u, cur_pos: %u",
-          curr_node_id, iter.cur_pos));
-        DBUG_RETURN(curr_node_id);
-      }
-    }
-  }
-  /* No live node found anywhere in cluster */
+  /**
+   * No usable node found anywhere in cluster. Park the state so that
+   * further calls without a new init_get_next_node() keep returning
+   * 0, and restore the round robin seed for the next iteration.
+   */
+  iter.start_index = 2 | (n << 2);
   iter.reset_state();
   DBUG_RETURN(0);
 }

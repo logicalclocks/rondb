@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -381,6 +381,25 @@ private:
 
   ClusterMgr *theClusterMgr;
 
+public:
+  int retrieveUserId(const char *username,
+                     Uint32 username_len,
+                     Uint32 &userId,
+                     Uint32 &userIdVersion,
+                     Uint32 node_id);
+
+  int updateUserId(const char *username,
+                   Uint32 username_len,
+                   Uint32 userId,
+                   Uint32 userIdVersion);
+  void deleteUserId(const char *username,
+                    Uint32 username_len,
+                    Uint32 userId,
+                    Uint32 userIdVersion);
+  void rateOverflowError(const char *username,
+                         Uint32 username_len);
+
+private:
   /* Single dozer supported currently.
    * In future, use a DLList to support > 1
    */
@@ -691,6 +710,51 @@ inline void TransporterFacade::TFSendBuffer::unlock_send() {
 
 #include "ClusterMgr.hpp"
 #include "ndb_cluster_connection_impl.hpp"
+
+inline
+void
+TransporterFacade::rateOverflowError(const char *username,
+                                     Uint32 username_len) {
+  theClusterMgr->rateOverflowError(username, username_len);
+}
+
+inline
+int
+TransporterFacade::retrieveUserId(const char *username,
+                                  Uint32 username_len,
+                                  Uint32 &userId,
+                                  Uint32 &userIdVersion,
+                                  Uint32 node_id) {
+  return theClusterMgr->retrieveUserId(username,
+                                       username_len,
+                                       userId,
+                                       userIdVersion,
+                                       node_id);
+}
+
+inline
+int
+TransporterFacade::updateUserId(const char *username,
+                                Uint32 username_len,
+                                Uint32 userId,
+                                Uint32 userIdVersion) {
+  return theClusterMgr->updateUserId(username,
+                                     username_len,
+                                     userId,
+                                     userIdVersion);
+}
+
+inline
+void
+TransporterFacade::deleteUserId(const char *username,
+                                Uint32 username_len,
+                                Uint32 userId,
+                                Uint32 userIdVersion) {
+  theClusterMgr->deleteUserId(username,
+                              username_len,
+                              userId,
+                              userIdVersion);
+}
 
 inline
 void

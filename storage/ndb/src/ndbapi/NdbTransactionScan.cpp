@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,6 +29,7 @@
 #include "API.hpp"
 
 #include <signaldata/ScanTab.hpp>
+#include <signaldata/TcKeyRef.hpp>
 
 #include <NdbOut.hpp>
 #include <NdbQueryOperationImpl.hpp>
@@ -53,6 +55,9 @@
 int NdbTransaction::receiveSCAN_TABREF(const NdbApiSignal *aSignal) {
   const ScanTabRef *ref = CAST_CONSTPTR(ScanTabRef, aSignal->getDataPtr());
 
+  if (ref->errorCode == TcKeyRef::WriteRateOverflowError) {
+    rateOverflowError();
+  }
   if (checkState_TransId(&ref->transId1)) {
     if (theScanningOp) {
       theScanningOp->execCLOSE_SCAN_REP(ref->errorCode, ref->closeNeeded);

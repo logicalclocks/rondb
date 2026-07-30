@@ -1871,7 +1871,7 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
    * @param   handle        Management handle.
    * @param   nextDatabaseId Next database id to start searching from
    *                         Both input parameter and output
-   * @param   result_buf    The result of the List Database Quota
+   * @param   result_buf    The result of the Backup Database Quota
    */
   int ndb_mgm_backup_quotas(NdbMgmHandle handle,
                             Uint32 *nextDatabaseId,
@@ -1927,6 +1927,84 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
    */
   int ndb_mgm_drop_quotas(NdbMgmHandle handle,
                           const char *database_name);
+
+  /**
+   * Get rate limit on user level.
+   *
+   * @param   handle        Management handle.
+   * @param   user_name     Username
+   * @param   result_buf    The result of the Get User
+   */
+  int ndb_mgm_get_user(NdbMgmHandle handle,
+                       const char *user_name,
+                       char **result_buf);
+
+  /**
+   * List rate limits on user level.
+   *
+   * @param   handle        Management handle.
+   * @param   nextUserId    Next user id to start searching from
+   *                         Both input parameter and output
+   * @param   result_buf    The result of the List User
+   */
+  int ndb_mgm_list_users(NdbMgmHandle handle,
+                         Uint32 *nextUserId,
+                         char **result_buf);
+
+  /**
+   * Backup rate limits on user level.
+   *
+   * @param   handle        Management handle.
+   * @param   nextUserId    Next user id to start searching from
+   *                         Both input parameter and output
+   * @param   result_buf    The result of the Backup User
+   */
+  int ndb_mgm_backup_users(NdbMgmHandle handle,
+                           Uint32 *nextUserId,
+                           char **result_buf);
+
+  /**
+   * Set rate limit on user level.
+   *
+   * @param   handle        Management handle.
+   * @param   user_name     Username
+   * @param   rate_per_sec  Rate limit on reads/writes
+   * @param   max_transaction_size Max size of a transaction
+   * @param   max_parallel_transactions Max number of parallel transactions
+   * @param   max_parallel_complex_queries Max number of parallel queries
+   */
+  int ndb_mgm_set_user(NdbMgmHandle handle,
+                       const char *user_name,
+                       Uint32 rate_per_sec,
+                       Uint32 max_transaction_size,
+                       Uint32 max_parallel_transactions,
+                       Uint32 max_parallel_complex_queries);
+
+  /**
+   * Alter rate limit on user level.
+   *
+   * @param   handle        Management handle.
+   * @param   user_name     Username
+   * @param   rate_per_sec  Rate limit on reads/writes
+   * @param   max_transaction_size Max size of a transaction
+   * @param   max_parallel_transactions Max number of parallel transactions
+   * @param   max_parallel_complex_queries Max number of parallel queries
+   */
+  int ndb_mgm_alter_user(NdbMgmHandle handle,
+                         const char *user_name,
+                         Uint32 rate_per_sec,
+                         Uint32 max_transaction_size,
+                         Uint32 max_parallel_transactions,
+                         Uint32 max_parallel_complex_queries);
+
+  /**
+   * Drop rate limit on user level.
+   *
+   * @param   handle        Management handle.
+   * @param   user_name     Username
+   */
+  int ndb_mgm_drop_user(NdbMgmHandle handle,
+                        const char *user_name);
 
   /**
    * Error printer

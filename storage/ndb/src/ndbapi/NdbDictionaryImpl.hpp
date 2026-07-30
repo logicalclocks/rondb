@@ -997,6 +997,7 @@ class NdbDictionaryImpl : public NdbDictionary::Dictionary {
                       Uint32 tabChangeMask);
   int invalidateObject(NdbTableImpl &);
   int removeCachedObject(NdbTableImpl &);
+  void releaseStaleTableReferences();
 
   int createIndex(NdbIndexImpl &ix, bool offline);
   int createIndex(NdbIndexImpl &ix, NdbTableImpl &tab, bool offline);
@@ -1075,6 +1076,16 @@ class NdbDictionaryImpl : public NdbDictionary::Dictionary {
 
   LocalDictCache m_localHash;
   GlobalDictCache *m_globalHash;
+  /*
+   * Head of this Ndb's singly-linked list of stale table/index cache entries
+   * evicted from the local hash whose global-cache release is deferred (see
+   * park_stale_object). The list is linked through the evicted
+   * Ndb_local_table_info entries themselves (their m_next_stale pointer), so
+   * parking one needs no allocation. Released by releaseStaleTableReferences(),
+   * at the latest from the destructor.
+   */
+  Ndb_local_table_info *m_staleLocalTableInfoHead;
+  void park_stale_object(const BaseString &internalName);
 
   static NdbDictionaryImpl &getImpl(NdbDictionary::Dictionary &t);
   static const NdbDictionaryImpl &getImpl(const NdbDictionary::Dictionary &t);
@@ -1381,16 +1392,24 @@ inline Ndb_local_table_info *NdbDictionaryImpl::get_local_table_info(
      * A schema-change notification (GSN_ALTER_TABLE_REP ->
      * GlobalDictCache::alter_table_rep) marks the shared NdbTableImpl
      * Invalid/Altered. This local cache entry points at that same object, so
-     * honor the mark: drop+release the stale entry and re-resolve below from
-     * the global cache (which self-heals on Invalid). The re-resolution
-     * reflects the current schema -- a fresh incarnation after a recreate, or
-     * "table not found" if it was dropped. Without this a pooled Ndb keeps
-     * serving the stale object after a schema change.
+     * honor the mark: drop the stale entry and re-resolve below from the
+     * global cache (which self-heals on Invalid). The re-resolution reflects
+     * the current schema -- a fresh incarnation after a recreate, or "table
+     * not found" if it was dropped. Without this a pooled Ndb keeps serving
+     * the stale object after a schema change.
+     *
+     * The global-cache release of the stale object is PARKED, not performed
+     * here: Table/Column/NdbRecord pointers handed out by earlier getTable()
+     * calls through this Ndb still rely on this reference, and releasing it
+     * inline can delete the object under them (observed use-after-free in
+     * batch reads that touch one table twice during a drop+recreate). Parked
+     * objects are released by releaseStaleTableReferences() - at the latest
+     * on Ndb destruction, or earlier at application-chosen safe points.
      */
     const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
     if (unlikely(st == NdbDictionary::Object::Invalid ||
                  st == NdbDictionary::Object::Altered)) {
-      invalidateObject(*info->m_table_impl);  // drop local + release global
+      park_stale_object(internalTableName);
       info = nullptr;
     }
   }
@@ -1552,12 +1571,12 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
   NdbTableImpl *tab;
   if (info != nullptr) {
     // Honor a DROP/ALTER invalidation on a local hit so the stale index entry
-    // is refetched instead of reused. (See the matching check in
-    // get_local_table_info.)
+    // is refetched instead of reused. The release is parked, not inline -
+    // see the matching check in get_local_table_info.
     const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
     if (unlikely(st == NdbDictionary::Object::Invalid ||
                  st == NdbDictionary::Object::Altered)) {
-      invalidateObject(*info->m_table_impl);  // drop local + release global
+      park_stale_object(internal_indexname);
       info = nullptr;
     }
   }
@@ -1588,8 +1607,11 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
         idx->m_table_version == (unsigned)prim.getObjectVersion()) {
       return idx;
     }
-    m_localHash.drop(internal_indexname);
-    releaseIndexGlobal(*idx, 1);
+    // Mark the wrong-incarnation entry Invalid so the global cache refetches
+    // for future callers, but park our reference instead of releasing it
+    // inline - earlier pointers from this Ndb may still be in use.
+    tab->m_status = NdbDictionary::Object::Invalid;
+    park_stale_object(internal_indexname);
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
@@ -1601,11 +1623,12 @@ retry:
 
   info = m_localHash.get(old_internal_indexname);
   if (info != nullptr) {
-    // Honor a DROP/ALTER invalidation on a local hit (see get_local_table_info).
+    // Honor a DROP/ALTER invalidation on a local hit; the release is parked,
+    // not inline (see get_local_table_info).
     const NdbDictionary::Object::Status st = info->m_table_impl->m_status;
     if (unlikely(st == NdbDictionary::Object::Invalid ||
                  st == NdbDictionary::Object::Altered)) {
-      invalidateObject(*info->m_table_impl);  // drop local + release global
+      park_stale_object(old_internal_indexname);
       info = nullptr;
     }
   }
@@ -1627,8 +1650,9 @@ retry:
         idx->m_table_version == (unsigned)prim.getObjectVersion()) {
       return idx;
     }
-    m_localHash.drop(old_internal_indexname);
-    releaseIndexGlobal(*idx, 1);
+    // Same wrong-incarnation handling as for the new name format above.
+    tab->m_status = NdbDictionary::Object::Invalid;
+    park_stale_object(old_internal_indexname);
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }

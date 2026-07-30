@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -192,7 +192,6 @@
 #define ZPREPAREINPROGRESS 238
 #define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
 #define ZWRONG_SCHEMA_VERSION_ERROR 241 // Also Scan
-#define ZRATE_OVERFLOW_ERROR 243
 #define ZTOO_MANY_OPERATIONS_IN_TRANSACTION_ERROR 247
 #define ZTOO_MANY_CONCURRENT_TRANSACTIONS_ERRROR 248
 #define ZDISK_QUOTA_OVERFLOW_ERROR 239
@@ -2956,6 +2955,7 @@ class Dbtc : public SimulatedBlock {
       theDatabaseConcurrentTransactionMutex(nullptr),
       m_is_memory_quota_exceeded(false),
       m_is_disk_quota_exceeded(false),
+      m_is_user(false),
       m_current_in_memory_size8k(0),
       m_current_disk_space_size32k(0),
       m_current_used_rate_us(0),
@@ -2994,6 +2994,7 @@ class Dbtc : public SimulatedBlock {
 
     bool m_is_memory_quota_exceeded;
     bool m_is_disk_quota_exceeded;
+    bool m_is_user;
 
     NDB_TICKS m_last_rate_decrement;
 

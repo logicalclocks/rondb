@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -583,6 +583,8 @@ static struct view {
      " process_name, service_URI "
      "FROM `ndbinfo`.`ndb$processes` "
      "ORDER BY node_id"},
+    {"ndbinfo", "rdma_transporters",
+     "SELECT * FROM `ndbinfo`.`ndb$rdma_transporters`"},
     {"ndbinfo", "resources",
      "SELECT node_id, "
      " CASE resource_id"
@@ -784,8 +786,6 @@ static struct view {
      " connect_count, "
      " overloaded, overload_count, slowdown, slowdown_count, encrypted "
      "FROM `ndbinfo`.`ndb$transporters`"},
-    {"ndbinfo", "rdma_transporters",
-     "SELECT * FROM `ndbinfo`.`ndb$rdma_transporters`"},
 };
 
 static constexpr size_t num_views = sizeof(views) / sizeof(views[0]);

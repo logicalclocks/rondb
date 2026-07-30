@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -49,7 +50,9 @@ enum WaitSignalType {
   WAIT_CREATE_INDX_REQ = 15,
   WAIT_DROP_INDX_REQ = 16,
   WAIT_LIST_TABLES_CONF = 17,
-  WAIT_SCHEMA_TRANS = 18
+  WAIT_SCHEMA_TRANS = 18,
+
+  WAIT_GET_DATABASE_REQ = 19
 };
 
 class NdbWaiter {

@@ -590,6 +590,29 @@ ndbd_send_started_bitmask(Uint32 x)
   return x >= NDBD_SEND_STARTED_BITMASK;
 }
 
+/**
+ * RonDB: node restarts park at the restart barrier in start phase 110
+ * until all concurrently restarting nodes have completed recovery
+ * (RONDB-1096). The barrier is only used when the NDBCNTR master and
+ * the peer NDBCNTRs support it; against older nodes we fail open and
+ * complete the start immediately as before.
+ *
+ * 26.2.9 is the first release in the 26.02 series that ships
+ * RONDB-1096 (the rondb-helm rondb.supportsRestartBarrier helper must
+ * use the same version). Earlier 26.02 releases, and every 25.10
+ * release when seen from this series, are treated as not supporting
+ * the barrier: a lower version must never be assumed to support the
+ * new CNTR_WAITREP waitpoint, and against such nodes we fail open.
+ */
+#define NDBD_RESTART_PHASE_110_BARRIER NDB_MAKE_VERSION(26,2,9)
+static
+inline
+int
+ndbd_restart_phase_110_barrier(Uint32 x)
+{
+  return x >= NDBD_RESTART_PHASE_110_BARRIER;
+}
+
 // New limitations from WL#12757
 
 #define NDBD_80_PROTOCOL_ACCEPT_74 NDB_MAKE_VERSION(7,4,6)
@@ -1286,6 +1309,21 @@ ndbd_support_drop_table_notification(Uint32 x) {
     return x >= NDBD_DROP_TABLE_NOTIFICATION_2604;
   }
   if (minor > 4) {
+    return true;
+  }
+  return false;
+}
+
+static inline
+bool
+ndbd_support_user_rate_limits(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major > 25) {
+    return true;
+  }
+  if ((major == 25) && (minor == 10) && (rel >= 2)) {
     return true;
   }
   return false;

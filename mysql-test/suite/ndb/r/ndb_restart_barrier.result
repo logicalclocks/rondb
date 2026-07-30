@@ -1,0 +1,11 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Barrier holds while a node is below phase 110, wave releases together
+# Consecutive waves reset barrier and dictionary lock state
+# Failure of the stalled starter releases the barrier
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All restart barrier tests passed
