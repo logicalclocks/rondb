@@ -125,6 +125,11 @@ END_OF_PERL
 --disable_query_log
 --disable_warnings
 
+# The Golang tests create and drop many databases in quick succession;
+# under load the schema distribution can time out transiently and mysqld
+# logs a warning that would otherwise fail the test's error log check.
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+
 DROP DATABASE IF EXISTS hopsworks;
 DROP DATABASE IF EXISTS db000;
 DROP DATABASE IF EXISTS db001;
@@ -168,6 +173,8 @@ DROP DATABASE IF EXISTS sentinel;
 # Also cleanup on mysqld.2.1 to avoid NDB schema distribution delay
 # causing check-testcase to see stale databases.
 --connect(cleanup_server2, 127.0.0.1, root, , test, $MASTER_MYPORT1)
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
 
 DROP DATABASE IF EXISTS hopsworks;
 DROP DATABASE IF EXISTS db000;

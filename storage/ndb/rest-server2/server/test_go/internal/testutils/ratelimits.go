@@ -91,10 +91,20 @@ const (
 	// rateLimitLowRate is a deliberately tiny per-second budget so that a
 	// burst is guaranteed to exhaust it and trip the overload rejection.
 	rateLimitLowRate = 1
-	// rateLimitBurstSize and rateLimitBurstParallel size the concurrent
-	// burst fired at a single identity.
-	rateLimitBurstSize     = 400
-	rateLimitBurstParallel = 15
+	// rateLimitBurstParallel concurrent senders apply sustained pressure.
+	rateLimitBurstParallel = 32
+	// rateLimitBurstMaxDuration bounds the throttled burst. The data nodes
+	// reject only once the queueing delay computed from usage accumulated
+	// over 100ms ticks crosses the read-abort threshold (~30ms); how fast
+	// it climbs depends on machine speed and per-request cost, so the
+	// burst is bounded by time and first-429, never by request count (a
+	// fixed-count burst on a fast machine finishes before the delay can
+	// climb, and is merely slowed down instead of rejected).
+	rateLimitBurstMaxDuration = 30 * time.Second
+	// rateLimitZeroBurstDuration sizes the burst asserting the absence of
+	// throttling for rate 0; a couple of seconds of full pressure is far
+	// beyond the point where a limited identity starts seeing 429s.
+	rateLimitZeroBurstDuration = 3 * time.Second
 )
 
 // rateLimitSettleTime waits out the ~1s client-side overload backoff plus the
@@ -129,27 +139,54 @@ func setRateLimit(t *testing.T, ratePerSec uint32) {
 	}
 }
 
-// rateLimitBurst fires rateLimitBurstSize concurrent sendOne calls (all
-// sharing one client so the burst reuses pooled connections) and returns how
-// many were served vs rate limited.
-func rateLimitBurst(client *http.Client, sendOne func(*http.Client) int) (numOk, numRateLimited int) {
+// setupBurstHttpClient returns an HTTP client like SetupHttpClient but with
+// an idle connection pool sized for the burst, so every worker reuses its
+// connection. The default pool (2 idle conns per host) closes almost every
+// burst connection after one response, and the sustained burst then runs the
+// OS out of ephemeral ports (thousands of sockets in TIME_WAIT).
+func setupBurstHttpClient(t *testing.T) *http.Client {
+	t.Helper()
+	tlsConfig, err := GetClientTLSConfig()
+	if err != nil {
+		t.Fatalf("failed to get TLS config for HTTP client. Error: %v", err)
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig:     tlsConfig,
+			ForceAttemptHTTP2:   true,
+			MaxIdleConns:        rateLimitBurstParallel,
+			MaxIdleConnsPerHost: rateLimitBurstParallel,
+		}}
+}
+
+// rateLimitBurst applies sustained pressure: rateLimitBurstParallel workers
+// (all sharing one client so the burst reuses pooled connections) send
+// requests in a loop until maxDuration elapses — or, when stopOn429 is set,
+// until some request has been rejected with 429 (each worker still finishes
+// its in-flight request). Returns how many were served vs rate limited.
+func rateLimitBurst(client *http.Client, sendOne func(*http.Client) int,
+	stopOn429 bool, maxDuration time.Duration) (numOk, numRateLimited int) {
+	deadline := time.Now().Add(maxDuration)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, rateLimitBurstParallel)
-	for i := 0; i < rateLimitBurstSize; i++ {
+	for i := 0; i < rateLimitBurstParallel; i++ {
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			code := sendOne(client)
-			mu.Lock()
-			if code == http.StatusOK {
-				numOk++
-			} else {
-				numRateLimited++
+			for time.Now().Before(deadline) {
+				code := sendOne(client)
+				mu.Lock()
+				if code == http.StatusOK {
+					numOk++
+				} else {
+					numRateLimited++
+				}
+				stop := stopOn429 && numRateLimited > 0
+				mu.Unlock()
+				if stop {
+					return
+				}
 			}
-			mu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -168,17 +205,27 @@ func restoreHighRateLimit(t *testing.T) {
 // throttled with HTTP 429, and raising the limit restores service. sendOne
 // performs one request with the supplied client and returns its HTTP status,
 // which must be http.StatusOK or http.StatusTooManyRequests.
+//
+// Rejection is deliberately not instantaneous in the kernel: per-operation
+// code only consults per-user queueing/abort flags, which the data nodes
+// recompute from accounted usage as it flows in and decay on 100ms ticks.
+// Below the abort thresholds an over-budget user is only *delayed*, so the
+// burst applies sustained pressure until the computed delay crosses the
+// read-abort threshold and the first 429 arrives (see
+// rateLimitBurstMaxDuration); from the first kernel rejection the
+// client-side backoff cascades 429s anyway.
 func RunEndpointRateLimitTest(t *testing.T, sendOne func(*http.Client) int) {
 	t.Helper()
-	client := SetupHttpClient(t)
+	client := setupBurstHttpClient(t)
 	defer restoreHighRateLimit(t)
 
 	setRateLimit(t, rateLimitLowRate)
 	time.Sleep(rateLimitSettleTime) // start from a fresh window
 
-	numOk, numRateLimited := rateLimitBurst(client, sendOne)
-	t.Logf("burst of %d at rate %d/sec -> %d ok, %d rate limited",
-		rateLimitBurstSize, rateLimitLowRate, numOk, numRateLimited)
+	numOk, numRateLimited := rateLimitBurst(client, sendOne, true,
+		rateLimitBurstMaxDuration)
+	t.Logf("sustained burst at rate %d/sec -> %d ok, %d rate limited",
+		rateLimitLowRate, numOk, numRateLimited)
 	if numRateLimited == 0 {
 		t.Fatalf("expected some requests rejected with 429, all %d succeeded", numOk)
 	}
@@ -198,13 +245,14 @@ func RunEndpointRateLimitTest(t *testing.T, sendOne func(*http.Client) int) {
 // endpoint, so it is exercised once (via pk-read).
 func RunZeroRateIsUnlimitedTest(t *testing.T, sendOne func(*http.Client) int) {
 	t.Helper()
-	client := SetupHttpClient(t)
+	client := setupBurstHttpClient(t)
 	defer restoreHighRateLimit(t)
 
 	setRateLimit(t, 0)
 	time.Sleep(rateLimitSettleTime)
 
-	numOk, numRateLimited := rateLimitBurst(client, sendOne)
+	numOk, numRateLimited := rateLimitBurst(client, sendOne, false,
+		rateLimitZeroBurstDuration)
 	if numRateLimited != 0 {
 		t.Fatalf("expected no rate limiting at rate 0, got %d/%d rejected",
 			numRateLimited, numOk+numRateLimited)
