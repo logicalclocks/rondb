@@ -33087,8 +33087,16 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-  } else {
-    /* Users are stored as $username, converted before searching */
+  } else if (db.DatabaseName[0] != '$') {
+    /*
+     * Users are stored as $username. This conversion must be idempotent:
+     * the master converts the user-facing name from the fresh client request
+     * and then re-packs the converted name (packDatabaseIntoPages reads the
+     * stored rope, which already holds "$username") into the op section. The
+     * participants and the restart path therefore re-parse a name that is
+     * already prefixed, so only convert when it is not, otherwise a second
+     * "$" would be prepended ("$$username") on those nodes.
+     */
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
     db.DatabaseName[0] = '$';
   }
@@ -34168,13 +34176,19 @@ void Dbdict::dropDatabase_commit(Signal* signal, SchemaOpPtr op_ptr) {
   bool ok = find_object(db_ptr, databaseId);
   ndbrequire(ok);
 
-  if (!db_ptr.p->m_is_user) { 
-    jam();
-    Callback c;
-    c.m_callbackData = op_ptr.p->op_key;
-    c.m_callbackFunction = safe_cast(&Dbdict::dropDb_alterComplete);
-    dropDbPtr.p->m_callback = c;
+  /*
+   * Both the database and the user path finish through dropDb_completeBlock,
+   * which fires m_callback once DBTC has dropped the database. The callback
+   * must therefore be armed for both, otherwise the user path invokes a null
+   * callback and the node aborts (failed ndbrequire in SimulatedBlock).
+   */
+  Callback c;
+  c.m_callbackData = op_ptr.p->op_key;
+  c.m_callbackFunction = safe_cast(&Dbdict::dropDb_alterComplete);
+  dropDbPtr.p->m_callback = c;
 
+  if (!db_ptr.p->m_is_user) {
+    jam();
     send_disconnect_table_database(signal, op_ptr, db_ptr, 0);
     return;
   }
@@ -34638,7 +34652,14 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   /* is_user travels in the packed properties, see createDatabase_parse */
   bool is_user = db.IsUser;
 
-  if (is_user) {
+  /*
+   * Idempotent $-prefix conversion, see createDatabase_parse: the master
+   * re-packs the already-converted "$username" into the op section, so the
+   * participants and the restart path re-parse a name that is already
+   * prefixed. Only convert when it is not, otherwise the lookup below would
+   * search for "$$username" and fail with NoSuchTable on those nodes.
+   */
+  if (is_user && db.DatabaseName[0] != '$') {
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
     db.DatabaseName[0] = '$';
   }
