@@ -6408,13 +6408,17 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
         const GetDatabaseConf * conf =
           CAST_CONSTPTR(GetDatabaseConf, signal->getDataPtr());
 
-        /* First send the protocol part */
+        /*
+         * First send the protocol part. The client reads exactly num_rows
+         * newline-terminated rows off the socket, so num_rows must match the
+         * number of rows emitted below for this branch: a database record has
+         * 9 rows, a user record has 6. Declaring the wrong count hangs the
+         * client's socket read (timeout).
+         */
         out << "result: Ok" << endl;
-        out << "num_rows: 9" << endl;
-        out << endl;
-
-        /* Next send the result data with 9 rows */
         if (!is_user) {
+          out << "num_rows: 9" << endl;
+          out << endl;
           out << "Database Quotas for " << (const char*)&databaseName[0] << endl;
           out << "databaseId = " << conf->databaseId << endl;
           out << "databaseVersion = " << conf->databaseId << endl;
@@ -6427,6 +6431,8 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
           out << "MaxParallelComplexQueries = ";
           out << conf->MaxParallelComplexQueries << endl;
         } else {
+          out << "num_rows: 6" << endl;
+          out << endl;
           out << "User rate limits for " << (const char*)&databaseName[0] << endl;
           out << "userId = " << conf->databaseId << endl;
           out << "userVersion = " << conf->databaseId << endl;
@@ -6573,17 +6579,24 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
           out << endl;
           return;
         }
-        /* First send the protocol part */
+        /*
+         * First send the protocol part. num_rows must match the number of
+         * newline-terminated rows emitted for this branch (the client reads
+         * exactly that many off the socket): a database record has 10 rows
+         * (9 fields + trailing blank), a user record has 8 rows (7 fields +
+         * trailing blank). A wrong count hangs the client's socket read.
+         */
         nextDatabaseId = conf->databaseId + 1;
         out << "result: Ok" << endl;
-        out << "num_rows: 10" << endl;
-        if (!is_user)
+        if (!is_user) {
+          out << "num_rows: 10" << endl;
           out << "nextDatabaseId: " << nextDatabaseId << endl;
-        else
+        } else {
+          out << "num_rows: 8" << endl;
           out << "nextUserId: " << nextDatabaseId << endl;
+        }
         out << endl;
 
-        /* Next send the result data with 9 rows */
         if (!is_user) {
           const char *databaseName = (const char*)signal->ptr[0].p;
           out << "Database Quotas for " << databaseName << endl;
