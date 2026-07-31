@@ -56,5 +56,5 @@ RdmaLogLevel must be an integer between 0 and 3 (0=errors, 1=warnings, 2=info, 3
 RdmaLogLevel must be an integer between 0 and 3 (0=errors, 1=warnings, 2=info, 3=debug)
 
 Usage: <id> SET <parameter> <value>
-Supported parameters: MaxDiskWriteSpeed, RdmaLogLevel
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel
 
