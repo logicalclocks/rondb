@@ -431,8 +431,8 @@ ErrorBundle ErrorCodes[] = {
   { 939,  DMEC, AE, "Wrong column for input parameters" },
   { 940,  DMEC, AE, "Direct write to ring-buffer table not allowed. Use MySQL handler INSERT/UPDATE/DELETE." },
   { 941,  DMEC, AE, "In-memory varsize part of row can at most be 32036 bytes" },
-  { 942,  DMEC, AE, "On-disk part of row can at most be 31080 bytes" },
-  { 943,  DMEC, AE, "Database name too long" },
+  { 942,  DMEC, AE, "Database name too long" },
+  { 943,  DMEC, AE, "On-disk part of row can at most be 31080 bytes" },
   { 944,  DMEC, AE, "Fixed size part of row can at most be 16280 bytes" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
@@ -536,6 +536,8 @@ ErrorBundle ErrorCodes[] = {
   { 1240, DMEC, AE, "Create Database failed, no disk quota available" },
   { 1241, DMEC, AE, "Alter Database failed, no disk quota available" },
   { 1242, DMEC, AE, "Drop File failed, Not allowed with Disk quotas" },
+  { 1243,  HA_WRONG_CREATE_OPTION, SE, "Invalid partition hash definition" },
+  { 1244,  HA_WRONG_CREATE_OPTION, SE, "Invalid fanout in partition hash definition" },
   { 4256, DMEC, AE, "Must call Ndb::init() before this function" },
   { 4257, DMEC, AE, "Tried to read too much - too many getValue calls" },
   { 320,  DMEC, AE, "Invalid no of nodes specified for new nodegroup" },
@@ -566,6 +568,7 @@ ErrorBundle ErrorCodes[] = {
   { 2200,  DMEC, AE, "Dirty reads and dirty writes are supported, not other operation types" },
   { 2201,  DMEC, AE, "Parallel Ordered Index scan flag set requires even number of receiver ids" },
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },
+  { 2203,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
 
   /** 
    * Scan application errors
@@ -1141,6 +1144,9 @@ ErrorBundle ErrorCodes[] = {
     "System shutdown in progress" },
   { 5028 /* NODE_SHUTDOWN_WOULD_CAUSE_SYSTEM_CRASH */, DMEC, AE,
    "Node shutdown would cause system crash" },
+  { 5029 /* NODE_SHUTDOWN_PERMISSION_TIMEOUT */, DMEC, TO,
+   "Timeout waiting for permission to stop the node gracefully, the node "
+   "is still started. Retry, or use abort to stop immediately." },
   { 5030 /* NO_CONTACT_WITH_DB_NODES */, DMEC, AE,
     "No contact with database nodes" },
   { 5031 /* UNSUPPORTED_NODE_SHUTDOWN */, DMEC, AE,

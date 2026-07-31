@@ -34,6 +34,7 @@
 
 #include "Configuration.hpp"
 #include "Dbdih.hpp"
+#include "../ndbcntr/Ndbcntr.hpp"
 
 #include <signaldata/AllocNodeId.hpp>
 #include <signaldata/BlockCommitOrd.hpp>
@@ -777,6 +778,16 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       tabPtr.i = tableId;
       ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
       removeNodeFromTable(signal, nodeId, tabPtr);
+      return;
+    }
+    case DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY: {
+      jam();
+      if (signal->theData[1] != c_dictLockTakeoverGen) {
+        jam();
+        /* Superseded by a fresh request from a later master takeover. */
+        return;
+      }
+      sendDictLockTakeoverReq(signal);
       return;
     }
     case DihContinueB::ZCOPY_NODE: {
@@ -1897,6 +1908,7 @@ void Dbdih::execSTTOR(Signal *signal) {
   switch (signal->theData[1]) {
     case 1:
       jam();
+      c_ndbcntr = (Ndbcntr *)globalData.getBlock(NDBCNTR);
       createMutexes(signal, 0);
       init_lcp_pausing_module();
 #ifdef DEBUG_LCP_COMP
@@ -2194,10 +2206,7 @@ void Dbdih::execNODE_START_REP(Signal *signal) {
      *   started
      */
     jam();
-    if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
-      sendDictUnlockOrd(signal, c_dictLockSlavePtrI_nodeRestart);
-      c_dictLockSlavePtrI_nodeRestart = RNIL;
-    }
+    releaseDictLock_nodeRestart(signal);
   }
 
   // Request max lag recalculation to reflect new cluster scale
@@ -2510,11 +2519,39 @@ void Dbdih::nodeRestartPh2Lab(Signal *signal) {
 
 void Dbdih::recvDictLockConf_nodeRestart(Signal *signal, Uint32 data,
                                          Uint32 ret) {
-  ndbrequire(c_dictLockSlavePtrI_nodeRestart == RNIL);
   ndbrequire(data != RNIL);
+
+  if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
+    jam();
+    ndbrequire(data == c_dictLockSlavePtrI_nodeRestart);
+    g_eventLogger->info(
+        "NodeRestart DICT lock re-registered with master node %u",
+        cmasterNodeId);
+    if (getNodeState().getStarted()) {
+      jam();
+      releaseDictLock_nodeRestart(signal);
+    }
+    return;
+  }
+
   c_dictLockSlavePtrI_nodeRestart = data;
 
   nodeRestartPh2Lab2(signal);
+}
+
+void Dbdih::releaseDictLock_nodeRestart(Signal *signal) {
+  if (c_dictLockSlavePtrI_nodeRestart == RNIL) return;
+
+  DictLockSlavePtr lockPtr;
+  ndbrequire(c_dictLockSlavePool.getPtr(
+      lockPtr, c_dictLockSlavePtrI_nodeRestart));
+  if (!lockPtr.p->locked) {
+    jam();
+    return;
+  }
+
+  sendDictUnlockOrd(signal, c_dictLockSlavePtrI_nodeRestart);
+  c_dictLockSlavePtrI_nodeRestart = RNIL;
 }
 
 void Dbdih::nodeRestartPh2Lab2(Signal *signal) {
@@ -5432,13 +5469,18 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
     nodePtr.p->is_pausable = false;
   }
 
-  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+  const bool track_failure_at_restart_barrier =
+      getNodeState().getNodeRecovered() &&
+      (new_status == NodeRecord::NODE_FAILED ||
+       new_status == NodeRecord::NODE_FAILURE_COMPLETED);
+  if (getNodeState().startLevel < NodeState::SL_STARTED &&
+      !track_failure_at_restart_barrier) {
     jam();
     /**
-     * We will ignore all state transitions until we are started ourselves
-     * before we even attempt to record state transitions. This means we
-     * have no view into system restarts currently and initial starts. We
-     * only worry about node restarts for now.
+     * Ignore state transitions until we are started ourselves. A node
+     * parked at the restart barrier is fully recovered and participates
+     * in normal node-failure handling, so it must record both halves of
+     * that handling even though it is still SL_STARTING.
      */
     return;
   }
@@ -9551,9 +9593,57 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
     startLcpMasterTakeOver(signal, oldMasterId);
     startGcpMasterTakeOver(signal, oldMasterId);
 
-    if (getNodeState().getNodeRestartInProgress()) {
+    /**
+     * A node parked at the restart barrier in start phase 110 is
+     * fully recovered and can take over as master like a started
+     * node, so it must not die here (RONDB-1096).
+     *
+     * Surviving is only safe when the new master also supports the
+     * restart barrier: an older master expects a restarting node to
+     * die with the failed master, cannot accept a NodeRestartLock
+     * re-registration, and lacks the master takeover fixes for a
+     * surviving restarting node. The parked state itself implies a
+     * barrier-capable master (a node never parks in a mixed-version
+     * cluster), but a recovered node that is completing its final
+     * start phases without having parked can face an old master, so
+     * keep the pre-barrier behaviour and die in that case.
+     */
+    if (getNodeState().getNodeRestartInProgress() &&
+        (!getNodeState().getNodeRecovered() ||
+         !ndbd_restart_phase_110_barrier(
+             getNodeInfo(cmasterNodeId).m_version))) {
       jam();
       progError(__LINE__, NDBD_EXIT_MASTER_FAILURE_DURING_NR);
+    }
+
+    /**
+     * The DICT lock queue was local to the failed master. Every
+     * surviving DIH reports whether it held NodeRestartLock so that
+     * the new master can reconstruct the queue before accepting DDL.
+     */
+    if (ndbd_restart_phase_110_barrier(
+            getNodeInfo(cmasterNodeId).m_version)) {
+      jam();
+      /**
+       * Invalidate any delayed retry still aimed at the previous
+       * master before sending the fresh request.
+       */
+      c_dictLockTakeoverGen++;
+      if (c_dictLockSlavePtrI_nodeRestart != RNIL) {
+        DictLockSlavePtr lockPtr;
+        ndbrequire(c_dictLockSlavePool.getPtr(
+            lockPtr, c_dictLockSlavePtrI_nodeRestart));
+        ndbrequire(lockPtr.p->lockType == DictLockReq::NodeRestartLock);
+        lockPtr.p->lockPtr = RNIL;
+        lockPtr.p->locked = false;
+        /**
+         * execute() nulled the callback when the original grant was
+         * delivered, so re-arm it for the re-registration CONF.
+         */
+        Callback c = {safe_cast(&Dbdih::recvDictLockConf_nodeRestart), 0};
+        lockPtr.p->callback = c;
+      }
+      sendDictLockTakeoverReq(signal);
     }
   }
 
@@ -26752,6 +26842,27 @@ void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
     }
     infoEvent("cgcpOrderBlocked = %d", cgcpOrderBlocked);
   }  // if
+  if (arg == DumpStateOrd::DihDumpStopPermInfo) {
+    /**
+     * Graceful stop permission state. A permission left behind by a node
+     * that abandoned its stop refuses every later graceful stop, so this
+     * is the first thing to look at when a stop hangs or is refused with
+     * NodeShutdownInProgress for no apparent reason.
+     */
+    char buf[NdbNodeBitmask::TextLength + 1];
+    infoEvent(
+        "StopPerm master: clientRef = H'%08x, clientData = %u,"
+        " returnValue = %u, stoppingNodes = %s",
+        c_stopPermMaster.clientRef, c_stopPermMaster.clientData,
+        c_stopPermMaster.returnValue,
+        c_stopPermMaster.stoppingNodes.getText(buf));
+    infoEvent(
+        "StopPerm proxy: clientRef = H'%08x, masterRef = H'%08x;"
+        " c_nodeStartMaster.activeState = %u, switch replica waiting = %u",
+        c_stopPermProxy.clientRef, c_stopPermProxy.masterRef,
+        (Uint32)c_nodeStartMaster.activeState,
+        c_DIH_SWITCH_REPLICA_REQ_Counter.getCount());
+  }  // if
   if (arg == DumpStateOrd::DihDumpNodeStatusInfo) {
     NodeRecordPtr localNodePtr;
     infoEvent("Printing nodeStatus of all nodes");
@@ -27710,6 +27821,29 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
       return;
     }  // if
 
+    if (c_ndbcntr->is_any_node_below_restart_barrier()) {
+      jam();
+      /**
+       * A node restart is still below the restart barrier in start
+       * phase 110 (RONDB-1096). A graceful stop of a started node
+       * would kill that restarting node, so the stop permission is
+       * refused; the requester retries every 100 ms until the
+       * restarting node has reached the barrier (where it survives
+       * node stops), completed its start or failed. Nodes queued
+       * waiting to start do not block the stop. Note that the early
+       * restart window is already covered by the activeState check
+       * above; this check covers the long database recovery part of
+       * the restart. Aborting stops bypass the STOP_PERM protocol
+       * entirely, and a stop that waited longer than
+       * GracefulShutdownTimeout is given up by the requester.
+       */
+      ref->senderData = senderData;
+      ref->errorCode = StopPermRef::NodeBelowRestartBarrier;
+      sendSignal(senderRef, GSN_STOP_PERM_REF, signal,
+                 StopPermRef::SignalLength, JBB);
+      return;
+    }
+
     /**
      * Lock
      */
@@ -27774,6 +27908,86 @@ void Dbdih::execSTOP_PERM_CONF(Signal *signal) {
   sendSignal(c_stopPermProxy.clientRef, GSN_STOP_PERM_CONF, signal, 1, JBB);
   c_stopPermProxy.clientRef = 0;
 }  // Dbdih::execSTOP_PERM_CONF()
+
+/**
+ * NDBCNTR abandoned a graceful stop it had asked permission for, so the
+ * permission is handed back while the node is still alive.
+ *
+ * Without this the master only ever releases when the stopping node
+ * fails (checkStopPermMaster), so an abandoned stop would leave the node
+ * in c_stopPermMaster.stoppingNodes for good and every later graceful
+ * stop in the cluster would be refused with NodeShutdownInProgress.
+ */
+void Dbdih::execSTOP_PERM_REL(Signal *signal) {
+  jamEntry();
+
+  const StopPermRel *const rel = (StopPermRel *)&signal->theData[0];
+  const BlockReference senderRef = rel->senderRef;
+  const NodeId nodeId = refToNode(senderRef);
+
+  if (isMaster()) {
+    jam();
+    releaseStopPermMaster(signal, nodeId);
+    return;
+  }
+
+  /**
+   * Proxy part. Stop proxying for the abandoned request and pass the
+   * release on to the master, which holds the permission.
+   */
+  jam();
+  if (c_stopPermProxy.clientRef != 0 &&
+      refToNode(c_stopPermProxy.clientRef) == nodeId) {
+    jam();
+    c_stopPermProxy.clientRef = 0;
+  }
+
+  StopPermRel *req = (StopPermRel *)&signal->theData[0];
+  req->senderRef = senderRef;
+  req->senderData = rel->senderData;
+  sendSignal(cmasterdihref, GSN_STOP_PERM_REL, signal,
+             StopPermRel::SignalLength, JBB);
+}  // Dbdih::execSTOP_PERM_REL()
+
+/**
+ * Give up the master side stop permission held for nodeId. Mirrors the
+ * refusal teardown at the end of switchReplica().
+ */
+void Dbdih::releaseStopPermMaster(Signal *signal, NodeId nodeId) {
+  if (c_stopPermMaster.clientRef != 0 &&
+      refToNode(c_stopPermMaster.clientRef) == nodeId) {
+    jam();
+    if (c_DIH_SWITCH_REPLICA_REQ_Counter.done() == false) {
+      jam();
+      /**
+       * Switching primary replicas away from the node is still running.
+       * Fail the round instead of tearing its state down underneath it;
+       * switchReplica() then unlocks and clears everything as it does
+       * for any other refusal, and the STOP_PERM_REF it sends is
+       * discarded by an NDBCNTR that has already given up.
+       */
+      c_stopPermMaster.returnValue = StopPermRef::NF_CausedAbortOfStopProcedure;
+      return;
+    }
+
+    c_nodeStartMaster.activeState = false;
+    c_stopPermMaster.clientRef = 0;
+    c_stopPermMaster.clientData = 0;
+    c_stopPermMaster.returnValue = 0;
+    c_stopPermMaster.stoppingNodes.clear(nodeId);
+
+    Mutex mutex(signal, c_mutexMgr, c_switchPrimaryMutexHandle);
+    mutex.unlock();  // ignore result
+    return;
+  }
+
+  /**
+   * Permission was granted and the switch replica round has already
+   * finished, so only the stopping bitmap is still held.
+   */
+  jam();
+  c_stopPermMaster.stoppingNodes.clear(nodeId);
+}  // Dbdih::releaseStopPermMaster()
 
 void Dbdih::execDIH_SWITCH_REPLICA_REQ(Signal *signal) {
   jamEntry();
@@ -28806,6 +29020,31 @@ void Dbdih::sendDictLockReq(Signal *signal, Uint32 lockType, Callback c) {
              DictLockReq::SignalLength, JBB);
 }
 
+void Dbdih::sendDictLockTakeoverReq(Signal *signal, Uint32 delayMillis) {
+  if (delayMillis != 0) {
+    jam();
+    /**
+     * sendSignalWithDelay delivers to the local block regardless of the
+     * node id in the reference, so a delayed retry must bounce off our
+     * own CONTINUEB and do the real send when it fires. The generation
+     * number drops the retry if a new master takeover sends a fresh
+     * request while it is pending.
+     */
+    signal->theData[0] = DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY;
+    signal->theData[1] = c_dictLockTakeoverGen;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, delayMillis, 2);
+    return;
+  }
+  DictLockReq *req = (DictLockReq *)&signal->theData[0];
+  req->userPtr = c_dictLockSlavePtrI_nodeRestart;
+  req->lockType = DictLockReq::NodeRestartLockTakeover;
+  req->userRef = reference();
+
+  BlockReference dictMasterRef = calcDictBlockRef(cmasterNodeId);
+  sendSignal(dictMasterRef, GSN_DICT_LOCK_REQ, signal,
+             DictLockReq::SignalLength, JBB);
+}
+
 void Dbdih::execDICT_LOCK_CONF(Signal *signal) {
   jamEntry();
   recvDictLockConf(signal);
@@ -28813,6 +29052,17 @@ void Dbdih::execDICT_LOCK_CONF(Signal *signal) {
 
 void Dbdih::execDICT_LOCK_REF(Signal *signal) {
   jamEntry();
+  const DictLockRef *ref =
+      (const DictLockRef *)&signal->theData[0];
+
+  if (ref->lockType == DictLockReq::NodeRestartLockTakeover &&
+      (ref->errorCode == DictLockRef::NotMaster ||
+       ref->errorCode == DictLockRef::TooManyRequests)) {
+    jam();
+    sendDictLockTakeoverReq(signal, 10);
+    return;
+  }
+
   ndbabort();
 }
 

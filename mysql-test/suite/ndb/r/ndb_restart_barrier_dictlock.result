@@ -1,0 +1,11 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Parked master reconstructs its node-restart dictionary lock
+# Remote master reconstructs the parked node's node-restart dictionary lock
+# Parked node serves transactions while still reporting starting
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All restart barrier dictionary lock tests passed

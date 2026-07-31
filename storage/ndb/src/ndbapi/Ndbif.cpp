@@ -1,5 +1,5 @@
 /* Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -967,13 +967,19 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       goto InvalidSignal;
     }
     case GSN_GET_DATABASE_CONF: {
-      if (tFirstDataPtr == nullptr) {
+      /**
+       * GET_DATABASE_CONF/REF carry the transaction object id in
+       * clientData (word 1); word 0 is DBDICT's reference, so the
+       * generic tFirstDataPtr (from word 0) cannot be used here.
+       */
+      void *tGetDbPtr = int2void(aSignal->readData(2));
+      if (tGetDbPtr == nullptr) {
         goto InvalidSignal;
       }
       if (tWaitState != WAIT_GET_DATABASE_REQ) {
         goto InvalidSignal;
       }
-      tCon = void2con(tFirstDataPtr);
+      tCon = void2con(tGetDbPtr);
       if (tCon->checkMagicNumber() != 0) {
         goto InvalidSignal;
       }
@@ -986,13 +992,14 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       }
     }
     case GSN_GET_DATABASE_REF: {
-      if (tFirstDataPtr == nullptr) {
+      void *tGetDbPtr = int2void(aSignal->readData(2));
+      if (tGetDbPtr == nullptr) {
         goto InvalidSignal;
       }
       if (tWaitState != WAIT_GET_DATABASE_REQ) {
         goto InvalidSignal;
       }
-      tCon = void2con(tFirstDataPtr);
+      tCon = void2con(tGetDbPtr);
       if (tCon->checkMagicNumber() != 0) {
         goto InvalidSignal;
       }

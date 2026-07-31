@@ -162,13 +162,25 @@ class Dbspj : public SimulatedBlock {
   /* ALL TABLES IN THE SYSTEM.                            */
   /********************************************************/
   struct TableRecord {
-    TableRecord() : m_currentSchemaVersion(0), m_flags(0) {}
+    TableRecord()
+        : m_currentSchemaVersion(0),
+          m_flags(0),
+          m_partition_hash_base_key_count(0),
+          m_partition_hash_detail_key_count(0),
+          m_partition_hash_fanout(1) {}
 
     TableRecord(Uint32 schemaVersion)
-        : m_currentSchemaVersion(schemaVersion), m_flags(TR_PREPARED) {}
+        : m_currentSchemaVersion(schemaVersion),
+          m_flags(TR_PREPARED),
+          m_partition_hash_base_key_count(0),
+          m_partition_hash_detail_key_count(0),
+          m_partition_hash_fanout(1) {}
 
     Uint32 m_currentSchemaVersion;
     Uint16 m_flags;
+    Uint8 m_partition_hash_base_key_count;
+    Uint8 m_partition_hash_detail_key_count;
+    Uint16 m_partition_hash_fanout;
 
     enum {
       TR_ENABLED      = 1 << 0,
@@ -1895,6 +1907,12 @@ class Dbspj : public SimulatedBlock {
                              Uint32 srcLen,       // Len in #32bit words
                              const struct KeyDescriptor* desc,
                              bool use_new_hash_function);
+  Uint32 handle_partition_hash(Uint32 dstHash[4],
+                               const Uint32 *src,
+                               Uint32 srcLen,
+                               const struct KeyDescriptor *desc,
+                               const Uint32 *keyPartLen,
+                               bool use_new_hash_function);
 
   Uint32 computeHash(Signal*, BuildKeyReq&, Uint32 table, Uint32 keyInfoPtrI);
   Uint32 computePartitionHash(Signal*, BuildKeyReq&, Uint32 table, Uint32 keyInfoPtrI);

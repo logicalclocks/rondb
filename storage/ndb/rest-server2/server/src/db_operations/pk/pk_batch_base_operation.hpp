@@ -59,10 +59,11 @@ class BaseBatchOperations {
                                   Ndb *ndb_object);
 
   RS_Status setup_primary_keys();
-  RS_Status set_user_id(PKRRequest *req,
-                        BaseKeyOperation *key_op,
-                        char *username_ptr);
-  RS_Status setup_transactions(char *username_ptr);
+  RS_Status set_user_id(BaseKeyOperation *key_op,
+                        const char *rate_limit_identity,
+                        Uint32 rate_limit_identity_len);
+  RS_Status setup_transactions(const char *rate_limit_identity,
+                               Uint32 rate_limit_identity_len);
   RS_Status execute();
   RS_Status create_response(RS_Buffer *respBuffer);
   void close_transaction();

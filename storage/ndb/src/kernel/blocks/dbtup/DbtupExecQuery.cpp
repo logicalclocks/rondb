@@ -8092,17 +8092,31 @@ struct Dbtup::InterpreterContext {
     int TnoDataRW = ctx.tup->readAttributes(
         ctx.req_struct, &theAttrinfo, (Uint32)1,
         &ctx.TregMemBuffer[ctx.theRegister], (Uint32)3);
+    /* readAttributes() also serves pseudo columns (ROW_AUTHOR, ROW_GCI,
+     * ROW_GCI64, ROW_SIZE, ...) via read_pseudo().  Their attribute ids
+     * live above AttributeHeader::PSEUDO, far outside the table's
+     * descriptor array, so tabDescriptor must only be indexed for real
+     * table columns — the epoch conflict-detection programs read
+     * ROW_AUTHOR / ROW_GCI64 into a register on every replicated
+     * UPDATE/DELETE.  A pseudo column keeps the pre-I.18 behaviour: the
+     * raw word(s) as-is, register tagged REG_TYPE_INT (bit-identical to
+     * the legacy NOT_NULL_INDICATOR), reached via the switch default. */
+    const Uint32 attrId = theAttrinfo >> 16;
+    const bool isTableColumn =
+        attrId < ctx.req_struct->tablePtrP->m_no_of_attributes;
     if (TnoDataRW == 2) {
       // 32-bit cell read.  TregMemBuffer[theRegister + 1] holds the
       // raw column data word (after the AttrHeader at slot 0).
       // Inspect the column descriptor to know how wide the actual
       // value is and whether it is signed.
       thrjamDebug(ctx.tup->jamBuffer());
-      Uint32 attrId = theAttrinfo >> 16;
-      const Uint32 attrDescIndex = attrId * ZAD_SIZE;
-      Uint32 attrDesc1 =
-          ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
-      Uint32 typeId = AttributeDescriptor::getType(attrDesc1);
+      Uint32 typeId = NDB_TYPE_UNDEFINED;
+      if (likely(isTableColumn)) {
+        const Uint32 attrDescIndex = attrId * ZAD_SIZE;
+        Uint32 attrDesc1 =
+            ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
+        typeId = AttributeDescriptor::getType(attrDesc1);
+      }
       const char* dataPtr =
           reinterpret_cast<const char*>(
               &ctx.TregMemBuffer[ctx.theRegister + 1]);
@@ -8177,11 +8191,13 @@ struct Dbtup::InterpreterContext {
       Uint32 highWord = ctx.TregMemBuffer[ctx.theRegister + 2];
       ctx.TregMemBuffer[ctx.theRegister + 2] = lowWord;
       ctx.TregMemBuffer[ctx.theRegister + 3] = highWord;
-      Uint32 attrId = theAttrinfo >> 16;
-      const Uint32 attrDescIndex = attrId * ZAD_SIZE;
-      Uint32 attrDesc1 =
-          ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
-      Uint32 typeId = AttributeDescriptor::getType(attrDesc1);
+      Uint32 typeId = NDB_TYPE_UNDEFINED;
+      if (likely(isTableColumn)) {
+        const Uint32 attrDescIndex = attrId * ZAD_SIZE;
+        Uint32 attrDesc1 =
+            ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
+        typeId = AttributeDescriptor::getType(attrDesc1);
+      }
       switch (typeId) {
         case NDB_TYPE_BIGUNSIGNED:
           ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
@@ -8235,7 +8251,22 @@ struct Dbtup::InterpreterContext {
     // Look up the parent table by tableId for type/charset info.
     // Validate table exists, is DEFINED, and schemaVersion matches
     // (via DBLQH's table record which tracks schema versions).
-    if (unlikely(tableId >= ctx.tup->cnoOfTablerec)) {
+    // On query thread blocks the record arrays are borrowed from an
+    // LDM instance per operation (setup_query_thread_for_cte_access)
+    // while the counts are copied once at STTOR — so a null array
+    // with a nonzero count means a caller missed that setup; fail the
+    // program instead of dereferencing.
+    if (unlikely(ctx.tup->tablerec == nullptr ||
+                 tableId >= ctx.tup->cnoOfTablerec)) {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      // ndbassert equivalent with an explicit block pointer (static
+      // handler has no `this`).
+      if (ctx.tup->tablerec == nullptr) {
+        jamNoBlock();
+        ctx.tup->progError(__LINE__, NDBD_EXIT_NDBASSERT, __FILE__,
+                           "ctx.tup->tablerec != nullptr");
+      }
+#endif
       thrjam(ctx.tup->jamBuffer());
       return -40;
     }
@@ -8244,9 +8275,17 @@ struct Dbtup::InterpreterContext {
       thrjam(ctx.tup->jamBuffer());
       return -40;
     }
-    if (unlikely(tableId >= ctx.tup->c_lqh->ctabrecFileSize ||
+    if (unlikely(ctx.tup->c_lqh->tablerec == nullptr ||
+                 tableId >= ctx.tup->c_lqh->ctabrecFileSize ||
                  ctx.tup->c_lqh->tablerec[tableId].schemaVersion !=
                      schemaVersion)) {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      if (ctx.tup->c_lqh->tablerec == nullptr) {
+        jamNoBlock();
+        ctx.tup->progError(__LINE__, NDBD_EXIT_NDBASSERT, __FILE__,
+                           "ctx.tup->c_lqh->tablerec != nullptr");
+      }
+#endif
       thrjam(ctx.tup->jamBuffer());
       return -40;
     }
@@ -8255,7 +8294,14 @@ struct Dbtup::InterpreterContext {
     const Uint32* memData = (const Uint32*)&ctx.TheapMemoryChar[0];
     const AttributeHeader ah(memData[0]);
 
-    // Get type info from the parent table's descriptor
+    // Get type info from the parent table's descriptor.  attrId is taken
+    // from the program stream, so bound it against the parent table's
+    // attribute count before indexing — same reasoning as the branch-col
+    // guard in handleBranchAttrOp().
+    if (unlikely(attrId >= parentTablePtrP->m_no_of_attributes)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -ZATTRIBUTE_ID_ERROR;
+    }
     const Uint32* attrDescriptor =
         parentTablePtrP->tabDescriptor + (attrId * ZAD_SIZE);
     const Uint32 TattrDesc1 = attrDescriptor[0];
@@ -8801,6 +8847,21 @@ struct Dbtup::InterpreterContext {
     const Uint32 opCode =
         Interpreter::getOpCode(ctx.theInstruction) % OVERFLOW_OPCODE;
 
+    /* The attribute ids used here come straight from the interpreted
+     * program.  readAttributes() happily serves a pseudo column (id above
+     * AttributeHeader::PSEUDO) via read_pseudo(), but such an id has no
+     * entry in tabDescriptor, so naming one on a branch would index the
+     * descriptor array hundreds of KB out of bounds.  The API side
+     * (NdbInterpretedCode::branch_col_val and friends) rejects both
+     * pseudo and unknown ids through NdbTableImpl::getColumn(), so only a
+     * malformed or hostile program reaches this — fail the program rather
+     * than dereference. */
+    if (unlikely(Interpreter::getBranchCol_AttrId(ins2) >=
+                 ctx.req_struct->tablePtrP->m_no_of_attributes)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+
     if (ctx.tmpHabitant != attrId) {
       Int32 TnoDataR = ctx.tup->readAttributes(
           ctx.req_struct, &attrId, 1, ctx.tmpArea, ctx.tmpAreaSz);
@@ -8863,6 +8924,13 @@ struct Dbtup::InterpreterContext {
     } else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR) {
       thrjamDebug(ctx.tup->jamBuffer());
       Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
+      /* Same bound check as for attrId above — attr2Descriptor is indexed
+       * with this id further down. */
+      if (unlikely(Interpreter::getBranchCol_AttrId2(ins2) >=
+                   ctx.req_struct->tablePtrP->m_no_of_attributes)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -ZATTRIBUTE_ID_ERROR;
+      }
 
       // Attr2 to be read into tmpArea[] after Attr1.
       const Uint32 firstAttrWords = attrLen + 1;

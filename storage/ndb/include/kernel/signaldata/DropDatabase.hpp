@@ -73,7 +73,7 @@ struct DropDatabaseRef {
 
   enum ErrorCode {
     InvalidTableState = 1,
-    DatabaseNameTooLong = 943
+    DatabaseNameTooLong = 942
   };
 
   union { Uint32 clientRef, senderRef; };

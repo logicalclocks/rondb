@@ -29,6 +29,7 @@
 #include <NdbDictionary.hpp>
 #include <NdbOut.hpp>
 #include <signaldata/CreateHashMap.hpp>
+#include <signaldata/CreateTable.hpp>
 #include "NdbDictionaryImpl.hpp"
 #include "decimal.h"
 #include "mysql/strings/m_ctype.h"
@@ -514,6 +515,24 @@ Uint32 NdbDictionary::Table::getFragmentCount() const {
 
 Uint32 NdbDictionary::Table::getPartitionCount() const {
   return m_impl.getPartitionCount();
+}
+
+void NdbDictionary::Table::setPartitionHash(Uint32 base_key_count,
+                                            Uint32 detail_key_count,
+                                            Uint32 fanout) {
+  m_impl.setPartitionHash(base_key_count, detail_key_count, fanout);
+}
+
+Uint32 NdbDictionary::Table::getPartitionHashBaseKeyCount() const {
+  return m_impl.getPartitionHashBaseKeyCount();
+}
+
+Uint32 NdbDictionary::Table::getPartitionHashDetailKeyCount() const {
+  return m_impl.getPartitionHashDetailKeyCount();
+}
+
+Uint32 NdbDictionary::Table::getPartitionHashFanout() const {
+  return m_impl.getPartitionHashFanout();
 }
 
 void NdbDictionary::Table::setPartitionBalance(
@@ -1674,6 +1693,22 @@ int NdbDictionary::Dictionary::prepareHashMap(const Table &oldTableF,
       DBUG_PRINT("info", ("prepareHashMap: New frag count: %u", newcnt));
     }
 
+    const Uint32 partition_hash_fanout = newTable.getPartitionHashFanout();
+    if (partition_hash_fanout == 0) {
+      m_impl.m_error.code = CreateTableRef::InvalidPartitionHash;
+      return -1;
+    }
+    if (partition_hash_fanout > 1) {
+      if (newTable.getFullyReplicated()) {
+        m_impl.m_error.code = 797; // WrongPartitionBalanceFullyReplicated
+        return -1;
+      }
+      if (partition_hash_fanout > newcnt) {
+        m_impl.m_error.code = CreateTableRef::InvalidFanout;
+        return -1;
+      }
+    }
+
     /*
      * If fragment count has not changed, dont move data between partitions and
      * keep old hashmap.
@@ -1702,6 +1737,18 @@ int NdbDictionary::Dictionary::prepareHashMap(const Table &oldTableF,
 
     if (oldmapsize < newmapsize && oldmapsize % newcnt == 0) {
       newmapsize = oldmapsize;
+    }
+
+    /**
+     * Every base key spreads over a block of fanout consecutive hash
+     * map buckets, so the fanout must divide the bucket count of the
+     * map the reorganized table will use. DBDICT re-validates this at
+     * alter parse time.
+     */
+    if (partition_hash_fanout > 1 &&
+        (newmapsize % partition_hash_fanout) != 0) {
+      m_impl.m_error.code = CreateTableRef::InvalidFanout;
+      return -1;
     }
 
     NdbHashMapImpl &newmap = NdbHashMapImpl::getImpl(newmapF);

@@ -18,8 +18,11 @@
 
 -- additional api keys for testing
 
+-- Explicit column list: this template runs AFTER the hopsworks-ddl migration
+-- patches, which add columns to api_key (e.g. V73 adds `expiry`), so a
+-- positional VALUES list would no longer match the table definition.
 INSERT INTO
-    `api_key`
+    `api_key` (`id`, `prefix`, `secret`, `salt`, `created`, `modified`, `name`, `user_id`, `reserved`)
 VALUES
     (
          KEY_ID,

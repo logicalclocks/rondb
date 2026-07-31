@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024, 2025 Hopsworks AB
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -26,6 +26,7 @@
 #include "buffer_manager.hpp"
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
+#include "rate_limit.hpp"
 #include "rdrs_dal.hpp"
 #include "src/constants.hpp"
 #include "metadata.hpp"
@@ -253,6 +254,10 @@ std::shared_ptr<RestErrorCode>
     if (code == drogon::k400BadRequest) {
       DEB_FS_CTRL("BAD INPUT");
       fsError = READ_FROM_DB_FAIL_BAD_INPUT->NewMessage(err);
+    } else if (code == drogon::k429TooManyRequests) {
+      /* Rate limit rejections (RONDB-978) keep their 429 status */
+      DEB_FS_CTRL("RATE LIMITED");
+      fsError = RATE_LIMIT_EXCEEDED->NewMessage(err);
     } else {
       DEB_FS_CTRL("FAILED");
       fsError = READ_FROM_DB_FAIL->NewMessage(err);
@@ -668,9 +673,7 @@ void FeatureStoreCtrl::featureStore(
   }
   // Authenticate
   DEB_FS_CTRL("Authenticate Feature Store request");
-
-  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
-  char *username_ptr = nullptr;
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     if (unlikely(err != nullptr)) {
@@ -679,11 +682,9 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
-    // Validate access right to ALL feature stores including shared feature
-    char *username_ptr = &username[0];
-    auto status = authenticate(api_key,
-                               metadata->featureStoreNames,
-                               username_ptr);
+    // Validate access to the FV's store and to every constituent feature
+    // group's table/columns (shared and restricted grants included)
+    auto status = authenticate(api_key, *metadata);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -691,6 +692,7 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
   ArenaMalloc amalloc(64 * 1024);
   // Execute
@@ -771,7 +773,9 @@ void FeatureStoreCtrl::featureStore(
                                        reqBuffs.data(),
                                        respBuffs.data(),
                                        currentThreadIndex,
-                                       username_ptr);
+                                       rl_identity.empty() ? nullptr
+                                                           : rl_identity.c_str(),
+                                       (unsigned int)rl_identity.size());
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
         DEB_FS_CTRL("pk_batch_read failed: http_code: %u, message: %s",

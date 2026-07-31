@@ -1025,8 +1025,9 @@ int main(int argc, char **argv)
     V("Connected to MySQL on port %d\n", mysqlPort);
 
     Ndb_cluster_connection con(connectString);
-    if (con.connect(12, 5, 1) != 0) {
-      fprintf(stderr, "Failed to connect to management server\n");
+    if (con.connect(30, 5, 1) != 0) {
+      fprintf(stderr, "Failed to connect to management server: %s\n",
+              con.get_latest_error_msg());
       mysql_close(conn);
       ndb_end(0);
       return 1;

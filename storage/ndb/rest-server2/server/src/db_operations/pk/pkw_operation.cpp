@@ -381,7 +381,8 @@ RS_Status BatchWriteOperations::perform_operation(
   RS_Buffer *reqBuffer,
   RS_Buffer *respBuffer,
   Ndb *ndb_object,
-  char *username_ptr) {
+  const char *rate_limit_identity,
+  Uint32 rate_limit_identity_len) {
 
   DEB_NDB_WRITE("init_batch_operations");
   RS_Status status = init_batch_operations(
@@ -423,7 +424,7 @@ RS_Status BatchWriteOperations::perform_operation(
     m_last_key = last_key;
 
     DEB_NDB_WRITE("setup_transactions");
-    status = setup_transactions(username_ptr);
+    status = setup_transactions(rate_limit_identity, rate_limit_identity_len);
     if (unlikely(status.http_code != SUCCESS)) {
       handle_ndb_error(status);
       return status;

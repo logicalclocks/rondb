@@ -436,6 +436,11 @@ bool ProcessManagement::waitNdb(int goal) {
                          ndb_mgm_get_latest_error(handle),
                          ndb_mgm_get_latest_error_msg(handle),
                          ndb_mgm_get_latest_error_desc(handle));
+          if (err == NDB_MGM_SERVER_NOT_READY && time(0) < end) {
+            /* mgmd is gated during startup; poll again on the same session */
+            NdbSleep_SecSleep(1);
+            continue;
+          }
           if (err == NDB_MGM_SERVER_NOT_CONNECTED && connectNdbMgm()) {
             g_logger.error("Reconnected...");
             continue;

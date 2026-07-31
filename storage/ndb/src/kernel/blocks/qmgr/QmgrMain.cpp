@@ -495,6 +495,10 @@ void Qmgr::execREAD_CONFIG_REQ(Signal *signal) {
       m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
+  m_graceful_shutdown_timeout_ms = 27000;
+  ndb_mgm_get_int_parameter(p, CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT,
+                            &m_graceful_shutdown_timeout_ms);
+
   m_num_multi_trps = 0;
   if (globalData.ndbMtSendThreads) {
     ndb_mgm_get_int_parameter(p, CFG_DB_NODE_GROUP_TRANSPORTERS,
@@ -3255,12 +3259,24 @@ void Qmgr::handle_graceful_shutdown(Signal *signal)
   NDB_TICKS now = NdbTick_getCurrentTicks();
   if (m_graceful_shutdown_started)
   {
-    Uint32 elapsed = NdbTick_Elapsed(m_graceful_shutdown_start_time, now).seconds();
-    if (elapsed > 27)
+    /**
+     * The deadline is configurable through GracefulShutdownTimeout
+     * (0 = wait forever) since a graceful stop can legitimately be
+     * delayed by the cluster, e.g. while another node restart is
+     * below the restart barrier in start phase 110 (RONDB-1096).
+     * The default of 27000 ms fits within the default Kubernetes
+     * terminationGracePeriodSeconds of 30 seconds.
+     */
+    Uint64 elapsed =
+        NdbTick_Elapsed(m_graceful_shutdown_start_time, now).milliSec();
+    if (m_graceful_shutdown_timeout_ms != 0 &&
+        elapsed > Uint64(m_graceful_shutdown_timeout_ms))
     {
       jam();
-      g_eventLogger->info("We initiated a graceful shutdown after kill -TERM, more than 30"
-                          " seconds passed without completion, we stop now");
+      g_eventLogger->info("We initiated a graceful shutdown after kill -TERM,"
+                          " more than %u milliseconds passed without"
+                          " completion, we stop now",
+                          m_graceful_shutdown_timeout_ms);
       childReportSignal(15);
       globalData.theRestartFlag = perform_stop;
     }
@@ -4954,8 +4970,15 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
   ptrCheckGuard(nodePtr, MAX_NODES, nodeRec);
 
   char buf[500];
+  /**
+   * A node that has reached the restart barrier in start phase 110 is
+   * fully recovered although it has not yet reported started; it
+   * survives the disconnect and participates in the normal node
+   * failure handling instead of dying here (RONDB-1096).
+   */
   if (nodeInfo.getType() == NodeInfo::DB &&
-      getNodeState().startLevel < NodeState::SL_STARTED) {
+      getNodeState().startLevel < NodeState::SL_STARTED &&
+      !getNodeState().getNodeRecovered()) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
@@ -5992,7 +6015,12 @@ void Qmgr::failReportLab(Signal *signal, Uint16 aFailedNode,
     return;
   }  // if
 
-  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+  /**
+   * A node parked at the restart barrier in start phase 110 is fully
+   * recovered and survives failures of other nodes (RONDB-1096).
+   */
+  if (getNodeState().startLevel < NodeState::SL_STARTED &&
+      !getNodeState().getNodeRecovered()) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
@@ -6148,7 +6176,13 @@ void Qmgr::execPREP_FAILREQ(Signal *signal) {
     return;
   }  // if
 
-  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+  /**
+   * A node parked at the restart barrier in start phase 110 is fully
+   * recovered and participates in the failure protocol as a normal
+   * cluster citizen (RONDB-1096).
+   */
+  if (getNodeState().startLevel < NodeState::SL_STARTED &&
+      !getNodeState().getNodeRecovered()) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
@@ -8437,6 +8471,26 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
       }
     }
   }
+
+  if (signal->theData[0] == DumpStateOrd::QmgrSetDynamicId &&
+      signal->getLength() == 3) {
+    const NodeId nodeId = signal->theData[1];
+    const Uint32 dynamicId = signal->theData[2];
+    if (nodeId > 0 && nodeId < MAX_NDB_NODES &&
+        dynamicId > 0 && dynamicId <= 0xFFFF) {
+      NodeRecPtr nodePtr;
+      nodePtr.i = nodeId;
+      ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRec);
+      if (nodePtr.p->phase == ZRUNNING) {
+        const UintR oldDynamicId = nodePtr.p->ndynamicId;
+        nodePtr.p->ndynamicId =
+            (oldDynamicId & ~(UintR)0xFFFF) | dynamicId;
+        g_eventLogger->info(
+            "QMGR: DUMP 937 changed node %u dynamic ID from %u to %u",
+            nodeId, (Uint32)(oldDynamicId & 0xFFFF), dynamicId);
+      }
+    }
+  }
 #endif
 
   if (signal->theData[0] == 900 && signal->getLength() == 2) {
@@ -9924,9 +9978,18 @@ void Qmgr::execNODE_STATE_REP(Signal *signal) {
   SimulatedBlock::execNODE_STATE_REP(signal);
   const NodeState newState = getNodeState();
 
-  /* Check whether we are changing state */
+  /* Check whether we are changing state.
+   *
+   * Reaching the restart barrier (RONDB-1096) flips
+   * getNodeRecovered() without changing the start level. API nodes
+   * gate their view of us as alive on that predicate and otherwise
+   * only refresh it on their API_REGREQ heartbeat (up to
+   * HeartbeatIntervalDbApi late), so push the state to them just as
+   * for the started transition.
+   */
   if (prevState.startLevel != newState.startLevel ||
-      prevState.nodeGroup != newState.nodeGroup) {
+      prevState.nodeGroup != newState.nodeGroup ||
+      prevState.getNodeRecovered() != newState.getNodeRecovered()) {
     jam();
     /* Inform APIs */
     signal->theData[0] = ZNOTIFY_STATE_CHANGE;

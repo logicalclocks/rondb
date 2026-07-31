@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,6 +44,7 @@
   { ndbout << "DIH::" << x << endl; }
 
 void Dbdih::initData() {
+  c_ndbcntr = nullptr;
   c_any_node_waiting_for_lcp = false;
   c_start_tab_queued = 0;
   c_end_tab_queued = 0;
@@ -87,6 +88,7 @@ void Dbdih::initData() {
 
   c_dictLockSlavePool.setSize(1);  // assert single usage
   c_dictLockSlavePtrI_nodeRestart = RNIL;
+  c_dictLockTakeoverGen = 0;
 
   cgcpOrderBlocked = 0;
   c_lcpState.ctcCounter = 0;
@@ -318,6 +320,7 @@ Dbdih::Dbdih(Block_context &ctx)
   addRecSignal(GSN_STOP_PERM_REQ, &Dbdih::execSTOP_PERM_REQ);
   addRecSignal(GSN_STOP_PERM_REF, &Dbdih::execSTOP_PERM_REF);
   addRecSignal(GSN_STOP_PERM_CONF, &Dbdih::execSTOP_PERM_CONF);
+  addRecSignal(GSN_STOP_PERM_REL, &Dbdih::execSTOP_PERM_REL);
 
   addRecSignal(GSN_STOP_ME_REQ, &Dbdih::execSTOP_ME_REQ);
   addRecSignal(GSN_STOP_ME_REF, &Dbdih::execSTOP_ME_REF);

@@ -143,17 +143,17 @@
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
 //#define DEBUG_ACTIVE_NODES 1
-//#define DEBUG_RATE_LIST 1
-//#define DEBUG_RATE_QUEUE 1
-//#define DEBUG_RATE_DEF 1
-//#define DEBUG_QUOTAS_REP 1
-//#define DEBUG_RATE_QUEUE_SET 1
-//#define DEBUG_QUOTAS 1
-//#define DEBUG_RATE_QUEUE_DROP 1
-//#define DEBUG_QUOTA_ABORT 1
+#define DEBUG_RATE_LIST 1
+#define DEBUG_RATE_QUEUE 1
+#define DEBUG_RATE_DEF 1
+#define DEBUG_QUOTAS_REP 1
+#define DEBUG_RATE_QUEUE_SET 1
+#define DEBUG_QUOTAS 1
+#define DEBUG_RATE_QUEUE_DROP 1
+#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
 #define DEBUG_SCAN_MANY 1
-//#define DEBUG_RATE_OVERFLOW 1
+#define DEBUG_RATE_OVERFLOW 1
 #define DEBUG_CONT_SCAN 1
 #define DEBUG_JOIN_AGG_TRACE 1
 #define DEBUG_SCAN_HB_TIMEOUT 1
@@ -1099,6 +1099,12 @@ void Dbtc::execTC_SCHVERREQ(Signal *signal) {
   tabptr.p->hasCharAttr = desc->hasCharAttr;
   tabptr.p->noOfDistrKeys = desc->noOfDistrKeys;
   tabptr.p->hasVarKeys = desc->noOfVarKeys > 0;
+  tabptr.p->m_partition_hash_base_key_count =
+      (Uint8)getPartitionHashBaseKeyCount(req->partitionHash);
+  tabptr.p->m_partition_hash_detail_key_count =
+      (Uint8)getPartitionHashDetailKeyCount(req->partitionHash);
+  tabptr.p->m_partition_hash_fanout =
+      (Uint16)getPartitionHashFanout(req->partitionHash);
   tabptr.p->databaseRecord = RNIL64;
   tabptr.p->set_user_defined_partitioning(userDefinedPartitioning);
   if (req->hashFunctionFlag)
@@ -2353,8 +2359,16 @@ void Dbtc::execTCSEIZEREQ(Signal *signal) {
 
   {
     {
+      /**
+       * A node parked at the restart barrier in start phase 110 is
+       * fully recovered and can coordinate transactions for remote
+       * API nodes although it has not yet reported started
+       * (RONDB-1096). Local block seizes are allowed during the
+       * whole start as before.
+       */
       if (!(sl == NodeState::SL_STARTED ||
-            (sl == NodeState::SL_STARTING && local == true))) {
+            (sl == NodeState::SL_STARTING &&
+             (local == true || getNodeState().getNodeRecovered())))) {
         jam();
 
         Uint32 errCode = 0;
@@ -3239,6 +3253,16 @@ void Dbtc::hash(Signal *signal, CacheRecord *const regCachePtr) {
   if (!regCachePtr->m_special_hash)
   {
     rondb_calc_hash(tmp, (const char*)&Tdata32[0], keylen, use_new_hash_function);
+    if (!distKey && tabPtrP->m_partition_hash_fanout > 1)
+    {
+      bool ok = handle_partition_hash(tmp,
+                                      &Tdata32[0],
+                                      keylen,
+                                      regCachePtr->tableref,
+                                      0,
+                                      use_new_hash_function);
+      ndbrequire(ok);
+    }
   }
   else
   {
@@ -3286,7 +3310,10 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
   const TableRecord *tabPtrP = &tableRecord[tabPtrI];
   const bool hasVarKeys = tabPtrP->hasVarKeys;
   const bool hasCharAttr = tabPtrP->hasCharAttr;
-  const bool compute_distkey = distr && (tabPtrP->noOfDistrKeys > 0);
+  const bool compute_partition_hash =
+      distr && (tabPtrP->m_partition_hash_fanout > 1);
+  const bool compute_distkey =
+      distr && !compute_partition_hash && (tabPtrP->noOfDistrKeys > 0);
 
   const Uint32 *hashInput;
   Uint32 inputLen = 0;
@@ -3294,7 +3321,8 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
   Uint32 *keyPartLenPtr;
 
   /* Normalise KeyInfo into workspace if necessary */
-  if (hasCharAttr || (compute_distkey && hasVarKeys)) {
+  if (hasCharAttr || ((compute_distkey || compute_partition_hash) &&
+                      hasVarKeys)) {
     hashInput = workspace;
     keyPartLenPtr = keyPartLen;
     inputLen = xfrm_key_hash(tabPtrI, src, workspace, sizeof(workspace) >> 2,
@@ -3334,11 +3362,78 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
     /* Just one word used for distribution */
     dstHash[1] = distrKeyHash[1];
   }
+  else if (compute_partition_hash) {
+    jam();
+    if (!handle_partition_hash(dstHash, hashInput, inputLen, tabPtrI,
+                               keyPartLenPtr, use_new_hash_function)) {
+      goto error;
+    }
+  }
   return true;  // success
 
 error:
   terrorCode = ZINVALID_KEY;
   return false;
+}
+
+bool Dbtc::handle_partition_hash(Uint32 dstHash[4],
+                                 const Uint32 *src,
+                                 Uint32 srcLen,
+                                 const Uint32 tabPtrI,
+                                 const Uint32 *keyPartLen,
+                                 bool use_new_hash_function) {
+  const TableRecord *tabPtrP = &tableRecord[tabPtrI];
+  const KeyDescriptor *desc = g_key_descriptor_pool.getPtr(tabPtrI);
+
+  const Uint32 base_count = tabPtrP->m_partition_hash_base_key_count;
+  const Uint32 detail_count = tabPtrP->m_partition_hash_detail_key_count;
+  const Uint32 fanout = tabPtrP->m_partition_hash_fanout;
+  const Uint32 parts = base_count + detail_count;
+
+  if (unlikely(fanout <= 1 || base_count == 0 || detail_count == 0 ||
+               parts > desc->noOfKeyAttr)) {
+    return false;
+  }
+
+  Uint32 base_len = 0;
+  Uint32 total_len = 0;
+
+  if (keyPartLen != 0) {
+    for (Uint32 i = 0; i < parts; i++) {
+      total_len += keyPartLen[i];
+      if (i + 1 == base_count) {
+        base_len = total_len;
+      }
+    }
+  } else {
+    for (Uint32 i = 0; i < parts; i++) {
+      const Uint32 attr = desc->keyAttr[i].attributeDescriptor;
+      if (unlikely(AttributeDescriptor::getArrayType(attr) !=
+                   NDB_ARRAYTYPE_FIXED)) {
+        return false;
+      }
+      total_len += AttributeDescriptor::getSizeInWords(attr);
+      if (i + 1 == base_count) {
+        base_len = total_len;
+      }
+    }
+  }
+
+  if (unlikely(base_len == 0 || total_len <= base_len ||
+               total_len > srcLen)) {
+    return false;
+  }
+
+  Uint32 base_hash[4];
+  Uint32 detail_hash[4];
+  rondb_calc_hash(base_hash, (const char *)src, base_len,
+                  use_new_hash_function);
+  rondb_calc_hash(detail_hash, (const char *)(src + base_len),
+                  total_len - base_len, use_new_hash_function);
+
+  dstHash[1] =
+      ((base_hash[1] / fanout) * fanout) + (detail_hash[1] % fanout);
+  return true;
 }
 
 /*
@@ -4550,6 +4645,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
 
   regCachePtr->m_special_hash = localTabptr.p->hasCharAttr |
                                 (localTabptr.p->noOfDistrKeys > 0) |
+                                ((localTabptr.p->m_partition_hash_fanout > 1) &&
+                                 localTabptr.p->hasVarKeys) |
                                 regCachePtr->m_no_hash;
 
   if (unlikely(TkeyLength == 0)) {
@@ -5704,7 +5801,6 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
     (replica_applier == ApiConnectRecord::TF_REPLICA_APPLIER));
   LqhKeyReq::setTTLIgnoreFlag(Tdata10, regCachePtr->m_ttl_ignore);
   LqhKeyReq::setTTLOnlyExpiredFlag(Tdata10, regCachePtr->m_ttl_only_expired);
-  LqhKeyReq::setRingBufferOpFlag(Tdata10, regCachePtr->m_ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Tdata10, regCachePtr->m_ring_buffer_show_meta);
 
   LqhKeyReq::setNoTriggersFlag(
@@ -5742,6 +5838,10 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
 
   lqhKeyReq->clientConnectPtr = sig0;
   lqhKeyReq->attrLen = tslrAttrLen;
+  /* The Ring Buffer Op flag lives in the attrLen word (requestInfo is
+     full), so it can only be set once attrLen has been filled in */
+  LqhKeyReq::setRingBufferOpFlag(lqhKeyReq->attrLen,
+                                 regCachePtr->m_ring_buffer_op);
   lqhKeyReq->hashValue = sig2;
   lqhKeyReq->requestInfo = Tdata10;
   lqhKeyReq->tcBlockref = sig4;
@@ -5780,7 +5880,7 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
     if (databaseRecordPtr.p->m_is_user) {
       lqhKeyReq->variableData[0] = databaseRecordPtr.p->m_database_id;
       extra_index++;
-      LqhKeyReq::setUserIdFlag(lqhKeyReq->attrLen, 1);
+      LqhKeyReq::setUserIdFlag(lqhKeyReq->requestInfo, 1);
     }
   }
   lqhKeyReq->variableData[extra_index++] = sig4;
@@ -12511,6 +12611,8 @@ void Dbtc::timeOutFoundFragLab(Signal *signal, UintR TscanConPtr) {
          */
         ptr.p->scanFragState = ScanFragRec::COMPLETED;
         ptr.p->stopFragTimer();
+        /* Worker's node is gone - no CTE phase report will follow. */
+        retireCteScanFragHandle(scanptr, ptr.i);
         {
           Local_ScanFragRec_dllist run(c_scan_frag_pool,
                                        scanptr.p->m_running_scan_frags);
@@ -12993,6 +13095,8 @@ void Dbtc::checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
           jam();
           curr.p->scanFragState = ScanFragRec::COMPLETED;
           curr.p->stopFragTimer();
+          /* Worker died with its node - no CTE phase report will follow. */
+          retireCteScanFragHandle(scanptr, curr.i);
           run.remove(curr);
           c_scan_frag_pool.release(curr);
           found = true;
@@ -16884,6 +16988,17 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   ndbrequire(transP->apiScanRec == RNIL);
   ndbrequire(scanptr.p->scanApiRec == RNIL);
 
+  /**
+   * Store the transaction id before anything below can fail. Those error
+   * paths release the scan and answer the API through scanTabRefLab(),
+   * which builds the SCAN_TABREF from this record - with the transid still
+   * unwritten the API cannot match the REF to its NdbTransaction and the
+   * error is lost. All queueing returns are passed at this point, so the
+   * request is now definitely ours to execute.
+   */
+  transP->transid[0] = transid1;
+  transP->transid[1] = transid2;
+
 #ifdef DEBUG_CONT_SCAN
   g_eventLogger->info("(%u) TC scanPtrI: %u, scanParallel: %u",
     instance(), scanptr.i, scanParallel);
@@ -16949,6 +17064,58 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   scanptr.p->m_scan_dist_key = scanTabReq->distributionKey;
   scanptr.p->m_scan_dist_key_flag = ScanTabReq::getDistributionKeyFlag(ri);
+  scanptr.p->m_scan_dist_key_interval_flag =
+      ScanTabReq::getDistributionKeyIntervalFlag(scanTabReq->storedProcId);
+  scanptr.p->m_scan_dist_key_part_id_flag =
+      ScanTabReq::getDistributionKeyPartIdFlag(scanTabReq->storedProcId);
+
+  if (unlikely(scanptr.p->m_scan_dist_key_interval_flag &&
+               (!scanptr.p->m_scan_dist_key_flag ||
+                scanptr.p->m_scan_dist_key_part_id_flag ||
+                tabptr.p->m_partition_hash_fanout <= 1))) {
+    jam();
+    /*
+     * Interval pruning requires API and kernel to agree on the table's
+     * partition hash fanout metadata. The metadata cannot be changed
+     * online, so a mismatch means the API used a stale table definition.
+     * The interval flag and the partition id flag are mutually exclusive.
+     */
+    errCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
+
+  if (unlikely(scanptr.p->m_scan_dist_key_part_id_flag &&
+               !scanptr.p->m_scan_dist_key_flag)) {
+    jam();
+    /* Partition id flag without a distribution key is malformed. */
+    errCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
+
+  if (unlikely(scanptr.p->m_scan_dist_key_flag &&
+               !scanptr.p->m_scan_dist_key_interval_flag &&
+               !scanptr.p->m_scan_dist_key_part_id_flag &&
+               tabptr.p->m_partition_hash_fanout > 1)) {
+    jam();
+    /*
+     * Rows sharing a base partition key are spread over the fanout interval
+     * of fragments, so a scan pruned to one partition by a hash value
+     * cannot be trusted to see all rows the application intended. This
+     * rejects clients that are unaware of partition hash fanout and
+     * hash-valued explicit scan partitioning (SO_PART_INFO) on fanout
+     * tables, rather than silently returning partial results. Scans pruned
+     * to a distinct fragment id carry m_scan_dist_key_part_id_flag and are
+     * allowed.
+     */
+    errCode = ZSCAN_PRUNE_PARTITION_HASH_ERROR;
+    transP->apiScanRec = scanptr.i;
+    releaseScanResources(signal, scanptr, apiConnectptr, true /* NotStarted */);
+    goto SCAN_TAB_error;
+  }
 
   if (ERROR_INSERTED(8119)) {
     jam();
@@ -16961,8 +17128,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   transP->apiScanRec = scanptr.i;
   transP->returncode = 0;
-  transP->transid[0] = transid1;
-  transP->transid[1] = transid2;
+  /* transid[] is already stored, see above */
   transP->buddyPtr = buddyPtr;
 
   // The scan is started
@@ -17123,6 +17289,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_par_ordered_scan_flag = par_ordered_scan_flag;
   scanptr.p->scanTableref = tabptr.i;
   scanptr.p->scanSchemaVersion = scanTabReq->tableSchemaVersion;
+  scanptr.p->scanFirstHashValue = 0;
   scanptr.p->scanNoFrag = 0;
   scanptr.p->scanParallel = scanParallel;
   if (batchSizeRows == 0) {
@@ -17134,6 +17301,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->batch_size_rows = batchSizeRows;
   scanptr.p->m_scan_block_no = DBLQH;
   scanptr.p->m_scan_dist_key_flag = 0;
+  scanptr.p->m_scan_dist_key_interval_flag = 0;
+  scanptr.p->m_scan_dist_key_part_id_flag = 0;
   scanptr.p->m_start_ticks = getHighResTimer();
   scanptr.p->m_aggProgramPtrI = RNIL;
   scanptr.p->m_aggColumnMeta = nullptr;
@@ -17203,9 +17372,9 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
 
   scanptr.p->scanRequestInfo = tmp;
   scanptr.p->m_read_committed_base = ScanTabReq::getReadCommittedBaseFlag(ri);
-  /* The upper 16 bits of storedProcId are extended flags (decoded above),
-   * not part of the stored-procedure id — mask them off. */
-  scanptr.p->scanStoredProcId = scanTabReq->storedProcId & 0xFFFF;
+  /* The high half of storedProcId carries extended request-info bits. */
+  scanptr.p->scanStoredProcId =
+      ScanTabReq::getStoredProcId(scanTabReq->storedProcId);
   scanptr.p->scanState = ScanRecord::RUNNING;
   scanptr.p->m_queued_count = 0;
   scanptr.p->m_booked_fragments_count = 0;
@@ -17300,8 +17469,13 @@ void Dbtc::scanKeyinfoLab(Signal *signal, CacheRecord *const regCachePtr,
     ScanRecordPtr scanPtr;
     scanPtr.i = apiConnectptr.p->apiScanRec;
     if (likely(scanRecordPool.getValidPtr(scanPtr))) {
-      abortScanLab(signal, scanPtr, ZGET_DATAREC_ERROR, true /* Not started */,
-                   apiConnectptr);
+      if (unlikely(abortScanLab(signal, scanPtr, ZGET_DATAREC_ERROR,
+                                true /* Not started */, apiConnectptr))) {
+        jam();
+        /* API node failure handling released the ApiConnectRecord, there
+         * is no record left to prepare for further KEYINFO. */
+        return;
+      }
 
       /* Prepare for up coming ATTRINFO/KEYINFO */
       apiConnectptr.p->apiConnectstate = CS_ABORTING;
@@ -17487,11 +17661,47 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
                is_ttl_table(tabPtr.p));
     */
 
-    /**
-     * Prepare for sendDihGetNodeReq to request DBDIH info for
-     * the single pruned-to fragId we got from NDB API.
-     */
-    tfragCount = 1;
+    if (scanptr.p->m_scan_dist_key_interval_flag) {
+      /**
+       * m_scan_dist_key is a grouped partition-hash base hash. Scan the
+       * fanout interval of raw hash values starting at it. The interval
+       * flag is only accepted by execSCAN_TABREQ when the table has
+       * partition hash fanout > 1, and the metadata cannot change online,
+       * but fail the scan rather than trust that if the metadata
+       * disagrees here.
+       */
+      const Uint32 partition_hash_fanout = tabPtr.p->m_partition_hash_fanout;
+      if (unlikely(partition_hash_fanout <= 1)) {
+        jam();
+        abortScanLab(signal, scanptr, ZWRONG_SCHEMA_VERSION_ERROR, true,
+                     apiConnectptr);
+        return;
+      }
+      scanptr.p->scanFirstHashValue = scanptr.p->m_scan_dist_key;
+      tfragCount = partition_hash_fanout;
+    } else if (scanptr.p->m_scan_dist_key_part_id_flag) {
+      /**
+       * m_scan_dist_key is a distinct fragment id. Scan exactly that
+       * fragment, also on tables with partition hash fanout. Validate the
+       * fragment id against the fragment count from DIH instead of
+       * trusting the API.
+       */
+      if (unlikely(scanptr.p->m_scan_dist_key >= tfragCount)) {
+        jam();
+        abortScanLab(signal, scanptr, ZNO_FRAGMENT_ERROR, true,
+                     apiConnectptr);
+        return;
+      }
+      tfragCount = 1;
+    } else {
+      /**
+       * Prepare for sendDihGetNodeReq to request DBDIH info for
+       * the single pruned-to fragId we got from NDB API. Tables with
+       * partition hash fanout > 1 cannot reach here: execSCAN_TABREQ
+       * rejects hash-valued one-partition pruned scans on such tables.
+       */
+      tfragCount = 1;
+    }
   }
   ndbassert(scanptr.p->scanNextFragId == 0);
 
@@ -17509,7 +17719,7 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
     return;
   }
 
-  scanptr.p->scanParallel = tfragCount;
+  scanptr.p->scanParallel = MIN(scanptr.p->scanParallel, tfragCount);
   scanptr.p->scanNoFrag = tfragCount;
   scanptr.p->scanState = ScanRecord::RUNNING;
 
@@ -17688,10 +17898,15 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
       return;
     }
 
+    const bool partition_hash_interval =
+        scanP->m_scan_dist_key_interval_flag;
+    const Uint32 scanHashOrFragId =
+        partition_hash_interval
+            ? scanP->scanFirstHashValue + scanP->scanNextFragId
+            : scanP->scanNextFragId;
     const bool success =
-        sendDihGetNodeReq(signal, scanptr, fragLocationPtr,
-                          scanP->scanNextFragId, is_multi_spj_scan,
-                          ttl_can_go_to_replica);
+        sendDihGetNodeReq(signal, scanptr, fragLocationPtr, scanHashOrFragId,
+                          is_multi_spj_scan, ttl_can_go_to_replica);
     if (unlikely(!success)) {
       jam();
       return;  // sendDihGetNodeReq called scanError() upon failure.
@@ -17881,17 +18096,44 @@ void Dbtc::execDIH_SCAN_TAB_REF(Signal *signal, ScanRecordPtr scanptr,
  *
  * Use ::scanError() instead for failing a scan which
  * is in 'RUNNING' or in 'CLOSING_SCAN' state.
+ *
+ * Returns true if the ApiConnectRecord was released here as part of API
+ * node failure handling - the caller must not touch apiConnectptr after
+ * that.
  */
-void Dbtc::abortScanLab(Signal *signal, ScanRecordPtr scanptr, Uint32 errCode,
+bool Dbtc::abortScanLab(Signal *signal, ScanRecordPtr scanptr, Uint32 errCode,
                         bool not_started,
                         ApiConnectRecordPtr const apiConnectptr) {
   ndbassert(scanptr.p->scanState != ScanRecord::RUNNING);
   ndbassert(scanptr.p->scanState != ScanRecord::CLOSING_SCAN);
 
+  /**
+   * The API may already be gone: handleFailedApiNode() marked the record
+   * with set_api_fail_state() - which stepped capiConnectClosing[] up -
+   * and ordered the scan closed. A CTE / JoinAgg scan defers that close in
+   * close_scan_req() until every outstanding aggregation response has
+   * landed, so the abort ends up here instead of in
+   * close_scan_req_send_conf(). The API-fail handshake still has to be
+   * completed: only handleApiFailState() steps capiConnectClosing[] back
+   * down, and until it reaches zero DBTC never answers API_FAILCONF -
+   * QMGR then kills the node after 600 s (error 7400).
+   */
+  const bool apiFail =
+      (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
+
   time_track_complete_scan_error(scanptr.p,
                                  refToNode(apiConnectptr.p->ndbapiBlockref));
-  scanTabRefLab(signal, errCode, apiConnectptr.p);
+  if (likely(!apiFail)) {
+    jam();
+    scanTabRefLab(signal, errCode, apiConnectptr.p);
+  }
   releaseScanResources(signal, scanptr, apiConnectptr, not_started);
+  if (unlikely(apiFail)) {
+    jam();
+    handleApiFailState(signal, apiConnectptr.i);
+    return true;
+  }
+  return false;
 }  // Dbtc::abortScanLab()
 
 void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
@@ -18035,17 +18277,35 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
   req->get_next_fragid_indicator = 0;
   req->only_readable_nodes = 1;
 
-  if (scanptr.p->m_scan_dist_key_flag)  // Scan pruned to specific fragment
+  TableRecordPtr tabPtr;
+  tabPtr.i = scanptr.p->scanTableref;
+  ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+
+  const bool partition_hash_interval =
+      scanptr.p->m_scan_dist_key_interval_flag;
+  if (partition_hash_interval) {
+    /*
+     * scanFragId is a raw hash value in the grouped base-hash interval.
+     * Keep distr_key_indicator cleared so DIH maps it through the current
+     * table distribution. Uint32 addition may wrap, which is fine for hashes.
+     */
+    ndbassert(tabPtr.p->m_partition_hash_fanout > 1);
+    distr_key_indicator = 0;
+  } else if (scanptr.p->m_scan_dist_key_flag)
   {
     jamDebug();
     ndbassert(scanFragId == 0); /* Pruned to 1 fragment */
     req->hashValue = scanptr.p->m_scan_dist_key;
 
-    TableRecordPtr tabPtr;
-    tabPtr.i = scanptr.p->scanTableref;
-    ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
-
-    distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    if (scanptr.p->m_scan_dist_key_part_id_flag) {
+      /*
+       * m_scan_dist_key is a distinct fragment id, resolve it directly
+       * instead of mapping it through the table distribution as a hash.
+       */
+      distr_key_indicator = ZTRUE;
+    } else {
+      distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    }
   }
   req->distr_key_indicator = distr_key_indicator;
   c_dih->execDIGETNODESREQ(signal);
@@ -18082,11 +18342,8 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
     }
   }
 
-  TableRecordPtr tabPtr;
-  tabPtr.i = scanptr.p->scanTableref;
-  ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
-
   ndbassert(scanFragId == lqhScanFragId ||
+            partition_hash_interval ||
             scanptr.p->m_scan_dist_key == lqhScanFragId ||
             distr_key_indicator == 0 ||
             (tabPtr.p->m_flags & TableRecord::TR_FULLY_REPLICATED));
@@ -18131,18 +18388,28 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
        scanptr.p->m_read_committed_base)) {
     jamDebug();
     Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
+    if (!scanptr.p->m_joinAgg) {
+      /* Prefer a readable replica on our own node when one exists. */
+      for (Uint32 i = 1; i < count; i++) {
+        if (conf->nodes[i] == ownNodeId) {
+          jamDebug();
+          nodeId = ownNodeId;
+          break;
+        }
+      }
+    }
     if (nodeId != ownNodeId) {
       Uint32 node;
       jamDebug();
       Uint16 nodes[4];
       Uint32 loc_count = 0;
       /*
-       * Do not prefer the local node for READ_BACKUP scans here.  CTE
-       * materialisation scans can otherwise collapse all fragments onto
-       * the TC-local node when each fragment has a local readable backup.
-       *
-       * Keep the location-domain preference, but only among non-local
-       * replicas.  If no such replica exists, retain DIH's primary node.
+       * JoinAgg (CTE materialisation) scans must not prefer the local
+       * node: with a readable backup on the TC node every fragment
+       * would collapse onto it, serialising the materialisation. For
+       * those scans the location-domain preference considers only
+       * non-local replicas; if none exists, retain DIH's primary node.
+       * Ordinary READ_BACKUP scans take the local replica above.
        */
       for (Uint32 i = 0; i < count && loc_count < NDB_ARRAY_SIZE(nodes); i++) {
         if (conf->nodes[i] != ownNodeId) {
@@ -18529,6 +18796,13 @@ void Dbtc::execSCAN_FRAGREF(Signal *signal) {
   scanFragptr.p->scanFragState = ScanFragRec::COMPLETED;
   scanFragptr.p->stopFragTimer();
   time_track_complete_scan_frag_error(scanFragptr.p);
+  /**
+   * DBSPJ refused this worker's request (or has already torn it down),
+   * so it will never send CTE_PHASE_COMPLETE_REP for it.  Retire the
+   * CTE handle before scanError() -> close_scan_req(), which would
+   * otherwise keep deferring the close waiting for that report.
+   */
+  retireCteScanFragHandle(scanptr, scanFragptr.i);
   {
     Local_ScanFragRec_dllist run(c_scan_frag_pool,
                                  scanptr.p->m_running_scan_frags);
@@ -18567,11 +18841,20 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
              scanP->scanState == ScanRecord::WAIT_CTE_COMPLETE);
 
   /**
+   * Read the API-fail state before closing: the close can run all the way
+   * to handleApiFailState(), which releases the ApiConnectRecord - reading
+   * it afterwards would be a use-after-release. Only handleFailedApiNode()
+   * ever sets the state, so sampling it here is equivalent.
+   */
+  const bool apiFail =
+      (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
+
+  /**
    * Close scan wo/ having received an order to do so
    */
   close_scan_req(signal, scanptr, false, apiConnectptr);
 
-  if (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK) {
+  if (apiFail) {
     jam();
     return;
   }
@@ -19225,25 +19508,74 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
    * Set failure flag and let the phase handler abort after all
    * responses arrive.
    */
-  if (old == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-      old == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
-      old == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
-      (old == ScanRecord::RUNNING &&
-       scanPtr.p->m_numCtes > 0 &&
-       scanPtr.p->m_cteCurrentPhase < scanPtr.p->m_ctePhaseCount &&
-       scanPtr.p->m_cteScanReportsReceived <
-           scanPtr.p->m_cteScanReportsExpected)) {
+  const bool aggWaitState = (old == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+                             old == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
+                             old == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
+                             (old == ScanRecord::RUNNING &&
+                              scanPtr.p->m_numCtes > 0 &&
+                              scanPtr.p->m_cteCurrentPhase <
+                                  scanPtr.p->m_ctePhaseCount));
+  /**
+   * Sticky: once the API has ordered the close there is no un-ordering
+   * it.  A CTE / JoinAgg scan reaches close_scan_req() more than once -
+   * the API's TCRELEASEREQ or SCAN_NEXTREQ(close) can land while
+   * responses are still outstanding, and the internal completion path
+   * calls in again with req_received == false.  Assigning would clear
+   * the API's request, and close_scan_req_send_conf() would then skip
+   * releaseScanResources() and park the ApiConnectRecord for good.
+   */
+  if (req_received) {
     jam();
-    scanPtr.p->m_close_scan_req = req_received;
-    if (!scanPtr.p->m_aggPhaseFailed) {
-      scanPtr.p->m_aggPhaseFailed = true;
-      scanPtr.p->m_aggErrorCode = ZSCAN_LQH_ERROR;
+    scanPtr.p->m_close_scan_req = true;
+  }
+
+  if (aggWaitState) {
+    if (likely(cteAggResponsesOutstanding(scanPtr))) {
+      jam();
+      if (!scanPtr.p->m_aggPhaseFailed) {
+        scanPtr.p->m_aggPhaseFailed = true;
+        scanPtr.p->m_aggErrorCode = ZSCAN_LQH_ERROR;
+      }
+      return;
     }
-    return;
+    /**
+     * Deferring here would be a permanent park: no response is
+     * outstanding, so nothing will ever call back to finish the close.
+     * Fall through and close now.  Every aggregation response has
+     * already been accounted for, so the aggStateKeys the deferral
+     * exists to protect are complete and releaseScanResources() can
+     * clean up.
+     *
+     * For a RUNNING CTE scan this is a normal outcome: every DBSPJ
+     * worker was retired by SCAN_FRAGREF / node failure / timeout, so
+     * the phase can no longer complete.  The WAIT_JOIN_AGG_* states on
+     * the other hand are only entered with responses outstanding and
+     * leave as soon as the count reaches zero, so reaching them with
+     * nothing in flight means the accounting drifted - log that one
+     * loudly, it is a bug worth chasing.
+     */
+    jam();
+    if (unlikely(old != ScanRecord::RUNNING)) {
+      g_eventLogger->info(
+          "(%u)DBTC close_scan_req: closing JoinAgg scanPtr.i=%u in wait "
+          "state %u with no outstanding responses (numCtes=%u phase=%u/%u "
+          "cteReports=%u/%u aggNodesOutstanding=%u)",
+          instance(), scanPtr.i, (Uint32)old, scanPtr.p->m_numCtes,
+          scanPtr.p->m_cteCurrentPhase, scanPtr.p->m_ctePhaseCount,
+          scanPtr.p->m_cteScanReportsReceived,
+          scanPtr.p->m_cteScanReportsExpected,
+          scanPtr.p->m_aggNodesOutstanding);
+    } else {
+      DEB_JOIN_AGG(("(%u)DBTC close_scan_req: closing CTE scanPtr.i=%u, all "
+                    "workers retired (phase=%u/%u cteReports=%u/%u)",
+                    instance(), scanPtr.i, scanPtr.p->m_cteCurrentPhase,
+                    scanPtr.p->m_ctePhaseCount,
+                    scanPtr.p->m_cteScanReportsReceived,
+                    scanPtr.p->m_cteScanReportsExpected));
+    }
   }
 
   scanPtr.p->scanState = ScanRecord::CLOSING_SCAN;
-  scanPtr.p->m_close_scan_req = req_received;
 
   if (old == ScanRecord::WAIT_FRAGMENT_COUNT)  // Dead state due to direct-exec
   {
@@ -19553,6 +19885,135 @@ bool Dbtc::registerCteScanFragHandle(ScanRecordPtr scanptr,
                 scanptr.p->m_cteScanReportsExpected, scanptr.p->m_numCtes));
 #endif
   return true;
+}
+
+/**
+ * Drop the CTE scan-frag handle belonging to 'scanFragPtrI'.
+ *
+ * Called when a fragment scan of a CTE compound query is retired
+ * without its DBSPJ worker ever reporting phase completion: DBSPJ
+ * refused the request (SCAN_FRAGREF), the worker's node died, or the
+ * fragment scan timed out.  In all three cases no
+ * CTE_PHASE_COMPLETE_REP will ever arrive for this handle.
+ *
+ * Leaving the handle registered keeps m_cteScanReportsExpected above
+ * m_cteScanReportsReceived forever, which makes close_scan_req() defer
+ * the close for good: the scan stays RUNNING, the ApiConnectRecord
+ * stays in CS_START_SCAN, and API node failure handling can never
+ * complete.  QMGR then kills the node once ApiFailureHandlingTimeout
+ * expires (error 7400).
+ */
+void Dbtc::retireCteScanFragHandle(ScanRecordPtr scanptr,
+                                   Uint32 scanFragPtrI) {
+  if (scanptr.p->m_numCtes == 0) {
+    jamDebug();
+    return;
+  }
+
+  /**
+   * m_cteScanFragHandles is a single-linked FIFO, so an entry in the
+   * middle cannot be unlinked directly.  Drain the list into a
+   * temporary head, dropping the retired handle on the way, then move
+   * the survivors back.  The list holds one entry per fragment scan of
+   * this scan record, so a single call stays short.
+   */
+  CteScanFragHandle_list::Head survivors;
+  CteScanFragHandlePtr handlePtr;
+  bool retired = false;
+
+  {
+    Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                         scanptr.p->m_cteScanFragHandles);
+    Local_CteScanFragHandle_list keep(c_cteScanFragHandlePool, survivors);
+    while (handles.removeFirst(handlePtr)) {
+      if (retired || handlePtr.p->m_scanFragPtrI != scanFragPtrI) {
+        jamDebug();
+        keep.addLast(handlePtr);
+        continue;
+      }
+      jam();
+      /**
+       * Keep m_cteScanReportsReceived <= m_cteScanReportsExpected.  A
+       * handle that already reported for the current phase is counted
+       * in 'received', so both counters must drop together - otherwise
+       * 'received' could exceed 'expected' and the '==' test that
+       * advances the phase would never fire again.
+       */
+      if (handlePtr.p->m_lastCompletePhase == scanptr.p->m_cteCurrentPhase &&
+          scanptr.p->m_cteScanReportsReceived > 0) {
+        jam();
+        scanptr.p->m_cteScanReportsReceived--;
+      }
+      ndbassert(scanptr.p->m_cteScanReportsExpected > 0);
+      if (scanptr.p->m_cteScanReportsExpected > 0) {
+        scanptr.p->m_cteScanReportsExpected--;
+      }
+
+      DEB_JOIN_AGG(("(%u)DBTC CTE handle retired: scanPtr.i=%u "
+                    "scanFragPtr.i=%u dbspjRef=0x%x reports=%u/%u",
+                    instance(), scanptr.i, scanFragPtrI,
+                    handlePtr.p->m_dbspjRef,
+                    scanptr.p->m_cteScanReportsReceived,
+                    scanptr.p->m_cteScanReportsExpected));
+
+      c_cteScanFragHandleHash.remove(handlePtr);
+      c_cteScanFragHandlePool.release(handlePtr);
+      retired = true;
+    }
+  }
+
+  {
+    Local_CteScanFragHandle_list keep(c_cteScanFragHandlePool, survivors);
+    Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
+                                         scanptr.p->m_cteScanFragHandles);
+    while (keep.removeFirst(handlePtr)) {
+      jamDebug();
+      handles.addLast(handlePtr);
+    }
+  }
+
+  if (retired) {
+    jam();
+    checkPoolShrinkNeed(DBTC_CTE_SCAN_FRAG_HANDLE_TRANSIENT_POOL_INDEX,
+                        c_cteScanFragHandlePool);
+  }
+}
+
+/**
+ * True while some CTE / join-aggregation response can still arrive for
+ * this scan.
+ *
+ * close_scan_req() must defer the close while this holds: tearing the
+ * scan down early would drop the aggStateKeys needed to release
+ * aggregation state in the LDM / query threads.
+ *
+ * Once it goes false, nothing will ever drive the scan again, so the
+ * close has to proceed instead.  Deferring at that point parks the
+ * ApiConnectRecord in CS_START_SCAN forever, which during API node
+ * failure handling blocks API_FAILCONF until QMGR kills the node.
+ */
+bool Dbtc::cteAggResponsesOutstanding(ScanRecordPtr scanPtr) {
+  if (scanPtr.p->m_aggNodesOutstanding > 0) {
+    jam();
+    /* JOIN_AGG_{SETUP,COMPLETE,RELEASE}_{CONF,REF} still in flight */
+    return true;
+  }
+  ndbassert(scanPtr.p->m_cteScanReportsReceived <=
+            scanPtr.p->m_cteScanReportsExpected);
+  /**
+   * A phase report can only come from a handle that is still
+   * registered, so an empty handle list means nothing is outstanding
+   * however the counters happen to read.
+   */
+  if (scanPtr.p->m_numCtes > 0 &&
+      scanPtr.p->m_cteCurrentPhase < scanPtr.p->m_ctePhaseCount &&
+      scanPtr.p->m_cteScanReportsReceived <
+          scanPtr.p->m_cteScanReportsExpected &&
+      !scanPtr.p->m_cteScanFragHandles.isEmpty()) {
+    jam();
+    return true;
+  }
+  return false;
 }
 
 bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
@@ -20144,35 +20605,57 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
     return;
   }
 
-  if (refToNode(ref) != getOwnNodeId())
-  {
-    signal->m_send_wakeups++;
-  }
-  if (max_signal_size > 25) {
-    jamDebug();
-    LinearSectionPtr ptr[3];
-    ptr[0].p = signal->getDataPtrSend() + 25;
-    ptr[0].sz = words_per_op * op_count + extra_words;
-    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with %u words"
-                   ", op_count: %u",
-      instance(), scanPtr.i, ptr[0].sz, op_count));
-    sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB,
-               ptr, 1);
-  } else {
-    jamDebug();
-    Uint32 sig_len = ScanTabConf::SignalLength + extra_words;
-    sig_len += words_per_op * op_count;
-    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with short"
-                   " signal, sig_len: %u, op_count: %u",
-      instance(), scanPtr.i, sig_len, op_count));
-    sendSignal(ref, GSN_SCAN_TABCONF, signal, sig_len, JBB);
+  /**
+   * The API node may have failed while this scan was still collecting
+   * responses - a CTE / JoinAgg scan defers the close ordered by
+   * handleFailedApiNode() until they have all landed, so the final
+   * EndOfData conf ends up here with the API already gone. Don't talk to
+   * the dead API, and complete the API-fail handshake after the release:
+   * capiConnectClosing[] was stepped up by set_api_fail_state() and only
+   * handleApiFailState() steps it back down, without which QMGR kills the
+   * node after 600 s waiting for API_FAILCONF.
+   */
+  const bool apiFail =
+      (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
+
+  if (likely(!apiFail)) {
+    if (refToNode(ref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
+    if (max_signal_size > 25) {
+      jamDebug();
+      LinearSectionPtr ptr[3];
+      ptr[0].p = signal->getDataPtrSend() + 25;
+      ptr[0].sz = words_per_op * op_count + extra_words;
+      DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with %u words"
+                     ", op_count: %u",
+        instance(), scanPtr.i, ptr[0].sz, op_count));
+      sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB,
+                 ptr, 1);
+    } else {
+      jamDebug();
+      Uint32 sig_len = ScanTabConf::SignalLength + extra_words;
+      sig_len += words_per_op * op_count;
+      DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with short"
+                     " signal, sig_len: %u, op_count: %u",
+        instance(), scanPtr.i, sig_len, op_count));
+      sendSignal(ref, GSN_SCAN_TABCONF, signal, sig_len, JBB);
+    }
   }
   scanPtr.p->m_queued_count = 0;
 
   if (release) {
     jamDebug();
-    time_track_complete_scan(scanPtr.p, refToNode(ref));
+    if (likely(!apiFail)) {
+      jamDebug();
+      time_track_complete_scan(scanPtr.p, refToNode(ref));
+    }
     releaseScanResources(signal, scanPtr, apiConnectptr);
+    if (unlikely(apiFail)) {
+      jam();
+      handleApiFailState(signal, apiConnectptr.i);
+    }
   }
 
 }  // Dbtc::sendScanTabConf()
@@ -28821,7 +29304,13 @@ bool Dbtc::getAllowStartTransaction(
   }
   if (unlikely(databaseRecordPtr.p != nullptr)) {
     /* implies regApiPtr != nullptr */
-    if (!is_committed_read) {
+    /**
+     * The max-parallel-transactions quota is a DATABASE quota only; user
+     * records carry rate limits only and never get globalDatabaseInstance
+     * set up (CONNECT_TABLE_DB is database-only), so skip this path for
+     * users to avoid dereferencing a null globalDatabaseInstance.
+     */
+    if (!is_committed_read && !databaseRecordPtr.p->m_is_user) {
       jam();
       bool count = false;
       Uint32 transactions = 0;
@@ -31118,12 +31607,38 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
     jam();
     AGGT(("AGGT(%u) CTE phase=%u scans complete scanPtr=%u",
           instance(), scanptr.p->m_cteCurrentPhase, scanptr.i));
+
+    if (scanptr.p->m_aggPhaseFailed) {
+      jam();
+      /**
+       * A worker failed during this phase (SCAN_FRAGREF, node failure
+       * or fragment timeout) and its handle was retired, so the
+       * surviving workers can now complete the report count.  The CTE
+       * result is incomplete - release the aggregation state the
+       * healthy nodes built and abort, rather than advancing the phase
+       * and answering from a partial CTE.
+       */
+      scanptr.p->m_aggPhaseFailed = false;
+      Uint32 errorCode = scanptr.p->m_aggErrorCode;
+
+      if (!scanptr.p->m_joinAggNodes->m_aggNodes.isclear()) {
+        jam();
+        sendJoinAggReleaseReqs(signal, scanptr);
+      } else {
+        jam();
+        ApiConnectRecordPtr apiConnectptr;
+        apiConnectptr.i = scanptr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiConnectptr);
+        abortScanLab(signal, scanptr, errorCode, true, apiConnectptr);
+      }
+      return;
+    }
+
     /**
      * All DBSPJ instances completed this CTE phase.
      * Redistribute this phase's CTEs.
      */
     scanptr.p->scanState = ScanRecord::WAIT_CTE_COMPLETE;
-    scanptr.p->m_aggPhaseFailed = false;
     scanptr.p->m_aggErrorCode = 0;
     sendCteCompleteReqsForPhase(signal, scanptr,
                                 scanptr.p->m_cteCurrentPhase);

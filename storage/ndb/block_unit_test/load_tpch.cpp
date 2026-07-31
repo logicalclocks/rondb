@@ -909,8 +909,9 @@ int main(int argc, char **argv)
   do {
     printf("Connecting to management server..."); fflush(stdout);
     Ndb_cluster_connection con(connectString);
-    if (con.connect(12, 5, 1) != 0) {
-      fprintf(stderr, "\nFailed to connect to management server\n");
+    if (con.connect(30, 5, 1) != 0) {
+      fprintf(stderr, "\nFailed to connect to management server: %s\n",
+              con.get_latest_error_msg());
       result = 1; break;
     }
     printf(" ok\n"); fflush(stdout);

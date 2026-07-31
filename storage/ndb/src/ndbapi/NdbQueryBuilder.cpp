@@ -2176,6 +2176,9 @@ int NdbQueryIndexScanOperationDefImpl::checkPrunable(
   isPruned = false;
   const NdbRecord *const tableRecord = getTable().getDefaultRecord();
   const NdbRecord *const indexRecord = m_index.getDefaultRecord();
+  if (getTable().m_base_partition_fanout > 1) {
+    return 0;
+  }
   /**
    * This is the prefix (in number of fields) of the index key that will contain
    * all the distribution key fields.
@@ -2808,6 +2811,17 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendPrunePattern(
    * with NdbQueryOperationImpl::prepareIndexKeyInfo()
    */
   if (getOpNo() == 0) return 0;
+
+  /*
+   * DBSPJ prune patterns currently map one prune key to one fragment.
+   * Partition-hash fanout needs one base-key prune key to scan a raw hash
+   * interval of fanout fragments. Until DBSPJ expands prune keys into that
+   * interval, do not push a prune pattern for fanout tables; the child scan
+   * remains correct by scanning all fragments with its normal index bounds.
+   */
+  if (getTable().m_base_partition_fanout > 1) {
+    return 0;
+  }
 
   if (m_bound.lowKeys > 0 || m_bound.highKeys > 0) {
     const NdbRecord *const tableRecord = getTable().getDefaultRecord();

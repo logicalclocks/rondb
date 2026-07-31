@@ -339,23 +339,15 @@ RS_Status BaseBatchOperations::setup_primary_keys() {
   return RS_OK;
 }
 
-RS_Status BaseBatchOperations::set_user_id(PKRRequest *req,
-                                           BaseKeyOperation *key_op,
-                                           char *username_ptr) {
+RS_Status BaseBatchOperations::set_user_id(BaseKeyOperation *key_op,
+                                           const char *rate_limit_identity,
+                                           Uint32 rate_limit_identity_len) {
   /**
-   * We need to concatenate database name and username here
+   * RONDB-978: the rate limit identity is already the complete
+   * {project}_{username} string resolved from the API key cache.
    */
-  const char *project_name = req->DB();
-  Uint32 project_name_len =
-    strnlen(project_name, PROJECT_PROJECTNAME_SIZE);
-  Uint32 username_len = strnlen(username_ptr, USERNAME_SIZE);
-  memmove(username_ptr + project_name_len,
-          username_ptr,
-          username_len + 1);
-  memcpy(username_ptr, project_name, project_name_len);
-  username_len += project_name_len;
-  if (key_op->m_ndbTransaction->setUserId(username_ptr,
-                                          username_len) != 0) {
+  if (key_op->m_ndbTransaction->setUserId(rate_limit_identity,
+                                          rate_limit_identity_len) != 0) {
     m_ndb_object->closeTransaction(key_op->m_ndbTransaction);
     key_op->m_ndbTransaction = nullptr;
     return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
@@ -364,7 +356,9 @@ RS_Status BaseBatchOperations::set_user_id(PKRRequest *req,
   return RS_OK;
 }
 
-RS_Status BaseBatchOperations::setup_transactions(char *username_ptr) {
+RS_Status BaseBatchOperations::setup_transactions(
+  const char *rate_limit_identity,
+  Uint32 rate_limit_identity_len) {
   Uint32 tmp[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
   char *buf = (char *)&tmp[0];
   PKRRequest *req = nullptr;
@@ -395,8 +389,8 @@ RS_Status BaseBatchOperations::setup_transactions(char *username_ptr) {
         return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
       }
-      if (m_user_rate_limits && username_ptr) {
-        RS_Status status = set_user_id(req, key_op, username_ptr);
+      if (m_user_rate_limits && rate_limit_identity != nullptr) {
+        RS_Status status = set_user_id(key_op, rate_limit_identity, rate_limit_identity_len);
         if (unlikely(status.http_code != SUCCESS)) {
           return status;
         }
@@ -418,11 +412,11 @@ RS_Status BaseBatchOperations::setup_transactions(char *username_ptr) {
         return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
             std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
       }
-      if (m_user_rate_limits && username_ptr) {
+      if (m_user_rate_limits && rate_limit_identity != nullptr) {
         /**
          * We need to concatenate database name and username here
          */
-        RS_Status status = set_user_id(req, key_op, username_ptr);
+        RS_Status status = set_user_id(key_op, rate_limit_identity, rate_limit_identity_len);
         if (unlikely(status.http_code != SUCCESS)) {
           return status;
         }

@@ -568,10 +568,16 @@ void MgmApiSession::reportArbitratorStartupGateBlocked(const char *cmd_name) {
   g_eventLogger->debug(
       "%s: blocked '%s' while waiting for arbitrator selection",
       name(), cmd_name ? cmd_name : "<NULL>");
-  m_output->println(
-      "result: Management server is waiting for arbitrator selection");
+  /*
+   * Well-formed refusal modeled on the "Authorization failed" reply,
+   * and the session stays open: mgmapi maps this reply to the
+   * retryable NDB_MGM_SERVER_NOT_READY instead of an illegal-reply
+   * protocol error, so pollers can retry on the same connection once
+   * the gate lifts.
+   */
+  m_output->println("%s", NDB_MGM_NOT_READY_REPLY);
+  m_output->println("Error: Waiting for arbitrator selection");
   m_output->print("\n");
-  m_stop = true;
 }
 
 MgmApiSession::~MgmApiSession() {
@@ -988,9 +994,8 @@ MgmApiSession::setUser(Parser_t::Context &,
 
   g_eventLogger->info("MgmApiSession::setUser");
   int error_code;
-  const char *database_name = nullptr;
   NdbOut socket_out(*m_output);
-  if ((error_code = m_mgmsrv.set_quotas(database_name,
+  if ((error_code = m_mgmsrv.set_quotas(user_name,
                                         true,
                                         in_memory_size,
                                         on_disk_size,
@@ -1006,7 +1011,7 @@ MgmApiSession::setUser(Parser_t::Context &,
     m_output->println("%s", "");
     return;
   }
-
+  
   m_output->println("set user reply");
   m_output->println("result: Ok");
   m_output->println("%s", "");
@@ -1032,9 +1037,8 @@ MgmApiSession::alterUser(Parser_t::Context &,
 
   g_eventLogger->info("MgmApiSession::alterUser");
   int error_code;
-  const char *database_name = nullptr;
   NdbOut socket_out(*m_output);
-  if ((error_code = m_mgmsrv.alter_quotas(database_name,
+  if ((error_code = m_mgmsrv.alter_quotas(user_name,
                                           true,
                                           in_memory_size,
                                           on_disk_size,
@@ -1050,7 +1054,7 @@ MgmApiSession::alterUser(Parser_t::Context &,
     m_output->println("%s", "");
     return;
   }
-
+  
   m_output->println("alter user reply");
   m_output->println("result: Ok");
   m_output->println("%s", "");
@@ -1066,9 +1070,8 @@ MgmApiSession::dropUser(Parser_t::Context &,
 
   g_eventLogger->info("MgmApiSession::dropUser");
   int error_code;
-  char *database_name = nullptr;
   NdbOut socket_out(*m_output);
-  if ((error_code = m_mgmsrv.drop_quotas(database_name, true, socket_out))) {
+  if ((error_code = m_mgmsrv.drop_quotas(user_name, true, socket_out))) {
     if (error_code == -1) return;
     m_output->println("drop user reply");
     m_output->println("result: %s", "Drop User failed");
@@ -1076,7 +1079,7 @@ MgmApiSession::dropUser(Parser_t::Context &,
     m_output->println("%s", "");
     return;
   }
-
+  
   m_output->println("drop user reply");
   m_output->println("result: Ok");
   m_output->println("%s", "");
@@ -1088,10 +1091,9 @@ MgmApiSession::getUser(Parser_t::Context &,
   const char *user_name = nullptr;
   args.get("username", &user_name);
 
-  const char *database_name = nullptr;
   m_output->println("get user reply");
   NdbOut socket_out(*m_output);
-  m_mgmsrv.get_quotas(database_name, true, socket_out);
+  m_mgmsrv.get_quotas(user_name, true, socket_out);
 }
 
 void

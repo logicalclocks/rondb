@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +36,10 @@
 void Ndbcntr::initData() {
   c_cntr_startedNodeSet.clear();
   c_startedNodeSet.clear();
+  c_recoveredNodeSet.clear();
+  m_restart_barrier_waiting = false;
+  c_restart_barrier_timeout_ms = 0;
+  c_graceful_stop_timeout_ms = 27000;
   c_start.reset();
   cmasterNodeId = 0;
   cnoStartNodes = 0;

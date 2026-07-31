@@ -614,6 +614,41 @@ TransporterRegistry::set_hostname(Uint32 nodeId,
 #endif
 }
 
+void TransporterRegistry::set_rdma_log_level(Uint32 level [[maybe_unused]]) {
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  /*
+   * Push the new verbosity level to every RDMA transporter.
+   * RDMA_Transporter::set_log_level() stores it atomically, so this is
+   * safe to call from the CMVMI block thread while the send/receive
+   * threads read the value. On builds without RDMA support the loop is
+   * elided and 'level' is marked maybe_unused, so this compiles to an
+   * empty function.
+   */
+  for (Uint32 i = 0; i < nRDMATransporters; i++) {
+    theRDMATransporters[i]->set_log_level(level);
+  }
+#endif
+}
+
+bool TransporterRegistry::get_rdma_stats(TrpId trpId [[maybe_unused]],
+                                         RdmaTransporterStats &out
+                                             [[maybe_unused]]) const {
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  /*
+   * Linear scan over the RDMA transporters matching on transporter index.
+   * nRDMATransporters is small (one per RDMA link) so this is cheap enough
+   * for an on-demand ndbinfo scan. Returns false for non-RDMA trpIds.
+   */
+  for (Uint32 i = 0; i < nRDMATransporters; i++) {
+    if (theRDMATransporters[i]->getTransporterIndex() == trpId) {
+      theRDMATransporters[i]->fill_stats(out);
+      return true;
+    }
+  }
+#endif
+  return false;
+}
+
 bool TransporterRegistry::init_tls(const char *searchPath, int nodeType,
                                    int mgmReqLevel) {
   require(localNodeId);

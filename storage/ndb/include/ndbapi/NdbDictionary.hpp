@@ -1020,6 +1020,21 @@ class NdbDictionary {
     Uint32 getPartitionCount() const;
 
     /**
+     * Set partition hash fanout metadata.
+     */
+    void setPartitionHash(Uint32 base_key_count, Uint32 detail_key_count,
+                          Uint32 fanout);
+
+    /**
+     * Get partition hash fanout metadata.
+     */
+    Uint32 getPartitionHashBaseKeyCount() const;
+
+    Uint32 getPartitionHashDetailKeyCount() const;
+
+    Uint32 getPartitionHashFanout() const;
+
+    /**
      * Set fragment count using cluster agnostics defines
      */
     void setPartitionBalance(NdbDictionary::Object::PartitionBalance);

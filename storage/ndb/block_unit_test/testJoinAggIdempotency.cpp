@@ -537,8 +537,9 @@ int main(int argc, char **argv)
 
   {
     Ndb_cluster_connection clusterConn(connectString);
-    if (clusterConn.connect(12, 5, 0) != 0) {
-      fprintf(stderr, "Cannot connect to cluster\n");
+    if (clusterConn.connect(30, 5, 0) != 0) {
+      fprintf(stderr, "Cannot connect to cluster: %s\n",
+              clusterConn.get_latest_error_msg());
       rc = 1;
       goto cleanup;
     }

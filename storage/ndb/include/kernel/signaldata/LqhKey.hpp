@@ -260,8 +260,9 @@ class LqhKeyReq {
     RI_INTERPRETED_INSERT_SHIFT = 7,
     RI_TTL_ONLY_EXPIRED_SHIFT = 8,
 
-    /* Ring Buffer related */
-    RI_RING_BUFFER_OP_SHIFT = 9,
+    /* The Ring Buffer Op flag lives in ScanInfo/attrLen word:
+       requestInfo is full and bit 9 is taken by the 26.02 UserId flag */
+    RI_USER_ID_SHIFT = 9,
 
     RI_LAST_REPL_SHIFT = 10,
     RI_LAST_REPL_MASK = 3,
@@ -299,7 +300,7 @@ class LqhKeyReq {
     SI_REORG_MASK = 3,
     SI_JOIN_AGG_SHIFT = 28,
     SI_OUTER_JOIN_AGG_SHIFT = 29,
-    SI_USER_ID_SHIFT = 30,
+    SI_RING_BUFFER_OP_SHIFT = 31,
   };
 };
 
@@ -340,6 +341,7 @@ class LqhKeyReq {
  * L = TTL flag               = 1 Bit (6)
  * N = Interpreted Insert flag= 1 Bit (7)
  * t = TTL only expired flag  = 1 Bit (8)
+ * U = User Id flag           = 1 Bit (9)
 
  * Short LQHKEYREQ :
  *             1111111111222222222233
@@ -365,12 +367,12 @@ class LqhKeyReq {
  * m = Reorg value              -  2 Bit (26-27)
  * J = Join aggregation flag    -  1 Bit (28)
  * O = Join aggregation flag    -  1 Bit (29)
- * U = User Id flag             -  1 Bit (30)
+ * G = Ring Buffer Op           -  1 Bit (31)
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  * aaaaaaaaaaaaaaaapddddddddtmmJ       (Short LQHKEYREQ)
- *                 pddddddddtmmJOU     (Long LQHKEYREQ)
+ *                 pddddddddtmmJO G    (Long LQHKEYREQ)
  */
 
 inline UintR LqhKeyReq::getAttrLen(const UintR &scanData) {
@@ -603,17 +605,17 @@ inline void LqhKeyReq::setNoDiskFlag(UintR &requestInfo, UintR val) {
   requestInfo |= (val << RI_NODISK_SHIFT);
 }
 
-inline void LqhKeyReq::setUserIdFlag(UintR &attrLenFlags, UintR val) {
+inline void LqhKeyReq::setUserIdFlag(UintR &requestInfo, UintR val) {
   ASSERT_BOOL(val, "LqhKeyReq::setUserIdFlag");
-  attrLenFlags |= (val << SI_USER_ID_SHIFT);
+  requestInfo |= (val << RI_USER_ID_SHIFT);
 }
 
 inline UintR LqhKeyReq::getNoDiskFlag(const UintR &requestInfo) {
   return (requestInfo >> RI_NODISK_SHIFT) & 1;
 }
 
-inline UintR LqhKeyReq::getUserIdFlag(const UintR &attrLenFlags) {
-  return (attrLenFlags >> SI_USER_ID_SHIFT) & 1;
+inline UintR LqhKeyReq::getUserIdFlag(const UintR &requestInfo) {
+  return (requestInfo >> RI_USER_ID_SHIFT) & 1;
 }
 
 inline void LqhKeyReq::setRowidFlag(UintR &requestInfo, UintR val) {
@@ -733,13 +735,13 @@ inline UintR LqhKeyReq::getTTLOnlyExpiredFlag(const UintR & requestInfo){
   return (requestInfo >> RI_TTL_ONLY_EXPIRED_SHIFT) & 1;
 }
 
-inline void LqhKeyReq::setRingBufferOpFlag(UintR &requestInfo, UintR val){
+inline void LqhKeyReq::setRingBufferOpFlag(UintR &attrLenFlags, UintR val){
   ASSERT_BOOL(val, "LqhKeyReq::setRingBufferOpFlag");
-  requestInfo |= (val << RI_RING_BUFFER_OP_SHIFT);
+  attrLenFlags |= (val << SI_RING_BUFFER_OP_SHIFT);
 }
 
-inline UintR LqhKeyReq::getRingBufferOpFlag(const UintR & requestInfo){
-  return (requestInfo >> RI_RING_BUFFER_OP_SHIFT) & 1;
+inline UintR LqhKeyReq::getRingBufferOpFlag(const UintR & attrLenFlags){
+  return (attrLenFlags >> SI_RING_BUFFER_OP_SHIFT) & 1;
 }
 
 inline void LqhKeyReq::setRingBufferShowMetaFlag(UintR &requestInfo, UintR val){

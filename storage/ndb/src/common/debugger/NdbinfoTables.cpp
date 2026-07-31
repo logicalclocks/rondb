@@ -653,7 +653,7 @@ DECLARE_NDBINFO_TABLE(TC_TIME_TRACK_STATS, 15) = {
 DECLARE_NDBINFO_TABLE(CONFIG_VALUES, 3) = {
     {"config_values", 3, 0,
      [](const Ndbinfo::Counts &c) {
-       return c.data_nodes * 193;  // 193 = current number of config parameters
+       return c.data_nodes * 195;  // 195 = current number of config parameters
      },
      "Configuration parameter values"},
     {
@@ -1296,6 +1296,35 @@ DECLARE_NDBINFO_TABLE(TRANSPORTER_ACTIVITY, 8) = {
         {"activity", Ndbinfo::Number64, "activity count"},
     }};
 
+DECLARE_NDBINFO_TABLE(RDMA_TRANSPORTERS, 17) = {
+    {"rdma_transporters", 17, 0,
+     [](const Ndbinfo::Counts &counts) {
+       return (counts.data_nodes) * (counts.all_nodes - 1);
+     },
+     "RDMA transporter statistics (rows only for RDMA links)"},
+    {{"node_id", Ndbinfo::Number, "Node id reporting"},
+     {"trp_id", Ndbinfo::Number, "Transporter id"},
+     {"remote_node_id", Ndbinfo::Number, "Node id at other end of link"},
+
+     {"reconnects", Ndbinfo::Number64,
+      "RDMA link reconnect attempts since start"},
+     {"send_posted", Ndbinfo::Number64, "SEND work requests posted"},
+     {"send_ok", Ndbinfo::Number64, "SEND completions with success status"},
+     {"send_err", Ndbinfo::Number64, "SEND completions with error status"},
+     {"recv_posted", Ndbinfo::Number64, "RECV work requests posted"},
+     {"recv_ok", Ndbinfo::Number64, "RECV completions with success status"},
+     {"recv_err", Ndbinfo::Number64, "RECV completions with error status"},
+     {"send_credit_stalls", Ndbinfo::Number64,
+      "Times a send stalled waiting for peer receive credits"},
+     {"peer_credits", Ndbinfo::Number,
+      "Current receive credits advertised by the peer"},
+     {"rnr", Ndbinfo::Number64, "Receiver-not-ready events"},
+     {"retry_exceeded", Ndbinfo::Number64,
+      "Transport retry-exceeded events"},
+     {"qp_fatal", Ndbinfo::Number64, "Queue-pair fatal error events"},
+     {"bytes_sent", Ndbinfo::Number64, "Wire bytes sent"},
+     {"bytes_received", Ndbinfo::Number64, "Wire bytes received"}}};
+
 DECLARE_NDBINFO_TABLE(SECURITY_VIOLATIONS, 3) = {
     {"security_violations", 3, 0, [](const Ndbinfo::Counts &) { return 0; },
      "Static catalog of data node security violation types (data node security)"},
@@ -1379,6 +1408,7 @@ static struct ndbinfo_table_list_entry {
     DBINFOTBL(TRANSPORTER_DETAILS),
     DBINFOTBL(TRANSACTIONS_FULL),
     DBINFOTBL(TRANSPORTER_ACTIVITY),
+    DBINFOTBL(RDMA_TRANSPORTERS)};
     DBINFOTBL(SECURITY_VIOLATIONS),
     DBINFOTBL(SECURITY_VIOLATION_COUNTS)};
 

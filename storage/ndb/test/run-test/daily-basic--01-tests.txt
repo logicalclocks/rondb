@@ -1,5 +1,5 @@
 # Copyright (c) 2015, 2026, Oracle and/or its affiliates.
-# Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -148,3 +148,43 @@ cmd: testSystemRestart
 args: -n SR1 T1
 max-time: 4140
 
+
+cmd: testNodeRestart
+args: -n RestartBarrierWaitRelease T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierRepeatedWaves T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierStarterFail T1
+max-time: 900
+
+# RestartBarrierStartedNodeFail, RestartBarrierMasterFail,
+# RestartBarrierMasterFailDictLock and RestartBarrierMasterFailRemoteDictLock
+# are deliberately not run here. They rely on the node stalled below the
+# barrier dying of the expected error 2308 (NDBD_EXIT_SR_OTHERNODEFAILED)
+# on the failure of another node. With the autotest default StopOnError=1
+# the angel exits instead of restarting the child, so the ndbd process is
+# gone for good; atrt then aborts the test with ERR_NDB_FAILED before the
+# case can finish, and the test cannot bring the cluster back either.
+# These four cases run under MTR instead, where
+# suite/ndb/t/ndb_restart_barrier.cnf sets StopOnError=0:
+#   ndb_restart_barrier_failures, ndb_restart_barrier_dictlock
+
+cmd: testNodeRestart
+args: -n RestartBarrierTimeout T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierServeWhileParked T1
+max-time: 900
+
+cmd: testMgmd
+args: -n ArbitratorGateNotReady
+max-time: 300
+
+cmd: testMgmd
+args: -n MgmTransporterConvertRetry
+max-time: 300

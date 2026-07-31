@@ -65,7 +65,8 @@ class BatchDeleteOperations : public BaseBatchOperations {
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
                                Ndb *ndb_object,
-                               char *username_ptr);
+                               const char *rate_limit_identity,
+                               Uint32 rate_limit_identity_len);
    // Delete-specific methods
    RS_Status setup_table_blob_handles(ArenaMalloc *amalloc);
    RS_Status setup_delete_operations();

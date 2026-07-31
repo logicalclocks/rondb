@@ -66,9 +66,11 @@ INSERT INTO ttl_backup.sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 3
 INSERT INTO ttl_backup.sz1 VALUES(4, SYSDATE(), 400, 40000);
 COMMIT;
 
-# Wait for TTL expiry: rows 1,2,4 expire; row 3 survives
+# Wait for TTL expiry: rows 1,2,4 expire; row 3 survives.
+# Wait on row 4, the last-inserted expiring row: its SYSDATE() timestamp
+# is >= those of rows 1 and 2, so once it is invisible all three are.
 --let $ttl_wait_timeout = 20
---let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM ttl_backup.sz1 WHERE col_a = 1
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM ttl_backup.sz1 WHERE col_a = 4
 --source suite/ndb_ttl/include/ttl_wait_expired.inc
 
 SELECT col_a, col_c, col_d FROM ttl_backup.sz1;

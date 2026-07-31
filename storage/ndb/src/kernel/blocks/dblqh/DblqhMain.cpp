@@ -165,7 +165,7 @@
 //#define DEBUG_RATE 1
 //#define DEBUG_RATE_SEND 1
 //#define DEBUG_RATE_DETAIL 1
-//#define DEBUG_QUOTAS 1
+#define DEBUG_QUOTAS 1
 /* Per-group redistribution tracing is very noisy on large CTEs.  Keep it
  * separate from DEBUG_JOIN_AGG so normal phase/state tracing stays readable. */
 //#define DEBUG_JOIN_AGG_REDIST_VERBOSE 1
@@ -1149,6 +1149,10 @@ void Dblqh::execCONTINUEB(Signal *signal) {
   case ZCONTINUE_CTE_SCAN_AGG_FEED:
   {
     jam();
+    if (m_is_query_block) {
+      jamDebug();
+      setup_query_thread_for_cte_access();
+    }
     const char *rawPtr = reinterpret_cast<const char *>(
         (uintptr_t)signal->theData[6] |
         ((uintptr_t)signal->theData[7] << 32));
@@ -1166,6 +1170,10 @@ void Dblqh::execCONTINUEB(Signal *signal) {
                    signal->theData[8],   // groupsSent
                    nullptr, 0,           // cinBuf, attrInfoLen
                    signal->theData[9]);  // aggFeedStateI (RNIL if none)
+    if (m_is_query_block) {
+      jamDebug();
+      reset_query_thread_access();
+    }
     return;
   }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
@@ -5598,7 +5606,7 @@ void Dblqh::earlyKeyReqAbort(Signal *signal, const LqhKeyReq *lqhKeyReq,
 
   /* Now perform signalling */
 
-  Uint32 var_index = LqhKeyReq::getUserIdFlag(lqhKeyReq->attrLen);
+  Uint32 var_index = LqhKeyReq::getUserIdFlag(reqInfo);
   if (LqhKeyReq::getDirtyFlag(reqInfo) &&
       LqhKeyReq::getOperation(reqInfo) == ZREAD &&
       !LqhKeyReq::getNormalProtocolFlag(reqInfo)) {
@@ -5806,6 +5814,7 @@ void Dblqh::LQHKEY_error(Signal *signal, int errortype,
   }  // switch
   g_eventLogger->info("(%u)Protocol error in LQHKEYREQ: %u", instance(),
                       errortype);
+  ndbabort();
   abortErrorLab(signal, tcConnectptr, ZLQHKEY_PROTOCOL_ERROR);
   reset_curr_ldm();
 }  // Dblqh::LQHKEY_error()
@@ -7268,7 +7277,7 @@ bool Dblqh::checkTransporterOverloaded(Signal *signal, const NodeBitmask &all,
   if (tc_node < MAX_NODES)  // not worth to crash here
     mask.set(tc_node);
   const Uint8 op = LqhKeyReq::getOperation(req->requestInfo);
-  Uint32 var_index = LqhKeyReq::getUserIdFlag(req->attrLen);
+  Uint32 var_index = LqhKeyReq::getUserIdFlag(req->requestInfo);
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK) {
     // the receiver
     Uint32 api_node = refToNode(req->variableData[var_index]);
@@ -9362,14 +9371,22 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   sig2 = lqhKeyReq->transId2;
 
   Uint32 var_index = 0;
-  if (LqhKeyReq::getUserIdFlag(attrLenFlags)) {
+  if (LqhKeyReq::getUserIdFlag(Treqinfo)) {
     jamDebug();
+    /**
+     * The user id word is always present when the flag is set, so var_index
+     * must advance regardless of whether this block has the database record
+     * in its local hash. Query threads (DBQLQH) in particular may not hold
+     * the record; only the accounting via m_user_ptr_i is then skipped. If
+     * var_index were advanced only on a hit, the fixed-length check below
+     * would fail on those blocks and abort the node.
+     */
     DatabaseRecordPtr dbPtr;
     Uint32 user_id = lqhKeyReq->variableData[0];
     DatabaseRecord key(*this, user_id);
+    var_index++;
     if (m_databaseRecordHash.find(dbPtr, key)) {
       jam();
-      var_index++;
       regTcPtr->m_user_ptr_i = dbPtr.i;
     }
   }
@@ -9460,7 +9477,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->m_flags |= TcConnectionrec::OP_TTL_OWNER_CHECK_BYPASS;
   }
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
-  regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(Treqinfo);
+  regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(attrLenFlags);
   regTcPtr->ring_buffer_show_meta = LqhKeyReq::getRingBufferShowMetaFlag(Treqinfo);
   TTL_RONDB_TRACE(tabptr.i, "Dblqh::execLQHKEYREQ(), ttl_ignore: %u, only_expired: %u",
                   regTcPtr->ttl_ignore,
@@ -12858,7 +12875,6 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * safe.
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
-  LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
   LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
 
   /*
@@ -12949,6 +12965,10 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   sig4 = regTcPtr->tcBlockref;
 
   lqhKeyReq->clientConnectPtr = sig0;
+  lqhKeyReq->attrLen = TotReclenAi;
+  /* The Ring Buffer Op flag lives in the attrLen word (requestInfo is
+     full), so it can only be set once attrLen has been filled in */
+  LqhKeyReq::setRingBufferOpFlag(lqhKeyReq->attrLen, regTcPtr->ring_buffer_op);
   lqhKeyReq->savePointId = sig1;
   lqhKeyReq->hashValue = sig2;
   lqhKeyReq->tcBlockref = sig4;
@@ -12959,10 +12979,9 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
     jam();
     ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
     lqhKeyReq->variableData[0] = dbPtr.p->m_database_id;
-    LqhKeyReq::setUserIdFlag(TotReclenAi, 1);
+    LqhKeyReq::setUserIdFlag(Treqinfo, 1);
     var_index++;
   }
-  lqhKeyReq->attrLen = TotReclenAi;
   lqhKeyReq->requestInfo = Treqinfo;
 
   sig0 = regTcPtr->tableref + ((regTcPtr->schemaVersion << 16) & 0xFFFF0000);
@@ -16965,6 +16984,39 @@ void Dblqh::setup_query_thread_for_scan_access(Uint32 instanceNo) {
     tux_block->c_indexPool.getArrayPtr());
 }
 
+/**
+ * setup_query_thread_for_cte_access
+ *
+ * CTE lookups/scans and join aggregation feeds evaluate interpreter
+ * programs (the WHERE-filter gate and embedded aggregation programs)
+ * whose BRANCH_MEM_OP_ARG instructions resolve parent-table type and
+ * charset metadata through c_tup->tablerec and (for the schema version
+ * check) this->tablerec.  Query thread blocks have no table metadata of
+ * their own: the counts (cnoOfTablerec / ctabrecFileSize) are copied
+ * from LDM instance 1 at STTOR, but the record arrays stay nullptr
+ * until setup_query_thread_for_key/scan_access borrows them from an
+ * LDM instance for a fragment operation.  A CTE signal can arrive on a
+ * query worker before any such access has run, so borrow the pointers
+ * here as well.
+ *
+ * Unlike key/scan access there is no fragment to derive the LDM
+ * instance from, and none is needed: CREATE_TAB_REQ is proxy-broadcast
+ * (SsParallel) to every LDM worker, so all LDM instances hold identical
+ * table metadata for every defined table — only fragment records are
+ * instance-specific.  Borrow from LDM instance 1, mirroring the STTOR
+ * count copy.  Races with concurrent schema operations are handled by
+ * the DEFINED / schemaVersion guards in the interpreter, which fail the
+ * query with a clean error.
+ */
+void Dblqh::setup_query_thread_for_cte_access() {
+  Dblqh *lqh_block = (Dblqh *)globalData.getBlock(DBLQH, 1);
+  Dbtup *tup_block = (Dbtup *)globalData.getBlock(DBTUP, 1);
+  this->m_ldm_instance_used = lqh_block;
+  this->tablerec = lqh_block->tablerec;
+  c_tup->m_ldm_instance_used = tup_block;
+  c_tup->tablerec = tup_block->tablerec;
+}
+
 void
 Dblqh::reset_query_thread_access()
 {
@@ -18911,6 +18963,20 @@ bool Dblqh::checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
  */
 void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   jamEntry();
+  /* Same borrow/reset bracket as execCTE_LOOKUP_REQ. */
+  const bool is_query_thread = m_is_query_block;
+  if (is_query_thread) {
+    jamDebug();
+    setup_query_thread_for_cte_access();
+  }
+  joinAggNullRowReqImpl(signal);
+  if (is_query_thread) {
+    jamDebug();
+    reset_query_thread_access();
+  }
+}
+
+void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
   const JoinAggNullRowReq *req =
     (const JoinAggNullRowReq *)signal->getDataPtr();
 
@@ -20182,7 +20248,23 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     jam();
     return;
   }
+  /* Borrow LDM table metadata for the filter gate / agg feed
+   * interpreters, and drop the borrowed pointers again on the way
+   * out so a missed setup elsewhere fails deterministically instead
+   * of riding on whatever the previous operation left behind. */
+  const bool is_query_thread = m_is_query_block;
+  if (is_query_thread) {
+    jamDebug();
+    setup_query_thread_for_cte_access();
+  }
+  cteLookupReqImpl(signal);
+  if (is_query_thread) {
+    jamDebug();
+    reset_query_thread_access();
+  }
+}
 
+void Dblqh::cteLookupReqImpl(Signal *signal) {
   const CteLookupReq req =
       *(const CteLookupReq *)signal->getDataPtr();
 
@@ -21078,7 +21160,20 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     jam();
     return;
   }
+  /* Same borrow/reset bracket as execCTE_LOOKUP_REQ. */
+  const bool is_query_thread = m_is_query_block;
+  if (is_query_thread) {
+    jamDebug();
+    setup_query_thread_for_cte_access();
+  }
+  cteScanReqImpl(signal);
+  if (is_query_thread) {
+    jamDebug();
+    reset_query_thread_access();
+  }
+}
 
+void Dblqh::cteScanReqImpl(Signal *signal) {
   const CteScanReq req =
       *(const CteScanReq *)signal->getDataPtr();
 
@@ -24271,12 +24366,19 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     ScanFragReq::getParallelOrderedScanFlag(reqinfo);
   if (ScanFragReq::getUserIdFlag(reqinfo)) {
     jamDebug();
+    /**
+     * The user id word is always present when the flag is set, so
+     * extra_len_index must advance regardless of whether this block holds
+     * the database record locally (query threads may not). Advancing it
+     * only on a hit would desync the variableData offsets / length on
+     * those blocks. See execLQHKEYREQ for the key-op equivalent.
+     */
     DatabaseRecordPtr dbPtr;
     Uint32 user_id = scanFragReq->variableData[0];
     DatabaseRecord key(*this, user_id);
+    extra_len_index++;
     if (m_databaseRecordHash.find(dbPtr, key)) {
       jam();
-      extra_len_index++;
       regTcPtr->m_user_ptr_i = dbPtr.i;
     }
   }

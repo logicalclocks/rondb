@@ -1281,6 +1281,8 @@ class Dbdih : public SimulatedBlock {
   void execSTOP_PERM_REQ(Signal *);
   void execSTOP_PERM_REF(Signal *);
   void execSTOP_PERM_CONF(Signal *);
+  void execSTOP_PERM_REL(Signal *);
+  void releaseStopPermMaster(Signal *, NodeId nodeId);
 
   void execSTOP_ME_REQ(Signal *);
   void execSTOP_ME_REF(Signal *);
@@ -2425,6 +2427,9 @@ class Dbdih : public SimulatedBlock {
   BlockReference clocalqlqhblockref;
   BlockReference clocaltcblockref;
   BlockReference cmasterdihref;
+  // Direct pointer to NDBCNTR (same thread), used to check the
+  // restart barrier state in STOP_PERM handling (RONDB-1096)
+  class Ndbcntr *c_ndbcntr;
   Uint16 cownNodeId;
   BlockReference cndbStartReqBlockref;
   BlockReference cntrlblockref;
@@ -2714,12 +2719,22 @@ class Dbdih : public SimulatedBlock {
 
   // slave
   void sendDictLockReq(Signal *signal, Uint32 lockType, Callback c);
+  void sendDictLockTakeoverReq(Signal *signal, Uint32 delayMillis = 0);
   void recvDictLockConf(Signal *signal);
   void sendDictUnlockOrd(Signal *signal, Uint32 lockSlavePtrI);
 
   // NR
   Uint32 c_dictLockSlavePtrI_nodeRestart;  // userPtr for NR
   void recvDictLockConf_nodeRestart(Signal *signal, Uint32 data, Uint32 ret);
+  void releaseDictLock_nodeRestart(Signal *signal);
+
+  /**
+   * Generation of NodeRestartLockTakeover requests, bumped for each
+   * master takeover. A pending delayed retry whose generation no longer
+   * matches is dropped instead of duplicating the fresh request the new
+   * takeover already sent.
+   */
+  Uint32 c_dictLockTakeoverGen;
 
   Uint32 c_error_7181_ref;
 
