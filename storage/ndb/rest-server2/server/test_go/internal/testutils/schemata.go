@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -137,13 +137,34 @@ func runQueriesWithConnection(sqlQueries string, dbConnection *sql.DB) error {
 	}
 	defer conn.Close()
 
+	// Insert each database's data in one big transaction, the way Hopsworks
+	// does in production (the feature view metadata graph is persisted by a
+	// single cascaded JPA transaction). With statement-level autocommit a
+	// server-side event watcher (e.g. the RDRS feature view metadata cache)
+	// can observe a feature_view row whose features, joins and serving keys
+	// are still uncommitted, and cache that partial state. DDL statements
+	// implicitly commit, so in effect every run of DML between DDL
+	// statements becomes one transaction; the fixture files keep all data
+	// after all DDL. Do NOT replace this with periodic "commit every N
+	// statements": an arbitrary commit boundary can split a feature view's
+	// rows and reintroduce the partial-read window.
+	_, err = conn.ExecContext(context.Background(), "SET autocommit = 0")
+	if err != nil {
+		return fmt.Errorf("failed to disable autocommit: %w", err)
+	}
+
 	for _, query := range splitQueries {
 		query := strings.TrimSpace(query)
 		log.Debugf("running query: \n%s", query)
 		_, err := conn.ExecContext(context.Background(), query)
 		if err != nil {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 			return fmt.Errorf("failed to run SQL query '%s'; error: %v", query, err)
 		}
+	}
+	_, err = conn.ExecContext(context.Background(), "COMMIT")
+	if err != nil {
+		return fmt.Errorf("failed to commit seeding transaction: %w", err)
 	}
 	return nil
 }
