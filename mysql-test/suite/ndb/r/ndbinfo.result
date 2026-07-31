@@ -102,9 +102,11 @@ table_id	table_name	comment
 54	transactions_full	transactions_full
 55	transporter_activity	Histogram over activity on heartbeated transporters
 56	rdma_transporters	RDMA transporter statistics (rows only for RDMA links)
+57	security_violations	Static catalog of data node security violation types (data node security)
+58	security_violation_counts	Per-violation-type strike counters (data node security)
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
-57
+59
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -161,6 +163,8 @@ table_id	table_name	comment
 54	transactions_full	transactions_full
 55	transporter_activity	Histogram over activity on heartbeated transporters
 56	rdma_transporters	RDMA transporter statistics (rows only for RDMA links)
+57	security_violations	Static catalog of data node security violation types (data node security)
+58	security_violation_counts	Per-violation-type strike counters (data node security)
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -216,6 +220,8 @@ table_id	table_name
 56	rdma_transporters
 7	resources
 21	restart_info
+56	security_violations
+57	security_violation_counts
 37	stored_tables
 0	tables
 31	table_distribution_status
@@ -329,6 +335,8 @@ table_id
 54
 55
 56
+57
+58
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only

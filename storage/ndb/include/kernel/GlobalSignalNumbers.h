@@ -1328,4 +1328,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_DBACC_WAITFOR_REP           979
 /* Deadlock detail report (DBTC → NDB API), version-gated — RONDB-1062 */
 #define GSN_TC_DEADLOCK_REP             980
+
+/* Data node security: block reports a malicious/malformed signal to QMGR */
+#define GSN_MALICIOUS_SIGNAL_REPORT     981
 #endif

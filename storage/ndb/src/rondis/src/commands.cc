@@ -2882,6 +2882,7 @@ void rondb_mset(Ndb *ndb,
     key_storage[i].m_key_len = key_len;
 
     if (argv[arg_index_val].size() > REDIS_MAX_VALUE_LEN) {
+      RONDIS_SECURITY_EVENT("rondis_oversize_value");
       assign_generic_err_to_response(response, REDIS_VALUE_TOO_LARGE);
       return;
     }
@@ -4281,6 +4282,7 @@ void rondb_setrange_command(Ndb *ndb,
   key_store->m_set_value_size = argv[3].size();
   Uint32 end = key_store->m_set_value_size + start;
   if (end > MAX_REDIS_ROW_SIZE) {
+    RONDIS_SECURITY_EVENT("rondis_oversize_value");
     assign_generic_err_to_response(response, REDIS_OFFSET_OUT_OF_RANGE);
     return;
   }

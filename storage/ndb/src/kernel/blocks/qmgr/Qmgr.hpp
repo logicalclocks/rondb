@@ -49,6 +49,7 @@
 #include "../ndbcntr/Ndbcntr.hpp"
 
 #include "timer.hpp"
+#include <kernel/ViolationType.hpp>
 
 #define JAM_FILE_ID 362
 
@@ -657,6 +658,38 @@ class Qmgr : public SimulatedBlock {
   void api_failed(Signal *signal, Uint32 aFailedNode, ApiFailureCause afc,
                   Uint32 senderRef);
   void node_failed(Signal *signal, Uint16 aFailedNode);
+
+  /**
+   * Data node security (tiered_response_policy.md): QMGR receives malicious-
+   * signal reports from any block and owns the per-violation counters and the
+   * disconnect decision. Tier A → disconnect; Tier B → count and log only. A
+   * Tier B report from a data-node sender is escalated to Tier A (override
+   * rule). Time-series analysis is handled externally (Prometheus).
+   *
+   * The SECURITY_EVENT cluster-log emission is rate-capped to bound MGM load: a
+   * connected client can cheaply trigger a high rate of Tier B violations, and
+   * each unthrottled event is an EVENT_REP to every MGM subscriber. The counters
+   * below (m_securityEvent*) implement a single GLOBAL per-second window on the
+   * *log emission only* — m_violationCounts is always incremented, so
+   * ndbinfo.security_violation_counts stays exact. Tier A is never suppressed
+   * (it self-limits: the offender is disconnected on first strike).
+   */
+  void execMALICIOUS_SIGNAL_REPORT(Signal *signal);
+  void securityDisconnectNode(Signal *signal, Uint32 nodeId);
+
+  // Per-violation-type cumulative strike counters. One Uint64 per catalog entry;
+  // ~240 bytes total. Zero-initialised at construction; never reset at runtime.
+  // Indexed by ViolationType enum value; out-of-range → VT_UNKNOWN bucket.
+  // Exposed via ndbinfo.security_violation_counts for Prometheus scraping.
+  Uint64 m_violationCounts[NUM_VIOLATION_TYPES];
+
+  // Global per-second cap on SECURITY_EVENT log emission (Tier B flood → MGM
+  // DoS). Only the cluster-log EVENT_REP is throttled; counting is unconditional.
+  static constexpr Uint32 MAX_SECURITY_EVENTS_PER_SEC = 10;
+  NDB_TICKS m_securityEventWindowStart;  // start of current 1s window
+  Uint32 m_securityEventsInWindow;       // Tier B events emitted this window
+  Uint32 m_securityEventsSuppressed;     // Tier B events suppressed this window
+
   void checkStartInterface(Signal *signal, NDB_TICKS now);
   void failReport(Signal *signal, Uint16 aFailedNode, UintR aSendFailRep,
                   FailRep::FailCause failCause, Uint16 sourceNode);

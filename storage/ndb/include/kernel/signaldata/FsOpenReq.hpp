@@ -238,7 +238,6 @@ class FsOpenReq {
   static void v6_setBasePath(Uint32 fileNumber[], Uint32 no);
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_FSOPENREQ, Local);
 
 /**
  * File flags (set according to solaris standard)

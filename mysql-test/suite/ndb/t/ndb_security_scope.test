@@ -1,0 +1,77 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+#
+# Data node security: signal-scope violation enforcement.
+#
+# A signal received from a node type that must never send it (see
+# SignalScopes.hpp / SimulatedBlock::checkSignalSender) is now dropped and
+# reported to QMGR as a Tier A violation via reportMaliciousSignal, replacing
+# the previous behaviour of crashing the receiving node.
+#
+# This test covers the QMGR/catalog side of that wiring:
+#   - the three scope violation types exist in the catalog and are Tier A;
+#   - a Tier A scope-violation report disconnects the offending API node and
+#     is counted on the reporting data node.
+#
+# The checkSignalSender -> handle_sender_error drop path itself (a real
+# scope-violating signal on the wire) is not exercised here; the DUMP 9100
+# injector synthesizes the report that QMGR would receive. Non-disconnecting
+# (Tier B) counting and catalog/view coverage lives in ndb_security.test; the
+# generic Tier A disconnect in ndb_security_enforce.test.
+#
+# DUMP code (debug builds only, Qmgr::execDUMP_STATE_ORD):
+#   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious report
+#
+# ViolationType ids (ViolationType.hpp):
+#   31 = VT_SIGNAL_SCOPE_LOCAL
+#   32 = VT_SIGNAL_SCOPE_REMOTE
+#   33 = VT_SIGNAL_SCOPE_MANAGEMENT
+#
+
+--echo #
+--echo # Test 1: the three signal-scope violation types are present in the static
+--echo #   catalog, all Tier A (tier=0), with the expected reason strings.
+--echo #
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE violation_id IN (31,32,33) ORDER BY violation_id;
+
+--echo #
+--echo # Test 2: a Tier A scope-violation report (vtype=33 =
+--echo #   VT_SIGNAL_SCOPE_MANAGEMENT) reported to data node 1 against the
+--echo #   connected API node 1600 disconnects it. (Same spare connection-pool
+--echo #   target as ndb_security_enforce.test.)
+--echo #
+
+--echo # Sanity: API node 1600 is currently connected.
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM ndbinfo.processes WHERE node_id=1600;
+--source include/wait_condition.inc
+
+--exec $NDB_MGM -e "1 dump 9100 1600 33" >> $NDB_TOOLS_OUTPUT
+
+--echo # Tier A => node 1600 is disconnected (leaves processes).
+let $wait_condition=
+  SELECT COUNT(*) = 0 FROM ndbinfo.processes WHERE node_id=1600;
+--source include/wait_condition.inc
+--echo # (API node 1600 disconnected on scope violation: OK)
+
+# NB: query the public view (ndbinfo.security_violation_counts), NOT the base
+# table ndb$security_violation_counts. Inside a `let $wait_condition= `...``
+# mysqltest re-substitutes variables, and the `$` in the base-table name is
+# taken as an (empty) variable, collapsing it to `ndbinfo.ndb`. The public view
+# has no `$` and exposes the aggregated column as total_count.
+--echo # The violation was counted on the reporting data node (node 1).
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM ndbinfo.security_violation_counts
+  WHERE reporting_node_id=1 AND violation_id=33 AND total_count >= 1;
+--source include/wait_condition.inc
+--echo # (scope violation counted on node 1: OK)
+
+--echo # Cleanup: wait for the pool to reconnect 1600 so the cluster is healthy
+--echo # again for any following test.
+let $wait_condition=
+  SELECT COUNT(*) > 0 FROM ndbinfo.processes WHERE node_id=1600;
+--source include/wait_condition.inc
+
+--remove_file $NDB_TOOLS_OUTPUT

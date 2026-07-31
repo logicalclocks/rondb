@@ -608,6 +608,27 @@ static struct view {
     {"ndbinfo", "restart_info",
      "SELECT * "
      "FROM `ndbinfo`.`ndb$restart_info`"},
+    /* security_violation_counts: the catalog base table ndb$security_violations
+       emits the full static catalog once per data node, so joining it raw would
+       multiply each per-node count row by the number of data nodes. Dedupe it
+       with a DISTINCT subquery (tier kept as the raw integer for the CASE). */
+    {"ndbinfo", "security_violation_counts",
+     "SELECT c.reporting_node_id, "
+     "v.violation_id, "
+     "CASE v.tier WHEN 0 THEN 'A' WHEN 1 THEN 'B' ELSE NULL END AS tier, "
+     "v.reason, "
+     "c.count AS total_count "
+     "FROM `ndbinfo`.`ndb$security_violation_counts` c "
+     "JOIN (SELECT DISTINCT violation_id, tier, reason "
+     "      FROM `ndbinfo`.`ndb$security_violations`) v "
+     "  ON c.violation_id = v.violation_id "
+     "ORDER BY c.reporting_node_id, v.violation_id"},
+    {"ndbinfo", "security_violations",
+     "SELECT DISTINCT violation_id, "
+     "CASE tier WHEN 0 THEN 'A' WHEN 1 THEN 'B' ELSE NULL END AS tier, "
+     "reason "
+     "FROM `ndbinfo`.`ndb$security_violations` "
+     "ORDER BY violation_id"},
     /* server_locks view, reflecting server_operations view */
     {"ndbinfo", "server_locks",
      "SELECT map.mysql_connection_id, l.* "

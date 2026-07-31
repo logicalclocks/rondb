@@ -18,6 +18,7 @@
  */
 
 #include "rondis_thread.h"
+#include "common.h"
 
 using namespace pink;
 
@@ -47,7 +48,7 @@ RondisConn::RondisConn(
 
 int RondisConn::DealMessage(const RedisCmdArgsType &argv, std::string *response)
 {
-    /*    
+    /*
         printf("Received Redis message: ");
         for (int i = 0; i < argv.size(); i++)
         {
@@ -55,6 +56,12 @@ int RondisConn::DealMessage(const RedisCmdArgsType &argv, std::string *response)
         }
         printf("\n");
     */
+    // Attribute any SECURITY_EVENT fired while handling this command to the
+    // originating connection. Cleared on return (mirrors DbgWorkerGuard).
+    g_client_ip_port = ip_port();
+    struct ClientIpGuard {
+        ~ClientIpGuard() { g_client_ip_port.clear(); }
+    } client_ip_guard;
     return rondb_redis_handler(argv, response, _worker_id);
 }
 

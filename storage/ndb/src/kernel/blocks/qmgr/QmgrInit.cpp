@@ -220,6 +220,7 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
 
   // Transit signals
   addRecSignal(GSN_DUMP_STATE_ORD, &Qmgr::execDUMP_STATE_ORD);
+  addRecSignal(GSN_MALICIOUS_SIGNAL_REPORT, &Qmgr::execMALICIOUS_SIGNAL_REPORT);
   addRecSignal(GSN_STOP_REQ, &Qmgr::execSTOP_REQ);
   addRecSignal(GSN_DEBUG_SIG, &Qmgr::execDEBUG_SIG);
   addRecSignal(GSN_CONTINUEB, &Qmgr::execCONTINUEB);
@@ -331,6 +332,14 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
 
   addRecSignal(GSN_NODE_STATE_REP, &Qmgr::execNODE_STATE_REP,
                true);  // Override
+
+  // Data node security: per-violation counters start zero.
+  memset(m_violationCounts, 0, sizeof(m_violationCounts));
+
+  // Data node security: SECURITY_EVENT log rate-limit window starts now, empty.
+  m_securityEventWindowStart = NdbTick_getCurrentTicks();
+  m_securityEventsInWindow = 0;
+  m_securityEventsSuppressed = 0;
 
   initData();
 }  // Qmgr::Qmgr()

@@ -1325,6 +1325,21 @@ DECLARE_NDBINFO_TABLE(RDMA_TRANSPORTERS, 17) = {
      {"bytes_sent", Ndbinfo::Number64, "Wire bytes sent"},
      {"bytes_received", Ndbinfo::Number64, "Wire bytes received"}}};
 
+DECLARE_NDBINFO_TABLE(SECURITY_VIOLATIONS, 3) = {
+    {"security_violations", 3, 0, [](const Ndbinfo::Counts &) { return 0; },
+     "Static catalog of data node security violation types (data node security)"},
+    {{"violation_id", Ndbinfo::Number, "ViolationType enum value"},
+     {"tier", Ndbinfo::Number, "0 = Tier A (disconnect), 1 = Tier B (log-only)"},
+     {"reason", Ndbinfo::String, "Short lowercase reason string"}}};
+
+DECLARE_NDBINFO_TABLE(SECURITY_VIOLATION_COUNTS, 3) = {
+    {"security_violation_counts", 3, 0,
+     [](const Ndbinfo::Counts &) { return 0; },
+     "Per-violation-type strike counters (data node security)"},
+    {{"reporting_node_id", Ndbinfo::Number, "Reporting data node ID"},
+     {"violation_id", Ndbinfo::Number, "ViolationType enum value"},
+     {"count", Ndbinfo::Number64, "Cumulative strikes since node start"}}};
+
 #define DBINFOTBL(x) \
   { Ndbinfo::x##_TABLEID, (const Ndbinfo::Table *)&ndbinfo_##x }
 
@@ -1394,6 +1409,8 @@ static struct ndbinfo_table_list_entry {
     DBINFOTBL(TRANSACTIONS_FULL),
     DBINFOTBL(TRANSPORTER_ACTIVITY),
     DBINFOTBL(RDMA_TRANSPORTERS)};
+    DBINFOTBL(SECURITY_VIOLATIONS),
+    DBINFOTBL(SECURITY_VIOLATION_COUNTS)};
 
 static int no_ndbinfo_tables =
     sizeof(ndbinfo_tables) / sizeof(ndbinfo_tables[0]);

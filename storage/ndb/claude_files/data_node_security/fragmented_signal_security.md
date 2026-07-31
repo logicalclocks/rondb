@@ -11,6 +11,43 @@ with no protocol change:
 - Reject new sections appearing in subsequent fragments
 - Same fixes in `assembleDroppedFragments`
 
+## Phase 1b: Security-system integration
+
+The `sectionNo >= 3` drop paths in `assembleFragmentsSlow` now also report a
+`GSN_MALICIOUS_SIGNAL_REPORT` to QMGR via `reportMaliciousSignal()`, using the
+`VT_FRAGMENT_INVALID_SECTION_NO` violation type. This is **Tier A**: a section
+number outside `[0,2]` is a transporter-framing detail that no SQL/HTTP/REST/Redis
+user input can influence (categorization rule, `tiered_response_policy.md` §6), so
+it is user-untriggerable.
+
+Call site pattern (SimulatedBlock.cpp):
+
+```cpp
+reportMaliciousSignal(signal, offendingNodeId,
+                      ViolationType::VT_FRAGMENT_INVALID_SECTION_NO);
+```
+
+Sections are released before the report (the report reuses the signal buffer and
+the caller returns immediately).
+
+The **hash-full** and **fragment-not-found** drops are deliberately NOT reported:
+a full hash can be caused by aggregate load, and a "not found" fragment can be the
+innocent tail of a train whose head we ourselves dropped — reporting either would
+risk punishing the wrong node.
+
+### KNOWN GAP — fragment-hash exhaustion wedge (for later audit)
+
+Incomplete fragment trains from a *still-connected* node are only reclaimed on node
+failure (`doCleanupFragInfo`, keyed by `failedNodeId`; `FragmentInfo` has no age /
+timestamp field). A node that opens many fragmented signals and never sends the
+final fragment can therefore fill `c_fragmentInfoHash` permanently — after which all
+fragmented signals to that block are silently dropped until the offender disconnects
+or the node restarts. The Phase 1 hardening turned this from a crash into a *silent*
+partial outage, and because the hash-full path is (correctly) not reported, the wedge
+is invisible to the security counters. A future fix would add age-based reclamation of
+stale incomplete trains (new timestamp field on `FragmentInfo` + a periodic sweep),
+which is a broader change to shared transporter infrastructure and is deferred.
+
 ## Phase 2: Protocol Extension (PLANNED)
 
 Extend the first fragment's wire format to include declared total section sizes

@@ -67,7 +67,6 @@ class FsAppendReq {
   UintR synch_flag;     // DATA 6
 };
 
-DECLARE_SIGNAL_SCOPE(GSN_FSAPPENDREQ, Local);
 
 #undef JAM_FILE_ID
 
