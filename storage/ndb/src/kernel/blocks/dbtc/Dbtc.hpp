@@ -2912,7 +2912,7 @@ class Dbtc : public SimulatedBlock {
                      ApiConnectRecord *regApiPtr);
   void diFcountReqLab(Signal *signal, ScanRecordPtr, ApiConnectRecordPtr);
   void abort080Lab(Signal *signal);
-  void abortScanLab(Signal *signal, ScanRecordPtr, Uint32 errCode,
+  bool abortScanLab(Signal *signal, ScanRecordPtr, Uint32 errCode,
                     bool not_started, ApiConnectRecordPtr apiConnectptr);
   void abort010Lab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
   void abort015Lab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
