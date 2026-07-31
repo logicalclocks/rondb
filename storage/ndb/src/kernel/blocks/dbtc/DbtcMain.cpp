@@ -16937,6 +16937,17 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   ndbrequire(transP->apiScanRec == RNIL);
   ndbrequire(scanptr.p->scanApiRec == RNIL);
 
+  /**
+   * Store the transaction id before anything below can fail. Those error
+   * paths release the scan and answer the API through scanTabRefLab(),
+   * which builds the SCAN_TABREF from this record - with the transid still
+   * unwritten the API cannot match the REF to its NdbTransaction and the
+   * error is lost. All queueing returns are passed at this point, so the
+   * request is now definitely ours to execute.
+   */
+  transP->transid[0] = transid1;
+  transP->transid[1] = transid2;
+
 #ifdef DEBUG_CONT_SCAN
   g_eventLogger->info("(%u) TC scanPtrI: %u, scanParallel: %u",
     instance(), scanptr.i, scanParallel);
@@ -17014,8 +17025,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   transP->apiScanRec = scanptr.i;
   transP->returncode = 0;
-  transP->transid[0] = transid1;
-  transP->transid[1] = transid2;
+  /* transid[] is already stored, see above */
   transP->buddyPtr = buddyPtr;
 
   // The scan is started
@@ -17353,8 +17363,13 @@ void Dbtc::scanKeyinfoLab(Signal *signal, CacheRecord *const regCachePtr,
     ScanRecordPtr scanPtr;
     scanPtr.i = apiConnectptr.p->apiScanRec;
     if (likely(scanRecordPool.getValidPtr(scanPtr))) {
-      abortScanLab(signal, scanPtr, ZGET_DATAREC_ERROR, true /* Not started */,
-                   apiConnectptr);
+      if (unlikely(abortScanLab(signal, scanPtr, ZGET_DATAREC_ERROR,
+                                true /* Not started */, apiConnectptr))) {
+        jam();
+        /* API node failure handling released the ApiConnectRecord, there
+         * is no record left to prepare for further KEYINFO. */
+        return;
+      }
 
       /* Prepare for up coming ATTRINFO/KEYINFO */
       apiConnectptr.p->apiConnectstate = CS_ABORTING;
@@ -17934,17 +17949,44 @@ void Dbtc::execDIH_SCAN_TAB_REF(Signal *signal, ScanRecordPtr scanptr,
  *
  * Use ::scanError() instead for failing a scan which
  * is in 'RUNNING' or in 'CLOSING_SCAN' state.
+ *
+ * Returns true if the ApiConnectRecord was released here as part of API
+ * node failure handling - the caller must not touch apiConnectptr after
+ * that.
  */
-void Dbtc::abortScanLab(Signal *signal, ScanRecordPtr scanptr, Uint32 errCode,
+bool Dbtc::abortScanLab(Signal *signal, ScanRecordPtr scanptr, Uint32 errCode,
                         bool not_started,
                         ApiConnectRecordPtr const apiConnectptr) {
   ndbassert(scanptr.p->scanState != ScanRecord::RUNNING);
   ndbassert(scanptr.p->scanState != ScanRecord::CLOSING_SCAN);
 
+  /**
+   * The API may already be gone: handleFailedApiNode() marked the record
+   * with set_api_fail_state() - which stepped capiConnectClosing[] up -
+   * and ordered the scan closed. A CTE / JoinAgg scan defers that close in
+   * close_scan_req() until every outstanding aggregation response has
+   * landed, so the abort ends up here instead of in
+   * close_scan_req_send_conf(). The API-fail handshake still has to be
+   * completed: only handleApiFailState() steps capiConnectClosing[] back
+   * down, and until it reaches zero DBTC never answers API_FAILCONF -
+   * QMGR then kills the node after 600 s (error 7400).
+   */
+  const bool apiFail =
+      (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
+
   time_track_complete_scan_error(scanptr.p,
                                  refToNode(apiConnectptr.p->ndbapiBlockref));
-  scanTabRefLab(signal, errCode, apiConnectptr.p);
+  if (likely(!apiFail)) {
+    jam();
+    scanTabRefLab(signal, errCode, apiConnectptr.p);
+  }
   releaseScanResources(signal, scanptr, apiConnectptr, not_started);
+  if (unlikely(apiFail)) {
+    jam();
+    handleApiFailState(signal, apiConnectptr.i);
+    return true;
+  }
+  return false;
 }  // Dbtc::abortScanLab()
 
 void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
@@ -18637,11 +18679,20 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
              scanP->scanState == ScanRecord::WAIT_CTE_COMPLETE);
 
   /**
+   * Read the API-fail state before closing: the close can run all the way
+   * to handleApiFailState(), which releases the ApiConnectRecord - reading
+   * it afterwards would be a use-after-release. Only handleFailedApiNode()
+   * ever sets the state, so sampling it here is equivalent.
+   */
+  const bool apiFail =
+      (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
+
+  /**
    * Close scan wo/ having received an order to do so
    */
   close_scan_req(signal, scanptr, false, apiConnectptr);
 
-  if (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK) {
+  if (apiFail) {
     jam();
     return;
   }
@@ -20392,35 +20443,57 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
     return;
   }
 
-  if (refToNode(ref) != getOwnNodeId())
-  {
-    signal->m_send_wakeups++;
-  }
-  if (max_signal_size > 25) {
-    jamDebug();
-    LinearSectionPtr ptr[3];
-    ptr[0].p = signal->getDataPtrSend() + 25;
-    ptr[0].sz = words_per_op * op_count + extra_words;
-    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with %u words"
-                   ", op_count: %u",
-      instance(), scanPtr.i, ptr[0].sz, op_count));
-    sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB,
-               ptr, 1);
-  } else {
-    jamDebug();
-    Uint32 sig_len = ScanTabConf::SignalLength + extra_words;
-    sig_len += words_per_op * op_count;
-    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with short"
-                   " signal, sig_len: %u, op_count: %u",
-      instance(), scanPtr.i, sig_len, op_count));
-    sendSignal(ref, GSN_SCAN_TABCONF, signal, sig_len, JBB);
+  /**
+   * The API node may have failed while this scan was still collecting
+   * responses - a CTE / JoinAgg scan defers the close ordered by
+   * handleFailedApiNode() until they have all landed, so the final
+   * EndOfData conf ends up here with the API already gone. Don't talk to
+   * the dead API, and complete the API-fail handshake after the release:
+   * capiConnectClosing[] was stepped up by set_api_fail_state() and only
+   * handleApiFailState() steps it back down, without which QMGR kills the
+   * node after 600 s waiting for API_FAILCONF.
+   */
+  const bool apiFail =
+      (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
+
+  if (likely(!apiFail)) {
+    if (refToNode(ref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
+    if (max_signal_size > 25) {
+      jamDebug();
+      LinearSectionPtr ptr[3];
+      ptr[0].p = signal->getDataPtrSend() + 25;
+      ptr[0].sz = words_per_op * op_count + extra_words;
+      DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with %u words"
+                     ", op_count: %u",
+        instance(), scanPtr.i, ptr[0].sz, op_count));
+      sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB,
+                 ptr, 1);
+    } else {
+      jamDebug();
+      Uint32 sig_len = ScanTabConf::SignalLength + extra_words;
+      sig_len += words_per_op * op_count;
+      DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with short"
+                     " signal, sig_len: %u, op_count: %u",
+        instance(), scanPtr.i, sig_len, op_count));
+      sendSignal(ref, GSN_SCAN_TABCONF, signal, sig_len, JBB);
+    }
   }
   scanPtr.p->m_queued_count = 0;
 
   if (release) {
     jamDebug();
-    time_track_complete_scan(scanPtr.p, refToNode(ref));
+    if (likely(!apiFail)) {
+      jamDebug();
+      time_track_complete_scan(scanPtr.p, refToNode(ref));
+    }
     releaseScanResources(signal, scanPtr, apiConnectptr);
+    if (unlikely(apiFail)) {
+      jam();
+      handleApiFailState(signal, apiConnectptr.i);
+    }
   }
 
 }  // Dbtc::sendScanTabConf()
