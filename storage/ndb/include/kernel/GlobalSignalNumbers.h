@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 980;
+const GlobalSignalNumber MAX_GSN = 981;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1286,7 +1286,13 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_SET_CONFIG_PARAM_CONF       949
 #define GSN_SET_CONFIG_PARAM_REF        950
 
-#define GSN_JOIN_AGG_SETUP_REQ          951
+/**
+ * Sent by NDBCNTR when it abandons a graceful stop for which it has
+ * requested or been granted stop permission, see STOP_PERM_REQ (RONDB-1096).
+ */
+#define GSN_STOP_PERM_REL               951
+
+#define GSN_JOIN_AGG_SETUP_REQ          981
 #define GSN_JOIN_AGG_SETUP_CONF         952
 #define GSN_JOIN_AGG_SETUP_REF          953
 #define GSN_JOIN_AGG_COMPLETE_REQ       954

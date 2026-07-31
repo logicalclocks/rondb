@@ -296,6 +296,8 @@ class DumpStateOrd {
     DihDumpPageRecInfo = 7032,
     DihFragmentsPerNode = 7033,
     DihDisplayPauseState = 7034,
+    // 7035 DIH Dump graceful stop permission state (master and proxy)
+    DihDumpStopPermInfo = 7035,
     EnableUndoDelayDataWrite = 7080, // DIH+ACC+TUP
     DihSetTimeBetweenGcp = 7090,
     DihStartLcpImmediately = 7099,
