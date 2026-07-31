@@ -9220,7 +9220,9 @@ enum COMMENT_ITEMS {
   PARTITION_BALANCE = 3,
   PARTITION_HASH = 4,
   TTL = 5,
-  RING_BUFFER = 6
+  RING_BUFFER = 6,
+  /* Number of comment items, keep last */
+  NUM_COMMENT_ITEMS = 7
 };
 
 /**
@@ -9330,7 +9332,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
 
   // Merge any previous comment changes from the old table from share
   // into the current changes specified in create_info
-  bool old_table_comment[6] = {false, false, false, false, false, false};
+  bool old_table_comment[NUM_COMMENT_ITEMS] = {false};
   if (get_old_table_comment_items(thd, old_table_comment, table->s->comment.str,
                                   table->s->comment.length)) {
     return;
