@@ -404,14 +404,14 @@ class TcKeyReq {
  I = IgnoreTTL             - 1  Bit 26
  N = Interpreted Insert    - 1  Bit 27
  t = TTL only expired      - 1  Bit 28
- G = Ring Buffer Op        - 1  Bit 29
+ u - User Id               - 1  Bit 29
  S = Ring Buffer Show Meta - 1  Bit 30
- u - User Id               - 1  Bit 31
+ G = Ring Buffer Op        - 1  Bit 31
 
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBUQAINtGSu  (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQAINtuSG  (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -459,13 +459,13 @@ class TcKeyReq {
  */
 #define TC_TTL_IGNORE_SHIFT (26)
 #define TC_TTL_ONLY_EXPIRED_SHIFT (28)
+#define USER_ID_SHIFT (29)
 /*
- * Ring Buffer related
+ * Ring Buffer related (Op flag moved to bit 31: bit 29 is taken by the
+ * 26.02 UserId flag and on a bit conflict the lower version always wins)
  */
-#define TC_RING_BUFFER_OP_SHIFT (29)
+#define TC_RING_BUFFER_OP_SHIFT (31)
 #define TC_RING_BUFFER_SHOW_META_SHIFT (30)
-
-#define USER_ID_SHIFT (31)
 
 /**
  * Scan Info

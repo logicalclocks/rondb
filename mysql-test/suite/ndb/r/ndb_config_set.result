@@ -25,10 +25,10 @@ MaxDiskWriteSpeed must be between 1M and 1024G
 Invalid value: '100X'. Use a number with optional K, M, or G suffix (e.g., 100M)
 
 Usage: <id> SET <parameter> <value>
-Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel
 
 Unknown SET parameter: 'FooBar'
-Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel
 
 select node_id, config_value
 from ndbinfo.config_values
@@ -47,3 +47,14 @@ order by node_id;
 node_id	config_value
 1	4194304
 2	4194304
+No RDMA connections found in configuration
+
+No RDMA connections found in configuration for the specified node
+
+RdmaLogLevel must be an integer between 0 and 3 (0=errors, 1=warnings, 2=info, 3=debug)
+
+RdmaLogLevel must be an integer between 0 and 3 (0=errors, 1=warnings, 2=info, 3=debug)
+
+Usage: <id> SET <parameter> <value>
+Supported parameters: MaxDiskWriteSpeed, RdmaLogLevel
+

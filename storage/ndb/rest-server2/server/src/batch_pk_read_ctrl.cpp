@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2026 Hopsworks AB
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,10 +24,12 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
-#include "metrics.hpp"
+#include "rate_limit.hpp"
 #include "error_response.hpp"
+#include "metrics.hpp"
 
 #include <cstring>
+#include <map>
 #include <drogon/HttpTypes.h>
 #include <iostream>
 #include <memory>
@@ -72,6 +74,7 @@ void BatchPKReadCtrl::batchPKRead(
 #endif
   size_t length = req->getBody().length();
   if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+    auto resp = drogon::HttpResponse::newHttpResponse();
     setErrorResponse(req, resp, CLIENT_ERROR, "Request too large");
     callback(resp);
     return;
@@ -97,7 +100,6 @@ void BatchPKReadCtrl::batchPKRead(
   std::unordered_map<std::string_view, bool> db_map;
   std::unordered_map<std::string, bool> table_map;
   std::unordered_map<std::string_view, bool> column_map;
-  std::vector<std::string_view> db_vector;
 
   for (auto reqStruct : reqStructs) {
     std::string_view &db = reqStruct.path.db;
@@ -122,7 +124,6 @@ void BatchPKReadCtrl::batchPKRead(
       callback(resp);
       return;
     }
-    db_vector.push_back(db);
   }
   for (auto it = table_map.begin(); it != table_map.end(); ++it) {
     const std::string &table = it->first;
@@ -150,8 +151,7 @@ void BatchPKReadCtrl::batchPKRead(
       status = reqStruct.validate_columns();
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
-        resp->setBody(std::string(status.message));
-        resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+        setErrorResponse(req, resp, status);
         callback(resp);
         return;
       }
@@ -166,18 +166,51 @@ void BatchPKReadCtrl::batchPKRead(
   }
 
   // Authenticate
-  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
-  char *username_ptr = nullptr;
+  std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    username_ptr = &username[0];
-    status = authenticate(api_key, db_vector, username_ptr);
+    // One access request per (db, table) of the batch. An operation with
+    // no explicit read columns returns the whole row, so that table needs
+    // a whole-table grant; otherwise the read and filter columns of all
+    // operations on the table are checked.
+    struct TableColumns {
+      bool whole_row = false;
+      std::vector<std::string_view> columns;
+    };
+    std::map<std::pair<std::string_view, std::string_view>,
+             TableColumns> table_accesses;
+    for (auto &reqStruct : reqStructs) {
+      TableColumns &access =
+        table_accesses[{reqStruct.path.db, reqStruct.path.table}];
+      if (reqStruct.readColumns.empty()) {
+        access.whole_row = true;
+        continue;
+      }
+      for (auto &readColumn : reqStruct.readColumns) {
+        access.columns.push_back(readColumn.column);
+      }
+      for (auto &filter : reqStruct.filters) {
+        access.columns.push_back(filter.column);
+      }
+    }
+    std::vector<TableAccessRequest> accessReqs;
+    accessReqs.reserve(table_accesses.size());
+    for (auto &entry : table_accesses) {
+      TableAccessRequest accessReq;
+      accessReq.db = entry.first.first;
+      accessReq.table = entry.first.second;
+      accessReq.columns = entry.second.whole_row ? nullptr
+                                                 : &entry.second.columns;
+      accessReqs.push_back(accessReq);
+    }
+    status = authenticate(api_key, accessReqs);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
+    rl_identity = get_rate_limit_identity(api_key);
   }
   ArenaMalloc amalloc(256 * 1024);
   // Execute
@@ -229,7 +262,8 @@ void BatchPKReadCtrl::batchPKRead(
                            reqBuffs.data(),
                            respBuffs.data(),
                            currentThreadIndex,
-                           username_ptr);
+                           rl_identity.empty() ? nullptr : rl_identity.c_str(),
+                           (unsigned int)rl_identity.size());
 
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {

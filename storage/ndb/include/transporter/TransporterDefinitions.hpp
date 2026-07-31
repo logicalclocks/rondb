@@ -145,6 +145,7 @@ struct TransporterConfiguration {
       Uint32 retryCount;           // QP retry count
       Uint32 rnrRetryCount;        // QP RNR retry count
       Uint32 overloadLimit;        // Unsent bytes overload threshold
+      Uint32 logLevel;             // RDMA self-logging verbosity (0=err..3=debug)
       const char *deviceName;      // ibverbs device name, NULL = first available
     } rdma;
   };

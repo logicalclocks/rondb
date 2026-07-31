@@ -33,17 +33,19 @@ typedef struct HopsworksAPIKey {
   char salt[API_KEY_SALT_SIZE];
   char name[API_KEY_NAME_SIZE];
   int user_id;
+  // api_key.expiry as unix epoch seconds; 0 = NULL = never expires
+  long long expiry_epoch;
 } HopsworksAPIKey;
 
 // User table
 typedef struct HopsworksUsers {
   char email[USERS_EMAIL_SIZE];
-  char username[USERNAME_SIZE];
 } HopsworksUsers;
 
 // project_team table
 typedef struct HopsworksProjectTeam {
   int project_id;
+  char team_role[PROJECT_TEAM_TEAM_ROLE_SIZE];
 } HopsworksProjectTeam;
 
 // project_team table
@@ -56,26 +58,57 @@ typedef struct HopsworksProject {
  */
 RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 
-/*
- * Find all projects for the api key
- */
-RS_Status find_all_projects(int uid,
-                            char ***projects,
-                            int *count,
-                            char **username_ptr);
-
 #ifdef __cplusplus
 }  // extern "C"
 
 #include <string>
 #include <vector>
 
+// One fine-grained data grant: a single online table the user may read,
+// either entirely (columns empty) or restricted to the listed columns.
+// Sourced from shared_feature_group/shared_feature (grantee = project) and
+// restricted_feature_group_access/restricted_feature_access (grantee = user).
+struct HopsworksFineGrant {
+  std::string db;                    // producer feature store database
+  std::string table;                 // online table name: <fg_name>_<version>
+  std::vector<std::string> columns;  // empty = the whole table is granted
+};
+
+// Everything an API key user may access, resolved from the Hopsworks
+// membership and sharing tables.
+struct HopsworksUserGrants {
+  // Full-database data access: the user's own (non-restricted) projects
+  // plus feature stores shared entirely with any of those projects.
+  std::vector<std::string> full_dbs;
+  // Databases the user may resolve feature-view metadata from but not read
+  // wholesale: restricted memberships and placeholder store shares
+  // (shared_feature_store.shared_entirely = 0).
+  std::vector<std::string> visible_dbs;
+  // Table/column-level data grants.
+  std::vector<HopsworksFineGrant> fine_grants;
+};
+
+/*
+ * Resolve all databases, tables and columns the api key's user can access.
+ * Members with the 'Feature store restricted' project role get no member
+ * access: their project is only visible and their data access comes
+ * exclusively from the restricted_* grant rows.
+ */
+RS_Status find_user_databases(int uid, HopsworksUserGrants *grants);
+
 struct HopsworksAPIKeyEntry {
   std::string prefix;
   std::string secret;
   std::string salt;
   int user_id;
+  // api_key.expiry as unix epoch seconds; 0 = NULL = never expires
+  long long expiry_epoch;
 };
+
+// Decode a nullable DATETIME NdbRecAttr to unix epoch seconds (0 = NULL).
+// Used for api_key.expiry by the DAL readers and the api_key event watcher.
+class NdbRecAttr;
+long long datetime_attr_to_epoch(const NdbRecAttr *attr, unsigned precision);
 
 RS_Status find_all_api_keys(std::vector<HopsworksAPIKeyEntry> *keys);
 

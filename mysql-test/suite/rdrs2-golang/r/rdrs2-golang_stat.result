@@ -1,0 +1,8 @@
+## Run rdrs2-golang_stat.test without TLS
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/stat	53.665s [no tests to run]
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/stat exited with code 0
+## Run rdrs2-golang_stat.test with TLS and server-side cert
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/stat	1.868s [no tests to run]
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/stat exited with code 0

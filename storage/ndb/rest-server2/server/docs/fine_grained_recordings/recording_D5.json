@@ -1,0 +1,66 @@
+{
+  "scenario": "D5",
+  "generated": "2026-07-17",
+  "hopsworks_version": "5.0.1",
+  "generator": "d5_probe.py (one-off, mirrors t2_lib subprocess-probe pattern)",
+  "setup": {
+    "description": "Does a restricted member's grant travel to a project he OWNS? userm (uid 100012, created for D5 after the T3 fixture import; the userg-i gap users stay reserved for consumer-side tests) is BOTH 'Feature store restricted' member of usera_project AND Data owner of his own userm_project (id 100006, created by him - proving restricted-elsewhere users can own projects). usera granted him customers_fg ENTIRELY via restrictedaccess (mirror of userk's D2 grant). Crucially, the grant created NO shared_feature_store row for userm_project: restricted_* grants are bound to the user's membership in the producer project and give his own project nothing.",
+    "users": {
+      "userm": "uid 100012, restricted member of usera_project + owner of userm_project, granted customers_fg entirely"
+    },
+    "projects": {
+      "usera_project": "id 100000, producer (store 100000)",
+      "userm_project": "id 100006, userm's own project (store id per feature_store row), empty"
+    }
+  },
+  "context": "Design-doc D5 asked how a user with a restricted membership in the producer project is routed when he also holds normal memberships elsewhere. Hypothesis: restricted_* grants are user-scoped to the producer-project membership; project-level shares are the only cross-project route; absent a shared_feature_store/shared_feature_group row for HIS project, the producer store is invisible from his own project's scope.",
+  "reads_legend": {
+    "D5a_own_project_reach_usera_store": "hsfs login project=userm_project, then get_feature_store('usera_project_featurestore')",
+    "D5b_fv_in_own_project_over_usera_fg": "same scope; attempt create_feature_view in userm's OWN store over usera_customers_fg columns",
+    "D5c_usera_project_scope_parity_with_F4": "hsfs login project=usera_project (his restricted membership); fetch both FGs' metadata"
+  },
+  "description": "MEASURED: a restricted user's grants are exercisable ONLY inside the producer project. Owning another project changes nothing for cross-project access - the producer store is not even listed from his own project (404/270008, A2 parity), so an FV over the producer's FGs can never be created in his own store. Inside usera_project he behaves exactly like userk (F4): granted FG metadata ok, ungranted FG 400/270266.",
+  "grants": {
+    "restricted_feature_group_access": [
+      {
+        "id": 100004,
+        "feature_store": 100000,
+        "feature_group": 100000,
+        "granted_to_user": 100012,
+        "can_access_entirely": 1
+      }
+    ],
+    "shared_feature_store_rows_for_userm_project": "NONE - the restricted grant created no store share for his project"
+  },
+  "sharing_tables": {
+    "project_team": [
+      {"project_id": 100006, "team_member": "userm@lc.com", "team_role": "Data owner"},
+      {"project_id": 100000, "team_member": "userm@lc.com", "team_role": "Feature store restricted"}
+    ]
+  },
+  "reads": {
+    "userm": {
+      "D5a_own_project_reach_usera_store": {
+        "login_project": "userm_project",
+        "own_feature_store": "userm_project_featurestore",
+        "usera_store": "denied: HTTP 404, errorCode 270008, 'Featurestore wasn't found.' (usrMsg: featurestoreName: usera_project_featurestore , project: userm_project)"
+      },
+      "D5b_fv_in_own_project_over_usera_fg": {
+        "fv_creation": "denied at store resolution: HTTP 404, errorCode 270008 - the foreign FG can never be referenced from his own project, so no FV over it can exist in his own store"
+      },
+      "D5c_usera_project_scope_parity_with_F4": {
+        "login_project": "usera_project",
+        "feature_store": "usera_project_featurestore",
+        "customers_fg": "ok: usera_customers_fg id=100000 (granted entirely)",
+        "transactions_fg": "denied: HTTP 400, errorCode 270266, 'The feature group is not shared' (identical to userk's F4 probe)"
+      },
+      "D5d_fv_catalog_listing": {
+        "endpoint": "GET /project/100000/featurestores/100000/featureview",
+        "userm": "items=[userk_own_fv] count=4 - sees ANOTHER user's FV because its constituent features (customers only) fit his grant; creator irrelevant",
+        "userk": "items=[userk_own_fv] count=4 - even the creator's view is grant-filtered, not ownership-based: userl_own_fv (references num_transactions_30d) is hidden from him",
+        "userj": "items=[] count=4 - no grants, empty list, but the TOTAL FV count of the store leaks (same loose-metadata family as the prepared-statement leak)",
+        "conclusion": "no per-FV ACL: catalog visibility for restricted members = the recursive constituent-feature check applied per FV"
+      }
+    }
+  }
+}

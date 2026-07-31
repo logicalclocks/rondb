@@ -105,9 +105,13 @@ struct CreateTableRef {
     CreateDbNoAvailableDiskQuota = 1240,
     AlterDbNoAvailableDiskQuota = 1241,
     NotAllowedToDropFileWithQuotas = 1242,
+    InvalidPartitionHash = 1243,
+    InvalidFanout = 1244,
     TooLargeFixedSizePart = 944,
     TooLargeVarsizePart = 941,
-    TooLargeDiskSizePart = 942
+    /* 942 belongs to DatabaseNameTooLong in released 26.02: on an error
+       code conflict the lower version always wins, so this moved to 943 */
+    TooLargeDiskSizePart = 943
   };
 
   Uint32 senderRef;

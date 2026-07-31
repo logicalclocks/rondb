@@ -8540,6 +8540,7 @@ static const struct NDB_Modifier ndb_table_modifiers[] = {
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("READ_BACKUP"), 0, {0}},
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("FULLY_REPLICATED"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_BALANCE"), 0, {0}},
+    {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_HASH"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("TTL"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("MAX_ROWS_PER_PK"), 0, {0}},
     {NDB_Modifier::M_BOOL, nullptr, 0, 0, {0}}};
@@ -9346,8 +9347,9 @@ enum COMMENT_ITEMS {
   READ_BACKUP = 1,
   FULLY_REPLICATED = 2,
   PARTITION_BALANCE = 3,
-  TTL = 4,
-  RING_BUFFER = 5
+  PARTITION_HASH = 4,
+  TTL = 5,
+  RING_BUFFER = 6
 };
 
 /**
@@ -9373,6 +9375,8 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
   const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
@@ -9381,6 +9385,7 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
   if (mod_fully_replicated->m_found)
     comment_items_shown[FULLY_REPLICATED] = true;
   if (mod_frags->m_found) comment_items_shown[PARTITION_BALANCE] = true;
+  if (mod_partition_hash->m_found) comment_items_shown[PARTITION_HASH] = true;
   if (mod_ttl->m_found) {
     comment_items_shown[TTL] = true;
   }
@@ -9440,6 +9445,8 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
   const NDB_Modifier * mod_ttl = table_modifiers.get("TTL");
   const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
@@ -9590,6 +9597,35 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
   }
 
   bool add_ttl = false;
+  bool add_partition_hash = false;
+  if (!mod_partition_hash->m_found) {
+    if (old_table_comment[PARTITION_HASH]) {
+      add_partition_hash = true;
+      NDB_Modifiers old_table_modifiers(ndb_table_modifier_prefix,
+                                        ndb_table_modifiers);
+      if (old_table_modifiers.loadComment(
+              table->s->comment.str, table->s->comment.length) == -1) {
+        push_warning_printf(thd, Sql_condition::SL_WARNING,
+                            ER_ILLEGAL_HA_CREATE_OPTION, "%s",
+                            table_modifiers.getErrMsg());
+        my_error(ER_ILLEGAL_HA_CREATE_OPTION, MYF(0), ndbcluster_hton_name,
+                 "Syntax error in COMMENT modifier");
+        return;
+      }
+
+      const NDB_Modifier *old_mod_partition_hash =
+          old_table_modifiers.get("PARTITION_HASH");
+      const std::string old_partition_hash_str(
+          old_mod_partition_hash->m_val_str.str,
+          old_mod_partition_hash->m_val_str.len);
+
+      table_modifiers.set("PARTITION_HASH", old_partition_hash_str.c_str());
+      ndb_log_info("No new PARTITION_HASH comment is set, will use the "
+                   "old one: %s",
+                   table_modifiers.get("PARTITION_HASH")->m_val_str.str);
+    }
+  }
+
   if (!mod_ttl->m_found) {
     if (old_table_comment[TTL]) {
       add_ttl = true;
@@ -9650,7 +9686,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
   }
 
   if (!(add_nologging || add_read_backup || add_fully_replicated ||
-        add_part_bal || add_ttl || add_ring_buffer)) {
+        add_part_bal || add_partition_hash || add_ttl || add_ring_buffer)) {
     /* No change of comment is needed. */
     return;
   }
@@ -9774,6 +9810,109 @@ static bool parsePartitionBalance(
     *part_bal = ret;
   }
   return true;
+}
+
+struct Partition_hash_modifier {
+  bool found;
+  Uint32 base_key_count;
+  Uint32 detail_key_count;
+  Uint32 fanout;
+};
+
+static bool parse_partition_hash_uint(const char *str, size_t len, size_t *pos,
+                                      Uint32 *value) {
+  if (*pos >= len) return false;
+
+  Uint64 parsed_value = 0;
+  bool have_digit = false;
+  while (*pos < len && str[*pos] != ':') {
+    const char c = str[*pos];
+    if (c < '0' || c > '9') return false;
+    have_digit = true;
+    parsed_value = (parsed_value * 10) + Uint64(c - '0');
+    if (parsed_value > Uint64(~Uint32(0))) return false;
+    (*pos)++;
+  }
+
+  if (!have_digit) return false;
+  *value = Uint32(parsed_value);
+  return true;
+}
+
+static bool parsePartitionHash(const NDB_Modifier *mod_partition_hash,
+                               Partition_hash_modifier *partition_hash,
+                               const char **reason) {
+  partition_hash->found = false;
+  partition_hash->base_key_count = 0;
+  partition_hash->detail_key_count = 0;
+  partition_hash->fanout = 1;
+
+  if (!mod_partition_hash->m_found) return true;
+
+  const char *str = mod_partition_hash->m_val_str.str;
+  const size_t len = mod_partition_hash->m_val_str.len;
+  size_t pos = 0;
+
+  if (!parse_partition_hash_uint(str, len, &pos,
+                                 &partition_hash->base_key_count) ||
+      pos >= len || str[pos++] != ':' ||
+      !parse_partition_hash_uint(str, len, &pos,
+                                 &partition_hash->detail_key_count) ||
+      pos >= len || str[pos++] != ':' ||
+      !parse_partition_hash_uint(str, len, &pos, &partition_hash->fanout) ||
+      pos != len) {
+    *reason = "PARTITION_HASH must be base_keys:detail_keys:fanout";
+    return false;
+  }
+
+  partition_hash->found = true;
+  return true;
+}
+
+static const char *validatePartitionHashCreate(
+    const Partition_hash_modifier &partition_hash, Uint32 primary_key_count,
+    Uint32 partition_key_count, Uint32 partition_count,
+    bool partition_count_known, bool user_defined_partitioning,
+    bool fully_replicated) {
+  if (!partition_hash.found) return nullptr;
+
+  if (primary_key_count == 0)
+    return "PARTITION_HASH requires an explicit primary key";
+
+  if (partition_hash.base_key_count == 0)
+    return "PARTITION_HASH base key count must be greater than zero";
+
+  if (partition_hash.fanout == 0)
+    return "PARTITION_HASH fanout must be greater than zero";
+
+  if (partition_hash.base_key_count + partition_hash.detail_key_count !=
+      primary_key_count)
+    return "PARTITION_HASH key counts must match primary key columns";
+
+  if (partition_hash.fanout > 1 && partition_hash.detail_key_count == 0)
+    return "PARTITION_HASH fanout > 1 requires detail key columns";
+
+  if (fully_replicated)
+    return "PARTITION_HASH is not supported for fully replicated tables";
+
+  if (user_defined_partitioning)
+    return "PARTITION_HASH is not supported with user-defined partitioning";
+
+  /*
+    Fanout routing hashes the first base_count primary key columns in key
+    order and ignores declared partition key columns, and the distribution
+    key flags would mislead pre-fanout clients into pruning on them.
+    Declaring all primary key columns is equivalent to the default and is
+    allowed.
+  */
+  if (partition_hash.fanout > 1 && partition_key_count > 0 &&
+      partition_key_count < primary_key_count)
+    return "PARTITION_HASH fanout > 1 cannot use explicit partition keys";
+
+  if (partition_count_known && partition_hash.fanout > partition_count)
+    return "PARTITION_HASH fanout cannot exceed the number of partitions";
+
+  return nullptr;
 }
 
 /*
@@ -10129,6 +10268,8 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   const NDB_Modifier *mod_read_backup = table_modifiers.get("READ_BACKUP");
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
 
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
   bool found_ttl = false;
@@ -10265,6 +10406,18 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   if (found_ttl && found_ring_buffer) {
     return create.failed_illegal_create_option(
         "A table cannot be both TTL and MAX_ROWS_PER_PK");
+  }
+  Partition_hash_modifier partition_hash;
+  const char *partition_hash_error = nullptr;
+  if (!parsePartitionHash(mod_partition_hash, &partition_hash,
+                          &partition_hash_error)) {
+    return create.failed_illegal_create_option(partition_hash_error);
+  }
+
+  if (partition_hash.found &&
+      ndbd_support_partition_hash_fanout(ndb->getMinDbNodeVersion()) == 0) {
+    return create.failed_illegal_create_option(
+        "PARTITION_HASH not supported by current data node versions");
   }
 
   NdbDictionary::Object::PartitionBalance part_bal =
@@ -10791,6 +10944,38 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
         return create.failed_in_NDB(dict->getNdbError());
       }
     }
+  }
+
+  if (partition_hash.found) {
+    Uint32 primary_key_count = 0;
+    if (table_share->primary_key != MAX_KEY) {
+      primary_key_count =
+          table->key_info[table_share->primary_key].user_defined_key_parts;
+    }
+
+    // Explicit PARTITION BY KEY(...) columns were flagged on the NDB
+    // table columns by create_table_set_up_partition_info()
+    Uint32 partition_key_count = 0;
+    for (int i = 0; i < tab.getNoOfColumns(); i++) {
+      const NdbDictionary::Column *col = tab.getColumn(i);
+      if (col->getPrimaryKey() && col->getPartitionKey())
+        partition_key_count++;
+    }
+
+    const Uint32 partition_count = tab.getFragmentCount();
+    const bool partition_count_known = partition_count != 0;
+    const char *reason = validatePartitionHashCreate(
+        partition_hash, primary_key_count, partition_key_count,
+        partition_count, partition_count_known,
+        tab.getFragmentType() == NDBTAB::UserDefined,
+        tab.getFullyReplicated());
+    if (reason != nullptr) {
+      return create.failed_illegal_create_option(reason);
+    }
+
+    tab.setPartitionHash(partition_hash.base_key_count,
+                         partition_hash.detail_key_count,
+                         partition_hash.fanout);
   }
 
   // Create the table in NDB
@@ -17113,6 +17298,8 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
   const NDB_Modifier *mod_read_backup = table_modifiers.get("READ_BACKUP");
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
+  const NDB_Modifier *mod_partition_hash =
+      table_modifiers.get("PARTITION_HASH");
 
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
   int64_t new_ttl_sec_raw = RNIL;
@@ -17249,6 +17436,29 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
     return true;
   }
 
+  Partition_hash_modifier partition_hash;
+  const char *partition_hash_error = nullptr;
+  if (!parsePartitionHash(mod_partition_hash, &partition_hash,
+                          &partition_hash_error)) {
+    *reason = partition_hash_error;
+    return true;
+  }
+
+  if (partition_hash.found) {
+    if (ndbd_support_partition_hash_fanout(ndb->getMinDbNodeVersion()) == 0) {
+      *reason = "PARTITION_HASH not supported by current data node versions";
+      return true;
+    }
+    if (old_tab->getPartitionHashBaseKeyCount() !=
+            partition_hash.base_key_count ||
+        old_tab->getPartitionHashDetailKeyCount() !=
+            partition_hash.detail_key_count ||
+        old_tab->getPartitionHashFanout() != partition_hash.fanout) {
+      *reason = "Changing PARTITION_HASH is not supported online";
+      return true;
+    }
+  }
+
   if (mod_nologging->m_found) {
     if (new_tab->getLogging() != (!mod_nologging->m_val_bool)) {
       *reason = "Cannot alter NOLOGGING inplace";
@@ -17272,6 +17482,11 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
   if (mod_fully_replicated->m_found) {
     if (ndbd_support_fully_replicated(ndb->getMinDbNodeVersion()) == 0) {
       *reason = "FULLY_REPLICATED not supported by current data node versions";
+      return true;
+    }
+    if (mod_fully_replicated->m_val_bool && partition_hash.found) {
+      *reason =
+          "PARTITION_HASH is not supported for fully replicated tables";
       return true;
     }
     if (old_tab->getFullyReplicated() != mod_fully_replicated->m_val_bool) {

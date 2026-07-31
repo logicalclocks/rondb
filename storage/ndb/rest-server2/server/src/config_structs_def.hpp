@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -111,8 +111,18 @@ CLASS
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
  CM(bool, userRateLimits, UserRateLimits, false,
-    "Set to true to enable rate limits per user")
- PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
+    "Set to true to tag NDB transactions with a rate limit identity so that"
+    " the data nodes enforce USER rate limits for REST requests.")
+ CM(std::string, rateLimitIdentity, RateLimitIdentity, "apikey",
+    "Identity type used for rate limiting."
+    " Currently only 'apikey' (the API key of the request) is supported.")
+ CM(bool, rateLimitFullApiKey, RateLimitFullAPIKey, false,
+    "Set to true to use the full API key as the rate limit identity."
+    " By default only the API key prefix is used.")
+ PROBLEM(!enable, "REST must be enabled")
+ PROBLEM(rateLimitIdentity != "apikey",
+         "RateLimitIdentity only supports 'apikey'")
+ PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "

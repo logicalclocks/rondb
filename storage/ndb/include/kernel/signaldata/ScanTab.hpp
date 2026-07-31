@@ -94,6 +94,27 @@ class ScanTabReq {
   */
   UintR tableId;             // DATA 3
   UintR tableSchemaVersion;  // DATA 4
+  /*
+    All 32 bits of requestInfo are used. storedProcId, batch_byte_size and
+    first_batch_size only carry values below 65536, so their high 16 bits
+    are guaranteed zero from older API versions and can carry extended
+    request-info bits without upgrade issues, allocated downwards from bit
+    31. Readers check the high half for non-zero before retrieving the 16
+    least significant bits.
+
+    storedProcId bit 31 carries the distribution key interval flag:
+    distributionKey is a grouped partition-hash base hash and the scan
+    covers the fanout interval of fragments starting at it. Only valid
+    together with the distribution key flag on tables with partition hash
+    fanout.
+
+    storedProcId bit 30 carries the distribution key partition id flag:
+    distributionKey is a distinct fragment id and the scan covers exactly
+    that fragment. Used by explicit scan partitioning (SO_PARTITION_ID,
+    setPartitionId()), which also makes TTL purge scans work on tables
+    with partition hash fanout. Only valid together with the distribution
+    key flag, and never together with the interval flag.
+  */
   UintR storedProcId;        // DATA 5
   UintR transId1;            // DATA 6
   UintR transId2;            // DATA 7
@@ -125,6 +146,9 @@ class ScanTabReq {
   static Uint8 getKeyinfoFlag(const UintR &requestInfo);
   static Uint16 getScanBatch(const UintR &requestInfo);
   static Uint8 getDistributionKeyFlag(const UintR &requestInfo);
+  static Uint8 getDistributionKeyIntervalFlag(const UintR &storedProcId);
+  static Uint8 getDistributionKeyPartIdFlag(const UintR &storedProcId);
+  static Uint16 getStoredProcId(const UintR &storedProcId);
   static UintR getNoDiskFlag(const UintR &requestInfo);
   static Uint32 getViaSPJFlag(const Uint32 &requestInfo);
   static Uint32 getPassAllConfsFlag(const Uint32 &requestInfo);
@@ -153,6 +177,8 @@ class ScanTabReq {
   static void setKeyinfoFlag(UintR &requestInfo, Uint32 flag);
   static void setScanBatch(Uint32 &requestInfo, Uint32 sz);
   static void setDistributionKeyFlag(Uint32 &requestInfo, Uint32 flag);
+  static void setDistributionKeyIntervalFlag(Uint32 &storedProcId, Uint32 flag);
+  static void setDistributionKeyPartIdFlag(Uint32 &storedProcId, Uint32 flag);
   static void setNoDiskFlag(UintR &requestInfo, UintR val);
   static void setViaSPJFlag(Uint32 &requestInfo, Uint32 val);
   static void setPassAllConfsFlag(Uint32 &requestInfo, Uint32 val);
@@ -214,12 +240,12 @@ class ScanTabReq {
  I = IgnoreTTL             - 1  Bit 3
  e = TTL only expired      - 1  Bit 4
  r = Four receiver/part    - 1  Bit 2
- M = Ring Buffer Show Meta - 1  Bit 5
- u = User Id flag          - 1  Bit 0
+ M = Ring Buffer Show Meta - 1  Bit 0
+ u = User Id flag          - 1  Bit 5
 
            1111111111222222222233
  01234567890123456789012345678901
- uJrIeMPglnhcktzxbbbbbbbbbbdjafR
+ MJrIeuPglnhcktzxbbbbbbbbbbdjafR
 */
 
 #define PARALLEL_SHIFT (0)
@@ -261,6 +287,13 @@ class ScanTabReq {
 #define SCAN_DISTR_KEY_SHIFT (26)
 #define SCAN_DISTR_KEY_MASK (1)
 
+/* In storedProcId, not requestInfo. See storedProcId member comment. */
+#define SCAN_DISTR_KEY_INTERVAL_SHIFT (31)
+#define SCAN_DISTR_KEY_INTERVAL_MASK (1)
+#define SCAN_DISTR_KEY_PART_ID_SHIFT (30)
+#define SCAN_DISTR_KEY_PART_ID_MASK (1)
+#define SCAN_STORED_PROC_ID_MASK (0xFFFF)
+
 #define SCAN_NODISK_SHIFT (9)
 #define SCAN_NODISK_MASK (1)
 
@@ -272,9 +305,11 @@ class ScanTabReq {
 
 #define SCAN_TTL_IGNORE_SHIFT (3)
 #define SCAN_TTL_ONLY_EXPIRED_SHIFT (4)
-#define SCAN_RING_BUFFER_SHOW_META_SHIFT (5)
+/* Show Meta moved to bit 0: bit 5 is taken by the 26.02 UserId flag and
+   on a bit conflict the lower version always wins */
+#define SCAN_RING_BUFFER_SHOW_META_SHIFT (0)
 
-#define SCAN_USER_ID_SHIFT     (0)
+#define SCAN_USER_ID_SHIFT     (5)
 
 #define SCAN_JOIN_AGG_SHIFT    (1)
 
@@ -427,6 +462,52 @@ inline void ScanTabReq::setDistributionKeyFlag(UintR &requestInfo,
   ASSERT_BOOL(flag, "ScanTabReq::setKeyinfoFlag");
   requestInfo = (requestInfo & ~(SCAN_DISTR_KEY_MASK << SCAN_DISTR_KEY_SHIFT)) |
                 ((flag & SCAN_DISTR_KEY_MASK) << SCAN_DISTR_KEY_SHIFT);
+}
+
+inline Uint8 ScanTabReq::getDistributionKeyIntervalFlag(
+    const UintR &storedProcId) {
+  /* High half is zero unless the sender uses extended request-info bits. */
+  if ((storedProcId >> 16) == 0) {
+    return 0;
+  }
+  return (Uint8)((storedProcId >> SCAN_DISTR_KEY_INTERVAL_SHIFT) &
+                 SCAN_DISTR_KEY_INTERVAL_MASK);
+}
+
+inline Uint8 ScanTabReq::getDistributionKeyPartIdFlag(
+    const UintR &storedProcId) {
+  /* High half is zero unless the sender uses extended request-info bits. */
+  if ((storedProcId >> 16) == 0) {
+    return 0;
+  }
+  return (Uint8)((storedProcId >> SCAN_DISTR_KEY_PART_ID_SHIFT) &
+                 SCAN_DISTR_KEY_PART_ID_MASK);
+}
+
+inline void ScanTabReq::setDistributionKeyPartIdFlag(UintR &storedProcId,
+                                                     Uint32 flag) {
+  ASSERT_BOOL(flag, "ScanTabReq::setDistributionKeyPartIdFlag");
+  storedProcId =
+      (storedProcId &
+       ~((UintR)SCAN_DISTR_KEY_PART_ID_MASK
+         << SCAN_DISTR_KEY_PART_ID_SHIFT)) |
+      ((flag & SCAN_DISTR_KEY_PART_ID_MASK)
+       << SCAN_DISTR_KEY_PART_ID_SHIFT);
+}
+
+inline Uint16 ScanTabReq::getStoredProcId(const UintR &storedProcId) {
+  return (Uint16)(storedProcId & SCAN_STORED_PROC_ID_MASK);
+}
+
+inline void ScanTabReq::setDistributionKeyIntervalFlag(UintR &storedProcId,
+                                                       Uint32 flag) {
+  ASSERT_BOOL(flag, "ScanTabReq::setDistributionKeyIntervalFlag");
+  storedProcId =
+      (storedProcId &
+       ~((UintR)SCAN_DISTR_KEY_INTERVAL_MASK
+         << SCAN_DISTR_KEY_INTERVAL_SHIFT)) |
+      ((flag & SCAN_DISTR_KEY_INTERVAL_MASK)
+       << SCAN_DISTR_KEY_INTERVAL_SHIFT);
 }
 
 inline UintR ScanTabReq::getNoDiskFlag(const UintR &requestInfo) {

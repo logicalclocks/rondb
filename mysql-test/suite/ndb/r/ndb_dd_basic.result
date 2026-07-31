@@ -274,7 +274,7 @@ charset = latin1 engine=ndbcluster;
 ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 942 'On-disk part of row can at most be 31080 bytes' from NDB
+Warning	1296	Got error 943 'On-disk part of row can at most be 31080 bytes' from NDB
 Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
 CREATE TABLE t1 (a bigint primary key, b bigint storage disk)
 ENGINE ndb

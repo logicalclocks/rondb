@@ -110,6 +110,7 @@ class DumpStateOrd {
     CmvmiSetMaxSignalsPerJBBReceive = 103017,
     CmvmiSetTcQueryThreadDistance = 103018,
     CmvmiSetRecvQueryThreadDistance = 103019,
+    CmvmiSetRdmaLogLevel = 103020,
 
     _CMVMIMax = 103099,
 
@@ -141,11 +142,15 @@ class DumpStateOrd {
     NdbcntrTestStopOnError = 25,
     NdbcntrStopNodes = 70,
     NdbcntrStallStartPhase = 71,
+    // Set RestartBarrierTimeout (ms) at runtime, arg 1 = new value
+    NdbcntrSetRestartBarrierTimeout = 72,
     // 100-105 TUP and ACC
     // 200-240 UTIL
     // 300-305 TRIX
     QmgrErr935 = 935,
     QmgrSetNodeInactive = 936,
+    // Test only: set the low 16 bits of one data node's dynamic ID.
+    QmgrSetDynamicId = 937,
     NdbfsDumpFileStat = 400,
     NdbfsDumpAllFiles = 401,
     NdbfsDumpOpenFiles = 402,

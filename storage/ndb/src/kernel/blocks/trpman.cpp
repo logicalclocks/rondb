@@ -692,6 +692,54 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
       }
       break;
     }
+    case Ndbinfo::RDMA_TRANSPORTERS_TABLEID: {
+      jam();
+      /*
+       * RDMA-specific per-link counters. get_rdma_stats() returns false for
+       * non-RDMA transporters, so on TCP/SHM-only nodes this table is empty.
+       * Only the owning TRPMAN instance reports (handles_this_trp), matching
+       * the transporter_details table.
+       */
+      TrpId trpId = cursor->data[0];
+      if (trpId == 0) trpId = 1;
+      while (trpId <= globalTransporterRegistry.get_transporter_count()) {
+        RdmaTransporterStats stats{};
+        if (!handles_this_trp(trpId) ||
+            globalTransporterRegistry.is_inactive_trp(trpId) ||
+            !globalTransporterRegistry.get_rdma_stats(trpId, stats)) {
+          trpId++;
+          continue;
+        }
+        const NodeId nodeId =
+            globalTransporterRegistry.get_transporter_node_id(trpId);
+        Ndbinfo::Row row(signal, req);
+        row.write_uint32(getOwnNodeId());  // node_id
+        row.write_uint32(trpId);           // trp_id
+        row.write_uint32(nodeId);          // remote_node_id
+        row.write_uint64(stats.reconnects);
+        row.write_uint64(stats.send_posted);
+        row.write_uint64(stats.send_completions_ok);
+        row.write_uint64(stats.send_completion_errors);
+        row.write_uint64(stats.recv_posted);
+        row.write_uint64(stats.recv_completions_ok);
+        row.write_uint64(stats.recv_completion_errors);
+        row.write_uint64(stats.send_credit_stalls);
+        row.write_uint32(stats.peer_credits);
+        row.write_uint64(stats.rnr_events);
+        row.write_uint64(stats.retry_exceeded_events);
+        row.write_uint64(stats.qp_fatal_events);
+        row.write_uint64(stats.bytes_sent);
+        row.write_uint64(stats.bytes_received);
+        ndbinfo_send_row(signal, req, row, rl);
+        trpId++;
+        if (rl.need_break(req)) {
+          jam();
+          ndbinfo_send_scan_break(signal, req, rl, trpId);
+          return;
+        }
+      }
+      break;
+    }
     case Ndbinfo::TRANSPORTERS_TABLEID: {
       jam();
       Uint32 rnode = cursor->data[0];

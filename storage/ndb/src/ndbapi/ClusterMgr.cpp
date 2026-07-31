@@ -1015,6 +1015,25 @@ ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
 }
 
 #define USER_ID_HASH_SIZE 1024
+
+/**
+ * Compute the user-id cache bucket for a username. rondb_calc_hash_val()
+ * takes the key length in 4-byte WORDS and hashes exactly that many words,
+ * so a raw byte pointer of length N would hash N*4 bytes, reading past the
+ * key into indeterminate memory and placing the same name in different
+ * buckets on insert vs lookup. Copy into a zero-padded, word-aligned buffer
+ * and pass the word count so the hash is stable for a given name.
+ */
+Uint32 ClusterMgr::calc_user_hash_index(const char *username,
+                                        Uint32 username_len) {
+  Uint32 buf[MAX_DB_NAME_SIZE / 4 + 1];
+  Uint32 words = (username_len + 3) / 4;
+  memset(buf, 0, (words + 1) * sizeof(Uint32));
+  memcpy(buf, username, username_len);
+  Uint32 hash_val = rondb_calc_hash_val((const char*)buf, words, true);
+  return hash_val & (USER_ID_HASH_SIZE - 1);
+}
+
 void ClusterMgr::execLIST_DATABASE_CONF(const Uint32 * theData,
                                         const LinearSectionPtr ptr[3]) {
   DBUG_ENTER("ClusterMgr::execLIST_DATABASE_CONF");
@@ -1094,16 +1113,47 @@ void ClusterMgr::execCREATE_DATABASE_REP(const Uint32 * theData,
   DBUG_VOID_RETURN;
 }
 
+/**
+ * Continue filling the user id cache with the next LIST_DATABASE_REQ.
+ * Only callable from the poll owner thread (the delivery context of
+ * execLIST_DATABASE_CONF); safe_sendSignal asserts this.
+ */
 void ClusterMgr::fillingUserIdCache(Uint32 node_id, Uint32 nextDatabaseId) {
   DBUG_ENTER("ClusterMgr::fillingUserIdCache");
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal tSignal(ref);
+  tSignal.setSignal(GSN_LIST_DATABASE_REQ, 0);
   ListDatabaseReq * const req =
     CAST_PTR(ListDatabaseReq, tSignal.getDataPtrSend());
   req->senderRef = ref;
   req->requestInfo = 1; //is_user
   req->nextDatabaseId = nextDatabaseId;
   safe_sendSignal(&tSignal, node_id);
+  DBUG_VOID_RETURN;
+}
+
+/**
+ * Kick off the initial fill of the user id cache. Called from an
+ * application thread (via retrieveUserId), so it cannot use
+ * safe_sendSignal; it sends on this trp_client under its own lock.
+ * Must NOT be called with theUserIdMutex held: signal delivery
+ * (execLIST_DATABASE_CONF -> insertUserId) takes the trp_client lock
+ * before theUserIdMutex, so the reverse order would deadlock.
+ */
+void ClusterMgr::startUserIdCacheFill(Uint32 node_id) {
+  DBUG_ENTER("ClusterMgr::startUserIdCacheFill");
+  Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal tSignal(ref);
+  tSignal.setSignal(GSN_LIST_DATABASE_REQ, 0);
+  ListDatabaseReq * const req =
+    CAST_PTR(ListDatabaseReq, tSignal.getDataPtrSend());
+  req->senderRef = ref;
+  req->requestInfo = 1; //is_user
+  req->nextDatabaseId = 0;
+  lock();
+  raw_sendSignal(&tSignal, node_id);
+  flush_send_buffers();
+  unlock();
   DBUG_VOID_RETURN;
 }
 
@@ -1122,10 +1172,7 @@ void ClusterMgr::rateOverflowError(const char *username,
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_VOID_RETURN;
   }
-  Uint32 hash_val = rondb_calc_hash_val(username,
-                                        username_len,
-                                        true);
-  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  Uint32 inx = calc_user_hash_index(username, username_len);
   struct UserIdHashEntry *entry = theUserIdHash[inx];
   while (entry != nullptr) {
     if (entry->m_username_len != username_len ||
@@ -1161,14 +1208,13 @@ int ClusterMgr::retrieveUserId(const char *username,
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_RETURN(0);
   }
+  bool start_cache_fill = false;
   if (m_initialising_user_id_cache == false) {
     m_initialising_user_id_cache = true;
-    fillingUserIdCache(node_id, 0);
+    /* The fill is started below, after theUserIdMutex is released */
+    start_cache_fill = true;
   }
-  Uint32 hash_val = rondb_calc_hash_val(username,
-                                        username_len,
-                                        true);
-  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  Uint32 inx = calc_user_hash_index(username, username_len);
   struct UserIdHashEntry *entry = theUserIdHash[inx];
   bool first = true;
   while (entry != nullptr) {
@@ -1199,31 +1245,21 @@ int ClusterMgr::retrieveUserId(const char *username,
     entry = theUserIdHash[inx];
     first = false;
   }
-  if (m_initialised_user_id_cache) {
-    /**
-     * When the user id cache is fully initialised we treat a missing
-     * entry as no user with that name exists.
-     */
-    NdbMutex_Unlock(theUserIdMutex);
-    userId = RNIL;
-    userIdVersion = 0;
-    DBUG_RETURN(0);
-  }
   /**
-   * We didn't find any entry, we will insert an entry into the hash
-   * table, we will set user id to RNIL to indicate we are still
-   * retrieving the user id from the RonDB data nodes.
+   * No entry for this user, whether the cache is fully initialised or
+   * not. The user thread resolves the user itself with GET_DATABASE_REQ;
+   * the reply inserts the entry into the cache (updateUserId), so only
+   * the first transaction pays the round trip. This must not depend on
+   * the cache initialisation state: a user created after the cache was
+   * initialised would otherwise be unresolvable for the lifetime of the
+   * process (and thus never rate limited). A username with no user at
+   * all pays a GET_DATABASE round trip per transaction, which is the
+   * price of being unprovisioned.
    */
-  int ret_code = insertUserId(username,
-                              username_len,
-                              RNIL,
-                              0);
-  if (ret_code != 0) {
-    userId = RNIL;
-    userIdVersion = 0;
-    DBUG_RETURN(0);
+  NdbMutex_Unlock(theUserIdMutex);
+  if (start_cache_fill) {
+    startUserIdCacheFill(node_id);
   }
-  /* User thread will send GET_DATABASE_REQ to get userId */
   DBUG_RETURN(1);
 }
 
@@ -1243,10 +1279,7 @@ int ClusterMgr::insertUserId(const char *username,
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_RETURN(-1);
   }
-  Uint32 hash_val = rondb_calc_hash_val(username,
-                                        username_len,
-                                        true);
-  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  Uint32 inx = calc_user_hash_index(username, username_len);
   new_entry->next_entry = theUserIdHash[inx];
   new_entry->m_username_len = username_len;
   new_entry->m_user_id = userId;
@@ -1257,7 +1290,7 @@ int ClusterMgr::insertUserId(const char *username,
               username,
               username_len + 1);
   theUserIdHash[inx] = new_entry;
-  NdbMutex_Lock(theUserIdMutex);
+  NdbMutex_Unlock(theUserIdMutex);
   DBUG_RETURN(0);
 }
 
@@ -1271,10 +1304,7 @@ int ClusterMgr::updateUserId(const char *username,
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_RETURN(0);
   }
-  Uint32 hash_val = rondb_calc_hash_val(username,
-                                        username_len,
-                                        true);
-  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  Uint32 inx = calc_user_hash_index(username, username_len);
   UserIdHashEntry *entry = theUserIdHash[inx];
   while (entry != nullptr) {
     if (entry->m_username_len != username_len ||
@@ -1292,16 +1322,31 @@ int ClusterMgr::updateUserId(const char *username,
       DBUG_RETURN(0);
     }
   }
+  /**
+   * No entry to update: insert one. This is the normal case for a user
+   * resolved with GET_DATABASE_REQ (a cache miss), and it is what makes
+   * the cache self-healing when a user is created after the cache was
+   * initialised: the first transaction pays a GET_DATABASE round trip
+   * and inserts the entry here, later transactions hit the cache.
+   */
+  struct UserIdHashEntry *new_entry = (struct UserIdHashEntry*)
+    malloc(sizeof(struct UserIdHashEntry) + username_len + 1);
+  if (new_entry == nullptr) {
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(-1);
+  }
+  new_entry->next_entry = theUserIdHash[inx];
+  new_entry->m_username_len = username_len;
+  new_entry->m_user_id = userId;
+  new_entry->m_user_id_version = userIdVersion;
+  new_entry->m_wait_for_entry = false;
+  NdbTick_Invalidate(&new_entry->m_error_time);
+  std::memcpy(&new_entry->m_username[0],
+              username,
+              username_len + 1);
+  theUserIdHash[inx] = new_entry;
   NdbMutex_Unlock(theUserIdMutex);
-#ifdef DEBUG_USER
-  g_eventLogger->info("Failed to update user id, "
-                      "name: %s, namelen: %u, id: %u, version: %u",
-    username,
-    username_len,
-    userId,
-    userIdVersion);
-#endif
-  DBUG_RETURN(-1);
+  DBUG_RETURN(0);
 }
 
 void ClusterMgr::deleteUserId(const char *username,
@@ -1313,10 +1358,7 @@ void ClusterMgr::deleteUserId(const char *username,
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_VOID_RETURN;
   }
-  Uint32 hash_val = rondb_calc_hash_val(username,
-                                        username_len,
-                                        true);
-  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  Uint32 inx = calc_user_hash_index(username, username_len);
   struct UserIdHashEntry *entry = theUserIdHash[inx];
   struct UserIdHashEntry *prev_entry = nullptr;
   while (entry != nullptr) {
@@ -1554,8 +1596,23 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
      */
     DBUG_PRINT("info", ("DB node, startLevel: %u, singleMode: %u",
       node.m_state.startLevel, node.m_state.getSingleUserMode()));
+    /**
+     * A data node that reports SL_STARTING with start phase >= 110 is
+     * parked at the restart barrier (RONDB-1096): it is fully
+     * recovered and accepts transactions although it does not yet
+     * report started (which keeps e.g. Kubernetes orchestration
+     * waiting for it). Treat such a node as alive. Version guarded:
+     * only data nodes that support the restart barrier accept remote
+     * TCSEIZEREQ in this state, older nodes would refuse with error
+     * 203.
+     */
+    const bool recovered_at_barrier =
+      node.m_state.startLevel == NodeState::SL_STARTING &&
+      node.m_state.getNodeRecovered() &&
+      ndbd_restart_phase_110_barrier(node.m_info.m_version);
     if (node.compatible && (node.m_state.startLevel == NodeState::SL_STARTED ||
-                            node.m_state.getSingleUserMode()))
+                            node.m_state.getSingleUserMode() ||
+                            recovered_at_barrier))
     {
       NdbMutex_Lock(m_node_state_mutex);
       if (!get_node_alive(node))
@@ -1568,7 +1625,9 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
           char node_buf[128];
           const char *started_ptr =
             (node.m_state.startLevel == NodeState::SL_STARTED) ?
-              "started" : "in single user mode";
+              "started" : (recovered_at_barrier ?
+                "recovered, waiting at the restart barrier" :
+                "in single user mode");
           const char *our_version_ptr =
             ndbGetVersionString(NDB_VERSION,
                                 0,

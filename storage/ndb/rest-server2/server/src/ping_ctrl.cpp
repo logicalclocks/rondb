@@ -65,12 +65,10 @@ void PingCtrl::ping(const drogon::HttpRequestPtr &req,
     return;
   }
   // Authenticate
-  char username[USERNAME_SIZE + 1];
-  char *username_ptr = &username[0];
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys &&
       globalConfigs.rest.pingRequiresAuth) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    auto status = authenticate_empty(api_key, username_ptr);
+    auto status = authenticate_empty(api_key);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));

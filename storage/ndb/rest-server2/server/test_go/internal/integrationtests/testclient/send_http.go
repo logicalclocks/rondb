@@ -40,9 +40,40 @@ func SendHttpRequest(
 	return SendHttpRequestWithClient(t, client, httpVerb, url, body, expectedErrMsg, expectedStatus...)
 }
 
+// SendHttpRequestWithAPIKey is SendHttpRequest with a caller-chosen API key
+// instead of the default testutils.HOPSWORKS_TEST_API_KEY. Used by the
+// sharing tests, where authorization differs per user key.
+func SendHttpRequestWithAPIKey(
+	t testing.TB,
+	apiKey string,
+	httpVerb string,
+	url string,
+	body string,
+	expectedErrMsg string,
+	expectedStatus ...int,
+) (int, []byte) {
+	client := testutils.SetupHttpClient(t)
+	return sendHttpRequestWithClientAndAPIKey(t, client, apiKey, httpVerb, url, body,
+		expectedErrMsg, expectedStatus...)
+}
+
 func SendHttpRequestWithClient(
 	t testing.TB,
 	client *http.Client,
+	httpVerb string,
+	url string,
+	body string,
+	expectedErrMsg string,
+	expectedStatus ...int,
+) (int, []byte) {
+	return sendHttpRequestWithClientAndAPIKey(t, client, testutils.HOPSWORKS_TEST_API_KEY,
+		httpVerb, url, body, expectedErrMsg, expectedStatus...)
+}
+
+func sendHttpRequestWithClientAndAPIKey(
+	t testing.TB,
+	client *http.Client,
+	apiKey string,
 	httpVerb string,
 	url string,
 	body string,
@@ -76,7 +107,7 @@ func SendHttpRequestWithClient(
 
 	conf := config.GetAll()
 	if conf.Security.APIKey.UseHopsworksAPIKeys {
-		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
+		req.Header.Set(config.API_KEY_NAME, apiKey)
 	}
 
 	resp, err = client.Do(req)

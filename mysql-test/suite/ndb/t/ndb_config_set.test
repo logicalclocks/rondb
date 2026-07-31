@@ -80,3 +80,37 @@ select node_id, config_value
 # ==========================================
 # Add new dynamic config parameter tests below
 # ==========================================
+
+# ==========================================
+# Test: SET RdmaLogLevel
+# ==========================================
+#
+# RdmaLogLevel is a per-[RDMA]-section parameter. mtr clusters use TCP
+# transporters and have no [RDMA] sections, so a syntactically valid SET
+# parses successfully and then reports that no RDMA connections exist.
+# These cases exercise the MGM client command path (parsing, the 0..3
+# range validation, ALL vs single-node dispatch, and the config lookup)
+# rather than an actual RDMA log-level change, which requires an
+# RDMA-enabled cluster.
+#
+
+# Valid level, ALL: reaches the config-update step; with no [RDMA]
+# sections in this cluster it reports none found and returns an error.
+--error 255
+--exec $NDB_MGM -e "ALL SET RdmaLogLevel 0"
+
+# Valid level, single node
+--error 255
+--exec $NDB_MGM -e "1 SET RdmaLogLevel 3"
+
+# Level above the 0..3 range: rejected by range validation
+--error 255
+--exec $NDB_MGM -e "ALL SET RdmaLogLevel 4"
+
+# Non-numeric level: rejected by range validation
+--error 255
+--exec $NDB_MGM -e "ALL SET RdmaLogLevel abc"
+
+# Missing value: usage error
+--error 255
+--exec $NDB_MGM -e "ALL SET RdmaLogLevel"
