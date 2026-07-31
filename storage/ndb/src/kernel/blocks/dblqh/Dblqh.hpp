@@ -415,6 +415,13 @@ class FsReadWriteReq;
 #define ZNO_SUCH_FRAGMENT_ID 1235
 #define ZKEYINFO_NOT_COMPLETED_BEFORE_ATTRINFO 1236
 #define ZLQHKEY_PROTOCOL_ERROR 1237
+/**
+ * A non-primary replica found the affected row at a different rowid than the
+ * one the primary attached to the forwarded LQHKEYREQ: the replica layouts
+ * have diverged (TTL error 899 hardening; permanent error, classified IE in
+ * ndberror.cpp). 1238-1244 are already taken by API-level codes.
+ */
+#define ZREPLICA_ROWID_MISMATCH 1245
 #define ZDISK_GET_PAGE_ERROR 932
 
 /* ------------------------------------------------------------------------- */

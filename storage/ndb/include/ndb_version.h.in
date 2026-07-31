@@ -1268,4 +1268,49 @@ ndbd_support_drop_table_notification(Uint32 x) {
   }
   return false;
 }
+
+/**
+ * Replica rowid forwarding + verification (TTL error 899 hardening).
+ *
+ * Principle: backup replicas must never receive a rowid-less operation for
+ * any INSERT, WRITE, UPDATE or DELETE. A data node that supports this feature
+ * accepts LQHKEYREQ with the RowidFlag set for operation shapes that were
+ * previously always rowid-less outside NR copy (ZINSERT_TTL forwarded as
+ * ZINSERT, TTL ZWRITE resolved to update, plain ZUPDATE/ZDELETE), verifies
+ * the wire rowid against its own ACC-resolved rowid, and rejects a mismatch
+ * with error 1245 (Replica rowid mismatch detected).
+ *
+ * The sender (DBLQH primary replica) checks the RECEIVING data node's version
+ * with this function before attaching the rowid to those shapes; to
+ * unsupporting receivers it keeps today's rowid-less shapes. Receivers accept
+ * BOTH shapes unconditionally, so mixed-version operation is safe in both
+ * directions (the divergence-detection guarantee only starts once all data
+ * nodes run a supporting version).
+ *
+ * The feature lands in the 25.10 maintenance series at 25.10.16. It is not
+ * yet forward-ported to the 26.02/26.04 series: add per-series floors here
+ * when the port lands (pattern: ndbd_support_drop_table_notification above).
+ */
+#define NDBD_REPLICA_ROWID_FORWARDING_2510 NDB_MAKE_VERSION(25,10,16)
+static inline
+bool
+ndbd_replica_rowid_forwarding(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    /* 25.10 is the only release in the 25 series. */
+    if (minor == 10) {
+      return x >= NDBD_REPLICA_ROWID_FORWARDING_2510;
+    }
+    return false;
+  }
+  /* major == 26: no release carries the feature yet (see comment above). */
+  return false;
+}
 #endif
