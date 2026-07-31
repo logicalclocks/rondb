@@ -12618,13 +12618,29 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * contained m_row_id for every operation class (writeLogHeader) and never
    * reads m_use_rowid; REDO replay never reaches this forwarding code
    * (lastReplicaNo == 0 takes the early return above).
+   *
+   * Full principle (second stage): plain forwarded ZUPDATE and ZDELETE on
+   * ANY table carry the affected row's rowid as a VERIFICATION rowid too.
+   * These shapes can never self-allocate (a backup that misses the row REFs
+   * with ZNO_TUPLE_FOUND, unchanged), but without the rowid a fork in which
+   * both replicas hold the row at DIFFERENT rowids stays invisible until
+   * insert-family traffic happens to touch the diverged slots; with it,
+   * every forwarded operation becomes a layout probe checked by the
+   * receiving replica in continueACCKEYCONF. This condition subsumes the
+   * TTL-ZWRITE-resolved-to-ZUPDATE clause of the first stage and also
+   * covers ZWRITE-resolved updates on non-TTL tables, dirty writes (their
+   * found case is excluded from verification on the receiver, but their
+   * not-found ZWRITE resolution now heals or trips at the wire rowid
+   * instead of self-allocating) and takeover-scan deletes such as the TTL
+   * purge. ZUPDATE/ZDELETE not-found semantics, checkTTL handling and the
+   * wire operation codes are all unchanged -- this stage only adds the two
+   * rowid words and the receiver-side comparison.
    */
   if (!regTcPtr->m_use_rowid &&
       regTcPtr->seqNoReplica == 0 &&
       (regTcPtr->operation == ZINSERT_TTL ||
-       (regTcPtr->operation == ZUPDATE &&
-        regTcPtr->original_operation == ZWRITE &&
-        is_ttl_table(fragptr.p->tabRef))) &&
+       regTcPtr->operation == ZUPDATE ||
+       regTcPtr->operation == ZDELETE) &&
       ndbd_replica_rowid_forwarding(
           getNodeInfo(regTcPtr->nextReplica).m_version)) {
     jamDebug();
