@@ -223,6 +223,9 @@ static int translateStopRef(Uint32 errCode) {
     case StopRef::UnsupportedNodeShutdown:
       return UNSUPPORTED_NODE_SHUTDOWN;
       break;
+    case StopRef::NodeShutdownPermissionTimeout:
+      return NODE_SHUTDOWN_PERMISSION_TIMEOUT;
+      break;
   }
   return 4999;
 }
@@ -239,6 +242,23 @@ static int translateStopRef(Uint32 errCode) {
  * transporter handoff, mgm clients) are short-lived.
  */
 static constexpr unsigned MAX_MGM_API_SESSIONS = 4096;
+
+/*
+ * Upper bound on how long sendSTOP_REQ() waits for the data nodes to
+ * confirm a stop.  It is a backstop, not the normal bound: a data node
+ * gives up a graceful stop it cannot get permission for within
+ * GracefulShutdownTimeout and answers STOP_REF, so this only fires when
+ * a node stops answering altogether.  Without it the MgmApiSession
+ * thread waits forever, never returns to its command loop and so never
+ * notices the client hanging up -- the session is never reaped and
+ * every later stop or restart command blocks behind it.
+ *
+ * Sized above any legitimate wait (the call waits for the node to
+ * actually go down, which includes its LCP/GCP work) but below the MGM
+ * client's own 300 s budget for stop and restart commands, so the
+ * client gets a real error rather than its own timeout.
+ */
+static constexpr Uint32 MAX_STOP_REQ_WAIT_MS = 240000;
 
 MgmtSrvr::MgmtSrvr(const MgmtOpts &opts)
     : m_opts(opts),
@@ -2378,7 +2398,18 @@ int MgmtSrvr::sendSTOP_REQ(const Vector<NodeId> &node_ids,
 
   // now wait for the replies
   Uint32 sendNodeId = ndb_nodes_to_stop.find(0);
+  const NDB_TICKS stop_req_start = NdbTick_getCurrentTicks();
   while (!stoppedNodes.contains(ndb_nodes_to_stop)) {
+    if (NdbTick_Elapsed(stop_req_start, NdbTick_getCurrentTicks()).milliSec() >
+        MAX_STOP_REQ_WAIT_MS) {
+      g_eventLogger->warning(
+          "Stop of node(s) %s abandoned after %u ms without a conclusive "
+          "answer from the data nodes",
+          BaseString::getPrettyText(ndb_nodes_to_stop).c_str(),
+          MAX_STOP_REQ_WAIT_MS);
+      DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+    }
+
     if (do_send) {
       assert(use_master_node);
       sendNodeId = guess_master_node(ss);
@@ -2404,7 +2435,11 @@ int MgmtSrvr::sendSTOP_REQ(const Vector<NodeId> &node_ids,
       do_send = 0;
     }
 
-    SimpleSignal *signal = ss.waitFor();
+    /* Wait bounded so the deadline above is always re-checked; nullptr
+     * means no signal arrived within this poll window. */
+    SimpleSignal *signal = ss.waitFor(1000);
+    if (signal == nullptr) continue;
+
     int gsn = signal->readSignalNumber();
     switch (gsn) {
       case GSN_STOP_REF: {
