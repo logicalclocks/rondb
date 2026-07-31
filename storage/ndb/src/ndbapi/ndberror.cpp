@@ -1111,6 +1111,9 @@ ErrorBundle ErrorCodes[] = {
     "System shutdown in progress" },
   { 5028 /* NODE_SHUTDOWN_WOULD_CAUSE_SYSTEM_CRASH */, DMEC, AE,
    "Node shutdown would cause system crash" },
+  { 5029 /* NODE_SHUTDOWN_PERMISSION_TIMEOUT */, DMEC, TO,
+   "Timeout waiting for permission to stop the node gracefully, the node "
+   "is still started. Retry, or use abort to stop immediately." },
   { 5030 /* NO_CONTACT_WITH_DB_NODES */, DMEC, AE,
     "No contact with database nodes" },
   { 5031 /* UNSUPPORTED_NODE_SHUTDOWN */, DMEC, AE,
