@@ -1560,8 +1560,9 @@ doRun()
   Uint32 totalLineitems = numOrders * linesPerOrder;
 
   Ndb_cluster_connection con(connectString);
-  if (con.connect(12, 5, 1) != 0) {
-    fprintf(stderr, "Failed to connect to management server\n");
+  if (con.connect(30, 5, 1) != 0) {
+    fprintf(stderr, "Failed to connect to management server: %s\n",
+            con.get_latest_error_msg());
     return 1;
   }
   if (con.wait_until_ready(30, 0) < 0) {

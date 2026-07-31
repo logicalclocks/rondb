@@ -3019,8 +3019,9 @@ int main(int argc, char **argv)
 
   {
     Ndb_cluster_connection clusterConn(connectString);
-    if (clusterConn.connect(12, 5, 1) != 0) {
-      fprintf(stderr, "Cannot connect to cluster mgm: %s\n", connectString);
+    if (clusterConn.connect(30, 5, 1) != 0) {
+      fprintf(stderr, "Cannot connect to cluster mgm %s: %s\n",
+              connectString, clusterConn.get_latest_error_msg());
       exitCode = 1;
     }
     else if (clusterConn.wait_until_ready(30, 0) < 0) {

@@ -2656,6 +2656,8 @@ class Dbtc : public SimulatedBlock {
                        ApiConnectRecordPtr const apiConnectptr);
   bool registerCteScanFragHandle(ScanRecordPtr, ScanFragRecPtr,
                                  ApiConnectRecordPtr const);
+  void retireCteScanFragHandle(ScanRecordPtr, Uint32 scanFragPtrI);
+  bool cteAggResponsesOutstanding(ScanRecordPtr);
   bool getCteScanFragForTimer(ScanRecordPtr, CteScanFragHandlePtr,
                               ScanFragRecPtr &);
   void stopCteScanFragTimer(ScanRecordPtr, CteScanFragHandlePtr);
@@ -2910,7 +2912,7 @@ class Dbtc : public SimulatedBlock {
                      ApiConnectRecord *regApiPtr);
   void diFcountReqLab(Signal *signal, ScanRecordPtr, ApiConnectRecordPtr);
   void abort080Lab(Signal *signal);
-  void abortScanLab(Signal *signal, ScanRecordPtr, Uint32 errCode,
+  bool abortScanLab(Signal *signal, ScanRecordPtr, Uint32 errCode,
                     bool not_started, ApiConnectRecordPtr apiConnectptr);
   void abort010Lab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
   void abort015Lab(Signal *signal, ApiConnectRecordPtr apiConnectptr);

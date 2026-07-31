@@ -2249,6 +2249,13 @@ int runTestMgmTransporterConvertRetry(NDBT_Context *ctx, NDBT_Step *step) {
   NDBT_Workingdir wd("test_mgmd");  // temporary working directory
   BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
   Properties config = ConfigFactory::create();
+  /**
+   * Keep the spawned data node small: the autotest host also runs the
+   * surrounding atrt cluster, and an auto-sized ndbmtd (all CPUs, all
+   * host memory) causes a paging storm that drops the mgm link.
+   */
+  CHECK(ConfigFactory::put(config, "ndbd", 2, "NumCPUs", 2));
+  CHECK(ConfigFactory::put(config, "ndbd", 2, "TotalMemoryConfig", "4G"));
   CHECK(ConfigFactory::write_config_ini(config, cfg_path.c_str()));
 
   Mgmd mgmd(1);
@@ -2284,9 +2291,14 @@ int runTestMgmTransporterConvertRetry(NDBT_Context *ctx, NDBT_Step *step) {
   CHECK(mgmd.start_from_config_ini(wd.path()));
   CHECK(mgmd.connect(config));
 
-  /* The node wakes with a dead mgm session and must reconnect */
+  /**
+   * The node wakes with a dead mgm session and must reconnect.  The
+   * conversion retry alone can spend up to 90 s (30 s test delay plus
+   * 12 x 5 s retries) before start phases begin, so allow 180 s; the
+   * autotest max-time of 300 s still covers it.
+   */
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle, 120));
+  CHECK(ndbd.wait_started(handle, 180));
 
   CHECK(ndbd.stop());
   CHECK(mgmd.stop());

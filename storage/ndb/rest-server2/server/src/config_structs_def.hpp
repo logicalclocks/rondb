@@ -119,10 +119,9 @@ CLASS
  CM(bool, rateLimitFullApiKey, RateLimitFullAPIKey, false,
     "Set to true to use the full API key as the rate limit identity."
     " By default only the API key prefix is used.")
- PROBLEM(!enable, "REST must be enabled")
  PROBLEM(rateLimitIdentity != "apikey",
          "RateLimitIdentity only supports 'apikey'")
- PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
+ PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "
