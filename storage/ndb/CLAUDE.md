@@ -17,4 +17,10 @@ Detailed documentation is organized by topic in `claude_files/`. Read the releva
 
 ### ttl_899_rowid
 
-- `findings.md` — Full audit findings (mechanism verdicts M1-M6, restart scenarios S1-S6, end-to-end 899 interleaving, seed analysis with fixed-bug history, observability, deterministic + probe test designs, hardening fix, continuation checklist)
+- `findings.md` — Full audit findings (mechanism verdicts M1-M6, restart scenarios S1-S6, end-to-end 899 interleaving, seed analysis with fixed-bug history, observability, test designs, hardening fix, continuation checklist)
+- `repro_test.md` — Natural-window verdict (NR-copy window closed, 3 traces agree) + ttl_nr_copy_window regression test + timing-only ERROR_INSERT 5113
+- `probe_tests.md` — Replica-consistency invariant include, 899 detector control test (SQL 1205 + Warning 1297 signature), copy×churn probe results
+- `impact_analysis.md` — Always-carry-rowid principle blast radius, per-subsystem impact, failure policy, rollout plan; fully-replicated findings (deferred)
+- `normal_insert_analysis.md` — Proof a normal INSERT cannot create the fork; abort-ordering closure; benign transient-899 windows on healthy clusters
+- `fix_design.md` — Design of the replica-rowid forwarding + verification fix (error 1245, EI 5118, version gate): decision log, REDO safety proof, NR-copy interplay, mixed-version behavior
+- `validation_report.md` — Fix build+test validation (33/33 green, both gate states, zero 1245 false positives); version-gate dormancy caveat; ERROR_codes merge rule

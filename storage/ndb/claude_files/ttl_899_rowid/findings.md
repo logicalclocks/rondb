@@ -1,6 +1,28 @@
 # TTL "leftover rowid" / Error 899 Investigation — Findings and Test Plan
 
-Status: investigation complete, test implementation NOT started.
+Status: investigation complete. CONTINUED 2026-08-01 — tests, fix, and validation
+now exist; see the companion documents in this directory:
+- `repro_test.md` — natural-window verdict (NR-copy window CLOSED, three
+  independent traces) + the `ttl_nr_copy_window` regression test + timing-only
+  ERROR_INSERT 5113. Supersedes the §9.1 seeded-drop design: per user
+  direction, tests must use natural TTL interleavings (EI only as timing aid).
+- `probe_tests.md` — replica-consistency invariant include, 899 detector
+  control test (signature: SQL 1205 + Warning 1297 "error 899"), 3-cycle
+  copy×churn probe (green).
+- `impact_analysis.md` — always-carry-rowid principle blast radius; NR copy
+  already forces rowids on all ops (the fix's precedent); fully-replicated
+  findings DEFERRED by user decision.
+- `normal_insert_analysis.md` — normal INSERT cannot create the fork; abort
+  topology closes; two benign transient-899 windows exist on healthy clusters
+  (899 detectors must assert recurrence, not single hits).
+- `validation_report.md` — fix compiled clean, 33/33 tests green with the
+  verification both dormant and force-enabled; zero 1245 false positives.
+  CAVEAT: version gate 25.10.16 means the fix is DORMANT in 25.10.15 builds.
+- Fix branch: `worktree-agent-a3f75365e3707f66b` (commits 517d6e8fa94 +
+  d429fda457f; patches in /tmp/ttl_rowid_fix_v2/): rowid forwarding +
+  per-hop verification, new permanent error 1245, ERROR_INSERT 5118
+  (ERROR_codes merge rule: 5113 + 5118 registered, Next DBLQH 5119).
+
 Date: 2026-07-31. Branch: 25.10-main (HEAD near 59b3b3cbdf1).
 Method: four parallel code-audit subtasks (purge architecture map, normal-operation
 interleaving hunt, restart/recovery-path audit, test-lever inventory) plus direct
