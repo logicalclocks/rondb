@@ -1,0 +1,98 @@
+# ==========================================================================
+# ttl_rowid_899_control: validate the detection recipe for NDB error 899
+# ("Rowid already allocated") and document how it surfaces in SQL.
+# ==========================================================================
+#
+# Background (storage/ndb/claude_files/ttl_899_rowid/findings.md): a replica
+# rowid-layout fork on a TTL table eventually produces NDB error 899 on the
+# BACKUP replica of ordinary inserts.  899 is classified as a TEMPORARY error
+# (ndberror.cpp: {899, HA_ERR_LOCK_WAIT_TIMEOUT, TR, "Rowid already
+# allocated"}), so in production it hides behind a generic retriable
+# "Lock wait timeout" -- easy to misdiagnose.  Any test that hunts for 899
+# needs a guaranteed-positive control proving its trap actually fires.
+#
+# This test IS that control.  ERROR_INSERT 4019
+# (dbtup/DbtupExecQuery.cpp, handleInsertReq) forces terrorCode=899 on every
+# ROWID-SPECIFIED insert.  Only inserts that arrive with a required rowid take
+# that branch: the PRIMARY replica allocates its own rowid (alloc_fix_rec,
+# no rowid on the wire, 4019 not consulted) and then forwards the insert to
+# the BACKUP replica with the rowid it chose.  Arming 4019 on ALL data nodes
+# therefore guarantees that whichever node is backup for the row's fragment
+# fails the insert with 899, exactly like a real rowid-collision on a forked
+# backup would -- while leaving every other code path untouched.
+#
+# Empirically established SQL surfacing of NDB 899 (asserted below):
+#   - the INSERT statement fails with ER_LOCK_WAIT_TIMEOUT (1205,
+#     "Lock wait timeout exceeded; try restarting transaction"), because
+#     899's mysql_code is HA_ERR_LOCK_WAIT_TIMEOUT;
+#   - SHOW WARNINGS contains a Warning with code 1297
+#     (ER_GET_TEMPORARY_ERRMSG): "Got temporary error 899 'Rowid already
+#     allocated' from NDB" -- this warning text is THE reliable 899
+#     signature; the statement error alone is indistinguishable from a real
+#     lock-wait timeout.
+#
+# The test finishes by disarming the error insert, verifying inserts work
+# again, and running the reusable per-fragment replica-consistency invariant
+# (include/ndb_assert_frag_replica_consistency.inc): the trapped insert was
+# aborted on all replicas, so no divergence may remain.
+#
+# Uses the ndb_ttl suite default cluster: 2 data nodes, NoOfReplicas=2.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+# ERROR_INSERT 4019 exists only in WITH_ERROR_INSERT (debug) data node builds;
+# on a release build "ALL ERROR 4019" is a no-op and the trap would not fire.
+--source include/have_ndb_debug.inc
+
+# TTL expiry is evaluated in the data node against UTC; pin the session time
+# zone so ttl_col values written with NOW() agree with the data node clock
+# (rows here must stay LIVE for the whole test).
+SET time_zone = '+00:00';
+
+--echo # --- create a small TTL table (TTL=300s, rows stay live throughout)
+CREATE TABLE test.t899 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col";
+
+--echo # --- baseline: insert succeeds while no error insert is armed
+INSERT INTO test.t899 VALUES (1, NOW(), 0);
+
+--echo # --- arm ERROR_INSERT 4019 on ALL data nodes: every rowid-specified
+--echo #     (i.e. backup-replica) insert now fails with NDB error 899
+--exec $NDB_MGM -e "ALL ERROR 4019" > /dev/null
+
+--echo # --- the INSERT fails -- NDB 899 surfaces as ER_LOCK_WAIT_TIMEOUT (1205)
+--error ER_LOCK_WAIT_TIMEOUT
+INSERT INTO test.t899 VALUES (2, NOW(), 0);
+
+--echo # --- the true cause is only visible in the warning stack: code 1297,
+--echo #     "Got temporary error 899 'Rowid already allocated' from NDB"
+SHOW WARNINGS;
+
+# Programmatic assertion on the 899 signature, independent of warning-stack
+# layout: fail hard if the signature text is missing.
+--let $_wmsg = query_get_value(SHOW WARNINGS, Message, 1)
+if (`SELECT "$_wmsg" NOT LIKE "%Rowid already allocated%"`)
+{
+  --echo # Unexpected first warning: $_wmsg
+  --die 899 signature warning (Rowid already allocated) not found after trapped INSERT
+}
+
+--echo # --- the row was NOT inserted (transaction aborted cleanly)
+SELECT id, v FROM test.t899 ORDER BY id;
+
+--echo # --- disarm the error insert on all nodes
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo # --- inserts succeed again
+INSERT INTO test.t899 VALUES (2, NOW(), 0);
+SELECT id, v FROM test.t899 ORDER BY id;
+
+--echo # --- final invariant: the aborted insert left no replica divergence
+--let $ndb_db = test
+--let $ndb_table = t899
+--source include/ndb_assert_frag_replica_consistency.inc
+
+DROP TABLE test.t899;

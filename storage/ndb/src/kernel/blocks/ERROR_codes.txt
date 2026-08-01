@@ -363,6 +363,13 @@ Error insertions used to test ACCKEYCONF/ABORT interleaving
 5107: Cause SimulatedBlock::allocChunks() to return chunks with gaps
 5108: Cause request to fail with error 1218 SendBuffer overload (temp error)
 5109: Delay on handling BACKUP_FRAGMENT_CONF during an ALTER table operation
+5113: Timing only: slow down the NR copy fragment scan of TTL-table
+      fragments (~10 ms per copy row, armed on the LIVE node) and log
+      per-fragment copy start/complete like 5714. Used to make the
+      natural mid-copy window deterministic for tests that commit live
+      traffic against a fragment while it is being copied. No state or
+      protocol transition is changed.
+
 5118: Escalate a replica-rowid-mismatch rejection (error 1245, TTL error 899
       hardening) to ndbabort on the detecting replica (autotest hard stop
       for layout-divergence tests)

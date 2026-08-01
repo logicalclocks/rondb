@@ -1037,6 +1037,63 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     resume_one_copy_fragment_process(signal);
     return;
   }
+#if defined ERROR_INSERT
+  case ZDELAY_NEXT_COPY_ROW:
+  {
+    jam();
+    /**
+     * ERROR_INSERT 5113 (timing only): the continuation of one NR copy
+     * fragment process was parked in a delayed CONTINUEB by nextRecordCopy
+     * to slow the copy scan of a TTL-table fragment down (the copy window
+     * that occurs naturally with large fragments, made deterministic).
+     * Nothing about the copy protocol state machine is changed; we simply
+     * reissue nextRecordCopy later than usual.
+     *
+     * Revalidate the copy process state before continuing, in the same way
+     * resume_one_copy_fragment_process() does: the copy may meanwhile have
+     * been closed (error/node failure), halted (UNDO log overload) or have
+     * had its continuation taken over by another LQHKEYCONF arrival.
+     */
+    TcConnectionrecPtr delayTcPtr;
+    delayTcPtr.i = signal->theData[1];
+    if (m_delay_copy_park_tc == delayTcPtr.i)
+    {
+      /* Release the single park slot: this signal IS the pending
+       * continuation for that copy process. */
+      m_delay_copy_park_tc = RNIL;
+    }
+    if (!tcConnect_pool.getValidPtr(delayTcPtr) ||
+        delayTcPtr.p->connectState != TcConnectionrec::COPY_CONNECTED ||
+        delayTcPtr.p->tcScanRec == RNIL)
+    {
+      jam();
+      return;
+    }
+    setup_scan_pointers_from_tc_con(delayTcPtr, __LINE__);
+    if (scanptr.p->scanState == ScanRecord::WAIT_LQHKEY_COPY)
+    {
+      if (scanptr.p->scanCompletedStatus == ZTRUE ||
+          scanptr.p->scanErrorCounter)
+      {
+        jam();
+        closeCopyLab(signal, delayTcPtr.p);
+      }
+      else if (is_ok_to_send_next_record(delayTcPtr.p))
+      {
+        jam();
+        /* nextRecordCopy itself handles c_copy_frag_live_node_halted by
+         * registering this process in the blocked list for later resume.
+         * m_delay_copy_reentry grants exactly ONE real execution; it is
+         * consumed (cleared) at the top of nextRecordCopy so the per-row
+         * calls deeper in the same chain park again. */
+        m_delay_copy_reentry = true;
+        nextRecordCopy(signal, delayTcPtr);
+      }
+    }
+    release_frag_access(prim_tab_fragptr.p);
+    return;
+  }
+#endif
   case ZHANDLE_TC_FAILED_SCANS:
   {
     jam();
@@ -21762,7 +21819,7 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
    * Start sending ROWID for all operations from now on
    */
   fragptr.p->m_copy_started_state = Fragrecord::AC_NR_COPY;
-  if (ERROR_INSERTED(5714)) {
+  if (ERROR_INSERTED(5714) || ERROR_INSERTED(5113)) {
     g_eventLogger->info("Starting copy of tab(%u,%u)", fragptr.p->tabRef,
                         fragptr.p->fragId);
   }
@@ -22222,6 +22279,82 @@ void Dblqh::nextRecordCopy(Signal *signal,
                            const TcConnectionrecPtr tcConnectptr) {
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
 
+#if defined ERROR_INSERT
+  if (unlikely(ERROR_INSERTED(5113)))
+  {
+    if (m_delay_copy_reentry)
+    {
+      /**
+       * This call is the one real execution granted by the delayed
+       * CONTINUEB continuation (ZDELAY_NEXT_COPY_ROW).  Consume the grant
+       * HERE so that the per-row nextRecordCopy calls made deeper in the
+       * same EXECUTE_DIRECT chain (copyTupkeyConfLab after each sent row)
+       * are parked again -- otherwise one grant would release a whole
+       * words-window batch of rows and the throttle would be per-batch,
+       * not per-row.
+       */
+      jam();
+      m_delay_copy_reentry = false;
+    }
+    else
+    {
+      FragrecordPtr delayFragPtr;
+      delayFragPtr.i = regTcPtr->fragmentptr;
+      ndbrequire(c_fragment_pool.getPtr(delayFragPtr));
+      if (is_ttl_table(delayFragPtr.p->tabRef))
+      {
+        /**
+         * ERROR_INSERT 5113 (timing only): slow down the NR copy scan of
+         * TTL-table fragments by parking the next-copy-row fetch in a
+         * delayed CONTINUEB (~10 ms per copy row).  This widens the
+         * natural mid-copy window (which occurs anyway on large
+         * fragments) so tests can deterministically commit live
+         * operations against the fragment while it is being copied.
+         * No state is changed: the copy still delivers every row through
+         * the normal protocol; the parked continuation revalidates the
+         * scan state before resuming (see ZDELAY_NEXT_COPY_ROW in
+         * execCONTINUEB).
+         *
+         * At most ONE parked continuation exists per copy process
+         * (m_delay_copy_park_tc): while it is pending, further
+         * nextRecordCopy attempts for the same process (e.g. from
+         * copyCompletedLab when LQHKEYCONFs stream back) are plain no-ops
+         * -- the parked continuation re-checks scanState and
+         * is_ok_to_send_next_record when it fires, so no continuation is
+         * lost.  Without this single-slot rule every parked fetch spawns
+         * further parked fetches and the delay collapses into a signal
+         * storm instead of a pace.
+         */
+        if (m_delay_copy_park_tc == RNIL)
+        {
+          jam();
+          m_delay_copy_park_tc = tcConnectptr.i;
+          c_errorCounter++;
+          if ((c_errorCounter & 0x3FF) == 1)
+          {
+            g_eventLogger->info("EI5113 parked copy fetch #%u tab(%u,%u)",
+                                c_errorCounter, delayFragPtr.p->tabRef,
+                                delayFragPtr.p->fragId);
+          }
+          signal->theData[0] = ZDELAY_NEXT_COPY_ROW;
+          signal->theData[1] = tcConnectptr.i;
+          sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 2);
+          return;
+        }
+        if (m_delay_copy_park_tc == tcConnectptr.i)
+        {
+          jam();
+          /* A continuation for this copy process is already parked. */
+          return;
+        }
+        jam();
+        /* Another TTL copy process holds the park slot: run this one
+         * unthrottled rather than risk stalling it. */
+      }
+    }
+  }
+#endif
+
   fragptr.i = regTcPtr->fragmentptr;
   ndbrequire(c_fragment_pool.getPtr(fragptr));
   prim_tab_fragptr = fragptr;
@@ -22319,7 +22452,7 @@ void Dblqh::closeCopyLab(Signal *signal, TcConnectionrec *regTcPtr) {
    */
   fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
   fragptr.p->copyNode = ZNIL;
-  if (ERROR_INSERTED(5714))
+  if (ERROR_INSERTED(5714) || ERROR_INSERTED(5113))
   {
     g_eventLogger->info("Copy of tab(%u,%u) complete", fragptr.p->tabRef,
                         fragptr.p->fragId);

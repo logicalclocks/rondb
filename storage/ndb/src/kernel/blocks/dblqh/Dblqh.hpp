@@ -337,6 +337,16 @@ class FsReadWriteReq;
 #define ZHANDLE_TC_FAILED_SCANS 42
 #define ZRESUME_BLOCKED_COPY_FRAGMENT 43
 #define ZUPDATE_CPU_USAGE 44
+#if defined ERROR_INSERT
+/**
+ * Timing-only test aid (ERROR_INSERT 5113): delayed continuation of one
+ * NR copy fragment process, used to slow down the copy scan of TTL-table
+ * fragments without changing any protocol state transition.
+ * The reentry flag lets the delayed CONTINUEB run the real nextRecordCopy
+ * body instead of parking itself again (member defined in the Dblqh class).
+ */
+#define ZDELAY_NEXT_COPY_ROW 45
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -4189,6 +4199,20 @@ public:
 
 #if defined ERROR_INSERT
   Uint32 delayOpenFilePtrI;
+  /**
+   * ERROR_INSERT 5113 (timing only, see ZDELAY_NEXT_COPY_ROW): true while
+   * the delayed CONTINUEB continuation executes the real nextRecordCopy
+   * body, so that call is not parked again (consumed at nextRecordCopy
+   * entry).
+   */
+  bool m_delay_copy_reentry = false;
+  /**
+   * ERROR_INSERT 5113: tc connect record i-value of the (single) parked
+   * copy-fetch continuation, RNIL when none is pending.  Enforces at most
+   * one delayed CONTINUEB per copy process so the throttle cannot turn
+   * into a self-amplifying signal storm.
+   */
+  Uint32 m_delay_copy_park_tc = RNIL;
 #endif
 
   // Configurable
