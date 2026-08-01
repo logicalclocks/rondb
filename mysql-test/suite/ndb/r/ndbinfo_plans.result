@@ -5,7 +5,7 @@ use ndbinfo;
 ##
 ## ndb$tables
 select count(*) from ndb$tables;
-count(*)	57
+count(*)	59
 explain select count(*) from ndb$tables;
 id	1
 select_type	SIMPLE
@@ -63,7 +63,7 @@ ndb$acc_operations	15	64
 ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$certificates	34	44
-ndb$columns	609	44
+ndb$columns	615	44
 ndb$config_nodes	34	28
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
@@ -92,6 +92,8 @@ ndb$processes	34	68
 ndb$rdma_transporters	32	120
 ndb$resources	26	28
 ndb$restart_info	2	100
+ndb$security_violation_counts	0	16
+ndb$security_violations	0	24
 ndb$stored_tables	100	80
 ndb$table_distribution_status	100	52
 ndb$table_distribution_status_all	200	52
@@ -101,7 +103,7 @@ ndb$table_map	100	36
 ndb$table_memory_usage	100	44
 ndb$table_replicas	800	64
 ndb$table_replicas_all	400	64
-ndb$tables	57	40
+ndb$tables	59	40
 ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
 ndb$threadblock_details	124	24
@@ -133,7 +135,7 @@ ndb$config_values	390	1
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows
   AND table_name != 'ndb$config_values';
 count(*)
-27
+28
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   AND table_name != 'ndb$config_values'
   ORDER BY table_name;
@@ -160,6 +162,7 @@ ndb$membership
 ndb$nodes
 ndb$pgman_time_track_stats
 ndb$resources
+ndb$security_violation_counts
 ndb$tables
 ndb$test
 ndb$threads
@@ -169,6 +172,8 @@ ndb$transporters
 ## Check that no tables have zero estimates
 SELECT table_name from rowcounts WHERE est_rows = 0;
 table_name
+ndb$security_violation_counts
+ndb$security_violations
 
 DROP TEMPORARY TABLE rowcounts;
 DROP PROCEDURE populate_sizes;
