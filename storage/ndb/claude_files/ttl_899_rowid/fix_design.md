@@ -288,9 +288,12 @@ ignores everything before the first copy row (AC_IGNORED, :9485-9508 /
 
 Gate: `ndbd_replica_rowid_forwarding(getNodeInfo(nextReplica).m_version)`,
 evaluated per hop at the attach site (precedent:
-`ndbd_support_copy_frag_done` per-hop check at :22115-22116). Cutoff
-25.10.16; major 26 returns false until the forward-port lands (helper comment
-says to add per-series floors then, pattern `ndbd_support_drop_table_notification`).
+`ndbd_support_copy_frag_done` per-hop check at :22115-22116). Per-series
+floors: 25.10.16 (`NDBD_REPLICA_ROWID_FORWARDING_2510`) and 26.02.9
+(`NDBD_REPLICA_ROWID_FORWARDING_2602`, the forward-port target); every
+series after 26.02 (26.04, 26.05, ...) returns true from its first release.
+A 25.10.16 sender therefore keeps legacy rowid-less shapes toward 26.02.x
+peers below 26.02.9 during a cross-series upgrade.
 
 - **New primary → old backup**: predicate false ⇒ exactly today's shapes
   (rowid-less D1/D2a/U/D). The old backup's behavior is bit-identical to

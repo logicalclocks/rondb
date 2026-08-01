@@ -1287,11 +1287,12 @@ ndbd_support_drop_table_notification(Uint32 x) {
  * directions (the divergence-detection guarantee only starts once all data
  * nodes run a supporting version).
  *
- * The feature lands in the 25.10 maintenance series at 25.10.16. It is not
- * yet forward-ported to the 26.02/26.04 series: add per-series floors here
- * when the port lands (pattern: ndbd_support_drop_table_notification above).
+ * Per-series floors: the feature lands in the 25.10 maintenance series at
+ * 25.10.16 and is forward-ported to the 26.02 series at 26.02.9; every
+ * series after 26.02 (26.04, 26.05, ...) carries it from its first release.
  */
 #define NDBD_REPLICA_ROWID_FORWARDING_2510 NDB_MAKE_VERSION(25,10,16)
+#define NDBD_REPLICA_ROWID_FORWARDING_2602 NDB_MAKE_VERSION(26,2,9)
 static inline
 bool
 ndbd_replica_rowid_forwarding(Uint32 x) {
@@ -1310,7 +1311,14 @@ ndbd_replica_rowid_forwarding(Uint32 x) {
     }
     return false;
   }
-  /* major == 26: no release carries the feature yet (see comment above). */
+  /* major == 26 */
+  if (minor > 2) {
+    /* Series after 26.02 (26.04, 26.05, ...) always carry the feature. */
+    return true;
+  }
+  if (minor == 2) {
+    return x >= NDBD_REPLICA_ROWID_FORWARDING_2602;
+  }
   return false;
 }
 #endif
