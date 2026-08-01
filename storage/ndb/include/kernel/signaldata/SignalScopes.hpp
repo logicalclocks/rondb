@@ -69,6 +69,23 @@
   This same list is the intended source for a future transporter-boundary
   bitmap (flood defense); keep it authoritative.
 */
+
+/*
+  Debug-build exception: the block unit tests (storage/ndb/block_unit_test/)
+  impersonate DBTC/DBSPJ from an API node, driving DBLQH directly with
+  LQHKEYREQ and SCAN_FRAGREQ. In production only data nodes send these two
+  signals, so they are Remote and an API-node sender is disconnected (Tier A).
+  Debug builds (VM_TRACE, also set by WITH_NDB_DEBUG) relax exactly these two
+  entries to Unclassified so the tests can run; their MTR wrappers source
+  include/have_ndb_debug.inc, which probes the same VM_TRACE capability, so
+  the tests skip on non-debug clusters.
+*/
+#ifdef VM_TRACE
+#define NDB_SCOPE_REMOTE_EXCEPT_DEBUG Unclassified
+#else
+#define NDB_SCOPE_REMOTE_EXCEPT_DEBUG Remote
+#endif
+
 #define SIGNAL_SCOPES(X)                                                       \
   /* ===================== Local (same node only) ===================== */     \
   X(GSN_CONTINUEB, Local)                                                      \
@@ -117,8 +134,10 @@
   X(GSN_ALLOC_MEM_CONF, Local)                                                 \
   /* ================== Remote (data nodes only) ===================== */     \
   X(GSN_FAIL_REP, Remote)                                                      \
-  X(GSN_LQHKEYREQ, Remote)                                                     \
-  X(GSN_SCAN_FRAGREQ, Remote)                                                  \
+  /* Remote in production, Unclassified in debug builds - see the comment  */  \
+  /* above the SIGNAL_SCOPES define.                                       */  \
+  X(GSN_LQHKEYREQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                              \
+  X(GSN_SCAN_FRAGREQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                           \
   X(GSN_GCP_PREPARE, Remote)                                                   \
   X(GSN_LCP_FRAG_ORD, Remote)                                                  \
   X(GSN_COPY_FRAGREQ, Remote)                                                  \
