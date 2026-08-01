@@ -99,8 +99,12 @@ Two things needed to be established:
   - page state `ZTH_MM_FREE` but `Fix_page::alloc_record(idx) != idx`
     (slot taken) — `DbtupFixAlloc.cpp:294`;
   - page state `ZTH_MM_FULL` — `DbtupFixAlloc.cpp:319`.
-  Both sites have `DEB_899_ERROR` logging, compiled out by default
-  (`//#define DEBUG_899_ERROR 1` at `DbtupFixAlloc.cpp:37`).
+  Both sites originally had `DEB_899_ERROR` debug-only logging; on this
+  branch it is promoted to always-on production logging
+  (`Dbtup::log_rowid_already_allocated`): silent during recovery (REDO
+  replay raises 899 by design), rate-limited to 2 lines per 10 s per
+  instance with a suppressed count, written to the node log (full detail)
+  and via warningEvent to the cluster log.
 - Out-of-DataMemory is a DIFFERENT error: page allocation failure returns 827
   (`ZMEM_NOMEM_ERROR`) in both the rowid and non-rowid paths
   (`DbtupPageMap.cpp:757,862`; `DbtupExecQuery.cpp` label `mem_error`).
@@ -360,7 +364,8 @@ heals the fork; REDO-based NR replays the divergent history and can keep it.
   (Expired-unpurged rows are physical and counted, so the comparison is exact.)
 - `ndb_select_all --rowid` (`tools/select_all.cpp`) dumps ROWID/FRAGMENT per
   row for offline layout diffs.
-- Compile-time logging: `DEBUG_899_ERROR` (`DbtupFixAlloc.cpp:37`) prints
+- Logging (now always-on in production on this branch, see section 2;
+  historically compile-time `DEBUG_899_ERROR` at `DbtupFixAlloc.cpp:37`) prints
   `"(inst)899 error FREE|FULL: tab(t,f) row(page,idx)"`; companion
   `DEBUG_ELEM_COUNT` traces element counts. Kernel+API TTL tracing:
   `TTL_DEBUG` / `TTL_RONDB_TRACE` (`ndb_global.h:283`).

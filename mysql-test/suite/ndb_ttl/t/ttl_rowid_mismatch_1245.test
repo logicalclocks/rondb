@@ -245,6 +245,56 @@ SELECT id, v FROM test.t1 WHERE id IN (5, 100) ORDER BY id;
 EOF
 --echo # mismatch diagnostic lines found in the backup node log
 
+--echo # === 8b. fresh insert hits the fork: production 899 logging ============
+--echo # The primary's page free head is now slot(id 2) -- exactly the slot
+--echo # the backup's diverged copy of id 100 occupies.  A fresh INSERT is a
+--echo # not-found case on the backup, so it takes the required-rowid path
+--echo # and raises ZROWID_ALLOCATED (899) at the true divergence point.
+--echo # The statement fails as a lock-wait timeout (899 is TR-classified;
+--echo # the statement stalls for the deadlock-detection timeout first), and
+--echo # the new rate-limited production logging (no debug build flag
+--echo # needed) must report it in BOTH the backup node log and the cluster
+--echo # log.
+--error ER_LOCK_WAIT_TIMEOUT
+INSERT INTO test.t1 VALUES (101, NOW() + INTERVAL 1 HOUR, 101);
+--let ROWID_899_NODE_TEXT = ZROWID_ALLOCATED (899): required rowid already in use tab($tab_id,0)
+--let ROWID_899_CLUSTER_TEXT = 899 rowid already in use tab($tab_id,0)
+--let CLUSTER_LOG_DIR = $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1
+--perl
+  use strict;
+  # >= 1 full-detail warning line in the backup node log
+  my $file = $ENV{'BACKUP_LOG_FILE'};
+  my $text = $ENV{'ROWID_899_NODE_TEXT'};
+  my $deadline = time() + 60;
+  while (time() < $deadline) {
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      exit 0 if index($content, $text) >= 0;
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No occurrence of '$text' in $file";
+EOF
+--echo # production 899 warnings found in the backup node log
+--perl
+  use strict;
+  # >= 1 warningEvent line in the mgmd cluster log
+  my $dir = $ENV{'CLUSTER_LOG_DIR'};
+  my $text = $ENV{'ROWID_899_CLUSTER_TEXT'};
+  my $deadline = time() + 60;
+  while (time() < $deadline) {
+    for my $file (glob("$dir/ndb_*_cluster.log")) {
+      if (open(my $fh, '<', $file)) {
+        local $/; my $content = <$fh>; close($fh);
+        exit 0 if index($content, $text) >= 0;
+      }
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No occurrence of '$text' in $dir/ndb_*_cluster.log";
+EOF
+--echo # production 899 warning found in the cluster log
+
 --echo # === 9. ERROR_INSERT 5118: escalate the next mismatch to ndbabort ======
 --exec $NDB_MGM -e "$backup_node ERROR 5118" > /dev/null
 --echo # the touch makes the backup detect the mismatch and ndbabort; the

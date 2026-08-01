@@ -526,3 +526,26 @@ Files: `mysql-test/suite/ndb_ttl/t/ttl_rowid_mismatch_1245.test`, `.cnf`
 (2 data nodes / NoOfReplicas=2 via `suite/ndb/my_2rpl.cnf` +
 StopOnError=0), recorded `r/ttl_rowid_mismatch_1245.result`; kernel EI
 4040 + `ERROR_codes.txt`.
+
+### Production 899 logging (section 8b of the test)
+
+The 899 raise sites in `Dbtup::alloc_fix_rowid` are now logged in
+production builds (`Dbtup::log_rowid_already_allocated`, replacing the
+compiled-out `DEB_899_ERROR` macro): silent until the node is started
+(REDO replay raises 899 on replayed inserts by design), rate-limited to
+2 lines per 10 s window per DBTUP instance with a carried suppressed
+count, each line written to the node log (full detail: tab/frag, rowid,
+page state) and via `warningEvent` to the cluster log (compact form,
+e.g. `Node 2: DBTUP 1: 899 rowid already in use tab(14,0) row(0,11)
+FREE supp=0`).
+
+Test section 8b exercises it live: with the placement fork seeded, a
+fresh-PK INSERT makes the primary allocate exactly the slot the backup's
+diverged row occupies -> real 899 at the backup's alloc_fix_rowid (the
+"899 at the true divergence point" arm of the fix) -> statement fails as
+ER_LOCK_WAIT_TIMEOUT after the ~30 s deadlock-detection stall, and the
+test asserts the warning line in BOTH the backup node log and the mgmd
+cluster log. Note the per-statement rhythm observed empirically: one 899
+raise per failing INSERT statement (no per-retry storm), with the raise
+and the SQL error separated by the deadlock-detection timeout — grep
+deadlines in the test are 60 s for this reason.

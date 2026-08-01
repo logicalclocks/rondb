@@ -67,6 +67,20 @@ id	v
 # One line per rejected operation, naming table/fragment, operation,
 # wire rowid and local rowid (>= 3 by now).
 # mismatch diagnostic lines found in the backup node log
+# === 8b. fresh insert hits the fork: production 899 logging ============
+# The primary's page free head is now slot(id 2) -- exactly the slot
+# the backup's diverged copy of id 100 occupies.  A fresh INSERT is a
+# not-found case on the backup, so it takes the required-rowid path
+# and raises ZROWID_ALLOCATED (899) at the true divergence point.
+# The statement fails as a lock-wait timeout (899 is TR-classified;
+# the statement stalls for the deadlock-detection timeout first), and
+# the new rate-limited production logging (no debug build flag
+# needed) must report it in BOTH the backup node log and the cluster
+# log.
+INSERT INTO test.t1 VALUES (101, NOW() + INTERVAL 1 HOUR, 101);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+# production 899 warnings found in the backup node log
+# production 899 warning found in the cluster log
 # === 9. ERROR_INSERT 5118: escalate the next mismatch to ndbabort ======
 # the touch makes the backup detect the mismatch and ndbabort; the
 # statement outcome depends on node-failure handling timing, so only
