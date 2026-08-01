@@ -99,6 +99,7 @@ CREATE TABLE `api_key` (
   `name` varchar(45) NOT NULL,
   `user_id` int(11) NOT NULL,
   `reserved` tinyint(1) DEFAULT '0',
+  `expiry` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `prefix_UNIQUE` (`prefix`),
   KEY `fk_api_key_1_idx` (`user_id`)
@@ -131,7 +132,7 @@ INSERT INTO `api_key` VALUES (
   1, 'bkYjEz6OTZyevbqt',
   '709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4',
   '1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==',
-  '2022-06-14 10:27:03', '2022-06-14 10:27:03', 'myapikey1', 10000, 0
+  '2022-06-14 10:27:03', '2022-06-14 10:27:03', 'myapikey1', 10000, 0, NULL
 );
 
 --enable_warnings
