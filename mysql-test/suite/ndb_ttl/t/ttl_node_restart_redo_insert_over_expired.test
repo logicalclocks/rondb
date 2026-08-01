@@ -66,6 +66,17 @@ SELECT id, data FROM t1 WHERE id = 7;
 # thread re-creates its ndb_schema event subscriptions; gate on it so the
 # final DROP TABLE cannot hit the transient refusal.
 --source include/ndb_not_readonly.inc
+# The second mysqld must also have schema distribution re-established before
+# the final DROP TABLE. A mysqld that has not yet re-subscribed does not
+# participate in the drop's schema distribution and keeps a stale test.t1 in
+# its data dictionary until the background metadata sync runs, which MTR's
+# post-test check-testcase reports as a leftover table.
+connect (mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1,);
+connection mysqld2;
+--source include/ndb_wait_connected.inc
+--source include/ndb_not_readonly.inc
+connection default;
+disconnect mysqld2;
 --disable_query_log
 --disable_result_log
 let $mysql_errno= 1;
