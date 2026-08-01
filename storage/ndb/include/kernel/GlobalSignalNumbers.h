@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 981;
+const GlobalSignalNumber MAX_GSN = 982;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1330,5 +1330,5 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_TC_DEADLOCK_REP             980
 
 /* Data node security: block reports a malicious/malformed signal to QMGR */
-#define GSN_MALICIOUS_SIGNAL_REPORT     981
+#define GSN_MALICIOUS_SIGNAL_REPORT     982
 #endif
