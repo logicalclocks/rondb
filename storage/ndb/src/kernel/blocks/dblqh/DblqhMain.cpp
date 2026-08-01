@@ -11623,6 +11623,56 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
   release_frag_access(fragptr.p);
 }
 
+/**
+ * Rate-limited logging of a replica rowid mismatch rejection (error 1245).
+ *
+ * Every mismatch is a real divergence detection, but it can fire at scale
+ * (a latent multi-key fork surfacing after upgrade, or application retry
+ * loops hammering a poisoned key -- 1245 surfaces as generic ER_GET_ERRMSG,
+ * which retry logic does not recognize as permanent), so printing is
+ * throttled to two lines per 10 s window per instance with the suppressed
+ * count carried in the next line. Only the PRINTING is throttled: the
+ * caller always rejects the operation, and the ERROR_INSERT 5118
+ * escalation always fires. No started-gate is needed (unlike the DBTUP
+ * 899 logging): verification only runs with activeCreat == AC_NORMAL,
+ * never during copy, REDO replay or restore.
+ *
+ * Each printed line goes to the node log with full detail and, via
+ * warningEvent, to the cluster log in compact form.
+ */
+void Dblqh::log_replica_rowid_mismatch(const TcConnectionrec *regTcPtr,
+                                       Uint32 resolved_op, Uint32 localKey1,
+                                       Uint32 localKey2) {
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (!NdbTick_IsValid(m_rowid_mismatch_window_start) ||
+      NdbTick_Elapsed(m_rowid_mismatch_window_start, now).milliSec() >=
+          10000) {
+    m_rowid_mismatch_window_start = now;
+    m_rowid_mismatch_window_count = 0;
+  }
+  if (m_rowid_mismatch_window_count >= 2) {
+    m_rowid_mismatch_suppressed++;
+    return;
+  }
+  m_rowid_mismatch_window_count++;
+  g_eventLogger->error(
+      "DBLQH %u: replica rowid mismatch tab(%u,%u) operation: %u"
+      " wire row(%u,%u) local row(%u,%u) transid(0x%.8x,0x%.8x)"
+      " seqNoReplica: %u (%u occurrences suppressed) -- replica layouts"
+      " have diverged, rejecting operation with error %u",
+      instance(), regTcPtr->tableref, regTcPtr->fragmentid, resolved_op,
+      regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx, localKey1,
+      localKey2, regTcPtr->transid[0], regTcPtr->transid[1],
+      regTcPtr->seqNoReplica, m_rowid_mismatch_suppressed,
+      (Uint32)ZREPLICA_ROWID_MISMATCH);
+  warningEvent("DBLQH %u: 1245 replica rowid mismatch tab(%u,%u)"
+               " wire(%u,%u) local(%u,%u) supp=%u",
+               instance(), regTcPtr->tableref, regTcPtr->fragmentid,
+               regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx,
+               localKey1, localKey2, m_rowid_mismatch_suppressed);
+  m_rowid_mismatch_suppressed = 0;
+}
+
 void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
                                Uint32 localKey2,
                                const TcConnectionrecPtr tcConnectptr) {
@@ -11752,18 +11802,8 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
       if (unlikely(regTcPtr->m_row_id.m_page_no != localKey1 ||
                    regTcPtr->m_row_id.m_page_idx != localKey2)) {
         jam();
-        g_eventLogger->error(
-            "DBLQH %u: replica rowid mismatch tab(%u,%u) operation: %u"
-            " wire row(%u,%u) local row(%u,%u) transid(0x%.8x,0x%.8x)"
-            " seqNoReplica: %u -- replica layouts have diverged, rejecting"
-            " operation with error %u",
-            instance(), regTcPtr->tableref, regTcPtr->fragmentid,
-            resolved_op,
-            regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx,
-            localKey1, localKey2,
-            regTcPtr->transid[0], regTcPtr->transid[1],
-            regTcPtr->seqNoReplica,
-            (Uint32)ZREPLICA_ROWID_MISMATCH);
+        log_replica_rowid_mismatch(regTcPtr, resolved_op, localKey1,
+                                   localKey2);
 #ifdef ERROR_INSERT
         if (ERROR_INSERTED(5118)) {
           /* Autotest escalation: die at the divergence point. */

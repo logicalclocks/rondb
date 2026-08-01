@@ -221,9 +221,11 @@ UPDATE test.t1 SET v = 55 WHERE id = 5;
 SELECT id, v FROM test.t1 WHERE id IN (5, 100) ORDER BY id;
 
 --echo # === 8. the backup logged the 1245 diagnostic line =====================
---echo # One line per rejected operation, naming table/fragment, operation,
---echo # wire rowid and local rowid (>= 3 by now).
---let MISMATCH_MIN = 3
+--echo # Naming table/fragment, operation, wire rowid and local rowid.  The
+--echo # printing is rate-limited to 2 lines per 10 s window (the REF itself
+--echo # is never throttled): of the 3 rejections above, the first two log
+--echo # and the third is suppressed (its count is carried in a later line).
+--let MISMATCH_MIN = 2
 --perl
   use strict;
   my $file = $ENV{'BACKUP_LOG_FILE'};
@@ -244,6 +246,26 @@ SELECT id, v FROM test.t1 WHERE id IN (5, 100) ORDER BY id;
   die "Only $cnt occurrences of '$text' in $file (wanted >= $want)";
 EOF
 --echo # mismatch diagnostic lines found in the backup node log
+--echo # ... and the compact 1245 warning reached the mgmd cluster log
+--let MISMATCH_CLUSTER_TEXT = 1245 replica rowid mismatch tab($tab_id,0)
+--let CLUSTER_LOG_DIR = $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1
+--perl
+  use strict;
+  my $dir = $ENV{'CLUSTER_LOG_DIR'};
+  my $text = $ENV{'MISMATCH_CLUSTER_TEXT'};
+  my $deadline = time() + 30;
+  while (time() < $deadline) {
+    for my $file (glob("$dir/ndb_*_cluster.log")) {
+      if (open(my $fh, '<', $file)) {
+        local $/; my $content = <$fh>; close($fh);
+        exit 0 if index($content, $text) >= 0;
+      }
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No occurrence of '$text' in $dir/ndb_*_cluster.log";
+EOF
+--echo # 1245 warning found in the cluster log
 
 --echo # === 8b. fresh insert hits the fork: production 899 logging ============
 --echo # The primary's page free head is now slot(id 2) -- exactly the slot

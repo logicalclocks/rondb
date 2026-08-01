@@ -549,3 +549,18 @@ cluster log. Note the per-statement rhythm observed empirically: one 899
 raise per failing INSERT statement (no per-retry storm), with the raise
 and the SQL error separated by the deadlock-detection timeout — grep
 deadlines in the test are 60 s for this reason.
+
+### Rate-limited 1245 logging (same treatment as 899)
+
+The 1245 mismatch logging in DBLQH (`log_replica_rowid_mismatch`) is
+rate-limited exactly like the DBTUP 899 logging: 2 lines per 10 s window
+per instance, suppressed count carried in the next printed line, and
+each printed line mirrored to the cluster log via `warningEvent`
+(compact form: `DBLQH 1: 1245 replica rowid mismatch tab(14,0)
+wire(0,22) local(0,11) supp=0`). Differences from the 899 treatment:
+severity stays `error` (permanent vs transient), and there is no
+started-gate (verification never runs during copy/replay/restore). The
+REF itself and the EI 5118 ndbabort escalation are never throttled.
+Test impact: of the three rejections in section 7, the first two log
+and the third is suppressed (section 8 asserts >= 2 node-log lines and
+the cluster-log line).

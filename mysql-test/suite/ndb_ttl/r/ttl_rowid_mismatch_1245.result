@@ -64,9 +64,13 @@ id	v
 5	55
 100	100
 # === 8. the backup logged the 1245 diagnostic line =====================
-# One line per rejected operation, naming table/fragment, operation,
-# wire rowid and local rowid (>= 3 by now).
+# Naming table/fragment, operation, wire rowid and local rowid.  The
+# printing is rate-limited to 2 lines per 10 s window (the REF itself
+# is never throttled): of the 3 rejections above, the first two log
+# and the third is suppressed (its count is carried in a later line).
 # mismatch diagnostic lines found in the backup node log
+# ... and the compact 1245 warning reached the mgmd cluster log
+# 1245 warning found in the cluster log
 # === 8b. fresh insert hits the fork: production 899 logging ============
 # The primary's page free head is now slot(id 2) -- exactly the slot
 # the backup's diverged copy of id 100 occupies.  A fresh INSERT is a

@@ -140,9 +140,13 @@ operation ∈ {ZUPDATE, ZDELETE, ZINSERT_TTL}`.
   `acckeyconf_tupkeyreq` — for disk tables the :11781 overwrite also happens
   later, which is why the check must sit here and not inside
   `acckeyconf_tupkeyreq`).
-- Mismatch ⇒ `g_eventLogger->error` (instance, table, fragment, op, wire
-  rowid, local rowid, transid, seqNoReplica), optional `ndbabort` under
-  ERROR_INSERT 5118, then REF with error 1245 via the synthesized-TUPKEYREF
+- Mismatch ⇒ `log_replica_rowid_mismatch` (rate-limited to 2 lines per
+  10 s window per instance with a carried suppressed count; each printed
+  line = `g_eventLogger->error` with full detail (instance, table,
+  fragment, op, wire rowid, local rowid, transid, seqNoReplica) plus a
+  compact `warningEvent` to the cluster log; only the printing is
+  throttled), optional `ndbabort` under ERROR_INSERT 5118 (never
+  throttled), then REF with error 1245 via the synthesized-TUPKEYREF
   unwind (assumption 2).
 - Not-found insert-family ops need no code: `m_use_rowid` came in as 1 and the
   pre-existing backup insert path executes `alloc_fix_rowid` at the wire rowid

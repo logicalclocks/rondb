@@ -32,6 +32,7 @@
 #include "ArrayPool.hpp"
 #include <DL64HashTable.hpp>
 #include <NdbCondition.h>
+#include <NdbTick.h>
 #include <ndb_limits.h>
 #include <DLHashTable.hpp>
 #include <IntrusiveList.hpp>
@@ -4489,6 +4490,22 @@ public:
   Uint32 c_o_direct_sync_flag;
   Uint32 m_use_om_init;
   Uint32 c_error_insert_table_id;
+
+  /**
+   * Rate-limited logging of replica rowid mismatch rejections (error 1245,
+   * ZREPLICA_ROWID_MISMATCH), to both the node log and the cluster log
+   * (warningEvent). At most two lines per 10 s window per instance with a
+   * suppressed-occurrence count; the REF itself and the ERROR_INSERT 5118
+   * escalation are never throttled. Unlike the DBTUP 899 logging there is
+   * no started-gate: verification only runs in normal operation
+   * (activeCreat == AC_NORMAL), never during copy/replay/restore.
+   */
+  NDB_TICKS m_rowid_mismatch_window_start;
+  Uint32 m_rowid_mismatch_window_count;
+  Uint32 m_rowid_mismatch_suppressed;
+  void log_replica_rowid_mismatch(const TcConnectionrec *regTcPtr,
+                                  Uint32 resolved_op, Uint32 localKey1,
+                                  Uint32 localKey2);
 
   void evict(LogPartRecord::RedoPageCache &, Uint32 cnt,
              LogPartRecord *logPartPtrP);
