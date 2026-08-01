@@ -1,0 +1,123 @@
+SET time_zone = '+00:00';
+# === 1. single-fragment TTL table, 10 rows in insertion order ==========
+# One fragment => one primary + one backup replica; rows inserted one
+# at a time land at page-0 slots in insertion order on BOTH replicas
+# (normal inserts always forward the primary's chosen rowid).
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY(id) PARTITIONS 1;
+SELECT COUNT(*) AS loaded_rows FROM test.t1;
+loaded_rows
+10
+# === 2. discover fragment roles (node ids kept out of the result) ======
+# === 3. free two ADJACENT slots on both replicas =======================
+# Delete the 2nd then the 3rd inserted row: free_record PREPENDS, so
+# both replicas' page free lists become head = slot(id 3) -> slot(id 2).
+DELETE FROM test.t1 WHERE id = 2;
+DELETE FROM test.t1 WHERE id = 3;
+# === 4. arm the placement-fork seed on the BACKUP only =================
+# === 5. the fork insert -- MUST SUCCEED ================================
+# The primary allocates its free head slot(id 3) and forwards
+# insert-at-slot(id 3); the armed backup redirects to the adjacent
+# free slot(id 2) and self-clears.  Silent success IS the defect
+# shape: row 100 now lives at different rowids on the two replicas.
+INSERT INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 100);
+# seed marker found in the backup node log: the fork exists
+# the committed row is intact and readable (content is identical on
+# both replicas -- this is a PLACEMENT fork, not a content fork)
+SELECT id, v FROM test.t1 WHERE id = 100;
+id	v
+100	100
+# === 6. the count screen is BLIND to a placement fork ==================
+# Both replicas hold the same 9 physical rows (10 - 2 deleted + 1
+# inserted), only at different slots for id 100, so the per-fragment
+# fixed_elem_count equality assert PASSES over a live fork.  Presence
+# forks are caught by this screen; placement forks are caught ONLY by
+# the per-hop rowid verification exercised below.
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+# === 7. THE POINT: touching the diverged key fires permanent 1245 ======
+# UPDATE: the primary attaches its rowid slot(id 3) as verification
+# rowid; the backup finds id 100 at slot(id 2) -> mismatch -> REF with
+# permanent error 1245, statement fails (ER_GET_ERRMSG 1296).
+UPDATE test.t1 SET v = 1001 WHERE id = 100;
+ERROR HY000: Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+# the true cause is in the error/warning text: NDB error 1245
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 1245 'Replica rowid mismatch detected' from NDB
+Error	1296	Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+# DELETE of the diverged key: same permanent 1245
+DELETE FROM test.t1 WHERE id = 100;
+ERROR HY000: Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+# the failure is deterministic and repeatable (permanent error, clean
+# abort each time -- no state decays, nothing is masked)
+UPDATE test.t1 SET v = 1002 WHERE id = 100;
+ERROR HY000: Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+# ONLY the diverged key is poisoned: another row updates fine
+UPDATE test.t1 SET v = 55 WHERE id = 5;
+# every aborted statement rolled back cleanly: contents unchanged
+SELECT id, v FROM test.t1 WHERE id IN (5, 100) ORDER BY id;
+id	v
+5	55
+100	100
+# === 8. the backup logged the 1245 diagnostic line =====================
+# One line per rejected operation, naming table/fragment, operation,
+# wire rowid and local rowid (>= 3 by now).
+# mismatch diagnostic lines found in the backup node log
+# === 9. ERROR_INSERT 5118: escalate the next mismatch to ndbabort ======
+# the touch makes the backup detect the mismatch and ndbabort; the
+# statement outcome depends on node-failure handling timing, so only
+# the crash itself is asserted (via the node's error log below)
+# backup data node ndbaborted at the mismatch-detection point
+# === 10. angel auto-restart after the deliberate crash =================
+# StopOnError=0 restarts the crashed node (a normal, non-initial node
+# restart) and the cluster becomes whole again on its own.  The fork
+# state after such an automatic restart is deliberately NOT asserted:
+# it depends on how much of the fragment the node's local LCP+REDO
+# recovery covers versus the NR copy phase.  On this young cluster no
+# LCP covers the table yet, so the copy re-delivers every row at the
+# primary's exact rowids and happens to heal the fork; on a cluster
+# whose LCP+durable-REDO history contains the diverged insert, the
+# restart REPLAYS the divergent history and the fork survives
+# (fix_design.md section 3: a REDO-based NR can preserve the fork,
+# which is why the documented repair below is an INITIAL restart).
+# backup rejoined after the crash
+# === 11. the documented repair: INITIAL restart of the diverged backup =
+# backup rebuilt from the live node (every row re-delivered at the
+# primary's exact rowids), cluster whole, error inserts disarmed
+# === 12. the fork is healed ============================================
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+# the previously poisoned key now updates fine
+UPDATE test.t1 SET v = 2000 WHERE id = 100;
+SELECT id, v FROM test.t1 WHERE id = 100;
+id	v
+100	2000
+# === 13. final sweep: recycling the healed slots stays clean ===========
+# Delete the healed row and refill its slot (plus a plain
+# delete/insert cycle): every insert is forwarded with a required
+# rowid, so any residual divergence would fail here with the 899
+# signature.  All statements must succeed.
+DELETE FROM test.t1 WHERE id = 100;
+INSERT INTO test.t1 VALUES (200, NOW() + INTERVAL 1 HOUR, 200);
+INSERT INTO test.t1 VALUES (201, NOW() + INTERVAL 1 HOUR, 201);
+INSERT INTO test.t1 VALUES (202, NOW() + INTERVAL 1 HOUR, 202);
+DELETE FROM test.t1 WHERE id = 7;
+INSERT INTO test.t1 VALUES (203, NOW() + INTERVAL 1 HOUR, 203);
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+SELECT id, v FROM test.t1 ORDER BY id;
+id	v
+1	1
+4	4
+5	55
+6	6
+8	8
+9	9
+10	10
+200	200
+201	201
+202	202
+203	203
+DROP TABLE test.t1;

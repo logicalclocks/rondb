@@ -26,7 +26,7 @@ Next QMGR 962
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
-Next DBTUP 4040
+Next DBTUP 4041
 Next DBLQH 5119
 Next DBDICT 6228
 Next DBDIH 7251
@@ -852,6 +852,13 @@ Dbtup:
 4026: Fail one insert with oom
 4027: Fail inserts randomly with oom
 4028: Fail one random insert with oom
+
+4040: Test-only replica placement-fork seed (one-shot, TTL tables only):
+      redirect the required rowid of the next rowid-specified insert to the
+      adjacent fixed-size slot before allocation, so a backup replica
+      materializes the row at a rowid the primary did not dictate.  Arm on a
+      backup node with a free adjacent slot to positively fire the replica
+      rowid mismatch verification (error 1245, escalation ERROR_INSERT 5118).
 
 NDBCNTR:
 

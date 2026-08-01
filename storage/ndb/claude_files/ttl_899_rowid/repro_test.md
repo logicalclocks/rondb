@@ -404,3 +404,125 @@ run.
   ("TEST BROKEN: copy ... completed before the racing operations"), the
   EI pacing regressed (or the row volume shrank) — fix the window, do not
   widen the assertion.
+
+---
+
+## 9. Seeded-mismatch positive test for error 1245 (`ttl_rowid_mismatch_1245`)
+
+Added 2026-08-01 on branch RONDB-1097 (version 25.10.16, replica rowid
+forwarding + verification ACTIVE as-built).  `validation_report.md` proved
+zero FALSE positives for the new permanent error 1245 but could not
+positively fire it: that requires a fabricated replica fork, which cannot
+occur naturally on the fixed tree.  Per user approval, this test SEEDS such
+a fork under ERROR_INSERT control — deliberately distinct from the
+natural-interleaving tests above (`ttl_nr_copy_window` et al.), which per
+the earlier user direction use EIs for timing only.
+
+### ERROR_INSERT 4040 (DBTUP, one-shot, TTL tables only)
+
+`storage/ndb/src/kernel/blocks/dbtup/DbtupExecQuery.cpp`, `handleInsertReq`
+required-rowid path (immediately after the EI 4019 site, BEFORE
+`alloc_fix_rowid`): when armed and `is_ttl_table(regTabPtr)`, the required
+rowid of the next rowid-specified insert is redirected to the ADJACENT
+fixed-size slot, then the EI self-clears (one-shot) and the insert proceeds
+through the completely normal required-rowid path — the fragment page mutex
+acquired inside `alloc_fix_rowid` covers the redirected slot, and
+`accminupdate` + REDO record the REDIRECTED rowid (Dblqh.hpp `accminupdate`
+tail: `m_row_id = *key`), so the diverged replica is fully self-consistent:
+exactly the pre-fix backup self-allocation defect shape.  Registered in
+`ERROR_codes.txt` (Next DBTUP now 4041; the DBLQH entries 5113/5118/Next
+5119 untouched).
+
+Empirical adaptation vs the original sketch: `Local_key::m_page_idx` is a
+WORD OFFSET, not a slot ordinal — a fresh fix page links its free slots at
+offsets 0, h, 2h, ... where h = `m_offsets[MM].m_fix_header_size`
+(`convertThPage`, DbtupFixAlloc.cpp), so "adjacent slot" means +-h words
+(h = 11 for the test's `(INT, DATETIME, INT)` row), and the EI computes the
+stride from the table metadata.  The invariant the choreography needs is
+unchanged: the redirected slot must be FREE on the armed replica while
+differing from the wire rowid.
+
+### Choreography rationale (two deletes -> adjacent free slot)
+
+1. 10 rows inserted one at a time land at page-0 slots in insertion order
+   on BOTH replicas (ascending initial free list; normal inserts always
+   forward the primary's rowid).  Observed: ids 1..10 at offsets 0,11,...,99.
+2. DELETE the 2nd inserted PK, then the 3rd: `Tup_fixsize_page::free_record`
+   PREPENDS (tuppage.cpp — re-verified unchanged), so both replicas' free
+   lists become head = slot(id 3)=22 -> slot(id 2)=11.  TWO deletes are
+   needed precisely so the backup's redirect target (wire − h) is FREE.
+3. INSERT a fresh PK (100): the primary allocates its free head (0,22) and
+   forwards insert-at-(0,22); the armed backup redirects to (0,11) and
+   self-clears.  The insert SUCCEEDS — silent success is the defect shape —
+   and the placement fork exists: id 100 at (0,22) on the primary, (0,11)
+   on the backup.  Observed backup markers:
+   `DBTUP 1: ERROR_INSERT 4040 redirecting required rowid tab(14,0)
+   row(0,22) -> row(0,11) to seed a replica placement fork`, then per
+   rejected touch `DBLQH 1: replica rowid mismatch tab(14,0) operation: N
+   wire row(0,22) local row(0,11) ... rejecting operation with error 1245`.
+
+### What the test proves
+
+- **Count-screen blindness**: with the fork live, both replicas hold the
+  same 9 physical rows, so `ndb_assert_frag_replica_consistency.inc`
+  PASSES over the fork — `fixed_elem_count` equality catches presence
+  forks only; placement forks are visible ONLY to the per-hop rowid
+  verification (this was the open question from the PR discussion).
+- **1245 fires, permanently and per-key**: UPDATE then DELETE then UPDATE
+  of the diverged key each fail; every abort is clean (row content intact
+  after each attempt), the failure repeats deterministically, and a
+  different key updates fine — only the diverged key is poisoned.
+- **EI 5118 escalation works**: armed on the backup, the next touch makes
+  the backup log the mismatch line and `ndbabort` at the detection point
+  (crash evidence: `DblqhMain` in the node's `ndb_<id>_error.log`); with
+  `StopOnError=0` the angel restarts the node and the cluster recovers
+  unattended.
+- **Initial NR heals**: after `RESTART -n -i` of the diverged backup the
+  consistency include passes, the poisoned key updates fine, and a
+  delete/refill sweep over the healed slots stays clean (any residual
+  divergence would resurface as the 899 signature).
+
+### Observed SQL surfacing of NDB error 1245 (permanent, DMEC/IE)
+
+- Statement error: **ER_GET_ERRMSG (1296)**
+  `ERROR HY000: Got error 1245 'Replica rowid mismatch detected' from
+  NDBCLUSTER` (DMEC + code >= HA_ERR_FIRST makes the handler return the
+  NDB code itself; the generic `handler::print_error` path renders it via
+  `get_error_message`).
+- `SHOW WARNINGS`: `Warning 1296 Got error 1245 'Replica rowid mismatch
+  detected' from NDB` followed by `Error 1296 ... from NDBCLUSTER`.
+- Contrast with 899 (temporary): statement 1205 ER_LOCK_WAIT_TIMEOUT +
+  Warning 1297 (`ttl_rowid_899_control`).  The permanent/temporary split —
+  the whole point of not reusing 899 for the verification — is directly
+  visible in SQL.
+
+### Empirical findings while stabilizing
+
+- The post-crash ANGEL auto-restart healed the fork on the young mtr
+  cluster: the node's recovery executed REDO only up to the last durable
+  GCP (`Log part 0 will execute REDO log records from GCI 2 -> 7`) and no
+  LCP covered the table (`Restored T14F0 LCP 0 rows`), so the NR copy
+  phase re-delivered EVERY row at the primary's rowids — for this fragment
+  the automatic restart degenerated to the healing shape.  On a mature
+  cluster whose LCP + durable REDO contain the diverged insert, the same
+  restart REPLAYS the divergent history and PRESERVES the fork
+  (fix_design.md §3) — the backup's REDO logs the redirected rowid because
+  `accminupdate` stores the TUP-actual location.  The fork state after an
+  automatic restart is therefore BIMODAL on LCP timing, and the test
+  deliberately asserts nothing about it between the crash and the
+  initial-restart repair (first recording attempt asserted fork survival
+  there and failed exactly as this analysis predicts).
+- Determinism: recorded run green, then 3 consecutive verification runs
+  green (~68 s in-test each), fresh cluster per run; plus 3 more green
+  after a final cosmetic rebuild of the EI marker line.  The result file
+  contains no node ids or timestamps (role discovery via
+  `ndbinfo.table_fragments.current_primary` stays out of the result; log
+  markers are asserted in `--perl` blocks).
+- `StopOnError=0` in the test's `.cnf` is what makes the deliberate
+  EI-5118 crash mtr-friendly (angel auto-restart + `$NDB_WAITER`, idiom
+  from `suite/ndb/t/ndb_stop_on_error`).
+
+Files: `mysql-test/suite/ndb_ttl/t/ttl_rowid_mismatch_1245.test`, `.cnf`
+(2 data nodes / NoOfReplicas=2 via `suite/ndb/my_2rpl.cnf` +
+StopOnError=0), recorded `r/ttl_rowid_mismatch_1245.result`; kernel EI
+4040 + `ERROR_codes.txt`.
