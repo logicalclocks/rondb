@@ -8,6 +8,7 @@ call mtr.add_suppression("Participant timeout");
 SET time_zone = "+00:00";
 
 --disable_query_log
+--disable_warnings
 CREATE TABLE orderby_test (
   pk               INT              NOT NULL AUTO_INCREMENT,
   c_tinyint        TINYINT          NULL,
@@ -266,6 +267,7 @@ INSERT INTO orderby_test
    NULL, NULL, NULL,
    NULL, NULL, NULL, NULL, 40);
 
+--enable_warnings
 --enable_query_log
 
 --echo Row count:
@@ -634,4 +636,6 @@ LIMIT 4;|
 --echo
 --echo Cleanup
 DELIMITER ;|
+--disable_warnings
 DROP TABLE orderby_test;
+--enable_warnings

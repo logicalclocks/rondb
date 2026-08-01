@@ -8954,8 +8954,6 @@ DECIMAL(65,30): JSON format aggregated
 
 ==================== Start testing data type: DECIMAL(30,10) UNSIGNED ====================
 DECIMAL(30,10) UNSIGNED: Create table and load data
-Warnings:
-Warning	1681	UNSIGNED for decimal and floating point data types is deprecated and support for it will be removed in a future release.
 DECIMAL(30,10) UNSIGNED: SELECT with GROUP BY
 == Query ==
 SELECT val, COUNT(*) as cnt
@@ -9451,8 +9449,6 @@ DECIMAL(30,10) UNSIGNED: JSON format aggregated
 
 ==================== Start testing data type: DECIMAL(10,0) UNSIGNED ====================
 DECIMAL(10,0) UNSIGNED: Create table and load data
-Warnings:
-Warning	1681	UNSIGNED for decimal and floating point data types is deprecated and support for it will be removed in a future release.
 DECIMAL(10,0) UNSIGNED: SELECT with GROUP BY
 == Query ==
 SELECT val, COUNT(*) as cnt

@@ -14,6 +14,7 @@ SET time_zone = "+00:00";
 # =============================================================================
 
 --disable_query_log
+--disable_warnings
 CREATE TABLE boundary_orderby (
   pk           INT              NOT NULL AUTO_INCREMENT,
   c_int        INT              NULL,
@@ -96,6 +97,7 @@ INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VA
   (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         30),
   (NULL,        NULL,                 NULL,                 NULL,         30);
 
+--enable_warnings
 --enable_query_log
 
 --echo Row count boundary_orderby:
@@ -173,7 +175,9 @@ ORDER BY c_int ASC, c_decimal DESC;|
 DELIMITER ;|
 
 --echo Cleanup boundary_orderby
+--disable_warnings
 DROP TABLE boundary_orderby;
+--enable_warnings
 
 
 # =============================================================================
@@ -182,6 +186,7 @@ DROP TABLE boundary_orderby;
 # =============================================================================
 
 --disable_query_log
+--disable_warnings
 CREATE TABLE many_groups (
   pk        INT          NOT NULL AUTO_INCREMENT,
   grp       INT          NOT NULL,
@@ -223,10 +228,13 @@ perl;
   }
   close($fh);
 EOF
+--enable_warnings
 --enable_query_log
 --echo Loading 200 rows into many_groups:
 --disable_query_log
+--disable_warnings
 eval LOAD DATA INFILE '$TEST_DATA_TSV' INTO TABLE many_groups (grp, c_varchar, c_date, val);
+--enable_warnings
 --enable_query_log
 --remove_file $TEST_DATA_TSV
 
@@ -356,7 +364,9 @@ ORDER BY grp ASC, c_varchar ASC;|
 DELIMITER ;|
 
 --echo Cleanup many_groups
+--disable_warnings
 DROP TABLE many_groups;
+--enable_warnings
 
 
 # =============================================================================
@@ -366,6 +376,7 @@ DROP TABLE many_groups;
 # =============================================================================
 
 --disable_query_log
+--disable_warnings
 CREATE TABLE string_edge (
   pk        INT          NOT NULL AUTO_INCREMENT,
   c_varchar VARCHAR(300) CHARACTER SET utf8mb4 NULL,
@@ -419,6 +430,7 @@ INSERT INTO string_edge (c_varchar, c_int, val) VALUES
 INSERT INTO string_edge (c_varchar, c_int, val) VALUES
   (NULL, 9, 5), (NULL, 9, 10), (NULL, 9, 15), (NULL, 9, 20), (NULL, 9, 25), (NULL, 9, 30);
 
+--enable_warnings
 --enable_query_log
 
 --echo Row count string_edge:
@@ -469,7 +481,9 @@ LIMIT 5;|
 DELIMITER ;|
 
 --echo Cleanup string_edge
+--disable_warnings
 DROP TABLE string_edge;
+--enable_warnings
 
 
 # =============================================================================
@@ -479,6 +493,7 @@ DROP TABLE string_edge;
 # =============================================================================
 
 --disable_query_log
+--disable_warnings
 CREATE TABLE tie_breaker (
   pk    INT NOT NULL AUTO_INCREMENT,
   c_a   INT NULL,
@@ -525,6 +540,7 @@ INSERT INTO tie_breaker (c_a, c_b, c_c, val) VALUES
   (3, 10, 100, 40), (3, 20, 200, 40),
   (NULL, 10, 100, 40), (NULL, NULL, NULL, 40);
 
+--enable_warnings
 --enable_query_log
 
 --echo Row count tie_breaker:
@@ -613,4 +629,6 @@ ORDER BY c_a ASC, c_b ASC, c_c ASC;|
 DELIMITER ;|
 
 --echo Cleanup tie_breaker
+--disable_warnings
 DROP TABLE tie_breaker;
+--enable_warnings
