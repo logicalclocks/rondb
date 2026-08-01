@@ -11923,8 +11923,8 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
    * of the expired row, and this flag would give a replica's local execution
    * required-rowid INSERT semantics it must not have. Its verification rowid
    * (and that of a TTL ZWRITE the primary resolved to an update) is attached
-   * on the primary in packLqhkeyreqLab instead, gated on the receiver's
-   * version (replica rowid forwarding, TTL error 899 hardening).
+   * on the primary in packLqhkeyreqLab instead, gated per hop on the next
+   * replica's version (replica rowid forwarding, TTL error 899 hardening).
    */
   regTcPtr->m_use_rowid |= (op == ZINSERT || op == ZREFRESH);
   /* ---------------------------------------------------------------------
@@ -12705,11 +12705,26 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * variableData words have existed since NDBD_ROWID_VERSION -- so this is
    * gated only on the RECEIVING data node understanding the new semantics
    * (rolling upgrade: older receivers keep getting today's rowid-less
-   * shapes, per-hop, same pattern as ndbd_support_copy_frag_done). Only the
-   * PRIMARY attaches (seqNoReplica == 0): a non-primary hop forwards the
-   * wire rowid it verified, never a locally-derived value (its m_use_rowid
-   * arrived set from the wire flag, and verification pinned m_row_id equal
-   * to the wire value).
+   * shapes, same pattern as ndbd_support_copy_frag_done). The gate is
+   * evaluated PER HOP, by every sender for ITS OWN next replica
+   * (replica_rowid_forwarding_supported): the primary ATTACHES only toward
+   * a supporting first backup, and a middle replica (NoOfReplicas >= 3)
+   * STRIPS the flag it received off the forwarded signal when its own next
+   * replica is unsupporting -- a new->new->old chain degrades to the legacy
+   * rowid-less shape exactly at the old tail hop instead of leaking the new
+   * shape to a receiver that was never validated with it. Only the PRIMARY
+   * ever attaches: a non-primary hop forwards the wire rowid it verified,
+   * never a locally-derived value (its m_use_rowid arrived set from the
+   * wire flag, and verification pinned m_row_id equal to the wire value),
+   * and a middle replica that received the legacy rowid-less shape from an
+   * old primary (new->old->new) must NOT self-attach -- its local rowid is
+   * not authoritative, and attaching it could abort healthy transactions
+   * with a false 1245 if the middle itself is the diverged replica. The
+   * legacy rowid-carrying shapes -- plain ZINSERT/ZREFRESH, the ZWRITE the
+   * primary resolved to an insert, and EVERYTHING while the fragment is
+   * under NR copy (AC_NR_COPY / NrCopyFlag) -- have carried their rowid to
+   * receivers of every version since NDBD_ROWID_VERSION and are never
+   * stripped (stripping copy-phase rowids would break handle_nr_copy).
    *
    * The REDO log is unaffected: the prepare-record header has always
    * contained m_row_id for every operation class (writeLogHeader) and never
@@ -12733,15 +12748,19 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * wire operation codes are all unchanged -- this stage only adds the two
    * rowid words and the receiver-side comparison.
    */
-  if (!regTcPtr->m_use_rowid &&
-      regTcPtr->seqNoReplica == 0 &&
-      (regTcPtr->operation == ZINSERT_TTL ||
+  if ((regTcPtr->operation == ZINSERT_TTL ||
        regTcPtr->operation == ZUPDATE ||
        regTcPtr->operation == ZDELETE) &&
-      ndbd_replica_rowid_forwarding(
-          getNodeInfo(regTcPtr->nextReplica).m_version)) {
-    jamDebug();
-    regTcPtr->m_use_rowid = 1;
+      LqhKeyReq::getNrCopyFlag(regTcPtr->reqinfo) == 0 &&
+      fragptr.p->m_copy_started_state != Fragrecord::AC_NR_COPY) {
+    if (!replica_rowid_forwarding_supported(regTcPtr->nextReplica)) {
+      /* This hop's receiver predates the feature: legacy rowid-less shape. */
+      jamDebug();
+      regTcPtr->m_use_rowid = 0;
+    } else if (regTcPtr->seqNoReplica == 0) {
+      jamDebug();
+      regTcPtr->m_use_rowid = 1;
+    }
   }
   LqhKeyReq::setRowidFlag(Treqinfo, regTcPtr->m_use_rowid);
 

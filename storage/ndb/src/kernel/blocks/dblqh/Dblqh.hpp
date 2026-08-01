@@ -34,6 +34,7 @@
 #include <NdbCondition.h>
 #include <NdbTick.h>
 #include <ndb_limits.h>
+#include <ndb_version.h>
 #include <DLHashTable.hpp>
 #include <IntrusiveList.hpp>
 #include <SectionReader.hpp>
@@ -4506,6 +4507,33 @@ public:
   void log_replica_rowid_mismatch(const TcConnectionrec *regTcPtr,
                                   Uint32 resolved_op, Uint32 localKey1,
                                   Uint32 localKey2);
+
+  /**
+   * Per-hop capability check for replica rowid forwarding: does the data
+   * node we are about to forward an LQHKEYREQ to understand the
+   * rowid-carrying ZINSERT_TTL/ZUPDATE/ZDELETE/ZWRITE shapes
+   * (ndbd_replica_rowid_forwarding)? Evaluated by EVERY forwarding hop in
+   * packLqhkeyreqLab -- the primary before attaching and every middle
+   * replica before passing the flag on -- so mixed-version chains degrade
+   * to the legacy rowid-less shapes exactly at the first unsupporting hop
+   * (new->new->old: the middle strips; new->old->new: the primary strips
+   * and the middle, having received no rowid, never self-attaches).
+   * Inline: sits on the per-forwarded-operation hot path.
+   *
+   * ERROR_INSERT 5119 makes this node treat EVERY peer as unsupporting,
+   * emulating an old-version next replica for mixed-version autotests on
+   * a homogeneous cluster (arm on the middle's node to emulate an old
+   * tail, on the primary's node to emulate an old middle). Send-side
+   * only; receiver verification is unaffected.
+   */
+  bool replica_rowid_forwarding_supported(Uint32 nodeId) const {
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(5119)) {
+      return false;
+    }
+#endif
+    return ndbd_replica_rowid_forwarding(getNodeInfo(nodeId).m_version);
+  }
 
   void evict(LogPartRecord::RedoPageCache &, Uint32 cnt,
              LogPartRecord *logPartPtrP);

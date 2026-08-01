@@ -290,8 +290,10 @@ ignores everything before the first copy row (AC_IGNORED, :9485-9508 /
 
 ## 6. Version gating (mixed-version behavior)
 
-Gate: `ndbd_replica_rowid_forwarding(getNodeInfo(nextReplica).m_version)`,
-evaluated per hop at the attach site (precedent:
+Gate: `Dblqh::replica_rowid_forwarding_supported(nextReplica)` (wrapping
+`ndbd_replica_rowid_forwarding(getNodeInfo(nextReplica).m_version)` plus the
+ERROR_INSERT 5119 emulation), evaluated in packLqhkeyreqLab by EVERY
+forwarding hop for ITS OWN next replica (precedent:
 `ndbd_support_copy_frag_done` per-hop check at :22115-22116). Per-series
 floors: 25.10.16 (`NDBD_REPLICA_ROWID_FORWARDING_2510`) and 26.02.9
 (`NDBD_REPLICA_ROWID_FORWARDING_2602`, the forward-port target); every
@@ -299,23 +301,71 @@ series after 26.02 (26.04, 26.05, ...) returns true from its first release.
 A 25.10.16 sender therefore keeps legacy rowid-less shapes toward 26.02.x
 peers below 26.02.9 during a cross-series upgrade.
 
+The gate has two arms, both restricted to the new shapes
+(operation ∈ {ZINSERT_TTL, ZUPDATE, ZDELETE}) and both skipped in NR-copy
+contexts (sender fragment in AC_NR_COPY, or NrCopyFlag ops), where
+rowid-carrying everything is legacy behavior required by handle_nr_copy:
+
+- **ATTACH** (primary only, seqNoReplica == 0): set m_use_rowid when the
+  next replica supports the feature.
+- **STRIP** (any hop): clear m_use_rowid when the next replica does NOT
+  support it, so a middle replica that received and verified the wire rowid
+  does not pass the flag to an unsupporting tail.
+
+History note: the first version of this fix evaluated the version check
+only inside the primary-only attach arm, while the middle replica forwarded
+a received RowidFlag unconditionally. On a new→new→old chain the old tail
+therefore still received the new rowid-carrying ZUPDATE/ZDELETE/ZWRITE
+shapes it was never validated with (reported against RONDB-1097; fixed by
+the per-hop STRIP arm above, regression-tested by
+ndb_ttl.ttl_replica3_mixed_version).
+
 - **New primary → old backup**: predicate false ⇒ exactly today's shapes
   (rowid-less D1/D2a/U/D). The old backup's behavior is bit-identical to
   today. No protection on that hop until it upgrades. Shapes that always
   carried rowids (plain insert, refresh, D2b, NR copy) are unchanged in both
-  directions.
+  directions and are never stripped.
 - **Old primary → new backup**: rowid-less D1/D2a/U/D arrive; the receive
   whitelists (:9310-9323) still accept them; verification stays idle (no
   flag). The new backup DOES already verify the rowid-carrying shapes old
   primaries send (e.g. a plain ZINSERT dup-converted on a TTL backup), since
   those rowids were always authoritative. The full divergence-detection
   guarantee starts when ALL data nodes run ≥ 25.10.16.
-- **Mixed 3-replica chains**: gating is per hop; each upgraded hop is
-  protected independently. A middle old node forwards rowid-less onward
-  (legacy behavior) — the downstream new node simply sees the legacy shape.
+- **Mixed 3-replica chains**: every hop applies the gate for its own next
+  replica, so the chain degrades to legacy shapes exactly at the first
+  unsupporting hop:
+  - new→new→old: primary attaches (middle is new), middle verifies and then
+    STRIPS toward the old tail.
+  - new→old→new: primary strips (middle is old); the new middle receives no
+    rowid and must NOT self-attach — its local rowid is not authoritative,
+    and forwarding it could abort healthy transactions with a false 1245
+    when the middle itself is the diverged replica. The tail runs with
+    verification idle (legacy).
+  - A genuinely old middle forwards rowid-less onward for the new shapes
+    (legacy behavior); the only rowid-carrying shapes it can receive are the
+    legacy ones, whose rowids required-rowid execution pins to the wire
+    value, so what it forwards still equals the primary's value.
+- **Version honesty caveat**: the per-hop scheme trusts getNodeInfo
+  versions. If an old node were mis-advertised as new, a new primary would
+  attach toward it; the old middle would not verify, would overwrite
+  m_row_id with its LOCAL rowid (acckeyconf_tupkeyreq) and forward THAT with
+  the flag — the tail would then verify against the middle's layout, not
+  the primary's. Same class of limitation applies to dirty writes on any
+  version (their found case skips verification by design, so a middle hop
+  forwards its local rowid); acceptable because dirty writes are documented
+  non-consistent and the not-found heal still lands on a chain-consistent
+  slot.
 - Downgrade: new shapes stop being sent as soon as the sender is downgraded;
   receivers of any version always accepted both shapes, so no cleanup is
   needed.
+- **Mixed-version testing**: real old binaries are unavailable under mtr,
+  so ERROR_INSERT 5119 (send-side only) makes an armed node's capability
+  check report "unsupported" for every peer. Arming the MIDDLE's node
+  emulates new→new→old, arming the PRIMARY's node emulates new→old→new;
+  receiver verification stays live, so a placement fork seeded on the tail
+  (EI 4040) acts as the leak tripwire: any rowid that reaches the forked
+  tail fires 1245, correct stripping keeps it silent. See
+  ndb_ttl.ttl_replica3_mixed_version.
 
 ## 7. Channel coverage
 

@@ -27,7 +27,7 @@ Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
 Next DBTUP 4041
-Next DBLQH 5119
+Next DBLQH 5120
 Next DBDICT 6228
 Next DBDIH 7251
 Next DBTC 8127
@@ -373,6 +373,15 @@ Error insertions used to test ACCKEYCONF/ABORT interleaving
 5118: Escalate a replica-rowid-mismatch rejection (error 1245, TTL error 899
       hardening) to ndbabort on the detecting replica (autotest hard stop
       for layout-divergence tests)
+
+5119: Replica rowid forwarding: make this node's per-hop capability check
+      (Dblqh::replica_rowid_forwarding_supported) treat EVERY peer data
+      node as running a pre-forwarding version, so the node strips/omits
+      the verification rowid toward its next replica exactly like a sender
+      facing an old receiver. Emulates mixed-version chains on a
+      homogeneous test cluster: arm on the middle replica's node to
+      emulate new->new->old, on the primary's node to emulate
+      new->old->new. Send-side only; receiver verification is unaffected.
 
 
 ERROR CODES FOR TESTING TIME-OUT HANDLING IN DBTC
