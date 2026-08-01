@@ -220,8 +220,8 @@ table_id	table_name
 56	rdma_transporters
 7	resources
 21	restart_info
-56	security_violations
-57	security_violation_counts
+57	security_violations
+58	security_violation_counts
 37	stored_tables
 0	tables
 31	table_distribution_status
