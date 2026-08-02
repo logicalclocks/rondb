@@ -4392,6 +4392,42 @@ int Dbtup::handleInsertReq(Signal* signal,
         goto alloc_rowid_error;
       }
 
+      if (ERROR_INSERTED(4040) && is_ttl_table(regTabPtr))
+      {
+        jam();
+        /**
+         * Test-only seed: fabricate a replica PLACEMENT fork to positively
+         * test the replica-rowid-mismatch verification (error 1245; see
+         * storage/ndb/claude_files/ttl_899_rowid/).  Arm on a BACKUP node
+         * only: the required rowid of one TTL-table insert is redirected to
+         * the adjacent fixed-size slot (one slot = m_fix_header_size words)
+         * BEFORE allocation, so this replica materializes the row at a rowid
+         * the primary did not dictate -- silently recreating the pre-fix
+         * backup self-allocation defect under ERROR_INSERT control.  The
+         * redirect happens before alloc_fix_rowid, so the normal path (and
+         * the fragment page mutex taken inside it) covers the redirected
+         * slot and all bookkeeping is the ordinary required-rowid insert's.
+         * The test must have freed the redirected slot on this replica or
+         * the insert fails with 899 like any occupied required rowid.
+         * One-shot: cleared on first use.
+         */
+        const Uint32 slot_words = regTabPtr->m_offsets[MM].m_fix_header_size;
+        Uint32 redirect_idx = regOperPtr.p->m_tuple_location.m_page_idx;
+        redirect_idx = (redirect_idx >= slot_words)
+                           ? (redirect_idx - slot_words)
+                           : (redirect_idx + slot_words);
+        g_eventLogger->info(
+            "DBTUP %u: ERROR_INSERT 4040 redirecting required rowid"
+            " tab(%u,%u) row(%u,%u) -> row(%u,%u) to seed a replica"
+            " placement fork",
+            instance(), regFragPtr->fragTableId, regFragPtr->fragmentId,
+            regOperPtr.p->m_tuple_location.m_page_no,
+            regOperPtr.p->m_tuple_location.m_page_idx,
+            regOperPtr.p->m_tuple_location.m_page_no, redirect_idx);
+        regOperPtr.p->m_tuple_location.m_page_idx = redirect_idx;
+        CLEAR_ERROR_INSERT_VALUE;
+      }
+
       if (!varalloc)
       {
         jam();

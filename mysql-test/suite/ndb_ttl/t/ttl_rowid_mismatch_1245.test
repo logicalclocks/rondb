@@ -1,0 +1,404 @@
+# ==========================================================================
+# ttl_rowid_mismatch_1245: positively fire the replica rowid-mismatch
+#                          verification (NDB error 1245) on a seeded
+#                          replica placement fork
+# ==========================================================================
+#
+# Background (storage/ndb/claude_files/ttl_899_rowid/ -- findings.md,
+# fix_design.md, validation_report.md): backup replicas now receive the
+# primary's rowid on every forwarded INSERT/WRITE/UPDATE/DELETE, and every
+# non-primary hop verifies the wire rowid against the rowid its own DBACC
+# resolved for the key.  A difference is a detected replica rowid-layout
+# fork: the operation is REFused with the NEW PERMANENT error 1245
+# ("Replica rowid mismatch detected", DMEC/IE) and the backup logs a
+# diagnostic line naming table/fragment and both rowids.  The prior
+# validation proved ZERO FALSE POSITIVES (the verification never fired on
+# healthy clusters across restarts, copy races, 3-replica chains and the
+# live purge) but could not POSITIVELY fire 1245: doing so requires a
+# fabricated replica fork, which cannot occur naturally on the fixed tree.
+#
+# This test IS the positive control.  It uses the test-only ERROR_INSERT
+# 4040 (dbtup/DbtupExecQuery.cpp handleInsertReq, required-rowid path) as a
+# user-approved SEED: armed on the BACKUP node only, it redirects the
+# required rowid of ONE TTL-table insert to the adjacent fixed-size slot
+# (one slot = the row's fix_header_size words) before allocation, then
+# self-clears.  The backup materializes the row at a rowid the primary did
+# not dictate -- silently recreating the pre-fix backup self-allocation
+# defect under ERROR_INSERT control -- while all other bookkeeping is the
+# ordinary required-rowid insert's.
+#
+# Choreography (the page free-list order is LOAD-BEARING):
+#   - ~10 rows inserted one at a time land at page-0 slots in insertion
+#     order (convertThPage links a fresh page's free slots in ascending
+#     order);
+#   - deleting the 2nd then the 3rd inserted row frees two ADJACENT slots
+#     on both replicas; Tup_fixsize_page::free_record PREPENDS, so both
+#     free lists become head = slot(3rd) -> slot(2nd);
+#   - a fresh-key INSERT: the primary allocates its free head slot(3rd)
+#     and forwards insert-at-slot(3rd); the armed backup redirects to the
+#     adjacent slot(2nd) -- free BECAUSE two rows were deleted -- and the
+#     insert SUCCEEDS.  The placement fork now exists: same row, two
+#     different rowids.
+#
+# What the test proves:
+#   1. the seeded insert succeeds silently (the defect shape) and the
+#      per-fragment replica consistency include still PASSES: physical row
+#      counts are EQUAL on both replicas, i.e. the fixed_elem_count screen
+#      is BLIND to a placement fork (it catches presence forks only) --
+#      per-hop rowid verification is the only tripwire for this fork class;
+#   2. UPDATE/DELETE of the diverged key fail LOUDLY with permanent error
+#      1245 (SQL: ER_GET_ERRMSG 1296, "Got error 1245 'Replica rowid
+#      mismatch detected' from NDBCLUSTER"; the same text as a warning
+#      from NDB), deterministically and repeatably -- each abort is clean
+#      (transaction rolled back, row content intact) and ONLY the diverged
+#      key is poisoned (other rows update fine);
+#   3. the backup's event log carries the diagnostic line
+#      "replica rowid mismatch tab(T,F) ... wire row(..) local row(..)";
+#   4. ERROR_INSERT 5118 escalates a detected mismatch to ndbabort of the
+#      backup (autotest hard-stop); with StopOnError=0 the angel restarts
+#      the node and the cluster recovers on its own.  The fork state after
+#      that automatic restart is NOT asserted: it depends on how much of
+#      the fragment the node's local LCP+REDO recovery covers versus the
+#      NR copy phase (here no LCP covers the young table, so the copy
+#      re-delivers every row at the primary's rowids and heals; on a
+#      mature cluster a REDO-based NR replays the divergent history and
+#      preserves the fork -- fix_design.md section 3);
+#   5. the documented repair -- an INITIAL node restart of the diverged
+#      backup -- heals the fork guaranteed: the touch succeeds, the
+#      consistency include passes, and recycling the healed slots stays
+#      clean.
+#
+# Needs NoOfReplicas=2 with 2 data nodes and StopOnError=0
+# (ttl_rowid_mismatch_1245.cnf) and a debug (WITH_ERROR_INSERT) data node
+# build for ERROR_INSERT 4040/5118.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Node-failure noise while the backup data node crashes/restarts is
+# expected; suppress it on both mysqlds.
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+connection default;
+--enable_query_log
+
+# TTL expiry is evaluated in the data node against UTC (checkTTL uses
+# gmtime_r(my_micro_time())); pin the session time zone so the ttl_col
+# values written with NOW() stay LIVE for the whole test on any host TZ.
+SET time_zone = '+00:00';
+
+--echo # === 1. single-fragment TTL table, 10 rows in insertion order ==========
+--echo # One fragment => one primary + one backup replica; rows inserted one
+--echo # at a time land at page-0 slots in insertion order on BOTH replicas
+--echo # (normal inserts always forward the primary's chosen rowid).
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY(id) PARTITIONS 1;
+
+--disable_query_log
+INSERT INTO test.t1 VALUES (1, NOW() + INTERVAL 1 HOUR, 1);
+INSERT INTO test.t1 VALUES (2, NOW() + INTERVAL 1 HOUR, 2);
+INSERT INTO test.t1 VALUES (3, NOW() + INTERVAL 1 HOUR, 3);
+INSERT INTO test.t1 VALUES (4, NOW() + INTERVAL 1 HOUR, 4);
+INSERT INTO test.t1 VALUES (5, NOW() + INTERVAL 1 HOUR, 5);
+INSERT INTO test.t1 VALUES (6, NOW() + INTERVAL 1 HOUR, 6);
+INSERT INTO test.t1 VALUES (7, NOW() + INTERVAL 1 HOUR, 7);
+INSERT INTO test.t1 VALUES (8, NOW() + INTERVAL 1 HOUR, 8);
+INSERT INTO test.t1 VALUES (9, NOW() + INTERVAL 1 HOUR, 9);
+INSERT INTO test.t1 VALUES (10, NOW() + INTERVAL 1 HOUR, 10);
+--enable_query_log
+SELECT COUNT(*) AS loaded_rows FROM test.t1;
+
+--echo # === 2. discover fragment roles (node ids kept out of the result) ======
+# The seed must be armed on the BACKUP of fragment 0: the verification
+# fires on the non-primary hop, against the rowid the PRIMARY dictates.
+--disable_query_log
+--let $tab_id = `SELECT table_id FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/t1' LIMIT 1`
+--let $primary_node = `SELECT DISTINCT current_primary FROM ndbinfo.table_fragments WHERE table_id = $tab_id AND fragment_id = 0`
+--let $backup_node = `SELECT 3 - $primary_node`
+--enable_query_log
+
+# Diagnostic markers logged by the backup data node.
+--let BACKUP_LOG_FILE = $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.$backup_node/ndbd.log
+--let BACKUP_NODE_DIR = $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.$backup_node
+--let SEED_TEXT = ERROR_INSERT 4040 redirecting required rowid tab($tab_id,0)
+--let MISMATCH_TEXT = replica rowid mismatch tab($tab_id,0)
+
+--echo # === 3. free two ADJACENT slots on both replicas =======================
+--echo # Delete the 2nd then the 3rd inserted row: free_record PREPENDS, so
+--echo # both replicas' page free lists become head = slot(id 3) -> slot(id 2).
+DELETE FROM test.t1 WHERE id = 2;
+DELETE FROM test.t1 WHERE id = 3;
+
+--echo # === 4. arm the placement-fork seed on the BACKUP only =================
+--exec $NDB_MGM -e "$backup_node ERROR 4040" > /dev/null
+
+--echo # === 5. the fork insert -- MUST SUCCEED ================================
+--echo # The primary allocates its free head slot(id 3) and forwards
+--echo # insert-at-slot(id 3); the armed backup redirects to the adjacent
+--echo # free slot(id 2) and self-clears.  Silent success IS the defect
+--echo # shape: row 100 now lives at different rowids on the two replicas.
+INSERT INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 100);
+# Disarm any residual DBTUP instances on the backup (the firing instance
+# self-cleared; instances not hosting fragment 0 still hold the value).
+--exec $NDB_MGM -e "$backup_node ERROR 0" > /dev/null
+
+# Positive evidence the seed fired: the backup logged the redirect marker.
+--perl
+  use strict;
+  my $file = $ENV{'BACKUP_LOG_FILE'};
+  my $text = $ENV{'SEED_TEXT'};
+  my $deadline = time() + 30;
+  while (time() < $deadline) {
+    my $cnt = 0;
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    exit 0 if $cnt >= 1;
+    select(undef, undef, undef, 0.2);
+  }
+  die "ERROR_INSERT 4040 seed marker '$text' not found in $file -- the placement fork was NOT fabricated";
+EOF
+--echo # seed marker found in the backup node log: the fork exists
+
+--echo # the committed row is intact and readable (content is identical on
+--echo # both replicas -- this is a PLACEMENT fork, not a content fork)
+SELECT id, v FROM test.t1 WHERE id = 100;
+
+--echo # === 6. the count screen is BLIND to a placement fork ==================
+--echo # Both replicas hold the same 9 physical rows (10 - 2 deleted + 1
+--echo # inserted), only at different slots for id 100, so the per-fragment
+--echo # fixed_elem_count equality assert PASSES over a live fork.  Presence
+--echo # forks are caught by this screen; placement forks are caught ONLY by
+--echo # the per-hop rowid verification exercised below.
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # === 7. THE POINT: touching the diverged key fires permanent 1245 ======
+--echo # UPDATE: the primary attaches its rowid slot(id 3) as verification
+--echo # rowid; the backup finds id 100 at slot(id 2) -> mismatch -> REF with
+--echo # permanent error 1245, statement fails (ER_GET_ERRMSG 1296).
+--error ER_GET_ERRMSG
+UPDATE test.t1 SET v = 1001 WHERE id = 100;
+--echo # the true cause is in the error/warning text: NDB error 1245
+SHOW WARNINGS;
+
+# Programmatic assertion on the 1245 signature, independent of
+# warning-stack layout: fail hard if the signature text is missing.
+--let $_wmsg = query_get_value(SHOW WARNINGS, Message, 1)
+if (`SELECT "$_wmsg" NOT LIKE "%Replica rowid mismatch%"`)
+{
+  --echo # Unexpected first warning: $_wmsg
+  --die 1245 signature warning (Replica rowid mismatch) not found after trapped UPDATE
+}
+
+--echo # DELETE of the diverged key: same permanent 1245
+--error ER_GET_ERRMSG
+DELETE FROM test.t1 WHERE id = 100;
+
+--echo # the failure is deterministic and repeatable (permanent error, clean
+--echo # abort each time -- no state decays, nothing is masked)
+--error ER_GET_ERRMSG
+UPDATE test.t1 SET v = 1002 WHERE id = 100;
+
+--echo # ONLY the diverged key is poisoned: another row updates fine
+UPDATE test.t1 SET v = 55 WHERE id = 5;
+
+--echo # every aborted statement rolled back cleanly: contents unchanged
+SELECT id, v FROM test.t1 WHERE id IN (5, 100) ORDER BY id;
+
+--echo # === 8. the backup logged the 1245 diagnostic line =====================
+--echo # Naming table/fragment, operation, wire rowid and local rowid.  The
+--echo # printing is rate-limited to 2 lines per 10 s window (the REF itself
+--echo # is never throttled): of the 3 rejections above, the first two log
+--echo # and the third is suppressed (its count is carried in a later line).
+--let MISMATCH_MIN = 2
+--perl
+  use strict;
+  my $file = $ENV{'BACKUP_LOG_FILE'};
+  my $text = $ENV{'MISMATCH_TEXT'};
+  my $want = $ENV{'MISMATCH_MIN'};
+  my $deadline = time() + 30;
+  my $cnt = 0;
+  while (time() < $deadline) {
+    $cnt = 0;
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    exit 0 if $cnt >= $want;
+    select(undef, undef, undef, 0.2);
+  }
+  die "Only $cnt occurrences of '$text' in $file (wanted >= $want)";
+EOF
+--echo # mismatch diagnostic lines found in the backup node log
+--echo # ... and the compact 1245 warning reached the mgmd cluster log
+--let MISMATCH_CLUSTER_TEXT = 1245 replica rowid mismatch tab($tab_id,0)
+--let CLUSTER_LOG_DIR = $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1
+--perl
+  use strict;
+  my $dir = $ENV{'CLUSTER_LOG_DIR'};
+  my $text = $ENV{'MISMATCH_CLUSTER_TEXT'};
+  my $deadline = time() + 30;
+  while (time() < $deadline) {
+    for my $file (glob("$dir/ndb_*_cluster.log")) {
+      if (open(my $fh, '<', $file)) {
+        local $/; my $content = <$fh>; close($fh);
+        exit 0 if index($content, $text) >= 0;
+      }
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No occurrence of '$text' in $dir/ndb_*_cluster.log";
+EOF
+--echo # 1245 warning found in the cluster log
+
+--echo # === 8b. fresh insert hits the fork: production 899 logging ============
+--echo # The primary's page free head is now slot(id 2) -- exactly the slot
+--echo # the backup's diverged copy of id 100 occupies.  A fresh INSERT is a
+--echo # not-found case on the backup, so it takes the required-rowid path
+--echo # and raises ZROWID_ALLOCATED (899) at the true divergence point.
+--echo # The statement fails as a lock-wait timeout (899 is TR-classified;
+--echo # the statement stalls for the deadlock-detection timeout first), and
+--echo # the new rate-limited production logging (no debug build flag
+--echo # needed) must report it in BOTH the backup node log and the cluster
+--echo # log.
+--error ER_LOCK_WAIT_TIMEOUT
+INSERT INTO test.t1 VALUES (101, NOW() + INTERVAL 1 HOUR, 101);
+--let ROWID_899_NODE_TEXT = ZROWID_ALLOCATED (899): required rowid already in use tab($tab_id,0)
+--let ROWID_899_CLUSTER_TEXT = 899 rowid already in use tab($tab_id,0)
+--let CLUSTER_LOG_DIR = $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1
+--perl
+  use strict;
+  # >= 1 full-detail warning line in the backup node log
+  my $file = $ENV{'BACKUP_LOG_FILE'};
+  my $text = $ENV{'ROWID_899_NODE_TEXT'};
+  my $deadline = time() + 60;
+  while (time() < $deadline) {
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      exit 0 if index($content, $text) >= 0;
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No occurrence of '$text' in $file";
+EOF
+--echo # production 899 warnings found in the backup node log
+--perl
+  use strict;
+  # >= 1 warningEvent line in the mgmd cluster log
+  my $dir = $ENV{'CLUSTER_LOG_DIR'};
+  my $text = $ENV{'ROWID_899_CLUSTER_TEXT'};
+  my $deadline = time() + 60;
+  while (time() < $deadline) {
+    for my $file (glob("$dir/ndb_*_cluster.log")) {
+      if (open(my $fh, '<', $file)) {
+        local $/; my $content = <$fh>; close($fh);
+        exit 0 if index($content, $text) >= 0;
+      }
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No occurrence of '$text' in $dir/ndb_*_cluster.log";
+EOF
+--echo # production 899 warning found in the cluster log
+
+--echo # === 9. ERROR_INSERT 5118: escalate the next mismatch to ndbabort ======
+--exec $NDB_MGM -e "$backup_node ERROR 5118" > /dev/null
+--echo # the touch makes the backup detect the mismatch and ndbabort; the
+--echo # statement outcome depends on node-failure handling timing, so only
+--echo # the crash itself is asserted (via the node's error log below)
+--disable_query_log
+--disable_result_log
+--error 0,1205,1296,1297
+UPDATE test.t1 SET v = 1003 WHERE id = 100;
+--enable_result_log
+--enable_query_log
+
+# Crash evidence: the error reporter appends the failure point (DblqhMain)
+# to the backup node's ndb_<id>_error.log before aborting.
+--perl
+  use strict;
+  my $dir = $ENV{'BACKUP_NODE_DIR'};
+  my $deadline = time() + 120;
+  while (time() < $deadline) {
+    for my $file (glob("$dir/ndb_*_error.log")) {
+      if (open(my $fh, '<', $file)) {
+        local $/; my $content = <$fh>; close($fh);
+        exit 0 if index($content, 'DblqhMain') >= 0;
+      }
+    }
+    select(undef, undef, undef, 0.2);
+  }
+  die "No ndbabort evidence (DblqhMain in ndb_*_error.log) under $dir -- EI 5118 did not crash the backup";
+EOF
+--echo # backup data node ndbaborted at the mismatch-detection point
+
+--echo # === 10. angel auto-restart after the deliberate crash =================
+--echo # StopOnError=0 restarts the crashed node (a normal, non-initial node
+--echo # restart) and the cluster becomes whole again on its own.  The fork
+--echo # state after such an automatic restart is deliberately NOT asserted:
+--echo # it depends on how much of the fragment the node's local LCP+REDO
+--echo # recovery covers versus the NR copy phase.  On this young cluster no
+--echo # LCP covers the table yet, so the copy re-delivers every row at the
+--echo # primary's exact rowids and happens to heal the fork; on a cluster
+--echo # whose LCP+durable-REDO history contains the diverged insert, the
+--echo # restart REPLAYS the divergent history and the fork survives
+--echo # (fix_design.md section 3: a REDO-based NR can preserve the fork,
+--echo # which is why the documented repair below is an INITIAL restart).
+--exec $NDB_WAITER --timeout=300 > /dev/null
+--echo # backup rejoined after the crash
+
+--echo # === 11. the documented repair: INITIAL restart of the diverged backup =
+--exec $NDB_MGM -e "$backup_node RESTART -n -i" > /dev/null
+--exec $NDB_WAITER --wait-nodes=$backup_node --not-started --timeout=300 > /dev/null
+--exec $NDB_MGM -e "$backup_node START" > /dev/null
+--exec $NDB_WAITER --timeout=300 > /dev/null
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--echo # backup rebuilt from the live node (every row re-delivered at the
+--echo # primary's exact rowids), cluster whole, error inserts disarmed
+
+--echo # === 12. the fork is healed ============================================
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # the previously poisoned key now updates fine
+UPDATE test.t1 SET v = 2000 WHERE id = 100;
+SELECT id, v FROM test.t1 WHERE id = 100;
+
+--echo # === 13. final sweep: recycling the healed slots stays clean ===========
+--echo # Delete the healed row and refill its slot (plus a plain
+--echo # delete/insert cycle): every insert is forwarded with a required
+--echo # rowid, so any residual divergence would fail here with the 899
+--echo # signature.  All statements must succeed.
+DELETE FROM test.t1 WHERE id = 100;
+INSERT INTO test.t1 VALUES (200, NOW() + INTERVAL 1 HOUR, 200);
+INSERT INTO test.t1 VALUES (201, NOW() + INTERVAL 1 HOUR, 201);
+INSERT INTO test.t1 VALUES (202, NOW() + INTERVAL 1 HOUR, 202);
+DELETE FROM test.t1 WHERE id = 7;
+INSERT INTO test.t1 VALUES (203, NOW() + INTERVAL 1 HOUR, 203);
+
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+SELECT id, v FROM test.t1 ORDER BY id;
+
+DROP TABLE test.t1;

@@ -26,8 +26,8 @@ Next QMGR 962
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
-Next DBTUP 4040
-Next DBLQH 5113
+Next DBTUP 4041
+Next DBLQH 5120
 Next DBDICT 6228
 Next DBDIH 7251
 Next DBTC 8127
@@ -363,6 +363,25 @@ Error insertions used to test ACCKEYCONF/ABORT interleaving
 5107: Cause SimulatedBlock::allocChunks() to return chunks with gaps
 5108: Cause request to fail with error 1218 SendBuffer overload (temp error)
 5109: Delay on handling BACKUP_FRAGMENT_CONF during an ALTER table operation
+5113: Timing only: slow down the NR copy fragment scan of TTL-table
+      fragments (~10 ms per copy row, armed on the LIVE node) and log
+      per-fragment copy start/complete like 5714. Used to make the
+      natural mid-copy window deterministic for tests that commit live
+      traffic against a fragment while it is being copied. No state or
+      protocol transition is changed.
+
+5118: Escalate a replica-rowid-mismatch rejection (error 1245, TTL error 899
+      hardening) to ndbabort on the detecting replica (autotest hard stop
+      for layout-divergence tests)
+
+5119: Replica rowid forwarding: make this node's per-hop capability check
+      (Dblqh::replica_rowid_forwarding_supported) treat EVERY peer data
+      node as running a pre-forwarding version, so the node strips/omits
+      the verification rowid toward its next replica exactly like a sender
+      facing an old receiver. Emulates mixed-version chains on a
+      homogeneous test cluster: arm on the middle replica's node to
+      emulate new->new->old, on the primary's node to emulate
+      new->old->new. Send-side only; receiver verification is unaffected.
 
 
 ERROR CODES FOR TESTING TIME-OUT HANDLING IN DBTC
@@ -842,6 +861,13 @@ Dbtup:
 4026: Fail one insert with oom
 4027: Fail inserts randomly with oom
 4028: Fail one random insert with oom
+
+4040: Test-only replica placement-fork seed (one-shot, TTL tables only):
+      redirect the required rowid of the next rowid-specified insert to the
+      adjacent fixed-size slot before allocation, so a backup replica
+      materializes the row at a rowid the primary did not dictate.  Arm on a
+      backup node with a free adjacent slot to positively fire the replica
+      rowid mismatch verification (error 1245, escalation ERROR_INSERT 5118).
 
 NDBCNTR:
 
