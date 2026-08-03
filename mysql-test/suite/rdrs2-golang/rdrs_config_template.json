@@ -17,7 +17,8 @@
       "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
     },
     "APIKey": {
-      "UseHopsworksAPIKeys": true
+      "UseHopsworksAPIKeys": true,
+      "CacheRefreshIntervalMS": 5000
     }
   },
   "Log": {

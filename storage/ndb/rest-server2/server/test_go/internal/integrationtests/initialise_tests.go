@@ -106,6 +106,19 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	time.Sleep(1000 * time.Millisecond) // need to find a more reliable way to determine if every thing is up
 	log.Debug("Successfully started up servers")
 
+	//---------------------------- API key readiness --------------------------
+	// The server's API key cache converges asynchronously after the hopsworks
+	// database is (re-)seeded; wait until the default key authenticates so no
+	// test races a transiently invalid or grant-less cache entry.
+	if conf.REST.Enable && conf.Security.APIKey.UseHopsworksAPIKeys {
+		url := testutils.NewPKReadURL(testdbs.DB004, "int_table1")
+		body := `{"filters":[{"column":"id0","value":0},{"column":"id1","value":0}]}`
+		if err := testutils.WaitForAPIKeyAuthReady(url, body, 30*time.Second); err != nil {
+			cleanupWrapper(cleanupFNs)()
+			return nil, fmt.Errorf("API key cache not ready; error: %w", err)
+		}
+	}
+
 	// Check if profiling is enabled
 	if profilingEnabled() {
 		f, err := os.Create("profile.out")
