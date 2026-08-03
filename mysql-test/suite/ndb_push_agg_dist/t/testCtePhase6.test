@@ -1,5 +1,11 @@
 --source include/have_ndb.inc
 --source include/have_debug.inc
+# The test impersonates DBTC/DBSPJ from an API node, sending SCAN_FRAGREQ
+# (signal scope Remote) directly to DBLQH. have_debug above checks mysqld;
+# this checks the ndb binaries, whose debug builds relax the scope so the
+# test can run. Production builds drop the signal and disconnect the sender
+# (Tier A).
+--source include/have_ndb_debug.inc
 
 --echo Running testCtePhase6 (multi-node)
 --exec $NDB_PUSH_AGG_DIR/testCtePhase6 -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

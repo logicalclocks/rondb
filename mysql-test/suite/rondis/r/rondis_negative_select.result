@@ -10,17 +10,17 @@ ERR Wrong parameter to SELECT command
 #
 # Out-of-range database id.
 #
-ERR The database selected doesn't exist
+ERR DB index is out of range
 
-ERR The database selected doesn't exist
+ERR DB index is out of range
 
-ERR The database selected doesn't exist
+ERR DB index is out of range
 
 #
 # Negative database id - rejected since B2 was fixed; previously
 # silently accepted.
 #
-ERR The database selected doesn't exist
+ERR DB index is out of range
 
 #
 # Confirm a valid SELECT still succeeds - guards against

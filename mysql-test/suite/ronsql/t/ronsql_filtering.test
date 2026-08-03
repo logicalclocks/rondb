@@ -8,6 +8,7 @@ call mtr.add_suppression("Participant timeout");
 --let $suppress_ronsql_cli=yes
 
 --disable_query_log
+--disable_warnings
 CREATE TABLE tbl (
   uint16 SMALLINT UNSIGNED NOT NULL,
   int16 SMALLINT NOT NULL,
@@ -18,6 +19,7 @@ while ($i)
   --eval insert into tbl values ($i, $i-50);
   dec $i;
 }
+--enable_warnings
 --enable_query_log
 
 DELIMITER |;
@@ -78,4 +80,6 @@ GROUP BY uint16;|
 
 --echo Cleanup
 DELIMITER ;|
+--disable_warnings
 DROP TABLE tbl;
+--enable_warnings

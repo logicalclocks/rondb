@@ -10,6 +10,7 @@ call mtr.add_suppression("Participant timeout");
 --echo
 
 --disable_query_log
+--disable_warnings
 
 CREATE TABLE orders (
   o_id INT NOT NULL,
@@ -46,6 +47,7 @@ INSERT INTO lineitem VALUES
   (9, 5, 40, 400),
   (10, 5, 35, 350);
 
+--enable_warnings
 --enable_query_log
 
 DELIMITER |;
@@ -119,5 +121,7 @@ DELIMITER ;|
 --echo
 --echo === Cleanup ===
 
+--disable_warnings
 DROP TABLE lineitem;
 DROP TABLE orders;
+--enable_warnings

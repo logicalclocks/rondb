@@ -1,8 +1,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 SET time_zone = "+00:00";
-Warnings:
-Warning	1681	UNSIGNED for decimal and floating point data types is deprecated and support for it will be removed in a future release.
 Row count:
 SELECT count(*) FROM orderby_test;
 count(*)

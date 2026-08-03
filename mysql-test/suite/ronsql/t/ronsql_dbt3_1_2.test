@@ -5,6 +5,7 @@ call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
 --disable_query_log
+--disable_warnings
 
 # Taken from dbt3-1.10: scripts/mysql/dbt3-mysql-create-tables
 CREATE TABLE lineitem (
@@ -46,6 +47,7 @@ INSERT INTO lineitem VALUES
   (1,  15600, 7201, 6, 32, 38376.64, 0.07, 0.02, 'Y', 'C', '1998-09-08', '1996-01-29', '1996-02-22', 'Deliver in person', 'SHIP',    'Small machine parts'),
   (1, 155190, 7706, 7, 38, 47866.62, 0.08, 0.05, 'N', 'C', '1998-09-13', '1996-03-30', '1996-05-22', 'Deliver in person', 'SHIP',    'Heavy machine parts');
 
+--enable_warnings
 --enable_query_log
 --echo
 --echo
@@ -86,5 +88,7 @@ EOF
 
 
 --echo Cleanup
+--disable_warnings
 DROP TABLE lineitem;
+--enable_warnings
 # todo add performance test version of this, perhaps add to rondb_big. There is already in our tarballs, db+query generator for dbt3, binaries are there. These are downloaded for release. In the test, check if the binaries are present. Actually, instead do something similar to have_ndb. (This todo from review 2024-08-22 with MR)

@@ -1,4 +1,9 @@
 --source include/have_ndb.inc
+# The test impersonates DBTC/DBSPJ from an API node, sending SCAN_FRAGREQ
+# (signal scope Remote) directly to DBLQH. Debug builds relax the scope so
+# the test can run; production builds drop the signal and disconnect the
+# sender (Tier A).
+--source include/have_ndb_debug.inc
 
 --echo Running testCteLookup
 --exec $NDB_PUSH_AGG_DIR/testCteLookup -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

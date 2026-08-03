@@ -194,6 +194,11 @@ sub rand_int {
 sub create_table {
   my ($type) = @_;
   l "--disable_query_log";
+  # Also suppress warnings while the query log is off: mysqltest still
+  # records warnings for hidden statements, so a deterministic deprecation
+  # note or a transient schema-dist "Participant timeout" warning would
+  # show up as an orphaned Warnings block and break the baseline.
+  l "--disable_warnings";
   l "CREATE TABLE tbl (";
   l "  pk INT PRIMARY KEY AUTO_INCREMENT,";
   l "  val " . $type->{typename} . ",";
@@ -215,13 +220,16 @@ sub create_table {
       l "  ($val_sql, $foo_sql, $bar_sql)" . (($i < $this_batch - 1) ? "," : ";");
     }
   }
+  l "--enable_warnings";
   l "--enable_query_log";
   l "";
 }
 
 sub drop_table {
   l "--disable_query_log";
+  l "--disable_warnings";
   l "DROP TABLE tbl;";
+  l "--enable_warnings";
   l "--enable_query_log";
   l "";
 }
