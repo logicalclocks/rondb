@@ -74,16 +74,25 @@ void printDocString(std::ostream& out,
 #ifdef VM_TRACE
   for(Uint32 i = 0; i < len; i++) {
     char c = data[i];
-    assert((0x20 <= c && c <= 0x21) ||
-           (0x23 <= c && c <= 0x5b) ||
-           (0x5d <= c && c <= 0x7e));
+    assert(0x20 <= c && c <= 0x7e);
   }
 #endif
   out << (is_first ? "\n" : ",\n")
       << INDENT()
-      << "\"#\": \""
-      << docString
-      << "\"";
+      << "\"#\": \"";
+  /*
+   * Doc strings are free text, so they may contain characters that have to be
+   * escaped to keep the output valid JSON, e.g. the quotes in the description
+   * of TTLPurge.ActiveWindow.
+   */
+  for (Uint32 i = 0; i < len; i++) {
+    char c = data[i];
+    if (c == '"' || c == '\\') {
+      out << '\\';
+    }
+    out << c;
+  }
+  out << "\"";
   is_first = false;
 }
 void printDocString(std::ostream& out,
