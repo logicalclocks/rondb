@@ -1,5 +1,48 @@
 #
-# Run an RDRS2 Unit test from MTR
+# Run the RDRS2 Golang tests from MTR.
+#
+# By default this runs ALL Golang test packages in a single `go test ./...`
+# invocation, so the hopsworks database is seeded once (the first package that
+# runs creates the "sentinel" DB; the rest reuse it) and the cluster is torn
+# down once. Running every package in its own MTR test instead re-seeds
+# hopsworks for each package, which is what made the suite slow.
+#
+# To run only one (or a few) packages, set RDRS_GO_PACKAGE to a Go package
+# name (or a space-separated list), e.g.:
+#
+#   RDRS_GO_PACKAGE=hopsworks.ai/rdrs2/internal/integrationtests/pkread \
+#     ./mtr --suite rdrs2-golang
+#
+# The package names are exactly what `go list ./...` prints. To see the
+# up-to-date list, run this from the test_go module directory
+# (storage/ndb/rest-server2/server/test_go):
+#
+#   go list ./...
+#
+# The packages worth running on their own are the integration-test packages
+# below (each hits the REST server a different way). Copy a name verbatim into
+# RDRS_GO_PACKAGE:
+#
+#   hopsworks.ai/rdrs2/internal/integrationtests/ping              # server is alive (/ping)
+#   hopsworks.ai/rdrs2/internal/integrationtests/health            # cluster health (/health)
+#   hopsworks.ai/rdrs2/internal/integrationtests/stat              # server statistics
+#   hopsworks.ai/rdrs2/internal/integrationtests/pkread            # single primary-key reads
+#   hopsworks.ai/rdrs2/internal/integrationtests/batchpkread       # batched primary-key reads
+#   hopsworks.ai/rdrs2/internal/integrationtests/index_scan        # index / range scans
+#   hopsworks.ai/rdrs2/internal/integrationtests/feature_store     # single feature-vector lookups
+#   hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore # batched feature-vector lookups
+#   hopsworks.ai/rdrs2/internal/integrationtests/sharing           # cross-project feature sharing
+#
+# Example running two of them at once:
+#
+#   RDRS_GO_PACKAGE="hopsworks.ai/rdrs2/internal/integrationtests/pkread hopsworks.ai/rdrs2/internal/integrationtests/ping" \
+#     ./mtr --suite rdrs2-golang
+#
+# The recorded result is intentionally package-count independent: on success
+# each run prints a constant "PASS", so a full run and a single-package run
+# produce identical output and both match the .result. The real `go test`
+# output is captured and only emitted when a run fails, in which case the test
+# also exits non-zero so MTR fails it regardless of the output.
 #
 
 --source include/have_ndb.inc
@@ -9,113 +52,84 @@ perl END_OF_PERL;
 use strict;
 use warnings;
 use File::Spec;
-use File::Basename;
 
-# Environment variables
-my $MYSQL_TMP_DIR  = $ENV{'MYSQL_TMP_DIR'};
-my $MYSQL_BASEDIR  = $ENV{'MYSQL_BASEDIR'};
-my $MYSQL_TEST_DIR = $ENV{'MYSQL_TEST_DIR'};
-my $MYSQLTEST_FILE = $ENV{'MYSQLTEST_FILE'};
-
-# Directories
-my $TEST_GO_DIR     = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb', 'rest-server2', 'server', 'test_go');
-my $RDRS2_GOLANG_SUITE_DIR = File::Spec->catdir($MYSQL_TEST_DIR, 'suite', 'rdrs2-golang', 't');
+my $MYSQL_BASEDIR = $ENV{'MYSQL_BASEDIR'};
+my $TEST_GO_DIR = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb',
+                                     'rest-server2', 'server', 'test_go');
 die "Directory $TEST_GO_DIR does not exist\n" unless -d $TEST_GO_DIR;
-die "Directory $RDRS2_GOLANG_SUITE_DIR does not exist\n" unless -d $RDRS2_GOLANG_SUITE_DIR;
 
-# Mapping from MTR test to Go test.
-# After adding a Golang test package, add a ../t/rdrs2-golang_*.test file with a
-# single line "--source suite/rdrs2-golang/include/run_gotest.inc" and add a
-# mapping below.
-my %mtr_to_go = (
-#  MTR test file name            #   Golang test package name                                                #
-#--------------------------------#---------------------------------------------------------------------------#
-  'rdrs2-golang_api.test'               => 'hopsworks.ai/rdrs2/pkg/api',                                     #
-  'rdrs2-golang_batchfeaturestore.test' => 'hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore', #
-  'rdrs2-golang_batchpkread.test'       => 'hopsworks.ai/rdrs2/internal/integrationtests/batchpkread',       #
-  'rdrs2-golang_common.test'            => 'hopsworks.ai/rdrs2/internal/common',                             #
-  'rdrs2-golang_config.test'            => 'hopsworks.ai/rdrs2/internal/config',                             #
-  'rdrs2-golang_feature_store.test'     => 'hopsworks.ai/rdrs2/internal/feature_store',                      #
-  'rdrs2-golang_health.test'            => 'hopsworks.ai/rdrs2/internal/integrationtests/health',            #
-  'rdrs2-golang_index_scan.test'        => 'hopsworks.ai/rdrs2/internal/integrationtests/index_scan',        #
-  'rdrs2-golang_int_feature_store.test' => 'hopsworks.ai/rdrs2/internal/integrationtests/feature_store',     #
-  'rdrs2-golang_integrationtests.test'  => 'hopsworks.ai/rdrs2/internal/integrationtests',                   #
-  'rdrs2-golang_log.test'               => 'hopsworks.ai/rdrs2/internal/log',                                #
-  'rdrs2-golang_metrics.test'           => 'hopsworks.ai/rdrs2/internal/metrics',                            #
-  'rdrs2-golang_ping.test'              => 'hopsworks.ai/rdrs2/internal/integrationtests/ping',              #
-  'rdrs2-golang_pkread.test'            => 'hopsworks.ai/rdrs2/internal/integrationtests/pkread',            #
-  'rdrs2-golang_sharing.test'           => 'hopsworks.ai/rdrs2/internal/integrationtests/sharing',           #
-  'rdrs2-golang_stat.test'              => 'hopsworks.ai/rdrs2/internal/integrationtests/stat',              #
-  'rdrs2-golang_testclient.test'        => 'hopsworks.ai/rdrs2/internal/integrationtests/testclient',        #
-  'rdrs2-golang_testdbs.test'           => 'hopsworks.ai/rdrs2/resources/testdbs',                           #
-  'rdrs2-golang_testutils.test'         => 'hopsworks.ai/rdrs2/internal/testutils',                          #
-  'rdrs2-golang_tlsutils.test'          => 'hopsworks.ai/rdrs2/internal/security/tlsutils',                  #
-  'rdrs2-golang_version.test'           => 'hopsworks.ai/rdrs2/version',                                     #
-#--------------------------------#---------------------------------------------------------------------------#
-);
-
-# Switching to test_go dir for `go list` and `go test`.
+# Switch to the test_go module for `go test`.
 chdir $TEST_GO_DIR or die "Cannot change directory to $TEST_GO_DIR: $!";
 
-# Make sure the existing MTR tests match the keys in the map above
-opendir(my $dh, $RDRS2_GOLANG_SUITE_DIR) or die "Cannot open directory $RDRS2_GOLANG_SUITE_DIR: $!";
-my @actual_mtr = sort grep { /\.test$/ && -f File::Spec->catfile($RDRS2_GOLANG_SUITE_DIR, $_) } readdir($dh);
-closedir($dh);
-my @expected_mtr = sort keys %mtr_to_go;
-if (join("\n", @actual_mtr) ne join("\n", @expected_mtr)) {
-    print "MTR tests listed in run_gotest.inc:\n", join("\n", @expected_mtr), "\n";
-    print "Existing MTR tests:\n", join("\n", @actual_mtr), "\n";
-    die "Mismatch in MTR test lists\n";
+# Packages to run. Default is every package (enumerated with `go list ./...`);
+# a caller can narrow it via RDRS_GO_PACKAGE (space-separated list allowed).
+#
+# Each package is run as its own `go test` invocation on purpose: when several
+# packages are passed to one `go test`, it buffers each package's output and
+# only flushes it when that package finishes, so `tail -f` sees nothing until a
+# package completes. A single-package invocation streams live instead. Running
+# them one at a time therefore lets progress be followed live, and the shared
+# "sentinel" DB means hopsworks is still seeded only once, by whichever package
+# runs first.
+my @packages;
+if (defined $ENV{'RDRS_GO_PACKAGE'} && $ENV{'RDRS_GO_PACKAGE'} ne '') {
+    @packages = split(' ', $ENV{'RDRS_GO_PACKAGE'});
+} else {
+    @packages = split(/\n/, `go list ./... 2>/dev/null`);
 }
+die "No Go packages found to test\n" unless @packages;
 
-# Make sure the existing Golang tests match the values in the map above
-my @actual_go = sort `go list ./...`;
-chomp @actual_go;
-my @expected_go = sort values %mtr_to_go;
-if (join("\n", @actual_go) ne join("\n", @expected_go)) {
-    print "Golang tests listed in run_gotest.inc:\n", join("\n", @expected_go), "\n";
-    print "Existing Golang tests:\n", join("\n", @actual_go), "\n";
-    die "Mismatch in Golang test lists\n";
-}
+# The full go test output is streamed here live, for both success and failure,
+# so progress can be watched with `tail -f`. This is deliberately NOT
+# var/log/<test>.log: MTR deletes that file when the test passes and it is not
+# reliably populated on failure. This file is left in place so the detailed
+# output can always be inspected afterwards.
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $go_log_file = "$log_dir/rdrs2-golang_gotest.output.log";
+# Start each run with a fresh file.
+if (open(my $trunc, '>', $go_log_file)) { close($trunc); }
 
-# Find the go test package mapped to by the currently executing MTR test
-my $this_file = basename($MYSQLTEST_FILE);
-my $go_test_package = $mtr_to_go{$this_file} // '';
-if ($go_test_package eq '') {
-    die "No Golang test package found for $this_file\n";
+sub log_line {
+    if (open(my $fh, '>>', $go_log_file)) { print $fh $_[0]; close($fh); }
 }
 
 sub run_test {
+    my ($label) = @_;
+    log_line("## $label\n");
 
-    # Run Golang test, capture exit code and stdout.
-    # * `-p 1` ensures that only one test is run in parallel by the `go test`
-    #   process. This is necessary since some of these tests change the database
-    #   state. This is unrelated to parallelism in MTR.
-    # * `-count 1` is the idiomatic way to prevent `go test` from using cached test
-    #   runs. This is necessary since the `go test` logic doesn't look into (all)
-    #   C++ sources to detect changes, meaning cache invalidation of test runs
-    #   wouldn't work correctly.
-    my $stdouterr = `go test -p 1 -count 1 $go_test_package 2>&1`;
-    my $exit_code = $? >> 8;
+    foreach my $pkg (@packages) {
+        # Stream this package straight to the log file so `tail -f` follows it
+        # live.
+        # * `-v`       per-test progress.
+        # * `-count 1` disables go's test-result cache, which cannot see
+        #              changes in the C++ sources.
+        log_line("### $pkg\n");
+        system("go test -v -count 1 $pkg >> \"$go_log_file\" 2>&1");
+        my $exit_code = $? >> 8;
+        next if $exit_code == 0;
 
-    # Remove test duration column to achieve deterministic output
-    $stdouterr =~ s/\t[0-9.]+s$//g;
-
-    print "$stdouterr\n",
-          "Golang test for $go_test_package exited with code $exit_code\n";
-
-    if ($exit_code != 0) {
+        # Failure: echo the streamed log to stdout so it is visible in the MTR
+        # console, and exit non-zero so MTR fails the test regardless of result
+        # matching.
+        print "## $label\n";
+        print "FAIL: `go test $pkg` exited with code $exit_code\n";
+        print "Full log: $go_log_file\n";
+        if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
         exit $exit_code;
     }
+
+    # Constant, package-count independent output so the recorded result is the
+    # same whether we ran all packages or just one.
+    print "## $label\n";
+    print "PASS\n";
 }
 
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
-print "## Run $this_file without TLS\n";
-run_test();
+run_test('Go tests (without TLS)');
 
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_TLS'};
-print "## Run $this_file with TLS and server-side cert\n";
-run_test();
+run_test('Go tests (with TLS and server-side cert)');
 
 exit 0;
 END_OF_PERL
