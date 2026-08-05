@@ -1328,4 +1328,61 @@ ndbd_support_user_rate_limits(Uint32 x) {
   }
   return false;
 }
+
+/**
+ * Replica rowid forwarding + verification (TTL error 899 hardening).
+ *
+ * Principle: backup replicas must never receive a rowid-less operation for
+ * any INSERT, WRITE, UPDATE or DELETE. A data node that supports this feature
+ * accepts LQHKEYREQ with the RowidFlag set for operation shapes that were
+ * previously always rowid-less outside NR copy (ZINSERT_TTL forwarded as
+ * ZINSERT, TTL ZWRITE resolved to update, plain ZUPDATE/ZDELETE), verifies
+ * the wire rowid against its own ACC-resolved rowid, and rejects a mismatch
+ * with error 1245 (Replica rowid mismatch detected).
+ *
+ * EVERY forwarding DBLQH hop checks ITS OWN next replica's version with this
+ * function (Dblqh::replica_rowid_forwarding_supported): the primary before
+ * ATTACHING the rowid to those shapes, and every middle replica
+ * (NoOfReplicas >= 3) before passing the received flag on -- an unsupporting
+ * next replica gets today's rowid-less shape no matter where it sits in the
+ * chain (new->new->old strips at the middle hop; new->old->new strips at the
+ * primary, and the middle never self-attaches). Receivers accept BOTH shapes
+ * unconditionally, so mixed-version operation is safe in both directions
+ * (the divergence-detection guarantee only starts once all data nodes run a
+ * supporting version).
+ *
+ * Per-series floors: the feature lands in the 25.10 maintenance series at
+ * 25.10.16 and is forward-ported to the 26.02 series at 26.02.9; every
+ * series after 26.02 (26.04, 26.05, ...) carries it from its first release.
+ */
+#define NDBD_REPLICA_ROWID_FORWARDING_2510 NDB_MAKE_VERSION(25,10,16)
+#define NDBD_REPLICA_ROWID_FORWARDING_2602 NDB_MAKE_VERSION(26,2,9)
+static inline
+bool
+ndbd_replica_rowid_forwarding(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    /* 25.10 is the only release in the 25 series. */
+    if (minor == 10) {
+      return x >= NDBD_REPLICA_ROWID_FORWARDING_2510;
+    }
+    return false;
+  }
+  /* major == 26 */
+  if (minor > 2) {
+    /* Series after 26.02 (26.04, 26.05, ...) always carry the feature. */
+    return true;
+  }
+  if (minor == 2) {
+    return x >= NDBD_REPLICA_ROWID_FORWARDING_2602;
+  }
+  return false;
+}
 #endif

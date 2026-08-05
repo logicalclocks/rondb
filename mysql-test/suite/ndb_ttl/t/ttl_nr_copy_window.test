@@ -1,0 +1,383 @@
+# ==========================================================================
+# ttl_nr_copy_window: TTL rowid-less channels racing a node-restart copy --
+#                     deterministic natural-interleaving regression test
+# ==========================================================================
+#
+# Background (storage/ndb/claude_files/ttl_899_rowid/findings.md,
+# impact_analysis.md and repro_test.md): on a TTL table the primary forwards
+# two operation shapes to backup replicas WITHOUT a rowid, re-resolved by PK
+# on the backup:
+#   D1  = INSERT over an expired-but-unpurged row (ACC dup-convert ->
+#         ZINSERT_TTL, forwarded as plain rowid-less ZINSERT), and
+#   D2a = REPLACE/upsert the primary resolved to an update (forwarded as
+#         rowid-less ZWRITE).
+# If such an op ever executed on a replica that lacks the row, the replica
+# would SILENTLY self-allocate a different rowid -- a permanent replica
+# rowid-layout fork whose delayed symptom is recurring NDB error 899
+# ("Rowid already allocated", surfaced as a fake lock-wait timeout; see
+# ttl_rowid_899_control.test for the validated 899 signature recipe).
+#
+# The natural moment a replica is missing rows is the node-restart
+# copy-fragment phase: the starting node joins the replica chain and
+# receives ALL live traffic while its fragment is still being filled in
+# rowid order.  This test drives exactly that interleaving FOR REAL, twice
+# (once against a graceful node restart, once against an INITIAL node
+# restart), with the racing operations PROVABLY committed while the
+# fragment copy is in progress:
+#
+#   - rows are loaded while the backup node is DOWN, so on restart every
+#     row must travel through the copy scan (rowGCI > the restore GCI);
+#   - ERROR_INSERT 5113 (timing only) makes the live node's copy scan crawl
+#     (~10 ms/row, TTL fragments only) and log per-fragment copy
+#     start/complete markers, turning the naturally-narrow mid-copy window
+#     into a wide deterministic one;
+#   - the test waits for the copy-start marker, commits D1 inserts and D2a
+#     REPLACEs over expired rows the scan has NOT yet reached, purge-shaped
+#     (ttl-ignored) deletes, plain fresh-key inserts and live-row deletes,
+#     then asserts the copy-complete marker has NOT appeared yet.
+#
+# EXPECTED (verified by three independent kernel code traces) behavior:
+# from copy-scan start the live node attaches the rowid to EVERY forwarded
+# operation ("Start sending ROWID for all operations from now on",
+# DblqhMain.cpp accScanConfCopyLab -> packLqhkeyreqLab), so the D1/D2a ops
+# arrive rowid-carrying and the starting node applies them at the primary's
+# exact rowids (handle_nr_copy).  NO fork forms.  The test then PROVES
+# layout agreement:
+#   (a) per-fragment physical row counts identical on both replicas
+#       (include/ndb_assert_frag_replica_consistency.inc), and
+#   (b) a rowid-recycling churn -- delete the race rows, refill the freed
+#       slots with fresh keys -- never hits 899.  The churn is strictly
+#       sequential on a quiesced, fully-started cluster, so ZERO tolerance
+#       for 899 is correct here.  (Do NOT weaken this reasoning the other
+#       way round: under concurrency/node-failure windows single benign
+#       transient 899s exist -- see normal_insert_analysis.md -- so a fork
+#       hunt in concurrent traffic must require RECURRENCE plus layout
+#       evidence.  This test's sequential churn sidesteps that ambiguity;
+#       the companion ttl_nr_copy_churn probe handles the concurrent case.)
+# If the rowid-attachment protocol regresses, this test fails: the
+# silent-fork flavor trips (a)/(b), and the known crash flavor (premature
+# AC_NORMAL flip -> ndbrequire in the NrCopy path) kills the starting node
+# so the waiter times out.
+#
+# KNOWN TRANSIENT (pre-existing, deterministic here, asserted as such): an
+# INSERT-over-expired arriving mid-copy for an ALREADY-copied row runs on
+# the starting node as ZWRITE->ZUPDATE with original_operation==ZINSERT, so
+# DBTUP's checkTTL gate 626-aborts the transaction (SQL: 1032 "Can't find
+# record") until the fragment leaves copy mode -- after which the identical
+# insert succeeds.  Retriable, symmetric on all replicas: an availability
+# blip, not a fork.
+#
+# Needs NoOfReplicas=2 with 2 data nodes (ttl_nr_copy_window.cnf) and a
+# debug (WITH_ERROR_INSERT) data node build for ERROR_INSERT 5113.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Node-membership changes while one data node restarts are expected noise.
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+--enable_query_log
+
+# TTL expiry is evaluated in the data node against UTC (checkTTL uses
+# gmtime_r(my_micro_time())); pin the session time zone so ttl_col values
+# written with NOW() agree with the data node clock.
+SET time_zone = '+00:00';
+
+--echo # === 1. single-fragment TTL table ======================================
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  data    VARCHAR(64)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY(id) PARTITIONS 1;
+
+--echo # === 2. discover fragment roles (node ids kept out of the result) ======
+# Fragment 0 has one primary and one backup data node (ids 1 and 2).  The
+# node restarted below must be the BACKUP, so the surviving node keeps the
+# primary (= rowid allocator and copy source) role throughout.
+--disable_query_log
+--let $tab_id = `SELECT table_id FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/t1' LIMIT 1`
+--let $primary_node = `SELECT DISTINCT current_primary FROM ndbinfo.table_fragments WHERE table_id = $tab_id AND fragment_id = 0`
+--let $backup_node = `SELECT 3 - $primary_node`
+--enable_query_log
+
+# Copy progress markers logged by EI 5113 on the live node.
+--let COPY_MARKER_FILE = $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.$primary_node/ndbd.log
+--let COPY_START_TEXT = Starting copy of tab($tab_id,0)
+--let COPY_DONE_TEXT = Copy of tab($tab_id,0) complete
+
+--echo # === 3. stop the backup data node (graceful, keeps its data) ===========
+--exec $NDB_MGM -e "$backup_node RESTART -n" > /dev/null
+--exec $NDB_WAITER --wait-nodes=$backup_node --not-started --timeout=180 > /dev/null
+--echo # backup data node stopped
+
+--echo # === 4. load the fragment while the backup is down =====================
+--echo # 1500 pre-expired rows (ids 1..1500) + 100 live rows (ids 2001..2100),
+--echo # inserted in id order so rowid order ~ id order; all of it is newer
+--echo # than the backup's restore GCI, so on restart every row MUST be
+--echo # delivered through the copy scan.
+--disable_query_log
+SET SESSION cte_max_recursion_depth = 2000;
+INSERT INTO test.t1
+  WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1500)
+  SELECT n, NOW() - INTERVAL 1 HOUR, CONCAT('expired-backlog-', n) FROM s ORDER BY n;
+INSERT INTO test.t1
+  WITH RECURSIVE s(n) AS (SELECT 2001 UNION ALL SELECT n + 1 FROM s WHERE n < 2100)
+  SELECT n, NOW() + INTERVAL 1 HOUR, CONCAT('live-', n) FROM s ORDER BY n;
+--enable_query_log
+--echo # visible (non-expired) rows now:
+SELECT COUNT(*) AS visible_rows FROM test.t1 WHERE id > 0;
+
+--echo # === 5. arm the timing error insert; start the backup ==================
+--echo # EI 5113 on the LIVE node: ~10 ms per copied row on TTL fragments and
+--echo # copy start/complete log markers.  Pure timing: the same wide copy
+--echo # window occurs naturally on large fragments.
+--exec $NDB_MGM -e "$primary_node ERROR 5113" > /dev/null
+--exec $NDB_MGM -e "$backup_node START" > /dev/null
+
+--echo # === 6. wait until the copy of the TTL fragment has begun ==============
+--let COPY_START_COUNT = 1
+--perl
+  use strict;
+  my $file = $ENV{'COPY_MARKER_FILE'};
+  my $text = $ENV{'COPY_START_TEXT'};
+  my $want = $ENV{'COPY_START_COUNT'};
+  my $deadline = time() + 240;
+  while (time() < $deadline) {
+    my $cnt = 0;
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    exit 0 if $cnt >= $want;
+    select(undef, undef, undef, 0.2);
+  }
+  die "Timeout waiting for occurrence #$want of '$text' in $file";
+EOF
+--echo # copy of the TTL fragment is now in progress on the live node
+# Let the crawling scan get safely past the lowest rowids (~100 rows).
+--sleep 2
+
+--echo # === 7. THE RACE: commit live TTL traffic against the half-copied ======
+--echo # ===    fragment (everything below runs inside the copy window)   ======
+
+--echo # (a) known transient: INSERT over an expired ALREADY-copied row is
+--echo #     626-aborted while the fragment is in copy mode (SQL sees 1032);
+--echo #     the identical insert will succeed after the copy completes.
+--error ER_KEY_NOT_FOUND
+INSERT INTO test.t1 VALUES (2, NOW(), 'transient-attempt');
+
+--echo # (b) D1 channel: INSERT over expired rows the copy has NOT yet reached
+INSERT INTO test.t1 VALUES (1496, NOW() + INTERVAL 1 HOUR, 'd1-race-1496');
+INSERT INTO test.t1 VALUES (1497, NOW() + INTERVAL 1 HOUR, 'd1-race-1497');
+INSERT INTO test.t1 VALUES (1498, NOW() + INTERVAL 1 HOUR, 'd1-race-1498');
+INSERT INTO test.t1 VALUES (1499, NOW() + INTERVAL 1 HOUR, 'd1-race-1499');
+INSERT INTO test.t1 VALUES (1500, NOW() + INTERVAL 1 HOUR, 'd1-race-1500');
+
+--echo # (c) D2a channel: REPLACE over expired rows the copy has NOT yet reached
+REPLACE INTO test.t1 VALUES (1481, NOW() + INTERVAL 1 HOUR, 'd2-race-1481');
+REPLACE INTO test.t1 VALUES (1482, NOW() + INTERVAL 1 HOUR, 'd2-race-1482');
+REPLACE INTO test.t1 VALUES (1483, NOW() + INTERVAL 1 HOUR, 'd2-race-1483');
+REPLACE INTO test.t1 VALUES (1484, NOW() + INTERVAL 1 HOUR, 'd2-race-1484');
+REPLACE INTO test.t1 VALUES (1485, NOW() + INTERVAL 1 HOUR, 'd2-race-1485');
+
+--echo # (d) purge-shaped deletes (ttl-ignored, the RDRS purge wire shape):
+--echo #     one row the copy already delivered (id 3), one it has not
+--echo #     reached yet (id 1490); both must physically delete on both
+--echo #     replicas
+--enable_info
+SET SESSION ttl_expired_rows_visible_in_delete = 1;
+DELETE FROM test.t1 WHERE id IN (3, 1490);
+SET SESSION ttl_expired_rows_visible_in_delete = 0;
+--disable_info
+
+--echo # (e) fresh-key inserts (rowid-carrying control channel)
+INSERT INTO test.t1 VALUES
+  (3001, NOW() + INTERVAL 1 HOUR, 'fresh-3001'),
+  (3002, NOW() + INTERVAL 1 HOUR, 'fresh-3002'),
+  (3003, NOW() + INTERVAL 1 HOUR, 'fresh-3003'),
+  (3004, NOW() + INTERVAL 1 HOUR, 'fresh-3004'),
+  (3005, NOW() + INTERVAL 1 HOUR, 'fresh-3005');
+
+--echo # (f) deletes of live rows (frees slots on both replicas, backup-first)
+DELETE FROM test.t1 WHERE id IN (2001, 2002, 2003, 2004, 2005);
+
+--echo # === 8. prove the race landed inside the copy window ===================
+--let COPY_DONE_MAX = 0
+--perl
+  use strict;
+  my $file = $ENV{'COPY_MARKER_FILE'};
+  my $text = $ENV{'COPY_DONE_TEXT'};
+  my $max  = $ENV{'COPY_DONE_MAX'};
+  my $cnt = 0;
+  if (open(my $fh, '<', $file)) {
+    local $/; my $content = <$fh>; close($fh);
+    my $pos = 0;
+    while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+  }
+  die "TEST BROKEN: copy of the TTL fragment completed ($cnt done-markers, max $max allowed) before the racing operations were committed"
+    if $cnt > $max;
+  exit 0;
+EOF
+--echo # racing operations committed while the fragment copy was still running
+
+--echo # === 9. let the copy finish and the backup rejoin ======================
+--exec $NDB_WAITER --timeout=300 > /dev/null
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--echo # cluster whole again, error insert disarmed
+
+--echo # === 10. detection: replica rowid layouts must NOT have forked =========
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # physical rows per replica (identical on both nodes by the assert
+--echo # above; 1500 backlog + 100 live - 2 purged - 5 deleted + 5 fresh = 1598):
+SELECT MAX(cnt) AS physical_rows_per_replica FROM (
+  SELECT node_id, SUM(fixed_elem_count) AS cnt
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = 'test/def/t1'
+  GROUP BY node_id) per_node;
+
+--echo # === 11. the copy-mode transient has cleared ===========================
+--echo # the same insert-over-expired that 626-aborted mid-copy now succeeds
+INSERT INTO test.t1 VALUES (2, NOW() + INTERVAL 1 HOUR, 'insert-over-expired-after-copy');
+
+--echo # === 12. 899 tripwire: recycle the race rows' rowids ===================
+--echo # Delete the D1/D2a race rows and refill the freed slots with fresh
+--echo # keys: the primary's free list hands out exactly those slots and
+--echo # forwards each insert with a required rowid, so a replica that had
+--echo # self-allocated during the race would abort one of these with the 899
+--echo # signature (fake ER_LOCK_WAIT_TIMEOUT; see ttl_rowid_899_control).
+--echo # Sequential statements on a quiesced healthy cluster: all must succeed.
+DELETE FROM test.t1 WHERE id IN (1496, 1497, 1498, 1499, 1500);
+INSERT INTO test.t1 VALUES
+  (3006, NOW() + INTERVAL 1 HOUR, 'refill-3006'),
+  (3007, NOW() + INTERVAL 1 HOUR, 'refill-3007'),
+  (3008, NOW() + INTERVAL 1 HOUR, 'refill-3008'),
+  (3009, NOW() + INTERVAL 1 HOUR, 'refill-3009'),
+  (3010, NOW() + INTERVAL 1 HOUR, 'refill-3010');
+DELETE FROM test.t1 WHERE id IN (1481, 1482, 1483, 1484, 1485);
+INSERT INTO test.t1 VALUES
+  (3011, NOW() + INTERVAL 1 HOUR, 'refill-3011'),
+  (3012, NOW() + INTERVAL 1 HOUR, 'refill-3012'),
+  (3013, NOW() + INTERVAL 1 HOUR, 'refill-3013'),
+  (3014, NOW() + INTERVAL 1 HOUR, 'refill-3014'),
+  (3015, NOW() + INTERVAL 1 HOUR, 'refill-3015');
+DELETE FROM test.t1 WHERE id IN (3001, 3002, 3003, 3004, 3005);
+INSERT INTO test.t1 VALUES
+  (3016, NOW() + INTERVAL 1 HOUR, 'refill-3016'),
+  (3017, NOW() + INTERVAL 1 HOUR, 'refill-3017'),
+  (3018, NOW() + INTERVAL 1 HOUR, 'refill-3018'),
+  (3019, NOW() + INTERVAL 1 HOUR, 'refill-3019'),
+  (3020, NOW() + INTERVAL 1 HOUR, 'refill-3020');
+
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # === 13. phase 2: INITIAL restart of the backup, race the full copy ====
+--echo # The backup's file system is wiped, so the copy phase must deliver
+--echo # EVERY row (restore GCI 0); race the window again on the initial-NR
+--echo # code path.
+--exec $NDB_MGM -e "$primary_node ERROR 5113" > /dev/null
+--exec $NDB_MGM -e "$backup_node RESTART -n -i" > /dev/null
+--exec $NDB_WAITER --wait-nodes=$backup_node --not-started --timeout=300 > /dev/null
+--exec $NDB_MGM -e "$backup_node START" > /dev/null
+
+# wait for the SECOND copy-start marker of this table on the live node
+--let COPY_START_COUNT = 2
+--perl
+  use strict;
+  my $file = $ENV{'COPY_MARKER_FILE'};
+  my $text = $ENV{'COPY_START_TEXT'};
+  my $want = $ENV{'COPY_START_COUNT'};
+  my $deadline = time() + 300;
+  while (time() < $deadline) {
+    my $cnt = 0;
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    exit 0 if $cnt >= $want;
+    select(undef, undef, undef, 0.2);
+  }
+  die "Timeout waiting for occurrence #$want of '$text' in $file";
+EOF
+--echo # initial-restart copy of the TTL fragment is in progress
+--sleep 2
+
+--echo # mid-copy race, round 2: D1 + D2a on not-yet-copied expired rows,
+--echo # fresh keys, live deletes
+INSERT INTO test.t1 VALUES (1471, NOW() + INTERVAL 1 HOUR, 'd1-race2-1471');
+INSERT INTO test.t1 VALUES (1472, NOW() + INTERVAL 1 HOUR, 'd1-race2-1472');
+REPLACE INTO test.t1 VALUES (1461, NOW() + INTERVAL 1 HOUR, 'd2-race2-1461');
+REPLACE INTO test.t1 VALUES (1462, NOW() + INTERVAL 1 HOUR, 'd2-race2-1462');
+INSERT INTO test.t1 VALUES
+  (3021, NOW() + INTERVAL 1 HOUR, 'fresh-3021'),
+  (3022, NOW() + INTERVAL 1 HOUR, 'fresh-3022');
+DELETE FROM test.t1 WHERE id IN (2006, 2007);
+
+# the phase-2 copy must still be running (only phase 1's done-marker exists)
+--let COPY_DONE_MAX = 1
+--perl
+  use strict;
+  my $file = $ENV{'COPY_MARKER_FILE'};
+  my $text = $ENV{'COPY_DONE_TEXT'};
+  my $max  = $ENV{'COPY_DONE_MAX'};
+  my $cnt = 0;
+  if (open(my $fh, '<', $file)) {
+    local $/; my $content = <$fh>; close($fh);
+    my $pos = 0;
+    while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+  }
+  die "TEST BROKEN: phase-2 copy of the TTL fragment completed ($cnt done-markers, max $max allowed) before the racing operations were committed"
+    if $cnt > $max;
+  exit 0;
+EOF
+--echo # phase-2 racing operations committed while the full copy was running
+
+--exec $NDB_WAITER --timeout=300 > /dev/null
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--echo # backup rebuilt from scratch and rejoined
+
+--echo # === 14. final detection and tripwire ==================================
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # recycle the phase-2 race rows' slots as well
+DELETE FROM test.t1 WHERE id IN (1471, 1472, 1461, 1462);
+INSERT INTO test.t1 VALUES
+  (3023, NOW() + INTERVAL 1 HOUR, 'refill-3023'),
+  (3024, NOW() + INTERVAL 1 HOUR, 'refill-3024'),
+  (3025, NOW() + INTERVAL 1 HOUR, 'refill-3025'),
+  (3026, NOW() + INTERVAL 1 HOUR, 'refill-3026');
+
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # physical rows per replica: phase 1 left 1598; phase 2 added 2 fresh
+--echo # and deleted 2 live rows, the tripwire freed 4 and refilled 4 => 1598
+SELECT MAX(cnt) AS physical_rows_per_replica FROM (
+  SELECT node_id, SUM(fixed_elem_count) AS cnt
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = 'test/def/t1'
+  GROUP BY node_id) per_node;
+
+--echo # visible rows: 100 live pool - 5 - 2 deleted + 1 (id 2) + 15 refills
+--echo #               + 2 fresh + 4 refills = 115
+SELECT COUNT(*) AS visible_rows FROM test.t1 WHERE id > 0;
+--echo # spot-check rows written during the two race windows
+SELECT id, data FROM test.t1 WHERE id IN (2, 2008, 3016, 3021, 3026) ORDER BY id;
+
+DROP TABLE test.t1;
