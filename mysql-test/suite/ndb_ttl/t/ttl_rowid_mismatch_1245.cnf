@@ -1,0 +1,14 @@
+# ttl_rowid_mismatch_1245 needs NoOfReplicas=2 with exactly 2 data nodes
+# (one node group): the fabricated placement fork and the error-1245
+# verification live on the primary->backup replica hop of one fragment.
+# Reuse the canonical 2-replica NDB config (same as ttl_nr_copy_window,
+# ttl_node_restart_copyfrag and ttl_nr_copy_churn).
+!include suite/ndb/my_2rpl.cnf
+
+[cluster_config]
+# The ERROR_INSERT 5118 section deliberately ndbaborts the backup data
+# node at the mismatch-detection point: StopOnError=0 lets the angel
+# restart the crashed node automatically (same idiom as
+# suite/ndb/t/ndb_stop_on_error.cnf), so the test only has to wait for
+# the node to rejoin.
+StopOnError=0

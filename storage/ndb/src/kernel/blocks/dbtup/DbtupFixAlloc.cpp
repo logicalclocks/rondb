@@ -34,7 +34,6 @@
 #define JAM_FILE_ID 421
 
 #ifdef VM_TRACE
-//#define DEBUG_899_ERROR 1
 //#define DEBUG_ELEM_COUNT 1
 #endif
 
@@ -44,16 +43,57 @@
 #define DEB_ELEM_COUNT(arglist) do { } while (0)
 #endif
 
-#ifdef DEBUG_899_ERROR
-#define DEB_899_ERROR(arglist)   \
-  do {                           \
-    g_eventLogger->info arglist; \
-  } while (0)
-#else
-#define DEB_899_ERROR(arglist) \
-  do {                         \
-  } while (0)
-#endif
+/**
+ * Production logging of ZROWID_ALLOCATED (899) raised by alloc_fix_rowid.
+ *
+ * In normal operation a required-rowid insert hitting an occupied slot
+ * means the replica rowid layouts have diverged (or, rarely, a benign
+ * transient around abort/takeover windows that clears on retry), so the
+ * occurrence must be visible in production logs, not only in debug builds.
+ * Two guards keep it from flooding:
+ * - silent until the node is fully started: REDO replay tolerates 899 on
+ *   replayed inserts by design (Dblqh::logLqhkeyrefLab), so every restart
+ *   would otherwise spam the log;
+ * - rate-limited to two lines per 10 s window per instance: a permanently
+ *   diverged slot is re-hit by every retry, and the suppressed count is
+ *   carried in the next line.
+ * Each line goes to the node log (full detail) and, via warningEvent, to
+ * the cluster log. Recurring lines for the same tab/row indicate diverged
+ * replica layouts; a line or two that never repeats is the benign
+ * transient.
+ */
+void Dbtup::log_rowid_already_allocated(Fragrecord *fragPtrP,
+                                        Uint32 page_no,
+                                        Uint32 page_idx,
+                                        bool page_full) {
+  if (!c_started) {
+    return;
+  }
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (!NdbTick_IsValid(m_rowid_899_window_start) ||
+      NdbTick_Elapsed(m_rowid_899_window_start, now).milliSec() >= 10000) {
+    m_rowid_899_window_start = now;
+    m_rowid_899_window_count = 0;
+  }
+  if (m_rowid_899_window_count >= 2) {
+    m_rowid_899_suppressed++;
+    return;
+  }
+  m_rowid_899_window_count++;
+  g_eventLogger->warning(
+      "DBTUP %u: ZROWID_ALLOCATED (899): required rowid already in use"
+      " tab(%u,%u) row(%u,%u) page state %s"
+      " (%u occurrences suppressed) -- recurring 899 on the same row"
+      " indicates diverged replica rowid layouts",
+      instance(), fragPtrP->fragTableId, fragPtrP->fragmentId, page_no,
+      page_idx, page_full ? "FULL" : "FREE", m_rowid_899_suppressed);
+  warningEvent("DBTUP %u: 899 rowid already in use tab(%u,%u) row(%u,%u)"
+               " %s supp=%u",
+               instance(), fragPtrP->fragTableId, fragPtrP->fragmentId,
+               page_no, page_idx, page_full ? "FULL" : "FREE",
+               m_rowid_899_suppressed);
+  m_rowid_899_suppressed = 0;
+}
 
 //
 // Fixed Allocator
@@ -288,11 +328,9 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
     case ZTH_MM_FREE:
       acquire_frag_mutex(regFragPtr, page_no, jamBuffer());
       if (((Fix_page *)pagePtr.p)->alloc_record(idx) != idx) {
-        DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)", instance(),
-                       regFragPtr->fragTableId, regFragPtr->fragmentId, page_no,
-                       idx));
         *err = ZROWID_ALLOCATED;
         release_frag_mutex(regFragPtr, page_no, jamBuffer());
+        log_rowid_already_allocated(regFragPtr, page_no, idx, false);
         return 0;
       }
 
@@ -317,9 +355,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
     case ZTH_MM_FULL:
       jam();
       *err = ZROWID_ALLOCATED;
-      DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)", instance(),
-                     regFragPtr->fragTableId, regFragPtr->fragmentId, page_no,
-                     idx));
+      log_rowid_already_allocated(regFragPtr, page_no, idx, true);
       return 0;
     default:
       ndbabort();

@@ -28,6 +28,7 @@
 #define DBTUP_H
 
 #include <ndb_limits.h>
+#include <NdbTick.h>
 #include <portlib/ndb_prefetch.h>
 #include <trigger_definitions.h>
 #include <AttributeDescriptor.hpp>
@@ -4316,6 +4317,19 @@ public:
 
  private:
   bool c_started;
+
+  /**
+   * Rate-limited production logging of ZROWID_ALLOCATED (899) raised by
+   * alloc_fix_rowid, to both the node log and the cluster log
+   * (warningEvent). Silent until the node is started (REDO replay raises
+   * 899 on replayed inserts by design); thereafter at most two lines per
+   * 10 s window per instance with a suppressed-occurrence count.
+   */
+  NDB_TICKS m_rowid_899_window_start;
+  Uint32 m_rowid_899_window_count;
+  Uint32 m_rowid_899_suppressed;
+  void log_rowid_already_allocated(Fragrecord *fragPtrP, Uint32 page_no,
+                                   Uint32 page_idx, bool page_full);
 
   Pending_undo_page_pool c_pending_undo_page_pool;
   Pending_undo_page_hash c_pending_undo_page_hash;

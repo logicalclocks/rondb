@@ -1,0 +1,101 @@
+SET time_zone = '+00:00';
+# === setup: TTL table and row pools =====================================
+CREATE TABLE test.churn_t (
+id      INT NOT NULL PRIMARY KEY,
+ttl_col DATETIME,
+v       INT,
+KEY ttl_index (ttl_col)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY (id) PARTITIONS 2;
+# === churn procedure (safe channels only) ===============================
+CREATE PROCEDURE test.churn_run(IN burst INT)
+BEGIN
+DECLARE i INT DEFAULT 0;
+DECLARE iend INT DEFAULT 0;
+DECLARE kL INT; DECLARE kF INT;
+DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+DECLARE n INT DEFAULT 0;
+DECLARE ci INT DEFAULT 1;
+DECLARE msg TEXT DEFAULT '';
+DECLARE f899 INT DEFAULT 0;
+DECLARE fknown INT DEFAULT 0;
+GET STACKED DIAGNOSTICS n = NUMBER;
+WHILE ci <= n DO
+GET STACKED DIAGNOSTICS CONDITION ci msg = MESSAGE_TEXT;
+IF msg LIKE '%Rowid already allocated%' THEN
+SET f899 = 1;
+SET @churn_899_msg = msg;
+END IF;
+IF msg LIKE '%Tuple did not exist%' OR msg LIKE '%Duplicate entry%'
+         OR msg LIKE '%error 626%' OR msg LIKE '%error 630%' THEN
+SET fknown = 1;
+END IF;
+SET ci = ci + 1;
+END WHILE;
+IF f899 = 1 THEN
+SET @churn_899 = @churn_899 + 1;
+ELSEIF fknown = 1 THEN
+SET @churn_known = @churn_known + 1;
+ELSE
+SET @churn_other = @churn_other + 1;
+END IF;
+END;
+SET i = IFNULL(@churn_i, 0);
+SET iend = i + burst;
+churn_loop: LOOP
+IF i >= iend THEN
+LEAVE churn_loop;
+END IF;
+SET kL = 1001 + (i MOD 800);
+SET kF = 200000 + i;
+/* L pool: live-row ZWRITE */
+REPLACE INTO test.churn_t VALUES (kL, NOW(), 6);
+/* fresh insert + trailing delete: rowid free-list cycling */
+INSERT INTO test.churn_t VALUES (kF, NOW(), 7);
+DELETE FROM test.churn_t WHERE id = kF - 25;
+SET i = i + 1;
+SET @churn_i = i;
+END LOOP;
+END|
+SET time_zone = '+00:00';
+SET SESSION ttl_expired_rows_visible_in_delete = 1;
+SET @churn_i = 0;
+# === baseline: pools loaded, replicas identical =========================
+# ndb_assert_frag_replica_consistency: PASS for test.churn_t (all fragments identical on 2 replicas)
+# === cycle 1: restart node 2 (args: ''), churn in supervised bursts ===
+# --- warmup churn (both replicas up)
+# --- stopping node (graceful; churn bursts continue during the stop)
+# --- node down; churning against the surviving replica
+# --- starting node again: churn bursts run through the copy window
+# --- node rejoined; churn quiesced; collecting per-cycle verdicts
+# --- invariant: per-fragment physical row counts identical on both replicas
+# ndb_assert_frag_replica_consistency: PASS for test.churn_t (all fragments identical on 2 replicas)
+# --- fresh-PK sweep: insert / delete / re-insert must never hit 899
+# --- sweep clean (450 fresh-PK operations, no persistent 899)
+# === cycle 2: restart node 1 (args: ''), churn in supervised bursts ===
+# --- warmup churn (both replicas up)
+# --- stopping node (graceful; churn bursts continue during the stop)
+# --- node down; churning against the surviving replica
+# --- starting node again: churn bursts run through the copy window
+# --- node rejoined; churn quiesced; collecting per-cycle verdicts
+# --- invariant: per-fragment physical row counts identical on both replicas
+# ndb_assert_frag_replica_consistency: PASS for test.churn_t (all fragments identical on 2 replicas)
+# --- fresh-PK sweep: insert / delete / re-insert must never hit 899
+# --- sweep clean (450 fresh-PK operations, no persistent 899)
+# === cycle 3: restart node 2 (args: '-i'), churn in supervised bursts ===
+# --- warmup churn (both replicas up)
+# --- stopping node (graceful; churn bursts continue during the stop)
+# --- node down; churning against the surviving replica
+# --- starting node again: churn bursts run through the copy window
+# --- node rejoined; churn quiesced; collecting per-cycle verdicts
+# --- invariant: per-fragment physical row counts identical on both replicas
+# ndb_assert_frag_replica_consistency: PASS for test.churn_t (all fragments identical on 2 replicas)
+# --- fresh-PK sweep: insert / delete / re-insert must never hit 899
+# --- sweep clean (450 fresh-PK operations, no persistent 899)
+# === all cycles green: final quiesced consistency check =================
+# ndb_assert_frag_replica_consistency: PASS for test.churn_t (all fragments identical on 2 replicas)
+# === cleanup ============================================================
+DROP PROCEDURE test.churn_run;
+DROP TABLE test.churn_t;
+DROP TABLE test.churn_seed;

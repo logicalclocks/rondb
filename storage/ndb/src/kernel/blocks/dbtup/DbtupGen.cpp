@@ -107,6 +107,10 @@ Dbtup::Dbtup(Block_context& ctx,
 {
   BLOCK_CONSTRUCTOR(Dbtup);
 
+  NdbTick_Invalidate(&m_rowid_899_window_start);
+  m_rowid_899_window_count = 0;
+  m_rowid_899_suppressed = 0;
+
   if (blockNo == DBTUP) {
     addRecSignal(GSN_DEBUG_SIG, &Dbtup::execDEBUG_SIG);
     addRecSignal(GSN_CONTINUEB, &Dbtup::execCONTINUEB);
