@@ -704,7 +704,8 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
       if (trpId == 0) trpId = 1;
       while (trpId <= globalTransporterRegistry.get_transporter_count()) {
         RdmaTransporterStats stats{};
-        if (!handles_this_trp(trpId) ||
+        if (globalTransporterRegistry.get_transporter(trpId) == nullptr ||
+            !handles_this_trp(trpId) ||
             globalTransporterRegistry.is_inactive_trp(trpId) ||
             !globalTransporterRegistry.get_rdma_stats(trpId, stats)) {
           trpId++;
