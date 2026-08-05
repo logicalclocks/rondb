@@ -446,6 +446,18 @@ void ClusterMgr::threadMain() {
       if (!theNode.defined) continue;
 
       if (theNode.is_connected() == false) {
+        /**
+         * Only allow data node connection setup to be attempted
+         * if we have received NF_COMPLETEREP for previous connection
+         * incarnation so that cluster disconnect can be reliably
+         * detected
+         */
+        if (theNode.m_info.getType() == NodeInfo::DB &&
+            !theNode.nfCompleteRep) {
+          /* Data node failure notification not received yet */
+          continue;
+        }
+
         theFacade.startConnecting(nodeId);
         continue;
       }
@@ -1964,7 +1976,9 @@ void ClusterMgr::execNF_COMPLETEREP(const NdbApiSignal *signal,
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
   trp_node &node = theNodes[nodeId];
-  if (node.nfCompleteRep == false) {
+  /* Must have received a NODE_FAILREP prior to this */
+  assert(node.m_node_fail_rep);
+  if (!node.nfCompleteRep) {
     node.nfCompleteRep = true;
     theFacade.for_each(this, signal, ptr);
   }
@@ -2219,7 +2233,12 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
     NdbMutex_Unlock(m_node_state_mutex);
 
     if (node_failrep == false) {
+      /**
+       * First handling of node failure for this node
+       * Clear nfCompleteRep flag
+       */
       theNode.m_node_fail_rep = true;
+      theNode.nfCompleteRep = false;
       NodeBitmask::set(theAllNodes, i);
       noOfNodes++;
     }
@@ -2269,7 +2288,6 @@ void ClusterMgr::set_node_dead(trp_node &theNode) {
   theNode.m_state.m_connected_nodes.clear();
   theNode.m_state.startLevel = NodeState::SL_NOTHING;
   theNode.m_info.m_connectCount++;
-  theNode.nfCompleteRep = false;
 }
 
 void
