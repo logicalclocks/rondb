@@ -48,8 +48,10 @@ extern int opt_ndb_nodeid;
 
 #if defined VM_TRACE || defined ERROR_INSERT
 extern int g_errorInsert;
+#define ERROR_INSERT_VALUE g_errorInsert
 #define ERROR_INSERTED(x) (g_errorInsert == x)
 #else
+#define ERROR_INSERT_VALUE 0
 #define ERROR_INSERTED(x) false
 #endif
 
@@ -2019,11 +2021,13 @@ ConfigManager::set_node_failed(Uint32 nodeId)
 
 Config *ConfigManager::load_init_config(const char *config_filename) {
   InitConfigFileParser parser;
+  parser.insertError(ERROR_INSERT_VALUE);
   return parser.parseConfig(config_filename);
 }
 
 Config *ConfigManager::load_init_mycnf(const char *cluster_config_suffix) {
   InitConfigFileParser parser;
+  parser.insertError(ERROR_INSERT_VALUE);
   return parser.parse_mycnf(cluster_config_suffix);
 }
 

@@ -79,7 +79,7 @@ NdbConfig_get_pidfile_path(int *_len)
   return path;
 }
 
-static char* 
+static char*
 NdbConfig_AllocHomePath(int _len, bool pid_file)
 {
   int path_len;
@@ -105,7 +105,7 @@ NdbConfig_SetPidfilePath(const char* path){
   pid_file_dir_path= path;
 }
 
-char* 
+char*
 NdbConfig_NdbCfgName(int with_ndb_home){
   char *buf;
   int len = 0;
@@ -157,7 +157,7 @@ char *get_prefix_buf(int len, int node_id, bool pidfile)
   return buf;
 }
 
-char* 
+char*
 NdbConfig_ErrorFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
@@ -165,11 +165,18 @@ NdbConfig_ErrorFileName(int node_id){
   return buf;
 }
 
+char* NdbConfig_ErrorFileCopyName(int node_id) {
+  char *buf = get_prefix_buf(PATH_MAX, node_id, false);
+  int len = (int)strlen(buf);
+  snprintf(buf + len, PATH_MAX, "_error.log.bak");
+  return buf;
+}
+
 char*
 NdbConfig_ClusterLogFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
-  int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_cluster.log");
+  char *buf = get_prefix_buf(PATH_MAX, node_id, false);
+  int len = (int)strlen(buf);
+  snprintf(buf + len, PATH_MAX, "_cluster.log");
   return buf;
 }
 

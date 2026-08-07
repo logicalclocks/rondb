@@ -253,19 +253,19 @@ void AsyncIoThread::allocMemReq(Request *request) {
     case AllocMemReq::RT_MAP: {
       bool memlock =
           !!(request->par.alloc.requestInfo & AllocMemReq::RT_MEMLOCK);
-    request->par.alloc.ctx->m_mm.map(&watchDog, memlock);
-    request->par.alloc.bytes = 0;
-    NDBFS_SET_REQUEST_ERROR(request, 0);
-    break;
-  }
-  case AllocMemReq::RT_EXTEND:
-    /**
-     * Not implemented...
-     */
-    assert(false);
-    request->par.alloc.bytes = 0;
-    NDBFS_SET_REQUEST_ERROR(request, 1);
-    break;
+      request->par.alloc.ctx->m_mm.map(&watchDog, memlock);
+      request->par.alloc.bytes = 0;
+      NDBFS_CLEAR_REQUEST_ERROR(request);
+      break;
+    }
+    case AllocMemReq::RT_EXTEND:
+      /**
+       * Not implemented...
+       */
+      assert(false);
+      request->par.alloc.bytes = 0;
+      NDBFS_SET_REQUEST_ERROR(request, 1);
+      break;
   }
 }
 
@@ -279,7 +279,9 @@ void AsyncIoThread::buildIndxReq(Request *request) {
   require(has_buffer);
   req.mem_buffer = ptr.p;
   req.buffer_size = cnt * sizeof(GlobalPage);
-  NDBFS_SET_REQUEST_ERROR(request, (*req.func_ptr)(&req));
+  require(request->error.code == 0);
+  const Uint32 res = (*req.func_ptr)(&req);
+  if (res != 0) NDBFS_SET_REQUEST_ERROR(request, res);
 }
 
 void AsyncIoThread::attach(AsyncFile *file) {
