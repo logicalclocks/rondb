@@ -110,10 +110,12 @@ APIKeyCache* start_api_key_cache() {
 
 void stop_api_key_cache() {
   DEB_AUTH("API Key Cache stopped: %p", apiKeyCache);
-  if (apiKeyCache != nullptr) {
-    delete apiKeyCache;
-    apiKeyCache = nullptr;
-  }
+  /* Null the global before destroying so the reconnect listener (which
+   * may fire from another thread during a cluster failure) sees null
+   * instead of a half-destroyed cache. */
+  APIKeyCache *cache = apiKeyCache;
+  apiKeyCache = nullptr;
+  delete cache;
 }
 
 void APIKeyCache::cleanup() {
@@ -1320,7 +1322,7 @@ err:
     dict = nullptr;
   }
   if (ndb != nullptr) {
-    RS_Status rs;
+    RS_Status rs = RS_OK;
     rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
     ndb = nullptr;
   }
@@ -1342,7 +1344,7 @@ done:
     dict->dropEvent(EVENT_NAME);
   }
   if (ndb != nullptr) {
-    RS_Status rs;
+    RS_Status rs = RS_OK;
     rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
   }
   g_eventLogger->info("[API Key Event] Watcher stopped");
