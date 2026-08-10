@@ -123,6 +123,18 @@ class RDRSRonDBConnection {
   int GetNumReadyDataNodes();
 
   /**
+   * Callback invoked whenever a reconnection starts (any connection).
+   * Long-lived Ndb object holders - the cache event watchers, which may
+   * otherwise sit in pollEvents() forever if TE_CLUSTER_FAILURE is never
+   * delivered - use this to release their objects so the reconnection
+   * teardown converges instead of timing out and deleting Ndb objects
+   * with live event operations. Listeners must be cheap and non-blocking
+   * (typically: set an atomic flag).
+   */
+  typedef void (*ReconnectListener)();
+  static void RegisterReconnectListener(ReconnectListener listener);
+
+  /**
    * Starts reconnection thread which calls the ReconnectHandler
    * Note: This is only made public for testing.
    *

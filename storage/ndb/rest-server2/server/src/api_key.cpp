@@ -89,11 +89,22 @@ extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 bool contains_upper(std::string_view s);
 RS_Status computeHash(const std::string &unhashed, std::string &hashed);
 
+/* On reconnection the event watcher must release its metadata Ndb object
+ * (it holds a live event subscription) or the connection teardown cannot
+ * converge. TE_CLUSTER_FAILURE delivery alone is not reliable enough. */
+static void api_key_cache_reconnect_listener() {
+  if (apiKeyCache != nullptr) {
+    apiKeyCache->force_reconnect();
+  }
+}
+
 APIKeyCache* start_api_key_cache() {
   apiKeyCache = new APIKeyCache();
   require(apiKeyCache != nullptr);
   apiKeyCache->set_event_name("RDRS_AK_EVT_" + generate_event_uuid());
   DEB_AUTH("API Key Cache started: %p", apiKeyCache);
+  RDRSRonDBConnection::RegisterReconnectListener(
+    api_key_cache_reconnect_listener);
   return apiKeyCache;
 }
 

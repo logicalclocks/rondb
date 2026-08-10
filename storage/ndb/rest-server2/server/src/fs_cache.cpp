@@ -80,10 +80,20 @@ extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 FSMetadataCache *g_fs_metadata_cache = nullptr;
 
+/* On reconnection the event watcher must release its metadata Ndb object
+ * (it holds a live event subscription) or the connection teardown cannot
+ * converge. TE_CLUSTER_FAILURE delivery alone is not reliable enough. */
+static void fs_cache_reconnect_listener() {
+  if (g_fs_metadata_cache != nullptr) {
+    g_fs_metadata_cache->force_reconnect();
+  }
+}
+
 void start_fs_cache() {
   g_fs_metadata_cache = new FSMetadataCache();
   require(g_fs_metadata_cache != nullptr);
   DEB_FS("FS Metadata Cache started: %p", g_fs_metadata_cache);
+  RDRSRonDBConnection::RegisterReconnectListener(fs_cache_reconnect_listener);
   g_fs_metadata_cache->start_fs_cache_thread();
 }
 

@@ -454,6 +454,26 @@ static void *reconnect_thread_wrapper(void *arg) {
   return NULL;
 }
 
+static constexpr int MAX_RECONNECT_LISTENERS = 4;
+static RDRSRonDBConnection::ReconnectListener
+  g_reconnectListeners[MAX_RECONNECT_LISTENERS];
+static std::atomic<int> g_numReconnectListeners{0};
+
+void RDRSRonDBConnection::RegisterReconnectListener(
+  ReconnectListener listener) {
+  int idx = g_numReconnectListeners.load(std::memory_order_acquire);
+  require(idx < MAX_RECONNECT_LISTENERS);
+  g_reconnectListeners[idx] = listener;
+  g_numReconnectListeners.store(idx + 1, std::memory_order_release);
+}
+
+static void notifyReconnectListeners() {
+  int cnt = g_numReconnectListeners.load(std::memory_order_acquire);
+  for (int i = 0; i < cnt; i++) {
+    g_reconnectListeners[i]();
+  }
+}
+
 // Note it is only public for testing
 RS_Status RDRSRonDBConnection::Reconnect() {
   checkMagic();
@@ -497,5 +517,10 @@ RS_Status RDRSRonDBConnection::Reconnect() {
   }
   NdbMutex_Unlock(connectionMutex);
   NdbMutex_Unlock(connectionInfoMutex);
+  /* Ask long-lived Ndb object holders (cache event watchers) to release
+   * their objects so the teardown's wait-for-objects converges. Called
+   * after unlocking: listeners only set atomic flags, but must not run
+   * under our mutexes. */
+  notifyReconnectListeners();
   return RS_OK;
 }
