@@ -207,7 +207,8 @@ RS_Status ronsql_dal(const char* database,
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 
 /**
- * Least number of data nodes in STARTED state (as reported through
+ * Least number of data nodes in STARTED state or single-user mode, and
+ * version-compatible (as reported through
  * Ndb_cluster_connection::get_no_ready(); nodes that are connected but
  * still starting do not count) across the data cluster connections.
  * 0 or -1 means requests cannot be served. Any value > 0 means the
