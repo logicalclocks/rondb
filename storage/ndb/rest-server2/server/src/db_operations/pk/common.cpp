@@ -790,7 +790,10 @@ int GetByteArray(const NdbRecAttr *attr, const char **firstByte, Uint32 *bytes) 
 bool CanRetryOperation(RS_Status status) {
   bool retry = false;
   if (status.http_code != SUCCESS) {
-    if (status.classification == NdbError::TemporaryError) {
+    /* NdbError::TemporaryError is a Status enum value; the matching
+     * RS_Status field is status (classification holds the unrelated
+     * Classification enum, whose value 1 is ApplicationError). */
+    if (status.status == NdbError::TemporaryError) {
       retry = true;
     } else if (status.code == 245 /* many active scans */) {
       retry = true;
