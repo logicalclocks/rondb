@@ -226,6 +226,9 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
   stats->ndb_objects_count = ret.ndb_objects_count;
   stats->ndb_objects_available = ret.ndb_objects_available;
   stats->connection_state = ret.connection_state;
+  stats->is_reconnection_in_progress = ret.is_reconnection_in_progress;
+  stats->is_shutdown = ret.is_shutdown;
+  stats->is_shutting_down = ret.is_shutting_down;
   return RS_OK;
 }
 

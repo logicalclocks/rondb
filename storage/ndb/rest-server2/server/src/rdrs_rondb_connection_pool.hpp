@@ -33,6 +33,9 @@ class alignas(64) ThreadContext {
   bool m_is_shutdown;
   bool m_is_ndb_object_in_use;
   Ndb *m_ndb_object;
+  /* Connection generation m_ndb_object was handed out under; if the
+   * connection has reconnected since, the object must not be reused. */
+  Uint64 m_generation;
   void init_thread_context();
 };
 
@@ -44,6 +47,14 @@ class RDRSRonDBConnectionPool {
   Uint32 m_num_threads;
   Uint32 m_num_data_connections;
   bool is_shutdown = true;
+
+  /**
+   * Start reconnection of a data connection (idempotent) and hand its
+   * idle thread-cached Ndb objects back so the teardown does not wait for
+   * objects nobody would return. In-use objects are handed back by
+   * ReturnNdbObject via the generation check.
+   */
+  void TriggerReconnect(Uint32 connection);
 
  public:
   static const Uint32 kNoTTLPurgeThreads = 2;
@@ -193,5 +204,15 @@ class RDRSRonDBConnectionPool {
    * @return RonDB_Stats
    */
   RonDB_Stats GetStats();
+
+  /**
+   * @brief Reconnection generation of a data connection.
+   *
+   * Bumped every time a reconnection of that connection starts.
+   * Observability for tests and debugging.
+   */
+  Uint64 GetDataConnectionGeneration(Uint32 connection) {
+    return dataConnections[connection]->GetGeneration();
+  }
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_POOL_
