@@ -214,5 +214,11 @@ class RDRSRonDBConnectionPool {
   Uint64 GetDataConnectionGeneration(Uint32 connection) {
     return dataConnections[connection]->GetGeneration();
   }
+
+  /**
+   * @brief Least number of reachable data nodes across the data
+   * connections. 0 or -1 means requests cannot be served.
+   */
+  int GetMinReadyDataNodes();
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_POOL_

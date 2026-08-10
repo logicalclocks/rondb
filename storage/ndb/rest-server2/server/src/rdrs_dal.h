@@ -206,6 +206,12 @@ RS_Status ronsql_dal(const char* database,
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 
+/**
+ * Least number of reachable data nodes across the data cluster
+ * connections. 0 or -1 means requests cannot be served.
+ */
+int get_num_ready_data_nodes();
+
 void* get_rdrs_ndb_object(int thread_index);
 void return_rdrs_ndb_object(void *ndb_object, int thread_index);
 
