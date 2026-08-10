@@ -17,8 +17,10 @@ sub _rdrs_port {
   local $/;
   my $json = <$fh>;
   close($fh);
-  ($rdrs_port) = $json =~ /"ServerPort"\s*:\s*(\d+)/
-    or die "No ServerPort found in $cfg\n";
+  # Anchor on the REST object: a config with Rondis enabled has a second
+  # "ServerPort" and the bare key could match the wrong one.
+  ($rdrs_port) = $json =~ /"REST"\s*:\s*\{[^{}]*"ServerPort"\s*:\s*(\d+)/
+    or die "No REST.ServerPort found in $cfg\n";
   return $rdrs_port;
 }
 

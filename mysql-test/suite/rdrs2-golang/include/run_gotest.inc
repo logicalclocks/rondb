@@ -150,32 +150,52 @@ my @cpp_tests = ('error_handling_test',   # pure error-classification tests
                  'feature_store_test');
 
 # Source builds place binaries in runtime_output_directory, packaged
-# builds in bin.
+# builds in bin; multi-config generators add a configuration subdirectory.
 my $bindir = $ENV{'MYSQL_BINDIR'} // $MYSQL_BASEDIR;
-my @bin_candidates = (File::Spec->catdir($bindir, 'runtime_output_directory'),
-                      File::Spec->catdir($bindir, 'bin'));
+my @bin_candidates;
+foreach my $dir ('runtime_output_directory', 'bin') {
+    push(@bin_candidates, File::Spec->catdir($bindir, $dir));
+    foreach my $cfg ('Release', 'RelWithDebInfo', 'Debug') {
+        push(@bin_candidates, File::Spec->catdir($bindir, $dir, $cfg));
+    }
+}
 
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
 log_line("## C++ tests\n");
+my $cpp_tests_run = 0;
 foreach my $test (@cpp_tests) {
     my ($exe) = grep { -x $_ }
                 map { File::Spec->catfile($_, $test) } @bin_candidates;
     if (!defined $exe) {
-        # Not part of this build (the test binaries are only built together
-        # with the NDB test programs); skip rather than fail.
         log_line("### $test: binary not found, skipped\n");
         next;
     }
     log_line("### $exe\n");
+    # NOTE: the redirect makes perl run this through `sh -c`, and the shell
+    # reports a signal death as exit code 128+N, so a crashing test binary
+    # fails the check below. Do NOT "simplify" this to list-form system()
+    # or a bare command: a direct signal death then yields $? >> 8 == 0 and
+    # a crash would silently PASS.
     system("\"$exe\" >> \"$go_log_file\" 2>&1");
     my $exit_code = $? >> 8;
-    next if $exit_code == 0;
+    if ($exit_code == 0) {
+        $cpp_tests_run++;
+        next;
+    }
 
     print "## C++ tests\n";
     print "FAIL: `$test` exited with code $exit_code\n";
     print "Full log: $go_log_file\n";
     if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
     exit $exit_code;
+}
+if ($cpp_tests_run == 0) {
+    # The binaries are built whenever WITH_RDRS is on, which this suite
+    # requires - finding none means the search paths are wrong, and
+    # printing PASS would turn the whole section into a silent no-op.
+    print "## C++ tests\n";
+    print "FAIL: no C++ test binaries found under: @bin_candidates\n";
+    exit 1;
 }
 print "## C++ tests\n";
 print "PASS\n";
