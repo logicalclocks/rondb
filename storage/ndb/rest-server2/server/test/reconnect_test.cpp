@@ -186,6 +186,10 @@ TEST_F(ReconnectTest, ClusterUpErrorsDoNotReconnect) {
     {NdbError::TemporaryError, NdbError::TimeoutExpired, 4012},
     {NdbError::PermanentError, NdbError::SchemaError, 241},
     {NdbError::PermanentError, NdbError::NoDataFound, 626},
+    // Nodes starting / single user mode: transient administrative states,
+    // reconnecting would turn them into a self-inflicted outage.
+    {NdbError::UnknownResult, NdbError::UnknownResultError, 4037},
+    {NdbError::UnknownResult, NdbError::UnknownResultError, 4041},
   };
   for (const auto &c : cases) {
     Ndb *ndb = nullptr;
