@@ -25,6 +25,13 @@
 #include <NdbApi.hpp>
 
 /**
+ * Clear the dictionary's sticky error. Call before a getTable() whose
+ * error will be used to classify a failure: the NDB API never resets it
+ * on entry, and pooled Ndb objects keep it across unrelated requests.
+ */
+void ndb_dict_clear_error(const NdbDictionary::Dictionary *dict);
+
+/**
  * Classify a dictionary lookup failure (getTable() returned nullptr).
  * Returns true when the dictionary positively reports that the object does
  * not exist. Returns false when the lookup itself failed (e.g. no data

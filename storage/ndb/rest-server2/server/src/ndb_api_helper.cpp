@@ -25,11 +25,31 @@
 #include <iostream>
 #include <string>
 
+// Internal NDB dictionary impl: clearing the sticky dictionary error has
+// no public API, so drive it through the impl accessor (same pattern as
+// rdrs_rondb_connection_pool.cpp).
+#include "NdbDictionaryImpl.hpp"
+
+void ndb_dict_clear_error(const NdbDictionary::Dictionary *dict) {
+  /* getTable() does not clear the dictionary error on entry, and a few of
+   * its null-return paths set no error at all. Pooled Ndb objects live
+   * for the process lifetime, so without this the 404-vs-500 decision
+   * after a failed lookup could read an error left over from an earlier,
+   * unrelated dictionary call. m_error is mutable by design ("allow
+   * update error from const methods"). */
+  NdbDictionaryImpl::getImpl(*dict).m_error.code = 0;
+}
+
 bool ndb_dict_object_missing(int dict_error_code) {
+  /* Callers clear the dictionary error before the lookup
+   * (ndb_dict_clear_error), so code 0 means the lookup failed without
+   * reporting why (a rare allocation-failure path) - keep the historic
+   * 404 for it rather than inventing a server error. */
   switch (dict_error_code) {
-  case 0:    /* dictionary reports no error at all */
-  case 709:  /* No such table existed */
-  case 723:  /* No such table existed */
+  case 0:     /* dictionary reports no error at all */
+  case 709:   /* No such table existed */
+  case 723:   /* No such table existed */
+  case 4377:  /* Invalid schema/database name in the request path */
     return true;
   default:
     return false;
@@ -63,13 +83,18 @@ RS_Status select_table(Ndb *ndb_object,
                        const char *database_str,
                        const char *table_str,
                        const NdbDictionary::Table **table_dict) {
+  /* Every caller passes internal metadata table names (hopsworks.*,
+   * feature store tables), never client input: a missing table here is a
+   * broken/absent schema, i.e. a server-side problem, not a client
+   * error. */
   if (unlikely(ndb_object->setCatalogName(database_str) != 0)) {
-    return RS_CLIENT_ERROR(
+    return RS_SERVER_ERROR(
       std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
       std::string(" Database: ") + std::string(database_str) +
       std::string(". Table: ") + std::string(table_str));
   }
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+  ndb_dict_clear_error(dict);
   *table_dict = dict->getTable(table_str);
   if (unlikely(*table_dict == nullptr)) {
     if (unlikely(!ndb_dict_object_missing(dict->getNdbError().code))) {
@@ -81,7 +106,7 @@ RS_Status select_table(Ndb *ndb_object,
         std::string(" Database: ") + std::string(database_str) +
         std::string(". Table: ") + std::string(table_str));
     }
-    return RS_CLIENT_ERROR(
+    return RS_SERVER_ERROR(
     std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
     std::string(" Database: ") + std::string(database_str) +
     std::string(". Table: ") + std::string(table_str));

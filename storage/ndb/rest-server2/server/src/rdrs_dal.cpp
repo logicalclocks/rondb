@@ -1782,6 +1782,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     return err;
   }
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+  ndb_dict_clear_error(dict);
   const NdbDictionary::Table* table = dict->getTable(scan_params.path.table.c_str());
   if (unlikely(table == nullptr)) {
     if (unlikely(!ndb_dict_object_missing(dict->getNdbError().code))) {
