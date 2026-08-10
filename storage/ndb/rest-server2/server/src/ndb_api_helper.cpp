@@ -25,21 +25,56 @@
 #include <iostream>
 #include <string>
 
+bool ndb_dict_object_missing(int dict_error_code) {
+  switch (dict_error_code) {
+  case 0:    /* dictionary reports no error at all */
+  case 709:  /* No such table existed */
+  case 723:  /* No such table existed */
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool ndb_error_cluster_unavailable(int error_code) {
+  switch (error_code) {
+  case 4009:  /* Cluster failure */
+  case 4035:  /* Cluster temporary unavailable */
+  case 4037:  /* Nodes are starting up */
+  case 4038:  /* Alive nodes run an incompatible version */
+  case 4039:  /* Accessible nodes are shutting down */
+  case 4040:  /* No data node ever connected */
+  case 4041:  /* Nodes are in single user mode */
+    return true;
+  default:
+    return false;
+  }
+}
+
 RS_Status select_table(Ndb *ndb_object,
                        const char *database_str,
                        const char *table_str,
                        const NdbDictionary::Table **table_dict) {
   if (unlikely(ndb_object->setCatalogName(database_str) != 0)) {
     return RS_CLIENT_ERROR(
-      std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) + 
+      std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
       std::string(" Database: ") + std::string(database_str) +
       std::string(". Table: ") + std::string(table_str));
   }
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
   *table_dict = dict->getTable(table_str);
   if (unlikely(*table_dict == nullptr)) {
+    if (unlikely(!ndb_dict_object_missing(dict->getNdbError().code))) {
+      /* The dictionary lookup itself failed (e.g. cluster unavailable).
+       * The table may well exist, so report the real NDB error instead of
+       * pretending the table is missing. */
+      return RS_RONDB_SERVER_ERROR(dict->getNdbError(),
+        std::string(rdrsErrorMessage(ERROR_TABLE_METADATA_READ_FAILED)) +
+        std::string(" Database: ") + std::string(database_str) +
+        std::string(". Table: ") + std::string(table_str));
+    }
     return RS_CLIENT_ERROR(
-    std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) + 
+    std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
     std::string(" Database: ") + std::string(database_str) +
     std::string(". Table: ") + std::string(table_str));
   }
