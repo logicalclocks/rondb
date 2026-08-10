@@ -223,6 +223,12 @@ RS_Status RDRSRonDBConnectionPool::AddMetaConnections(
 
 RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
                                                 Uint32 threadIndex) {
+  /* shutdown() deletes the thread contexts before it shuts the
+   * connections down; do not touch them once it has started. */
+  if (unlikely(is_shutdown)) {
+    return RS_SERVER_ERROR(
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
+  }
   ThreadContext *thread_context = m_thread_context[threadIndex];
   require(threadIndex < m_num_threads);
   NdbMutex_Lock(thread_context->m_thread_context_mutex);
@@ -281,6 +287,11 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
 }
 
 void RDRSRonDBConnectionPool::TriggerReconnect(Uint32 connection) {
+  if (unlikely(is_shutdown)) {
+    /* The thread contexts are being (or have been) deleted, and there is
+     * no point in reconnecting a pool that is going away. */
+    return;
+  }
   /* Idempotent: logs and returns if a reconnection is already running.
    * Bumps the connection generation before its teardown starts. */
   dataConnections[connection]->Reconnect();
@@ -310,7 +321,18 @@ void RDRSRonDBConnectionPool::TriggerReconnect(Uint32 connection) {
 RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object,
                                                    RS_Status *status,
                                                    Uint32 threadIndex) {
+  if (unlikely(ndb_object == nullptr)) {
+    /* The TTL threads' error path returns both of their objects even when
+     * one of the Gets failed; there is nothing to hand back then. */
+    return RS_OK;
+  }
   Uint32 connection = threadIndex % m_num_data_connections;
+  if (unlikely(is_shutdown)) {
+    /* The thread contexts are being deleted; hand the object straight
+     * back to its connection, which is shut down after the contexts. */
+    dataConnections[connection]->ReturnNDBObjectToPool(ndb_object, status);
+    return RS_OK;
+  }
   /* A cluster-unavailability error makes every Ndb object of this
    * connection unusable. Start the reconnection BEFORE deciding whether
    * to cache: the generation bump makes the check below hand this object
@@ -367,15 +389,19 @@ RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
 }
 
 RS_Status RDRSRonDBConnectionPool::Reconnect() {
+  /* Go through TriggerReconnect so idle thread-cached Ndb objects are
+   * handed back; reconnecting a data connection directly would leave the
+   * teardown waiting for objects nobody returns. */
   for (Uint32 i = 0; i < m_num_data_connections; i++) {
-    RS_Status status = dataConnections[i]->Reconnect();
+    TriggerReconnect(i);
+  }
+  if (metadataConnection != dataConnections[0]) {
+    /* Separate metadata connection: no thread contexts cache its
+     * objects, so a direct reconnect is safe. */
+    RS_Status status = metadataConnection->Reconnect();
     if (unlikely(status.http_code != SUCCESS)) {
       return status;
     }
-  }
-  RS_Status status = metadataConnection->Reconnect();
-  if (unlikely(status.http_code != SUCCESS)) {
-    return status;
   }
   return RS_OK;
 }
@@ -385,6 +411,12 @@ int RDRSRonDBConnectionPool::GetMinReadyDataNodes() {
   for (Uint32 i = 0; i < m_num_data_connections; i++) {
     int ready = dataConnections[i]->GetNumReadyDataNodes();
     min_ready = std::min(min_ready, ready);
+  }
+  if (metadataConnection != dataConnections[0]) {
+    /* A separate metadata cluster serves API-key validation and feature
+     * store metadata; requests cannot be served without it either. */
+    min_ready = std::min(min_ready,
+                         metadataConnection->GetNumReadyDataNodes());
   }
   return min_ready == INT_MAX ? -1 : min_ready;
 }
@@ -418,6 +450,9 @@ RonDB_Stats RDRSRonDBConnectionPool::GetStats() {
 
     merged_stats.is_shutdown |=
       dataConnectionStats.is_shutdown;
+
+    merged_stats.is_shutting_down |=
+      dataConnectionStats.is_shutting_down;
   }
   return merged_stats;
 }

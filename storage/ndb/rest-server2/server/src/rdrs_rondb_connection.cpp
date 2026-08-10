@@ -192,15 +192,32 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
   {
     NdbMutex_Lock(connectionMutex);
     NdbMutex_Lock(connectionInfoMutex);
-    RS_Status ret_status = RS_OK;
+    /* Re-validate under the locks: the state check above dropped its lock,
+     * and a reconnection teardown may have started - or already deleted
+     * ndbConnection - in between. Creating an Ndb object from a deleted
+     * (or null) cluster connection is a use-after-free. */
+    if (unlikely(stats.is_shutdown || stats.is_shutting_down ||
+                 stats.is_reconnection_in_progress ||
+                 stats.connection_state != CONNECTED ||
+                 ndbConnection == nullptr)) {
+      NdbMutex_Unlock(connectionMutex);
+      NdbMutex_Unlock(connectionInfoMutex);
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)));
+    }
     if (unlikely(availableNdbObjects.empty())) {
       *ndb_object = new Ndb(ndbConnection);
       int retCode = (*ndb_object)->init(RDRSRonDBConnection::MAX_PARALLEL_KEY_OPS);
       if (unlikely(retCode != 0)) {
-        delete ndb_object;
-        ret_status =
-            RS_SERVER_ERROR(
-              std::string(rdrsErrorMessage(ERROR_NDB_OBJECT_INIT_FAILED)) + 
+        /* Do not track the failed object: the caller never returns it, so
+         * counting it would make every later teardown wait for an object
+         * that cannot come back. */
+        delete *ndb_object;
+        *ndb_object = nullptr;
+        NdbMutex_Unlock(connectionMutex);
+        NdbMutex_Unlock(connectionInfoMutex);
+        return RS_SERVER_ERROR(
+              std::string(rdrsErrorMessage(ERROR_NDB_OBJECT_INIT_FAILED)) +
               std::string(" RetCode: ") + std::to_string(retCode));
       }
       stats.ndb_objects_created++;
@@ -212,7 +229,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     }
     NdbMutex_Unlock(connectionMutex);
     NdbMutex_Unlock(connectionInfoMutex);
-    return ret_status;
+    return RS_OK;
   }
 }
 
@@ -237,12 +254,12 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
     }
   }
   if (unlikely(status != nullptr && status->http_code != SUCCESS)) {
-    /* Reconnect only when the cluster could not answer at all (the error
-     * set of ClusterMgr::is_cluster_completely_unavailable()). Errors on a
-     * cluster that is still up - single node failure, timeout, overload -
-     * must not tear down the connection: long-lived event subscribers
-     * (TTL schema watcher, cache watchers) only release their Ndb objects
-     * on TE_CLUSTER_FAILURE, and the teardown waits for every object. */
+    /* Reconnect only when this API node has lost every data node. Errors
+     * on a cluster that is still reachable - single node failure,
+     * timeout, overload, single user mode - must not tear down the
+     * connection: long-lived event subscribers (TTL schema watcher, cache
+     * watchers) only release their Ndb objects on TE_CLUSTER_FAILURE, and
+     * the teardown waits for every object. */
     if (ndb_error_cluster_unavailable(status->code)) {
       rdrs_logger::error(
         "Detected connection loss. Triggering reconnection.");
@@ -252,7 +269,13 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
 }
 
 int RDRSRonDBConnection::GetNumReadyDataNodes() {
-  NdbMutex_Lock(connectionMutex);
+  /* Try-lock: connectionMutex is held for tens of seconds while a
+   * reconnection tears down and rebuilds the cluster connection. A health
+   * probe must not block behind that, and a busy teardown/rebuild means
+   * the connection cannot serve right now anyway. */
+  if (NdbMutex_Trylock(connectionMutex) != 0) {
+    return 0;
+  }
   int ready = -1;
   if (likely(ndbConnection != nullptr)) {
     ready = ndbConnection->get_no_ready();
@@ -346,6 +369,8 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     {
       NdbMutex_Lock(connectionMutex);
       if (reconnectionThread != nullptr) {
+        void *thread_status = nullptr;
+        NdbThread_WaitFor(reconnectionThread, &thread_status);
         NdbThread_Destroy(&reconnectionThread);
         reconnectionThread = nullptr;
       }
@@ -362,11 +387,24 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   {
     NdbMutex_Lock(connectionMutex);
     NdbMutex_Lock(connectionInfoMutex);
-    // Delete all Ndb objects
+    /* Delete only the Ndb objects that were handed back. An object still
+     * held by a thread that missed the wait deadline above is leaked
+     * instead: deleting it under its holder is a use-after-free, and a
+     * leaked object's address can never be recycled into a new Ndb
+     * object, so a very late return is dropped by the tracked-check in
+     * ReturnNDBObjectToPool rather than corrupting the new pool. */
+    Uint32 leakedObjects = 0;
     while (allAvailableNdbObjects.size() > 0) {
       Ndb *ndb_object = allAvailableNdbObjects.front();
       allAvailableNdbObjects.pop_front();
-      delete ndb_object;
+      bool returned = std::find(availableNdbObjects.begin(),
+                                availableNdbObjects.end(),
+                                ndb_object) != availableNdbObjects.end();
+      if (likely(returned)) {
+        delete ndb_object;
+      } else {
+        leakedObjects++;
+      }
     }
     availableNdbObjects.clear();
     allAvailableNdbObjects.clear();
@@ -378,6 +416,11 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     stats.ndb_objects_deleted = 0;
     NdbMutex_Unlock(connectionMutex);
     NdbMutex_Unlock(connectionInfoMutex);
+    if (unlikely(leakedObjects > 0)) {
+      rdrs_logger::error(
+        "Leaked " + std::to_string(leakedObjects) +
+        " NDB object(s) still held by their users at teardown time.");
+    }
   }
   {
     NdbMutex_Lock(connectionMutex);
@@ -399,6 +442,8 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
       stats.is_shutting_down = false;
       free(connection_string);
       if (reconnectionThread != nullptr) {
+        void *thread_status = nullptr;
+        NdbThread_WaitFor(reconnectionThread, &thread_status);
         NdbThread_Destroy(&reconnectionThread);
         reconnectionThread = nullptr;
       }
@@ -462,6 +507,13 @@ static std::atomic<int> g_numReconnectListeners{0};
 void RDRSRonDBConnection::RegisterReconnectListener(
   ReconnectListener listener) {
   int idx = g_numReconnectListeners.load(std::memory_order_acquire);
+  /* Idempotent: the caches re-register on every start (the C++ tests
+   * start/stop them many times per process). */
+  for (int i = 0; i < idx; i++) {
+    if (g_reconnectListeners[i] == listener) {
+      return;
+    }
+  }
   require(idx < MAX_RECONNECT_LISTENERS);
   g_reconnectListeners[idx] = listener;
   g_numReconnectListeners.store(idx + 1, std::memory_order_release);
@@ -504,6 +556,10 @@ RS_Status RDRSRonDBConnection::Reconnect() {
   m_generation.fetch_add(1, std::memory_order_acq_rel);
   // clean previous failed/completed reconnection thread
   if (reconnectionThread != nullptr) {
+    /* The previous handler has cleared is_reconnection_in_progress but its
+     * thread may still be exiting; join before freeing the handle. */
+    void *thread_status = nullptr;
+    NdbThread_WaitFor(reconnectionThread, &thread_status);
     NdbThread_Destroy(&reconnectionThread);
     reconnectionThread = nullptr;
   }
