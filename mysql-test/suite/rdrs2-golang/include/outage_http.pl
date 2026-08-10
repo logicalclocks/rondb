@@ -32,16 +32,23 @@ sub _health_status {
 
 # Fire a pk-read with a well-formed but nonexistent API key. The key
 # lookup reads RonDB through the metadata connection, so during an outage
-# this exercises the production reconnection trigger. The response is
-# deliberately ignored.
+# this exercises the production reconnection trigger. The status may be
+# 401/500/503/599 depending on phase - but it must NEVER be 200 or 404:
+# 200 or 404 for a data read while the cluster cannot answer is exactly
+# the answer-laundering bug RONDB-1104 fixes.
 sub _poke_pkread {
   my $ua = HTTP::Tiny->new(timeout => 5);
   my $key = ('X' x 16) . '.' . ('x' x 64);
-  $ua->post(
+  my $res = $ua->post(
     'http://127.0.0.1:' . _rdrs_port() . '/0.1.0/nodb/notab/pk-read',
     { headers => { 'Content-Type' => 'application/json',
                    'X-API-KEY' => $key },
       content => '{"filters":[{"column":"id","value":1}]}' });
+  my $st = $res->{status};
+  if ($st == 200 || $st == 404) {
+    die "pk-read poke returned HTTP $st: a cluster outage must surface " .
+        "as an error, not as success or 'not found'\n";
+  }
 }
 
 sub _poll_health {

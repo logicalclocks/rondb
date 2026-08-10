@@ -44,9 +44,13 @@ NdbMutex *globalConfigsMutex = nullptr;
  * reports no error at all (preserves historic behavior).
  */
 TEST(NdbDictObjectMissing, TableMissingCodesMapToMissing) {
+  // 0 is legitimate only because callers clear the dictionary error
+  // before the lookup (ndb_dict_clear_error): it then means the lookup
+  // failed without reporting why, and the historic 404 is kept.
   EXPECT_TRUE(ndb_dict_object_missing(0));
   EXPECT_TRUE(ndb_dict_object_missing(709));
   EXPECT_TRUE(ndb_dict_object_missing(723));
+  EXPECT_TRUE(ndb_dict_object_missing(4377));  // invalid schema/db name
 }
 
 /*
@@ -125,7 +129,7 @@ TEST(CanRetryOperation, TemporaryStatusIsRetried) {
   EXPECT_TRUE(CanRetryOperation(s));
 
   // 410 'REDO log overloaded': status TemporaryError, classification
-  // TemporaryResourceError.
+  // OverloadError.
   s = ndbErrorStatus(NdbError::TemporaryError,
                      NdbError::OverloadError, 410, -1);
   EXPECT_TRUE(CanRetryOperation(s));

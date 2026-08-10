@@ -123,6 +123,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
       return err;
     }
     const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+    ndb_dict_clear_error(dict);
     const NdbDictionary::Table *tableDict = dict->getTable(req->Table());
     DEB_NDB_BE("Request on DB: %s, Table: %s, op: %u, reqBuffer: %p",
       req->DB(), req->Table(), i, reqBuffer[i].buffer);
