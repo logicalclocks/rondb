@@ -68,25 +68,25 @@ TEST(NdbDictObjectMissing, ClusterFailureCodesAreNotMissing) {
 }
 
 /*
- * The cluster-unavailable set must match what
- * ClusterMgr::is_cluster_completely_unavailable() can produce. These are
- * the errors that should mark the connection for reconnection.
+ * The reconnection trigger set: only the states where the API node has
+ * lost its transporter connection to EVERY data node. These strand the
+ * NDB API in CS_waiting_for_clean_cache, and they also guarantee the
+ * event subscribers received TE_CLUSTER_FAILURE so the teardown's
+ * wait-for-objects converges.
  */
-TEST(NdbErrorClusterUnavailable, CompleteUnavailabilitySet) {
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4009));
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4035));
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4037));
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4038));
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4039));
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4040));
-  EXPECT_TRUE(ndb_error_cluster_unavailable(4041));
+TEST(NdbErrorClusterUnavailable, TotalConnectivityLossTriggersReconnect) {
+  EXPECT_TRUE(ndb_error_cluster_unavailable(4009));  // Cluster failure
+  EXPECT_TRUE(ndb_error_cluster_unavailable(4035));  // None alive
+  EXPECT_TRUE(ndb_error_cluster_unavailable(4040));  // Never connected
 }
 
 /*
- * Errors that occur while the cluster can still answer must not trigger a
- * full reconnection: a single node failure (4010), a timeout (4012) or a
- * schema error can happen on a healthy cluster, and tearing down the
- * connection then would be far worse than the error itself.
+ * Errors that occur while some data node is still reachable must not
+ * trigger a full reconnection: the NDB API recovers on its own, tearing
+ * down costs ~a minute of downtime, and the event subscribers never get
+ * TE_CLUSTER_FAILURE so the teardown would stall on their objects. A
+ * rolling restart (4037) or single user mode (4041) must never turn into
+ * a self-inflicted outage.
  */
 TEST(NdbErrorClusterUnavailable, PartialFailuresAreNotUnavailability) {
   EXPECT_FALSE(ndb_error_cluster_unavailable(0));
@@ -96,6 +96,11 @@ TEST(NdbErrorClusterUnavailable, PartialFailuresAreNotUnavailability) {
   EXPECT_FALSE(ndb_error_cluster_unavailable(4010));  // Node failure, abort
   EXPECT_FALSE(ndb_error_cluster_unavailable(4012));  // Request time-out
   EXPECT_FALSE(ndb_error_cluster_unavailable(241));   // Schema version
+  EXPECT_FALSE(ndb_error_cluster_unavailable(4036));  // Weird transient
+  EXPECT_FALSE(ndb_error_cluster_unavailable(4037));  // Nodes starting
+  EXPECT_FALSE(ndb_error_cluster_unavailable(4038));  // Version mismatch
+  EXPECT_FALSE(ndb_error_cluster_unavailable(4039));  // Nodes stopping
+  EXPECT_FALSE(ndb_error_cluster_unavailable(4041));  // Single user mode
 }
 
 /* Build the RS_Status an NDB error produces in the serving path. */

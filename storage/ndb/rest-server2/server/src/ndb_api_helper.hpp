@@ -36,9 +36,11 @@
 bool ndb_dict_object_missing(int dict_error_code);
 
 /**
- * True for NdbError codes meaning the cluster could not answer at all
- * (no usable data node). This is the error set produced by
- * ClusterMgr::is_cluster_completely_unavailable().
+ * True for NdbError codes meaning this API node has lost connectivity to
+ * every data node - the states only a full reconnection of the cluster
+ * connection can recover from. Used to trigger reconnection; states with
+ * alive data nodes (single node failure, nodes stopping, single user
+ * mode, version mismatch) must not tear the connection down.
  */
 bool ndb_error_cluster_unavailable(int error_code);
 

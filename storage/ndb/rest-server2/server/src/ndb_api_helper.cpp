@@ -37,14 +37,22 @@ bool ndb_dict_object_missing(int dict_error_code) {
 }
 
 bool ndb_error_cluster_unavailable(int error_code) {
+  /* Only the states where the API node has lost its transporter
+   * connection to EVERY data node. Those are the states that strand the
+   * NDB API in CS_waiting_for_clean_cache (so only a full reconnection
+   * recovers), and losing the last data node is also what guarantees
+   * TE_CLUSTER_FAILURE was delivered to the long-lived event subscribers,
+   * so they hand their Ndb objects back and the teardown converges.
+   *
+   * Deliberately NOT included, although
+   * ClusterMgr::is_cluster_completely_unavailable() can report them:
+   * 4036/4038/4039/4041 (alive nodes exist - transporters are up, the
+   * NDB API recovers by itself) and 4037 (nodes starting up - once one
+   * reaches STARTED this becomes 4035 if the connection is stuck). */
   switch (error_code) {
-  case 4009:  /* Cluster failure */
-  case 4035:  /* Cluster temporary unavailable */
-  case 4037:  /* Nodes are starting up */
-  case 4038:  /* Alive nodes run an incompatible version */
-  case 4039:  /* Accessible nodes are shutting down */
+  case 4009:  /* Cluster failure - no data node reachable */
+  case 4035:  /* Cluster temporary unavailable - none alive */
   case 4040:  /* No data node ever connected */
-  case 4041:  /* Nodes are in single user mode */
     return true;
   default:
     return false;
