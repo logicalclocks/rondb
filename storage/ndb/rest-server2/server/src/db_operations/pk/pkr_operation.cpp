@@ -25,6 +25,7 @@
 #include "src/db_operations/pk/common.hpp"
 #include "src/db_operations/pk/pkr_request.hpp"
 #include "src/db_operations/pk/pkr_response.hpp"
+#include "src/buffer_manager.hpp"
 #include "src/error_strings.h"
 #include "src/logger.hpp"
 #include "src/ndb_api_helper.hpp"
@@ -91,7 +92,10 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_isSuccess = false;
   m_isBatch = is_batch;
   m_ndb_object = ndb_object;
-  m_numOperations = numOps;
+  /* Counted up as each operation's request is constructed below: the
+   * destructor iterates m_numOperations calling into m_req, and an early
+   * error return must not make it touch unconstructed entries. */
+  m_numOperations = 0;
   m_num_sent_operations = 0;
   m_single_transaction = globalConfigs.rest.useSingleTransaction;
   m_key_ops = amalloc->alloc<KeyOperation>(numOps);
@@ -106,6 +110,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
     KeyOperation *key_op = &m_key_ops[i];
     key_op->m_ndbTransaction = nullptr;
     PKRRequest *req = new (&key_op->m_req) PKRRequest(&reqBuffer[i]);
+    m_numOperations = i + 1;
     if (unlikely(ndb_object->setCatalogName(req->DB()) != 0)) {
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
         std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
@@ -535,6 +540,18 @@ RS_Status BatchKeyOperations::execute() {
 
 RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
   bool found = true;
+  /* On a retried attempt the loop below rebuilds respBuffs[] from
+   * scratch; overflow buffers a previous failed attempt got from
+   * getNextRespRS_Buffer() would be overwritten and leak from the buffer
+   * pool. Walk the previous attempt's chain and return them first. */
+  Uint32 chain = respBuffs[0].next_allocated_buffer;
+  while (chain != 0) {
+    require(chain < m_numOperations);
+    Uint32 next = respBuffs[chain].next_allocated_buffer;
+    rsBufferArrayManager.return_resp_buffer(respBuffs[chain]);
+    chain = next;
+  }
+  respBuffs[0].next_allocated_buffer = 0;
   Uint32 response_buffer_size = respBuffs[0].size;
   Uint32 response_buffer_limit = response_buffer_size / 2;
   Uint32 current_head = 0;

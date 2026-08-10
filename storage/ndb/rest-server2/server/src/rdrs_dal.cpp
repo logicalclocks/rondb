@@ -173,6 +173,10 @@ RS_Status pk_batch_read(void *amalloc_void,
     return status;
   }
   DATA_OP_RETRY_HANDLER(
+    /* Declared inside the macro body on purpose: each retry attempt gets
+     * a fresh object, and ~BatchKeyOperations undoes the in-place request
+     * buffer mutations (addReadColumns) between attempts. Hoisting this
+     * out of the macro would corrupt retried batches. */
     BatchKeyOperations pkread;
     status = pkread.perform_operation(amalloc,
                                       no_req,
