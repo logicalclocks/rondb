@@ -20303,6 +20303,15 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   Uint32 extra_len_index = 0;
   const Uint32 par_ordered_scan_flag =
     ScanFragReq::getParallelOrderedScanFlag(reqinfo);
+  /**
+   * seizeTcrec recycles TcConnectionrec from LQH's own free list without
+   * re-construction, so m_user_ptr_i must be cleared unconditionally here
+   * (as execLQHKEYREQ does for key operations). A value left over from an
+   * earlier operation would otherwise be dereferenced by the rate usage
+   * accounting of this scan, and the user record it points to may have
+   * been released by DROP USER since.
+   */
+  regTcPtr->m_user_ptr_i = RNIL64;
   if (ScanFragReq::getUserIdFlag(reqinfo)) {
     jamDebug();
     /**
