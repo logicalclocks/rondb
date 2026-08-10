@@ -122,10 +122,12 @@ void FSMetadataCache::start_fs_cache_thread() {
 
 void stop_fs_cache() {
   DEB_FS("FS Metadata Cache stopped: %p", g_fs_metadata_cache);
-  if (g_fs_metadata_cache != nullptr) {
-    delete g_fs_metadata_cache;
-    g_fs_metadata_cache = nullptr;
-  }
+  /* Null the global before destroying so the reconnect listener (which
+   * may fire from another thread during a cluster failure) sees null
+   * instead of a half-destroyed cache. */
+  FSMetadataCache *cache = g_fs_metadata_cache;
+  g_fs_metadata_cache = nullptr;
+  delete cache;
 }
 
 void fs_cache_dec_ref_count(char *cache_entry) {
@@ -895,7 +897,7 @@ err:
     dict = nullptr;
   }
   if (ndb != nullptr) {
-    RS_Status rs;
+    RS_Status rs = RS_OK;
     rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
     ndb = nullptr;
   }
@@ -918,7 +920,7 @@ done:
     dict->dropEvent(EVENT_NAME);
   }
   if (ndb != nullptr) {
-    RS_Status rs;
+    RS_Status rs = RS_OK;
     rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
   }
   g_eventLogger->info("[FS Cache Event] Watcher stopped");
