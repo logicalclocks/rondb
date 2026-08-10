@@ -22,6 +22,7 @@
 
 #include "rdrs_dal.h"
 
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <NdbApi.hpp>
@@ -59,6 +60,11 @@ class RDRSRonDBConnection {
   // This a list of all the NDB objects whether the objects
   // are in use or not
   std::list<Ndb *> allAvailableNdbObjects;
+
+  /* Incremented every time a reconnection starts. Ndb objects handed out
+   * under an older generation belong to a connection that is being (or has
+   * been) torn down and must be returned to the pool, never reused. */
+  std::atomic<Uint64> m_generation{0};
 
   inline void checkMagic() { require(magic == expectedMagic); }
 
@@ -99,6 +105,15 @@ class RDRSRonDBConnection {
    * Get status
    */
   void GetStats(RonDB_Stats&);
+
+  /**
+   * Reconnection generation of this connection. Compare with the value
+   * captured when an Ndb object was handed out to detect that the object
+   * belongs to a torn-down connection.
+   */
+  Uint64 GetGeneration() const {
+    return m_generation.load(std::memory_order_acquire);
+  }
 
   /**
    * Starts reconnection thread which calls the ReconnectHandler

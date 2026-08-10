@@ -25,6 +25,9 @@ NDB_ADD_EXECUTABLE(api_key_test api_key_test.cpp
 NDB_ADD_EXECUTABLE(error_handling_test error_handling_test.cpp
                    STATIC_NDBCLIENT)
 
+NDB_ADD_EXECUTABLE(reconnect_test reconnect_test.cpp
+                   STATIC_NDBCLIENT)
+
 NDB_ADD_EXECUTABLE(
   feature_store_test
   feature_store_test.cpp
@@ -47,6 +50,14 @@ TARGET_LINK_LIBRARIES(
 )
 
 TARGET_LINK_LIBRARIES(
+	reconnect_test
+	gtest_main
+	ndbgeneral
+	rdrs2_lib
+	${GTEST_LIBRARIES}
+)
+
+TARGET_LINK_LIBRARIES(
   feature_store_test
   gtest_main
   rdrs2_lib
@@ -62,3 +73,4 @@ TARGET_LINK_LIBRARIES(
 add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)
 add_test(NAME error_handling_test COMMAND error_handling_test)
+add_test(NAME reconnect_test COMMAND reconnect_test)

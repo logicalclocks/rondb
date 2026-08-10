@@ -18,10 +18,12 @@
  */
 
 #include "rdrs_rondb_connection.hpp"
+#include "ndb_api_helper.hpp"
 #include "status.hpp"
 #include "error_strings.h"
 #include "logger.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <iostream>
@@ -167,7 +169,10 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
       return RS_SERVER_ERROR(std::string(
         rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
     }
-    if (unlikely(connection_state != CONNECTED)) {
+    /* Also refuse to hand out objects while a reconnection is in
+     * progress: the teardown is waiting for all objects to return before
+     * it deletes them together with the cluster connection. */
+    if (unlikely(connection_state != CONNECTED || reconnection_in_progress)) {
       if (!reconnection_in_progress) {
         // If previous reconnection attempts have failed then
         // restart the reconnection process
@@ -215,17 +220,30 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
                                                 RS_Status *status) {
   {
     NdbMutex_Lock(connectionMutex);
-    availableNdbObjects.push_back(ndb_object);
+    /* If the object is not tracked any more, a reconnection teardown timed
+     * out waiting for it and already deleted it. Pushing the dangling
+     * pointer would hand it out again later; drop it instead. */
+    bool tracked = std::find(allAvailableNdbObjects.begin(),
+                             allAvailableNdbObjects.end(),
+                             ndb_object) != allAvailableNdbObjects.end();
+    if (likely(tracked)) {
+      availableNdbObjects.push_back(ndb_object);
+    }
     NdbMutex_Unlock(connectionMutex);
+    if (unlikely(!tracked)) {
+      rdrs_logger::error(
+        "Returned NDB object is no longer tracked by the connection pool."
+        " It was deleted by a reconnection. Dropping it.");
+    }
   }
-  // Note there are no unit test for this
-  // In order to test this run the TestReconnection1 for longer duration
-  // and then drop the ndbconnection using iptables or by disconnection
-  // the network.
   if (unlikely(status != nullptr && status->http_code != SUCCESS)) {
-    // Classification.UnknownResultError is the classification
-    // for loss of connectivity to the cluster
-    if (status->classification == NdbError::UnknownResultError) {
+    /* Reconnect only when the cluster could not answer at all (the error
+     * set of ClusterMgr::is_cluster_completely_unavailable()). Errors on a
+     * cluster that is still up - single node failure, timeout, overload -
+     * must not tear down the connection: long-lived event subscribers
+     * (TTL schema watcher, cache watchers) only release their Ndb objects
+     * on TE_CLUSTER_FAILURE, and the teardown waits for every object. */
+    if (ndb_error_cluster_unavailable(status->code)) {
       rdrs_logger::error(
         "Detected connection loss. Triggering reconnection.");
       Reconnect();
@@ -450,6 +468,10 @@ RS_Status RDRSRonDBConnection::Reconnect() {
       std::string(rdrsErrorMessage(ERROR_RONDB_SHUTDOWN_IN_PROGRESS)));
   }
   stats.is_reconnection_in_progress = true;
+  /* From this point on GetNdbObject() refuses to hand out objects, so any
+   * object stamped with an older generation belongs to the connection
+   * being torn down and must go back to the pool instead of a cache. */
+  m_generation.fetch_add(1, std::memory_order_acq_rel);
   // clean previous failed/completed reconnection thread
   if (reconnectionThread != nullptr) {
     NdbThread_Destroy(&reconnectionThread);

@@ -18,6 +18,7 @@
  */
 
 #include "rdrs_rondb_connection_pool.hpp"
+#include "ndb_api_helper.hpp"
 #include "ndb_global.h"
 #include "error_strings.h"
 #include "status.hpp"
@@ -63,6 +64,7 @@ ThreadContext::ThreadContext() {
   m_is_shutdown = false;
   m_is_ndb_object_in_use = false;
   m_ndb_object = nullptr;
+  m_generation = 0;
 }
 
 ThreadContext::~ThreadContext() {
@@ -255,6 +257,12 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
   }
   NdbMutex_Unlock(thread_context->m_thread_context_mutex);
   Uint32 connection = threadIndex % m_num_data_connections;
+  /* Read the generation BEFORE acquiring: a reconnection bumps the
+   * generation before GetNdbObject starts failing, so an object acquired
+   * concurrently with a starting reconnection carries the older stamp and
+   * ReturnNdbObject hands it back to the connection instead of caching a
+   * pointer the teardown is waiting for. */
+  Uint64 generation = dataConnections[connection]->GetGeneration();
   RS_Status status = dataConnections[connection]->GetNdbObject(ndb_object);
   if (unlikely(status.http_code != SUCCESS)) {
     DEB_POOL("GetNdbObject(%u), fail get", threadIndex);
@@ -262,31 +270,70 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
   }
   NdbMutex_Lock(thread_context->m_thread_context_mutex);
   thread_context->m_ndb_object = *ndb_object;
+  thread_context->m_generation = generation;
   thread_context->m_is_ndb_object_in_use = true;
   NdbMutex_Unlock(thread_context->m_thread_context_mutex);
   DEB_POOL("GetNdbObject(%u), success get", threadIndex);
   return RS_OK;
 }
 
+void RDRSRonDBConnectionPool::TriggerReconnect(Uint32 connection) {
+  /* Idempotent: logs and returns if a reconnection is already running.
+   * Bumps the connection generation before its teardown starts. */
+  dataConnections[connection]->Reconnect();
+  /* Hand idle thread-cached Ndb objects back to the connection: the
+   * teardown waits for every created object to return, and an idle cached
+   * object would only be returned when its thread happens to serve
+   * another request. */
+  Uint64 generation = dataConnections[connection]->GetGeneration();
+  for (Uint32 i = connection; i < m_num_threads;
+       i += m_num_data_connections) {
+    ThreadContext *thread_context = m_thread_context[i];
+    Ndb *cached = nullptr;
+    NdbMutex_Lock(thread_context->m_thread_context_mutex);
+    if (thread_context->m_is_ndb_object_in_use == false &&
+        thread_context->m_ndb_object != nullptr &&
+        thread_context->m_generation != generation) {
+      cached = thread_context->m_ndb_object;
+      thread_context->m_ndb_object = nullptr;
+    }
+    NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+    if (cached != nullptr) {
+      dataConnections[connection]->ReturnNDBObjectToPool(cached, nullptr);
+    }
+  }
+}
+
 RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object,
                                                    RS_Status *status,
                                                    Uint32 threadIndex) {
+  Uint32 connection = threadIndex % m_num_data_connections;
+  /* A cluster-unavailability error makes every Ndb object of this
+   * connection unusable. Start the reconnection BEFORE deciding whether
+   * to cache: the generation bump makes the check below hand this object
+   * back instead of caching a pointer into the torn-down connection. */
+  if (unlikely(status != nullptr && status->http_code != SUCCESS &&
+               ndb_error_cluster_unavailable(status->code))) {
+    TriggerReconnect(connection);
+  }
   ThreadContext *thread_context = m_thread_context[threadIndex];
   NdbMutex_Lock(thread_context->m_thread_context_mutex);
   DEB_POOL("ReturnNdbObject(%u), in_use: %u",
            threadIndex, thread_context->m_is_ndb_object_in_use);
-  if (thread_context->m_is_shutdown == false) {
+  if (thread_context->m_is_shutdown == false &&
+      thread_context->m_generation ==
+        dataConnections[connection]->GetGeneration()) {
     require(ndb_object == thread_context->m_ndb_object);
     require(thread_context->m_is_ndb_object_in_use);
     thread_context->m_is_ndb_object_in_use = false;
     NdbMutex_Unlock(thread_context->m_thread_context_mutex);
     return RS_OK;
   }
-  /* We are shutting down, return the Ndb object */
+  /* Shutting down, or the connection reconnected while this object was in
+   * use: return the Ndb object so the teardown can account for it. */
   thread_context->m_is_ndb_object_in_use = false;
   thread_context->m_ndb_object = nullptr;
   NdbMutex_Unlock(thread_context->m_thread_context_mutex);
-  Uint32 connection = threadIndex % m_num_data_connections;
   dataConnections[connection]->ReturnNDBObjectToPool(ndb_object, status);
   return RS_OK;
 }
@@ -303,6 +350,15 @@ RS_Status RDRSRonDBConnectionPool::GetMetadataNdbObject(Ndb **ndb_object) {
 
 RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
                                                            RS_Status *status) {
+  if (unlikely(status != nullptr && status->http_code != SUCCESS &&
+               ndb_error_cluster_unavailable(status->code) &&
+               metadataConnection == dataConnections[0])) {
+    /* The metadata connection is a borrowed data connection: reconnect
+     * through the pool so idle thread-cached objects are reclaimed too.
+     * The connection-level trigger below then sees the reconnection
+     * already in progress and does nothing. */
+    TriggerReconnect(0);
+  }
   metadataConnection->ReturnNDBObjectToPool(ndb_object, status);
   return RS_OK;
 }
