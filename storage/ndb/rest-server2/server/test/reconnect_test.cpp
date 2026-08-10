@@ -204,6 +204,8 @@ TEST_F(ReconnectTest, ClusterUpErrorsDoNotReconnect) {
   get_rondb_stats(&stats);
   EXPECT_EQ(stats.connection_state, CONNECTED);
   EXPECT_FALSE(stats.is_reconnection_in_progress);
+  // The /health readiness signal: reachable data nodes on a live cluster.
+  EXPECT_GT(get_num_ready_data_nodes(), 0);
 
   // The cached object must still be usable - no reconnection happened.
   Ndb *ndb = nullptr;

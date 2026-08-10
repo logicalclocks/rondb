@@ -251,6 +251,16 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
   }
 }
 
+int RDRSRonDBConnection::GetNumReadyDataNodes() {
+  NdbMutex_Lock(connectionMutex);
+  int ready = -1;
+  if (likely(ndbConnection != nullptr)) {
+    ready = ndbConnection->get_no_ready();
+  }
+  NdbMutex_Unlock(connectionMutex);
+  return ready;
+}
+
 void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {
   NdbMutex_Lock(connectionInfoMutex);
   stats.ndb_objects_available = availableNdbObjects.size();

@@ -116,6 +116,13 @@ class RDRSRonDBConnection {
   }
 
   /**
+   * Number of data nodes this connection can currently reach.
+   * 0 means the cluster cannot serve requests; -1 means there is no
+   * usable cluster connection at all.
+   */
+  int GetNumReadyDataNodes();
+
+  /**
    * Starts reconnection thread which calls the ReconnectHandler
    * Note: This is only made public for testing.
    *

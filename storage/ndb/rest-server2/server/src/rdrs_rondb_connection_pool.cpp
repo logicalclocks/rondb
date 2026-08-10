@@ -23,6 +23,9 @@
 #include "error_strings.h"
 #include "status.hpp"
 
+#include <algorithm>
+#include <climits>
+
 #include <util/require.h>
 #include <EventLogger.hpp>
 // Internal NDB dictionary impl: the stale-object purge is an internal
@@ -375,6 +378,15 @@ RS_Status RDRSRonDBConnectionPool::Reconnect() {
     return status;
   }
   return RS_OK;
+}
+
+int RDRSRonDBConnectionPool::GetMinReadyDataNodes() {
+  int min_ready = INT_MAX;
+  for (Uint32 i = 0; i < m_num_data_connections; i++) {
+    int ready = dataConnections[i]->GetNumReadyDataNodes();
+    min_ready = std::min(min_ready, ready);
+  }
+  return min_ready == INT_MAX ? -1 : min_ready;
 }
 
 RonDB_Stats RDRSRonDBConnectionPool::GetStats() {

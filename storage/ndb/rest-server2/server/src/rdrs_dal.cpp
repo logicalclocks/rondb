@@ -232,6 +232,10 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
   return RS_OK;
 }
 
+int get_num_ready_data_nodes() {
+  return rdrsRonDBConnectionPool->GetMinReadyDataNodes();
+}
+
 void*
 get_rdrs_ndb_object(int thread_index) {
   Ndb *ndb_object  = nullptr;

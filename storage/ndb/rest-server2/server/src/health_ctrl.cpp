@@ -82,7 +82,13 @@ void HealthCtrl::health(
   }
   RonDB_Stats stats;
   (void)get_rondb_stats(&stats);
-  if (stats.connection_state == CONNECTED) {
+  /* Healthy only when the connection is up AND at least one data node is
+   * reachable: with all data nodes down the connection state alone stays
+   * CONNECTED until a failed request triggers reconnection, and a load
+   * balancer would keep routing traffic to a server that cannot answer. */
+  if (stats.connection_state == CONNECTED &&
+      !stats.is_reconnection_in_progress &&
+      get_num_ready_data_nodes() > 0) {
     resp->setBody("1");
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   } else {
