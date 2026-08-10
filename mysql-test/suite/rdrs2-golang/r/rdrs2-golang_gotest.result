@@ -2,3 +2,5 @@
 PASS
 ## Go tests (with TLS and server-side cert)
 PASS
+## C++ tests
+PASS
