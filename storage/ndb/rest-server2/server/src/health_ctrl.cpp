@@ -67,7 +67,9 @@ void HealthCtrl::health(
     callback(resp);
     return;
   }
-  // Authenticate
+  // Authenticate. NOTE: with HealthRequiresAuth enabled, an outage makes
+  // the key validation itself fail against RonDB before the cluster-state
+  // check below runs, so /health reports 401/500 instead of 503 then.
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys &&
       globalConfigs.rest.healthRequiresAuth) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
