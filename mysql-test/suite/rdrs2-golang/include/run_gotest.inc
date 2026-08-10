@@ -1,5 +1,6 @@
 #
-# Run the RDRS2 Golang tests from MTR.
+# Run the RDRS2 Golang tests from MTR, followed by the RDRS2 C++ test
+# binaries (which reuse the databases the Go tests seeded).
 #
 # By default this runs ALL Golang test packages in a single `go test ./...`
 # invocation, so the hopsworks database is seeded once (the first package that
@@ -130,6 +131,54 @@ run_test('Go tests (without TLS)');
 
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_TLS'};
 run_test('Go tests (with TLS and server-side cert)');
+
+# ---------------------------------------------------------------------------
+# C++ tests (gtest binaries from storage/ndb/rest-server2/server/test).
+#
+# They connect to the cluster directly through the NDB API and reuse the
+# databases the Go tests above seeded, so they MUST run here - after the Go
+# tests, but before the cleanup section below drops those databases.
+#
+# The same constant-output convention as run_test applies: on success only
+# "PASS" is printed so the recorded result is stable; each binary's full
+# gtest output is streamed to the log file, and echoed to the MTR console
+# only on failure.
+# ---------------------------------------------------------------------------
+my @cpp_tests = ('error_handling_test',   # pure error-classification tests
+                 'reconnect_test',        # RONDB-1104 reconnection cycle
+                 'api_key_test',
+                 'feature_store_test');
+
+# Source builds place binaries in runtime_output_directory, packaged
+# builds in bin.
+my $bindir = $ENV{'MYSQL_BINDIR'} // $MYSQL_BASEDIR;
+my @bin_candidates = (File::Spec->catdir($bindir, 'runtime_output_directory'),
+                      File::Spec->catdir($bindir, 'bin'));
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
+log_line("## C++ tests\n");
+foreach my $test (@cpp_tests) {
+    my ($exe) = grep { -x $_ }
+                map { File::Spec->catfile($_, $test) } @bin_candidates;
+    if (!defined $exe) {
+        # Not part of this build (the test binaries are only built together
+        # with the NDB test programs); skip rather than fail.
+        log_line("### $test: binary not found, skipped\n");
+        next;
+    }
+    log_line("### $exe\n");
+    system("\"$exe\" >> \"$go_log_file\" 2>&1");
+    my $exit_code = $? >> 8;
+    next if $exit_code == 0;
+
+    print "## C++ tests\n";
+    print "FAIL: `$test` exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit $exit_code;
+}
+print "## C++ tests\n";
+print "PASS\n";
 
 exit 0;
 END_OF_PERL
