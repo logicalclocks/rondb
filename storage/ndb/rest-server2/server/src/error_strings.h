@@ -138,7 +138,8 @@ typedef enum {
   ERROR_SCAN_INVALID_LIMIT = 107,
   ERROR_SCAN_INDEX_BOUND_VALUES_TOO_MANY = 108,
   ERROR_SCAN_FILTER_VALUE_TYPE_MISMATCH = 109,
-  __MAX_INDEX__                         = 110  // this SHOULD always be last with max index number
+  ERROR_TABLE_METADATA_READ_FAILED      = 110,
+  __MAX_INDEX__                         = 111  // this SHOULD always be last with max index number
 } ErrorCode;
 
 // Struct to tie error codes with messages
@@ -259,6 +260,7 @@ static const ErrorEntry errorTable[] = {
     {ERROR_SCAN_INVALID_LIMIT, "[Scan] limit must be non-negative"},
     {ERROR_SCAN_INDEX_BOUND_VALUES_TOO_MANY, "[ScanIndex] Range bound has more values than the index has key columns"},
     {ERROR_SCAN_FILTER_VALUE_TYPE_MISMATCH, "[ScanFilter] CMP value JSON type does not match the target column data type"},
+    {ERROR_TABLE_METADATA_READ_FAILED, "Failed to read table metadata from RonDB."},
     {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };
 

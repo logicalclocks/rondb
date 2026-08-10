@@ -22,6 +22,7 @@
 #include "db_operations/ronsql/ronsql_operation.hpp"
 #include "rdrs_dal.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
+#include "ndb_api_helper.hpp"
 #include "retry_handler.hpp"
 #include "status.hpp"
 #include "logger.hpp"
@@ -1772,6 +1773,14 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
   const NdbDictionary::Table* table = dict->getTable(scan_params.path.table.c_str());
   if (unlikely(table == nullptr)) {
+    if (unlikely(!ndb_dict_object_missing(dict->getNdbError().code))) {
+      /* Dictionary lookup failed (e.g. cluster unavailable); the table may
+       * exist, so report the real NDB error instead of 404. */
+      return RS_RONDB_SERVER_ERROR(dict->getNdbError(),
+        std::string(rdrsErrorMessage(ERROR_TABLE_METADATA_READ_FAILED)) +
+        std::string(" Database: ") + db +
+        std::string(" Table: ") + scan_params.path.table);
+    }
     RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
       std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
       std::string(" Database: ") + db +

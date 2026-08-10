@@ -27,6 +27,7 @@
 #include "src/db_operations/pk/pkr_response.hpp"
 #include "src/error_strings.h"
 #include "src/logger.hpp"
+#include "src/ndb_api_helper.hpp"
 #include "src/rdrs_const.h"
 #include "src/status.hpp"
 #include "src/mystring.hpp"
@@ -121,9 +122,19 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
     DEB_NDB_BE("Request on DB: %s, Table: %s, op: %u, reqBuffer: %p",
       req->DB(), req->Table(), i, reqBuffer[i].buffer);
     if (unlikely(tableDict == nullptr)) {
+      if (unlikely(!ndb_dict_object_missing(dict->getNdbError().code))) {
+        /* The dictionary lookup itself failed (e.g. no data node was
+         * available to answer). Reporting 404 here would make a cluster
+         * outage indistinguishable from a missing row, so fail the whole
+         * batch with the real NDB error. */
+        return RS_RONDB_SERVER_ERROR(dict->getNdbError(),
+          std::string(rdrsErrorMessage(ERROR_TABLE_METADATA_READ_FAILED)) +
+          std::string(" Database: ") + std::string(req->DB()) +
+          std::string(" Table: ") + req->Table());
+      }
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
-        std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) + 
-        std::string(" Database: ") + std::string(req->DB()) + 
+        std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
+        std::string(" Database: ") + std::string(req->DB()) +
         std::string(" Table: ") + req->Table());
       if (m_isBatch) {
         req->MarkInvalidOp(err);
