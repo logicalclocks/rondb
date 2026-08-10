@@ -1,0 +1,8 @@
+# Wait for REST server to report healthy
+health: up
+# Stop all data nodes
+# /health must report unavailable during the outage
+health: down during outage
+# Restart all data nodes
+# REST server must recover without a process restart
+health: recovered without restart
