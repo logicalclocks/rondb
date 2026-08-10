@@ -207,8 +207,18 @@ RS_Status ronsql_dal(const char* database,
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 
 /**
- * Least number of reachable data nodes across the data cluster
- * connections. 0 or -1 means requests cannot be served.
+ * Least number of data nodes in STARTED state (as reported through
+ * Ndb_cluster_connection::get_no_ready(); nodes that are connected but
+ * still starting do not count) across the data cluster connections.
+ * 0 or -1 means requests cannot be served. Any value > 0 means the
+ * cluster is operational: a node is only STARTED inside a viable cluster,
+ * since losing a whole node group shuts down the surviving nodes too.
+ *
+ * There is no separate "cluster up" NDB API: get_no_ready() counts the
+ * same alive-node set that TransporterFacade::get_an_alive_node() scans,
+ * which is the serving path's own node-selection predicate (its 0 return
+ * is what produces error 4009). So > 0 here is exactly "the NDB API will
+ * attempt to serve requests".
  */
 int get_num_ready_data_nodes();
 

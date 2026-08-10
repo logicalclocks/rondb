@@ -83,9 +83,18 @@ void HealthCtrl::health(
   RonDB_Stats stats;
   (void)get_rondb_stats(&stats);
   /* Healthy only when the connection is up AND at least one data node is
-   * reachable: with all data nodes down the connection state alone stays
-   * CONNECTED until a failed request triggers reconnection, and a load
-   * balancer would keep routing traffic to a server that cannot answer. */
+   * in STARTED state: with all data nodes down the connection state alone
+   * stays CONNECTED until a failed request triggers reconnection, and a
+   * load balancer would keep routing traffic to a server that cannot
+   * answer.
+   *
+   * One STARTED node is sufficient, not just necessary: the NDB API only
+   * counts a data node once it reports SL_STARTED (ClusterMgr
+   * execAPI_REGCONF), and a data node can only be STARTED inside a viable
+   * cluster - losing a complete node group shuts down the surviving nodes
+   * too, taking the STARTED count to 0. A started-but-degraded cluster
+   * (some replicas down, every node group still covered) serves all data
+   * and is correctly reported healthy. */
   if (stats.connection_state == CONNECTED &&
       !stats.is_reconnection_in_progress &&
       get_num_ready_data_nodes() > 0) {
