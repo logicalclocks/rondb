@@ -844,6 +844,11 @@ Uint32 ExponentialDelayWithJitter(Uint32 retry,
                                   Uint32 jitterInMS) {
   Uint32 expoDelay  = initialDelayInMS * pow(2, retry);
   jitterInMS = std::min(jitterInMS, initialDelayInMS);
+  if (unlikely(jitterInMS == 0)) {
+    /* rand() % 0 is undefined (SIGFPE on x86); a zero-jitter or
+     * zero-delay configuration must not crash the retry path. */
+    return expoDelay;
+  }
   Uint32 randJitter = rand() % jitterInMS;
 
   Uint32 delay = 0;
