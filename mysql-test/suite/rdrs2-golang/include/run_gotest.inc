@@ -2,11 +2,20 @@
 # Run the RDRS2 Golang tests from MTR, followed by the RDRS2 C++ test
 # binaries (which reuse the databases the Go tests seeded).
 #
-# By default this runs ALL Golang test packages in a single `go test ./...`
-# invocation, so the hopsworks database is seeded once (the first package that
-# runs creates the "sentinel" DB; the rest reuse it) and the cluster is torn
-# down once. Running every package in its own MTR test instead re-seeds
-# hopsworks for each package, which is what made the suite slow.
+# The Go tests run in two passes:
+#   1. the FULL suite against the TLS server (rdrs.2.1): every handler plus
+#      the production transport;
+#   2. one hand-picked SIMPLE test per integration package against the
+#      plain-HTTP server (rdrs.1.1): plain HTTP is a shipped configuration
+#      with its own config-validation and listener-bootstrap code, and one
+#      test per package proves it serves every endpoint family without
+#      paying for the full suite twice. See %smoke_test below.
+#
+# By default this covers ALL Golang test packages, and the hopsworks
+# database is seeded once (the first package that runs creates the
+# "sentinel" DB; the rest reuse it) with the cluster torn down once.
+# Running every package in its own MTR test instead re-seeds hopsworks for
+# each package, which is what made the suite slow.
 #
 # To run only one (or a few) packages, set RDRS_GO_PACKAGE to a Go package
 # name (or a space-separated list), e.g.:
@@ -95,6 +104,18 @@ sub log_line {
     if (open(my $fh, '>>', $go_log_file)) { print $fh $_[0]; close($fh); }
 }
 
+sub fail_run {
+    my ($label, $message) = @_;
+    # Echo the streamed log to stdout so it is visible in the MTR console,
+    # and exit non-zero so MTR fails the test regardless of result
+    # matching.
+    print "## $label\n";
+    print "FAIL: $message\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit 1;
+}
+
 sub run_test {
     my ($label) = @_;
     log_line("## $label\n");
@@ -109,15 +130,7 @@ sub run_test {
         system("go test -v -count 1 $pkg >> \"$go_log_file\" 2>&1");
         my $exit_code = $? >> 8;
         next if $exit_code == 0;
-
-        # Failure: echo the streamed log to stdout so it is visible in the MTR
-        # console, and exit non-zero so MTR fails the test regardless of result
-        # matching.
-        print "## $label\n";
-        print "FAIL: `go test $pkg` exited with code $exit_code\n";
-        print "Full log: $go_log_file\n";
-        if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
-        exit $exit_code;
+        fail_run($label, "`go test $pkg` exited with code $exit_code");
     }
 
     # Constant, package-count independent output so the recorded result is the
@@ -126,11 +139,73 @@ sub run_test {
     print "PASS\n";
 }
 
-$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
-run_test('Go tests (without TLS)');
+# One hand-picked SIMPLE test per integration package: enough to prove the
+# configuration under test can serve every endpoint family, without paying
+# for the full suite twice. Unit packages prove nothing about a listener
+# configuration and are skipped. stat has no runnable tests (the endpoint
+# is not implemented yet).
+my %smoke_test = (
+    'hopsworks.ai/rdrs2/internal/integrationtests/ping'
+        => 'TestPing',
+    'hopsworks.ai/rdrs2/internal/integrationtests/health'
+        => 'TestHealth',
+    'hopsworks.ai/rdrs2/internal/integrationtests/pkread'
+        => 'TestDataTypesInt',
+    'hopsworks.ai/rdrs2/internal/integrationtests/batchpkread'
+        => 'TestBatchSimple',
+    'hopsworks.ai/rdrs2/internal/integrationtests/index_scan'
+        => 'Test_SimpleComparison',
+    'hopsworks.ai/rdrs2/internal/integrationtests/feature_store'
+        => 'Test_GetFeatureVector_Success',
+    'hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore'
+        => 'Test_GetFeatureVector_Success_1entries',
+    'hopsworks.ai/rdrs2/internal/integrationtests/sharing'
+        => 'Test_Sharing_PKRead',
+);
 
+sub run_smoke_tests {
+    my ($label) = @_;
+    log_line("## $label\n");
+
+    foreach my $pkg (@packages) {
+        my $test = $smoke_test{$pkg};
+        if (!defined $test) {
+            log_line("### $pkg: no smoke test configured, skipped\n");
+            next;
+        }
+        log_line("### $pkg -> $test\n");
+        my $out = `go test -v -count 1 -run '^${test}\$' $pkg 2>&1`;
+        my $exit_code = $? >> 8;
+        log_line($out);
+        if ($exit_code != 0) {
+            fail_run($label,
+                     "`go test -run '^${test}\$' $pkg` exited with code " .
+                     $exit_code);
+        }
+        # `go test -run` with a pattern matching no test exits 0, so a
+        # renamed/deleted smoke test would silently turn this pass into a
+        # no-op. Fail loudly instead so the list above cannot rot.
+        if ($out =~ /no tests to run/) {
+            fail_run($label,
+                     "smoke test $test not found in $pkg " .
+                     "(renamed or deleted? update the smoke_test map)");
+        }
+    }
+
+    print "## $label\n";
+    print "PASS\n";
+}
+
+# The full suite runs over TLS: it exercises every handler AND the
+# production transport. Plain HTTP is still a shipped configuration with
+# its own config-validation and listener-bootstrap code, so it gets one
+# simple test from every integration package - enough to prove the plain
+# listener serves each endpoint family.
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_TLS'};
 run_test('Go tests (with TLS and server-side cert)');
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
+run_smoke_tests('Go tests (without TLS, one simple test per package)');
 
 # ---------------------------------------------------------------------------
 # C++ tests (gtest binaries from storage/ndb/rest-server2/server/test).
