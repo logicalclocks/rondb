@@ -56,7 +56,8 @@ func pkReadRateLimitSender(t *testing.T) func(*http.Client) int {
 // restores service.
 func TestRateLimit(t *testing.T) {
 	testutils.SkipIfRateLimitsDisabled(t)
-	testutils.RunEndpointRateLimitTest(t, pkReadRateLimitSender(t))
+	testutils.RunEndpointRateLimitTest(t, pkReadRateLimitSender(t),
+		testdbs.DB004)
 }
 
 // TestRateLimitZeroIsUnlimited verifies the kernel "rate_per_sec == 0 means no
@@ -64,7 +65,8 @@ func TestRateLimit(t *testing.T) {
 // once here via pk-read rather than in every endpoint package.
 func TestRateLimitZeroIsUnlimited(t *testing.T) {
 	testutils.SkipIfRateLimitsDisabled(t)
-	testutils.RunZeroRateIsUnlimitedTest(t, pkReadRateLimitSender(t))
+	testutils.RunZeroRateIsUnlimitedTest(t, pkReadRateLimitSender(t),
+		testdbs.DB004)
 }
 
 // TestRateLimitUserCreatedAfterServerStart verifies that a USER entity created
@@ -74,5 +76,6 @@ func TestRateLimitZeroIsUnlimited(t *testing.T) {
 // exercised once here via pk-read.
 func TestRateLimitUserCreatedAfterServerStart(t *testing.T) {
 	testutils.SkipIfRateLimitsDisabled(t)
-	testutils.RunUserCreatedAfterStartRateLimitTest(t, pkReadRateLimitSender(t))
+	testutils.RunUserCreatedAfterStartRateLimitTest(t, pkReadRateLimitSender(t),
+		testdbs.DB004)
 }

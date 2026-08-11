@@ -232,15 +232,23 @@ DROP DATABASE IF EXISTS sentinel;
 --disconnect cleanup_server2
 --connection default
 
-# The Go tests provision a USER rate-limit entity for the test API key
-# prefix (testutils.ProvisionDefaultRateLimitUsers, key constant
-# HOPSWORKS_TEST_API_KEY). Drop it here so check-testcase sees no leftover
-# $-entity in the data nodes. Tolerate failure: the entity does not exist
-# when the Go tests were skipped. The result log is disabled because the
-# command's output depends on whether the entity existed.
+# The Go tests provision USER rate-limit entities: the test API key prefix
+# (testutils.ProvisionDefaultRateLimitUsers, apikey identity mode) and the
+# project-user identities of the databases the rate limit tests bill to
+# (username identity mode, server 2; see testutils.rateLimitIdentity).
+# Drop them here so check-testcase sees no leftover $-entities in the data
+# nodes. Tolerate failure: an entity does not exist when the Go tests were
+# skipped or ran in only one identity mode. The result log is disabled
+# because the commands' output depends on whether the entity existed.
 --disable_result_log
 --error 0,255,65280
 --exec $NDB_MGM -e "USER DROP bkYjEz6OTZyevbqt"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP db004_macho"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP db029_macho"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP fsdb001_macho"
 --enable_result_log
 
 --enable_warnings

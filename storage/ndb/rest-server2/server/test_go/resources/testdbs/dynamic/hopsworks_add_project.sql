@@ -22,10 +22,25 @@ VALUES
         PROJECT_NUMBER, 'PROJECT_NAME', 'macho@hopsworks.ai', '2022-05-30 14:17:22', 'Some desc', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'SomeDockerImage', 1, 0
     );
 
+-- Also make macho a member of the project. In username mode
+-- (RateLimitIdentity) only member projects have a project-user rate limit
+-- identity ("<project>_<username>", matching the online-FS MySQL account
+-- Hopsworks creates per membership), so the rate limit tests need their
+-- target databases to be member projects - as they are in production,
+-- where a feature view is served from a project the caller belongs to.
+INSERT INTO
+    `project_team`
+SET
+    `project_id` = PROJECT_NUMBER,
+    `team_member` = 'macho@hopsworks.ai',
+    `team_role` = 'Data scientist',
+    `added` = '2022-06-01 13:28:05';
+
 -- Register the database as a feature store and share it entirely with the
--- api key user's home project 999/demo0. macho is only a member of 999;
--- access to every other database comes via shared_feature_store, mirroring
--- how real Hopsworks grants cross-project access.
+-- api key user's home project 999/demo0, mirroring how real Hopsworks
+-- grants cross-project access (the membership above and this share grant
+-- the same data access; sharing-specific behaviour is covered by the
+-- sharing test package with its own users).
 INSERT INTO
     `feature_store`
 SET

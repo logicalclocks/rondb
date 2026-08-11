@@ -1,0 +1,38 @@
+{
+  "PIDFile": "@pid-file",
+  "REST": {
+    "ServerIP": "@bind-address",
+    "ServerPort": @port,
+    "UserRateLimits": true,
+    "RateLimitIdentity": "username",
+    "RateLimitFullAPIKey": false
+  },
+  "RonDB": {
+      "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+  },
+  "Security": {
+    "TLS": {
+      "EnableTLS": @EnableTLS,
+      "RequireAndVerifyClientCert": false,
+      "CertificateFile": "@std-data/hopsworks_fake_certificates/hw_service_and_intermediate.pem",
+      "PrivateKeyFile": "@std-data/hopsworks_fake_certificates/hw_service.key",
+      "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
+    },
+    "APIKey": {
+      "UseHopsworksAPIKeys": true,
+      "CacheRefreshIntervalMS": 5000
+    }
+  },
+  "Log": {
+    "Level": "INFO"
+  },
+  "Testing": {
+    "MySQL": {
+        "Servers": [ { "IP": "@mysqld.1.1.#host",
+                       "Port": @mysqld.1.1.port } ],
+      "User": "root",
+      "Password": ""
+    }
+  }
+}

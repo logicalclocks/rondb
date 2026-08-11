@@ -1197,6 +1197,15 @@ INSERT INTO `project_team` SET
   `team_role` = 'Data scientist',
   `added` = '2022-06-01 13:28:05';
 
+-- Membership in fsdb001 so the feature store rate limit tests have a
+-- project-user identity ('fsdb001_macho') in username mode; data access is
+-- unchanged (fsdb001 is also shared entirely with project 999 below).
+INSERT INTO `project_team` SET
+  `project_id` = 1000,
+  `team_member` = 'macho@hopsworks.ai',
+  `team_role` = 'Data scientist',
+  `added` = '2022-06-01 13:28:05';
+
 -- fsdb001 (store 67) shared entirely with 999/demo0
 INSERT INTO `shared_feature_store` SET
   `id` = 1001,

@@ -58,5 +58,5 @@ func TestRateLimit(t *testing.T) {
 		code, _ := testclient.SendHttpRequestWithClient(t, client, config.SCAN_HTTP_VERB,
 			url, reqBody, "", http.StatusOK, http.StatusTooManyRequests)
 		return code
-	})
+	}, testdbs.DB029)
 }
