@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RONDB-978: Project-User (Username) Rate-Limit Identity for RDRS — Design</title>
+<style>
+  :root {
+    --fg: #1a1a1a; --bg: #ffffff; --muted: #555; --border: #d8d8d8;
+    --accent: #0b5fa5; --code-bg: #f4f4f4; --warn-bg: #fff4e5; --warn-border: #e0a030;
+    --ok-bg: #eef7ee; --ok-border: #4a8f4a; --bad-bg: #fdeeee; --bad-border: #c05050;
+    --th-bg: #f0f3f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e4e4e4; --bg: #16181c; --muted: #a5a5a5; --border: #3a3f46;
+      --accent: #6db3e8; --code-bg: #22262c; --warn-bg: #3a3020; --warn-border: #c09040;
+      --ok-bg: #20301f; --ok-border: #5a9f5a; --bad-bg: #382222; --bad-border: #c06060;
+      --th-bg: #22262c;
+    }
+  }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--fg);
+         background: var(--bg); max-width: 62rem; margin: 0 auto; padding: 2rem 1.2rem 5rem; }
+  h1 { font-size: 1.7rem; border-bottom: 2px solid var(--accent); padding-bottom: .4rem; }
+  h2 { font-size: 1.32rem; margin-top: 2.4rem; border-bottom: 1px solid var(--border); padding-bottom: .25rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.8rem; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .86em;
+              background: var(--code-bg); border-radius: 4px; }
+  code { padding: .1em .35em; }
+  pre { padding: .8em 1em; overflow-x: auto; line-height: 1.45; }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .92em; }
+  .tablewrap { overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: .45em .6em; text-align: left; vertical-align: top; }
+  th { background: var(--th-bg); }
+  .warn, .ok, .bad { border-left: 4px solid; padding: .6em .9em; margin: 1em 0; border-radius: 0 6px 6px 0; }
+  .warn { background: var(--warn-bg); border-color: var(--warn-border); }
+  .ok   { background: var(--ok-bg);   border-color: var(--ok-border); }
+  .bad  { background: var(--bad-bg);  border-color: var(--bad-border); }
+  .muted { color: var(--muted); }
+  .file { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .84em; color: var(--muted); }
+  dt { font-weight: 600; margin-top: .7em; }
+  dd { margin-left: 1.2em; }
+  nav ul { columns: 2; }
+  .tag { display: inline-block; font-size: .75em; font-weight: 700; padding: .1em .5em;
+         border-radius: 10px; border: 1px solid var(--border); vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<h1>RONDB-978: Project-User Rate-Limit Identity for RDRS</h1>
+<p class="muted">Design document — switching the REST server's rate-limit identity from API-key
+prefixes to Hopsworks project-user names, with a per-endpoint solution.
+Sources: Hopsworks (<span class="file">hops/hopsworks @ d7fe78bfab</span>), the original upstream
+implementation (<span class="file">rondb2, commits 1d04f04ece9 / 32220b33624</span>), current RDRS
+(<span class="file">rondb @ RONDB-978-Cont</span>).</p>
+
+<nav>
+<ul>
+  <li><a href="#summary">1. Executive summary</a></li>
+  <li><a href="#identity">2. The identity: which string, exactly</a></li>
+  <li><a href="#today">3. What exists today</a></li>
+  <li><a href="#upstream">4. Post-mortem of the original username code</a></li>
+  <li><a href="#core">5. Core RDRS changes</a></li>
+  <li><a href="#endpoints">6. Per-endpoint solutions</a></li>
+  <li><a href="#provisioning">7. Provisioning USER entities from Hopsworks</a></li>
+  <li><a href="#kernel">8. Kernel considerations</a></li>
+  <li><a href="#rollout">9. Rollout</a></li>
+  <li><a href="#open">10. Open questions</a></li>
+</ul>
+</nav>
+
+<h2 id="summary">1. Executive summary</h2>
+<p>Today RDRS tags every NdbTransaction with the <strong>API-key prefix</strong>
+(<span class="file">rate_limit.hpp</span>). That was the pragmatic stage-1 choice; its weakness is
+that an API key spans <em>all</em> of its owner's projects, so one bucket aggregates a user's
+traffic across projects, and REST buckets don't line up with anything else in the platform.</p>
+<p>The proposal: make the identity the <strong>Hopsworks project-user</strong>, using the
+<em>online feature store MySQL account convention</em>:</p>
+<pre><code>identity = clip( project.projectname + "_" + users.username )
+   where clip cuts to 31 chars ONLY when longer than 32 (a 32-char name stays 32)</code></pre>
+<p>Rationale: this is the exact string of the MySQL account each project member already has for
+online feature store access (<code>OnlineFeaturestoreController.onlineDbUsername</code>). The
+RONDB-978 MySQL-server path attributes usage by MySQL account name, so with this choice
+<strong>a project-user's REST traffic and MySQL traffic land in the same kernel rate-limit
+bucket</strong>, and Hopsworks can provision/drop USER entities in the exact place it
+creates/drops the MySQL accounts. One bucket per (project, member) — precisely the granularity
+Hopsworks already manages identities at.</p>
+<p>The project half of the identity comes <em>from the request</em> (the target database /
+feature store), because the API key itself carries no project. The username half comes from
+<code>hopsworks.users.username</code>, cached alongside the API key. Requests whose identity has
+no provisioned USER entity run unmetered — which makes rollout safe and incremental.</p>
+
+<h2 id="identity">2. The identity: which string, exactly</h2>
+
+<h3>2.1 Hopsworks naming systems (verified)</h3>
+<div class="tablewrap"><table>
+<tr><th>System</th><th>Format</th><th>Separator</th><th>Length rule</th><th>Defined in</th></tr>
+<tr><td><strong>Online FS MySQL account</strong> (chosen)</td>
+    <td><code>{ProjectName}_{username}</code> (project case preserved)</td>
+    <td>single <code>_</code></td>
+    <td>names <em>longer than 32</em> are clipped to <strong>31</strong> chars
+        (<code>substring(0, 32-1)</code> under a <code>&gt; 32</code> guard — a 32-char name is
+        kept); this odd boundary must be copied verbatim</td>
+    <td><span class="file">OnlineFeaturestoreController.java:589-595</span>,
+        <span class="file">FeaturestoreConstants.java:103</span></td></tr>
+<tr><td>HDFS / certificates / Kafka / Kubernetes</td>
+    <td><code>{ProjectName}__{username}</code></td>
+    <td>double <code>__</code></td>
+    <td>no clip</td>
+    <td><span class="file">HdfsUsersController.java:75,285</span></td></tr>
+<tr><td>JWT subject</td><td><code>{username}</code> only — project is in claims</td>
+    <td>—</td><td>8</td><td><span class="file">JWTHelper.java:232</span></td></tr>
+</table></div>
+
+<h3>2.2 Building blocks</h3>
+<div class="tablewrap"><table>
+<tr><th>Component</th><th>Facts</th></tr>
+<tr><td><code>users.username</code></td>
+    <td>always exactly <strong>8 chars</strong>, <code>[a-z0-9]{8}</code> (email local-part,
+        stripped, zero-padded, numeric suffix on collision); column <code>varchar(10)</code>,
+        UNIQUE. <span class="file">UsersController.java:483</span></td></tr>
+<tr><td><code>project.projectname</code></td>
+    <td>≤ <strong>25 chars</strong>, starts with a letter, <code>[a-zA-Z0-9_]</code>, may not
+        contain <code>__</code> or <code>_featurestore</code>, mixed case allowed.
+        <span class="file">FolderNameValidator.java:54</span></td></tr>
+<tr><td>Online DB name</td>
+    <td><code>lowercase(projectname)</code> — this is the database REST requests actually name.
+        <span class="file">OnlineFeaturestoreController.java:575</span></td></tr>
+<tr><td>Feature store <em>name</em></td>
+    <td><code>lowercase(projectname)</code> — <code>feature_store.name</code> is set to the
+        bare lowercased project name (<span class="file">FeaturestoreController.java:239</span>),
+        so feature-store requests and pk-read/scan URLs both resolve with the same key. (The
+        Hive <em>offline DB</em> is <code>lowercase(projectname) + "_featurestore"</code>,
+        <span class="file">FeaturestoreController.java:331</span>, but RDRS never bills by it.)</td></tr>
+<tr><td><code>api_key</code> → user</td>
+    <td><code>prefix</code> (16 chars, UNIQUE) → <code>user_id</code> → <code>users.uid</code>.
+        <strong>No project dimension.</strong></td></tr>
+<tr><td>Membership</td>
+    <td><code>project_team(project_id, team_member=users.email)</code>; one user ↔ many
+        projects.</td></tr>
+</table></div>
+
+<div class="warn"><strong>Gotchas the implementation must respect</strong>
+<ul>
+<li><strong>Case:</strong> the request names the <em>lowercased</em> DB, but the identity uses
+    the project name's <em>original case</em>. The mapping lowercase-db → ProjectName must come
+    from a lookup of <code>project.projectname</code> (RDRS's API-key cache already reads these
+    rows), never from string surgery on the request.</li>
+<li><strong>Clip &gt;32 → 31 (a 32-char name survives).</strong> Max unclipped length is
+    25+1+8 = 34, so truncation is real for project names ≥ 24 chars, and exactly-32 names
+    (23-char projects) stay whole. Reproduce Hopsworks' exact boundary or REST and MySQL
+    buckets diverge for long project names.</li>
+<li><strong>Not parseable:</strong> project names may contain <code>_</code>, so the identity
+    cannot be split back into (project, user). Treat it as an opaque bucket key; always build it
+    from the pair.</li>
+<li><strong>Kernel storage:</strong> the data nodes store the entity as
+    <code>$&lt;identity&gt;</code>; 31+1 chars is comfortably inside database-name limits.</li>
+</ul></div>
+
+<h2 id="today">3. What exists today (API-key prefix identity)</h2>
+<p>Identity is computed once per request in
+<span class="file">rate_limit.hpp:38</span> (<code>get_rate_limit_identity</code>), gated by
+<code>REST.UserRateLimits</code>; config <code>RateLimitIdentity</code> is validated to the
+single value <code>"apikey"</code>. It is threaded as one <code>const char*</code> into
+<code>pk_batch_read(...)</code> / <code>scan_read(...)</code> and applied per transaction via
+<code>NdbTransaction::setUserId</code>
+(<span class="file">pkr_operation.cpp:386-397</span>, <span class="file">rdrs_dal.cpp:1855</span>).</p>
+<p>Two load-bearing facts for this design:</p>
+<ul>
+<li>The api-key cache entry (<code>UserDBs</code>, <span class="file">api_key.hpp:91-131</span>)
+    stores the owner's <code>users.uid</code> (<code>m_user_id</code>) but <strong>no
+    username</strong> — and <code>find_user_int</code> currently reads only
+    <code>users.email</code>. <strong>The word “username” does not exist in RDRS src today.</strong></li>
+<li>Every <code>authenticate*()</code> overload returns only <code>RS_Status</code> — there is no
+    channel to hand an identity back to the controller. Adding one is the central API change.</li>
+</ul>
+
+<h2 id="upstream">4. Post-mortem: the original username implementation (rondb2)</h2>
+<p>The original code (Mikael, <span class="file">1d04f04ece9</span>, refactored in
+<span class="file">32220b33624</span>, later <em>silently deleted by the RONDB-1088 squash
+merge</em>) is a useful map of the plumbing, but it cannot be revived by cherry-pick:</p>
+<div class="tablewrap"><table>
+<tr><th>#</th><th>Defect</th><th>Effect</th></tr>
+<tr><td>1</td><td><code>find_all_projects_int</code> took <code>HopsworksUsers</code> <em>by
+    value</em>; the username read from NDB never reached the caller.</td>
+    <td>Identity built from an uninitialised struct.</td></tr>
+<tr><td>2</td><td><code>find_and_validate</code> accepted <code>username_ptr</code> but never
+    wrote to it; the cached <code>m_user_ptr</code> was assigned and never read.</td>
+    <td>Controllers tagged transactions with uninitialised stack memory.</td></tr>
+<tr><td>3</td><td><code>feature_store_ctrl.cpp</code> declared a <em>shadowing</em>
+    <code>char *username_ptr</code> inside the auth block.</td>
+    <td>Single feature-store endpoint always passed <code>nullptr</code> — untagged.</td></tr>
+<tr><td>4</td><td><code>set_user_id</code> built the identity by <code>memmove</code>/<code>memcpy</code>
+    <em>in place</em> in the shared request buffer.</td>
+    <td>In per-op-transaction batches, op 2+ got a garbled, accumulating identity.</td></tr>
+</table></div>
+<div class="warn"><strong>Naming surprise:</strong> the original concatenation was
+<code>{database}{username}</code> — request DB name, then username, <strong>no separator</strong>,
+username truncated at 10 chars. For feature-store requests the “project” half was actually
+<code>{project}_featurestore</code>. This matches no Hopsworks identity system, and nothing
+provisioned entities with those names. This design deliberately replaces it with the MySQL
+account convention (§2) instead of restoring it.</div>
+
+<h2 id="core">5. Core RDRS changes (shared by all endpoints)</h2>
+
+<h3>5.1 Cache: carry the username and the project-name map</h3>
+<ul>
+<li><code>find_user_int</code> (<span class="file">rdrs_hopsworks_dal.cpp:526</span>): also read
+    the <code>username</code> column (fixing upstream defect #1 — pass the struct by reference).
+    <code>USERNAME_SIZE = 11</code> already exists in <span class="file">rdrs_const.h</span>.</li>
+<li><code>UserDBs</code> (<span class="file">api_key.hpp</span>): add
+    <code>char m_username[USERNAME_SIZE]</code>, filled on every cache load/refresh
+    (<code>update_cache</code>, <code>load_single_key</code>, <code>refresh_job</code> all funnel
+    through <code>find_user_databases</code>, so one write-site).</li>
+<li>Add a per-entry map <code>m_db_to_project: lowercase db → ProjectName (original case)</code>.
+    The refresh path already fetches <code>HopsworksProject.projectname</code> with original
+    case before lowercasing into <code>userDBs</code>
+    (<span class="file">api_key.cpp:692-724</span>); keep the pair instead of discarding it.
+    Entries: member projects (grant source <code>project_team</code>) and, if shared-store
+    metering is wanted (§10), shared stores' owning projects.</li>
+</ul>
+
+<h3>5.2 Authentication API: return an identity context</h3>
+<pre><code>struct AuthCtx {           // filled by authenticate*() on success
+  char username[USERNAME_SIZE];        // 8 chars in practice
+  // accessor into the cache entry's db→ProjectName map, valid for the request
+};
+
+RS_Status authenticate(const std::string &amp;apiKey, PKReadParams &amp;, AuthCtx *ctx);
+// ... same added parameter on the other three overloads</code></pre>
+<p>This is the fix for upstream defect #2 done properly: the out-parameter is written exactly
+once, under the cache entry's shared lock, by <code>find_and_validate</code>.</p>
+
+<h3>5.3 Identity computation: extend <code>rate_limit.hpp</code></h3>
+<pre><code>// RateLimitIdentity: "apikey" (today's behaviour) | "username" (new)
+std::string get_rate_limit_identity(const std::string &amp;api_key,
+                                    const AuthCtx &amp;ctx,
+                                    std::string_view target_db) {
+  if (!globalConfigs.rest.userRateLimits) return {};
+  if (identity_mode == APIKEY) return prefix(api_key);          // unchanged
+  // username mode:
+  //   1. identity = ctx.identity_for(lowercase(target_db))   (map lookup;
+  //      the key is the lowercased project name = online db name =
+  //      feature store name, so no suffix handling is needed)
+  //      - unknown db (not in map) -> return {} (unmetered)
+  //   2. return it (already clip(ProjectName + "_" + username),
+  //      built case-preserved from the project table at cache load)
+}</code></pre>
+<p>Each call returns a <strong>fresh <code>std::string</code></strong> owned by the controller —
+no shared mutable buffer (fixes upstream defect #4). The existing threading
+(<code>const char*, len</code> → <code>setUserId</code> per transaction) is unchanged, so the
+DAL and kernel plumbing this branch already validated keeps working.</p>
+
+<h3>5.4 Config</h3>
+<ul>
+<li><code>RateLimitIdentity</code> gains the value <code>"username"</code> (drop the
+    apikey-only validation in <span class="file">config_structs_def.hpp:116-124</span>).
+    <code>"apikey"</code> remains supported — instant rollback path.</li>
+<li><code>RateLimitFullAPIKey</code> is meaningful only in apikey mode; reject it in username
+    mode.</li>
+</ul>
+
+<h2 id="endpoints">6. Per-endpoint solutions</h2>
+
+<h3>6.1 pk-read <span class="tag">POST /0.1.0/{db}/{table}/pk-read</span></h3>
+<dl>
+<dt>Today</dt><dd>Auth at <span class="file">pk_read_ctrl.cpp:119</span> with one
+    <code>TableAccessRequest</code>; single DB from the URL; one transaction, tagged.</dd>
+<dt>Solution</dt><dd><code>target_db = path.db</code>. Identity
+    <code>clip(Proj(db) + "_" + username)</code> computed right after auth; passed exactly as
+    today. The URL DB is the online DB (= lowercased project name), so the map lookup always
+    resolves for member projects. <strong>Simplest case; no structural change.</strong></dd>
+<dt>Edge</dt><dd>DB not in the project map (e.g. system db accessed by an admin key): empty
+    identity → unmetered. Acceptable and explicit.</dd>
+</dl>
+
+<h3>6.2 scan / index-scan <span class="tag">POST /0.1.0/{db}/{table}/scan</span></h3>
+<dl>
+<dt>Today</dt><dd>Auth at <span class="file">scan_read_ctrl.cpp:206</span>; single DB from URL;
+    exactly one transaction (<span class="file">rdrs_dal.cpp:1836</span>), tagged; already maps
+    429 explicitly.</dd>
+<dt>Solution</dt><dd>Identical to pk-read: <code>target_db = path.db</code>, one identity, one
+    transaction. No structural change.</dd>
+</dl>
+
+<h3>6.3 batch-pk-read <span class="tag">POST /0.1.0/batch</span></h3>
+<dl>
+<dt>Today</dt><dd>Sub-operations <strong>can name different databases</strong> in one request
+    (<span class="file">batch_pk_read_ctrl.cpp:176-212</span>). With
+    <code>UseSingleTransaction=true</code> (default) the whole batch shares transactions, and one
+    identity tags them all.</dd>
+<dt>Problem</dt><dd>A transaction has exactly one userId. A mixed-project batch under a single
+    identity either over-bills one project (upstream's "first op wins") or under-bills all.</dd>
+<dt>Solution — group by database</dt><dd>
+    Partition sub-operations by <code>req-&gt;DB()</code> before
+    <code>setup_transactions</code>; start one transaction (chain) per database group; tag each
+    group's transactions with that database's project identity. For the overwhelmingly common
+    single-DB batch this degenerates to exactly today's behaviour (one group), so no performance
+    change; mixed-DB batches gain one transaction per extra database — correct attribution at
+    proportional cost. Per-group identities live in per-group <code>std::string</code>s (fixes
+    upstream defect #4 structurally).</dd>
+<dt>Fallback if grouping is deemed too invasive for v1</dt><dd>Tag all transactions with the
+    identity of the <em>first</em> operation's DB and document it. Deterministic but
+    mis-attributes mixed batches; grouping is the recommended end state.</dd>
+</dl>
+
+<h3>6.4 feature-store <span class="tag">POST /0.1.0/feature_store</span></h3>
+<dl>
+<dt>Today</dt><dd>Metadata is resolved <em>before</em> auth
+    (<span class="file">feature_store_ctrl.cpp:634-641</span>), so the feature view's own store
+    (<code>reqStruct.featureStoreName</code>) is known early. Reads may touch feature groups in
+    <em>other projects' stores</em> (shared FGs, <code>metadata-&gt;featureStoreNames</code>);
+    auth deliberately validates those cross-project grants. One <code>pk_batch_read</code> over
+    possibly several DBs; single identity today.</dd>
+<dt>Solution — bill the entry project</dt><dd>
+    <code>target_db = reqStruct.featureStoreName</code> — the feature store name equals the
+    lowercased project name, so this is directly the <strong>feature view's own
+    project</strong>. All transactions of the
+    request (including sub-reads that land in shared stores) are tagged with
+    <code>clip(FVProject + "_" + username)</code>. Rationale: the caller is acting <em>in</em>
+    that project — the same attribution MySQL gives when the client connects as that project's
+    account and selects from a shared DB. Do <em>not</em> use per-FG store identities: shared-FG
+    reads would then bill the <em>owning</em> project's project-user, which may not even exist
+    for this caller (no membership → no MySQL account → no bucket).</dd>
+<dt>Note</dt><dd>This is a single-identity request, so no transaction grouping is needed
+    regardless of how many stores the FV spans.</dd>
+</dl>
+
+<h3>6.5 batch-feature-store <span class="tag">POST /0.1.0/batch_feature_store</span></h3>
+<dl>
+<dt>Today</dt><dd>Same shape as feature-store — one feature view, N entry rows
+    (<span class="file">batch_feature_store_ctrl.cpp:127-182</span>).</dd>
+<dt>Solution</dt><dd>Identical to 6.4: one identity from the FV's own store; entries multiply
+    operations, not identities.</dd>
+</dl>
+
+<h3>6.6 ronsql <span class="tag">POST /0.1.0/ronsql</span></h3>
+<dl>
+<dt>Today</dt><dd><strong>Completely untagged</strong> — the controller computes no identity,
+    and <code>ronsql_dal</code> (<span class="file">rdrs_dal.cpp:190</span>) has no identity
+    parameter; no <code>setUserId</code> under <code>db_operations/ronsql/</code>. (The original
+    upstream code obtained a username here but also never forwarded it.)</dd>
+<dt>Solution</dt><dd>The single database comes from the body (<code>reqStruct.database</code>,
+    validated at <span class="file">ronsql_ctrl.cpp:102</span>) and auth already happens after a
+    parse-only pass discovers the table/columns. Wire the standard chain for the first time:
+    compute the identity from that database, add an identity parameter to
+    <code>ronsql_dal(...)</code> → <code>ronsql_operation</code> → <code>setUserId</code> on the
+    execution transaction, and map queueing-abort NDB errors to 429 in the controller (copy the
+    scan controller's mapping, <span class="file">scan_read_ctrl.cpp:236-240</span>). Aggregation
+    scans are the expensive queries — leaving RonSQL unmetered would leave the biggest per-query
+    cost outside the quota system.</dd>
+</dl>
+
+<h3>6.7 batch write / delete <span class="tag">26.04+ only</span></h3>
+<dl>
+<dt>Situation</dt><dd>Not present on 26.02; on 26.04+ they already take the downstream
+    <code>rate_limit_identity</code> DAL signature (ported during the upmerge).</dd>
+<dt>Solution</dt><dd>Same as batch-pk-read (6.3): group by database, per-group identity. Writes
+    use the write-rate constants in the kernel; nothing endpoint-specific beyond that.</dd>
+</dl>
+
+<h3>6.8 Non-data endpoints <span class="tag">no tagging</span></h3>
+<div class="tablewrap"><table>
+<tr><th>Endpoint</th><th>Decision</th></tr>
+<tr><td>health, ping</td><td>Optional key-existence auth only, no NDB data transactions —
+    nothing to tag. Unchanged.</td></tr>
+<tr><td>ttl-purge family</td><td>The background purger's transactions
+    (<span class="file">ttl_purge.cpp:785…</span>) are <em>system</em> work, not user traffic —
+    deliberately unmetered. (Separately: most TTL read endpoints have no auth at all; worth its
+    own ticket.)</td></tr>
+<tr><td>metrics, slow-scans</td><td>No auth, no user transactions. Unchanged.</td></tr>
+<tr><td>Internal metadata reads (api-key cache, FS-metadata cache, event watchers)</td>
+    <td>Remain untagged by design — internal upkeep must never be throttled by a user's
+    bucket.</td></tr>
+</table></div>
+
+<h2 id="provisioning">7. Provisioning USER entities from Hopsworks</h2>
+<p>The kernel only meters identities that exist as USER entities (<code>$</code>-prefixed
+records created via mgm <code>USER SET</code>). Unprovisioned identities run unmetered, so
+provisioning defines coverage. Hopsworks should own it, mirroring the MySQL account lifecycle:</p>
+<div class="tablewrap"><table>
+<tr><th>Option</th><th>Mechanism</th><th>Assessment</th></tr>
+<tr><td><strong>A — co-locate with the MySQL account</strong> (recommended)</td>
+    <td>Call mgm <code>USER SET clip(proj_user) --rate-per-sec=&lt;quota&gt;</code> next to
+    <code>OnlineFeaturestoreFacade.createOnlineFeaturestoreUser</code>
+    (<span class="file">OnlineFeaturestoreFacade.java:167</span>) and <code>USER DROP</code> next
+    to <code>removeOnlineFeaturestoreUser</code> (<span class="file">:187</span>).</td>
+    <td>Exact 1:1 with the accounts the identity mirrors; covers both the eager
+    <code>addMember</code> path and the <em>lazy</em> <code>setupOnlineFeatureStore</code> path
+    (MySQL users are created on first online-FS touch, not at project creation). Synchronous —
+    needs a best-effort/retry wrapper so mgm unavailability doesn't fail membership changes.</td></tr>
+<tr><td><strong>B — <code>operation_log</code> async handler</strong></td>
+    <td>Implement <code>OnlinefsOperationHandler</code>
+    (<span class="file">hopsworks-common/.../async/service/</span>); the
+    <code>ONLINE_FS_DB_CREATE_USER / REMOVE_USER</code> rows already carry
+    <code>online_fs_user</code> — literally the identity string. Template:
+    <span class="file">SupersetUserAccountHandler.java</span>.</td>
+    <td>Retries, per-service status, decoupled from the request path; slightly delayed
+    (timer-driven). Excellent either as the primary mechanism or as the retry layer under A.</td></tr>
+</table></div>
+<ul>
+<li><strong>Idempotency:</strong> use SET-then-ALTER (as the Go test helper does) — Hopsworks
+    re-runs provisioning defensively, and multi-region executes twice.</li>
+<li><strong>Service users</strong> (<code>onlinefs</code>, <code>rondb_replication</code>, serving
+    keys): ordinary members, so they'd get buckets too. Exempt them (skip provisioning, or
+    provision rate 0 = unlimited) using <code>operation_log.is_service_user</code> /
+    <code>OperationHandlerHelper.isServiceUser</code>.</li>
+<li><strong>Quota source:</strong> a per-project (or cluster-default) setting in Hopsworks;
+    role-differentiated limits (Data owner vs Data scientist) are possible later since the role
+    is known at provisioning time.</li>
+<li><strong>Reconciliation:</strong> a periodic job comparing mgm <code>USER LIST</code> against
+    the expected set heals missed events (mirror of RDRS's own 60s re-LIST philosophy).</li>
+</ul>
+
+<h2 id="kernel">8. Kernel considerations</h2>
+<ul>
+<li><strong>Cardinality:</strong> entities = active (project, member) pairs — the same
+    cardinality as online-FS MySQL accounts, which the platform already sustains. Each is one
+    small DICT record distributed to TC/LQH.</li>
+<li><strong>Drop under traffic is now safe</strong> on this branch: the DBLQH stale
+    <code>m_user_ptr_i</code> UAF (node crash on USER DROP with live scans) is fixed
+    (<span class="file">5b32fa7783e</span>), and in-flight operations are gated by DBTC's
+    <code>PREPARE_DROP</code> refcount. <em>The fix must be ported to 26.04/26.05 before this
+    feature ships there.</em></li>
+<li><strong>Client cache:</strong> the authoritative user-id cache + CREATE/DROP push +
+     60s re-LIST (<span class="file">40dee85245d</span>) means newly provisioned project-users
+    start being enforced within push latency, without per-transaction DICT probes — validated by
+    <code>TestRateLimitUserCreatedAfterServerStart</code>.</li>
+<li><strong>Kill switches</strong> (unchanged by this design): per-user
+    <code>USER ALTER --rate-per-sec=0</code> (live), <code>UserRateLimits=false</code> + RDRS
+    roll, <code>ActivateRateLimits=0</code> + data-node roll. Making the last one runtime-SETable
+    is a recommended companion change.</li>
+</ul>
+
+<h2 id="rollout">9. Rollout</h2>
+<ol>
+<li>Ship the RDRS changes with <code>RateLimitIdentity: "apikey"</code> (default) — zero
+    behaviour change; the username plumbing is dormant but testable.</li>
+<li>Ship Hopsworks provisioning (entities appear; nothing meters them yet since RDRS still tags
+    prefixes and MySQL-path buckets only bite if MySQL-path limits are set).</li>
+<li>Flip <code>RateLimitIdentity: "username"</code> per cluster + rolling RDRS restart.
+    Rollback = flip back.</li>
+<li>Test coverage per endpoint mirrors the existing per-endpoint ratelimit Go tests, plus: a
+    mixed-database batch asserting per-group attribution, a shared-FG feature-store read
+    asserting the entry project is billed, and a ronsql throttle test (new coverage entirely).</li>
+</ol>
+
+<h2 id="open">10. Open questions (need product/review decisions)</h2>
+<ol>
+<li><strong>Shared-store scans/pk-reads outside feature-store endpoints:</strong> a pk-read
+    directly against a <em>shared</em> project's online DB resolves to a project the caller is
+    not a member of. Options: (a) unmetered (map lookup fails — simplest, proposed default);
+    (b) extend the map with shared stores so it bills
+    <code>{OwnerProject}_{username}</code> — requires provisioning those extra buckets on
+    share-grant events (<code>ONLINE_FS_DB_GRANT_PRIVILEGES</code> rows exist for this).</li>
+<li><strong>Mixed-DB batch grouping (6.3):</strong> accept the per-group transaction cost in v1,
+    or start with first-op-wins? Recommendation: group — the code motion is contained in
+    <code>setup_transactions</code>.</li>
+<li><strong>MySQL-path string — RESOLVED:</strong> <code>ha_ndbcluster::set_user_id</code>
+    (<span class="file">ha_ndbcluster.cc:7756</span>) tags with
+    <code>security_context()-&gt;user()</code>, the plain account name without host suffix, so
+    REST and MySQL buckets coincide byte-for-byte.</li>
+<li><strong>JWT-authenticated RDRS requests</strong> (if/when enabled): the JWT subject is the
+    bare username and the project comes from claims — same identity formula applies, different
+    extraction point.</li>
+</ol>
+
+<hr>
+<p class="muted">Prepared on branch <span class="file">RONDB-978-Cont</span>, 2026-08-10.
+Companion artifacts: kernel UAF fix <span class="file">5b32fa7783e</span>, push-path test
+<span class="file">124ec9a8d4d</span>, authoritative user-id cache
+<span class="file">40dee85245d</span>.</p>
+
+</body>
+</html>
