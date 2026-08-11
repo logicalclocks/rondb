@@ -9,6 +9,7 @@
                    "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
   },
   "Security": {
+    "InsecureAllowAll": @InsecureAllowAll,
     "TLS": {
       "EnableTLS": @EnableTLS,
       "RequireAndVerifyClientCert": false,
@@ -17,7 +18,7 @@
       "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
     },
     "APIKey": {
-      "UseHopsworksAPIKeys": true,
+      "UseHopsworksAPIKeys": @UseHopsworksAPIKeys,
       "CacheRefreshIntervalMS": 5000
     }
   },
