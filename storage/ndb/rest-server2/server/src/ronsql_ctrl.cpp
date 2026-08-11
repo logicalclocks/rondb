@@ -24,6 +24,7 @@
 #include <drogon/HttpTypes.h>
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "api_key.hpp"
+#include "rate_limit.hpp"
 #include <metrics.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -127,6 +128,7 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
+  std::string rl_identity;
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     /*
@@ -136,6 +138,7 @@ void RonSQLCtrl::ronsql(
      * subset. A parse failure is reported like an execution-time parse
      * failure; the schema is never touched before authorization succeeds.
      */
+    RateLimitIdentities rlIdentities;
     try {
       RonSQLPreparer parser(params, RonSQLPreparer::ParseOnly{});
       LexCString table = parser.get_table_name();
@@ -152,7 +155,8 @@ void RonSQLCtrl::ronsql(
       accessReq.table = std::string_view(table.str, table.len);
       accessReq.columns = &columns;
       status = authenticate(api_key,
-                            std::vector<TableAccessRequest>{accessReq});
+                            std::vector<TableAccessRequest>{accessReq},
+                            &rlIdentities);
     }
     catch (std::exception& e) {
       err_stream << "Caught exception: " << e.what() << "\n";
@@ -171,6 +175,13 @@ void RonSQLCtrl::ronsql(
       callback(resp);
       DEB_TRACE();
       return;
+    }
+    // Tag the executor's transactions with the rate limit identity
+    // (RONDB-978). rl_identity outlives ronsql_dal below.
+    rl_identity = get_rate_limit_identity(api_key, rlIdentities, database);
+    if (!rl_identity.empty()) {
+      params.rate_limit_identity = rl_identity.c_str();
+      params.rate_limit_identity_len = (Uint32)rl_identity.size();
     }
   }
 

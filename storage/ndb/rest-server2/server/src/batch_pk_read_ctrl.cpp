@@ -210,7 +210,8 @@ void BatchPKReadCtrl::batchPKRead(
                                                  : &entry.second.columns;
       accessReqs.push_back(accessReq);
     }
-    status = authenticate(api_key, accessReqs);
+    RateLimitIdentities rlIdentities;
+    status = authenticate(api_key, accessReqs, &rlIdentities);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -218,7 +219,16 @@ void BatchPKReadCtrl::batchPKRead(
       callback(resp);
       return;
     }
-    rl_identity = get_rate_limit_identity(api_key);
+    // A batch may mix databases but a transaction carries one identity;
+    // the whole batch is billed to the first operation's database (the
+    // same operation the single-transaction mode starts the transaction
+    // from). Mixed-project batches are rare; per-database transaction
+    // groups would attribute them exactly and are a possible follow-up.
+    rl_identity = get_rate_limit_identity(api_key, rlIdentities,
+                                          reqStructs.empty()
+                                            ? std::string_view()
+                                            : std::string_view(
+                                                reqStructs[0].path.db));
   }
   ArenaMalloc amalloc(256 * 1024);
   // Execute

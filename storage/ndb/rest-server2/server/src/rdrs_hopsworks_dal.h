@@ -40,6 +40,9 @@ typedef struct HopsworksAPIKey {
 // User table
 typedef struct HopsworksUsers {
   char email[USERS_EMAIL_SIZE];
+  // 8-char generated Hopsworks login ([a-z0-9]{8}); used to build the
+  // project-user rate limit identity (RONDB-978)
+  char username[USERS_USERNAME_SIZE];
 } HopsworksUsers;
 
 // project_team table
@@ -86,6 +89,14 @@ struct HopsworksUserGrants {
   std::vector<std::string> visible_dbs;
   // Table/column-level data grants.
   std::vector<HopsworksFineGrant> fine_grants;
+  // hopsworks.users.username of the key's owner (RONDB-978)
+  std::string username;
+  // Original-case project names of ALL the user's project_team
+  // memberships (any role, including 'Feature store restricted'): the
+  // projects Hopsworks creates an online-FS MySQL account
+  // "<ProjectName>_<username>" for. Unlike full_dbs this excludes shared
+  // stores and preserves case (RONDB-978 rate limit identities).
+  std::vector<std::string> member_projects;
 };
 
 /*

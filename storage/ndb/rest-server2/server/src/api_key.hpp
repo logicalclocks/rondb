@@ -76,15 +76,49 @@ namespace metadata {
 struct FeatureViewMetadata;
 }
 
+/*
+RONDB-978 username-mode rate limiting: the identity a transaction is
+tagged with is the Hopsworks project-user, using the online feature
+store MySQL account convention so that REST and MySQL traffic of the
+same (project, member) share one kernel rate limit bucket:
+  identity = projectname + "_" + users.username,
+  clipped to 31 chars ONLY when longer than 32
+The clip reproduces OnlineFeaturestoreController.onlineDbUsername
+exactly: substring(0, MAX - 1) under a length > MAX guard with MAX =
+32, so a 32-char name stays 32 and longer names become 31. Do not
+"fix" the off-by-one or its boundary, or the identities stop matching
+the accounts Hopsworks provisions.
+*/
+constexpr size_t RATE_LIMIT_IDENTITY_MAX_LEN = 32;
+
+/*
+Rate limit identities resolved during authentication (username mode).
+Scoped to ONE api key, i.e. one owning user: each entry maps a database
+the request referenced to the identity of the KEY'S OWNER acting in
+that database's project ("<ProjectName>_<username>"). The key is the
+lowercased project name, which is simultaneously the project's online
+database name (pk-read/scan URLs) and its feature store name
+(feature-store requests) - Hopsworks derives both by lowercasing the
+project name. Only projects the owner is a MEMBER of have an entry;
+other databases (shared stores, system dbs) are absent and their
+requests run unmetered.
+*/
+struct RateLimitIdentities {
+  std::unordered_map<std::string, std::string> per_db;
+};
+
 RS_Status authenticate_empty(const std::string &apiKey);
-RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
+RS_Status authenticate(const std::string &apiKey, PKReadParams &params,
+                       RateLimitIdentities *rlIdentities = nullptr);
 RS_Status authenticate(const std::string &apiKey, const std::string_view & db);
 RS_Status authenticate(const std::string &apiKey,
                        const std::vector<std::string_view> &);
 RS_Status authenticate(const std::string &apiKey,
-                       const std::vector<TableAccessRequest> &);
+                       const std::vector<TableAccessRequest> &,
+                       RateLimitIdentities *rlIdentities = nullptr);
 RS_Status authenticate(const std::string &apiKey,
-                       const metadata::FeatureViewMetadata &fvMetadata);
+                       const metadata::FeatureViewMetadata &fvMetadata,
+                       RateLimitIdentities *rlIdentities = nullptr);
 
 struct NdbThread;
 
@@ -100,6 +134,10 @@ class UserDBs {
   std::unordered_map<std::string,
     std::unordered_map<std::string,
       std::unordered_set<std::string>>> fineGrants;
+  // Precomputed project-user rate limit identities (RONDB-978):
+  // lowercased db (member project's online db and its "_featurestore"
+  // db) -> clip31(ProjectName + "_" + username)
+  std::unordered_map<std::string, std::string> rlIdentities;
   NDB_TICKS m_lastUsed;
   NDB_TICKS m_lastUpdated;
   NdbMutex *m_waitLock;
@@ -154,10 +192,12 @@ class APIKeyCache {
                              const std::vector<std::string_view> &);
   /*
   Checking whether the API key satisfies the given table/column access
-  requests
+  requests. On success rlIdentities (when non-null) receives the
+  project-user identities for the requested databases (username mode).
   */
   RS_Status validate_api_key(const std::string &,
-                             const std::vector<TableAccessRequest> &);
+                             const std::vector<TableAccessRequest> &,
+                             RateLimitIdentities *rlIdentities = nullptr);
 
   Uint64 last_updated(const std::string &);
   std::string to_string();
@@ -200,7 +240,8 @@ class APIKeyCache {
                               bool &allowedAccess,
                               const std::vector<TableAccessRequest> &accessReqs,
                               Uint32 hash,
-                              bool inc_refcount_done);
+                              bool inc_refcount_done,
+                              RateLimitIdentities *rlIdentities);
 
   static RS_Status verify_api_key_hash(const std::string &clientSecret,
                                        const std::string &secret,

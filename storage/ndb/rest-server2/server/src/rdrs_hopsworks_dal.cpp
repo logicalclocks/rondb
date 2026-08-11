@@ -570,6 +570,12 @@ RS_Status find_user_int(Ndb *ndb_object,
   }
   assert(USERS_EMAIL_SIZE ==
          (Uint32)table_dict->getColumn("email")->getSizeInBytes());
+  NdbRecAttr *username = scanOp->getValue("username");
+  if (unlikely(username == nullptr)) {
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  assert(USERS_USERNAME_SIZE ==
+         (Uint32)table_dict->getColumn("username")->getSizeInBytes());
 
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
@@ -592,6 +598,19 @@ RS_Status find_user_int(Ndb *ndb_object,
       }
       memcpy(users->email, email_data_start, email_attr_bytes);
       users->email[email_attr_bytes] = 0;
+      Uint32 username_attr_bytes;
+      const char *username_data_start = nullptr;
+      if (unlikely(GetByteArray(
+                     username, &username_data_start, &username_attr_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      if (unlikely(sizeof(users->username) < username_attr_bytes)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+      }
+      memcpy(users->username, username_data_start, username_attr_bytes);
+      users->username[username_attr_bytes] = 0;
     } while ((check = scanOp->nextResult(false)) == 0);
   }
   // check for errors happened during the reading process
@@ -1704,11 +1723,12 @@ RS_Status find_user_databases_int(
   int uid,
   HopsworksUserGrants *grants) {
 
-  HopsworksUsers user;
+  HopsworksUsers user = {};
   RS_Status status = find_user(ndb_object, (Uint32)uid, &user);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
+  grants->username = user.username;
   std::vector<HopsworksProjectTeam> team_vec;
   status = find_project_team(ndb_object, &user, &team_vec);
   if (unlikely(status.http_code != SUCCESS)) {
@@ -1731,6 +1751,7 @@ RS_Status find_user_databases_int(
     }
     for (const HopsworksProject &project : project_vec) {
       grants->full_dbs.push_back(project.projectname);
+      grants->member_projects.push_back(project.projectname);
     }
   }
   if (!restricted_vec.empty()) {
@@ -1741,6 +1762,12 @@ RS_Status find_user_databases_int(
     }
     for (const HopsworksProject &project : project_vec) {
       grants->visible_dbs.push_back(project.projectname);
+      // Restricted members get no member data access, but Hopsworks
+      // still creates their online-FS MySQL account
+      // (setupOnlineFeatureStore runs createDatabaseUser for every
+      // project_team row; the role only selects the grants), so their
+      // membership carries a rate limit identity too.
+      grants->member_projects.push_back(project.projectname);
     }
   }
   std::vector<int> shared_store_ids;
@@ -1778,6 +1805,8 @@ RS_Status find_user_databases(int uid, HopsworksUserGrants *grants) {
     grants->full_dbs.clear();
     grants->visible_dbs.clear();
     grants->fine_grants.clear();
+    grants->username.clear();
+    grants->member_projects.clear();
     status = find_user_databases_int(ndb_object, uid, grants);
     HandleSchemaErrors(ndb_object, status, {
       std::make_tuple(HOPSWORKS, USERS),

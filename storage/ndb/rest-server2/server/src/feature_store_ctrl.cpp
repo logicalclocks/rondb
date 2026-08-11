@@ -684,7 +684,8 @@ void FeatureStoreCtrl::featureStore(
     }
     // Validate access to the FV's store and to every constituent feature
     // group's table/columns (shared and restricted grants included)
-    auto status = authenticate(api_key, *metadata);
+    RateLimitIdentities rlIdentities;
+    auto status = authenticate(api_key, *metadata, &rlIdentities);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -692,7 +693,12 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
-    rl_identity = get_rate_limit_identity(api_key);
+    // Billed to the feature view's own project (its store), even when
+    // constituent feature groups live in shared stores: the caller acts
+    // in the FV's project, matching MySQL's attribution when a project
+    // account selects from a shared database.
+    rl_identity = get_rate_limit_identity(api_key, rlIdentities,
+                                          metadata->featureStoreName);
   }
   ArenaMalloc amalloc(64 * 1024);
   // Execute

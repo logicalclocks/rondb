@@ -391,6 +391,20 @@ int NdbTransaction::init() {
   theTransactionIsStarted = false;
   theNext		  = nullptr;
 
+  /**
+   * Transactions are pooled and recycled through init(). The rate limit
+   * identity (RONDB-978) must not survive into the next transaction: a
+   * request that sets no identity (unmetered by design - e.g. shared
+   * stores in RDRS username mode) would otherwise inherit the previous
+   * request's user id and be billed to - and throttled against - that
+   * user's bucket, and m_current_username would dangle into the previous
+   * request's freed identity string on the rate overflow path.
+   */
+  m_user_id               = RNIL;
+  m_user_id_version       = 0;
+  m_current_username      = nullptr;
+  m_current_username_len  = 0;
+
   theFirstOpInList	  = nullptr;
   theLastOpInList	  = nullptr;
 

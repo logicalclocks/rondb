@@ -203,8 +203,10 @@ void ScanReadCtrl::ScanRead(
     accessReq.db = reqStruct.path.db;
     accessReq.table = reqStruct.path.table;
     accessReq.columns = reqStruct.readColumns.empty() ? nullptr : &columns;
+    RateLimitIdentities rlIdentities;
     status = authenticate(api_key,
-                          std::vector<TableAccessRequest>{accessReq});
+                          std::vector<TableAccessRequest>{accessReq},
+                          &rlIdentities);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -212,7 +214,8 @@ void ScanReadCtrl::ScanRead(
       callback(resp);
       return;
     }
-    rl_identity = get_rate_limit_identity(api_key);
+    rl_identity = get_rate_limit_identity(api_key, rlIdentities,
+                                          reqStruct.path.db);
   }
 
   RJ_Document doc;

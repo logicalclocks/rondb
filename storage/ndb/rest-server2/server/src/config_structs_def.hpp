@@ -114,14 +114,18 @@ CLASS
     "Set to true to tag NDB transactions with a rate limit identity so that"
     " the data nodes enforce USER rate limits for REST requests.")
  CM(std::string, rateLimitIdentity, RateLimitIdentity, "apikey",
-    "Identity type used for rate limiting."
-    " Currently only 'apikey' (the API key of the request) is supported.")
+    "Identity type used for rate limiting: 'apikey' (the API key of the"
+    " request) or 'username' (the Hopsworks project-user of the key's"
+    " owner in the request's target project, matching the online feature"
+    " store MySQL account names).")
  CM(bool, rateLimitFullApiKey, RateLimitFullAPIKey, false,
     "Set to true to use the full API key as the rate limit identity."
     " By default only the API key prefix is used.")
  PROBLEM(!enable, "REST must be enabled")
- PROBLEM(rateLimitIdentity != "apikey",
-         "RateLimitIdentity only supports 'apikey'")
+ PROBLEM(rateLimitIdentity != "apikey" && rateLimitIdentity != "username",
+         "RateLimitIdentity must be 'apikey' or 'username'")
+ PROBLEM(rateLimitIdentity == "username" && rateLimitFullApiKey,
+         "RateLimitFullAPIKey requires RateLimitIdentity 'apikey'")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
@@ -492,6 +496,11 @@ CLASS
  PROBLEM(security.insecureAllowAll && rest.pingRequiresAuth,
          "Combining .Security.InsecureAllowAll and"
          " .REST.PingRequiresAuth is not allowed")
+ PROBLEM(rest.userRateLimits && rest.rateLimitIdentity == "username" &&
+           !security.apiKey.useHopsworksAPIKeys,
+         ".REST.RateLimitIdentity 'username' requires"
+         " .Security.APIKey.UseHopsworksAPIKeys: the identity is derived"
+         " from the API key's owner")
  CLASSDEFS
  (
   static AllConfigs get_all();

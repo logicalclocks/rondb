@@ -74,6 +74,11 @@ struct RonSQLExecParams
   OutputFormat output_format = OutputFormat::JSON;
   std::basic_ostream<char>* err_stream = NULL;
   const char* operation_id = NULL; // Only used with RDRS
+  // Rate limit identity (RONDB-978), only used with RDRS: when set, every
+  // NdbTransaction the executor starts is tagged via setUserId() so the
+  // data nodes account the query's usage against this user's rate limits.
+  const char* rate_limit_identity = NULL;
+  Uint32 rate_limit_identity_len = 0;
   bool* do_explain = NULL; // If not NULL, use this to inform the caller whether
                            // we EXPLAIN. This is needed by RDRS to determine
                            // content type.

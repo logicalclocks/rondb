@@ -118,7 +118,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, reqStruct);
+    RateLimitIdentities rlIdentities;
+    status = authenticate(api_key, reqStruct, &rlIdentities);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -127,7 +128,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       callback(resp);
       return;
     }
-    rl_identity = get_rate_limit_identity(api_key);
+    rl_identity = get_rate_limit_identity(api_key, rlIdentities,
+                                          reqStruct.path.db);
   }
 
   ArenaMalloc amalloc(64 * 1024);
