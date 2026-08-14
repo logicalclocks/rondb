@@ -72,6 +72,16 @@ class NdbBackup : public NdbConfig {
   int clearOldBackups();
   int abort(unsigned _backup_id);
 
+  /**
+   * Check whether any backup file content (regular files under a
+   * BACKUP-* entry) exists in the node's BackupDataDir. Empty
+   * directory shells do not count: scoped removal of a failed backup
+   * leaves the shared BACKUP-<id> parent in place. Returns 1 if
+   * content exists, 0 if none, -1 on error (or on Windows where the
+   * check is not implemented).
+   */
+  int backupDirsExist(int node_id);
+
  private:
   int execRestore(bool _restore_data, bool _restore_meta, bool _restore_epoch,
                   bool _disable_indexes, bool _enable_indexes,

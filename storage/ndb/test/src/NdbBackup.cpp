@@ -96,6 +96,7 @@ int NdbBackup::clearOldBackups() {
     ndbout << "buf: " << tmp1.c_str() << endl;
     int res = system(tmp1.c_str());
     ndbout << "res: " << res << endl;
+    if (res && retCode == 0) retCode = res;
 
     ndbout << "buf: " << tmp2.c_str() << endl;
     res = system(tmp2.c_str());
@@ -106,6 +107,56 @@ int NdbBackup::clearOldBackups() {
 #endif
 
   return retCode;
+}
+
+int NdbBackup::backupDirsExist(int node_id) {
+#ifndef _WIN32
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  const char *host;
+  if (!getHostName(node_id, &host)) return -1;
+
+  /* Print an unambiguous marker so that a command or transport failure
+   * cannot be mistaken for "no directories".
+   */
+  /* Matches backup file CONTENT under any BACKUP-* entry: empty
+   * directory shells are expected after scoped removal and do not
+   * count as debris. The second find call distinguishes 'no match'
+   * (find exits 0) from an operational failure such as permission
+   * denial (find exits nonzero): a failure must not read as a clean
+   * directory.
+   */
+  BaseString check;
+  check.assfmt(
+      "if [ ! -d '%s/BACKUP' ]; then echo NONE;"
+      " elif find '%s/BACKUP' -path '*BACKUP-*' -type f"
+      " -print -quit | grep -q .; then echo EXIST;"
+      " elif find '%s/BACKUP' -path '*BACKUP-*' -type f"
+      " >/dev/null; then echo NONE;"
+      " else echo FAILED; fi",
+      path.c_str(), path.c_str(), path.c_str());
+
+  BaseString cmd;
+  if (!isHostLocal(host)) {
+    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
+               check.c_str());
+  } else {
+    cmd = check;
+  }
+
+  FILE *fp = popen(cmd.c_str(), "r");
+  if (fp == NULL) return -1;
+  char buf[16] = {0};
+  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
+  const int rc = pclose(fp);
+  if (!got_line || rc != 0) return -1;
+  if (strncmp(buf, "EXIST", 5) == 0) return 1;
+  if (strncmp(buf, "NONE", 4) == 0) return 0;
+  return -1;
+#else
+  return -1;
+#endif
 }
 
 int NdbBackup::start(unsigned int &_backup_id, int flags,

@@ -96,6 +96,10 @@ cmd: testBackup
 args: -n FailSlave T1
 max-time: 180
 
+cmd: testBackup
+args: -n FailedBackupRemovesFiles T1
+max-time: 180
+
 cmd: testLimits
 args: -n DropSignalFragments T1
 max-time: 900
