@@ -52,6 +52,14 @@ args: -n TestLCPFSErrScanActive T1
 max-time: 540
 
 cmd: testNodeRestart
+args: -n TestLCPFSErrAfterScan T1
+max-time: 540
+
+cmd: testNodeRestart
+args: -n TestLCPFSErrAfterScanSkew T1
+max-time: 540
+
+cmd: testNodeRestart
 args: -n LCPScanFragWatchdogIsolation T1
 max-time: 540
 

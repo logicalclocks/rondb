@@ -10072,6 +10072,23 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
 
     if (ptr.p->is_lcp()) {
       jam();
+      if (ptr.p->slaveState.getState() == STOPPING &&
+          ptr.p->m_save_error_code == 0) {
+        jam();
+        /**
+         * Record the file error where lcp_write_ctl_file's row-count
+         * check sees it. The scan-completion path only saves the scan's
+         * own error code, so a write error arriving after the scan
+         * finished would otherwise trip that check as an internal
+         * program error (2341) whenever the counts also disagree,
+         * masking the real file system error. Restricted to STOPPING:
+         * that is the only window that reaches the row-count check, and
+         * scan completion has just (re)initialized m_save_error_code —
+         * earlier error paths terminate through the fragment scan and
+         * never get here.
+         */
+        ptr.p->m_save_error_code = filePtr.p->errorCode;
+      }
       if ((filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD) == 0) {
         jam();
         /* Close file with error - will delete it */
@@ -10109,12 +10126,34 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
       /* 10057: as 10045, but with no CRASH_INSERTION in execFSAPPENDREF,
        * so the append error takes the real error-handling path while the
        * scan still owns the file (FSCLOSECONF flags assert).
+       * 10058: as 10044, but non-crashing and only after the LCP
+       * fragment scan completed (slave state STOPPING, post-scan buffer
+       * flush): the append error hits the data file close path into
+       * lcp_write_ctl_file, whose row-count check must see the file
+       * error and not report an internal program error.
+       * 10059: as 10058, but only on fragments where the paired row
+       * count skew in lcp_write_ctl_file can falsify the row-count
+       * check (see there) — otherwise a fragment with too few records
+       * would take the append error without exercising the check.
        */
+      bool skew_effective = false;
+      if (ERROR_INSERTED(10059) && ptr.p->is_lcp()) {
+        BackupFilePtr zeroFilePtr;
+        ndbrequire(
+            c_backupFilePool.getPtr(zeroFilePtr, ptr.p->dataFilePtr[0]));
+        skew_effective = (zeroFilePtr.p->m_lcp_inserts +
+                              zeroFilePtr.p->m_lcp_writes >= 2);
+      }
       if ((ERROR_INSERTED(10044) &&
            !(filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD)) ||
           ((ERROR_INSERTED(10045) ||
             (ERROR_INSERTED(10057) && ptr.p->is_lcp())) &&
-           (filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD))) {
+           (filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD)) ||
+          ((ERROR_INSERTED(10058) ||
+            (ERROR_INSERTED(10059) && skew_effective)) &&
+           ptr.p->is_lcp() &&
+           !(filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD) &&
+           ptr.p->slaveState.getState() == STOPPING)) {
         jam();
         g_eventLogger->info(
             "REFing on append to data file for table %u, fragment %u, "
@@ -14726,6 +14765,11 @@ void Backup::start_execute_lcp(Signal *signal, BackupRecordPtr ptr,
   ndbrequire(ptr.p->prepareState == PREPARED);
   ptr.p->prepareState = NOT_ACTIVE;
   ptr.p->m_lcp_lsn_synced = 1;
+  /* Only scan completion assigns this; initialize it so error paths
+   * reading it before this fragment's scan completed cannot see the
+   * previous fragment's saved code (or garbage on the first use).
+   */
+  ptr.p->m_save_error_code = 0;
   ptr.p->m_num_lcp_data_files_open = 1;
   ptr.p->m_bytes_written = 0;
   ptr.p->m_row_scan_counter = 0;
@@ -15131,6 +15175,35 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
    * that the data file exists when we crash and can be used for
    * analysis.
    */
+#ifdef ERROR_INSERT
+  /* 10059: pair the injected append failure (see checkFile) with a row
+   * count skewed on the SAME errored fragment, modelling a count
+   * anomaly coinciding with a file error. The check below must then be
+   * short-circuited by the recorded file error (m_save_error_code) —
+   * without that, the file error is masked as an internal program error.
+   * The chosen value falsifies BOTH count disjuncts whenever
+   * inserts + writes >= 2 (the injection in checkFile only fires on
+   * such fragments): row_count = 0 breaks equality when inserts > 0 and
+   * undercuts inserts + writes; row_count = 1 does the same when
+   * inserts == 0 and writes >= 2. Coupling on errorCode keeps clean
+   * fragments unaffected.
+   */
+  if (ERROR_INSERTED(10059) && ptr.p->errorCode != 0) {
+    BackupFilePtr skewFilePtr;
+    ndbrequire(c_backupFilePool.getPtr(skewFilePtr, ptr.p->dataFilePtr[0]));
+    const Uint64 recs =
+        skewFilePtr.p->m_lcp_inserts + skewFilePtr.p->m_lcp_writes;
+    if (recs >= 2) {
+      jam();
+      ptr.p->m_row_count = (skewFilePtr.p->m_lcp_inserts > 0) ? 0 : 1;
+      g_eventLogger->info(
+          "EI 10059: skewed row_count to %llu on errored fragment"
+          " (inserts: %llu, writes: %llu)",
+          ptr.p->m_row_count, skewFilePtr.p->m_lcp_inserts,
+          skewFilePtr.p->m_lcp_writes);
+    }
+  }
+#endif
   {
     BackupFilePtr dataFilePtr;
     ndbrequire(c_backupFilePool.getPtr(dataFilePtr, ptr.p->dataFilePtr[0]));

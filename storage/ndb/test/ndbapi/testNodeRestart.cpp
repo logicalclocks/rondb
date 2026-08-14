@@ -6339,7 +6339,14 @@ int runBug16834416(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
-enum LCPFSStopCases { NdbFsError1, NdbFsError2, NdbFsErrScanActive, NUM_CASES };
+enum LCPFSStopCases {
+  NdbFsError1,
+  NdbFsError2,
+  NdbFsErrScanActive,
+  NdbFsErrAfterScan,
+  NdbFsErrAfterScanSkew,
+  NUM_CASES
+};
 
 static int runLoadTable500k(NDBT_Context *ctx, NDBT_Step *step) {
   /* The scan-active append-failure window only opens when the file
@@ -6355,6 +6362,21 @@ static int runLoadTable500k(NDBT_Context *ctx, NDBT_Step *step) {
   }
   g_err << "Loaded " << records << " records" << endl;
   return NDBT_OK;
+}
+
+static int triggerLcpAllNodes(NdbRestarter &restarter) {
+  /* DumpStateOrd 7099 starts an LCP only when the DIH master handles
+   * it (a non-master merely bumps its local LCP counter); send it to
+   * every data node (a dead victim is tolerated) instead of guessing
+   * which node the master is. */
+  int startLcpDumpCode = 7099;
+  int triggered = 0;
+  for (int n = 0; n < restarter.getNumDbNodes(); n++) {
+    int nodeId = restarter.getDbNodeId(n);
+    if (restarter.dumpStateOneNode(nodeId, &startLcpDumpCode, 1) == 0)
+      triggered++;
+  }
+  return (triggered > 0) ? 0 : -1;
 }
 
 int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
@@ -6382,10 +6404,7 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
     g_err << "Injecting fault " << scenario << " to suspend LCP frag scan..."
           << endl;
     Uint32 victim = restarter.getNode(NdbRestarter::NS_RANDOM);
-    Uint32 otherNode = 0;
-    do {
-      otherNode = restarter.getNode(NdbRestarter::NS_RANDOM);
-    } while (otherNode == victim);
+    g_err << "Victim node " << victim << endl;
 
     // Setting 'RestartOnErrorInsert = 2' will auto restart 'victim'
     int val2[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 2};
@@ -6437,31 +6456,72 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
         lcpsRequired = 6;
         break;
       }
+      case NdbFsErrAfterScan: {
+        /* Non-crashing append failure after the LCP fragment scan has
+         * completed (post-scan buffer flush, small fragments flush only
+         * then): exercises the data file close path into
+         * lcp_write_ctl_file. The victim must die reporting the injected
+         * file system error, not an internal program error.
+         */
+        if (restarter.insertErrorInNode(victim, 10058) != 0) {
+          g_err << "Error insert 10058 failed." << endl;
+          failed = true;
+          break;
+        }
+        /* Touch the rows AFTER arming the insert so the next LCP has
+         * real per-fragment work — an idle LCP round would never append
+         * to the data file and the injection could not fire. Errors are
+         * ignored: the victim may die during the following LCPs.
+         */
+        {
+          HugoTransactions hugoTrans(*ctx->getTab());
+          (void)hugoTrans.pkUpdateRecords(GETNDB(step), ctx->getNumRecords());
+        }
+        lcpsRequired = 6;
+        break;
+      }
+      case NdbFsErrAfterScanSkew: {
+        /* As NdbFsErrAfterScan, but 10059 additionally skews the row
+         * count low on the errored fragment: a count anomaly coinciding
+         * with the file error. The victim must still die reporting the
+         * file system error — the row-count check may only be
+         * short-circuited by the recorded file error, not report an
+         * internal program error.
+         */
+        if (restarter.insertErrorInNode(victim, 10059) != 0) {
+          g_err << "Error insert 10059 failed." << endl;
+          failed = true;
+          break;
+        }
+        {
+          HugoTransactions hugoTrans(*ctx->getTab());
+          (void)hugoTrans.pkUpdateRecords(GETNDB(step), ctx->getNumRecords());
+        }
+        lcpsRequired = 6;
+        break;
+      }
     }
     if (failed) break;
 
+    const bool nonCrashingEI = (scenario == NdbFsErrScanActive ||
+                                scenario == NdbFsErrAfterScan ||
+                                scenario == NdbFsErrAfterScanSkew);
+
     g_err << "Triggering LCP..." << endl;
-    /* Now trigger LCP, in case the concurrent updates don't.
-     * The scan-active scenario's victim may already have died during
-     * the churn above (that is a valid reproduction), so trigger via
-     * the other node there.
+    /* Now trigger LCP, in case the concurrent updates don't. 7099 has
+     * effect only on the DIH master and the victim (which may even be
+     * the master) can already have died, so sweep all nodes.
      */
-    {
-      int startLcpDumpCode = 7099;
-      Uint32 lcpTriggerNode =
-          (scenario == NdbFsErrScanActive) ? otherNode : victim;
-      if (restarter.dumpStateOneNode(lcpTriggerNode, &startLcpDumpCode, 1)) {
-        g_err << "Dump state failed." << endl;
-        failed = true;
-        break;
-      }
+    if (triggerLcpAllNodes(restarter) != 0) {
+      g_err << "Dump state failed on all nodes." << endl;
+      failed = true;
+      break;
     }
 
     g_err << "Waiting to hear of LCP completion..." << endl;
     Uint32 completedLcps = 0;
     Uint32 stopForcedError = 0;
-    Uint64 maxWaitSeconds =
-        (scenario == NdbFsErrScanActive) ? 300 : (120 * lcpsRequired);
+    Uint64 maxWaitSeconds = nonCrashingEI ? 300 : (120 * lcpsRequired);
     Uint64 endTime = NdbTick_CurrentMillisecond() + (maxWaitSeconds * 1000);
     struct ndb_logevent event;
 
@@ -6482,16 +6542,15 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
           g_err << "LCP " << completedLcps << " completed." << endl;
           if (completedLcps < lcpsRequired) {
             /* Request another... */
-            int startLcpDumpCode = 7099;
-            if (restarter.dumpStateOneNode(otherNode, &startLcpDumpCode, 1)) {
-              g_err << "Dump state failed." << endl;
+            if (triggerLcpAllNodes(restarter) != 0) {
+              g_err << "Dump state failed on all nodes." << endl;
               failed = true;
               break;
             }
           }
         }
       }
-      if (scenario == NdbFsErrScanActive && stopForcedError != 0) {
+      if (nonCrashingEI && stopForcedError != 0) {
         g_err << "Victim crash observed, stopping LCP wait." << endl;
         break;
       }
@@ -6499,7 +6558,7 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
     }
     if (failed) break;
 
-    if (scenario == NdbFsErrScanActive) {
+    if (nonCrashingEI) {
       if (stopForcedError == 0) {
         g_err << "ERROR: injection did not fire (no victim crash observed"
               << " after " << completedLcps << " LCPs)" << endl;
@@ -6526,7 +6585,7 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
       g_err << count << " events consumed." << endl;
     }
 
-    if (scenario == NdbFsErrScanActive) {
+    if (nonCrashingEI) {
       /* Verdict before recovery: the victim dies with a REAL error (not
        * an error-insert exit), so with StopOnError=1 it stays down and
        * recovery must not gate the verdict.
@@ -6576,6 +6635,14 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
       restarter.insertErrorInAllNodes(0);
     }
   } while (!failed && ++scenario <= lastScenario);
+
+  /* Unconditional best-effort cleanup: the failure exits above skip the
+   * in-loop insertErrorInAllNodes(0), and an error insert left armed on
+   * a surviving node fires on the next LCP of a LATER run — observed as
+   * both nodes dying 2812 simultaneously when a stale 10058 from an
+   * aborted run met the next run's freshly armed victim.
+   */
+  (void)restarter.insertErrorInAllNodes(0);
 
   ctx->stopTest();
 
@@ -10761,6 +10828,25 @@ TESTCASE("TestLCPFSErrScanActive",
   TC_PROPERTY("LCPFSErrFirstCase", Uint32(NdbFsErrScanActive));
   TC_PROPERTY("LCPFSErrLastCase", Uint32(NdbFsErrScanActive));
   INITIALIZER(runLoadTable500k);
+  STEP(runPkUpdateUntilStopped);
+  STEP(runTestLcpFsErr);
+}
+TESTCASE("TestLCPFSErrAfterScan",
+         "Check that an LCP data file write error after the fragment"
+         " scan completed is reported as the real file system error") {
+  TC_PROPERTY("LCPFSErrFirstCase", Uint32(NdbFsErrAfterScan));
+  TC_PROPERTY("LCPFSErrLastCase", Uint32(NdbFsErrAfterScan));
+  INITIALIZER(runLoadTable);
+  STEP(runPkUpdateUntilStopped);
+  STEP(runTestLcpFsErr);
+}
+TESTCASE("TestLCPFSErrAfterScanSkew",
+         "Check that an LCP data file write error after the fragment"
+         " scan completed is reported as the real file system error"
+         " also when the fragment's row count is inconsistent") {
+  TC_PROPERTY("LCPFSErrFirstCase", Uint32(NdbFsErrAfterScanSkew));
+  TC_PROPERTY("LCPFSErrLastCase", Uint32(NdbFsErrAfterScanSkew));
+  INITIALIZER(runLoadTable);
   STEP(runPkUpdateUntilStopped);
   STEP(runTestLcpFsErr);
 }
