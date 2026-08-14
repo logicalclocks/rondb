@@ -785,6 +785,27 @@ class Backup : public SimulatedBlock {
      */
     Uint32 errorCode;
     /**
+     * The stop/abort path clears errorCode so that STOP_BACKUP confirms
+     * an already-reported failure instead of re-reporting it; this
+     * remembers that the backup failed so that cleanup still removes
+     * the backup's files (cleanupNextTable/removeBackup).
+     */
+    bool m_remove_files_after_cleanup = false;
+    /**
+     * Ownership of the on-disk fileset: files are opened with
+     * OM_CREATE_IF_NONE, so an open CONF means this attempt created the
+     * file, and fsErrFileExists means a fileset with this backup id was
+     * already on disk. Cleanup must never recursively remove a
+     * directory this attempt does not own.
+     */
+    bool m_backup_files_created = false;
+    bool m_backup_files_preexisted = false;
+    /**
+     * Scoped removal of a failed backup's files issues one FSREMOVEREQ
+     * per file; the record is released when the last one confirms.
+     */
+    Uint32 m_outstanding_backup_removals = 0;
+    /**
      * List of tables for backups, used during LCP execution phase, for
      * LCP it only contains one table, so can always be fetched using
      * the first call.

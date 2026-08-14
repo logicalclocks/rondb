@@ -333,6 +333,164 @@ int runFail(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
+  /* A backup aborted by a file error must remove its backup files on
+   * the errored node (cleanup() -> cleanupNextTable() ->
+   * removeBackup(); empty directory shells may remain by design). The
+   * baseline check below establishes that any surviving backup file
+   * content is debris from this backup.
+   */
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  const int masterNodeId = restarter.getMasterNodeId();
+  int victim = -1;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n != masterNodeId) {
+      victim = n;
+      break;
+    }
+  }
+  if (victim == -1) {
+    g_err << "No non-master node found" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
+        << endl;
+
+  /* Verified clean baseline (also proves the check itself works). */
+  if (backup.backupDirsExist(victim) != 0) {
+    g_err << "Baseline not clean on node " << victim << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Subscribe to backup events BEFORE starting: the verdict requires
+   * the abort to carry the injected error, not any incidental failure.
+   */
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP, 0};
+  NdbLogEventHandle log_handle =
+      ndb_mgm_create_logevent_handle(restarter.handle, filter);
+  if (log_handle == NULL) {
+    g_err << "Failed to create log event handle" << endl;
+    return NDBT_FAILED;
+  }
+
+  if (restarter.insertErrorInNode(victim, 10036) != 0) {
+    g_err << "Error insert 10036 failed" << endl;
+    ndb_mgm_destroy_logevent_handle(&log_handle);
+    return NDBT_FAILED;
+  }
+
+  unsigned backupId = 0;
+  int r = backup.start(backupId);
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_err << "NOTE: clearing error inserts reported failure" << endl;
+  }
+  bool failed = false;
+  if (r == 0) {
+    g_err << "Backup unexpectedly succeeded (id " << backupId << ")" << endl;
+    failed = true;
+  } else {
+    g_err << "Backup failed as intended" << endl;
+  }
+
+  /* The abort must report the injected file error 2810. Finite poll:
+   * a 0 timeout would make ndb_logevent_get_next wait indefinitely.
+   */
+  if (!failed) {
+    Uint32 abortError = 0;
+    struct ndb_logevent event;
+    Uint64 endTime = NdbTick_CurrentMillisecond() + (20 * 1000);
+    while (NdbTick_CurrentMillisecond() < endTime) {
+      int res = ndb_logevent_get_next(log_handle, &event, 500);
+      if (res < 0) break;
+      if (res > 0 && event.type == NDB_LE_BackupAborted) {
+        abortError = event.BackupAborted.error;
+        break;
+      }
+    }
+    if (abortError != 2810) {
+      g_err << "ERROR: expected backup abort error 2810, observed "
+            << abortError << endl;
+      failed = true;
+    }
+  }
+  ndb_mgm_destroy_logevent_handle(&log_handle);
+  if (failed) return NDBT_FAILED;
+
+  /* The removal request runs after the abort completes; poll. In the
+   * broken state the errored node never removes its real directory
+   * (removeBackup used to target BACKUP-4294967295, and mid-flight
+   * aborts skipped it entirely).
+   */
+  int exist = -1;
+  for (int i = 0; i < 20; i++) {
+    exist = backup.backupDirsExist(victim);
+    if (exist == 0) break;
+    NdbSleep_MilliSleep(500);
+  }
+  if (exist != 0) {
+    g_err << "ERROR: BACKUP-* debris remains on errored node " << victim
+          << " after the failed backup (result " << exist << ")" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Errored node " << victim << " is clean" << endl;
+
+  /* The armed insert must not have harmed the node. */
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "ERROR: cluster not fully started after the failed backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Non-errored nodes keeping their partial files is a separate,
+   * known gap in the abort protocol (no assertion, log only).
+   */
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n == victim) continue;
+    g_err << "NOTE: node " << n
+          << " BACKUP-* present: " << backup.backupDirsExist(n)
+          << " (abort-protocol scope, not asserted here)" << endl;
+  }
+
+  /* A successful backup proves the error insert is truly cleared
+   * (insertErrorInNode's return value cannot be trusted for that) and
+   * that the record/cleanup state is sane after the failed round.
+   */
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: backup still failing after error insert reset" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Post-reset backup " << backupId << " succeeded" << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "ERROR: final cleanup failed, leaving the post-reset backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
 int outOfLDMRecords(NDBT_Context *ctx, NDBT_Step *step) {
   int res;
   int row = 0;
@@ -2147,6 +2305,13 @@ TESTCASE("FailSlave", "Test that backup behaves during node failiure\n") {
   INITIALIZER(setSlave);
   INITIALIZER(runLoadTable); // See comment above for "FailMaster"
   STEP(runFail);
+}
+TESTCASE("FailedBackupRemovesFiles",
+         "Check that a backup aborted by a file error removes its"
+         " backup files on the errored node") {
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runFailedBackupLeavesNoFiles);
 }
 TESTCASE("Bug57650", "") {
   INITIALIZER(clearOldBackups);

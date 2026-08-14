@@ -4227,6 +4227,9 @@ void Backup::execBACKUP_REQ(Signal *signal) {
 
   ptr.p->m_gsn = 0;
   ptr.p->errorCode = 0;
+  ptr.p->m_remove_files_after_cleanup = false;
+  ptr.p->m_backup_files_created = false;
+  ptr.p->m_backup_files_preexisted = false;
   ptr.p->clientRef = senderRef;
   ptr.p->clientData = senderData;
   ptr.p->flags = flags;
@@ -5445,6 +5448,13 @@ void Backup::sendDropTrig(Signal *signal, BackupRecordPtr ptr) {
     if (ptr.p->checkError()) {
       jam();
       closeFiles(signal, ptr);
+      /* The reset below lets an asynchronous file close confirm the
+       * stop phase for a failure that was already reported (a
+       * synchronous close still REFs before the clear is observed);
+       * remember that the backup failed so cleanup still removes its
+       * files.
+       */
+      ptr.p->m_remove_files_after_cleanup = true;
       ptr.p->errorCode = 0;
       return;
     }
@@ -6117,6 +6127,9 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
   ptr.p->prepareState = NOT_ACTIVE;
   ptr.p->slaveData.dropTrig.tableId = RNIL;
   ptr.p->errorCode = 0;
+  ptr.p->m_remove_files_after_cleanup = false;
+  ptr.p->m_backup_files_created = false;
+  ptr.p->m_backup_files_preexisted = false;
   ptr.p->clientRef = req->clientRef;
   ptr.p->clientData = req->clientData;
   if (req->masterRef == reference()) {
@@ -6686,6 +6699,14 @@ void Backup::execFSOPENREF(Signal *signal) {
   ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
 
   ptr.p->setErrorCode(ref->errorCode);
+  if (!ptr.p->is_lcp() && ref->errorCode == FsRef::fsErrFileExists) {
+    jam();
+    /* Per-file check: with mixed open failures the record's first-wins
+     * errorCode may hold a different code, which would hide that a
+     * file with this backup id already existed on disk.
+     */
+    ptr.p->m_backup_files_preexisted = true;
+  }
   if (ptr.p->is_lcp()) {
     jam();
     openFilesReplyLCP(signal, ptr, filePtr);
@@ -6731,6 +6752,10 @@ void Backup::execFSOPENCONF(Signal *signal) {
     openFilesReplyLCP(signal, ptr, filePtr);
     return;
   }
+  /* OM_CREATE_IF_NONE: a confirmed open means this attempt created
+   * the file, i.e. it owns (part of) the on-disk fileset.
+   */
+  ptr.p->m_backup_files_created = true;
   openFilesReply(signal, ptr, filePtr);
 }
 
@@ -6766,6 +6791,7 @@ void Backup::openFilesReply(Signal *signal, BackupRecordPtr ptr,
     jam();
     if (ptr.p->errorCode == FsRef::fsErrFileExists) {
       jam();
+      /* m_backup_files_preexisted was set per-REF in execFSOPENREF. */
       ptr.p->errorCode = DefineBackupRef::FailedForBackupFilesAleadyExist;
     }
     defineBackupRef(signal, ptr);
@@ -10048,7 +10074,11 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
   BackupRecordPtr ptr;
   ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
 
-  if (ERROR_INSERTED(10036)) {
+  if (ERROR_INSERTED(10036) && !ptr.p->is_lcp()) {
+    /* Backup-only: without the is_lcp() guard an LCP data file write
+     * racing the armed insert takes error 2810 and DBLQH treats an LCP
+     * file error as fatal for the node.
+     */
     jam();
     filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_FILE_THREAD;
     filePtr.p->errorCode = 2810;
@@ -10532,6 +10562,10 @@ void Backup::sendAbortBackupOrd(Signal *signal, BackupRecordPtr ptr,
   ord->backupPtr = ptr.i;
   ord->requestType = requestType;
   ord->senderData = ptr.i;
+  /* Initialize the full signal: an unwritten word leaks stale signal
+   * buffer content to every receiver.
+   */
+  ord->senderRef = reference();
   NodePtr node;
   Uint32 receiverInstance = instanceNo(ptr);  // = BackupProxy for mt-backup
 
@@ -11189,22 +11223,30 @@ void Backup::cleanupNextTable(Signal *signal, BackupRecordPtr ptr,
   release_tables(ptr);
   while (ptr.p->triggers.releaseFirst())
     ;
-  ptr.p->backupId = ~0;
   sendPoolShrink(BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX);
-  
+
   /*
     report of backup status uses these variables to keep track
     if files are used
   */
   ptr.p->ctlFilePtr = ptr.p->logFilePtr = ptr.p->dataFilePtr[0] = RNIL;
 
-  if (ptr.p->checkError())
+  if ((ptr.p->checkError() || ptr.p->m_remove_files_after_cleanup) &&
+      ptr.p->m_backup_files_created && !ptr.p->m_backup_files_preexisted) {
+    /* Remove the failed backup's fileset — but only one this attempt
+     * owns: never a directory whose files already existed (a valid
+     * earlier backup with the same id), and nothing when the failure
+     * struck before any file was created. removeBackup stamps backupId
+     * into the FSREMOVEREQ, so it must still hold the real id here; it
+     * is invalidated when the removal confirms (execFSREMOVECONF).
+     */
     removeBackup(signal, ptr);
-  else {
+  } else {
     /*
       report of backup status uses these variables to keep track
       if backup ia running and current state
     */
+    ptr.p->backupId = ~0;
     ptr.p->m_gsn = 0;
     ptr.p->masterData.gsn = 0;
     c_backups.release(ptr);
@@ -11214,15 +11256,53 @@ void Backup::cleanupNextTable(Signal *signal, BackupRecordPtr ptr,
 void Backup::removeBackup(Signal *signal, BackupRecordPtr ptr) {
   jam();
 
+  /**
+   * Scoped removal: exactly this attempt's three files, individually,
+   * by replaying their open-time addressing (leaf filenames carry the
+   * node id, so they are provably this attempt's — unlike the shared
+   * BACKUP-<id> parent or even the mt part directory, which another
+   * node's or another layout's valid backup files can share without
+   * ever colliding with this attempt's opens). NDBFS tolerates ENOENT
+   * for files that were never created. The empty directory shells
+   * that may remain are left for the abort-protocol backstop.
+   */
   FsRemoveReq *req = (FsRemoveReq *)signal->getDataPtrSend();
   req->userReference = reference();
   req->userPointer = ptr.i;
-  req->directory = 1;
-  req->ownDirectory = 1;
+  req->directory = 0;
+  req->ownDirectory = 0;
+  /* The v2_set* helpers only touch their own bit fields; clear all
+   * four words first so stale signal-buffer content cannot leak in.
+   */
+  req->fileNumber[0] = 0;
+  req->fileNumber[1] = 0;
+  req->fileNumber[2] = 0;
+  req->fileNumber[3] = 0;
   FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_BACKUP);
-  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
   FsOpenReq::v2_setSequence(req->fileNumber, ptr.p->backupId);
   FsOpenReq::v2_setNodeId(req->fileNumber, getOwnNodeId());
+  if (MT_BACKUP_FLAG(ptr.p->flags)) {
+    jam();
+    FsOpenReq::v2_setPartNum(req->fileNumber, instance());
+    FsOpenReq::v2_setTotalParts(req->fileNumber, globalData.ndbMtLqhWorkers);
+  } else {
+    jam();
+    FsOpenReq::v2_setPartNum(req->fileNumber, 0);
+    FsOpenReq::v2_setTotalParts(req->fileNumber, 0);
+  }
+  ptr.p->m_outstanding_backup_removals = 3;
+
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
+  FsOpenReq::v2_setCount(req->fileNumber, 0xFFFFFFFF);
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
+             JBA);
+
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_LOG);
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
+             JBA);
+
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_DATA);
+  FsOpenReq::v2_setCount(req->fileNumber, 0);
   sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
              JBA);
 }
@@ -11254,10 +11334,18 @@ void Backup::execFSREMOVECONF(Signal *signal) {
     lcp_remove_file_conf(signal, ptr);
     return;
   }
+  ndbrequire(ptr.p->m_outstanding_backup_removals > 0);
+  ptr.p->m_outstanding_backup_removals--;
+  if (ptr.p->m_outstanding_backup_removals > 0) {
+    jam();
+    return;
+  }
   /*
     report of backup status uses these variables to keep track
     if backup ia running and current state
   */
+  ptr.p->backupId = ~0;
+  ptr.p->m_remove_files_after_cleanup = false;
   ptr.p->m_gsn = 0;
   ptr.p->masterData.gsn = 0;
   c_backups.release(ptr);
