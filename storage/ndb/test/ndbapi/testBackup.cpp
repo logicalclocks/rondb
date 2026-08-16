@@ -491,6 +491,219 @@ int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
+  /* BACKUP_FRAGMENT_REF carries no table/fragment identity. The master
+   * must identify the REF'd fragment from the sender's LDM instance;
+   * consuming the first in-flight fragment of that node instead marks
+   * another LDM worker's fragment as scanned, and that worker's later
+   * BACKUP_FRAGMENT_CONF kills the master on the scanned==0 ndbrequire.
+   *
+   * EI 10060 fails the backup scan of one selected fragment mid-scan
+   * (its worker REFs while the node's other fragments are scanning).
+   * EI 10061 (property "EICode") additionally duplicates the REF: the
+   * duplicate matches no in-flight fragment and must be a no-op, not
+   * consume another fragment or fabricate an abort reason (1324).
+   */
+  const Uint32 eiCode = ctx->getProperty("EICode", Uint32(10060));
+
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Pick the target fragment: the highest-numbered fragment sharing
+   * its primary node with a lower-numbered fragment. The lower one is
+   * earlier in the master's REF match loop, so in the broken state the
+   * REF consumes it instead of the target.
+   *
+   * The wrong-worker consume needs the sibling to be mid-scan when the
+   * REF arrives, i.e. multithreaded backup with the two fragments on
+   * different LDMs (the record threshold in the error insert plus the
+   * row count keep that window wide). Without those conditions - e.g.
+   * single-threaded backup, where a node has at most one in-flight
+   * fragment and the identity-less match was trivially correct - the
+   * bug cannot manifest and this test degrades to checking the plain
+   * error-abort path.
+   */
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *pTab =
+      pNdb->getDictionary()->getTable(ctx->getTab()->getName());
+  if (pTab == NULL) {
+    g_err << "Failed to get table from dictionary" << endl;
+    return NDBT_FAILED;
+  }
+  const Uint32 fragCount = pTab->getFragmentCount();
+  const Uint32 maxFrags = 256;
+  Uint32 primary[maxFrags];
+  if (fragCount > maxFrags) {
+    g_err << "Unexpected fragment count " << fragCount << endl;
+    return NDBT_FAILED;
+  }
+  for (Uint32 f = 0; f < fragCount; f++) {
+    Uint32 nodes[4];
+    if (pTab->getFragmentNodes(f, nodes, 4) == 0) {
+      g_err << "getFragmentNodes failed for fragment " << f << endl;
+      return NDBT_FAILED;
+    }
+    primary[f] = nodes[0];
+  }
+  int targetFrag = -1;
+  for (int f = (int)fragCount - 1; f > 0 && targetFrag < 0; f--) {
+    for (int e = 0; e < f; e++) {
+      if (primary[e] == primary[f]) {
+        targetFrag = f;
+        break;
+      }
+    }
+  }
+  if (targetFrag < 0) {
+    g_err << "NOTE: no two fragments share a primary node (" << fragCount
+          << " fragments) - cannot exercise the REF match, skipping" << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+  const Uint32 tableId = (Uint32)pTab->getObjectId();
+  if (tableId >= 0x10000 || targetFrag >= 0x10000) {
+    g_err << "table id " << tableId << " or fragment " << targetFrag
+          << " does not fit the error insert extra encoding" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Target: table " << tableId << " fragment " << targetFrag
+        << " on node " << primary[targetFrag] << " (EI " << eiCode << ")"
+        << endl;
+
+  /* Subscribe to backup and node-death events BEFORE starting: the
+   * verdict requires the abort to carry the injected error, not a
+   * fabricated one, and a node crash must fail the test even where
+   * the node auto-restarts fast enough to slip past a cluster-state
+   * check (NDB_LE_NDBStopForced is in the STARTUP category).
+   */
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP,
+                  15, NDB_MGM_EVENT_CATEGORY_STARTUP, 0};
+  NdbLogEventHandle log_handle =
+      ndb_mgm_create_logevent_handle(restarter.handle, filter);
+  if (log_handle == NULL) {
+    g_err << "Failed to create log event handle" << endl;
+    return NDBT_FAILED;
+  }
+
+  if (restarter.insertError2InAllNodes((int)eiCode,
+                                       (int)((tableId << 16) |
+                                             (Uint32)targetFrag)) != 0) {
+    g_err << "Error insert " << eiCode << " failed" << endl;
+    ndb_mgm_destroy_logevent_handle(&log_handle);
+    return NDBT_FAILED;
+  }
+
+  unsigned backupId = 0;
+  int r = backup.start(backupId);
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_err << "NOTE: clearing error inserts reported failure" << endl;
+  }
+  bool failed = false;
+  if (r == 0) {
+    /* Also reached when the error insert never fired (e.g. too few
+     * records per fragment for the mid-scan trigger).
+     */
+    g_err << "Backup unexpectedly succeeded (id " << backupId << ")" << endl;
+    failed = true;
+  } else {
+    g_err << "Backup failed as intended" << endl;
+  }
+
+  /* No node may die. In the broken state the master consumes another
+   * LDM worker's in-flight fragment and dies with error 2341 on that
+   * worker's BACKUP_FRAGMENT_CONF (scanned == 0 ndbrequire), and the
+   * errored worker dies on the FSCLOSECONF file-flags check. Watch
+   * the event stream (catches a crash even if the node auto-restarts
+   * before the cluster-state check below), draining a few seconds
+   * beyond the abort report for a trailing crash.
+   */
+  if (failed) {
+    ndb_mgm_destroy_logevent_handle(&log_handle);
+    return NDBT_FAILED;
+  }
+  Uint32 abortError = 0;
+  bool nodeDied = false;
+  struct ndb_logevent event;
+  Uint64 endTime = NdbTick_CurrentMillisecond() + (20 * 1000);
+  Uint64 drainEnd = 0;
+  while (NdbTick_CurrentMillisecond() < (drainEnd ? drainEnd : endTime)) {
+    int res = ndb_logevent_get_next(log_handle, &event, 500);
+    if (res < 0) break;
+    if (res == 0) continue;
+    if (event.type == NDB_LE_NDBStopForced) {
+      g_err << "ERROR: node " << event.source_nodeid
+            << " died (NDBStopForced error "
+            << event.NDBStopForced.error << ") during the backup" << endl;
+      nodeDied = true;
+      break;
+    }
+    if (event.type == NDB_LE_BackupAborted && drainEnd == 0) {
+      abortError = event.BackupAborted.error;
+      drainEnd = NdbTick_CurrentMillisecond() + (5 * 1000);
+    }
+  }
+  ndb_mgm_destroy_logevent_handle(&log_handle);
+  if (nodeDied) {
+    return NDBT_FAILED;
+  }
+
+  /* Belt and braces for the stay-down case (StopOnError). */
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "ERROR: cluster not whole after the failed backup" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* The abort must report the worker's real error 2810: not 1324
+   * (LogBufferFull fabricated for an unmatched REF) and not a node
+   * failure code.
+   */
+  if (abortError != 2810) {
+    g_err << "ERROR: expected backup abort error 2810, observed "
+          << abortError
+          << (abortError == 1324 ? " (fabricated LogBufferFull - the"
+                                   " worker's real error was discarded)"
+                                 : "")
+          << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Backup aborted with the worker's real error 2810" << endl;
+
+  /* A successful backup proves the error insert is truly cleared and
+   * that the master's fragment bookkeeping and send counter survived
+   * the REF handling.
+   */
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: backup still failing after error insert reset" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Post-reset backup " << backupId << " succeeded" << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "ERROR: final cleanup failed, leaving the post-reset backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
 int outOfLDMRecords(NDBT_Context *ctx, NDBT_Step *step) {
   int res;
   int row = 0;
@@ -2312,6 +2525,23 @@ TESTCASE("FailedBackupRemovesFiles",
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
   STEP(runFailedBackupLeavesNoFiles);
+}
+TESTCASE("FragmentRefWrongWorker",
+         "Check that the master matches a BACKUP_FRAGMENT_REF to the"
+         " sender's own fragment, not another LDM worker's in-flight"
+         " one, and reports the worker's real error") {
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runFragmentRefWrongWorker);
+}
+TESTCASE("FragmentRefDuplicate",
+         "Check that a duplicated BACKUP_FRAGMENT_REF matching no"
+         " in-flight fragment is ignored instead of consuming another"
+         " fragment or fabricating an abort reason") {
+  TC_PROPERTY("EICode", Uint32(10061));
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runFragmentRefWrongWorker);
 }
 TESTCASE("Bug57650", "") {
   INITIALIZER(clearOldBackups);
