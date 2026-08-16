@@ -203,7 +203,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10062
+Next BACKUP 10069
 Next PGMAN 11010
 Next DBTUX 12011
 Next SUMA 13063
@@ -904,6 +904,20 @@ Backup Stuff:
 10058: In a participant node abort BACKUP_FRAGMENT_REQ by
        sending execBACKUP_FRAGMENT_REF to master
 10061: Enable error insert 10030 (Backup log buffer o/flow) during scanning
+10064: As 10045, but without crash insertion, so the LCP data file
+       append error takes the real error-handling path while the scan
+       still owns the file
+10065: As 10044, but non-crashing and only after the LCP fragment scan
+       completed, so the append error hits the data file close path
+       into the LCP row-count check
+10066: As 10065, but only on fragments where the paired row count skew
+       in lcp_write_ctl_file can falsify the row-count check
+10067: Fail the backup scan of the fragment selected by the error
+       insert extra (tableId << 16 | fragmentNo) mid-scan, so the
+       worker sends BACKUP_FRAGMENT_REF while other fragments of the
+       same node are scanning
+10068: As 10067, and the worker sends the BACKUP_FRAGMENT_REF twice
+
 11001: Send UTIL_SEQUENCE_REF (in master)
 
 5028:  Crash when receiving LQHKEYREQ (in non-master)

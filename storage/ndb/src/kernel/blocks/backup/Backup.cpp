@@ -5448,19 +5448,34 @@ void Backup::execBACKUP_FRAGMENT_REF(Signal *signal) {
     Fragment* fragPtrP;
     get_backup_fragment(&fragPtrP, tabPtr, fragmentNo);
 
-    ndbrequire(fragPtrP->scanned == 0);
-    ndbrequire(fragPtrP->scanning == 1);
     ndbrequire(nodeId == refToNode(signal->senderBlockRef()));
 
-    fragPtrP->scanned = 1;
-    fragPtrP->scanning = 0;
-    ptr.p->masterData.sendCounter--;
-    ptr.p->setErrorCode(ref->errorCode);
-
-    if (ptr.p->masterData.sendCounter.done()) {
+    if (fragPtrP->scanning == 0) {
       jam();
-      masterAbort(signal, ptr);
-      return;
+      /**
+       * The fragment is not in flight: a late or duplicate REF, e.g. the
+       * duplicate of a REF whose fragment was already consumed. Record
+       * the worker's real error, leave the send counter alone, and
+       * (re-)trigger the abort below; the abort request is idempotent.
+       */
+      g_eventLogger->info(
+          "Backup %u: BACKUP_FRAGMENT_REF from node %u for fragment (%u,%u)"
+          " error %u matches no in-flight fragment",
+          ptr.p->backupId, nodeId, tableId, fragmentNo, ref->errorCode);
+      ptr.p->setErrorCode(ref->errorCode);
+    } else {
+      jam();
+      ndbrequire(fragPtrP->scanned == 0);
+      fragPtrP->scanned = 1;
+      fragPtrP->scanning = 0;
+      ptr.p->masterData.sendCounter--;
+      ptr.p->setErrorCode(ref->errorCode);
+
+      if (ptr.p->masterData.sendCounter.done()) {
+        jam();
+        masterAbort(signal, ptr);
+        return;
+      }
     }
   }
 
@@ -9574,6 +9589,31 @@ void Backup::execSCAN_FRAGCONF(Signal *signal) {
     ndbrequire(senderIsThreadLocal || !MT_BACKUP_FLAG(ptr.p->flags));
   }
 
+#ifdef ERROR_INSERT
+  /* 10067: fail the backup scan of the fragment selected by the error
+   * insert extra (tableId << 16 | fragmentNo) once it is mid-scan, so
+   * this worker sends BACKUP_FRAGMENT_REF to the master while other
+   * fragments of the same node are still being scanned. The master
+   * must consume the REF sender's own fragment, not another LDM
+   * worker's in-flight one.
+   * 10068: as 10067, and backupFragmentRef sends the REF twice, so
+   * the master additionally sees a REF matching no in-flight fragment.
+   */
+  if ((ERROR_INSERTED(10067) || ERROR_INSERTED(10068)) &&
+      !ptr.p->is_lcp() && filePtr.p->errorCode == 0 &&
+      filePtr.p->tableId == (ERROR_INSERT_EXTRA >> 16) &&
+      filePtr.p->fragmentNo == (ERROR_INSERT_EXTRA & 0xFFFF) &&
+      op.noOfRecords >= 512) {
+    jam();
+    g_eventLogger->info(
+        "EI %u: failing backup scan of table %u fragment %u after %llu"
+        " records",
+        ERROR_INSERT_VALUE, filePtr.p->tableId, filePtr.p->fragmentNo,
+        (unsigned long long)op.noOfRecords);
+    filePtr.p->errorCode = 2810;
+  }
+#endif
+
   const Uint32 completed = conf.fragmentCompleted;
   if (completed != 2) {
     jam();
@@ -9828,6 +9868,16 @@ void Backup::backupFragmentRef(Signal *signal, BackupFilePtr filePtr) {
   ref->fragmentNo = filePtr.p->fragmentNo;
   sendSignal(ptr.p->masterRef, GSN_BACKUP_FRAGMENT_REF, signal,
              BackupFragmentRef::SignalLength, JBB);
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(10068) && !ptr.p->is_lcp()) {
+    jam();
+    g_eventLogger->info(
+        "EI 10068: sending duplicate BACKUP_FRAGMENT_REF, error %u",
+        ref->errorCode);
+    sendSignal(ptr.p->masterRef, GSN_BACKUP_FRAGMENT_REF, signal,
+               BackupFragmentRef::SignalLength, JBB);
+  }
+#endif
 }
 
 void Backup::update_pause_lcp_counter(Uint32 loop_count) {
@@ -10332,6 +10382,17 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
   if (filePtr.p->errorCode != 0) {
     jam();
     ptr.p->setErrorCode(filePtr.p->errorCode);
+
+    /* This is the file thread's own execution and with the error
+     * recorded there is nothing more to write, so the thread ends
+     * here. The flag must not survive it: a scan error (see
+     * execSCAN_FRAGREF) records its error on this file without
+     * stopping the file thread, and the closeFile below would then
+     * trip FSCLOSECONF's file-flags check, while for a backup not
+     * yet in the stop phase closeFiles would wait forever for this
+     * thread to close the file.
+     */
+    filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_FILE_THREAD;
 
     if (ptr.p->m_gsn == GSN_STOP_BACKUP_REQ) {
       jam();
