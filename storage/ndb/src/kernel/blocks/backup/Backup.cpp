@@ -6127,8 +6127,38 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
 #endif
     if (!c_backups.getPool().seizeId(ptr, ptrI)) {
       jam();
-      ndbabort();  // If master has succeeded slave should succeed
-    }              // if
+      if (req->backupDataLen == ~(Uint32)0) {
+        jam();
+        /* DBLQH's one-time LCP define at start: an occupied slot here
+         * is unrecoverable state corruption, and DBLQH has no handling
+         * for a REF of it. Keep it fatal.
+         */
+        ndbabort();
+      }
+      /* The slot is still occupied: a record leaked by an abort that
+       * never completed its cleanup (e.g. after a master death). Fail
+       * this backup instead of dying with it - the leak is survivable
+       * and only a node restart frees the record.
+       */
+      BackupRecordPtr stuck;
+      ndbrequire(c_backupPool.getPtr(stuck, ptrI));
+      g_eventLogger->warning(
+          "DEFINE_BACKUP_REQ for backup %u cannot seize record %u: slot"
+          " held by backup %u (gsn %u, master gsn %u, state %u, error %u,"
+          " masterRef 0x%x) - failing the backup",
+          backupId, ptrI, stuck.p->backupId, stuck.p->m_gsn,
+          stuck.p->masterData.gsn, stuck.p->slaveState.getState(),
+          stuck.p->errorCode, stuck.p->masterRef);
+      const BlockReference senderRef = signal->senderBlockRef();
+      DefineBackupRef *ref = (DefineBackupRef *)signal->getDataPtrSend();
+      ref->backupId = backupId;
+      ref->backupPtr = ptrI;
+      ref->errorCode = DefineBackupRef::FailedToAllocateBackupRecord;
+      ref->nodeId = getOwnNodeId();
+      sendSignal(senderRef, GSN_DEFINE_BACKUP_REF, signal,
+                 DefineBackupRef::SignalLength, JBB);
+      return;
+    }  // if
     c_backups.addFirst(ptr);
   }  // if
 
@@ -11123,6 +11153,18 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
     if (c_backupPool.findId(senderData)) {
       jam();
       ndbrequire(c_backupPool.getPtr(ptr, senderData));
+      if (ptr.p->backupId != backupId) {
+        jam();
+        /* The slot holds a different backup's record (e.g. one leaked
+         * by a stalled abort). Acting on it would resurrect stale
+         * state - ignore the order like an unknown id.
+         */
+        g_eventLogger->info(
+            "Backup: ignoring abort request type=%u for backup %u:"
+            " record %u belongs to backup %u",
+            requestType, backupId, senderData, ptr.p->backupId);
+        return;
+      }
     } else {
       jam();
 #ifdef DEBUG_ABORT
@@ -11323,6 +11365,22 @@ void Backup::cleanupNextTable(Signal *signal, BackupRecordPtr ptr,
     if files are used
   */
   ptr.p->ctlFilePtr = ptr.p->logFilePtr = ptr.p->dataFilePtr[0] = RNIL;
+
+#ifdef ERROR_INSERT
+  /* 10062: leak the backup record instead of releasing it, simulating
+   * a self-abort that stalled before its cleanup completed (e.g. after
+   * a master death). The pool slot stays occupied, so the next
+   * backup's DEFINE_BACKUP_REQ exercises the seize-failure path. Only
+   * a node restart frees the record. One-shot.
+   */
+  if (ERROR_INSERTED(10062) && !ptr.p->is_lcp()) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    g_eventLogger->info("EI 10062: leaking record of backup %u",
+                        ptr.p->backupId);
+    return;
+  }
+#endif
 
   if ((ptr.p->checkError() || ptr.p->m_remove_files_after_cleanup) &&
       ptr.p->m_backup_files_created && !ptr.p->m_backup_files_preexisted) {

@@ -32,6 +32,7 @@
 #include <NdbHistory.hpp>
 #include <NdbMgmd.hpp>
 #include <UtilTransactions.hpp>
+#include <signaldata/BackupImpl.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 
 int runDropTable(NDBT_Context *ctx, NDBT_Step *step);
@@ -697,6 +698,185 @@ int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
   g_err << "Post-reset backup " << backupId << " succeeded" << endl;
   if (backup.clearOldBackups() != 0) {
     g_err << "ERROR: final cleanup failed, leaving the post-reset backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
+int runStaleRecordFailsDefine(NDBT_Context *ctx, NDBT_Step *step) {
+  /* A backup record leaked by a stalled abort (e.g. after a master
+   * death) must not kill the node on the next backup attempt: the
+   * DEFINE-phase seize failure used to ndbabort ("If master has
+   * succeeded slave should succeed", error 2301), so a single leak
+   * cascaded into node loss on every following backup. EI 10062 leaks
+   * the record on the victim at the end of a successful backup; the
+   * next backup must then fail cleanly with no node death. Only a
+   * restart of the victim frees the leaked record.
+   */
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  const int masterNodeId = restarter.getMasterNodeId();
+  int victim = -1;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n != masterNodeId) {
+      victim = n;
+      break;
+    }
+  }
+  if (victim == -1) {
+    g_err << "No non-master node found" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
+        << endl;
+
+  if (restarter.insertErrorInNode(victim, 10062) != 0) {
+    g_err << "Error insert 10062 failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Backup 1 succeeds; the error insert fires at its cleanup and
+   * leaks the record on the victim.
+   */
+  unsigned backupId = 0;
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: initial backup failed (before any leak)" << endl;
+    restarter.insertErrorInAllNodes(0);
+    return NDBT_FAILED;
+  }
+  g_err << "Backup " << backupId << " succeeded (record now leaked on node "
+        << victim << ")" << endl;
+
+  /* The client reply does not wait for participant cleanup, where the
+   * error insert fires. Let the cleanup settle before clearing the
+   * insert (a too-early clear would disarm it) and before the next
+   * backup (whose failure must be the persistent leak, not a
+   * transient collision with a still-cleaning record).
+   */
+  NdbSleep_SecSleep(3);
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_err << "NOTE: clearing error inserts reported failure" << endl;
+  }
+
+  /* Watch for node deaths around backup 2: a crash with a fast
+   * auto-restart could slip past the cluster-state check below
+   * (NDB_LE_NDBStopForced is in the STARTUP category).
+   */
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP,
+                  15, NDB_MGM_EVENT_CATEGORY_STARTUP, 0};
+  NdbLogEventHandle log_handle =
+      ndb_mgm_create_logevent_handle(restarter.handle, filter);
+  if (log_handle == NULL) {
+    g_err << "Failed to create log event handle" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Backup 2 must fail (the victim cannot seize the leaked slot) with
+   * no node death. In the broken state the victim dies on the
+   * DEFINE-phase ndbabort (error 2301). A success here means the
+   * error insert never fired.
+   */
+  bool failed = false;
+  if (backup.start(backupId) == 0) {
+    g_err << "ERROR: backup " << backupId << " succeeded on a leaked"
+          << " record - error insert did not fire" << endl;
+    failed = true;
+  } else {
+    g_err << "Backup failed as expected on the leaked record" << endl;
+  }
+
+  bool nodeDied = false;
+  Uint32 abortError = 0;
+  {
+    struct ndb_logevent event;
+    Uint64 endTime = NdbTick_CurrentMillisecond() + (10 * 1000);
+    while (NdbTick_CurrentMillisecond() < endTime) {
+      int res = ndb_logevent_get_next(log_handle, &event, 500);
+      if (res < 0) break;
+      if (res == 0) continue;
+      if (event.type == NDB_LE_NDBStopForced) {
+        g_err << "ERROR: node " << event.source_nodeid
+              << " died (NDBStopForced error " << event.NDBStopForced.error
+              << ") on the backup attempt" << endl;
+        nodeDied = true;
+        break;
+      }
+      if (event.type == NDB_LE_BackupAborted && abortError == 0) {
+        abortError = event.BackupAborted.error;
+        g_err << "Backup abort reported error " << abortError << endl;
+      }
+    }
+  }
+  ndb_mgm_destroy_logevent_handle(&log_handle);
+  if (failed || nodeDied) return NDBT_FAILED;
+
+  /* The failure must be the leaked-record seize failure itself, not
+   * some coincidental abort reason.
+   */
+  if (abortError != DefineBackupRef::FailedToAllocateBackupRecord) {
+    g_err << "ERROR: expected backup abort error "
+          << (Uint32)DefineBackupRef::FailedToAllocateBackupRecord
+          << ", observed " << abortError << endl;
+    return NDBT_FAILED;
+  }
+
+  /* The leak is persistent: another attempt must fail too. */
+  if (backup.start(backupId) == 0) {
+    g_err << "ERROR: backup " << backupId << " succeeded although the"
+          << " leaked record was never released" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Second backup attempt failed as expected" << endl;
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "ERROR: cluster not whole after the failed backup" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Recovery: only a restart frees the leaked record. */
+  g_err << "Restarting node " << victim << " to free the leaked record"
+        << endl;
+  if (restarter.restartOneDbNode(victim, false /* initial */,
+                                 false /* nostart */,
+                                 true /* abort */) != 0) {
+    g_err << "ERROR: failed to restart node " << victim << endl;
+    return NDBT_FAILED;
+  }
+  if (restarter.waitClusterStarted(300) != 0) {
+    g_err << "ERROR: cluster did not recover after restarting node "
+          << victim << endl;
+    return NDBT_FAILED;
+  }
+
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: backup still failing after the node restart" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Post-restart backup " << backupId << " succeeded" << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "ERROR: final cleanup failed, leaving the post-restart backup"
           << endl;
     return NDBT_FAILED;
   }
@@ -2542,6 +2722,13 @@ TESTCASE("FragmentRefDuplicate",
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
   STEP(runFragmentRefWrongWorker);
+}
+TESTCASE("StaleRecordFailsDefine",
+         "Check that a backup record leaked by a stalled abort fails"
+         " the next backup cleanly instead of killing the node at the"
+         " DEFINE-phase seize") {
+  INITIALIZER(clearOldBackups);
+  STEP(runStaleRecordFailsDefine);
 }
 TESTCASE("Bug57650", "") {
   INITIALIZER(clearOldBackups);
