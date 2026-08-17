@@ -5768,9 +5768,9 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
     return;
   }
 
-  sendAbortBackupOrd(signal, ptr, AbortBackupOrd::BackupComplete);
-
   if (!ptr.p->checkError() && ptr.p->masterData.errorCode == 0) {
+    sendAbortBackupOrd(signal, ptr, AbortBackupOrd::BackupComplete);
+
     if (SEND_BACKUP_COMPLETED_FLAG(ptr.p->flags)) {
       BackupCompleteRep *rep = (BackupCompleteRep *)signal->getDataPtrSend();
       rep->backupId = ptr.p->backupId;
@@ -5812,6 +5812,13 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
     signal->theData[14] = (Uint32)(ptr.p->noOfLogRecords >> 32);
     sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 15, JBB);
   } else {
+    /* Failed backup: every participant must remove its files, not only
+     * the ones that saw the error themselves (a worker that was not
+     * scanning when the abort arrived closed its files cleanly and
+     * would keep them forever). sendAbortBackupOrd downgrades the
+     * order to BackupComplete for nodes too old to understand it.
+     */
+    sendAbortBackupOrd(signal, ptr, AbortBackupOrd::CleanupFailedBackup);
     masterAbort(signal, ptr);
   }
 }
@@ -10203,6 +10210,25 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
     return;
   }
 
+  /* 10063: as 10036, but only once the backup reached its stop phase
+   * (log file trailer writing), so the error arrives after the other
+   * participants already confirmed their stop with cleanly closed
+   * files - the window where nothing tells them to remove those files.
+   */
+  if (ERROR_INSERTED(10063) && !ptr.p->is_lcp() &&
+      ptr.p->m_gsn == GSN_STOP_BACKUP_REQ &&
+      filePtr.p->fileType == BackupFormat::LOG_FILE) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    g_eventLogger->info("EI 10063: failing backup %u log file at stop",
+                        ptr.p->backupId);
+    filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_FILE_THREAD;
+    filePtr.p->errorCode = 2810;
+    ptr.p->setErrorCode(2810);
+    closeFile(signal, ptr, filePtr);
+    return;
+  }
+
   if (filePtr.p->errorCode != 0) {
     jam();
     ptr.p->setErrorCode(filePtr.p->errorCode);
@@ -10705,6 +10731,17 @@ void Backup::sendAbortBackupOrd(Signal *signal, BackupRecordPtr ptr,
     const Uint32 nodeId = node.p->nodeId;
     if (node.p->alive && ptr.p->nodes.get(nodeId)) {
       jam();
+      if (requestType == AbortBackupOrd::CleanupFailedBackup &&
+          !ndbd_backup_failed_cleanup_ord(getNodeInfo(nodeId).m_version)) {
+        jam();
+        /* The node predates the cleanup order and would treat it as an
+         * error abort: downgrade to the plain completion order, under
+         * which it keeps its partial files exactly as before the fix.
+         */
+        ord->requestType = AbortBackupOrd::BackupComplete;
+      } else {
+        ord->requestType = requestType;
+      }
       BlockReference ref = numberToRef(BACKUP, receiverInstance, nodeId);
       sendSignal(ref, GSN_ABORT_BACKUP_ORD, signal,
                  AbortBackupOrd::SignalLength, JBB);
@@ -11211,6 +11248,15 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
 
     case AbortBackupOrd::BackupComplete:
       jam();
+      cleanup(signal, ptr);
+      return;
+    case AbortBackupOrd::CleanupFailedBackup:
+      jam();
+      /* The backup failed somewhere: remove this worker's files even
+       * though this worker itself saw no error (removeBackup's
+       * ownership guards still apply).
+       */
+      ptr.p->m_remove_files_after_cleanup = true;
       cleanup(signal, ptr);
       return;
     case AbortBackupOrd::BackupFailure:

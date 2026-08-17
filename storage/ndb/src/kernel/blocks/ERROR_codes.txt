@@ -36,7 +36,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10063
+Next BACKUP 10064
 Next PGMAN 11010
 Next DBTUX 12010
 Next SUMA 13063
@@ -710,6 +710,9 @@ Backup Stuff:
 10062: Leak the backup record at cleanup instead of releasing it
        (one-shot), so the next backup's DEFINE_BACKUP_REQ hits the
        seize-failure path; only a node restart frees the record
+10063: As 10036, but only once the backup reached its stop phase (log
+       file trailer), after the other participants confirmed their
+       stop with cleanly closed files (one-shot)
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 

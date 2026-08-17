@@ -279,7 +279,8 @@ class AbortBackupOrd {
 
     ,
     AbortScan = 1328,
-    IncompatibleVersions = 1329
+    IncompatibleVersions = 1329,
+    CleanupFailedBackup = 1330  //     coordinator -> slave, remove files
   };
 
  private:
