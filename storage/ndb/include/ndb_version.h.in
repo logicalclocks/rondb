@@ -1665,4 +1665,21 @@ ndbd_support_ttl_ring_buffer(Uint32 x)
 {
   return x >= NDBD_SUPPORT_TTL_RING_BUFFER;
 }
+
+/**
+ * Whether the node understands AbortBackupOrd::CleanupFailedBackup, the
+ * abort-protocol order telling every backup participant to remove the
+ * failed backup's files. The coordinator downgrades the order to
+ * BackupComplete for nodes without support, which then keep their
+ * partial files exactly as before the fix - mixed-version operation is
+ * safe in both directions, full cleanup starts once all data nodes run
+ * a supporting version. Present from the 26.10 series; a backport to an
+ * older series adds its floor here.
+ */
+#define NDBD_BACKUP_FAILED_CLEANUP_ORD_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_backup_failed_cleanup_ord(Uint32 x) {
+  return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2610;
+}
 #endif

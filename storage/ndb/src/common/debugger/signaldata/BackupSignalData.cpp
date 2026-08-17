@@ -161,6 +161,10 @@ bool printABORT_BACKUP_ORD(FILE *out, const Uint32 *data, Uint32 len,
               sig->backupId);
       return true;
       break;
+    case AbortBackupOrd::CleanupFailedBackup:
+      fprintf(out, " CleanupFailedBackup: backupPtr: %d backupId: %d\n",
+              sig->backupPtr, sig->backupId);
+      return true;
     case AbortBackupOrd::AbortScan:
     case AbortBackupOrd::IncompatibleVersions:
       return false;

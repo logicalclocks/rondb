@@ -109,6 +109,10 @@ args: -r 200000 -n FragmentRefDuplicate T1
 max-time: 300
 
 cmd: testBackup
+args: -n AbortRemovesAllNodesFiles T1
+max-time: 300
+
+cmd: testBackup
 args: -n StaleRecordFailsDefine T1
 max-time: 600
 
