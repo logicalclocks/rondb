@@ -108,6 +108,10 @@ cmd: testBackup
 args: -r 200000 -n FragmentRefDuplicate T1
 max-time: 300
 
+cmd: testBackup
+args: -n StaleRecordFailsDefine T1
+max-time: 600
+
 cmd: testLimits
 args: -n DropSignalFragments T1
 max-time: 900

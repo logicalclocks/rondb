@@ -203,7 +203,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10069
+Next BACKUP 10070
 Next PGMAN 11010
 Next DBTUX 12011
 Next SUMA 13063
@@ -917,6 +917,9 @@ Backup Stuff:
        worker sends BACKUP_FRAGMENT_REF while other fragments of the
        same node are scanning
 10068: As 10067, and the worker sends the BACKUP_FRAGMENT_REF twice
+10069: Leak the backup record at cleanup instead of releasing it
+       (one-shot), so the next backup's DEFINE_BACKUP_REQ hits the
+       seize-failure path; only a node restart frees the record
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 

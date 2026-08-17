@@ -125,7 +125,9 @@ class DefineBackupRef {
     FailedAllocateTableMem = 1347,
     FailedToAllocateFileRecord = 1348,
     FailedToAllocateAttributeRecord = 1349,
-    FailedForBackupFilesAleadyExist = 1350
+    FailedForBackupFilesAleadyExist = 1350,
+    /* 1351 is StartBackupRef::FailedStartSinceDefineFailed */
+    FailedToAllocateBackupRecord = 1352
   };
 
  private:
