@@ -388,24 +388,6 @@ RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::Reconnect() {
-  /* Go through TriggerReconnect so idle thread-cached Ndb objects are
-   * handed back; reconnecting a data connection directly would leave the
-   * teardown waiting for objects nobody returns. */
-  for (Uint32 i = 0; i < m_num_data_connections; i++) {
-    TriggerReconnect(i);
-  }
-  if (metadataConnection != dataConnections[0]) {
-    /* Separate metadata connection: no thread contexts cache its
-     * objects, so a direct reconnect is safe. */
-    RS_Status status = metadataConnection->Reconnect();
-    if (unlikely(status.http_code != SUCCESS)) {
-      return status;
-    }
-  }
-  return RS_OK;
-}
-
 int RDRSRonDBConnectionPool::GetMinReadyDataNodes() {
   int min_ready = INT_MAX;
   for (Uint32 i = 0; i < m_num_data_connections; i++) {
