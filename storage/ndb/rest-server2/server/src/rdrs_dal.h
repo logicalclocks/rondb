@@ -138,11 +138,6 @@ RS_Status set_metadata_cluster_op_retry_props(
 RS_Status shutdown_connection();
 
 /**
- * Reconnect. Closes the existing connection and then reconnects
- */
-RS_Status reconnect();
-
-/**
  * Batched primary key read operation
  * Also used for single key read operation
  *

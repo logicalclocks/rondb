@@ -155,10 +155,6 @@ RS_Status shutdown_connection() {
   return RS_OK;
 }
 
-RS_Status reconnect() {
-  return rdrsRonDBConnectionPool->Reconnect();
-}
-
 RS_Status pk_batch_read(void *amalloc_void,
                         unsigned int no_req,
                         bool is_batch,

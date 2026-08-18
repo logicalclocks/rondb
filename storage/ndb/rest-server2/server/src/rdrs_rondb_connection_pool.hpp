@@ -192,13 +192,6 @@ class RDRSRonDBConnectionPool {
   RS_Status ReturnMetadataNdbObject(Ndb *ndb_object, RS_Status *status);
 
   /**
-   * @brief Restart connections
-   *
-   * @return RS_Status A struct representing the status of the operation:
-   */
-  RS_Status Reconnect();
-
-  /**
    * @brief Get connection statistis
    *
    * @return RonDB_Stats

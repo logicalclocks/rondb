@@ -422,7 +422,18 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
      * instead: deleting it under its holder is a use-after-free, and a
      * leaked object's address can never be recycled into a new Ndb
      * object, so a very late return is dropped by the tracked-check in
-     * ReturnNDBObjectToPool rather than corrupting the new pool. */
+     * ReturnNDBObjectToPool rather than corrupting the new pool.
+     *
+     * Leaking the object is not by itself sufficient, because the cluster
+     * connection is deleted further down and a leaked object still holds a
+     * reference to it (NdbImpl::m_ndb_cluster_connection). Not missing the
+     * deadline therefore rests on one invariant: a reconnection only ever
+     * starts on total data-node loss (see ndb_error_cluster_unavailable),
+     * and that is precisely the event that wakes every blocked NDB caller,
+     * so every holder returns within seconds. Do NOT add an API that forces
+     * a reconnection while the cluster is healthy - a long scan would then
+     * outlive the deadline. If the two errors logged below ever show up in
+     * a real log, this invariant has been broken. */
     Uint32 leakedObjects = 0;
     while (allAvailableNdbObjects.size() > 0) {
       Ndb *ndb_object = allAvailableNdbObjects.front();
