@@ -183,10 +183,18 @@ struct SelectStatement
   Int64 limit = -1; // -1 means no limit
 };
 
-/* RonSQL uses 4 types of exceptions:
+/* RonSQL uses 5 types of exceptions:
  * - RonSQLRetryableError indicates that the RonSQL query might be worth
  *   retrying.
  * - RonSQLPermanentError indicates that the RonSQL query is not worth retrying.
+ * - RonSQLRateLimitError indicates that the query was rejected because the
+ *   caller is over its USER rate limit or quota (RONDB-978). Kept apart from
+ *   RonSQLRetryableError even though the underlying Ndb errors are classified
+ *   temporary: retrying only adds load to a bucket that is already
+ *   overflowing, and the caller has to report throttling distinctly from a
+ *   server failure (RDRS answers HTTP 429). Thrown ONLY when
+ *   rate_limit_identity below was set, so a caller that does not tag its
+ *   transactions never has to handle this type.
  * - RonSQLMaybeStaleSchema is used internally to communicate errors from
  *   operations that depend on the schema. This will cause a schema unload and
  *   reload. Then, if the schema version was stale, it will be rethrown as a
@@ -195,14 +203,27 @@ struct SelectStatement
  *   errors, such as RonSQL type checking.
  * - std::runtime_error is used internally to indicate errors where it's unknown
  *   whether they should be retried. This will cause an investigation of Ndb
- *   error codes. Then, it will be rethrown as a RetryableError or a
- *   PermanentError.
+ *   error codes. Then, it will be rethrown as a RetryableError, a
+ *   RateLimitError or a PermanentError.
  */
 class RonSQLRetryableError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 class RonSQLPermanentError : public std::runtime_error {
   using std::runtime_error::runtime_error;
+};
+/*
+ * Carries the Ndb error code because the transaction is closed before the
+ * exception escapes the executor, so the caller can no longer read it off the
+ * transaction. The caller maps the code to its own error reporting.
+ */
+class RonSQLRateLimitError : public std::runtime_error {
+ public:
+  RonSQLRateLimitError(const std::string& msg, int ndb_error_code)
+    : std::runtime_error(msg), m_ndb_error_code(ndb_error_code) {}
+  int get_ndb_error_code() const { return m_ndb_error_code; }
+ private:
+  int m_ndb_error_code;
 };
 class RonSQLMaybeStaleSchema : public std::runtime_error {
   using std::runtime_error::runtime_error;
