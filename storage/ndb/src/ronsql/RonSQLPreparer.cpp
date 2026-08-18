@@ -945,6 +945,13 @@ RonSQLPreparer::execute()
     ndbrequire(m_trans == NULL);
     m_trans = DBG(ndb->startTransaction());
     require_run(m_trans != NULL, "Failed to start transaction.");
+    if (m_conf.rate_limit_identity != NULL) {
+      // RONDB-978: tag the transaction so the data nodes account this
+      // query's usage against the caller's USER rate limits.
+      require_run(m_trans->setUserId(m_conf.rate_limit_identity,
+                                     m_conf.rate_limit_identity_len) == 0,
+                  "Failed to set rate limit identity on transaction.");
+    }
     // Since ndb exists, m_table should have been initialized in load()
     ndbrequire(m_table != NULL);
     NdbAggregator aggregator(m_table);
