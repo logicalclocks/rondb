@@ -171,6 +171,16 @@ class TTLPurger {
   void SchemaWatcherJob();
   void PurgeWorkerJob();
 
+  /**
+   * Ask the schema watcher to release its two Ndb objects (and its event
+   * subscription) and then resubscribe. Called from the connection-level
+   * reconnect listener: a reconnection teardown waits for every Ndb object
+   * to be handed back, and these two are held for the whole watcher run.
+   * Cheap and non-blocking - it only sets an atomic flag that the watcher
+   * loop checks once per poll iteration.
+   */
+  void force_reconnect() { force_reconnect_ = true; }
+
   // Config getters/setters (thread-safe)
   TTLPurgeConfig GetConfig() const;
   void SetConfig(const TTLPurgeConfig& config);
@@ -194,6 +204,10 @@ class TTLPurger {
   Ndb* watcher_ndb_;
   Ndb* worker_ndb_;
   std::atomic<bool> exit_;
+  /* Set by the reconnect listener, consumed by the schema watcher loop:
+   * unlike exit_ this only restarts the watcher (release, then resubscribe),
+   * it does not stop it. */
+  std::atomic<bool> force_reconnect_;
 
   typedef struct TTLInfo {
     Int32 table_id = 0;
