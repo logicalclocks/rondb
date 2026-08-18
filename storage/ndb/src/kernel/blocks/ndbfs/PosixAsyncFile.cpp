@@ -78,6 +78,19 @@ void PosixAsyncFile::rmrfReq(Request *request, const char *src,
     return;
   }
 
+  if (request->par.rmrf.empty_directory_only) {
+    /* Non-recursive removal of one directory level. A directory that
+     * is missing or still holds content (possibly another owner's on
+     * a shared path) is left alone; EEXIST is the SUSv3 alias for
+     * ENOTEMPTY.
+     */
+    errno = 0;
+    if (rmdir(src) != 0 && errno != ENOENT && errno != ENOTEMPTY &&
+        errno != EEXIST)
+      NDBFS_SET_REQUEST_ERROR(request, errno);
+    return;
+  }
+
   char path[PATH_MAX];
   strcpy(path, src);
   strcat(path, "/");

@@ -82,6 +82,16 @@ class NdbBackup : public NdbConfig {
    */
   int backupDirsExist(int node_id);
 
+  /**
+   * Check whether any BACKUP-* directory entry (empty shell or not)
+   * exists in the node's BackupDataDir. Complements backupDirsExist:
+   * a completed removal of a failed backup must leave neither file
+   * content nor the BACKUP-<id> / BACKUP-<id>-PART-N-OF-M directory
+   * shells. Returns 1 if any such directory exists, 0 if none, -1 on
+   * error (or on Windows where the check is not implemented).
+   */
+  int backupShellsExist(int node_id);
+
  private:
   int execRestore(bool _restore_data, bool _restore_meta, bool _restore_epoch,
                   bool _disable_indexes, bool _enable_indexes,

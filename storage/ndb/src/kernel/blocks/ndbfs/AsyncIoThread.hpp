@@ -112,6 +112,7 @@ class Request {
     struct {
       bool directory;
       bool own_directory;
+      bool empty_directory_only;
     } rmrf;
     struct {
       Block_context *ctx;
