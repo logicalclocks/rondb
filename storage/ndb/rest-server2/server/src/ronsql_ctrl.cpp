@@ -292,7 +292,13 @@ void RonSQLCtrl::ronsql(
   }
   else {
     DEB_TRACE();
-    resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+    /* Rate limit rejections (RONDB-978) must surface as 429 like on every
+       other endpoint, everything else keeps the historical 500 of this
+       endpoint. ronsql_op reports the throttling as TOO_MANY_REQUESTS and
+       does not retry it. */
+    resp->setStatusCode(status.http_code == TOO_MANY_REQUESTS
+                          ? drogon::HttpStatusCode::k429TooManyRequests
+                          : drogon::HttpStatusCode::k500InternalServerError);
     resp->setContentTypeCodeAndCustomString(
       drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
     DEB_TRACE();
