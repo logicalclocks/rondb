@@ -29,6 +29,7 @@
 
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <openssl/evp.h>
 #include <unordered_map>
 #include <functional>
@@ -80,21 +81,43 @@ extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 FSMetadataCache *g_fs_metadata_cache = nullptr;
 
+/* Guards the g_fs_metadata_cache global against the reconnect listener
+ * below. Held only across the null check and the flag set, NEVER across the
+ * delete in stop_fs_cache(): ~FSMetadataCache joins the cache and event
+ * watcher threads, and those threads are exactly the ones that can be
+ * inside the listener, so holding it there would deadlock. The request path
+ * does not take it - it must not serialize on a lock that exists for
+ * start/stop, and drogon is quit before the cache is stopped. */
+static std::mutex fsCacheMutex;
+
 /* On reconnection the event watcher must release its metadata Ndb object
  * (it holds a live event subscription) or the connection teardown cannot
- * converge. TE_CLUSTER_FAILURE delivery alone is not reliable enough. */
+ * converge. TE_CLUSTER_FAILURE delivery alone is not reliable enough.
+ *
+ * Fires from any thread that returns a metadata Ndb object with a
+ * cluster-unavailability status - including, while the process is shutting
+ * down, this cache's own threads - so the global must not be read
+ * unsynchronized: stop_fs_cache() could otherwise free the cache between
+ * the null check and the call. */
 static void fs_cache_reconnect_listener() {
+  std::lock_guard<std::mutex> guard(fsCacheMutex);
   if (g_fs_metadata_cache != nullptr) {
     g_fs_metadata_cache->force_reconnect();
   }
 }
 
 void start_fs_cache() {
-  g_fs_metadata_cache = new FSMetadataCache();
-  require(g_fs_metadata_cache != nullptr);
-  DEB_FS("FS Metadata Cache started: %p", g_fs_metadata_cache);
+  FSMetadataCache *cache = new FSMetadataCache();
+  require(cache != nullptr);
+  {
+    /* Publish before starting the threads: fs_key_thread_main reads the
+     * global. */
+    std::lock_guard<std::mutex> guard(fsCacheMutex);
+    g_fs_metadata_cache = cache;
+  }
+  DEB_FS("FS Metadata Cache started: %p", cache);
   RDRSRonDBConnection::RegisterReconnectListener(fs_cache_reconnect_listener);
-  g_fs_metadata_cache->start_fs_cache_thread();
+  cache->start_fs_cache_thread();
 }
 
 extern "C" void* fs_key_thread_main(void *thr_arg) {
@@ -121,12 +144,16 @@ void FSMetadataCache::start_fs_cache_thread() {
 }
 
 void stop_fs_cache() {
-  DEB_FS("FS Metadata Cache stopped: %p", g_fs_metadata_cache);
-  /* Null the global before destroying so the reconnect listener (which
-   * may fire from another thread during a cluster failure) sees null
-   * instead of a half-destroyed cache. */
-  FSMetadataCache *cache = g_fs_metadata_cache;
-  g_fs_metadata_cache = nullptr;
+  FSMetadataCache *cache = nullptr;
+  {
+    /* Once the global is null again under the lock, no listener holds a
+     * reference to the cache and none can obtain one, so destroying it
+     * outside the lock is safe. */
+    std::lock_guard<std::mutex> guard(fsCacheMutex);
+    cache = g_fs_metadata_cache;
+    g_fs_metadata_cache = nullptr;
+  }
+  DEB_FS("FS Metadata Cache stopped: %p", cache);
   delete cache;
 }
 
