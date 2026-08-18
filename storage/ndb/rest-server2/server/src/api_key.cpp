@@ -31,6 +31,7 @@
 #include <ctime>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <openssl/evp.h>
 #include <string_view>
 #include <thread>
@@ -89,32 +90,57 @@ extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 bool contains_upper(std::string_view s);
 RS_Status computeHash(const std::string &unhashed, std::string &hashed);
 
+/* Guards the apiKeyCache global against the reconnect listener below.
+ * Held only across the null check and the flag set, NEVER across the
+ * delete in stop_api_key_cache(): APIKeyCache::cleanup() joins the refresh
+ * and event watcher threads, and those threads are exactly the ones that
+ * can be inside the listener, so holding it there would deadlock. The
+ * request path does not take it - it must not serialize on a lock that
+ * exists for start/stop, and drogon is quit before the cache is stopped. */
+static std::mutex apiKeyCacheMutex;
+
 /* On reconnection the event watcher must release its metadata Ndb object
  * (it holds a live event subscription) or the connection teardown cannot
- * converge. TE_CLUSTER_FAILURE delivery alone is not reliable enough. */
+ * converge. TE_CLUSTER_FAILURE delivery alone is not reliable enough.
+ *
+ * Fires from any thread that returns a metadata Ndb object with a
+ * cluster-unavailability status - including, while the process is shutting
+ * down, this cache's own threads - so the global must not be read
+ * unsynchronized: stop_api_key_cache() could otherwise free the cache
+ * between the null check and the call. */
 static void api_key_cache_reconnect_listener() {
+  std::lock_guard<std::mutex> guard(apiKeyCacheMutex);
   if (apiKeyCache != nullptr) {
     apiKeyCache->force_reconnect();
   }
 }
 
 APIKeyCache* start_api_key_cache() {
-  apiKeyCache = new APIKeyCache();
-  require(apiKeyCache != nullptr);
-  apiKeyCache->set_event_name("RDRS_AK_EVT_" + generate_event_uuid());
-  DEB_AUTH("API Key Cache started: %p", apiKeyCache);
+  APIKeyCache *cache = new APIKeyCache();
+  require(cache != nullptr);
+  cache->set_event_name("RDRS_AK_EVT_" + generate_event_uuid());
+  {
+    /* Publish only once the cache is fully initialized. */
+    std::lock_guard<std::mutex> guard(apiKeyCacheMutex);
+    apiKeyCache = cache;
+  }
+  DEB_AUTH("API Key Cache started: %p", cache);
   RDRSRonDBConnection::RegisterReconnectListener(
     api_key_cache_reconnect_listener);
-  return apiKeyCache;
+  return cache;
 }
 
 void stop_api_key_cache() {
-  DEB_AUTH("API Key Cache stopped: %p", apiKeyCache);
-  /* Null the global before destroying so the reconnect listener (which
-   * may fire from another thread during a cluster failure) sees null
-   * instead of a half-destroyed cache. */
-  APIKeyCache *cache = apiKeyCache;
-  apiKeyCache = nullptr;
+  APIKeyCache *cache = nullptr;
+  {
+    /* Once the global is null again under the lock, no listener holds a
+     * reference to the cache and none can obtain one, so destroying it
+     * outside the lock is safe. */
+    std::lock_guard<std::mutex> guard(apiKeyCacheMutex);
+    cache = apiKeyCache;
+    apiKeyCache = nullptr;
+  }
+  DEB_AUTH("API Key Cache stopped: %p", cache);
   delete cache;
 }
 
