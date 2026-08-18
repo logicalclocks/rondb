@@ -391,6 +391,25 @@ int NdbTransaction::init() {
   theTransactionIsStarted = false;
   theNext		  = nullptr;
 
+  /**
+   * Transactions are pooled and recycled through init(). The rate limit
+   * identity (RONDB-978) must not survive into the next transaction: a
+   * transaction whose next user sets no identity would otherwise be billed
+   * to - and throttled against - the previous user's bucket, and
+   * m_current_username would dangle into the previous request's freed
+   * identity string on the rate overflow reporting path.
+   *
+   * Untagged transactions are not an edge case. Every endpoint computes an
+   * identity only inside its useHopsworksAPIKeys branch, RDRS's own
+   * metadata reads (the api key cache, feature store metadata) set none at
+   * all, and Rondis traffic is never tagged - yet all of them draw from the
+   * same pool as tagged REST requests.
+   */
+  m_user_id               = RNIL;
+  m_user_id_version       = 0;
+  m_current_username      = nullptr;
+  m_current_username_len  = 0;
+
   theFirstOpInList	  = nullptr;
   theLastOpInList	  = nullptr;
 
