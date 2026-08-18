@@ -2210,6 +2210,15 @@ void Backup::execCONTINUEB(Signal *signal) {
     return;
   }
 
+  case BackupContinueB::ZDEBRIS_SWEEP_START:
+  {
+    jam();
+    /* Delayed first removals of a held debris sweep (EI 10064). */
+    ndbrequire(m_debris_sweep.m_active);
+    debrisSweepRemoveFiles(signal);
+    return;
+  }
+
 #if (defined(VM_TRACE) || \
      defined(ERROR_INSERT)) && \
     defined(DO_TRANSIENT_POOL_STAT)
@@ -3769,6 +3778,56 @@ void Backup::execNODE_START_REP(Signal *signal) {
       break;
     }
   }
+
+  /**
+   * A rejoining node that died during a backup still holds that failed
+   * backup's files (it never ran its own cleanup): order the sweep
+   * recorded for it (recordDebrisSweep). The entry stays until the
+   * receiver confirms the sweep (RemoveFailedBackupFilesConf), so a
+   * node that dies again mid-sweep is re-ordered on its next rejoin
+   * (the removals are idempotent). Version-gated per receiver: an old
+   * node would read the order's senderData as a backup-record index
+   * and could hit a live record, so it is never sent one and keeps
+   * its debris exactly as before the fix (that entry is dropped).
+   */
+  if (started_node < MAX_NDB_NODES &&
+      m_pending_sweeps[started_node].backupId != 0) {
+    jam();
+    const Uint32 backupId = m_pending_sweeps[started_node].backupId;
+    const Uint32 totalParts = m_pending_sweeps[started_node].totalParts;
+    const Uint32 gen = m_pending_sweeps[started_node].gen;
+    if (ndbd_backup_failed_cleanup_ord(getNodeInfo(started_node).m_version)) {
+      jam();
+      AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtrSend();
+      ord->requestType = AbortBackupOrd::RemoveFailedBackupFiles;
+      ord->backupId = backupId;
+      ord->senderData = totalParts;
+      ord->senderRef = reference();
+      ord->sweepGen = gen;
+      /* Via the node's main BACKUP instance: on ndbmtd that is the
+       * BackupProxy, which installs the node-wide same-id define
+       * barrier before handing the order to LDM1 (on ndbd it is the
+       * block itself, where the worker-local define guard already is
+       * node-wide).
+       */
+      sendSignal(numberToRef(BACKUP, BackupProxyInstanceKey, started_node),
+                 GSN_ABORT_BACKUP_ORD, signal,
+                 AbortBackupOrd::SignalLengthDebrisSweep, JBB);
+      g_eventLogger->info(
+          "Backup: ordered node %u to sweep debris of failed backup %u"
+          " (%u parts, gen %u)",
+          started_node, backupId, totalParts, gen);
+    } else {
+      jam();
+      m_pending_sweeps[started_node].backupId = 0;
+      m_pending_sweeps[started_node].totalParts = 0;
+      m_pending_sweeps[started_node].gen = 0;
+      g_eventLogger->info(
+          "Backup: node %u predates the debris sweep order, leaving"
+          " failed backup %u's files on it",
+          started_node, backupId);
+    }
+  }
 }
 
 void Backup::execNODE_FAILREP(Signal *signal) {
@@ -3871,6 +3930,62 @@ bool Backup::verifyNodesAlive(BackupRecordPtr ptr,
   return true;
 }
 
+void Backup::recordDebrisSweep(BackupRecordPtr ptr, Uint32 deadNode) {
+  /**
+   * Remember the backup debris a dead participant leaves behind, to
+   * be swept when it rejoins (execNODE_START_REP). Only the cluster
+   * master's LDM1 worker records - one recorder, one sweep order.
+   *
+   * Only record when this worker has reached STARTED or later through
+   * the normal flow: the master fans START_BACKUP_REQ only after every
+   * participant confirmed DEFINE, and a confirmed DEFINE proves the
+   * dead node CREATED its files in this attempt (files are opened with
+   * OM_CREATE_IF_NONE, so a pre-existing fileset - a valid earlier
+   * backup with the same id - would have failed the define instead).
+   * Sweeping without that proof could delete a valid backup. Earlier
+   * states, and ABORTING (reachable from anywhere), keep today's
+   * behavior: the debris stays until manual cleanup.
+   */
+  if (c_masterNodeId != getOwnNodeId() ||
+      instance() != masterInstanceKey(ptr)) {
+    jam();
+    return;
+  }
+  const Uint32 state = ptr.p->slaveState.getState();
+  if (state != STARTED && state != SCANNING && state != STOPPING &&
+      state != CLEANING) {
+    jam();
+    return;
+  }
+  if (ptr.p->m_backup_completed_ok) {
+    jam();
+    /* The success verdict was already rendered: the dead node's
+     * fileset is part of a valid backup. (CLEANING alone proves
+     * nothing - a worker enters it right after its own stop confirm,
+     * while the master may still be collecting other stop replies; a
+     * death there fails the backup and must be recorded.)
+     */
+    return;
+  }
+  ndbrequire(deadNode < MAX_NDB_NODES);
+  PendingDebrisSweep &entry = m_pending_sweeps[deadNode];
+  if (entry.backupId != 0 && entry.backupId != ptr.p->backupId) {
+    jam();
+    g_eventLogger->info(
+        "Backup: node %u died during backup %u before its debris of"
+        " backup %u was swept - backup %u's files stay behind",
+        deadNode, ptr.p->backupId, entry.backupId, entry.backupId);
+  }
+  entry.backupId = ptr.p->backupId;
+  entry.totalParts =
+      MT_BACKUP_FLAG(ptr.p->flags) ? getNodeInfo(deadNode).m_lqh_workers : 0;
+  entry.gen = ++m_debris_sweep_next_gen;
+  g_eventLogger->info(
+      "Backup: recorded debris sweep for node %u: backup %u (%u parts,"
+      " gen %u)",
+      deadNode, entry.backupId, entry.totalParts, entry.gen);
+}
+
 void Backup::checkNodeFail(Signal *signal, BackupRecordPtr ptr, NodeId newCoord,
                            Uint32 theFailedNodes[NdbNodeBitmask::Size]) {
   NdbNodeBitmask mask;
@@ -3888,6 +4003,7 @@ void Backup::checkNodeFail(Signal *signal, BackupRecordPtr ptr, NodeId newCoord,
         jam();
         ptr.p->nodes.clear(nodePtr.p->nodeId);
         found = true;
+        recordDebrisSweep(ptr, nodePtr.p->nodeId);
       }
     }  // if
   }    // for
@@ -4228,6 +4344,8 @@ void Backup::execBACKUP_REQ(Signal *signal) {
   ptr.p->m_gsn = 0;
   ptr.p->errorCode = 0;
   ptr.p->m_remove_files_after_cleanup = false;
+  ptr.p->m_backup_completed_ok = false;
+  ptr.p->m_sweep_gen_floor = m_debris_sweep_next_gen;
   ptr.p->m_backup_files_created = false;
   ptr.p->m_backup_files_preexisted = false;
   ptr.p->clientRef = senderRef;
@@ -5769,6 +5887,29 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
   }
 
   if (!ptr.p->checkError() && ptr.p->masterData.errorCode == 0) {
+    ptr.p->m_backup_completed_ok = true;
+    /* The backup succeeded: a debris sweep recorded for it (a
+     * participant that died after confirming its stop, without
+     * failing the backup) must not fire - the dead node's fileset is
+     * part of a valid backup now.
+     */
+    for (Uint32 i = 0; i < MAX_NDB_NODES; i++) {
+      /* Only entries THIS attempt recorded (gen above the attempt's
+       * floor): an older failed attempt of a reused id still owes its
+       * sweep on a node that stayed down through this attempt.
+       */
+      if (m_pending_sweeps[i].backupId == ptr.p->backupId &&
+          m_pending_sweeps[i].gen > ptr.p->m_sweep_gen_floor) {
+        jam();
+        g_eventLogger->info(
+            "Backup: backup %u completed - dropping the debris sweep"
+            " recorded for node %u",
+            ptr.p->backupId, i);
+        m_pending_sweeps[i].backupId = 0;
+        m_pending_sweeps[i].totalParts = 0;
+        m_pending_sweeps[i].gen = 0;
+      }
+    }
     sendAbortBackupOrd(signal, ptr, AbortBackupOrd::BackupComplete);
 
     if (SEND_BACKUP_COMPLETED_FLAG(ptr.p->flags)) {
@@ -6121,6 +6262,46 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
   const Uint32 ptrI = req->backupPtr;
   const Uint32 backupId = req->backupId;
 
+#ifdef ERROR_INSERT
+  /* 10064 with extra = a backup id: proof of the node-wide define
+   * barrier. While that id's debris sweep is active, the BackupProxy
+   * must reject its DEFINE before any fan-out, so no worker other
+   * than LDM1 (whose own copy of the insert was consumed by the sweep
+   * hold) may ever see it. A worker-local-only guard fans the DEFINE
+   * and trips this.
+   */
+  if (ERROR_INSERTED(10064) && backupId == ERROR_INSERT_EXTRA &&
+      instance() != UserBackupInstanceKey &&
+      req->backupDataLen != ~(Uint32)0) {
+    CRASH_INSERTION(10064);
+  }
+#endif
+
+  if (m_debris_sweep.m_active && m_debris_sweep.m_backup_id == backupId &&
+      req->backupDataLen != ~(Uint32)0) {
+    jam();
+    /* This node is still removing the on-disk debris of a failed
+     * backup with this very id (ordered at its rejoin): defining a
+     * new backup now would open files the sweep is about to unlink.
+     * Fail the new backup cleanly - the sweep is millisecond-scale,
+     * a retry succeeds. (Never for DBLQH's one-time LCP define,
+     * which cannot handle a REF.)
+     */
+    g_eventLogger->warning(
+        "DEFINE_BACKUP_REQ for backup %u while its debris sweep is"
+        " running - failing the backup",
+        backupId);
+    const BlockReference senderRef = signal->senderBlockRef();
+    DefineBackupRef *ref = (DefineBackupRef *)signal->getDataPtrSend();
+    ref->backupId = backupId;
+    ref->backupPtr = ptrI;
+    ref->errorCode = DefineBackupRef::FailedForDebrisSweepInProgress;
+    ref->nodeId = getOwnNodeId();
+    sendSignal(senderRef, GSN_DEFINE_BACKUP_REF, signal,
+               DefineBackupRef::SignalLength, JBB);
+    return;
+  }
+
   if (req->masterRef == reference()) {
     /**
      * Signal sent from myself -> record already seized
@@ -6212,6 +6393,8 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
   ptr.p->slaveData.dropTrig.tableId = RNIL;
   ptr.p->errorCode = 0;
   ptr.p->m_remove_files_after_cleanup = false;
+  ptr.p->m_backup_completed_ok = false;
+  ptr.p->m_sweep_gen_floor = m_debris_sweep_next_gen;
   ptr.p->m_backup_files_created = false;
   ptr.p->m_backup_files_preexisted = false;
   ptr.p->clientRef = req->clientRef;
@@ -11167,6 +11350,67 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
   dumpUsedResources();
 #endif
 
+  if (requestType == AbortBackupOrd::RemoveFailedBackupFiles ||
+      requestType == AbortBackupOrd::RemoveFailedBackupFilesConf ||
+      requestType == AbortBackupOrd::RemoveFailedBackupFilesRef) {
+    jam();
+    /* All three carry the sweep generation in the fifth word; every
+     * sender of them is version-gated onto this form.
+     */
+    if (signal->getLength() < AbortBackupOrd::SignalLengthDebrisSweep) {
+      jam();
+      g_eventLogger->info(
+          "Backup: ignoring malformed debris sweep signal type=%u"
+          " length=%u",
+          requestType, signal->getLength());
+      return;
+    }
+    if (requestType == AbortBackupOrd::RemoveFailedBackupFiles) {
+      jam();
+      /* Record-less by design: this node's record of the failed backup
+       * died with the node, and a live record here belongs to a
+       * different, running backup - senderData is the failed backup's
+       * part count, not a record index, so this must be handled before
+       * any record lookup.
+       */
+      startDebrisSweep(signal, backupId, senderData, ord->senderRef,
+                       ord->sweepGen);
+      return;
+    }
+    if (requestType == AbortBackupOrd::RemoveFailedBackupFilesRef) {
+      jam();
+      /* The node received the order but did not execute it (a backup
+       * with that id is running there, or the order was superseded):
+       * keep the entry, it is re-ordered on the node's next restart.
+       */
+      g_eventLogger->info(
+          "Backup: node %u declined the debris sweep of failed backup"
+          " %u - kept for its next restart",
+          refToNode(signal->getSendersBlockRef()), backupId);
+      return;
+    }
+    /* The restarted node confirms its ordered sweep: retire the
+     * pending entry (kept until now so a node dying mid-sweep gets
+     * re-ordered on its next rejoin). Backup ids are reusable, so the
+     * confirm must match the recorded generation - a late confirm of
+     * an older sweep must not retire a newer entry.
+     */
+    const Uint32 sweptNode = refToNode(signal->getSendersBlockRef());
+    if (sweptNode < MAX_NDB_NODES &&
+        m_pending_sweeps[sweptNode].backupId == backupId &&
+        m_pending_sweeps[sweptNode].gen == ord->sweepGen) {
+      jam();
+      m_pending_sweeps[sweptNode].backupId = 0;
+      m_pending_sweeps[sweptNode].totalParts = 0;
+      m_pending_sweeps[sweptNode].gen = 0;
+      g_eventLogger->info(
+          "Backup: node %u confirmed the debris sweep of failed"
+          " backup %u",
+          sweptNode, backupId);
+    }
+    return;
+  }
+
   BackupRecordPtr ptr;
   if (requestType == AbortBackupOrd::ClientAbort) {
     jam();
@@ -11550,10 +11794,249 @@ void Backup::removeBackupDirShell(Signal *signal, BackupRecordPtr ptr,
              FsRemoveReq::SignalLengthEmptyDirectoryOnly, JBA);
 }
 
+void Backup::startDebrisSweep(Signal *signal, Uint32 backupId,
+                              Uint32 totalParts, Uint32 senderRef,
+                              Uint32 gen) {
+  jam();
+  bool decline = false;
+  if (backupId == 0 || totalParts > MAX_NDBMT_LQH_WORKERS ||
+      m_debris_sweep.m_active) {
+    jam();
+    g_eventLogger->info(
+        "Backup: declining debris sweep order for backup %u (%s)", backupId,
+        m_debris_sweep.m_active
+            ? "a sweep is already running"
+            : (backupId == 0 ? "no backup id" : "part count out of range"));
+    decline = true;
+  } else {
+    /* A running backup with the same id (explicit id reuse) must not
+     * race the removals: leave the debris alone. The master keeps the
+     * entry and re-orders on this node's next restart.
+     */
+    BackupRecordPtr live;
+    if (get_backup_record(live) && live.p->backupId == backupId) {
+      jam();
+      g_eventLogger->info(
+          "Backup: declining debris sweep order for backup %u: a backup"
+          " with that id is running",
+          backupId);
+      decline = true;
+    }
+  }
+  if (decline) {
+    jam();
+    /* The response lifts the proxy's define barrier; the master keeps
+     * the entry (only a matching confirm retires it).
+     */
+    AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtrSend();
+    ord->requestType = AbortBackupOrd::RemoveFailedBackupFilesRef;
+    ord->backupId = backupId;
+    ord->senderData = 0;
+    ord->senderRef = reference();
+    ord->sweepGen = gen;
+    sendSignal(senderRef, GSN_ABORT_BACKUP_ORD, signal,
+               AbortBackupOrd::SignalLengthDebrisSweep, JBB);
+    return;
+  }
+  m_debris_sweep.m_active = true;
+  m_debris_sweep.m_backup_id = backupId;
+  m_debris_sweep.m_total_parts = totalParts;
+  /* Sweep exactly the failed attempt's layout: its confirmed DEFINE
+   * proves ownership of that layout's files only. Level 0 (the
+   * single-threaded layout) is swept only for a single-threaded
+   * attempt - an mt attempt's id may coexist with a valid older
+   * single-threaded backup whose level-0 files must survive.
+   */
+  m_debris_sweep.m_current_part = (totalParts > 0) ? 1 : 0;
+  m_debris_sweep.m_order_sender_ref = senderRef;
+  m_debris_sweep.m_gen = gen;
+  m_debris_sweep.m_failed = false;
+  m_debris_sweep.m_phase = DebrisSweep::SWEEP_FILES;
+  g_eventLogger->info(
+      "Backup: sweeping debris of failed backup %u (%u parts)", backupId,
+      totalParts);
+#ifdef ERROR_INSERT
+  /* 10064: hold the sweep window open (define barrier installed, the
+   * removals delayed) so a test can drive a same-id DEFINE into the
+   * window. One-shot.
+   */
+  if (ERROR_INSERTED(10064)) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    g_eventLogger->info("EI 10064: holding debris sweep of backup %u for 15s",
+                        backupId);
+    signal->theData[0] = BackupContinueB::ZDEBRIS_SWEEP_START;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 15000, 1);
+    return;
+  }
+#endif
+  debrisSweepRemoveFiles(signal);
+}
+
+void Backup::debrisSweepRemoveFiles(Signal *signal) {
+  jam();
+
+  /**
+   * The current layout level's three files, by the same scoped
+   * addressing removeBackup uses (leaf filenames carry this node's id,
+   * so they are provably this node's; ENOENT tolerated - the dead node
+   * may not have reached every file). Level 0 is the single-threaded
+   * layout, levels 1..totalParts the mt part directories.
+   */
+  FsRemoveReq *req = (FsRemoveReq *)signal->getDataPtrSend();
+  req->userReference = reference();
+  req->userPointer = RNIL; /* routes the confirms to debrisSweepConf */
+  req->directory = 0;
+  req->ownDirectory = 0;
+  req->fileNumber[0] = 0;
+  req->fileNumber[1] = 0;
+  req->fileNumber[2] = 0;
+  req->fileNumber[3] = 0;
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_BACKUP);
+  FsOpenReq::v2_setSequence(req->fileNumber, m_debris_sweep.m_backup_id);
+  FsOpenReq::v2_setNodeId(req->fileNumber, getOwnNodeId());
+  const Uint32 part = m_debris_sweep.m_current_part;
+  FsOpenReq::v2_setPartNum(req->fileNumber, part);
+  FsOpenReq::v2_setTotalParts(req->fileNumber,
+                              part == 0 ? 0 : m_debris_sweep.m_total_parts);
+  m_debris_sweep.m_outstanding = 3;
+
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
+  FsOpenReq::v2_setCount(req->fileNumber, 0xFFFFFFFF);
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
+             JBA);
+
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_LOG);
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
+             JBA);
+
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_DATA);
+  FsOpenReq::v2_setCount(req->fileNumber, 0);
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
+             JBA);
+}
+
+void Backup::debrisSweepRemoveDir(Signal *signal, bool partDir) {
+  jam();
+
+  /**
+   * Emptied directory shell of the swept level: non-recursive
+   * empty-directory-only removal, exactly like removeBackupDirShell -
+   * a missing or non-empty directory (the shared BACKUP-<id> parent
+   * can hold another owner's content) is left alone.
+   */
+  FsRemoveReq *req = (FsRemoveReq *)signal->getDataPtrSend();
+  req->userReference = reference();
+  req->userPointer = RNIL;
+  req->directory = 1;
+  req->ownDirectory = 1;
+  req->emptyDirectoryOnly = 1;
+  req->fileNumber[0] = 0;
+  req->fileNumber[1] = 0;
+  req->fileNumber[2] = 0;
+  req->fileNumber[3] = 0;
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_BACKUP);
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
+  FsOpenReq::v2_setSequence(req->fileNumber, m_debris_sweep.m_backup_id);
+  FsOpenReq::v2_setNodeId(req->fileNumber, getOwnNodeId());
+  if (partDir) {
+    jam();
+    FsOpenReq::v2_setPartNum(req->fileNumber, m_debris_sweep.m_current_part);
+    FsOpenReq::v2_setTotalParts(req->fileNumber,
+                                m_debris_sweep.m_total_parts);
+  } else {
+    jam();
+    FsOpenReq::v2_setPartNum(req->fileNumber, 0);
+    FsOpenReq::v2_setTotalParts(req->fileNumber, 0);
+  }
+  m_debris_sweep.m_outstanding = 1;
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal,
+             FsRemoveReq::SignalLengthEmptyDirectoryOnly, JBA);
+}
+
+void Backup::debrisSweepConf(Signal *signal) {
+  jam();
+  DebrisSweep &sweep = m_debris_sweep;
+  ndbrequire(sweep.m_active);
+  ndbrequire(sweep.m_outstanding > 0);
+  sweep.m_outstanding--;
+  if (sweep.m_outstanding > 0) {
+    jam();
+    return;
+  }
+  switch (sweep.m_phase) {
+    case DebrisSweep::SWEEP_FILES:
+      if (sweep.m_current_part > 0) {
+        jam();
+        sweep.m_phase = DebrisSweep::SWEEP_PART_DIR;
+        debrisSweepRemoveDir(signal, true);
+        return;
+      }
+      /* The single-threaded level has no own directory. */
+      [[fallthrough]];
+    case DebrisSweep::SWEEP_PART_DIR:
+      if (sweep.m_current_part < sweep.m_total_parts) {
+        jam();
+        sweep.m_current_part++;
+        sweep.m_phase = DebrisSweep::SWEEP_FILES;
+        debrisSweepRemoveFiles(signal);
+        return;
+      }
+      jam();
+      sweep.m_phase = DebrisSweep::SWEEP_TOP_DIR;
+      debrisSweepRemoveDir(signal, false);
+      return;
+    case DebrisSweep::SWEEP_TOP_DIR: {
+      jam();
+      /* Report the verdict to the ordering master: a confirm retires
+       * the pending entry; a failed removal ends in a Ref instead, so
+       * the entry stays and the node is re-ordered on its next
+       * restart (the removals are idempotent).
+       */
+      g_eventLogger->info("Backup: %s debris of failed backup %u",
+                          sweep.m_failed ? "failed to fully sweep"
+                                         : "swept",
+                          sweep.m_backup_id);
+      AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtrSend();
+      ord->requestType = sweep.m_failed
+                             ? AbortBackupOrd::RemoveFailedBackupFilesRef
+                             : AbortBackupOrd::RemoveFailedBackupFilesConf;
+      ord->backupId = sweep.m_backup_id;
+      ord->senderData = 0;
+      ord->senderRef = reference();
+      ord->sweepGen = sweep.m_gen;
+      sendSignal(sweep.m_order_sender_ref, GSN_ABORT_BACKUP_ORD, signal,
+                 AbortBackupOrd::SignalLengthDebrisSweep, JBB);
+      sweep.m_active = false;
+      sweep.m_backup_id = 0;
+      sweep.m_order_sender_ref = 0;
+      sweep.m_gen = 0;
+      sweep.m_failed = false;
+      return;
+    }
+    default:
+      ndbabort();
+  }
+}
+
 void Backup::execFSREMOVEREF(Signal *signal) {
   jamEntry();
   FsRef *ref = (FsRef *)signal->getDataPtr();
   const Uint32 ptrI = ref->userPointer;
+
+  if (ptrI == RNIL) {
+    jam();
+    /* A debris sweep removal failed for real (NDBFS swallows the
+     * benign ENOENT/ENOTEMPTY outcomes before ever sending a REF):
+     * remember it so the sweep finishes with a Ref and the master
+     * keeps the entry - the debris is still there.
+     */
+    g_eventLogger->info(
+        "Backup: debris sweep removal of backup %u failed:"
+        " NDBFS error %u",
+        m_debris_sweep.m_backup_id, ref->errorCode);
+    m_debris_sweep.m_failed = true;
+  }
 
   FsConf *conf = (FsConf *)signal->getDataPtr();
   conf->userPointer = ptrI;
@@ -11565,6 +12048,13 @@ void Backup::execFSREMOVECONF(Signal *signal) {
 
   FsConf *conf = (FsConf *)signal->getDataPtr();
   const Uint32 ptrI = conf->userPointer;
+
+  if (ptrI == RNIL) {
+    jam();
+    /* Reserved cookie of the record-less debris sweep. */
+    debrisSweepConf(signal);
+    return;
+  }
 
   /**
    * Get backup record

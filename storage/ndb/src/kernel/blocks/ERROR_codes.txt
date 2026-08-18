@@ -36,7 +36,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10064
+Next BACKUP 10065
 Next PGMAN 11010
 Next DBTUX 12010
 Next SUMA 13063
@@ -713,6 +713,12 @@ Backup Stuff:
 10063: As 10036, but only once the backup reached its stop phase (log
        file trailer), after the other participants confirmed their
        stop with cleanly closed files (one-shot)
+10064: Hold a received debris sweep order for 15s before its first
+       removal (define barrier stays installed), opening a window for
+       a same-id DEFINE to arrive (one-shot on the holding worker).
+       With extra = a backup id, any OTHER worker that receives a
+       DEFINE for that id crashes - proving the proxy rejected the
+       define before its fan-out
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 

@@ -85,6 +85,35 @@ class BackupProxy : public LocalProxy {
     Uint32 masterRef;
   };
   SsPool<Ss_DEFINE_BACKUP_REQ> c_ss_DEFINE_BACKUP_REQ;
+
+  /**
+   * Node-wide barrier for the failed-backup debris sweep: while LDM1
+   * removes the files of a failed backup (RemoveFailedBackupFiles),
+   * no DEFINE for that backup id may reach ANY worker on this node -
+   * otherwise the new attempt's freshly opened files race the
+   * removals. Set when the order passes through here on its way to
+   * LDM1, lifted by LDM1's confirm/ref passing back to the master.
+   * A zero backup id means no barrier.
+   */
+  Uint32 m_sweep_backup_id = 0;
+  Uint32 m_sweep_gen = 0;
+  Uint32 m_sweep_master_ref = 0;
+  /**
+   * Set once any backup DEFINE has been fanned to the workers this
+   * boot, never cleared: from then on every debris sweep order is
+   * declined. A fanned attempt's files - or the unacknowledged
+   * cleanup tail of its failure (an aggregated REF starts the
+   * master's abort, and the workers' file cleanup completes with no
+   * signal the proxy could observe; parallel backup records make
+   * per-id tracking insufficient) - may be live at any later point,
+   * and the removals of a sweep must never overlap them. Costs
+   * nothing in the intended flow: sweep orders arrive moments after
+   * this node restarted, before any backup could define here, and a
+   * declined order is re-ordered at the node's next restart, where
+   * this flag is fresh.
+   */
+  bool m_backup_defined_since_start = false;
+
   void execDEFINE_BACKUP_REQ(Signal *);
   void sendDEFINE_BACKUP_REQ(Signal *, Uint32 ssId, SectionHandle *);
   void execDEFINE_BACKUP_CONF(Signal *);

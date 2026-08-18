@@ -118,6 +118,7 @@ class NdbRestarter {
   int getRandomNotMasterNodeId(int randomNumber);
 
   int getMasterNodeVersion(int &version);
+  int getNodeVersion(int nodeId, int &version);
   int getNodeTypeVersionRange(ndb_mgm_node_type type, int &minVer, int &maxVer);
 
   int getNodeStatus(int nodeId);  // return NDB_MGM_NODE_STATUS_*

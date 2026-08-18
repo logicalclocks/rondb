@@ -92,6 +92,28 @@ class NdbBackup : public NdbConfig {
    */
   int backupShellsExist(int node_id);
 
+  /**
+   * Fabricate / check a single-threaded-layout fileset for the given
+   * backup id in the node's BackupDataDir (the three files directly
+   * under BACKUP-<id>, no part directories) - stands in for a valid
+   * older single-threaded backup when testing that a failed
+   * multithreaded attempt reusing the id never touches it.
+   * createStBackupFileset returns 0 on success; stBackupFilesetExists
+   * returns 1 if all three files exist, 0 if not, -1 on error (both
+   * -1 on Windows).
+   */
+  int createStBackupFileset(int node_id, unsigned backup_id);
+  int stBackupFilesetExists(int node_id, unsigned backup_id);
+
+  /**
+   * Check whether any BACKUP-<id>-PART-* directory (or content below
+   * one) of the given backup id remains on the node - the
+   * multithreaded attempt's own layout, which a debris sweep must
+   * remove. Returns 1 if present, 0 if none, -1 on error (or on
+   * Windows).
+   */
+  int backupMtDebrisExists(int node_id, unsigned backup_id);
+
  private:
   int execRestore(bool _restore_data, bool _restore_meta, bool _restore_epoch,
                   bool _disable_indexes, bool _enable_indexes,

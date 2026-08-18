@@ -907,6 +907,494 @@ int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+static int oneDeadParticipantRound(NdbBackup &backup, NdbRestarter &restarter,
+                                   int victim, Uint32 eiCode,
+                                   unsigned user_backup_id) {
+  /* Kill the victim mid-backup with the given crash insert, verify the
+   * backup failed BECAUSE the victim died (a backup that fails any
+   * other way leaves no dead-participant debris and the round would be
+   * vacuous), and wait for the victim's auto-restart to rejoin.
+   */
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_STARTUP, 0};
+  NdbLogEventHandle log_handle =
+      ndb_mgm_create_logevent_handle(restarter.handle, filter);
+  if (log_handle == NULL) {
+    g_err << "Failed to create log event handle" << endl;
+    return -1;
+  }
+
+  if (restarter.insertErrorInNode(victim, (int)eiCode) != 0) {
+    g_err << "Error insert " << eiCode << " failed" << endl;
+    ndb_mgm_destroy_logevent_handle(&log_handle);
+    return -1;
+  }
+
+  unsigned backupId = 0;
+  bool failed = false;
+  if (backup.start(backupId, 2, user_backup_id) == 0) {
+    g_err << "ERROR: backup unexpectedly succeeded (id " << backupId
+          << ") - the victim did not die" << endl;
+    failed = true;
+  } else {
+    g_err << "Backup failed as intended" << endl;
+  }
+
+  /* The victim's death must be observed, not assumed. An error-insert
+   * crash under RestartOnErrorInsert reports NDBStopCompleted
+   * ("Node shutdown completed, restarting"), not the NDBStopForced a
+   * plain crash emits - accept the stop-event family.
+   */
+  if (!failed) {
+    bool victimDied = false;
+    struct ndb_logevent event;
+    Uint64 endTime = NdbTick_CurrentMillisecond() + (20 * 1000);
+    while (NdbTick_CurrentMillisecond() < endTime) {
+      int res = ndb_logevent_get_next(log_handle, &event, 500);
+      if (res < 0) break;
+      if (res > 0 &&
+          (event.type == NDB_LE_NDBStopForced ||
+           event.type == NDB_LE_NDBStopCompleted ||
+           event.type == NDB_LE_NDBStopStarted) &&
+          (int)event.source_nodeid == victim) {
+        victimDied = true;
+        break;
+      }
+    }
+    if (!victimDied) {
+      g_err << "ERROR: victim node " << victim
+            << " did not report a node stop - backup failed for"
+            << " another reason, no dead-participant debris to sweep"
+            << endl;
+      failed = true;
+    }
+  }
+  ndb_mgm_destroy_logevent_handle(&log_handle);
+  if (failed) return -1;
+
+  /* The victim auto-restarts after the error-insert crash
+   * (RestartOnErrorInsert); wait for the full cluster, then clear any
+   * leftover inserts (the victim's own died with its process).
+   */
+  if (restarter.waitClusterStarted(300) != 0) {
+    g_err << "ERROR: cluster did not recover after the victim's crash"
+          << endl;
+    return -1;
+  }
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_err << "NOTE: clearing error inserts reported failure" << endl;
+  }
+  return 0;
+}
+
+int runDeadParticipantSwept(NDBT_Context *ctx, NDBT_Step *step) {
+  /* A participant that dies mid-backup never runs its own cleanup, and
+   * nothing used to remove its partial backup files when it came back:
+   * the debris survived the restart forever. The master node's backup
+   * worker now remembers the debris owed by a dead participant and
+   * orders a sweep when the node rejoins. The order is version-gated
+   * (never sent to nodes below the floor), so the assertion only holds
+   * once the data nodes report a supporting version.
+   *
+   * The EICode property picks the death point: 10017 (default) kills
+   * the victim at its first SCAN_FRAGCONF - mid-scan, so the backup
+   * has passed DEFINE cluster-wide and the victim provably created its
+   * files; 10020 kills it at STOP_BACKUP_REQ - while the master is
+   * still collecting stop replies, the window where the master's own
+   * worker record is already CLEANING without any verdict.
+   */
+  const Uint32 eiCode = ctx->getProperty("EICode", Uint32(10017));
+
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  {
+    int version = 0;
+    if (restarter.getMasterNodeVersion(version) != 0) {
+      g_err << "Failed to get master node version" << endl;
+      return NDBT_FAILED;
+    }
+    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
+      g_err << "NOTE: data node version predates the failed-backup"
+            << " cleanup order (gated), skipping" << endl;
+      ctx->stopTest();
+      return NDBT_OK;
+    }
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  const int masterNodeId = restarter.getMasterNodeId();
+  int victim = -1;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n != masterNodeId) {
+      victim = n;
+      break;
+    }
+  }
+  if (victim == -1) {
+    g_err << "No non-master node found" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
+        << endl;
+
+  /* The victim is the order's receiver: in a mixed cluster the master
+   * may support the order while the victim does not - the sweep is
+   * then rightly withheld and the assertion cannot hold.
+   */
+  {
+    int version = 0;
+    if (restarter.getNodeVersion(victim, version) != 0) {
+      g_err << "Failed to get victim node version" << endl;
+      return NDBT_FAILED;
+    }
+    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
+      g_err << "NOTE: victim node version predates the failed-backup"
+            << " cleanup order (gated), skipping" << endl;
+      ctx->stopTest();
+      return NDBT_OK;
+    }
+  }
+
+  /* Verified clean baseline (also proves the checks themselves work). */
+  if (backup.backupDirsExist(victim) != 0 ||
+      backup.backupShellsExist(victim) != 0) {
+    g_err << "Baseline not clean on node " << victim << endl;
+    return NDBT_FAILED;
+  }
+
+  if (oneDeadParticipantRound(backup, restarter, victim, eiCode, 0) != 0) {
+    return NDBT_FAILED;
+  }
+
+  /* The sweep order fires when the master sees the victim started;
+   * poll. In the broken state the victim's BACKUP-<id> files survive
+   * its restart forever.
+   */
+  int exist = -1;
+  int shells = -1;
+  for (int i = 0; i < 30; i++) {
+    exist = backup.backupDirsExist(victim);
+    shells = backup.backupShellsExist(victim);
+    if (exist == 0 && shells == 0) break;
+    NdbSleep_MilliSleep(500);
+  }
+  if (exist != 0 || shells != 0) {
+    g_err << "ERROR: BACKUP-* debris remains on restarted node " << victim
+          << " after rejoin (content " << exist << ", shells " << shells
+          << ")" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Restarted node " << victim << " is clean" << endl;
+
+  /* Round 2: a valid single-threaded fileset whose id a failed
+   * multithreaded attempt reuses must survive the sweep - the sweep
+   * may only remove the failed attempt's own layout.
+   */
+  const unsigned fakeId = 900000;
+  if (backup.createStBackupFileset(victim, fakeId) != 0 ||
+      backup.stBackupFilesetExists(victim, fakeId) != 1) {
+    g_err << "Failed to fabricate the single-threaded fileset on node "
+          << victim << endl;
+    return NDBT_FAILED;
+  }
+  if (oneDeadParticipantRound(backup, restarter, victim, eiCode, fakeId) !=
+      0) {
+    return NDBT_FAILED;
+  }
+  int mtDebris = -1;
+  for (int i = 0; i < 30; i++) {
+    mtDebris = backup.backupMtDebrisExists(victim, fakeId);
+    if (mtDebris == 0) break;
+    NdbSleep_MilliSleep(500);
+  }
+  if (mtDebris != 0) {
+    g_err << "ERROR: the failed attempt's part directories remain on node "
+          << victim << " (result " << mtDebris << ")" << endl;
+    return NDBT_FAILED;
+  }
+  if (backup.stBackupFilesetExists(victim, fakeId) != 1) {
+    g_err << "ERROR: the sweep removed the valid single-threaded fileset"
+          << " of backup " << fakeId << " on node " << victim << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Valid single-threaded fileset survived the sweep" << endl;
+
+  /* A successful backup proves the cluster and the backup machinery
+   * are sane after the crash rounds.
+   */
+  unsigned backupId = 0;
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: backup still failing after the node recovered" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Post-recovery backup " << backupId << " succeeded" << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "ERROR: final cleanup failed, leaving the post-recovery backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
+int runSweepBlocksSameIdBackup(NDBT_Context *ctx, NDBT_Step *step) {
+  /* While a rejoined node sweeps the debris of a failed backup, a new
+   * backup reusing that id must be rejected node-wide BEFORE any
+   * worker opens files (error 1353): the sweep would unlink the new
+   * attempt's files, and the doomed attempt's later cleanup could in
+   * turn remove a retry's files. EI 10064 holds the received sweep
+   * order (barrier installed, removals delayed) so the same-id define
+   * provably lands in the window; after the sweep completes, a retry
+   * with the same id must succeed and keep its files.
+   */
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  {
+    int version = 0;
+    if (restarter.getMasterNodeVersion(version) != 0) {
+      g_err << "Failed to get master node version" << endl;
+      return NDBT_FAILED;
+    }
+    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
+      g_err << "NOTE: data node version predates the failed-backup"
+            << " cleanup order (gated), skipping" << endl;
+      ctx->stopTest();
+      return NDBT_OK;
+    }
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  const int masterNodeId = restarter.getMasterNodeId();
+  int victim = -1;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n != masterNodeId) {
+      victim = n;
+      break;
+    }
+  }
+  if (victim == -1) {
+    g_err << "No non-master node found" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
+        << endl;
+
+  {
+    int version = 0;
+    if (restarter.getNodeVersion(victim, version) != 0) {
+      g_err << "Failed to get victim node version" << endl;
+      return NDBT_FAILED;
+    }
+    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
+      g_err << "NOTE: victim node version predates the failed-backup"
+            << " cleanup order (gated), skipping" << endl;
+      ctx->stopTest();
+      return NDBT_OK;
+    }
+  }
+
+  if (backup.backupDirsExist(victim) != 0 ||
+      backup.backupShellsExist(victim) != 0) {
+    g_err << "Baseline not clean on node " << victim << endl;
+    return NDBT_FAILED;
+  }
+
+  /* The doomed backup, with a known id so it can be reused: wait only
+   * for it to start, then kill the victim mid-scan and hold it
+   * not-started so the sweep-hold insert can be armed in the process
+   * that will receive the order.
+   */
+  const unsigned reusedId = 910000;
+  unsigned backupId = 0;
+  if (backup.start(backupId, 1 /* wait started */, reusedId) != 0) {
+    g_err << "ERROR: could not start the doomed backup" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Backup " << reusedId << " started, killing node " << victim
+        << endl;
+  if (restarter.restartOneDbNode(victim, false /* initial */,
+                                 true /* nostart */, true /* abort */) != 0) {
+    g_err << "ERROR: failed to kill node " << victim << endl;
+    return NDBT_FAILED;
+  }
+  if (restarter.waitNodesNoStart(&victim, 1) != 0) {
+    g_err << "ERROR: node " << victim << " did not reach not-started" << endl;
+    return NDBT_FAILED;
+  }
+  /* The barrier under test guards the proxy's DEFINE fan-out, which
+   * only exists for multithreaded backup - verify the doomed attempt
+   * really left an mt-layout fileset (part directories) behind. A
+   * single-threaded run would make the whole test vacuous.
+   */
+  if (backup.backupMtDebrisExists(victim, reusedId) != 1) {
+    g_err << "ERROR: no multithreaded debris of backup " << reusedId
+          << " on node " << victim
+          << " - not a multithreaded backup, the barrier is not"
+          << " exercised" << endl;
+    return NDBT_FAILED;
+  }
+  /* extra = the reused id makes every OTHER worker on the victim a
+   * tripwire: a DEFINE for that id reaching any of them (i.e. the
+   * proxy failed to reject it before the fan-out) crashes the node
+   * and fails the test. LDM1's own copy of the insert is consumed by
+   * the sweep hold.
+   */
+  if (restarter.insertError2InNode(victim, 10064, (int)reusedId) != 0) {
+    g_err << "Error insert 10064 failed" << endl;
+    return NDBT_FAILED;
+  }
+  if (restarter.startNodes(&victim, 1) != 0) {
+    g_err << "ERROR: failed to start node " << victim << endl;
+    return NDBT_FAILED;
+  }
+  if (restarter.waitClusterStarted(300) != 0) {
+    g_err << "ERROR: cluster did not recover" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* insertError2InNode returns success even when the management API
+   * failed to deliver the insert - observe the hold instead, with a
+   * minimum-elapsed-time argument: an unheld sweep is a handful of
+   * local filesystem removals completing within milliseconds of the
+   * rejoin, so debris still present five full seconds after the
+   * cluster reports started can only mean the 15-second hold armed
+   * (and leaves it >= 8 more seconds for the same-id attempt below).
+   */
+  NdbSleep_SecSleep(5);
+  if (backup.backupMtDebrisExists(victim, reusedId) != 1) {
+    g_err << "ERROR: debris of backup " << reusedId << " already swept -"
+          << " EI 10064 did not hold the sweep window open" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* The sweep order fired when the victim reached started; EI 10064
+   * holds it (barrier up, removals pending) for 15s. A backup reusing
+   * the id must now fail cleanly with the sweep-in-progress code.
+   */
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP, 0};
+  NdbLogEventHandle log_handle =
+      ndb_mgm_create_logevent_handle(restarter.handle, filter);
+  if (log_handle == NULL) {
+    g_err << "Failed to create log event handle" << endl;
+    return NDBT_FAILED;
+  }
+
+  bool failed = false;
+  unsigned backupId2 = 0;
+  if (backup.start(backupId2, 2, reusedId) == 0) {
+    g_err << "ERROR: backup " << reusedId << " succeeded during the sweep"
+          << " window - the define barrier did not hold" << endl;
+    failed = true;
+  } else {
+    g_err << "Same-id backup failed as intended during the sweep window"
+          << endl;
+  }
+
+  if (!failed) {
+    Uint32 abortError = 0;
+    struct ndb_logevent event;
+    Uint64 endTime = NdbTick_CurrentMillisecond() + (20 * 1000);
+    while (NdbTick_CurrentMillisecond() < endTime) {
+      int res = ndb_logevent_get_next(log_handle, &event, 500);
+      if (res < 0) break;
+      if (res > 0 && event.type == NDB_LE_BackupAborted) {
+        abortError = event.BackupAborted.error;
+        break;
+      }
+    }
+    if (abortError != DefineBackupRef::FailedForDebrisSweepInProgress) {
+      g_err << "ERROR: expected backup abort error "
+            << (Uint32)DefineBackupRef::FailedForDebrisSweepInProgress
+            << ", observed " << abortError << endl;
+      failed = true;
+    }
+  }
+  ndb_mgm_destroy_logevent_handle(&log_handle);
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_err << "NOTE: clearing error inserts reported failure" << endl;
+  }
+  if (failed) return NDBT_FAILED;
+
+  /* The held sweep completes after the insert's delay; the victim
+   * must then be clean.
+   */
+  int exist = -1;
+  int shells = -1;
+  for (int i = 0; i < 60; i++) {
+    exist = backup.backupDirsExist(victim);
+    shells = backup.backupShellsExist(victim);
+    if (exist == 0 && shells == 0) break;
+    NdbSleep_MilliSleep(500);
+  }
+  if (exist != 0 || shells != 0) {
+    g_err << "ERROR: debris remains on node " << victim
+          << " after the held sweep (content " << exist << ", shells "
+          << shells << ")" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Held sweep completed, node " << victim << " is clean" << endl;
+
+  /* A retry with the same id must now succeed - and its files must
+   * survive (nothing may remove them after the fact).
+   */
+  unsigned backupId3 = 0;
+  if (backup.start(backupId3, 2, reusedId) != 0) {
+    g_err << "ERROR: same-id retry failed after the sweep completed" << endl;
+    return NDBT_FAILED;
+  }
+  NdbSleep_SecSleep(3);
+  if (backup.backupDirsExist(victim) != 1) {
+    g_err << "ERROR: the successful retry's files are missing on node "
+          << victim << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Same-id retry " << reusedId << " succeeded and kept its files"
+        << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "ERROR: final cleanup failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
 int runStaleRecordFailsDefine(NDBT_Context *ctx, NDBT_Step *step) {
   /* A backup record leaked by a stalled abort (e.g. after a master
    * death) must not kill the node on the next backup attempt: the
@@ -2932,6 +3420,33 @@ TESTCASE("AbortRemovesAllNodesFiles",
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
   STEP(runAbortRemovesAllNodesFiles);
+}
+TESTCASE("DeadParticipantSwept",
+         "Check that a participant that died mid-backup gets its"
+         " backup debris removed when it rejoins the cluster, and"
+         " that the sweep spares a valid fileset of another layout"
+         " under the same backup id") {
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runDeadParticipantSwept);
+}
+TESTCASE("DeadParticipantSweptAtStop",
+         "As DeadParticipantSwept, with the participant dying in the"
+         " stop phase - while the master still collects stop replies"
+         " and its own worker record is already past its stop") {
+  TC_PROPERTY("EICode", Uint32(10020));
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runDeadParticipantSwept);
+}
+TESTCASE("SweepBlocksSameIdBackup",
+         "Check that a backup reusing the id of an in-flight debris"
+         " sweep is rejected node-wide before any worker opens files,"
+         " and that a retry after the sweep succeeds and keeps its"
+         " files") {
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runSweepBlocksSameIdBackup);
 }
 TESTCASE("StaleRecordFailsDefine",
          "Check that a backup record leaked by a stalled abort fails"

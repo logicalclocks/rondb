@@ -792,6 +792,21 @@ class Backup : public SimulatedBlock {
      */
     bool m_remove_files_after_cleanup = false;
     /**
+     * Set on the master's record when stopBackupReply renders the
+     * success verdict. Disambiguates CLEANING: a worker enters it
+     * right after its own STOP_BACKUP_CONF, long before the verdict,
+     * so state alone cannot tell "cleanup of a completed backup"
+     * from "still collecting stop replies" (recordDebrisSweep).
+     */
+    bool m_backup_completed_ok = false;
+    /**
+     * Value of m_debris_sweep_next_gen when this attempt started:
+     * entries with gen above the floor were recorded by THIS attempt
+     * and are the only ones its success verdict may cancel (an older
+     * failed attempt of a reused id still owes its sweep).
+     */
+    Uint32 m_sweep_gen_floor = 0;
+    /**
      * Ownership of the on-disk fileset: files are opened with
      * OM_CREATE_IF_NONE, so an open CONF means this attempt created the
      * file, and fsErrFileExists means a fileset with this backup id was
@@ -1006,6 +1021,56 @@ class Backup : public SimulatedBlock {
   NdbNodeBitmask c_aliveNodes;
   BackupRecord_dllist c_backups;
   Config c_defaults;
+
+  /**
+   * Debris owed by dead backup participants: a node that dies during
+   * a backup never runs its own cleanup, so the cluster-master node's
+   * LDM1 worker remembers what the dead node owes (latest failed
+   * backup per node) and orders a sweep when the node rejoins
+   * (execNODE_START_REP). The memory dies with this node - debris on
+   * a node that outlives it needs manual cleanup.
+   */
+  struct PendingDebrisSweep {
+    Uint32 backupId = 0;  // 0 = no entry
+    Uint32 totalParts = 0;  // 0 = single-threaded layout
+    /**
+     * Identity of the recorded sweep: backup ids are reusable, so a
+     * (late) confirm and the completed-backup cancellation must match
+     * the exact recording, not just the id.
+     */
+    Uint32 gen = 0;
+  };
+  PendingDebrisSweep m_pending_sweeps[ABS_MAX_NDB_NODES];
+  Uint32 m_debris_sweep_next_gen = 0;
+
+  /**
+   * Receiver side of the sweep order: no BackupRecord is involved (a
+   * real backup may be running), a dedicated driver walks the failed
+   * backup's layout - per part the three files then the emptied part
+   * directory, finally the shared BACKUP-<id> parent - with the same
+   * ENOENT/ENOTEMPTY-tolerant removals the record-driven cleanup
+   * uses. FSREMOVE confirms are routed here by the reserved RNIL
+   * userPointer.
+   */
+  struct DebrisSweep {
+    bool m_active = false;
+    Uint32 m_backup_id = 0;
+    Uint32 m_total_parts = 0;
+    Uint32 m_current_part = 0;  // 0 = single-threaded layout
+    Uint32 m_outstanding = 0;
+    Uint32 m_order_sender_ref = 0;  // gets the completion confirm
+    Uint32 m_gen = 0;               // echoed in the confirm
+    /**
+     * NDBFS reported a non-benign removal error (ENOENT/ENOTEMPTY are
+     * swallowed before a REF is ever sent): the sweep drains its
+     * outstanding requests but finishes with a Ref, so the master
+     * keeps the entry instead of retiring debris that is still there.
+     */
+    bool m_failed = false;
+    enum Phase { SWEEP_FILES = 0, SWEEP_PART_DIR = 1, SWEEP_TOP_DIR = 2 };
+    Uint32 m_phase = SWEEP_FILES;
+  };
+  DebrisSweep m_debris_sweep;
 
   bool c_encrypted_filesystem;
 
@@ -1329,6 +1394,13 @@ class Backup : public SimulatedBlock {
   void abort_scan(Signal *, BackupRecordPtr ptr);
   void removeBackup(Signal *, BackupRecordPtr ptr);
   void removeBackupDirShell(Signal *, BackupRecordPtr ptr, bool partDir);
+
+  void recordDebrisSweep(BackupRecordPtr ptr, Uint32 deadNode);
+  void startDebrisSweep(Signal *, Uint32 backupId, Uint32 totalParts,
+                        Uint32 senderRef, Uint32 gen);
+  void debrisSweepRemoveFiles(Signal *);
+  void debrisSweepRemoveDir(Signal *, bool partDir);
+  void debrisSweepConf(Signal *);
 
   void sendUtilSequenceReq(Signal *, BackupRecordPtr ptr, Uint32 delay = 0);
 
