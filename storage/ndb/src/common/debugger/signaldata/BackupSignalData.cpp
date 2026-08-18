@@ -165,6 +165,18 @@ bool printABORT_BACKUP_ORD(FILE *out, const Uint32 *data, Uint32 len,
       fprintf(out, " CleanupFailedBackup: backupPtr: %d backupId: %d\n",
               sig->backupPtr, sig->backupId);
       return true;
+    case AbortBackupOrd::RemoveFailedBackupFiles:
+      fprintf(out, " RemoveFailedBackupFiles: backupId: %d totalParts: %d\n",
+              sig->backupId, sig->senderData);
+      return true;
+    case AbortBackupOrd::RemoveFailedBackupFilesConf:
+      fprintf(out, " RemoveFailedBackupFilesConf: backupId: %d\n",
+              sig->backupId);
+      return true;
+    case AbortBackupOrd::RemoveFailedBackupFilesRef:
+      fprintf(out, " RemoveFailedBackupFilesRef: backupId: %d\n",
+              sig->backupId);
+      return true;
     case AbortBackupOrd::AbortScan:
     case AbortBackupOrd::IncompatibleVersions:
       return false;
