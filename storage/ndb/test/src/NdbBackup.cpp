@@ -159,6 +159,51 @@ int NdbBackup::backupDirsExist(int node_id) {
 #endif
 }
 
+int NdbBackup::backupShellsExist(int node_id) {
+#ifndef _WIN32
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  const char *host;
+  if (!getHostName(node_id, &host)) return -1;
+
+  /* Matches any BACKUP-* directory entry, empty or not: after a
+   * completed removal no shell of this attempt may remain. Same
+   * marker scheme as backupDirsExist so that a command or transport
+   * failure cannot be mistaken for "no directories".
+   */
+  BaseString check;
+  check.assfmt(
+      "if [ ! -d '%s/BACKUP' ]; then echo NONE;"
+      " elif find '%s/BACKUP' -name 'BACKUP-*' -type d"
+      " -print -quit | grep -q .; then echo EXIST;"
+      " elif find '%s/BACKUP' -name 'BACKUP-*' -type d"
+      " >/dev/null; then echo NONE;"
+      " else echo FAILED; fi",
+      path.c_str(), path.c_str(), path.c_str());
+
+  BaseString cmd;
+  if (!isHostLocal(host)) {
+    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
+               check.c_str());
+  } else {
+    cmd = check;
+  }
+
+  FILE *fp = popen(cmd.c_str(), "r");
+  if (fp == NULL) return -1;
+  char buf[16] = {0};
+  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
+  const int rc = pclose(fp);
+  if (!got_line || rc != 0) return -1;
+  if (strncmp(buf, "EXIST", 5) == 0) return 1;
+  if (strncmp(buf, "NONE", 4) == 0) return 0;
+  return -1;
+#else
+  return -1;
+#endif
+}
+
 int NdbBackup::start(unsigned int &_backup_id, int flags,
                      unsigned int user_backup_id, unsigned int logtype,
                      const char *encryption_password,

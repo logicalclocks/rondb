@@ -338,9 +338,10 @@ int runFail(NDBT_Context *ctx, NDBT_Step *step) {
 int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
   /* A backup aborted by a file error must remove its backup files on
    * the errored node (cleanup() -> cleanupNextTable() ->
-   * removeBackup(); empty directory shells may remain by design). The
-   * baseline check below establishes that any surviving backup file
-   * content is debris from this backup.
+   * removeBackup()) including the emptied BACKUP-<id> (and mt
+   * BACKUP-<id>-PART-N-OF-M) directory shells. The baseline check
+   * below establishes that any surviving backup file content or
+   * directory is debris from this backup.
    */
   NdbBackup backup;
   backup.set_default_encryption_password(
@@ -379,8 +380,9 @@ int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
   g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
         << endl;
 
-  /* Verified clean baseline (also proves the check itself works). */
-  if (backup.backupDirsExist(victim) != 0) {
+  /* Verified clean baseline (also proves the checks themselves work). */
+  if (backup.backupDirsExist(victim) != 0 ||
+      backup.backupShellsExist(victim) != 0) {
     g_err << "Baseline not clean on node " << victim << endl;
     return NDBT_FAILED;
   }
@@ -440,19 +442,28 @@ int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
   if (failed) return NDBT_FAILED;
 
   /* The removal request runs after the abort completes; poll. In the
-   * broken state the errored node never removes its real directory
+   * broken states the errored node never removes its real directory
    * (removeBackup used to target BACKUP-4294967295, and mid-flight
-   * aborts skipped it entirely).
+   * aborts skipped it entirely), or removes the three files but
+   * leaves the emptied directory shells behind.
    */
   int exist = -1;
+  int shells = -1;
   for (int i = 0; i < 20; i++) {
     exist = backup.backupDirsExist(victim);
-    if (exist == 0) break;
+    shells = backup.backupShellsExist(victim);
+    if (exist == 0 && shells == 0) break;
     NdbSleep_MilliSleep(500);
   }
   if (exist != 0) {
     g_err << "ERROR: BACKUP-* debris remains on errored node " << victim
           << " after the failed backup (result " << exist << ")" << endl;
+    return NDBT_FAILED;
+  }
+  if (shells != 0) {
+    g_err << "ERROR: empty BACKUP-* directory shells remain on errored node "
+          << victim << " after the failed backup (result " << shells << ")"
+          << endl;
     return NDBT_FAILED;
   }
   g_err << "Errored node " << victim << " is clean" << endl;
@@ -471,7 +482,8 @@ int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
     int n = restarter.getDbNodeId(i);
     if (n == victim) continue;
     g_err << "NOTE: node " << n
-          << " BACKUP-* present: " << backup.backupDirsExist(n)
+          << " BACKUP-* content: " << backup.backupDirsExist(n)
+          << " shells: " << backup.backupShellsExist(n)
           << " (abort-protocol scope, not asserted here)" << endl;
   }
 
@@ -774,7 +786,7 @@ int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
   /* Verified clean baseline on every node. */
   for (int i = 0; i < restarter.getNumDbNodes(); i++) {
     int n = restarter.getDbNodeId(i);
-    if (backup.backupDirsExist(n) != 0) {
+    if (backup.backupDirsExist(n) != 0 || backup.backupShellsExist(n) != 0) {
       g_err << "Baseline not clean on node " << n << endl;
       return NDBT_FAILED;
     }
@@ -843,20 +855,24 @@ int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
   if (failed) return NDBT_FAILED;
 
   /* Every participant must be clean once the abort completes; poll.
-   * In the broken state the non-errored non-master nodes keep their
-   * partial files forever.
+   * In the broken states the non-errored non-master nodes keep their
+   * partial files forever, or the emptied BACKUP-* directory shells
+   * remain after the files were removed.
    */
   for (int i = 0; i < restarter.getNumDbNodes(); i++) {
     int n = restarter.getDbNodeId(i);
     int exist = -1;
+    int shells = -1;
     for (int p = 0; p < 20; p++) {
       exist = backup.backupDirsExist(n);
-      if (exist == 0) break;
+      shells = backup.backupShellsExist(n);
+      if (exist == 0 && shells == 0) break;
       NdbSleep_MilliSleep(500);
     }
-    if (exist != 0) {
+    if (exist != 0 || shells != 0) {
       g_err << "ERROR: BACKUP-* debris remains on node " << n
-            << " after the failed backup (result " << exist << ")"
+            << " after the failed backup (content " << exist << ", shells "
+            << shells << ")"
             << (n == victim
                     ? " [errored node]"
                     : (n == masterNodeId ? " [master]" : " [other]"))

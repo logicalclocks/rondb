@@ -802,8 +802,19 @@ class Backup : public SimulatedBlock {
     bool m_backup_files_preexisted = false;
     /**
      * Scoped removal of a failed backup's files issues one FSREMOVEREQ
-     * per file; the record is released when the last one confirms.
+     * per file; when the last one confirms, the emptied directory
+     * shells are removed non-recursively (the mt part directory, then
+     * the BACKUP-<id> parent — shared, so it only falls with its last
+     * owner's rmdir and is left alone while anything else lives in
+     * it). The record is released when the final phase confirms.
      */
+    enum BackupRemovalPhase {
+      BACKUP_REMOVING_NOTHING = 0,
+      BACKUP_REMOVING_FILES = 1,
+      BACKUP_REMOVING_PART_DIR = 2,
+      BACKUP_REMOVING_TOP_DIR = 3
+    };
+    Uint32 m_backup_removal_phase = BACKUP_REMOVING_NOTHING;
     Uint32 m_outstanding_backup_removals = 0;
     /**
      * List of tables for backups, used during LCP execution phase, for
@@ -1317,6 +1328,7 @@ class Backup : public SimulatedBlock {
   void cleanup(Signal *, BackupRecordPtr ptr);
   void abort_scan(Signal *, BackupRecordPtr ptr);
   void removeBackup(Signal *, BackupRecordPtr ptr);
+  void removeBackupDirShell(Signal *, BackupRecordPtr ptr, bool partDir);
 
   void sendUtilSequenceReq(Signal *, BackupRecordPtr ptr, Uint32 delay = 0);
 

@@ -11460,8 +11460,9 @@ void Backup::removeBackup(Signal *signal, BackupRecordPtr ptr) {
    * BACKUP-<id> parent or even the mt part directory, which another
    * node's or another layout's valid backup files can share without
    * ever colliding with this attempt's opens). NDBFS tolerates ENOENT
-   * for files that were never created. The empty directory shells
-   * that may remain are left for the abort-protocol backstop.
+   * for files that were never created. Once the file removals confirm,
+   * the emptied directory shells are removed with the non-recursive
+   * rmdir mode (removeBackupDirShell).
    */
   FsRemoveReq *req = (FsRemoveReq *)signal->getDataPtrSend();
   req->userReference = reference();
@@ -11487,6 +11488,7 @@ void Backup::removeBackup(Signal *signal, BackupRecordPtr ptr) {
     FsOpenReq::v2_setPartNum(req->fileNumber, 0);
     FsOpenReq::v2_setTotalParts(req->fileNumber, 0);
   }
+  ptr.p->m_backup_removal_phase = BackupRecord::BACKUP_REMOVING_FILES;
   ptr.p->m_outstanding_backup_removals = 3;
 
   FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
@@ -11502,6 +11504,50 @@ void Backup::removeBackup(Signal *signal, BackupRecordPtr ptr) {
   FsOpenReq::v2_setCount(req->fileNumber, 0);
   sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal, FsRemoveReq::SignalLength,
              JBA);
+}
+
+void Backup::removeBackupDirShell(Signal *signal, BackupRecordPtr ptr,
+                                  bool partDir) {
+  jam();
+
+  /**
+   * Remove an emptied directory shell of the failed backup: the mt
+   * part directory (this worker's own), or the BACKUP-<id> parent.
+   * The parent is shared — between this node's workers for an mt
+   * backup, and potentially with other owners on a shared
+   * BackupDataDir — so the request uses the non-recursive
+   * empty-directory-only mode: only the last remover's rmdir
+   * succeeds, and a directory holding anything else stays untouched
+   * (ENOENT/ENOTEMPTY are tolerated by NDBFS). Each worker orders
+   * its parent attempt after its own part removal confirmed, so the
+   * chronologically last parent attempt sees the directory empty.
+   */
+  FsRemoveReq *req = (FsRemoveReq *)signal->getDataPtrSend();
+  req->userReference = reference();
+  req->userPointer = ptr.i;
+  req->directory = 1;
+  req->ownDirectory = 1;
+  req->emptyDirectoryOnly = 1;
+  req->fileNumber[0] = 0;
+  req->fileNumber[1] = 0;
+  req->fileNumber[2] = 0;
+  req->fileNumber[3] = 0;
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_BACKUP);
+  FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
+  FsOpenReq::v2_setSequence(req->fileNumber, ptr.p->backupId);
+  FsOpenReq::v2_setNodeId(req->fileNumber, getOwnNodeId());
+  if (partDir) {
+    jam();
+    FsOpenReq::v2_setPartNum(req->fileNumber, instance());
+    FsOpenReq::v2_setTotalParts(req->fileNumber, globalData.ndbMtLqhWorkers);
+  } else {
+    jam();
+    FsOpenReq::v2_setPartNum(req->fileNumber, 0);
+    FsOpenReq::v2_setTotalParts(req->fileNumber, 0);
+  }
+  ptr.p->m_outstanding_backup_removals = 1;
+  sendSignal(NDBFS_REF, GSN_FSREMOVEREQ, signal,
+             FsRemoveReq::SignalLengthEmptyDirectoryOnly, JBA);
 }
 
 void Backup::execFSREMOVEREF(Signal *signal) {
@@ -11537,6 +11583,30 @@ void Backup::execFSREMOVECONF(Signal *signal) {
     jam();
     return;
   }
+  switch (ptr.p->m_backup_removal_phase) {
+    case BackupRecord::BACKUP_REMOVING_FILES:
+      if (MT_BACKUP_FLAG(ptr.p->flags)) {
+        jam();
+        ptr.p->m_backup_removal_phase = BackupRecord::BACKUP_REMOVING_PART_DIR;
+        removeBackupDirShell(signal, ptr, true);
+        return;
+      }
+      jam();
+      ptr.p->m_backup_removal_phase = BackupRecord::BACKUP_REMOVING_TOP_DIR;
+      removeBackupDirShell(signal, ptr, false);
+      return;
+    case BackupRecord::BACKUP_REMOVING_PART_DIR:
+      jam();
+      ptr.p->m_backup_removal_phase = BackupRecord::BACKUP_REMOVING_TOP_DIR;
+      removeBackupDirShell(signal, ptr, false);
+      return;
+    case BackupRecord::BACKUP_REMOVING_TOP_DIR:
+      jam();
+      break;
+    default:
+      ndbabort();
+  }
+  ptr.p->m_backup_removal_phase = BackupRecord::BACKUP_REMOVING_NOTHING;
   /*
     report of backup status uses these variables to keep track
     if backup ia running and current state
