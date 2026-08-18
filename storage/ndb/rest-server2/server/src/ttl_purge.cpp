@@ -17,6 +17,7 @@
  * USA.
  */
 #include <algorithm>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include <random>
@@ -159,7 +160,7 @@ Uint32 AdvancePartition(Uint32 part_id, Uint32 part_count, Uint32 table_hash,
 
 TTLPurger::TTLPurger() :
   watcher_ndb_(nullptr), worker_ndb_(nullptr),
-  exit_(false), cache_updated_(false),
+  exit_(false), force_reconnect_(false), cache_updated_(false),
   purge_worker_asks_for_retry_(false),
   schema_watcher_running_(false), schema_watcher_(nullptr),
   purge_worker_running_(false), purge_worker_(nullptr),
@@ -167,8 +168,36 @@ TTLPurger::TTLPurger() :
     ttl_cache_.clear();
 }
 
+/* Guards the purger the reconnect listener talks to. Same rules as the cache
+ * globals: held across the null check and the flag set, and NEVER across
+ * ~TTLPurger, which joins the schema watcher thread - the very thread that
+ * can be inside the listener, so holding it there would deadlock. */
+static std::mutex ttlPurgerMutex;
+static TTLPurger *g_registered_ttl_purger = nullptr;
+
+/* A reconnection teardown waits for every Ndb object to come back, and the
+ * schema watcher holds two of them (one with a live event subscription) for
+ * its whole run. It does release them on its own once its dictionary work
+ * starts failing with a cluster-unavailability error, but that is incidental:
+ * this makes the release explicit, the way the API-key and FS cache watchers
+ * already do it. */
+static void ttl_purger_reconnect_listener() {
+  std::lock_guard<std::mutex> guard(ttlPurgerMutex);
+  if (g_registered_ttl_purger != nullptr) {
+    g_registered_ttl_purger->force_reconnect();
+  }
+}
+
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 TTLPurger::~TTLPurger() {
+  {
+    /* Unregister before joining the watcher below: once the pointer is null
+     * no listener holds a reference and none can obtain one. */
+    std::lock_guard<std::mutex> guard(ttlPurgerMutex);
+    if (g_registered_ttl_purger == this) {
+      g_registered_ttl_purger = nullptr;
+    }
+  }
   exit_ = true;
   if (schema_watcher_running_) {
     assert(schema_watcher_ != nullptr);
@@ -206,8 +235,16 @@ TTLPurger* TTLPurger::CreateTTLPurger() {
   TTLPurger* ttl_purger = new TTLPurger();
   if (!ttl_purger->Init()) {
     delete ttl_purger;
-    ttl_purger = nullptr;
+    return nullptr;
   }
+  {
+    /* Publish only after Init() succeeded: before that there are no Ndb
+     * objects to release. */
+    std::lock_guard<std::mutex> guard(ttlPurgerMutex);
+    g_registered_ttl_purger = ttl_purger;
+  }
+  RDRSRonDBConnection::RegisterReconnectListener(
+    ttl_purger_reconnect_listener);
   return ttl_purger;
 }
 
@@ -471,6 +508,14 @@ retry:
   last_reconcile_us = my_micro_time();
   // Main schema_watcher_ task
   while (!exit_) {
+    if (force_reconnect_.exchange(false)) {
+      /* A reconnection has started and is waiting for our two Ndb objects.
+       * Take the err path: it drops the event subscription, stops the purge
+       * worker, hands both objects back and then resubscribes after 2s. */
+      g_eventLogger->info("[TTL SWatcher] Reconnection started."
+                          " Releasing the Ndb objects. Retry...");
+      goto err;
+    }
     int res = watcher_ndb_->pollEvents(1000);  // wait for event or 1000 ms
     if (res > 0) {
       while ((op = watcher_ndb_->nextEvent())) {
