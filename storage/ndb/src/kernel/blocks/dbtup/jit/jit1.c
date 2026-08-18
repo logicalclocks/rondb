@@ -36,7 +36,9 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -113,7 +115,54 @@ struct Jit1Prog {
   size_t         emitted;       /* total bytes emitted */
   NdbJitCodeMem *mem;           /* manager the slot came from (for jit1_free) */
   NdbJitCodeSlot slot;          /* code-memory slot backing the blob */
+
+  /* RONDB-1056 Phase 8 — crash-diagnosis sidecar. Captured at compile,
+   * read ONLY by jit1_describe_pc (a SIGSEGV handler / DUMP), never on the
+   * per-row execution path. Best-effort: op_kind/pc_off may be NULL if the
+   * small allocations failed (the program still runs). */
+  uint16_t       n_ops;         /* opcode count (0 when sidecar absent) */
+  uint8_t       *op_kind;       /* [n_ops] OpKind per bytecode pc, or NULL */
+  uint32_t      *pc_off;        /* [n_ops+1] byte offset per pc; [n_ops]=total */
+  struct Jit1Prog *reg_next;    /* node-global live-program registry (intrusive) */
+  struct Jit1Prog *reg_prev;
 };
+
+/* ------------------------------------------------------------------ */
+/* Live-program registry (for crash diagnosis).                       */
+/*                                                                    */
+/* An intrusive doubly-linked list of every live Jit1Prog. Mutated    */
+/* under a mutex by compile/free; traversed WITHOUT the lock by        */
+/* jit1_describe_pc, which runs in a SIGSEGV handler where taking a    */
+/* lock is unsafe. The traversal reads only immutable post-seal fields */
+/* (rx range, op_kind/pc_off); racing a concurrent free during a crash */
+/* is accepted (rare, and the alternative — a lock in a signal handler */
+/* — is worse).                                                       */
+/* ------------------------------------------------------------------ */
+
+static pthread_mutex_t g_jit1_reg_mtx = PTHREAD_MUTEX_INITIALIZER;
+static Jit1Prog *g_jit1_reg_head = NULL;
+
+static void jit1_registry_add(Jit1Prog *p) {
+  pthread_mutex_lock(&g_jit1_reg_mtx);
+  p->reg_prev = NULL;
+  p->reg_next = g_jit1_reg_head;
+  if (g_jit1_reg_head != NULL) g_jit1_reg_head->reg_prev = p;
+  g_jit1_reg_head = p;
+  pthread_mutex_unlock(&g_jit1_reg_mtx);
+}
+
+static void jit1_registry_remove(Jit1Prog *p) {
+  pthread_mutex_lock(&g_jit1_reg_mtx);
+  if (p->reg_prev != NULL) {
+    p->reg_prev->reg_next = p->reg_next;
+  } else if (g_jit1_reg_head == p) {
+    g_jit1_reg_head = p->reg_next;
+  }
+  if (p->reg_next != NULL) p->reg_next->reg_prev = p->reg_prev;
+  p->reg_next = NULL;
+  p->reg_prev = NULL;
+  pthread_mutex_unlock(&g_jit1_reg_mtx);
+}
 
 /* ------------------------------------------------------------------ */
 /* Pure helpers — no arena, no state.                                 */
@@ -685,6 +734,32 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
   handle->mem      = mem;
   handle->slot     = slot;
 
+  /* Capture the crash-diagnosis sidecar (per-opcode kind + byte offset)
+   * and add the program to the live registry so a faulting PC can be
+   * mapped back to a bytecode opcode. Best-effort: if either small
+   * allocation fails the program still runs, just without opcode detail. */
+  handle->n_ops    = 0;
+  handle->op_kind  = NULL;
+  handle->pc_off   = NULL;
+  handle->reg_next = NULL;
+  handle->reg_prev = NULL;
+  {
+    uint16_t n = prog->n_ops;
+    uint8_t  *ok = (uint8_t *)malloc(n ? n : 1);
+    uint32_t *po = (uint32_t *)malloc((size_t)(n + 1) * sizeof(uint32_t));
+    if (ok != NULL && po != NULL) {
+      for (uint16_t i = 0; i < n; ++i) ok[i] = prog->ops[i].kind;
+      for (uint16_t i = 0; i <= n; ++i) po[i] = pc_byte_off[i];
+      handle->n_ops   = n;
+      handle->op_kind = ok;
+      handle->pc_off  = po;
+    } else {
+      free(ok);
+      free(po);
+    }
+  }
+  jit1_registry_add(handle);
+
   if (out_timing) {
     t_handle_end = j1_now_ns();
     out_timing->pass1_ns  = t_pass1_end  - t_entry;
@@ -722,8 +797,58 @@ size_t jit1_emitted_size(const Jit1Prog *prog) {
 
 void jit1_free(Jit1Prog *prog) {
   if (prog == NULL) return;
+  /* Remove from the crash-diagnosis registry before freeing anything, so
+   * a concurrent jit1_describe_pc never observes a half-freed program. */
+  jit1_registry_remove(prog);
+  free(prog->op_kind);
+  free(prog->pc_off);
   /* Return the code-memory slot to its manager, then free the handle.
    * After this the entry pointer is dangling — the slot may be reused. */
   ndb_jit_codemem_free(prog->mem, &prog->slot);
   free(prog);
+}
+
+int jit1_describe_pc(const void *pc, char *buf, size_t buflen) {
+  if (buf == NULL || buflen == 0) return 0;
+  const uint8_t *p = (const uint8_t *)pc;
+
+  /* Lock-free traversal — see the registry comment above. We read only
+   * post-seal-immutable fields, so a SIGSEGV handler can call this safely. */
+  unsigned idx = 0;
+  for (const Jit1Prog *prog = g_jit1_reg_head; prog != NULL;
+       prog = prog->reg_next, ++idx) {
+    const uint8_t *lo = prog->rx_entry;
+    const uint8_t *hi = lo + prog->emitted;
+    if (p < lo || p >= hi) continue;
+
+    size_t off = (size_t)(p - lo);
+    if (prog->pc_off != NULL && prog->op_kind != NULL && prog->n_ops > 0) {
+      if (off < prog->pc_off[0]) {
+        snprintf(buf, buflen,
+                 "JIT-CRASH: pc=%p in JIT blob #%u [%p..%p) byte_off=%zu "
+                 "(entry preamble) n_ops=%u",
+                 pc, idx, (const void *)lo, (const void *)hi, off,
+                 (unsigned)prog->n_ops);
+        return 1;
+      }
+      for (uint16_t i = 0; i < prog->n_ops; ++i) {
+        if (off >= prog->pc_off[i] && off < prog->pc_off[i + 1]) {
+          snprintf(buf, buflen,
+                   "JIT-CRASH: pc=%p in JIT blob #%u [%p..%p) byte_off=%zu "
+                   "bytecode_pc=%u op_kind=%u (op bytes [%u..%u)) n_ops=%u",
+                   pc, idx, (const void *)lo, (const void *)hi, off,
+                   (unsigned)i, (unsigned)prog->op_kind[i],
+                   (unsigned)prog->pc_off[i], (unsigned)prog->pc_off[i + 1],
+                   (unsigned)prog->n_ops);
+          return 1;
+        }
+      }
+    }
+    snprintf(buf, buflen,
+             "JIT-CRASH: pc=%p in JIT blob #%u [%p..%p) byte_off=%zu "
+             "(no opcode sidecar)",
+             pc, idx, (const void *)lo, (const void *)hi, off);
+    return 1;
+  }
+  return 0; /* pc is not inside any live JIT blob */
 }
