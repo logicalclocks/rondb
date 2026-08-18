@@ -237,13 +237,19 @@ foreach my $dir ('runtime_output_directory', 'bin') {
 
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
 log_line("## C++ tests\n");
-my $cpp_tests_run = 0;
 foreach my $test (@cpp_tests) {
     my ($exe) = grep { -x $_ }
                 map { File::Spec->catfile($_, $test) } @bin_candidates;
     if (!defined $exe) {
-        log_line("### $test: binary not found, skipped\n");
-        next;
+        # Every listed binary is built whenever WITH_RDRS is on, which this
+        # suite requires, so a missing one is a broken or stale build
+        # directory - not an optional test program. Skipping it would drop
+        # its coverage while the section still printed PASS: a stale build
+        # tree really can contain some of these binaries and not others (a
+        # partial `make <target>` after adding a test does exactly that).
+        print "## C++ tests\n";
+        print "FAIL: test binary '$test' not found under: @bin_candidates\n";
+        exit 1;
     }
     log_line("### $exe\n");
     # NOTE: the redirect makes perl run this through `sh -c`, and the shell
@@ -254,7 +260,6 @@ foreach my $test (@cpp_tests) {
     system("\"$exe\" >> \"$go_log_file\" 2>&1");
     my $exit_code = $? >> 8;
     if ($exit_code == 0) {
-        $cpp_tests_run++;
         next;
     }
 
@@ -263,14 +268,6 @@ foreach my $test (@cpp_tests) {
     print "Full log: $go_log_file\n";
     if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
     exit $exit_code;
-}
-if ($cpp_tests_run == 0) {
-    # The binaries are built whenever WITH_RDRS is on, which this suite
-    # requires - finding none means the search paths are wrong, and
-    # printing PASS would turn the whole section into a silent no-op.
-    print "## C++ tests\n";
-    print "FAIL: no C++ test binaries found under: @bin_candidates\n";
-    exit 1;
 }
 print "## C++ tests\n";
 print "PASS\n";
