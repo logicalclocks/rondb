@@ -135,7 +135,12 @@ INSTALL(TARGETS ${PROJECT_NAME}
 INSTALL(FILES "$<TARGET_FILE_DIR:${PROJECT_NAME}>/rdrs"
     DESTINATION ${INSTALL_BINDIR} COMPONENT Server)
 
-add_library(rdrs2_lib STATIC ${SRC})
+# The test library must not contain main(); linking it next to gtest_main
+# would otherwise give a duplicate _main whenever an archive member that
+# main.cc.o satisfies gets pulled in.
+set(SRC_LIB ${SRC})
+list(REMOVE_ITEM SRC_LIB ${CMAKE_CURRENT_SOURCE_DIR}/main.cc)
+add_library(rdrs2_lib STATIC ${SRC_LIB})
 
 target_include_directories(rdrs2_lib PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}

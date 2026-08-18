@@ -1,11 +1,21 @@
 #
-# Run the RDRS2 Golang tests from MTR.
+# Run the RDRS2 Golang tests from MTR, followed by the RDRS2 C++ test
+# binaries (which reuse the databases the Go tests seeded).
 #
-# By default this runs ALL Golang test packages in a single `go test ./...`
-# invocation, so the hopsworks database is seeded once (the first package that
-# runs creates the "sentinel" DB; the rest reuse it) and the cluster is torn
-# down once. Running every package in its own MTR test instead re-seeds
-# hopsworks for each package, which is what made the suite slow.
+# The Go tests run in two passes:
+#   1. the FULL suite against the TLS server (rdrs.2.1): every handler plus
+#      the production transport;
+#   2. one hand-picked SIMPLE test per integration package against the
+#      plain-HTTP server (rdrs.1.1): plain HTTP is a shipped configuration
+#      with its own config-validation and listener-bootstrap code, and one
+#      test per package proves it serves every endpoint family without
+#      paying for the full suite twice. See %smoke_test below.
+#
+# By default this covers ALL Golang test packages, and the hopsworks
+# database is seeded once (the first package that runs creates the
+# "sentinel" DB; the rest reuse it) with the cluster torn down once.
+# Running every package in its own MTR test instead re-seeds hopsworks for
+# each package, which is what made the suite slow.
 #
 # To run only one (or a few) packages, set RDRS_GO_PACKAGE to a Go package
 # name (or a space-separated list), e.g.:
@@ -94,6 +104,18 @@ sub log_line {
     if (open(my $fh, '>>', $go_log_file)) { print $fh $_[0]; close($fh); }
 }
 
+sub fail_run {
+    my ($label, $message) = @_;
+    # Echo the streamed log to stdout so it is visible in the MTR console,
+    # and exit non-zero so MTR fails the test regardless of result
+    # matching.
+    print "## $label\n";
+    print "FAIL: $message\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit 1;
+}
+
 sub run_test {
     my ($label) = @_;
     log_line("## $label\n");
@@ -108,15 +130,7 @@ sub run_test {
         system("go test -v -count 1 $pkg >> \"$go_log_file\" 2>&1");
         my $exit_code = $? >> 8;
         next if $exit_code == 0;
-
-        # Failure: echo the streamed log to stdout so it is visible in the MTR
-        # console, and exit non-zero so MTR fails the test regardless of result
-        # matching.
-        print "## $label\n";
-        print "FAIL: `go test $pkg` exited with code $exit_code\n";
-        print "Full log: $go_log_file\n";
-        if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
-        exit $exit_code;
+        fail_run($label, "`go test $pkg` exited with code $exit_code");
     }
 
     # Constant, package-count independent output so the recorded result is the
@@ -125,11 +139,144 @@ sub run_test {
     print "PASS\n";
 }
 
-$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
-run_test('Go tests (without TLS)');
+# One hand-picked SIMPLE test per integration package: enough to prove the
+# configuration under test can serve every endpoint family, without paying
+# for the full suite twice. Unit packages prove nothing about a listener
+# configuration and are skipped. stat has no runnable tests (the endpoint
+# is not implemented yet).
+#
+# ronsql is deliberately absent: its only runnable test is TestRateLimit,
+# which skips unless rate limits are enabled (proving nothing about the
+# listener) and otherwise floods the endpoint to provoke 429s - running it a
+# second time here would disturb the rate limit bucket the TLS pass just
+# exercised. The full TLS pass above covers the RonSQL endpoint.
+my %smoke_test = (
+    'hopsworks.ai/rdrs2/internal/integrationtests/ping'
+        => 'TestPing',
+    'hopsworks.ai/rdrs2/internal/integrationtests/health'
+        => 'TestHealth',
+    'hopsworks.ai/rdrs2/internal/integrationtests/pkread'
+        => 'TestDataTypesInt',
+    'hopsworks.ai/rdrs2/internal/integrationtests/batchpkread'
+        => 'TestBatchSimple',
+    'hopsworks.ai/rdrs2/internal/integrationtests/index_scan'
+        => 'Test_SimpleComparison',
+    'hopsworks.ai/rdrs2/internal/integrationtests/feature_store'
+        => 'Test_GetFeatureVector_Success',
+    'hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore'
+        => 'Test_GetFeatureVector_Success_1entries',
+    'hopsworks.ai/rdrs2/internal/integrationtests/sharing'
+        => 'Test_Sharing_PKRead',
+);
 
+sub run_smoke_tests {
+    my ($label) = @_;
+    log_line("## $label\n");
+
+    foreach my $pkg (@packages) {
+        my $test = $smoke_test{$pkg};
+        if (!defined $test) {
+            log_line("### $pkg: no smoke test configured, skipped\n");
+            next;
+        }
+        log_line("### $pkg -> $test\n");
+        my $out = `go test -v -count 1 -run '^${test}\$' $pkg 2>&1`;
+        my $exit_code = $? >> 8;
+        log_line($out);
+        if ($exit_code != 0) {
+            fail_run($label,
+                     "`go test -run '^${test}\$' $pkg` exited with code " .
+                     $exit_code);
+        }
+        # `go test -run` with a pattern matching no test exits 0, so a
+        # renamed/deleted smoke test would silently turn this pass into a
+        # no-op. Fail loudly instead so the list above cannot rot.
+        if ($out =~ /no tests to run/) {
+            fail_run($label,
+                     "smoke test $test not found in $pkg " .
+                     "(renamed or deleted? update the smoke_test map)");
+        }
+    }
+
+    print "## $label\n";
+    print "PASS\n";
+}
+
+# The full suite runs over TLS: it exercises every handler AND the
+# production transport. Plain HTTP is still a shipped configuration with
+# its own config-validation and listener-bootstrap code, so it gets one
+# simple test from every integration package - enough to prove the plain
+# listener serves each endpoint family.
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_TLS'};
 run_test('Go tests (with TLS and server-side cert)');
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
+run_smoke_tests('Go tests (without TLS, one simple test per package)');
+
+# ---------------------------------------------------------------------------
+# C++ tests (gtest binaries from storage/ndb/rest-server2/server/test).
+#
+# They connect to the cluster directly through the NDB API and reuse the
+# databases the Go tests above seeded, so they MUST run here - after the Go
+# tests, but before the cleanup section below drops those databases.
+#
+# The same constant-output convention as run_test applies: on success only
+# "PASS" is printed so the recorded result is stable; each binary's full
+# gtest output is streamed to the log file, and echoed to the MTR console
+# only on failure.
+# ---------------------------------------------------------------------------
+my @cpp_tests = ('error_handling_test',   # pure error-classification tests
+                 'reconnect_test',        # RONDB-1104 reconnection cycle
+                 'api_key_test',
+                 'feature_store_test');
+
+# Source builds place binaries in runtime_output_directory, packaged
+# builds in bin; multi-config generators add a configuration subdirectory.
+my $bindir = $ENV{'MYSQL_BINDIR'} // $MYSQL_BASEDIR;
+my @bin_candidates;
+foreach my $dir ('runtime_output_directory', 'bin') {
+    push(@bin_candidates, File::Spec->catdir($bindir, $dir));
+    foreach my $cfg ('Release', 'RelWithDebInfo', 'Debug') {
+        push(@bin_candidates, File::Spec->catdir($bindir, $dir, $cfg));
+    }
+}
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
+log_line("## C++ tests\n");
+foreach my $test (@cpp_tests) {
+    my ($exe) = grep { -x $_ }
+                map { File::Spec->catfile($_, $test) } @bin_candidates;
+    if (!defined $exe) {
+        # Every listed binary is built whenever WITH_RDRS is on, which this
+        # suite requires, so a missing one is a broken or stale build
+        # directory - not an optional test program. Skipping it would drop
+        # its coverage while the section still printed PASS: a stale build
+        # tree really can contain some of these binaries and not others (a
+        # partial `make <target>` after adding a test does exactly that).
+        print "## C++ tests\n";
+        print "FAIL: test binary '$test' not found under: @bin_candidates\n";
+        exit 1;
+    }
+    log_line("### $exe\n");
+    # NOTE: the redirect makes perl run this through `sh -c`, and the shell
+    # reports a signal death as exit code 128+N, so a crashing test binary
+    # fails the check below. Do NOT "simplify" this to list-form system()
+    # or a bare command: a direct signal death then yields $? >> 8 == 0 and
+    # a crash would silently PASS.
+    system("\"$exe\" >> \"$go_log_file\" 2>&1");
+    my $exit_code = $? >> 8;
+    if ($exit_code == 0) {
+        next;
+    }
+
+    print "## C++ tests\n";
+    print "FAIL: `$test` exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit $exit_code;
+}
+print "## C++ tests\n";
+print "PASS\n";
 
 exit 0;
 END_OF_PERL
