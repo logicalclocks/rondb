@@ -36,7 +36,7 @@ import (
 const HIGH_RATE_LIMIT = 1000000
 
 // APIKeyPrefix returns the public prefix of a Hopsworks API key (the part
-// before the '.'). With RateLimitIdentity=apikey and RateLimitFullAPIKey
+// before the '.'). With .RateLimit.Identity=apikey and .RateLimit.FullAPIKey
 // false (the defaults), this is the rate limit identity RDRS tags
 // transactions with.
 func APIKeyPrefix(apiKey string) string {
@@ -133,7 +133,7 @@ func SkipIfRateLimitsDisabled(t *testing.T) {
 	if !conf.REST.Enable {
 		t.Skip("Skipping test as REST is disabled")
 	}
-	if !conf.REST.UserRateLimits || conf.REST.RateLimitIdentity != "apikey" {
+	if !conf.RateLimit.Enable || conf.RateLimit.Identity != "apikey" {
 		t.Skip("Skipping test as API key rate limits are disabled")
 	}
 	if !*WithRonDB {

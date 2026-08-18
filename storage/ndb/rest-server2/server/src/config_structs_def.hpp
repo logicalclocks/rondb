@@ -110,18 +110,7 @@ CLASS
  ALIAS(pingRequiresAuth, PingRequiresAuth, PingRequiresAPIKey)
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
- CM(bool, userRateLimits, UserRateLimits, false,
-    "Set to true to tag NDB transactions with a rate limit identity so that"
-    " the data nodes enforce USER rate limits for REST requests.")
- CM(std::string, rateLimitIdentity, RateLimitIdentity, "apikey",
-    "Identity type used for rate limiting."
-    " Currently only 'apikey' (the API key of the request) is supported.")
- CM(bool, rateLimitFullApiKey, RateLimitFullAPIKey, false,
-    "Set to true to use the full API key as the rate limit identity."
-    " By default only the API key prefix is used.")
  PROBLEM(!enable, "REST must be enabled")
- PROBLEM(rateLimitIdentity != "apikey",
-         "RateLimitIdentity only supports 'apikey'")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
@@ -462,11 +451,31 @@ CLASS
 )
 
 CLASS
+(RateLimit,
+ CM(bool, enable, Enable, false,
+    "Set to true to tag NDB transactions with a rate limit identity so that"
+    " the data nodes enforce USER rate limits. The data nodes must also run"
+    " with ActivateRateLimits, and an identity with no provisioned USER"
+    " entity runs unmetered. Currently applies to REST requests only;"
+    " Rondis traffic is never tagged.")
+ CM(std::string, identity, Identity, "apikey",
+    "Identity type used for rate limiting."
+    " Currently only 'apikey' (the API key of the request) is supported.")
+ CM(bool, fullApiKey, FullAPIKey, false,
+    "Set to true to use the full API key as the rate limit identity."
+    " By default only the API key prefix is used.")
+ PROBLEM(identity != "apikey",
+         ".RateLimit.Identity only supports 'apikey'")
+)
+
+CLASS
 (AllConfigs,
  CM(Internal, internal, Internal, Internal(), "")
  CM(std::string, pidfile, PIDFile, "",
     "Path to .pid file. The process ID will be written on startup, and the file"
     " will be deleted on exit.")
+ CM(RateLimit, rateLimit, RateLimit, RateLimit(),
+    "USER rate limiting policy for this server's NDB traffic (RONDB-978).")
  CM(REST, rest, REST, REST(), "REST server settings.")
  CM(RondisConfig, rondis, Rondis, RondisConfig(),
     "An object describing configuration for the rondis server")
@@ -492,6 +501,16 @@ CLASS
  PROBLEM(security.insecureAllowAll && rest.pingRequiresAuth,
          "Combining .Security.InsecureAllowAll and"
          " .REST.PingRequiresAuth is not allowed")
+ /*
+ The identity is derived from the request's Hopsworks API key, and every
+ endpoint only computes one inside its useHopsworksAPIKeys branch. Without
+ API keys no identity is ever produced, so rate limiting would silently do
+ nothing rather than fail.
+ */
+ PROBLEM(rateLimit.enable && !security.apiKey.useHopsworksAPIKeys,
+         ".RateLimit.Enable requires .Security.APIKey.UseHopsworksAPIKeys:"
+         " the identity is derived from the request's API key, so without"
+         " API keys no request would be rate limited")
  CLASSDEFS
  (
   static AllConfigs get_all();
