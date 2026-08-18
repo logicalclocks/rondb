@@ -1426,14 +1426,11 @@ static struct ndbinfo_table_list_entry {
     DBINFOTBL(THREADBLOCK_DETAILS),
     DBINFOTBL(TRANSPORTER_DETAILS),
     DBINFOTBL(TRANSACTIONS_FULL),
-<<<<<<< HEAD
     DBINFOTBL(TRANSPORTER_ACTIVITY),
     DBINFOTBL(RDMA_TRANSPORTERS),
     DBINFOTBL(SECURITY_VIOLATIONS),
-    DBINFOTBL(SECURITY_VIOLATION_COUNTS)};
-=======
+    DBINFOTBL(SECURITY_VIOLATION_COUNTS),
     DBINFOTBL(JIT)};
->>>>>>> 5c6ecec26ee (RONDB-1056 Add ndbinfo.jit counters table)
 
 static int no_ndbinfo_tables =
     sizeof(ndbinfo_tables) / sizeof(ndbinfo_tables[0]);

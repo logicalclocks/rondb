@@ -212,6 +212,8 @@ static const char *T25_PARENT   = "t25_parent";
 static const char *T25_CHILD    = "t25_child";
 static const char *T28_PARENT   = "t28_parent";
 static const char *T28_CHILD    = "t28_child";
+static const char *T29_PARENT   = "t29_parent";
+static const char *T29_CHILD    = "t29_child";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -816,7 +818,7 @@ static int
 testJitMustCompileSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
                       Int64 expectedSum)
 {
-  const char *testName = "Test 25: JIT must compile SUM local attr";
+  const char *testName = "Test 24: JIT must compile SUM local attr";
   printf("%s ... ", testName);
   fflush(stdout);
 
@@ -1423,7 +1425,7 @@ testJitLinkedNullSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 26: Unsupported-program fallback canary                        */
+/* Test 27: Unsupported-program fallback canary                        */
 /*                                                                     */
 /* Purpose: lock in clean interpreter fallback for a program that is a */
 /* JIT candidate by shape (child leaf aggregation, no GROUP BY) but    */
@@ -1578,7 +1580,7 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 27: operand-width boundary — JIT must compile SUM of a column  */
+/* Test 28: operand-width boundary — JIT must compile SUM of a column  */
 /* whose id is past the old 255 cap (RONDB-1056).                      */
 /*                                                                     */
 /* Builds a child table wide enough that the aggregated column sits at */
@@ -1591,70 +1593,68 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
 /* full-range boundary (255/256/4095 accept, 4096 reject) is covered   */
 /* at the unit level in bridge_tests.c; this is the end-to-end proof.  */
 /* ------------------------------------------------------------------ */
-static const int   T27_NUM_COLS = 260;  /* c1..c260; c260 -> column id 260 */
-static const char *T27_PARENT   = "t27_parent";
-static const char *T27_CHILD    = "t27_child";
+static const int   T28_NUM_COLS = 260;  /* c1..c260; c260 -> column id 260 */
 
 static int
-createT27Tables(MYSQL *conn)
+createT28Tables(MYSQL *conn)
 {
-  sqlExec(conn, "DROP TABLE IF EXISTS t27_child");
-  sqlExec(conn, "DROP TABLE IF EXISTS t27_parent");
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_parent");
 
   if (sqlExec(conn,
-        "CREATE TABLE t27_parent ("
+        "CREATE TABLE t28_parent ("
         "  id INT NOT NULL PRIMARY KEY,"
         "  grp INT NOT NULL"
         ") ENGINE=NDB") != 0) return -1;
 
   /* Wide child: parent_id PK + c1..c260, all BIGINT NOT NULL, declared
    * in order so c260 gets column id 260. */
-  std::string create = "CREATE TABLE t27_child ("
+  std::string create = "CREATE TABLE t28_child ("
                        "parent_id INT NOT NULL PRIMARY KEY";
-  for (int i = 1; i <= T27_NUM_COLS; i++) {
+  for (int i = 1; i <= T28_NUM_COLS; i++) {
     create += ", c";
     create += std::to_string(i);
     create += " BIGINT NOT NULL";
   }
   create += ") ENGINE=NDB";
   if (sqlExec(conn, create.c_str()) != 0) return -1;
-  V("Created Test 27 tables (%d child columns)\n", T27_NUM_COLS);
+  V("Created Test 28 tables (%d child columns)\n", T28_NUM_COLS);
   return 0;
 }
 
 static int
-insertT27Data(MYSQL *conn)
+insertT28Data(MYSQL *conn)
 {
   if (sqlExec(conn,
-        "INSERT INTO t27_parent VALUES "
+        "INSERT INTO t28_parent VALUES "
         "(1,1),(2,1),(3,2),(4,2),(5,3)") != 0) return -1;
 
   /* 5 child rows. Only the last column (c260) carries the aggregated
    * values 100..500 (sum=1500); c1..c259 are 0 padding whose only job
    * is to push c260's column id past 255. */
   static const long long lastColVals[5] = {100, 200, 300, 400, 500};
-  std::string ins = "INSERT INTO t27_child VALUES ";
+  std::string ins = "INSERT INTO t28_child VALUES ";
   for (int r = 0; r < 5; r++) {
     if (r != 0) ins += ",";
     ins += "(";
     ins += std::to_string(r + 1);            /* parent_id */
-    for (int i = 1; i <= T27_NUM_COLS; i++) {
+    for (int i = 1; i <= T28_NUM_COLS; i++) {
       ins += ",";
-      ins += (i == T27_NUM_COLS) ? std::to_string(lastColVals[r]) : "0";
+      ins += (i == T28_NUM_COLS) ? std::to_string(lastColVals[r]) : "0";
     }
     ins += ")";
   }
   if (sqlExec(conn, ins.c_str()) != 0) return -1;
-  V("Inserted 5 Test 27 child rows\n");
+  V("Inserted 5 Test 28 child rows\n");
   return 0;
 }
 
 static int
-dropT27Tables(MYSQL *conn)
+dropT28Tables(MYSQL *conn)
 {
-  sqlExec(conn, "DROP TABLE IF EXISTS t27_child");
-  sqlExec(conn, "DROP TABLE IF EXISTS t27_parent");
-  V("Dropped Test 27 tables\n");
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t28_parent");
+  V("Dropped Test 28 tables\n");
   return 0;
 }
 
@@ -1662,23 +1662,23 @@ static int
 testJitWideColumn(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
                   Int64 expectedSum)
 {
-  const char *testName = "Test 27: JIT compiles SUM of column id > 255";
+  const char *testName = "Test 28: JIT compiles SUM of column id > 255";
   printf("%s ... ", testName);
   fflush(stdout);
 
   if (verifyScalarWithMysql(conn, testName,
-        "SELECT SUM(c260) FROM t27_parent "
-        "JOIN t27_child ON t27_child.parent_id = t27_parent.id",
+        "SELECT SUM(c260) FROM t28_parent "
+        "JOIN t28_child ON t28_child.parent_id = t28_parent.id",
         {expectedSum}) != 0) {
     printf("FAILED (MySQL verification)\n");
     return -1;
   }
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->invalidateTable(T27_PARENT);
-  dict->invalidateTable(T27_CHILD);
-  const NdbDictionary::Table *parentTab = dict->getTable(T27_PARENT);
-  const NdbDictionary::Table *childTab = dict->getTable(T27_CHILD);
+  dict->invalidateTable(T28_PARENT);
+  dict->invalidateTable(T28_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T28_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T28_CHILD);
   if (parentTab == nullptr || childTab == nullptr) {
     printf("FAILED (table lookup)\n");
     return -1;
@@ -1819,7 +1819,7 @@ testJitWideColumn(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 28: JIT CASE non-zero skip_offset canary                       */
+/* Test 29: JIT CASE non-zero skip_offset canary                       */
 /*                                                                     */
 /* The bridge lowers WRITE_INTERPRETER_OUTPUT slot 0 with a non-zero   */
 /* skip_offset to OP_JUMP. This test proves the full NDB API path      */
@@ -1829,18 +1829,18 @@ testJitWideColumn(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
 /* ------------------------------------------------------------------ */
 
 static int
-createT28Tables(MYSQL *conn)
+createT29Tables(MYSQL *conn)
 {
-  sqlExec(conn, "DROP TABLE IF EXISTS t28_child");
-  sqlExec(conn, "DROP TABLE IF EXISTS t28_parent");
+  sqlExec(conn, "DROP TABLE IF EXISTS t29_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t29_parent");
 
   if (sqlExec(conn,
-        "CREATE TABLE t28_parent ("
+        "CREATE TABLE t29_parent ("
         "  id INT NOT NULL PRIMARY KEY,"
         "  marker BIGINT NULL"
         ") ENGINE=NDB") != 0) return -1;
   if (sqlExec(conn,
-        "CREATE TABLE t28_child ("
+        "CREATE TABLE t29_child ("
         "  parent_id INT NOT NULL PRIMARY KEY,"
         "  dummy BIGINT NOT NULL,"
         "  amount BIGINT NOT NULL"
@@ -1849,37 +1849,37 @@ createT28Tables(MYSQL *conn)
 }
 
 static int
-insertT28Data(MYSQL *conn)
+insertT29Data(MYSQL *conn)
 {
   /* marker NULL for parents 2,4; non-NULL for 1,3,5. */
   if (sqlExec(conn,
-        "INSERT INTO t28_parent VALUES "
+        "INSERT INTO t29_parent VALUES "
         "(1,10),(2,NULL),(3,30),(4,NULL),(5,50)") != 0) return -1;
   if (sqlExec(conn,
-        "INSERT INTO t28_child VALUES "
+        "INSERT INTO t29_child VALUES "
         "(1,10000,100),(2,20000,200),(3,30000,300),"
         "(4,40000,400),(5,50000,500)") != 0) return -1;
   return 0;
 }
 
 static int
-dropT28Tables(MYSQL *conn)
+dropT29Tables(MYSQL *conn)
 {
-  sqlExec(conn, "DROP TABLE IF EXISTS t28_child");
-  sqlExec(conn, "DROP TABLE IF EXISTS t28_parent");
+  sqlExec(conn, "DROP TABLE IF EXISTS t29_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t29_parent");
   return 0;
 }
 
 static int
 testJitCaseSkipOffset(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  const char *testName = "Test 28: JIT CASE skip offset";
+  const char *testName = "Test 29: JIT CASE skip offset";
   printf("%s ... ", testName);
   fflush(stdout);
 
   if (verifyScalarWithMysql(conn, testName,
-        "SELECT SUM(c.amount) FROM t28_parent p "
-        "JOIN t28_child c ON c.parent_id = p.id "
+        "SELECT SUM(c.amount) FROM t29_parent p "
+        "JOIN t29_child c ON c.parent_id = p.id "
         "WHERE p.marker IS NOT NULL",
         {900}) != 0) {
     printf("FAILED (MySQL verification)\n");
@@ -1887,10 +1887,10 @@ testJitCaseSkipOffset(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   }
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->invalidateTable(T28_PARENT);
-  dict->invalidateTable(T28_CHILD);
-  const NdbDictionary::Table *parentTab = dict->getTable(T28_PARENT);
-  const NdbDictionary::Table *childTab = dict->getTable(T28_CHILD);
+  dict->invalidateTable(T29_PARENT);
+  dict->invalidateTable(T29_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T29_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T29_CHILD);
   if (parentTab == nullptr || childTab == nullptr) {
     printf("FAILED (table lookup)\n");
     return -1;
@@ -7656,31 +7656,31 @@ int main(int argc, char **argv)
           dropTestTables(conn);
         }
 
-        /* Test 27: operand-width boundary — JIT must compile SUM of a
+        /* Test 28: operand-width boundary — JIT must compile SUM of a
          * column whose id is > 255 (proves the bridge admits col_id up to
          * 4095, matching NDB's MAX_ATTRIBUTES_IN_TABLE). */
-        if (shouldRun(27)) {
+        if (shouldRun(28)) {
           NdbRestarter restarter(connectString);
-          if (createT27Tables(conn) == 0 && insertT27Data(conn) == 0) {
+          if (createT28Tables(conn) == 0 && insertT28Data(conn) == 0) {
             if (testJitWideColumn(&ndb, conn, restarter, 1500) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;
           }
-          dropT27Tables(conn);
+          dropT28Tables(conn);
         }
 
-        /* Test 28: embedded CASE non-zero skip_offset — JIT must jump
+        /* Test 29: embedded CASE non-zero skip_offset — JIT must jump
          * over the dummy aggregate and land on the real aggregate. */
-        if (shouldRun(28)) {
+        if (shouldRun(29)) {
           NdbRestarter restarter(connectString);
-          if (createT28Tables(conn) == 0 && insertT28Data(conn) == 0) {
+          if (createT29Tables(conn) == 0 && insertT29Data(conn) == 0) {
             if (testJitCaseSkipOffset(&ndb, conn, restarter) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;
           }
-          dropT28Tables(conn);
+          dropT29Tables(conn);
         }
 
         mysql_close(conn);

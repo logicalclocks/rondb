@@ -311,6 +311,7 @@
 #define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 707
 #define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 708
 
+#define CFG_DB_COMPILED_INTERPRETER 708
 /* Values for CFG_DB_COMPILED_INTERPRETER (CompiledInterpreter enum param):
  * controls the RONDB-1056 JIT for pushed-down interpreted programs (scan
  * filters + standalone and join aggregation). */
