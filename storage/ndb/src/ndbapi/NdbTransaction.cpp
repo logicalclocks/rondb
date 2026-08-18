@@ -424,6 +424,18 @@ int NdbTransaction::init() {
   theCompletionStatus     = NotCompleted;
 
   theError.code		  = 0;
+  /**
+   * Transactions are pooled, so details must be cleared here or a recycled
+   * transaction inherits the previous one's detail text - a pointer into a
+   * buffer that has since been freed. Only code was being reset, which is not
+   * enough for an error raised by setErrorCode(): that sets code alone, and
+   * ndberror_update() (via getNdbError()) then refills message, status and
+   * classification from the static error table but never touches details. The
+   * result was a stale non-null details pointer on a code-only error, and any
+   * caller that formats the error dereferenced it. Reached via
+   * setUserId()'s rate overflow report (RONDB-978).
+   */
+  theError.details	  = nullptr;
   theErrorLine		  = 0;
   theErrorOperation	  = nullptr;
 
