@@ -32,8 +32,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 #include <drogon/HttpTypes.h>
 #include <NdbApi.hpp>
@@ -54,6 +57,10 @@ NdbMutex *globalConfigsMutex = nullptr;
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 static constexpr Uint32 NUM_THREADS = 4;
+/* Readiness checks per contention probe. Enough that a single-attempt
+ * try-lock is overwhelmingly likely to collide with the request path at
+ * least once. */
+static constexpr Uint32 NUM_HEALTH_PROBES = 200;
 
 class ReconnectTest : public ::testing::Test {
  protected:
@@ -218,6 +225,56 @@ TEST_F(ReconnectTest, ClusterUpErrorsDoNotReconnect) {
   expectUsable(ndb);
   RS_Status ok = RS_OK;
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb, &ok, 2);
+}
+
+/*
+ * The readiness signal must not report an unavailable cluster merely because
+ * the request path happens to hold connectionMutex. Metadata Ndb objects are
+ * not thread-cached, so GetMetadataNdbObject/ReturnMetadataNdbObject take
+ * that mutex on every API-key validation - i.e. on every request in the
+ * production configuration. A single-attempt try-lock inside
+ * GetNumReadyDataNodes() therefore reports 0 ready data nodes under ordinary
+ * load, flapping /health to 503 on a perfectly healthy server.
+ */
+TEST_F(ReconnectTest, ContendedConnectionMutexStaysHealthy) {
+  ASSERT_TRUE(waitForRecovery(60 * 1000));
+  ASSERT_GT(get_num_ready_data_nodes(), 0);
+
+  std::atomic<bool> stop{false};
+  std::atomic<Uint64> acquisitions{0};
+  std::vector<std::thread> hammer;
+  for (Uint32 t = 0; t < NUM_THREADS; t++) {
+    hammer.emplace_back([&stop, &acquisitions]() {
+      while (!stop.load(std::memory_order_relaxed)) {
+        Ndb *ndb = nullptr;
+        if (rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb).http_code ==
+              SUCCESS) {
+          RS_Status ok = RS_OK;
+          rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &ok);
+          acquisitions.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+
+  Uint32 unhealthy = 0;
+  for (Uint32 probe = 0; probe < NUM_HEALTH_PROBES; probe++) {
+    if (get_num_ready_data_nodes() <= 0) {
+      unhealthy++;
+    }
+  }
+  stop.store(true);
+  for (std::thread &thread : hammer) {
+    thread.join();
+  }
+
+  EXPECT_GT(acquisitions.load(), Uint64{0})
+    << "The contending threads never acquired a metadata Ndb object, so "
+       "connectionMutex was never contended and this test proved nothing";
+  EXPECT_EQ(unhealthy, Uint32{0})
+    << unhealthy << " of " << NUM_HEALTH_PROBES << " readiness checks "
+       "reported no ready data node while the cluster was up: request-path "
+       "contention on connectionMutex must not look like an outage";
 }
 
 int main(int argc, char **argv) {

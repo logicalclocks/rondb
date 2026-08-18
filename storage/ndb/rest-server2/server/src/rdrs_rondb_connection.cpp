@@ -269,19 +269,49 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
 }
 
 int RDRSRonDBConnection::GetNumReadyDataNodes() {
-  /* Try-lock: connectionMutex is held for tens of seconds while a
-   * reconnection tears down and rebuilds the cluster connection. A health
-   * probe must not block behind that, and a busy teardown/rebuild means
-   * the connection cannot serve right now anyway. */
-  if (NdbMutex_Trylock(connectionMutex) != 0) {
-    return 0;
+  /* connectionMutex is held for tens of seconds only while the cluster
+   * connection is rebuilt: Connect()'s wait_until_ready() and the
+   * delete ndbConnection in Shutdown(). Those windows are exactly what the
+   * state below describes, so check it first and never wait for them.
+   * connectionInfoMutex is safe to wait on: its longest critical section is
+   * the teardown's Ndb-object deletion loop, bounded by the object count.
+   *
+   * Every other holder keeps the mutex for microseconds, and one of them is
+   * on the hot path: the metadata Ndb objects are not thread-cached, so
+   * GetMetadataNdbObject/ReturnMetadataNdbObject take this mutex on every
+   * API-key validation and every feature store metadata read. A failed
+   * try-lock there means contention, NOT an unavailable cluster - reporting
+   * 0 would flap /health on a healthy but busy server - so retry briefly
+   * instead of guessing. */
+  {
+    NdbMutex_Lock(connectionInfoMutex);
+    const bool unavailable = stats.is_shutdown || stats.is_shutting_down ||
+                             stats.is_reconnection_in_progress ||
+                             stats.connection_state != CONNECTED;
+    NdbMutex_Unlock(connectionInfoMutex);
+    if (unlikely(unavailable)) {
+      return 0;
+    }
   }
-  int ready = -1;
-  if (likely(ndbConnection != nullptr)) {
-    ready = ndbConnection->get_no_ready();
+  for (Uint32 attempt = 0; attempt < READY_NODES_TRYLOCK_ATTEMPTS; attempt++) {
+    if (likely(NdbMutex_Trylock(connectionMutex) == 0)) {
+      int ready = -1;
+      if (likely(ndbConnection != nullptr)) {
+        ready = ndbConnection->get_no_ready();
+      }
+      NdbMutex_Unlock(connectionMutex);
+      return ready;
+    }
+    NdbSleep_MilliSleep(1);
   }
-  NdbMutex_Unlock(connectionMutex);
-  return ready;
+  /* Unbroken contention for the whole window: a rebuild must have started
+   * after the check above, or the server is pathologically overloaded.
+   * Either way it cannot serve right now. */
+  rdrs_logger::warn(
+    "Health check could not read the number of ready data nodes: "
+    "connectionMutex busy for " +
+    std::to_string(READY_NODES_TRYLOCK_ATTEMPTS) + " ms.");
+  return 0;
 }
 
 void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {

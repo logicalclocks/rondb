@@ -32,6 +32,12 @@
 class RDRSRonDBConnection {
   static constexpr int MAX_PARALLEL_KEY_OPS = 1024;
   static constexpr Uint32 expectedMagic = 0x52b5cb03;
+  /* How long GetNumReadyDataNodes() retries its try-lock, in 1 ms steps,
+   * before it reports the connection as not ready. Long enough that
+   * ordinary request-path contention on connectionMutex can never be
+   * mistaken for an unavailable cluster, short enough that a health probe
+   * still answers promptly. */
+  static constexpr Uint32 READY_NODES_TRYLOCK_ATTEMPTS = 20;
 
  private:
   Uint32 magic = 0;
