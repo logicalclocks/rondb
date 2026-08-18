@@ -1,0 +1,28 @@
+CREATE DATABASE urlimit;
+CREATE TABLE urlimit.t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO urlimit.t1 VALUES
+(1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),(8,0),(9,0),(10,0);
+CREATE USER 'metered_user'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'free_user'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON urlimit.* TO 'metered_user'@'%';
+GRANT ALL PRIVILEGES ON urlimit.* TO 'free_user'@'%';
+#
+# 1. The metered account is throttled once it exceeds its rate.
+#
+metered_user: throttled as expected
+#
+# 2. An account with no USER entity is never throttled (per-account
+#    attribution: the limit follows the identity, not the cluster).
+#
+free_user: not throttled as expected
+#
+# 3. Raising the limit restores service for the metered account.
+#
+metered_user: served without throttling after raising the limit
+#
+# 4. rate-per-sec = 0 means unlimited, not "block everything".
+#
+metered_user: unmetered at rate 0 as expected
+DROP USER 'metered_user'@'%';
+DROP USER 'free_user'@'%';
+DROP DATABASE urlimit;
