@@ -59,12 +59,29 @@ func (g *GRPC) Validate() error {
 }
 
 type REST struct {
-	Enable              bool
-	ServerIP            string
-	ServerPort          uint16
-	UserRateLimits      bool
-	RateLimitIdentity   string
-	RateLimitFullAPIKey bool
+	Enable     bool
+	ServerIP   string
+	ServerPort uint16
+}
+
+// RateLimit mirrors the server's top-level .RateLimit section (RONDB-978):
+// USER rate limiting policy for this server's NDB traffic. Identity is
+// "apikey" or "username"; both derive from the request's Hopsworks API key,
+// so the server rejects Enable without .Security.APIKey.UseHopsworksAPIKeys.
+type RateLimit struct {
+	Enable     bool
+	Identity   string
+	FullAPIKey bool
+}
+
+func (r *RateLimit) Validate() error {
+	if r.Identity != "apikey" && r.Identity != "username" {
+		return errors.New("RateLimit.Identity must be 'apikey' or 'username'")
+	}
+	if r.Identity == "username" && r.FullAPIKey {
+		return errors.New("RateLimit.FullAPIKey requires RateLimit.Identity 'apikey'")
+	}
+	return nil
 }
 
 func (g *REST) Validate() error {
@@ -296,6 +313,7 @@ the corresponding file for the MTR tests as well.
 */
 type AllConfigs struct {
 	Internal             Internal
+	RateLimit            RateLimit
 	REST                 REST
 	GRPC                 GRPC
 	RonDB                RonDB
@@ -310,6 +328,8 @@ func (c *AllConfigs) Validate() error {
 	if err = c.GRPC.Validate(); err != nil {
 		return err
 	} else if err = c.REST.Validate(); err != nil {
+		return err
+	} else if err = c.RateLimit.Validate(); err != nil {
 		return err
 	} else if err = c.RonDB.Validate(); err != nil {
 		return fmt.Errorf("Config.RonDB: %s", err)

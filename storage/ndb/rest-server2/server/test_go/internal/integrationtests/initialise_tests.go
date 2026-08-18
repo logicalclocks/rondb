@@ -90,7 +90,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	//---------------------------- Rate limits --------------------------------
 	// Give the default test API key a high rate limit so all tests exercise
 	// the RONDB-978 identity tagging path without ever being throttled.
-	if conf.REST.UserRateLimits && conf.REST.RateLimitIdentity == "apikey" {
+	if conf.RateLimit.Enable && conf.RateLimit.Identity == "apikey" {
 		if err := testutils.ProvisionDefaultRateLimitUsers(); err != nil {
 			cleanupWrapper(cleanupFNs)()
 			return nil, fmt.Errorf("failed provisioning rate limit users; error: %w", err)

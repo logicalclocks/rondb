@@ -46,7 +46,7 @@ const HOPSWORKS_TEST_USERNAME = "macho"
 const rateLimitIdentityMaxLen = 32
 
 // APIKeyPrefix returns the public prefix of a Hopsworks API key (the part
-// before the '.'). With RateLimitIdentity=apikey and RateLimitFullAPIKey
+// before the '.'). With RateLimit.Identity=apikey and RateLimit.FullAPIKey
 // false (the defaults), this is the rate limit identity RDRS tags
 // transactions with.
 func APIKeyPrefix(apiKey string) string {
@@ -145,7 +145,7 @@ const rateLimitSettleTime = 2500 * time.Millisecond
 // upper-case project (e.g. FSDB003) must pass "FSDB003", not the
 // lowercased database name, or the provisioned entity will not match.
 func rateLimitIdentity(billingDb string) string {
-	if config.GetAll().REST.RateLimitIdentity == "username" {
+	if config.GetAll().RateLimit.Identity == "username" {
 		identity := billingDb + "_" + HOPSWORKS_TEST_USERNAME
 		if len(identity) > rateLimitIdentityMaxLen {
 			identity = identity[:rateLimitIdentityMaxLen-1]
@@ -163,9 +163,9 @@ func SkipIfRateLimitsDisabled(t *testing.T) {
 	if !conf.REST.Enable {
 		t.Skip("Skipping test as REST is disabled")
 	}
-	if !conf.REST.UserRateLimits ||
-		(conf.REST.RateLimitIdentity != "apikey" &&
-			conf.REST.RateLimitIdentity != "username") {
+	if !conf.RateLimit.Enable ||
+		(conf.RateLimit.Identity != "apikey" &&
+			conf.RateLimit.Identity != "username") {
 		t.Skip("Skipping test as user rate limits are disabled")
 	}
 	if !*WithRonDB {
@@ -263,8 +263,18 @@ func restoreHighRateLimit(t *testing.T, identity string) {
 func RunEndpointRateLimitTest(t *testing.T, sendOne func(*http.Client) int,
 	billingDb string) {
 	t.Helper()
+	RunRateLimitTestForIdentity(t, sendOne, rateLimitIdentity(billingDb))
+}
+
+// RunRateLimitTestForIdentity is RunEndpointRateLimitTest with the identity
+// given explicitly rather than derived from the billing database. Needed
+// wherever the two differ: a database reached through a store share is billed
+// to the project that RECEIVED the share, so the identity names the reader's
+// own project while the request names the producer's database (RONDB-978).
+func RunRateLimitTestForIdentity(t *testing.T, sendOne func(*http.Client) int,
+	identity string) {
+	t.Helper()
 	client := setupBurstHttpClient(t)
-	identity := rateLimitIdentity(billingDb)
 	defer restoreHighRateLimit(t, identity)
 
 	setRateLimit(t, identity, rateLimitLowRate)
