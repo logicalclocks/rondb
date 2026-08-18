@@ -162,7 +162,8 @@ no provisioned USER entity run unmetered — which makes rollout safe and increm
 <p>Identity is computed once per request in
 <span class="file">rate_limit.hpp:38</span> (<code>get_rate_limit_identity</code>), gated by
 <code>REST.UserRateLimits</code>; config <code>RateLimitIdentity</code> is validated to the
-single value <code>"apikey"</code>. It is threaded as one <code>const char*</code> into
+single value <code>"apikey"</code>. (Both keys were moved into a top-level
+<code>.RateLimit</code> section as built — see §5.4.) It is threaded as one <code>const char*</code> into
 <code>pk_batch_read(...)</code> / <code>scan_read(...)</code> and applied per transaction via
 <code>NdbTransaction::setUserId</code>
 (<span class="file">pkr_operation.cpp:386-397</span>, <span class="file">rdrs_dal.cpp:1855</span>).</p>
@@ -208,7 +209,7 @@ account convention (§2) instead of restoring it.</div>
 <ul>
 <li><code>find_user_int</code> (<span class="file">rdrs_hopsworks_dal.cpp:526</span>): also read
     the <code>username</code> column (fixing upstream defect #1 — pass the struct by reference).
-    <code>USERNAME_SIZE = 11</code> already exists in <span class="file">rdrs_const.h</span>.</li>
+    <code>USERS_USERNAME_SIZE = 10 + 1</code> added to <span class="file">rdrs_const.h</span>, matching the <code>varchar(10) latin1</code> column. <span class="tag">AS BUILT</span> this doc originally claimed such a constant already existed — it did not.</li>
 <li><code>UserDBs</code> (<span class="file">api_key.hpp</span>): add
     <code>char m_username[USERNAME_SIZE]</code>, filled on every cache load/refresh
     (<code>update_cache</code>, <code>load_single_key</code>, <code>refresh_job</code> all funnel
@@ -233,11 +234,13 @@ RS_Status authenticate(const std::string &amp;apiKey, PKReadParams &amp;, AuthCt
 once, under the cache entry's shared lock, by <code>find_and_validate</code>.</p>
 
 <h3>5.3 Identity computation: extend <code>rate_limit.hpp</code></h3>
-<pre><code>// RateLimitIdentity: "apikey" (today's behaviour) | "username" (new)
+<pre><code>// .RateLimit.Identity: "apikey" (today's behaviour) | "username" (new)
+// AS BUILT: the ctx parameter is a RateLimitIdentities (per-db map of
+// precomputed identities), not the AuthCtx sketched in 5.2.
 std::string get_rate_limit_identity(const std::string &amp;api_key,
-                                    const AuthCtx &amp;ctx,
+                                    const RateLimitIdentities &amp;ctx,
                                     std::string_view target_db) {
-  if (!globalConfigs.rest.userRateLimits) return {};
+  if (!globalConfigs.rateLimit.enable) return {};
   if (identity_mode == APIKEY) return prefix(api_key);          // unchanged
   // username mode:
   //   1. identity = ctx.identity_for(lowercase(target_db))   (map lookup;
@@ -252,14 +255,69 @@ no shared mutable buffer (fixes upstream defect #4). The existing threading
 (<code>const char*, len</code> → <code>setUserId</code> per transaction) is unchanged, so the
 DAL and kernel plumbing this branch already validated keeps working.</p>
 
-<h3>5.4 Config</h3>
+<h3>5.4 Config <span class="file">(AS BUILT — differs from the original sketch)</span></h3>
+<p>The three flat <code>.REST.*</code> keys were moved into a <strong>top-level
+<code>.RateLimit</code> section</strong> and lost their now-redundant prefixes. Rate limiting is
+enforced by the data nodes and mysqld participates via its own
+<code>--ndb-user-rate-limits</code>, so it is a cluster participation policy rather than a REST
+server option; Rondis also issues NDB transactions from this same process (untagged today), so a
+REST-nested section would have needed moving again once Rondis is metered.</p>
+<pre><code>{
+  "RateLimit": {
+    "Enable": true,          // was .REST.UserRateLimits
+    "Identity": "username",  // was .REST.RateLimitIdentity: "apikey" | "username"
+    "FullAPIKey": false      // was .REST.RateLimitFullAPIKey
+  },
+  "REST":     { "ServerIP": "0.0.0.0", "ServerPort": 4406 },
+  "RonDB":    { "Mgmds": [ { "IP": "localhost", "Port": 1186 } ] },
+  "Security": { "APIKey": { "UseHopsworksAPIKeys": true } }
+}</code></pre>
+<table>
+<tr><th>Earlier internal shape (flat)</th><th>As built (section)</th></tr>
+<tr><td><code>.REST.UserRateLimits</code></td><td><code>.RateLimit.Enable</code></td></tr>
+<tr><td><code>.REST.RateLimitIdentity</code></td><td><code>.RateLimit.Identity</code></td></tr>
+<tr><td><code>.REST.RateLimitFullAPIKey</code></td><td><code>.RateLimit.FullAPIKey</code></td></tr>
+</table>
+<p>No compatibility burden. The rate limit code is committed in the tree, but the plumbing to
+enable it has not been done — nothing provisions USER entities and no deployment turns it on — so
+no operator config sets these keys. The rename is therefore internal: the only consumers are this
+repo's MTR templates and the Go test harness, both updated alongside it. No aliases, deprecation
+window or upgrade note are needed.</p>
+<p>Validation. Two rules live inside the section, two span sections and sit at
+<code>AllConfigs</code> level:</p>
 <ul>
-<li><code>RateLimitIdentity</code> gains the value <code>"username"</code> (drop the
-    apikey-only validation in <span class="file">config_structs_def.hpp:116-124</span>).
-    <code>"apikey"</code> remains supported — instant rollback path.</li>
-<li><code>RateLimitFullAPIKey</code> is meaningful only in apikey mode; reject it in username
-    mode.</li>
+<li><code>Identity</code> must be <code>"apikey"</code> or <code>"username"</code>.
+    <code>"apikey"</code> remains the default — instant rollback path.</li>
+<li><code>FullAPIKey</code> is meaningful only in apikey mode; rejected in username mode.</li>
+<li><code>Enable</code> requires <code>.Security.APIKey.UseHopsworksAPIKeys</code>.
+    <strong>Both</strong> identity modes derive from the request's API key
+    (<code>apikey</code> from the key itself, <code>username</code> from its owner), and all six
+    endpoints compute an identity only inside their <code>useHopsworksAPIKeys</code> branch — so
+    without API keys nothing would ever be rate limited. This replaces the narrower
+    username-only rule originally proposed here.</li>
+<li><code>Enable</code> requires <code>.REST.Enable</code>: only REST requests are tagged, so
+    enabling it with REST off would meter nothing. Nesting under <code>.REST</code> gave this
+    check for free; at top level it has to be explicit.</li>
 </ul>
+<p><strong>Stale keys fail loudly, not silently.</strong> Worth recording because it is the
+property that makes this whole feature safe to configure: the parser rejects any unrecognised
+key — <code>DEFINE_STRUCT_PARSER</code> throws
+<code>ConfigParseError("Unexpected key")</code> for anything that neither matches an element nor
+starts with <code>#</code>. A config using the old flat keys does <em>not</em> quietly fall back
+to defaults with rate limiting off; <code>rdrs2</code> refuses to start and names the line:</p>
+<pre><code>Error while initializing configuration.
+HTTP code 400
+Unexpected key before/at line 5, column 22
+rdrs2: Exit with code 1.</code></pre>
+<p>The same protection covers ordinary typos (<code>"Identiy"</code>, a key at the wrong nesting
+level), which matters here because every <em>other</em> misconfiguration in this feature —
+an unprovisioned USER entity, a wrong-case project name, a clip-length mismatch — fails silently
+as "no rate limiting" (§7). Config-key typos are the one class of mistake the server can catch
+for you, and it does.</p>
+<p>Note for any future rename: <code>ALIAS()</code> cannot bridge a change of nesting level. It
+maps an alternative key name <em>within one class</em>, so it could not lift
+<code>.REST.UserRateLimits</code> into the nested <code>.RateLimit</code> object; accepting both
+spellings would need new macro machinery.</p>
 
 <h2 id="endpoints">6. Per-endpoint solutions</h2>
 
@@ -303,6 +361,11 @@ DAL and kernel plumbing this branch already validated keeps working.</p>
 <dt>Fallback if grouping is deemed too invasive for v1</dt><dd>Tag all transactions with the
     identity of the <em>first</em> operation's DB and document it. Deterministic but
     mis-attributes mixed batches; grouping is the recommended end state.</dd>
+<dt><span class="tag">AS BUILT</span></dt><dd>The <strong>fallback</strong> shipped, not the
+    grouping: <span class="file">batch_pk_read_ctrl.cpp</span> bills the whole batch to
+    <code>reqStructs[0].path.db</code>. Mixed-project batches are therefore mis-attributed to the
+    first operation's project. Per-database transaction groups remain the recommended end state
+    and are tracked as a follow-up.</dd>
 </dl>
 
 <h3>6.4 feature-store <span class="tag">POST /0.1.0/feature_store</span></h3>
@@ -350,6 +413,30 @@ DAL and kernel plumbing this branch already validated keeps working.</p>
     scan controller's mapping, <span class="file">scan_read_ctrl.cpp:236-240</span>). Aggregation
     scans are the expensive queries — leaving RonSQL unmetered would leave the biggest per-query
     cost outside the quota system.</dd>
+<dt><span class="tag">AS BUILT</span></dt><dd>Tagging landed via new
+    <code>RonSQLExecParams::rate_limit_identity</code> fields applied at
+    <code>RonSQLPreparer::execute()</code>'s transaction start, rather than by adding a parameter
+    to <code>ronsql_dal</code>. The 429 mapping needed <strong>two</strong> fixes, because a
+    RonSQL rejection reaches the caller as a thrown exception rather than a returned status:
+    <ol>
+      <li><code>handle_ronsql_exception</code> now classifies the quota codes (243/2203/247/248)
+          into a new <code>RonSQLRateLimitError</code> carrying the NDB code, instead of folding
+          them into the temporary/permanent verdict — which had cost 3×50 ms of pointless retries
+          against an already-overflowing bucket. Classifying in the exception handler rather than
+          at the <code>setUserId</code> call site covers <em>both</em> routes to a rejection: the
+          client-side backoff window failing <code>setUserId</code>, and the data nodes rejecting
+          the aggregation scan mid-flight.</li>
+      <li><code>ronsql_ctrl.cpp</code> hardcoded
+          <code>k500InternalServerError</code> for every non-200, so even a correct
+          <code>TOO_MANY_REQUESTS</code> status was flattened to 500. It now mirrors the scan
+          controller.</li>
+    </ol>
+    The throw is guarded on <code>rate_limit_identity != NULL</code>, so the new exception type is
+    structurally unreachable for embedders that never opted into tagging —
+    <code>ronsql_cli</code> ends its handler chain with <code>catch (...) { abort(); }</code>.
+    Covered by a new Go package,
+    <span class="file">test_go/internal/integrationtests/ronsql/ratelimit_test.go</span>, green in
+    both identity modes.</dd>
 </dl>
 
 <h3>6.7 batch write / delete <span class="tag">26.04+ only</span></h3>
@@ -428,22 +515,28 @@ provisioning defines coverage. Hopsworks should own it, mirroring the MySQL acco
     start being enforced within push latency, without per-transaction DICT probes — validated by
     <code>TestRateLimitUserCreatedAfterServerStart</code>.</li>
 <li><strong>Kill switches</strong> (unchanged by this design): per-user
-    <code>USER ALTER --rate-per-sec=0</code> (live), <code>UserRateLimits=false</code> + RDRS
+    <code>USER ALTER --rate-per-sec=0</code> (live), <code>.RateLimit.Enable=false</code> + RDRS
     roll, <code>ActivateRateLimits=0</code> + data-node roll. Making the last one runtime-SETable
     is a recommended companion change.</li>
 </ul>
 
 <h2 id="rollout">9. Rollout</h2>
 <ol>
-<li>Ship the RDRS changes with <code>RateLimitIdentity: "apikey"</code> (default) — zero
+<li>Ship the RDRS changes with <code>.RateLimit.Identity: "apikey"</code> (default) — zero
     behaviour change; the username plumbing is dormant but testable.</li>
 <li>Ship Hopsworks provisioning (entities appear; nothing meters them yet since RDRS still tags
     prefixes and MySQL-path buckets only bite if MySQL-path limits are set).</li>
-<li>Flip <code>RateLimitIdentity: "username"</code> per cluster + rolling RDRS restart.
+<li>Flip <code>.RateLimit.Identity: "username"</code> per cluster + rolling RDRS restart.
     Rollback = flip back.</li>
 <li>Test coverage per endpoint mirrors the existing per-endpoint ratelimit Go tests, plus: a
     mixed-database batch asserting per-group attribution, a shared-FG feature-store read
-    asserting the entry project is billed, and a ronsql throttle test (new coverage entirely).</li>
+    asserting the entry project is billed, and a ronsql throttle test (new coverage entirely).
+    <br><span class="tag">AS BUILT</span> The ronsql throttle test shipped
+    (<span class="file">integrationtests/ronsql/ratelimit_test.go</span>), plus a C++ unit test
+    pinning the clip boundary at total lengths 31/32/33/34 against an independent restatement of
+    the Java rule (<span class="file">test/api_key_test.cpp</span>,
+    <code>RateLimitIdentity.*</code>). The mixed-database batch test was not added, since
+    first-op-wins shipped instead of grouping (6.3).</li>
 </ol>
 
 <h2 id="open">10. Open questions (need product/review decisions)</h2>
