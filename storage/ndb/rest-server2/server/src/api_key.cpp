@@ -19,6 +19,7 @@
 
 #include "api_key.hpp"
 #include "config_structs.hpp"
+#include "rate_limit.hpp"
 #include "metadata.hpp"
 #include "ndb_event_utils.hpp"
 #include "pk_data_structs.hpp"
@@ -715,6 +716,15 @@ static void to_lower(std::string &str) {
   }
 }
 
+std::string make_rate_limit_identity(const std::string &project,
+                                     const std::string &username) {
+  std::string identity = project + "_" + username;
+  if (identity.size() > RATE_LIMIT_IDENTITY_MAX_LEN) {
+    identity.resize(RATE_LIMIT_IDENTITY_MAX_LEN - 1);
+  }
+  return identity;
+}
+
 RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
                                      UserDBs *userDBs) {
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
@@ -722,18 +732,26 @@ RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
   // entry per member project of this key's owner, keyed by the project's
   // lowercased name - which is both its online database name and its
   // feature store name (FeaturestoreController.setName lowercases the
-  // project name), so every endpoint resolves with the same lookup. The
-  // identity string must exactly match the online-FS MySQL account
-  // Hopsworks creates for the membership: original-case project name +
-  // "_" + username, clipped to RATE_LIMIT_IDENTITY_MAX_LEN (api_key.hpp).
+  // project name), so every endpoint resolves with the same lookup.
   userDBs->rlIdentities.clear();
   if (!grants.username.empty()) {
     for (const std::string &project : grants.member_projects) {
-      std::string identity = project + "_" + grants.username;
-      if (identity.size() > RATE_LIMIT_IDENTITY_MAX_LEN) {
-        identity.resize(RATE_LIMIT_IDENTITY_MAX_LEN - 1);
-      }
+      std::string identity =
+        make_rate_limit_identity(project, grants.username);
       std::string db = project;
+      to_lower(db);
+      userDBs->rlIdentities.emplace(std::move(db), std::move(identity));
+    }
+    // Databases reached only through a store share are billed to the owner's
+    // project that received the share - the same MySQL account Hopsworks
+    // grants the share to, so shared-store reads land in the bucket their SQL
+    // equivalent already uses instead of running unmetered. emplace() keeps
+    // the membership entry above when a database is both, which is the
+    // stronger relationship.
+    for (const HopsworksSharedDbBilling &shared : grants.shared_db_billing) {
+      std::string identity =
+        make_rate_limit_identity(shared.recipient_project, grants.username);
+      std::string db = shared.db;
       to_lower(db);
       userDBs->rlIdentities.emplace(std::move(db), std::move(identity));
     }
@@ -765,6 +783,34 @@ RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
     for (std::string &column : grant.columns) {
       to_lower(column);
       table_it->second.insert(std::move(column));
+    }
+  }
+  /*
+  RONDB-978: a database this key can reach but has no identity for runs
+  unmetered. Detected here rather than per request: everything needed is a
+  set difference over data this function just built, so request handling
+  pays nothing, and the condition is reported before any request is even
+  made. Only meaningful in username mode - the apikey identity is derived
+  from the key itself and never misses.
+  */
+  if (globalConfigs.rest.enable &&
+      globalConfigs.rateLimit.enable &&
+      globalConfigs.rateLimit.identity == "username") {
+    for (const std::string &db : userDBs->userDBs) {
+      if (userDBs->rlIdentities.find(db) == userDBs->rlIdentities.end()) {
+        report_unmetered_database(db);
+      }
+    }
+    for (const std::string &db : userDBs->visibleDBs) {
+      if (userDBs->rlIdentities.find(db) == userDBs->rlIdentities.end()) {
+        report_unmetered_database(db);
+      }
+    }
+    for (const auto &kvp : userDBs->fineGrants) {
+      if (userDBs->rlIdentities.find(kvp.first) ==
+            userDBs->rlIdentities.end()) {
+        report_unmetered_database(kvp.first);
+      }
     }
   }
   userDBs->m_lastUpdated = lastUpdated;

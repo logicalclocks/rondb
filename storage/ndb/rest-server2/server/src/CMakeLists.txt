@@ -51,6 +51,7 @@ file(GLOB_RECURSE SRC
         pk_read_ctrl.cpp
         pk_read_ctrl.cpp
         prometheus_ctrl.cpp
+        rate_limit.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp
         rdrs_rondb_connection.cpp

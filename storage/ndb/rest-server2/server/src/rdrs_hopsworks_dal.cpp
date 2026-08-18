@@ -18,6 +18,8 @@
  */
 
 #include "rdrs_hopsworks_dal.h"
+
+#include <unordered_map>
 #include "rdrs_dal.hpp"
 #include "error_strings.h"
 #include "logger.hpp"
@@ -809,6 +811,17 @@ RS_Status find_projects_int(
   }
   assert(PROJECT_PROJECTNAME_SIZE ==
          (Uint32)table_dict->getColumn("projectname")->getSizeInBytes());
+  /*
+   * The rows come back in scan order, not in the order of project_team_vec,
+   * so the id has to be read to pair a project with its name. Shared-store
+   * rate limit identities (RONDB-978) need that mapping to turn
+   * shared_feature_store.shared_with_project into a project name.
+   */
+  NdbRecAttr *project_id = scanOp->getValue("id");
+  if (unlikely(project_id == nullptr)) {
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
 
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
@@ -837,6 +850,7 @@ RS_Status find_projects_int(
              projectname_data_start,
              projectname_attr_bytes);
       project.projectname[projectname_attr_bytes] = '\0';
+      project.id = project_id->int32_value();
       project_vec->push_back(project);
 
     } while ((check = scanOp->nextResult(false)) == 0);
@@ -876,8 +890,8 @@ RS_Status find_projects_vec(
 RS_Status find_shared_feature_store_ids_int(
   Ndb *ndb_object,
   std::vector<HopsworksProjectTeam> *project_team_vec,
-  std::vector<int> *shared_store_ids,
-  std::vector<int> *placeholder_store_ids) {
+  std::vector<SharedStoreRef> *shared_store_ids,
+  std::vector<SharedStoreRef> *placeholder_store_ids) {
 
   if (project_team_vec->empty()) {
     return RS_OK;
@@ -934,7 +948,15 @@ RS_Status find_shared_feature_store_ids_int(
   }
   NdbRecAttr *feature_store_id = scanOp->getValue("feature_store");
   NdbRecAttr *shared_entirely = scanOp->getValue("shared_entirely");
-  if (unlikely(feature_store_id == nullptr || shared_entirely == nullptr)) {
+  /*
+   * RONDB-978: which of the caller's own projects received the share. MySQL
+   * grants the share to <RecipientProject>_<username> and bills reads of the
+   * shared database to that account, so RDRS must resolve the same identity
+   * instead of leaving shared-store traffic unmetered.
+   */
+  NdbRecAttr *shared_with = scanOp->getValue("shared_with_project");
+  if (unlikely(feature_store_id == nullptr || shared_entirely == nullptr ||
+               shared_with == nullptr)) {
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
@@ -946,10 +968,13 @@ RS_Status find_shared_feature_store_ids_int(
   bool check;
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
+      SharedStoreRef ref;
+      ref.store_id = feature_store_id->int32_value();
+      ref.recipient_project_id = shared_with->int32_value();
       if (shared_entirely->int8_value() == 1) {
-        shared_store_ids->push_back(feature_store_id->int32_value());
+        shared_store_ids->push_back(ref);
       } else {
-        placeholder_store_ids->push_back(feature_store_id->int32_value());
+        placeholder_store_ids->push_back(ref);
       }
     } while ((check = scanOp->nextResult(false)) == 0);
   }
@@ -1051,14 +1076,15 @@ RS_Status find_feature_store_name_int(Ndb *ndb_object,
  */
 static RS_Status append_store_names_int(
   Ndb *ndb_object,
-  std::vector<int> *store_ids,
-  std::vector<std::string> *db_names) {
+  std::vector<SharedStoreRef> *store_ids,
+  std::vector<std::string> *db_names,
+  std::vector<std::pair<std::string, int>> *resolved) {
 
   for (Uint32 i = 0; i < store_ids->size(); i++) {
     HopsworksProject store_db;
     bool found = false;
     RS_Status status = find_feature_store_name_int(ndb_object,
-                                                   (*store_ids)[i],
+                                                   (*store_ids)[i].store_id,
                                                    &store_db,
                                                    &found);
     if (unlikely(status.http_code != SUCCESS)) {
@@ -1066,6 +1092,12 @@ static RS_Status append_store_names_int(
     }
     if (found) {
       db_names->push_back(store_db.projectname);
+      if (resolved != nullptr) {
+        // Keep the db name paired with the project that received the share
+        // so the caller can build the rate limit identity (RONDB-978).
+        resolved->emplace_back(store_db.projectname,
+                               (*store_ids)[i].recipient_project_id);
+      }
     }
   }
   return RS_OK;
@@ -1744,6 +1776,9 @@ RS_Status find_user_databases_int(
     }
   }
   std::vector<HopsworksProject> project_vec;
+  // id -> original-case name of every project the owner is a member of, used
+  // to name the project that received a store share (RONDB-978).
+  std::unordered_map<int, std::string> member_project_names;
   if (!member_vec.empty()) {
     status = find_projects_vec(ndb_object, &member_vec, &project_vec);
     if (unlikely(status.http_code != SUCCESS)) {
@@ -1752,6 +1787,7 @@ RS_Status find_user_databases_int(
     for (const HopsworksProject &project : project_vec) {
       grants->full_dbs.push_back(project.projectname);
       grants->member_projects.push_back(project.projectname);
+      member_project_names.emplace(project.id, project.projectname);
     }
   }
   if (!restricted_vec.empty()) {
@@ -1770,8 +1806,8 @@ RS_Status find_user_databases_int(
       grants->member_projects.push_back(project.projectname);
     }
   }
-  std::vector<int> shared_store_ids;
-  std::vector<int> placeholder_store_ids;
+  std::vector<SharedStoreRef> shared_store_ids;
+  std::vector<SharedStoreRef> placeholder_store_ids;
   status = find_shared_feature_store_ids_int(ndb_object,
                                              &member_vec,
                                              &shared_store_ids,
@@ -1779,17 +1815,48 @@ RS_Status find_user_databases_int(
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
+  std::vector<std::pair<std::string, int>> shared_dbs;
   status = append_store_names_int(ndb_object,
                                   &shared_store_ids,
-                                  &grants->full_dbs);
+                                  &grants->full_dbs,
+                                  &shared_dbs);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   status = append_store_names_int(ndb_object,
                                   &placeholder_store_ids,
-                                  &grants->visible_dbs);
+                                  &grants->visible_dbs,
+                                  &shared_dbs);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
+  }
+  /*
+   * RONDB-978: turn each share into the rate limit identity MySQL would use.
+   * The recipient project is one of the owner's own memberships, so its name
+   * comes from the project rows already fetched above. A store shared with
+   * several of the owner's projects is ambiguous - REST has no equivalent of
+   * the MySQL client picking credentials - so resolve it deterministically to
+   * the lowest project id, which keeps a given (key, database) on one bucket
+   * across cache reloads and servers.
+   */
+  std::unordered_map<std::string, std::pair<std::string, int>> billing;
+  for (const std::pair<std::string, int> &shared : shared_dbs) {
+    auto name_it = member_project_names.find(shared.second);
+    if (name_it == member_project_names.end()) {
+      // Share to a project that is not a membership of this user: cannot
+      // happen, the scan filtered on the owner's project ids.
+      continue;
+    }
+    auto existing = billing.find(shared.first);
+    if (existing == billing.end() || shared.second < existing->second.second) {
+      billing[shared.first] = std::make_pair(name_it->second, shared.second);
+    }
+  }
+  for (const auto &kvp : billing) {
+    HopsworksSharedDbBilling entry;
+    entry.db = kvp.first;
+    entry.recipient_project = kvp.second.first;
+    grants->shared_db_billing.push_back(std::move(entry));
   }
   return find_fine_grained_grants_int(ndb_object, uid, &member_vec, grants);
 }
@@ -1807,6 +1874,7 @@ RS_Status find_user_databases(int uid, HopsworksUserGrants *grants) {
     grants->fine_grants.clear();
     grants->username.clear();
     grants->member_projects.clear();
+    grants->shared_db_billing.clear();
     status = find_user_databases_int(ndb_object, uid, grants);
     HandleSchemaErrors(ndb_object, status, {
       std::make_tuple(HOPSWORKS, USERS),

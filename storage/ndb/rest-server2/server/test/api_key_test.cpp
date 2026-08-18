@@ -2152,6 +2152,89 @@ TEST_F(APIKeyTest, TestAPIKeyExpiry) {
   stop_api_key_cache();
 }
 
+/*
+RONDB-978: the project-user rate limit identity must be byte-identical to the
+online feature store MySQL account Hopsworks creates for the same (project,
+member), because the two share one kernel rate limit bucket. Hopsworks builds
+it in OnlineFeaturestoreController.onlineDbUsername:
+
+  String username = project + "_" + user;
+  if (username.length() > 32) username = username.substring(0, 32 - 1);
+
+so a 32-character name survives whole and only longer ones are cut - to 31,
+not 32. Both halves are ASCII by construction (project names are
+[a-zA-Z][a-zA-Z0-9_]* of at most 25 chars, FolderNameValidator; usernames are
+[a-z0-9]{8}, PlatformConstants.USERNAME_LEN), so Java's UTF-16 length() and
+our byte size() agree and "byte-identical" is achievable.
+
+These are plain TESTs, not APIKeyTest fixture tests: the rule is a pure
+function, so they need neither a cluster nor seeded test databases.
+*/
+namespace {
+
+// What Hopsworks' Java would produce, restated independently of the code
+// under test.
+std::string hopsworksOnlineDbUsername(const std::string &project,
+                                      const std::string &user) {
+  std::string username = project + "_" + user;
+  if (username.length() > 32) {
+    username = username.substr(0, 32 - 1);
+  }
+  return username;
+}
+
+// 8 chars, exactly what generateUsername("macho@hopsworks.ai") yields: the
+// email local part, stripped to [a-z0-9] and zero-padded to USERNAME_LEN.
+const std::string kUsername = "macho000";
+
+}  // namespace
+
+TEST(RateLimitIdentity, ShortNameIsProjectUnderscoreUsername) {
+  EXPECT_EQ(make_rate_limit_identity("demo0", kUsername), "demo0_macho000");
+  // The project half keeps its original case - the MySQL account does, and
+  // only the map key that finds the identity is lowercased.
+  EXPECT_EQ(make_rate_limit_identity("MyProject", kUsername),
+            "MyProject_macho000");
+}
+
+TEST(RateLimitIdentity, ClipBoundaryMatchesHopsworks) {
+  // project length -> total length before any clip, with an 8-char username
+  const struct {
+    const char *project;
+    size_t total_len;
+  } cases[] = {
+    {"abcdefghijklmnopqrstuv",   31},  // 22 + 1 + 8, under the guard
+    {"abcdefghijklmnopqrstuvw",  32},  // 23 + 1 + 8, ON the guard: kept whole
+    {"abcdefghijklmnopqrstuvwx", 33},  // 24 + 1 + 8, first length that clips
+    {"abcdefghijklmnopqrstuvwxy", 34}, // 25 + 1 + 8, longest possible
+  };
+  for (const auto &c : cases) {
+    const std::string project(c.project);
+    const std::string raw = project + "_" + kUsername;
+    ASSERT_EQ(raw.size(), c.total_len)
+        << "test case is mis-sized for project " << project;
+
+    const std::string identity = make_rate_limit_identity(project, kUsername);
+    EXPECT_EQ(identity, hopsworksOnlineDbUsername(project, kUsername))
+        << "identity diverges from the Hopsworks account for project "
+        << project;
+    EXPECT_EQ(identity.size(), c.total_len <= 32 ? c.total_len : 31u)
+        << "wrong clipped length for project " << project;
+    // Whatever survives must be a prefix of the unclipped name: the clip only
+    // truncates, it never rewrites.
+    EXPECT_EQ(identity, raw.substr(0, identity.size()));
+  }
+}
+
+TEST(RateLimitIdentity, ClipIsExactlyOneShortOfTheMax) {
+  // Guards the off-by-one specifically: 32 stays 32, 33 becomes 31, so 32 is
+  // never a clipped length. "Fixing" the Java off-by-one would break this.
+  const std::string p32("abcdefghijklmnopqrstuvw");   // 23 chars -> total 32
+  const std::string p33("abcdefghijklmnopqrstuvwx");  // 24 chars -> total 33
+  EXPECT_EQ(make_rate_limit_identity(p32, kUsername).size(), 32u);
+  EXPECT_EQ(make_rate_limit_identity(p33, kUsername).size(), 31u);
+}
+
 int main(int argc, char **argv) {
   ndb_init();
   globalConfigsMutex = NdbMutex_Create();

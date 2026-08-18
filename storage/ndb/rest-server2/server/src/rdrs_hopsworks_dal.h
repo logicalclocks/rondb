@@ -51,8 +51,9 @@ typedef struct HopsworksProjectTeam {
   char team_role[PROJECT_TEAM_TEAM_ROLE_SIZE];
 } HopsworksProjectTeam;
 
-// project_team table
+// project table
 typedef struct HopsworksProject {
+  int id;
   char projectname[PROJECT_PROJECTNAME_SIZE];
 } HopsworksProject;
 
@@ -66,6 +67,24 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 
 #include <string>
 #include <vector>
+
+// A shared_feature_store row reduced to what the caller needs: the shared
+// store and which of the API key owner's own projects received the share.
+struct SharedStoreRef {
+  int store_id;
+  int recipient_project_id;
+};
+
+// A database the user reaches only through a share, paired with the project
+// of theirs that received it (RONDB-978). Hopsworks grants the share to the
+// MySQL account "<RecipientProject>_<username>"
+// (OnlineFeaturestoreController.shareOnlineFeatureStore), so SQL reads of the
+// shared database are billed to that account; RDRS bills the same bucket so
+// shared-store REST traffic is metered identically instead of running free.
+struct HopsworksSharedDbBilling {
+  std::string db;                 // the shared store's database name
+  std::string recipient_project;  // original-case name of the receiving project
+};
 
 // One fine-grained data grant: a single online table the user may read,
 // either entirely (columns empty) or restricted to the listed columns.
@@ -97,6 +116,11 @@ struct HopsworksUserGrants {
   // "<ProjectName>_<username>" for. Unlike full_dbs this excludes shared
   // stores and preserves case (RONDB-978 rate limit identities).
   std::vector<std::string> member_projects;
+  // Databases reachable only through a store share, each with the receiving
+  // member project that determines the rate limit identity (RONDB-978).
+  // A database that is also one of the owner's own projects never appears
+  // here - membership always wins.
+  std::vector<HopsworksSharedDbBilling> shared_db_billing;
 };
 
 /*

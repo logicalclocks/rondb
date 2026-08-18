@@ -92,6 +92,15 @@ the accounts Hopsworks provisions.
 constexpr size_t RATE_LIMIT_IDENTITY_MAX_LEN = 32;
 
 /*
+Builds that identity for one (project, member) pair. project must carry
+the project's ORIGINAL case (the MySQL account does) while username is
+hopsworks.users.username. The clip boundary is covered by
+test/api_key_test.cpp - change it there first if it ever has to move.
+*/
+std::string make_rate_limit_identity(const std::string &project,
+                                     const std::string &username);
+
+/*
 Rate limit identities resolved during authentication (username mode).
 Scoped to ONE api key, i.e. one owning user: each entry maps a database
 the request referenced to the identity of the KEY'S OWNER acting in
@@ -134,9 +143,12 @@ class UserDBs {
   std::unordered_map<std::string,
     std::unordered_map<std::string,
       std::unordered_set<std::string>>> fineGrants;
-  // Precomputed project-user rate limit identities (RONDB-978):
-  // lowercased db (member project's online db and its "_featurestore"
-  // db) -> clip31(ProjectName + "_" + username)
+  // Precomputed project-user rate limit identities (RONDB-978): one entry
+  // per member project, keyed by the project's lowercased name - which
+  // serves both the online db of pk-read/scan URLs and the feature store
+  // name of feature-store requests. Value is
+  // make_rate_limit_identity(ProjectName, username). RDRS never bills the
+  // Hive offline "<project>_featurestore" db, so it has no entry.
   std::unordered_map<std::string, std::string> rlIdentities;
   NDB_TICKS m_lastUsed;
   NDB_TICKS m_lastUpdated;
