@@ -598,8 +598,29 @@ RS_Status RDRSRonDBConnection::Reconnect() {
                                         0, // default stack size
                                         "reconnection_thread",
                                         NDB_THREAD_PRIO_MEAN);
-  if (reconnectionThread == nullptr) {
-    rdrs_logger::error("Failed to start reconnection thread");
+  if (unlikely(reconnectionThread == nullptr)) {
+    /* No thread will run the handler, so nothing would ever clear
+     * is_reconnection_in_progress - and while it is set, GetNdbObject
+     * refuses to hand out objects, /health reports unhealthy and
+     * Shutdown(true) waits its full 300s. That would wedge the server
+     * permanently on a transient thread-creation failure. Clear the flag so
+     * the next cluster-unavailability status starts a fresh attempt.
+     *
+     * The generation bump above is deliberately NOT undone: it is monotonic
+     * and other threads may already have read it. The only consequence is
+     * that objects acquired under the previous generation are handed back to
+     * the connection once instead of being re-cached.
+     *
+     * Returning before notifyReconnectListeners() as well: no teardown is
+     * waiting for the watchers' Ndb objects, so making them drop their
+     * event subscriptions would be pointless churn. */
+    stats.is_reconnection_in_progress = false;
+    NdbMutex_Unlock(connectionMutex);
+    NdbMutex_Unlock(connectionInfoMutex);
+    rdrs_logger::error(
+      std::string(rdrsErrorMessage(ERROR_RONDB_RECONNECT_THREAD_FAILED)));
+    return RS_SERVER_ERROR(
+      std::string(rdrsErrorMessage(ERROR_RONDB_RECONNECT_THREAD_FAILED)));
   }
   NdbMutex_Unlock(connectionMutex);
   NdbMutex_Unlock(connectionInfoMutex);
