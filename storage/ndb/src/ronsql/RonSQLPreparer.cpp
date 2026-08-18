@@ -29,6 +29,7 @@
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
 #include <iostream>
+#include <sstream>
 #include "define_formatter.hpp"
 #include "my_time.h"
 #include "mysql_time.h"
@@ -946,11 +947,18 @@ RonSQLPreparer::execute()
     m_trans = DBG(ndb->startTransaction());
     require_run(m_trans != NULL, "Failed to start transaction.");
     if (m_conf.rate_limit_identity != NULL) {
-      // RONDB-978: tag the transaction so the data nodes account this
-      // query's usage against the caller's USER rate limits.
+      /*
+       * RONDB-978: tag the transaction so the data nodes account this query's
+       * usage against the caller's USER rate limits. This also fails while the
+       * caller's client-side rate overflow backoff window is open, so it is a
+       * require_run: the Ndb error investigation turns the rate overflow into
+       * a RonSQLRateLimitError and everything else into the usual
+       * temporary/permanent verdict.
+       */
       require_run(m_trans->setUserId(m_conf.rate_limit_identity,
                                      m_conf.rate_limit_identity_len) == 0,
-                  "Failed to set rate limit identity on transaction.");
+                  "Rejected or failed to set the rate limit identity on the"
+                  " transaction.");
     }
     // Since ndb exists, m_table should have been initialized in load()
     ndbrequire(m_table != NULL);
@@ -1103,11 +1111,46 @@ std::ostream& operator<<(std::ostream& os, const NdbError& err) {
   return os;
 }
 
+/*
+ * RONDB-978: Ndb errors that mean "the caller is over its USER rate limit or
+ * quota", i.e. the request was rejected on the caller's behalf rather than
+ * failing. They arrive both from NdbTransaction::setUserId (which reports the
+ * rate overflow directly while the client-side backoff window is open) and
+ * from the aggregation scan itself when a data node rejects operations.
+ *
+ * Keep this set in sync with the 429 set in the RDRS status mapping
+ * (rest-server2/server/src/status.hpp, __RONDB_ERROR_CODE_HTTP_CODE, which
+ * stays the single source of truth for the HTTP code). A code missing here is
+ * only retried needlessly; it cannot produce a wrong HTTP code, because the
+ * caller maps the code carried by the exception through that same mapping.
+ */
+static inline bool
+is_rate_limit_error(int ndb_error_code)
+{
+  switch (ndb_error_code) {
+  case 243:   // TcKeyRef::WriteRateOverflowError
+  case 2203:  // TcKeyRef::ReadRateOverflowError
+  case 247:   // too many operations in a transaction for the quota
+  case 248:   // too many concurrent transactions for the quota
+    return true;
+  default:
+    return false;
+  }
+}
+
 void
 RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
   std::basic_ostream<char>& err = *m_conf.err_stream;
   try {
     std::rethrow_exception(eptr);
+  }
+  catch (const RonSQLRateLimitError& e) {
+    // This exception type inherits from std::runtime_error, but we don't want
+    // it caught below: the Ndb error has already been classified and the code
+    // it carries must not be re-derived from a closed transaction.
+    DEB_TRACE(); err << "Error handling: RLE\n";
+    cleanup_trans();
+    throw;
   }
   catch (const RonSQLRetryableError& e) {
     // This exception type inherits from std::runtime_error, but we don't want
@@ -1154,7 +1197,35 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       cleanup_trans();
       throw RonSQLPermanentError("No NDB object");
     }
+    /*
+     * Render the Ndb error BEFORE releasing the transaction. getNdbError()
+     * runs ndberror_update(), so message points into the static error table
+     * and is safe indefinitely - but details is left as-is and can point into
+     * storage owned by the transaction, which cleanup_trans() frees. Streaming
+     * the struct afterwards would then be a use-after-free. The scalars (code,
+     * status, classification, mysql_code) are all the verdict below needs.
+     */
+    std::ostringstream ndb_err_text;
+    ndb_err_text << ndb_err;
     cleanup_trans();
+    /*
+     * RONDB-978: a rate limit rejection is the caller's quota being enforced,
+     * not a failure of this query. Report it as such and never retry: the
+     * client-side backoff window outlives our retry budget, so retrying can
+     * only add load to a bucket that is already overflowing.
+     *
+     * Only when this query was tagged with a rate limit identity, which is
+     * what gives it a bucket to overflow in the first place. That keeps
+     * RonSQLRateLimitError reachable only for callers that opted into
+     * tagging, so embedders which did not (ronsql_cli) keep seeing exactly
+     * the two exception types they handle.
+     */
+    if (m_conf.rate_limit_identity != NULL &&
+        is_rate_limit_error(ndb_err.code)) {
+      DEB_TRACE();
+      err << "->RLE\n" << ndb_err_text.str() << '\n';
+      throw RonSQLRateLimitError(e.what(), ndb_err.code);
+    }
     bool temporary = false;
     // Decide whether to unload and whether the error is temporary
     if (ndb_err.classification == NdbError::Classification::SchemaError) {
@@ -1172,11 +1243,11 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // exception with a new error type.
     if (temporary) {
       DEB_TRACE();
-      err << "->RRE\n" << ndb_err << '\n';
+      err << "->RRE\n" << ndb_err_text.str() << '\n';
       throw RonSQLRetryableError(e.what());
     }
     DEB_TRACE();
-    err << "->RPE\n" << ndb_err << '\n';
+    err << "->RPE\n" << ndb_err_text.str() << '\n';
     throw RonSQLPermanentError(e.what());
   }
   catch (...) {
