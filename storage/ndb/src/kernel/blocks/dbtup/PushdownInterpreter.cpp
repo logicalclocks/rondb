@@ -291,7 +291,8 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
       if (bc_off < prog_len) {
         void *handle = nullptr;
         void *entry = dbtup_jit_compile_agg(agg_prog + bc_off,
-                                            prog_len - bc_off, &handle);
+                                            prog_len - bc_off, &handle,
+                                            result.agg->prog_reusable());
         if (entry != nullptr) {
           result.agg->setJitEntry(reinterpret_cast<JitEntry>(entry));
           result.agg->setJitCacheHandle(handle);

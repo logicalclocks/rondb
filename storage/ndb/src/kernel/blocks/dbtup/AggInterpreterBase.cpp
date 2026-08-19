@@ -520,8 +520,14 @@ void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
     *compatible = false;
     return;
   }
-  assert((prog[3] & 0x80000000) == 0);
-  assert(prog[3] == 0);
+  /* prog[3]: flags word. Bit 0 (AGG_PROG_FLAG_REUSABLE) marks a program
+   * the client re-sends across executions (RonSQL / prepared
+   * statements) — the JIT compile then pins the blob in the reuse
+   * cache (Phase 8 Slice 4). Bit 31 is the vector-search type marker
+   * and never set here (DetectType routes those before Init). All
+   * other bits reserved-zero. */
+  m_prog_reusable = (prog[3] & AGG_PROG_FLAG_REUSABLE) != 0;
+  assert((prog[3] & ~(Uint32)AGG_PROG_FLAG_REUSABLE) == 0);
 
   assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
   assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);

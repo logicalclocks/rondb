@@ -194,7 +194,26 @@ Recommended order:
      simplified to `m_num_leaves == 1`. The `ndb_jit_arena` *library* stays
      (substrate under `jit_codemem`); only per-block instances are gone.
      **Phase 8 item #1 COMPLETE — the ship blocker is fully resolved.**
-   - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
+   - **Slice 4 — RonSQL reusable-program pinning DONE (2026-08-19,
+     pending verify).** The reserved aggregation-header word `prog[3]`
+     became a flags word: `AGG_PROG_FLAG_REUSABLE` (bit 0,
+     `NdbAggregationCommon.hpp`) = "client re-sends this program".
+     `NdbAggregator::set_reusable_program(true)` sets it (RonSQLPreparer
+     marks its aggregators; mysqld never does → ad-hoc SQL unpinned);
+     `peekProgramHeader` parses it; `PushdownInterpreterFactory::Create`
+     passes it as the agg-cache acquire's `pinned` → the entry survives
+     refcount 0 and re-sent identical RonSQL programs cache-hit instead
+     of recompiling. Old release-build nodes ignore the bit (only
+     DetectType's bit 31 is read); the join-agg proxy path has no cache
+     and ignores it. Full detail: `phase_8_code_memory_manager.md`
+     Slice 4. **Verify:** rebuild (API + kernel: NdbAggregator,
+     RonSQLPreparer, ndbmtd), run the same RonSQL aggregation twice via
+     `ronsql_cli`/RDRS with pauses between, check `ndbinfo.jit`:
+     `programs_cached` stays ≥ 1 after the first run completes and
+     `programs_reused` bumps on the second; a plain mysqld
+     `SELECT SUM(...)` still drops `programs_cached` back after the
+     scan ends (unpinned). Host `progcache_tests` already covers
+     pinned-survives-refcount-0.
 2. **Config param `CompiledInterpreter` — DONE (2026-06-22).** New
    `[DB]` config.ini parameter `CompiledInterpreter` (`CI_ENUM`,
    `CFG_DB_COMPILED_INTERPRETER=708` post-merge, was 705): **OFF** =

@@ -209,9 +209,13 @@ void dbtup_jit_release_scan_filter(void *cache_handle);
  * out_cache_handle (nullable) receives the handle to pass to
  * dbtup_jit_release_agg when the interpreter is torn down. Used only for
  * scalar (n_gb_cols == 0) programs — the dispatch gate never runs the
- * JIT entry for GROUP BY. */
+ * JIT entry for GROUP BY. `pinned` (from the program's
+ * AGG_PROG_FLAG_REUSABLE header bit — RonSQL / prepared statements)
+ * keeps the entry cached at refcount 0 so a re-sent identical program
+ * hits instead of recompiling (Phase 8 Slice 4); sticky on an existing
+ * entry, never downgraded. */
 void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
-                            void **out_cache_handle);
+                            void **out_cache_handle, bool pinned);
 
 /* Release an agg program acquired by dbtup_jit_compile_agg. Drops the
  * reuse-cache refcount; the blob + code-memory slot are freed when the

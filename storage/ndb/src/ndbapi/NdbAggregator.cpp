@@ -127,6 +127,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   table_impl_(nullptr), n_gb_cols_(0), n_agg_results_(0),
   agg_results_(nullptr), gb_map_(nullptr),
   finalized_(false), finished_(false),
+  reusable_program_(false),
   curr_prog_pos_(PROGRAM_HEADER_SIZE),
   instructions_length_(PROGRAM_HEADER_SIZE),
   result_record_fetched_(false),
@@ -1340,8 +1341,8 @@ bool NdbAggregator::Finalize() {
   buffer_[1] = n_gb_cols_ << 16 | n_agg_results_;
   buffer_[2] = PUSHDOWN_AGGREGATION_VERSION;
 
-  // Initialize the next 5 reserved Uint32 elements to 0
-  buffer_[3] = 0;
+  // prog[3] carries the flag bits (AGG_PROG_FLAG_*); [4..7] reserved 0.
+  buffer_[3] = reusable_program_ ? AGG_PROG_FLAG_REUSABLE : 0;
   buffer_[4] = 0;
   buffer_[5] = 0;
   buffer_[6] = 0;

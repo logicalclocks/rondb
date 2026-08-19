@@ -684,7 +684,7 @@ static NdbJitProgCache *agg_cache() {
 }
 
 void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
-                            void **out_cache_handle) {
+                            void **out_cache_handle, bool pinned) {
   if (out_cache_handle != nullptr) {
     *out_cache_handle = nullptr;
   }
@@ -699,10 +699,17 @@ void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
   if (cache == nullptr) {
     return nullptr;
   }
+  /* Phase 8 Slice 4: `pinned` comes from the program's
+   * AGG_PROG_FLAG_REUSABLE header bit (RonSQL / prepared statements).
+   * A pinned entry is retained at refcount 0, so the next execution of
+   * the identical program is a cache hit instead of a recompile; the
+   * cache upgrades an existing entry to pinned and never downgrades.
+   * Bounded by the code-memory cap: on OOM new compiles fail and fall
+   * back (a memory-pressure sweep is future work). */
   NdbJitProgItem item;
   NjpEntry *handle = ndb_jit_progcache_acquire(
       cache, reinterpret_cast<const uint8_t *>(agg_prog),
-      n_words * (Uint32)sizeof(Uint32), /*pinned=*/0, &item);
+      n_words * (Uint32)sizeof(Uint32), pinned ? 1 : 0, &item);
   if (handle == nullptr) {
     return nullptr;
   }

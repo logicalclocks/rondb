@@ -67,6 +67,19 @@ struct CHARSET_INFO;
 
 #define PUSHDOWN_AGGREGATION_VERSION 3
 
+/* prog[3] flag bits for aggregation programs (vector-search programs use
+ * bit 31 as their type marker in PushdownInterpreterFactory::DetectType;
+ * all other bits are reserved-zero).
+ *
+ * Bit 0 (AGG_PROG_FLAG_REUSABLE): the client expects to re-send this
+ * exact program across executions (RonSQL / prepared statements). The
+ * data node then pins the JIT-compiled form in its program-reuse cache
+ * so it survives refcount 0 and re-executions skip recompilation
+ * (RONDB-1056 Phase 8 Slice 4). A pre-Slice-4 data node does not read
+ * prog[3] for aggregation programs in release builds, so the bit
+ * degrades harmlessly to "not pinned". */
+#define AGG_PROG_FLAG_REUSABLE 0x1
+
 /*
  * kOpEmbeddedInterp writes its control result through interpreter output
  * slot 0.  Normal CASE lowering writes a forward skip offset.  This

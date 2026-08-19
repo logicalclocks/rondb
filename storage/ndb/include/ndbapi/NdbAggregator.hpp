@@ -258,6 +258,14 @@ class NdbAggregator {
   bool finalized() const {
     return finalized_;
   }
+  /* Mark the program as intended for repeated execution (RonSQL /
+   * prepared statements): Finalize() then sets AGG_PROG_FLAG_REUSABLE
+   * in prog[3] and the data node pins the JIT-compiled form in its
+   * reuse cache, so re-sending the identical program skips
+   * recompilation. Call before Finalize(); default off. */
+  void set_reusable_program(bool v) {
+    reusable_program_ = v;
+  }
   bool finished() const {
     return finished_;
   }
@@ -472,6 +480,7 @@ class NdbAggregator {
 
   bool finalized_;
   bool finished_;
+  bool reusable_program_;
   Uint32 curr_prog_pos_;
   Uint32 instructions_length_;
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>::iterator iter_;

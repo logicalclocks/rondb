@@ -139,7 +139,7 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_attr_read_buf(nullptr), m_prog_buf(nullptr),
       m_gb_cols_buf(nullptr), m_agg_results_buf(nullptr),
       m_gb_map_buf(nullptr), m_buf_block(nullptr),
-      m_tearing_down(false),
+      m_tearing_down(false), m_prog_reusable(false),
       m_chunks(nullptr), m_chunks_tail(nullptr),
       m_current_chunk(nullptr), m_total_chunk_bytes(0),
       m_memory_budget(0), m_budget_increment(0),
@@ -222,6 +222,10 @@ class AggInterpreterBase : public PushdownInterpreter {
   static constexpr Uint16 AVG_NO_HIDDEN = 0xFFFF;
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* prog[3] AGG_PROG_FLAG_REUSABLE — the client re-sends this program
+   * across executions (RonSQL); the JIT compile pins its blob in the
+   * reuse cache (Phase 8 Slice 4). */
+  bool prog_reusable() const { return m_prog_reusable; }
 
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
@@ -638,6 +642,9 @@ class AggInterpreterBase : public PushdownInterpreter {
    * read by callers / asserts.  Drives the CONTINUEB-driven release
    * path described above on the public interface. */
   bool m_tearing_down;
+  /* prog[3] bit 0 (AGG_PROG_FLAG_REUSABLE), parsed in
+   * peekProgramHeader — see prog_reusable(). */
+  bool m_prog_reusable;
 
   /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
    * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;

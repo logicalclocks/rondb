@@ -184,7 +184,29 @@ Sharded refcounted hash so identical bytecode reuses one compiled blob.
   substrate under the code-memory manager (`jit_codemem` lives in it) —
   only the per-block *instances* are gone. Pure deletion, no behavior
   change. **Phase 8 item #1 (code-memory manager) is complete.**
-- **4 — RonSQL PREPARE** pinned acquire at prepare / release at deallocate.
+- **4 — RonSQL reusable-program pinning.** ✅ done (2026-08-19, pending
+  verify). The original sketch ("pinned acquire at PREPARE / release at
+  DEALLOCATE") assumed a client-side prepared-statement lifecycle that
+  could reach the data node — but RDRS has no statement cache (every
+  RonSQL request parses + executes fresh) and there is no prepare
+  message to data nodes. Shipped realization: the aggregation program
+  header's reserved `prog[3]` word became a flags word —
+  `AGG_PROG_FLAG_REUSABLE` (bit 0, `NdbAggregationCommon.hpp`) means
+  "the client re-sends this exact program across executions".
+  `NdbAggregator::set_reusable_program(true)` sets it at Finalize;
+  RonSQLPreparer marks both its standalone and join-leaf aggregators
+  (join path has no cache and ignores it). The data node parses the bit
+  in `peekProgramHeader` (`AggInterpreterBase::m_prog_reusable`), and
+  `PushdownInterpreterFactory::Create` passes it as the acquire's
+  `pinned` — the entry survives refcount 0, so the next identical
+  RonSQL request cache-hits instead of recompiling. Sticky upgrade on
+  hit (verified in `jit_progcache.c` acquire). mysqld's pushed
+  aggregation never sets the bit → ad-hoc SQL stays unpinned.
+  Rolling-upgrade note: an old data node ignores `prog[3]` for
+  aggregation programs in release builds (only DetectType's bit 31 is
+  read), so the bit degrades to "not pinned"; debug builds asserted
+  `prog[3] == 0` (now a masked assert). Bounded by the 16 MB code cap;
+  memory-pressure sweep of pinned entries remains future work.
 
 ## Cross-thread publication (orthogonal, pre-existing)
 
