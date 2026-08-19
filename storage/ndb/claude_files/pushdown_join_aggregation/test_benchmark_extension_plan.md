@@ -684,3 +684,66 @@ clients and ORMs that prepend tracing tags or hint comments. On shipping:
 flip the two `ronsql_parser_cte` comment rejection-asserts to
 accept-cases (including comments interleaved with the WITH list) and
 add an unterminated-`/*` error case.
+
+## 8. Candidate future test phases (not yet planned in detail)
+
+Ordered by expected value. P0 belongs to the bug-fix phase; P1 items are
+justified by findings from THIS exercise; P2/P3 round out coverage.
+
+### P0 — post-fix regression re-enables (rides the fix phase)
+Each §5b probe carries its ready-made regression query: dtw-19b
+(scalar-CTE MIN), ronsql_cte_subquery Test 4 (NOT EXISTS × CTE-join) and
+Test 7 (DECIMAL scalar subquery), big-07 (anti-join + INNER CTE join),
+big-06 (8-node RDRS crash). On each fix: re-enable, extend to the
+shape's neighbors (e.g. after the MIN-merge fix: scalar MAX/SUM/COUNT/
+string-MIN over adversarial placements), re-record ×5.
+
+### P1a — scalar-CTE merge matrix family (`body_scalarmerge.inc`, ×5)
+The MIN polarity bug proved `mergeScalarAccumulators` is under-tested:
+it has ONE merge site per aggregate kind × type family and correctness
+currently depends on row placement. A family that sweeps scalar CTEs
+(no GROUP BY) over MIN/MAX/SUM/COUNT × int widths / DECIMAL(0 and 2) /
+FLOAT-MINMAX / CHAR / VARCHAR / DATE, with the extreme value planted in
+MANY different PK positions (different fragments → different scan
+nodes) so every case forces cross-node merges regardless of topology.
+Also: all-NULL-on-one-node cases, empty-CTE scalar cases, and the I.17
+watermark GREATEST over two scalar CTEs at 6/8 nodes.
+
+### P1b — subquery boundary + limits (`ronsql_subquery_limits.test`)
+The 1000-row caps in execute_subqueries (IN-subquery values, correlated
+pairs) are untested boundaries: assert 1000 passes and 1001 rejects
+cleanly for both, plus a deep WITH-list count bound and a
+many-CTE-columns bound (parser-stack analogues of the existing paren
+nesting case).
+
+### P1c — ORDER BY / LIMIT on aggregate join/CTE queries (×5)
+ronsql_orderby_limit_plan.md Phase 1 remains open: ORDER BY on join/CTE
+aggregate mains is only spot-tested (big-12). A family covering
+multi-target ASC/DESC mixes, alias vs GROUP-BY-column targets, tie
+determinism, LIMIT 0/1/exact-group-count boundaries, and string
+GROUP-BY keys under charset ordering.
+
+### P2 — coverage rounding
+- **Charset/collation matrix**: MIN/MAX + GROUP BY keys + CTE string
+  join keys over utf8mb4 vs latin1 and a case-insensitive collation
+  (S.2 charset-aware merge is only default-collation-tested).
+- **Empty/NULL shape matrix**: empty CTE body × {lookup child, scan
+  root, LEFT child, anti-join} ×5 topologies (chain family covers only
+  the chained variant).
+- **FRAGS_PER_WORKER × new families**: K=2/4/8 wrapper variants of
+  dtwide/bigquery via $RONSQL_PREFIX (bundling under the new shapes).
+- **JSON output format**: the compare harness pins TEXT only; CTE/agg
+  queries with outputFormat JSON/JSON_ASCII + operationId.
+- **Go unit tests** (tools/rondb-cli): parseRonSQLPhases, key
+  substitution, registry envelope sanity.
+
+### P3 — hard-to-harness
+- **Concurrency**: parallel RonSQL CTE queries against one RDRS
+  (join-agg state pool contention, mutex-free build), teardown under
+  load (4c), schema-change-during-query retry (RonSQLMaybeStaleSchema).
+- **HA**: data-node restart during CTE materialization / JOIN_AGG
+  phases — must produce clean retryable errors, never hangs; API
+  disconnect mid-query (RELEASE cleanup).
+- **Scale**: bigquery-family shapes at ronsql_large lg_* scale (20k+
+  groups; D6 territory).
+- **B5 data-node phase counters**: tests arrive with that feature.
