@@ -1,0 +1,1 @@
+--source suite/ronsql_cte/include/body_bigquery.inc

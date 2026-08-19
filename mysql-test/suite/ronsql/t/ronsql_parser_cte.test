@@ -1,0 +1,371 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Parser coverage for the grammar added by the CTE / pushdown-join-agg
+# work: WITH clauses, JOIN ... ON, GREATEST/LEAST, CASE, IS [NOT] NULL,
+# index hints, and the FRAGS_PER_WORKER statement head.  Complements
+# ronsql_parsing.test, which covers the lexer and the single-table
+# grammar only.
+#
+# Three sections:
+#   (a) pure parse errors — via ronsql_cli WITHOUT a connect string
+#       (--explain-mode=FORCE needs no Ndb); these fail in the lexer/
+#       parser before any schema access.
+#   (b) parse-accept + plan shape — via ronsql_cli WITH a connect
+#       string and --explain-mode=FORCE over two tiny tables; the
+#       recorded EXPLAIN output doubles as a plan regression.
+#   (c) prepare-time rejections — schema-dependent rejects (ambiguous
+#       CTE/table name, hint on a joined table, partial-key CTE join).
+#
+# See test_benchmark_extension_plan.md (Phase T3).
+
+--echo
+--echo === Create tables for parser tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE pt1 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  c INT NOT NULL,
+  PRIMARY KEY USING HASH (a)
+) ENGINE=NDB;
+CREATE INDEX idx_pt1_b ON pt1 (b);
+
+CREATE TABLE pt2 (
+  k INT NOT NULL,
+  grp INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (k)
+) ENGINE=NDB;
+CREATE INDEX idx_pt2_grp ON pt2 (grp);
+
+INSERT INTO pt1 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40);
+INSERT INTO pt2 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 300), (4, 2, 400);
+
+--enable_warnings
+--enable_query_log
+
+--let PARSE_ERR=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 -e
+--let PARSE_OK=$RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT --explain-mode=FORCE 2>&1 -e
+--let PARSE_REJECT=$RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT --explain-mode=FORCE 2>&1 -e
+# EXEC_REJECT executes (no EXPLAIN FORCE): rejections raised on the emit
+# path (execute_join / emit_child_ops, e.g. I.16a) never fire under
+# EXPLAIN — FORCE prints the would-be plan instead.  Same pattern as the
+# ronsql_cte suite's rejection-asserts.
+--let EXEC_REJECT=$RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT 2>&1 -e
+--let QUERY_FILE=$MYSQL_TMP_DIR/parser_query.sql
+--let PARSE_ERR_FILE=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 --execute-file $QUERY_FILE
+--let PARSE_OK_FILE=$RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT --explain-mode=FORCE 2>&1 --execute-file $QUERY_FILE
+
+--echo
+--echo ===== Section (a): pure parse errors (no schema needed) =====
+
+--echo ===== WITH: missing parens around body =====
+--error 1
+--exec $PARSE_ERR 'WITH x AS SELECT COUNT(*) FROM t SELECT MAX(x.n) FROM x;'
+
+--echo ===== WITH: missing AS =====
+--error 1
+--exec $PARSE_ERR 'WITH x (SELECT COUNT(*) FROM t) SELECT MAX(x.n) FROM x;'
+
+--echo ===== WITH: missing CTE name =====
+--error 1
+--exec $PARSE_ERR 'WITH AS (SELECT COUNT(*) FROM t) SELECT MAX(x.n) FROM x;'
+
+--echo ===== WITH: trailing comma in CTE list =====
+--error 1
+--exec $PARSE_ERR 'WITH x AS (SELECT COUNT(*) AS n FROM t), SELECT MAX(x.n) FROM x;'
+
+--echo ===== WITH: unterminated body paren =====
+--error 1
+--exec $PARSE_ERR 'WITH x AS (SELECT COUNT(*) AS n FROM t SELECT MAX(x.n) FROM x;'
+
+--echo ===== WITH: missing main SELECT =====
+--error 1
+--exec $PARSE_ERR 'WITH x AS (SELECT COUNT(*) AS n FROM t);'
+
+--echo ===== WITH: empty body =====
+--error 1
+--exec $PARSE_ERR 'WITH x AS () SELECT MAX(x.n) FROM x;'
+
+--echo ===== WITH: reserved keyword as CTE name =====
+--error 1
+--exec $PARSE_ERR 'WITH select AS (SELECT COUNT(*) AS n FROM t) SELECT MAX(n) FROM select;'
+
+--echo ===== JOIN: missing ON clause =====
+--error 1
+--exec $PARSE_ERR 'SELECT COUNT(*) FROM t JOIN u;'
+
+--echo ===== JOIN: missing table before ON =====
+--error 1
+--exec $PARSE_ERR 'SELECT COUNT(*) FROM t JOIN ON u.a = t.a;'
+
+--echo ===== JOIN: implicit table alias rejected =====
+--error 1
+--exec $PARSE_ERR 'SELECT COUNT(*) FROM t x JOIN u AS y ON y.a = x.a;'
+
+--echo ===== CASE without END =====
+--error 1
+--exec $PARSE_ERR 'SELECT SUM(CASE WHEN a > 1 THEN 1 ELSE 0) FROM t;'
+
+--echo ===== CASE without WHEN =====
+--error 1
+--exec $PARSE_ERR 'SELECT SUM(CASE THEN 1 ELSE 0 END) FROM t;'
+
+# CASE is an aggregate-argument expression only (RonSQLParser.y arith_expr
+# production, Phase I.4); a CASE used as a WHERE predicate is not in the
+# grammar.
+--echo ===== CASE as a WHERE predicate is not in the grammar =====
+--error 1
+--exec $PARSE_ERR 'SELECT COUNT(*) FROM t WHERE CASE WHEN a > 1 THEN 1 ELSE 0 END = 1;'
+
+--echo ===== Index hint: missing parens =====
+--error 1
+--exec $PARSE_ERR 'SELECT COUNT(*) FROM t FORCE INDEX idx;'
+
+--echo ===== FRAGS_PER_WORKER: missing value =====
+--error 1
+--exec $PARSE_ERR 'FRAGS_PER_WORKER SELECT COUNT(*) FROM t;'
+
+--echo ===== FRAGS_PER_WORKER: non-integer value =====
+--error 1
+--exec $PARSE_ERR 'FRAGS_PER_WORKER = abc SELECT COUNT(*) FROM t;'
+
+--echo ===== FRAGS_PER_WORKER: missing value after equals =====
+--error 1
+--exec $PARSE_ERR 'FRAGS_PER_WORKER = SELECT COUNT(*) FROM t;'
+
+# RonSQL's lexer has no comment rules at all (RonSQLLexer.l skips only
+# whitespace), so every SQL comment form is a syntax error.  Assert that
+# current behavior; if comment support is ever added, flip these to
+# accept-cases in section (b).
+--echo ===== Comments not supported: block comment =====
+--error 1
+--exec $PARSE_ERR 'SELECT COUNT(*) /* comment */ FROM t;'
+
+--echo ===== Comments not supported: line comment =====
+--write_file $QUERY_FILE
+SELECT COUNT(*) -- a line comment
+FROM t;
+EOF
+--error 1
+--exec $PARSE_ERR_FILE
+--remove_file $QUERY_FILE
+
+--echo
+--echo ===== Section (b): parse-accept + plan shape (EXPLAIN FORCE with schema) =====
+
+--echo ===== Basic WITH + complete-key CTE join, aggregating main =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt, SUM(val) AS s
+  FROM pt2 GROUP BY grp)
+SELECT p.b, COUNT(*), SUM(agg2.cnt), SUM(agg2.s)
+FROM pt1 AS p JOIN agg2 ON agg2.g = p.b
+GROUP BY p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Keyword case-mixing =====
+--write_file $QUERY_FILE
+WiTh agg2 aS (
+  SeLeCt grp AS g, CoUnT(*) As cnt
+  FrOm pt2 GrOuP By grp)
+sElEcT MAX(agg2.cnt), CoUnT(*)
+fRoM pt1 AS p jOiN agg2 oN agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Backtick-quoted CTE name and aliases =====
+--write_file $QUERY_FILE
+WITH `my cte` AS (
+  SELECT grp AS `the group`, COUNT(*) AS `row count`
+  FROM pt2 GROUP BY grp)
+SELECT MAX(`my cte`.`row count`), COUNT(*)
+FROM pt1 AS `p 1` JOIN `my cte` ON `my cte`.`the group` = `p 1`.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Whitespace torture =====
+--write_file $QUERY_FILE
+   WITH
+	agg2
+ AS
+	(
+ SELECT    grp	AS g ,COUNT( * )	AS cnt
+	FROM pt2	GROUP	BY grp
+ )
+	SELECT MAX( agg2 . cnt ) , COUNT(*)
+FROM pt1 AS p
+	JOIN agg2 ON agg2 . g = p . b ;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Three sibling CTEs =====
+--write_file $QUERY_FILE
+WITH c1 AS (SELECT grp AS g, COUNT(*) AS n FROM pt2 GROUP BY grp),
+     c2 AS (SELECT grp AS g, SUM(val) AS s FROM pt2 GROUP BY grp),
+     c3 AS (SELECT grp AS g, MAX(val) AS m FROM pt2 GROUP BY grp)
+SELECT COUNT(*), SUM(c1.n), SUM(c2.s), MAX(c3.m)
+FROM pt1 AS p
+JOIN c1 ON c1.g = p.b
+JOIN c2 ON c2.g = p.b
+JOIN c3 ON c3.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Chained CTE-of-CTE =====
+--write_file $QUERY_FILE
+WITH base AS (SELECT grp AS g, SUM(val) AS s FROM pt2 GROUP BY grp),
+     top2 AS (SELECT g, MAX(s) AS m FROM base GROUP BY g)
+SELECT COUNT(*), SUM(top2.m) FROM top2;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== GREATEST/LEAST (2-arg and 3-arg) in CTE-body WHERE =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt
+  FROM pt2
+  WHERE GREATEST(val, 150) > 150 AND LEAST(val, k, 900) < 350
+  GROUP BY grp)
+SELECT MAX(agg2.cnt), COUNT(*) FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== CASE inside an aggregate: parent condition + CTE THEN arm =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt
+  FROM pt2 GROUP BY grp)
+SELECT SUM(CASE WHEN p.c > 20 THEN agg2.cnt ELSE 0 END), COUNT(*)
+FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== CASE inside an aggregate: CTE-column condition (Phase I.4) =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt
+  FROM pt2 GROUP BY grp)
+SELECT SUM(CASE WHEN agg2.g = 1 THEN agg2.cnt ELSE 0 END), COUNT(*)
+FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== IS NULL / IS NOT NULL + DNF in CTE-body WHERE =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt
+  FROM pt2
+  WHERE (val > 100 AND val < 250) OR (k IS NOT NULL AND val >= 300)
+  GROUP BY grp)
+SELECT MAX(agg2.cnt), COUNT(*) FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== FORCE INDEX on the CTE-body root =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt
+  FROM pt2 FORCE INDEX (idx_pt2_grp)
+  WHERE grp = 1
+  GROUP BY grp)
+SELECT MAX(agg2.cnt), COUNT(*) FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== USE INDEX () forces a table scan =====
+--exec $PARSE_OK 'SELECT b, COUNT(*) FROM pt1 USE INDEX () WHERE b = 1 GROUP BY b;'
+
+--echo ===== FRAGS_PER_WORKER statement head on a CTE join query =====
+--write_file $QUERY_FILE
+FRAGS_PER_WORKER = 4
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt FROM pt2 GROUP BY grp)
+SELECT MAX(agg2.cnt), COUNT(*) FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== EXPLAIN FRAGS_PER_WORKER combination =====
+--write_file $QUERY_FILE
+EXPLAIN FRAGS_PER_WORKER = 2
+WITH agg2 AS (
+  SELECT grp AS g, COUNT(*) AS cnt FROM pt2 GROUP BY grp)
+SELECT MAX(agg2.cnt), COUNT(*) FROM pt1 AS p JOIN agg2 ON agg2.g = p.b;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== ORDER BY alias + LIMIT on aggregate main =====
+--write_file $QUERY_FILE
+WITH agg2 AS (
+  SELECT grp AS g, SUM(val) AS s FROM pt2 GROUP BY grp)
+SELECT p.b, SUM(agg2.s) AS total
+FROM pt1 AS p JOIN agg2 ON agg2.g = p.b
+GROUP BY p.b
+ORDER BY total DESC
+LIMIT 2;
+EOF
+--exec $PARSE_OK_FILE
+--remove_file $QUERY_FILE
+
+--echo
+--echo ===== Section (c): prepare-time rejections (schema-dependent) =====
+
+--echo ===== Duplicate CTE name =====
+--error 1
+--exec $PARSE_REJECT 'WITH x AS (SELECT COUNT(*) AS n FROM pt2), x AS (SELECT COUNT(*) AS n FROM pt2) SELECT MAX(x.n) FROM x;'
+
+# A CTE named like a stored table SHADOWS it for the rest of the
+# statement (standard SQL / MySQL semantics; I.23's ambiguity rejection
+# is about column references, not table names).  Pin the resolution in
+# the plan: the join target must be CTE_LOOKUP CTE:pt2 with body source
+# pt1, not the stored pt2 table.
+--echo ===== CTE named like a stored table shadows it (resolves to the CTE) =====
+--exec $PARSE_OK 'WITH pt2 AS (SELECT b AS g, COUNT(*) AS cnt FROM pt1 GROUP BY b) SELECT MAX(pt2.cnt), COUNT(*) FROM pt1 AS p JOIN pt2 ON pt2.g = p.b;'
+
+--echo ===== Index hint on a joined (non-root) table is rejected =====
+--error 1
+--exec $PARSE_REJECT 'SELECT COUNT(*) FROM pt1 AS p JOIN pt2 AS q FORCE INDEX (idx_pt2_grp) ON q.grp = p.b;'
+
+# A partial-key INNER join to a multi-key CTE whose parent is the root is
+# NOT rejected: the Phase I.16b/c pre-pass swaps the CTE to the root
+# (CTE_SCAN) and demotes the original root to a child.  Pin that rewrite
+# in the plan output.
+--echo ===== Partial-key INNER join to a multi-key CTE triggers the I.16 root rewrite =====
+--exec $PARSE_OK 'WITH mk AS (SELECT grp AS g1, val AS g2, COUNT(*) AS cnt FROM pt2 GROUP BY grp, val) SELECT MAX(mk.cnt), COUNT(*) FROM pt1 AS p JOIN mk ON mk.g1 = p.b;'
+
+# LEFT OUTER on the multikey-CTE join itself cannot be root-rewritten;
+# it stays on the I.16a permanent rejection.  That rejection is raised
+# in emit_child_ops, i.e. on the execute path — EXPLAIN FORCE prints
+# the would-be plan instead of rejecting — so this case must EXECUTE.
+--echo ===== Partial-key LEFT join to a multi-key CTE is rejected (I.16a, at execution) =====
+--error 1
+--exec $EXEC_REJECT 'WITH mk AS (SELECT grp AS g1, val AS g2, COUNT(*) AS cnt FROM pt2 GROUP BY grp, val) SELECT MAX(mk.cnt), COUNT(*) FROM pt1 AS p LEFT JOIN mk ON mk.g1 = p.b;'
+
+--echo
+--echo === Cleanup ===
+--disable_query_log
+DROP TABLE pt1;
+DROP TABLE pt2;
+--enable_query_log
