@@ -195,6 +195,7 @@ static void test_single_row(void) {
   } else {
     mark_pass("T2 single_row");
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
 }
 
@@ -240,6 +241,7 @@ static void test_multi_row(void) {
   } else {
     mark_pass("T3 multi_row");
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
 }
 
@@ -295,6 +297,7 @@ static void test_coldcall_plus_arith(void) {
   } else {
     mark_pass("T4 coldcall_plus_arith");
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
 }
 
@@ -337,6 +340,7 @@ static void test_sum_marks_result_index(void) {
   } else {
     mark_pass("T5 sum_marks_result_index");
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
 }
 
@@ -368,11 +372,13 @@ static void test_exit_does_not_mark_result(void) {
       mark_fail("T6 exit_does_not_mark_result",
                 "value_updated[%u]=%" PRIu64 ", want 0",
                 i, s.value_updated[i]);
+      jit1_free(jp);
       ndb_jit_codemem_destroy(arena);
       return;
     }
   }
   mark_pass("T6 exit_does_not_mark_result");
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
 }
 
@@ -432,9 +438,11 @@ static void test_checked_add_no_overflow(void) {
     mark_fail("T8 checked_add_no_overflow",
               "row_overflowed=%u reg2=%lld, want 0/42",
               s.row_overflowed, (long long)s.regs_i64[2]);
+    jit1_free(jp);
     ndb_jit_codemem_destroy(arena);
     return;
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
   mark_pass("T8 checked_add_no_overflow");
 }
@@ -469,9 +477,11 @@ static void test_checked_add_overflow(void) {
     mark_fail("T9 checked_add_overflow",
               "row_overflowed=%u reg2=%lld, want 1/0",
               s.row_overflowed, (long long)s.regs_i64[2]);
+    jit1_free(jp);
     ndb_jit_codemem_destroy(arena);
     return;
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
   mark_pass("T9 checked_add_overflow");
 }
@@ -506,9 +516,11 @@ static void test_jump_skips_sum(void) {
               "reg0=%lld acc0=%lld updated0=%" PRIu64 ", want 5/0/0",
               (long long)s.regs_i64[0], (long long)s.acc_i64[0],
               s.value_updated[0]);
+    jit1_free(jp);
     ndb_jit_codemem_destroy(arena);
     return;
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
   mark_pass("T10 jump_skips_sum");
 }
@@ -538,11 +550,86 @@ static void test_filter_reject_exit_sets_state(void) {
     mark_fail("T11 filter_reject_exit_sets_state",
               "row_filter_rejected=%u row_overflowed=%u, want 1/0",
               s.row_filter_rejected, s.row_overflowed);
+    jit1_free(jp);
     ndb_jit_codemem_destroy(arena);
     return;
   }
+  jit1_free(jp);
   ndb_jit_codemem_destroy(arena);
   mark_pass("T11 filter_reject_exit_sets_state");
+}
+
+/* T12: crash-diagnosis registry — jit1_describe_pc resolves any PC
+ * inside a live blob to a JIT-CRASH line and stops resolving once the
+ * program is freed; jit1_registry_dump walks the same registry.
+ *
+ * The dump assertions are relative (live == freed + 1 lines) rather
+ * than absolute so a leaked program from another test can never break
+ * this one. The describe assertions rely on registry insertion order:
+ * the newest program sits at the list head, so our live blob always
+ * shadows any stale leaked entry whose (dangling) range an mmap reuse
+ * might alias. */
+static void count_dump_line(void *arg, const char *line) {
+  (void)line;
+  (*(unsigned *)arg)++;
+}
+
+static void test_describe_pc_registry(void) {
+  const char *name = "T12 describe_pc_registry";
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  if (arena == NULL) {
+    mark_fail(name, "arena_create failed");
+    return;
+  }
+  Program p;
+  build_load_col_then_sum(&p, /*col_id=*/7);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  const uint8_t *entry = (const uint8_t *)jit1_entry(jp);
+  size_t emitted = jit1_emitted_size(jp);
+  char buf[256];
+
+  unsigned lines_live = 0;
+  unsigned lines_freed = 0;
+  jit1_registry_dump(count_dump_line, &lines_live);
+
+  int ok = 1;
+  if (!jit1_describe_pc(entry, buf, sizeof(buf))) {
+    mark_fail(name, "entry pc not resolved");
+    ok = 0;
+  } else if (strstr(buf, "JIT-CRASH:") == NULL) {
+    mark_fail(name, "describe line missing JIT-CRASH prefix: %s", buf);
+    ok = 0;
+  } else if (!jit1_describe_pc(entry + emitted - 1, buf, sizeof(buf))) {
+    mark_fail(name, "last blob byte not resolved");
+    ok = 0;
+  } else if (jit1_describe_pc(entry + emitted, buf, sizeof(buf))) {
+    mark_fail(name, "one-past-end pc wrongly resolved");
+    ok = 0;
+  } else if (jit1_describe_pc(&p, buf, sizeof(buf))) {
+    mark_fail(name, "non-code (stack) pc wrongly resolved");
+    ok = 0;
+  }
+
+  jit1_free(jp);
+  if (ok && jit1_describe_pc(entry, buf, sizeof(buf))) {
+    mark_fail(name, "freed blob pc still resolved");
+    ok = 0;
+  }
+  jit1_registry_dump(count_dump_line, &lines_freed);
+  if (ok && lines_live != lines_freed + 1) {
+    mark_fail(name, "dump lines live=%u freed=%u, want live == freed+1",
+              lines_live, lines_freed);
+    ok = 0;
+  }
+  if (ok) {
+    mark_pass(name);
+  }
+  ndb_jit_codemem_destroy(arena);
 }
 
 /* ------------------------------------------------------------------ */
@@ -573,6 +660,7 @@ int main(void) {
   test_checked_add_overflow();
   test_jump_skips_sum();
   test_filter_reject_exit_sets_state();
+  test_describe_pc_registry();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

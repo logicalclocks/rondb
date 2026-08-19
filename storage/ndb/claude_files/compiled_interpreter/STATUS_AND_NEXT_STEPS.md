@@ -225,10 +225,33 @@ Recommended order:
    **NOTE:** ndbinfo metadata MTR tests that enumerate all tables/columns
    need `--record` (one new table). Not yet wired: `runs` / `fallbacks` /
    `compile-ns` (need per-row + compile-time instrumentation; deferred).
-4. **SIGSEGV sidecar — HALF DONE (2026-08-18, `65d9c2fa9ee`).** The
-   registry + sidecar + `jit1_describe_pc` are in `jit1.c` but inert (not
-   in `jit1.h`, no callers). Remaining: export + SIGSEGV/DUMP wiring +
-   unit test — see the 2026-08 session section at the top.
+4. **SIGSEGV sidecar — IMPLEMENTED (2026-08-19, pending verify).**
+   Registry + sidecar + `jit1_describe_pc` (`65d9c2fa9ee`) now wired:
+   `jit1_describe_pc` + `jit1_registry_dump` exported in `jit1.h`;
+   `DbtupJitGlue` owns a process-wide SA_SIGINFO interposer for
+   SIGSEGV/SIGBUS/SIGILL/SIGFPE that extracts the faulting PC from the
+   ucontext (Linux + macOS, x86_64 + arm64), logs the `JIT-CRASH:` line
+   (raw `write` to stderr first, then `g_eventLogger`), and chains to
+   ndbd's `handler_error` so the normal ErrorReporter crash path is
+   unchanged. Installed lazily at the first JIT compile (pthread_once;
+   all three compile sites call it) — `CompiledInterpreter=OFF` never
+   touches signal handling. New `DUMP 2383` (`TupDumpJitPrograms`,
+   works in all builds, `instance()==1`-gated) logs one `JIT-DUMP:`
+   line per live program via `dbtup_jit_dump_programs`. Host coverage:
+   `coldcall_tests` T12 (describe resolves live blob PCs, stops after
+   `jit1_free`, dump line count drops by one); T2–T11 also got the
+   missing `jit1_free` calls (they leaked registry entries with
+   dangling rx ranges). Files: `jit/jit1.{h,c}`,
+   `DbtupJitGlue.{hpp,cpp}`, `DblqhProxy.cpp`, `DumpStateOrd.hpp`,
+   `DbtupDebug.cpp`, `test/jit_proto/coldcall_tests.c`. **Verify:**
+   rebuild `ndbmtd` + `coldcall_tests`; run `coldcall_tests` (T12);
+   optionally `ndb_mgm -e "all dump 2383"` against a live cluster
+   after a JIT query, and check the node log for `JIT-DUMP:` lines.
+   Deviations from plan.md §14: DUMP works in production builds too
+   (read-only, harmless, more useful); the type-state snapshot is not
+   in the sidecar (Phase 5's lattice doesn't exist yet); per-register
+   state and the 16-byte hex window are not dumped (the byte offset +
+   op kind + blob range cover the diagnosis need).
 5. **GROUP BY gate lift** (big coverage, hard; arguably its own phase) —
    today *all* grouped aggregation falls back via the
    `m_jit_entry != nullptr && m_n_gb_cols == 0` gate in `ProcessRec`

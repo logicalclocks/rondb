@@ -2844,6 +2844,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 #endif
   if (dbtup_jit_enabled() && state->m_num_leaves == 1) {
     jam();
+    /* First JIT activity on this node may be a join-agg compile — make
+     * sure the JIT-CRASH signal interposer is installed (idempotent). */
+    dbtup_jit_install_crash_handler();
     LeafProgram &lp = state->m_leaf_programs[0];
     Uint32 bc_off = lp.m_agg_prog_start_pos;
     if (bc_off < lp.m_agg_program_len) {

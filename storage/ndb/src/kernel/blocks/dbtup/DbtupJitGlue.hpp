@@ -234,6 +234,24 @@ struct NdbJitStats {
  * managers' locks briefly); for NDBINFO reporting, not the per-row path. */
 void dbtup_jit_get_stats(NdbJitStats *out);
 
+/* RONDB-1056 Phase 8 — crash diagnosis glue.
+ *
+ * dbtup_jit_install_crash_handler installs a process-wide SA_SIGINFO
+ * interposer for SIGSEGV/SIGBUS/SIGILL/SIGFPE that maps a faulting PC
+ * through jit1_describe_pc, logs the "JIT-CRASH:" line, and chains to
+ * the handler ndbd installed at startup (so the normal ErrorReporter
+ * crash path is unchanged). Idempotent (pthread_once); called lazily
+ * from every JIT compile site, so a node that never compiles — or runs
+ * CompiledInterpreter=OFF — never touches signal handling. No-op on
+ * Windows. */
+void dbtup_jit_install_crash_handler();
+
+/* Log one "JIT-DUMP:" line per live JIT program (blob address range,
+ * size, op kinds) plus a count line via g_eventLogger. Takes the
+ * registry mutex — for DUMP diagnostics (TupDumpJitPrograms), not the
+ * per-row path or signal handlers. */
+void dbtup_jit_dump_programs();
+
 /* RONDB-1056 Phase 8 — CompiledInterpreter config gate (node-global).
  * dbtup_jit_set_mode is called once at config read with the
  * NDB_COMPILED_INTERPRETER_* value; every compile site consults

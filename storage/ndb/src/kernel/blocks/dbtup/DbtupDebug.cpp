@@ -327,6 +327,19 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     return;
   }//if
 #endif
+  if (dumpState->args[0] == DumpStateOrd::TupDumpJitPrograms)
+  {
+    jam();
+    /* The JIT live-program registry is node-global (shared across all
+     * LDM DBTUP instances) — dump once from the first LDM worker
+     * rather than identically from every instance. */
+    if (instance() == 1)
+    {
+      jam();
+      dbtup_jit_dump_programs();
+    }
+    return;
+  }
   if (dumpState->args[0] == DumpStateOrd::TupDumpOneScanRec)
   {
     Uint32 recordNo = RNIL;

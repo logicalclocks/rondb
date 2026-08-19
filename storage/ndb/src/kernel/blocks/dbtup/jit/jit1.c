@@ -852,3 +852,42 @@ int jit1_describe_pc(const void *pc, char *buf, size_t buflen) {
   }
   return 0; /* pc is not inside any live JIT blob */
 }
+
+void jit1_registry_dump(Jit1DumpEmitFn emit, void *arg) {
+  if (emit == NULL) return;
+  char line[512];
+  unsigned idx = 0;
+  pthread_mutex_lock(&g_jit1_reg_mtx);
+  for (const Jit1Prog *prog = g_jit1_reg_head; prog != NULL;
+       prog = prog->reg_next, ++idx) {
+    const uint8_t *lo = prog->rx_entry;
+    /* Compact per-blob op-kind list. The full bytecode lives with the
+     * program's owner (progcache key / stored procedure), not here —
+     * the kinds are enough to see what shape a blob is. Kind values are
+     * one byte (<= 3 digits) plus a comma, so 8 spare bytes always fit
+     * the next element or the ",..." truncation marker. */
+    char kinds[192];
+    size_t used = 0;
+    kinds[0] = '\0';
+    if (prog->op_kind != NULL) {
+      for (uint16_t i = 0; i < prog->n_ops; ++i) {
+        if (sizeof(kinds) - used < 8) {
+          snprintf(kinds + used, sizeof(kinds) - used, ",...");
+          break;
+        }
+        used += (size_t)snprintf(kinds + used, sizeof(kinds) - used,
+                                 "%s%u", i ? "," : "",
+                                 (unsigned)prog->op_kind[i]);
+      }
+    }
+    snprintf(line, sizeof(line),
+             "JIT-DUMP: blob #%u [%p..%p) bytes=%zu n_ops=%u kinds=[%s]",
+             idx, (const void *)lo, (const void *)(lo + prog->emitted),
+             prog->emitted, (unsigned)prog->n_ops,
+             prog->op_kind != NULL ? kinds : "no sidecar");
+    emit(arg, line);
+  }
+  snprintf(line, sizeof(line), "JIT-DUMP: %u live JIT program(s)", idx);
+  emit(arg, line);
+  pthread_mutex_unlock(&g_jit1_reg_mtx);
+}

@@ -151,6 +151,32 @@ JitEntry jit1_entry(const Jit1Prog *prog);
 size_t jit1_emitted_size(const Jit1Prog *prog);
 
 /* ------------------------------------------------------------------ */
+/* Phase 8 RONDB-1056 — crash diagnosis.                              */
+/*                                                                    */
+/* Every live Jit1Prog sits in a node-global registry with a small    */
+/* sidecar (per-opcode kind + byte-offset table) captured at compile. */
+/* Neither is touched on the per-row execution path.                  */
+/* ------------------------------------------------------------------ */
+
+/* Map a faulting PC to the live JIT blob containing it. On a hit,
+ * formats a single "JIT-CRASH: ..."-prefixed line into buf (blob
+ * address range, byte offset, and — when the sidecar is present — the
+ * bytecode pc and op kind being executed) and returns 1. Returns 0
+ * when pc is not inside any live blob.
+ *
+ * Async-signal-usable by design: the registry is traversed WITHOUT
+ * its mutex (compile/free mutate under the lock; a racing free during
+ * a crash is accepted), and only post-seal-immutable fields are read.
+ * Intended callers: a SIGSEGV/SIGBUS handler and DUMP diagnostics. */
+int jit1_describe_pc(const void *pc, char *buf, size_t buflen);
+
+/* Walk the live-program registry under its mutex (NOT signal-safe —
+ * for DUMP-style diagnostics only) and emit one formatted line per
+ * live program plus a trailing count line through the callback. */
+typedef void (*Jit1DumpEmitFn)(void *arg, const char *line);
+void jit1_registry_dump(Jit1DumpEmitFn emit, void *arg);
+
+/* ------------------------------------------------------------------ */
 /* Phase 4 RONDB-1056 — cold-call helper registry.                    */
 /*                                                                    */
 /* Some opcodes (kOpLoadCol, future kOpDiv NULL fixup, kOpStringSearch,*/

@@ -25,6 +25,17 @@
 #include <cstdlib>             /* malloc / free for cache products */
 #include <cstring>
 
+#ifndef _WIN32
+#include <pthread.h>           /* pthread_once for the crash-handler install */
+#include <signal.h>            /* sigaction (JIT-CRASH interposer) */
+#include <unistd.h>            /* write() from the signal handler */
+#if defined(__linux__)
+#include <ucontext.h>          /* faulting-PC extraction */
+#elif defined(__APPLE__)
+#include <sys/ucontext.h>
+#endif
+#endif /* !_WIN32 */
+
 extern "C" {
 #include "jit/ndb_jit_bridge.h"   /* ndb_jit_bridge_translate_scan_filter */
 #include "jit/jit_progcache.h"    /* program-reuse cache (Phase 8 Slice 3) */
@@ -513,6 +524,7 @@ void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
   if (!dbtup_jit_enabled()) {
     return nullptr;   /* CompiledInterpreter=OFF -> run on the interpreter */
   }
+  dbtup_jit_install_crash_handler();
   if (filter_prog == nullptr || n_words == 0) {
     return nullptr;
   }
@@ -598,6 +610,7 @@ void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
   if (!dbtup_jit_enabled()) {
     return nullptr;   /* CompiledInterpreter=OFF -> run on the interpreter */
   }
+  dbtup_jit_install_crash_handler();
   if (agg_prog == nullptr || n_words == 0) {
     return nullptr;
   }
@@ -648,6 +661,135 @@ void dbtup_jit_get_stats(NdbJitStats *out) {
                          ndb_jit_progcache_hit_count(ag);
   out->programs_cached = ndb_jit_progcache_live_count(sf) +
                          ndb_jit_progcache_live_count(ag);
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 8 — crash diagnosis (SIGSEGV interposer + DUMP).             */
+/*                                                                    */
+/* JIT'd code has no symbols: a fault inside a blob lands at a bare   */
+/* PC that neither the stacktrace printer nor gdb can name. The        */
+/* interposer below catches the fatal signal FIRST, maps the faulting  */
+/* PC through jit1_describe_pc (lock-free over the live-program        */
+/* registry), logs the JIT-CRASH line, and then chains to whatever     */
+/* handler ndbd installed at startup (handler_error -> ErrorReporter)  */
+/* so the node's normal crash path is unchanged. Installed lazily at   */
+/* the first JIT compile: a node running CompiledInterpreter=OFF (or   */
+/* one that never compiles) never touches signal handling at all —     */
+/* and catchsigs() runs long before any query traffic, so the previous */
+/* action we capture is always ndbd's own handler.                     */
+/* ------------------------------------------------------------------ */
+
+#ifndef _WIN32
+
+static const int g_jit_crash_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+static const int g_n_jit_crash_signals =
+    (int)(sizeof(g_jit_crash_signals) / sizeof(g_jit_crash_signals[0]));
+static struct sigaction g_jit_prev_action[
+    sizeof(g_jit_crash_signals) / sizeof(g_jit_crash_signals[0])];
+
+/* Faulting instruction pointer from the ucontext the kernel hands an
+ * SA_SIGINFO handler. Per-platform; nullptr where unknown (the handler
+ * then just chains without a JIT-CRASH line). */
+static const void *jit_crash_pc_from_ucontext(void *uctx) {
+  if (uctx == nullptr) {
+    return nullptr;
+  }
+#if defined(__linux__) && defined(__x86_64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+  return reinterpret_cast<const void *>(uc->uc_mcontext.gregs[REG_RIP]);
+#elif defined(__linux__) && defined(__aarch64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+  return reinterpret_cast<const void *>(uc->uc_mcontext.pc);
+#elif defined(__APPLE__) && defined(__x86_64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+  return reinterpret_cast<const void *>(uc->uc_mcontext->__ss.__rip);
+#elif defined(__APPLE__) && defined(__aarch64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+#if defined(arm_thread_state64_get_pc)
+  return reinterpret_cast<const void *>(
+      arm_thread_state64_get_pc(uc->uc_mcontext->__ss));
+#else
+  return reinterpret_cast<const void *>(uc->uc_mcontext->__ss.__pc);
+#endif
+#else
+  return nullptr;
+#endif
+}
+
+extern "C" void dbtup_jit_crash_handler(int signum, siginfo_t *info,
+                                        void *uctx) {
+  char line[256];
+  const void *pc = jit_crash_pc_from_ucontext(uctx);
+  if (pc != nullptr && jit1_describe_pc(pc, line, sizeof(line))) {
+    /* Raw write first (async-signal-safe), then the event logger so the
+     * line reaches the cluster log. The logger is not signal-safe, but
+     * ndbd's own handler_error logs from this context too and the
+     * process is going down either way — the write() already saved the
+     * diagnosis if the logger deadlocks. */
+    ssize_t wr = write(STDERR_FILENO, line, std::strlen(line));
+    wr = write(STDERR_FILENO, "\n", 1);
+    (void)wr;
+    g_eventLogger->error("%s", line);
+  }
+
+  /* Chain to the previously installed handler (ndbd's handler_error),
+   * preserving the node's normal crash path exactly. */
+  const struct sigaction *prev = nullptr;
+  for (int i = 0; i < g_n_jit_crash_signals; i++) {
+    if (g_jit_crash_signals[i] == signum) {
+      prev = &g_jit_prev_action[i];
+      break;
+    }
+  }
+  if (prev != nullptr && (prev->sa_flags & SA_SIGINFO) != 0 &&
+      prev->sa_sigaction != nullptr) {
+    prev->sa_sigaction(signum, info, uctx);
+    return;
+  }
+  if (prev != nullptr && (prev->sa_flags & SA_SIGINFO) == 0 &&
+      prev->sa_handler != SIG_DFL && prev->sa_handler != SIG_IGN) {
+    prev->sa_handler(signum);
+    return;
+  }
+  /* No previous handler: restore the default action and re-raise so the
+   * OS produces the normal termination/core. */
+  signal(signum, SIG_DFL);
+  raise(signum);
+}
+
+static void dbtup_jit_install_crash_handler_once(void) {
+  for (int i = 0; i < g_n_jit_crash_signals; i++) {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = dbtup_jit_crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(g_jit_crash_signals[i], &sa, &g_jit_prev_action[i]) != 0) {
+      /* Install failed for this signal — treat "previous" as default so
+       * a fault still terminates via re-raise. */
+      std::memset(&g_jit_prev_action[i], 0, sizeof(g_jit_prev_action[i]));
+    }
+  }
+}
+
+void dbtup_jit_install_crash_handler() {
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once(&once, dbtup_jit_install_crash_handler_once);
+}
+
+#else /* _WIN32 */
+
+void dbtup_jit_install_crash_handler() {}
+
+#endif /* !_WIN32 */
+
+static void jit_dump_emit_line(void *arg, const char *line) {
+  (void)arg;
+  g_eventLogger->info("%s", line);
+}
+
+void dbtup_jit_dump_programs() {
+  jit1_registry_dump(jit_dump_emit_line, nullptr);
 }
 
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
