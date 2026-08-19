@@ -1270,6 +1270,31 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         break;
       }
 
+      case BR_kOpCount: {
+        /* Phase 8 GROUP BY lift: COUNT accumulator. Same wire layout as
+         * kOpSumBigint (reg in bits 16..19, acc slot in the low 16).
+         * The register operand exists only for the interpreter's
+         * null-register skip; the admitted LoadCol contract is non-null
+         * columns, so the JIT counts every row that reaches the op —
+         * b carries the reg for diagnostics but the stencil ignores it.
+         * Unchecked: Int64 row counts cannot realistically overflow. */
+        uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
+        uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS ||
+            agg_result_index >= BC_MAX_ACCS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (!emit_op(out_prog, OP_COUNT_BIGINT,
+                     (uint8_t)agg_index, reg_index, agg_result_index, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        agg_result_index++;
+        pos += 1;
+        break;
+      }
+
       case BR_kOpEmbeddedInterp: {
         if (!embedded_filters_enabled()) {
           set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);

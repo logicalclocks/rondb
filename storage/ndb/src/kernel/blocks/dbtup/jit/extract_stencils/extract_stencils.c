@@ -993,6 +993,7 @@ static const OpkindMap kOpkindMap[] = {
   { "op_jump",                  "OP_JUMP"                  },
   { "op_filter_reject_exit",    "OP_FILTER_REJECT_EXIT"    },
   { "op_branch_attr_op_arg",    "OP_BRANCH_ATTR_OP_ARG"    },
+  { "op_count_bigint",          "OP_COUNT_BIGINT"          },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

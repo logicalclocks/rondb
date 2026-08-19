@@ -151,7 +151,15 @@ typedef enum {
    * b = inst word offset into ctx->prog_buf; c = branch target pc (after
    * bridge fixup); a/imm unused. */
   OP_BRANCH_ATTR_OP_ARG    = 33,
-  OP_KIND_MAX           = OP_BRANCH_ATTR_OP_ARG
+  /* Phase 8 GROUP BY lift: COUNT accumulator. acc_i64[a] += 1; marks
+   * value_updated[c] AND value_unsigned[c] (the interpreter's Count
+   * kernel produces an unsigned BIGINT result — the writeback glue
+   * mirrors is_unsigned from the mask). The interpreter's per-row
+   * null-register skip is not lowered: the admitted LoadCol contract
+   * is non-null columns, so a row that reaches this op always counts.
+   * b carries the bytecode's register operand for diagnostics only. */
+  OP_COUNT_BIGINT          = 34,
+  OP_KIND_MAX           = OP_COUNT_BIGINT
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

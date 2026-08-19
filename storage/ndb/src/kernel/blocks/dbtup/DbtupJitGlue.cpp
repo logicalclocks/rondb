@@ -497,11 +497,14 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
 
   /* Write accumulators back only for aggregate results updated by this
    * row. Rejected rows leave NULL metadata intact for SUM/MIN/MAX
-   * semantics over an empty input. */
+   * semantics over an empty input. value_unsigned mirrors the
+   * interpreter's per-kernel result signedness: COUNT produces an
+   * unsigned BIGINT (Count() inits is_unsigned=true and asserts it),
+   * SUM a signed one. */
   for (Uint32 i = 0; i < n_agg_results; i++) {
     if (s.value_updated[i] != 0) {
       agg_res_ptr[i].type        = NDB_TYPE_BIGINT;
-      agg_res_ptr[i].is_unsigned = false;
+      agg_res_ptr[i].is_unsigned = (s.value_unsigned[i] != 0);
       agg_res_ptr[i].is_null     = false;
       agg_res_ptr[i].value.val_int64 = s.acc_i64[i];
     }

@@ -45,6 +45,12 @@ typedef struct JitState {
   uint64_t  value_updated[BC_MAX_ACCS]; /* per-row aggregate-result update flags */
   uint32_t  row_overflowed;          /* checked arithmetic saw signed overflow */
   uint32_t  row_filter_rejected;     /* scan-filter JIT rejected the row */
+  /* Per-row "this result is unsigned" flags, set alongside
+   * value_updated by ops whose interpreter kernel produces an unsigned
+   * result (COUNT). The writeback glue mirrors it into
+   * AggResItem::is_unsigned. Appended last so existing stencils' baked
+   * field offsets are unchanged. */
+  uint64_t  value_unsigned[BC_MAX_ACCS];
 } JitState;
 
 /* Per-row entry function — produced by jit1_compile.

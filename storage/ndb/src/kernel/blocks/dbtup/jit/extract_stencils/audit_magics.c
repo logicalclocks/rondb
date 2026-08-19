@@ -231,6 +231,11 @@ static const struct {
   { "MAGIC_LCI16_DST_FOLD",   "op_load_const_int16",   1 },
   { "MAGIC_LCU32_DST_FOLD",   "op_load_const_uint32",  1 },
   { "MAGIC_LCI32_DST_FOLD",   "op_load_const_int32",   1 },
+  /* Phase 8 GROUP BY lift: COUNT_SLOT is loaded AND stored
+   * (acc += 1); COUNT_RESULT is stored twice (value_updated +
+   * value_unsigned). */
+  { "MAGIC_COUNT_SLOT_FOLD",   "op_count_bigint",      2 },  /* L+S */
+  { "MAGIC_COUNT_RESULT_FOLD", "op_count_bigint",      2 },  /* 2×S */
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);

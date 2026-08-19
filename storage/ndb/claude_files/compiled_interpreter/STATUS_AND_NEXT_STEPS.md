@@ -299,13 +299,57 @@ Recommended order:
    in the sidecar (Phase 5's lattice doesn't exist yet); per-register
    state and the 16-byte hex window are not dumped (the byte offset +
    op kind + blob range cover the diagnosis need).
-5. **GROUP BY gate lift** (big coverage, hard; arguably its own phase) —
-   today *all* grouped aggregation falls back via the
-   `m_jit_entry != nullptr && m_n_gb_cols == 0` gate in `ProcessRec`
-   (`JoinAggInterpreter.cpp:~484`, `AggInterpreter.cpp`). Lifting it needs
-   grouped accumulator lookup/update in the JIT.
+5. **GROUP BY gate lift — DONE, CANARY-VERIFIED (2026-08-19).**
+   `rondb_jit_groupby_canary` passes post-regen (grouped SUM/COUNT JIT
+   under 4060 + counter deltas; 500-group differential; grouped
+   join-agg; CASE-falls-back and >4-aggregates negatives). Remaining
+   sweep: full `ndb_push_agg` suite. All six slices in tree; the
+   generated stencil headers were regenerated for `OP_COUNT_BIGINT` +
+   the `JitState::value_unsigned[]` unsigned-result mask. Shipped: (1) `op_count_bigint`
+   stencil + `BR_kOpCount` bridge case + `value_unsigned` writeback
+   (`is_unsigned` mirrored per result — COUNT is unsigned BIGINT);
+   (2) compile gate dropped in `Create`; (3)+(4) both dispatch gates
+   now `m_jit_entry != nullptr` only; (5) `rondb_jit_groupby_canary`
+   (Q1 grouped SUM, Q2 COUNT+SUM, Q3 CASE per-group NULL, Q4 500-group
+   differential, Q5 grouped join-agg — 4060-only proof, the proxy path
+   has no progcache; Q6 >4-aggregates negative); host tests
+   bridge_tests T46/T46b + coldcall_tests T13. Verify order + full
+   notes in `phase_8_groupby_gate_lift.md`'s status header. Full plan:
+   `phase_8_groupby_gate_lift.md`. Key finding from
+   the planning analysis: the lift is much smaller than this item
+   historically assumed — the group prologue (GB column reads, xfrm
+   hash find/insert, group-record alloc) is block-level C++ *before*
+   the interpreter loop, not bytecode; `dbtup_jit_invoke` already takes
+   `agg_res_ptr` as a parameter; the glue's `value_updated` writeback
+   already gives per-group SQL-NULL semantics; and the compiled/cached
+   region (`agg_prog + bc_off`) already excludes GB metadata (blob
+   sharing across different GROUP BY column sets is sound). Slices:
+   (1) lower `kOpCount` — the bridge has no case for it today, so the
+   canonical `grp, COUNT, SUM` query would still reject (the one
+   stencil-regen item; MIN/MAX stay Phase 5 — Test 27/28 depends on
+   MAX rejecting); (2) lift the compile gate in
+   `PushdownInterpreterFactory::Create`; (3)+(4) lift the two dispatch
+   gates (standalone + join-agg, keeping `m_num_leaves == 1`);
+   (5) `rondb_jit_groupby_canary` (4060 + ndbinfo counter deltas +
+   high-cardinality differential + >4-aggregates negative); (6) docs +
+   bench (honest expectation: smaller win than scalar — the hash find
+   stays interpreted).
 
-**Other open tracks** (not Phase 8, alternatives to it): **Phase 6**
+**Roadmap decided 2026-08-19 (Mikael):** GROUP BY gate lift first
+(plan: `phase_8_groupby_gate_lift.md`), **then Phase 5** — the
+stencil-matrix expansion, with stencil priorities driven by the new
+`ndbinfo.jit` `programs_fallback` counter + rate-limited fallback log
+(they name the rejecting site/opcode in real workloads) rather than the
+doc's a-priori order. **First concrete Phase 5 item (found by the
+groupby canary run):** lower the `BRANCH_*_REG_REG` embedded branch
+family — the SQL planner's pushed CASE aggregation emits those, so
+every SQL CASE shape currently falls back; groupby-canary Q3's
+delta==0 assertion flips when it lands. **Phase 6** (`--force-jit` differential
+conformance) is handled when this branch merges with the parallel
+pushdown-join + CTE work that carries the interpreter test-program
+harness — not scheduled independently.
+
+**Other open tracks** (for reference): **Phase 6**
 cross-branch always-JIT `--force-jit` differential testing (high
 confidence; needs the parallel interpreter-test-program branch merged);
 **Phase 5 (full)** type-state lattice + ~70–75 aggregation stencil matrix

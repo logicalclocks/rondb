@@ -112,6 +112,8 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
       ((state)->acc_i64[HOLE(name)] = (value))
 #  define HOLE_STORE_VALUE_UPDATED(name, state, value)  \
       ((state)->value_updated[HOLE(name)] = (uint64_t)(value))
+#  define HOLE_STORE_VALUE_UNSIGNED(name, state, value)  \
+      ((state)->value_unsigned[HOLE(name)] = (uint64_t)(value))
 #  define HOLE_LOAD_COL(name, state)  \
       ((state)->row_cols_i64[HOLE(name)])
 #elif defined(__aarch64__)
@@ -291,6 +293,21 @@ static inline void aarch64_store_value_updated_(uint32_t magic_byte_off,
   );
 }
 
+__attribute__((always_inline))
+__attribute__((unused))
+static inline void aarch64_store_value_unsigned_(uint32_t magic_byte_off,
+                                                 JitState *state,
+                                                 uint64_t value) {
+  __asm__ volatile (
+    "str %[v], [%[base], %[off]]"
+    :
+    : [v]    "r"  (value),
+      [base] "r"  (state->value_unsigned),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+    : "memory"
+  );
+}
+
 /* row_cols_i64 variant. row_cols_i64 is a *pointer* member of
  * JitState (offset 96), not an embedded array — clang loads the
  * pointer once into a register, then uses it as the imm12 base. */
@@ -321,6 +338,8 @@ static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
       aarch64_store_acc_(MAGIC_##name##_FOLD * 8u, (state), (value))
 #  define HOLE_STORE_VALUE_UPDATED(name, state, value) \
       aarch64_store_value_updated_(MAGIC_##name##_FOLD * 8u, (state), (value))
+#  define HOLE_STORE_VALUE_UNSIGNED(name, state, value) \
+      aarch64_store_value_unsigned_(MAGIC_##name##_FOLD * 8u, (state), (value))
 #  define HOLE_LOAD_COL(name, state)         \
       aarch64_load_col_(MAGIC_##name##_FOLD * 8u, (state))
 #else
@@ -398,6 +417,28 @@ STENCIL op_sum_bigint(JitState *s) {
   HOLE_STORE_ACC(SUM_SLOT, s,
                  HOLE_LOAD_ACC(SUM_SLOT, s) + HOLE_LOAD_REG(SUM_SRC, s));
   HOLE_STORE_VALUE_UPDATED(SUM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
+/* op_count_bigint : acc_i64[SLOT] += 1 (COUNT accumulator)           */
+/*                                                                    */
+/* Phase 8 GROUP BY lift. Mirrors the interpreter's Count kernel for  */
+/* the admitted (non-null LoadCol) contract: every row that reaches   */
+/* this op counts — the interpreter's null-register skip can only     */
+/* fire for rows the JIT path would have aborted at the load. COUNT   */
+/* results are unsigned BIGINT, so the RESULT index marks both the    */
+/* value_updated and value_unsigned masks; the writeback glue mirrors */
+/* the latter into AggResItem::is_unsigned. Unchecked: Int64 row      */
+/* counts cannot realistically overflow (interpreter is unchecked     */
+/* here too).                                                         */
+/* ------------------------------------------------------------------ */
+DECLARE_FOLD_HOLE(COUNT_SLOT);
+DECLARE_FOLD_HOLE(COUNT_RESULT);
+STENCIL op_count_bigint(JitState *s) {
+  HOLE_STORE_ACC(COUNT_SLOT, s, HOLE_LOAD_ACC(COUNT_SLOT, s) + 1);
+  HOLE_STORE_VALUE_UPDATED(COUNT_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UNSIGNED(COUNT_RESULT, s, 1u);
   TAIL_NEXT(s);
 }
 
@@ -803,6 +844,7 @@ const StencilTailFn g_stencil_anchor[] = {
     op_mov_int_int,
     op_add_int_int,
     op_sum_bigint,
+    op_count_bigint,
     op_branch_lt_int_int,
     op_branch_le_int_int,
     op_branch_eq_int_int,

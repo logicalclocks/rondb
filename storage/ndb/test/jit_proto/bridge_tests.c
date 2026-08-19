@@ -52,6 +52,7 @@
 #define kOpLoadCol        7
 #define kOpLoadConst      8
 #define kOpMov            9
+#define kOpCount         13
 #define kOpSumBigint     14
 #define kOpPlusBigint    20
 #define kOpMinusBigint   22
@@ -90,6 +91,12 @@ static uint32_t enc_2reg(uint32_t op, uint32_t dst, uint32_t src) {
 /* kOpSumBigint: reg bits 19-16, agg bits 15-0. */
 static uint32_t enc_sum(uint32_t reg_index, uint32_t agg_index) {
   return enc_op(kOpSumBigint,
+                ((reg_index & 0x0Fu) << 16) | (agg_index & 0xFFFFu));
+}
+
+/* kOpCount: same wire layout as kOpSumBigint. */
+static uint32_t enc_count(uint32_t reg_index, uint32_t agg_index) {
+  return enc_op(kOpCount,
                 ((reg_index & 0x0Fu) << 16) | (agg_index & 0xFFFFu));
 }
 
@@ -1342,6 +1349,46 @@ static void test_scan_filter_exit_ok_last_reject(void) {
                               EMB_EXIT_OK_LAST);
 }
 
+/* T46: kOpCount lowers to OP_COUNT_BIGINT (Phase 8 GROUP BY lift).
+ * SELECT COUNT(c0), SUM(c0) shape:
+ *   load_col r0, c0
+ *   count acc[0], r0
+ *   sum_bigint acc[1], r0
+ * Expected lowering (5 ops): load_col_ndb, COUNT (unchecked — no
+ * overflow branch), SUM_BIGINT_CHECKED, exit, overflow_exit (from the
+ * checked SUM). Result indexes are assigned in aggregate-op order:
+ * COUNT gets result 0, SUM result 1 — independent of the acc slots. */
+static void test_count_lowering_accept(void) {
+  const char *name = "T46 count_lowering_accept";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_count(/*reg=*/0, /*agg=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 0)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 0)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 1)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 1)) return;
+  mark_pass(name);
+}
+
+/* T46b: kOpCount with an out-of-range acc slot rejects. */
+static void test_count_slot_oor_reject(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_count(/*reg=*/0, /*agg=*/BC_MAX_ACCS),
+  };
+  assert_rejected("T46b count_slot_oor_reject", prog, 2,
+                  JIT_BRIDGE_REG_OUT_OF_RANGE,
+                  /*want_word=*/1, kOpCount);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1395,6 +1442,8 @@ int main(void) {
   test_scan_filter_attr_op_param_lower();
   test_scan_filter_attr_op_attr_lower();
   test_scan_filter_exit_ok_last_reject();
+  test_count_lowering_accept();
+  test_count_slot_oor_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

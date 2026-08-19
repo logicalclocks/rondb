@@ -632,6 +632,64 @@ static void test_describe_pc_registry(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* T13: OP_COUNT_BIGINT (Phase 8 GROUP BY lift) — acc += 1 per
+ * invocation, marks BOTH value_updated and value_unsigned for its
+ * result index (COUNT is an unsigned BIGINT in the interpreter), and
+ * leaves other results' masks untouched. Program:
+ *   count   acc[0] -> result 0
+ *   sum     acc[1] += r1 -> result 1
+ *   exit
+ * Run 3 rows with r1 = 5: acc[0] = 3 (count), acc[1] = 15 (sum);
+ * result 0 unsigned, result 1 signed. */
+static void test_count_bigint(void) {
+  const char *name = "T13 count_bigint";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_COUNT_BIGINT, .a = 0, .b = 0, .c = 0 };
+  p.ops[1] = (Op){ .kind = OP_SUM_BIGINT,   .a = 1, .b = 1, .c = 1 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  if (arena == NULL) {
+    mark_fail(name, "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — stencils regenerated?",
+              errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  for (int i = 0; i < 3; ++i) {
+    memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    memset(s.value_updated, 0, sizeof(s.value_updated));
+    memset(s.value_unsigned, 0, sizeof(s.value_unsigned));
+    s.regs_i64[1] = 5;
+    entry(&s);
+  }
+
+  if (s.acc_i64[0] != 3 || s.acc_i64[1] != 15) {
+    mark_fail(name, "acc0=%lld acc1=%lld, want 3/15",
+              (long long)s.acc_i64[0], (long long)s.acc_i64[1]);
+  } else if (s.value_updated[0] != 1 || s.value_updated[1] != 1) {
+    mark_fail(name, "value_updated={%" PRIu64 ",%" PRIu64 "}, want {1,1}",
+              s.value_updated[0], s.value_updated[1]);
+  } else if (s.value_unsigned[0] != 1 || s.value_unsigned[1] != 0) {
+    mark_fail(name, "value_unsigned={%" PRIu64 ",%" PRIu64 "}, want {1,0}",
+              s.value_unsigned[0], s.value_unsigned[1]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 /* ------------------------------------------------------------------ */
 /* main.                                                              */
 /* ------------------------------------------------------------------ */
@@ -661,6 +719,7 @@ int main(void) {
   test_jump_skips_sum();
   test_filter_reject_exit_sets_state();
   test_describe_pc_registry();
+  test_count_bigint();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

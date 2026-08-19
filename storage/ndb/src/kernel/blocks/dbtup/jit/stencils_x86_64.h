@@ -74,6 +74,17 @@ static const Hole holes_op_sum_bigint[] = {
   { .byte_offset = 20, .kind = HK_OP_C, .width = 4 },
 };
 
+/* op_count_bigint — 36 bytes, 2 holes */
+static const uint8_t bytes_op_count_bigint[] = {
+  0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0xff, 0x44, 0xc4, 0x40, 0xb8, 0x00,
+  0x00, 0x00, 0x00, 0x49, 0xc7, 0x44, 0xc4, 0x70, 0x01, 0x00, 0x00, 0x00,
+  0x49, 0xc7, 0x84, 0xc4, 0x98, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+};
+static const Hole holes_op_count_bigint[] = {
+  { .byte_offset = 1, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 11, .kind = HK_OP_C, .width = 4 },
+};
+
 /* op_branch_lt_int_int — 29 bytes, 4 holes */
 static const uint8_t bytes_op_branch_lt_int_int[] = {
   0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x04, 0xc4, 0xb9, 0x00, 0x00,
@@ -414,6 +425,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_MOV_INT_INT] = STENCIL_(op_mov_int_int),
   [OP_ADD_INT_INT] = STENCIL_(op_add_int_int),
   [OP_SUM_BIGINT] = STENCIL_(op_sum_bigint),
+  [OP_COUNT_BIGINT] = STENCIL_(op_count_bigint),
   [OP_BRANCH_LT_INT_INT] = STENCIL_(op_branch_lt_int_int),
   [OP_BRANCH_LE_INT_INT] = STENCIL_(op_branch_le_int_int),
   [OP_BRANCH_EQ_INT_INT] = STENCIL_(op_branch_eq_int_int),

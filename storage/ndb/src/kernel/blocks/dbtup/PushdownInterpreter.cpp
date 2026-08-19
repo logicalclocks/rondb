@@ -279,13 +279,16 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                               thread_id);
     require(result.agg->Init(prog));
     require(result.agg->OptimizeProgram());
-    /* Phase 8 Slice 3c: JIT-compile the per-row aggregation only for
-     * scalar (non-GROUP-BY) programs — ProcessRec's dispatch gate runs
-     * the JIT entry only when m_n_gb_cols == 0, so a GROUP-BY program's
-     * blob would never be used. Acquire from the node-global agg reuse
-     * cache (identical scalar aggregations share one blob); the handle is
+    /* Phase 8 Slice 3c: JIT-compile the per-row aggregation. The
+     * GROUP BY gate lift (Phase 8 #5) compiles grouped programs too —
+     * the compiled region starts at agg_prog_start_pos, past the
+     * GROUP BY metadata, so grouping never appears in the blob (the
+     * group prologue in ProcessRec resolves the row's accumulator
+     * slots before dispatch). Acquire from the node-global agg reuse
+     * cache (identical instruction streams share one blob — sound
+     * even across different GROUP BY column sets); the handle is
      * released in ~AggInterpreterBase. */
-    if (result.agg->n_gb_cols() == 0) {
+    {
       const Uint32 *agg_prog = result.agg->agg_program();
       const Uint32 bc_off = result.agg->agg_prog_start_pos();
       if (bc_off < prog_len) {

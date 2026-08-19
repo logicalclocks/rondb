@@ -248,9 +248,14 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   /* Phase 6.5 RONDB-1056: standalone pushed aggregation JIT path.
    * This is the same scalar-aggregation dispatch shape used by
    * JoinAggInterpreter once setup has published a compiled entry.
-   * GROUP BY remains on the interpreter path until the JIT supports
-   * grouped accumulator lookup/update. */
-  if (m_jit_entry != nullptr && m_n_gb_cols == 0) {
+   *
+   * Phase 8 GROUP BY lift: grouped programs dispatch too. The group
+   * prologue above has already resolved agg_res_ptr to this row's
+   * group record (hash find/insert, fresh-group init), so the JIT'd
+   * accumulator/filter program runs against the right slots; the
+   * glue's value_updated/value_unsigned writeback preserves per-group
+   * SQL-NULL and COUNT-unsignedness semantics. */
+  if (m_jit_entry != nullptr) {
     m_processed_rows++;
     return dbtup_jit_invoke(this, block_tup, req_struct,
                             m_jit_entry, agg_res_ptr,

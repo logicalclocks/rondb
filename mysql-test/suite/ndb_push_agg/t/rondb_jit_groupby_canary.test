@@ -1,0 +1,145 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 8 #5 — GROUP BY gate lift canary.
+#
+# Grouped pushed aggregation now dispatches through the JIT: the group
+# prologue (GB column reads + hash find/insert) stays interpreted C++
+# and resolves the row's group record; the JIT'd accumulator/filter
+# program then runs against that group's slots. This canary proves the
+# lift the compound-canary way: ERROR_INSERT 4060 (a compiled program
+# must execute via JIT) plus an ndbinfo.jit programs_compiled +
+# programs_reused delta >= 1 (only successful compiles count, so the
+# delta proves the grouped shape was admitted).
+#
+# Q2/Q4 additionally exercise the new OP_COUNT_BIGINT stencil — they
+# require regenerated stencils (regen-stencils) in the build.
+
+--echo ############################################################
+--echo # RONDB-1056 GROUP BY JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  v   BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 1, 10), (2, 1, 20), (3, 1, 30), (4, 1, 40),
+  (5, 2, 50), (6, 2, 60), (7, 2, 70),
+  (8, 3, 80), (9, 3, 90), (10, 3, 100), (11, 3, 110), (12, 3, 120);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: grouped SUM must JIT (the basic gate lift).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, SUM(v) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: grouped COUNT + SUM must JIT (OP_COUNT_BIGINT — count results
+--echo #     are unsigned BIGINT via the value_unsigned writeback mask).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, COUNT(v), SUM(v) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: grouped CASE stays on the interpreter for now (counter delta
+--echo #     exactly 0) with correct results. Two findings behind this
+--echo #     (2026-08-19): the SQL planner only pushes CASE with a pushable
+--echo #     ELSE value (ELSE NULL is not pushed at all), and the pushed
+--echo #     form emits BRANCH_*_REG_REG inside the embedded block, which
+--echo #     the bridge does not lower until Phase 5's embedded-branch
+--echo #     family. When Phase 5 lands, this delta flips to >= 1 — update
+--echo #     the assertion then. NB per-group SQL-NULL is therefore not
+--echo #     expressible via pushed SQL today; the value_updated writeback
+--echo #     that provides it is group-agnostic and scalar-proven (NDB API
+--echo #     Test 25). No 4060 here: this fallback is expected.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--sorted_result
+SELECT grp, SUM(CASE WHEN v > 115 THEN v ELSE 0 END) AS s FROM t1 GROUP BY grp;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q3_case_stays_on_interpreter;
+
+--echo # Q4: high-cardinality differential — 2048 rows over 500 groups
+--echo #     (chunk-allocator growth under JIT dispatch). The outer derived
+--echo #     query folds the grouped result to one deterministic row.
+CREATE TABLE t2 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  v   BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES (1, 0, 1);
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+SET @m = (SELECT MAX(pk) FROM t2);
+INSERT INTO t2 SELECT pk + @m, 0, 1 FROM t2;
+UPDATE t2 SET grp = pk % 500, v = pk % 7;
+SELECT COUNT(*) FROM t2;
+SELECT SUM(s), SUM(c), COUNT(*)
+FROM (SELECT grp, SUM(v) AS s, COUNT(v) AS c FROM t2 GROUP BY grp) x;
+DROP TABLE t2;
+
+--echo # Q5: grouped join aggregation must JIT (single-leaf pushed join).
+CREATE TABLE jt1 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+CREATE TABLE jt2 (
+  pk BIGINT NOT NULL,
+  c2 BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO jt1 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 2);
+INSERT INTO jt2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
+SET ndb_join_pushdown_aggregate=ON;
+# No ndbinfo counter check here: the join-agg path compiles via
+# DblqhProxy (deduped by aggStateKey), not the progcache, so
+# programs_compiled does not move. 4060 alone is a sufficient proof for
+# aggregation paths — a program that failed to compile reaches the
+# interpreter and aborts (the agg 4060 guards have no
+# deliberate-fallback exemption, unlike the scan-filter one).
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT jt1.grp, SUM(jt2.c2) FROM jt1 JOIN jt2 ON jt2.pk = jt1.pk GROUP BY jt1.grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+DROP TABLE jt1;
+DROP TABLE jt2;
+
+--echo # Q6: negative control — more aggregates than BC_MAX_ACCS (4) is
+--echo #     bridge-rejected: correct results via the interpreter and the
+--echo #     compile counters move by exactly 0. No 4060 (deliberate
+--echo #     fallback).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--sorted_result
+SELECT grp, SUM(v), SUM(pk), SUM(v+pk), SUM(v-pk), SUM(pk*2) FROM t1 GROUP BY grp;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q6_stays_on_interpreter;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

@@ -955,17 +955,19 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   /* Phase 4 RONDB-1056: JIT path.
    *
    * Bypass the interpreter loop entirely when a JIT'd entry is
-   * cached AND the program isn't using GROUP BY. The Phase 4
-   * narrow scope rejects GB programs at admission, but defense-
-   * in-depth: the runtime check ensures GB programs that slip
-   * through (e.g., via a setup-time bug) still take the
-   * interpreter path.
+   * cached. Phase 8 GROUP BY lift: grouped programs dispatch too —
+   * the group prologue above has already resolved agg_res_ptr to this
+   * row's group record, so the JIT'd program runs against the right
+   * slots (per-group SQL-NULL semantics come from the glue's
+   * value_updated writeback). Single-leaf only (compile gate
+   * m_num_leaves == 1), so m_acc_offset-shifted multi-leaf layouts
+   * never reach a compiled entry.
    *
    * The dispatch glue (in DbtupJitGlue.cpp) handles JitState
    * setup, accumulator copy in/out, and helper-context wiring.
    * Per-program decision; the branch predictor folds it after
    * a couple of iterations. */
-  if (m_jit_entry != nullptr && m_n_gb_cols == 0) {
+  if (m_jit_entry != nullptr) {
     m_processed_rows++;
     /* Make this row's linked-attribute buffer visible to the JIT
      * cold-call helpers (ndb_jit_h_read_linked_to_mem reads it via

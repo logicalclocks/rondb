@@ -107,6 +107,9 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_SUM_SLOT", HK_OP_A   },
   { "HOLE_SUM_SRC",  HK_OP_B   },
   { "HOLE_SUM_RESULT", HK_OP_C },
+  /* op_count_bigint (Phase 8 GROUP BY lift) */
+  { "HOLE_COUNT_SLOT",   HK_OP_A },
+  { "HOLE_COUNT_RESULT", HK_OP_C },
   /* op_branch_lt_int_int */
   { "HOLE_BLT_A",    HK_OP_A          },
   { "HOLE_BLT_B",    HK_OP_B          },
@@ -387,6 +390,9 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_LCU16_DST_FOLD     0xa6bu
 #define MAGIC_LCI32_DST_FOLD     0x938u
 #define MAGIC_LCU32_DST_FOLD     0x064u  /* salt-rotated, retry=1 */
+/* Phase 8 GROUP BY lift: op_count_bigint. */
+#define MAGIC_COUNT_SLOT_FOLD    0x3c5u
+#define MAGIC_COUNT_RESULT_FOLD  0x9d2u
 
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
@@ -512,6 +518,8 @@ static const HoleFoldMagicEntry kHoleFoldMagicTable[] = {
   { MAGIC_LCU16_DST_FOLD,     HK_OP_A,  "MAGIC_LCU16_DST_FOLD"     },
   { MAGIC_LCI32_DST_FOLD,     HK_OP_A,  "MAGIC_LCI32_DST_FOLD"     },
   { MAGIC_LCU32_DST_FOLD,     HK_OP_A,  "MAGIC_LCU32_DST_FOLD"     },
+  { MAGIC_COUNT_SLOT_FOLD,    HK_OP_A,  "MAGIC_COUNT_SLOT_FOLD"    },
+  { MAGIC_COUNT_RESULT_FOLD,  HK_OP_C,  "MAGIC_COUNT_RESULT_FOLD"  },
 };
 static const size_t kHoleFoldMagicTableLen =
     sizeof(kHoleFoldMagicTable) / sizeof(kHoleFoldMagicTable[0]);
