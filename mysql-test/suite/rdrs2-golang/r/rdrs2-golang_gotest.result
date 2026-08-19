@@ -1,4 +1,6 @@
-## Go tests (without TLS)
-PASS
 ## Go tests (with TLS and server-side cert)
+PASS
+## Go tests (without TLS, one simple test per package)
+PASS
+## C++ tests
 PASS

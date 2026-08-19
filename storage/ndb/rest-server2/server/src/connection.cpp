@@ -106,12 +106,3 @@ RS_Status RonDBConnection::shutdown_rondb_connection() noexcept {
   return CRS_Status::SUCCESS.status;
 }
 
-/* Reconnect on all cluster connections is currently never used */
-RS_Status RonDBConnection::rondb_reconnect() noexcept {
-  RS_Status ret = reconnect();
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
-        drogon::HttpStatusCode::k200OK) {
-    return ret;
-  }
-  return CRS_Status::SUCCESS.status;
-}
