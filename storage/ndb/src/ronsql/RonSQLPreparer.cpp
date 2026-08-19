@@ -1,7 +1,7 @@
 // vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
 
 /*
-   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -168,22 +168,31 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     PERF_TS(t_prep_start);
     configure();
     PERF_TS(t_parse_start);
+    STAT_TS(m_conf.phase_stats, s_parse_start);
     parse();
     resolve_orderby_aliases();
     PERF_TS(t_parse_end);
     PERF_LOG("  parse", t_parse_start, t_parse_end);
+    STAT_TS(m_conf.phase_stats, s_parse_end);
+    STAT_SET(m_conf.phase_stats, parse_us, s_parse_start, s_parse_end);
     analyze_ctes();
     analyze_subqueries();
     analyze_select_subqueries();
     PERF_TS(t_load_start);
+    STAT_TS(m_conf.phase_stats, s_load_start);
+    STAT_SET(m_conf.phase_stats, analyze_us, s_parse_end, s_load_start);
     load();
     PERF_TS(t_load_end);
     PERF_LOG("  load (dict)", t_load_start, t_load_end);
+    STAT_TS(m_conf.phase_stats, s_load_end);
+    STAT_SET(m_conf.phase_stats, load_us, s_load_start, s_load_end);
     if (m_has_ctes)
       validate_cte_execution_shapes();
     if (!is_join_query())
       plan_index_and_filter();
     PERF_TS(t_compile_start);
+    STAT_TS(m_conf.phase_stats, s_compile_start);
+    STAT_SET(m_conf.phase_stats, plan_us, s_load_end, s_compile_start);
     compile();
     if (is_join_query())
       build_agg_linked_projections();
@@ -191,6 +200,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
       build_cte_linked_projections();
     PERF_TS(t_compile_end);
     PERF_LOG("  compile", t_compile_start, t_compile_end);
+    STAT_TS(m_conf.phase_stats, s_compile_end);
+    STAT_SET(m_conf.phase_stats, compile_us, s_compile_start, s_compile_end);
     determine_explain();
     PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
@@ -5900,8 +5911,11 @@ RonSQLPreparer::execute()
     require_prm(ndb != NULL, "Cannot query without ndb object.");
 
     if (m_has_subqueries) {
+      STAT_TS(m_conf.phase_stats, s_subq_start);
       execute_subqueries();
       substitute_subquery_results();
+      STAT_TS(m_conf.phase_stats, s_subq_end);
+      STAT_SET(m_conf.phase_stats, subquery_us, s_subq_start, s_subq_end);
     }
 
     if (is_join_query()) {
@@ -5926,16 +5940,24 @@ RonSQLPreparer::execute()
     NdbAggregator aggregator(m_main_scope.table);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+    STAT_TS(m_conf.phase_stats, s_scandef_start);
     NdbScanOperation* scanOp = open_single_table_scan_op();
     DEB_TRACE();
     require_run(DBG(scanOp->setAggregationCode(&aggregator)) >= 0,
                 "Failed to set aggregation code.");
+    STAT_TS(m_conf.phase_stats, s_agg_start);
+    STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_agg_start);
     require_run(DBG(scanOp->DoAggregation()) >= 0,
                 "Failed to execute scan aggregation.");
+    STAT_TS(m_conf.phase_stats, s_agg_end);
+    STAT_SET(m_conf.phase_stats, firstbatch_us, s_agg_start, s_agg_end);
     DEB_TRACE();
 
     // Print results
+    STAT_TS(m_conf.phase_stats, s_print_start);
     m_resultprinter->print_result(&aggregator, m_conf.out_stream);
+    STAT_TS(m_conf.phase_stats, s_print_end);
+    STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
     DEB_TRACE();
 
     cleanup_trans();
@@ -6743,10 +6765,13 @@ RonSQLPreparer::execute_join()
 
   // Prepare and execute
   PERF_TS(t_qb_prepare);
+  STAT_TS(m_conf.phase_stats, s_qb_prepare);
   const NdbQueryDef* queryDef = qb->prepare(ndb);
   require_run(queryDef != NULL, "Failed to prepare query.");
   PERF_TS(t_qb_prepared);
   PERF_LOG("  qb->prepare", t_qb_prepare, t_qb_prepared);
+  STAT_TS(m_conf.phase_stats, s_qb_prepared);
+  STAT_SET(m_conf.phase_stats, ndbprep_us, s_qb_prepare, s_qb_prepared);
 
   NdbQuery* query = m_trans->createQuery(queryDef);
   require_run(query != NULL, "Failed to create query.");
@@ -6766,16 +6791,31 @@ RonSQLPreparer::execute_join()
     PERF_LOG("  execute total", t_qb_prepare, t_drain_done);
   } else {
     PERF_TS(t_exec_start);
+    STAT_TS(m_conf.phase_stats, s_exec_start);
     require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
                 "Failed to execute transaction.");
     PERF_TS(t_exec_sent);
     PERF_LOG("  trans->execute", t_exec_start, t_exec_sent);
+    STAT_TS(m_conf.phase_stats, s_exec_sent);
+    STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
 
-    // Consume all rows
-    NdbQuery::NextResultOutcome rc;
-    while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+    // Consume all rows.  The first nextResult covers data-node execution
+    // up to the first result batch (incl. CTE materialization for CTE
+    // queries); the remaining drain is result transfer + local unpack.
+    Uint64 n_rows = 0;
+    NdbQuery::NextResultOutcome rc = query->nextResult(true);
+    STAT_TS(m_conf.phase_stats, s_first_row);
+    STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
+    while (rc == NdbQuery::NextResult_gotRow) {
+      n_rows++;
+      rc = query->nextResult(true);
+    }
     PERF_TS(t_drain_done);
     PERF_LOG("  drain results", t_exec_sent, t_drain_done);
+    STAT_TS(m_conf.phase_stats, s_drain_done);
+    STAT_SET(m_conf.phase_stats, drain_us, s_first_row, s_drain_done);
+    STAT_COUNT(m_conf.phase_stats, rows_drained, n_rows);
+    (void)n_rows;
     if (rc == NdbQuery::NextResult_error)
     {
       const NdbError& err = query->getNdbError();
@@ -6800,12 +6840,15 @@ RonSQLPreparer::execute_join()
 
     // Collect and print aggregation results
     PERF_TS(t_result_start);
+    STAT_TS(m_conf.phase_stats, s_result_start);
     NdbAggregator* resultAgg = query->getAggregator();
     ndbrequire(resultAgg != NULL);
     m_resultprinter->print_result(resultAgg, m_conf.out_stream);
     PERF_TS(t_result_done);
     PERF_LOG("  print results", t_result_start, t_result_done);
     PERF_LOG("  execute total", t_qb_prepare, t_result_done);
+    STAT_TS(m_conf.phase_stats, s_result_done);
+    STAT_SET(m_conf.phase_stats, print_us, s_result_start, s_result_done);
   }
 
   // Cleanup
@@ -7032,8 +7075,11 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   DEB_DRAIN(("[drain] before execute(NoCommit): numTotalOps=%u numMainOps=%u "
              "numCteSubtreeOps=%u num_cols=%u\n",
              numTotalOps, numMainOps, numCteSubtreeOps, num_cols));
+  STAT_TS(m_conf.phase_stats, s_exec_start);
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
               "Failed to execute transaction (pass-through).");
+  STAT_TS(m_conf.phase_stats, s_exec_sent);
+  STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
   DEB_DRAIN(("[drain] execute(NoCommit) returned OK; entering drain\n"));
 
   // For JSON output we always want the framing '[' ... ']' (an empty
@@ -7061,6 +7107,12 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   for (;;) {
     DEB_DRAIN(("[drain] calling nextResult(true), row_count=%u\n", row_count));
     rc = query->nextResult(true);
+    if (row_count == 0) {
+      // First nextResult covers data-node execution up to the first result
+      // batch (captured whether or not a row arrived).
+      STAT_TS(m_conf.phase_stats, s_first_row);
+      STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
+    }
     DEB_DRAIN(("[drain] nextResult returned rc=%d "
                "(gotRow=%d scanComplete=%d error=%d bufferEmpty=%d)\n",
                (int)rc, (int)NdbQuery::NextResult_gotRow,
@@ -7089,6 +7141,16 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     row_count++;
   }
   DEB_DRAIN(("[drain] loop exited: rc=%d total_rows=%u\n", (int)rc, row_count));
+  STAT_TS(m_conf.phase_stats, s_drain_done);
+#ifdef RONSQL_PHASE_STATS
+  if (m_conf.phase_stats != nullptr) {
+    // Rows are printed inside the drain loop on this path, so print_us
+    // stays 0 and drain_us includes the formatting cost.
+    m_conf.phase_stats->drain_us =
+        (s_drain_done - s_exec_sent) - m_conf.phase_stats->firstbatch_us;
+    m_conf.phase_stats->rows_drained = row_count;
+  }
+#endif
   if (rc == NdbQuery::NextResult_error) {
     const NdbError& err = query->getNdbError();
     std::basic_ostream<char>& errout = *m_conf.err_stream;
@@ -12389,11 +12451,28 @@ RonSQLPreparer::print()
     out << "ORDER BY\n";
     while (orderby != NULL)
     {
-      Uint32 col_idx = orderby->col_idx;
       bool ascending = orderby->ascending;
-      out << "  C" << col_idx << ":" <<
-        quoted_identifier(column_idx_to_name(col_idx)) <<
-        (ascending ? " ASC" : " DESC") << '\n';
+      if (orderby->kind == OrderbyColumns::Kind::OUTPUT_REF)
+      {
+        // The union holds output_idx here, not col_idx: an alias target
+        // resolved to a SELECT output.  Print it like the SELECT section
+        // (Out_N:`alias`) instead of misreading it as a column index.
+        Uint32 output_idx = orderby->output_idx;
+        out << "  Out_" << output_idx;
+        Outputs* ob_output = ast_root.outputs;
+        for (Uint32 i = 0; ob_output != NULL && i < output_idx; i++)
+          ob_output = ob_output->next;
+        if (ob_output != NULL)
+          out << ":" << quoted_identifier(ob_output->output_name);
+        out << (ascending ? " ASC" : " DESC") << '\n';
+      }
+      else
+      {
+        Uint32 col_idx = orderby->col_idx;
+        out << "  C" << col_idx << ":" <<
+          quoted_identifier(column_idx_to_name(col_idx)) <<
+          (ascending ? " ASC" : " DESC") << '\n';
+      }
       orderby = orderby->next;
     }
   }

@@ -141,6 +141,13 @@ var ronsqlBenchQueries = []RonSQLBenchQuery{
 	// Online Feature-Store-style benchmarks (filter-bounded)
 	// ---------------------------------------------------------------
 	{
+		Name:        "fs_floor",
+		Category:    benchCatFS,
+		Description: "Fixed-overhead floor: single-table COUNT(*) over region (5 rows) - lower bound for every phase",
+		Database:    "tpch",
+		SQL:         `SELECT COUNT(*) FROM region;`,
+	},
+	{
 		Name:        "fs_point",
 		Category:    benchCatFS,
 		Description: "On-demand feature vector for one random customer (CTE body filtered on entity key)",
@@ -269,6 +276,51 @@ ORDER BY top_spend DESC
 LIMIT 100;`,
 	},
 	{
+		Name:        "fs_minmax",
+		Category:    benchCatFS,
+		Description: "Datatype-heavy MIN/MAX (DECIMAL + DATE) over a 3-day shipment window, re-aggregated per supplier nation",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(s_nationkey) FROM tpch.supplier",
+		KeyDefault:  24,
+		SQL: `WITH ship_stats AS (
+  SELECT l_suppkey AS sk, COUNT(*) AS item_cnt,
+         MIN(l_extendedprice) AS min_price, MAX(l_extendedprice) AS max_price,
+         MIN(l_quantity) AS min_qty, MAX(l_quantity) AS max_qty,
+         MIN(l_shipdate) AS first_ship, MAX(l_shipdate) AS last_ship
+  FROM lineitem
+  WHERE l_shipdate >= '1998-06-01' AND l_shipdate <= '1998-06-03'
+  GROUP BY l_suppkey)
+SELECT s.s_nationkey, COUNT(*), SUM(ship_stats.item_cnt),
+       MIN(ship_stats.min_price), MAX(ship_stats.max_price),
+       MIN(ship_stats.min_qty), MAX(ship_stats.max_qty),
+       MIN(ship_stats.first_ship), MAX(ship_stats.last_ship)
+FROM supplier AS s JOIN ship_stats ON ship_stats.sk = s.s_suppkey
+WHERE s.s_nationkey = {KEY}
+GROUP BY s.s_nationkey;`,
+	},
+	{
+		Name:        "fs_dnf",
+		Category:    benchCatFS,
+		Description: "DNF filter cost: 4-disjunct OR in the CTE body WHERE over a random 200-customer segment",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:  tpchCustomerBase,
+		KeySpan:     200,
+		SQL: `WITH flagged AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_totalprice) AS spend
+  FROM orders
+  WHERE o_custkey >= {KEY} AND o_custkey < {KEY2}
+    AND (o_orderstatus = 'F' OR o_orderstatus = 'P'
+         OR o_totalprice > 300000.00 OR o_orderpriority = '1-URGENT')
+  GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(flagged.cnt), SUM(flagged.spend)
+FROM customer AS c JOIN flagged ON flagged.k = c.c_custkey
+WHERE c.c_custkey >= {KEY} AND c.c_custkey < {KEY2}
+GROUP BY c.c_nationkey;`,
+	},
+	{
 		Name:        "fs_history",
 		Category:    benchCatFS,
 		MySQLOnly:   true,
@@ -346,6 +398,38 @@ SELECT c.c_nationkey, COUNT(*), MAX(c.c_acctbal)
 FROM customer AS c LEFT JOIN recent_orders ON recent_orders.k = c.c_custkey
 WHERE recent_orders.cnt IS NULL
 GROUP BY c.c_nationkey;`,
+	},
+	{
+		Name:        "offline_fs_wide",
+		Category:    benchCatOfflineFS,
+		Description: "Wide output: 7-aggregate per-customer CTE re-aggregated into 10 output columns per market segment",
+		Database:    "tpch",
+		SQL: `WITH cust_features AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_totalprice) AS spend,
+         MIN(o_totalprice) AS min_price, MAX(o_totalprice) AS max_price,
+         MIN(o_orderdate) AS first_order, MAX(o_orderdate) AS last_order,
+         MAX(o_orderkey) AS max_key
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, COUNT(*), SUM(cust_features.cnt), SUM(cust_features.spend),
+       MIN(cust_features.min_price), MAX(cust_features.max_price),
+       MIN(cust_features.first_order), MAX(cust_features.last_order),
+       MAX(cust_features.max_key), MAX(cust_features.cnt)
+FROM customer AS c JOIN cust_features ON cust_features.k = c.c_custkey
+GROUP BY c.c_mktsegment;`,
+	},
+	{
+		Name:        "offline_fs_chain",
+		Category:    benchCatOfflineFS,
+		Description: "Chained CTE-of-CTE: per-customer features rolled up through a second CTE into a scalar reduce",
+		Database:    "tpch",
+		SQL: `WITH per_cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_totalprice) AS spend
+  FROM orders GROUP BY o_custkey),
+cust_rollup AS (
+  SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
+  FROM per_cust GROUP BY k)
+SELECT COUNT(*), SUM(cust_rollup.cnt2), MAX(cust_rollup.max_spend), MIN(cust_rollup.max_spend)
+FROM cust_rollup;`,
 	},
 	{
 		Name:        "offline_fs_scalar",
@@ -732,6 +816,122 @@ func countRonSQLResultRows(data []byte) int {
 	return len(strings.Split(body, "\n")) - 1
 }
 
+// ronsqlPhasesHeader is the RDRS response header carrying per-request
+// RonSQL phase timings, emitted when the server is compiled with
+// RONSQL_PHASE_STATS (the default; see RonSQLPerf.hpp). Value format:
+// "parse=12,analyze=3,load=45,...,rows=8,attempts=1" — timing fields in
+// microseconds, last ronsql_op attempt; rows/attempts are counters.
+const ronsqlPhasesHeader = "x-ronsql-phases"
+
+// ronsqlPhaseOrder is the canonical display order of the timing fields.
+var ronsqlPhaseOrder = []string{
+	"parse", "analyze", "load", "plan", "compile", "prepare",
+	"subquery", "ndbprep", "send", "firstbatch", "drain", "print",
+	"execute",
+}
+
+// parseRonSQLPhases parses an x-ronsql-phases header value into a
+// name → value map. Returns nil for an empty header (old RDRS build or
+// RONSQL_PHASE_STATS compiled out).
+func parseRonSQLPhases(header string) map[string]int64 {
+	if header == "" {
+		return nil
+	}
+	phases := make(map[string]int64)
+	for _, kv := range strings.Split(header, ",") {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		v, err := strconv.ParseInt(kv[eq+1:], 10, 64)
+		if err != nil {
+			continue
+		}
+		phases[strings.TrimSpace(kv[:eq])] = v
+	}
+	if len(phases) == 0 {
+		return nil
+	}
+	return phases
+}
+
+// phaseBreakdown aggregates per-phase server-side latencies across the
+// requests of one benchmark run.
+type phaseBreakdown struct {
+	mu         sync.Mutex
+	collectors map[string]*LatencyCollector
+	samples    int64
+	retries    int64 // sum of (attempts - 1) over sampled requests
+	rows       int64 // sum of drained rows over sampled requests
+}
+
+func newPhaseBreakdown() *phaseBreakdown {
+	return &phaseBreakdown{collectors: make(map[string]*LatencyCollector)}
+}
+
+// Record parses one x-ronsql-phases header value and feeds the per-phase
+// collectors. A missing header is ignored (the breakdown then reports
+// unavailability once at print time instead of per request).
+func (pb *phaseBreakdown) Record(header string) {
+	phases := parseRonSQLPhases(header)
+	if phases == nil {
+		return
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.samples++
+	for name, v := range phases {
+		switch name {
+		case "attempts":
+			if v > 1 {
+				pb.retries += v - 1
+			}
+		case "rows":
+			pb.rows += v
+		default:
+			c := pb.collectors[name]
+			if c == nil {
+				c = NewLatencyCollector()
+				pb.collectors[name] = c
+			}
+			c.Record(time.Duration(v) * time.Microsecond)
+		}
+	}
+}
+
+// Print writes the per-phase breakdown table after the end-to-end results.
+// Phases that never exceeded 0µs in the whole run are omitted.
+func (pb *phaseBreakdown) Print(totalRequests int64) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	if pb.samples == 0 {
+		fmt.Printf("   Phase breakdown: not available (no %s header; RDRS predates it or RONSQL_PHASE_STATS is compiled out)\n\n",
+			ronsqlPhasesHeader)
+		return
+	}
+	fmt.Printf("   Phase breakdown (server-side, %d/%d requests sampled):\n",
+		pb.samples, totalRequests)
+	fmt.Printf("     %-12s %10s %10s %10s %10s\n", "phase", "avg", "p95", "p99", "max")
+	for _, name := range ronsqlPhaseOrder {
+		c := pb.collectors[name]
+		if c == nil {
+			continue
+		}
+		_, maxLat, avgLat, p95Lat, p99Lat, _, count := c.GetTotalStats()
+		if count == 0 || maxLat == 0 {
+			continue
+		}
+		fmt.Printf("     %-12s %10s %10s %10s %10s\n", name,
+			formatLatency(avgLat), formatLatency(p95Lat),
+			formatLatency(p99Lat), formatLatency(maxLat))
+	}
+	fmt.Printf("     %-12s %.1f per request\n", "rows drained", float64(pb.rows)/float64(pb.samples))
+	if pb.retries > 0 {
+		fmt.Printf("     Retries: %d (phase values reflect each request's last attempt)\n", pb.retries)
+	}
+	fmt.Println()
+}
+
 // benchProgressReporter starts a goroutine printing progress every 10s.
 // Returns a stop function.
 func benchProgressReporter(totalOps int, doneOps *int64, errorCollector *ErrorCollector, benchStart time.Time) func() {
@@ -872,7 +1072,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 		ExplainMode:  "ALLOW",
 		OutputFormat: "TEXT",
 	}
-	data, warmupDur, err := clients[0].Post(endpoint, warmupReq)
+	data, warmupPhases, warmupDur, err := clients[0].PostWithHeader(endpoint, warmupReq, ronsqlPhasesHeader)
 	if err != nil {
 		if len(data) > 0 {
 			fmt.Println(ui.Error("RonSQL response:"))
@@ -882,6 +1082,9 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	}
 	warmupRows := countRonSQLResultRows(data)
 	fmt.Println(ui.Info(fmt.Sprintf("Warmup: %s, %d result rows", formatLatency(warmupDur), warmupRows)))
+	if warmupPhases != "" {
+		fmt.Println(ui.Info("Warmup phases (µs): " + warmupPhases))
+	}
 	if s.debug {
 		fmt.Println(strings.TrimSpace(string(data)))
 	}
@@ -891,6 +1094,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	errorCollector := NewErrorCollector()
+	phases := newPhaseBreakdown()
 	benchStart := time.Now()
 	stopProgress := benchProgressReporter(totalOps, &doneOps, errorCollector, benchStart)
 
@@ -908,7 +1112,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 					ExplainMode:  "ALLOW",
 					OutputFormat: "TEXT",
 				}
-				_, duration, err := restClient.Post(endpoint, req)
+				_, phaseHeader, duration, err := restClient.PostWithHeader(endpoint, req, ronsqlPhasesHeader)
 				latencyCollector.Record(duration)
 				if debugMode {
 					fmt.Printf("[DEBUG] %s op %d: %s err=%v\n", q.Name, i, formatLatency(duration), err)
@@ -916,6 +1120,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 				if err != nil {
 					errorCollector.Record(err)
 				} else {
+					phases.Record(phaseHeader)
 					atomic.AddInt64(&doneOps, 1)
 				}
 			}
@@ -926,6 +1131,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	benchDuration := time.Since(benchStart)
 
 	printBenchResults("RonSQL", q.Name, doneOps, benchDuration, latencyCollector, errorCollector)
+	phases.Print(doneOps)
 	return nil
 }
 

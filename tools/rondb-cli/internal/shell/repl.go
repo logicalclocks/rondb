@@ -4354,6 +4354,16 @@ Common parameters:
      .bench_sql tpch_q15             Official TPC-H Q15 formulation via MySQL
      .bench_sql all 1 10             Run every SQL query sequentially
 
+   Phase breakdown: when RDRS is built with RONSQL_PHASE_STATS (the
+   default), every RonSQL response carries an x-ronsql-phases header with
+   per-phase server-side timings (parse/analyze/load/plan/compile,
+   subquery, ndbprep/send/firstbatch/drain/print, in µs). .bench_ronsql
+   aggregates them and prints an avg/p95/p99/max table per phase after the
+   end-to-end results; the warmup request prints its raw phase values.
+   End-to-end latency minus prepare+execute approximates REST/HTTP
+   overhead. fs_floor (COUNT(*) over 5 rows) is the fixed-cost floor to
+   compare other queries against.
+
    Inspecting the queries:
      .list_query_ronsql              Query names + descriptions (RonSQL namespace)
      .list_query_sql                 Query names + descriptions (SQL namespace)
@@ -4370,8 +4380,8 @@ Common parameters:
                    aggregate features joined to entity tables, with filters
                    bounding the work to hundreds .. tens of thousands of
                    rows. fs_point/fs_batch/fs_freshness use a random entity
-                   key or segment per request. fs_topk and fs_history use
-                   ORDER BY/LIMIT and are .bench_sql-only.
+                   key or segment per request. fs_history (single-table
+                   non-aggregate SELECT) is .bench_sql-only.
      offline_fs_*  Offline feature materialization: full-table per-entity
                    CTEs re-aggregated across the entity table.
      tpch_q*       (.bench_ronsql) TPC-H queries whose official form has a

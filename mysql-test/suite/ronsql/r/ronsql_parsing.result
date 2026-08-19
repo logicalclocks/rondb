@@ -1168,7 +1168,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` ASC
+  Out_0:`col1` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1195,8 +1195,8 @@ GROUP BY
   C0:`col1`
   C1:`col #2`
 ORDER BY
-  C0:`col1` ASC
-  C1:`col #2` ASC
+  Out_0:`col1` ASC
+  Out_1:`col #2` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1229,10 +1229,10 @@ GROUP BY
   C2:`col3`
   C3:`col4`
 ORDER BY
-  C0:`col1` ASC
-  C1:`col2` ASC
-  C2:`col3` DESC
-  C3:`col4` ASC
+  Out_0:`col1` ASC
+  Out_1:`col2` ASC
+  Out_2:`col3` DESC
+  Out_3:`col4` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1563,8 +1563,8 @@ GROUP BY
   C0:`l_returnflag`
   C1:`l_linestatus`
 ORDER BY
-  C0:`l_returnflag` ASC
-  C1:`l_linestatus` ASC
+  Out_0:`l_returnflag` ASC
+  Out_1:`l_linestatus` ASC
 
 Aggregation program (21 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1655,7 +1655,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` ASC
+  Out_0:`col1` ASC
 LIMIT 10
 
 Aggregation program (2 instructions):
@@ -1751,7 +1751,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` DESC
+  Out_0:`col1` DESC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1778,7 +1778,7 @@ GROUP BY
   C0:`col1`
   C1:`col2`
 ORDER BY
-  C0:`col1` ASC
+  Out_0:`col1` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1805,8 +1805,8 @@ GROUP BY
   C0:`col1`
   C1:`col2`
 ORDER BY
-  C1:`col2` ASC
-  C0:`col1` ASC
+  Out_1:`col2` ASC
+  Out_0:`col1` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1836,7 +1836,7 @@ GROUP BY
   C1:`col2`
   C2:`col3`
 ORDER BY
-  C2:`col3` DESC
+  Out_2:`col3` DESC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1864,7 +1864,7 @@ WHERE
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` DESC
+  Out_0:`col1` DESC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1896,7 +1896,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` ASC
+  Out_0:`col1` ASC
 
 Aggregation program (5 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1923,7 +1923,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` DESC
+  Out_0:`col1` DESC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -1947,7 +1947,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` ASC
+  Out_0:`col1` ASC
 LIMIT 1
 
 Aggregation program (2 instructions):
@@ -1976,8 +1976,8 @@ GROUP BY
   C0:`col1`
   C1:`col2`
 ORDER BY
-  C0:`col1` DESC
-  C1:`col2` ASC
+  Out_0:`col1` DESC
+  Out_1:`col2` ASC
 LIMIT 3
 
 Aggregation program (2 instructions):
@@ -2003,7 +2003,7 @@ FROM tbl
 GROUP BY
   C0:`col1`
 ORDER BY
-  C0:`col1` ASC
+  Out_0:`col1` ASC
 LIMIT 0
 
 Aggregation program (2 instructions):

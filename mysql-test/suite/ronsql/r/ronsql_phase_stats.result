@@ -1,0 +1,33 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create table ===
+
+
+=== Single-table aggregate: header present and well-formed ===
+== Header count (must be 1) ==
+1
+== Normalized header (values masked to N) ==
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N
+== Result body (sorted) ==
+1	2	3
+2	2	7
+3	1	5
+b	COUNT(*)	SUM(a)
+
+=== CTE join aggregate: header present and well-formed ===
+== Header count (must be 1) ==
+1
+== Normalized header (values masked to N) ==
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N
+== Result body (sorted) ==
+2	5
+MAX(agg.cnt)	COUNT(*)
+
+=== EXPLAIN: header still present (no execution phases) ===
+== Header count (must be 1) ==
+1
+== Normalized header (values masked to N) ==
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N
+
+=== Cleanup ===

@@ -132,28 +132,40 @@ func (c *RestClient) Ping() error {
 
 // Post sends a POST request with JSON body and returns the response
 func (c *RestClient) Post(endpoint string, body interface{}) ([]byte, time.Duration, error) {
-	return c.doRequest(http.MethodPost, endpoint, body)
+	data, _, duration, err := c.doRequest(http.MethodPost, endpoint, body, "")
+	return data, duration, err
+}
+
+// PostWithHeader sends a POST request with JSON body and returns the
+// response together with the value of the named response header (empty
+// string when the header is absent). Used by the RonSQL benchmarks to read
+// the x-ronsql-phases per-phase timing header.
+func (c *RestClient) PostWithHeader(endpoint string, body interface{}, header string) ([]byte, string, time.Duration, error) {
+	return c.doRequest(http.MethodPost, endpoint, body, header)
 }
 
 // Delete sends a DELETE request with JSON body and returns the response
 func (c *RestClient) Delete(endpoint string, body interface{}) ([]byte, time.Duration, error) {
-	return c.doRequest(http.MethodDelete, endpoint, body)
+	data, _, duration, err := c.doRequest(http.MethodDelete, endpoint, body, "")
+	return data, duration, err
 }
 
-// doRequest sends an HTTP request with JSON body and returns the response
-func (c *RestClient) doRequest(method, endpoint string, body interface{}) ([]byte, time.Duration, error) {
+// doRequest sends an HTTP request with JSON body and returns the response.
+// When header is non-empty, the value of that response header is returned
+// as well (empty string when absent).
+func (c *RestClient) doRequest(method, endpoint string, body interface{}, header string) ([]byte, string, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to marshal request body: %w", err)
+		return nil, "", 0, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
 	url := c.baseURL + endpoint
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to create request: %w", err)
+		return nil, "", 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -165,20 +177,25 @@ func (c *RestClient) doRequest(method, endpoint string, body interface{}) ([]byt
 	duration := time.Since(start)
 
 	if err != nil {
-		return nil, duration, fmt.Errorf("request failed: %w", err)
+		return nil, "", duration, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	headerValue := ""
+	if header != "" {
+		headerValue = resp.Header.Get(header)
+	}
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, duration, fmt.Errorf("failed to read response: %w", err)
+		return nil, headerValue, duration, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
-		return data, duration, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(data))
+		return data, headerValue, duration, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(data))
 	}
 
-	return data, duration, nil
+	return data, headerValue, duration, nil
 }
 
 // Close releases any resources held by the client

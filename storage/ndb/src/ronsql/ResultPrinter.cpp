@@ -2561,9 +2561,34 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
     {
       if (i > 0) out << ", ";
       OrderbySpec& spec = m_orderby_specs[i];
-      Uint32 col_idx = m_groupby_cols[spec.groupby_idx];
-      out << quoted_identifier(column_names[col_idx])
-          << (spec.ascending ? " ASC" : " DESC");
+      if (spec.kind == OrderbySpec::Kind::GROUPBY_COL)
+      {
+        Uint32 col_idx = m_groupby_cols[spec.groupby_idx];
+        out << quoted_identifier(column_names[col_idx]);
+      }
+      else
+      {
+        // AGGREGATE: the union holds agg_result_idx, not groupby_idx.
+        // Print the SELECT output alias that produced this aggregate
+        // result when we can find it, else the result index.
+        const char* alias_str = NULL;
+        size_t alias_len = 0;
+        for (const Outputs* o = m_query->outputs; o != NULL; o = o->next)
+        {
+          if (o->type == Outputs::Type::AGGREGATE &&
+              o->aggregate.agg_index == spec.agg_result_idx)
+          {
+            alias_str = o->output_name.str;
+            alias_len = o->output_name.len;
+            break;
+          }
+        }
+        if (alias_str != NULL)
+          out << quoted_identifier(LexCString(alias_str, alias_len));
+        else
+          out << "aggregate result " << spec.agg_result_idx;
+      }
+      out << (spec.ascending ? " ASC" : " DESC");
     }
     out << ".\n";
   }
