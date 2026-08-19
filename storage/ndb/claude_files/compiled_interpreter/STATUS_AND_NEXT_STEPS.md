@@ -221,7 +221,14 @@ Recommended order:
    global codemem/progcache diagnostics; emitted from
    `Dbtup::execDBINFO_SCANREQ` (`DbtupDebug.cpp`) gated to `instance()==1`
    (one row/node). Table def + array entry in `NdbinfoTables.cpp`; enum in
-   `Ndbinfo.hpp`. The SQL view is auto-generated (no hardcoded view list).
+   `Ndbinfo.hpp`. **Correction (2026-08-19):** only the base table
+   `ndb$jit` is auto-generated from the kernel metadata — the clean-named
+   `ndbinfo.jit` VIEW needed a manual entry in the (name-sorted, asserted)
+   `views[]` list in `plugin/ha_ndbinfo_sql.cc`; it was missing until the
+   compound-canary run failed with "Table 'ndbinfo.jit' doesn't exist".
+   Added 2026-08-19. NOTE: this re-invalidates the freshly recorded
+   ndbinfo metadata results (`1a8c3a3b257`) — one more `--record` needed
+   after rebuilding mysqld (new view in the listings).
    **NOTE:** ndbinfo metadata MTR tests that enumerate all tables/columns
    need `--record` (one new table). Not yet wired: `runs` / `fallbacks` /
    `compile-ns` (need per-row + compile-time instrumentation; deferred).
@@ -262,9 +269,22 @@ Recommended order:
 cross-branch always-JIT `--force-jit` differential testing (high
 confidence; needs the parallel interpreter-test-program branch merged);
 **Phase 5 (full)** type-state lattice + ~70–75 aggregation stencil matrix
-(broader aggregation expressions; needs regen). **Cheap leftover:** verify
-compound scan predicates (`WHERE a > 5 AND b < 'x'`) — likely already JIT
-(forward branches the bridge admits); one canary confirms.
+(broader aggregation expressions; needs regen). **Cheap leftover —
+DONE & VERIFIED (2026-08-19):** compound scan predicates JIT. MTR
+`rondb_jit_compound_canary` (ndb_push_agg) **passed** against the
+hand-written `.result`: Q1 `a > 5 AND b < 'x'`, Q2 int range AND, Q3
+int OR, Q4 `IS NULL OR >`, Q5 3-way mixed AND — each proven two ways,
+ERROR_INSERT 4060 (compiled ⇒ must execute JIT; the
+`m_jit_filter_ineligible` exemption means 4060 alone can no longer
+prove compilation) **plus** an `ndbinfo.jit`
+`programs_compiled + programs_reused` delta ≥ 1 (the progcache counts
+only successful compiles, so rejected acquires — e.g. stats scans —
+never pollute it). Findings: the OR shapes (Q3/Q4) compile too — the
+bridge admits NdbScanFilter's full AND/OR forward-branch layout — and
+Q8 confirmed LIKE stays on the interpreter with exactly-0 counter
+movement, validating the counter methodology. The run also flushed out
+that the `ndbinfo.jit` VIEW was missing (see the correction in item 3
+above).
 
 ## Latest implementation — Phase 7 scan-filter runtime glue (2026-06-10)
 

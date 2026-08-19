@@ -1,0 +1,104 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 7 leftover — compound scan-predicate JIT canary.
+#
+# Confirms that multi-condition pushed WHERE filters (AND / OR chains
+# over integer and VARCHAR comparisons, i.e. forward-branch chains in
+# the generated NdbScanFilter program) compile through the scan-filter
+# JIT. Two independent proofs per shape:
+#
+#  - ERROR_INSERT 4060 makes interpreter fallback fatal for a scan
+#    whose filter compiled but failed to wire up. Since the
+#    m_jit_filter_ineligible exemption, 4060 alone cannot prove a
+#    shape compiled — a bridge-REJECTED filter falls back silently.
+#  - So each query also asserts the node-global ndbinfo.jit counters
+#    advanced: programs_compiled counts only SUCCESSFUL reuse-cache
+#    compiles (a rejected acquire bumps nothing), so a >= +1 delta of
+#    programs_compiled + programs_reused proves the compound filter
+#    was admitted and compiled (or reused from an identical compile).
+#
+# The LIKE query at the end is a negative control for the counter
+# methodology: the bridge rejects LIKE (cond > GE by design), so its
+# delta must be exactly 0. If that line ever diffs, LIKE started
+# compiling — update the bridge notes, not just the .result.
+
+--echo ############################################################
+--echo # RONDB-1056 compound scan-predicate JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk BIGINT NOT NULL,
+  a  BIGINT,
+  b  VARCHAR(32),
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 2,    'apple'),
+  (2, 6,    'banana'),
+  (3, 8,    'cherry'),
+  (4, 10,   'zebra'),
+  (5, NULL, 'kiwi'),
+  (6, 7,    NULL),
+  (7, 42,   'mango');
+
+--echo # Q1: WHERE a > 5 AND b < 'x' (integer AND string) must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk FROM t1 WHERE a > 5 AND b < 'x';
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: WHERE a > 5 AND a < 10 (integer range, same column) must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, a FROM t1 WHERE a > 5 AND a < 10;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: WHERE a < 3 OR a > 9 (integer OR) must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk, a FROM t1 WHERE a < 3 OR a > 9;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+
+--echo # Q4: WHERE a IS NULL OR a > 9 (NULL-branch OR comparison) must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk FROM t1 WHERE a IS NULL OR a > 9;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+
+--echo # Q5: WHERE a > 5 AND a < 41 AND b > 'b' (3-way mixed AND) must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT pk FROM t1 WHERE a > 5 AND a < 41 AND b > 'b';
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+
+--echo # Q6: differential — Q1 without the error insert matches.
+--sorted_result
+SELECT pk FROM t1 WHERE a > 5 AND b < 'x';
+
+--echo # Q7: differential — Q3 without the error insert matches.
+--sorted_result
+SELECT pk, a FROM t1 WHERE a < 3 OR a > 9;
+
+--echo # Q8: negative control — LIKE is bridge-rejected (cond > GE), so it
+--echo #     must run on the interpreter and the compile counters must not
+--echo #     move. No 4060 here: deliberate fallback is exempt anyway.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--sorted_result
+SELECT pk FROM t1 WHERE b LIKE 'c%';
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q8_like_stays_on_interpreter;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT
