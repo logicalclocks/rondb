@@ -540,21 +540,21 @@ o_orderkey	o_clerk
 
 === st-P1 (rejection): ORDER BY on a single-table projection ===
 This query has no aggregate expression, so it is not an aggregate query.
-Currently, RonSQL only supports aggregate queries, projection-only
-single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),
-and projection-only SELECTs over supported CTE shapes (Phase
-E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the
-broader non-aggregate roadmap.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), and CTE_SCAN roots —
+all without ORDER BY / LIMIT / GROUP BY / expressions.  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 
 === st-P2 (rejection): LIMIT on a single-table projection ===
 This query has no aggregate expression, so it is not an aggregate query.
-Currently, RonSQL only supports aggregate queries, projection-only
-single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),
-and projection-only SELECTs over supported CTE shapes (Phase
-E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the
-broader non-aggregate roadmap.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), and CTE_SCAN roots —
+all without ORDER BY / LIMIT / GROUP BY / expressions.  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 
@@ -567,10 +567,10 @@ ronsql_cli caught exception: Syntax error.
 
 === st-P4 (rejection): WITH prefix on a single-table projection ===
 This query has no aggregate expression, so it is not an aggregate query.
-Currently, RonSQL only supports aggregate queries, projection-only
-single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),
-and projection-only SELECTs over supported CTE shapes (Phase
-E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the
-broader non-aggregate roadmap.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), and CTE_SCAN roots —
+all without ORDER BY / LIMIT / GROUP BY / expressions.  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.

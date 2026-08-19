@@ -2358,10 +2358,63 @@ o_orderkey	c_custkey	n_name
 8	8	NATION8
 9	9	NATION9
 
-=== sn-15 (rejection): INNER below a LEFT child ===
-INNER JOIN below a LEFT JOIN is not supported in projection-only queries: RonSQL does not yet emit outer-join nest metadata, and NDB would deliver NULL-extended rows the INNER join must eliminate.
-Error handling: RPE
-ronsql_cli caught exception: INNER JOIN below LEFT JOIN not supported.
+=== sn-15: INNER below a LEFT child (promoted to all-INNER) ===
+== Query ==
+SELECT o.o_orderkey, cl.c_custkey, n.n_name
+FROM orders AS o
+LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE o.o_orderkey < 40;
+
+Number of output lines, including header: 35
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT o.o_orderkey, cl.c_custkey, n.n_name
+FROM orders AS o
+LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE o.o_orderkey < 40|
+o_orderkey	c_custkey	n_name
+1	2	NATION2
+10	11	NATION11
+11	12	NATION12
+12	13	NATION13
+13	14	NATION14
+15	16	NATION16
+16	17	NATION17
+17	18	NATION18
+18	19	NATION19
+19	20	NATION20
+2	3	NATION3
+20	21	NATION21
+22	23	NATION23
+23	24	NATION24
+24	25	NATION0
+25	26	NATION1
+26	27	NATION2
+27	28	NATION3
+29	30	NATION5
+3	4	NATION4
+30	31	NATION6
+31	32	NATION7
+32	33	NATION8
+33	34	NATION9
+34	35	NATION10
+36	37	NATION12
+37	38	NATION13
+38	39	NATION14
+39	40	NATION15
+4	5	NATION5
+5	6	NATION6
+6	7	NATION7
+8	9	NATION9
+9	10	NATION10
 
 === sn-P1 (rejection): type-mismatch join columns ===
 Join columns 'c_custkey' and 'r_regionkey' must have identical type, precision, scale, length and character set: NDB pushed joins do not convert linked values.

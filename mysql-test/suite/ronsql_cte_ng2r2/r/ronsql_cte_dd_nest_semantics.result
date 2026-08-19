@@ -1,6 +1,103 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
+=== ns-1: COUNT(*) over the full mix (promoted to all-INNER) ===
+== Query ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
+c
+10
+
+=== ns-2: NULL-ref slice ===
+== Query ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 21;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 21|
+c
+0
+
+=== ns-3: dangling-ref slice ===
+== Query ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 11 AND t.p_id < 21;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 11 AND t.p_id < 21|
+c
+0
+
+=== ns-4: GROUP BY root column over the full mix ===
+== Query ==
+SELECT t.grp AS g, COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+GROUP BY t.grp;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t.grp AS g, COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+GROUP BY t.grp|
+g	c
+0	3
+1	4
+2	3
+
 === ns-5: COUNT(n.n_nationkey) variant ===
 == Query ==
 SELECT COUNT(n.n_nationkey) AS c
@@ -59,6 +156,7 @@ Number of output lines, including header: 2
 
 
 
+== Explain Query ==
 == Expected result ==
 SELECT COUNT(*) AS c, COUNT(n.n_nationkey) AS cn
 FROM nestp AS t
@@ -66,3 +164,28 @@ LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
 LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
 c	cn
 30	10
+
+=== ns-8: cascade — INNER at the end promotes the whole LEFT chain ===
+== Query ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+JOIN region AS r ON r.r_regionkey = n.n_regionkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+JOIN region AS r ON r.r_regionkey = n.n_regionkey|
+c
+10

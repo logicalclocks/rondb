@@ -393,20 +393,13 @@ Syntax error: SELECT expression refers to ungrouped column `b` outside of aggreg
 You can either add this column to the GROUP BY clause, or use it within an aggregate function e.g. Sum(`b`).
 Error handling: RPE
 ronsql_cli caught exception: Ungrouped column in non-aggregated SELECT expression.
-===== Non-aggregation query =====
-This query has no aggregate expression, so it is not an aggregate query.
-Currently, RonSQL only supports aggregate queries and projection-only
-SELECTs over supported CTE shapes (Phase E.3/I.8/I.11/I.12).  See
-ronsql_join_phase7.md for the
-broader non-aggregate roadmap.
-Error handling: RPE
-ronsql_cli caught exception: Not an aggregate query.
 ===== Non-aggregation query with GROUP BY =====
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only
-SELECTs over supported CTE shapes (Phase E.3/I.8/I.11/I.12).  See
-ronsql_join_phase7.md for the
-broader non-aggregate roadmap.
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), and CTE_SCAN roots —
+all without ORDER BY / LIMIT / GROUP BY / expressions.  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 ===== Too big integer constant =====
@@ -435,6 +428,22 @@ No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
+
+===== Non-aggregation query (single-table projection, Phase 1) =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`b`
+   = C1:`b`
+FROM tbl
+
+No aggregation program.
+
+No NDB connection, so no index scan analysis.
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 0 instructions.
 
 ===== Arithmetics =====
 Query parse tree:

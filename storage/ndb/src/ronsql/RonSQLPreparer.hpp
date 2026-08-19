@@ -615,6 +615,16 @@ private:
                               Uint32 op_idx,
                               NdbDictionary::Table* virtTab,
                               struct ConditionalExpression* where_ce);
+  // Part B of join_nest_semantics_plan.md: join-condition LEFT->INNER
+  // promotion over the flat AST join list, run in parse() before the
+  // non-aggregate gate and before everything that consumes join types
+  // (planner match types, EXPLAIN parse tree).  An effectively-INNER
+  // join whose ON references a LEFT-joined alias eliminates that
+  // alias's NULL-extended rows (join conditions are null-rejecting
+  // equalities), making the LEFT equivalent to INNER — MySQL's
+  // simplify_joins rewrite.  One backward pass is exact: ON conditions
+  // only reference earlier aliases.
+  void promote_left_joins();
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,
                              struct ConditionalExpression* pk_const[],

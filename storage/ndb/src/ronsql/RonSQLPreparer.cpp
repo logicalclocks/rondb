@@ -563,6 +563,16 @@ RonSQLPreparer::parse()
       ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
+    // Part B (join_nest_semantics_plan.md): LEFT->INNER promotion must
+    // run before the non-aggregate gate (whose INNER-below-LEFT check
+    // is thereby demoted to a defensive dead-man's check) and applies
+    // to aggregate queries too — the emitted tree for an unpromoted
+    // chain (MatchNonNull child of a MatchAll node, no nest metadata)
+    // expresses `t LEFT (b INNER c)` instead of SQL's left-associative
+    // `(t LEFT b) INNER c`, with verified wrong results on both the
+    // aggregate path (ns-1: COUNT(*) 30 vs 10) and the pass-through
+    // row path (sn-15).
+    promote_left_joins();
     m_is_aggregate_query = (has_aggregate_outputs || has_having_aggregates ||
                             has_subquery_agg_outputs);
     if (!m_is_aggregate_query)
@@ -644,13 +654,15 @@ RonSQLPreparer::parse()
           !has_having && !has_orderby && !has_limit && has_joins) {
         projection_only_join_chain = true;
         LexCString visible_aliases[MAX_SPJ_TREE_NODES];
-        // Phase 2 (sn-15 probe outcome): an alias is "under LEFT" when
-        // it was LEFT-joined itself or reached through one.  RonSQL
-        // emits no outer-join nest metadata (setFirstInnerJoin /
-        // setUpperJoin), so an INNER join below a LEFT join would let
-        // NDB deliver NULL-extended rows the INNER join must eliminate
-        // — verified wrong results vs MySQL.  Reject that shape with a
-        // targeted error until nest metadata is emitted.
+        // Defensive dead-man's check (join_nest_semantics_plan.md): an
+        // alias is "under LEFT" when it was LEFT-joined itself or
+        // reached through one.  promote_left_joins() runs before this
+        // gate and rewrites every INNER-below-LEFT flat chain to
+        // all-INNER (equality join conditions are null-rejecting), so
+        // this check firing means a promotion bug or a future
+        // non-equality join condition — without promotion the emitted
+        // tree (no nest metadata) would deliver NULL-extended rows the
+        // INNER join must eliminate (verified wrong results, sn-15).
         bool alias_under_left[MAX_SPJ_TREE_NODES];
         Uint32 num_visible_aliases = 0;
         alias_under_left[num_visible_aliases] = false;
@@ -6175,6 +6187,49 @@ RonSQLPreparer::cleanup_trans() {
     ndbrequire(ndb);
     DBGV(ndb->closeTransaction(m_trans));
     m_trans = NULL;
+  }
+}
+
+void
+RonSQLPreparer::promote_left_joins()
+{
+  JoinClause* joins = m_context.ast_root.joins;
+  if (joins == NULL) return;
+  JoinClause* list[MAX_SPJ_TREE_NODES];
+  Uint32 num_joins = 0;
+  for (JoinClause* j = joins;
+       j != NULL && num_joins < MAX_SPJ_TREE_NODES; j = j->next) {
+    list[num_joins++] = j;
+  }
+  // Aliases referenced by the ON conditions of effectively-INNER joins
+  // processed so far (backward walk).  Capacity bounds: a query with
+  // more joins or more conditions per join than fits here is rejected
+  // by the planner's own caps before execution, so silently skipping
+  // the overflow is safe (a missed promotion then at worst hits the
+  // gate's defensive INNER-below-LEFT rejection).
+  static const Uint32 MAX_INNER_REFS =
+      MAX_SPJ_TREE_NODES * MAX_JOIN_KEY_COLS;
+  LexCString inner_refs[MAX_INNER_REFS];
+  Uint32 num_inner_refs = 0;
+  for (Uint32 i = num_joins; i-- > 0; ) {
+    JoinClause* j = list[i];
+    if (j->join_type == JoinClause::LEFT_OUTER_JOIN) {
+      const LexCString& alias = j->table.alias;
+      for (Uint32 r = 0; r < num_inner_refs; r++) {
+        if (inner_refs[r] == alias) {
+          j->join_type = JoinClause::INNER_JOIN;
+          break;
+        }
+      }
+    }
+    if (j->join_type == JoinClause::INNER_JOIN) {
+      for (const JoinCondition* jc = j->conditions;
+           jc != NULL; jc = jc->next) {
+        if (num_inner_refs < MAX_INNER_REFS) {
+          inner_refs[num_inner_refs++] = jc->parent_table;
+        }
+      }
+    }
   }
 }
 

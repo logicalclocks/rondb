@@ -775,11 +775,11 @@ c_id	tiny_s	small_s	med_s	int_s
 
 === Test 29: signed positive overflow literals rejected ===
 Expected error: signed integer literal out of range
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an integer literal out of range.

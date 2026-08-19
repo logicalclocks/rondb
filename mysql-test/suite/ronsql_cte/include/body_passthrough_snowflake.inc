@@ -27,11 +27,10 @@
 #   12  UNIQUE_LOOKUP child (local snow1.s_uk; 2 internal tree nodes)
 #   13  projection touching only the root (child empty-projection guard)
 #   14  LEFT child under an INNER chain (always matched)
-#   15  rejection: INNER below a LEFT child — the semantics probe
-#       CONFIRMED wrong results (NULL-extended rows delivered that the
-#       INNER join must eliminate); the shape is now rejected at the
-#       parse gate until nest metadata is emitted.  See the NEXT-PHASE
-#       marker at the case.
+#   15  INNER below a LEFT child — promoted to all-INNER by the Part B
+#       LEFT->INNER pre-pass (join_nest_semantics_plan.md); the Part A
+#       probe had recorded wrong results pre-promotion.  EXPLAIN pins
+#       [INNER] on the promoted op.
 #   P1  rejection: type-mismatch join columns (TINYINT vs INT)
 #   P2  rejection: join column with no usable index
 #   P3  rejection: cross-table WHERE residual on a pass-through join
@@ -299,37 +298,40 @@ JOIN customer AS cu ON cu.c_custkey = o.o_custkey
 LEFT JOIN nation AS n ON n.n_nationkey = cu.c_nationkey
 WHERE o.o_orderkey < 25|
 
-DELIMITER ;|
-
 --echo
---echo === sn-15 (rejection): INNER below a LEFT child ===
-# The semantics probe CONFIRMED wrong results on first record: RonSQL
-# emitted the LEFT JOIN's NULL-extended rows (o_orderkey 7/14/21/28/35,
-# where o_clerk IS NULL) that MySQL's INNER join on cl.c_nationkey
-# eliminates.  RonSQL emits no outer-join nest metadata
-# (setFirstInnerJoin / setUpperJoin), so the shape is now rejected at
-# the parse gate with a targeted error.
-#
-# NEXT-PHASE: INNER JOIN below a LEFT JOIN — fixed by join-condition
-#   LEFT->INNER promotion, not nest metadata: SQL's left-associative
-#   reading `(o LEFT cl) INNER n` with a null-rejecting equality on cl
-#   is equivalent to all-INNER, while the emitted tree expresses
-#   `o LEFT (cl INNER n)`.  See join_nest_semantics_plan.md Part B;
-#   re-enable as a compare when the promotion pre-pass lands.
-#   Probe:
-#   SELECT o.o_orderkey, cl.c_custkey, n.n_name
-#   FROM orders AS o
-#   LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk
-#   JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
-#   WHERE o.o_orderkey < 40;
-#     -- want: rows with cl NULL-extended are dropped (MySQL semantics);
-#     -- got:  RonSQL delivered them as "o_orderkey NULL NULL".
-#   The AGGREGATE join path emits the same MatchTypes with no nest
-#   metadata — the same shape under COUNT/SUM is a suspected latent
-#   wrong-results bug there too (the gate only guards pass-through);
-#   probe separately.
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_orderkey, cl.c_custkey, n.n_name FROM orders AS o LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk JOIN nation AS n ON n.n_nationkey = cl.c_nationkey WHERE o.o_orderkey < 40;' 2>&1
+--echo === sn-15: INNER below a LEFT child (promoted to all-INNER) ===
+# History: the Part A probe recorded wrong results (RonSQL delivered
+# the o_clerk-IS-NULL rows as "o_orderkey NULL NULL" — the emitted
+# tree expressed `o LEFT (cl INNER n)` instead of SQL's
+# left-associative `(o LEFT cl) INNER n`).  The Part B LEFT->INNER
+# promotion (join_nest_semantics_plan.md) rewrites the chain to
+# all-INNER, matching MySQL; the EXPLAIN grep pins the promotion.
+let $QUERY=
+SELECT o.o_orderkey, cl.c_custkey, n.n_name
+FROM orders AS o
+LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE o.o_orderkey < 40;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_sn_15.out
+let $QUERY=
+SELECT o.o_orderkey, cl.c_custkey, n.n_name
+FROM orders AS o
+LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE o.o_orderkey < 40;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] PK_LOOKUP customer AS cl' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_orderkey, cl.c_custkey, n.n_name
+FROM orders AS o
+LEFT JOIN customer AS cl ON cl.c_custkey = o.o_clerk
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE o.o_orderkey < 40|
+
+DELIMITER ;|
 
 --echo
 --echo === sn-P1 (rejection): type-mismatch join columns ===

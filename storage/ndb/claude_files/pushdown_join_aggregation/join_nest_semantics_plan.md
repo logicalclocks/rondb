@@ -1,11 +1,16 @@
 # Join Nest Semantics — Verification + Fix Plan
 
-**Status: Part A COMPLETE — verdict: CONFIRMED WRONG on the aggregate
-path (ns-1 recorded COUNT(*) = 30 vs MySQL's 10; both the lookup-miss
-and NULL-key sub-cases counted, settling both open cells with one
-number).  Part B is therefore a CORRECTNESS fix for shipped aggregate
-functionality, not just a quality improvement.  Parts B/C not yet
-implemented; ns-1..4 NEXT-PHASE-disabled pending B.**
+**Status: Parts A + B COMPLETE (B pending user build + MTR
+re-record).  Part A verdict: CONFIRMED WRONG on the aggregate path
+(ns-1 recorded COUNT(*) = 30 vs MySQL's 10; both the lookup-miss and
+NULL-key sub-cases counted).  Part B implemented as planned:
+`promote_left_joins()` backward-pass in parse() before the
+non-aggregate gate (one pass is exact — ON conditions only reference
+earlier aliases); the gate's INNER-below-LEFT check demoted to a
+defensive dead-man's check; ns-1..4 re-enabled as compares (+ new ns-8
+fixpoint-cascade case, EXPLAIN greps pinning [INNER] on promoted ops
+and [LEFT JOIN] on the non-promoting ns-7 control); sn-15 re-enabled
+as a compare.  Part C deferred as planned.**
 
 Part A addendum — reconciliation with the evidence table below: Test 2
 of `testMultiOuterJoinAggNdbApi` is green with the same tree shape but

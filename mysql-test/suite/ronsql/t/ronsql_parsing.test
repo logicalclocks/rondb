@@ -392,10 +392,6 @@ EOF
 --error 1
 --exec $PARSE_TEST 'select a, b, max(c) from tbl group by a;'
 
---echo ===== Non-aggregation query =====
---error 1
---exec $PARSE_TEST 'select a, b from tbl;'
-
 --echo ===== Non-aggregation query with GROUP BY =====
 --error 1
 --exec $PARSE_TEST 'select a from tbl group by a;'
@@ -408,6 +404,11 @@ EOF
 
 --echo ===== Simple =====
 --exec $PARSE_TEST 'select a, max(b) from tbl group by a;'
+
+--echo ===== Non-aggregation query (single-table projection, Phase 1) =====
+# Accepted since non_aggregate_pushdown_plan.md Phase 1 (was a
+# rejection: "Not an aggregate query").
+--exec $PARSE_TEST 'select a, b from tbl;'
 
 --echo ===== Arithmetics =====
 --exec $PARSE_TEST 'select a, count(b), min((b+c)/(d-e)), max(d*e/f-b/c/f), count(b/c/f+d*e/f*(b+c)) from tbl group by a;'

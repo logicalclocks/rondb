@@ -21,19 +21,23 @@
 #   p_id 11..20: ref = 9000 + p_id (dangling — no such customer)
 #   p_id 21..30: ref = NULL
 #
-# Case map (ns-N):
-#   1..4  NEXT-PHASE-disabled: the verification CONFIRMED wrong results
-#         (ns-1 recorded c=30 vs MySQL's 10 — both the miss and
-#         NULL-key sub-cases counted).  See the marker below; re-enable
-#         with join_nest_semantics_plan.md Part B.
-#   5  COUNT(n.n_nationkey) variant — enabled probe: injected rows
-#      carry NULL for n, so COUNT(col) should skip them (expected 10
-#      both sides); a diff here would show the injection feeding
-#      non-NULL leaf values
-#   6  control: same chain all-INNER (the left-associative equivalent
-#      of ns-1; COUNT = 10)
-#   7  control: LEFT ... LEFT chain, no INNER below (supported today;
-#      COUNT(*) = 30, COUNT(n.n_nationkey) = 10)
+# Case map (ns-N) — all compares since the Part B LEFT->INNER
+# promotion; ns-1..4 were the Part A wrong-results probes (see the
+# history note below):
+#   1  COUNT(*) over the full mix — promoted to all-INNER (COUNT = 10;
+#      Part A recorded 30 pre-promotion); EXPLAIN pins [INNER]
+#   2  NULL-ref slice (COUNT = 0)
+#   3  dangling-ref slice (COUNT = 0)
+#   4  GROUP BY a root column (matched-only groups)
+#   5  COUNT(n.n_nationkey) variant (10 — was green even
+#      pre-promotion: injected rows carried NULL leaf values)
+#   6  control: the same chain written all-INNER (COUNT = 10 — must
+#      equal ns-1 post-promotion)
+#   7  control: LEFT ... LEFT chain, no INNER below — promotion must
+#      NOT fire (COUNT(*) = 30, COUNT(col) = 10; EXPLAIN pins
+#      [LEFT JOIN])
+#   8  cascade: LEFT LEFT chain + INNER at the end promotes the whole
+#      chain (fixpoint; COUNT = 10; EXPLAIN pins [INNER] on both)
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -65,29 +69,89 @@ INSERT INTO nestp VALUES
 
 DELIMITER |;
 
-# NEXT-PHASE: ns-1..4 — INNER-below-LEFT on the AGGREGATE path returns
-#   wrong results, CONFIRMED by the first record run (2026-08-19):
-#   ns-1 returned c=30 where MySQL returns 10.  The arithmetic settles
-#   BOTH sub-cases at once: 10 matched + 10 dangling + 10 NULL-key
-#   rows were all counted — the aggregate NULL-injection feeds
-#   NULL-extended rows through a MatchNonNull (INNER) aggregate LEAF
-#   for lookup misses AND NULL join keys.  Reconciliation with
-#   testMultiOuterJoinAggNdbApi Test 2 (green): there the leaf is a
-#   LEFT node BELOW the INNER; here the INNER is the leaf — the
-#   injection logic differs by leaf position.  This is shipped
-#   aggregate territory producing silent wrong results.
-#   Fix: join_nest_semantics_plan.md Part B (LEFT->INNER promotion
-#   pre-pass — the flat-SQL semantics make these chains all-INNER);
-#   re-enable ns-1..4 as compares when it lands.
-#   Probes (MySQL expected / RonSQL got):
-#   ns-1  full mix COUNT(*)                      -> 10 / 30 (recorded)
-#   ns-2  NULL-ref slice COUNT(*)                ->  0 / expected 10
-#   ns-3  dangling slice COUNT(*)                ->  0 / expected 10
-#   ns-4  GROUP BY t.grp                         -> matched-only groups
-#   SELECT COUNT(*) AS c
-#   FROM nestp AS t
-#   LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
-#   JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;
+# History: ns-1..4 were NEXT-PHASE-disabled after the first record run
+# (2026-08-19) CONFIRMED wrong results on the aggregate path — ns-1
+# recorded COUNT(*) = 30 vs MySQL's 10 (miss AND NULL-key rows both
+# counted through the MatchNonNull aggregate leaf).  Re-enabled by the
+# Part B LEFT->INNER promotion pre-pass: SQL's left-associative reading
+# makes these chains all-INNER, so the promoted plans never emit an
+# INNER-below-LEFT tree.  ns-1's EXPLAIN grep pins the promotion
+# ([INNER], not [LEFT JOIN], on the customer op).
+
+--echo
+--echo === ns-1: COUNT(*) over the full mix (promoted to all-INNER) ===
+let $QUERY=
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_ns_1.out
+let $QUERY=
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] PK_LOOKUP customer AS cl' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
+
+--echo
+--echo === ns-2: NULL-ref slice ===
+let $QUERY=
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 21;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 21|
+
+--echo
+--echo === ns-3: dangling-ref slice ===
+let $QUERY=
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 11 AND t.p_id < 21;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+WHERE t.p_id >= 11 AND t.p_id < 21|
+
+--echo
+--echo === ns-4: GROUP BY root column over the full mix ===
+let $QUERY=
+SELECT t.grp AS g, COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+GROUP BY t.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t.grp AS g, COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+GROUP BY t.grp|
 
 --echo
 --echo === ns-5: COUNT(n.n_nationkey) variant ===
@@ -121,18 +185,62 @@ JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
 
 --echo
 --echo === ns-7: control — LEFT ... LEFT chain, no INNER below ===
+# Both LEFTs stay LEFT: only LEFT joins reference them, so the
+# promotion must NOT fire ([LEFT JOIN] pinned by the EXPLAIN grep).
 let $QUERY=
 SELECT COUNT(*) AS c, COUNT(n.n_nationkey) AS cn
 FROM nestp AS t
 LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
 LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;|
 --source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_ns_7.out
+let $QUERY=
+SELECT COUNT(*) AS c, COUNT(n.n_nationkey) AS cn
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[LEFT JOIN] PK_LOOKUP customer AS cl' $EXPLAIN_FILE || true
+--exec grep -qF '[LEFT JOIN] PK_LOOKUP nation AS n' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
 SELECT COUNT(*) AS c, COUNT(n.n_nationkey) AS cn
 FROM nestp AS t
 LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
 LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
+
+--echo
+--echo === ns-8: cascade — INNER at the end promotes the whole LEFT chain ===
+# region INNER-references nation, which promotes nation; nation's ON
+# references customer, which promotes customer — the fixpoint cascade.
+# Left-associative SQL agrees: region's null-rejecting equality drops
+# every NULL-extended row, so the chain is all-INNER (COUNT = 10).
+let $QUERY=
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+JOIN region AS r ON r.r_regionkey = n.n_regionkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_ns_8.out
+let $QUERY=
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+JOIN region AS r ON r.r_regionkey = n.n_regionkey;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] PK_LOOKUP customer AS cl' $EXPLAIN_FILE || true
+--exec grep -qF '[INNER] PK_LOOKUP nation AS n' $EXPLAIN_FILE || true
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey
+JOIN region AS r ON r.r_regionkey = n.n_regionkey|
 
 DELIMITER ;|
 
