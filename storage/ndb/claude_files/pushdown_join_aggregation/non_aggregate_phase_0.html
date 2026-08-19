@@ -1,0 +1,642 @@
+<title>Root Plan Cascade</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #FAFBFC;
+    --ink: #1B242B;
+    --muted: #5B6B77;
+    --line: #D6DEE4;
+    --surface: #EFF3F6;
+    --accent: #0E7490;
+    --accent-soft: #E0F0F4;
+    --good: #177E3C;
+    --good-soft: #E3F3E8;
+    --warn: #A75A08;
+    --warn-soft: #FAEEDC;
+    --bad: #B42323;
+    --bad-soft: #F9E4E4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10151A;
+      --ink: #D8E0E7;
+      --muted: #8C9CA8;
+      --line: #2A343E;
+      --surface: #1A222B;
+      --accent: #46C2D0;
+      --accent-soft: #123641;
+      --good: #57D98A;
+      --good-soft: #12301C;
+      --warn: #F2B23E;
+      --warn-soft: #33260D;
+      --bad: #F27E7E;
+      --bad-soft: #391414;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151A;
+    --ink: #D8E0E7;
+    --muted: #8C9CA8;
+    --line: #2A343E;
+    --surface: #1A222B;
+    --accent: #46C2D0;
+    --accent-soft: #123641;
+    --good: #57D98A;
+    --good-soft: #12301C;
+    --warn: #F2B23E;
+    --warn-soft: #33260D;
+    --bad: #F27E7E;
+    --bad-soft: #391414;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Serif", Georgia, serif;
+    font-size: 16.5px;
+    line-height: 1.68;
+    margin: 0;
+    padding: 0 20px 90px;
+  }
+  main { max-width: 1020px; margin: 0 auto; }
+  .prose { max-width: 72ch; }
+
+  h1, h2, h3, .eyebrow, th, .pill, figcaption, .tag {
+    font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  }
+  h1 {
+    font-size: 40px; font-weight: 700; letter-spacing: -0.015em;
+    line-height: 1.12; margin: 18px 0 10px; text-wrap: balance;
+  }
+  h2 {
+    font-size: 25px; font-weight: 650; letter-spacing: -0.01em;
+    margin: 64px 0 6px; text-wrap: balance;
+  }
+  h3 { font-size: 18px; font-weight: 600; margin: 34px 0 4px; }
+  .eyebrow {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--accent); margin: 0;
+  }
+  .subtitle { color: var(--muted); font-size: 18px; margin: 0 0 8px; max-width: 62ch; }
+  header { padding-top: 64px; border-bottom: 1px solid var(--line); padding-bottom: 28px; }
+  .meta { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted); }
+
+  p { margin: 12px 0; }
+  li { margin: 6px 0; }
+  code, .mono {
+    font-family: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+    font-size: 0.86em;
+    background: var(--surface);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .summary {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 18px 24px;
+    margin: 30px 0;
+  }
+  .summary p { margin: 8px 0; }
+
+  figure { margin: 30px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  .figwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; padding: 18px; background: var(--bg); }
+  figcaption { font-size: 13.5px; color: var(--muted); margin-top: 10px; max-width: 78ch; line-height: 1.5; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14px;
+    font-family: "IBM Plex Sans", sans-serif;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+  .tablewrap { overflow-x: auto; margin: 22px 0; border: 1px solid var(--line); border-radius: 6px; }
+  th {
+    text-align: left; font-weight: 600; font-size: 12px;
+    letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted);
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    white-space: nowrap;
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+
+  .pill {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    border-radius: 999px; padding: 2px 10px; white-space: nowrap;
+  }
+  .pill.optimal { color: var(--good); background: var(--good-soft); }
+  .pill.near { color: var(--accent); background: var(--accent-soft); }
+  .pill.subopt { color: var(--warn); background: var(--warn-soft); }
+  .pill.crash { color: var(--bad); background: var(--bad-soft); }
+
+  .tag {
+    display: inline-block; font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 3px; padding: 0 6px; margin-left: 8px; vertical-align: 2px;
+  }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
+  a { color: var(--accent); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 56px 0; }
+  ::selection { background: var(--accent-soft); }
+</style>
+
+<main>
+<header>
+  <p class="eyebrow">RonSQL · Non-Aggregate Pushdown · Phase 0</p>
+  <h1>Root Plan Cascade</h1>
+  <p class="subtitle">How RonSQL chooses and executes the root access plan after Phase 0 — and where each choice sits on the optimality scale.</p>
+  <p class="meta">RONDB-733 companion · covers RonSQLPreparer, NdbQueryBuilder, DBSPJ · August 2026</p>
+</header>
+
+<div class="summary prose">
+  <p><strong>What shipped.</strong> Phase 0 of the non-aggregate pushdown plan fixed two pre-existing defect classes and, in doing so, uncovered and fixed a data-node crash:</p>
+  <p><strong>0a</strong> — the three PK-equality-covered root branches in <code>emit_root_op</code> silently <em>dropped</em> every WHERE conjunct that wasn't consumed as a key. They now apply those residuals as interpreted filters, with a safe fallback cascade.</p>
+  <p><strong>0b</strong> — the pass-through result printer rejected temporal and DECIMAL columns outright and printed CTE temporal MIN/MAX outputs as raw packed integers. It now shares the aggregate path's column metadata and decoders.</p>
+  <p><strong>Crash</strong> — aggregate queries without CTEs whose root was PK-equality-covered emitted a lookup-rooted query, a shape the JoinAgg protocol cannot serve. Both data nodes died on an <code>ndbrequire</code>. Fixed at three layers; the kernel now fails the query, not the node.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>1 · From SQL to an executed plan</h2>
+<div class="prose">
+<p>RonSQL builds its plan in two stages, and understanding the split is the key to reading any plan this document discusses:</p>
+<ol>
+  <li><strong>The planner stage</strong> (<code>QueryPlanner::plan</code> + <code>select_root_scan_config</code>) classifies every operation: the root becomes <code>TABLE_SCAN</code>, <code>INDEX_SCAN</code> (when a scan-config candidate binds an ordered index), or <code>CTE_SCAN</code>; children become <code>PK_LOOKUP</code>, <code>UNIQUE_LOOKUP</code>, <code>INDEX_SCAN</code>, or <code>CTE_LOOKUP</code>.</li>
+  <li><strong>The emit stage</strong> (<code>emit_root_op</code>) refines the root at NdbQueryBuilder-build time. This is where a <code>TABLE_SCAN</code>-classified root can become a single-row <code>readTuple</code> PK lookup, a PK-equality ordered-index scan, or a full-key <code>lookupCte</code> — decisions the planner never records.</li>
+</ol>
+<p>One practical consequence, worth stating up front: <strong><code>EXPLAIN</code> prints the planner's classification, not the emit refinement.</strong> A query that executes as a PK lookup still shows <code>[ROOT] TABLE_SCAN</code>. The emit-time branches in this document are therefore invisible in today's EXPLAIN output — a known observability gap, flagged in §6.</p>
+<p>Before Phase 0, the emit refinements had a correctness bug: when the WHERE fully covered the primary key by equality, the branch built its keys from the matched conjuncts and <em>discarded everything else</em>. <code>WHERE pk = 1 AND balance &gt; 1000</code> executed as <code>WHERE pk = 1</code> — silently, in shipped aggregate and pass-through shapes alike.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>2 · The root decision cascade</h2>
+<div class="prose">
+<p>This is the full decision sequence for a real-table root after Phase 0. Every edge either existed before (drawn in the neutral ink) or is new (drawn in the accent color). The invariant the cascade maintains: <em>every fallback step is strictly more general and never less correct</em> — the residual filter travels with whichever plan wins.</p>
+</div>
+
+<figure>
+<div class="figwrap">
+<svg viewBox="0 0 960 660" role="img" aria-label="Decision cascade for the real-table root operation: PK equality cover leads through residual construction, aggregation legality, and program size checks to one of four plan shapes" style="min-width:820px">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.3" color="var(--ink)">
+
+    <!-- spine boxes -->
+    <rect x="60" y="20" width="320" height="46" rx="5"/>
+    <rect x="60" y="118" width="320" height="46" rx="5"/>
+    <rect x="60" y="216" width="320" height="60" rx="5" stroke="var(--accent)" stroke-width="1.8"/>
+    <rect x="60" y="330" width="320" height="46" rx="5"/>
+    <rect x="60" y="428" width="320" height="60" rx="5" stroke="var(--accent)" stroke-width="1.8"/>
+    <rect x="60" y="542" width="320" height="46" rx="5"/>
+
+    <!-- outcome boxes, right column -->
+    <rect x="560" y="118" width="340" height="74" rx="5"/>
+    <rect x="560" y="300" width="340" height="74" rx="5" stroke="var(--accent)" stroke-width="1.8"/>
+    <rect x="560" y="452" width="340" height="60" rx="5"/>
+
+    <!-- final outcome -->
+    <rect x="60" y="612" width="380" height="0" rx="0" stroke="none"/>
+    <rect x="40" y="608" width="360" height="0" stroke="none"/>
+  </g>
+
+  <!-- readTuple outcome -->
+  <g fill="none" stroke="var(--accent)" stroke-width="2.2">
+    <rect x="60" y="596" width="320" height="52" rx="5"/>
+  </g>
+
+  <!-- spine arrows -->
+  <g stroke="currentColor" stroke-width="1.3" fill="none" color="var(--ink)" marker-end="url(#arr)">
+    <line x1="220" y1="66" x2="220" y2="114"/>
+    <line x1="220" y1="376" x2="220" y2="424"/>
+  </g>
+  <g stroke="var(--accent)" stroke-width="1.6" fill="none" marker-end="url(#arrA)">
+    <line x1="220" y1="164" x2="220" y2="212"/>
+    <line x1="220" y1="276" x2="220" y2="326"/>
+    <line x1="220" y1="488" x2="220" y2="538"/>
+    <line x1="220" y1="588" x2="220" y2="592"/>
+  </g>
+
+  <!-- branch arrows to right column -->
+  <g stroke="currentColor" stroke-width="1.3" fill="none" color="var(--ink)" marker-end="url(#arr)">
+    <line x1="380" y1="141" x2="556" y2="141"/>
+    <line x1="380" y1="353" x2="556" y2="343"/>
+    <line x1="380" y1="565" x2="556" y2="500"/>
+    <line x1="730" y1="374" x2="730" y2="448"/>
+  </g>
+  <g stroke="var(--accent)" stroke-width="1.6" fill="none" marker-end="url(#arrA)">
+    <line x1="380" y1="453" x2="556" y2="350"/>
+  </g>
+
+  <!-- text -->
+  <g font-family="IBM Plex Sans, sans-serif" font-size="13" fill="currentColor" color="var(--ink)">
+    <text x="220" y="40" text-anchor="middle" font-weight="600">Root-classified WHERE conjuncts</text>
+    <text x="220" y="57" text-anchor="middle" font-size="12" fill="var(--muted)">simplify_ce → collect_pk_equalities</text>
+
+    <text x="220" y="146" text-anchor="middle" font-weight="600">Full PK covered by equalities?</text>
+
+    <text x="220" y="240" text-anchor="middle" font-weight="600">build_root_residual</text>
+    <text x="220" y="257" text-anchor="middle" font-size="12" fill="var(--muted)">subtract consumed conjuncts, AND the rest</text>
+    <text x="366" y="230" text-anchor="end" font-size="10.5" font-weight="600" fill="var(--accent)">PHASE 0a</text>
+
+    <text x="220" y="358" text-anchor="middle" font-weight="600">Scan child in the join plan?</text>
+
+    <text x="220" y="452" text-anchor="middle" font-weight="600">Aggregation with no preceding</text>
+    <text x="220" y="468" text-anchor="middle" font-weight="600">CTE materialisation scan?</text>
+    <text x="366" y="442" text-anchor="end" font-size="10.5" font-weight="600" fill="var(--accent)">CRASH GUARD</text>
+
+    <text x="220" y="570" text-anchor="middle" font-weight="600">Residual program ≤ 64 words?</text>
+
+    <!-- outcomes -->
+    <text x="730" y="146" text-anchor="middle" font-weight="600">Existing scan paths</text>
+    <text x="730" y="163" text-anchor="middle" font-size="12" fill="var(--muted)">scan-config INDEX_SCAN (bounds + residual)</text>
+    <text x="730" y="179" text-anchor="middle" font-size="12" fill="var(--muted)">else scanTable + full WHERE filter</text>
+
+    <text x="730" y="326" text-anchor="middle" font-weight="600">PK-equality ordered-index scan</text>
+    <text x="730" y="343" text-anchor="middle" font-size="12" fill="var(--muted)">equality bound on every PK column</text>
+    <text x="730" y="359" text-anchor="middle" font-size="12" fill="var(--muted)">+ residual as interpreted filter</text>
+
+    <text x="730" y="478" text-anchor="middle" font-weight="600">scanTable + full WHERE filter</text>
+    <text x="730" y="495" text-anchor="middle" font-size="12" fill="var(--muted)">always-correct terminal fallback</text>
+
+    <text x="220" y="620" text-anchor="middle" font-weight="600" fill="var(--accent)">readTuple PK lookup root</text>
+    <text x="220" y="637" text-anchor="middle" font-size="12" fill="var(--muted)">+ residual program riding LQHKEYREQ</text>
+
+    <!-- edge labels -->
+    <text x="470" y="132" text-anchor="middle" font-size="11.5" fill="var(--muted)">no · or flatten overflow</text>
+    <text x="468" y="338" text-anchor="middle" font-size="11.5" fill="var(--muted)">yes</text>
+    <text x="452" y="408" text-anchor="middle" font-size="11.5" fill="var(--accent)">yes — lookup root illegal for JoinAgg</text>
+    <text x="470" y="528" text-anchor="middle" font-size="11.5" fill="var(--muted)">no — program too large for a lookup</text>
+    <text x="770" y="416" text-anchor="start" font-size="11.5" fill="var(--muted)">no ordered PK index</text>
+    <text x="770" y="431" text-anchor="start" font-size="11.5" fill="var(--muted)">(PK USING HASH)</text>
+    <text x="232" y="190" text-anchor="start" font-size="11.5" fill="var(--muted)">yes</text>
+    <text x="232" y="304" text-anchor="start" font-size="11.5" fill="var(--muted)">residual built</text>
+    <text x="232" y="516" text-anchor="start" font-size="11.5" fill="var(--muted)">no</text>
+    <text x="232" y="99" text-anchor="start" font-size="11.5" fill="var(--muted)">start</text>
+  </g>
+</svg>
+</div>
+<figcaption>The real-table root cascade in <code>emit_root_op</code> after Phase 0. Accent marks the new steps: residual construction, the JoinAgg lookup-root guard, and the 64-word program cap. Every branch carries the residual with it — the plan gets progressively blunter, never less correct. The CTE-root cascade (not drawn) is analogous: scalar dummy-key <code>lookupCte</code> + filter → full-key <code>lookupCte</code> + residual filter <span class="tag" style="margin-left:4px">Phase 0a</span> → <code>scanCte</code> + full filter.</figcaption>
+</figure>
+
+<div class="prose">
+<h3>Reading each branch as a cost statement</h3>
+<p><strong><code>readTuple</code> PK lookup</strong> — the best possible plan for a fully-bound key: one hashed key access, one <code>LQHKEYREQ</code> to the one LDM thread owning the row, no fragment fan-out, no scan setup. The residual rides inside that same signal as an interpreted program, capped at 64 words (mirroring <code>ha_ndbcluster</code>'s pushed-condition cap, since the program is copied into every <code>LQHKEYREQ</code>); a filtered-out row behaves as a lookup miss.</p>
+<p><strong>PK-equality ordered-index scan</strong> — the same single row reached through the ordered index: an equality bound on every PK column prunes the B-tree walk to that one key, and the residual runs as a per-row filter. It costs a scan-protocol round (per-fragment <code>SCAN_FRAGREQ</code>s) rather than one lookup signal, but reads the same ~1 row. This is the landing spot when a scan child forbids a lookup root (NDB API rule), when aggregation forbids the lookup protocol, or when the residual outgrows the lookup cap.</p>
+<p><strong><code>scanTable</code> + full filter</strong> — the terminal fallback: every fragment, every row, filter per row. Correct always; optimal only when nothing better exists. It is reached from this cascade only when the PK has no ordered index (<code>USING HASH</code>), which is exactly the shared test schema's shape — see the optimality table.</p>
+<p>Two properties worth calling out because they are easy to get wrong and the implementation deliberately gets them right: the residual is <em>residual-only</em> — conjuncts consumed as keys are subtracted by pointer identity, so nothing is evaluated twice; and contradictory keys (<code>pk = 1 AND pk = 2</code>) resolve naturally — the last equality becomes the key, the orphaned first one lands in the residual, and the filter correctly returns the empty set (previously: the wrong row).</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>3 · Where predicates actually execute</h2>
+<div class="prose">
+<p>Judging optimality requires one distinction above all others: <strong>bounds prune reads; filters prune only transfer.</strong> An equality or range bound is evaluated inside the ordered-index (TUX) walk and stops rows from ever being read. An interpreted filter runs in DBTUP <em>after</em> the row has been read, and only stops it from being returned or aggregated. A plan that turns a predicate into a bound is categorically better than one that turns it into a filter.</p>
+</div>
+
+<figure>
+<div class="figwrap">
+<svg viewBox="0 0 940 210" role="img" aria-label="Row pipeline inside a data node: index bounds prune which rows are read; the interpreted filter prunes which rows are returned" style="min-width:760px">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.3" color="var(--ink)">
+    <rect x="20" y="60" width="180" height="66" rx="5"/>
+    <rect x="270" y="60" width="180" height="66" rx="5"/>
+    <rect x="520" y="60" width="180" height="66" rx="5"/>
+    <rect x="770" y="60" width="150" height="66" rx="5"/>
+  </g>
+  <g stroke="currentColor" stroke-width="1.3" fill="none" color="var(--ink)" marker-end="url(#arr2)">
+    <line x1="200" y1="93" x2="266" y2="93"/>
+    <line x1="450" y1="93" x2="516" y2="93"/>
+    <line x1="700" y1="93" x2="766" y2="93"/>
+  </g>
+  <g font-family="IBM Plex Sans, sans-serif" font-size="13" fill="currentColor" color="var(--ink)">
+    <text x="110" y="86" text-anchor="middle" font-weight="600">Index bounds (TUX)</text>
+    <text x="110" y="103" text-anchor="middle" font-size="12" fill="var(--muted)">equality / range on key prefix</text>
+    <text x="110" y="118" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--good)">prunes READS</text>
+
+    <text x="360" y="86" text-anchor="middle" font-weight="600">Row read (DBTUP)</text>
+    <text x="360" y="103" text-anchor="middle" font-size="12" fill="var(--muted)">tuple fetched from fragment</text>
+
+    <text x="610" y="86" text-anchor="middle" font-weight="600">Interpreted filter</text>
+    <text x="610" y="103" text-anchor="middle" font-size="12" fill="var(--muted)">residual WHERE, per row</text>
+    <text x="610" y="118" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--warn)">prunes TRANSFER only</text>
+
+    <text x="845" y="86" text-anchor="middle" font-weight="600">Aggregator /</text>
+    <text x="845" y="103" text-anchor="middle" font-size="12">result stream</text>
+
+    <text x="233" y="84" text-anchor="middle" font-size="11.5" fill="var(--muted)">reads</text>
+    <text x="483" y="84" text-anchor="middle" font-size="11.5" fill="var(--muted)">rows</text>
+    <text x="733" y="84" text-anchor="middle" font-size="11.5" fill="var(--muted)">accepted</text>
+  </g>
+</svg>
+</div>
+<figcaption>The per-row pipeline on a data node. In the Phase 0 cascade, PK equalities become the lookup key or index bounds (read-pruning); everything else becomes the interpreted residual (transfer-pruning). A <code>readTuple</code> root collapses the first stage to a single hashed access.</figcaption>
+</figure>
+
+<div class="prose">
+<p>This is also why the known optimizer gap inherited from the join-root work matters (tracked in <code>next_steps.md</code>, not part of Phase 0): child-local <em>constant</em> bounds — <code>o_orderdate ≥ X</code> on an index <code>(o_custkey, o_orderdate)</code> — are still emitted as filters rather than bounds. Correct, but read-amplifying.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>4 · The crash: two protocols, one missing edge</h2>
+<div class="prose">
+<p>The first test run of the new family crashed both data nodes at <code>DbspjMain.cpp:8748</code>. The mechanism is a protocol split the emit layer wasn't respecting:</p>
+</div>
+
+<figure>
+<div class="figwrap">
+<svg viewBox="0 0 960 430" role="img" aria-label="Scan protocol carries JOIN_AGG_SETUP and aggregation state keys; the lookup protocol has no setup edge, so an aggregate lookup query reached DBSPJ with an empty node set and crashed" style="min-width:820px">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arr3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--bad)"/>
+    </marker>
+    <marker id="arr3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <!-- lane separators -->
+  <g stroke="currentColor" stroke-dasharray="3 5" stroke-width="1" color="var(--ink)" opacity="0.4">
+    <line x1="20" y1="205" x2="940" y2="205"/>
+  </g>
+
+  <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" font-weight="600" fill="var(--muted)" letter-spacing="1.2">
+    <text x="24" y="36">SCAN PROTOCOL — AGGREGATION SUPPORTED</text>
+    <text x="24" y="238">LOOKUP PROTOCOL — THE CRASH, NOW A CLEAN REF</text>
+  </g>
+
+  <!-- scan lane -->
+  <g fill="none" stroke="currentColor" stroke-width="1.3" color="var(--ink)">
+    <rect x="24" y="70" width="110" height="50" rx="5"/>
+    <rect x="220" y="70" width="110" height="50" rx="5"/>
+    <rect x="430" y="52" width="200" height="42" rx="5"/>
+    <rect x="430" y="112" width="200" height="50" rx="5"/>
+    <rect x="740" y="70" width="190" height="70" rx="5"/>
+  </g>
+  <g stroke="currentColor" stroke-width="1.3" fill="none" color="var(--ink)" marker-end="url(#arr3)">
+    <line x1="134" y1="95" x2="216" y2="95"/>
+    <line x1="330" y1="80" x2="426" y2="73"/>
+    <line x1="630" y1="73" x2="700" y2="73"/>
+    <line x1="700" y1="73" x2="700" y2="95"/>
+    <line x1="700" y1="95" x2="736" y2="95"/>
+    <line x1="330" y1="110" x2="426" y2="132"/>
+    <line x1="630" y1="137" x2="736" y2="125"/>
+  </g>
+  <g font-family="IBM Plex Sans, sans-serif" font-size="13" fill="currentColor" color="var(--ink)">
+    <text x="79" y="91" text-anchor="middle" font-weight="600">API</text>
+    <text x="79" y="107" text-anchor="middle" font-size="11.5" fill="var(--muted)">scan-rooted def</text>
+    <text x="275" y="91" text-anchor="middle" font-weight="600">DBTC</text>
+    <text x="275" y="107" text-anchor="middle" font-size="11.5" fill="var(--muted)">ScanRecord</text>
+    <text x="530" y="78" text-anchor="middle" font-size="12.5" font-weight="600">JOIN_AGG_SETUP_REQ</text>
+    <text x="530" y="133" text-anchor="middle" font-size="12.5" font-weight="600">SCAN_FRAGREQ</text>
+    <text x="530" y="150" text-anchor="middle" font-size="11.5" fill="var(--muted)">+ [nodeId, aggStateKey] pairs</text>
+    <text x="835" y="95" text-anchor="middle" font-weight="600">DBSPJ</text>
+    <text x="835" y="112" text-anchor="middle" font-size="11.5" fill="var(--good)">m_aggNodes populated</text>
+    <text x="835" y="127" text-anchor="middle" font-size="11.5" fill="var(--muted)">agg-leaf sends OK</text>
+    <text x="178" y="87" text-anchor="middle" font-size="11" fill="var(--muted)">SCAN_TABREQ</text>
+    <text x="378" y="60" text-anchor="middle" font-size="11" fill="var(--muted)">to every node</text>
+  </g>
+
+  <!-- lookup lane -->
+  <g fill="none" stroke="currentColor" stroke-width="1.3" color="var(--ink)">
+    <rect x="24" y="270" width="110" height="50" rx="5"/>
+    <rect x="220" y="270" width="110" height="50" rx="5"/>
+    <rect x="430" y="270" width="200" height="50" rx="5"/>
+    <rect x="740" y="258" width="190" height="76" rx="5" stroke="var(--bad)" stroke-width="1.8"/>
+  </g>
+  <g stroke="currentColor" stroke-width="1.3" fill="none" color="var(--ink)" marker-end="url(#arr3)">
+    <line x1="134" y1="295" x2="216" y2="295"/>
+    <line x1="330" y1="295" x2="426" y2="295"/>
+    <line x1="630" y1="295" x2="736" y2="295"/>
+  </g>
+  <!-- missing setup edge -->
+  <g stroke="var(--bad)" stroke-width="1.4" stroke-dasharray="5 4" fill="none">
+    <line x1="275" y1="320" x2="275" y2="368"/>
+    <line x1="275" y1="368" x2="530" y2="368"/>
+  </g>
+  <g font-family="IBM Plex Sans, sans-serif" font-size="13" fill="currentColor" color="var(--ink)">
+    <text x="79" y="291" text-anchor="middle" font-weight="600">API</text>
+    <text x="79" y="307" text-anchor="middle" font-size="11.5" fill="var(--muted)">lookup-rooted def</text>
+    <text x="275" y="291" text-anchor="middle" font-weight="600">DBTC</text>
+    <text x="275" y="307" text-anchor="middle" font-size="11.5" fill="var(--muted)">TCKEYREQ path</text>
+    <text x="530" y="291" text-anchor="middle" font-size="12.5" font-weight="600">LQHKEYREQ</text>
+    <text x="530" y="307" text-anchor="middle" font-size="11.5" fill="var(--muted)">no aggStateKeys section</text>
+    <text x="835" y="282" text-anchor="middle" font-weight="600">DBSPJ</text>
+    <text x="835" y="299" text-anchor="middle" font-size="11.5" fill="var(--bad)">m_aggNodes empty</text>
+    <text x="835" y="315" text-anchor="middle" font-size="11.5" fill="var(--bad)">was: ndbrequire → node down</text>
+    <text x="835" y="330" text-anchor="middle" font-size="11.5" fill="var(--accent)">now: InvalidAggregateFlags REF</text>
+    <text x="178" y="287" text-anchor="middle" font-size="11" fill="var(--muted)">TCKEYREQ</text>
+    <text x="420" y="382" text-anchor="middle" font-size="11.5" fill="var(--bad)">JOIN_AGG_SETUP never sent — the missing edge</text>
+  </g>
+</svg>
+</div>
+<figcaption>The scan protocol carries an aggregation-setup phase and ships per-node state keys inside every fragment request; the lookup protocol has neither. An aggregate query tree arriving over the lookup protocol therefore reaches DBSPJ with no aggregation state anywhere — previously an <code>ndbrequire</code> crash at the first aggregate-leaf send, now a build-time <code>InvalidAggregateFlags</code> rejection.</figcaption>
+</figure>
+
+<div class="prose">
+<p>The bug was pre-existing and had simply never been exercised: every previously-green PK-equality aggregate query happened to involve a CTE, and <em>any</em> CTE forces the scan protocol (the materialisation scan is the query's first operation). The fix has three layers, each catching what the layer above lets through:</p>
+</div>
+
+<div class="tablewrap">
+<table>
+<tr><th>Layer</th><th>Site</th><th>Behavior</th></tr>
+<tr>
+  <td><strong>1 · RonSQL emit</strong></td>
+  <td><code>emit_root_op</code>, <code>lookup_root_supported</code></td>
+  <td>Never emits a lookup root for an aggregating scope unless a CTE materialisation scan precedes it. The query silently takes the (scan-rooted) PK-index or table-scan fallback instead.</td>
+</tr>
+<tr>
+  <td><strong>2 · NDB API</strong></td>
+  <td><code>NdbQueryDefImpl</code> constructor</td>
+  <td>A query def with main-aggregation leaves, no CTEs, and a non-scan first operation fails <code>prepare()</code> with <code>QRY_WRONG_OPERATION_TYPE</code> (4820). Clean client-side error.</td>
+</tr>
+<tr>
+  <td><strong>3 · Kernel</strong></td>
+  <td><code>Dbspj::validateAggregateFlags</code> + the LqhKeyReq <code>do_init</code></td>
+  <td><code>RT_AGGREGATE</code> with an empty <code>m_aggNodes</code> fails the build with <code>InvalidAggregateFlags</code> — query REF, node stays up. The <code>do_init</code> fix closes a second latent bug: lookup-protocol Requests come from a TransientPool (no constructors) and never cleared <code>m_aggNodes</code>, so recycled Requests carried stale bits.</td>
+</tr>
+</table>
+</div>
+
+<div class="prose">
+<p>The remaining runtime <code>ndbrequire(m_aggNodes.get(nodeId))</code> sites stay deliberately: after layers 1–3, they can only fire on inconsistencies in DBTC-constructed data — a trusted-peer invariant, where crash-on-violation is this codebase's convention per the tiered response policy. The graceful failure sits exactly at the trust boundary, where API-controlled data (the query tree bits) enters the kernel.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>5 · The residual filter, per plan shape</h2>
+<div class="prose">
+<p>Where the Phase 0a residual lands depends on the winning plan — three different transports, one semantic:</p>
+</div>
+
+<div class="tablewrap">
+<table>
+<tr><th>Winning plan</th><th>Residual transport</th><th>Size constraint</th></tr>
+<tr><td><code>readTuple</code> PK lookup</td><td><code>NdbScanFilter</code> program via <code>setInterpretedCode</code>, copied into the <code>LQHKEYREQ</code></td><td>≤ 64 words (the <code>ha_ndbcluster</code> pushed-condition cap; <code>getWordsUsed()</code> overcounts by 2 words per label, which only makes the cap more conservative). Over-cap → fall back to a scan plan.</td></tr>
+<tr><td>PK-equality index scan · <code>scanTable</code></td><td>Same program, travelling in <code>SCAN_FRAGREQ</code> attrinfo sections</td><td>None in practice — sections are segmented.</td></tr>
+<tr><td>Full-key <code>lookupCte</code> root</td><td><code>emit_cte_lookup_filter</code> — the CTE jump-table interpreter, same envelope the scalar and <code>scanCte</code> branches already use</td><td>Atoms the emitter cannot express (col-vs-col, non-DNF nesting) throw a clean permanent error — previously those conjuncts were silently dropped.</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>6 · Optimality assessment, shape by shape</h2>
+<div class="prose">
+<p>The honest question this section answers: <em>after Phase 0, does each query shape execute on the best plan the protocol currently allows — and where it doesn't, why not and what would fix it?</em> "Rows read" means rows fetched from fragments before any filter.</p>
+</div>
+
+<div class="tablewrap">
+<table>
+<tr><th>Query shape</th><th>Executed plan</th><th>Rows read</th><th>Verdict</th><th>Why / path to optimal</th></tr>
+<tr>
+  <td>Pass-through, PK-covered real root + residual, CTE join (rpr-7/8)</td>
+  <td><code>readTuple</code> + lookup filter</td>
+  <td>~1</td>
+  <td><span class="pill optimal">Optimal</span></td>
+  <td>Single hashed access; residual rides the lookup; miss ⇒ empty result. The best plan NDB offers for this shape.</td>
+</tr>
+<tr>
+  <td>Aggregate + CTE, PK-covered root + residual (rpr-13/14, fpw-6 + filter)</td>
+  <td><code>readTuple</code> + lookup filter, inside a scan-rooted compound query</td>
+  <td>~1 (root)</td>
+  <td><span class="pill optimal">Optimal</span></td>
+  <td>The CTE forces the scan protocol anyway, so its fixed costs are already paid; the main root itself is a single lookup.</td>
+</tr>
+<tr>
+  <td>Full-key CTE-root lookup + residual on aggregate output (rpr-5/6)</td>
+  <td><code>lookupCte</code> + jump-table filter</td>
+  <td>1 group probe</td>
+  <td><span class="pill optimal">Optimal</span></td>
+  <td>One hash-table probe against the materialised CTE instead of a full <code>scanCte</code>.</td>
+</tr>
+<tr>
+  <td>Aggregate, <em>no</em> CTE, PK-covered root, ordered PK index exists (rpr-3/4/12)</td>
+  <td>PK-equality ordered-index scan + residual filter</td>
+  <td>~1</td>
+  <td><span class="pill near">Near-optimal</span></td>
+  <td>Reads the same single row via the index, but pays scan-protocol setup (per-fragment requests + JoinAgg setup/complete round). A true lookup would be cheaper — the protocol forbids it (§4).</td>
+</tr>
+<tr>
+  <td>Aggregate, <em>no</em> CTE, PK-covered root, PK is <code>USING HASH</code> (rpr-1/2/9/11)</td>
+  <td><code>scanTable</code> + full WHERE filter</td>
+  <td>all rows</td>
+  <td><span class="pill subopt">Suboptimal</span></td>
+  <td>Full scan to fetch one known row. Reached because a hash PK has no ordered index and the lookup protocol can't carry aggregation. Correct, and the crash guard makes it the only safe choice today — see the closing note for the two real fixes.</td>
+</tr>
+<tr>
+  <td>Over-cap residual (&gt; 64 words) on a lookup-eligible root (rpr-11)</td>
+  <td>Index-scan or table-scan fallback carrying the big filter</td>
+  <td>~1 / all</td>
+  <td><span class="pill near">Near-optimal</span></td>
+  <td>Scan programs have no practical size limit; whether ~1 or all rows are read depends on the ordered-PK-index question above. Rare shape (dozens of root conjuncts).</td>
+</tr>
+<tr>
+  <td>Contradictory PK equalities (rpr-9/10)</td>
+  <td><code>readTuple</code> of the last key + orphaned equality as filter</td>
+  <td>~1</td>
+  <td><span class="pill near">Near-optimal</span></td>
+  <td>Reads one row to prove emptiness. A planner with impossible-WHERE detection would read zero — at this cost, not worth the machinery. Previously: returned the wrong row.</td>
+</tr>
+<tr>
+  <td>Aggregate lookup-rooted query from an unpatched client</td>
+  <td>Rejected — API 4820 or kernel <code>InvalidAggregateFlags</code></td>
+  <td>0</td>
+  <td><span class="pill crash">Was: node crash</span></td>
+  <td>The query fails; the node stays up.</td>
+</tr>
+</table>
+</div>
+
+<div class="prose">
+<h3>The two genuine gaps, named</h3>
+<p><strong>Gap 1 — the suboptimal row.</strong> An aggregate query with no CTE and a fully-bound hash PK full-scans for one row. Two real fixes exist, both out of Phase 0's scope: teach the JoinAgg protocol a lookup-request setup path (a DBTC/DBSPJ feature — the same machinery the <code>local_execution_mode_plan.md</code> feed work would touch), or simply have such deployments define an ordered index on the PK. Until then this shape is correct-but-blunt, and it is at least rare: a fully-bound PK under an aggregate usually means a one-row aggregate the application could have written as a plain lookup.</p>
+<p><strong>Gap 2 — observability.</strong> EXPLAIN cannot show any of this: the readTuple / PK-index / fallback choice happens at emit time, after the planner output EXPLAIN prints. Until EXPLAIN grows an emit-plan section, the authoritative way to know which plan ran is this cascade plus the query's shape — which is precisely why this document exists. Extending EXPLAIN to print the emitted root (and its residual placement) is the natural follow-up and would make the optimality table verifiable per query.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>7 · Phase 0b: the pass-through printer</h2>
+<div class="prose">
+<p>Pass-through (projection-only) queries stream raw rows rather than aggregates, and their printer previously understood only integers, floats, doubles and strings. Two failure classes existed in <em>accepted</em> shapes: real temporal/DECIMAL columns threw a hard error, and CTE <code>MIN</code>/<code>MAX</code> over temporal columns — which the kernel delivers as a <code>Bigunsigned</code> carrying the column's packed value — printed as raw integers, silently diverging from MySQL.</p>
+<p>The fix reuses what the aggregate path already had. The column-metadata build (charset, precision, scale, temporal tag — resolved through CTE hops back to the source column) is now shared by both printer constructions, and the packed-temporal decoder was factored out of <code>print_aggregate_result</code> into one helper both paths call:</p>
+</div>
+
+<div class="tablewrap">
+<table>
+<tr><th>Column type</th><th>Wire form</th><th>Decode path</th></tr>
+<tr><td>DATE / YEAR (raw column)</td><td>3-byte / 1-byte little-endian — <em>identical to the packed MIN/MAX form</em></td><td>Shared packed decoder, directly</td></tr>
+<tr><td>DATETIME(n) / TIME(n) / TIMESTAMP(n) (raw)</td><td>Big-endian packed binary, 5/3/4 + fsp bytes</td><td>Bytes re-packed to a <code>Uint64</code>, then the shared decoder (MySQL's own codecs; TIMESTAMP displayed in UTC via the lock-free converter)</td></tr>
+<tr><td>DECIMAL(p,s)</td><td>Binary decimal</td><td><code>decimal_bin2str</code> with the column's precision/scale</td></tr>
+<tr><td>CTE MIN/MAX over any temporal</td><td><code>Bigunsigned</code> virt column holding the packed value</td><td>Metadata pre-check: temporal tag + <code>Bigunsigned</code> ⇒ shared decoder. This was the silent-wrong-output case.</td></tr>
+<tr><td>BIT · BINARY/VARBINARY · BLOB/TEXT · pre-5.6 temporals · Olddecimal</td><td>—</td><td>Still rejected, now with an error naming the type (matches the aggregate printer's envelope)</td></tr>
+</table>
+</div>
+
+<div class="prose">
+<p>LEFT JOIN NULL substitution composes correctly with all of this: unmatched rows arrive as NULL attributes and print as NULL — never as a decode of stale bytes (locked in by test pt-6).</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>8 · What the tests pin down</h2>
+<div class="prose">
+<p>Two data-driven families, each running in all five topology suites (2, 3, 4, 6 and 8 data nodes), every case strict-diffed against MySQL on the same data:</p>
+</div>
+
+<div class="tablewrap">
+<table>
+<tr><th>Case</th><th>Path exercised</th></tr>
+<tr><td><code>rpr-1/2</code></td><td>Aggregate no-CTE PK-covered root → crash guard → table-scan fallback, residual accepting / rejecting</td></tr>
+<tr><td><code>rpr-3/4</code></td><td>Ordered-PK root + index-scan child → PK-equality index scan + residual filter</td></tr>
+<tr><td><code>rpr-5/6</code></td><td>Full-key <code>lookupCte</code> root + jump-table residual on an aggregate output</td></tr>
+<tr><td><code>rpr-7/8</code></td><td>Pass-through <code>readTuple</code> root + lookup filter; miss ⇒ empty output matching the mysql baseline</td></tr>
+<tr><td><code>rpr-9/10</code></td><td>Contradictory PK equalities ⇒ empty (previously: wrong row)</td></tr>
+<tr><td><code>rpr-11/12</code></td><td>Over-cap residual ⇒ table-scan / PK-index-scan fallbacks</td></tr>
+<tr><td><code>rpr-13/14</code></td><td>The protocol-legal aggregate <code>readTuple</code> root (CTE-containing) + lookup filter</td></tr>
+<tr><td><code>rpr-P1</code></td><td>Unsupportable residual atom on a CTE-root lookup ⇒ clean rejection (previously: wrong results)</td></tr>
+<tr><td><code>pt-1…6</code></td><td>All temporal + DECIMAL decode paths, raw and packed, incl. GROUP-BY-over-DATE and LEFT JOIN NULLs</td></tr>
+<tr><td><code>pt-P1/P2</code></td><td>BIT / VARBINARY projections ⇒ clean error naming the type</td></tr>
+</table>
+</div>
+
+<div class="prose">
+<p>One deliberate coverage hole: the kernel-side <code>InvalidAggregateFlags</code> gate is unreachable through patched clients (the API guard rejects first). Covering it takes a raw-QueryTree block test in the <code>testJoinAggSpj</code> style — noted as a follow-up, not built.</p>
+</div>
+
+<hr>
+
+<div class="prose">
+<p class="meta">Files: RonSQLPreparer.{hpp,cpp} · ResultPrinter.{hpp,cpp} · NdbQueryBuilder.cpp · DbspjMain.cpp · mysql-test/suite/ronsql_cte{,_ng1r3,_ng2r2,_ng2r3,_ng4r2}.<br>
+Companion docs: non_aggregate_pushdown_plan.md (the five-phase roadmap) · non_aggregate_phase_0.md (the detailed plan and implementation deltas) · findings/root_pk_residual.md.<br>
+Status: all tests green ×5 topologies, August 2026.</p>
+</div>
+</main>

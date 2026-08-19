@@ -1,0 +1,362 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== rpr-1: agg join, readTuple root, residual accepts the row ===
+== Query ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77 AND o.o_custkey < 401;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77 AND o.o_custkey < 401|
+c	s
+1	2
+
+=== rpr-2: agg join, readTuple root, residual rejects the row ===
+== Query ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77 AND o.o_custkey < 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77 AND o.o_custkey < 0|
+c	s
+0	NULL
+
+=== rpr-3: ordered-PK root + INDEX_SCAN child, residual accepts ===
+== Query ==
+SELECT COUNT(*) AS c, SUM(o.o_shippriority) AS s
+FROM acct AS a JOIN orders AS o ON o.o_custkey = a.a_grp
+WHERE a.a_id = 7 AND a.a_val > 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, SUM(o.o_shippriority) AS s
+FROM acct AS a JOIN orders AS o ON o.o_custkey = a.a_grp
+WHERE a.a_id = 7 AND a.a_val > 0|
+c	s
+5	10
+
+=== rpr-4: ordered-PK root + INDEX_SCAN child, residual rejects ===
+== Query ==
+SELECT COUNT(*) AS c, SUM(o.o_shippriority) AS s
+FROM acct AS a JOIN orders AS o ON o.o_custkey = a.a_grp
+WHERE a.a_id = 7 AND a.a_val > 1000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, SUM(o.o_shippriority) AS s
+FROM acct AS a JOIN orders AS o ON o.o_custkey = a.a_grp
+WHERE a.a_id = 7 AND a.a_val > 1000|
+c	s
+0	NULL
+
+=== rpr-5: passthrough, full-key CTE root, residual accepts ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > 1|
+k	n
+7	5
+
+=== rpr-6: passthrough, full-key CTE root, residual rejects ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > 100000;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > 100000|
+k	n
+
+=== rpr-7: passthrough chain, PK-covered real root, residual accepts ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey >= 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey >= 0|
+c_custkey	n
+42	5
+
+=== rpr-8: passthrough chain, PK-covered real root, residual rejects ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey < 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey < 0|
+c_custkey	n
+
+=== rpr-9: contradictory PK equalities, aggregate ===
+== Query ==
+SELECT COUNT(*) AS c
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77 AND o.o_orderkey = 78;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77 AND o.o_orderkey = 78|
+c
+0
+
+=== rpr-10: contradictory PK equalities, passthrough ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_custkey = 43;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_custkey = 43|
+c_custkey	n
+
+=== rpr-11: over-cap residual on a hash-PK root (table-scan fallback) ===
+== Query ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77
+AND o.o_custkey < 401 AND o.o_custkey < 402 AND o.o_custkey < 403
+AND o.o_custkey < 404 AND o.o_custkey < 405 AND o.o_custkey < 406
+AND o.o_custkey < 407 AND o.o_custkey < 408 AND o.o_custkey < 409
+AND o.o_custkey < 410 AND o.o_custkey < 411 AND o.o_custkey < 412
+AND o.o_custkey < 413 AND o.o_custkey < 414 AND o.o_custkey < 415
+AND o.o_custkey < 416 AND o.o_custkey < 417 AND o.o_custkey < 418
+AND o.o_custkey < 419 AND o.o_custkey < 420 AND o.o_custkey < 421
+AND o.o_custkey < 422 AND o.o_custkey < 423 AND o.o_custkey < 424
+AND o.o_custkey < 425 AND o.o_custkey < 426 AND o.o_custkey < 427
+AND o.o_custkey < 428 AND o.o_custkey < 429 AND o.o_custkey < 430
+AND o.o_custkey < 431 AND o.o_custkey < 432 AND o.o_custkey < 433
+AND o.o_custkey < 434 AND o.o_custkey < 435 AND o.o_custkey < 436
+AND o.o_custkey < 437 AND o.o_custkey < 438 AND o.o_custkey < 439
+AND o.o_custkey < 440;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_orderkey = 77
+AND o.o_custkey < 401 AND o.o_custkey < 402 AND o.o_custkey < 403
+AND o.o_custkey < 404 AND o.o_custkey < 405 AND o.o_custkey < 406
+AND o.o_custkey < 407 AND o.o_custkey < 408 AND o.o_custkey < 409
+AND o.o_custkey < 410 AND o.o_custkey < 411 AND o.o_custkey < 412
+AND o.o_custkey < 413 AND o.o_custkey < 414 AND o.o_custkey < 415
+AND o.o_custkey < 416 AND o.o_custkey < 417 AND o.o_custkey < 418
+AND o.o_custkey < 419 AND o.o_custkey < 420 AND o.o_custkey < 421
+AND o.o_custkey < 422 AND o.o_custkey < 423 AND o.o_custkey < 424
+AND o.o_custkey < 425 AND o.o_custkey < 426 AND o.o_custkey < 427
+AND o.o_custkey < 428 AND o.o_custkey < 429 AND o.o_custkey < 430
+AND o.o_custkey < 431 AND o.o_custkey < 432 AND o.o_custkey < 433
+AND o.o_custkey < 434 AND o.o_custkey < 435 AND o.o_custkey < 436
+AND o.o_custkey < 437 AND o.o_custkey < 438 AND o.o_custkey < 439
+AND o.o_custkey < 440|
+c	s
+1	2
+
+=== rpr-12: over-cap residual on an ordered-PK root (PK-index-scan fallback) ===
+== Query ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM acct AS a JOIN customer AS cu ON cu.c_custkey = a.a_val
+WHERE a.a_id = 7
+AND a.a_val < 9001 AND a.a_val < 9002 AND a.a_val < 9003
+AND a.a_val < 9004 AND a.a_val < 9005 AND a.a_val < 9006
+AND a.a_val < 9007 AND a.a_val < 9008 AND a.a_val < 9009
+AND a.a_val < 9010 AND a.a_val < 9011 AND a.a_val < 9012
+AND a.a_val < 9013 AND a.a_val < 9014 AND a.a_val < 9015
+AND a.a_val < 9016 AND a.a_val < 9017 AND a.a_val < 9018
+AND a.a_val < 9019 AND a.a_val < 9020 AND a.a_val < 9021
+AND a.a_val < 9022 AND a.a_val < 9023 AND a.a_val < 9024
+AND a.a_val < 9025 AND a.a_val < 9026 AND a.a_val < 9027
+AND a.a_val < 9028 AND a.a_val < 9029 AND a.a_val < 9030
+AND a.a_val < 9031 AND a.a_val < 9032 AND a.a_val < 9033
+AND a.a_val < 9034 AND a.a_val < 9035 AND a.a_val < 9036
+AND a.a_val < 9037 AND a.a_val < 9038 AND a.a_val < 9039
+AND a.a_val < 9040;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
+FROM acct AS a JOIN customer AS cu ON cu.c_custkey = a.a_val
+WHERE a.a_id = 7
+AND a.a_val < 9001 AND a.a_val < 9002 AND a.a_val < 9003
+AND a.a_val < 9004 AND a.a_val < 9005 AND a.a_val < 9006
+AND a.a_val < 9007 AND a.a_val < 9008 AND a.a_val < 9009
+AND a.a_val < 9010 AND a.a_val < 9011 AND a.a_val < 9012
+AND a.a_val < 9013 AND a.a_val < 9014 AND a.a_val < 9015
+AND a.a_val < 9016 AND a.a_val < 9017 AND a.a_val < 9018
+AND a.a_val < 9019 AND a.a_val < 9020 AND a.a_val < 9021
+AND a.a_val < 9022 AND a.a_val < 9023 AND a.a_val < 9024
+AND a.a_val < 9025 AND a.a_val < 9026 AND a.a_val < 9027
+AND a.a_val < 9028 AND a.a_val < 9029 AND a.a_val < 9030
+AND a.a_val < 9031 AND a.a_val < 9032 AND a.a_val < 9033
+AND a.a_val < 9034 AND a.a_val < 9035 AND a.a_val < 9036
+AND a.a_val < 9037 AND a.a_val < 9038 AND a.a_val < 9039
+AND a.a_val < 9040|
+c	s
+1	21
+
+=== rpr-13: agg + CTE, readTuple root, residual accepts ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey >= 0
+GROUP BY cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey >= 0
+GROUP BY cu.c_custkey|
+ck	sn
+42	5
+
+=== rpr-14: agg + CTE, readTuple root, residual rejects ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey < 0
+GROUP BY cu.c_custkey;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42 AND cu.c_nationkey < 0
+GROUP BY cu.c_custkey|
+ck	sn
+
+=== rpr-P1 (rejection): full-key CTE root + col-vs-col residual ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: both columns must resolve to Bigint (signed 64-bit).  Bigunsigned, mixed-width, float, decimal, and string col-vs-col comparisons are not yet supported — cast in the CTE body or use a constant-vs-column comparison.
