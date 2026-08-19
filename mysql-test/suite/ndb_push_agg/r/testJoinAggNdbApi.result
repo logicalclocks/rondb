@@ -26,6 +26,7 @@ Test 20: SETUP_REF error handling (ERROR_INSERT 5117) ... OK (SETUP_REF handled,
 Test 21: Early query close ... OK (early close handled, cleanup verified)
 Test 22: COMPLETE_REF error handling (ERROR_INSERT 5118) ... OK (COMPLETE_REF handled, cleanup verified)
 Test 23: fragsPerWorker result equality (unset/1/2/4/8) ... OK (identical results for all fragsPerWorker values)
+Test 24: aggregate lookup-rooted query def rejected ... OK (prepare rejected with 4820)
 
 All tests PASSED
 PASSED

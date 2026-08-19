@@ -595,7 +595,7 @@
 <table>
 <tr><th>Column type</th><th>Wire form</th><th>Decode path</th></tr>
 <tr><td>DATE / YEAR (raw column)</td><td>3-byte / 1-byte little-endian — <em>identical to the packed MIN/MAX form</em></td><td>Shared packed decoder, directly</td></tr>
-<tr><td>DATETIME(n) / TIME(n) / TIMESTAMP(n) (raw)</td><td>Big-endian packed binary, 5/3/4 + fsp bytes</td><td>Bytes re-packed to a <code>Uint64</code>, then the shared decoder (MySQL's own codecs; TIMESTAMP displayed in UTC via the lock-free converter)</td></tr>
+<tr><td>DATETIME(n) / TIME(n) / TIMESTAMP(n) (raw)</td><td>Big-endian packed binary, 5/3/4 + fsp bytes</td><td>Bytes re-packed to a <code>Uint64</code>, then the shared decoder (MySQL's own codecs; TIMESTAMP displayed in UTC via the lock-free converter — with <code>tv_sec == 0</code> decoding as the zero timestamp <code>0000-00-00 00:00:00</code>, MySQL's reserved encoding, never as the Unix epoch)</td></tr>
 <tr><td>DECIMAL(p,s)</td><td>Binary decimal</td><td><code>decimal_bin2str</code> with the column's precision/scale</td></tr>
 <tr><td>CTE MIN/MAX over any temporal</td><td><code>Bigunsigned</code> virt column holding the packed value</td><td>Metadata pre-check: temporal tag + <code>Bigunsigned</code> ⇒ shared decoder. This was the silent-wrong-output case.</td></tr>
 <tr><td>BIT · BINARY/VARBINARY · BLOB/TEXT · pre-5.6 temporals · Olddecimal</td><td>—</td><td>Still rejected, now with an error naming the type (matches the aggregate printer's envelope)</td></tr>
@@ -620,16 +620,17 @@
 <tr><td><code>rpr-5/6</code></td><td>Full-key <code>lookupCte</code> root + jump-table residual on an aggregate output</td></tr>
 <tr><td><code>rpr-7/8</code></td><td>Pass-through <code>readTuple</code> root + lookup filter; miss ⇒ empty output matching the mysql baseline</td></tr>
 <tr><td><code>rpr-9/10</code></td><td>Contradictory PK equalities ⇒ empty (previously: wrong row)</td></tr>
-<tr><td><code>rpr-11/12</code></td><td>Over-cap residual ⇒ table-scan / PK-index-scan fallbacks</td></tr>
+<tr><td><code>rpr-11/12/15</code></td><td>Over-cap residual on lookup-eligible shapes — the 64-word branch is genuinely entered — ⇒ table-scan / PK-index-scan fallbacks (rpr-15 is the aggregate+CTE flavor)</td></tr>
 <tr><td><code>rpr-13/14</code></td><td>The protocol-legal aggregate <code>readTuple</code> root (CTE-containing) + lookup filter</td></tr>
 <tr><td><code>rpr-P1</code></td><td>Unsupportable residual atom on a CTE-root lookup ⇒ clean rejection (previously: wrong results)</td></tr>
-<tr><td><code>pt-1…6</code></td><td>All temporal + DECIMAL decode paths, raw and packed, incl. GROUP-BY-over-DATE and LEFT JOIN NULLs</td></tr>
+<tr><td><code>pt-1…9</code></td><td>All temporal + DECIMAL decode paths, raw and packed, incl. GROUP-BY-over-DATE, LEFT JOIN NULLs, and zero TIMESTAMPs (raw, packed CTE MIN, and aggregate GROUP BY — <code>0000-00-00</code>, not the epoch)</td></tr>
 <tr><td><code>pt-P1/P2</code></td><td>BIT / VARBINARY projections ⇒ clean error naming the type</td></tr>
+<tr><td><code>testJoinAggNdbApi</code> Test 24</td><td>Direct API-layer regression: a lookup-rooted aggregate query def (the rpr-1 crash shape) must fail <code>prepare()</code> with <code>QRY_WRONG_OPERATION_TYPE</code> (4820)</td></tr>
 </table>
 </div>
 
 <div class="prose">
-<p>One deliberate coverage hole: the kernel-side <code>InvalidAggregateFlags</code> gate is unreachable through patched clients (the API guard rejects first). Covering it takes a raw-QueryTree block test in the <code>testJoinAggSpj</code> style — noted as a follow-up, not built.</p>
+<p>One deliberate coverage hole remains: the kernel-side <code>InvalidAggregateFlags</code> gate is unreachable through patched clients — the API guard rejects first (now pinned directly by Test 24), and on the scan path DBTC constructs the aggStateKeys itself, so the empty-<code>m_aggNodes</code> case can only be produced by a raw lookup-protocol (TCKEYREQ + query tree) sender, which <code>testJoinAggSpj</code> does not yet have. That is a harness feature, noted as a follow-up.</p>
 </div>
 
 <hr>

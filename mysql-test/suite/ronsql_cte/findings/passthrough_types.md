@@ -1,5 +1,13 @@
 # passthrough_types family — findings
 
+Post-review addition: zero TIMESTAMP values (`tv_sec == 0`, MySQL's
+reserved encoding for `0000-00-00 00:00:00`) were decoded through the
+epoch converter and printed as `1970-01-01 00:00:00` — in the new
+pass-through arms, the packed CTE MIN/MAX decode, AND the pre-existing
+aggregate GROUP-BY print arms.  Fixed via `ronsql_timestamp_tv_to_TIME`
+(zero guard) at all three sites; covered by pt-7/8/9 over the local
+`tz1` table.
+
 Phase 0b of `non_aggregate_phase_0.md` (pass-through printer type
 coverage + ColumnMetadata).  Cases pt-1..6 lock in the fixed behavior;
 before the fix, pt-1/2/3/5/6 failed with "Unsupported column type" and

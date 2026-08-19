@@ -1194,6 +1194,89 @@ c_custkey	c_acctbal	d	n
 8	238.50	1995-01-09	1
 9	255.75	1995-01-10	1
 
+=== pt-7: zero TIMESTAMP / TIMESTAMP(6) projected raw ===
+== Query ==
+WITH tg AS (SELECT t_grp AS g, COUNT(*) AS n
+FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, t.t_s, t.t_s6, tg.n
+FROM tz1 AS t JOIN tg ON tg.g = t.t_grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH tg AS (SELECT t_grp AS g, COUNT(*) AS n
+FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, t.t_s, t.t_s6, tg.n
+FROM tz1 AS t JOIN tg ON tg.g = t.t_grp|
+t_id	t_s	t_s6	n
+1	0000-00-00 00:00:00	0000-00-00 00:00:00.000000	2
+2	2024-03-05 10:20:30	2024-03-05 10:20:30.123456	2
+3	0000-00-00 00:00:00	0000-00-00 00:00:00.000000	2
+4	2025-12-31 23:59:59	2025-12-31 23:59:59.999999	2
+
+=== pt-8: CTE MIN over zero TIMESTAMPs (packed zero decode) ===
+== Query ==
+WITH tm AS (SELECT t_grp AS g, MIN(t_s) AS mn, MIN(t_s6) AS mn6
+FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, tm.mn, tm.mn6
+FROM tz1 AS t JOIN tm ON tm.g = t.t_grp
+WHERE t.t_id < 3;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH tm AS (SELECT t_grp AS g, MIN(t_s) AS mn, MIN(t_s6) AS mn6
+FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, tm.mn, tm.mn6
+FROM tz1 AS t JOIN tm ON tm.g = t.t_grp
+WHERE t.t_id < 3|
+t_id	mn	mn6
+1	0000-00-00 00:00:00	0000-00-00 00:00:00.000000
+2	0000-00-00 00:00:00	0000-00-00 00:00:00.000000
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00' for column 'mn' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00' for column 'mn' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00' for column 'mn' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00' for column 'mn' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 'mn6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 'mn6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 'mn6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 'mn6' at row 1
+Warnings:
+
+=== pt-9: aggregate GROUP BY over a zero TIMESTAMP ===
+== Query ==
+SELECT t_s6, COUNT(*) AS n FROM tz1 GROUP BY t_s6;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t_s6, COUNT(*) AS n FROM tz1 GROUP BY t_s6|
+t_s6	n
+0000-00-00 00:00:00.000000	2
+2024-03-05 10:20:30.123456	1
+2025-12-31 23:59:59.999999	1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 't_s6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 't_s6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 't_s6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 't_s6' at row 1
+Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column 't_s6' at row 1
+Warnings:
+
 === pt-P1 (rejection): BIT projection in a pass-through result ===
 b_bits	n
 Unsupported column type (22) in pass-through result.

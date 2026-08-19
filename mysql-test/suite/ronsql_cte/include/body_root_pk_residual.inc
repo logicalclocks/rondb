@@ -21,13 +21,17 @@
 #   7/8   I.8 passthrough chain, PK-covered real root + accepting /
 #         rejecting residual
 #   9/10  contradictory PK equalities (aggregate / passthrough) -> empty
-#   11    over-cap residual on a hash-PK root -> table-scan fallback
-#   12    over-cap residual on an ordered-PK root -> PK-index-scan
+#   11    over-cap residual, lookup-eligible hash-PK root (pass-through
+#         CTE chain) -> enters the readTuple branch, then table-scan
 #         fallback
+#   12    over-cap residual, lookup-eligible ordered-PK root ->
+#         PK-index-scan fallback
 #   13/14 agg + CTE, readTuple root + accepting / rejecting residual
 #         (the scan-rooted compound shape where an aggregate readTuple
 #         main root is protocol-legal)
+#   15    agg + CTE, over-cap residual -> table-scan fallback
 #   P1    rejection: full-key CTE root + col-vs-col residual atom
+#   P2    rejection: out-of-range literal -> permanent error, no retries
 #
 # NOTE (discovered by rpr-1 on first record): aggregate queries WITHOUT
 # CTEs whose root is PK-equality-covered used to emit a readTuple root,
@@ -36,8 +40,11 @@
 # on the SCAN_TABREQ path), crashing data nodes at DbspjMain.cpp:8748
 # (empty m_aggNodes).  Pre-existing, reachable before Phase 0a with a
 # plain full-PK WHERE.  Fixed by emit-side suppression (scan fallbacks)
-# + NdbQueryDefImpl prepare-time rejection; rpr-1/2/9/11 now exercise
-# the scan fallbacks.
+# + NdbQueryDefImpl prepare-time rejection + DBSPJ build-time
+# validation; rpr-1/2/9 now exercise the scan fallbacks.  The over-cap
+# cases (11/12/15) use lookup-ELIGIBLE shapes so the 64-word branch is
+# actually entered — an aggregate no-CTE shape would be suppressed by
+# lookup_root_supported before the word count runs.
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -227,57 +234,69 @@ FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_custkey = 42 AND cu.c_custkey = 43|
 
 --echo
---echo === rpr-11: over-cap residual on a hash-PK root (table-scan fallback) ===
-# 40 always-true conjuncts push the residual program past the 64-word
-# lookup cap; orders' PK is USING HASH (no ordered PK index) so the emit
+--echo === rpr-11: over-cap residual, lookup-eligible hash-PK root (table-scan fallback) ===
+# A pass-through CTE chain keeps lookup_root_supported true, so this
+# actually enters the readTuple branch: 40 always-true conjuncts
+# (c_nationkey <= 24) push the residual program past the 64-word lookup
+# cap, and customer's USING HASH PK has no ordered index, so the emit
 # cascades to a table scan with the full WHERE filter.  Correctness only
 # — the plan is an emit-time decision and not visible in EXPLAIN.
+# The literals stay within TINYINT range (< 88 .. < 127): RonSQL's
+# filter encoder rejects integer literals outside the column's type
+# range rather than constant-folding them like MySQL.
 let $QUERY=
-SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
-FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
-WHERE o.o_orderkey = 77
-  AND o.o_custkey < 401 AND o.o_custkey < 402 AND o.o_custkey < 403
-  AND o.o_custkey < 404 AND o.o_custkey < 405 AND o.o_custkey < 406
-  AND o.o_custkey < 407 AND o.o_custkey < 408 AND o.o_custkey < 409
-  AND o.o_custkey < 410 AND o.o_custkey < 411 AND o.o_custkey < 412
-  AND o.o_custkey < 413 AND o.o_custkey < 414 AND o.o_custkey < 415
-  AND o.o_custkey < 416 AND o.o_custkey < 417 AND o.o_custkey < 418
-  AND o.o_custkey < 419 AND o.o_custkey < 420 AND o.o_custkey < 421
-  AND o.o_custkey < 422 AND o.o_custkey < 423 AND o.o_custkey < 424
-  AND o.o_custkey < 425 AND o.o_custkey < 426 AND o.o_custkey < 427
-  AND o.o_custkey < 428 AND o.o_custkey < 429 AND o.o_custkey < 430
-  AND o.o_custkey < 431 AND o.o_custkey < 432 AND o.o_custkey < 433
-  AND o.o_custkey < 434 AND o.o_custkey < 435 AND o.o_custkey < 436
-  AND o.o_custkey < 437 AND o.o_custkey < 438 AND o.o_custkey < 439
-  AND o.o_custkey < 440;|
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42
+  AND cu.c_nationkey < 88 AND cu.c_nationkey < 89 AND cu.c_nationkey < 90
+  AND cu.c_nationkey < 91 AND cu.c_nationkey < 92 AND cu.c_nationkey < 93
+  AND cu.c_nationkey < 94 AND cu.c_nationkey < 95 AND cu.c_nationkey < 96
+  AND cu.c_nationkey < 97 AND cu.c_nationkey < 98 AND cu.c_nationkey < 99
+  AND cu.c_nationkey < 100 AND cu.c_nationkey < 101 AND cu.c_nationkey < 102
+  AND cu.c_nationkey < 103 AND cu.c_nationkey < 104 AND cu.c_nationkey < 105
+  AND cu.c_nationkey < 106 AND cu.c_nationkey < 107 AND cu.c_nationkey < 108
+  AND cu.c_nationkey < 109 AND cu.c_nationkey < 110 AND cu.c_nationkey < 111
+  AND cu.c_nationkey < 112 AND cu.c_nationkey < 113 AND cu.c_nationkey < 114
+  AND cu.c_nationkey < 115 AND cu.c_nationkey < 116 AND cu.c_nationkey < 117
+  AND cu.c_nationkey < 118 AND cu.c_nationkey < 119 AND cu.c_nationkey < 120
+  AND cu.c_nationkey < 121 AND cu.c_nationkey < 122 AND cu.c_nationkey < 123
+  AND cu.c_nationkey < 124 AND cu.c_nationkey < 125 AND cu.c_nationkey < 126
+  AND cu.c_nationkey < 127;|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
-FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
-WHERE o.o_orderkey = 77
-  AND o.o_custkey < 401 AND o.o_custkey < 402 AND o.o_custkey < 403
-  AND o.o_custkey < 404 AND o.o_custkey < 405 AND o.o_custkey < 406
-  AND o.o_custkey < 407 AND o.o_custkey < 408 AND o.o_custkey < 409
-  AND o.o_custkey < 410 AND o.o_custkey < 411 AND o.o_custkey < 412
-  AND o.o_custkey < 413 AND o.o_custkey < 414 AND o.o_custkey < 415
-  AND o.o_custkey < 416 AND o.o_custkey < 417 AND o.o_custkey < 418
-  AND o.o_custkey < 419 AND o.o_custkey < 420 AND o.o_custkey < 421
-  AND o.o_custkey < 422 AND o.o_custkey < 423 AND o.o_custkey < 424
-  AND o.o_custkey < 425 AND o.o_custkey < 426 AND o.o_custkey < 427
-  AND o.o_custkey < 428 AND o.o_custkey < 429 AND o.o_custkey < 430
-  AND o.o_custkey < 431 AND o.o_custkey < 432 AND o.o_custkey < 433
-  AND o.o_custkey < 434 AND o.o_custkey < 435 AND o.o_custkey < 436
-  AND o.o_custkey < 437 AND o.o_custkey < 438 AND o.o_custkey < 439
-  AND o.o_custkey < 440|
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42
+  AND cu.c_nationkey < 88 AND cu.c_nationkey < 89 AND cu.c_nationkey < 90
+  AND cu.c_nationkey < 91 AND cu.c_nationkey < 92 AND cu.c_nationkey < 93
+  AND cu.c_nationkey < 94 AND cu.c_nationkey < 95 AND cu.c_nationkey < 96
+  AND cu.c_nationkey < 97 AND cu.c_nationkey < 98 AND cu.c_nationkey < 99
+  AND cu.c_nationkey < 100 AND cu.c_nationkey < 101 AND cu.c_nationkey < 102
+  AND cu.c_nationkey < 103 AND cu.c_nationkey < 104 AND cu.c_nationkey < 105
+  AND cu.c_nationkey < 106 AND cu.c_nationkey < 107 AND cu.c_nationkey < 108
+  AND cu.c_nationkey < 109 AND cu.c_nationkey < 110 AND cu.c_nationkey < 111
+  AND cu.c_nationkey < 112 AND cu.c_nationkey < 113 AND cu.c_nationkey < 114
+  AND cu.c_nationkey < 115 AND cu.c_nationkey < 116 AND cu.c_nationkey < 117
+  AND cu.c_nationkey < 118 AND cu.c_nationkey < 119 AND cu.c_nationkey < 120
+  AND cu.c_nationkey < 121 AND cu.c_nationkey < 122 AND cu.c_nationkey < 123
+  AND cu.c_nationkey < 124 AND cu.c_nationkey < 125 AND cu.c_nationkey < 126
+  AND cu.c_nationkey < 127|
 
 --echo
---echo === rpr-12: over-cap residual on an ordered-PK root (PK-index-scan fallback) ===
-# Same over-cap shape, but acct's ordered PK lets the emit fall back to
-# a PK-equality ordered-index scan carrying the big filter.
+--echo === rpr-12: over-cap residual, lookup-eligible ordered-PK root (PK-index-scan fallback) ===
+# Same over-cap entry through the readTuple branch (pass-through CTE
+# chain), but acct's ordered PK lets the emit fall back to a PK-equality
+# ordered-index scan carrying the big filter.
 let $QUERY=
-SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
-FROM acct AS a JOIN customer AS cu ON cu.c_custkey = a.a_val
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT a.a_id, a.a_val, cf.n
+FROM acct AS a JOIN cf ON cf.k = a.a_grp
 WHERE a.a_id = 7
   AND a.a_val < 9001 AND a.a_val < 9002 AND a.a_val < 9003
   AND a.a_val < 9004 AND a.a_val < 9005 AND a.a_val < 9006
@@ -296,8 +315,10 @@ WHERE a.a_id = 7
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
-FROM acct AS a JOIN customer AS cu ON cu.c_custkey = a.a_val
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT a.a_id, a.a_val, cf.n
+FROM acct AS a JOIN cf ON cf.k = a.a_grp
 WHERE a.a_id = 7
   AND a.a_val < 9001 AND a.a_val < 9002 AND a.a_val < 9003
   AND a.a_val < 9004 AND a.a_val < 9005 AND a.a_val < 9006
@@ -355,6 +376,57 @@ FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_custkey = 42 AND cu.c_nationkey < 0
 GROUP BY cu.c_custkey|
 
+--echo
+--echo === rpr-15: agg + CTE, over-cap residual (table-scan fallback) ===
+# The aggregate flavor of the over-cap entry: lookup_root_supported is
+# true (CTE-containing main scope), the 40-conjunct residual exceeds the
+# 64-word lookup cap, and customer's hash PK sends the emit to the
+# table-scan fallback inside the scan-rooted compound query.
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42
+  AND cu.c_nationkey < 88 AND cu.c_nationkey < 89 AND cu.c_nationkey < 90
+  AND cu.c_nationkey < 91 AND cu.c_nationkey < 92 AND cu.c_nationkey < 93
+  AND cu.c_nationkey < 94 AND cu.c_nationkey < 95 AND cu.c_nationkey < 96
+  AND cu.c_nationkey < 97 AND cu.c_nationkey < 98 AND cu.c_nationkey < 99
+  AND cu.c_nationkey < 100 AND cu.c_nationkey < 101 AND cu.c_nationkey < 102
+  AND cu.c_nationkey < 103 AND cu.c_nationkey < 104 AND cu.c_nationkey < 105
+  AND cu.c_nationkey < 106 AND cu.c_nationkey < 107 AND cu.c_nationkey < 108
+  AND cu.c_nationkey < 109 AND cu.c_nationkey < 110 AND cu.c_nationkey < 111
+  AND cu.c_nationkey < 112 AND cu.c_nationkey < 113 AND cu.c_nationkey < 114
+  AND cu.c_nationkey < 115 AND cu.c_nationkey < 116 AND cu.c_nationkey < 117
+  AND cu.c_nationkey < 118 AND cu.c_nationkey < 119 AND cu.c_nationkey < 120
+  AND cu.c_nationkey < 121 AND cu.c_nationkey < 122 AND cu.c_nationkey < 123
+  AND cu.c_nationkey < 124 AND cu.c_nationkey < 125 AND cu.c_nationkey < 126
+  AND cu.c_nationkey < 127
+GROUP BY cu.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey = 42
+  AND cu.c_nationkey < 88 AND cu.c_nationkey < 89 AND cu.c_nationkey < 90
+  AND cu.c_nationkey < 91 AND cu.c_nationkey < 92 AND cu.c_nationkey < 93
+  AND cu.c_nationkey < 94 AND cu.c_nationkey < 95 AND cu.c_nationkey < 96
+  AND cu.c_nationkey < 97 AND cu.c_nationkey < 98 AND cu.c_nationkey < 99
+  AND cu.c_nationkey < 100 AND cu.c_nationkey < 101 AND cu.c_nationkey < 102
+  AND cu.c_nationkey < 103 AND cu.c_nationkey < 104 AND cu.c_nationkey < 105
+  AND cu.c_nationkey < 106 AND cu.c_nationkey < 107 AND cu.c_nationkey < 108
+  AND cu.c_nationkey < 109 AND cu.c_nationkey < 110 AND cu.c_nationkey < 111
+  AND cu.c_nationkey < 112 AND cu.c_nationkey < 113 AND cu.c_nationkey < 114
+  AND cu.c_nationkey < 115 AND cu.c_nationkey < 116 AND cu.c_nationkey < 117
+  AND cu.c_nationkey < 118 AND cu.c_nationkey < 119 AND cu.c_nationkey < 120
+  AND cu.c_nationkey < 121 AND cu.c_nationkey < 122 AND cu.c_nationkey < 123
+  AND cu.c_nationkey < 124 AND cu.c_nationkey < 125 AND cu.c_nationkey < 126
+  AND cu.c_nationkey < 127
+GROUP BY cu.c_custkey|
+
 DELIMITER ;|
 
 --echo
@@ -364,6 +436,16 @@ DELIMITER ;|
 # cf.n > cf.k conjunct was silently dropped).
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey) SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > cf.k;' 2>&1
+
+--echo
+--echo === rpr-P2 (rejection): out-of-range literal is a PERMANENT error ===
+# c_nationkey is TINYINT (max 127); a literal outside the column type's
+# domain must fail once with a permanent error ("Error handling: RPE" in
+# the recorded output).  It was previously RonSQLMaybeStaleSchema, which
+# the broken join-path unload_schema comparison turned into 10 doomed
+# retries ("RMS->RRE" x10).
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey) SELECT cu.c_custkey, cf.n FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey WHERE cu.c_custkey = 42 AND cu.c_nationkey < 200;' 2>&1
 
 --disable_query_log
 --disable_warnings

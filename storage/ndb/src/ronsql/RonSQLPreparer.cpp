@@ -9478,8 +9478,15 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
-      throw RonSQLMaybeStaleSchema("Integer type column compared to an integer"
-                                   " literal out of range.");
+      // Permanent, not RonSQLMaybeStaleSchema: the literal lies outside
+      // the column type's domain — a property of the query text against
+      // the declared schema, not a transient condition.  Classifying it
+      // retryable burned 10 doomed attempts per query (and the join-path
+      // unload_schema comparison misreports "schema changed" whenever
+      // the root table has an ordered index, so the RMS disambiguation
+      // never converged — see non_aggregate_phase_0.md).
+      throw RonSQLPermanentError("Integer type column compared to an integer"
+                                 " literal out of range.");
     }
     Int64* val = m_amalloc->alloc_exc<Int64>(1);
     *val = ce->constant_integer;
@@ -9526,16 +9533,18 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       dec.buf = digits;
       if (type == NdbDictionary::Column::Type::Decimalunsigned &&
           ce->constant_integer < 0) {
-        throw RonSQLMaybeStaleSchema("Decimal type column compared to an"
-                                     " integer literal out of range.");
+        // Permanent for the same reason as the integer out-of-range case.
+        throw RonSQLPermanentError("Decimal type column compared to an"
+                                   " integer literal out of range.");
       }
       longlong2decimal(ce->constant_integer, &dec);
       err = decimal2bin(&dec, (unsigned char *)bin, prec, scale);
     } else if (op == T_FLOAT) {
       if (type == NdbDictionary::Column::Type::Decimalunsigned &&
           ce->constant_float.dbl < 0) {
-        throw RonSQLMaybeStaleSchema("Decimal type column compared to a"
-                                     " float literal out of range.");
+        // Permanent for the same reason as the integer out-of-range case.
+        throw RonSQLPermanentError("Decimal type column compared to a"
+                                   " float literal out of range.");
       }
       LexString ls = ce->constant_float.ls;
       err = decimal_str2bin(ls.str, ls.len, prec, scale, bin, bin_len);

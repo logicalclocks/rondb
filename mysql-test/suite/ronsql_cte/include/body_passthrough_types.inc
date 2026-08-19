@@ -27,6 +27,10 @@
 #      YEAR) through an I.8 chain — pre-0b printed raw integers
 #   5  CTE MIN/MAX over DATE + DECIMAL scale-0/2 real columns
 #   6  LEFT JOIN NULL substitution over temporal / DECIMAL outputs
+#   7  zero TIMESTAMP / TIMESTAMP(6) projected raw (0000-00-00, not
+#      1970-01-01 — local tz1 table)
+#   8  CTE MIN over zero TIMESTAMPs (packed Bigunsigned zero decode)
+#   9  aggregate GROUP BY over a zero TIMESTAMP (raw group-by print arm)
 #   P1 rejection: BIT projection (clean error, local table)
 #   P2 rejection: VARBINARY projection (clean error, local table)
 
@@ -41,7 +45,11 @@ call mtr.add_suppression("Participant timeout");
 --source suite/ronsql_cte/include/cte_data.inc
 
 # Family-local table for the BIT / VARBINARY rejection cases (the shared
-# schema deliberately has neither type).
+# schema deliberately has neither type), and one for zero TIMESTAMPs
+# (tv_sec == 0 is MySQL's reserved encoding for 0000-00-00 00:00:00 —
+# Field_timestampf::get_date_internal_at — which must not decode as the
+# Unix epoch; inserting the zero values needs sql_mode without
+# NO_ZERO_DATE/strict).
 --disable_query_log
 --disable_warnings
 CREATE TABLE bin1 (
@@ -52,6 +60,21 @@ CREATE TABLE bin1 (
   PRIMARY KEY (b_id)
 ) ENGINE=NDB;
 INSERT INTO bin1 VALUES (1, 1, b'1010', 0x4142), (2, 1, b'0101', 0x4344);
+CREATE TABLE tz1 (
+  t_id  INT NOT NULL,
+  t_grp INT NOT NULL,
+  t_s   TIMESTAMP NULL,
+  t_s6  TIMESTAMP(6) NULL,
+  PRIMARY KEY (t_id)
+) ENGINE=NDB;
+SET @old_sql_mode = @@session.sql_mode;
+SET SESSION sql_mode = '';
+INSERT INTO tz1 VALUES
+  (1, 1, '0000-00-00 00:00:00', '0000-00-00 00:00:00.000000'),
+  (2, 1, '2024-03-05 10:20:30', '2024-03-05 10:20:30.123456'),
+  (3, 2, '0000-00-00 00:00:00', '0000-00-00 00:00:00'),
+  (4, 2, '2025-12-31 23:59:59', '2025-12-31 23:59:59.999999');
+SET SESSION sql_mode = @old_sql_mode;
 --enable_warnings
 --enable_query_log
 
@@ -164,6 +187,53 @@ SELECT cu.c_custkey, cu.c_acctbal, cf.d, cf.n
 FROM customer AS cu LEFT JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_custkey < 15|
 
+--echo
+--echo === pt-7: zero TIMESTAMP / TIMESTAMP(6) projected raw ===
+# tv_sec == 0 must print as 0000-00-00 00:00:00[.000000], never as the
+# Unix epoch (the strict diff against MySQL enforces this).
+let $QUERY=
+WITH tg AS (SELECT t_grp AS g, COUNT(*) AS n
+            FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, t.t_s, t.t_s6, tg.n
+FROM tz1 AS t JOIN tg ON tg.g = t.t_grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH tg AS (SELECT t_grp AS g, COUNT(*) AS n
+            FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, t.t_s, t.t_s6, tg.n
+FROM tz1 AS t JOIN tg ON tg.g = t.t_grp|
+
+--echo
+--echo === pt-8: CTE MIN over zero TIMESTAMPs (packed zero decode) ===
+# Zero sorts below every valid epoch, so MIN over a group containing a
+# zero value is the zero value — through the packed Bigunsigned path.
+let $QUERY=
+WITH tm AS (SELECT t_grp AS g, MIN(t_s) AS mn, MIN(t_s6) AS mn6
+            FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, tm.mn, tm.mn6
+FROM tz1 AS t JOIN tm ON tm.g = t.t_grp
+WHERE t.t_id < 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH tm AS (SELECT t_grp AS g, MIN(t_s) AS mn, MIN(t_s6) AS mn6
+            FROM tz1 GROUP BY t_grp)
+SELECT t.t_id, tm.mn, tm.mn6
+FROM tz1 AS t JOIN tm ON tm.g = t.t_grp
+WHERE t.t_id < 3|
+
+--echo
+--echo === pt-9: aggregate GROUP BY over a zero TIMESTAMP ===
+# Exercises the raw GROUP-BY-column print arm (the aggregate path had
+# the same epoch-rendering defect).
+let $QUERY=
+SELECT t_s6, COUNT(*) AS n FROM tz1 GROUP BY t_s6;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t_s6, COUNT(*) AS n FROM tz1 GROUP BY t_s6|
+
 DELIMITER ;|
 
 --echo
@@ -179,6 +249,7 @@ DELIMITER ;|
 --disable_query_log
 --disable_warnings
 DROP TABLE bin1;
+DROP TABLE tz1;
 --enable_warnings
 --enable_query_log
 --source suite/ronsql_cte/include/cte_drop.inc

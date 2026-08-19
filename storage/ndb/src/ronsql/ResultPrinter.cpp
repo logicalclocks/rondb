@@ -88,6 +88,25 @@ static inline void ronsql_utc_sec_to_TIME(time_t t, MYSQL_TIME *out)
   out->time_type = MYSQL_TIMESTAMP_DATETIME;
 }
 
+/*
+ * TIMESTAMP my_timeval -> MYSQL_TIME, including the zero-value rule:
+ * MySQL reserves tv_sec == 0 for the zero timestamp 0000-00-00 00:00:00
+ * (Field_timestampf::get_date_internal_at, sql/field.cc) — the valid
+ * range starts at 1970-01-01 00:00:01.  Routing tv_sec == 0 through the
+ * epoch converter would wrongly print 1970-01-01 00:00:00.
+ */
+static inline void ronsql_timestamp_tv_to_TIME(const my_timeval &tv,
+                                               MYSQL_TIME *out)
+{
+  if (tv.m_tv_sec == 0) {
+    memset(out, 0, sizeof(*out));
+    out->time_type = MYSQL_TIMESTAMP_DATETIME;
+    return;
+  }
+  ronsql_utc_sec_to_TIME((time_t)tv.m_tv_sec, out);
+  out->second_part = (unsigned long)tv.m_tv_usec;
+}
+
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 #define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
@@ -823,10 +842,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
             MYSQL_TIME lTime;
-            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
-            lTime.second_part = myTV.m_tv_usec;
+            ronsql_timestamp_tv_to_TIME(myTV, &lTime);
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -1217,8 +1234,7 @@ print_temporal_packed(std::ostream& out, Uint64 w,
     my_timeval tv{};
     my_timestamp_from_binary(&tv, bytes, fsp);
     MYSQL_TIME mt;
-    ronsql_utc_sec_to_TIME((time_t)tv.m_tv_sec, &mt);
-    mt.second_part = (unsigned long)tv.m_tv_usec;
+    ronsql_timestamp_tv_to_TIME(tv, &mt);
     my_TIME_to_str(mt, buf, fsp);
     break;
   }
@@ -1786,10 +1802,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
             MYSQL_TIME lTime;
-            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
-            lTime.second_part = myTV.m_tv_usec;
+            ronsql_timestamp_tv_to_TIME(myTV, &lTime);
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;

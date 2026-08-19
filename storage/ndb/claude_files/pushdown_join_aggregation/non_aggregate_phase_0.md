@@ -80,12 +80,64 @@ scan-rooted (fpw-6 / J14 / mri-5 shapes).  Fix, both sides:
     (`tiered_response_policy.md` — Tier A criteria; the
     API-controllable path is what needed the graceful failure).
 
-rpr-1/2/9/11 now exercise the scan fallbacks; new rpr-13/14 cover the
+rpr-1/2/9 now exercise the scan fallbacks; rpr-13/14 cover the
 still-legal aggregate `readTuple` root + residual inside a
-CTE-containing (scan-rooted) query.  The kernel build gate is not
-reachable through patched clients (the API guard rejects first); a
-raw-QueryTree negative test (testJoinAggSpj style) is the natural
-follow-up if block-level coverage is wanted.
+CTE-containing (scan-rooted) query.
+
+**Post-review fixes (August 2026).**  A review after the first green
+run found one correctness defect and two coverage gaps, all fixed:
+
+- **Zero TIMESTAMP rendered as Unix epoch.**  MySQL reserves
+  `tv_sec == 0` for the zero timestamp `0000-00-00 00:00:00`
+  (`Field_timestampf::get_date_internal_at`, sql/field.cc); the
+  decoders converted it through the epoch converter and printed
+  `1970-01-01 00:00:00`.  New `ronsql_timestamp_tv_to_TIME` wrapper
+  (zero guard + epoch conversion + fractional part) now used by all
+  three decode sites: `print_temporal_packed` (raw + packed CTE
+  outputs) and the two raw GROUP-BY print arms — the latter were the
+  same pre-existing defect on the aggregate path.  Coverage: local
+  `tz1` table (inserted under `sql_mode=''`), cases pt-7 (raw
+  pass-through), pt-8 (packed CTE MIN — zero sorts below every valid
+  epoch), pt-9 (aggregate GROUP BY over a zero TIMESTAMP, the raw
+  group-by arm).
+- **The over-cap cases never reached the 64-word branch.**  rpr-11/12
+  were aggregate no-CTE shapes, so `lookup_root_supported` suppressed
+  the readTuple branch before the word count ran.  Rewritten as
+  lookup-ELIGIBLE shapes: rpr-11 pass-through CTE chain on a hash-PK
+  root (over-cap → table-scan fallback), rpr-12 pass-through chain on
+  the ordered-PK `acct` root (over-cap → PK-index-scan fallback), new
+  rpr-15 aggregate + CTE over-cap (table-scan fallback inside the
+  scan-rooted compound query).
+- **Direct hardening-layer coverage.**  New `testJoinAggNdbApi`
+  Test 24 builds a lookup-rooted aggregate query def (the rpr-1 crash
+  shape) and asserts `prepare()` fails with
+  `QRY_WRONG_OPERATION_TYPE` (4820) — pinning the API layer directly.
+  The DBSPJ build gate remains deferred: `testJoinAggSpj` only speaks
+  SCAN_TABREQ, and on the scan path DBTC itself constructs the
+  aggStateKeys, so reaching the empty-`m_aggNodes` check requires a
+  new raw lookup-protocol (TCKEYREQ + query tree) sender in that
+  harness — a harness feature, not a test addition.
+
+- **Out-of-range literals reclassified as permanent errors.**  The
+  first version of rpr-11 used TINYINT literals above 127, exposing
+  that `encode_constant`'s "literal out of range" errors (integer +
+  the two DECIMAL-unsigned variants) were `RonSQLMaybeStaleSchema` —
+  and burned 10 doomed retries.  All three now throw
+  `RonSQLPermanentError`: the literal lies outside the column type's
+  declared domain, a property of the query text, not a transient
+  condition.  rpr-P2 pins the single-attempt "RPE" classification.
+  Root cause of the *unbounded* retrying is a separate tracked defect:
+  the join-path `unload_schema` comparison always reports "schema
+  changed" (it compares against `m_indexes`, which only
+  `load_single_table` populates, so a join root with any online
+  ordered index trips `new_indexes_count >= old_indexes_count` with
+  0 old entries).  Until that gets a join-aware version walk, EVERY
+  `RonSQLMaybeStaleSchema` thrown from such a join query is
+  retryable — tracked in `findings/root_pk_residual.md`.
+
+Re-record needed after these fixes: both `ronsql_cte` families ×5
+topology suites and `ndb_push_agg.testJoinAggNdbApi` (Test 24 adds an
+output line).
 
 Two independent pre-existing defects, both already causing wrong results
 or hard failures in **shipped** query shapes, and both prerequisites for
