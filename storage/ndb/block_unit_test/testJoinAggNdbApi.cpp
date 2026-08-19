@@ -1431,38 +1431,37 @@ testJitLinkedNullSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 /* JIT candidate by shape (child leaf aggregation, no GROUP BY) but    */
 /* contains an opcode the bridge does not lower.                       */
 /*                                                                     */
-/* The bridge's main switch (ndb_jit_bridge.c) emits only kOpSumBigint;*/
-/* MAX/MIN/COUNT and the division/modulo opcodes fall through to its   */
-/* default case (JIT_BRIDGE_UNSUPPORTED_OP). The program is therefore  */
-/* rejected at JOIN_AGG_SETUP_REQ, m_jit_entry stays nullptr, and      */
+/* The division/modulo opcodes fall through to the bridge's default    */
+/* case (JIT_BRIDGE_UNSUPPORTED_OP). The program is therefore rejected */
+/* at JOIN_AGG_SETUP_REQ, m_jit_entry stays nullptr, and               */
 /* JoinAggInterpreter::ProcessRec runs the normal interpreter loop.    */
 /* This test proves that reject path produces the correct result and   */
 /* never errors the query.                                             */
 /*                                                                     */
-/* MAX(amount) is the shape used here. Deliberately runs with NO error */
-/* inserts: 4060 (fallback fatal) and 4062 (setup-compile fatal) would */
-/* both abort precisely the path we want to exercise. A developer can  */
-/* confirm the reject reason manually with a one-off 4062 run; that    */
-/* fatal variant is intentionally kept out of MTR (see                 */
-/* phase_5_1_ndbapi_test_additions.md, Test 26). Because it needs no   */
-/* error inserts, this test also runs for real in production builds.   */
+/* SUM(amount % amount) is the shape (= 0; kOpMod is unlowered).       */
+/* Historically MAX(amount) — repointed when Phase 5B lowered          */
+/* kOpMaxBigint, per the original durability note. Deliberately runs   */
+/* with NO error inserts: 4060 (fallback fatal) and 5120 (setup-       */
+/* compile fatal) would both abort precisely the path we want to       */
+/* exercise. A developer can confirm the reject reason manually with a */
+/* one-off 5120 run; that fatal variant is intentionally kept out of   */
+/* MTR. Because it needs no error inserts, this test also runs for     */
+/* real in production builds.                                          */
 /*                                                                     */
-/* Durability note: if a later phase teaches the bridge to lower MAX,  */
-/* this test still passes (it only checks the result) but stops being  */
-/* a fallback canary. At that point switch the program to a still-     */
-/* unsupported op (e.g. DivInt or Mod) to retain fallback coverage.    */
+/* Durability note: when Phase 5E lowers Mod/DivInt, repoint again —   */
+/* to a DOUBLE shape (until 5C) or a string MIN/MAX (until 5F).        */
 /* ------------------------------------------------------------------ */
 static int
-testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
+testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
 {
   const char *testName = "Test 27: Unsupported JIT shape falls back cleanly";
   printf("%s ... ", testName);
   fflush(stdout);
 
   if (verifyScalarWithMysql(conn, testName,
-        "SELECT MAX(amount) FROM jagg_parent "
+        "SELECT SUM(amount % amount) FROM jagg_parent "
         "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id",
-        {expectedMax}) != 0) {
+        {expectedSum}) != 0) {
     printf("FAILED (MySQL verification)\n");
     return -1;
   }
@@ -1477,11 +1476,14 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
     return -1;
   }
 
-  /* MAX(amount): kOpMaxBigint is outside the bridge's main switch, so the
-   * program is rejected at setup and the query runs on the interpreter. */
+  /* SUM(amount % amount): kOpMod is outside the bridge's main switch, so
+   * the program is rejected at setup and the query runs on the
+   * interpreter. (amount is never 0 in the fixture, so no div-by-zero.) */
   NdbAggregator agg(childTab);
   if (!agg.LoadColumn("amount", 0) ||
-      !agg.Max(0, 0) ||
+      !agg.LoadColumn("amount", 1) ||
+      !agg.Mod(0, 1) ||
+      !agg.Sum(0, 0) ||
       !agg.Finalize()) {
     printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
     return -1;
@@ -1553,8 +1555,8 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
     return -1;
   }
 
-  NdbAggregator::Result maxRes = rec.FetchAggregationResult();
-  Int64 actualMax = maxRes.data_int64();
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 actualSum = sumRes.data_int64();
 
   NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
   if (!rec2.end()) {
@@ -1569,13 +1571,13 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedMax)
   trans->close();
   queryDef->destroy();
 
-  if (actualMax != expectedMax) {
-    printf("FAILED (MAX: expected %lld, got %lld)\n",
-           (long long)expectedMax, (long long)actualMax);
+  if (actualSum != expectedSum) {
+    printf("FAILED (SUM: expected %lld, got %lld)\n",
+           (long long)expectedSum, (long long)actualSum);
     return -1;
   }
 
-  printf("OK (max=%lld via interpreter fallback)\n", (long long)actualMax);
+  printf("OK (sum=%lld via interpreter fallback)\n", (long long)actualSum);
   return 0;
 }
 
@@ -7648,7 +7650,7 @@ int main(int argc, char **argv)
          * path, which 4060/4062 would abort. Reuses the Test 23 tables. */
         if (shouldRun(27)) {
           if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
-            if (testJitUnsupportedFallback(&ndb, conn, 500) != 0)
+            if (testJitUnsupportedFallback(&ndb, conn, 0) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;

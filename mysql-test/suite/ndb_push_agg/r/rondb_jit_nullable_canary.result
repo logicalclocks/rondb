@@ -22,12 +22,13 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q1_jit_compiled
 1
 # Q2: grouped — including a group whose rows are ALL NULL (grp 3):
-#     SUM stays SQL NULL and COUNT is 0 for that group, the
+#     SUM/MIN stay SQL NULL and COUNT is 0 for that group, the
 #     per-group NULL semantics that pushed SQL could not otherwise
-#     express.
-SELECT grp, SUM(v), COUNT(v) FROM tn GROUP BY grp;
-grp	SUM(v)	COUNT(v)
-1	40	2
-2	60	1
-3	NULL	0
+#     express. MIN (Phase 5B) rides the same per-row fallback for
+#     NULL rows; non-NULL rows JIT with first-row-init per group.
+SELECT grp, SUM(v), COUNT(v), MIN(v) FROM tn GROUP BY grp;
+grp	SUM(v)	COUNT(v)	MIN(v)
+1	40	2	10
+2	60	1	60
+3	NULL	0	NULL
 DROP TABLE tn;

@@ -236,6 +236,15 @@ static const struct {
    * value_unsigned). */
   { "MAGIC_COUNT_SLOT_FOLD",   "op_count_bigint",      2 },  /* L+S */
   { "MAGIC_COUNT_RESULT_FOLD", "op_count_bigint",      2 },  /* 2×S */
+  /* Phase 5B MIN/MAX: MM_SLOT loaded (compare) + stored (init/win);
+   * MM_SRC loaded once; MM_RESULT = value_initialized load +
+   * value_initialized store + value_updated store. */
+  { "MAGIC_MM_SLOT_FOLD",      "op_min_bigint",        2 },  /* L+S */
+  { "MAGIC_MM_SRC_FOLD",       "op_min_bigint",        1 },
+  { "MAGIC_MM_RESULT_FOLD",    "op_min_bigint",        3 },  /* L+2×S */
+  { "MAGIC_MM_SLOT_FOLD",      "op_max_bigint",        2 },  /* L+S */
+  { "MAGIC_MM_SRC_FOLD",       "op_max_bigint",        1 },
+  { "MAGIC_MM_RESULT_FOLD",    "op_max_bigint",        3 },  /* L+2×S */
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);

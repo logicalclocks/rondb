@@ -1504,6 +1504,32 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         break;
       }
 
+      case BR_kOpMinBigint:
+      case BR_kOpMaxBigint: {
+        /* Phase 5B: MIN/MAX accumulators. Same wire layout as
+         * kOpSumBigint (reg in bits 19..16, acc slot in the low 16 —
+         * the optimizer's typed rewrite preserves the operand bits).
+         * First-row-initialize semantics come from the
+         * value_initialized input mask (set per row by the dispatch
+         * glue); c = agg_index, the AggResItem index, like every
+         * aggregate op. Unchecked — no arithmetic. */
+        uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
+        uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        uint8_t out_kind =
+            (op == BR_kOpMinBigint) ? OP_MIN_BIGINT : OP_MAX_BIGINT;
+        if (!emit_op(out_prog, out_kind,
+                     (uint8_t)agg_index, reg_index, agg_index, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        pos += 1;
+        break;
+      }
+
       case BR_kOpSkip: {
         /* Phase 5A: unconditional forward skip over outer words — the
          * planner emits one after each CASE arm to jump past the

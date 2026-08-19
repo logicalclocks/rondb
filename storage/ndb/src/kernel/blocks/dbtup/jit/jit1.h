@@ -51,6 +51,14 @@ typedef struct JitState {
    * AggResItem::is_unsigned. Appended last so existing stencils' baked
    * field offsets are unchanged. */
   uint64_t  value_unsigned[BC_MAX_ACCS];
+  /* Phase 5B: per-result "accumulator holds a real value" INPUT mask,
+   * set by the dispatch glue at copy-in from
+   * AggResItem::type != UNDEFINED && !is_null. MIN/MAX stencils branch
+   * on it for the interpreter's first-row-initialize semantics (a
+   * fresh accumulator's copy-in value of 0 must not win a MIN) and
+   * store 1 after initializing. Per row — the grouped path resolves a
+   * different AggResItem set each row, so this is per-group state. */
+  uint64_t  value_initialized[BC_MAX_ACCS];
   /* Phase 5A: per-row interpreter-fallback flag. A cold-call helper
    * sets it when the row hits a condition the JIT cannot represent
    * (today: a NULL column value in a load — registers have no null

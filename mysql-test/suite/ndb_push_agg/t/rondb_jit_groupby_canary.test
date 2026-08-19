@@ -136,6 +136,16 @@ SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT grp, SUM(v), SUM(pk), SUM(v+pk), SUM(v-pk), SUM(pk*2) FROM t1 GROUP BY grp;
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q6_stays_on_interpreter;
 
+--echo # Q7: grouped MIN/MAX must JIT (Phase 5B). All v values are > 0, so
+--echo #     a broken first-row initialization (fresh accumulator's 0
+--echo #     winning the MIN) would show as MIN = 0.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, MIN(v), MAX(v) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+
 DROP TABLE t1;
 
 --remove_file $NDB_TOOLS_OUTPUT

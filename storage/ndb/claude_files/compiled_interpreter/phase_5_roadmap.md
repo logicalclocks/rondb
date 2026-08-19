@@ -163,7 +163,45 @@ lowered. Mostly bridge work reusing existing stencils:
   `testCaseAgg` under 4060 once green.
 - No regen unless a new stencil variant proves necessary.
 
-## 5B — MIN/MAX BIGINT
+## 5B — MIN/MAX BIGINT — **DONE & VERIFIED (2026-08-19)**
+
+All tests pass post-regen: bridge_tests (54), coldcall_tests (14 —
+incl. the garbage-accumulator first-row-init test), the groupby (Q7)
+and nullable (Q2+MIN) canaries, the repointed unsupported-fallback
+canary, and the COMPLETE ndb_push_agg sweep.
+
+Shipped as designed. **Build REQUIRES `regen-stencils` first** (two new
+stencils + the `JitState::value_initialized[]` accessors):
+- `OP_MIN_BIGINT`/`OP_MAX_BIGINT` (kinds 35/36) with shared MM_* fold
+  holes; first-row init via the new `value_initialized` INPUT mask (set
+  per row by the glue from `AggResItem::type != UNDEFINED && !is_null`
+  — per-group state on the grouped path; the stencil stores 1 after
+  any reaching row, marks value_updated always). Signed i64 compares
+  only (the kernel's unsigned branches are unreachable for admitted
+  programs). Unchecked — no arithmetic.
+- Bridge: `kOpMinBigint`(18)/`kOpMaxBigint`(16) — the optimizer's typed
+  rewrite (kOpMin/kOpMax → typed when the source register is in the
+  BIGINT track; strings stay generic → still rejected) runs on BOTH
+  compile paths (Create for standalone/scan, DblqhProxy before the
+  join-agg compile), so the bridge always sees the typed forms.
+  c = agg_index like every aggregate op.
+- **Test 27/28 canary repointed** (its durability note foresaw this):
+  `MAX(amount)` now compiles, so the unsupported-fallback canary uses
+  `SUM(amount % amount)` → kOpMod (durable until 5E; then repoint to a
+  DOUBLE shape (5C) or string MIN/MAX (5F)). Result strings synced
+  (`sum=0 via interpreter fallback`).
+- Tests: bridge T49/T49b, coldcall T14 (first-row init overwrites a
+  garbage accumulator — the min-vs-0 bug class), groupby-canary Q7
+  (grouped MIN/MAX under 4060 + counter delta; all values > 0 so a
+  broken init shows as MIN=0), nullable-canary Q2 + MIN (NULL rows per-
+  row-fallback; all-NULL group → NULL MIN).
+- Verify order: (1) `regen-stencils`, (2) rebuild ndbmtd + host tools +
+  testJoinAggNdbApi, (3) bridge_tests (54) + coldcall_tests (14) +
+  admission/microbench, (4) `./mtr --suite=ndb_push_agg` FULL sweep
+  with `--force` — existing MIN/MAX tests (testVarcharMinMax stays
+  interpreter: strings stay generic) now silently JIT.
+
+### Original sketch (for reference)
 
 The most common missing aggregates (`kOpMinBigint` / `kOpMaxBigint`,
 plus generic `kOpMin`/`kOpMax` when the lattice says BIGINT). Two new

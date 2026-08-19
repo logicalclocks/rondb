@@ -519,10 +519,19 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
 
   /* Read accumulators into s.acc_i64. Phase 4 narrow: non-null
    * BIGINT only. Cap at BC_MAX_ACCS — bridge admission rejects
-   * programs that would exceed this. */
+   * programs that would exceed this.
+   *
+   * Phase 5B: value_initialized tells the MIN/MAX stencils whether the
+   * accumulator holds a real value (the interpreter's first-row-
+   * initialize check on AggResItem::type) — a fresh slot's copy-in
+   * value of 0 must never win a comparison. Per row: the grouped path
+   * points agg_res_ptr at a different group record each row. */
   if (n_agg_results > BC_MAX_ACCS) n_agg_results = BC_MAX_ACCS;
   for (Uint32 i = 0; i < n_agg_results; i++) {
     s.acc_i64[i] = agg_res_ptr[i].value.val_int64;
+    s.value_initialized[i] =
+        (agg_res_ptr[i].type != NDB_TYPE_UNDEFINED &&
+         !agg_res_ptr[i].is_null) ? 1 : 0;
   }
 
 #ifdef ERROR_INSERT

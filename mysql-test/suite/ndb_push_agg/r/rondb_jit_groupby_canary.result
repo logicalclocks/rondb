@@ -121,4 +121,16 @@ grp	SUM(v)	SUM(pk)	SUM(v+pk)	SUM(v-pk)	SUM(pk*2)
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q6_stays_on_interpreter;
 q6_stays_on_interpreter
 1
+# Q7: grouped MIN/MAX must JIT (Phase 5B). All v values are > 0, so
+#     a broken first-row initialization (fresh accumulator's 0
+#     winning the MIN) would show as MIN = 0.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, MIN(v), MAX(v) FROM t1 GROUP BY grp;
+grp	MIN(v)	MAX(v)
+1	10	40
+2	50	70
+3	80	120
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+q7_jit_compiled
+1
 DROP TABLE t1;

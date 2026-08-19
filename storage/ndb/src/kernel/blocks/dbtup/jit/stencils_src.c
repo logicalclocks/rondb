@@ -114,6 +114,10 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
       ((state)->value_updated[HOLE(name)] = (uint64_t)(value))
 #  define HOLE_STORE_VALUE_UNSIGNED(name, state, value)  \
       ((state)->value_unsigned[HOLE(name)] = (uint64_t)(value))
+#  define HOLE_LOAD_VALUE_INITIALIZED(name, state)  \
+      ((state)->value_initialized[HOLE(name)])
+#  define HOLE_STORE_VALUE_INITIALIZED(name, state, value)  \
+      ((state)->value_initialized[HOLE(name)] = (uint64_t)(value))
 #  define HOLE_LOAD_COL(name, state)  \
       ((state)->row_cols_i64[HOLE(name)])
 #elif defined(__aarch64__)
@@ -308,6 +312,35 @@ static inline void aarch64_store_value_unsigned_(uint32_t magic_byte_off,
   );
 }
 
+__attribute__((always_inline))
+__attribute__((unused))
+static inline uint64_t aarch64_load_value_initialized_(uint32_t magic_byte_off,
+                                                       const JitState *state) {
+  uint64_t v;
+  __asm__ volatile (
+    "ldr %[out], [%[base], %[off]]"
+    : [out] "=r" (v)
+    : [base] "r"  (state->value_initialized),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+  );
+  return v;
+}
+
+__attribute__((always_inline))
+__attribute__((unused))
+static inline void aarch64_store_value_initialized_(uint32_t magic_byte_off,
+                                                    JitState *state,
+                                                    uint64_t value) {
+  __asm__ volatile (
+    "str %[v], [%[base], %[off]]"
+    :
+    : [v]    "r"  (value),
+      [base] "r"  (state->value_initialized),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+    : "memory"
+  );
+}
+
 /* row_cols_i64 variant. row_cols_i64 is a *pointer* member of
  * JitState (offset 96), not an embedded array — clang loads the
  * pointer once into a register, then uses it as the imm12 base. */
@@ -340,6 +373,10 @@ static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
       aarch64_store_value_updated_(MAGIC_##name##_FOLD * 8u, (state), (value))
 #  define HOLE_STORE_VALUE_UNSIGNED(name, state, value) \
       aarch64_store_value_unsigned_(MAGIC_##name##_FOLD * 8u, (state), (value))
+#  define HOLE_LOAD_VALUE_INITIALIZED(name, state) \
+      aarch64_load_value_initialized_(MAGIC_##name##_FOLD * 8u, (state))
+#  define HOLE_STORE_VALUE_INITIALIZED(name, state, value) \
+      aarch64_store_value_initialized_(MAGIC_##name##_FOLD * 8u, (state), (value))
 #  define HOLE_LOAD_COL(name, state)         \
       aarch64_load_col_(MAGIC_##name##_FOLD * 8u, (state))
 #else
@@ -417,6 +454,46 @@ STENCIL op_sum_bigint(JitState *s) {
   HOLE_STORE_ACC(SUM_SLOT, s,
                  HOLE_LOAD_ACC(SUM_SLOT, s) + HOLE_LOAD_REG(SUM_SRC, s));
   HOLE_STORE_VALUE_UPDATED(SUM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
+/* op_min_bigint / op_max_bigint : conditional accumulators.          */
+/*                                                                    */
+/* Phase 5B. Interpreter first-row semantics (MinBigint/MaxBigint):   */
+/* the first reaching row INITIALIZES the result — a fresh            */
+/* accumulator's copy-in value of 0 must never win the comparison.    */
+/* The value_initialized INPUT mask (set per row by the dispatch glue */
+/* from AggResItem::type != UNDEFINED && !is_null) carries that       */
+/* state; the stencil stores 1 after any reaching row. Signed i64     */
+/* compares only — the kernel's unsigned branches are unreachable     */
+/* for admitted (declared-signed BIGINT track) programs. Marks        */
+/* value_updated on every reaching row (result exists once any row    */
+/* reaches the op). Unchecked: no arithmetic.                         */
+/* Holes shared by both stencils (like ADD's checked/unchecked pair). */
+/* ------------------------------------------------------------------ */
+DECLARE_FOLD_HOLE(MM_SLOT);
+DECLARE_FOLD_HOLE(MM_SRC);
+DECLARE_FOLD_HOLE(MM_RESULT);
+STENCIL op_min_bigint(JitState *s) {
+  int64_t v = HOLE_LOAD_REG(MM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(MM_RESULT, s) ||
+      v < HOLE_LOAD_ACC(MM_SLOT, s)) {
+    HOLE_STORE_ACC(MM_SLOT, s, v);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(MM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(MM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_max_bigint(JitState *s) {
+  int64_t v = HOLE_LOAD_REG(MM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(MM_RESULT, s) ||
+      v > HOLE_LOAD_ACC(MM_SLOT, s)) {
+    HOLE_STORE_ACC(MM_SLOT, s, v);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(MM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(MM_RESULT, s, 1u);
   TAIL_NEXT(s);
 }
 
@@ -845,6 +922,8 @@ const StencilTailFn g_stencil_anchor[] = {
     op_add_int_int,
     op_sum_bigint,
     op_count_bigint,
+    op_min_bigint,
+    op_max_bigint,
     op_branch_lt_int_int,
     op_branch_le_int_int,
     op_branch_eq_int_int,

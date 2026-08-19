@@ -30,7 +30,7 @@ Test 24: aggregate lookup-rooted query def rejected ... OK (prepare rejected wit
 Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
 Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
 Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)
-Test 27: Unsupported JIT shape falls back cleanly ... OK (max=500 via interpreter fallback)
+Test 27: Unsupported JIT shape falls back cleanly ... OK (sum=0 via interpreter fallback)
 Test 28: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)
 Test 29: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
 

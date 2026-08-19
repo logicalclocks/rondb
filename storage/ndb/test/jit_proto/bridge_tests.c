@@ -54,6 +54,8 @@
 #define kOpMov            9
 #define kOpCount         13
 #define kOpSumBigint     14
+#define kOpMaxBigint     16
+#define kOpMinBigint     18
 #define kOpPlusBigint    20
 #define kOpMinusBigint   22
 #define kOpMulBigint     24
@@ -1544,6 +1546,45 @@ static void test_reg_reg_backward_reject(void) {
                   /*want_word=*/UINT32_MAX, EMB_BRANCH_EQ_REG_REG);
 }
 
+/* T49: kOpMinBigint / kOpMaxBigint lower (Phase 5B). Same wire layout
+ * as kOpSumBigint; unchecked (no OVERFLOW_EXIT when the program has no
+ * checked arithmetic); mask index c = agg_index. */
+static void test_min_max_lowering_accept(void) {
+  const char *name = "T49 min_max_lowering_accept";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_op(kOpMinBigint, (0u << 16) | 0u),   /* min acc0, r0 */
+    enc_op(kOpMaxBigint, (0u << 16) | 1u),   /* max acc1, r0 */
+    enc_count(/*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* ops: [0]LOAD_COL [1]MIN [2]MAX [3]COUNT [4]tail EXIT — all
+   * unchecked, so no OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_MIN_BIGINT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 0)) return;
+  if (!expect_op_field(name, &p, 1, "b", p.ops[1].b, 0)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 0)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MAX_BIGINT)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 1)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 1)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T49b: MIN with an out-of-range acc slot rejects. */
+static void test_min_slot_oor_reject(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_op(kOpMinBigint, (0u << 16) | BC_MAX_ACCS),
+  };
+  assert_rejected("T49b min_slot_oor_reject", prog, 2,
+                  JIT_BRIDGE_REG_OUT_OF_RANGE,
+                  /*want_word=*/1, kOpMinBigint);
+}
+
 /* T48: outer kOpSkip lowers to OP_JUMP (Phase 5A — the planner emits a
  * Skip after each CASE arm to jump past the remaining arms). Two-arm
  * shape, both arms feeding the SAME aggregate (RepeatAgg re-emits the
@@ -1632,6 +1673,8 @@ int main(void) {
   test_scan_filter_reg_ops_reject();
   test_reg_reg_backward_reject();
   test_skip_lowers_to_jump();
+  test_min_max_lowering_accept();
+  test_min_slot_oor_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

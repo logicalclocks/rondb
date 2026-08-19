@@ -159,7 +159,18 @@ typedef enum {
    * is non-null columns, so a row that reaches this op always counts.
    * b carries the bytecode's register operand for diagnostics only. */
   OP_COUNT_BIGINT          = 34,
-  OP_KIND_MAX           = OP_COUNT_BIGINT
+  /* Phase 5B: MIN/MAX accumulators. First-row initialization comes
+   * from the value_initialized input mask (set by the dispatch glue
+   * from AggResItem::type != UNDEFINED && !is_null, per row — the
+   * grouped path makes this per-group state): uninitialized -> store
+   * the row's value, else compare-and-conditionally-store (signed i64;
+   * the unsigned kernel branches are unreachable for admitted
+   * programs). Marks value_updated AND value_initialized on every
+   * reaching row. a = acc slot, b = src register, c = result index
+   * (== a, the AggResItem index). Unchecked — no arithmetic. */
+  OP_MIN_BIGINT            = 35,
+  OP_MAX_BIGINT            = 36,
+  OP_KIND_MAX           = OP_MAX_BIGINT
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

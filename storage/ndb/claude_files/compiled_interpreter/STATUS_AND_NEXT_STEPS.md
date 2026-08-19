@@ -360,6 +360,18 @@ must-JIT. Details: `phase_5_roadmap.md` §5A. Verify: rebuild ndbmtd +
 host tools; bridge_tests (T47 family + updated T22b/c), coldcall;
 mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
 
+**Phase 5B — DONE & VERIFIED (2026-08-19; full ndb_push_agg sweep
+green post-regen).**
+MIN/MAX BIGINT: two new stencils (**regen-stencils required**) with
+first-row-init via the new `JitState::value_initialized[]` input mask
+(glue sets it per row from `AggResItem::type`; per-group on the grouped
+path), bridge cases for the optimizer's typed kOpMin/MaxBigint
+rewrites, the Test 27/28 fallback canary repointed to
+`SUM(amount % amount)` (kOpMod, durable until 5E), and canary/host
+coverage (bridge T49/b, coldcall T14 garbage-accumulator init test,
+groupby Q7, nullable Q2+MIN). Details + verify order:
+`phase_5_roadmap.md` §5B.
+
 **Roadmap decided 2026-08-19 (Mikael):** GROUP BY gate lift ✅ done →
 **Phase 5, NOW CURRENT — sub-phased plan in `phase_5_roadmap.md`**
 (supersedes the monolithic sequencing of `phase_5_implementation.md`,

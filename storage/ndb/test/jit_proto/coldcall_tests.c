@@ -694,6 +694,74 @@ static void test_count_bigint(void) {
 /* main.                                                              */
 /* ------------------------------------------------------------------ */
 
+/* T14: OP_MIN_BIGINT / OP_MAX_BIGINT (Phase 5B) — first-row
+ * initialization semantics. The accumulator starts with garbage (777)
+ * and value_initialized = 0: the first reaching row must OVERWRITE it
+ * (a min of 0/garbage must never win). Later rows compare. The test
+ * emulates the dispatch glue: value_initialized is set once the slot
+ * holds a real value.
+ *   ops: min acc0<-r1 (result 0), max acc1<-r1 (result 1), exit
+ *   rows: 50, 10, 99  ->  min 10, max 99. */
+static void test_min_max_first_row_init(void) {
+  const char *name = "T14 min_max_first_row_init";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_MIN_BIGINT, .a = 0, .b = 1, .c = 0 };
+  p.ops[1] = (Op){ .kind = OP_MAX_BIGINT, .a = 1, .b = 1, .c = 1 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  if (arena == NULL) {
+    mark_fail(name, "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — stencils regenerated?",
+              errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  /* Fresh accumulators hold garbage; value_initialized = 0. */
+  s.acc_i64[0] = 777;
+  s.acc_i64[1] = -777;
+  const int64_t rows[3] = {50, 10, 99};
+  for (int i = 0; i < 3; ++i) {
+    memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    memset(s.value_updated, 0, sizeof(s.value_updated));
+    s.regs_i64[1] = rows[i];
+    entry(&s);
+    /* The stencil set value_initialized itself; verify after row 1. */
+    if (i == 0 && (s.value_initialized[0] != 1 ||
+                   s.value_initialized[1] != 1)) {
+      mark_fail(name, "value_initialized={%" PRIu64 ",%" PRIu64
+                "} after first row, want {1,1}",
+                s.value_initialized[0], s.value_initialized[1]);
+      jit1_free(jp);
+      ndb_jit_codemem_destroy(arena);
+      return;
+    }
+  }
+
+  if (s.acc_i64[0] != 10 || s.acc_i64[1] != 99) {
+    mark_fail(name, "min=%lld max=%lld, want 10/99 (first-row init must "
+              "overwrite the garbage 777/-777)",
+              (long long)s.acc_i64[0], (long long)s.acc_i64[1]);
+  } else if (s.value_updated[0] != 1 || s.value_updated[1] != 1) {
+    mark_fail(name, "value_updated={%" PRIu64 ",%" PRIu64 "}, want {1,1}",
+              s.value_updated[0], s.value_updated[1]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -720,6 +788,7 @@ int main(void) {
   test_filter_reject_exit_sets_state();
   test_describe_pc_registry();
   test_count_bigint();
+  test_min_max_first_row_init();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -1,7 +1,8 @@
 --source include/have_ndb.inc
 
 # Test 27: an aggregation program that is a JIT candidate by shape but uses
-# an opcode the bridge does not lower (MAX -> kOpMaxBigint). The program is
+# an opcode the bridge does not lower (SUM(amount % amount) -> kOpMod;
+# repointed from MAX when Phase 5B lowered kOpMaxBigint). The program is
 # rejected at JOIN_AGG_SETUP_REQ and runs on the interpreter; this canary
 # proves the fallback produces the correct result and never errors the query.
 # No data-node error inserts are used, so it runs in every build type.
