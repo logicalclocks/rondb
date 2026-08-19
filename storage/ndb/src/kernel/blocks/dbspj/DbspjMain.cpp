@@ -1330,6 +1330,13 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
         reinterpret_cast<Uint16 *>(
             static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
   }
+  /* Request objects come from a TransientPool (no constructor runs) and
+   * the lookup protocol carries no aggStateKeys section, so without this
+   * clear a recycled Request keeps the previous occupant's m_aggNodes
+   * bits — defeating validateAggregateFlags' empty-check and potentially
+   * routing agg feeds with stale keys.  The ScanFragReq do_init has the
+   * same clear. */
+  requestP->m_aggNodes.clear();
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -2514,6 +2521,19 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       return DbspjErr::InvalidAggregateFlags;
     }
     if (unlikely(!aggregate_leaf_all_are_leaves)) {
+      jam();
+      return DbspjErr::InvalidAggregateFlags;
+    }
+
+    /* Main aggregation needs the per-node agg state supplied by the
+     * request's [nodeId, aggStateKey] pairs (parsed into m_aggNodes).
+     * DBTC only performs JOIN_AGG_SETUP on the scan path, so a
+     * lookup-protocol (TCKEYREQ) aggregate request — or a scan request
+     * missing its aggStateKeys section — arrives with an empty
+     * m_aggNodes.  The tree bits are API-controlled data: fail the
+     * query, not the node (the aggregate-leaf sends previously
+     * ndbrequire-crashed on this at DbspjMain.cpp:8748). */
+    if (unlikely(requestPtr.p->m_aggNodes.isclear())) {
       jam();
       return DbspjErr::InvalidAggregateFlags;
     }
