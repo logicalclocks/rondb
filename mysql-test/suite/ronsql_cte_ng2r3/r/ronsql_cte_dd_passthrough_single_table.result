@@ -1,0 +1,576 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== st-1: PK hit, mixed-type projection ===
+== Query ==
+SELECT o_orderkey, o_orderdate, o_totalprice, o_orderstatus
+FROM orders WHERE o_orderkey = 77;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT o_orderkey, o_orderdate, o_totalprice, o_orderstatus
+FROM orders WHERE o_orderkey = 77|
+o_orderkey	o_orderdate	o_totalprice	o_orderstatus
+77	1995-03-19	1029.49	P
+
+=== st-2: PK miss, empty output ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders WHERE o_orderkey = 999999;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders WHERE o_orderkey = 999999|
+o_orderkey	o_orderdate
+
+=== st-3: composite PK, predicates in reversed PK order ===
+== Query ==
+SELECT l_orderkey, l_linenumber, l_quantity, l_extendedprice
+FROM lineitem WHERE l_linenumber = 2 AND l_orderkey = 10;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT l_orderkey, l_linenumber, l_quantity, l_extendedprice
+FROM lineitem WHERE l_linenumber = 2 AND l_orderkey = 10|
+l_orderkey	l_linenumber	l_quantity	l_extendedprice
+10	2	13	93.24
+
+=== st-4: PK equality + accepting residual (scan fallback) ===
+== Query ==
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = 77 AND o_shippriority >= 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = 77 AND o_shippriority >= 0|
+o_orderkey	o_custkey
+77	77
+
+=== st-5: PK equality + rejecting residual -> empty ===
+== Query ==
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = 77 AND o_custkey < 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = 77 AND o_custkey < 0|
+o_orderkey	o_custkey
+
+=== st-6: partial composite PK -> scan path ===
+== Query ==
+SELECT l_orderkey, l_linenumber, l_quantity
+FROM lineitem WHERE l_orderkey = 10;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT l_orderkey, l_linenumber, l_quantity
+FROM lineitem WHERE l_orderkey = 10|
+l_orderkey	l_linenumber	l_quantity
+10	1	12
+10	2	13
+
+=== st-7: secondary-index equality ===
+== Query ==
+SELECT o_orderkey, o_custkey FROM orders WHERE o_custkey = 7;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_custkey FROM orders WHERE o_custkey = 7|
+o_orderkey	o_custkey
+1207	7
+307	7
+607	7
+7	7
+907	7
+
+=== st-8: half-open DATE range + residual filter ===
+== Query ==
+SELECT o_orderkey, o_orderdate, o_orderstatus
+FROM orders
+WHERE o_orderdate >= '1997-06-01' AND o_shippriority >= 0;
+
+Number of output lines, including header: 119
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT o_orderkey, o_orderdate, o_orderstatus
+FROM orders
+WHERE o_orderdate >= '1997-06-01' AND o_shippriority >= 0|
+o_orderkey	o_orderdate	o_orderstatus
+882	1997-06-01	O
+883	1997-06-02	F
+884	1997-06-03	P
+885	1997-06-04	O
+886	1997-06-05	F
+887	1997-06-06	P
+888	1997-06-07	O
+889	1997-06-08	F
+890	1997-06-09	P
+891	1997-06-10	O
+892	1997-06-11	F
+893	1997-06-12	P
+894	1997-06-13	O
+895	1997-06-14	F
+896	1997-06-15	P
+897	1997-06-16	O
+898	1997-06-17	F
+899	1997-06-18	P
+900	1997-06-19	O
+901	1997-06-20	F
+902	1997-06-21	P
+903	1997-06-22	O
+904	1997-06-23	F
+905	1997-06-24	P
+906	1997-06-25	O
+907	1997-06-26	F
+908	1997-06-27	P
+909	1997-06-28	O
+910	1997-06-29	F
+911	1997-06-30	P
+912	1997-07-01	O
+913	1997-07-02	F
+914	1997-07-03	P
+915	1997-07-04	O
+916	1997-07-05	F
+917	1997-07-06	P
+918	1997-07-07	O
+919	1997-07-08	F
+920	1997-07-09	P
+921	1997-07-10	O
+922	1997-07-11	F
+923	1997-07-12	P
+924	1997-07-13	O
+925	1997-07-14	F
+926	1997-07-15	P
+927	1997-07-16	O
+928	1997-07-17	F
+929	1997-07-18	P
+930	1997-07-19	O
+931	1997-07-20	F
+932	1997-07-21	P
+933	1997-07-22	O
+934	1997-07-23	F
+935	1997-07-24	P
+936	1997-07-25	O
+937	1997-07-26	F
+938	1997-07-27	P
+939	1997-07-28	O
+940	1997-07-29	F
+941	1997-07-30	P
+942	1997-07-31	O
+943	1997-08-01	F
+944	1997-08-02	P
+945	1997-08-03	O
+946	1997-08-04	F
+947	1997-08-05	P
+948	1997-08-06	O
+949	1997-08-07	F
+950	1997-08-08	P
+951	1997-08-09	O
+952	1997-08-10	F
+953	1997-08-11	P
+954	1997-08-12	O
+955	1997-08-13	F
+956	1997-08-14	P
+957	1997-08-15	O
+958	1997-08-16	F
+959	1997-08-17	P
+960	1997-08-18	O
+961	1997-08-19	F
+962	1997-08-20	P
+963	1997-08-21	O
+964	1997-08-22	F
+965	1997-08-23	P
+966	1997-08-24	O
+967	1997-08-25	F
+968	1997-08-26	P
+969	1997-08-27	O
+970	1997-08-28	F
+971	1997-08-29	P
+972	1997-08-30	O
+973	1997-08-31	F
+974	1997-09-01	P
+975	1997-09-02	O
+976	1997-09-03	F
+977	1997-09-04	P
+978	1997-09-05	O
+979	1997-09-06	F
+980	1997-09-07	P
+981	1997-09-08	O
+982	1997-09-09	F
+983	1997-09-10	P
+984	1997-09-11	O
+985	1997-09-12	F
+986	1997-09-13	P
+987	1997-09-14	O
+988	1997-09-15	F
+989	1997-09-16	P
+990	1997-09-17	O
+991	1997-09-18	F
+992	1997-09-19	P
+993	1997-09-20	O
+994	1997-09-21	F
+995	1997-09-22	P
+996	1997-09-23	O
+997	1997-09-24	F
+998	1997-09-25	P
+999	1997-09-26	O
+
+=== st-9: double-bounded DATE range ===
+== Query ==
+SELECT o_orderkey, o_orderdate
+FROM orders
+WHERE o_orderdate >= '1997-06-01' AND o_orderdate < '1997-08-01';
+
+Number of output lines, including header: 62
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderdate
+FROM orders
+WHERE o_orderdate >= '1997-06-01' AND o_orderdate < '1997-08-01'|
+o_orderkey	o_orderdate
+882	1997-06-01
+883	1997-06-02
+884	1997-06-03
+885	1997-06-04
+886	1997-06-05
+887	1997-06-06
+888	1997-06-07
+889	1997-06-08
+890	1997-06-09
+891	1997-06-10
+892	1997-06-11
+893	1997-06-12
+894	1997-06-13
+895	1997-06-14
+896	1997-06-15
+897	1997-06-16
+898	1997-06-17
+899	1997-06-18
+900	1997-06-19
+901	1997-06-20
+902	1997-06-21
+903	1997-06-22
+904	1997-06-23
+905	1997-06-24
+906	1997-06-25
+907	1997-06-26
+908	1997-06-27
+909	1997-06-28
+910	1997-06-29
+911	1997-06-30
+912	1997-07-01
+913	1997-07-02
+914	1997-07-03
+915	1997-07-04
+916	1997-07-05
+917	1997-07-06
+918	1997-07-07
+919	1997-07-08
+920	1997-07-09
+921	1997-07-10
+922	1997-07-11
+923	1997-07-12
+924	1997-07-13
+925	1997-07-14
+926	1997-07-15
+927	1997-07-16
+928	1997-07-17
+929	1997-07-18
+930	1997-07-19
+931	1997-07-20
+932	1997-07-21
+933	1997-07-22
+934	1997-07-23
+935	1997-07-24
+936	1997-07-25
+937	1997-07-26
+938	1997-07-27
+939	1997-07-28
+940	1997-07-29
+941	1997-07-30
+942	1997-07-31
+
+=== st-10: composite index prefix (status equality + date bound) ===
+== Query ==
+SELECT o_orderkey, o_orderstatus, o_orderdate
+FROM orders
+WHERE o_orderstatus = 'O' AND o_orderdate >= '1997-06-01';
+
+Number of output lines, including header: 41
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderstatus, o_orderdate
+FROM orders
+WHERE o_orderstatus = 'O' AND o_orderdate >= '1997-06-01'|
+o_orderkey	o_orderstatus	o_orderdate
+882	O	1997-06-01
+885	O	1997-06-04
+888	O	1997-06-07
+891	O	1997-06-10
+894	O	1997-06-13
+897	O	1997-06-16
+900	O	1997-06-19
+903	O	1997-06-22
+906	O	1997-06-25
+909	O	1997-06-28
+912	O	1997-07-01
+915	O	1997-07-04
+918	O	1997-07-07
+921	O	1997-07-10
+924	O	1997-07-13
+927	O	1997-07-16
+930	O	1997-07-19
+933	O	1997-07-22
+936	O	1997-07-25
+939	O	1997-07-28
+942	O	1997-07-31
+945	O	1997-08-03
+948	O	1997-08-06
+951	O	1997-08-09
+954	O	1997-08-12
+957	O	1997-08-15
+960	O	1997-08-18
+963	O	1997-08-21
+966	O	1997-08-24
+969	O	1997-08-27
+972	O	1997-08-30
+975	O	1997-09-02
+978	O	1997-09-05
+981	O	1997-09-08
+984	O	1997-09-11
+987	O	1997-09-14
+990	O	1997-09-17
+993	O	1997-09-20
+996	O	1997-09-23
+999	O	1997-09-26
+
+=== st-11: residual-only WHERE -> table scan ===
+== Query ==
+SELECT o_orderkey, o_totalprice FROM orders
+WHERE o_orderkey < 15 AND o_shippriority >= 0;
+
+Number of output lines, including header: 15
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT o_orderkey, o_totalprice FROM orders
+WHERE o_orderkey < 15 AND o_shippriority >= 0|
+o_orderkey	o_totalprice
+1	13.37
+10	133.70
+11	147.07
+12	160.44
+13	173.81
+14	187.18
+2	26.74
+3	40.11
+4	53.48
+5	66.85
+6	80.22
+7	93.59
+8	106.96
+9	120.33
+
+=== st-12: no WHERE -> full table scan ===
+== Query ==
+SELECT n_nationkey, n_name, n_regionkey FROM nation;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT n_nationkey, n_name, n_regionkey FROM nation|
+n_nationkey	n_name	n_regionkey
+0	NATION0	0
+1	NATION1	1
+10	NATION10	0
+11	NATION11	1
+12	NATION12	2
+13	NATION13	3
+14	NATION14	4
+15	NATION15	0
+16	NATION16	1
+17	NATION17	2
+18	NATION18	3
+19	NATION19	4
+2	NATION2	2
+20	NATION20	0
+21	NATION21	1
+22	NATION22	2
+23	NATION23	3
+24	NATION24	4
+3	NATION3	3
+4	NATION4	4
+5	NATION5	0
+6	NATION6	1
+7	NATION7	2
+8	NATION8	3
+9	NATION9	4
+
+=== st-13: temporal projection sweep ===
+== Query ==
+SELECT e_id, e_year, e_logged, e_split, e_stamp6
+FROM evlog WHERE e_id < 10;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e_id, e_year, e_logged, e_split, e_stamp6
+FROM evlog WHERE e_id < 10|
+e_id	e_year	e_logged	e_split	e_stamp6
+1	1997	2001-06-15 12:01:29.123457	00:05:31.097	2001-03-10 08:00:53.098765
+2	2004	2001-06-15 12:02:58.246914	00:11:02.194	2001-03-10 08:01:46.197530
+3	2011	2001-06-15 12:04:27.370371	00:16:33.291	2001-03-10 08:02:39.296295
+4	2018	2001-06-15 12:05:56.493828	00:22:04.388	2001-03-10 08:03:32.395060
+5	2025	2001-06-15 12:07:25.617285	00:27:35.485	2001-03-10 08:04:25.493825
+6	1992	2001-06-15 12:08:54.740742	00:33:06.582	2001-03-10 08:05:18.592590
+7	1999	2001-06-15 12:10:23.864199	00:38:37.679	2001-03-10 08:06:11.691355
+8	2006	2001-06-15 12:11:52.987656	00:44:08.776	2001-03-10 08:07:04.790120
+9	2013	2001-06-15 12:13:21.111113	00:49:39.873	2001-03-10 08:07:57.888885
+
+=== st-14: NULL values in a projected column ===
+== Query ==
+SELECT o_orderkey, o_clerk FROM orders WHERE o_orderkey < 22;
+
+Number of output lines, including header: 22
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_clerk FROM orders WHERE o_orderkey < 22|
+o_orderkey	o_clerk
+1	2
+10	11
+11	12
+12	13
+13	14
+14	NULL
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+20	21
+21	NULL
+3	4
+4	5
+5	6
+6	7
+7	NULL
+8	9
+9	10
+
+=== st-P1 (rejection): ORDER BY on a single-table projection ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries, projection-only
+single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),
+and projection-only SELECTs over supported CTE shapes (Phase
+E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the
+broader non-aggregate roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.
+
+=== st-P2 (rejection): LIMIT on a single-table projection ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries, projection-only
+single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),
+and projection-only SELECTs over supported CTE shapes (Phase
+E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the
+broader non-aggregate roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.
+
+=== st-P3 (rejection): expression in the projection ===
+Syntax error in SQL statement: Unexpected at this point
+> SELECT o_orderkey + 1 FROM orders WHERE o_orderkey = 77;
+!                   ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== st-P4 (rejection): WITH prefix on a single-table projection ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries, projection-only
+single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),
+and projection-only SELECTs over supported CTE shapes (Phase
+E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the
+broader non-aggregate roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.
