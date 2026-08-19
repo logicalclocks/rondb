@@ -311,6 +311,16 @@ private:
   DynamicArray<AggregationAPICompiler::Expr*> m_greatest_least_pair_loads;
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
+  // Phase 1 (non_aggregate_phase_1.md, W2): single-row PK lookup for
+  // non-aggregate single-table queries whose WHERE is fully consumed
+  // as PK equalities.  When set, m_scan_config stays NULL and
+  // m_pk_lookup_const holds one constant per PK column (in PK order,
+  // arena-allocated).  Aggregate queries never set this — single-table
+  // aggregation needs the scan protocol (SO_AGGREGATION); a plain
+  // readTuple has no aggregator path (the single-table twin of the
+  // Phase 0 lookup-root rule).
+  bool m_pk_lookup = false;
+  struct ConditionalExpression** m_pk_lookup_const = NULL;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -423,7 +433,27 @@ private:
   void assign_cross_table_index_bounds();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
+  // Phase 1 W2: returns true (and sets m_pk_lookup + m_pk_lookup_const)
+  // when every top-level WHERE conjunct is a `pk_col = const` equality
+  // and together they cover the full primary key — the v1 policy: any
+  // residual conjunct, duplicate, partial cover or non-equality falls
+  // back to the scan-config path (always correct).
+  bool detect_pk_lookup();
   void generate_scan_config_candidates();
+  // Phase 1 W4: the single-table scan setup shared by the aggregate
+  // path and the pass-through drain — table or index scan per
+  // m_scan_config, bounds from condition_handling_map (with the
+  // documented inverted BoundType mapping), residual conjuncts applied
+  // as an NdbScanFilter.  Returns the configured operation; the caller
+  // attaches aggregation or getValue()s and executes.
+  NdbScanOperation* open_single_table_scan_op();
+  // Phase 1 W3: projection-only single-table execution — PK-lookup arm
+  // (NoDataFound = empty result) or scan drain arm, both feeding the
+  // pass-through printer.
+  void execute_single_table_passthrough();
+  void register_passthrough_getvalues(NdbOperation* op,
+                                      const NdbRecAttr** attrs,
+                                      Uint32 num_cols);
   // Shared scan-config candidate generator used by both the
   // single-table path (`generate_scan_config_candidates`) and the
   // per-scope path (`select_root_scan_config`).  Pushes one TABLE_SCAN candidate

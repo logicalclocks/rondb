@@ -204,6 +204,11 @@ feature-store schemas) fail at print time. BLOB/TEXT stay rejected
 
 ## Phase 1 — single-table non-aggregate queries
 
+**Detailed plan: `non_aggregate_phase_1.md` — IMPLEMENTED (August
+2026), pending user build + MTR --record** (work items W1-W6, v1
+residual-on-PK policy, MTR family `body_passthrough_single_table.inc`
+st-1..14/P1..P4 ×5 topology suites).
+
 Target shapes (`all_column_outputs`, no joins, no CTEs, no GROUP BY /
 HAVING; ORDER BY / LIMIT still rejected, per the interlock):
 

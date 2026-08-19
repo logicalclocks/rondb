@@ -612,6 +612,20 @@ RonSQLPreparer::parse()
       bool projection_only_cte_scan =
           (from_is_cte && all_column_outputs && !has_groupby &&
            !has_having && !has_orderby && !has_limit && !has_joins);
+      // Phase 1 (non_aggregate_phase_1.md, W1): projection-only
+      // single-table queries over a real table — the first shape with
+      // no aggregation and no CTE.  Requires a FROM table (the Phase
+      // I.17h optional-FROM path cannot resolve COLUMN outputs) and no
+      // CTE definitions at all (a WITH prefix on a single-table
+      // projection stays rejected rather than silently ignoring the
+      // CTE).  ORDER BY / LIMIT stay rejected — they layer on via
+      // ronsql_orderby_limit_plan.md.
+      bool has_from = (m_context.ast_root.table.str != NULL &&
+                       m_context.ast_root.table.len > 0);
+      bool projection_only_single_table =
+          (has_from && !from_is_cte && !has_joins && all_column_outputs &&
+           !has_groupby && !has_having && !has_orderby && !has_limit &&
+           m_context.ast_root.cte_list == NULL);
       // Phase I.8/I.11/I.12: projection-only join chains over CTE-and-
       // real-table operands.  Accepted shapes:
       //   - I.8/I.11: FROM <real> JOIN <cte> [JOIN ...] (real root,
@@ -694,13 +708,15 @@ RonSQLPreparer::parse()
         cte_lookup_join_chain =
             cte_lookup_join_chain && query_has_cte;
       }
-      if (!projection_only_cte_scan && !cte_lookup_join_chain) {
+      if (!projection_only_cte_scan && !cte_lookup_join_chain &&
+          !projection_only_single_table) {
         ndbrequire(m_conf.err_stream != NULL);
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
-               "Currently, RonSQL only supports aggregate queries and projection-only\n"
-               "SELECTs over supported CTE shapes (Phase E.3/I.8/I.11/I.12).  See\n"
-               "ronsql_join_phase7.md for the\n"
+               "Currently, RonSQL only supports aggregate queries, projection-only\n"
+               "single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),\n"
+               "and projection-only SELECTs over supported CTE shapes (Phase\n"
+               "E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the\n"
                "broader non-aggregate roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
@@ -2328,6 +2344,11 @@ RonSQLPreparer::plan_index_and_filter()
     // No connection, so we can't discover indexes.
     return;
   }
+  // Phase 1 W2: a non-aggregate WHERE fully consumed as PK equalities
+  // executes as a single-row PK lookup — no scan config needed.
+  if (detect_pk_lookup()) {
+    return;
+  }
   // Add scan config candidates, including both index scans and table scan. This
   // will guarantee that we get at least one candidate.
   generate_scan_config_candidates();
@@ -2364,6 +2385,66 @@ RonSQLPreparer::generate_scan_config_candidates()
                                m_toplevel_conditions,
                                m_scan_config_candidates,
                                m_context.ast_root.root_table);
+}
+
+bool
+RonSQLPreparer::detect_pk_lookup()
+{
+  // Aggregate queries never take the lookup: single-table aggregation
+  // runs through NdbScanOperation + SO_AGGREGATION; a plain readTuple
+  // has no aggregator path (the single-table twin of the Phase 0
+  // lookup-root rule).
+  if (m_is_aggregate_query) return false;
+  const NdbDictionary::Table* tab = m_main_scope.table;
+  if (tab == NULL) return false;
+  const int nkeys = tab->getNoOfPrimaryKeys();
+  if (nkeys <= 0) return false;
+  const Uint32 num_conds = m_toplevel_conditions.size();
+  if (num_conds == 0) return false;  // no WHERE — full scan
+  ConditionalExpression** pk_const =
+      m_amalloc->alloc_exc<ConditionalExpression*>(nkeys);
+  for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
+  // v1 policy (non_aggregate_phase_1.md): every conjunct must be a
+  // `pk_col = const` equality and each PK column must be bound exactly
+  // once.  Anything else — a residual conjunct, a duplicate, a partial
+  // cover, a non-equality — falls back to the scan-config path, which
+  // is always correct (the RecAttr-style NdbOperation read has no
+  // interpreted-code facility to carry residual filters).
+  for (Uint32 i = 0; i < num_conds; i++) {
+    ConditionalExpression* ce = m_toplevel_conditions[i];
+    if (ce->op != T_EQUALS) return false;
+    ConditionalExpression* col_side = NULL;
+    ConditionalExpression* const_side = NULL;
+    if (ce->args.left->op == T_IDENTIFIER &&
+        ce->args.right->op != T_IDENTIFIER) {
+      col_side = ce->args.left;
+      const_side = ce->args.right;
+    } else if (ce->args.right->op == T_IDENTIFIER &&
+               ce->args.left->op != T_IDENTIFIER) {
+      col_side = ce->args.right;
+      const_side = ce->args.left;
+    } else {
+      return false;
+    }
+    const char* col_name = m_columns[col_side->col_idx].c_str();
+    bool matched = false;
+    for (int k = 0; k < nkeys; k++) {
+      const char* pk_name = tab->getPrimaryKey(k);
+      if (pk_name != NULL && strcmp(pk_name, col_name) == 0) {
+        if (pk_const[k] != NULL) return false;  // duplicate equality
+        pk_const[k] = const_side;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;  // equality on a non-PK column
+  }
+  for (int k = 0; k < nkeys; k++) {
+    if (pk_const[k] == NULL) return false;  // partial PK cover
+  }
+  m_pk_lookup = true;
+  m_pk_lookup_const = pk_const;
+  return true;
 }
 
 void
@@ -5782,6 +5863,14 @@ RonSQLPreparer::execute()
       return;
     }
 
+    if (!m_is_aggregate_query) {
+      // Phase 1 (non_aggregate_phase_1.md): projection-only
+      // single-table queries — plain-API pass-through execution.
+      execute_single_table_passthrough();
+      cleanup_trans();
+      return;
+    }
+
     ndbrequire(m_trans == NULL);
     m_trans = DBG(ndb->startTransaction());
     require_run(m_trans != NULL, "Failed to start transaction.");
@@ -5790,120 +5879,12 @@ RonSQLPreparer::execute()
     NdbAggregator aggregator(m_main_scope.table);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
-    ScanConfig& sc = *m_scan_config;
-    const NdbDictionary::Index* index = sc.index;
-    bool has_filter = false;
-    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-      if (sc.condition_handling_map[i] == -1) {
-        has_filter = true;
-      }
-    }
-    // End of general preparation
-
-    if(index == NULL) {
-      // Prepare and execute full table scan
-      DEB_TRACE();
-      NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
-      require_sch(myScanOp != NULL, "Failed to get scan operation.");
-      require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
-                  "Failed to initialize scan operation.");
-      DEB_TRACE();
-      if (has_filter)
-      {
-        DEB_TRACE();
-        NdbScanFilter filter(myScanOp);
-        DBGV(filter.setSqlCmpSemantics());
-        DEB_TRACE();
-        apply_filter_top_level(&filter);
-        DEB_TRACE();
-      }
-      DEB_TRACE();
-      require_run(DBG(myScanOp->setAggregationCode(&aggregator)) >= 0,
-                  "Failed to set aggregation code.");
-      DEB_TRACE();
-      require_run(DBG(myScanOp->DoAggregation()) >= 0,
-                  "Failed to execute table scan aggregation.");
-      DEB_TRACE();
-    } else {
-      DEB_TRACE();
-      // Prepare and execute index scan
-      require_sch(DBG(index->getTableId()) == DBG(m_main_scope.table->getObjectId()) &&
-                  DBG(index->getTableVersion()) ==
-                  DBG(m_main_scope.table->getObjectVersion()),
-                  "Table id/version mismatch");
-      NdbIndexScanOperation *myIndexScanOp =
-        DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
-      require_run(myIndexScanOp != NULL,
-                  "Failed getting index scan operation.");
-      Uint32 scanFlags = 0;
-      // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
-      require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
-                                                DBG(scanFlags))) == 0,
-                  "Failed to initialize index scan operation.");
-      for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
-      {
-        int index_col_idx = DBG(sc.condition_handling_map[i]);
-        if (index_col_idx == -1) {
-          // This condition could not be configured for the index scan. It will
-          // be applied as part of the filter instead.
-          continue;
-        }
-        ConditionalExpression* ce = m_toplevel_conditions[i];
-        Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
-        ConditionalExpression* condition_constant = ce->args.right;
-        TokenKind op = DBG(ce->op);
-        NdbIndexScanOperation::BoundType bt;
-        switch (op) {
-        case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
-        /* This mapping might seem surprising.
-         * - In RonSQL, we have normalized the conditional expressions to have
-         *   the column name on the left and the constant on the right. Thus,
-         *   T_GE means column value >= constant, or in other words, the
-         *   constant is a lower bound.
-         * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
-         */
-        case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
-        case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
-        case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
-        case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
-        default: abort();
-        }
-        const char* colName = m_columns[condition_col_idx].c_str();
-        require_run(m_main_scope.resolved_columns != NULL,
-                    "Index scan bound: missing resolved columns.");
-        const QueryScope::ResolvedColumnRef& condition_ref =
-            m_main_scope.resolved_columns[condition_col_idx];
-        require_prm(
-            condition_ref.kind ==
-            QueryScope::ResolvedColumnRef::Kind::StoredColumn,
-            "Index scan bound requires a stored-table column.");
-        require_prm(condition_ref.dict_column != NULL,
-                    "Index scan bound column descriptor missing.");
-        raw_value rv = encode_constant(condition_constant,
-                                       condition_ref.dict_column);
-        require_run(DBG(myIndexScanOp->setBound(DBG(colName),
-                                                DBG(bt),
-                                                DBG(rv).val)) == 0,
-                    "Failed to set bound for index scan.");
-        DEB_TRACE();
-      }
-      DEB_TRACE();
-      // todo Is this necessary after removing the multirange flag?
-      require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
-                  "Failed to set end of bound.");
-      if (has_filter)
-      {
-        DEB_TRACE();
-        NdbScanFilter filter(myIndexScanOp);
-        DBGV(filter.setSqlCmpSemantics());
-        apply_filter_top_level(&filter);
-      }
-      DEB_TRACE();
-      require_run(DBG(myIndexScanOp->setAggregationCode(&aggregator)) >= 0,
-                  "Failed to set aggregation code.");
-      require_run(DBG(myIndexScanOp->DoAggregation()) >= 0,
-                  "Failed to execute index scan aggregation.");
-    }
+    NdbScanOperation* scanOp = open_single_table_scan_op();
+    DEB_TRACE();
+    require_run(DBG(scanOp->setAggregationCode(&aggregator)) >= 0,
+                "Failed to set aggregation code.");
+    require_run(DBG(scanOp->DoAggregation()) >= 0,
+                "Failed to execute scan aggregation.");
     DEB_TRACE();
 
     // Print results
@@ -5914,6 +5895,259 @@ RonSQLPreparer::execute()
   }
   catch (...) {
     handle_ronsql_exception(std::current_exception());
+  }
+}
+
+NdbScanOperation*
+RonSQLPreparer::open_single_table_scan_op()
+{
+  ScanConfig& sc = *m_scan_config;
+  const NdbDictionary::Index* index = sc.index;
+  bool has_filter = false;
+  for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+    if (sc.condition_handling_map[i] == -1) {
+      has_filter = true;
+    }
+  }
+
+  if (index == NULL) {
+    // Prepare full table scan
+    DEB_TRACE();
+    NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
+    require_sch(myScanOp != NULL, "Failed to get scan operation.");
+    require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
+                "Failed to initialize scan operation.");
+    DEB_TRACE();
+    if (has_filter)
+    {
+      DEB_TRACE();
+      NdbScanFilter filter(myScanOp);
+      DBGV(filter.setSqlCmpSemantics());
+      DEB_TRACE();
+      apply_filter_top_level(&filter);
+      DEB_TRACE();
+    }
+    DEB_TRACE();
+    return myScanOp;
+  }
+
+  DEB_TRACE();
+  // Prepare index scan
+  require_sch(DBG(index->getTableId()) == DBG(m_main_scope.table->getObjectId()) &&
+              DBG(index->getTableVersion()) ==
+              DBG(m_main_scope.table->getObjectVersion()),
+              "Table id/version mismatch");
+  NdbIndexScanOperation *myIndexScanOp =
+    DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
+  require_run(myIndexScanOp != NULL,
+              "Failed getting index scan operation.");
+  Uint32 scanFlags = 0;
+  // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
+  require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
+                                            DBG(scanFlags))) == 0,
+              "Failed to initialize index scan operation.");
+  for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
+  {
+    int index_col_idx = DBG(sc.condition_handling_map[i]);
+    if (index_col_idx == -1) {
+      // This condition could not be configured for the index scan. It will
+      // be applied as part of the filter instead.
+      continue;
+    }
+    ConditionalExpression* ce = m_toplevel_conditions[i];
+    Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
+    ConditionalExpression* condition_constant = ce->args.right;
+    TokenKind op = DBG(ce->op);
+    NdbIndexScanOperation::BoundType bt;
+    switch (op) {
+    case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
+    /* This mapping might seem surprising.
+     * - In RonSQL, we have normalized the conditional expressions to have
+     *   the column name on the left and the constant on the right. Thus,
+     *   T_GE means column value >= constant, or in other words, the
+     *   constant is a lower bound.
+     * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
+     */
+    case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
+    case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
+    case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
+    case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
+    default: abort();
+    }
+    const char* colName = m_columns[condition_col_idx].c_str();
+    require_run(m_main_scope.resolved_columns != NULL,
+                "Index scan bound: missing resolved columns.");
+    const QueryScope::ResolvedColumnRef& condition_ref =
+        m_main_scope.resolved_columns[condition_col_idx];
+    require_prm(
+        condition_ref.kind ==
+        QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+        "Index scan bound requires a stored-table column.");
+    require_prm(condition_ref.dict_column != NULL,
+                "Index scan bound column descriptor missing.");
+    raw_value rv = encode_constant(condition_constant,
+                                   condition_ref.dict_column);
+    require_run(DBG(myIndexScanOp->setBound(DBG(colName),
+                                            DBG(bt),
+                                            DBG(rv).val)) == 0,
+                "Failed to set bound for index scan.");
+    DEB_TRACE();
+  }
+  DEB_TRACE();
+  // todo Is this necessary after removing the multirange flag?
+  require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
+              "Failed to set end of bound.");
+  if (has_filter)
+  {
+    DEB_TRACE();
+    NdbScanFilter filter(myIndexScanOp);
+    DBGV(filter.setSqlCmpSemantics());
+    apply_filter_top_level(&filter);
+  }
+  DEB_TRACE();
+  return myIndexScanOp;
+}
+
+void
+RonSQLPreparer::register_passthrough_getvalues(NdbOperation* op,
+                                               const NdbRecAttr** attrs,
+                                               Uint32 num_cols)
+{
+  require_run(m_main_scope.resolved_columns != NULL,
+              "Single-table pass-through: missing resolved columns.");
+  Uint32 i = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next, i++) {
+    ndbrequire(o->type == Outputs::Type::COLUMN);
+    const QueryScope::ResolvedColumnRef& col_ref =
+        m_main_scope.resolved_columns[o->column.col_idx];
+    require_prm(col_ref.kind ==
+                    QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "Single-table pass-through: output is not a stored column.");
+    require_run(col_ref.dict_column != NULL,
+                "Single-table pass-through: column descriptor missing.");
+    attrs[i] = op->getValue(col_ref.dict_column);
+    require_run(attrs[i] != NULL,
+                "Single-table pass-through: getValue() failed.");
+  }
+  ndbrequire(i == num_cols);
+}
+
+void
+RonSQLPreparer::execute_single_table_passthrough()
+{
+  /*
+   * Phase 1 (non_aggregate_phase_1.md, W3): projection-only
+   * single-table execution.  PK-lookup arm when the WHERE was fully
+   * consumed as PK equalities (detect_pk_lookup); otherwise the shared
+   * scan setup + a streaming NdbRecAttr drain.  Output framing mirrors
+   * execute_passthrough_drain: JSON always frames '[' ... ']' (an
+   * empty array is the correct empty representation); TSV defers the
+   * header until the first row so empty results produce no output,
+   * matching the mysql client baseline ronsql_compare.inc diffs
+   * against.
+   */
+  Ndb* ndb = m_conf.ndb;
+  ndbrequire(m_trans == NULL);
+  m_trans = DBG(ndb->startTransaction());
+  require_run(m_trans != NULL, "Failed to start transaction.");
+  ndbrequire(m_main_scope.table != NULL);
+
+  Uint32 num_cols = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next) {
+    num_cols++;
+  }
+  ndbrequire(num_cols > 0);
+  const NdbRecAttr** attrs =
+      m_amalloc->alloc_exc<const NdbRecAttr*>(num_cols);
+
+  const bool is_json =
+      (m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
+       m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII);
+  bool header_emitted = false;
+
+  if (m_pk_lookup) {
+    // Single-row primary key lookup.
+    NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
+    require_sch(op != NULL, "Failed to get lookup operation.");
+    require_run(DBG(op->readTuple(NdbOperation::LM_CommittedRead)) == 0,
+                "Failed to initialize lookup operation.");
+    const int nkeys = m_main_scope.table->getNoOfPrimaryKeys();
+    for (int k = 0; k < nkeys; k++) {
+      const char* pk_name = m_main_scope.table->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col =
+          m_main_scope.table->getColumn(pk_name);
+      ndbrequire(pk_col != NULL);
+      raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
+      require_run(DBG(op->equal(pk_name,
+                                static_cast<const char*>(rv.val))) == 0,
+                  "Failed to set primary key value for lookup.");
+    }
+    register_passthrough_getvalues(op, attrs, num_cols);
+    bool have_row = true;
+    if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0 ||
+        op->getNdbError().code != 0) {
+      // A missing row surfaces as NoDataFound — the one place a failed
+      // NDB call is a normal, empty result.  Anything else is a real
+      // error, classified by handle_ronsql_exception.
+      const NdbError& op_err = op->getNdbError();
+      const NdbError& trans_err = m_trans->getNdbError();
+      if (op_err.classification == NdbError::NoDataFound ||
+          trans_err.classification == NdbError::NoDataFound) {
+        have_row = false;
+      } else {
+        require_run(false, "Failed to execute lookup.");
+      }
+    }
+    if (is_json) {
+      m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                m_conf.out_stream);
+      header_emitted = true;
+    }
+    if (have_row) {
+      if (!header_emitted) {
+        m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                  m_conf.out_stream);
+        header_emitted = true;
+      }
+      m_resultprinter->print_passthrough_row(attrs, num_cols,
+                                             /*is_first_row=*/true,
+                                             m_conf.out_stream);
+    }
+    if (header_emitted) {
+      m_resultprinter->print_passthrough_finish(m_conf.out_stream);
+    }
+    return;
+  }
+
+  // Scan arm: shared setup, then a streaming drain.
+  NdbScanOperation* scanOp = open_single_table_scan_op();
+  register_passthrough_getvalues(scanOp, attrs, num_cols);
+  require_run(DBG(m_trans->execute(NdbTransaction::NoCommit)) == 0,
+              "Failed to execute transaction (single-table pass-through).");
+
+  if (is_json) {
+    m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                              m_conf.out_stream);
+    header_emitted = true;
+  }
+  Uint32 row_count = 0;
+  int rc;
+  while ((rc = DBG(scanOp->nextResult(true))) == 0) {
+    if (!header_emitted) {
+      m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                m_conf.out_stream);
+      header_emitted = true;
+    }
+    m_resultprinter->print_passthrough_row(attrs, num_cols,
+                                           /*is_first_row=*/(row_count == 0),
+                                           m_conf.out_stream);
+    row_count++;
+  }
+  require_run(rc == 1, "Single-table pass-through scan failed.");
+  if (header_emitted) {
+    m_resultprinter->print_passthrough_finish(m_conf.out_stream);
   }
 }
 
@@ -12082,6 +12316,20 @@ RonSQLPreparer::print()
   // Print scan information
   if (m_conf.ndb == NULL) {
     out << "No NDB connection, so no index scan analysis.\n";
+  } else if (m_pk_lookup) {
+    // Phase 1 W5: unlike the join path's emit-time refinements, the
+    // single-table access choice lives in planner state, so EXPLAIN
+    // can tell the whole truth here.
+    Uint32 cond_cnt = m_toplevel_conditions.size();
+    out << "Execute as primary key lookup.\n"
+        << "KEYS (" << cond_cnt << "):\n";
+    for (Uint32 i = 0; i < cond_cnt; i++) {
+      out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+      print(m_toplevel_conditions[i],
+            i + 1 == cond_cnt
+            ? LexString{"   ", 3}
+            : LexString{"│  ", 5});
+    }
   } else if (m_scan_config == NULL) {
     // Join plan already printed at the top
   } else {
