@@ -12158,6 +12158,13 @@ RonSQLPreparer::print()
         out << op.table->getName();
       }
       if (op.alias.len > 0) out << " AS " << op.alias.c_str();
+      // Phase 3 (W2): show the topology — a star and a chain used to
+      // print identically.  No recorded baseline contains this print
+      // (it goes to ronsql_explain.inc's $EXPLAIN_FILE), so the
+      // annotation is baseline-safe.
+      if (!op.is_root) {
+        out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
+      }
       out << '\n';
       const char *indent = is_last ? "   " : "│  ";
       if ((op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) &&

@@ -144,6 +144,21 @@ QueryPlanner::plan(
     const CteDefinition *cte_match = findCte(cte_list, child_table_name,
                                              cte_idx);
 
+    /* Phase 3 (non_aggregate_phase_3.md, W1): aliases must be unique —
+     * star-shaped queries make collisions likely, and a duplicate
+     * alias would silently bind ON conditions and column references to
+     * the first match (potentially wrong results).  Mirrors MySQL's
+     * ER_NONUNIQ_TABLE ("Not unique table/alias"). */
+    for (Uint32 a = 0; a < out.num_ops; a++)
+    {
+      if (out.ops[a].alias == jc->table.alias)
+      {
+        err << "Not unique table/alias: '" << jc->table.alias.c_str()
+            << "'." << std::endl;
+        throw RonSQLPermanentError("Not unique table/alias.");
+      }
+    }
+
     JoinOp &childOp = out.ops[out.num_ops];
     childOp.alias = jc->table.alias;
     childOp.is_root = false;

@@ -356,6 +356,11 @@ EXPLAIN for each.
 
 ## Phase 3 — star schemas (fan-out on a common key)
 
+**Detailed plan: `non_aggregate_phase_3.md` — IMPLEMENTED (August
+2026), pending user build + MTR --record** (alias-uniqueness
+validation + EXPLAIN topology annotation + MTR family
+`body_passthrough_star.inc` sr-1..10/P1 ×5 topology suites).
+
 Target (the `star_schema_plan.md` schema, minus aggregation):
 
 ```sql
