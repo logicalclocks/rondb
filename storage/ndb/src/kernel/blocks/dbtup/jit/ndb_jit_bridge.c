@@ -399,7 +399,8 @@ static inline int embedded_filters_enabled(void) {
 /*   BRANCH_LINKED_*_NULL → OP_BRANCH_LINKED_*_NULL (likewise)        */
 /*   LOAD_CONST16         → stage row-disposition skip_offset          */
 /*   WRITE_INTERP_OUTPUT  → no Op for skip_offset 0, OP_JUMP otherwise*/
-/*   EXIT_OK / EXIT_OK_LAST → no Op (fall through to outer program)   */
+/*   EXIT_OK              → no Op (fall through to outer program)     */
+/*   EXIT_OK_LAST         → reject (JIT can't set req_struct last_row)*/
 /*   EXIT_REFUSE          → caller-selected reject terminator          */
 /*                                                                    */
 /* Every other embedded opcode rejects the WHOLE program. The         */
@@ -858,8 +859,28 @@ static JitBridgeReason translate_embedded_block(
         break;
       }
 
-      case BR_EMB_EXIT_OK:
       case BR_EMB_EXIT_OK_LAST: {
+        /* EXIT_OK_LAST = "row accepted AND terminate the fragment scan"
+         * — the interpreter's handleExitOkLast sets
+         * req_struct->last_row before exiting. The JIT has no channel
+         * to signal last-row back to the scan layer, and lowering this
+         * as a plain accept keeps the scan running past the row. That
+         * is not hypothetical: ndb_get_table_statistics' stats scan
+         * (interpret_exit_last_row — this opcode as the whole program)
+         * then returns every row per fragment instead of one, each
+         * carrying fragment-level ROW_COUNT, inflating stats.records
+         * and thus COUNT(*). Reject → interpreter fallback. Known
+         * emitters run the program once per fragment, so JIT'ing them
+         * would win nothing anyway. */
+        if (out_err) {
+          out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+          out_err->offending_word = outer_word_pos + 1 + emb_pc;
+          out_err->offending_op   = emb_op;
+        }
+        return JIT_BRIDGE_UNSUPPORTED_OP;
+      }
+
+      case BR_EMB_EXIT_OK: {
         /* EXIT_OK = "row accepted".
          *
          * Aggregation-embedded model (exit_ok_kind ==

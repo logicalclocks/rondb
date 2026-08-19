@@ -580,6 +580,7 @@ static uint32_t enc_emb_read_linked_to_mem(uint32_t position) {
 }
 /* Accept-path opcodes (row-disposition model). */
 #define EMB_EXIT_OK              18
+#define EMB_EXIT_OK_LAST         22
 #define EMB_LOAD_CONST16          4
 #define EMB_WRITE_INTERP_OUTPUT 123
 static uint32_t enc_emb_load_const16(uint32_t reg, uint32_t val) {
@@ -1321,6 +1322,26 @@ static void test_scan_filter_attr_op_attr_lower(void) {
   mark_pass(name);
 }
 
+/* T45: EXIT_OK_LAST is REJECTED on the scan-filter path. It means "accept
+ * this row AND terminate the fragment scan" — the interpreter's
+ * handleExitOkLast sets req_struct->last_row — and the JIT has no way to
+ * signal last-row, so lowering it as a plain accept keeps the scan
+ * running. The one-instruction program below is exactly what
+ * ndb_get_table_statistics' interpret_exit_last_row() emits; mis-lowering
+ * it made the stats scan return every row per fragment instead of one,
+ * inflating stats.records and thus implicit COUNT(*) (the
+ * ndb_pushdown_agg 44-vs-12 regression). */
+static void test_scan_filter_exit_ok_last_reject(void) {
+  uint32_t filter_prog[1] = {
+    enc_emb_op_word(EMB_EXIT_OK_LAST, 0),
+  };
+  assert_scan_filter_rejected("T45 scan_filter_exit_ok_last_reject",
+                              filter_prog, 1,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/UINT32_MAX,
+                              EMB_EXIT_OK_LAST);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1373,6 +1394,7 @@ int main(void) {
   test_scan_filter_attr_op_arg_like_reject();
   test_scan_filter_attr_op_param_lower();
   test_scan_filter_attr_op_attr_lower();
+  test_scan_filter_exit_ok_last_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

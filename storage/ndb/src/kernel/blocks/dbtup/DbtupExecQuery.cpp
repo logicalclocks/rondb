@@ -1116,11 +1116,24 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
             }
           }
         }
+        /* Publish onto the scan record: reset first (a pooled ScanRecord
+         * reused via init_release_scanrec must never keep a previous
+         * scan's entry — the blob it points at is freed when that scan's
+         * stored procedure dies), then either install the compiled entry
+         * or mark the interpreter fallback as deliberate so ERROR_INSERT
+         * 4060 doesn't abort on a bridge-rejected filter (e.g. the
+         * EXIT_OK_LAST table-stats scan). */
+        scan_rec_ptr->m_jit_filter_entry = nullptr;
+        scan_rec_ptr->m_jit_filter_reject_code = 0;
         if (storedPtr.p->m_jit_filter_state == JIT_FILTER_COMPILED) {
           jam();
           scan_rec_ptr->m_jit_filter_entry = storedPtr.p->m_jit_filter_entry;
           scan_rec_ptr->m_jit_filter_reject_code =
               storedPtr.p->m_jit_filter_reject_code;
+          scan_rec_ptr->m_jit_filter_ineligible = 0;
+        } else {
+          jam();
+          scan_rec_ptr->m_jit_filter_ineligible = 1;
         }
       }
     }
@@ -5914,9 +5927,14 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
        * scan-filter canary. The canary only runs JIT-eligible filters
        * under 4060, so reaching the interpreter for a scan here means the
        * filter failed to compile or wire up — abort, matching the
-       * aggregation 4060 contract. */
+       * aggregation 4060 contract. m_jit_filter_ineligible exempts scans
+       * whose filter the bridge deliberately rejected (interpreter
+       * fallback is their contract) — mysqld issues such scans on its
+       * own (the EXIT_OK_LAST table-stats scan), so they can appear
+       * under 4060 without being part of the canary's queries. */
       if (jit_filter == nullptr &&
           req_struct->scan_rec != nullptr &&
+          !scan_rec_ptr->m_jit_filter_ineligible &&
           jit_error_inserted(4060)) {
         g_eventLogger->error(
             "ERROR_INSERT 4060: scan filter (RexecRegionLen=%u) reached the "

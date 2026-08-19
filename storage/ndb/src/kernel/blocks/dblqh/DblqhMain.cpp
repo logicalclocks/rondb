@@ -25828,6 +25828,13 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   scanPtr->m_agg_curr_batch_size_rows = 0;
   scanPtr->m_agg_curr_batch_size_bytes = 0;
   scanPtr->m_agg_n_res_recs = 0;
+  /* RONDB-1056 Phase 7: the JIT scan-filter fields must not survive
+   * into the next scan that reuses this record — the entry is a
+   * borrowed pointer whose code slot is freed when its stored
+   * procedure dies (progcache release at deleteScanProcedure). */
+  scanPtr->m_jit_filter_entry = nullptr;
+  scanPtr->m_jit_filter_reject_code = 0;
+  scanPtr->m_jit_filter_ineligible = 0;
   /*
    * Pushdown interpreter release was moved up to releaseScanrec
    * (Step 4 normal-scan path also needs it before
@@ -27107,6 +27114,9 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     scanPtr->m_join_agg_state_key = RNIL;
     scanPtr->m_vs_interpreter = nullptr;
     scanPtr->m_agg_interpreter = nullptr;
+    scanPtr->m_jit_filter_entry = nullptr;
+    scanPtr->m_jit_filter_reject_code = 0;
+    scanPtr->m_jit_filter_ineligible = 0;
     scanPtr->m_join_agg_evict_rows = 0;
     scanPtr->m_rows_examined = 0;
     m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 6;

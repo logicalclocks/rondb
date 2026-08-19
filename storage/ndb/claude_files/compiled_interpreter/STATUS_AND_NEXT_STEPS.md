@@ -45,6 +45,59 @@ run yet — it is the immediate next action.**
    Fixed: `--only` bumped to 24…29, result lines + wrapper comments
    renumbered. No other file in the suite uses `--only`.
 
+### 2026-08-19 — EXIT_OK_LAST bug found by the sweep (FIXED, pending verify)
+
+The first post-merge MTR run failed `ndb_push_agg.ndb_pushdown_agg`
+(implicit `COUNT(*)` = 44 instead of 12, with SUM/MIN/MAX correct and
+wrong under pushdown OFF **and** ON). Root cause — a genuine Phase 7
+scan-filter JIT bug, latent since the slice landed:
+
+- mysqld answers implicit no-WHERE `COUNT(*)` from
+  `ha_ndbcluster::records()` → `ndb_get_table_statistics`
+  (`ndb_table_stats.cc`), whose interpreted scan program is a single
+  `interpret_exit_last_row()` = `EXIT_OK_LAST` (opcode 22) plus a
+  pseudo-column read region. Semantics: accept the row **and terminate
+  the fragment scan** (`handleExitOkLast` sets `req_struct->last_row`)
+  → one stats row per fragment.
+- The bridge lowered `EXIT_OK_LAST` identically to `EXIT_OK` (plain
+  accept, shared case label) — the JIT never signals last-row, so the
+  stats scan returned *every* row per fragment, each carrying
+  fragment-level ROW_COUNT; the summed `stats.records` was inflated →
+  COUNT(*) wrong wherever MySQL substitutes `ha_records()` (Tests
+  11–12; Tests 1–10 GROUP BY and Test 13 WHERE unaffected). Optimizer
+  row estimates were silently inflated too.
+
+**Fix (in tree):**
+1. `ndb_jit_bridge.c`: `BR_EMB_EXIT_OK_LAST` split into its own case →
+   `JIT_BRIDGE_UNSUPPORTED_OP` (interpreter fallback). Right ship
+   state, not a stopgap: the stats program runs once per fragment, so
+   JIT'ing it wins nothing. `bridge_tests.c` T45
+   (`scan_filter_exit_ok_last_reject`) locks it in.
+2. **Stale-entry bug (found while fixing):**
+   `ScanRecord::m_jit_filter_entry` was never reset on scan-record
+   reuse (`init_release_scanrec` resets the agg fields but not the JIT
+   fields; only pool-release runs the ctor) and `scanCopyAttrinfo` only
+   *conditionally* copied it — a reused record could carry a stale
+   entry whose code slot was already freed at `deleteScanProcedure`
+   (use-after-free of executable memory) into a scan whose own filter
+   was bridge-rejected. Fixed: reset `m_jit_filter_entry` /
+   `_reject_code` / `_ineligible` in `init_release_scanrec` + the
+   copy-fragment setup block, and `scanCopyAttrinfo` now always
+   resets-then-publishes.
+3. **4060 guard narrowed:** new `ScanRecord::m_jit_filter_ineligible`
+   (set when the bridge deliberately rejected the filter) exempts
+   deliberate fallbacks from the ERROR_INSERT 4060 abort — necessary
+   because mysqld issues stats scans on its own, so a bridge-rejected
+   EXIT_OK_LAST scan can appear while a canary has 4060 armed
+   cluster-wide. Genuine eligible-but-failed filters still abort.
+
+Files: `jit/ndb_jit_bridge.c`, `test/jit_proto/bridge_tests.c`,
+`dblqh/Dblqh.hpp`, `dblqh/DblqhMain.cpp`, `dbtup/DbtupExecQuery.cpp`.
+Verify: rebuild `ndbmtd` + `bridge_tests`; run `bridge_tests` (T45),
+`./mtr --suite=ndb_push_agg ndb_pushdown_agg` and the JIT canaries
+(`rondb_jit_scan_filter_canary` exercises the same translate path and
+the 4060 guard).
+
 **Post-merge verification checklist (Mikael runs; nothing built or run
 since the merge):**
 
