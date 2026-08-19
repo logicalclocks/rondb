@@ -286,6 +286,14 @@ void dbtup_jit_note_compile_ns(Uint64 ns);
 void dbtup_jit_set_mode(Uint32 mode);
 bool dbtup_jit_enabled();
 
+/* Sentinel return of dbtup_jit_invoke: the row hit a condition the JIT
+ * cannot represent (JitState::row_fallback — e.g. a NULL column value).
+ * The JIT run was discarded (no accumulator writeback); the caller must
+ * re-run THIS ROW through the interpreter loop, which reproduces the
+ * interpreter's exact semantics. Negative and far outside the ZAGG_*
+ * error space so it can never collide with a real error code. */
+constexpr Int32 NDB_JIT_ROW_FALLBACK = -7157;
+
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The
  * caller maps a rejected row to TUPKEY_abort with

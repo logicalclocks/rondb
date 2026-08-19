@@ -1,0 +1,49 @@
+--source include/have_ndb.inc
+
+# RONDB-1056 Phase 5A — nullable-column aggregation canary.
+#
+# The JIT's load helper used to abort() on a NULL column value (its
+# comment wrongly claimed admission rejects nullable columns — the
+# bridge only sees bytecode and the SQL planner pushes aggregation over
+# nullable columns), so SELECT SUM(nullable) with any NULL row crashed
+# the data node with CompiledInterpreter=AUTO. Phase 5A replaced the
+# abort with a per-row interpreter fallback: the NULL-bearing row's JIT
+# run is discarded and the row re-runs on the interpreter (exact
+# null-skip semantics); non-NULL rows keep the JIT.
+#
+# No ERROR_INSERT 4060 here — the per-row fallback is deliberate. The
+# counter check proves the program still COMPILES (admission is
+# unaffected by nullability); before the fix this test crashed a node.
+
+--echo ############################################################
+--echo # RONDB-1056 nullable-column JIT canary (per-row fallback)
+--echo ############################################################
+
+CREATE TABLE tn (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  v   BIGINT,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO tn VALUES
+  (1, 1, 10), (2, 1, NULL), (3, 1, 30),
+  (4, 2, NULL), (5, 2, NULL), (6, 2, 60),
+  (7, 3, NULL);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: scalar SUM/COUNT over a nullable column — NULL rows fall back
+--echo #     per row, non-NULL rows run the JIT; the program compiles.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(v), COUNT(v) FROM tn;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: grouped — including a group whose rows are ALL NULL (grp 3):
+--echo #     SUM stays SQL NULL and COUNT is 0 for that group, the
+--echo #     per-group NULL semantics that pushed SQL could not otherwise
+--echo #     express.
+--sorted_result
+SELECT grp, SUM(v), COUNT(v) FROM tn GROUP BY grp;
+
+DROP TABLE tn;

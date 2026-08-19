@@ -33,25 +33,19 @@ grp	COUNT(v)	SUM(v)
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 q2_jit_compiled
 1
-# Q3: grouped CASE stays on the interpreter for now (counter delta
-#     exactly 0) with correct results. Two findings behind this
-#     (2026-08-19): the SQL planner only pushes CASE with a pushable
-#     ELSE value (ELSE NULL is not pushed at all), and the pushed
-#     form emits BRANCH_*_REG_REG inside the embedded block, which
-#     the bridge does not lower until Phase 5's embedded-branch
-#     family. When Phase 5 lands, this delta flips to >= 1 — update
-#     the assertion then. NB per-group SQL-NULL is therefore not
-#     expressible via pushed SQL today; the value_updated writeback
-#     that provides it is group-agnostic and scalar-proven (NDB API
-#     Test 25). No 4060 here: this fallback is expected.
+# Q3: grouped CASE aggregation must JIT (Phase 5A: the embedded
+#     READ_ATTR / LOAD_CONST16/64 / BRANCH_*_REG_REG condition
+#     family lowers, and multi-arm same-aggregate mask indexes are
+#     fixed). Note the planner still only pushes CASE with a
+#     pushable ELSE value — ELSE NULL is evaluated server-side.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT grp, SUM(CASE WHEN v > 115 THEN v ELSE 0 END) AS s FROM t1 GROUP BY grp;
 grp	s
 1	0
 2	0
 3	120
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q3_case_stays_on_interpreter;
-q3_case_stays_on_interpreter
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
 1
 # Q4: high-cardinality differential — 2048 rows over 500 groups
 #     (chunk-allocator growth under JIT dispatch). The outer derived

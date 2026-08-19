@@ -256,10 +256,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
    * glue's value_updated/value_unsigned writeback preserves per-group
    * SQL-NULL and COUNT-unsignedness semantics. */
   if (m_jit_entry != nullptr) {
-    m_processed_rows++;
-    return dbtup_jit_invoke(this, block_tup, req_struct,
-                            m_jit_entry, agg_res_ptr,
-                            m_n_agg_results);
+    Int32 jit_rc = dbtup_jit_invoke(this, block_tup, req_struct,
+                                    m_jit_entry, agg_res_ptr,
+                                    m_n_agg_results);
+    if (jit_rc != NDB_JIT_ROW_FALLBACK) {
+      m_processed_rows++;
+      return jit_rc;
+    }
+    /* Phase 5A per-row fallback: the row hit a condition the JIT can't
+     * represent (NULL column value) — its JIT run was discarded (no
+     * writeback). Fall through and run THIS ROW on the interpreter
+     * loop below, which counts m_processed_rows itself. */
   }
 
 #ifdef ERROR_INSERT

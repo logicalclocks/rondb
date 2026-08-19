@@ -118,6 +118,17 @@
  * include/kernel/Interpreter.hpp) — the bridge decodes the embedded
  * opcode via Interpreter::getOpCode and switches on it directly. */
 #define BR_EMB_LOAD_CONST16          4
+/* Phase 5A: the SQL planner's CASE-condition family (see
+ * ha_ndbcluster_push_agg.cc emit_int_comparison_branch): column into
+ * register, 64-bit constant into register, register-register compare. */
+#define BR_EMB_READ_ATTR             1   /* READ_ATTR_INTO_REG */
+#define BR_EMB_LOAD_CONST64          6   /* value in next 2 words */
+#define BR_EMB_BRANCH_EQ_REG_REG    12
+#define BR_EMB_BRANCH_NE_REG_REG    13
+#define BR_EMB_BRANCH_LT_REG_REG    14
+#define BR_EMB_BRANCH_LE_REG_REG    15
+#define BR_EMB_BRANCH_GT_REG_REG    16
+#define BR_EMB_BRANCH_GE_REG_REG    17
 #define BR_EMB_EXIT_OK              18
 #define BR_EMB_EXIT_REFUSE          19
 #define BR_EMB_EXIT_OK_LAST         22
@@ -231,7 +242,15 @@ const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
 const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
   switch (op) {
     case BR_EMB_BRANCH:                return "BRANCH";
+    case BR_EMB_READ_ATTR:             return "READ_ATTR_INTO_REG";
     case BR_EMB_LOAD_CONST16:          return "LOAD_CONST16";
+    case BR_EMB_LOAD_CONST64:          return "LOAD_CONST64";
+    case BR_EMB_BRANCH_EQ_REG_REG:     return "BRANCH_EQ_REG_REG";
+    case BR_EMB_BRANCH_NE_REG_REG:     return "BRANCH_NE_REG_REG";
+    case BR_EMB_BRANCH_LT_REG_REG:     return "BRANCH_LT_REG_REG";
+    case BR_EMB_BRANCH_LE_REG_REG:     return "BRANCH_LE_REG_REG";
+    case BR_EMB_BRANCH_GT_REG_REG:     return "BRANCH_GT_REG_REG";
+    case BR_EMB_BRANCH_GE_REG_REG:     return "BRANCH_GE_REG_REG";
     case BR_EMB_EXIT_OK:               return "EXIT_OK";
     case BR_EMB_EXIT_REFUSE:           return "EXIT_REFUSE";
     case BR_EMB_EXIT_OK_LAST:          return "EXIT_OK_LAST";
@@ -450,6 +469,7 @@ static JitBridgeReason translate_embedded_block(
     uint8_t exit_ok_kind,
     int allow_linked_ops,
     int allow_attr_op_arg,
+    int allow_reg_ops,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps,
     uint32_t *out_exit_refuse_code) {
@@ -509,6 +529,157 @@ static JitBridgeReason translate_embedded_block(
     emb_pc_to_op_idx[emb_pc] = out_op_idx;
 
     switch (emb_op) {
+      case BR_EMB_READ_ATTR: {
+        /* Phase 5A: READ_ATTR_INTO_REG — column value into an
+         * interpreter register (the SQL planner's CASE condition starts
+         * with this). Lowers to the OP_LOAD_COL_NDB cold-call: the
+         * helper reads the column via readSingleAttributeForJit into
+         * regs_i64[dst]. A NULL value sets JitState::row_fallback — the
+         * row is re-run on the interpreter, which reproduces the exact
+         * null-register semantics (SUM/COUNT null-skip,
+         * ZREGISTER_INIT_ERROR on null comparisons). */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t dst_reg = (inst >> 6) & 0x7u;
+        uint32_t attr_id = inst >> 16;
+        if (attr_id > BR_MAX_LOCAL_ATTR_ID) {
+          /* Local table columns only — linked/pseudo out of scope. */
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (!emit_op(out_prog, OP_LOAD_COL_NDB, (uint8_t)dst_reg, 0,
+                     (uint16_t)attr_id, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        /* The register no longer holds a LOAD_CONST16 value usable as
+         * a WRITE_INTERPRETER_OUTPUT skip offset. */
+        const16_valid[dst_reg] = 0;
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_LOAD_CONST64: {
+        /* Phase 5A: 64-bit constant into a register; the value lives in
+         * the next 2 words, low word first (the emitter memcpy's an
+         * Int64 on a little-endian host). Lowers to OP_LOAD_CONST_INT
+         * (imm64 hole). The 2 data-word pcs keep the 0xFF "no op here"
+         * mapping — a branch may not legally target the middle of an
+         * instruction. */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        if (emb_pc + 3 > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t dst_reg = (inst >> 6) & 0x7u;
+        uint64_t lo = emb_prog[emb_pc + 1];
+        uint64_t hi = emb_prog[emb_pc + 2];
+        int64_t  imm = (int64_t)(lo | (hi << 32));
+        if (!emit_op(out_prog, OP_LOAD_CONST_INT, (uint8_t)dst_reg, 0, 0,
+                     imm)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        const16_valid[dst_reg] = 0;
+        emb_pc += 3;
+        break;
+      }
+
+      case BR_EMB_BRANCH_EQ_REG_REG:
+      case BR_EMB_BRANCH_NE_REG_REG:
+      case BR_EMB_BRANCH_LT_REG_REG:
+      case BR_EMB_BRANCH_LE_REG_REG:
+      case BR_EMB_BRANCH_GT_REG_REG:
+      case BR_EMB_BRANCH_GE_REG_REG: {
+        /* Phase 5A: register-register comparison branch — lowers to the
+         * Phase 1 hot branch stencils. Word 0: opcode | left_reg<<6 |
+         * right_reg<<9 | direction<<31 | branch_length<<16 (forward
+         * only, like every embedded branch). Null registers cannot
+         * reach the compare through the JIT: the only register writers
+         * are LOAD_CONST16/64 (never null) and READ_ATTR, whose helper
+         * flags NULL rows for interpreter fallback — so the hot compare
+         * on raw i64 values is exact for every row the JIT completes. */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t direction = inst >> 31;
+        if (direction != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t left_reg  = (inst >> 6) & 0x7u;
+        uint32_t right_reg = (inst >> 9) & 0x7u;
+        uint8_t out_kind;
+        switch (emb_op) {
+          case BR_EMB_BRANCH_EQ_REG_REG: out_kind = OP_BRANCH_EQ_INT_INT; break;
+          case BR_EMB_BRANCH_NE_REG_REG: out_kind = OP_BRANCH_NE_INT_INT; break;
+          case BR_EMB_BRANCH_LT_REG_REG: out_kind = OP_BRANCH_LT_INT_INT; break;
+          case BR_EMB_BRANCH_LE_REG_REG: out_kind = OP_BRANCH_LE_INT_INT; break;
+          case BR_EMB_BRANCH_GT_REG_REG: out_kind = OP_BRANCH_GT_INT_INT; break;
+          default:                       out_kind = OP_BRANCH_GE_INT_INT; break;
+        }
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
+        if (!emit_op(out_prog, out_kind, (uint8_t)left_reg,
+                     (uint16_t)right_reg, /*c=*/0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += 1;
+        break;
+      }
+
       case BR_EMB_BRANCH_ATTR_EQ_NULL:
       case BR_EMB_BRANCH_ATTR_NE_NULL: {
         /* 2-word instruction. Word 0 has branch_offset in
@@ -800,13 +971,31 @@ static JitBridgeReason translate_embedded_block(
 
       case BR_EMB_LOAD_CONST16: {
         /* Stages the accept-path skip_offset for a following
-         * WRITE_INTERPRETER_OUTPUT. The JIT only models constants written
-         * to output slot 0, which is the aggregation row-disposition slot.
-         * LOAD_CONST16 itself emits no JIT op; branches targeting this pc
-         * resolve to the next emitted op, either an OP_JUMP for non-zero
-         * CASE skip offsets or the outer aggregation continuation for 0. */
+         * WRITE_INTERPRETER_OUTPUT (the JIT only models constants written
+         * to output slot 0, the aggregation row-disposition slot).
+         *
+         * Phase 5A: in reg-ops mode the register is ALSO materialized
+         * (OP_LOAD_CONST_UINT16) — a following BRANCH_*_REG_REG may
+         * compare it: the SQL planner's CASE conditions load their
+         * constant with LOAD_CONST16 whenever it fits 16 bits. The
+         * staged copy still serves skip offsets; on a pure
+         * row-disposition path the materialized load is a dead register
+         * store (one mov per row — accepted). Branches targeting this pc
+         * then resolve to the load itself, which is executed and
+         * continues — semantically identical to the interpreter. */
         uint32_t reg = (inst >> 6) & 0x7u;
         uint32_t const16 = (inst >> 16) & 0xFFFFu;
+        if (allow_reg_ops) {
+          if (!emit_op(out_prog, OP_LOAD_CONST_UINT16, (uint8_t)reg, 0, 0,
+                       (int64_t)const16)) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+        }
         const16_by_reg[reg] = (uint16_t)const16;
         const16_valid[reg] = 1;
         emb_pc += 1;
@@ -831,7 +1020,20 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_UNSUPPORTED_OP;
         }
         uint16_t skip_offset = const16_by_reg[reg];
-        if (skip_offset != 0) {
+        /* Phase 5A fix: emit the disposition jump for skip_offset 0 TOO.
+         * "Emit nothing, fall through to the outer ops" is only correct
+         * when this output block is the LAST thing in the embedded
+         * stream. A multi-arm CASE lays out several LC16/WRITE/EXIT_OK
+         * blocks back to back — a zero-skip block in the middle would
+         * fall through into the NEXT block's materialized LC16 + jump
+         * and take the wrong arm (ndb_join_pushdown_agg Test 42:
+         * rows for arm 0 landed in arm 1). The jump targets
+         * outer_after_emb_pos + skip_offset, exactly like the nonzero
+         * path; for a final block that's a jump to the next op — one
+         * wasted jmp, always correct. (Both paths assume nothing
+         * meaningful executes between WRITE and its EXIT_OK — true for
+         * every emitter: output blocks are exactly LC16/WRITE/EXIT_OK.) */
+        {
           uint16_t jump_op_idx = out_prog->n_ops;
           if (!emit_op(out_prog, OP_JUMP, 0, 0, 0, 0)) {
             if (out_err) {
@@ -1023,6 +1225,7 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   BR_EXIT_OK_FALLTHROUGH,
                                   /*allow_linked_ops=*/1,
                                   /*allow_attr_op_arg=*/0,
+                                  /*allow_reg_ops=*/1,
                                   pending_case_jumps,
                                   &n_pending_case_jumps,
                                   /*out_exit_refuse_code=*/NULL);
@@ -1055,6 +1258,7 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                /*exit_ok_kind=*/OP_EXIT,
                                /*allow_linked_ops=*/0,
                                /*allow_attr_op_arg=*/1,
+                               /*allow_reg_ops=*/0,
                                pending_case_jumps,
                                &n_pending_case_jumps,
                                &refuse_code);
@@ -1106,7 +1310,6 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   }
 
   uint32_t pos = 0;
-  uint16_t agg_result_index = 0;
   uint16_t checked_arith_ops[BC_MAX_OPS];
   uint16_t n_checked_arith_ops = 0;
   PendingCaseJump pending_case_jumps[BC_MAX_OPS];
@@ -1251,21 +1454,27 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
       }
 
       case BR_kOpSumBigint: {
+        /* Phase 5A fix: op->c (the value_updated/value_unsigned mask
+         * index) must be the wire agg_index — the interpreter writes
+         * agg_res_ptr[agg_index], i.e. agg_index IS the AggResItem
+         * index, and the writeback glue pairs acc_i64[i] with result i.
+         * The old per-op ordinal only coincided with agg_index for
+         * shapes with one aggregate op per result; a multi-arm CASE
+         * emits several Sum ops targeting the SAME agg_index and the
+         * ordinal mis-marked the mask. */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS ||
-            agg_result_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         if (!emit_op(out_prog, OP_SUM_BIGINT_CHECKED,
-                     (uint8_t)agg_index, reg_index, agg_result_index, 0)) {
+                     (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         checked_arith_ops[n_checked_arith_ops++] =
             (uint16_t)(out_prog->n_ops - 1);
-        agg_result_index++;
         pos += 1;
         break;
       }
@@ -1280,17 +1489,44 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * Unchecked: Int64 row counts cannot realistically overflow. */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS ||
-            agg_result_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
+        /* c = agg_index (the AggResItem index) — see the kOpSumBigint
+         * comment on the Phase 5A mask-index fix. */
         if (!emit_op(out_prog, OP_COUNT_BIGINT,
-                     (uint8_t)agg_index, reg_index, agg_result_index, 0)) {
+                     (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
-        agg_result_index++;
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpSkip: {
+        /* Phase 5A: unconditional forward skip over outer words — the
+         * planner emits one after each CASE arm to jump past the
+         * remaining arms (interpreter: exec_pos += skip_count, plus the
+         * loop's own +1 for this word). Lowers to OP_JUMP; the target
+         * outer-word position is resolved by the same pass that
+         * resolves embedded CASE skip offsets: end-of-program maps to
+         * the tail OP_EXIT, a target inside a multi-word instruction is
+         * MALFORMED, and backward targets reject. */
+        uint32_t skip_count = word & 0xFFFFu;
+        uint16_t jump_op_idx = (uint16_t)out_prog->n_ops;
+        if (!emit_op(out_prog, OP_JUMP, 0, 0, 0, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        if (n_pending_case_jumps >= BC_MAX_OPS) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        pending_case_jumps[n_pending_case_jumps++] = (PendingCaseJump){
+          .op_idx = jump_op_idx,
+          .target_word_pos = this_pos + 1u + skip_count,
+        };
         pos += 1;
         break;
       }
@@ -1312,6 +1548,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
             pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
             /*allow_linked_ops=*/1, /*allow_attr_op_arg=*/0,
+            /*allow_reg_ops=*/1,
             pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);
         if (rc != JIT_BRIDGE_OK) return rc;

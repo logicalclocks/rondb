@@ -51,6 +51,18 @@ typedef struct JitState {
    * AggResItem::is_unsigned. Appended last so existing stencils' baked
    * field offsets are unchanged. */
   uint64_t  value_unsigned[BC_MAX_ACCS];
+  /* Phase 5A: per-row interpreter-fallback flag. A cold-call helper
+   * sets it when the row hits a condition the JIT cannot represent
+   * (today: a NULL column value in a load — registers have no null
+   * tracking until Phase 5D). The blob keeps running to completion
+   * (results are garbage but side-effect free); the dispatch glue sees
+   * the flag, skips the accumulator writeback, and returns a sentinel
+   * so the caller re-runs THIS ROW through the interpreter — exact
+   * interpreter semantics (null-skip kernels, ZREGISTER_INIT_ERROR on
+   * null comparisons, ...) at interpreter speed for that row only.
+   * Only helpers touch this field (no stencil loads/stores it), so
+   * adding it required no stencil regen. */
+  uint32_t  row_fallback;
 } JitState;
 
 /* Per-row entry function — produced by jit1_compile.

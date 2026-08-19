@@ -2832,8 +2832,15 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * the actual aggregation instructions). */
 #ifdef DEBUG_JIT
 #ifdef ERROR_INSERT
-  const bool dump_jit_program = ERROR_INSERTED(4061);
-  const bool fatal_compile_failure = ERROR_INSERTED(4062);
+  /* 5119/5120, NOT the DBTUP-side 4061/4062: Cmvmi::execTAMPER_ORD
+   * routes `all error N` by number range (4000-4999 -> DBTUP,
+   * 5000-5999 -> DBLQH), so a 4xxx insert can never arm this block's
+   * ERROR_INSERTED. The DBTUP-side JIT inserts (4060-4063) keep their
+   * numbers; the proxy's compile-time diagnostics live here:
+   *   5119 = dump program + translation at JOIN_AGG_SETUP compile
+   *   5120 = compile failure is fatal (abort with the reject reason) */
+  const bool dump_jit_program = ERROR_INSERTED(5119);
+  const bool fatal_compile_failure = ERROR_INSERTED(5120);
 #else
   const bool dump_jit_program = false;
   const bool fatal_compile_failure = false;
@@ -2853,7 +2860,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       Uint32 bc_words = lp.m_agg_program_len - bc_off;
 #ifdef DEBUG_JIT
       if (dump_jit_program) {
-        g_eventLogger->info("[RONDB-1056] ERROR_INSERT 4061: "
+        g_eventLogger->info("[RONDB-1056] ERROR_INSERT 5119: "
                             "dumping JIT setup for key=%u", key);
         ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
                                   lp.m_agg_program + bc_off, bc_words,
@@ -2921,7 +2928,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                       ndb_jit_bridge_jit_op_name(aerr->offending_kind)));
           if (fatal_compile_failure) {
             g_eventLogger->error(
-                "ERROR_INSERT 4062: JIT admission rejected key=%u "
+                "ERROR_INSERT 5120: JIT admission rejected key=%u "
                 "reason=%d pc=%u target=%u kind=%u (%s). Aborting.",
                 key, (int)aerr->reason,
                 (unsigned)aerr->offending_pc,
@@ -2956,7 +2963,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           }
 #endif
           g_eventLogger->error(
-              "ERROR_INSERT 4062: JIT bridge rejected key=%u "
+              "ERROR_INSERT 5120: JIT bridge rejected key=%u "
               "reason=%d (%s) word=%u op=%u (%s) value=0x%08x. Aborting.",
               key, (int)brc, ndb_jit_bridge_reason_name(brc),
               (unsigned)berr.offending_word,
@@ -2968,7 +2975,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       }
     } else if (fatal_compile_failure) {
       g_eventLogger->error(
-          "ERROR_INSERT 4062: JIT setup found no aggregation bytecode "
+          "ERROR_INSERT 5120: JIT setup found no aggregation bytecode "
           "for key=%u (start=%u len=%u). Aborting.",
           key, (unsigned)bc_off, (unsigned)lp.m_agg_program_len);
       abort();
@@ -2980,7 +2987,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                 state->m_num_leaves, key));
     if (fatal_compile_failure) {
       g_eventLogger->error(
-          "ERROR_INSERT 4062: JIT skipped for multi-leaf setup "
+          "ERROR_INSERT 5120: JIT skipped for multi-leaf setup "
           "(%u leaves) key=%u. Aborting.",
           state->m_num_leaves, key);
       abort();

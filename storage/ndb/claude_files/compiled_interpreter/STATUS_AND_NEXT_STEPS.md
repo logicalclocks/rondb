@@ -299,11 +299,13 @@ Recommended order:
    in the sidecar (Phase 5's lattice doesn't exist yet); per-register
    state and the 16-byte hex window are not dumped (the byte offset +
    op kind + blob range cover the diagnosis need).
-5. **GROUP BY gate lift — DONE, CANARY-VERIFIED (2026-08-19).**
+5. **GROUP BY gate lift — DONE & FULLY VERIFIED (2026-08-19).**
    `rondb_jit_groupby_canary` passes post-regen (grouped SUM/COUNT JIT
    under 4060 + counter deltas; 500-group differential; grouped
-   join-agg; CASE-falls-back and >4-aggregates negatives). Remaining
-   sweep: full `ndb_push_agg` suite. All six slices in tree; the
+   join-agg; CASE-falls-back and >4-aggregates negatives), **and the
+   full `ndb_push_agg` suite passes** — the existing grouped tests
+   dispatching through the JIT are the broad regression net.
+   **Phase 8 is complete.** All six slices in tree; the
    generated stencil headers were regenerated for `OP_COUNT_BIGINT` +
    the `JitState::value_unsigned[]` unsigned-result mask. Shipped: (1) `op_count_bigint`
    stencil + `BR_kOpCount` bridge case + `value_unsigned` writeback
@@ -335,16 +337,41 @@ Recommended order:
    bench (honest expectation: smaller win than scalar — the hash find
    stays interpreted).
 
-**Roadmap decided 2026-08-19 (Mikael):** GROUP BY gate lift first
-(plan: `phase_8_groupby_gate_lift.md`), **then Phase 5** — the
-stencil-matrix expansion, with stencil priorities driven by the new
-`ndbinfo.jit` `programs_fallback` counter + rate-limited fallback log
-(they name the rejecting site/opcode in real workloads) rather than the
-doc's a-priori order. **First concrete Phase 5 item (found by the
-groupby canary run):** lower the `BRANCH_*_REG_REG` embedded branch
-family — the SQL planner's pushed CASE aggregation emits those, so
-every SQL CASE shape currently falls back; groupby-canary Q3's
-delta==0 assertion flips when it lands. **Phase 6** (`--force-jit` differential
+**Phase 5A — DONE & VERIFIED (2026-08-19; full ndb_push_agg sweep
+green after three post-first-green debugging rounds — see
+`phase_5_roadmap.md` §5A findings: untyped READ_ATTR decode fixed
+(INT columns read as 8 bytes → garbage compares), kOpSkip lowered
+(outer CASE-arm jumps), zero-skip output blocks now emit their
+disposition jump (mid-stream fall-through), and the proxy error
+inserts renumbered 5119/5120 — 4xxx never routed to DBLQH).** SQL CASE
+aggregation now JITs: embedded `READ_ATTR`/`LOAD_CONST64`/
+`BRANCH_*_REG_REG` lowered (agg mode only, reusing the Phase 1 hot
+branch stencils — **no regen**), `LOAD_CONST16` also materializes its
+register, and TWO latent bugs fixed along the way: (1) **production
+crash** — the load helper abort()ed on NULL column values, so
+`SUM(nullable_col)` with a NULL row crashed the node; replaced by a
+per-row interpreter fallback (`JitState::row_fallback` →
+`NDB_JIT_ROW_FALLBACK` → the row re-runs on the interpreter, exact
+null semantics; new `rondb_jit_nullable_canary` incl. all-NULL-group
+per-group NULL); (2) the aggregate `value_updated` mask index was a
+per-op ordinal instead of the wire `agg_index` — wrong for multi-arm
+CASE (several Sum ops, same aggregate). Groupby-canary Q3 flipped to
+must-JIT. Details: `phase_5_roadmap.md` §5A. Verify: rebuild ndbmtd +
+host tools; bridge_tests (T47 family + updated T22b/c), coldcall;
+mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
+
+**Roadmap decided 2026-08-19 (Mikael):** GROUP BY gate lift ✅ done →
+**Phase 5, NOW CURRENT — sub-phased plan in `phase_5_roadmap.md`**
+(supersedes the monolithic sequencing of `phase_5_implementation.md`,
+which stays the stencil-level reference): 5A embedded
+READ_ATTR/LOAD_CONST64/BRANCH_REG_REG (unblocks SQL CASE — mostly
+bridge work reusing the Phase 1 REG_REG branch stencils; flips
+groupby-canary Q3), 5B MIN/MAX BIGINT (first-row-init input mask;
+repoint the Test 27/28 fallback canary to kOpMod), 5C type-state
+lattice + DOUBLE family (the big one), 5D nullable columns + register
+null-tracking, 5E int div/mod (NULL-on-zero, needs 5D), 5F string
+MIN/MAX. Order after 5A is provisional — re-rank between sub-phases
+from `programs_fallback` + the fallback log on real workloads. **Phase 6** (`--force-jit` differential
 conformance) is handled when this branch merges with the parallel
 pushdown-join + CTE work that carries the interpreter test-program
 harness — not scheduled independently.
@@ -624,8 +651,14 @@ very loose guard, not a restoration).
   instead of 0. (See `phase_5_1_row_accumulated.md` for the design;
   confirm the shipped form matches before relying on it.)
 - **Diagnostics:** error inserts `4060` (fallback-fatal canary),
-  `4061` (dump program+translation), `4062` (setup-compile fatal),
-  `4063` (bounded row trace), gated (commit `16feda17b`).
+  `4061` (dump program+translation, DBTUP-side paths), `4063` (bounded
+  row trace), gated (commit `16feda17b`). **Renumbered 2026-08-19:**
+  the DblqhProxy compile-time diagnostics are `5119` (dump program +
+  translation at JOIN_AGG_SETUP) and `5120` (compile failure fatal) —
+  they were 4061/4062, which `all error N` can never arm on the proxy
+  because Cmvmi::execTAMPER_ORD routes 4xxx to DBTUP and 5xxx to DBLQH
+  (found while debugging the 5A join-CASE regression: the proxy dump
+  silently never fired).
 - **Tests/bench (host binaries, run directly — no ctest):**
   `proto_microbench` (Phase 1 PASS: 2.66× warm speedup, 1.82µs warm
   compile, 93-row break-even), `admission_tests`, `bridge_tests`,

@@ -59,6 +59,7 @@
 #define kOpMulBigint     24
 #define kOpEmbeddedInterp 28
 #define kOpDiv            4
+#define kOpSkip          29
 #define kOpSetRegNull    30
 
 #define NDB_TYPE_BIGINT  9
@@ -590,6 +591,26 @@ static uint32_t enc_emb_read_linked_to_mem(uint32_t position) {
 #define EMB_EXIT_OK_LAST         22
 #define EMB_LOAD_CONST16          4
 #define EMB_WRITE_INTERP_OUTPUT 123
+/* Phase 5A embedded reg-ops (the SQL planner's CASE condition family). */
+#define EMB_READ_ATTR             1
+#define EMB_LOAD_CONST64          6
+#define EMB_BRANCH_EQ_REG_REG    12
+#define EMB_BRANCH_NE_REG_REG    13
+#define EMB_BRANCH_GT_REG_REG    16
+
+static uint32_t enc_emb_read_attr(uint32_t attr_id, uint32_t reg) {
+  return (attr_id << 16) | ((reg & 0x7u) << 6) | EMB_READ_ATTR;
+}
+static uint32_t enc_emb_load_const64_hdr(uint32_t reg) {
+  return ((reg & 0x7u) << 6) | EMB_LOAD_CONST64;
+}
+/* left_reg bits 6..8, right_reg bits 9..11, forward offset bits 30..16
+ * (mirrors ha_ndbcluster_push_agg.cc's emission). */
+static uint32_t enc_emb_branch_reg_reg(uint32_t op, uint32_t left,
+                                       uint32_t right, uint32_t offset) {
+  return op | ((left & 0x7u) << 6) | ((right & 0x7u) << 9) |
+         ((offset & 0x7FFFu) << 16);
+}
 static uint32_t enc_emb_load_const16(uint32_t reg, uint32_t val) {
   return EMB_LOAD_CONST16 | ((reg & 0x7u) << 6) | ((val & 0xFFFFu) << 16);
 }
@@ -767,8 +788,10 @@ static void test_embedded_linked_backward_reject(void) {
 
 /* T22b: Phase 5.1 linked filter with an explicit ACCEPT path (the full
  * row-disposition model). The non-NULL branch lands on the accept
- * sequence (LOAD_CONST16 0 + WRITE_INTERPRETER_OUTPUT 0 + EXIT_OK),
- * which emits no Ops, so the branch must resolve to the outer LoadCol.
+ * sequence (LOAD_CONST16 0 + WRITE_INTERPRETER_OUTPUT 0 + EXIT_OK).
+ * Phase 5A: LOAD_CONST16 now ALSO materializes its register (a
+ * following REG_REG compare may read it), so the accept branch
+ * resolves to that load and falls through to the outer LoadCol.
  *   embedded(emb_len=6):
  *     0: READ_LINKED_TO_MEM 0
  *     1: BRANCH_LINKED_NE_NULL +2   (non-NULL -> accept @3)
@@ -778,8 +801,11 @@ static void test_embedded_linked_backward_reject(void) {
  *     5: EXIT_OK
  *   outer: kOpLoadCol, kOpSumBigint
  * Expected Ops: [0]LOAD_LINKED_TO_MEM [1]BRANCH_LINKED_NE_NULL(c=3)
- *   [2]OP_EXIT(reject) [3]OP_LOAD_COL_NDB [4]OP_SUM_BIGINT_CHECKED
- *   [5]OP_EXIT(tail) [6]OP_OVERFLOW_EXIT. */
+ *   [2]OP_EXIT(reject) [3]OP_LOAD_CONST_UINT16
+ *   [4]OP_JUMP(c=5 — the zero-skip disposition jump to the outer
+ *   continuation; required so mid-stream output blocks can't fall
+ *   through into a following block) [5]OP_LOAD_COL_NDB
+ *   [6]OP_SUM_BIGINT_CHECKED [7]OP_EXIT(tail) [8]OP_OVERFLOW_EXIT. */
 static void test_embedded_linked_accept_path(void) {
   uint32_t prog[9] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
@@ -795,21 +821,27 @@ static void test_embedded_linked_accept_path(void) {
 
   Program p;
   if (!expect_accepted("T22b embedded_linked_accept_path", prog, 9,
-                       &p, /*expected_n_ops=*/7)) return;
+                       &p, /*expected_n_ops=*/9)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 1,
                        "kind", p.ops[1].kind,
                        OP_BRANCH_LINKED_NE_NULL)) return;
-  /* Accept branch resolves to the outer LoadCol at op index 3. */
+  /* Accept branch resolves to the materialized LOAD_CONST16 at op 3. */
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 1,
                        "c", p.ops[1].c, 3)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 2,
                        "kind", p.ops[2].kind, OP_EXIT)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 3,
-                       "kind", p.ops[3].kind, OP_LOAD_COL_NDB)) return;
+                       "kind", p.ops[3].kind, OP_LOAD_CONST_UINT16)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 4,
-                       "kind", p.ops[4].kind, OP_SUM_BIGINT_CHECKED)) return;
+                       "kind", p.ops[4].kind, OP_JUMP)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 4,
-                       "d", p.ops[4].d, 6)) return;
+                       "c", p.ops[4].c, 5)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 5,
+                       "kind", p.ops[5].kind, OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 6,
+                       "kind", p.ops[6].kind, OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 6,
+                       "d", p.ops[6].d, 8)) return;
   mark_pass("T22b embedded_linked_accept_path");
 }
 
@@ -824,7 +856,9 @@ static void test_embedded_linked_accept_path(void) {
  *     4: WRITE_INTERPRETER_OUTPUT r2, 0
  *     5: EXIT_OK
  *   outer: kOpLoadCol(0), kOpSum(0), kOpLoadCol(1), kOpSum(1)
- * Expected jump target: outer word pos 9 -> JIT op index 6. */
+ * Phase 5A: LOAD_CONST16 materializes its register too, so the op list
+ * gains one load before the OP_JUMP and the jump target shifts.
+ * Expected jump target: outer word pos 9 -> JIT op index 7. */
 static void test_embedded_case_skip_offset_accept(void) {
   uint32_t prog[11] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
@@ -842,25 +876,27 @@ static void test_embedded_case_skip_offset_accept(void) {
 
   Program p;
   if (!expect_accepted("T22c embedded_case_skip_offset_accept", prog, 11,
-                       &p, /*expected_n_ops=*/10)) return;
+                       &p, /*expected_n_ops=*/11)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 1,
                        "c", p.ops[1].c, 3)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 3,
-                       "kind", p.ops[3].kind, OP_JUMP)) return;
-  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 3,
-                       "c", p.ops[3].c, 6)) return;
+                       "kind", p.ops[3].kind, OP_LOAD_CONST_UINT16)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 4,
-                       "kind", p.ops[4].kind, OP_LOAD_COL_NDB)) return;
+                       "kind", p.ops[4].kind, OP_JUMP)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 4,
+                       "c", p.ops[4].c, 7)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 5,
-                       "kind", p.ops[5].kind, OP_SUM_BIGINT_CHECKED)) return;
+                       "kind", p.ops[5].kind, OP_LOAD_COL_NDB)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 6,
-                       "kind", p.ops[6].kind, OP_LOAD_COL_NDB)) return;
+                       "kind", p.ops[6].kind, OP_SUM_BIGINT_CHECKED)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 7,
-                       "kind", p.ops[7].kind, OP_SUM_BIGINT_CHECKED)) return;
-  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 5,
-                       "d", p.ops[5].d, 9)) return;
-  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 7,
-                       "d", p.ops[7].d, 9)) return;
+                       "kind", p.ops[7].kind, OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 8,
+                       "kind", p.ops[8].kind, OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 6,
+                       "d", p.ops[6].d, 10)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 8,
+                       "d", p.ops[8].d, 10)) return;
   mark_pass("T22c embedded_case_skip_offset_accept");
 }
 
@@ -1356,8 +1392,9 @@ static void test_scan_filter_exit_ok_last_reject(void) {
  *   sum_bigint acc[1], r0
  * Expected lowering (5 ops): load_col_ndb, COUNT (unchecked — no
  * overflow branch), SUM_BIGINT_CHECKED, exit, overflow_exit (from the
- * checked SUM). Result indexes are assigned in aggregate-op order:
- * COUNT gets result 0, SUM result 1 — independent of the acc slots. */
+ * checked SUM). The mask index (op->c) equals the wire agg_index (the
+ * AggResItem index — Phase 5A fix): COUNT agg 0 -> c=0, SUM agg 1 ->
+ * c=1. */
 static void test_count_lowering_accept(void) {
   const char *name = "T46 count_lowering_accept";
   uint32_t prog[3] = {
@@ -1387,6 +1424,152 @@ static void test_count_slot_oor_reject(void) {
   assert_rejected("T46b count_slot_oor_reject", prog, 2,
                   JIT_BRIDGE_REG_OUT_OF_RANGE,
                   /*want_word=*/1, kOpCount);
+}
+
+/* T47: Phase 5A — the SQL planner's CASE condition family lowers.
+ * Embedded shape (ha_ndbcluster_push_agg.cc emit_int_comparison_branch
+ * + the single-arm accept path):
+ *   emb(7): 0 READ_ATTR attr7 -> r0
+ *           1 LOAD_CONST16 r1, 115
+ *           2 BRANCH_GT_REG_REG r0, r1, +2   (true -> accept @4)
+ *           3 EXIT_REFUSE 626
+ *           4 LOAD_CONST16 r2, 0
+ *           5 WRITE_INTERPRETER_OUTPUT r2, 0
+ *           6 EXIT_OK
+ *   outer: kOpLoadCol(r0, c0), kOpSum(r0, agg0)
+ * Expected ops (10): [0]LOAD_COL_NDB(r0<-attr7) [1]LOAD_CONST_UINT16(r1)
+ *   [2]BRANCH_GT_INT_INT(a=0,b=1,c=4) [3]OP_EXIT(refuse)
+ *   [4]LOAD_CONST_UINT16(r2, materialized accept marker)
+ *   [5]OP_JUMP(c=6 — zero-skip disposition jump)
+ *   [6]outer LOAD_COL_NDB [7]SUM_CHECKED(c=0,d=9) [8]OP_EXIT(tail)
+ *   [9]OVERFLOW_EXIT. */
+static void test_case_condition_family_accept(void) {
+  const char *name = "T47 case_condition_family_accept";
+  uint32_t prog[10] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+    enc_emb_read_attr(/*attr_id=*/7, /*reg=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/115),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, /*left=*/0, /*right=*/1,
+                           /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 10, &p, /*expected_n_ops=*/10)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 7)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_GT_INT_INT)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 1)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 5, "c", p.ops[5].c, 6)) return;
+  if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind,
+                       OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field(name, &p, 7, "kind", p.ops[7].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 7, "c", p.ops[7].c, 0)) return;
+  mark_pass(name);
+}
+
+/* T47b: embedded LOAD_CONST64 lowers to OP_LOAD_CONST_INT with the
+ * 64-bit immediate reassembled low-word-first. */
+static void test_load_const64_lowering(void) {
+  const char *name = "T47b load_const64_lowering";
+  const int64_t want = (int64_t)0x1122334455667788LL;
+  uint32_t prog[7] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_read_attr(/*attr_id=*/3, /*reg=*/0),
+    enc_emb_load_const64_hdr(/*reg=*/1),
+    (uint32_t)(0x55667788u),              /* low word  */
+    (uint32_t)(0x11223344u),              /* high word */
+    enc_emb_branch_reg_reg(EMB_BRANCH_NE_REG_REG, 0, 1, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  Program p;
+  /* ops: [0]LOAD_COL_NDB [1]LOAD_CONST_INT [2]BRANCH_NE(c=3)
+   *      [3]OP_EXIT(refuse) [4]tail OP_EXIT. No aggregation ops, so no
+   *      OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 7, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_CONST_INT)) return;
+  if (p.ops[1].imm != want) {
+    mark_fail(name, "imm=%lld, want %lld",
+              (long long)p.ops[1].imm, (long long)want);
+    return;
+  }
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_NE_INT_INT)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 3)) return;
+  mark_pass(name);
+}
+
+/* T47c: the reg-ops family stays REJECTED on the scan-filter path
+ * (allow_reg_ops=0 there — NdbScanFilter never emits it and the
+ * per-row fallback plumbing is aggregation-only today). */
+static void test_scan_filter_reg_ops_reject(void) {
+  uint32_t filter_prog[2] = {
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_scan_filter_rejected("T47c scan_filter_reg_ops_reject",
+                              filter_prog, 2,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/UINT32_MAX,
+                              EMB_BRANCH_EQ_REG_REG);
+}
+
+/* T47d: a backward REG_REG branch (direction bit 31) rejects the whole
+ * program — same forward-only contract as every embedded branch. */
+static void test_reg_reg_backward_reject(void) {
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/1) |
+        0x80000000u,
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T47d reg_reg_backward_reject", prog, 3,
+                  JIT_BRIDGE_EMBEDDED_BACKWARD,
+                  /*want_word=*/UINT32_MAX, EMB_BRANCH_EQ_REG_REG);
+}
+
+/* T48: outer kOpSkip lowers to OP_JUMP (Phase 5A — the planner emits a
+ * Skip after each CASE arm to jump past the remaining arms). Two-arm
+ * shape, both arms feeding the SAME aggregate (RepeatAgg re-emits the
+ * aggregate opcode with the same agg id):
+ *   0: kOpLoadCol r0,c0   1: kOpSum r0,agg0
+ *   2: kOpSkip 2          (target word 5 = end -> tail OP_EXIT)
+ *   3: kOpLoadCol r1,c1   4: kOpSum r1,agg0
+ * Expected ops (7): [0]LOAD_COL [1]SUM_CHECKED(c=0) [2]OP_JUMP(c=5)
+ *   [3]LOAD_COL [4]SUM_CHECKED(c=0) [5]OP_EXIT(tail) [6]OVERFLOW_EXIT. */
+static void test_skip_lowers_to_jump(void) {
+  const char *name = "T48 skip_lowers_to_jump";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_op(kOpSkip, /*skip_count=*/2),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 5)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 0)) return;
+  if (!expect_op_field(name, &p, 4, "c", p.ops[4].c, 0)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind, OP_EXIT)) return;
+  mark_pass(name);
 }
 
 int main(void) {
@@ -1444,6 +1627,11 @@ int main(void) {
   test_scan_filter_exit_ok_last_reject();
   test_count_lowering_accept();
   test_count_slot_oor_reject();
+  test_case_condition_family_accept();
+  test_load_const64_lowering();
+  test_scan_filter_reg_ops_reject();
+  test_reg_reg_backward_reject();
+  test_skip_lowers_to_jump();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

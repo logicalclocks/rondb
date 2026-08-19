@@ -20,7 +20,8 @@
 #include "AggInterpreter.hpp"   /* for AlignedType / IsUnsigned helpers */
 
 #include <ndb_global.h>
-#include <my_byteorder.h>      /* sint8korr */
+#include <my_byteorder.h>      /* sint8korr / sint4korr / ... */
+#include <AttributeDescriptor.hpp>  /* column type decode for READ_ATTR */
 
 #include <atomic>              /* observability counters */
 #include <cstdlib>             /* malloc / free for cache products */
@@ -191,30 +192,90 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
       ctx->req_struct, col_id, read_buf,
       sizeof(read_buf) / sizeof(Uint32));
   if (ret < 0) {
-    /* Column read failed — Phase 4 panics. Phase 5 wires this into
-     * the JoinAggInterpreter error path so the row can be skipped
-     * cleanly. */
-    g_eventLogger->error(
-        "ndb_jit_h_load_col: readAttributes failed for col_id=%u (rc=%d)",
-        col_id, ret);
-    abort();
+    /* Column read failed — flag the row for interpreter fallback so
+     * the interpreter path produces its normal error handling for it.
+     * (Pre-5A this abort()ed.) */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
   }
 
   AttributeHeader *header =
       reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
-    /* Bridge admission was supposed to reject programs touching
-     * nullable columns. If a NULL surfaced anyway, schema /
-     * admission has a bug. */
-    g_eventLogger->error(
-        "ndb_jit_h_load_col: unexpected NULL value for col_id=%u "
-        "(admission should have rejected the program)", col_id);
-    abort();
+    /* NULL column value. The bridge cannot see nullability (it only
+     * sees bytecode) and the SQL planner pushes aggregation over
+     * nullable columns, so this is a NORMAL runtime condition — not an
+     * admission bug. JIT registers have no null tracking until Phase
+     * 5D, so flag the row: the glue discards this row's JIT run and
+     * the caller re-runs it on the interpreter, whose register null
+     * flags give the exact semantics (SUM/COUNT null-skip,
+     * ZREGISTER_INIT_ERROR on null comparisons). Pre-5A this
+     * abort()ed — a production crash for SUM(nullable_col) with any
+     * NULL row. */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
   }
 
-  /* Decode the BIGINT value (8 bytes, little-endian). */
-  s->regs_i64[dst_reg] =
-      sint8korr(reinterpret_cast<char *>(&read_buf[1]));
+  /* Decode by the column's DECLARED type, mirroring the interpreter's
+   * handleReadAttrIntoReg descriptor inspection. This matters because
+   * the embedded READ_ATTR wire format carries no type: decoding an
+   * INT column's 4-byte cell as 8 bytes reads a garbage high word (the
+   * 5A join-CASE all-ELSE bug). The outer kOpLoadCol path is only
+   * admitted for declared-BIGINT programs, so it always lands in the
+   * BIGINT case below — behaviour unchanged.
+   *
+   * Types the signed-i64 register model cannot represent exactly take
+   * the per-row interpreter fallback: BIGUNSIGNED (values >= 2^63
+   * would misorder under the hot stencils' signed compare), FLOAT /
+   * DOUBLE (until Phase 5C), strings, and pseudo columns. Narrower
+   * unsigned ints zero-extend to non-negative i64 and compare
+   * correctly. */
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
+  Int64 value;
+  switch (type_id) {
+    case NDB_TYPE_TINYINT:
+      value = (Int64)*reinterpret_cast<const Int8 *>(data);
+      break;
+    case NDB_TYPE_TINYUNSIGNED:
+      value = (Int64)(Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLINT:
+      value = (Int64)(Int16)sint2korr(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      value = (Int64)(Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMINT:
+      value = (Int64)sint3korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      value = (Int64)(Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_INT:
+      value = (Int64)sint4korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      value = (Int64)(Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGINT:
+      value = (Int64)sint8korr(data);
+      break;
+    default:
+      /* Not representable in the signed-i64 register model — re-run
+       * the row on the interpreter (typed registers there handle it). */
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  s->regs_i64[dst_reg] = value;
 
 #ifdef ERROR_INSERT
   if (ctx->trace_enabled) {
@@ -479,6 +540,12 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   /* Run the JIT'd program. */
   entry_fn(&s);
 
+  if (s.row_fallback != 0) {
+    /* A helper hit a condition the JIT can't represent (NULL column
+     * value). Discard everything from this run — no writeback — and
+     * tell the caller to re-run the row on the interpreter. */
+    return NDB_JIT_ROW_FALLBACK;
+  }
   if (s.row_overflowed != 0) {
     return ZAGG_MATH_OVERFLOW;
   }

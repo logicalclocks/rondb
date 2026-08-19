@@ -50,21 +50,17 @@ SELECT grp, COUNT(v), SUM(v) FROM t1 GROUP BY grp;
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
---echo # Q3: grouped CASE stays on the interpreter for now (counter delta
---echo #     exactly 0) with correct results. Two findings behind this
---echo #     (2026-08-19): the SQL planner only pushes CASE with a pushable
---echo #     ELSE value (ELSE NULL is not pushed at all), and the pushed
---echo #     form emits BRANCH_*_REG_REG inside the embedded block, which
---echo #     the bridge does not lower until Phase 5's embedded-branch
---echo #     family. When Phase 5 lands, this delta flips to >= 1 — update
---echo #     the assertion then. NB per-group SQL-NULL is therefore not
---echo #     expressible via pushed SQL today; the value_updated writeback
---echo #     that provides it is group-agnostic and scalar-proven (NDB API
---echo #     Test 25). No 4060 here: this fallback is expected.
+--echo # Q3: grouped CASE aggregation must JIT (Phase 5A: the embedded
+--echo #     READ_ATTR / LOAD_CONST16/64 / BRANCH_*_REG_REG condition
+--echo #     family lowers, and multi-arm same-aggregate mask indexes are
+--echo #     fixed). Note the planner still only pushes CASE with a
+--echo #     pushable ELSE value — ELSE NULL is evaluated server-side.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
 --sorted_result
 SELECT grp, SUM(CASE WHEN v > 115 THEN v ELSE 0 END) AS s FROM t1 GROUP BY grp;
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q3_case_stays_on_interpreter;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 --echo # Q4: high-cardinality differential — 2048 rows over 500 groups
 --echo #     (chunk-allocator growth under JIT dispatch). The outer derived

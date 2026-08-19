@@ -968,7 +968,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
    * Per-program decision; the branch predictor folds it after
    * a couple of iterations. */
   if (m_jit_entry != nullptr) {
-    m_processed_rows++;
     /* Make this row's linked-attribute buffer visible to the JIT
      * cold-call helpers (ndb_jit_h_read_linked_to_mem reads it via
      * req_struct->m_linked_attr_data). The interpreter path sets these
@@ -982,7 +981,15 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                                   m_n_agg_results, this);
     req_struct->m_linked_attr_data = nullptr;
     req_struct->m_linked_attr_len = 0;
-    return jit_rc;
+    if (jit_rc != NDB_JIT_ROW_FALLBACK) {
+      m_processed_rows++;
+      return jit_rc;
+    }
+    /* Phase 5A per-row fallback: the row hit a condition the JIT can't
+     * represent (NULL column value) — its JIT run was discarded (no
+     * writeback). Fall through and run THIS ROW on the interpreter
+     * loop below (which re-sets the linked-attr fields itself and
+     * counts m_processed_rows). */
   }
 
 #ifdef ERROR_INSERT
