@@ -5161,65 +5161,14 @@ RonSQLPreparer::compile()
   // execute_join), so ResultPrinter's normal construction applies.
   // Phase E.3: projection-only CTE_SCAN-root queries skip the
   // GROUP-BY-validating compile() path and use the pass-through
-  // formatter helpers instead.
+  // formatter helpers instead — Phase 0b gives them the same column
+  // metadata so temporal / DECIMAL outputs format correctly.
   if (m_is_aggregate_query) {
-    ResultPrinter::ColumnMetadata* column_metadata =
-        m_amalloc->alloc_exc<ResultPrinter::ColumnMetadata>(m_columns.size());
-    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-      column_metadata[col_idx].charset = NULL;
-      column_metadata[col_idx].precision = 0;
-      column_metadata[col_idx].scale = 0;
-      column_metadata[col_idx].has_metadata = false;
-      column_metadata[col_idx].temporal =
-          ResultPrinter::TemporalDisplay::NONE;
-      column_metadata[col_idx].temporal_fsp = 0;
-      if (m_main_scope.resolved_columns == NULL) continue;
-      const QueryScope::ResolvedColumnRef& ref =
-          m_main_scope.resolved_columns[col_idx];
-      const NdbDictionary::Column* col = ref.dict_column;
-      if (col == NULL) continue;
-      column_metadata[col_idx].charset = col->getCharset();
-      column_metadata[col_idx].precision = col->getPrecision();
-      column_metadata[col_idx].scale = col->getScale();
-      column_metadata[col_idx].has_metadata = true;
-      // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
-      // ref.dict_column back to the original source column even through a CTE
-      // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal
-      // column itself.  Tag it so the printer decodes the Bigunsigned packed
-      // value back to its text form.
-      switch (col->getType()) {
-      case NdbDictionary::Column::Date:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::DATE;
-        break;
-      case NdbDictionary::Column::Year:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::YEAR;
-        break;
-      case NdbDictionary::Column::Datetime2:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::DATETIME2;
-        column_metadata[col_idx].temporal_fsp = col->getPrecision();
-        break;
-      case NdbDictionary::Column::Time2:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::TIME2;
-        column_metadata[col_idx].temporal_fsp = col->getPrecision();
-        break;
-      case NdbDictionary::Column::Timestamp2:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::TIMESTAMP2;
-        column_metadata[col_idx].temporal_fsp = col->getPrecision();
-        break;
-      default:
-        break;
-      }
-    }
     m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
       ResultPrinter(m_amalloc,
                     &m_context.ast_root,
                     &m_columns,
-                    column_metadata,
+                    build_result_column_metadata(),
                     m_conf.output_format,
                     m_conf.err_stream);
   } else {
@@ -5227,10 +5176,69 @@ RonSQLPreparer::compile()
       ResultPrinter(m_amalloc,
                     &m_context.ast_root,
                     &m_columns,
+                    build_result_column_metadata(),
                     m_conf.output_format,
                     m_conf.err_stream,
                     /*passthrough_marker=*/true);
   }
+}
+
+ResultPrinter::ColumnMetadata*
+RonSQLPreparer::build_result_column_metadata()
+{
+  ResultPrinter::ColumnMetadata* column_metadata =
+      m_amalloc->alloc_exc<ResultPrinter::ColumnMetadata>(m_columns.size());
+  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    column_metadata[col_idx].charset = NULL;
+    column_metadata[col_idx].precision = 0;
+    column_metadata[col_idx].scale = 0;
+    column_metadata[col_idx].has_metadata = false;
+    column_metadata[col_idx].temporal =
+        ResultPrinter::TemporalDisplay::NONE;
+    column_metadata[col_idx].temporal_fsp = 0;
+    if (m_main_scope.resolved_columns == NULL) continue;
+    const QueryScope::ResolvedColumnRef& ref =
+        m_main_scope.resolved_columns[col_idx];
+    const NdbDictionary::Column* col = ref.dict_column;
+    if (col == NULL) continue;
+    column_metadata[col_idx].charset = col->getCharset();
+    column_metadata[col_idx].precision = col->getPrecision();
+    column_metadata[col_idx].scale = col->getScale();
+    column_metadata[col_idx].has_metadata = true;
+    // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
+    // ref.dict_column back to the original source column even through a CTE
+    // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal
+    // column itself.  Tag it so the printer decodes the Bigunsigned packed
+    // value back to its text form.
+    switch (col->getType()) {
+    case NdbDictionary::Column::Date:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::DATE;
+      break;
+    case NdbDictionary::Column::Year:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::YEAR;
+      break;
+    case NdbDictionary::Column::Datetime2:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::DATETIME2;
+      column_metadata[col_idx].temporal_fsp = col->getPrecision();
+      break;
+    case NdbDictionary::Column::Time2:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::TIME2;
+      column_metadata[col_idx].temporal_fsp = col->getPrecision();
+      break;
+    case NdbDictionary::Column::Timestamp2:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::TIMESTAMP2;
+      column_metadata[col_idx].temporal_fsp = col->getPrecision();
+      break;
+    default:
+      break;
+    }
+  }
+  return column_metadata;
 }
 
 void
@@ -5923,13 +5931,14 @@ void
 RonSQLPreparer::collect_pk_equalities(
     struct ConditionalExpression* ce,
     const NdbDictionary::Table* table,
-    struct ConditionalExpression* pk_const[])
+    struct ConditionalExpression* pk_const[],
+    struct ConditionalExpression* pk_eq_ce[])
 {
   if (ce == NULL) return;
   if (ce->op == T_AND)
   {
-    collect_pk_equalities(ce->args.left, table, pk_const);
-    collect_pk_equalities(ce->args.right, table, pk_const);
+    collect_pk_equalities(ce->args.left, table, pk_const, pk_eq_ce);
+    collect_pk_equalities(ce->args.right, table, pk_const, pk_eq_ce);
     return;
   }
   if (ce->op != T_EQUALS) return;
@@ -5956,9 +5965,74 @@ RonSQLPreparer::collect_pk_equalities(
     if (pk_name != NULL && strcmp(pk_name, col_name) == 0)
     {
       pk_const[k] = const_side;
+      if (pk_eq_ce != NULL) pk_eq_ce[k] = ce;
       break;
     }
   }
+}
+
+// Phase 0a helper: AND-flatten a simplified WHERE tree into its
+// top-level conjuncts.  Sets *overflow instead of throwing so callers
+// can fall back to the whole-tree filter path, which never flattens.
+static void
+flatten_and_conjuncts(ConditionalExpression* ce,
+                      ConditionalExpression* out[],
+                      Uint32* num,
+                      bool* overflow)
+{
+  if (ce == NULL || *overflow) return;
+  if (ce->op == T_AND)
+  {
+    flatten_and_conjuncts(ce->args.left, out, num, overflow);
+    flatten_and_conjuncts(ce->args.right, out, num, overflow);
+    return;
+  }
+  if (*num >= MAX_WHERE_CONJUNCTS)
+  {
+    *overflow = true;
+    return;
+  }
+  out[(*num)++] = ce;
+}
+
+bool
+RonSQLPreparer::build_root_residual(
+    struct ConditionalExpression* where_ce,
+    struct ConditionalExpression* const consumed[],
+    int nkeys,
+    struct ConditionalExpression** residual_out)
+{
+  *residual_out = NULL;
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num = 0;
+  bool overflow = false;
+  flatten_and_conjuncts(where_ce, conjuncts, &num, &overflow);
+  if (overflow) return false;
+  ConditionalExpression* residual = NULL;
+  for (Uint32 i = 0; i < num; i++)
+  {
+    bool used = false;
+    for (int k = 0; k < nkeys; k++)
+    {
+      if (consumed[k] == conjuncts[i]) { used = true; break; }
+    }
+    if (used) continue;
+    if (residual == NULL)
+    {
+      residual = conjuncts[i];
+    }
+    else
+    {
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = residual;
+      combined->args.right = conjuncts[i];
+      residual = combined;
+    }
+  }
+  *residual_out = residual;
+  return true;
 }
 
 void
@@ -6824,6 +6898,55 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
   return def;
 }
 
+const NdbQueryOperationDef*
+RonSQLPreparer::emit_pk_equality_index_scan_root(
+    NdbQueryBuilder* qb, QueryScope& scope,
+    const NdbDictionary::Table* root_table,
+    ConditionalExpression* const pk_const[], int nkeys,
+    ConditionalExpression* residual,
+    NdbQueryOptions& rootOpts)
+{
+  const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  for (int k = 0; k < nkeys; k++)
+    pk_col_names[k] = root_table->getPrimaryKey(k);
+  const NdbDictionary::Index* pk_ordered_idx =
+      QueryPlanner::findOrderedIndex(
+          m_dict, root_table, pk_col_names, (Uint32)nkeys);
+  if (pk_ordered_idx == NULL)
+    return NULL;
+  const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+  for (int k = 0; k < nkeys; k++)
+  {
+    const NdbDictionary::Column* pk_col =
+        root_table->getColumn(pk_col_names[k]);
+    ndbrequire(pk_col != NULL);
+    raw_value rv = encode_constant(pk_const[k], pk_col);
+    pk_keys[k] = qb->constValue(rv.val, rv.len);
+    require_run(pk_keys[k] != NULL,
+                "Failed to create const value for PK index scan.");
+  }
+  pk_keys[nkeys] = nullptr;
+  if (residual != NULL)
+  {
+    // Phase 0a: residual conjuncts (not consumed as equality bounds) go
+    // through an InterpretedCode filter, mirroring emit_index_scan_root.
+    NdbInterpretedCode code(root_table);
+    NdbScanFilter filter(&code);
+    filter.setSqlCmpSemantics();
+    filter.begin(NdbScanFilter::AND);
+    apply_filter(&filter, scope, residual);
+    filter.end();
+    code.finalise();
+    require_run(rootOpts.setInterpretedCode(code) == 0,
+                "Failed to set interpreted code on root PK index scan.");
+  }
+  NdbQueryIndexBound bound(pk_keys);
+  const NdbQueryOperationDef* def =
+      qb->scanIndex(pk_ordered_idx, root_table, &bound, &rootOpts);
+  require_run(def != NULL, "Failed to create root PK index scan.");
+  return def;
+}
+
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
 // lookup when WHERE fully covers the PK and no child is a scan; ordered
 // index scan with equality bounds when PK-covered with a scan child;
@@ -6874,6 +6997,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     bool root_pk_covered = false;
     int root_nkeys = 0;
     ConditionalExpression* root_pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    ConditionalExpression* root_pk_eq[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    ConditionalExpression* root_residual = NULL;
     bool root_has_scan_child = false;
     bool root_cte_is_scalar =
         (plan.ops[0].cte_def != NULL &&
@@ -6933,15 +7058,29 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     {
       ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
       root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
-      for (int k = 0; k < root_nkeys; k++) root_pk_const[k] = NULL;
+      for (int k = 0; k < root_nkeys; k++)
+      {
+        root_pk_const[k] = NULL;
+        root_pk_eq[k] = NULL;
+      }
       if (root_nkeys > 0)
       {
-        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const);
+        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const,
+                              root_pk_eq);
         root_pk_covered = true;
         for (int k = 0; k < root_nkeys; k++)
         {
           if (root_pk_const[k] == NULL) { root_pk_covered = false; break; }
         }
+      }
+      // Phase 0a: conjuncts not consumed as virt-PK equalities must be
+      // applied as a CTE_LOOKUP filter — they were silently dropped
+      // before.  On flatten overflow fall back to scanCte below, which
+      // applies the whole WHERE.
+      if (root_pk_covered &&
+          !build_root_residual(w, root_pk_eq, root_nkeys, &root_residual))
+      {
+        root_pk_covered = false;
       }
       if (root_pk_covered)
       {
@@ -7029,6 +7168,19 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                     "Failed to create const value for CTE root lookup.");
       }
       lookup_keys[root_nkeys] = nullptr;
+      if (root_residual != NULL)
+      {
+        // Phase 0a: residual conjuncts ride the same CTE_LOOKUP
+        // jump-table filter the scalar and scanCte branches already
+        // use; emit_cte_lookup_filter finalises the program and throws
+        // a clean error on unsupported atoms (which were silently
+        // dropped before).
+        NdbInterpretedCode residual_code(cteVirtualTables[0]);
+        emit_cte_lookup_filter(residual_code, scope, /*op_idx=*/0,
+                               cteVirtualTables[0], root_residual);
+        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
+                    "Failed to set interpreted code on CTE_LOOKUP root.");
+      }
       if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
           plan.num_agg_leaves == 0 && scope.agg != NULL)
       {
@@ -7095,6 +7247,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   bool has_scan_child = false;
   int nkeys = 0;
   ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  ConditionalExpression* pk_eq_ce[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  ConditionalExpression* root_residual = NULL;
 
   if (scope.join_where_ce[0] != NULL)
   {
@@ -7102,12 +7256,25 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
 
     nkeys = root_table->getNoOfPrimaryKeys();
     for (int k = 0; k < nkeys; k++)
+    {
       pk_const[k] = NULL;
-    collect_pk_equalities(where_ce, root_table, pk_const);
+      pk_eq_ce[k] = NULL;
+    }
+    collect_pk_equalities(where_ce, root_table, pk_const, pk_eq_ce);
     pk_covered = true;
     for (int k = 0; k < nkeys; k++)
     {
       if (pk_const[k] == NULL) { pk_covered = false; break; }
+    }
+
+    // Phase 0a: conjuncts not consumed as PK equalities must be applied
+    // as an interpreted filter — they were silently dropped before.  On
+    // flatten overflow skip the PK-equality optimization; the table-scan
+    // fallback applies the whole WHERE.
+    if (pk_covered &&
+        !build_root_residual(where_ce, pk_eq_ce, nkeys, &root_residual))
+    {
+      pk_covered = false;
     }
 
     if (pk_covered)
@@ -7124,53 +7291,91 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     }
   }
 
-  if (pk_covered && !has_scan_child)
+  // A readTuple root makes this a lookup-rooted (TCKEYREQ) query when
+  // no CTE subtree precedes it, and DBTC's JOIN_AGG_SETUP only exists
+  // on the scan path — an aggregate LookupQuery reaches DBSPJ with an
+  // empty m_aggNodes and fails lookup_send's ndbrequire (node failure;
+  // also rejected at prepare time by NdbQueryDefImpl since Phase 0a).
+  // Emit the readTuple root only when nothing aggregates here
+  // (pass-through main query), or when this is the main scope of a
+  // CTE-containing query — the CTE materialisation scan makes the
+  // compound query scan-rooted (the proven fpw-6 shape).  CTE-body
+  // scopes always aggregate and may themselves be op[0], so they
+  // always take the scan fallbacks.
+  bool lookup_root_supported = (singleAgg == NULL && scope.agg == NULL);
+  if (!lookup_root_supported && &scope == &m_main_scope)
   {
-    const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-    for (int k = 0; k < nkeys; k++)
+    for (Uint32 ci = 0; ci < plan.num_ops; ci++)
     {
-      const char* pk_name = root_table->getPrimaryKey(k);
-      const NdbDictionary::Column* pk_col =
-          root_table->getColumn(pk_name);
-      ndbrequire(pk_col != NULL);
-      raw_value rv = encode_constant(pk_const[k], pk_col);
-      pk_keys[k] = qb->constValue(rv.val, rv.len);
-      require_run(pk_keys[k] != NULL,
-                  "Failed to create const value for PK lookup.");
+      if (plan.ops[ci].type == JoinOp::CTE_LOOKUP ||
+          plan.ops[ci].type == JoinOp::CTE_SCAN)
+      {
+        lookup_root_supported = true;
+        break;
+      }
     }
-    pk_keys[nkeys] = nullptr;
-    opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
-    require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
-    return;
   }
 
-  if (pk_covered && has_scan_child)
+  if (pk_covered && !has_scan_child && lookup_root_supported)
   {
-    const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
-    for (int k = 0; k < nkeys; k++)
-      pk_col_names[k] = root_table->getPrimaryKey(k);
-    const NdbDictionary::Index* pk_ordered_idx =
-        QueryPlanner::findOrderedIndex(
-            m_dict, root_table, pk_col_names, (Uint32)nkeys);
-    if (pk_ordered_idx != NULL)
+    // Lookup-op interpreted programs ride inside every LQHKEYREQ, so cap
+    // them like ha_ndbcluster caps pushed conditions on lookups (64
+    // words); getWordsUsed() overcounts by 2 words per label, which only
+    // makes the cap more conservative.  An over-cap residual falls
+    // through to the ordered-PK-index scan / table-scan branches below
+    // (scan programs travel in SCAN_FRAGREQ sections instead).
+    static const Uint32 ROOT_LOOKUP_FILTER_MAX_WORDS = 64;
+    NdbInterpretedCode residual_code(root_table);
+    bool residual_fits = true;
+    if (root_residual != NULL)
+    {
+      NdbScanFilter filter(&residual_code);
+      filter.setSqlCmpSemantics();
+      filter.begin(NdbScanFilter::AND);
+      apply_filter(&filter, scope, root_residual);
+      filter.end();
+      residual_code.finalise();
+      residual_fits =
+          (residual_code.getWordsUsed() <= ROOT_LOOKUP_FILTER_MAX_WORDS);
+    }
+    if (residual_fits)
     {
       const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
       for (int k = 0; k < nkeys; k++)
       {
+        const char* pk_name = root_table->getPrimaryKey(k);
         const NdbDictionary::Column* pk_col =
-            root_table->getColumn(pk_col_names[k]);
+            root_table->getColumn(pk_name);
         ndbrequire(pk_col != NULL);
         raw_value rv = encode_constant(pk_const[k], pk_col);
         pk_keys[k] = qb->constValue(rv.val, rv.len);
         require_run(pk_keys[k] != NULL,
-                    "Failed to create const value for PK index scan.");
+                    "Failed to create const value for PK lookup.");
       }
       pk_keys[nkeys] = nullptr;
-      NdbQueryIndexBound bound(pk_keys);
-      opDefs[0] = qb->scanIndex(pk_ordered_idx, root_table,
-                                &bound, &rootOpts);
-      require_run(opDefs[0] != NULL,
-                  "Failed to create root PK index scan.");
+      if (root_residual != NULL)
+      {
+        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
+                    "Failed to set interpreted code on root PK lookup.");
+      }
+      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
+      return;
+    }
+  }
+
+  if (pk_covered)
+  {
+    // Reached with a scan child (a readTuple root cannot have scan
+    // children — NDB API restriction) or with a residual filter too
+    // large for a lookup op.
+    const NdbQueryOperationDef* def =
+        emit_pk_equality_index_scan_root(qb, scope, root_table,
+                                         pk_const, nkeys, root_residual,
+                                         rootOpts);
+    if (def != NULL)
+    {
+      opDefs[0] = def;
       return;
     }
     // No ordered index on PK — fall through to table scan with filter

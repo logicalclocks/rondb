@@ -587,7 +587,39 @@ private:
                               struct ConditionalExpression* where_ce);
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,
-                             struct ConditionalExpression* pk_const[]);
+                             struct ConditionalExpression* pk_const[],
+                             struct ConditionalExpression* pk_eq_ce[] = NULL);
+  // Phase 0a (non_aggregate_phase_0.md): AND-flatten the simplified root
+  // WHERE, drop every conjunct consumed as a PK equality (pointer
+  // identity with consumed[]), and recombine the rest with T_AND.
+  // Returns false when the WHERE has more top-level conjuncts than the
+  // flatten cap — the caller must then skip the PK-equality optimization
+  // and use the full-filter scan fallback (always correct).  On success
+  // sets *residual_out (NULL when every conjunct was consumed).  Both
+  // walks must run on the same simplify_ce output for pointer identity
+  // to hold.
+  bool build_root_residual(struct ConditionalExpression* where_ce,
+                           struct ConditionalExpression* const consumed[],
+                           int nkeys,
+                           struct ConditionalExpression** residual_out);
+  // Ordered-index equality scan over the full PK — used when the WHERE
+  // fully covers the PK by equality but a readTuple root is unavailable
+  // (a scan child exists, or the residual filter exceeds the lookup-op
+  // program cap).  Attaches the residual conjuncts as an InterpretedCode
+  // filter.  Returns NULL when the table has no ordered index on the PK
+  // columns; the caller then falls back to a table scan with the full
+  // WHERE filter.
+  const NdbQueryOperationDef* emit_pk_equality_index_scan_root(
+      NdbQueryBuilder* qb, QueryScope& scope,
+      const NdbDictionary::Table* root_table,
+      struct ConditionalExpression* const pk_const[], int nkeys,
+      struct ConditionalExpression* residual,
+      NdbQueryOptions& rootOpts);
+  // Phase 0b: col_idx-indexed ColumnMetadata (charset / precision /
+  // scale / temporal tag per referenced column), built from the main
+  // scope's resolved dict columns.  Shared by the aggregate and
+  // pass-through ResultPrinter constructions.
+  ResultPrinter::ColumnMetadata* build_result_column_metadata();
   void apply_filter_top_level(NdbScanFilter* filter);
   void apply_filter(NdbScanFilter* filter, QueryScope& scope,
                     struct ConditionalExpression* ce);

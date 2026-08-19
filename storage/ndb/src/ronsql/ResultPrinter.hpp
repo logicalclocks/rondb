@@ -200,10 +200,13 @@ public:
   // Phase E.3 pass-through constructor for projection-only main SELECTs
   // over a CTE_SCAN root.  Skips compile()/optimize() (which require
   // every COLUMN output to be in GROUP BY); only sets up the output-format
-  // helpers used by print_passthrough_*.
+  // helpers used by print_passthrough_*.  Phase 0b: takes the same
+  // col_idx-indexed ColumnMetadata as the aggregate constructor so
+  // temporal / DECIMAL outputs format correctly.
   ResultPrinter(ArenaMalloc* amalloc,
                 struct SelectStatement* query,
                 DynamicArray<LexCString>* column_names,
+                const ColumnMetadata* column_metadata,
                 RonSQLExecParams::OutputFormat output_format,
                 std::basic_ostream<char>* err,
                 bool /*passthrough_marker*/);
@@ -220,8 +223,16 @@ public:
   void explain(std::basic_ostream<char>* out_stream);
 private:
   void setup_output_format();
+  // Phase 0b: `meta` (may be NULL) carries the resolved source column's
+  // metadata — needed to decode CTE MIN/MAX temporal outputs, which
+  // arrive as Bigunsigned virt columns holding the packed value.
   void print_passthrough_value(std::ostream& out,
-                               const class NdbRecAttr* attr);
+                               const class NdbRecAttr* attr,
+                               const ColumnMetadata* meta);
+  // col_idx-indexed metadata lookup for one pass-through output; NULL
+  // when no metadata is available or the output is not a plain column.
+  const ColumnMetadata* passthrough_column_metadata(
+      const struct Outputs* o) const;
 };
 
 #endif
