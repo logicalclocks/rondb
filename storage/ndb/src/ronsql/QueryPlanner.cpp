@@ -278,6 +278,57 @@ QueryPlanner::plan(
       }
     }
 
+    /* Phase 2 (non_aggregate_phase_2.md, W2): pre-check the NDB API's
+     * linked-operand rule for real-table links — the child key column
+     * and the parent column must be identically declared (type,
+     * precision, scale, length, charset; no implicit conversion), and
+     * BLOB/TEXT can never be linked.  Failing here gives a clean
+     * permanent error instead of a runtime NDB error from
+     * NdbQueryBuilder's linkedValue/bindOperand.  CTE operands are
+     * skipped — virtual-table typing is handled by the CTE machinery.
+     */
+    if (childOp.table != NULL && out.ops[parent_idx].table != NULL)
+    {
+      for (Uint32 k = 0; k < num_keys; k++)
+      {
+        const NdbDictionary::Column *child_col =
+            childOp.table->getColumn(childOp.child_key_col_names[k]);
+        const NdbDictionary::Column *parent_col =
+            out.ops[parent_idx].table->getColumn(
+                childOp.parent_key_col_names[k]);
+        if (child_col == NULL || parent_col == NULL)
+        {
+          err << "Join condition references unknown column '"
+              << (child_col == NULL ? childOp.child_key_col_names[k]
+                                    : childOp.parent_key_col_names[k])
+              << "'." << std::endl;
+          throw RonSQLPermanentError("Unknown join column.");
+        }
+        if (child_col->getType() == NdbDictionary::Column::Blob ||
+            child_col->getType() == NdbDictionary::Column::Text ||
+            parent_col->getType() == NdbDictionary::Column::Blob ||
+            parent_col->getType() == NdbDictionary::Column::Text)
+        {
+          err << "BLOB/TEXT columns cannot be used as join columns."
+              << std::endl;
+          throw RonSQLPermanentError("BLOB/TEXT join column.");
+        }
+        if (child_col->getType() != parent_col->getType() ||
+            child_col->getPrecision() != parent_col->getPrecision() ||
+            child_col->getScale() != parent_col->getScale() ||
+            child_col->getLength() != parent_col->getLength() ||
+            child_col->getCharset() != parent_col->getCharset())
+        {
+          err << "Join columns '" << childOp.parent_key_col_names[k]
+              << "' and '" << childOp.child_key_col_names[k]
+              << "' must have identical type, precision, scale, length"
+              << " and character set: NDB pushed joins do not convert"
+              << " linked values." << std::endl;
+          throw RonSQLPermanentError("Join column type mismatch.");
+        }
+      }
+    }
+
     out.num_ops++;
   }
 
@@ -306,6 +357,28 @@ QueryPlanner::plan(
     if (latest_cte_idx < out.num_ops)
     {
       out.ops[i].tree_parent_op_idx = latest_cte_idx;
+    }
+  }
+
+  /* Phase 2 (non_aggregate_phase_2.md, W2): NDB API internal-node
+   * budget — a unique-index lookup expands to 2 internal tree nodes
+   * (index table + base table), which the num_ops bound above counts
+   * as 1.  CTE subtree nodes are accounted by the API's own
+   * prepare-time cap (the planner cannot know body sizes). */
+  {
+    Uint32 internal_nodes = out.num_ops;
+    for (Uint32 i = 0; i < out.num_ops; i++)
+    {
+      if (out.ops[i].type == JoinOp::UNIQUE_LOOKUP)
+        internal_nodes++;
+    }
+    if (internal_nodes > MAX_SPJ_TREE_NODES)
+    {
+      err << "Pushed join too large: " << internal_nodes
+          << " internal operations exceed the NDB limit of "
+          << MAX_SPJ_TREE_NODES
+          << " (a unique-index lookup counts as 2)." << std::endl;
+      throw RonSQLPermanentError("Pushed join too large.");
     }
   }
 

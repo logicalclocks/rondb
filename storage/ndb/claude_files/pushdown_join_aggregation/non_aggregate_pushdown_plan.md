@@ -276,6 +276,11 @@ Work items:
 
 ## Phase 2 — snowflake-schema pushed joins (real tables only)
 
+**Detailed plan: `non_aggregate_phase_2.md` — IMPLEMENTED (August
+2026), pending user build + MTR --record** (gate conjunct dropped,
+planner identity + node-budget pre-checks, MTR family
+`body_passthrough_snowflake.inc` sn-1..15/P1..P3 ×5 topology suites).
+
 Target: left-deep-or-tree FK chains `root → child → grandchild …`,
 `SELECT` of bare columns from any of the tables.
 

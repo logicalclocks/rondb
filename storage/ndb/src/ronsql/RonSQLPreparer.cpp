@@ -626,30 +626,34 @@ RonSQLPreparer::parse()
           (has_from && !from_is_cte && !has_joins && all_column_outputs &&
            !has_groupby && !has_having && !has_orderby && !has_limit &&
            m_context.ast_root.cte_list == NULL);
-      // Phase I.8/I.11/I.12: projection-only join chains over CTE-and-
-      // real-table operands.  Accepted shapes:
-      //   - I.8/I.11: FROM <real> JOIN <cte> [JOIN ...] (real root,
-      //     INNER chain).
-      //   - I.12 relaxation A: FROM <cte> JOIN <real> [JOIN ...]
-      //     (CTE root, INNER chain).  testCteNdbApiOuterJoin.cpp
-      //     Test 1 shape.
-      //   - I.12 relaxation B: any join in the chain may be
-      //     LEFT_OUTER_JOIN.  testCteNdbApiOuterJoin.cpp Tests 2, 3.
-      // Constraints (unchanged across A and B): every CTE join must
-      // be a complete-key CTE_LOOKUP (ExactOrdered or ExactPermuted
-      // via cte_key_coverage); no ORDER BY / GROUP BY / HAVING /
-      // LIMIT / aggregate outputs.  Phase G's defensive reject for
+      // Projection-only join chains (Phase I.8/I.11/I.12 for
+      // CTE-involving shapes; Phase 2 of non_aggregate_pushdown_plan.md
+      // extends the same walk to pure real-table snowflake chains by
+      // dropping the previous at-least-one-CTE requirement).  Accepted:
+      // strictly left-deep INNER / LEFT_OUTER chains whose ON
+      // conditions bind the joined alias's columns to an
+      // already-visible alias, with every CTE operand a complete-key
+      // CTE_LOOKUP (ExactOrdered or ExactPermuted via
+      // cte_key_coverage); no ORDER BY / GROUP BY / HAVING / LIMIT /
+      // aggregate outputs.  Phase G's defensive reject for
       // CTE_SCAN-as-outer-join-child still fires later in
       // validate_cte_execution_shapes() for any planner-produced
       // shape outside this conservative class.
-      bool cte_lookup_join_chain = false;
+      bool projection_only_join_chain = false;
       if (all_column_outputs && !has_groupby &&
           !has_having && !has_orderby && !has_limit && has_joins) {
-        cte_lookup_join_chain = true;
-        // CTE root already counts as a CTE in the query.
-        bool query_has_cte = from_is_cte;
+        projection_only_join_chain = true;
         LexCString visible_aliases[MAX_SPJ_TREE_NODES];
+        // Phase 2 (sn-15 probe outcome): an alias is "under LEFT" when
+        // it was LEFT-joined itself or reached through one.  RonSQL
+        // emits no outer-join nest metadata (setFirstInnerJoin /
+        // setUpperJoin), so an INNER join below a LEFT join would let
+        // NDB deliver NULL-extended rows the INNER join must eliminate
+        // — verified wrong results vs MySQL.  Reject that shape with a
+        // targeted error until nest metadata is emitted.
+        bool alias_under_left[MAX_SPJ_TREE_NODES];
         Uint32 num_visible_aliases = 0;
+        alias_under_left[num_visible_aliases] = false;
         visible_aliases[num_visible_aliases++] =
             m_context.ast_root.root_table->alias;
         for (const JoinClause* join = m_context.ast_root.joins;
@@ -658,29 +662,42 @@ RonSQLPreparer::parse()
               (join->join_type != JoinClause::INNER_JOIN &&
                join->join_type != JoinClause::LEFT_OUTER_JOIN) ||
               join->conditions == NULL) {
-            cte_lookup_join_chain = false;
+            projection_only_join_chain = false;
             break;
           }
           const LexCString& join_alias = join->table.alias;
+          bool any_parent_under_left = false;
           for (const JoinCondition* jc = join->conditions;
                jc != NULL; jc = jc->next) {
             if (!(jc->child_table == join_alias)) {
-              cte_lookup_join_chain = false;
+              projection_only_join_chain = false;
               break;
             }
             bool parent_seen = false;
             for (Uint32 a = 0; a < num_visible_aliases; a++) {
               if (jc->parent_table == visible_aliases[a]) {
                 parent_seen = true;
+                if (alias_under_left[a]) any_parent_under_left = true;
                 break;
               }
             }
             if (!parent_seen) {
-              cte_lookup_join_chain = false;
+              projection_only_join_chain = false;
               break;
             }
           }
-          if (!cte_lookup_join_chain) break;
+          if (!projection_only_join_chain) break;
+          if (join->join_type == JoinClause::INNER_JOIN &&
+              any_parent_under_left) {
+            ndbrequire(m_conf.err_stream != NULL);
+            std::basic_ostream<char>& err = *m_conf.err_stream;
+            err << "INNER JOIN below a LEFT JOIN is not supported in"
+                   " projection-only queries: RonSQL does not yet emit"
+                   " outer-join nest metadata, and NDB would deliver"
+                   " NULL-extended rows the INNER join must eliminate.\n";
+            throw RonSQLPermanentError(
+                "INNER JOIN below LEFT JOIN not supported.");
+          }
           const CteDefinition* cte = find_cte_definition(join->table.name);
           if (cte != NULL) {
             LexCString child_names[MAX_JOIN_KEY_COLS];
@@ -688,36 +705,36 @@ RonSQLPreparer::parse()
             for (const JoinCondition* jc = join->conditions;
                  jc != NULL; jc = jc->next) {
               if (num_keys >= MAX_JOIN_KEY_COLS) {
-                cte_lookup_join_chain = false;
+                projection_only_join_chain = false;
                 break;
               }
               child_names[num_keys++] = jc->child_column;
             }
-            if (!cte_lookup_join_chain) break;
+            if (!projection_only_join_chain) break;
             CteKeyCoverageResult coverage;
             if (!cte_key_coverage(cte, child_names, num_keys, coverage) ||
                 (coverage.state != CteKeyCoverage::ExactOrdered &&
                  coverage.state != CteKeyCoverage::ExactPermuted)) {
-              cte_lookup_join_chain = false;
+              projection_only_join_chain = false;
               break;
             }
-            query_has_cte = true;
           }
+          alias_under_left[num_visible_aliases] =
+              (join->join_type == JoinClause::LEFT_OUTER_JOIN) ||
+              any_parent_under_left;
           visible_aliases[num_visible_aliases++] = join_alias;
         }
-        cte_lookup_join_chain =
-            cte_lookup_join_chain && query_has_cte;
       }
-      if (!projection_only_cte_scan && !cte_lookup_join_chain &&
+      if (!projection_only_cte_scan && !projection_only_join_chain &&
           !projection_only_single_table) {
         ndbrequire(m_conf.err_stream != NULL);
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
-               "Currently, RonSQL only supports aggregate queries, projection-only\n"
-               "single-table SELECTs (no ORDER BY / LIMIT / GROUP BY / expressions),\n"
-               "and projection-only SELECTs over supported CTE shapes (Phase\n"
-               "E.3/I.8/I.11/I.12).  See non_aggregate_pushdown_plan.md for the\n"
-               "broader non-aggregate roadmap.\n";
+               "Currently, RonSQL only supports aggregate queries and projection-only\n"
+               "SELECTs: single-table, left-deep join chains over real tables and/or\n"
+               "complete-key CTE lookups (INNER / LEFT JOIN), and CTE_SCAN roots —\n"
+               "all without ORDER BY / LIMIT / GROUP BY / expressions.  See\n"
+               "non_aggregate_pushdown_plan.md for the broader roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
     }
