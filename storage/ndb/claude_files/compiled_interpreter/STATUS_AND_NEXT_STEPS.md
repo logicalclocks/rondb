@@ -360,6 +360,15 @@ must-JIT. Details: `phase_5_roadmap.md` §5A. Verify: rebuild ndbmtd +
 host tools; bridge_tests (T47 family + updated T22b/c), coldcall;
 mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
 
+**Phase 5C — PLANNED (2026-08-19): `phase_5c_plan.md`.** Key planning
+finding: the original design's full type-state lattice is unnecessary —
+`OptimizeProgramBuffer` pre-types the bytecode on both compile paths,
+so a linear bridge-side register-type tracker suffices. Slices: 5C-1
+tracker, 5C-2 DOUBLE family (~9 stencils; SumDouble needs
+value_initialized + isfinite→overflow; div-by-zero's NULL-register
+semantics handled by a new OP_ROW_FALLBACK_EXIT terminator → per-row
+interpreter fallback, no 5D dependency), 5C-3 unsigned BIGINT.
+
 **Phase 5B — DONE & VERIFIED (2026-08-19; full ndb_push_agg sweep
 green post-regen).**
 MIN/MAX BIGINT: two new stencils (**regen-stencils required**) with
