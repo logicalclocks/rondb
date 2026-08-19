@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-06-16.** Single entry point for resuming work. Branch:
+**Updated: 2026-08-19.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -8,6 +8,58 @@
 > implemented and wired end-to-end (~34 real code commits across
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
+
+## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
+
+Three things happened after the 2026-06-22 state described below. **The
+post-merge verification checklist at the end of this section has NOT been
+run yet — it is the immediate next action.**
+
+1. **Phase 8 item #4 (crash diagnosis) — first half LANDED**
+   (`65d9c2fa9ee`, jit1.c only). At compile time each `Jit1Prog` now
+   captures a debug sidecar (per-opcode kind + byte-offset table) and
+   registers itself in a node-global intrusive list of live programs
+   (mutex on compile/free; lock-free traversal, safe from a signal
+   handler). `jit1_describe_pc(pc, buf, buflen)` maps a faulting PC to
+   the owning blob, its byte offset, and the bytecode opcode. **Still
+   inert:** not declared in `jit1.h` and has zero callers. The remaining
+   half = export it, call it from the data node's SIGSEGV/error-reporter
+   path (`JIT-CRASH:`-prefixed `g_eventLogger` output per plan.md §14),
+   add a debug-build DUMP command for live programs, and a host unit test.
+2. **Upstream merge** — `26.04-main` (~874 commits) merged;
+   `dab718f802c` "Fixed merge issues" resolved committed conflict markers
+   and renumbered collisions:
+   - `JIT_TABLEID` **55 → 59** (upstream took 55–58 for
+     TRANSPORTER_ACTIVITY/RDMA_TRANSPORTERS/SECURITY_VIOLATION*).
+   - `CFG_DB_COMPILED_INTERPRETER` **705 → 708** (upstream took 705–707).
+   - The `testJoinAggNdbApi` JIT canaries shifted **+1 to Tests 24–29**
+     (upstream added "Test 23: fragsPerWorker result equality"):
+     must-compile=24, null-sum=25, linked-null=26, unsupported-fallback=27,
+     wide-column=28, case-skip=29. The consolidated
+     `testJoinAggNdbApi.result` was updated in the merge fix.
+   - Source scanned 2026-08-19: no leftover conflict markers, no stale
+     references to table id 55 / param 705.
+3. **MTR wrapper fix (2026-08-19):** the six `rondb_jit_ndbapi_*`
+   wrappers + their `.result` files still used the pre-merge numbers
+   (`--only 23…28` + old "Test N:" lines) → all six would have failed.
+   Fixed: `--only` bumped to 24…29, result lines + wrapper comments
+   renumbered. No other file in the suite uses `--only`.
+
+**Post-merge verification checklist (Mikael runs; nothing built or run
+since the merge):**
+
+- Rebuild `ndbmtd`, `testJoinAggNdbApi`, and the host unit binaries.
+- Host units (run directly): `bridge_tests`, `admission_tests`,
+  `coldcall_tests`, `codemem_tests`, `progcache_tests`, `proto_microbench`
+  under `debug_build/storage/ndb/test/jit_proto/`.
+- MTR: the `ndb_push_agg` JIT set (the six fixed `rondb_jit_ndbapi_*`
+  wrappers + `rondb_jit_canary` + `rondb_jit_embedded_canary` +
+  `rondb_jit_must_compile` + `rondb_jit_scan_filter_canary` +
+  `rondb_jit_standalone_canary` + `testJoinAggNdbApi`).
+- `--record` still outstanding (flagged in the original commits, never
+  done): config-enumeration tests (`ndb_config` / config-defaults — new
+  `CompiledInterpreter` param) and ndbinfo metadata tests that enumerate
+  tables/columns (new `jit` table, id 59).
 
 ## NEXT UP: Phase 8 — production readiness (start here after compaction)
 
@@ -92,7 +144,8 @@ Recommended order:
    - **Slice 4** — RonSQL PREPARE pinned acquire / deallocate release.
 2. **Config param `CompiledInterpreter` — DONE (2026-06-22).** New
    `[DB]` config.ini parameter `CompiledInterpreter` (`CI_ENUM`,
-   `CFG_DB_COMPILED_INTERPRETER=705`): **OFF** = interpreter only;
+   `CFG_DB_COMPILED_INTERPRETER=708` post-merge, was 705): **OFF** =
+   interpreter only;
    **AUTO** (default) = JIT every eligible program (current behaviour);
    **ON** = reserved (== AUTO today). Named `CompiledInterpreter` (not the
    plan's `JoinAggCompiledInterpreter`) since the JIT now covers scan
@@ -106,7 +159,8 @@ Recommended order:
    (`ndb_config` / config-defaults `.result`) need `--record` (one new
    param). Default AUTO keeps the existing JIT canaries green.
 3. **NDBINFO counters — DONE (2026-06-22).** New node-global ndbinfo table
-   `ndbinfo.jit` (kernel `JIT_TABLEID=55`), one row per data node:
+   `ndbinfo.jit` (kernel `JIT_TABLEID=59` post-merge, was 55), one row per
+   data node:
    `code_reserved_bytes`, `code_used_bytes`, `code_slots_live` (from the
    code-memory manager) + `programs_compiled`, `programs_reused`,
    `programs_cached` (summed over the scan-filter + agg reuse caches). New
@@ -118,8 +172,10 @@ Recommended order:
    **NOTE:** ndbinfo metadata MTR tests that enumerate all tables/columns
    need `--record` (one new table). Not yet wired: `runs` / `fallbacks` /
    `compile-ns` (need per-row + compile-time instrumentation; deferred).
-4. **SIGSEGV sidecar** — JIT'd code has no symbols; keep bytecode +
-   stencil-IDs on the writable side for post-mortem of a crash in a blob.
+4. **SIGSEGV sidecar — HALF DONE (2026-08-18, `65d9c2fa9ee`).** The
+   registry + sidecar + `jit1_describe_pc` are in `jit1.c` but inert (not
+   in `jit1.h`, no callers). Remaining: export + SIGSEGV/DUMP wiring +
+   unit test — see the 2026-08 session section at the top.
 5. **GROUP BY gate lift** (big coverage, hard; arguably its own phase) —
    today *all* grouped aggregation falls back via the
    `m_jit_entry != nullptr && m_n_gb_cols == 0` gate in `ProcessRec`
@@ -663,7 +719,8 @@ helper failures) so tests can distinguish "never reached setup" from
 
 ```sh
 cmake --build debug_build --target testJoinAggNdbApi -j 4
-debug_build/runtime_output_directory/testJoinAggNdbApi -c localhost:1186 -m 3306 --only 23 -v
+debug_build/runtime_output_directory/testJoinAggNdbApi -c localhost:1186 -m 3306 --only 24 -v
+# NB: JIT canaries are Tests 24-29 post-merge (upstream Test 23 = fragsPerWorker)
 ./mysql-test/mtr --suite=ndb_push_agg testJoinAggNdbApi
 # host unit binaries (run directly, no ctest):
 debug_build/storage/ndb/test/jit_proto/{admission_tests,bridge_tests,coldcall_tests,proto_microbench}

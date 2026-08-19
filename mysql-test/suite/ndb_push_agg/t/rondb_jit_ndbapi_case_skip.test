@@ -1,14 +1,14 @@
 --source include/have_ndb.inc
 --source have_ndb_error_insert.inc
 
-# Test 28: CASE skip-offset canary (RONDB-1056). The embedded accept path
+# Test 29: CASE skip-offset canary (RONDB-1056). The embedded accept path
 # writes skip_offset=2 to interpreter output slot 0, which the JIT lowers to
 # OP_JUMP. ERROR_INSERT 4060 makes fallback fatal, so this passes only if the
 # non-zero skip-offset path compiles and executes through JIT.
 
 --echo Running rondb_jit_ndbapi_case_skip
 --replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/ /Connecting to management server at [^\n]*\n//
---exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 28 2>&1
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 29 2>&1
 --echo PASSED
 
 # Clean up database created by test program

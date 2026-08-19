@@ -3,7 +3,7 @@ Running rondb_jit_ndbapi_wide_column
 Connect string: #
 MySQL port: #
 
-Test 27: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)
+Test 28: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)
 
 All tests PASSED
 PASSED
