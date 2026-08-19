@@ -243,6 +243,9 @@ void Dbtup::execDBINFO_SCANREQ(Signal *signal) {
         row.write_uint64(s.programs_compiled);       // programs_compiled
         row.write_uint64(s.programs_reused);         // programs_reused
         row.write_uint32(s.programs_cached);         // programs_cached
+        row.write_uint64(s.programs_fallback);       // programs_fallback
+        row.write_uint64(s.rows_executed);           // rows_executed
+        row.write_uint64(s.compile_ns_total);        // compile_ns_total
         ndbinfo_send_row(signal, req, row, rl);
       }
       break;

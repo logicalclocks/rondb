@@ -22,8 +22,10 @@
 #include <ndb_global.h>
 #include <my_byteorder.h>      /* sint8korr */
 
+#include <atomic>              /* observability counters */
 #include <cstdlib>             /* malloc / free for cache products */
 #include <cstring>
+#include <ctime>               /* rate-limited fallback logging */
 
 #ifndef _WIN32
 #include <pthread.h>           /* pthread_once for the crash-handler install */
@@ -59,6 +61,68 @@ static Uint32 g_jit_mode = 1 /* NDB_COMPILED_INTERPRETER_AUTO */;
 void dbtup_jit_set_mode(Uint32 mode) { g_jit_mode = mode; }
 
 bool dbtup_jit_enabled() { return g_jit_mode != 0 /* != OFF */; }
+
+/* ------------------------------------------------------------------ */
+/* Phase 8 — observability counters (ndbinfo.jit) + fallback logging. */
+/* ------------------------------------------------------------------ */
+
+/* rows_executed is bumped once per row on the JIT execution hot path,
+ * so it must not be one shared atomic — a contended fetch_add across
+ * LDM threads would cost a real slice of the ~11 ns/row JIT budget.
+ * Each thread claims a cache-line-padded slot on first use and does a
+ * plain load+store (single writer per slot, no RMW); the stats reader
+ * sums every slot. The slot claim wraps at NJT_MAX_ROW_SLOTS — two
+ * threads sharing a slot after a wrap can lose increments, which is
+ * stats-grade acceptable (real thread counts never approach the cap). */
+struct alignas(64) JitRowSlot {
+  std::atomic<Uint64> rows{0};
+};
+static constexpr unsigned NJT_MAX_ROW_SLOTS = 256;
+static JitRowSlot g_jit_row_slots[NJT_MAX_ROW_SLOTS];
+static std::atomic<unsigned> g_jit_row_slot_next{0};
+
+static inline void jit_count_row() {
+  static thread_local unsigned slot =
+      g_jit_row_slot_next.fetch_add(1, std::memory_order_relaxed) %
+      NJT_MAX_ROW_SLOTS;
+  JitRowSlot &js = g_jit_row_slots[slot];
+  js.rows.store(js.rows.load(std::memory_order_relaxed) + 1,
+                std::memory_order_relaxed);
+}
+
+/* Compile-frequency counters — plain relaxed atomics are fine here. */
+static std::atomic<Uint64> g_jit_fallback_count{0};
+static std::atomic<Uint64> g_jit_compile_ns_total{0};
+
+/* Rate limit for the production fallback log line. Implicit scans
+ * (e.g. the EXIT_OK_LAST table-stats scan) fall back deliberately on
+ * every occurrence, so an unthrottled log would flood the cluster log. */
+static constexpr time_t NJT_FALLBACK_LOG_PERIOD_S = 10;
+static std::atomic<time_t> g_jit_fallback_last_log{0};
+
+void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail) {
+  const Uint64 n =
+      g_jit_fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
+  const time_t now = time(nullptr);
+  time_t last = g_jit_fallback_last_log.load(std::memory_order_relaxed);
+  if (now - last < NJT_FALLBACK_LOG_PERIOD_S) {
+    return;
+  }
+  if (!g_jit_fallback_last_log.compare_exchange_strong(
+          last, now, std::memory_order_relaxed)) {
+    return;   /* another thread just logged */
+  }
+  g_eventLogger->info(
+      "RONDB-1056 JIT fallback: %s rejected (reason=%d detail=%u) — the "
+      "program runs on the interpreter. %llu JIT fallbacks since node "
+      "start (logged at most every %d s).",
+      path, reason, (unsigned)detail, (unsigned long long)n,
+      (int)NJT_FALLBACK_LOG_PERIOD_S);
+}
+
+void dbtup_jit_note_compile_ns(Uint64 ns) {
+  g_jit_compile_ns_total.fetch_add(ns, std::memory_order_relaxed);
+}
 
 #ifdef ERROR_INSERT
 static bool dbtup_jit_trace_start(AggInterpreterBase *agg,
@@ -386,6 +450,8 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
                                             &ctx.trace_limit);
 #endif
 
+  jit_count_row();
+
   JitState s;
   std::memset(&s, 0, sizeof(s));
   s.ctx = &ctx;
@@ -470,18 +536,26 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
   Program p;
   JitBridgeError berr;
   Uint32 reject_code = 0;
-  if (ndb_jit_bridge_translate_scan_filter(prog, n_words, &p, &berr,
-                                           &reject_code) != JIT_BRIDGE_OK) {
+  JitBridgeReason brc = ndb_jit_bridge_translate_scan_filter(
+      prog, n_words, &p, &berr, &reject_code);
+  if (brc != JIT_BRIDGE_OK) {
+    dbtup_jit_note_fallback("scan-filter bridge", (int)brc,
+                            berr.offending_op);
     return -1;
   }
-  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
+  Jit1Timing jt;
+  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
   if (jp == nullptr) {
+    dbtup_jit_note_fallback("scan-filter compile",
+                            (int)jit1_last_admit_error()->reason, 0);
     return -1;
   }
+  dbtup_jit_note_compile_ns(jt.total_ns);
   ScanFilterProduct *sfp =
       static_cast<ScanFilterProduct *>(malloc(sizeof(ScanFilterProduct)));
   if (sfp == nullptr) {
     jit1_free(jp);
+    dbtup_jit_note_fallback("scan-filter product-alloc", 0, 0);
     return -1;
   }
   sfp->jp = jp;
@@ -577,13 +651,20 @@ static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
   const Uint32 n_words = key_len / (Uint32)sizeof(Uint32);
   Program p;
   JitBridgeError berr;
-  if (ndb_jit_bridge_translate(prog, n_words, &p, &berr) != JIT_BRIDGE_OK) {
+  JitBridgeReason brc = ndb_jit_bridge_translate(prog, n_words, &p, &berr);
+  if (brc != JIT_BRIDGE_OK) {
+    dbtup_jit_note_fallback("aggregation bridge", (int)brc,
+                            berr.offending_op);
     return -1;
   }
-  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
+  Jit1Timing jt;
+  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
   if (jp == nullptr) {
+    dbtup_jit_note_fallback("aggregation compile",
+                            (int)jit1_last_admit_error()->reason, 0);
     return -1;
   }
+  dbtup_jit_note_compile_ns(jt.total_ns);
   out->entry_fn = reinterpret_cast<void *>(jit1_entry(jp));
   out->user = jp;   /* Jit1Prog* directly; jit1_free on destroy */
   return 0;
@@ -661,6 +742,16 @@ void dbtup_jit_get_stats(NdbJitStats *out) {
                          ndb_jit_progcache_hit_count(ag);
   out->programs_cached = ndb_jit_progcache_live_count(sf) +
                          ndb_jit_progcache_live_count(ag);
+
+  out->programs_fallback =
+      g_jit_fallback_count.load(std::memory_order_relaxed);
+  out->compile_ns_total =
+      g_jit_compile_ns_total.load(std::memory_order_relaxed);
+  Uint64 rows = 0;
+  for (unsigned i = 0; i < NJT_MAX_ROW_SLOTS; i++) {
+    rows += g_jit_row_slots[i].rows.load(std::memory_order_relaxed);
+  }
+  out->rows_executed = rows;
 }
 
 /* ------------------------------------------------------------------ */
@@ -815,6 +906,8 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   ctx.trace_row_no  = 0;
   ctx.trace_limit   = 0;
 #endif
+
+  jit_count_row();
 
   JitState s;
   std::memset(&s, 0, sizeof(s));

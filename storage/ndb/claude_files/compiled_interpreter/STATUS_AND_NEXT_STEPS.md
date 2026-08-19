@@ -229,6 +229,27 @@ Recommended order:
    Added 2026-08-19. NOTE: this re-invalidates the freshly recorded
    ndbinfo metadata results (`1a8c3a3b257`) — one more `--record` needed
    after rebuilding mysqld (new view in the listings).
+   **Deferred counters — DONE (2026-08-19, pending verify).** The three
+   deferred columns are wired: `ndbinfo.jit` grew `programs_fallback`
+   (compile attempts that produced no program — bumped at all six
+   reject points across the scan-filter/agg compile callbacks and
+   DblqhProxy's join-agg site; NB deliberate fallbacks like the
+   EXIT_OK_LAST stats scan recur per occurrence, so the counter runs
+   hot by design), `rows_executed` (per-row — counted via
+   cache-line-padded per-thread slots with plain load/store, NOT a
+   shared atomic, so the ~11 ns/row JIT budget is untouched; slots
+   summed at read), and `compile_ns_total` (Jit1Timing.total_ns now
+   requested at all three `jit1_compile` sites). Table is now 10
+   columns (`DECLARE_NDBINFO_TABLE(JIT, 10)`); `NdbJitStats` reordered
+   Uint64s-first. Plus plan.md §14 "Error reporting":
+   `dbtup_jit_note_fallback` rate-limit-logs one
+   "RONDB-1056 JIT fallback: <site> rejected (reason/detail)" line per
+   10 s via `g_eventLogger` (CAS-guarded timestamp). NOTE: the ndbinfo
+   metadata `--record` must happen AFTER this lands too (3 new
+   columns + the view, one batch). Verify: rebuild `ndbmtd` + `mysqld`,
+   run a JIT query, `SELECT * FROM ndbinfo.jit` — rows_executed > 0,
+   compile_ns_total > 0; a stats-scan-heavy workload moves
+   programs_fallback; check the node log for the rate-limited line.
    **NOTE:** ndbinfo metadata MTR tests that enumerate all tables/columns
    need `--record` (one new table). Not yet wired: `runs` / `fallbacks` /
    `compile-ns` (need per-row + compile-time instrumentation; deferred).

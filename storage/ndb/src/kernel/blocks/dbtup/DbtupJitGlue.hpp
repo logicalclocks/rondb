@@ -220,13 +220,17 @@ void dbtup_jit_release_agg(void *cache_handle);
 
 /* RONDB-1056 Phase 8 — node-global JIT statistics for NDBINFO.
  * A snapshot of the (node-global) code-memory manager + both program
- * reuse caches; identical from any block instance on the node. */
+ * reuse caches + the execution/compile counters; identical from any
+ * block instance on the node. */
 struct NdbJitStats {
   Uint64 code_reserved_bytes;  // executable memory mmap'd by the manager
   Uint64 code_used_bytes;      // memory held by live compiled-program slots
-  Uint32 code_slots_live;      // live code-memory slots
   Uint64 programs_compiled;    // total compiles (scan-filter + agg misses)
   Uint64 programs_reused;      // total reuse-cache hits (compiles avoided)
+  Uint64 programs_fallback;    // compile attempts that produced no program
+  Uint64 rows_executed;        // rows run through JIT entry points
+  Uint64 compile_ns_total;     // total ns spent in jit1_compile
+  Uint32 code_slots_live;      // live code-memory slots
   Uint32 programs_cached;      // compiled programs currently cached
 };
 
@@ -251,6 +255,24 @@ void dbtup_jit_install_crash_handler();
  * registry mutex — for DUMP diagnostics (TupDumpJitPrograms), not the
  * per-row path or signal handlers. */
 void dbtup_jit_dump_programs();
+
+/* RONDB-1056 Phase 8 — fallback / compile-time accounting.
+ *
+ * dbtup_jit_note_fallback records one "compile attempt produced no JIT
+ * program" event (bumps the node-global programs_fallback counter) and
+ * rate-limit-logs it via g_eventLogger — at most one line per period,
+ * because implicit scans (e.g. the EXIT_OK_LAST table-stats scan) are
+ * deliberate fallbacks that recur on every occurrence. `path` names
+ * the compile site + stage (e.g. "scan-filter bridge"); reason/detail
+ * are the site's reject enums, logged as numbers.
+ *
+ * dbtup_jit_note_compile_ns adds one successful compile's duration
+ * (Jit1Timing.total_ns) to the node-global compile_ns_total counter.
+ *
+ * Both are compile-frequency paths (never per-row); DblqhProxy's
+ * inline join-agg compile site uses them too. */
+void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail);
+void dbtup_jit_note_compile_ns(Uint64 ns);
 
 /* RONDB-1056 Phase 8 — CompiledInterpreter config gate (node-global).
  * dbtup_jit_set_mode is called once at config read with the

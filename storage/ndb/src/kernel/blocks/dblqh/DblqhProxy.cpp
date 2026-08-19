@@ -2896,9 +2896,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 #endif
         /* Compile into the node-global code-memory manager (free-capable,
          * shared). Freed by jit1_free at JOIN_AGG teardown (Slice 3b). */
-        Jit1Prog *jp =
-            jit1_compile(ndb_jit_codemem_global(), &p, /*timing=*/nullptr);
+        Jit1Timing jt;
+        Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
         if (jp != nullptr) {
+          dbtup_jit_note_compile_ns(jt.total_ns);
           lp.m_jit_prog  = jp;
           lp.m_jit_entry = jit1_entry(jp);
           DEB_JIT_IF(log_jit_decision,
@@ -2907,6 +2908,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                       key, bc_words, jit1_emitted_size(jp)));
         } else {
           const Jit1AdmitError *aerr = jit1_last_admit_error();
+          dbtup_jit_note_fallback("join-agg compile", (int)aerr->reason,
+                                  aerr->offending_kind);
           DEB_JIT_IF(log_jit_decision,
                      ("[RONDB-1056] JIT admission rejected key=%u "
                       "reason=%d pc=%u target=%u kind=%u (%s) - "
@@ -2929,6 +2932,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           }
         }
       } else {
+        dbtup_jit_note_fallback("join-agg bridge", (int)brc,
+                                berr.offending_op);
         Uint32 ow = (berr.offending_word < bc_words)
                        ? (lp.m_agg_program + bc_off)[berr.offending_word]
                        : 0u;

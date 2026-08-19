@@ -1340,8 +1340,8 @@ DECLARE_NDBINFO_TABLE(SECURITY_VIOLATION_COUNTS, 3) = {
      {"violation_id", Ndbinfo::Number, "ViolationType enum value"},
      {"count", Ndbinfo::Number64, "Cumulative strikes since node start"}}};
 
-DECLARE_NDBINFO_TABLE(JIT, 7) = {
-    {"jit", 7, 0, [](const Ndbinfo::Counts &c) { return c.data_nodes; },
+DECLARE_NDBINFO_TABLE(JIT, 10) = {
+    {"jit", 10, 0, [](const Ndbinfo::Counts &c) { return c.data_nodes; },
      "RONDB-1056 JIT code-memory and program-reuse statistics "
      "(one row per data node)"},
     {{"node_id", Ndbinfo::Number, "Node ID"},
@@ -1357,7 +1357,14 @@ DECLARE_NDBINFO_TABLE(JIT, 7) = {
      {"programs_reused", Ndbinfo::Number64,
       "Reuse-cache hits (compilations avoided) since node start"},
      {"programs_cached", Ndbinfo::Number,
-      "Compiled programs currently held in the reuse cache"}}};
+      "Compiled programs currently held in the reuse cache"},
+     {"programs_fallback", Ndbinfo::Number64,
+      "Compile attempts that produced no JIT program (ran on the "
+      "interpreter) since node start"},
+     {"rows_executed", Ndbinfo::Number64,
+      "Rows executed by JIT-compiled programs since node start"},
+     {"compile_ns_total", Ndbinfo::Number64,
+      "Total nanoseconds spent JIT-compiling since node start"}}};
 
 #define DBINFOTBL(x) \
   { Ndbinfo::x##_TABLEID, (const Ndbinfo::Table *)&ndbinfo_##x }
