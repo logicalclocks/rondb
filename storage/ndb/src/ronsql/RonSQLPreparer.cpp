@@ -670,10 +670,23 @@ RonSQLPreparer::parse()
             m_context.ast_root.root_table->alias;
         for (const JoinClause* join = m_context.ast_root.joins;
              join != NULL; join = join->next) {
+          // Phase 4 (non_aggregate_phase_4.md, W1): a conditionless
+          // join clause is acceptable only as the comma cross-join of
+          // a SCALAR CTE (the grammar's one conditionless production;
+          // a scalar CTE always produces exactly one row, so the
+          // cross join is a semantics-preserving 1-row multiplier —
+          // and its coverage state is ScalarDummy by construction).
+          // Real-table and grouped-CTE comma joins stay rejected.
+          const CteDefinition* join_cte =
+              find_cte_definition(join->table.name);
+          bool scalar_cte_cross_join =
+              (join->conditions == NULL && join_cte != NULL &&
+               join_cte->stmt->groupby_columns == NULL &&
+               join->join_type == JoinClause::INNER_JOIN);
           if (num_visible_aliases >= MAX_SPJ_TREE_NODES ||
               (join->join_type != JoinClause::INNER_JOIN &&
                join->join_type != JoinClause::LEFT_OUTER_JOIN) ||
-              join->conditions == NULL) {
+              (join->conditions == NULL && !scalar_cte_cross_join)) {
             projection_only_join_chain = false;
             break;
           }
@@ -710,8 +723,7 @@ RonSQLPreparer::parse()
             throw RonSQLPermanentError(
                 "INNER JOIN below LEFT JOIN not supported.");
           }
-          const CteDefinition* cte = find_cte_definition(join->table.name);
-          if (cte != NULL) {
+          if (join_cte != NULL) {
             LexCString child_names[MAX_JOIN_KEY_COLS];
             Uint32 num_keys = 0;
             for (const JoinCondition* jc = join->conditions;
@@ -724,9 +736,14 @@ RonSQLPreparer::parse()
             }
             if (!projection_only_join_chain) break;
             CteKeyCoverageResult coverage;
-            if (!cte_key_coverage(cte, child_names, num_keys, coverage) ||
+            // Phase 4: ScalarDummy (scalar CTE, no keys) joins the
+            // accepted set — its producer restricts it to exactly the
+            // conditionless-scalar case admitted above.
+            if (!cte_key_coverage(join_cte, child_names, num_keys,
+                                  coverage) ||
                 (coverage.state != CteKeyCoverage::ExactOrdered &&
-                 coverage.state != CteKeyCoverage::ExactPermuted)) {
+                 coverage.state != CteKeyCoverage::ExactPermuted &&
+                 coverage.state != CteKeyCoverage::ScalarDummy)) {
               projection_only_join_chain = false;
               break;
             }
@@ -744,9 +761,10 @@ RonSQLPreparer::parse()
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
                "Currently, RonSQL only supports aggregate queries and projection-only\n"
                "SELECTs: single-table, left-deep join chains over real tables and/or\n"
-               "complete-key CTE lookups (INNER / LEFT JOIN), and CTE_SCAN roots —\n"
-               "all without ORDER BY / LIMIT / GROUP BY / expressions.  See\n"
-               "non_aggregate_pushdown_plan.md for the broader roadmap.\n";
+               "complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of\n"
+               "scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /\n"
+               "GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the\n"
+               "broader roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
     }
@@ -9099,7 +9117,13 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       const NdbQueryOperand* effective_keys[2];
       const NdbQueryOperand** keys_to_use = keys;
       if (coverage.state == CteKeyCoverage::ScalarDummy) {
-        require_run(opts.setParent(opDefs[op.parent_op_idx]) == 0,
+        // Phase 4 (W2): parent on tree_parent_op_idx, not
+        // parent_op_idx — identical for every 2-CTE shape, but with
+        // three or more comma-joined scalar CTEs the planner chains
+        // the sibling CTE_LOOKUPs via tree_parent_op_idx (SPJ rejects
+        // un-chained sibling CTEs) and setParent(root) would clobber
+        // that chain.
+        require_run(opts.setParent(opDefs[op.tree_parent_op_idx]) == 0,
                     "Failed to set parent for scalar CTE cross-join.");
         // D8: the scalar CTE's virtual PK is its FIRST output column (I.21),
         // whose type is the derived aggregate type — Bigint, Bigunsigned,

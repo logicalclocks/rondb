@@ -403,6 +403,13 @@ EXPLAIN showing the fan-out.
 
 ## Phase 4 — scalar aggregate CTEs in non-aggregate main queries
 
+**Detailed plan: `non_aggregate_phase_4.md` — IMPLEMENTED (August
+2026), pending user build + MTR --record.**  Research reshaped the
+sketch below: scalar-CTE joins are comma cross-joins only (LEFT JOIN
+scalar CTE is not expressible), and the 4b condition-routing item
+(`t.col > s.m`) turned out to be missing on BOTH paths — deferred as
+its own feature, pinned by sc-P1.
+
 Target: snowflake/star projection queries joined with single-row
 aggregating CTEs (Phase I.17 machinery):
 

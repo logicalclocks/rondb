@@ -20375,15 +20375,18 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * directly (gb_map is nullptr). Return the scalar result regardless
      * of the lookup key.  The key is a dummy constant provided by the
      * NdbQueryBuilder for cross-join support.
+     *
+     * A scalar aggregate over EMPTY input is still one row (COUNT = 0,
+     * SUM/MIN/MAX = NULL) per MySQL semantics — exactly what the
+     * scalar CTE_SCAN emit path produces (JoinAggInterpreter::Init
+     * pre-zeroes the COUNT slots and leaves the other slots is_null,
+     * so m_agg_results is valid for emit even when processed_rows()
+     * is 0).  An earlier processed_rows() == 0 early REF here
+     * (GROUP_NOT_FOUND) dropped every cross-join parent row via
+     * MatchNonNull, on both the pass-through and aggregate paths
+     * (found by non_aggregate_phase_4.md sc-6).
      */
     jam();
-    if (interp->processed_rows() == 0) {
-      jam();
-      /* Empty table — no result to return */
-      sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
-      return;
-    }
     groupData = reinterpret_cast<const char *>(interp->agg_results());
     /* Override keyLen to 0 so cteLookupEmitResult computes
      * accumulators = groupData + 0 = m_agg_results correctly. */

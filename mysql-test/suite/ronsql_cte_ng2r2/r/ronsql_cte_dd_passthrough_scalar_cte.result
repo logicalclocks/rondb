@@ -1,0 +1,321 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sc-1: real root + scalar CTE cross-join ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 6;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 6|
+c_custkey	m
+1	1500
+2	1500
+3	1500
+4	1500
+5	1500
+
+=== sc-2: two scalar CTEs, projection-only ===
+== Query ==
+WITH a AS (SELECT MAX(o_orderkey) AS m FROM orders),
+b AS (SELECT COUNT(*) AS n FROM nation)
+SELECT a.m, b.n FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(o_orderkey) AS m FROM orders),
+b AS (SELECT COUNT(*) AS n FROM nation)
+SELECT a.m, b.n FROM a, b|
+m	n
+1500	25
+
+=== sc-3: scalar CTE appended to a snowflake chain ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT o.o_orderkey, cu.c_mktsegment, s.m
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey, s
+WHERE o.o_orderkey < 8;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT o.o_orderkey, cu.c_mktsegment, s.m
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey, s
+WHERE o.o_orderkey < 8|
+o_orderkey	c_mktsegment	m
+1	BUILDING	1500
+2	FURNITURE	1500
+3	HOUSEHOLD	1500
+4	MACHINERY	1500
+5	AUTOMOBILE	1500
+6	BUILDING	1500
+7	FURNITURE	1500
+
+=== sc-4: scalar CTE appended to a self-join star ===
+== Query ==
+WITH s AS (SELECT COUNT(*) AS n FROM region)
+SELECT o.o_orderkey, cu.c_mktsegment AS m1, c2.c_mktsegment AS m2, s.n
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN customer AS c2 ON c2.c_custkey = o.o_clerk, s
+WHERE o.o_orderkey < 30;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT COUNT(*) AS n FROM region)
+SELECT o.o_orderkey, cu.c_mktsegment AS m1, c2.c_mktsegment AS m2, s.n
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN customer AS c2 ON c2.c_custkey = o.o_clerk, s
+WHERE o.o_orderkey < 30|
+o_orderkey	m1	m2	n
+1	BUILDING	FURNITURE	5
+10	AUTOMOBILE	BUILDING	5
+11	BUILDING	FURNITURE	5
+12	FURNITURE	HOUSEHOLD	5
+13	HOUSEHOLD	MACHINERY	5
+15	AUTOMOBILE	BUILDING	5
+16	BUILDING	FURNITURE	5
+17	FURNITURE	HOUSEHOLD	5
+18	HOUSEHOLD	MACHINERY	5
+19	MACHINERY	AUTOMOBILE	5
+2	FURNITURE	HOUSEHOLD	5
+20	AUTOMOBILE	BUILDING	5
+22	FURNITURE	HOUSEHOLD	5
+23	HOUSEHOLD	MACHINERY	5
+24	MACHINERY	AUTOMOBILE	5
+25	AUTOMOBILE	BUILDING	5
+26	BUILDING	FURNITURE	5
+27	FURNITURE	HOUSEHOLD	5
+29	MACHINERY	AUTOMOBILE	5
+3	HOUSEHOLD	MACHINERY	5
+4	MACHINERY	AUTOMOBILE	5
+5	AUTOMOBILE	BUILDING	5
+6	BUILDING	FURNITURE	5
+8	HOUSEHOLD	MACHINERY	5
+9	MACHINERY	AUTOMOBILE	5
+
+=== sc-5: WHERE on the scalar output, accepting ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 6 AND s.m > 100;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 6 AND s.m > 100|
+c_custkey	m
+1	1500
+2	1500
+3	1500
+4	1500
+5	1500
+
+=== sc-5b: WHERE on the scalar output, rejecting -> empty ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 6 AND s.m > 100000;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 6 AND s.m > 100000|
+c_custkey	m
+
+=== sc-6: NULL scalar printed on every row ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders
+WHERE o_orderkey > 999999)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders
+WHERE o_orderkey > 999999)
+SELECT cu.c_custkey, s.m
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4|
+c_custkey	m
+1	NULL
+2	NULL
+3	NULL
+
+=== sc-7: COUNT over an empty subset prints 0 ===
+== Query ==
+WITH s AS (SELECT COUNT(*) AS n FROM orders WHERE o_orderkey > 999999)
+SELECT cu.c_custkey, s.n
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT COUNT(*) AS n FROM orders WHERE o_orderkey > 999999)
+SELECT cu.c_custkey, s.n
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4|
+c_custkey	n
+1	0
+2	0
+3	0
+
+=== sc-8: three scalar CTEs — the setParent chain fix ===
+== Query ==
+WITH a AS (SELECT MAX(o_orderkey) AS m FROM orders),
+b AS (SELECT COUNT(*) AS n FROM nation),
+c AS (SELECT MIN(r_regionkey) AS r FROM region)
+SELECT a.m, b.n, c.r FROM a, b, c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(o_orderkey) AS m FROM orders),
+b AS (SELECT COUNT(*) AS n FROM nation),
+c AS (SELECT MIN(r_regionkey) AS r FROM region)
+SELECT a.m, b.n, c.r FROM a, b, c|
+m	n	r
+1500	25	0
+
+=== sc-9: multi-output scalar CTE with temporal + DECIMAL ===
+== Query ==
+WITH s AS (SELECT MIN(o_orderdate) AS d, MAX(o_totalprice) AS p
+FROM orders)
+SELECT cu.c_custkey, s.d, s.p
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(o_orderdate) AS d, MAX(o_totalprice) AS p
+FROM orders)
+SELECT cu.c_custkey, s.d, s.p
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4|
+c_custkey	d	p
+1	1995-01-01	20055.00
+2	1995-01-01	20055.00
+3	1995-01-01	20055.00
+
+=== sc-10: AGGREGATE main + empty scalar CTE child ===
+== Query ==
+WITH s AS (SELECT COUNT(*) AS n FROM orders WHERE o_orderkey > 999999)
+SELECT COUNT(*) AS c
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT COUNT(*) AS n FROM orders WHERE o_orderkey > 999999)
+SELECT COUNT(*) AS c
+FROM customer AS cu, s
+WHERE cu.c_custkey < 4|
+c
+3
+
+=== sc-P1 (rejection): real column vs scalar output ===
+Error handling: RPE
+ronsql_cli caught exception: Cross-table WHERE conditions (e.g., a.x > b.y) are only supported in queries with aggregation (GROUP BY / aggregate functions).  Split into separate conditions per table, or add aggregation.
+
+=== sc-P2 (rejection): comma cross-join of real tables ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
+scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
+GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
+broader roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.
+
+=== sc-P3 (rejection): grouped CTE comma-joined ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
+scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
+GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
+broader roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.
