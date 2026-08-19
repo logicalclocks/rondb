@@ -2481,6 +2481,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_redist_queue_count = 0;
     state->m_cte_num_nodes = 0;
     state->m_cte_redistribution_done = false;
+    state->m_cte_scalar_shipped = false;
     for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
       jamDebug();
       jamDataDebug(i);

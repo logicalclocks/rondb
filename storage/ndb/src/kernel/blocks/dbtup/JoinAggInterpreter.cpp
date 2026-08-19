@@ -1328,6 +1328,12 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
       freeStringAggSlot(&local_items[i]);
     }
   }
+  if (ret == 0) {
+    /* Single-feeder rule companion (dtw-19b): a peer contributed, so
+     * the cteScanAggFeed scalar gate (processed_rows() > 0) must pass
+     * on this owner even when it scanned no local rows itself. */
+    m_processed_rows++;
+  }
   return ret;
 }
 Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {

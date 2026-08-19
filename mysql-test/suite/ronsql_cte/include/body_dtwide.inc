@@ -455,41 +455,43 @@ SELECT COUNT(*), SUM(t.n), SUM(t.s_i), SUM(t.s_biu), MIN(t.mn_si),
 FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
 
 --echo
---echo === dtw-19: scalar CTE (no GROUP BY), COUNT + MAX over BIGINT columns ===
-# MIN deliberately absent: scalar-CTE MIN is broken in the cross-node
-# merge — see the dtw-19b probe below.
+--echo === dtw-19: scalar CTE (no GROUP BY) over BIGINT extremes ===
+# Regression net for the dtw-19b duplicate-feed bug: before the
+# single-feeder fix (m_cte_scalar_shipped gate in cteScanAggFeed),
+# every node fed its LOCAL scalar accumulators into the main aggregator
+# alongside the owner's merged ones, so MAX(t.mn) computed
+# max-of-per-node-minima whenever the global-min row was scanned on the
+# owner node.  This full-table form caught it on ng4r2 (8 nodes).
 let $QUERY=
 WITH t AS (
-  SELECT COUNT(*) AS n, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+  SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
   FROM dtw)
-SELECT MAX(t.n), MAX(t.mx), MAX(t.mxu) FROM t;|
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t;|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
 WITH t AS (
-  SELECT COUNT(*) AS n, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+  SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
   FROM dtw)
-SELECT MAX(t.n), MAX(t.mx), MAX(t.mxu) FROM t|
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t|
 
-# NEXT-PHASE (dtw-19b): scalar-CTE MIN is WRONG whenever the true
-# global minimum is scanned on a non-owner node — the MIN arm of the
-# scalar cross-node merge appears to compare with INVERTED POLARITY
-# (keeps the larger of the two local minima).  Three data points
-# (2026-08-19): (1) ng4r2/8 nodes, full table: returned -9500000665
-# instead of Int64-min; (2) default topology, WHERE d_id <= 240:
-# returned -11700000819 (row 3) instead of -11900000833 (row 1);
-# (3) default topology, full table: correct — by luck, the min row was
-# scanned on the owner node.  MAX (Int64-max, Uint64-max) merges
-# correctly in every run, and the GROUPED MIN path (dtw-05/dtw-16) is
-# correct on all topologies.  Suspect: the MIN arm of
-# mergeScalarAccumulators (cte_filter_phase_i17_redistribute.md, the
-# keyLen==0 scalar redistribute).  Affects ALL topologies — also audit
-# body_chain_scalar.inc / offline_fs_scalar-style scalar-CTE MINs,
-# which may be green only by row placement.
-# See test_benchmark_extension_plan.md §5b.
-#   WITH t AS (
-#     SELECT COUNT(*) AS n, MIN(d_bi) AS mn FROM dtw)
-#   SELECT MAX(t.n), MAX(t.mn) FROM t;
+--echo
+--echo === dtw-19b: scalar CTE MIN with a body WHERE (2-node duplicate-feed reproducer) ===
+# The moderate-rows variant that reproduced the duplicate-feed bug on
+# the DEFAULT topology (returned row 3's value instead of row 1's).
+let $QUERY=
+WITH t AS (
+  SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+  FROM dtw WHERE d_id <= 240)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (
+  SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+  FROM dtw WHERE d_id <= 240)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t|
+
 
 --echo
 --echo === dtw-20: P-GB — GROUP BY a dimension column over a mixed-type CTE leaf ===

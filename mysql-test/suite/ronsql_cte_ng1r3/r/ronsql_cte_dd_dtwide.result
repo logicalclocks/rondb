@@ -464,12 +464,12 @@ FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
 COUNT(*)	SUM(t.n)	SUM(t.s_i)	SUM(t.s_biu)	MIN(t.mn_si)	MAX(t.mx_siu)	MIN(t.mn_dec)	MAX(t.mx_dec)	MIN(t.mn_dt)	MAX(t.mx_ch)	MAX(t.mx_d)
 20	240	-397599928000	24000072000	-29993	3107	233.25	1450455	1995-01-04	echo	4.875
 
-=== dtw-19: scalar CTE (no GROUP BY), COUNT + MAX over BIGINT columns ===
+=== dtw-19: scalar CTE (no GROUP BY) over BIGINT extremes ===
 == Query ==
 WITH t AS (
-SELECT COUNT(*) AS n, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
 FROM dtw)
-SELECT MAX(t.n), MAX(t.mx), MAX(t.mxu) FROM t;
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t;
 
 Number of output lines, including header: 2
 
@@ -480,11 +480,33 @@ Number of output lines, including header: 2
 
 == Expected result ==
 WITH t AS (
-SELECT COUNT(*) AS n, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
 FROM dtw)
-SELECT MAX(t.n), MAX(t.mx), MAX(t.mxu) FROM t|
-MAX(t.n)	MAX(t.mx)	MAX(t.mxu)
-244	9223372036854775807	18446744073709551615
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t|
+MAX(t.n)	MAX(t.mn)	MAX(t.mx)	MAX(t.mxu)
+244	-9223372036854775808	9223372036854775807	18446744073709551615
+
+=== dtw-19b: scalar CTE MIN with a body WHERE (2-node duplicate-feed reproducer) ===
+== Query ==
+WITH t AS (
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+FROM dtw WHERE d_id <= 240)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+FROM dtw WHERE d_id <= 240)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t|
+MAX(t.n)	MAX(t.mn)	MAX(t.mx)	MAX(t.mxu)
+240	-11900000833	11900000833	239000717
 
 === dtw-20: P-GB — GROUP BY a dimension column over a mixed-type CTE leaf ===
 == Query ==

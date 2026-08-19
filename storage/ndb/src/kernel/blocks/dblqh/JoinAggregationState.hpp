@@ -252,6 +252,13 @@ struct JoinAggregationState {
   Uint32 m_cte_remote_ownerInstances[ABS_MAX_NDB_NODES];
 
   bool m_cte_redistribution_done;           // This node finished sending
+  bool m_cte_scalar_shipped;                // Scalar (no GROUP BY) CTE: this
+                                            // node shipped its local
+                                            // accumulators to the DBTC-node
+                                            // owner (I.17e).  Once shipped,
+                                            // the local copy is a stale
+                                            // partial and must not be fed or
+                                            // emitted (single-feeder rule)
   bool m_cte_waiting_conf;                  // Paused waiting for REDISTRIBUTE_CONF
   Uint32 m_cte_redist_batch_bytes;          // Bytes sent in current batch (flow control)
   Uint32 m_cte_node_fail_count;             // Snapshot of s_node_fail_count at SETUP
@@ -360,6 +367,7 @@ struct JoinAggregationState {
     m_cte_num_nodes(0),
     m_owner_instance(0),
     m_cte_redistribution_done(false),
+    m_cte_scalar_shipped(false),
     m_cte_waiting_conf(false),
     m_cte_redist_batch_bytes(0),
     m_cte_node_fail_count(0),

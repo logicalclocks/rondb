@@ -10,8 +10,9 @@ fs_floor` for the phase-breakdown table). Findings ledger in §5b:
 3 crashes (EXPLAIN SUM(CASE) abort **fixed**; DECIMAL scalar subquery
 RDRS crash **probed**; big-06 8-node RDRS crash **probed**), 2 ORDER BY
 explain mis-prints **fixed**, 1 hang **probed** (anti-join + INNER CTE
-join), 2 wrong-results **probed** (NOT EXISTS × CTE-join; scalar-CTE
-MIN merge polarity — all topologies), 1 clean-reject **asserted**
+join), 2 wrong-results (NOT EXISTS × CTE-join **probed**;
+scalar-CTE duplicate feed **FIXED** — see §5b, was misdiagnosed as MIN
+merge polarity), 1 clean-reject **asserted**
 (explicit IN × CTE-join), 2 future-extension TODOs (§7), 2 capability
 upgrades pinned as EXPLAIN regressions (I.16 rewrite, CTE shadowing).
 The probed engine bugs are the natural input for a follow-up fix phase
@@ -583,26 +584,30 @@ done
   comment carries the two bisect halves (body WHERE alone, CASE main
   aggregate alone); the rdrs crash trace from the failed run pins the
   abort site.
-- **WRONG RESULTS: scalar-CTE MIN merge is polarity-inverted — ALL
-  topologies** (`body_dtwide.inc` dtw-19; MIN removed from the
-  accept-case, shape probed as dtw-19b): three recordings triangulate
-  it. (1) ng4r2/8 nodes, full table: MIN(d_bi) returned -9500000665
-  instead of Int64-min. (2) Default topology, `WHERE d_id <= 240`:
-  returned -11700000819 (row 3's value) instead of -11900000833 (row
-  1's). (3) Default topology, full table: CORRECT — by placement luck.
-  The consistent explanation: the MIN arm of the scalar cross-node
-  merge keeps the LARGER of the two local minima (inverted compare),
-  so results are right only when the true global min is scanned on the
-  owner node. MAX (Int64-max, Uint64-max) merges correctly in every
-  run; the GROUPED MIN path (dtw-05/dtw-16, hash-group redistribute)
-  is correct on every topology. Suspect: the MIN arm of
-  `mergeScalarAccumulators` (cte_filter_phase_i17_redistribute.md,
-  keyLen==0 scalar redistribute). Not multi-node-only — any scalar-CTE
-  MIN in production can be silently wrong. Follow-up audit: other
-  scalar-CTE MIN users (body_chain_scalar.inc, offline_fs_scalar,
-  cte_tpch_q15's MIN(revenue.total_rev)) may be green only by row
-  placement. High-priority kernel fix; dtw-19b is the regression case
-  to re-enable.
+- **WRONG RESULTS: scalar-CTE duplicate feed (FIXED)** — originally
+  filed as "scalar-CTE MIN merge polarity-inverted"; runtime tracing
+  (mergeScalarAccumulators slot dump) proved the cross-node merge fully
+  CORRECT and located the real bug one layer up: `cteScanAggFeed`'s
+  scalar branch (the joinAggStateKey path an aggregating main takes,
+  distinct from cteScanEmitResults which already had
+  cteScanShouldEmitScalar) had NO single-feeder rule.  After the I.17e
+  scalar redistribute, every node still held its local pre-redistribute
+  accumulators and fed them into its node's main aggregator alongside
+  the DBTC-node owner's merged ones; the main query's MAX over those
+  duplicate rows computed max-of-per-node-minima.  Explains all three
+  observations exactly (correct only when the global-min row is scanned
+  on a NON-owner node, whose fed local min coincides with the merged
+  min).  The grouped path never had this because redistribution REMOVES
+  shipped groups from the sender's hash map.  Fix: new
+  `JoinAggregationState::m_cte_scalar_shipped` set when a peer ships in
+  `continueJoinAggRedistribute`, gating `cteScanAggFeed`'s scalar
+  branch (single-row CTEs never ship, so their one-node state feeds
+  unconditionally); companion: `mergeScalarAccumulators` bumps
+  `m_processed_rows` per inbound merge so an owner that scanned no
+  local rows still passes the `processed_rows() > 0` feed gate
+  (previously masked by the duplicate feeding).  Regression: dtw-19
+  (full-table, ng4r2 catcher) + dtw-19b (WHERE d_id <= 240, the 2-node
+  reproducer) re-enabled as live cases.
 - **A CTE named like a stored table shadows it — accepted, not
   ambiguous**: the fifth recording showed `WITH pt2 AS (… FROM pt1 …)`
   resolving the `pt2` join target to the CTE (`CTE_LOOKUP CTE:pt2`,

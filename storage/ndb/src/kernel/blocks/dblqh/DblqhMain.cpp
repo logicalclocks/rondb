@@ -20687,10 +20687,22 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     }
   } else if (interp->n_gb_cols() == 0 &&
              interp->processed_rows() > 0 &&
-             groupsSent == 0) {
+             groupsSent == 0 &&
+             !state->m_cte_scalar_shipped) {
     /**
      * Scalar aggregate (no GROUP BY): single result in m_agg_results.
      * Build linked_attr_data and feed into target aggregator once.
+     *
+     * Single-feeder rule (dtw-19b): a node that shipped its scalar
+     * accumulators to the DBTC-node owner during the I.17e scalar
+     * redistribute holds a stale partial and must NOT also feed it —
+     * otherwise the main aggregator sees one row per node and e.g.
+     * MAX(cte_min) computes max-of-per-node-minima.  The owner's
+     * m_cte_scalar_shipped stays false and it feeds the cluster-wide
+     * merged result; single-row CTEs (one-node state, no redistribute)
+     * never ship and feed unconditionally.  processed_rows() > 0 also
+     * covers an owner that scanned no local rows: inbound scalar
+     * merges bump it (see mergeScalarAccumulators).
      */
     jam();
     const AggResItem *accumulators = interp->agg_results();
@@ -21567,6 +21579,14 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         jam();
         sendScalarRedistributeReq(signal, state, interp, ownerNode,
                                   aggStateKey);
+        /* Single-feeder rule (dtw-19b): our local accumulators are now
+         * a stale partial — the DBTC-node owner holds the cluster-wide
+         * merged result.  Mark shipped so cteScanAggFeed /
+         * cteScanEmitResults never feed or emit the stale copy (the
+         * grouped path gets this for free because redistribution
+         * REMOVES shipped groups from the sender's hash map; scalar
+         * accumulators have no such removal). */
+        state->m_cte_scalar_shipped = true;
       } else {
         jam();
         DEB_CTE(("(%u) CTE REDIST: scalar — this node is owner "
