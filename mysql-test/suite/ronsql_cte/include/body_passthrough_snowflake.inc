@@ -310,9 +310,12 @@ DELIMITER ;|
 # (setFirstInnerJoin / setUpperJoin), so the shape is now rejected at
 # the parse gate with a targeted error.
 #
-# NEXT-PHASE: INNER JOIN below a LEFT JOIN — needs outer-join nest
-#   metadata emission (follow ha_ndbcluster_push.cc build_query's
-#   setFirstInnerJoin/setUpperJoin), then re-enable as a compare.
+# NEXT-PHASE: INNER JOIN below a LEFT JOIN — fixed by join-condition
+#   LEFT->INNER promotion, not nest metadata: SQL's left-associative
+#   reading `(o LEFT cl) INNER n` with a null-rejecting equality on cl
+#   is equivalent to all-INNER, while the emitted tree expresses
+#   `o LEFT (cl INNER n)`.  See join_nest_semantics_plan.md Part B;
+#   re-enable as a compare when the promotion pre-pass lands.
 #   Probe:
 #   SELECT o.o_orderkey, cl.c_custkey, n.n_name
 #   FROM orders AS o

@@ -1,0 +1,68 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ns-5: COUNT(n.n_nationkey) variant ===
+== Query ==
+SELECT COUNT(n.n_nationkey) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(n.n_nationkey) AS c
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
+c
+10
+
+=== ns-6: control — same chain all-INNER ===
+== Query ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c
+FROM nestp AS t
+JOIN customer AS cl ON cl.c_custkey = t.ref
+JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
+c
+10
+
+=== ns-7: control — LEFT ... LEFT chain, no INNER below ===
+== Query ==
+SELECT COUNT(*) AS c, COUNT(n.n_nationkey) AS cn
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, COUNT(n.n_nationkey) AS cn
+FROM nestp AS t
+LEFT JOIN customer AS cl ON cl.c_custkey = t.ref
+LEFT JOIN nation AS n ON n.n_nationkey = cl.c_nationkey|
+c	cn
+30	10
