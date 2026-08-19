@@ -5,7 +5,7 @@ use ndbinfo;
 ##
 ## ndb$tables
 select count(*) from ndb$tables;
-count(*)	59
+count(*)	60
 explain select count(*) from ndb$tables;
 id	1
 select_type	SIMPLE
@@ -63,7 +63,7 @@ ndb$acc_operations	15	64
 ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$certificates	34	44
-ndb$columns	615	44
+ndb$columns	622	44
 ndb$config_nodes	34	28
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
@@ -81,6 +81,7 @@ ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
 ndb$hwinfo	2	44
 ndb$index_stats	64	20
+ndb$jit	2	44
 ndb$logbuffers	8	40
 ndb$logspaces	8	40
 ndb$membership	2	88
@@ -103,7 +104,7 @@ ndb$table_map	100	36
 ndb$table_memory_usage	100	44
 ndb$table_replicas	800	64
 ndb$table_replicas_all	400	64
-ndb$tables	59	40
+ndb$tables	60	40
 ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
 ndb$threadblock_details	124	24
@@ -135,7 +136,7 @@ ndb$config_values	390	1
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows
   AND table_name != 'ndb$config_values';
 count(*)
-28
+29
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   AND table_name != 'ndb$config_values'
   ORDER BY table_name;
@@ -156,6 +157,7 @@ ndb$diskstat
 ndb$diskstats_1sec
 ndb$error_messages
 ndb$hwinfo
+ndb$jit
 ndb$logbuffers
 ndb$logspaces
 ndb$membership
