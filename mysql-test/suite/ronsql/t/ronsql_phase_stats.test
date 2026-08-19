@@ -61,6 +61,36 @@ INSERT INTO ph1 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 3);
 --remove_file $MYSQL_TMP_DIR/phase-out-2
 
 --echo
+--echo === Single-table pass-through scan (non-aggregate): header present ===
+# RONDB-1108 non-agg path, scan arm: ndbprep/send/firstbatch/drain/rows.
+--exec printf '{"query":"SELECT a, b FROM ph1;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-4
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-4 -o $MYSQL_TMP_DIR/phase-out-4 -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-4
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-4
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-4 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Result body (sorted) ==
+--exec sort $MYSQL_TMP_DIR/phase-out-4
+--remove_file $MYSQL_TMP_DIR/phase-body-4
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-4
+--remove_file $MYSQL_TMP_DIR/phase-out-4
+
+--echo
+--echo === Single-table pass-through PK lookup (non-aggregate): header present ===
+# RONDB-1108 non-agg path, PK-lookup arm: firstbatch = fused execute(Commit).
+--exec printf '{"query":"SELECT a, b FROM ph1 WHERE a = 3;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-5
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-5 -o $MYSQL_TMP_DIR/phase-out-5 -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-5
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-5
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-5 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Result body (sorted) ==
+--exec sort $MYSQL_TMP_DIR/phase-out-5
+--remove_file $MYSQL_TMP_DIR/phase-body-5
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-5
+--remove_file $MYSQL_TMP_DIR/phase-out-5
+
+--echo
 --echo === EXPLAIN: header still present (no execution phases) ===
 --exec printf '{"query":"EXPLAIN SELECT b, COUNT(*) FROM ph1 GROUP BY b;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-3
 --exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-3 -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-3

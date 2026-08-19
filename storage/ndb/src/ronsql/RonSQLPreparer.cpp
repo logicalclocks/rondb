@@ -6136,6 +6136,8 @@ RonSQLPreparer::execute_single_table_passthrough()
        m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII);
   bool header_emitted = false;
 
+  STAT_TS(m_conf.phase_stats, s_scandef_start);
+
   if (m_pk_lookup) {
     // Single-row primary key lookup.
     NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
@@ -6154,6 +6156,11 @@ RonSQLPreparer::execute_single_table_passthrough()
                   "Failed to set primary key value for lookup.");
     }
     register_passthrough_getvalues(op, attrs, num_cols);
+    // Phase stats: ndbprep = lookup-op definition; the NDB API fuses
+    // send + read for a committed lookup, reported as firstbatch (send
+    // and drain stay 0, like the fused single-table aggregate path).
+    STAT_TS(m_conf.phase_stats, s_pk_defined);
+    STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_pk_defined);
     bool have_row = true;
     if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0 ||
         op->getNdbError().code != 0) {
@@ -6169,6 +6176,9 @@ RonSQLPreparer::execute_single_table_passthrough()
         require_run(false, "Failed to execute lookup.");
       }
     }
+    STAT_TS(m_conf.phase_stats, s_pk_done);
+    STAT_SET(m_conf.phase_stats, firstbatch_us, s_pk_defined, s_pk_done);
+    STAT_COUNT(m_conf.phase_stats, rows_drained, have_row ? 1 : 0);
     if (is_json) {
       m_resultprinter->print_passthrough_header(attrs, num_cols,
                                                 m_conf.out_stream);
@@ -6193,8 +6203,12 @@ RonSQLPreparer::execute_single_table_passthrough()
   // Scan arm: shared setup, then a streaming drain.
   NdbScanOperation* scanOp = open_single_table_scan_op();
   register_passthrough_getvalues(scanOp, attrs, num_cols);
+  STAT_TS(m_conf.phase_stats, s_exec_start);
+  STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_exec_start);
   require_run(DBG(m_trans->execute(NdbTransaction::NoCommit)) == 0,
               "Failed to execute transaction (single-table pass-through).");
+  STAT_TS(m_conf.phase_stats, s_exec_sent);
+  STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
 
   if (is_json) {
     m_resultprinter->print_passthrough_header(attrs, num_cols,
@@ -6203,7 +6217,15 @@ RonSQLPreparer::execute_single_table_passthrough()
   }
   Uint32 row_count = 0;
   int rc;
-  while ((rc = DBG(scanOp->nextResult(true))) == 0) {
+  for (;;) {
+    rc = DBG(scanOp->nextResult(true));
+    if (row_count == 0) {
+      // First nextResult covers data-node execution up to the first
+      // result batch (captured whether or not a row arrived).
+      STAT_TS(m_conf.phase_stats, s_first_row);
+      STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
+    }
+    if (rc != 0) break;
     if (!header_emitted) {
       m_resultprinter->print_passthrough_header(attrs, num_cols,
                                                 m_conf.out_stream);
@@ -6214,6 +6236,17 @@ RonSQLPreparer::execute_single_table_passthrough()
                                            m_conf.out_stream);
     row_count++;
   }
+  STAT_TS(m_conf.phase_stats, s_drain_done);
+#ifdef RONSQL_PHASE_STATS
+  if (m_conf.phase_stats != nullptr) {
+    // Rows are printed inside the drain loop on this path, so print_us
+    // stays 0 and drain_us includes the formatting cost (same
+    // convention as execute_passthrough_drain).
+    m_conf.phase_stats->drain_us =
+        (s_drain_done - s_exec_sent) - m_conf.phase_stats->firstbatch_us;
+    m_conf.phase_stats->rows_drained = row_count;
+  }
+#endif
   require_run(rc == 1, "Single-table pass-through scan failed.");
   if (header_emitted) {
     m_resultprinter->print_passthrough_finish(m_conf.out_stream);

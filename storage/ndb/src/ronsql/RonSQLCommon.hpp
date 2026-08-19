@@ -62,6 +62,12 @@ class RdrsSchemaCache;  // Forward declaration — optional, for index list cach
  * - single-table path: ndbprep = scan-op definition (bounds, filter,
  *   aggregation code); firstbatch = DoAggregation (the NDB API fuses
  *   send + execute + drain); send/drain stay 0.
+ * - single-table pass-through scan arm: like the pass-through path
+ *   (ndbprep = scan-op definition + getValue wiring; send / firstbatch /
+ *   drain split; rows printed inside the drain, print stays 0).
+ * - single-table pass-through PK-lookup arm: ndbprep = lookup-op
+ *   definition; firstbatch = execute(Commit) (the NDB API fuses send +
+ *   read); send/drain stay 0; rows is 0 or 1.
  */
 struct RonSQLPhaseStats
 {

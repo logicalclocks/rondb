@@ -353,6 +353,7 @@ markers, which stay untouched):
 | `RonSQLPreparer.cpp` ctor | parse/load/compile (existing PERF boundaries at lines ~168–195) |
 | `RonSQLPreparer.cpp` `execute()` | subquery block; single-table scan block (fused → drain_us) + print |
 | `RonSQLPreparer.cpp` `execute_join()` | qb->prepare → ndbprep_us; trans->execute → send_us; nextResult loop → drain_us; print_result → print_us; passthrough drain → drain_us |
+| `RonSQLPreparer.cpp` `execute_single_table_passthrough()` | (added after the RONDB-1108 non-agg-phase0 rebase) scan arm: ndbprep/send/firstbatch/drain/rows like execute_passthrough_drain; PK-lookup arm: ndbprep = op definition, firstbatch = execute(Commit) fused, rows 0/1 |
 | `ronsql_operation.cpp` `ronsql_op` | prepare_us / execute_us / attempts |
 | `ronsql_ctrl.cpp` | stack `RonSQLPhaseStats`, wire into params, on success `resp->addHeader("x-ronsql-phases", "parse=…,load=…,compile=…,prepare=…,subquery=…,ndbprep=…,send=…,drain=…,print=…,execute=…,attempts=…")` |
 
