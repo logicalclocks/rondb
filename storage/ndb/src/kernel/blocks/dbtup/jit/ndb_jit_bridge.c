@@ -131,6 +131,8 @@
  * register, 64-bit constant into register, register-register compare. */
 #define BR_EMB_READ_ATTR             1   /* READ_ATTR_INTO_REG */
 #define BR_EMB_LOAD_CONST64          6   /* value in next 2 words */
+#define BR_EMB_BRANCH_REG_EQ_NULL   10   /* null guard (5D-3 fusion) */
+#define BR_EMB_BRANCH_REG_NE_NULL   11   /* rejected (no emitter) */
 #define BR_EMB_BRANCH_EQ_REG_REG    12
 #define BR_EMB_BRANCH_NE_REG_REG    13
 #define BR_EMB_BRANCH_LT_REG_REG    14
@@ -255,6 +257,8 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_READ_ATTR:             return "READ_ATTR_INTO_REG";
     case BR_EMB_LOAD_CONST16:          return "LOAD_CONST16";
     case BR_EMB_LOAD_CONST64:          return "LOAD_CONST64";
+    case BR_EMB_BRANCH_REG_EQ_NULL:    return "BRANCH_REG_EQ_NULL";
+    case BR_EMB_BRANCH_REG_NE_NULL:    return "BRANCH_REG_NE_NULL";
     case BR_EMB_BRANCH_EQ_REG_REG:     return "BRANCH_EQ_REG_REG";
     case BR_EMB_BRANCH_NE_REG_REG:     return "BRANCH_NE_REG_REG";
     case BR_EMB_BRANCH_LT_REG_REG:     return "BRANCH_LT_REG_REG";
@@ -493,6 +497,123 @@ typedef struct {
  * calling translate_embedded_block. */
 #define BR_NO_REFUSE_CODE 0xFFFFFFFFu
 
+/* Phase 5D-3: null-path safety scan for the READ_ATTR +
+ * BRANCH_REG_EQ_NULL fusion.
+ *
+ * The fused OP_LOAD_COL_NDB_NB leaves the destination register with an
+ * UNDEFINED value on its taken (null) edge, where the interpreter's
+ * register would be tagged null (and raise ZREGISTER_INIT_ERROR if
+ * compared). Fusion is therefore only sound if no path from the
+ * guard's target can READ the register before overwriting it. Planner
+ * programs satisfy this by construction (the target is either the next
+ * condition — which starts by re-loading the same register — or an
+ * ELSE/THEN output block that never touches it); this scan proves it
+ * for the program at hand so a hand-built API program can't diverge.
+ *
+ * Walks every path from start_pc (forward-only branches, visited set →
+ * terminates). A path is safe when it overwrites `reg`, reaches a
+ * terminal EXIT, or leaves the embedded block (the outer translator
+ * resets every register to UNKNOWN after an embedded block, so no
+ * admitted outer op can read the stale register). Reading `reg`,
+ * a backward branch, or an opcode this scan doesn't know → unsafe
+ * (conservative: pass 1 rejects such programs anyway).
+ * Returns 1 = safe to fuse, 0 = not. */
+static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
+                                  uint32_t start_pc, uint32_t reg) {
+  uint8_t  visited[BR_EMB_MAX_LEN];
+  uint32_t stack[BR_EMB_MAX_LEN];
+  uint32_t sp = 0;
+  memset(visited, 0, sizeof(visited));
+  stack[sp++] = start_pc;
+  while (sp > 0) {
+    uint32_t pc = stack[--sp];
+    /* Follow one path; pc = emb_len ends it (off-end / overwritten /
+     * terminal all funnel here — see the header comment for why
+     * leaving the block is safe). */
+    while (pc < emb_len && !visited[pc]) {
+      visited[pc] = 1;
+      uint32_t inst = emb_prog[pc];
+      uint8_t  scan_op = (uint8_t)((inst & 0x3Fu) |
+                                   (((inst >> 15) & 0x1u) << 6));
+      switch (scan_op) {
+        case BR_EMB_READ_ATTR:
+        case BR_EMB_LOAD_CONST16:
+          if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
+          pc += 1;
+          break;
+        case BR_EMB_LOAD_CONST64:
+          if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
+          pc += 3;
+          break;
+        case BR_EMB_BRANCH_REG_EQ_NULL:
+        case BR_EMB_BRANCH_REG_NE_NULL:
+          if (((inst >> 6) & 0x7u) == reg) return 0;   /* reads reg */
+          if ((inst >> 31) != 0) return 0;             /* backward */
+          if (sp >= BR_EMB_MAX_LEN) return 0;
+          stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
+          pc += 1;
+          break;
+        case BR_EMB_BRANCH_EQ_REG_REG:
+        case BR_EMB_BRANCH_NE_REG_REG:
+        case BR_EMB_BRANCH_LT_REG_REG:
+        case BR_EMB_BRANCH_LE_REG_REG:
+        case BR_EMB_BRANCH_GT_REG_REG:
+        case BR_EMB_BRANCH_GE_REG_REG:
+          if (((inst >> 6) & 0x7u) == reg ||
+              ((inst >> 9) & 0x7u) == reg) return 0;   /* reads reg */
+          if ((inst >> 31) != 0) return 0;
+          if (sp >= BR_EMB_MAX_LEN) return 0;
+          stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
+          pc += 1;
+          break;
+        case BR_EMB_BRANCH_ATTR_EQ_NULL:
+        case BR_EMB_BRANCH_ATTR_NE_NULL:
+          if ((inst >> 31) != 0) return 0;
+          if (sp >= BR_EMB_MAX_LEN) return 0;
+          stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
+          pc += 2;
+          break;
+        case BR_EMB_BRANCH_ATTR_OP_ARG:
+        case BR_EMB_BRANCH_ATTR_OP_PARAM:
+        case BR_EMB_BRANCH_ATTR_OP_ATTR: {
+          if ((inst >> 31) != 0) return 0;
+          if (pc + 2 > emb_len) return 0;
+          uint32_t words = 2u;
+          if (scan_op == BR_EMB_BRANCH_ATTR_OP_ARG) {
+            words = 2u + (((emb_prog[pc + 1] & 0xFFFFu) + 3u) >> 2);
+          }
+          if (sp >= BR_EMB_MAX_LEN) return 0;
+          stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
+          pc += words;
+          break;
+        }
+        case BR_EMB_READ_LINKED_TO_MEM:
+          pc += 1;
+          break;
+        case BR_EMB_BRANCH_LINKED_EQ_NULL:
+        case BR_EMB_BRANCH_LINKED_NE_NULL:
+          if ((inst >> 31) != 0) return 0;
+          if (sp >= BR_EMB_MAX_LEN) return 0;
+          stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
+          pc += 1;
+          break;
+        case BR_EMB_WRITE_INTERP_OUTPUT:
+          if (((inst >> 6) & 0x7u) == reg) return 0;   /* reads reg */
+          pc += 1;
+          break;
+        case BR_EMB_EXIT_OK:
+        case BR_EMB_EXIT_OK_LAST:
+        case BR_EMB_EXIT_REFUSE:
+          pc = emb_len;                                /* terminal */
+          break;
+        default:
+          return 0;
+      }
+    }
+  }
+  return 1;
+}
+
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
     Program *out_prog, JitBridgeError *out_err,
@@ -547,9 +668,22 @@ static JitBridgeReason translate_embedded_block(
   memset(const16_by_reg, 0, sizeof(const16_by_reg));
   memset(const16_valid, 0, sizeof(const16_valid));
 
+  /* Phase 5D-3: READ_ATTR + BRANCH_REG_EQ_NULL fusion state. Records
+   * the immediately preceding instruction when it was a READ_ATTR so
+   * the guard case can rewrite its emitted load into the
+   * null-branching form. Any other instruction clears it (captured
+   * into prev_* at the top of each iteration). */
+  uint8_t  read_attr_pending = 0;
+  uint8_t  read_attr_dst = 0;
+  uint16_t read_attr_op_idx = 0;
+
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
   while (emb_pc < emb_len) {
+    uint8_t  prev_read_attr_pending = read_attr_pending;
+    uint8_t  prev_read_attr_dst     = read_attr_dst;
+    uint16_t prev_read_attr_op_idx  = read_attr_op_idx;
+    read_attr_pending = 0;
     uint32_t inst = emb_prog[emb_pc];
     /* NDB normal-interpreter opcode encoding (different from the
      * aggregation interpreter's bits 31..26 layout): bits 5..0 +
@@ -570,7 +704,13 @@ static JitBridgeReason translate_embedded_block(
          * regs_i64[dst]. A NULL value sets JitState::row_fallback — the
          * row is re-run on the interpreter, which reproduces the exact
          * null-register semantics (SUM/COUNT null-skip,
-         * ZREGISTER_INIT_ERROR on null comparisons). */
+         * ZREGISTER_INIT_ERROR on null comparisons).
+         *
+         * Phase 5D-3: when the NEXT instruction is the planner's
+         * BRANCH_REG_EQ_NULL null guard for this register, the guard
+         * case rewrites this load into OP_LOAD_COL_NDB_NB — NULL rows
+         * then take the guard's edge on the JIT instead of the per-row
+         * fallback. */
         if (!allow_reg_ops) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
@@ -602,6 +742,86 @@ static JitBridgeReason translate_embedded_block(
         /* The register no longer holds a LOAD_CONST16 value usable as
          * a WRITE_INTERPRETER_OUTPUT skip offset. */
         const16_valid[dst_reg] = 0;
+        /* Arm the 5D-3 fusion for a following BRANCH_REG_EQ_NULL. */
+        read_attr_pending = 1;
+        read_attr_dst = (uint8_t)dst_reg;
+        read_attr_op_idx = out_op_idx;
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_BRANCH_REG_EQ_NULL: {
+        /* Phase 5D-3: the planner's null guard for a nullable
+         * CASE-condition column — always emitted directly after the
+         * READ_ATTR it guards, targeting "this condition failed"
+         * (the next WHEN's first word, or the ELSE output block for a
+         * simple-CASE search register).
+         *
+         * Fuse the READ_ATTR + guard PAIR into one OP_LOAD_COL_NDB_NB:
+         * the null-branching load's taken edge IS the guard's edge, so
+         * NULL rows stay on the JIT (pre-5D-3 the plain load's helper
+         * took the per-row interpreter fallback for every NULL). The
+         * guard itself emits no Op; emb_pc_to_op_idx for its pc was
+         * recorded at the loop top and resolves to the next emitted Op
+         * (planner programs never branch to a guard).
+         *
+         * A guard NOT immediately after a READ_ATTR of the same
+         * register has no lowering (JIT registers carry no null
+         * state) → reject, program falls back. Likewise when the
+         * null path could read the register before overwriting it
+         * (emb_null_path_reg_safe) — the fused load leaves the
+         * register UNDEFINED on the taken edge where the interpreter
+         * would hold a null tag. */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t direction = inst >> 31;
+        if (direction != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t guard_reg = (inst >> 6) & 0x7u;
+        if (!prev_read_attr_pending || prev_read_attr_dst != guard_reg ||
+            !emb_null_path_reg_safe(emb_prog, emb_len, target_emb_pc,
+                                    guard_reg)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        /* Rewrite the just-emitted load into the null-branching form.
+         * Operand relayout: OP_LOAD_COL_NDB carries col_id in c;
+         * OP_LOAD_COL_NDB_NB carries a=dst, b=col_id, c=branch target
+         * (the engine patches HK_BRANCH_TAKE displacement from op->c). */
+        {
+          Op *load_op = &out_prog->ops[prev_read_attr_op_idx];
+          load_op->kind = OP_LOAD_COL_NDB_NB;
+          load_op->b = load_op->c;
+          load_op->c = 0;   /* pass-2 fixup */
+          pending_target_emb_pc[prev_read_attr_op_idx] =
+              (uint16_t)target_emb_pc;
+        }
         emb_pc += 1;
         break;
       }
@@ -659,8 +879,10 @@ static JitBridgeReason translate_embedded_block(
          * only, like every embedded branch). Null registers cannot
          * reach the compare through the JIT: the only register writers
          * are LOAD_CONST16/64 (never null) and READ_ATTR, whose helper
-         * flags NULL rows for interpreter fallback — so the hot compare
-         * on raw i64 values is exact for every row the JIT completes. */
+         * flags NULL rows for interpreter fallback — or, when fused
+         * with a BRANCH_REG_EQ_NULL guard (5D-3), branches around the
+         * compare on NULL — so the hot compare on raw i64 values is
+         * exact for every row the JIT completes. */
         if (!allow_reg_ops) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;

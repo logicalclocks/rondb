@@ -10,15 +10,17 @@ d    DOUBLE NOT NULL,
 f    FLOAT NOT NULL,
 dec9 DECIMAL(9,2) NOT NULL,
 s    VARCHAR(16) NOT NULL,
+ch   CHAR(8) NOT NULL,
+i    INT NOT NULL,
 dt   DATE NOT NULL,
 n    BIGINT,
 PRIMARY KEY (pk)
 ) ENGINE=NDB;
 INSERT INTO t1 VALUES
-(1, 10, 3, 100, 2.5, 0.5, 1.10, 'beta',  '2026-01-15', NULL),
-(2, 20, 4, 200, 3.5, 0.5, 2.20, 'alpha', '2026-02-15', 5),
-(3, 30, 5, 300, 4.0, 2.0, 3.30, 'gamma', '2026-03-15', 7),
-(4, 40, 6, 400, 6.0, 4.0, 4.40, 'delta', '2026-04-15', NULL);
+(1, 10, 3, 100, 2.5, 0.5, 1.10, 'beta',  'beta',  1, '2026-01-15', NULL),
+(2, 20, 4, 200, 3.5, 0.5, 2.20, 'alpha', 'alpha', 2, '2026-02-15', 5),
+(3, 30, 5, 300, 4.0, 2.0, 3.30, 'gamma', 'gamma', 3, '2026-03-15', 7),
+(4, 40, 6, 400, 6.0, 4.0, 4.40, 'delta', 'delta', 4, '2026-04-15', NULL);
 SET ndb_pushdown_aggregate=ON;
 #
 # ---- Shapes expected to COMPILE (controls) ----
@@ -62,6 +64,17 @@ SUM(n)	COUNT(n)
 12	2
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS nullable_sum_fell_back;
 nullable_sum_fell_back
+0
+# case_nullable: CASE over a NULLABLE condition column (Phase
+# 5D-3 — the planner's BRANCH_REG_EQ_NULL guard fuses with the
+# READ_ATTR into a null-branching load; NULL rows stay on the
+# JIT).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN n > 5 THEN 1 ELSE 0 END) FROM t1;
+SUM(CASE WHEN n > 5 THEN 1 ELSE 0 END)
+1
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_nullable_fell_back;
+case_nullable_fell_back
 0
 #
 # ---- Shapes expected to FALL BACK (the census proper) ----
@@ -127,4 +140,27 @@ SUM(u + 1)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS unsigned_arith_fell_back;
 unsigned_arith_fell_back
 0
+# int_sum: SUM over a plain INT column. The OUTER kOpLoadCol
+# admission is BIGINT-only (narrow widths were never added even
+# though the load helpers already decode them — found during
+# 5D-3); every narrow-integer aggregate is a whole-program
+# fallback. High-value follow-up slice.
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(i) FROM t1;
+SUM(i)
+10
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_sum_fell_back;
+int_sum_fell_back
+1
+# case_string: STRING condition in a CASE aggregate — the
+# BRANCH_ATTR_OP_ARG lowering is wired for the scan-filter path
+# only; the aggregation path rejects it (needs per-block
+# prog_buf base plumbing — future work).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN ch = 'beta' THEN 1 ELSE 0 END) FROM t1;
+SUM(CASE WHEN ch = 'beta' THEN 1 ELSE 0 END)
+1
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_string_fell_back;
+case_string_fell_back
+1
 DROP TABLE t1;

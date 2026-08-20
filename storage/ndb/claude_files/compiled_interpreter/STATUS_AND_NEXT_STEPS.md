@@ -399,9 +399,25 @@ coldcall 31/31; rondb_jit_string_canary with collation-discriminating
 values green; census string_min flipped to 0; mixed programs stay
 hot; nullable strings 4060-safe day one; full sweep passed). The
 census scoreboard is now FULLY GREEN for every shape the SQL planner
-pushes. NEXT → chores (ndbinfo metadata + config-enumeration
---record), then 5F-2 / 5D-3 / 5E stay parked pending demand data;
-Phase 6 when merged with the pushdown-join + CTE branch.** Key planning
+pushes. → 5D-3 DONE & VERIFIED (2026-08-20 — NO regen; bridge 102/102,
+all canaries + census + full sweep green:
+found + fixed two pre-existing mysqld bugs for nullable CASE
+condition columns (integer conditions ERRORED with NDB 1872 on NULL
+rows — no null guard; string NE counted NULL as matching —
+NULL_CMP_EQUAL): planner now emits BRANCH_REG_EQ_NULL guards
+(backportable standalone commit + portable ndb_push_agg_case_null
+test) and the bridge fuses READ_ATTR + guard into the existing
+OP_LOAD_COL_NDB_NB with a null-path safety scan; bridge 102/102,
+census case_nullable green / case_string documents the string-
+condition gap, new rondb_jit_case_nullable_canary). The canary's
+first run ALSO surfaced that the OUTER kOpLoadCol admission is
+BIGINT-only — every narrow-INT-column aggregate is a whole-program
+fallback although the load helpers already decode every width
+(census probe int_sum; likely the highest-demand gap left and a
+small bridge-admission slice). NEXT → 5F-2 /
+5E stay parked pending demand data; string CASE conditions
+(BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
+work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
 the load's cold call (helper returns "was null", the load stencil
 becomes a cold-call branch in op_branch_attr_eq_null's proven shape)

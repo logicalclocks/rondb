@@ -5,9 +5,96 @@
 the nullable-expression Q3, full ndb_push_agg sweep to completion).
 5D-2 DONE & VERIFIED (2026-08-20; regen clean, bridge_tests 81/81,
 coldcall_tests 26/26, double canary Q9 + unsigned canary Q6 green
-under 4060, full ndb_push_agg sweep to completion). 5D-3 (embedded
-READ_ATTR) deferred until fallback data — otherwise the phase is
-complete.**
+under 4060, full ndb_push_agg sweep to completion).
+5D-3 DONE & VERIFIED (2026-08-20 — NO regen, bridge + mysqld only;
+bridge_tests 102/102, portable ndb_push_agg_case_null green,
+rondb_jit_case_nullable_canary green under 4060, census
+case_nullable 0 / case_string 1 / int_sum 1 as expected, full
+ndb_push_agg sweep passed; see the 5D-3 record below). The phase is
+COMPLETE.**
+
+## 5D-3 implementation record (2026-08-20)
+
+Investigating "embedded READ_ATTR null branching" surfaced TWO
+pre-existing mysqld bugs UNDER the JIT slice — for nullable CASE
+condition columns the interpreter path itself was broken, so there
+was no correct equivalence target to lower:
+
+1. **Integer conditions ERRORED on NULL rows.** The planner emitted
+   READ_ATTR + LOAD_CONST + BRANCH_XX_REG_REG with no null guard; the
+   interpreter's REG_REG branches return -ZREGISTER_INIT_ERROR when
+   either register is null tagged → ZAGG_EMBEDDED_INTERP_ERROR (1872)
+   — a hard query error where SQL semantics say the WHEN condition is
+   UNKNOWN → falls to the next WHEN / ELSE. Never caught because the
+   CASE tests' nullable-declared columns never held an actual NULL.
+2. **String NE conditions counted NULL as matching.** BranchCol used
+   NULL_CMP_EQUAL (NULL orders lowest and COMPARES): a NULL attr vs a
+   literal gives res1 = -1, so NE took the branch — `c <> 'x'` counted
+   NULL rows into the THEN arm.
+
+**mysqld fix (standalone, backportable — ha_ndbcluster_push_agg.cc):**
+nullable integer condition columns get a BRANCH_REG_EQ_NULL guard
+right after their READ_ATTR — jumping past the compare = "condition
+failed" (searched CASE: to the next condition; simple-CASE search
+register: one guard at the top, to the ELSE output block). Guards are
+emitted ONLY for nullable columns, so NOT NULL programs stay
+byte-identical. String conditions switch NULL_CMP_EQUAL →
+IF_NULL_CONTINUE (never take the branch on NULL; identical for
+non-NULL values). Safe against any data node: the kernel validator
+and the agg handler table have accepted BRANCH_REG_EQ_NULL all along,
+and a pre-5D-3 JIT rejects the unknown opcode → whole-program
+interpreter fallback (correct, just slower). Portable MTR test
+`ndb_push_agg_case_null` (OFF/ON differential; all 6 int operators,
+string EQ+NE, simple + searched + mixed + multi-WHEN, an all-NULL
+group, LOAD_CONST64 path, control on a NOT NULL column).
+
+**JIT side (bridge only — NO new stencil, NO regen):** the embedded
+translator fuses the READ_ATTR + BRANCH_REG_EQ_NULL PAIR into one
+OP_LOAD_COL_NDB_NB (a = dst, b = col_id from the load's c, c = the
+guard's target through the pending_target_emb_pc fixup — the existing
+5D-1 stencil and helper carry the full small-int decode already). The
+guard emits no Op; its emb_pc maps to the next emitted Op like every
+no-op pc. A guard NOT directly after a READ_ATTR of the same register
+rejects (JIT registers carry no null state — and pre-5D-3 behavior
+was reject anyway, so 5D-3 only ADDS coverage). Soundness:
+`emb_null_path_reg_safe` walks every forward path from the guard's
+target and vetoes fusion if the register could be READ before being
+overwritten (the fused load leaves it UNDEFINED on the taken edge
+where the interpreter holds a null tag; falling off the block's end
+is safe because the outer tracker resets all registers to UNKNOWN
+after an embedded block). Planner shapes pass by construction: next
+condition = READ_ATTR overwrite; output blocks never touch condition
+registers.
+
+**Known gap kept (documented, not 5D-3):** STRING conditions in CASE
+aggregates still fall back whole-program — OP_BRANCH_ATTR_OP_ARG's
+helper reads the instruction via ctx->prog_buf, which only the
+scan-filter path sets (aggregation would need per-embedded-block
+base plumbing). Census probe `case_string` (expected 1) tracks it.
+
+**Second gap FOUND during 5D-3 verification (the canary's first Q6
+crash):** the OUTER kOpLoadCol admission is BIGINT-only — every
+aggregate over a plain INT / SMALLINT / MEDIUMINT / TINYINT column
+(signed or unsigned) is a whole-program fallback, even though
+ndb_jit_h_load_col and its _nb sibling ALREADY decode every narrow
+width (the decode was added for the embedded READ_ATTR, which shares
+the helpers). Almost certainly the highest-demand gap left — INT is
+MySQL's default integer type — and likely a small bridge-admission
+slice since the runtime side exists. Census probe `int_sum`
+(expected 1) tracks it; the canary's THEN-value columns are BIGINT
+by construction.
+
+Tests: bridge 102/102 (T60a single guarded condition; T60b guard
+into an output block; T60c guard without READ_ATTR rejects; T60d
+register mismatch rejects; T60e null-path-reads-register rejects —
+the scanner's veto; T60f two guarded conditions — guard-to-next-
+condition overwrite rule). Coldcall unchanged (31 — no new stencil).
+Census: `case_nullable` compiles (0), `case_string` documents the
+string gap (1). New canary `rondb_jit_case_nullable_canary`:
+searched multi-WHEN / grouped-with-all-NULL-group / simple-CASE all
+4060 must-JIT; string and mixed shapes as interpreter-correctness
+probes; a mixed program with the THEN arm loading the nullable
+column itself (5D-1 + 5D-3 composition).
 
 ## 5D-2 implementation record (2026-08-20)
 
@@ -81,8 +168,9 @@ workloads the JIT is a pure overhead. 5D keeps NULL rows on the JIT.
 - Arithmetic (`RegPlus*/RegMinus*/RegMul*/RegDiv*`): any null operand
   → result register null, NO overflow check, propagate.
 - Embedded REG_REG comparisons on a null register →
-  `ZREGISTER_INIT_ERROR` (not reachable from admitted programs — the
-  embedded READ_ATTR keeps its per-row fallback on NULL, see 5D-3).
+  `ZREGISTER_INIT_ERROR` (post-5D-3: unreachable for planner programs
+  — the BRANCH_REG_EQ_NULL guard jumps around the compare; the guard
+  + READ_ATTR pair fuses on the JIT, see the 5D-3 record above).
 
 ## Design decision: FUSED null-branching loads
 
@@ -189,13 +277,13 @@ Mechanical siblings (`_f64_nb`, `_u64_nb`) so nullable DOUBLE/FLOAT
 and BIGINT UNSIGNED aggregation also stays on the JIT. Extend the
 double/unsigned canaries with a nullable column each.
 
-### 5D-3 — embedded READ_ATTR null branching — DEFERRED
+### 5D-3 — embedded READ_ATTR null branching — DONE (see record above)
 
-CASE conditions over nullable columns still take the per-row
-fallback. The same fused pattern applies (READ_ATTR is already a
-cold call), but the branch target inside an embedded block needs the
-embedded fixup machinery and interacts with arm dispositions —
-defer until `programs_fallback` / the fallback log show demand.
+Original deferral note: CASE conditions over nullable columns took
+the per-row fallback; the fused pattern needed the embedded fixup
+machinery. Implemented 2026-08-20 together with the underlying
+mysqld null-guard fix — see the 5D-3 implementation record at the
+top of this file.
 
 ## Non-goals
 

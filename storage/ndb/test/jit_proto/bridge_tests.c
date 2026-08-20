@@ -2415,6 +2415,192 @@ static void test_str_dangling_load_reject(void) {
                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpLoadCol);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5D-3: READ_ATTR + BRANCH_REG_EQ_NULL fusion (nullable CASE   */
+/* condition columns). The planner emits the guard directly after the */
+/* READ_ATTR it protects; the pair fuses into one OP_LOAD_COL_NDB_NB  */
+/* whose taken edge is the guard's edge, keeping NULL rows on the JIT.*/
+/* ------------------------------------------------------------------ */
+#define EMB_BRANCH_REG_EQ_NULL   10
+static uint32_t enc_emb_branch_reg_eq_null(uint32_t reg, uint32_t offset) {
+  return EMB_BRANCH_REG_EQ_NULL | ((reg & 0x7u) << 6) |
+         ((offset & 0x7FFFu) << 16);
+}
+
+/* T60a: single guarded condition, guard targets the refuse word
+ * (condition failed). Planner shape for one nullable integer WHEN.
+ *   emb(8): 0 READ_ATTR attr7 -> r0
+ *           1 BRANCH_REG_EQ_NULL r0, +3   (-> 4 EXIT_REFUSE)
+ *           2 LOAD_CONST16 r1, 115
+ *           3 BRANCH_GT_REG_REG r0, r1, +2  (-> 5 accept)
+ *           4 EXIT_REFUSE 626
+ *           5 LOAD_CONST16 r2, 0
+ *           6 WRITE_INTERPRETER_OUTPUT r2, 0
+ *           7 EXIT_OK
+ *   outer: kOpLoadCol(r0, c0), kOpSum(r0, agg0)
+ * Expected ops (10): [0]LOAD_COL_NDB_NB(a=0,b=7,c=3 — the fused pair)
+ *   [1]LC16 [2]BRANCH_GT(c=4) [3]EXIT(refuse) [4]LC16 [5]JUMP(c=6)
+ *   [6]outer NB load [7]SUM_CHECKED [8]tail EXIT [9]OVERFLOW_EXIT. */
+static void test_nb_case_guard_fusion(void) {
+  const char *name = "T60a nb_case_guard_fusion";
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_read_attr(/*attr_id=*/7, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/3),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/115),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/10)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 0)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 7)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 3)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_GT_INT_INT)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 5, "c", p.ops[5].c, 6)) return;
+  if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 7, "kind", p.ops[7].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T60b: guard target INSIDE an accept output block (the simple-CASE
+ * "NULL search value -> ELSE block" shape). The null path walks
+ * LC16(r2) + WRITE(r2) + EXIT_OK without touching r0 — safe. */
+static void test_nb_case_guard_into_output_block(void) {
+  const char *name = "T60b nb_case_guard_into_output_block";
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_read_attr(/*attr_id=*/3, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/4),  /* -> 5 */
+    enc_emb_load_const16(/*reg=*/1, /*val=*/10),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/10)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 3)) return;
+  /* Both the guard (emb pc 5) and the compare (emb pc 3 -> +2 = 5)
+   * resolve to the accept block's LC16 at op 4. */
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 4)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
+  mark_pass(name);
+}
+
+/* T60c: a guard NOT immediately after a READ_ATTR has no lowering
+ * (JIT registers carry no null state) — reject. */
+static void test_nb_case_guard_no_read_attr_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/5),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T60c nb_case_guard_no_read_attr_reject", prog, 4,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, EMB_BRANCH_REG_EQ_NULL);
+}
+
+/* T60d: guard on a DIFFERENT register than the READ_ATTR — reject. */
+static void test_nb_case_guard_reg_mismatch_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T60d nb_case_guard_reg_mismatch_reject", prog, 4,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, EMB_BRANCH_REG_EQ_NULL);
+}
+
+/* T60e: the null path READS the register before overwriting it — the
+ * fused load would compare an UNDEFINED value where the interpreter
+ * holds a null tag (ZREGISTER_INIT_ERROR). emb_null_path_reg_safe
+ * must veto the fusion -> reject. Guard target +1 = the fall-through
+ * continuation, whose BRANCH_EQ reads r0. */
+static void test_nb_case_guard_null_path_reads_reject(void) {
+  uint32_t prog[6] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/1),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T60e nb_case_guard_null_path_reads_reject", prog, 6,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, EMB_BRANCH_REG_EQ_NULL);
+}
+
+/* T60f: TWO guarded conditions — the planner's multi-WHEN shape. The
+ * first guard targets the SECOND condition, whose READ_ATTR overwrites
+ * r0 (the scanner's overwrite rule); the second guard targets the
+ * refuse word (terminal rule).
+ *   emb(12): 0 READ_ATTR attr7 r0    1 GUARD r0 +3 (->4)
+ *            2 LC16 r1 115           3 BR_GT r0,r1 +6 (->9)
+ *            4 READ_ATTR attr9 r0    5 GUARD r0 +3 (->8)
+ *            6 LC16 r1 42            7 BR_EQ r0,r1 +2 (->9)
+ *            8 EXIT_REFUSE           9 LC16 r2 0
+ *           10 WRITE r2 0           11 EXIT_OK
+ * Expected ops (13): [0]NB(b=7,c=3) [1]LC16 [2]BR_GT(c=7)
+ *   [3]NB(b=9,c=6) [4]LC16 [5]BR_EQ(c=7) [6]EXIT [7]LC16 [8]JUMP(c=9)
+ *   [9]outer NB [10]SUM_CHECKED [11]tail EXIT [12]OVERFLOW_EXIT. */
+static void test_nb_case_guard_two_conditions(void) {
+  const char *name = "T60f nb_case_guard_two_conditions";
+  uint32_t prog[15] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/12),
+    enc_emb_read_attr(/*attr_id=*/7, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/3),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/115),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/6),
+    enc_emb_read_attr(/*attr_id=*/9, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/3),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/42),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 15, &p, /*expected_n_ops=*/13)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 7)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 3)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 7)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 3, "b", p.ops[3].b, 9)) return;
+  if (!expect_op_field(name, &p, 3, "c", p.ops[3].c, 6)) return;
+  if (!expect_op_field(name, &p, 5, "c", p.ops[5].c, 7)) return;
+  if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 8, "kind", p.ops[8].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 8, "c", p.ops[8].c, 9)) return;
+  if (!expect_op_field(name, &p, 9, "kind", p.ops[9].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2515,6 +2701,12 @@ int main(void) {
   test_str_mixed_program();
   test_str_non_minmax_consumer_reject();
   test_str_dangling_load_reject();
+  test_nb_case_guard_fusion();
+  test_nb_case_guard_into_output_block();
+  test_nb_case_guard_no_read_attr_reject();
+  test_nb_case_guard_reg_mismatch_reject();
+  test_nb_case_guard_null_path_reads_reject();
+  test_nb_case_guard_two_conditions();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

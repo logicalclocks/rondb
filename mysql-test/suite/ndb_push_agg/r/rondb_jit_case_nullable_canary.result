@@ -1,0 +1,78 @@
+############################################################
+# RONDB-1056 nullable CASE-condition JIT canary
+############################################################
+CREATE TABLE t1 (
+pk  INT PRIMARY KEY,
+grp INT NOT NULL,
+val BIGINT,
+c   CHAR(4),
+amt BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 10,   'aa', 100),
+(2, 1, NULL, 'bb', 200),
+(3, 1, 30,   NULL, 300),
+(4, 2, NULL, NULL, 400),
+(5, 2, 50,   'aa', 500),
+(6, 3, NULL, NULL, 600),
+(7, 3, NULL, NULL, 700);
+SET ndb_pushdown_aggregate=ON;
+# Q1: multi-WHEN searched CASE — a NULL falls through BOTH
+#     guarded conditions to the ELSE, all on the JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN val <= 30 THEN amt WHEN val <= 50 THEN 1 ELSE 0 END) AS s
+FROM t1;
+s
+401
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: grouped, incl. a group whose condition values are ALL NULL.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS s
+FROM t1 GROUP BY grp;
+grp	s
+1	1
+2	1
+3	0
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: simple CASE — a NULL search value jumps straight to the
+#     ELSE output block (one guard after the top READ_ATTR).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(CASE val WHEN 10 THEN 1 WHEN 50 THEN 2 ELSE 0 END) AS s
+FROM t1;
+s
+3
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+# Q4: string EQ and NE over a nullable CHAR — IF_NULL_CONTINUE
+#     means NULL rows match NEITHER. Interpreter path (string
+#     conditions are not JIT-admitted for aggregation) — this
+#     probes the NULL semantics fix, not compilation.
+SELECT SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa,
+SUM(CASE WHEN c = 'aa' THEN amt ELSE 0 END) AS eq_amt
+FROM t1;
+ne_aa	eq_amt
+1	600
+# Q5: mixed integer + string conditions in one searched CASE —
+#     also interpreter-path (the string condition rejects the
+#     whole program); NULL falls through both conditions.
+SELECT SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
+FROM t1;
+s
+11
+# Q6: CASE aggregate + plain aggregates in one program; the THEN
+#     arm loads the nullable column itself (5D-1 NB load).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(amt) AS total, COUNT(*) AS cnt,
+SUM(CASE WHEN val >= 10 THEN val ELSE 0 END) AS s
+FROM t1;
+total	cnt	s
+2800	7	90
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q6_jit_compiled;
+q6_jit_compiled
+1
+DROP TABLE t1;

@@ -17,8 +17,8 @@
 #
 # Caveats: `fell_back = 0` can also mean the planner did not PUSH the
 # shape at all (nothing reached the bridge). Per-row fallbacks
-# (e.g. CASE conditions over nullable/double columns, 5D-3 territory)
-# are invisible to this counter by design.
+# (e.g. CASE conditions over double columns) are invisible to this
+# counter by design.
 
 --echo ############################################################
 --echo # RONDB-1056 JIT fallback census
@@ -33,16 +33,18 @@ CREATE TABLE t1 (
   f    FLOAT NOT NULL,
   dec9 DECIMAL(9,2) NOT NULL,
   s    VARCHAR(16) NOT NULL,
+  ch   CHAR(8) NOT NULL,
+  i    INT NOT NULL,
   dt   DATE NOT NULL,
   n    BIGINT,
   PRIMARY KEY (pk)
 ) ENGINE=NDB;
 
 INSERT INTO t1 VALUES
-  (1, 10, 3, 100, 2.5, 0.5, 1.10, 'beta',  '2026-01-15', NULL),
-  (2, 20, 4, 200, 3.5, 0.5, 2.20, 'alpha', '2026-02-15', 5),
-  (3, 30, 5, 300, 4.0, 2.0, 3.30, 'gamma', '2026-03-15', 7),
-  (4, 40, 6, 400, 6.0, 4.0, 4.40, 'delta', '2026-04-15', NULL);
+  (1, 10, 3, 100, 2.5, 0.5, 1.10, 'beta',  'beta',  1, '2026-01-15', NULL),
+  (2, 20, 4, 200, 3.5, 0.5, 2.20, 'alpha', 'alpha', 2, '2026-02-15', 5),
+  (3, 30, 5, 300, 4.0, 2.0, 3.30, 'gamma', 'gamma', 3, '2026-03-15', 7),
+  (4, 40, 6, 400, 6.0, 4.0, 4.40, 'delta', 'delta', 4, '2026-04-15', NULL);
 
 SET ndb_pushdown_aggregate=ON;
 
@@ -74,6 +76,14 @@ SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS min_max_u64_fel
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(n), COUNT(n) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS nullable_sum_fell_back;
+
+--echo # case_nullable: CASE over a NULLABLE condition column (Phase
+--echo # 5D-3 — the planner's BRANCH_REG_EQ_NULL guard fuses with the
+--echo # READ_ATTR into a null-branching load; NULL rows stay on the
+--echo # JIT).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN n > 5 THEN 1 ELSE 0 END) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_nullable_fell_back;
 
 --echo #
 --echo # ---- Shapes expected to FALL BACK (the census proper) ----
@@ -125,5 +135,24 @@ SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS date_min_fell_b
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(u + 1) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS unsigned_arith_fell_back;
+
+--echo # int_sum: SUM over a plain INT column. The OUTER kOpLoadCol
+--echo # admission is BIGINT-only (narrow widths were never added even
+--echo # though the load helpers already decode them — found during
+--echo # 5D-3); every narrow-integer aggregate is a whole-program
+--echo # fallback. High-value follow-up slice.
+--sleep 11
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(i) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_sum_fell_back;
+
+--echo # case_string: STRING condition in a CASE aggregate — the
+--echo # BRANCH_ATTR_OP_ARG lowering is wired for the scan-filter path
+--echo # only; the aggregation path rejects it (needs per-block
+--echo # prog_buf base plumbing — future work).
+--sleep 11
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN ch = 'beta' THEN 1 ELSE 0 END) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_string_fell_back;
 
 DROP TABLE t1;
