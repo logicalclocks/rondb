@@ -71,6 +71,8 @@ typedef struct {
   uint32_t last_dst_reg;
   /* Phase 5D-1: makes mock_load_col_nb report NULL. */
   uint32_t nb_null;
+  /* Phase 5G: last pinfo seen by mock_load_col_dec. */
+  uint32_t last_pinfo;
 } MockCtx;
 
 /* Mock-A: writes col_id * 10 into dst_reg, bumps call counter. */
@@ -1465,6 +1467,62 @@ static void test_nb_u64_load_null_skip(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* Phase 5G mock for ndb_jit_h_load_col_dec: records pinfo, writes
+ * col_id * 100 (an already-converted scale-0 value). */
+static void mock_load_col_dec(JitState *s, uint32_t col_id,
+                              uint32_t dst_reg, uint32_t pinfo) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  ctx->last_pinfo = pinfo;
+  s->regs_i64[dst_reg] = (int64_t)col_id * 100;
+}
+
+/* T30: OP_LOAD_COL_NDB_DEC cold call — all three operand holes
+ * (col, dst, pinfo) reach the helper and the value flows into the
+ * accumulator. */
+static void test_dec_load_col_coldcall(void) {
+  const char *name = "T30 dec_load_col_coldcall";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB_DEC, .a = 0,
+                   .b = (9u << 8) | 2u, .c = 5 };
+  p.ops[1] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0, .c = 0 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — dec helper "
+              "registered / stencils regenerated?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  jit1_entry(jp)(&s);
+
+  if (ctx.n_calls != 1 || ctx.last_col_id != 5 ||
+      ctx.last_dst_reg != 0 || ctx.last_pinfo != ((9u << 8) | 2u)) {
+    mark_fail(name, "helper calls=%u col=%u dst=%u pinfo=0x%x, "
+              "want 1/5/0/0x902",
+              ctx.n_calls, ctx.last_col_id, ctx.last_dst_reg,
+              ctx.last_pinfo);
+  } else if (s.acc_i64[0] != 500 || s.value_updated[0] != 1) {
+    mark_fail(name, "acc=%lld updated=%" PRIu64 ", want 500/1",
+              (long long)s.acc_i64[0], s.value_updated[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 /* T26: unsigned checked arithmetic battery — values past the SIGNED
  * boundary flow without spurious overflow: r2 = 2^62 + 3,
  * r3 = r2 - 3 = 2^62, r4 = r3 * 3 = 3*2^62 (> 2^63). */
@@ -1596,7 +1654,9 @@ int main(void) {
       jit1_register_helper("ndb_jit_h_load_col_f64_nb",
                             (JitHelperFn)&mock_load_col_f64_nb) != 0 ||
       jit1_register_helper("ndb_jit_h_load_col_u64_nb",
-                            (JitHelperFn)&mock_load_col_u64_nb) != 0) {
+                            (JitHelperFn)&mock_load_col_u64_nb) != 0 ||
+      jit1_register_helper("ndb_jit_h_load_col_dec",
+                            (JitHelperFn)&mock_load_col_dec) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1629,6 +1689,7 @@ int main(void) {
   test_u64_arith_battery();
   test_u64_minus_borrow();
   test_u64_mul_overflow();
+  test_dec_load_col_coldcall();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -52,6 +52,9 @@
 #define kOpLoadCol        7
 #define kOpLoadConst      8
 #define kOpMov            9
+#define kOpSum           10
+#define kOpMax           11
+#define kOpMin           12
 #define kOpCount         13
 #define kOpSumBigint     14
 #define kOpMaxBigint     16
@@ -76,6 +79,8 @@
 #define NDB_TYPE_BIGUNSIGNED 10
 #define NDB_TYPE_FLOAT       11
 #define NDB_TYPE_DOUBLE      12
+#define NDB_TYPE_DECIMAL         29
+#define NDB_TYPE_DECIMALUNSIGNED 30
 
 /* Encode opcode + operands into a single Uint32. */
 static uint32_t enc_op(uint32_t op, uint32_t lower) {
@@ -2213,6 +2218,112 @@ static void test_nnc_arith_stays_signed(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5G — DECIMAL loads + generic-aggregate lowering.              */
+/* ------------------------------------------------------------------ */
+
+/* Two-word DECIMAL load: word0 like enc_load_col, word1 =
+ * precision << 16 | scale. */
+static uint32_t enc_dec_info(uint32_t precision, uint32_t scale) {
+  return (precision << 16) | scale;
+}
+
+/* T58a: DECIMAL(9,0) — scale 0 lands in the BIGINT track; the GENERIC
+ * kOpSum lowers via the tracker to the signed checked sum. */
+static void test_dec_scale0_sum(void) {
+  const char *name = "T58a dec_scale0_sum";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/0, /*col=*/2),
+    enc_dec_info(9, 0),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LCD [1]SUM_BIGINT_CHECKED [2]EXIT [3]OVF. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_DEC)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, (9u << 8))) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 1, "d", p.ops[1].d, 3)) return;
+  mark_pass(name);
+}
+
+/* T58b: DECIMAL(9,2) — scale > 0 lands in the DOUBLE track; generic
+ * Sum/Min/Max lower to the f64 accumulators. */
+static void test_dec_scale2_aggregates(void) {
+  const char *name = "T58b dec_scale2_aggregates";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/0, /*col=*/2),
+    enc_dec_info(9, 2),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/1),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]LCD [1]SUM_F64 [2]MIN_F64 [3]MAX_F64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
+                       (9u << 8) | 2u)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_SUM_F64))
+    return;
+  if (!expect_op_field(name, &p, 1, "d", p.ops[1].d, 5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MIN_F64))
+    return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MAX_F64))
+    return;
+  mark_pass(name);
+}
+
+/* T58c: DECIMALUNSIGNED(20,0) — scale 0 unsigned lands in the u64
+ * track; generic Sum lowers to the carry-checked u64 sum, and the
+ * pinfo word carries the signedness bit. */
+static void test_dec_unsigned_scale0_sum(void) {
+  const char *name = "T58c dec_unsigned_scale0_sum";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DECIMALUNSIGNED, /*reg=*/0, /*col=*/2),
+    enc_dec_info(20, 0),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
+                       0x8000u | (20u << 8))) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T58d: DECIMAL load truncated (missing the decimal_info word). */
+static void test_dec_truncated_reject(void) {
+  uint32_t prog[1] = {
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/0, /*col=*/2),
+  };
+  assert_rejected("T58d dec_truncated_reject", prog, 1,
+                  JIT_BRIDGE_MALFORMED, 0, kOpLoadCol);
+}
+
+/* T58e: generic Sum over an UNPROVEN register keeps the fallback. */
+static void test_generic_sum_unknown_reject(void) {
+  uint32_t prog[1] = {
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T58e generic_sum_unknown_reject", prog, 1,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpSum);
+}
+
+/* T58f: nonsense precision/scale rejects (scale > precision). */
+static void test_dec_bad_info_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/0, /*col=*/2),
+    enc_dec_info(5, 9),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T58f dec_bad_info_reject", prog, 3,
+                  JIT_BRIDGE_MALFORMED, 0, kOpLoadCol);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2302,6 +2413,12 @@ int main(void) {
   test_u64_arith_const_first();
   test_u64_arith_negative_const_reject();
   test_nnc_arith_stays_signed();
+  test_dec_scale0_sum();
+  test_dec_scale2_aggregates();
+  test_dec_unsigned_scale0_sum();
+  test_dec_truncated_reject();
+  test_generic_sum_unknown_reject();
+  test_dec_bad_info_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

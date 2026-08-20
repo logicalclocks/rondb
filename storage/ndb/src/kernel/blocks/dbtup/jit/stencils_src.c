@@ -1274,6 +1274,27 @@ STENCIL op_load_col_ndb_u64_nb(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5G — op_load_col_ndb_dec: DECIMAL column load (cold call).   */
+/*                                                                    */
+/* The helper mirrors the interpreter's bin2decimal + conversion:     */
+/* scale 0 stores an i64 (or u64 for DECIMALUNSIGNED), scale > 0 the  */
+/* double's bit pattern. pinfo packs (is_unsigned << 15) |            */
+/* (precision << 8) | scale. NULL and every conversion error take    */
+/* the per-row interpreter fallback inside the helper.                */
+/* ------------------------------------------------------------------ */
+DECLARE_NARROW_HOLE(LCD_COL);
+DECLARE_NARROW_HOLE(LCD_DST);
+DECLARE_NARROW_HOLE(LCD_INFO);
+extern void ndb_jit_h_load_col_dec(JitState *s, uint32_t col_id,
+                                   uint32_t dst_reg, uint32_t pinfo);
+STENCIL op_load_col_ndb_dec(JitState *s) {
+  ndb_jit_h_load_col_dec(s, (uint32_t)HOLE_NARROW(LCD_COL),
+                         (uint32_t)HOLE_NARROW(LCD_DST),
+                         (uint32_t)HOLE_NARROW(LCD_INFO));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -1334,4 +1355,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_add_u64_checked,
     op_minus_u64_checked,
     op_mul_u64_checked,
+    op_load_col_ndb_dec,
 };

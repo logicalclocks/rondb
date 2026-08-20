@@ -86,16 +86,16 @@ SELECT SUM(a / b), COUNT(a / b) FROM t2;
 SUM(a / b)	COUNT(a / b)
 11.5	3
 DROP TABLE t2;
-# Q7: negative control — DECIMAL aggregation stays on the
-#     interpreter (the bridge rejects non-BIGINT/DOUBLE/FLOAT load
-#     types); correct results and the compile counters move by
-#     exactly 0. No 4060 (deliberate fallback).
+# Q7 (flipped by Phase 5G): DECIMAL aggregation must JIT — the
+#     DECIMAL load + generic-aggregate lowering compile it now
+#     (this was the 5C-2-era negative control; the durable
+#     negative examples live in rondb_jit_fallback_census).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(dec9) FROM t1;
 SUM(dec9)
 85.80
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q7_stays_on_interpreter;
-q7_stays_on_interpreter
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+q7_jit_compiled
 1
 # Q8: -0.0 sign preservation — SUM's first-row init stores the
 #     value verbatim (0.0 + -0.0 would flip the sign). Compare the

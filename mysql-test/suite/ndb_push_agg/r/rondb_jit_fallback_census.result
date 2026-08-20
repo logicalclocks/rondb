@@ -99,14 +99,15 @@ alpha	gamma
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS string_min_fell_back;
 string_min_fell_back
 1
-# decimal_sum: SUM over DECIMAL (no DECIMAL track).
+# decimal_sum: SUM over DECIMAL (compiles since Phase 5G — the
+# DECIMAL load + generic-aggregate lowering).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(dec9) FROM t1;
 SUM(dec9)
 11.00
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS decimal_sum_fell_back;
 decimal_sum_fell_back
-1
+0
 # date_min: MIN/MAX over DATE (temporal follow-up on the u64
 # stencils — see phase_5c_plan.md).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);

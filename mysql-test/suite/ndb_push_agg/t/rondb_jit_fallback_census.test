@@ -104,7 +104,8 @@ SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT MIN(s), MAX(s) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS string_min_fell_back;
 
---echo # decimal_sum: SUM over DECIMAL (no DECIMAL track).
+--echo # decimal_sum: SUM over DECIMAL (compiles since Phase 5G — the
+--echo # DECIMAL load + generic-aggregate lowering).
 --sleep 11
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(dec9) FROM t1;

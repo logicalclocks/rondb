@@ -223,6 +223,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_LUNB_COL",      HK_OP_B          },
   { "HOLE_LUNB_DST",      HK_OP_A          },
   { "HOLE_LUNB_TGT",      HK_BRANCH_TAKE   },
+  /* Phase 5G op_load_col_ndb_dec — DECIMAL load. The packed
+   * precision/scale/signedness word rides op->b. */
+  { "HOLE_LCD_COL",       HK_OP_C          },
+  { "HOLE_LCD_DST",       HK_OP_A          },
+  { "HOLE_LCD_INFO",      HK_OP_B          },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -386,6 +391,10 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_LFNB_DST_NARROW     0x82ebu
 #define MAGIC_LUNB_COL_NARROW     0xcabdu
 #define MAGIC_LUNB_DST_NARROW     0x573du
+/* Phase 5G op_load_col_ndb_dec helper arguments. */
+#define MAGIC_LCD_COL_NARROW      0x633eu
+#define MAGIC_LCD_DST_NARROW      0x1438u
+#define MAGIC_LCD_INFO_NARROW     0xf108u
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -545,6 +554,10 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   { MAGIC_LFNB_DST_NARROW,  HK_OP_A,  "MAGIC_LFNB_DST_NARROW"  },
   { MAGIC_LUNB_COL_NARROW,  HK_OP_B,  "MAGIC_LUNB_COL_NARROW"  },
   { MAGIC_LUNB_DST_NARROW,  HK_OP_A,  "MAGIC_LUNB_DST_NARROW"  },
+  /* Phase 5G: op_load_col_ndb_dec helper arguments. */
+  { MAGIC_LCD_COL_NARROW,   HK_OP_C,  "MAGIC_LCD_COL_NARROW"   },
+  { MAGIC_LCD_DST_NARROW,   HK_OP_A,  "MAGIC_LCD_DST_NARROW"   },
+  { MAGIC_LCD_INFO_NARROW,  HK_OP_B,  "MAGIC_LCD_INFO_NARROW"  },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

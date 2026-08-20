@@ -572,6 +572,113 @@ ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
   return 0;
 }
 
+/* ndb_jit_h_load_col_dec — Phase 5G cold-call load for DECIMAL /
+ * DECIMALUNSIGNED columns (OP_LOAD_COL_NDB_DEC). Mirrors the
+ * interpreter's kOpLoadCol DECIMAL path: bin2decimal with the
+ * precision/scale from pinfo ((is_unsigned << 15) | (precision << 8)
+ * | scale, packed by the bridge from the instruction's decimal_info
+ * word), then decimal2double (scale > 0 — DOUBLE track) or
+ * decimal2longlong / decimal2ulonglong (scale == 0 — BIGINT track).
+ * NULL values and EVERY error path (read failure, declared-type
+ * drift, parse/convert errors, negative value in an unsigned column)
+ * take the per-row interpreter fallback — the interpreter re-runs
+ * the row and produces its exact ZAGG_DECIMAL_* error where one is
+ * due. */
+extern "C" void
+ndb_jit_h_load_col_dec(JitState *s, uint32_t col_id, uint32_t dst_reg,
+                       uint32_t pinfo) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_dec: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  const bool     dec_uns   = (pinfo & 0x8000u) != 0;
+  const int      precision = (int)((pinfo >> 8) & 0x7Fu);
+  const int      scale     = (int)(pinfo & 0xFFu);
+
+  /* 1 word AttributeHeader + up to decimal_bin_size(65, 30) ≈ 30
+   * bytes of packed decimal. 16 words is comfortably enough. */
+  Uint32 read_buf[16];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  if (header->isNULL()) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  if (type_id != (dec_uns ? (Uint32)NDB_TYPE_DECIMALUNSIGNED
+                          : (Uint32)NDB_TYPE_DECIMAL)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  decimal_digit_t dec_buf[AggInterpreterBase::AGG_DECIMAL_BUFF_LENGTH];
+  decimal_t dec;
+  dec.buf = dec_buf;
+  dec.len = AggInterpreterBase::AGG_DECIMAL_BUFF_LENGTH;
+  if (bin2decimal(reinterpret_cast<const uchar *>(&read_buf[1]),
+                  &dec, precision, scale) != E_DEC_OK) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (dec_uns && dec.sign) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  if (scale != 0) {
+    double dval;
+    if (decimal2double(&dec, &dval) != E_DEC_OK) {
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+    }
+    Int64 bits;
+    std::memcpy(&bits, &dval, sizeof(bits));
+    s->regs_i64[dst_reg] = bits;
+  } else if (dec_uns) {
+    ulonglong uval;
+    if (decimal2ulonglong(&dec, &uval) != E_DEC_OK) {
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+    }
+    s->regs_i64[dst_reg] = (Int64)uval;
+  } else {
+    longlong lval;
+    if (decimal2longlong(&dec, &lval) != E_DEC_OK) {
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+    }
+    s->regs_i64[dst_reg] = (Int64)lval;
+  }
+}
+
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
  * BIGUNSIGNED columns (OP_LOAD_COL_NDB_U64). The u64 value's bits are
  * stored into regs_i64[dst_reg]; the u64 consumer stencils
@@ -834,6 +941,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64_nb));
   jit1_register_helper("ndb_jit_h_load_col_u64_nb",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64_nb));
+  jit1_register_helper("ndb_jit_h_load_col_dec",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_dec));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
   jit1_register_helper("ndb_jit_h_branch_attr_op_arg",

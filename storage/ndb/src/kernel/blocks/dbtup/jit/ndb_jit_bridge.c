@@ -109,6 +109,8 @@
 #define BR_NDB_TYPE_BIGUNSIGNED 10
 #define BR_NDB_TYPE_FLOAT       11
 #define BR_NDB_TYPE_DOUBLE      12
+#define BR_NDB_TYPE_DECIMAL         29
+#define BR_NDB_TYPE_DECIMALUNSIGNED 30
 
 /* ------------------------------------------------------------------ */
 /* Embedded-interpreter opcodes (mirror of                            */
@@ -328,6 +330,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_ADD_U64_CHECKED:      return "add_u64_checked";
     case OP_MINUS_U64_CHECKED:    return "minus_u64_checked";
     case OP_MUL_U64_CHECKED:      return "mul_u64_checked";
+    case OP_LOAD_COL_NDB_DEC:     return "load_col_ndb_dec";
     default:                      return "jit_op?";
   }
 }
@@ -1396,6 +1399,7 @@ static int nb_op_written_reg(const Op *op) {
     case OP_LOAD_COL_NDB_NB:
     case OP_LOAD_COL_NDB_F64_NB:
     case OP_LOAD_COL_NDB_U64_NB:
+    case OP_LOAD_COL_NDB_DEC:
     case OP_MOV_INT_INT:
     case OP_ADD_INT_INT:
     case OP_MINUS_INT_INT:
@@ -1722,13 +1726,50 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         int is_f64 =
             (type == BR_NDB_TYPE_DOUBLE || type == BR_NDB_TYPE_FLOAT);
         int is_u64 = (type == BR_NDB_TYPE_BIGUNSIGNED);
-        if (type != BR_NDB_TYPE_BIGINT && !is_f64 && !is_u64) {
+        int is_dec = (type == BR_NDB_TYPE_DECIMAL ||
+                      type == BR_NDB_TYPE_DECIMALUNSIGNED);
+        if (type != BR_NDB_TYPE_BIGINT && !is_f64 && !is_u64 && !is_dec) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
         if (reg_index >= BC_MAX_REGS || col_index > BR_MAX_LOCAL_ATTR_ID) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (is_dec) {
+          /* Phase 5G: DECIMAL loads are TWO wire words — the extra
+           * word carries decimal_info = precision << 16 | scale.
+           * scale == 0 lands in the BIGINT track (unsigned for
+           * DECIMALUNSIGNED), scale > 0 in the DOUBLE track — the
+           * interpreter's AlignedType routing, known statically here.
+           * The helper gets (is_unsigned << 15) | (precision << 8) |
+           * scale packed into op->b (free in the load layout). */
+          if (pos + 2 > n_words) {
+            set_err(out_err, JIT_BRIDGE_MALFORMED, this_pos, op);
+            return JIT_BRIDGE_MALFORMED;
+          }
+          int32_t dec_info = (int32_t)ndb_prog[pos + 1];
+          int32_t precision = dec_info >> 16;
+          int32_t scale     = dec_info & 0xFFFF;
+          int dec_uns = (type == BR_NDB_TYPE_DECIMALUNSIGNED);
+          if (precision < 1 || precision > 65 ||
+              scale < 0 || scale > 30 || scale > precision) {
+            set_err(out_err, JIT_BRIDGE_MALFORMED, this_pos, op);
+            return JIT_BRIDGE_MALFORMED;
+          }
+          uint16_t pinfo = (uint16_t)((dec_uns ? 0x8000u : 0u) |
+                                      ((uint32_t)precision << 8) |
+                                      (uint32_t)scale);
+          if (!emit_op(out_prog, OP_LOAD_COL_NDB_DEC,
+                       reg_index, pinfo, col_index, 0)) {
+            set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          reg_type[reg_index] = (scale != 0) ? BR_REG_F64
+                              : dec_uns      ? BR_REG_U64
+                                             : BR_REG_I64;
+          pos += 2;
+          break;
         }
         if (!emit_op(out_prog,
                      is_f64 ? OP_LOAD_COL_NDB_F64 :
@@ -1984,6 +2025,66 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                      (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpSum:
+      case BR_kOpMin:
+      case BR_kOpMax: {
+        /* Phase 5G: GENERIC aggregates. The optimizer leaves these
+         * untyped when the source register's track is not statically
+         * BIGINT/DOUBLE to IT — notably DECIMAL loads, whose register
+         * becomes runtime-BIGINT (scale 0) or runtime-DOUBLE
+         * (scale > 0). The bridge's tracker DOES know the track (the
+         * DECIMAL load's wire word carries the scale), so a generic
+         * aggregate over a proven register lowers exactly like its
+         * typed sibling; UNKNOWN keeps the whole-program fallback.
+         * (Generic MIN/MAX over STRING registers never gets here —
+         * string loads are not admitted.) */
+        uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
+        uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        uint8_t out_kind;
+        uint8_t fam;
+        int     is_checked;
+        switch (reg_type[reg_index]) {
+          case BR_REG_F64:
+            out_kind = (op == BR_kOpSum) ? OP_SUM_F64
+                     : (op == BR_kOpMin) ? OP_MIN_F64 : OP_MAX_F64;
+            fam = BR_ACC_F64;
+            is_checked = (op == BR_kOpSum);
+            break;
+          case BR_REG_U64:
+            out_kind = (op == BR_kOpSum) ? OP_SUM_U64_CHECKED
+                     : (op == BR_kOpMin) ? OP_MIN_U64 : OP_MAX_U64;
+            fam = BR_ACC_U64;
+            is_checked = (op == BR_kOpSum);
+            break;
+          case BR_REG_I64:
+          case BR_REG_NNC:
+            out_kind = (op == BR_kOpSum) ? OP_SUM_BIGINT_CHECKED
+                     : (op == BR_kOpMin) ? OP_MIN_BIGINT : OP_MAX_BIGINT;
+            fam = BR_ACC_I64;
+            is_checked = (op == BR_kOpSum);
+            break;
+          default:
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        BR_CLAIM_ACC_FAMILY(agg_index, fam);
+        if (!emit_op(out_prog, out_kind,
+                     (uint8_t)agg_index, reg_index, agg_index, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        if (is_checked) {
+          checked_arith_ops[n_checked_arith_ops++] =
+              (uint16_t)(out_prog->n_ops - 1);
         }
         pos += 1;
         break;

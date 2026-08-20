@@ -381,9 +381,19 @@ DONE & VERIFIED (2026-08-20; regen clean, bridge 85/85 + coldcall
 unsigned_arith flipped to 0, full sweep to completion — 3 u64
 checked-arith stencils reusing the ADD/MINUS/MUL holes, BR_REG_NNC
 nonneg-constant tracker state, signed/unsigned arith classifier).
-NEXT → 5F string MIN/MAX (confirmed demand) → DECIMAL load audit →
-5E int div/mod (ZERO SQL-side demand — planner never pushes those
-shapes; API/RonSQL-only).** Key planning
+Phase 5G DECIMAL loads DONE & VERIFIED (2026-08-20; regen clean,
+bridge 91/91 + coldcall 30/30, decimal canary green on all three
+tracks, census decimal_sum flipped to 0, double canary Q7 flipped
+from negative control to must-JIT, full sweep — 1 cold-call stencil +
+bin2decimal helper routing scale statically into the BIGINT/u64/
+DOUBLE tracks, plus GENERIC kOpSum/kOpMin/kOpMax lowering via the
+tracker). Verification uncovered and FIXED a second RONDB-733-class
+mysqld bug: pushed MIN/MAX over DECIMAL printed NULL —
+Item_sum_hybrid::val_str's pushed branch fell through to the
+never-populated value cache for non-string values; fixed +
+backportable test ndb_push_agg_decimal_minmax (see roadmap §5G).
+NEXT → 5F string MIN/MAX (confirmed demand, the last major Phase 5
+item) → 5E int div/mod (ZERO SQL-side demand; API/RonSQL-only).** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
 the load's cold call (helper returns "was null", the load stencil
 becomes a cold-call branch in op_branch_attr_eq_null's proven shape)

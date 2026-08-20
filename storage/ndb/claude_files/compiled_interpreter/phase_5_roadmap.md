@@ -320,6 +320,53 @@ branch stencils and avoids doubling the stencil set — evaluate first).
 Also revisits per-group NULL end-to-end proof (the optional grouped
 NDB API canary from the Phase 8 plan becomes natural here).
 
+## 5G — DECIMAL loads + generic-aggregate lowering — **DONE & VERIFIED (2026-08-20, census-driven; regen clean, bridge 91/91 + coldcall 30/30, decimal canary green under 4060 on all three tracks incl. a past-2^63 unsigned DECIMAL sum, census decimal_sum flipped to 0, double canary Q7 flipped from negative control to must-JIT, full ndb_push_agg sweep to completion)**
+
+The census showed `SUM(DECIMAL)` pushed and rejected at the load. Two
+structural facts made this cheap: (1) the interpreter's DECIMAL load
+converts into the EXISTING register tracks (`AlignedType`: scale 0 →
+BIGINT — unsigned for DECIMALUNSIGNED — scale > 0 → DOUBLE), so no new
+accumulator stencils are needed; (2) the scale is IN THE WIRE (the
+DECIMAL kOpLoadCol's second word carries precision<<16|scale), so the
+bridge knows the track statically even though the OPTIMIZER leaves
+DECIMAL registers untyped.
+
+Implementation: one cold-call stencil `op_load_col_ndb_dec` (operands
+a=dst, c=col, b=packed (is_unsigned<<15)|(precision<<8)|scale) +
+helper `ndb_jit_h_load_col_dec` mirroring bin2decimal +
+decimal2{longlong,ulonglong,double}; NULL and every parse/convert
+error (incl. negative-in-unsigned) take the per-row fallback, which
+reproduces the interpreter's exact ZAGG_DECIMAL_* errors. Because the
+optimizer leaves the aggregates GENERIC over DECIMAL registers, the
+bridge also gained **generic kOpSum/kOpMin/kOpMax lowering** driven by
+the tracker (F64/U64/I64/NNC → the corresponding typed accumulator;
+UNKNOWN keeps the fallback) — which incidentally benefits any future
+untyped-track source. First cut has NO null-branching DECIMAL load
+(nullable DECIMAL NULL rows use the per-row fallback; extend if
+fallback data demands). Tests: bridge 91 (T58a-f: scale-0/scale-2/
+unsigned lowering, truncation, bad precision/scale, generic-over-
+unknown reject), coldcall 30 (T30: 3-operand cold call round trip),
+new `rondb_jit_decimal_canary` (all three tracks under 4060 incl. a
+past-2^63 unsigned sum; nullable differential), census decimal_sum
+flips 1 → 0. Regen done.
+
+**Verification uncovered ANOTHER pre-existing mysqld consumption bug
+(the RONDB-733 pattern, 2026-08-20): pushed MIN/MAX over DECIMAL
+printed NULL** — with the interpreter as much as the JIT (pre-5G the
+program fell back at the bridge but was STILL pushed, so this was
+always broken; nothing tested MIN/MAX(dec) until the 5G canary).
+`Item_sum_hybrid::val_str`'s pushed branch handled only STRING pushed
+values and otherwise fell through to the unpushed code path, reading
+the never-populated internal `value` cache. SUM was unaffected
+(Item_sum_sum::val_str routes DECIMAL via val_decimal); integer/
+double MIN/MAX were unaffected (they display via val_int/val_real).
+Fixed (sql-layer, backportable): val_str's pushed branch now routes
+non-string values by representation (DECIMAL_RESULT →
+val_string_from_decimal, double → from_real, int → from_int), and the
+val_real/val_int pushed branches convert across representations
+(int-pushed read as real honors unsignedness; double-pushed read as
+int rounds). Portable OFF/ON test: `ndb_push_agg_decimal_minmax`.
+
 ## 5E — integer division / modulo
 
 `kOpDivInt`/`kOpDivIntBigint`, `kOpMod`, `kOpDiv`: cold-call helpers

@@ -1,0 +1,83 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5G — DECIMAL aggregation canary.
+#
+# DECIMAL columns now load through the OP_LOAD_COL_NDB_DEC cold call
+# (bin2decimal + the interpreter's AlignedType routing: scale 0 into
+# the BIGINT track — unsigned for DECIMAL UNSIGNED — scale > 0 into
+# the DOUBLE track), and the optimizer's GENERIC kOpSum/kOpMin/kOpMax
+# over those registers lower via the bridge's type tracker.
+#
+# Proof pattern: ERROR_INSERT 4060 + ndbinfo.jit compile-counter
+# delta. The scale-2 values are exact quarters so the double-track
+# sums print the same digits as server-side DECIMAL math.
+#
+# Requires regenerated stencils (regen-stencils) in the build.
+
+--echo ############################################################
+--echo # RONDB-1056 DECIMAL JIT canary
+--echo ############################################################
+
+# DECIMAL UNSIGNED draws a deprecation warning — suppress it, the
+# type is exactly what Q3 exercises (the DECIMALUNSIGNED u64 track).
+--disable_warnings
+CREATE TABLE t1 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  d90 DECIMAL(9,0) NOT NULL,
+  d92 DECIMAL(9,2) NOT NULL,
+  du  DECIMAL(20,0) UNSIGNED NOT NULL,
+  dn  DECIMAL(9,2),
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+--enable_warnings
+
+INSERT INTO t1 VALUES
+  (1, 1, 10, 1.25, 4611686018427387905, 1.50),
+  (2, 1, 20, 2.50, 4611686018427387905, NULL),
+  (3, 2, 30, 3.25, 4611686018427387905, 2.25),
+  (4, 2, 40, 4.00, 0,                   NULL);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: scale-0 DECIMAL — BIGINT track — must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(d90), MIN(d90), MAX(d90) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: scale-2 DECIMAL — DOUBLE track — must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(d92), MIN(d92), MAX(d92) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: DECIMAL(20,0) UNSIGNED — u64 track — must JIT; the sum
+--echo #     crosses 2^63 (3 x (2^62 + 1)), exercising the u64 sum and
+--echo #     the RONDB-733 unsigned consumption fix end to end.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(du) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+
+--echo # Q4: grouped scale-2 DECIMAL must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, SUM(d92) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+
+--echo # Q5: nullable DECIMAL differential — NULL values take the
+--echo #     per-row interpreter fallback in this first cut (no
+--echo #     null-branching DECIMAL load yet), so no 4060 here; the
+--echo #     values are the assertion.
+SELECT SUM(dn), COUNT(dn) FROM t1;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

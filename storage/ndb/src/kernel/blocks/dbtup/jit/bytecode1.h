@@ -261,7 +261,19 @@ typedef enum {
   OP_ADD_U64_CHECKED       = 52,
   OP_MINUS_U64_CHECKED     = 53,
   OP_MUL_U64_CHECKED       = 54,
-  OP_KIND_MAX           = OP_MUL_U64_CHECKED
+  /* Phase 5G (census-driven): DECIMAL column load. Cold call that
+   * mirrors the interpreter's bin2decimal + decimal2{longlong,
+   * ulonglong,double} conversion: scale == 0 lands in the BIGINT
+   * track (unsigned for DECIMALUNSIGNED), scale > 0 in the DOUBLE
+   * track — the same AlignedType routing the interpreter uses, known
+   * STATICALLY by the bridge from the instruction's decimal_info
+   * word. Operand layout: a = dst reg, c = col_id,
+   * b = packed (is_unsigned << 15) | (precision << 8) | scale.
+   * NULL values and every conversion error take the per-row
+   * interpreter fallback (which reproduces the interpreter's exact
+   * ZAGG_DECIMAL_* error for the error cases). */
+  OP_LOAD_COL_NDB_DEC      = 55,
+  OP_KIND_MAX           = OP_LOAD_COL_NDB_DEC
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

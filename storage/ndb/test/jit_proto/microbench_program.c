@@ -232,6 +232,7 @@ const char *bc_op_name(uint8_t kind) {
     case OP_ADD_U64_CHECKED:       return "add_u64_checked";
     case OP_MINUS_U64_CHECKED:     return "minus_u64_checked";
     case OP_MUL_U64_CHECKED:       return "mul_u64_checked";
+    case OP_LOAD_COL_NDB_DEC:      return "load_col_ndb_dec";
     default:                   return "?";
   }
 }
