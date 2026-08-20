@@ -1813,8 +1813,10 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
             (*func)->set_pushed_avg(sum_res.data_int64(), count);
             break;
           case NdbDictionary::Column::Bigunsigned:
-            (*func)->set_pushed_avg(
-                static_cast<int64_t>(sum_res.data_uint64()), count);
+            // The unsigned setter — a plain signed cast here would make
+            // sums past 2^63 print signed-wrapped (the DECIMAL/double
+            // conversions in Item_sum need the unsigned flag).
+            (*func)->set_pushed_avg_uint(sum_res.data_uint64(), count);
             break;
           case NdbDictionary::Column::Double:
             (*func)->set_pushed_avg_double(sum_res.data_double(), count);
@@ -1833,8 +1835,12 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
             (*func)->set_pushed_value_int(res.data_int64());
             break;
           case NdbDictionary::Column::Bigunsigned:
-            (*func)->set_pushed_value_int(
-                static_cast<int64_t>(res.data_uint64()));
+            // The unsigned setter — a plain signed cast here would make
+            // SUM results past 2^63 print signed-wrapped (the DECIMAL
+            // conversion in Item_sum_sum needs the unsigned flag; the
+            // MIN/MAX items survive either way via their own
+            // unsigned_flag).
+            (*func)->set_pushed_value_uint(res.data_uint64());
             break;
           case NdbDictionary::Column::Double:
             (*func)->set_pushed_value_double(res.data_double());

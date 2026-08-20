@@ -805,6 +805,14 @@ class Item_sum : public Item_func {
  protected:
   bool m_pushed_aggregate{false};
   int64_t m_pushed_value_int{0};
+  // True when m_pushed_value_int carries the bit pattern of an UNSIGNED
+  // value (e.g. SUM over BIGINT UNSIGNED whose result exceeds 2^63).
+  // Readers that CONVERT the value — the DECIMAL conversions and the
+  // int-to-double casts — must honor it; without it such results print
+  // signed-wrapped. Readers that only pass the bits through to a
+  // consumer with its own unsigned_flag (MIN/MAX val_int, COUNT's
+  // int8store) need no change.
+  bool m_pushed_value_is_unsigned{false};
   double m_pushed_value_double{0.0};
   String m_pushed_value_string;
   bool m_pushed_null{false};
@@ -819,14 +827,23 @@ class Item_sum : public Item_func {
   void set_pushed_value_int(int64_t val) {
     m_pushed_aggregate = true;
     m_pushed_value_int = val;
+    m_pushed_value_is_unsigned = false;
     m_pushed_is_double = false;
     m_pushed_is_string = false;
     m_pushed_null = false;
     null_value = false;
   }
+  /// Unsigned variant: the value's bit pattern rides m_pushed_value_int,
+  /// and m_pushed_value_is_unsigned makes the converting readers
+  /// (DECIMAL / double) interpret it unsigned.
+  void set_pushed_value_uint(uint64_t val) {
+    set_pushed_value_int(static_cast<int64_t>(val));
+    m_pushed_value_is_unsigned = true;
+  }
   void set_pushed_value_double(double val) {
     m_pushed_aggregate = true;
     m_pushed_value_double = val;
+    m_pushed_value_is_unsigned = false;
     m_pushed_is_double = true;
     m_pushed_is_string = false;
     m_pushed_null = false;
@@ -836,6 +853,7 @@ class Item_sum : public Item_func {
                                const CHARSET_INFO *cs) {
     m_pushed_aggregate = true;
     m_pushed_value_string.copy(ptr, len, cs);
+    m_pushed_value_is_unsigned = false;
     m_pushed_is_double = false;
     m_pushed_is_string = true;
     m_pushed_null = false;
@@ -851,15 +869,22 @@ class Item_sum : public Item_func {
   void set_pushed_avg(int64_t sum_int, uint64_t count) {
     m_pushed_aggregate = true;
     m_pushed_value_int = sum_int;
+    m_pushed_value_is_unsigned = false;
     m_pushed_avg_count = count;
     m_pushed_is_double = false;
     m_pushed_is_string = false;
     m_pushed_null = false;
     null_value = false;
   }
+  /// Unsigned variant of set_pushed_avg — see set_pushed_value_uint.
+  void set_pushed_avg_uint(uint64_t sum_uint, uint64_t count) {
+    set_pushed_avg(static_cast<int64_t>(sum_uint), count);
+    m_pushed_value_is_unsigned = true;
+  }
   void set_pushed_avg_double(double sum_dbl, uint64_t count) {
     m_pushed_aggregate = true;
     m_pushed_value_double = sum_dbl;
+    m_pushed_value_is_unsigned = false;
     m_pushed_avg_count = count;
     m_pushed_is_double = true;
     m_pushed_is_string = false;
