@@ -360,10 +360,21 @@ must-JIT. Details: `phase_5_roadmap.md` §5A. Verify: rebuild ndbmtd +
 host tools; bridge_tests (T47 family + updated T22b/c), coldcall;
 mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
 
-**Phase 5C — 5C-1 + 5C-2 DONE & VERIFIED (2026-08-20; regen clean,
-double canary green, full ndb_push_agg sweep to completion); 5C-3
-IMPLEMENTED (2026-08-20), regen + verify pending — closes the phase.
-`phase_5c_plan.md`.**
+**Phase 5C — COMPLETE: 5C-1, 5C-2 AND 5C-3 all DONE & VERIFIED
+(2026-08-20; regen clean, double + unsigned canaries green, full
+ndb_push_agg sweeps to completion). `phase_5c_plan.md`.**
+
+**Phase 5D — PLANNED (2026-08-20): `phase_5d_plan.md`.** Key planning
+finding: no null-tracking matrix needed — the null test FUSES into
+the load's cold call (helper returns "was null", the load stencil
+becomes a cold-call branch in op_branch_attr_eq_null's proven shape)
+whose taken edge skips the register's consumer chain, reproducing the
+kernels' null-skip exactly. Bridge computes the skip range by a taint
+walk with PER-LOAD graceful degradation to today's row-fallback load
+(non-contiguous range / embedded block) — no caller-side nullability
+metadata, no regression possible. Slices: 5D-1 i64 (1 stencil;
+nullable canary upgraded to 4060 must-JIT), 5D-2 f64/u64 siblings,
+5D-3 embedded READ_ATTR (deferred until fallback data shows demand).
 **5C-3**: aggregation over BIGINT UNSIGNED columns JITs. 4 stencils
 (**regen required**): u64 load cold-call (new helper, descriptor-
 BIGUNSIGNED-only), carry-checked u64 SUM (accumulates past 2^63 where

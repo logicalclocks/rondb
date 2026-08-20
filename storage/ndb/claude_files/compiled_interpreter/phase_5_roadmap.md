@@ -265,7 +265,22 @@ no overflow checks (IEEE), div-by-zero per the interpreter's kernel
 (audit `SumDouble`/`DivDouble` for NULL-vs-inf behaviour before
 emitting). Largest regen of the roadmap (~15–20 stencils).
 
-## 5D — nullable columns + register null-tracking
+## 5D — nullable columns + register null-tracking — **PLANNED, see `phase_5d_plan.md`**
+
+**Planning finding (2026-08-20): NEITHER of the two candidate designs
+below is needed — the null test FUSES into the load's cold call.**
+The load helper already inspects the AttributeHeader; giving it a
+return value turns the load stencil into a cold-call branch
+(op_branch_attr_eq_null's proven shape) whose taken edge skips the
+register's whole consumer chain — exactly the kernels' null-skip.
+No JitState null state, no consumer-stencil variants, no ~2× matrix,
+no nullability metadata from callers, and per-load graceful
+degradation to today's row-fallback load when the skip range is
+non-contiguous or touches an embedded block. Slices: 5D-1 i64
+(1 stencil + bridge taint walk; nullable canary upgraded to 4060
+must-JIT), 5D-2 f64/u64 siblings, 5D-3 embedded READ_ATTR (deferred
+until fallback data). Full detail: `phase_5d_plan.md`. Original
+sketch below.
 
 Lifts the "non-null BIGINT only" LoadCol contract. Registers gain a
 null bit (lattice dimension + runtime representation), nullable

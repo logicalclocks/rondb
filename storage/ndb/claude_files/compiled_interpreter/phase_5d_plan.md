@@ -1,0 +1,155 @@
+# Phase 5D — nullable columns without a null-tracking matrix
+
+**Status: PLANNED (2026-08-20). Code: not started.**
+
+## Where null handling stands (post-5C)
+
+Since 5A, a NULL column value in any JIT load takes the **per-row
+interpreter fallback**: the helper sets `JitState::row_fallback`, the
+blob runs to completion (results discarded), the glue returns
+`NDB_JIT_ROW_FALLBACK`, and the interpreter re-runs THAT ROW with
+exact null semantics. Correct, crash-free — but every NULL row costs
+a discarded JIT run PLUS a full interpreter run. On NULL-heavy
+workloads the JIT is a pure overhead. 5D keeps NULL rows on the JIT.
+
+## Interpreter null semantics (audited, the equivalence targets)
+
+- `kOpLoadCol` of a NULL value → register `is_null = true`.
+- Aggregate kernels (`SumBigint/SumDouble/Min*/Max*/Count`):
+  `if (a.is_null) return 1;` — the row contributes NOTHING to that
+  aggregate; `AggResItem` metadata untouched (per-group SQL NULL for
+  all-NULL groups falls out of this).
+- Arithmetic (`RegPlus*/RegMinus*/RegMul*/RegDiv*`): any null operand
+  → result register null, NO overflow check, propagate.
+- Embedded REG_REG comparisons on a null register →
+  `ZREGISTER_INIT_ERROR` (not reachable from admitted programs — the
+  embedded READ_ATTR keeps its per-row fallback on NULL, see 5D-3).
+
+## Design decision: FUSED null-branching loads
+
+Three candidates were on the table:
+
+1. **Null-aware variants of every consumer stencil** (the original
+   plan's ~2× matrix multiplier): register null flags in JitState,
+   every accumulator/arith stencil grows a check. Doubles the stencil
+   set AND taxes the NOT-NULL hot path. Rejected.
+2. **Branch-on-null prelude** (the roadmap's alternative): a reg_null
+   flag array + one `OP_BRANCH_IF_REG_NULL` stencil emitted before
+   each consumer. Keeps the matrix flat but still adds JitState
+   state, per-row clearing, and one extra op per consumer.
+3. **CHOSEN — fuse the null test into the load's cold call.** The
+   load helper already inspects the AttributeHeader; give it a
+   RETURN VALUE (1 = value was NULL) and make the load stencil a
+   cold-call BRANCH — exactly `op_branch_attr_eq_null`'s proven
+   shape:
+
+   ```c
+   if (ndb_jit_h_load_col_nb(s, col_id, dst)) {
+     [[clang::musttail]] return HOLE_LCNB_TGT(s);   /* null: skip */
+   }
+   TAIL_NEXT(s);
+   ```
+
+   The branch target skips the register's ENTIRE consumer chain —
+   which reproduces the kernels' null-skip exactly (see equivalence
+   below). No JitState change, no null state, no per-row clearing,
+   no consumer-stencil variants. NOT-NULL rows pay one test of an
+   already-returned value.
+
+## The bridge's skip-range (taint) analysis
+
+For each `kOpLoadCol`, the bridge computes where a NULL must branch
+TO: the first subsequent op that does not depend on the loaded
+register.
+
+- Walk forward with a taint set initialized to {dst}. An op reading a
+  tainted register joins the skip range (its own dst becomes
+  tainted); an op overwriting a tainted register with an untainted
+  value removes it. The target is the first op outside the range —
+  resolved to an output-op index by the same machinery as the CASE
+  skip fixups; end-of-program maps to the tail OP_EXIT.
+- **Per-load graceful degradation**: if the skip range is
+  NON-CONTIGUOUS (interleaved independent chains — planner-emitted
+  programs are per-aggregate contiguous, so rare) or TOUCHES an
+  embedded block (5A REG_REG compares could read the register), that
+  load simply keeps the CURRENT row-fallback stencil. No program-
+  level rejection, no regression — 5D never makes anything worse
+  than today, and needs NO nullability metadata from the caller
+  (a NOT NULL column's null branch is simply never taken).
+
+## Equivalence arguments
+
+- `SUM(a)` / `COUNT(a)` / `MIN(a)` / `MAX(a)`, a NULL: interpreter —
+  kernel skips; JIT — branch past the accumulator(s). Identical:
+  no acc update, no value_updated/initialized/unsigned/double marks,
+  so per-group SQL NULL (all-NULL group) is preserved.
+- `SUM(a), MIN(a)` (two consumers, one load): skip range covers both
+  — both kernels would have skipped. Identical.
+- `SUM(a + c)` (a nullable): interpreter — Plus propagates null (no
+  overflow check!), Sum skips; JIT — branch past Plus AND Sum, so the
+  arithmetic never runs on garbage (no spurious OVERFLOW_EXIT), and
+  the skipped `LoadCol c` has no observable effect. Identical.
+- `AVG(a)`: SUM slot + COUNT slot in one chain — one branch skips
+  both, matching both kernels' null-skip. Identical.
+- Rows where EVERY load is non-null: byte-identical behavior to
+  today minus one predictable branch per load.
+
+## Operand layout + engine touch points
+
+`OP_LOAD_COL_NDB_NB` (and 5D-2's `_F64_NB` / `_U64_NB`):
+**a = dst reg, b = col_id, c = null-branch target pc** — col_id moves
+from c to b (free in the load ops; 16-bit, holds ≤ 4095) because the
+engine patches HK_BRANCH_TAKE displacement from op->c. Add the new
+kinds to `bc_op_is_branch` (forward-only + in-range admission comes
+free). Extractor: cold-call + two narrow operand holes + one
+HK_BRANCH_TAKE — the op_branch_attr_eq_null pattern, no extractor
+changes expected. New helpers `ndb_jit_h_load_col_nb` (+`_f64_nb`,
+`_u64_nb`): identical decode to their void siblings, but NULL returns
+1 (take the branch) instead of setting row_fallback; read errors and
+declared-type mismatches KEEP the row_fallback defense (return 0,
+blob continues, glue discards).
+
+## Slices
+
+### 5D-1 — i64 null-branching loads (regen, 1 stencil)
+
+`op_load_col_ndb_nb` + helper; the bridge taint walk + target
+resolution + per-load degradation; bc_op_is_branch + names + dump
+support. Tests: bridge (target computation for the shapes above,
+contiguity degradation, embedded-block degradation, end-of-program
+target), coldcall (null branch skips the accumulator and leaves all
+masks unmarked; non-null proceeds; helper-arg round trip). Canary:
+upgrade `rondb_jit_nullable_canary` to MUST-JIT under 4060 (its
+NULL-row queries stop being fallbacks — the all-NULL-group query
+becomes a pure-JIT run) + assert the `programs_fallback` counter
+does NOT move across the nullable queries.
+
+### 5D-2 — f64/u64 null-branching loads (regen, 2 stencils)
+
+Mechanical siblings (`_f64_nb`, `_u64_nb`) so nullable DOUBLE/FLOAT
+and BIGINT UNSIGNED aggregation also stays on the JIT. Extend the
+double/unsigned canaries with a nullable column each.
+
+### 5D-3 — embedded READ_ATTR null branching — DEFERRED
+
+CASE conditions over nullable columns still take the per-row
+fallback. The same fused pattern applies (READ_ATTR is already a
+cold call), but the branch target inside an embedded block needs the
+embedded fixup machinery and interacts with arm dispositions —
+defer until `programs_fallback` / the fallback log show demand.
+
+## Non-goals
+
+- Register null flags in JitState / null-aware consumer stencils —
+  subsumed by the fused design.
+- Null semantics for embedded comparisons (ZREGISTER_INIT_ERROR) —
+  unreachable while 5D-3 is deferred.
+- String/DECIMAL nullable loads — those types don't load at all yet.
+
+## Verification pattern
+
+bridge_tests target/degradation cases; coldcall null-skip execution;
+`rondb_jit_nullable_canary` upgraded to 4060 must-JIT + fallback-
+counter-zero asserts; full `ndb_push_agg` sweep with `--force` to
+completion (nullable-column tests across the suite silently stop
+falling back — they are the real net).
