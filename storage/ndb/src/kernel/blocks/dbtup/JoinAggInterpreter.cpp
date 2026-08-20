@@ -925,50 +925,13 @@ static Int32 mergeAccumulators(AggResItem* dst, AggResItem* src,
     }
     if (src[i].is_null) continue;
     if (dst[i].is_null) { dst[i] = src[i]; continue; }
-    switch (agg_ops[i]) {
-      case kOpSum: case kOpSumBigint: case kOpSumDouble:
-        if (dst[i].type == NDB_TYPE_BIGINT) {
-          if (dst[i].is_unsigned) dst[i].value.val_uint64 += src[i].value.val_uint64;
-          else dst[i].value.val_int64 += src[i].value.val_int64;
-        } else {
-          dst[i].value.val_double += src[i].value.val_double;
-        }
-        break;
-      case kOpCount:
-        dst[i].value.val_uint64 += src[i].value.val_uint64;
-        break;
-      case kOpMax: case kOpMaxBigint: case kOpMaxDouble:
-        if (dst[i].type == NDB_TYPE_BIGINT) {
-          if (dst[i].is_unsigned) {
-            if (src[i].value.val_uint64 > dst[i].value.val_uint64)
-              dst[i].value.val_uint64 = src[i].value.val_uint64;
-          } else {
-            if (src[i].value.val_int64 > dst[i].value.val_int64)
-              dst[i].value.val_int64 = src[i].value.val_int64;
-          }
-        } else {
-          if (src[i].value.val_double > dst[i].value.val_double)
-            dst[i].value.val_double = src[i].value.val_double;
-        }
-        break;
-      case kOpMin: case kOpMinBigint: case kOpMinDouble:
-        if (dst[i].type == NDB_TYPE_BIGINT) {
-          if (dst[i].is_unsigned) {
-            if (src[i].value.val_uint64 < dst[i].value.val_uint64)
-              dst[i].value.val_uint64 = src[i].value.val_uint64;
-          } else {
-            if (src[i].value.val_int64 < dst[i].value.val_int64)
-              dst[i].value.val_int64 = src[i].value.val_int64;
-          }
-        } else {
-          if (src[i].value.val_double < dst[i].value.val_double)
-            dst[i].value.val_double = src[i].value.val_double;
-        }
-        break;
-      default:
-        assert(0);
-        break;
-    }
+    /* Both slots non-null and numeric — merge with the shared
+     * signedness/promotion-correct helper (NdbAggregationCommon.hpp).
+     * The old per-op code here keyed every compare and add on
+     * dst.is_unsigned alone.  Numeric overflow retains the legacy
+     * distributed-merge behavior; this function's error return remains
+     * reserved for errors that its callers already propagate. */
+    aggMergeNumericSlot(&dst[i], src[i], agg_ops[i]);
   }
   return 0;
 }

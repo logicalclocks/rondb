@@ -9,7 +9,8 @@ Remaining optional: CLI benchmark smoke (`go build`, `.bench_ronsql
 fs_floor` for the phase-breakdown table). Findings ledger in §5b:
 3 crashes (EXPLAIN SUM(CASE) abort **fixed**; DECIMAL scalar subquery
 RDRS crash **FIXED** — NULL-ls float constant into decimal_str2bin;
-big-06 8-node RDRS crash **probed**), 2 ORDER BY
+big-06 8-node RDRS crash **FIXED** — mixed-signedness CASE-arm
+partial merge, RONDB-1107), 2 ORDER BY
 explain mis-prints **fixed**, 1 hang **FIXED** (outer/anti CTE join +
 second CTE join — CTE_LOOKUP outer-chain protocol,
 RONDB-1107), 2 wrong-results **FIXED** (NOT-heavy join-root
@@ -192,6 +193,8 @@ lineitem 3000 / customer 300), ~12 MAIN cases:
   o_shippriority / o_clerk IS NULL) + aggregating main.
 - big-06: GREATEST/LEAST (3-arg, cols + consts) inside a big CTE +
   CASE-over-CTE-column in main-query filter position (supported envelope).
+  (Post-fix: live again + big-06b MAX/MIN mixed-signedness CASE arms;
+  see §5b.)
 - big-07: anti-join (LEFT JOIN cte … IS NULL) + second positive CTE join in
   the same query.  (Post-fix: live as big-07a/b/c — anti + INNER,
   plain LEFT + INNER, unreferenced INNER + INNER; see §5b.)
@@ -638,6 +641,48 @@ done
   pattern showed the request-abort path can occasionally lose a
   completion and idle to the deadlock timeout — Phase L-family
   robustness; this fix removes the trigger.
+- **CRASH: mixed-signedness CASE-arm aggregate partials killed RDRS at
+  8 nodes (FIXED, RONDB-1107)** — big-06's standalone repro bisect
+  cleared GREATEST/LEAST entirely: `SUM(CASE WHEN c.c_nationkey = 7
+  THEN gl.cnt ELSE 0 END)` alone aborted rdrs.1.1
+  (`NdbAggregator.cpp:718 ProcessRes` assert).  Root cause: the
+  per-row kernels (AggInterpreterBase::Sum/Max/Min) deliberately type
+  each accumulator from the values it actually saw — `gl.cnt` (a
+  COUNT) is BIGINT unsigned, the literal `0` arm is signed, so a node
+  whose customers never hit nation 7 produces a SIGNED SUM partial
+  while nation-7 nodes produce UNSIGNED ones.  Only at 8 nodes / 4
+  node groups does some node own zero of the 12 nation-7 customers,
+  so the mixed-signedness merge first appears there (green at 2/3/4/6
+  nodes).  The MERGE layers didn't share the kernels' rules: the API
+  `ProcessRes` asserted on the mismatch (debug abort) and in release
+  merged last-writer-wins with single-domain compares; the kernel
+  cross-node `mergeAccumulators` keyed everything on dst's
+  signedness.  Audit also found two latent kernel Max/Min defects in
+  the same family: `Max()`'s signed-value-vs-unsigned-accumulator arm
+  assigned the comparison RESULT (0/1) to the accumulator (wrong
+  MAX(CASE …) results on any node mixing arms — unreachable until an
+  unsigned column met a constant arm), and Max/Min's BIGINT→DOUBLE
+  promotion arms read raw bits without converting and never set
+  `res->type`.  Fix: shared header-only merge helpers in
+  `NdbAggregationCommon.hpp` (`aggMergeNumericSlot` — SUM signedness
+  = OR of contributions, with a signed-BIGINT-zero identity shortcut
+  for the common ELSE-0-only partial; MAX/MIN four-arm value-domain
+  compares; any DOUBLE contribution promotes), used by kernel
+  `mergeAccumulators` and both `ProcessRes` branches (asserts relaxed
+  to numeric-type checks); kernel `Max()`/`Min()` arms corrected.
+  Both merge layers deliberately retain the legacy distributed-merge
+  overflow behavior (modular 64-bit BIGINT addition, IEEE DOUBLE):
+  neither existing merge call chain propagates errors reliably, and a
+  failed merge must never silently omit one partial result — per-row
+  overflow detection in the kernels is unchanged; end-to-end merge
+  overflow propagation is queued as TODO 7.3.  Regression:
+  big-06 re-enabled with the full query + new big-06b
+  (MAX/MIN over mixed-signedness CASE arms incl. negative constants —
+  pins the boolean-assign fix, expected 300/5/5/0/5/-9) — the mixed
+  merge only triggers on the ng4r2 suite, which is the topology
+  sweep's job.  Noted, not fixed here: MySQL's exact result-type
+  rules for mixed-signedness CASE arms (DECIMAL promotion) remain
+  approximated by BIGINT/DOUBLE runtime typing.
 
 ## 6. Risks & guardrails
 
@@ -714,7 +759,36 @@ flip the two `ronsql_parser_cte` comment rejection-asserts to
 accept-cases (including comments interleaved with the WITH list) and
 add an unterminated-`/*` error case.
 
-## 8. Candidate future test phases (not yet planned in detail)
+### TODO 7.3 — end-to-end overflow error handling for aggregate merges
+
+Decided while fixing big-06 (§5b): the per-row aggregation kernels
+detect BIGINT/DOUBLE overflow (`AggInterpreterBase::Sum` →
+`ZAGG_MATH_OVERFLOW`, failing the query), but every DISTRIBUTED merge
+of partial accumulators deliberately retains legacy wrap-around
+semantics — modular 64-bit BIGINT addition, IEEE DOUBLE — because no
+merge call chain propagates errors reliably today, and a failed merge
+must never silently omit one partial result.  Affected layers: the
+kernel cross-thread / cross-node merges (`mergeAccumulators` callers —
+MUTEX_FREE `mergeFrom` at JOIN_AGG_COMPLETE, the CTE redistribute
+inbound merge, scalar redistribute) and the API-side
+`NdbAggregator::ProcessRes` (returns a parse position; its
+NdbQueryOperation caller has no error convention at all).
+
+A future phase should plumb overflow end-to-end so a merge that
+overflows fails the query exactly like per-row overflow does:
+- `aggMergeSum` / `aggMergeNumericSlot` regain an error return
+  (the shape shipped-then-reverted during the big-06 fix), applied
+  atomically per merge — never abort a merge loop halfway.
+- Kernel: `mergeAccumulators` callers map the error to
+  `ZAGG_MATH_OVERFLOW` and fail the JOIN_AGG_COMPLETE / redistribute
+  step cleanly (state → error, DBTC/DBSPJ abort protocol).
+- API: give `ProcessRes` a real error convention and make
+  `NdbQueryOperation` / `NdbScanOperation` check it, surfacing the
+  standard out-of-range error to the client.
+- Tests: an MTR case with partials that only overflow at merge time
+  (per-node sums in range, combined sum out of range — needs
+  multi-node placement control), plus a block-test unit for the merge
+  helpers' boundary values.
 
 Ordered by expected value. P0 belongs to the bug-fix phase; P1 items are
 justified by findings from THIS exercise; P2/P3 round out coverage.
@@ -724,7 +798,8 @@ Each §5b probe carries its ready-made regression query: dtw-19b
 (scalar-CTE MIN), ronsql_cte_subquery Test 4 (NOT EXISTS × CTE-join) and
 Test 7 (DECIMAL scalar subquery), big-07 (anti-join + INNER CTE join —
 FIXED, re-enabled as big-07a/b/c),
-big-06 (8-node RDRS crash). On each fix: re-enable, extend to the
+big-06 (8-node RDRS crash — FIXED, re-enabled + big-06b). On each
+fix: re-enable, extend to the
 shape's neighbors (e.g. after the MIN-merge fix: scalar MAX/SUM/COUNT/
 string-MIN over adversarial placements), re-record ×5.
 

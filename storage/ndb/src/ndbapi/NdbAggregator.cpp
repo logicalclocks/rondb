@@ -542,79 +542,18 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
             agg_res_ptr[i] = res[i];
             continue;
           }
-          // Both sides are non-null with real types — check consistency.
-          assert(((res[i].type == NDB_TYPE_BIGINT &&
-                  res[i].is_unsigned == agg_res_ptr[i].is_unsigned) ||
+          // Both sides are non-null numeric partials.  Mixed BIGINT
+          // signedness (or BIGINT-vs-DOUBLE) between a group's partials
+          // is legitimate when CASE arms differ in type and different
+          // nodes' rows took different arms — merge with the shared
+          // signedness/promotion-correct helper (see the scalar branch
+          // below and NdbAggregationCommon.hpp; big-06 finding).
+          assert((res[i].type == NDB_TYPE_BIGINT ||
                   res[i].type == NDB_TYPE_DOUBLE) &&
-                  res[i].type == agg_res_ptr[i].type);
-          {
-            DEB_TRACE();
-            agg_res_ptr[i].type = res[i].type;
-            agg_res_ptr[i].is_unsigned = res[i].is_unsigned;
-            switch (agg_ops_[i]) {
-              case kOpSum:
-                DEB_TRACE();
-                if (res[i].type == NDB_TYPE_BIGINT) {
-                  if (res[i].is_unsigned) {
-                    agg_res_ptr[i].value.val_uint64 += res[i].value.val_uint64;
-                  } else {
-                    agg_res_ptr[i].value.val_int64 += res[i].value.val_int64;
-                  }
-                } else {
-                  assert(res[i].type == NDB_TYPE_DOUBLE);
-                  agg_res_ptr[i].value.val_double += res[i].value.val_double;
-                }
-                break;
-              case kOpCount:
-                DEB_TRACE();
-                assert(res[i].type == NDB_TYPE_BIGINT);
-                assert(res[i].is_unsigned == 1);
-                agg_res_ptr[i].value.val_int64 += res[i].value.val_int64;
-                break;
-              case kOpMax:
-                DEB_TRACE();
-                if (res[i].type == NDB_TYPE_BIGINT) {
-                  if (res[i].is_unsigned) {
-                    agg_res_ptr[i].value.val_uint64 =
-                      agg_res_ptr[i].value.val_uint64 >= res[i].value.val_uint64 ?
-                      agg_res_ptr[i].value.val_uint64 : res[i].value.val_uint64;
-                  } else {
-                    agg_res_ptr[i].value.val_int64 =
-                      agg_res_ptr[i].value.val_int64 >= res[i].value.val_int64 ?
-                      agg_res_ptr[i].value.val_int64 : res[i].value.val_int64;
-                  }
-                } else {
-                  assert(res[i].type == NDB_TYPE_DOUBLE);
-                  agg_res_ptr[i].value.val_double =
-                    agg_res_ptr[i].value.val_double >= res[i].value.val_double ?
-                    agg_res_ptr[i].value.val_double : res[i].value.val_double;
-                }
-                break;
-              case kOpMin:
-                DEB_TRACE();
-                if (res[i].type == NDB_TYPE_BIGINT) {
-                  if (res[i].is_unsigned) {
-                    agg_res_ptr[i].value.val_uint64 =
-                      agg_res_ptr[i].value.val_uint64 <= res[i].value.val_uint64 ?
-                      agg_res_ptr[i].value.val_uint64 : res[i].value.val_uint64;
-                  } else {
-                    agg_res_ptr[i].value.val_int64 =
-                      agg_res_ptr[i].value.val_int64 <= res[i].value.val_int64 ?
-                      agg_res_ptr[i].value.val_int64 : res[i].value.val_int64;
-                  }
-                } else {
-                  assert(res[i].type == NDB_TYPE_DOUBLE);
-                  agg_res_ptr[i].value.val_double =
-                    agg_res_ptr[i].value.val_double <= res[i].value.val_double ?
-                    agg_res_ptr[i].value.val_double : res[i].value.val_double;
-                }
-                break;
-              default:
-                DEB_TRACE();
-                assert(0);
-                break;
-            }
-          }
+                 (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||
+                  agg_res_ptr[i].type == NDB_TYPE_DOUBLE));
+          DEB_TRACE();
+          aggMergeNumericSlot(&agg_res_ptr[i], res[i], agg_ops_[i]);
         }
         if (wire_has_strings) {
           for (Uint32 i = 0; i < n_agg_results; i++) {
@@ -707,89 +646,31 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           (res[i].type == NDB_TYPE_CHAR ||
            res[i].type == NDB_TYPE_VARCHAR ||
            res[i].type == NDB_TYPE_LONGVARCHAR);
-      assert((((res[i].type == NDB_TYPE_BIGINT &&
-              (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
-               agg_res_ptr[i].is_null)) ||
-              res[i].type == NDB_TYPE_DOUBLE ||
-              is_string_type) &&
-              res[i].type == agg_res_ptr[i].type) ||
-              agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
-              (res[i].type == NDB_TYPE_UNDEFINED &&
-               n_gb_cols == 0));
       if (is_string_type) {
         mergeStringSlot(&agg_res_ptr[i], &res[i], i);
-      } else if (res[i].is_null) {
+      } else if (res[i].type == NDB_TYPE_UNDEFINED || res[i].is_null) {
+        // Empty/NULL partial slot (e.g. a node whose scan fed no rows)
+        // contributes nothing.
         DEB_TRACE();
-      } else if (agg_res_ptr[i].is_null) {
+      } else if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
+                 agg_res_ptr[i].is_null) {
         DEB_TRACE();
         agg_res_ptr[i] = res[i];
       } else {
         DEB_TRACE();
-        agg_res_ptr[i].type = res[i].type;
-        agg_res_ptr[i].is_unsigned = res[i].is_unsigned;
-        switch (agg_ops_[i]) {
-          case kOpSum:
-            DEB_TRACE();
-            if (res[i].type == NDB_TYPE_BIGINT) {
-              if (res[i].is_unsigned) {
-                agg_res_ptr[i].value.val_uint64 += res[i].value.val_uint64;
-              } else {
-                agg_res_ptr[i].value.val_int64 += res[i].value.val_int64;
-              }
-            } else {
-              assert(res[i].type == NDB_TYPE_DOUBLE);
-              agg_res_ptr[i].value.val_double += res[i].value.val_double;
-            }
-            break;
-          case kOpCount:
-            DEB_TRACE();
-            assert(res[i].type == NDB_TYPE_BIGINT);
-            assert(res[i].is_unsigned == 1);
-            agg_res_ptr[i].value.val_int64 += res[i].value.val_int64;
-            break;
-          case kOpMax:
-            DEB_TRACE();
-            if (res[i].type == NDB_TYPE_BIGINT) {
-              if (res[i].is_unsigned) {
-                agg_res_ptr[i].value.val_uint64 =
-                  agg_res_ptr[i].value.val_uint64 >= res[i].value.val_uint64 ?
-                  agg_res_ptr[i].value.val_uint64 : res[i].value.val_uint64;
-              } else {
-                agg_res_ptr[i].value.val_int64 =
-                  agg_res_ptr[i].value.val_int64 >= res[i].value.val_int64 ?
-                  agg_res_ptr[i].value.val_int64 : res[i].value.val_int64;
-              }
-            } else {
-              assert(res[i].type == NDB_TYPE_DOUBLE);
-              agg_res_ptr[i].value.val_double =
-                agg_res_ptr[i].value.val_double >= res[i].value.val_double ?
-                agg_res_ptr[i].value.val_double : res[i].value.val_double;
-            }
-            break;
-          case kOpMin:
-            DEB_TRACE();
-            if (res[i].type == NDB_TYPE_BIGINT) {
-              if (res[i].is_unsigned) {
-                agg_res_ptr[i].value.val_uint64 =
-                  agg_res_ptr[i].value.val_uint64 <= res[i].value.val_uint64 ?
-                  agg_res_ptr[i].value.val_uint64 : res[i].value.val_uint64;
-              } else {
-                agg_res_ptr[i].value.val_int64 =
-                  agg_res_ptr[i].value.val_int64 <= res[i].value.val_int64 ?
-                  agg_res_ptr[i].value.val_int64 : res[i].value.val_int64;
-              }
-            } else {
-              assert(res[i].type == NDB_TYPE_DOUBLE);
-              agg_res_ptr[i].value.val_double =
-                agg_res_ptr[i].value.val_double <= res[i].value.val_double ?
-                agg_res_ptr[i].value.val_double : res[i].value.val_double;
-            }
-            break;
-          default:
-            DEB_TRACE();
-            assert(0);
-            break;
-        }
+        // Both slots non-null numeric partials.  They may legitimately
+        // disagree in BIGINT signedness — or BIGINT-vs-DOUBLE — when a
+        // CASE expression's arms differ in type and different nodes'
+        // rows took different arms (big-06: the old assert here
+        // rejected exactly that and aborted the RDRS process at 8
+        // nodes).  aggMergeNumericSlot applies the same signedness-OR
+        // / value-domain / DOUBLE-promotion rules, while preserving
+        // the distributed merger's existing overflow behavior.
+        assert((res[i].type == NDB_TYPE_BIGINT ||
+                res[i].type == NDB_TYPE_DOUBLE) &&
+               (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||
+                agg_res_ptr[i].type == NDB_TYPE_DOUBLE));
+        aggMergeNumericSlot(&agg_res_ptr[i], res[i], agg_ops_[i]);
       }
     }
     // Phase I.6 (F.2-K.5d): release any string val_ptr buffers in

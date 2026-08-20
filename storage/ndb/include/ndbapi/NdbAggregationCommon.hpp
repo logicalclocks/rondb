@@ -25,6 +25,9 @@
 #define NDBAGGREGATIONCOMMON_H_
 #include <cstring>
 #include <cstdint>
+#include <cassert>
+#include <ndb_types.h>
+#include <ndb_constants.h>
 
 struct CHARSET_INFO;
 /*
@@ -201,5 +204,175 @@ struct GBHashEntryCmp {
 
   bool operator() (const GBHashEntry& n1, const GBHashEntry& n2) const;
 };
+
+/**
+ * Shared numeric partial-aggregate MERGE helpers — used by the kernel
+ * cross-thread/cross-node merges (JoinAggInterpreter mergeAccumulators)
+ * and the API-side result merge (NdbAggregator::ProcessRes), which
+ * cannot link the kernel implementations.
+ *
+ * Partial accumulators from different LDM threads / data nodes may
+ * legitimately disagree in BIGINT signedness — and, for CASE arms of
+ * mixed numeric types, in BIGINT-vs-DOUBLE — because the per-row
+ * kernels (AggInterpreterBase::Sum / Max / Min) type each accumulator
+ * from the values it actually saw: e.g. SUM(CASE WHEN c THEN
+ * bigunsigned_col ELSE 0 END) yields signed partials on workers whose
+ * rows all took the signed-constant arm and unsigned partials
+ * elsewhere (the big-06 finding — the old ProcessRes merge asserted
+ * on exactly this).  These helpers apply the same promotion rules as
+ * the per-row kernels: SUM's merged signedness is the OR of the
+ * contributions, MAX/MIN compare in the value domain across all four
+ * signedness arms, and any DOUBLE contribution promotes the slot to
+ * DOUBLE.
+ *
+ * Caller contract: src.type and dst->type are NDB_TYPE_BIGINT or
+ * NDB_TYPE_DOUBLE (never UNDEFINED or a string type) and both slots
+ * are non-null — string, NULL and first-contribution handling stay at
+ * the call sites.  COUNT merges by unsigned addition (the per-row
+ * Count() increments by one per row and cannot be reused for
+ * merging).
+ *
+ * Distributed SUM merging deliberately retains its existing behavior:
+ * BIGINT uses modular 64-bit addition and DOUBLE follows IEEE arithmetic.
+ * Overflow reporting is not introduced here because neither of the existing
+ * distributed merge call chains propagates it reliably.  In particular, a
+ * failed merge must never silently omit one partial result.
+ */
+static inline double aggSlotAsDouble(const AggResItem& v) {
+  if (v.type == NDB_TYPE_DOUBLE) return v.value.val_double;
+  return v.is_unsigned ? static_cast<double>(v.value.val_uint64)
+                       : static_cast<double>(v.value.val_int64);
+}
+
+static inline void aggMergeSum(AggResItem* dst, const AggResItem& src) {
+  assert(!src.is_null && !dst->is_null);
+
+  /*
+   * A signed BIGINT zero is both a value and type identity.  This is the
+   * common big-06 case: workers that only execute ELSE 0 contribute a
+   * signed-zero partial.  Avoid the general mixed-signedness merge entirely,
+   * regardless of which partial arrived first.
+   *
+   * Do not apply this shortcut to unsigned zero: its unsignedness affects the
+   * result domain under the existing signedness-OR rule.
+   */
+  if (src.type == NDB_TYPE_BIGINT &&
+      dst->type == NDB_TYPE_BIGINT) {
+    if (!src.is_unsigned && src.value.val_int64 == 0) {
+      return;
+    }
+    if (!dst->is_unsigned && dst->value.val_int64 == 0) {
+      *dst = src;
+      return;
+    }
+  }
+
+  if (src.type == NDB_TYPE_DOUBLE || dst->type == NDB_TYPE_DOUBLE) {
+    dst->value.val_double =
+        aggSlotAsDouble(*dst) + aggSlotAsDouble(src);
+    dst->type = NDB_TYPE_DOUBLE;
+    dst->is_unsigned = false;
+    return;
+  }
+
+  assert(src.type == NDB_TYPE_BIGINT &&
+         dst->type == NDB_TYPE_BIGINT);
+  dst->value.val_uint64 += src.value.val_uint64;
+  dst->is_unsigned = src.is_unsigned || dst->is_unsigned;
+}
+
+static inline void aggMergeMax(AggResItem* dst, const AggResItem& src) {
+  assert(!src.is_null && !dst->is_null);
+  if (src.type == NDB_TYPE_DOUBLE || dst->type == NDB_TYPE_DOUBLE) {
+    const double a = aggSlotAsDouble(src);
+    const double b = aggSlotAsDouble(*dst);
+    dst->type = NDB_TYPE_DOUBLE;
+    dst->is_unsigned = false;
+    dst->value.val_double = a > b ? a : b;
+    return;
+  }
+  if (!src.is_unsigned && !dst->is_unsigned) {
+    if (src.value.val_int64 > dst->value.val_int64)
+      dst->value.val_int64 = src.value.val_int64;
+  } else if (src.is_unsigned && dst->is_unsigned) {
+    if (src.value.val_uint64 > dst->value.val_uint64)
+      dst->value.val_uint64 = src.value.val_uint64;
+  } else if (src.is_unsigned && !dst->is_unsigned) {
+    if (dst->value.val_int64 < 0 ||
+        src.value.val_uint64 > static_cast<Uint64>(dst->value.val_int64))
+      dst->value.val_uint64 = src.value.val_uint64;
+    dst->is_unsigned = true;
+  } else {  // src signed, dst unsigned
+    if (src.value.val_int64 >= 0 &&
+        static_cast<Uint64>(src.value.val_int64) > dst->value.val_uint64)
+      dst->value.val_uint64 = static_cast<Uint64>(src.value.val_int64);
+    /* src negative: the unsigned dst is already larger. */
+  }
+}
+
+static inline void aggMergeMin(AggResItem* dst, const AggResItem& src) {
+  assert(!src.is_null && !dst->is_null);
+  if (src.type == NDB_TYPE_DOUBLE || dst->type == NDB_TYPE_DOUBLE) {
+    const double a = aggSlotAsDouble(src);
+    const double b = aggSlotAsDouble(*dst);
+    dst->type = NDB_TYPE_DOUBLE;
+    dst->is_unsigned = false;
+    dst->value.val_double = a < b ? a : b;
+    return;
+  }
+  if (!src.is_unsigned && !dst->is_unsigned) {
+    if (src.value.val_int64 < dst->value.val_int64)
+      dst->value.val_int64 = src.value.val_int64;
+  } else if (src.is_unsigned && dst->is_unsigned) {
+    if (src.value.val_uint64 < dst->value.val_uint64)
+      dst->value.val_uint64 = src.value.val_uint64;
+  } else if (src.is_unsigned && !dst->is_unsigned) {
+    if (dst->value.val_int64 >= 0) {
+      if (src.value.val_uint64 < static_cast<Uint64>(dst->value.val_int64))
+        dst->value.val_uint64 = src.value.val_uint64;
+      dst->is_unsigned = true;
+    }
+    /* dst negative: the signed dst is already smaller. */
+  } else {  // src signed, dst unsigned
+    if (src.value.val_int64 < 0) {
+      dst->value.val_int64 = src.value.val_int64;
+      dst->is_unsigned = false;
+    } else if (static_cast<Uint64>(src.value.val_int64) <
+               dst->value.val_uint64) {
+      dst->value.val_uint64 = static_cast<Uint64>(src.value.val_int64);
+    }
+  }
+}
+
+static inline void aggMergeNumericSlot(AggResItem* dst,
+                                       const AggResItem& src,
+                                       Uint32 agg_op) {
+  switch (agg_op) {
+    case kOpCount:
+      assert(src.type == NDB_TYPE_BIGINT &&
+             dst->type == NDB_TYPE_BIGINT);
+      assert(src.is_unsigned && dst->is_unsigned);
+      dst->value.val_uint64 += src.value.val_uint64;
+      return;
+    case kOpSum:
+    case kOpSumBigint:
+    case kOpSumDouble:
+      aggMergeSum(dst, src);
+      return;
+    case kOpMax:
+    case kOpMaxBigint:
+    case kOpMaxDouble:
+      aggMergeMax(dst, src);
+      return;
+    case kOpMin:
+    case kOpMinBigint:
+    case kOpMinDouble:
+      aggMergeMin(dst, src);
+      return;
+    default:
+      assert(false);
+      return;
+  }
+}
 
 #endif  // NDBAGGREGATIONCOMMON_H_

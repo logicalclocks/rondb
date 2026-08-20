@@ -522,7 +522,71 @@ c_nationkey	COUNT(*)	SUM(flagged.cnt)	SUM(flagged.spr)
 8	6	14	42
 9	12	15	60
 
-=== big-06: GREATEST/LEAST body WHERE + CASE main aggregate (DISABLED - RDRS crash at 8 nodes) ===
+=== big-06: GREATEST/LEAST body WHERE + CASE main aggregate ===
+== Query ==
+WITH gl AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS spr
+FROM orders
+WHERE GREATEST(o_shippriority, o_clerk, 2) >= 3
+AND LEAST(o_orderkey, 1200) > 100
+GROUP BY o_custkey)
+SELECT COUNT(*), SUM(gl.cnt), SUM(gl.spr),
+SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH gl AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS spr
+FROM orders
+WHERE GREATEST(o_shippriority, o_clerk, 2) >= 3
+AND LEAST(o_orderkey, 1200) > 100
+GROUP BY o_custkey)
+SELECT COUNT(*), SUM(gl.cnt), SUM(gl.spr),
+SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey|
+COUNT(*)	SUM(gl.cnt)	SUM(gl.spr)	SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
+300	1140	2370	48
+
+=== big-06b: MAX/MIN over mixed-signedness CASE arms ===
+== Query ==
+WITH gl AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*),
+MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 9 END),
+MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END),
+MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH gl AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*),
+MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 9 END),
+MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END),
+MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey|
+COUNT(*)	MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)	MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 9 END)	MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)	MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)	MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)
+300	5	5	0	5	-9
 
 === big-07a: anti-join CTE + positive INNER CTE join ===
 == Query ==

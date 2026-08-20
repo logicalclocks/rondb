@@ -192,38 +192,70 @@ FROM customer AS c JOIN flagged ON flagged.k = c.c_custkey
 GROUP BY c.c_nationkey|
 
 --echo
---echo === big-06: GREATEST/LEAST body WHERE + CASE main aggregate (DISABLED - RDRS crash at 8 nodes) ===
-# NEXT-PHASE: this case CRASHED the RDRS process on ronsql_cte_ng4r2
-# (8 nodes, 4 node groups; curl exit 52, "Server rdrs.1.1 failed during
-# test run", 2026-08-19) after recording green on the default topology
-# and the ng1r3/ng2r2/ng2r3 siblings (big-01..05 passed in the same
-# ng4r2 run).  The crash is in RDRS itself, suggesting API-side
-# handling of the 8-node result stream for this shape rather than
-# kernel row processing.  Bisect manually at 8 nodes with the halves:
-#   (a) body WHERE only:
-#     WITH gl AS (SELECT o_custkey AS k, COUNT(*) AS cnt
-#       FROM orders
-#       WHERE GREATEST(o_shippriority, o_clerk, 2) >= 3
-#         AND LEAST(o_orderkey, 1200) > 100
-#       GROUP BY o_custkey)
-#     SELECT COUNT(*), SUM(gl.cnt) FROM customer AS c
-#     JOIN gl ON gl.k = c.c_custkey;
-#   (b) CASE main aggregate only:
-#     WITH gl AS (SELECT o_custkey AS k, COUNT(*) AS cnt
-#       FROM orders GROUP BY o_custkey)
-#     SELECT COUNT(*), SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
-#     FROM customer AS c JOIN gl ON gl.k = c.c_custkey;
-# The rdrs crash trace from the failed run pins the abort site.
+--echo === big-06: GREATEST/LEAST body WHERE + CASE main aggregate ===
+# Fixed 2026-08-20 (RONDB-1107): the 8-node RDRS abort was the
+# ProcessRes partial-merge asserting on legitimately mixed-signedness
+# SUM partials — CASE arms of differing signedness (unsigned gl.cnt vs
+# signed literal 0) type each node's accumulator from the arm values
+# its rows actually took, and only at 8 nodes / 4 node groups does
+# some node own zero nation-7 customers.  Merges now share the
+# signedness/promotion-correct helpers in NdbAggregationCommon.hpp.
 # See test_benchmark_extension_plan.md §5b.
-#   WITH gl AS (
-#     SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS spr
-#     FROM orders
-#     WHERE GREATEST(o_shippriority, o_clerk, 2) >= 3
-#       AND LEAST(o_orderkey, 1200) > 100
-#     GROUP BY o_custkey)
-#   SELECT COUNT(*), SUM(gl.cnt), SUM(gl.spr),
-#          SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
-#   FROM customer AS c JOIN gl ON gl.k = c.c_custkey;
+let $QUERY=
+WITH gl AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS spr
+  FROM orders
+  WHERE GREATEST(o_shippriority, o_clerk, 2) >= 3
+    AND LEAST(o_orderkey, 1200) > 100
+  GROUP BY o_custkey)
+SELECT COUNT(*), SUM(gl.cnt), SUM(gl.spr),
+       SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH gl AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS spr
+  FROM orders
+  WHERE GREATEST(o_shippriority, o_clerk, 2) >= 3
+    AND LEAST(o_orderkey, 1200) > 100
+  GROUP BY o_custkey)
+SELECT COUNT(*), SUM(gl.cnt), SUM(gl.spr),
+       SUM(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey|
+
+--echo
+--echo === big-06b: MAX/MIN over mixed-signedness CASE arms ===
+# Same defect family as big-06: an unsigned CTE column (gl.cnt, a
+# COUNT) against a signed constant arm.  MAX's signed-value-vs-
+# unsigned-accumulator kernel arm previously assigned the comparison
+# RESULT (0/1) to the accumulator, and the cross-node MAX/MIN merges
+# compared in a single signedness domain.  The negative arms exercise
+# both mixed-sign orderings.  Expected: 300, 5, 5, 0, 5, -9.
+let $QUERY=
+WITH gl AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders GROUP BY o_custkey)
+SELECT COUNT(*),
+       MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+       MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 9 END),
+       MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+       MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END),
+       MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH gl AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders GROUP BY o_custkey)
+SELECT COUNT(*),
+       MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+       MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 9 END),
+       MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE 0 END),
+       MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END),
+       MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)
+FROM customer AS c JOIN gl ON gl.k = c.c_custkey|
 
 --echo
 --echo === big-07a: anti-join CTE + positive INNER CTE join ===
