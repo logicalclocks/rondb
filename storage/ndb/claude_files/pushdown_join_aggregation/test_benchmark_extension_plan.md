@@ -10,8 +10,9 @@ fs_floor` for the phase-breakdown table). Findings ledger in §5b:
 3 crashes (EXPLAIN SUM(CASE) abort **fixed**; DECIMAL scalar subquery
 RDRS crash **FIXED** — NULL-ls float constant into decimal_str2bin;
 big-06 8-node RDRS crash **probed**), 2 ORDER BY
-explain mis-prints **fixed**, 1 hang **probed** (anti-join + INNER CTE
-join), 2 wrong-results **FIXED** (NOT-heavy join-root
+explain mis-prints **fixed**, 1 hang **FIXED** (outer/anti CTE join +
+second CTE join — CTE_LOOKUP outer-chain protocol,
+RONDB-1107), 2 wrong-results **FIXED** (NOT-heavy join-root
 filters — double-finalise branch corruption, was filed as NOT EXISTS ×
 CTE-join; scalar-CTE duplicate feed — was misdiagnosed as MIN merge
 polarity), 1 clean-reject **obsoleted**
@@ -192,7 +193,8 @@ lineitem 3000 / customer 300), ~12 MAIN cases:
 - big-06: GREATEST/LEAST (3-arg, cols + consts) inside a big CTE +
   CASE-over-CTE-column in main-query filter position (supported envelope).
 - big-07: anti-join (LEFT JOIN cte … IS NULL) + second positive CTE join in
-  the same query.
+  the same query.  (Post-fix: live as big-07a/b/c — anti + INNER,
+  plain LEFT + INNER, unreferenced INNER + INNER; see §5b.)
 - big-08: multi-key CTE (2-col virtual PK) complete-key lookup with
   composite-index body bounds.
 - big-09: index-hint (FORCE INDEX on CTE-body root) + residual filter +
@@ -573,6 +575,69 @@ done
   "ambiguous unqualified names" rejection concerns column references,
   not table names. The `ronsql_parser_cte` case is now an accept-case
   pinning the shadowing resolution in the plan output.
+- **HANG/ERROR: outer or anti CTE join + second CTE join in one
+  aggregating main (FIXED, RONDB-1107)** — big-07's anti-join
+  (`LEFT JOIN cte … WHERE cte.cnt IS NULL`) + INNER CTE join hung to
+  NDB 274 / errored 1265 ("CTE lookup attrinfo malformed").  The
+  tiny-table repro showed the probe's bounding note was wrong: plain
+  LEFT + INNER two-CTE mains (no IS NULL) failed identically (the
+  green evidence covered normal-table chains and single-CTE LEFT
+  joins only), and unreferenced INNER + INNER was latent too.  Root
+  cause chain: RonSQL pins chained CTE_LOOKUPs (tree-parent
+  override in `emit_child_ops`), so the exec plan drives the second
+  CTE lookup from the first one's result rows; but a non-agg-leaf
+  outer/anti CTE_LOOKUP had no usable result-row protocol — parseDA
+  suppresses the user projection + FLUSH_AI for aggregate-request
+  intermediates, leaving a 6/7-word AttrInfo that DBLQH's
+  `execCTE_LOOKUP_REQ` rejected with 1265 (the gate demanded ≥ 8
+  words and a FLUSH_AI inside the final-read section), aborting the
+  request — some attempts raced the abort into the 274 deadlock
+  timeout instead.  Even if accepted, DBSPJ had no unmatched-parent
+  continuation (REF GROUP_NOT_FOUND on a non-agg-leaf outer node
+  just dropped the parent row) and no drop-on-match for an anti
+  intermediate (Phase K only covered the agg-leaf position).  Fix
+  (kernel-only, no API/RonSQL change): new
+  `CTE_LOOKUP_OUTER_CHAIN_FLAG` row-shaped protocol —
+  `cte_lookup_send` sets it for outer/anti non-agg-leaf CTE_LOOKUPs
+  of aggregating mains; parseDA guarantees those nodes an
+  interpreted 5-word header + CORR_FACTOR32 read
+  (+ T_EXPECT_TRANSID_AI); DBLQH answers a miss (or filter reject)
+  with a NULL-extended result row + CONF so the row-driven chain
+  still continues the parent row, and an anti match with
+  REF(GROUP_NOT_FOUND) so the matched parent is dropped (mirrors
+  the Phase K agg-feed arm); the two validation gates relaxed
+  (header floor 5 words; FLUSH-less / empty final-read legal —
+  which also unblocks the CORR-only unreferenced-INNER
+  intermediate).  Pass-through (non-aggregate) requests keep the
+  REF-on-miss protocol and the API's NULL-fill.  First re-record of
+  big-07a caught a second defect the protocol exposed: at root-scan
+  completion the legacy completion-time sweep
+  (`handleScanAggAncestorComplete` → `handleAggAncestorComplete`,
+  whose `isLookup()` gate INCLUDES CTE_LOOKUP nodes) iterated the
+  final batch's still-buffered root rows and NULL-injected every
+  parent without an hp match bit through `propagateNullToAggLeaf` —
+  i.e. exactly the anti-DROPPED parents (the deliberate REF sends no
+  TRANSID_AI, so no match bit), past the INNER next op, straight
+  into the aggregator with lifetime-NULL columns.  Symptom: ~11
+  scattered rows (`COUNT 1-2, SUM NULL`) in the anti-only nations,
+  only from the final root batch (earlier batches' buffers were
+  already released), while hp-miss parents were skipped because the
+  inline NULL-substitute row DOES set their match bit (surviving
+  nations exactly right).  Fix: `handleAggAncestorComplete` now
+  early-returns for CTE_LOOKUP nodes — outer-chain intermediates
+  resolve every parent row inline (miss → NULL row, anti match →
+  deliberate drop), so the sweep must not re-interpret the drops.
+  Regression: big-07 re-enabled as big-07a (anti + INNER) + big-07b
+  (LEFT + INNER, no IS NULL) + big-07c (unreferenced INNER +
+  INNER).  Known
+  follow-ups, out of scope here: (1) a NULL join key on an
+  outer/anti CTE join still takes the silent NULL-key skip in
+  `cte_lookup_send` (parent dropped — would need a local NULL-row
+  continuation; unreachable from current RonSQL shapes, which join
+  CTEs on NOT NULL root PKs); (2) the mixed 274-vs-1265 retry
+  pattern showed the request-abort path can occasionally lose a
+  completion and idle to the deadlock timeout — Phase L-family
+  robustness; this fix removes the trigger.
 
 ## 6. Risks & guardrails
 
@@ -657,7 +722,8 @@ justified by findings from THIS exercise; P2/P3 round out coverage.
 ### P0 — post-fix regression re-enables (rides the fix phase)
 Each §5b probe carries its ready-made regression query: dtw-19b
 (scalar-CTE MIN), ronsql_cte_subquery Test 4 (NOT EXISTS × CTE-join) and
-Test 7 (DECIMAL scalar subquery), big-07 (anti-join + INNER CTE join),
+Test 7 (DECIMAL scalar subquery), big-07 (anti-join + INNER CTE join —
+FIXED, re-enabled as big-07a/b/c),
 big-06 (8-node RDRS crash). On each fix: re-enable, extend to the
 shape's neighbors (e.g. after the MIN-merge fix: scalar MAX/SUM/COUNT/
 string-MIN over adversarial placements), re-record ×5.

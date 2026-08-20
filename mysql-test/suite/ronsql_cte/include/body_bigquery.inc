@@ -226,30 +226,110 @@ GROUP BY c.c_nationkey|
 #   FROM customer AS c JOIN gl ON gl.k = c.c_custkey;
 
 --echo
---echo === big-07: anti-join + positive CTE join (DISABLED - kernel hang) ===
-# NEXT-PHASE: anti-join (LEFT JOIN cte ... WHERE cte.cnt IS NULL)
-# COMBINED WITH a second positive INNER CTE join in the same main query
-# HANGS in the data nodes — every attempt times out with NDB error 274
-# (transaction deadlock timeout), 10 ronsql_op retries (found 2026-08-19
-# while recording this family).  Bounding evidence: the anti-join alone
-# is green (Phase K, offline_fs_anti shape), and mixed LEFT+INNER
-# without the IS NULL filter is green (testMultiOuterJoinAggNdbApi /
-# I.12 shapes).  Suspected area: the ANTI_JOIN promotion (Phase K)
-# meeting a second agg-feed CTE_LOOKUP child in the JoinAgg batch /
-# completion protocol — same hang family as the D-findings in
-# cte_fix_plan.md.  See test_benchmark_extension_plan.md §5b.
-#   WITH hiprio AS (
-#     SELECT o_custkey AS k, COUNT(*) AS cnt
-#     FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
-#        lifetime AS (
-#     SELECT o_custkey AS k2, COUNT(*) AS lcnt
-#     FROM orders GROUP BY o_custkey)
-#   SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
-#   FROM customer AS c
-#   LEFT JOIN hiprio ON hiprio.k = c.c_custkey
-#   JOIN lifetime ON lifetime.k2 = c.c_custkey
-#   WHERE hiprio.cnt IS NULL
-#   GROUP BY c.c_nationkey;
+--echo === big-07a: anti-join CTE + positive INNER CTE join ===
+# Fixed 2026-08-20 (RONDB-1107): outer/anti CTE_LOOKUP intermediates in
+# an aggregating main query use the row-shaped CTE_LOOKUP_OUTER_CHAIN
+# protocol — DBLQH answers a miss with a NULL-extended CORR row + CONF
+# (parent row continues down the chain) and an anti match with
+# REF(GROUP_NOT_FOUND) (parent row dropped).  Previously every shape
+# below REFed 1265 (CTE lookup attrinfo malformed) or hung to NDB 274.
+# See test_benchmark_extension_plan.md §5b.
+let $QUERY=
+WITH hiprio AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+     lifetime AS (
+  SELECT o_custkey AS k2, COUNT(*) AS lcnt
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+WHERE hiprio.cnt IS NULL
+GROUP BY c.c_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH hiprio AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+     lifetime AS (
+  SELECT o_custkey AS k2, COUNT(*) AS lcnt
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+WHERE hiprio.cnt IS NULL
+GROUP BY c.c_nationkey|
+
+--echo
+--echo === big-07b: unreferenced LEFT CTE join + positive INNER CTE join ===
+# Same shape without the IS NULL filter.  Found while reproducing
+# big-07a: the LEFT + INNER two-CTE main was NOT green as the original
+# probe note assumed (the bounding evidence covered normal-table chains
+# and single-CTE LEFT joins only) — the plain-LEFT intermediate hit the
+# same malformed-attrinfo REF.
+let $QUERY=
+WITH hiprio AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+     lifetime AS (
+  SELECT o_custkey AS k2, COUNT(*) AS lcnt
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH hiprio AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+     lifetime AS (
+  SELECT o_custkey AS k2, COUNT(*) AS lcnt
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey|
+
+--echo
+--echo === big-07c: unreferenced INNER CTE join + positive INNER CTE join ===
+# Third latent variant of the same defect: an INNER CTE join whose
+# columns are never referenced downstream carried only the CORR read
+# (7-word attrinfo) and was rejected by the same >= 8-word gate.  Here
+# hiprio acts as a pure join filter (drops customers with no
+# o_shippriority >= 3 orders).
+let $QUERY=
+WITH hiprio AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+     lifetime AS (
+  SELECT o_custkey AS k2, COUNT(*) AS lcnt
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH hiprio AS (
+  SELECT o_custkey AS k, COUNT(*) AS cnt
+  FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+     lifetime AS (
+  SELECT o_custkey AS k2, COUNT(*) AS lcnt
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey|
 
 --echo
 --echo === big-08: multi-key (2-col, mixed int + string) CTE complete-key lookup ===

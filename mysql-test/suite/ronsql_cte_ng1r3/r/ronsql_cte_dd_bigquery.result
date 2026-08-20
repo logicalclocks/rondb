@@ -524,7 +524,162 @@ c_nationkey	COUNT(*)	SUM(flagged.cnt)	SUM(flagged.spr)
 
 === big-06: GREATEST/LEAST body WHERE + CASE main aggregate (DISABLED - RDRS crash at 8 nodes) ===
 
-=== big-07: anti-join + positive CTE join (DISABLED - kernel hang) ===
+=== big-07a: anti-join CTE + positive INNER CTE join ===
+== Query ==
+WITH hiprio AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+lifetime AS (
+SELECT o_custkey AS k2, COUNT(*) AS lcnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+WHERE hiprio.cnt IS NULL
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH hiprio AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+lifetime AS (
+SELECT o_custkey AS k2, COUNT(*) AS lcnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+WHERE hiprio.cnt IS NULL
+GROUP BY c.c_nationkey|
+c_nationkey	COUNT(*)	SUM(lifetime.lcnt)
+0	12	60
+1	12	60
+10	12	60
+11	12	60
+12	12	60
+15	12	60
+16	12	60
+17	12	60
+2	12	60
+20	12	60
+21	12	60
+22	12	60
+5	12	60
+6	12	60
+7	12	60
+
+=== big-07b: unreferenced LEFT CTE join + positive INNER CTE join ===
+== Query ==
+WITH hiprio AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+lifetime AS (
+SELECT o_custkey AS k2, COUNT(*) AS lcnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH hiprio AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+lifetime AS (
+SELECT o_custkey AS k2, COUNT(*) AS lcnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+LEFT JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	COUNT(*)	SUM(lifetime.lcnt)
+0	12	60
+1	12	60
+10	12	60
+11	12	60
+12	12	60
+13	12	60
+14	12	60
+15	12	60
+16	12	60
+17	12	60
+18	12	60
+19	12	60
+2	12	60
+20	12	60
+21	12	60
+22	12	60
+23	12	60
+24	12	60
+3	12	60
+4	12	60
+5	12	60
+6	12	60
+7	12	60
+8	12	60
+9	12	60
+
+=== big-07c: unreferenced INNER CTE join + positive INNER CTE join ===
+== Query ==
+WITH hiprio AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+lifetime AS (
+SELECT o_custkey AS k2, COUNT(*) AS lcnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH hiprio AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_shippriority >= 3 GROUP BY o_custkey),
+lifetime AS (
+SELECT o_custkey AS k2, COUNT(*) AS lcnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(lifetime.lcnt)
+FROM customer AS c
+JOIN hiprio ON hiprio.k = c.c_custkey
+JOIN lifetime ON lifetime.k2 = c.c_custkey
+GROUP BY c.c_nationkey|
+c_nationkey	COUNT(*)	SUM(lifetime.lcnt)
+13	12	60
+14	12	60
+18	12	60
+19	12	60
+23	12	60
+24	12	60
+3	12	60
+4	12	60
+8	12	60
+9	12	60
 
 === big-08: multi-key (2-col, mixed int + string) CTE complete-key lookup ===
 == Query ==
