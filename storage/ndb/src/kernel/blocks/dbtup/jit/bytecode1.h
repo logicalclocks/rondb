@@ -201,7 +201,34 @@ typedef enum {
   OP_SUM_F64               = 42,
   OP_MIN_F64               = 43,
   OP_MAX_F64               = 44,
-  OP_KIND_MAX           = OP_MAX_F64
+  /* Phase 5C-3: unsigned BIGINT. u64 values live bit-cast in
+   * regs_i64 / acc_i64 like everything else; the bridge admits these
+   * only for statically-proven-unsigned sources (declared BIGUNSIGNED
+   * loads / BIGUNSIGNED constants), and enforces uniform signedness
+   * per accumulator slot, so the interpreter kernels' mixed
+   * signed/unsigned branches are unreachable for admitted programs.
+   *
+   * OP_LOAD_COL_NDB_U64: cold-call load for declared BIGUNSIGNED
+   * columns (helper ndb_jit_h_load_col_u64; NULL / unexpected type →
+   * per-row fallback). Same operand layout as OP_LOAD_COL_NDB.
+   *
+   * OP_SUM_U64_CHECKED: u64 add with carry check → overflow-exit pc
+   * in d (the kernel returns ZAGG_MATH_OVERFLOW on u64 overflow). No
+   * first-row init mask needed — u64 0 + x = x, like the signed SUM.
+   *
+   * OP_MIN_U64 / OP_MAX_U64: the 5B MIN/MAX shape with UNSIGNED
+   * compares (a signed compare would order values >= 2^63 as
+   * negative) and first-row init via value_initialized.
+   *
+   * All three accumulators mark value_unsigned alongside
+   * value_updated — the writeback glue mirrors it into
+   * AggResItem::is_unsigned (the kernels produce is_unsigned = true
+   * for uniform-unsigned inputs). */
+  OP_LOAD_COL_NDB_U64      = 45,
+  OP_SUM_U64_CHECKED       = 46,
+  OP_MIN_U64               = 47,
+  OP_MAX_U64               = 48,
+  OP_KIND_MAX           = OP_MAX_U64
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

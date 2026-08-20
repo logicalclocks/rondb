@@ -1,7 +1,7 @@
 # Phase 5C — DOUBLE family + unsigned BIGINT (and why the lattice shrank)
 
-**Status: 5C-1 + 5C-2 DONE & VERIFIED (2026-08-20 — full ndb_push_agg
-sweep green post-regen). 5C-3 (unsigned BIGINT) remains.**
+**Status: PHASE COMPLETE — 5C-1, 5C-2 and 5C-3 all DONE & VERIFIED
+(2026-08-20; full ndb_push_agg sweeps green post-regen).**
 
 ## Headline finding: the full type-state lattice is NOT needed
 
@@ -81,7 +81,7 @@ behavior-neutral for all currently admitted programs (i64-only).
 ### 5C-2 — the DOUBLE family — **DONE & VERIFIED (2026-08-20)**
 
 Verified: regen-stencils clean (incl. the fold-magic audit's new f64
-expected counts), bridge_tests 64/64, coldcall_tests 20/20,
+expected counts), bridge_tests 68/68, coldcall_tests 20/20,
 `rondb_jit_double_canary` green (Q1–Q5 must-JIT under 4060 + counter
 delta all held — the planner does push every double shape the canary
 assumes), full ndb_push_agg sweep to completion. Two verification
@@ -135,7 +135,7 @@ three accumulators (source proven f64; SUM checked). SUM_F64 keeps the
 `value_initialized` first-row init — 0.0 + -0.0 would flip the sign of
 a single-row SUM(-0.0) (coldcall T15b).
 
-Tests: bridge_tests 64 (T9 flipped to accept + T9b, T50/T50b lowering
+Tests: bridge_tests 68 total (T9 flipped to accept + T9b, T50/T50b lowering
 batteries, T51a–g tracker rejects/accepts), coldcall_tests 20
 (T15/T15b/T16/T17/T18/T19: accumulator battery, -0.0 init, arith
 chain, overflow exit, div-by-zero fallback, f64 cold-call), MTR canary
@@ -176,16 +176,110 @@ Original plan follows.
   differential; AVG queries flipping from fallback to JIT; the
   existing ta1/ta2 AVG tests in the full sweep as the regression net.
 
-### 5C-3 — unsigned BIGINT (regen, ~4 stencils)
+### 5C-3 — unsigned BIGINT — **DONE & VERIFIED (2026-08-20; regen clean, bridge_tests 74/74, coldcall_tests 23/23, unsigned canary green, full ndb_push_agg sweep to completion)**
 
-Outer aggregation over BIGUNSIGNED columns: unsigned MIN/MAX (u64
-compares), checked unsigned SUM (carry check), unsigned load admission
-(type field BIGUNSIGNED → a load variant that stores the bits and —
-design detail in-slice — distinguishes itself from the signed
-contract; the embedded READ_ATTR keeps its BIGUNSIGNED per-row
-fallback). Writeback via the existing `value_unsigned` mask. Embedded
-unsigned comparisons stay on the interpreter (rare; needs unsigned
-REG_REG stencils — defer until fallback data demands it).
+In the tree: 4 new stencils (`op_load_col_ndb_u64` with helper
+`ndb_jit_h_load_col_u64` — descriptor-BIGUNSIGNED-only, NULL/other →
+per-row fallback; `op_sum_u64_checked` — u64 add with carry check →
+the shared SUM overflow target, matching SumBigint's uniform-unsigned
+path incl. TestIfSumOverflowsUint64; `op_min_u64` / `op_max_u64` —
+u64 compares with the 5B first-row-init mask). All three accumulators
+mark `value_unsigned` → the existing writeback mirrors is_unsigned.
+The u64 stencils REUSE the SUM_* / MM_* fold holes (shared across
+signedness variants like ADD_* across checked/unchecked) — only two
+new narrow magics (LU64_COL/LU64_DST) for the load helper args.
+
+Bridge: the tracker grows `BR_REG_U64` (declared-BIGUNSIGNED loads
+and BIGUNSIGNED constants produce it; the optimizer types BIGUNSIGNED
+into the same BIGINT track and the kernels dispatch on the register's
+is_unsigned at runtime, so `kOpSumBigint` / `kOpMin/MaxBigint` over a
+proven-u64 register lower to the UNSIGNED variants). Signed checked
+arithmetic rejects u64 operands (SUM(u_col + 1) falls back whole —
+unsigned arith stencils deferred until fallback data demands them).
+New **acc-family guard** (`acc_family[BC_MAX_ACCS]` ∈ {unset, i64,
+u64, f64}): a multi-arm CASE feeding one agg slot from mixed-family
+arms would leave the per-row writeback masks reflecting whichever arm
+ran last — mixed-family programs reject (TYPE_MISMATCH) and fall back
+whole; the guard also covers the 5C-2 double accumulators.
+
+Interpreter-semantics deltas: none for admitted programs — the
+kernels' mixed signed/unsigned branches are unreachable under the
+uniform-signedness contract, and the embedded READ_ATTR keeps its
+BIGUNSIGNED per-row fallback (so u64 bits never enter registers from
+embedded paths — the tracker's UNKNOWN-tolerance invariant holds).
+
+**LATENT DATA-NODE CRASH found & fixed during verification
+(2026-08-20)**: `JoinAggInterpreter::ProcessRec`'s JIT dispatch
+segfaulted on OUTER-JOIN NULL-EXTENDED rows
+(`Dblqh::handleOuterJoinAggKeyNotFound` → `processNullExtendedRow` →
+`ProcessRec(nullptr, nullptr, ...)`): the dispatch unconditionally
+wrote `req_struct->m_linked_attr_data` with `req_struct == nullptr`.
+Latent since the outer-join merge (RONDB-1035/1036) — whether it fired
+depended on the shared interpreter instance having a compiled entry
+when an unmatched parent arrived; the 5C-3 sweep's scheduling landed
+on it (ndb_join_pushdown_agg Test 36, LEFT JOIN + COUNT(*) + GROUP
+BY). Fix: null-extended rows never dispatch to the JIT
+(`m_jit_entry != nullptr && !m_null_local_columns`) — there is no
+local tuple, only the interpreter's kOpLoadCol knows to synthesize
+NULL AttributeHeaders (`m_null_local_columns`), and the special entry
+points may have switched `m_prog` to a different leaf program than
+the compiled one. Same convention as the per-row fallback; no 4060
+exemption needed (block_tup is nullptr there, which the 4060 check
+already skips). The guard also covers `processRecWithLinkedAttrs`'s
+CTE_LOOKUP feed (block_tup == nullptr sets the same flag).
+
+**PRE-EXISTING upstream bug discovered during verification
+(2026-08-20), NOT a JIT issue**: `SUM(bigunsigned_col)` whose sum
+exceeds 2^63 prints SIGNED-WRAPPED under aggregation pushdown — with
+the interpreter as much as with the JIT. The entire kernel/API chain
+is faithful (verified hop by hop: the u64 SUM stencil stores
+value_unsigned — confirmed by disassembling the regenerated bytes —
+the glue writeback mirrors it, `PrepareAggResIfNeeded` serializes
+AggResItem verbatim, NdbAggregator's merge adds val_uint64 and
+propagates is_unsigned, and `Result` maps Bigint+is_unsigned →
+Bigunsigned). The loss is the LAST hop:
+`ha_ndbcluster_push_agg.cc`'s Bigunsigned case calls
+`set_pushed_value_int(static_cast<int64_t>(res.data_uint64()))` and
+`Item_sum::m_pushed_value_int` is a plain signed int64 with no
+unsigned companion flag — SUM's DECIMAL-typed result item then
+converts it signed. MIN/MAX are unaffected only because their result
+items carry the column's unsigned_flag and reinterpret the bits.
+`set_pushed_avg` has the same cast (AVG over huge unsigned sums
+wraps too). Fix (separate change, sql-layer): add an
+is-unsigned flag next to `m_pushed_value_int` (or a
+`set_pushed_value_uint`) and honor it in the pushed-value readers.
+The unsigned canary's Q3 keeps its sum below 2^63 until then; the
+past-2^63 accumulation is proven at the JitState level by coldcall
+T21.
+
+Tests: bridge_tests 74 total (T52/T52b lowering + const, T53a–d arith
+reject / mixed-acc reject / COUNT accept / Mov preserves), coldcall 23 total
+(T20 min/max ordering across the signed boundary, T21 carry check
+past 2^63 then a genuine u64 carry, T22 u64 cold-call), MTR canary
+`rondb_jit_unsigned_canary` (Q1–Q4 must-JIT with boundary values
+under 4060 + counter delta; Q5 arithmetic negative control on a
+no-WHERE scan so a scan-filter compile can't move the counters).
+
+Regen done — headers carry the 4 u64 stencils. Original sketch follows.
+
+Pre-implementation sketch: outer aggregation over BIGUNSIGNED columns:
+unsigned MIN/MAX (u64 compares), checked unsigned SUM (carry check),
+unsigned load admission (type field BIGUNSIGNED → a load variant that
+stores the bits and distinguishes itself from the signed contract; the
+embedded READ_ATTR keeps its BIGUNSIGNED per-row fallback). Writeback
+via the existing `value_unsigned` mask. Embedded unsigned comparisons
+stay on the interpreter (rare; needs unsigned REG_REG stencils — defer
+until fallback data demands it).
+
+## Follow-up unlocked by 5C-3 (not scheduled)
+
+`TypeSupported` admits DATE / YEAR / DATETIME2 / TIME2 / TIMESTAMP2
+for MIN/MAX precisely because they reduce to unsigned integers
+(packed values monotonic with chronological order — see the comments
+there). The u64 MIN/MAX stencils are the natural lowering vehicle:
+all that's missing is bridge admission for those wire types plus a
+load-helper variant that decodes each packed width. Defer until the
+fallback counters show temporal MIN/MAX traffic.
 
 ## Non-goals (explicit)
 

@@ -204,6 +204,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
    * like LCN_*). */
   { "HOLE_LCF_COL",       HK_OP_C          },
   { "HOLE_LCF_DST",       HK_OP_A          },
+  /* Phase 5C-3 op_load_col_ndb_u64 cold-call helper arguments. The
+   * u64 SUM/MIN/MAX stencils reuse the SUM_* / MM_* holes (shared
+   * across signedness variants like ADD_* across checked/unchecked). */
+  { "HOLE_LU64_COL",      HK_OP_C          },
+  { "HOLE_LU64_DST",      HK_OP_A          },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -356,6 +361,9 @@ static const size_t kHoleSymbolTableLen =
  * narrow salt). */
 #define MAGIC_LCF_COL_NARROW      0xcef1u
 #define MAGIC_LCF_DST_NARROW      0x5f9bu
+/* Phase 5C-3 op_load_col_ndb_u64 cold-call helper arguments. */
+#define MAGIC_LU64_COL_NARROW     0xdc0eu
+#define MAGIC_LU64_DST_NARROW     0x6067u
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -504,6 +512,9 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   /* Phase 5C-2: op_load_col_ndb_f64 helper arguments. */
   { MAGIC_LCF_COL_NARROW,   HK_OP_C,  "MAGIC_LCF_COL_NARROW"   },
   { MAGIC_LCF_DST_NARROW,   HK_OP_A,  "MAGIC_LCF_DST_NARROW"   },
+  /* Phase 5C-3: op_load_col_ndb_u64 helper arguments. */
+  { MAGIC_LU64_COL_NARROW,  HK_OP_C,  "MAGIC_LU64_COL_NARROW"  },
+  { MAGIC_LU64_DST_NARROW,  HK_OP_A,  "MAGIC_LU64_DST_NARROW"  },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

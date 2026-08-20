@@ -105,9 +105,10 @@
 #define BR_kOpSetRegNull    30
 
 /* From storage/ndb/include/ndb_constants.h. */
-#define BR_NDB_TYPE_BIGINT  9
-#define BR_NDB_TYPE_FLOAT   11
-#define BR_NDB_TYPE_DOUBLE  12
+#define BR_NDB_TYPE_BIGINT      9
+#define BR_NDB_TYPE_BIGUNSIGNED 10
+#define BR_NDB_TYPE_FLOAT       11
+#define BR_NDB_TYPE_DOUBLE      12
 
 /* ------------------------------------------------------------------ */
 /* Embedded-interpreter opcodes (mirror of                            */
@@ -317,6 +318,10 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_SUM_F64:              return "sum_f64";
     case OP_MIN_F64:              return "min_f64";
     case OP_MAX_F64:              return "max_f64";
+    case OP_LOAD_COL_NDB_U64:     return "load_col_ndb_u64";
+    case OP_SUM_U64_CHECKED:      return "sum_u64_checked";
+    case OP_MIN_U64:              return "min_u64";
+    case OP_MAX_U64:              return "max_u64";
     default:                      return "jit_op?";
   }
 }
@@ -1335,22 +1340,27 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
    * Rules (documented invariants, not a dataflow lattice):
    * - Producers set their destination's type (loads/consts from their
    *   explicit type field; Mov copies; Bigint arithmetic yields I64).
-   * - I64-consuming ops reject F64 operands but TOLERATE UNKNOWN:
-   *   everything producible today — including the 5A embedded ops,
-   *   which write registers this linear walk cannot see — is i64.
-   *   Revisit that tolerance if an embedded op ever produces f64.
-   * - F64-consuming ops (5C-2) REQUIRE proven F64 — the f64 stencils
-   *   reinterpret the register bits as a double, so an UNKNOWN
+   * - I64-consuming ops reject F64 and U64 operands but TOLERATE
+   *   UNKNOWN: everything producible today — including the 5A
+   *   embedded ops, which write registers this linear walk cannot
+   *   see — is i64 (the embedded READ_ATTR per-row-falls-back on
+   *   BIGUNSIGNED and FLOAT/DOUBLE columns, so neither u64 nor f64
+   *   bits ever enter a register from an embedded path). Revisit
+   *   that tolerance if an embedded op ever produces one.
+   * - F64/U64-consuming ops (5C-2/5C-3) REQUIRE the proven type —
+   *   their stencils reinterpret the register bits, so an UNKNOWN
    *   (embedded-invalidated) register must not reach them.
    * - An embedded block invalidates every register (the optimizer
    *   itself skips embedded blocks, and the planner re-loads outer
    *   registers after them — same convention). */
-  enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2 };
+  enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2,
+         BR_REG_U64 = 3 };
   uint8_t reg_type[BC_MAX_REGS];
   memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
-#define BR_REJECT_IF_F64(r)                                        \
+#define BR_REJECT_IF_F64_OR_U64(r)                                 \
   do {                                                             \
-    if (reg_type[(r)] == BR_REG_F64) {                             \
+    if (reg_type[(r)] == BR_REG_F64 ||                             \
+        reg_type[(r)] == BR_REG_U64) {                             \
       set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);    \
       return JIT_BRIDGE_TYPE_MISMATCH;                             \
     }                                                              \
@@ -1358,6 +1368,28 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
 #define BR_REQUIRE_F64(r)                                          \
   do {                                                             \
     if (reg_type[(r)] != BR_REG_F64) {                             \
+      set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);    \
+      return JIT_BRIDGE_TYPE_MISMATCH;                             \
+    }                                                              \
+  } while (0)
+
+  /* Phase 5C-3: uniform signedness per accumulator slot. A multi-arm
+   * CASE emits several aggregate ops targeting the SAME agg_index; if
+   * the arms' value families differed (signed vs unsigned vs double),
+   * the per-row writeback masks (value_unsigned / value_double) would
+   * reflect whichever arm ran LAST rather than the accumulated
+   * value's true family — the interpreter mutates AggResItem
+   * signedness dynamically per row, which the JIT cannot represent.
+   * Reject mixed-family programs; they fall back whole. */
+  enum { BR_ACC_UNSET = 0, BR_ACC_I64 = 1, BR_ACC_F64 = 2,
+         BR_ACC_U64 = 3 };
+  uint8_t acc_family[BC_MAX_ACCS];
+  memset(acc_family, BR_ACC_UNSET, sizeof(acc_family));
+#define BR_CLAIM_ACC_FAMILY(slot, family)                          \
+  do {                                                             \
+    if (acc_family[(slot)] == BR_ACC_UNSET) {                      \
+      acc_family[(slot)] = (family);                               \
+    } else if (acc_family[(slot)] != (family)) {                   \
       set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);    \
       return JIT_BRIDGE_TYPE_MISMATCH;                             \
     }                                                              \
@@ -1393,11 +1425,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         uint8_t type      = (uint8_t)((word >> 21) & 0x1Fu);
         uint8_t reg_index = (uint8_t)((word >> 16) & 0x0Fu);
-        /* Phase 5C-2: DOUBLE constants are admitted — bits are bits.
-         * The two value words carry the double's bit pattern, which
-         * rides the same imm64 path as an integer constant; only the
-         * tracker type differs. */
-        if (type != BR_NDB_TYPE_BIGINT && type != BR_NDB_TYPE_DOUBLE) {
+        /* Phase 5C-2/5C-3: DOUBLE and BIGUNSIGNED constants are
+         * admitted — bits are bits. The two value words carry the
+         * bit pattern, which rides the same imm64 path as a signed
+         * constant; only the tracker type differs. */
+        if (type != BR_NDB_TYPE_BIGINT && type != BR_NDB_TYPE_DOUBLE &&
+            type != BR_NDB_TYPE_BIGUNSIGNED) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
@@ -1427,7 +1460,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         reg_type[reg_index] =
-            (type == BR_NDB_TYPE_DOUBLE) ? BR_REG_F64 : BR_REG_I64;
+            (type == BR_NDB_TYPE_DOUBLE)      ? BR_REG_F64 :
+            (type == BR_NDB_TYPE_BIGUNSIGNED) ? BR_REG_U64 :
+                                                BR_REG_I64;
         pos += 3;
         break;
       }
@@ -1458,15 +1493,18 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                        (((word >> 20) & 0x1u) << 5));
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t col_index = (uint16_t)(word & 0xFFFFu);
-        /* Phase 5C-2: declared FLOAT/DOUBLE columns load through the
-         * f64 cold-call variant (FLOAT promotes to double in the
-         * helper, matching the interpreter's floatget path). The wire
-         * type is the column's DECLARED type, so this admission is
-         * static; the helper's own descriptor check is defense in
-         * depth. */
+        /* Phase 5C-2/5C-3: declared FLOAT/DOUBLE columns load through
+         * the f64 cold-call variant (FLOAT promotes to double in the
+         * helper, matching the interpreter's floatget path), and
+         * declared BIGUNSIGNED columns through the u64 variant. The
+         * wire type is the column's DECLARED type, so this admission
+         * is static; each helper's own descriptor check is defense in
+         * depth (and keeps a schema drift from feeding one contract's
+         * bits into another's consumers). */
         int is_f64 =
             (type == BR_NDB_TYPE_DOUBLE || type == BR_NDB_TYPE_FLOAT);
-        if (type != BR_NDB_TYPE_BIGINT && !is_f64) {
+        int is_u64 = (type == BR_NDB_TYPE_BIGUNSIGNED);
+        if (type != BR_NDB_TYPE_BIGINT && !is_f64 && !is_u64) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
@@ -1475,12 +1513,14 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         if (!emit_op(out_prog,
-                     is_f64 ? OP_LOAD_COL_NDB_F64 : OP_LOAD_COL_NDB,
+                     is_f64 ? OP_LOAD_COL_NDB_F64 :
+                     is_u64 ? OP_LOAD_COL_NDB_U64 : OP_LOAD_COL_NDB,
                      reg_index, 0, col_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
-        reg_type[reg_index] = is_f64 ? BR_REG_F64 : BR_REG_I64;
+        reg_type[reg_index] = is_f64 ? BR_REG_F64 :
+                              is_u64 ? BR_REG_U64 : BR_REG_I64;
         pos += 1;
         break;
       }
@@ -1514,8 +1554,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        BR_REJECT_IF_F64(dst);
-        BR_REJECT_IF_F64(src);
+        BR_REJECT_IF_F64_OR_U64(dst);
+        BR_REJECT_IF_F64_OR_U64(src);
         uint8_t our_kind;
         switch (op) {
           case BR_kOpPlusBigint:  our_kind = OP_ADD_INT_INT_CHECKED;   break;
@@ -1601,8 +1641,22 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        BR_REJECT_IF_F64(reg_index);
-        if (!emit_op(out_prog, OP_SUM_BIGINT_CHECKED,
+        /* Phase 5C-3: the optimizer types BIGUNSIGNED columns into
+         * the same BIGINT track (the kernels dispatch on the
+         * register's is_unsigned flag at runtime), so kOpSumBigint
+         * over a proven-u64 register lowers to the UNSIGNED sum —
+         * u64 add with carry check, matching SumBigint's uniform-
+         * unsigned path. F64 still rejects. */
+        if (reg_type[reg_index] == BR_REG_F64) {
+          set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+          return JIT_BRIDGE_TYPE_MISMATCH;
+        }
+        int sum_is_u64 = (reg_type[reg_index] == BR_REG_U64);
+        BR_CLAIM_ACC_FAMILY(agg_index,
+                            sum_is_u64 ? BR_ACC_U64 : BR_ACC_I64);
+        if (!emit_op(out_prog,
+                     sum_is_u64 ? OP_SUM_U64_CHECKED
+                                : OP_SUM_BIGINT_CHECKED,
                      (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
@@ -1659,9 +1713,23 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        BR_REJECT_IF_F64(reg_index);
-        uint8_t out_kind =
-            (op == BR_kOpMinBigint) ? OP_MIN_BIGINT : OP_MAX_BIGINT;
+        /* Phase 5C-3: proven-u64 sources lower to the UNSIGNED
+         * variants — a signed compare would order values >= 2^63 as
+         * negative. F64 still rejects (kOpMin/MaxDouble is the typed
+         * route for doubles). */
+        if (reg_type[reg_index] == BR_REG_F64) {
+          set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+          return JIT_BRIDGE_TYPE_MISMATCH;
+        }
+        int mm_is_u64 = (reg_type[reg_index] == BR_REG_U64);
+        BR_CLAIM_ACC_FAMILY(agg_index,
+                            mm_is_u64 ? BR_ACC_U64 : BR_ACC_I64);
+        uint8_t out_kind;
+        if (op == BR_kOpMinBigint) {
+          out_kind = mm_is_u64 ? OP_MIN_U64 : OP_MIN_BIGINT;
+        } else {
+          out_kind = mm_is_u64 ? OP_MAX_U64 : OP_MAX_BIGINT;
+        }
         if (!emit_op(out_prog, out_kind,
                      (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
@@ -1688,6 +1756,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         BR_REQUIRE_F64(reg_index);
+        BR_CLAIM_ACC_FAMILY(agg_index, BR_ACC_F64);
         uint8_t out_kind;
         switch (op) {
           case BR_kOpSumDouble: out_kind = OP_SUM_F64; break;
@@ -1819,6 +1888,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   }
 
   return JIT_BRIDGE_OK;
-#undef BR_REJECT_IF_F64
+#undef BR_REJECT_IF_F64_OR_U64
 #undef BR_REQUIRE_F64
+#undef BR_CLAIM_ACC_FAMILY
 }

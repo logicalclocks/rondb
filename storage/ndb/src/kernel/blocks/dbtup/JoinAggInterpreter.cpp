@@ -966,8 +966,22 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
    * The dispatch glue (in DbtupJitGlue.cpp) handles JitState
    * setup, accumulator copy in/out, and helper-context wiring.
    * Per-program decision; the branch predictor folds it after
-   * a couple of iterations. */
-  if (m_jit_entry != nullptr) {
+   * a couple of iterations.
+   *
+   * NULL-EXTENDED ROWS NEVER DISPATCH (5C-3 verification fix, latent
+   * since the outer-join merge): processNullExtendedRow calls in with
+   * block_tup == req_struct == nullptr and m_null_local_columns set —
+   * there is no local tuple, and only the interpreter loop's
+   * kOpLoadCol knows to synthesize NULL AttributeHeaders for it. The
+   * JIT has no representation of that mode (its load helpers read a
+   * real row via req_struct — the unguarded m_linked_attr_data write
+   * below segfaulted on nullptr), and processNullExtendedRow may also
+   * have switched m_prog to a DIFFERENT leaf program than the one
+   * m_jit_entry was compiled from. Run such rows on the interpreter —
+   * the same convention as the per-row fallback. (No 4060 exemption
+   * needed: block_tup is nullptr here, which the 4060 check below
+   * already skips.) */
+  if (m_jit_entry != nullptr && !m_null_local_columns) {
     /* Make this row's linked-attribute buffer visible to the JIT
      * cold-call helpers (ndb_jit_h_read_linked_to_mem reads it via
      * req_struct->m_linked_attr_data). The interpreter path sets these

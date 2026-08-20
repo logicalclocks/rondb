@@ -72,9 +72,10 @@
 #define kOpMulDouble     25
 #define kOpDivDouble     26
 
-#define NDB_TYPE_BIGINT  9
-#define NDB_TYPE_FLOAT   11
-#define NDB_TYPE_DOUBLE  12
+#define NDB_TYPE_BIGINT      9
+#define NDB_TYPE_BIGUNSIGNED 10
+#define NDB_TYPE_FLOAT       11
+#define NDB_TYPE_DOUBLE      12
 
 /* Encode opcode + operands into a single Uint32. */
 static uint32_t enc_op(uint32_t op, uint32_t lower) {
@@ -1837,6 +1838,126 @@ static void test_embedded_invalidates_f64_reject(void) {
                   JIT_BRIDGE_TYPE_MISMATCH, 2, kOpSumDouble);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5C-3 — unsigned BIGINT.                                       */
+/* ------------------------------------------------------------------ */
+
+/* T52: u64 lowering battery. A declared-BIGUNSIGNED load enters the
+ * u64 track; the optimizer's kOpSumBigint / kOpMin/MaxBigint (the
+ * BIGINT track covers unsigned — the kernels dispatch on the
+ * register's is_unsigned at runtime) lower to the UNSIGNED variants. */
+static void test_u64_lowering_accept(void) {
+  const char *name = "T52 u64_lowering_accept";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMinBigint, /*reg=*/0, /*agg=*/1),
+    enc_agg(kOpMaxBigint, /*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]LOAD_COL_NDB_U64 [1]SUM_U64_CHECKED [2]MIN_U64 [3]MAX_U64
+   * [4]tail EXIT [5]OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 1, "d", p.ops[1].d, 5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MIN_U64))
+    return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 0)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MAX_U64))
+    return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 1)) return;
+  if (!expect_op_field(name, &p, 3, "a", p.ops[3].a, 2)) return;
+  mark_pass(name);
+}
+
+/* T52b: a BIGUNSIGNED constant is admitted (bits ride the imm64 path)
+ * and tracks u64 — feeding kOpMinBigint lowers unsigned. Value
+ * 2^63 + 5: as a signed imm it is negative; the tracker, not the
+ * value, decides the variant. */
+static void test_u64_const_accept(void) {
+  const char *name = "T52b u64_const_accept";
+  uint32_t prog[4] = {
+    enc_load_const(NDB_TYPE_BIGUNSIGNED, 0),
+    0x00000005u, 0x80000000u,   /* 0x8000000000000005, low word first */
+    enc_agg(kOpMinBigint, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LOAD_CONST_INT [1]MIN_U64 [2]tail EXIT. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/3)) return;
+  if (p.ops[0].imm != (int64_t)0x8000000000000005LL) {
+    mark_fail(name, "decoded imm=0x%" PRIx64 ", want 0x8000000000000005",
+              (uint64_t)p.ops[0].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_MIN_U64))
+    return;
+  mark_pass(name);
+}
+
+/* T53a: u64 into signed checked arithmetic rejects — unsigned
+ * arithmetic has no JIT lowering yet (SUM(u_col + 1) falls back
+ * whole). */
+static void test_u64_into_arith_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, 0, 0),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_2reg(kOpPlusBigint, 1, 0),
+  };
+  assert_rejected("T53a u64_into_arith_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, kOpPlusBigint);
+}
+
+/* T53b: mixed accumulator families reject — two Sum ops targeting
+ * the SAME agg slot from signed and unsigned arms would leave the
+ * per-row value_unsigned mask reflecting whichever arm ran last. */
+static void test_u64_mixed_acc_family_reject(void) {
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, 1, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_sum(/*reg=*/1, /*agg=*/0),
+  };
+  assert_rejected("T53b u64_mixed_acc_family_reject", prog, 4,
+                  JIT_BRIDGE_TYPE_MISMATCH, 3, kOpSumBigint);
+}
+
+/* T53c: COUNT over a u64 register accepts — COUNT never reads the
+ * register's bits (same rationale as the f64 T51g case). */
+static void test_u64_count_accept(void) {
+  const char *name = "T53c u64_count_accept";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, 0, 0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_count(/*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]LOAD_COL_NDB_U64 [1]SUM_U64_CHECKED [2]COUNT [3]EXIT [4]OVF. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_COUNT_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T53d: kOpMov preserves the u64 track. */
+static void test_mov_preserves_u64_accept(void) {
+  const char *name = "T53d mov_preserves_u64_accept";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, 0, 0),
+    enc_2reg(kOpMov, /*dst=*/1, /*src=*/0),
+    enc_agg(kOpMaxBigint, /*reg=*/1, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LOAD_COL_NDB_U64 [1]MOV [2]MAX_U64 [3]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MAX_U64))
+    return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1909,6 +2030,12 @@ int main(void) {
   test_mov_preserves_f64_accept();
   test_avg_double_shape_accept();
   test_embedded_invalidates_f64_reject();
+  test_u64_lowering_accept();
+  test_u64_const_accept();
+  test_u64_into_arith_reject();
+  test_u64_mixed_acc_family_reject();
+  test_u64_count_accept();
+  test_mov_preserves_u64_accept();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

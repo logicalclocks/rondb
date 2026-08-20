@@ -1,0 +1,93 @@
+############################################################
+# RONDB-1056 unsigned BIGINT JIT canary
+############################################################
+CREATE TABLE t1 (
+pk  BIGINT NOT NULL,
+grp BIGINT NOT NULL,
+u   BIGINT UNSIGNED NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 3),
+(2, 1, 9223372036854775813),
+(3, 1, 18446744073709551615),
+(4, 2, 100),
+(5, 2, 9223372036854775808),
+(6, 3, 42);
+SET ndb_pushdown_aggregate=ON;
+# Q1: scalar MIN/MAX over BIGINT UNSIGNED must JIT with u64
+#     compares — a signed compare would report MIN = 2^63+5.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT MIN(u), MAX(u) FROM t1;
+MIN(u)	MAX(u)
+3	18446744073709551615
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: grouped MIN/MAX/COUNT must JIT (per-group first-row init
+#     with unsigned compares).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, MIN(u), MAX(u), COUNT(u) FROM t1 GROUP BY grp;
+grp	MIN(u)	MAX(u)	COUNT(u)
+1	3	18446744073709551615	3
+2	100	9223372036854775808	2
+3	42	42	1
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: SUM over a BIGINT UNSIGNED column must JIT (the u64
+#     carry-checked sum). The summed values stay BELOW 2^63:
+#     the pushed-SUM consumption in mysqld routes the result
+#     through a signed int64 (set_pushed_value_int — see
+#     ha_ndbcluster_push_agg.cc's Bigunsigned case), so a sum
+#     past the signed boundary prints wrapped UNDER PUSHDOWN
+#     REGARDLESS of JIT vs interpreter — a pre-existing
+#     consumption gap recorded in phase_5c_plan.md. The
+#     past-2^63 accumulation itself is proven at the JitState
+#     level by coldcall T21.
+CREATE TABLE t2 (
+pk BIGINT NOT NULL,
+u  BIGINT UNSIGNED NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+(1, 1000000000000000000),
+(2, 1000000000000000000),
+(3, 1000000000000000000);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(u) FROM t2;
+SUM(u)
+3000000000000000000
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+DROP TABLE t2;
+# Q4: AVG over BIGINT UNSIGNED must JIT (SUM + COUNT
+#     decomposition over the same u64 register).
+CREATE TABLE t3 (
+pk BIGINT NOT NULL,
+u  BIGINT UNSIGNED NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t3 VALUES (1, 10), (2, 20), (3, 30), (4, 60);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT AVG(u) FROM t3;
+AVG(u)
+30.0000
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
+# Q5: negative control — arithmetic over an unsigned register
+#     has no JIT lowering yet: correct results via the
+#     interpreter, compile counters move by exactly 0. No 4060
+#     (deliberate fallback). Full-table scan on t3 — no WHERE,
+#     so no scan-filter compile can move the counters either.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(u + 1) FROM t3;
+SUM(u + 1)
+124
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q5_stays_on_interpreter;
+q5_stays_on_interpreter
+1
+DROP TABLE t3;
+DROP TABLE t1;

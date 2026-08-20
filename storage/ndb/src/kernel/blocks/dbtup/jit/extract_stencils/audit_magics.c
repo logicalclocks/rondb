@@ -136,6 +136,9 @@ static const struct {
    * the same reason as LCN_* — scalar bl arguments, not array indices). */
   { "MAGIC_LCF_COL_NARROW",   "op_load_col_ndb_f64"       },
   { "MAGIC_LCF_DST_NARROW",   "op_load_col_ndb_f64"       },
+  /* Phase 5C-3: op_load_col_ndb_u64 helper-argument holes. */
+  { "MAGIC_LU64_COL_NARROW",  "op_load_col_ndb_u64"       },
+  { "MAGIC_LU64_DST_NARROW",  "op_load_col_ndb_u64"       },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);
@@ -276,6 +279,20 @@ static const struct {
   { "MAGIC_FMM_SLOT_FOLD",     "op_max_f64",           2 },  /* L+S */
   { "MAGIC_FMM_SRC_FOLD",      "op_max_f64",           1 },
   { "MAGIC_FMM_RESULT_FOLD",   "op_max_f64",           4 },  /* L+3×S */
+  /* Phase 5C-3 unsigned BIGINT: the u64 variants reuse SUM_* / MM_*
+   * (shared across signedness variants like ADD_* across checked/
+   * unchecked). SUM_RESULT ×2 in the u64 sum: value_updated +
+   * value_unsigned stores; MM_RESULT ×4 in u64 min/max: initialized
+   * load + initialized/updated/unsigned stores. */
+  { "MAGIC_SUM_SLOT_FOLD",     "op_sum_u64_checked",   2 },  /* L+S */
+  { "MAGIC_SUM_SRC_FOLD",      "op_sum_u64_checked",   1 },
+  { "MAGIC_SUM_RESULT_FOLD",   "op_sum_u64_checked",   2 },  /* 2×S */
+  { "MAGIC_MM_SLOT_FOLD",      "op_min_u64",           2 },  /* L+S */
+  { "MAGIC_MM_SRC_FOLD",       "op_min_u64",           1 },
+  { "MAGIC_MM_RESULT_FOLD",    "op_min_u64",           4 },  /* L+3×S */
+  { "MAGIC_MM_SLOT_FOLD",      "op_max_u64",           2 },  /* L+S */
+  { "MAGIC_MM_SRC_FOLD",       "op_max_u64",           1 },
+  { "MAGIC_MM_RESULT_FOLD",    "op_max_u64",           4 },  /* L+3×S */
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);

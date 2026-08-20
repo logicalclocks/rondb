@@ -1112,6 +1112,74 @@ STENCIL op_load_col_ndb_f64(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5C-3 — unsigned BIGINT.                                      */
+/*                                                                    */
+/* u64 values live bit-cast in regs_i64 / acc_i64. The bridge admits  */
+/* these ops only for statically-proven-unsigned sources and enforces */
+/* uniform signedness per accumulator slot, so the interpreter        */
+/* kernels' mixed signed/unsigned branches are unreachable for        */
+/* admitted programs — the stencils implement only the uniform-       */
+/* unsigned paths: u64 add with carry check for SUM (kernel:          */
+/* TestIfSumOverflowsUint64 ⇒ ZAGG_MATH_OVERFLOW), plain u64          */
+/* compares for MIN/MAX. All three mark value_unsigned alongside      */
+/* value_updated (the kernels produce is_unsigned = true), and reuse  */
+/* the SUM_* / MM_* holes — shared across signedness variants the     */
+/* same way ADD_* is shared across checked/unchecked.                 */
+/* ------------------------------------------------------------------ */
+
+STENCIL op_sum_u64_checked(JitState *s) {
+  uint64_t result;
+  if (__builtin_add_overflow((uint64_t)HOLE_LOAD_ACC(SUM_SLOT, s),
+                             (uint64_t)HOLE_LOAD_REG(SUM_SRC, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_SUM_OVF_TGT(s);
+  }
+  HOLE_STORE_ACC(SUM_SLOT, s, (int64_t)result);
+  HOLE_STORE_VALUE_UPDATED(SUM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UNSIGNED(SUM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_min_u64(JitState *s) {
+  uint64_t v = (uint64_t)HOLE_LOAD_REG(MM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(MM_RESULT, s) ||
+      v < (uint64_t)HOLE_LOAD_ACC(MM_SLOT, s)) {
+    HOLE_STORE_ACC(MM_SLOT, s, (int64_t)v);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(MM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(MM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UNSIGNED(MM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_max_u64(JitState *s) {
+  uint64_t v = (uint64_t)HOLE_LOAD_REG(MM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(MM_RESULT, s) ||
+      v > (uint64_t)HOLE_LOAD_ACC(MM_SLOT, s)) {
+    HOLE_STORE_ACC(MM_SLOT, s, (int64_t)v);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(MM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(MM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UNSIGNED(MM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+/* op_load_col_ndb_u64 — cold-call load for declared BIGUNSIGNED
+ * columns; same shape as op_load_col_ndb. The helper stores the u64
+ * bits into regs_i64[dst]; NULL or an unexpected declared type takes
+ * the per-row fallback. Kept separate from the signed helper so a
+ * schema drift cannot feed u64 bits into a signed-contract site. */
+DECLARE_NARROW_HOLE(LU64_COL);
+DECLARE_NARROW_HOLE(LU64_DST);
+extern void ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id,
+                                   uint32_t dst_reg);
+STENCIL op_load_col_ndb_u64(JitState *s) {
+  ndb_jit_h_load_col_u64(s, (uint32_t)HOLE_NARROW(LU64_COL),
+                         (uint32_t)HOLE_NARROW(LU64_DST));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -1162,4 +1230,8 @@ const StencilTailFn g_stencil_anchor[] = {
     op_min_f64,
     op_max_f64,
     op_load_col_ndb_f64,
+    op_sum_u64_checked,
+    op_min_u64,
+    op_max_u64,
+    op_load_col_ndb_u64,
 };

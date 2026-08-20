@@ -361,9 +361,37 @@ host tools; bridge_tests (T47 family + updated T22b/c), coldcall;
 mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
 
 **Phase 5C — 5C-1 + 5C-2 DONE & VERIFIED (2026-08-20; regen clean,
-bridge 64/64 + coldcall 20/20, double canary green, full ndb_push_agg
-sweep to completion); 5C-3 (unsigned BIGINT) remains.
-`phase_5c_plan.md`.** Key
+double canary green, full ndb_push_agg sweep to completion); 5C-3
+IMPLEMENTED (2026-08-20), regen + verify pending — closes the phase.
+`phase_5c_plan.md`.**
+**5C-3**: aggregation over BIGINT UNSIGNED columns JITs. 4 stencils
+(**regen required**): u64 load cold-call (new helper, descriptor-
+BIGUNSIGNED-only), carry-checked u64 SUM (accumulates past 2^63 where
+a signed add would falsely overflow), u64 MIN/MAX (unsigned compares —
+signed ones would order values >= 2^63 as negative) — reusing the
+SUM_*/MM_* fold holes; writeback via the existing value_unsigned mask.
+Bridge: tracker grows BR_REG_U64 (BIGUNSIGNED loads/consts); the
+BIGINT-track aggregates dispatch signed-vs-unsigned on the PROVEN
+register type (the optimizer folds BIGUNSIGNED into the BIGINT track;
+kernels dispatch on register is_unsigned at runtime); signed arith
+rejects u64 (SUM(u+1) falls back whole); new acc-family guard rejects
+mixed signed/unsigned/double arms feeding one agg slot (per-row
+writeback masks can't represent the interpreter's dynamic per-row
+signedness). Tests: bridge 74, coldcall 23, new
+`rondb_jit_unsigned_canary` (boundary values 2^63+5 / 2^64-1 for
+MIN/MAX; SUM kept below 2^63 — verification uncovered a PRE-EXISTING
+pushdown bug, not JIT-related: mysqld's pushed-SUM consumption routes
+Bigunsigned results through a signed int64
+(`set_pushed_value_int(static_cast<int64_t>(...))`, no unsigned flag
+on `m_pushed_value_int`), so sums past 2^63 print signed-wrapped
+under pushdown with interpreter and JIT alike; details + proposed
+sql-layer fix in `phase_5c_plan.md` §5C-3). The sweep also flushed
+out a LATENT node crash (since the outer-join merge, not 5C-3's
+doing): the join-agg JIT dispatch deref'd the nullptr req_struct on
+outer-join NULL-EXTENDED rows — fixed by never dispatching such rows
+to the JIT (`!m_null_local_columns`; the interpreter alone can
+synthesize NULL loads for the missing tuple). Verify:
+regen-stencils, rebuild, host tests, unsigned canary, full sweep. Key
 planning finding: the original design's full type-state lattice is
 unnecessary — `OptimizeProgramBuffer` pre-types the bytecode on both
 compile paths, so a linear bridge-side register-type tracker suffices.
@@ -387,7 +415,7 @@ proved unnecessary. Generic `kOpDiv` lowers when both operands are
 proven f64 (the optimizer never rewrites it to kOpDivDouble). One
 5C-1 correction: COUNT's operand type check removed —
 `AVG(double_col)` is SumDouble + Count over the SAME f64 register and
-COUNT never reads the bits (bridge T51g). Tests: bridge 64, coldcall
+COUNT never reads the bits (bridge T51g). Tests: bridge 68, coldcall
 20, new `rondb_jit_double_canary` (Q1–Q8; all five must-JIT asserts
 held — the planner pushes every double shape the canary assumes).
 Verification findings: the extractor's `classify_tail` needed the five

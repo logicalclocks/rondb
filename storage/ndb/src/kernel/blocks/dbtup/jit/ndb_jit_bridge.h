@@ -29,7 +29,10 @@
  * Current coverage: type-specialised bigint hot ops from Phase 4,
  * the Phase 5C-2 DOUBLE family (kOp{Plus,Minus,Mul,Div}Double,
  * kOp{Sum,Min,Max}Double, DOUBLE/FLOAT loads and DOUBLE constants,
- * generic kOpDiv over proven-f64 operands), plus the Phase 5
+ * generic kOpDiv over proven-f64 operands), the Phase 5C-3 unsigned
+ * BIGINT family (BIGUNSIGNED loads/constants; the BIGINT-track
+ * SUM/MIN/MAX lower to unsigned variants over proven-u64 registers;
+ * signed arithmetic rejects u64 operands), plus the Phase 5
  * embedded filter/row-disposition subset (BRANCH_ATTR_*_NULL,
  * READ_LINKED_TO_MEM, BRANCH_LINKED_*_NULL, LOAD_CONST16,
  * WRITE_INTERPRETER_OUTPUT slot 0, EXIT_OK, EXIT_REFUSE).

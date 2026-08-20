@@ -195,6 +195,8 @@ static inline int op_has_overflow_target(uint8_t kind) {
     case OP_MUL_F64:
     case OP_DIV_F64:
     case OP_SUM_F64:
+    /* Phase 5C-3: u64 SUM carry check → HOLE_SUM_OVF_TGT via op->d. */
+    case OP_SUM_U64_CHECKED:
       return 1;
     default:
       return 0;

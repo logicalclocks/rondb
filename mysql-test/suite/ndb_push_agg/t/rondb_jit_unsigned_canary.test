@@ -1,0 +1,111 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5C-3 — unsigned BIGINT canary.
+#
+# Aggregation over BIGINT UNSIGNED columns now JITs: declared
+# BIGUNSIGNED loads go through the OP_LOAD_COL_NDB_U64 cold-call, and
+# the optimizer's BIGINT-track aggregates lower to the UNSIGNED
+# variants (u64 compares for MIN/MAX — a signed compare would order
+# values >= 2^63 as negative — and a carry-checked u64 SUM). The
+# writeback marks is_unsigned via the value_unsigned mask.
+#
+# Proof pattern (see rondb_jit_double_canary): ERROR_INSERT 4060 +
+# an ndbinfo.jit programs_compiled + programs_reused delta >= 1.
+#
+# Requires regenerated stencils (regen-stencils) in the build.
+
+--echo ############################################################
+--echo # RONDB-1056 unsigned BIGINT JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  u   BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+# Values straddle the signed boundary: 9223372036854775813 = 2^63 + 5
+# and 18446744073709551615 = 2^64 - 1 are negative under a broken
+# signed compare, so MIN/MAX answers detect signedness bugs directly.
+INSERT INTO t1 VALUES
+  (1, 1, 3),
+  (2, 1, 9223372036854775813),
+  (3, 1, 18446744073709551615),
+  (4, 2, 100),
+  (5, 2, 9223372036854775808),
+  (6, 3, 42);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: scalar MIN/MAX over BIGINT UNSIGNED must JIT with u64
+--echo #     compares — a signed compare would report MIN = 2^63+5.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT MIN(u), MAX(u) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: grouped MIN/MAX/COUNT must JIT (per-group first-row init
+--echo #     with unsigned compares).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, MIN(u), MAX(u), COUNT(u) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: SUM over a BIGINT UNSIGNED column must JIT (the u64
+--echo #     carry-checked sum). The summed values stay BELOW 2^63:
+--echo #     the pushed-SUM consumption in mysqld routes the result
+--echo #     through a signed int64 (set_pushed_value_int — see
+--echo #     ha_ndbcluster_push_agg.cc's Bigunsigned case), so a sum
+--echo #     past the signed boundary prints wrapped UNDER PUSHDOWN
+--echo #     REGARDLESS of JIT vs interpreter — a pre-existing
+--echo #     consumption gap recorded in phase_5c_plan.md. The
+--echo #     past-2^63 accumulation itself is proven at the JitState
+--echo #     level by coldcall T21.
+CREATE TABLE t2 (
+  pk BIGINT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+  (1, 1000000000000000000),
+  (2, 1000000000000000000),
+  (3, 1000000000000000000);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(u) FROM t2;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+DROP TABLE t2;
+
+--echo # Q4: AVG over BIGINT UNSIGNED must JIT (SUM + COUNT
+--echo #     decomposition over the same u64 register).
+CREATE TABLE t3 (
+  pk BIGINT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t3 VALUES (1, 10), (2, 20), (3, 30), (4, 60);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT AVG(u) FROM t3;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+
+--echo # Q5: negative control — arithmetic over an unsigned register
+--echo #     has no JIT lowering yet: correct results via the
+--echo #     interpreter, compile counters move by exactly 0. No 4060
+--echo #     (deliberate fallback). Full-table scan on t3 — no WHERE,
+--echo #     so no scan-filter compile can move the counters either.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(u + 1) FROM t3;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q5_stays_on_interpreter;
+DROP TABLE t3;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

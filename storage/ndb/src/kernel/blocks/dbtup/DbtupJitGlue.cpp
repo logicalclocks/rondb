@@ -364,6 +364,72 @@ ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
 #endif
 }
 
+/* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
+ * BIGUNSIGNED columns (OP_LOAD_COL_NDB_U64). The u64 value's bits are
+ * stored into regs_i64[dst_reg]; the u64 consumer stencils
+ * (SUM_U64_CHECKED, MIN/MAX_U64) reinterpret them unsigned. Kept
+ * separate from the signed helper so a schema drift cannot feed u64
+ * bits (which misorder under signed compares for values >= 2^63) into
+ * a signed-contract site: only a descriptor-BIGUNSIGNED column loads
+ * here; anything else takes the per-row fallback. */
+extern "C" void
+ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_u64: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  /* 1 word AttributeHeader + 8 bytes for a BIGUNSIGNED. */
+  Uint32 read_buf[4];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  if (header->isNULL()) {
+    /* Same per-row fallback as the other loads — registers have no
+     * null tracking until Phase 5D. */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  if (type_id != NDB_TYPE_BIGUNSIGNED) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
+  s->regs_i64[dst_reg] = (Int64)(Uint64)uint8korr(data);
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col_u64 col=%u dst=r%u "
+        "value=%llu",
+        ctx->trace_row_no, col_id, dst_reg,
+        (unsigned long long)(Uint64)s->regs_i64[dst_reg]);
+  }
+#endif
+}
+
 /* ndb_jit_h_branch_attr_null — Phase 5.0 cold-call branch helper.
  *
  * Used by both op_branch_attr_eq_null (want_null=1) and
@@ -552,6 +618,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col));
   jit1_register_helper("ndb_jit_h_load_col_f64",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64));
+  jit1_register_helper("ndb_jit_h_load_col_u64",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
   jit1_register_helper("ndb_jit_h_branch_attr_op_arg",

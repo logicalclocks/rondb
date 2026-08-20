@@ -1014,6 +1014,10 @@ static const OpkindMap kOpkindMap[] = {
   { "op_sum_f64",               "OP_SUM_F64"               },
   { "op_min_f64",               "OP_MIN_F64"               },
   { "op_max_f64",               "OP_MAX_F64"               },
+  { "op_load_col_ndb_u64",      "OP_LOAD_COL_NDB_U64"      },
+  { "op_sum_u64_checked",       "OP_SUM_U64_CHECKED"       },
+  { "op_min_u64",               "OP_MIN_U64"               },
+  { "op_max_u64",               "OP_MAX_U64"               },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

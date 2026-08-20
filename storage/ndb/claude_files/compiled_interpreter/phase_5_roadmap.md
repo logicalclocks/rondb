@@ -222,7 +222,7 @@ conditionally store. Marks `value_updated` either way.
   case), bridge lowering, MTR canary extension (grouped MIN/MAX under
   4060 + counter delta; all-rejected group stays NULL).
 
-## 5C — DOUBLE family + unsigned BIGINT — **5C-1 + 5C-2 DONE & VERIFIED (2026-08-20, full ndb_push_agg sweep green post-regen); 5C-3 remains. See `phase_5c_plan.md`**
+## 5C — DOUBLE family + unsigned BIGINT — **5C-1 + 5C-2 DONE & VERIFIED (2026-08-20, full ndb_push_agg sweep green post-regen); 5C-3 DONE & VERIFIED (2026-08-20). See `phase_5c_plan.md`**
 
 **Planning finding (2026-08-19): the full type-state lattice is NOT
 needed.** `OptimizeProgramBuffer` already type-specializes the outer
@@ -233,7 +233,9 @@ register flows). Slices: 5C-1 tracker (no regen) — **done**;
 5C-2 DOUBLE family (8 stencils, bit-cast f64 storage; the planned
 OP_ROW_FALLBACK_EXIT proved unnecessary — div-by-zero sets
 row_fallback inline and continues) — **done & verified 2026-08-20**;
-5C-3 unsigned BIGINT (~4 stencils) — next. Implementation
+5C-3 unsigned BIGINT (4 stencils reusing the SUM_*/MM_* holes; u64
+tracker state + acc-family guard) — **done & verified 2026-08-20;
+the phase is complete**. Implementation
 record incl. deviations (COUNT type-check removal for AVG(double),
 generic kOpDiv lowering): `phase_5c_plan.md`. The section below is
 the pre-planning sketch.

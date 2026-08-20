@@ -1060,6 +1060,180 @@ static void test_f64_load_col_coldcall(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5C-3 — unsigned BIGINT.                                      */
+/* ------------------------------------------------------------------ */
+
+/* Mock for ndb_jit_h_load_col_u64: writes 2^63 + col_id (a value a
+ * signed pipeline would misinterpret as negative). */
+static void mock_load_col_u64(JitState *s, uint32_t col_id,
+                              uint32_t dst_reg) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  s->regs_i64[dst_reg] =
+      (int64_t)(UINT64_C(0x8000000000000000) + col_id);
+}
+
+/* T20: MIN/MAX_U64 ordering across the signed boundary. Rows
+ * {2^63+5, 3, 2^64-1}: unsigned order gives min 3, max 2^64-1; a
+ * signed compare would call 2^63+5 the minimum (negative as i64) and
+ * 3 the maximum. First-row init from garbage, like T14. */
+static void test_u64_min_max_ordering(void) {
+  const char *name = "T20 u64_min_max_ordering";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_MIN_U64, .a = 0, .b = 1, .c = 0 };
+  p.ops[1] = (Op){ .kind = OP_MAX_U64, .a = 1, .b = 1, .c = 1 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — stencils regenerated?",
+              errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.acc_i64[0] = 777;    /* garbage; value_initialized = 0 */
+  s.acc_i64[1] = 777;
+  const uint64_t rows[3] = {
+    UINT64_C(0x8000000000000005),   /* 2^63 + 5 */
+    3,
+    UINT64_C(0xFFFFFFFFFFFFFFFF),   /* 2^64 - 1 */
+  };
+  for (int i = 0; i < 3; ++i) {
+    memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    memset(s.value_updated, 0, sizeof(s.value_updated));
+    memset(s.value_unsigned, 0, sizeof(s.value_unsigned));
+    s.regs_i64[1] = (int64_t)rows[i];
+    entry(&s);
+  }
+
+  if ((uint64_t)s.acc_i64[0] != 3 ||
+      (uint64_t)s.acc_i64[1] != UINT64_C(0xFFFFFFFFFFFFFFFF)) {
+    mark_fail(name, "min=%" PRIu64 " max=0x%" PRIx64
+              ", want 3/0xffffffffffffffff (unsigned compares)",
+              (uint64_t)s.acc_i64[0], (uint64_t)s.acc_i64[1]);
+  } else if (s.value_unsigned[0] != 1 || s.value_unsigned[1] != 1) {
+    mark_fail(name, "value_unsigned={%" PRIu64 ",%" PRIu64 "}, want {1,1}",
+              s.value_unsigned[0], s.value_unsigned[1]);
+  } else if (s.value_updated[0] != 1 || s.value_updated[1] != 1) {
+    mark_fail(name, "value_updated={%" PRIu64 ",%" PRIu64 "}, want {1,1}",
+              s.value_updated[0], s.value_updated[1]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T21: SUM_U64_CHECKED — accumulates past the SIGNED boundary without
+ * error (3 × 2^62 = 0xC000... > 2^63, where a signed checked add
+ * would overflow), then a genuine u64 carry sets row_overflowed. */
+static void test_u64_sum_carry(void) {
+  const char *name = "T21 u64_sum_carry";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_SUM_U64_CHECKED, .a = 0, .b = 1, .c = 0,
+                   .d = 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+  p.ops[2] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  for (int i = 0; i < 3; ++i) {
+    memset(s.value_updated, 0, sizeof(s.value_updated));
+    s.regs_i64[1] = (int64_t)(UINT64_C(1) << 62);
+    entry(&s);
+  }
+  if ((uint64_t)s.acc_i64[0] != UINT64_C(0xC000000000000000) ||
+      s.row_overflowed != 0) {
+    mark_fail(name, "acc=0x%" PRIx64 " overflowed=%u, want "
+              "0xc000000000000000/0 (past the signed boundary is fine)",
+              (uint64_t)s.acc_i64[0], s.row_overflowed);
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  if (s.value_unsigned[0] != 1) {
+    mark_fail(name, "value_unsigned[0]=%" PRIu64 ", want 1",
+              s.value_unsigned[0]);
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  /* Two more 2^62 additions: the first lands exactly at 2^64 → carry. */
+  entry(&s);
+  entry(&s);
+  if (s.row_overflowed != 1) {
+    mark_fail(name, "row_overflowed=%u after u64 carry, want 1",
+              s.row_overflowed);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T22: OP_LOAD_COL_NDB_U64 cold-call — the helper's above-signed-range
+ * bits land in the register file and flow through MAX_U64. */
+static void test_u64_load_col_coldcall(void) {
+  const char *name = "T22 u64_load_col_coldcall";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB_U64, .a = 0, .c = 9 };
+  p.ops[1] = (Op){ .kind = OP_MAX_U64, .a = 0, .b = 0, .c = 0 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — u64 helper "
+              "registered?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  jit1_entry(jp)(&s);
+
+  if (ctx.n_calls != 1 || ctx.last_col_id != 9 || ctx.last_dst_reg != 0) {
+    mark_fail(name, "helper calls=%u col=%u dst=%u, want 1/9/0",
+              ctx.n_calls, ctx.last_col_id, ctx.last_dst_reg);
+  } else if ((uint64_t)s.acc_i64[0] != UINT64_C(0x8000000000000009)) {
+    mark_fail(name, "acc=0x%" PRIx64 ", want 0x8000000000000009",
+              (uint64_t)s.acc_i64[0]);
+  } else if (s.value_unsigned[0] != 1) {
+    mark_fail(name, "value_unsigned[0]=%" PRIu64 ", want 1",
+              s.value_unsigned[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -1071,7 +1245,9 @@ int main(void) {
   if (jit1_register_helper("ndb_jit_h_load_col",
                             (JitHelperFn)&mock_load_col) != 0 ||
       jit1_register_helper("ndb_jit_h_load_col_f64",
-                            (JitHelperFn)&mock_load_col_f64) != 0) {
+                            (JitHelperFn)&mock_load_col_f64) != 0 ||
+      jit1_register_helper("ndb_jit_h_load_col_u64",
+                            (JitHelperFn)&mock_load_col_u64) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1095,6 +1271,9 @@ int main(void) {
   test_f64_mul_overflow();
   test_f64_div_by_zero_fallback();
   test_f64_load_col_coldcall();
+  test_u64_min_max_ordering();
+  test_u64_sum_carry();
+  test_u64_load_col_coldcall();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
