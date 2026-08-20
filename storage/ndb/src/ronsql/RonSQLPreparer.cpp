@@ -9972,6 +9972,27 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                    " float literal out of range.");
       }
       LexString ls = ce->constant_float.ls;
+      char dbl_buf[400];
+      if (ls.str == NULL) {
+        /* A subquery-substituted float constant carries only .dbl —
+         * every substitution site sets ls = {NULL, 0} since there is
+         * no source text to point at.  decimal_str2bin on the NULL
+         * pointer crashed the whole process when a scalar subquery
+         * result was compared against a DECIMAL column
+         * (ronsql_cte_subquery Test 7).  Render at the COLUMN's scale:
+         * the subquery text was formatted at that scale by the inner
+         * query, and rounding the double back at the same scale
+         * recovers the exact original value (DECIMAL digits within
+         * double's exact range).  A round-trip-exact %.17g rendering
+         * instead surfaces the double's binary error as extra digits
+         * and fails decimal_str2bin with E_DEC_TRUNCATED.  The buffer
+         * covers %.f of any double (up to ~309 integer digits). */
+        int n = snprintf(dbl_buf, sizeof(dbl_buf), "%.*f", scale,
+                         ce->constant_float.dbl);
+        require_prm(n > 0 && n < (int)sizeof(dbl_buf),
+                    "Failed to render substituted float constant.");
+        ls = LexString{ dbl_buf, (size_t)n };
+      }
       err = decimal_str2bin(ls.str, ls.len, prec, scale, bin, bin_len);
     } else {
       throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
@@ -12655,6 +12676,11 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   case T_FLOAT:
     {
       LexString ls = ce->constant_float.ls;
+      if (ls.str == NULL) {
+        // Subquery-substituted constant — no source text; print the value.
+        out << ce->constant_float.dbl << '\n';
+        return;
+      }
       while (ls.len > 0 && ls.str[ls.len-1]=='0') ls.len--;
       if (ls.len > 0 && ls.str[ls.len-1]=='.') ls.len--;
       out << ls << '\n';
