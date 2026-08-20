@@ -1750,6 +1750,43 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
   return 0;
 }
 
+Int32 AggInterpreterBase::jitMinMaxStringCol(
+    Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+    Uint32 col_id, Uint32 agg_index, bool is_max,
+    AggResItem* agg_res_ptr) {
+  /* Scratch register for the capture — see the header comment. */
+  constexpr Uint32 kScratchReg = kRegTotal - 1;
+
+  if (unlikely(col_id >= req_struct->tablePtrP->m_no_of_attributes)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  m_attr_read_pos = 0;
+  int ret = block_tup->readSingleAttributeForJit(
+      req_struct, col_id, m_attr_read_buf, g_attr_read_buf_len_);
+  if (ret < 0) {
+    return -ret;
+  }
+  AttributeHeader* header =
+      reinterpret_cast<AttributeHeader*>(&m_attr_read_buf[0]);
+  const Uint32* attrDescriptor =
+      req_struct->tablePtrP->tabDescriptor + (col_id * ZAD_SIZE);
+  const DataType type = AttributeDescriptor::getType(attrDescriptor[0]);
+  if (type != NDB_TYPE_CHAR && type != NDB_TYPE_VARCHAR &&
+      type != NDB_TYPE_LONGVARCHAR) {
+    /* Schema drift — the bridge admitted by the wire's declared type. */
+    return ZAGG_COL_TYPE_UNSUPPORTED;
+  }
+  Uint32 exec_pos_dummy = 0;
+  Int32 lret = loadColumnTypedFromBuf(
+      type, /*is_unsigned=*/false, kScratchReg, header, attrDescriptor,
+      /*linked_cte_attr=*/false, /*linked_word0=*/0, /*linked_word1=*/0,
+      req_struct, exec_pos_dummy, "JitMinMaxStr");
+  if (lret != 0) {
+    return lret;
+  }
+  return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
+}
+
 /*
  * Step 1.4 — shared opcode handler.
  *

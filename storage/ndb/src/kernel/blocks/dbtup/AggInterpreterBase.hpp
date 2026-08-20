@@ -294,6 +294,19 @@ class AggInterpreterBase : public PushdownInterpreter {
    * caller. */
   Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
                      AggResItem* agg_res_ptr, bool is_max);
+  /* Phase 5F-1 (RONDB-1056 JIT): fused string MIN/MAX for one row —
+   * reads the column into the per-LDM attr scratch, runs the
+   * protected load path into a scratch register (the JIT dispatch
+   * never runs the interpreter loop, so clobbering a register is
+   * harmless; minMaxString copies the payload before returning), then
+   * the minMaxString kernel above. Called from the JIT cold-call
+   * helper ndb_jit_h_minmax_str via the base-class pointer (works for
+   * both subclasses). Returns 0 or a positive ZAGG_* error; NULL
+   * column values return 0 (the kernel's skip). */
+  Int32 jitMinMaxStringCol(Dbtup* block_tup,
+                           Dbtup::KeyReqStruct* req_struct,
+                           Uint32 col_id, Uint32 agg_index, bool is_max,
+                           AggResItem* agg_res_ptr);
   void freeGroupStringSlots(AggResItem* slots);
   /* Step 3a-A: walk m_agg_results (scalar) + every group in m_gb_map,
    * freeing per-(group, slot) string winner buffers, then free the

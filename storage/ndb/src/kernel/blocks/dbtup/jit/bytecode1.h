@@ -273,7 +273,20 @@ typedef enum {
    * interpreter fallback (which reproduces the interpreter's exact
    * ZAGG_DECIMAL_* error for the error cases). */
   OP_LOAD_COL_NDB_DEC      = 55,
-  OP_KIND_MAX           = OP_LOAD_COL_NDB_DEC
+  /* Phase 5F-1: FUSED string MIN/MAX — one cold call per string
+   * aggregate covering load + collation compare + winner-buffer
+   * update. The helper delegates to
+   * AggInterpreterBase::jitMinMaxStringCol, which reuses the
+   * interpreter's own load path and public minMaxString kernel — the
+   * kernel mutates the group's AggResItem DIRECTLY and the helper
+   * never sets value_updated, so the glue's masked writeback leaves
+   * string slots alone. NULL values are skipped by the kernel (no
+   * fallback of any kind); kernel errors (alloc failure) take the
+   * per-row fallback so the interpreter surfaces the exact ZAGG
+   * error. Operand layout: b = col_id,
+   * c = (is_max << 8) | agg_index; a = agg_index (diagnostics). */
+  OP_MINMAX_STR_NDB        = 56,
+  OP_KIND_MAX           = OP_MINMAX_STR_NDB
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

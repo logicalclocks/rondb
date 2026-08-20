@@ -1,0 +1,64 @@
+############################################################
+# RONDB-1056 string MIN/MAX JIT canary
+############################################################
+CREATE TABLE t1 (
+pk  BIGINT NOT NULL,
+grp BIGINT NOT NULL,
+s   VARCHAR(16) NOT NULL,
+v   BIGINT NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 'Banana', 10),
+(2, 1, 'apple',  20),
+(3, 2, 'Cherry', 30),
+(4, 2, 'date',   40);
+SET ndb_pushdown_aggregate=ON;
+# Q1: scalar string MIN/MAX must JIT with COLLATION order
+#     (byte order would report MIN='Banana', MAX='apple').
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT MIN(s), MAX(s) FROM t1;
+MIN(s)	MAX(s)
+apple	date
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: grouped string MIN/MAX must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, MIN(s), MAX(s) FROM t1 GROUP BY grp;
+grp	MIN(s)	MAX(s)
+1	apple	Banana
+2	Cherry	date
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: nullable strings incl. an ALL-NULL group must JIT under
+#     4060 — NULL values are the kernel's skip, not a fallback.
+CREATE TABLE t2 (
+pk  BIGINT NOT NULL,
+grp BIGINT NOT NULL,
+sn  VARCHAR(16),
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+(1, 1, 'beta'), (2, 1, NULL), (3, 2, NULL), (4, 2, NULL);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, MIN(sn), MAX(sn) FROM t2 GROUP BY grp;
+grp	MIN(sn)	MAX(sn)
+1	beta	beta
+2	NULL	NULL
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+DROP TABLE t2;
+# Q4: MIXED program — the integer aggregates lower hot, the
+#     string aggregate fuses; pre-5F this whole program fell
+#     back because of the one string aggregate.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(v), MIN(s), COUNT(*) FROM t1;
+SUM(v)	MIN(s)	COUNT(*)
+100	apple	4
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
+DROP TABLE t1;

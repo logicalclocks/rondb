@@ -737,6 +737,18 @@ static const Hole holes_op_load_col_ndb_dec[] = {
   { .byte_offset = 24, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_load_col_dec" },
 };
 
+/* op_minmax_str_ndb — 28 bytes, 3 holes */
+static const uint8_t bytes_op_minmax_str_ndb[] = {
+  0xfd, 0x7b, 0xbf, 0xa9, 0x61, 0x4e, 0x84, 0x52, 0xe2, 0x4f, 0x9c, 0x52,
+  0xe0, 0x03, 0x14, 0xaa, 0xfd, 0x03, 0x00, 0x91, 0x00, 0x00, 0x00, 0x94,
+  0xfd, 0x7b, 0xc1, 0xa8,
+};
+static const Hole holes_op_minmax_str_ndb[] = {
+  { .byte_offset = 4, .kind = HK_OP_B, .width = 2 },
+  { .byte_offset = 8, .kind = HK_OP_C, .width = 2 },
+  { .byte_offset = 20, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_minmax_str" },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -805,6 +817,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_MINUS_U64_CHECKED] = STENCIL_(op_minus_u64_checked),
   [OP_MUL_U64_CHECKED] = STENCIL_(op_mul_u64_checked),
   [OP_LOAD_COL_NDB_DEC] = STENCIL_(op_load_col_ndb_dec),
+  [OP_MINMAX_STR_NDB] = STENCIL_(op_minmax_str_ndb),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */

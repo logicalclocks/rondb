@@ -98,7 +98,8 @@ SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(a / b) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS generic_div_int_fell_back;
 
---echo # string_min: MIN over VARCHAR (5F — generic kOpMin, string track).
+--echo # string_min: MIN over VARCHAR (compiles since Phase 5F-1 — the
+--echo # fused string MIN/MAX cold call).
 --sleep 11
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT MIN(s), MAX(s) FROM t1;

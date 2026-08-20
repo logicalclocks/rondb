@@ -1,6 +1,45 @@
 # Phase 5F — string MIN/MAX without a string register model
 
-**Status: PLANNED (2026-08-20). Code: not started.**
+**Status: 5F-1 DONE & VERIFIED (2026-08-20 — regen, bridge 96/96,
+coldcall 31/31, string canary + census green, full ndb_push_agg sweep
+passed). 5F-2 (linked columns) deferred.**
+
+## 5F-1 implementation record (2026-08-20)
+
+Landed as planned: `OP_MINMAX_STR_NDB` (cold-call stencil, plain
+STRIP_TAIL load shape; operands b = col_id, c = (is_max<<8)|agg_index)
++ helper `ndb_jit_h_minmax_str` delegating to the new PUBLIC facade
+`AggInterpreterBase::jitMinMaxStringCol` (per-LDM attr-scratch read
+via readSingleAttributeForJit, schema-drift type check, the protected
+load path into scratch register kRegTotal-1, then the public
+minMaxString kernel — exact reuse). `dbtup_jit_call_ctx` grows
+`agg_res_ptr` (set per row by dbtup_jit_invoke; nullptr on the
+scan-filter path; the helper aborts on a malformed ctx since fused
+string ops are aggregation-only). Kernel errors set row_fallback;
+NULL values are the kernel's skip — no fallback.
+
+Bridge: string-typed kOpLoadCol fuses with its consecutive
+kOpMin/kOpMax consumers (one fused op each; consumed words get outer-
+map entries so CASE-jump resolution keeps working — a jump landing on
+the Min word lands on its fused op, which IS the min); zero consumers
+or a non-minmax consumer keeps the whole-program fallback. New
+tracker states BR_REG_STR (poisons the register — arith and every
+typed/generic numeric aggregate reject it) and BR_ACC_STR (mixed-arm
+acc-family defense). The fused op is classified accumulator-like in
+the nb-conversion pass (a side effect that must never sit inside a
+numeric load's skip range).
+
+Tests: bridge 96 (T59a single-MIN fusion, T59b MIN+MAX one load with
+the is_max bit, T59c mixed program — NB load + checked SUM + fused
+string, T59d non-minmax consumer reject, T59e dangling load reject),
+coldcall 31 (T31: operand round trip + the direct-write discipline —
+acc and masks untouched), new `rondb_jit_string_canary` (collation-
+discriminating values where byte order and collation order disagree;
+scalar/grouped/nullable-with-all-NULL-group/mixed all 4060 must-JIT),
+census string_min flips 1 → 0. Verified 2026-08-20: regen clean,
+bridge 96/96, coldcall 31/31, string canary + census green, full
+ndb_push_agg sweep passed — the census scoreboard is now FULLY GREEN
+for every shape the SQL planner pushes.
 
 ## The demand (census-confirmed)
 

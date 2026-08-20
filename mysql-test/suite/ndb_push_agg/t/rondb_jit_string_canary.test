@@ -1,0 +1,84 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5F-1 — string MIN/MAX canary.
+#
+# String MIN/MAX now runs fused on the JIT: one cold call per string
+# aggregate covering load + COLLATION-aware compare + winner-buffer
+# update via the interpreter's own minMaxString kernel. The values
+# below are chosen so byte order and collation order DISAGREE
+# (utf8mb4 ai_ci: apple < Banana < Cherry < date, while memcmp would
+# order B < C < a < d) — a byte-compare bug cannot pass.
+#
+# NULL string values are the kernel's skip — no fallback of any kind —
+# so nullable string MIN/MAX is 4060-safe (unlike the numeric
+# families before Phase 5D).
+#
+# Requires regenerated stencils (regen-stencils) in the build.
+
+--echo ############################################################
+--echo # RONDB-1056 string MIN/MAX JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  s   VARCHAR(16) NOT NULL,
+  v   BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 1, 'Banana', 10),
+  (2, 1, 'apple',  20),
+  (3, 2, 'Cherry', 30),
+  (4, 2, 'date',   40);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: scalar string MIN/MAX must JIT with COLLATION order
+--echo #     (byte order would report MIN='Banana', MAX='apple').
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT MIN(s), MAX(s) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: grouped string MIN/MAX must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, MIN(s), MAX(s) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: nullable strings incl. an ALL-NULL group must JIT under
+--echo #     4060 — NULL values are the kernel's skip, not a fallback.
+CREATE TABLE t2 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  sn  VARCHAR(16),
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+  (1, 1, 'beta'), (2, 1, NULL), (3, 2, NULL), (4, 2, NULL);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, MIN(sn), MAX(sn) FROM t2 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+DROP TABLE t2;
+
+--echo # Q4: MIXED program — the integer aggregates lower hot, the
+--echo #     string aggregate fuses; pre-5F this whole program fell
+--echo #     back because of the one string aggregate.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(v), MIN(s), COUNT(*) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

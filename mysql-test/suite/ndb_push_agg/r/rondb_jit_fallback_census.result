@@ -91,14 +91,15 @@ SUM(a / b)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS generic_div_int_fell_back;
 generic_div_int_fell_back
 0
-# string_min: MIN over VARCHAR (5F — generic kOpMin, string track).
+# string_min: MIN over VARCHAR (compiles since Phase 5F-1 — the
+# fused string MIN/MAX cold call).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT MIN(s), MAX(s) FROM t1;
 MIN(s)	MAX(s)
 alpha	gamma
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS string_min_fell_back;
 string_min_fell_back
-1
+0
 # decimal_sum: SUM over DECIMAL (compiles since Phase 5G — the
 # DECIMAL load + generic-aggregate lowering).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);

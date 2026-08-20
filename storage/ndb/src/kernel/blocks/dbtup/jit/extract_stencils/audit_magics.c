@@ -151,6 +151,9 @@ static const struct {
   { "MAGIC_LCD_COL_NARROW",   "op_load_col_ndb_dec"       },
   { "MAGIC_LCD_DST_NARROW",   "op_load_col_ndb_dec"       },
   { "MAGIC_LCD_INFO_NARROW",  "op_load_col_ndb_dec"       },
+  /* Phase 5F-1: op_minmax_str_ndb helper-argument holes. */
+  { "MAGIC_MMS_COL_NARROW",   "op_minmax_str_ndb"         },
+  { "MAGIC_MMS_ARG_NARROW",   "op_minmax_str_ndb"         },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

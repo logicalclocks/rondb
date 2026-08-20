@@ -1479,6 +1479,62 @@ static void mock_load_col_dec(JitState *s, uint32_t col_id,
   s->regs_i64[dst_reg] = (int64_t)col_id * 100;
 }
 
+/* Phase 5F-1 mock for ndb_jit_h_minmax_str: records col + packed in
+ * MockCtx (reusing last_pinfo for packed). Touches NOTHING else —
+ * the direct-write discipline means acc/masks must stay untouched. */
+static void mock_minmax_str(JitState *s, uint32_t col_id,
+                            uint32_t packed) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_pinfo = packed;
+}
+
+/* T31: OP_MINMAX_STR_NDB cold call — both operand holes reach the
+ * helper, and the blob leaves every accumulator and mask untouched
+ * (the string kernel writes the AggResItem directly; the glue's
+ * masked writeback must skip those slots). */
+static void test_minmax_str_coldcall(void) {
+  const char *name = "T31 minmax_str_coldcall";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_MINMAX_STR_NDB, .a = 2, .b = 6,
+                   .c = 0x102 };
+  p.ops[1] = (Op){ .kind = OP_MINMAX_STR_NDB, .a = 1, .b = 6,
+                   .c = 0x001 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — minmax_str "
+              "helper registered / stencils regenerated?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  jit1_entry(jp)(&s);
+
+  if (ctx.n_calls != 2 || ctx.last_col_id != 6 ||
+      ctx.last_pinfo != 0x001) {
+    mark_fail(name, "helper calls=%u col=%u packed=0x%x, want 2/6/0x001",
+              ctx.n_calls, ctx.last_col_id, ctx.last_pinfo);
+  } else if (s.acc_i64[1] != 0 || s.acc_i64[2] != 0 ||
+             s.value_updated[1] != 0 || s.value_updated[2] != 0) {
+    mark_fail(name, "blob touched acc/masks — string slots must be "
+              "kernel-owned");
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 /* T30: OP_LOAD_COL_NDB_DEC cold call — all three operand holes
  * (col, dst, pinfo) reach the helper and the value flows into the
  * accumulator. */
@@ -1656,7 +1712,9 @@ int main(void) {
       jit1_register_helper("ndb_jit_h_load_col_u64_nb",
                             (JitHelperFn)&mock_load_col_u64_nb) != 0 ||
       jit1_register_helper("ndb_jit_h_load_col_dec",
-                            (JitHelperFn)&mock_load_col_dec) != 0) {
+                            (JitHelperFn)&mock_load_col_dec) != 0 ||
+      jit1_register_helper("ndb_jit_h_minmax_str",
+                            (JitHelperFn)&mock_minmax_str) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1690,6 +1748,7 @@ int main(void) {
   test_u64_minus_borrow();
   test_u64_mul_overflow();
   test_dec_load_col_coldcall();
+  test_minmax_str_coldcall();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

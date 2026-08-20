@@ -81,6 +81,9 @@
 #define NDB_TYPE_DOUBLE      12
 #define NDB_TYPE_DECIMAL         29
 #define NDB_TYPE_DECIMALUNSIGNED 30
+#define NDB_TYPE_CHAR            14
+#define NDB_TYPE_VARCHAR         15
+#define NDB_TYPE_LONGVARCHAR     23
 
 /* Encode opcode + operands into a single Uint32. */
 static uint32_t enc_op(uint32_t op, uint32_t lower) {
@@ -2324,6 +2327,94 @@ static void test_dec_bad_info_reject(void) {
                   JIT_BRIDGE_MALFORMED, 0, kOpLoadCol);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5F-1 — fused string MIN/MAX.                                  */
+/* ------------------------------------------------------------------ */
+
+/* T59a: single string MIN fuses the load + kernel into one op. */
+static void test_str_min_fusion(void) {
+  const char *name = "T59a str_min_fusion";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]MINMAX_STR(b=3, c=agg0|min) [1]tail EXIT. */
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 3)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 0)) return;
+  mark_pass(name);
+}
+
+/* T59b: MIN + MAX on the same string column, single load — two fused
+ * ops, the MAX carrying the is_max bit. */
+static void test_str_min_max_fusion(void) {
+  const char *name = "T59b str_min_max_fusion";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_CHAR, /*reg=*/0, /*col=*/4),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]MINMAX_STR(min agg0) [1]MINMAX_STR(max agg1) [2]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 0)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 1, "b", p.ops[1].b, 4)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 0x101)) return;
+  mark_pass(name);
+}
+
+/* T59c: mixed program — the string aggregate fuses, the integer part
+ * lowers hot (NB load + checked sum). */
+static void test_str_mixed_program(void) {
+  const char *name = "T59c str_mixed_program";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_LONGVARCHAR, /*reg=*/1, /*col=*/5),
+    enc_agg(kOpMin, /*reg=*/1, /*agg=*/1),
+  };
+  Program p;
+  /* [0]LOAD_NB(c=2) [1]SUM_CHECKED [2]MINMAX_STR [3]EXIT [4]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 5)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 1)) return;
+  mark_pass(name);
+}
+
+/* T59d: a string load whose consumer is NOT Min/Max keeps the
+ * whole-program fallback (the planner never emits string Sum/Count
+ * through this path). */
+static void test_str_non_minmax_consumer_reject(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T59d str_non_minmax_consumer_reject", prog, 2,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpLoadCol);
+}
+
+/* T59e: a dangling string load (no consumer at all) rejects. */
+static void test_str_dangling_load_reject(void) {
+  uint32_t prog[1] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+  };
+  assert_rejected("T59e str_dangling_load_reject", prog, 1,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpLoadCol);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2419,6 +2510,11 @@ int main(void) {
   test_dec_truncated_reject();
   test_generic_sum_unknown_reject();
   test_dec_bad_info_reject();
+  test_str_min_fusion();
+  test_str_min_max_fusion();
+  test_str_mixed_program();
+  test_str_non_minmax_consumer_reject();
+  test_str_dangling_load_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

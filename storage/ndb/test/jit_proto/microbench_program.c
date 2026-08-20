@@ -233,6 +233,7 @@ const char *bc_op_name(uint8_t kind) {
     case OP_MINUS_U64_CHECKED:     return "minus_u64_checked";
     case OP_MUL_U64_CHECKED:       return "mul_u64_checked";
     case OP_LOAD_COL_NDB_DEC:      return "load_col_ndb_dec";
+    case OP_MINMAX_STR_NDB:        return "minmax_str_ndb";
     default:                   return "?";
   }
 }

@@ -1295,6 +1295,23 @@ STENCIL op_load_col_ndb_dec(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5F-1 — op_minmax_str_ndb: FUSED string MIN/MAX (cold call).  */
+/*                                                                    */
+/* One call covers load + collation compare + winner-buffer update    */
+/* via the interpreter's own kernel (see bytecode1.h). packed =       */
+/* (is_max << 8) | agg_index.                                         */
+/* ------------------------------------------------------------------ */
+DECLARE_NARROW_HOLE(MMS_COL);
+DECLARE_NARROW_HOLE(MMS_ARG);
+extern void ndb_jit_h_minmax_str(JitState *s, uint32_t col_id,
+                                 uint32_t packed);
+STENCIL op_minmax_str_ndb(JitState *s) {
+  ndb_jit_h_minmax_str(s, (uint32_t)HOLE_NARROW(MMS_COL),
+                       (uint32_t)HOLE_NARROW(MMS_ARG));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -1356,4 +1373,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_minus_u64_checked,
     op_mul_u64_checked,
     op_load_col_ndb_dec,
+    op_minmax_str_ndb,
 };

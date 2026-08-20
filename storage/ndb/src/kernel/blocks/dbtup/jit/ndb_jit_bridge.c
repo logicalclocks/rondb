@@ -111,6 +111,9 @@
 #define BR_NDB_TYPE_DOUBLE      12
 #define BR_NDB_TYPE_DECIMAL         29
 #define BR_NDB_TYPE_DECIMALUNSIGNED 30
+#define BR_NDB_TYPE_CHAR        14
+#define BR_NDB_TYPE_VARCHAR     15
+#define BR_NDB_TYPE_LONGVARCHAR 23
 
 /* ------------------------------------------------------------------ */
 /* Embedded-interpreter opcodes (mirror of                            */
@@ -331,6 +334,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_MINUS_U64_CHECKED:    return "minus_u64_checked";
     case OP_MUL_U64_CHECKED:      return "mul_u64_checked";
     case OP_LOAD_COL_NDB_DEC:     return "load_col_ndb_dec";
+    case OP_MINMAX_STR_NDB:       return "minmax_str_ndb";
     default:                      return "jit_op?";
   }
 }
@@ -1433,6 +1437,9 @@ static int nb_op_is_accumulator(uint8_t kind) {
     case OP_MIN_F64:
     case OP_MAX_F64:
     case OP_COUNT_BIGINT:
+    /* Phase 5F-1: the fused string MIN/MAX mutates its AggResItem —
+     * a side effect that must never be skipped for unrelated NULLs. */
+    case OP_MINMAX_STR_NDB:
       return 1;
     default:
       return 0;
@@ -1578,7 +1585,11 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           * only by kOpLoadConst type BIGINT with value >= 0; the SQL
           * planner emits integer literals that way (LoadInt64), so
           * SUM(u + 1) is the mixed shape this exists for. */
-         BR_REG_NNC = 4 };
+         BR_REG_NNC = 4,
+         /* Phase 5F-1: a string load consumed by the fusion pass —
+          * only fused string MIN/MAX ever touches such a register;
+          * every other consumer rejects. */
+         BR_REG_STR = 5 };
   uint8_t reg_type[BC_MAX_REGS];
   memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
 #define BR_REQUIRE_F64(r)                                          \
@@ -1598,7 +1609,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
    * signedness dynamically per row, which the JIT cannot represent.
    * Reject mixed-family programs; they fall back whole. */
   enum { BR_ACC_UNSET = 0, BR_ACC_I64 = 1, BR_ACC_F64 = 2,
-         BR_ACC_U64 = 3 };
+         BR_ACC_U64 = 3, BR_ACC_STR = 4 };
   uint8_t acc_family[BC_MAX_ACCS];
   memset(acc_family, BR_ACC_UNSET, sizeof(acc_family));
 #define BR_CLAIM_ACC_FAMILY(slot, family)                          \
@@ -1728,13 +1739,68 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         int is_u64 = (type == BR_NDB_TYPE_BIGUNSIGNED);
         int is_dec = (type == BR_NDB_TYPE_DECIMAL ||
                       type == BR_NDB_TYPE_DECIMALUNSIGNED);
-        if (type != BR_NDB_TYPE_BIGINT && !is_f64 && !is_u64 && !is_dec) {
+        int is_str = (type == BR_NDB_TYPE_CHAR ||
+                      type == BR_NDB_TYPE_VARCHAR ||
+                      type == BR_NDB_TYPE_LONGVARCHAR);
+        if (type != BR_NDB_TYPE_BIGINT && !is_f64 && !is_u64 &&
+            !is_dec && !is_str) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
         if (reg_index >= BC_MAX_REGS || col_index > BR_MAX_LOCAL_ATTR_ID) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (is_str) {
+          /* Phase 5F-1: FUSE the string load with its consecutive
+           * kOpMin/kOpMax consumers — one OP_MINMAX_STR_NDB per
+           * consumer, each covering load + collation compare +
+           * winner-buffer update via the interpreter's own kernel
+           * (jitMinMaxStringCol). A string load with any other (or
+           * no) consumer keeps the whole-program fallback — the
+           * planner only emits MIN/MAX over strings. The register is
+           * poisoned (BR_REG_STR) so nothing else can read it. */
+          uint32_t look = pos + 1;
+          uint16_t n_fused = 0;
+          while (look < n_words) {
+            uint32_t cword = ndb_prog[look];
+            uint8_t  cop   = (uint8_t)((cword & 0xFC000000u) >> 26);
+            if (cop != BR_kOpMin && cop != BR_kOpMax) break;
+            uint8_t c_reg = (uint8_t)((cword >> 16) & 0x0Fu);
+            if (c_reg != reg_index) break;
+            uint16_t c_agg = (uint16_t)(cword & 0xFFFFu);
+            if (c_agg >= BC_MAX_ACCS) {
+              set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, look, cop);
+              return JIT_BRIDGE_REG_OUT_OF_RANGE;
+            }
+            BR_CLAIM_ACC_FAMILY(c_agg, BR_ACC_STR);
+            uint16_t packed = (uint16_t)(
+                ((cop == BR_kOpMax) ? 0x100u : 0u) | c_agg);
+            if (!emit_op(out_prog, OP_MINMAX_STR_NDB, (uint8_t)c_agg,
+                         col_index, packed, 0)) {
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, look, cop);
+              return JIT_BRIDGE_PROG_TOO_LARGE;
+            }
+            /* Map the consumed word so CASE-jump resolution keeps
+             * working (a jump landing on the Min word lands on its
+             * fused op — the fused op IS the min). */
+            if (n_outer_map >= BC_MAX_OPS) {
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, look, cop);
+              return JIT_BRIDGE_PROG_TOO_LARGE;
+            }
+            outer_word_pos[n_outer_map] = look;
+            outer_op_idx[n_outer_map] = (uint16_t)(out_prog->n_ops - 1);
+            n_outer_map++;
+            n_fused++;
+            look++;
+          }
+          if (n_fused == 0) {
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
+          reg_type[reg_index] = BR_REG_STR;
+          pos = look;
+          break;
         }
         if (is_dec) {
           /* Phase 5G: DECIMAL loads are TWO wire words — the extra
@@ -1822,7 +1888,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * whole-program fallback (the kernel's sign-dependent mixed
          * logic has no lowering). Otherwise the op lowers SIGNED with
          * the pre-5C-4 rules (I64/NNC/UNKNOWN operands). */
-        if (reg_type[dst] == BR_REG_F64 || reg_type[src] == BR_REG_F64) {
+        if (reg_type[dst] == BR_REG_F64 || reg_type[src] == BR_REG_F64 ||
+            reg_type[dst] == BR_REG_STR || reg_type[src] == BR_REG_STR) {
           set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
           return JIT_BRIDGE_TYPE_MISMATCH;
         }
@@ -1938,7 +2005,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * over a proven-u64 register lowers to the UNSIGNED sum —
          * u64 add with carry check, matching SumBigint's uniform-
          * unsigned path. F64 still rejects. */
-        if (reg_type[reg_index] == BR_REG_F64) {
+        if (reg_type[reg_index] == BR_REG_F64 ||
+            reg_type[reg_index] == BR_REG_STR) {
           set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
           return JIT_BRIDGE_TYPE_MISMATCH;
         }
@@ -2008,7 +2076,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * variants — a signed compare would order values >= 2^63 as
          * negative. F64 still rejects (kOpMin/MaxDouble is the typed
          * route for doubles). */
-        if (reg_type[reg_index] == BR_REG_F64) {
+        if (reg_type[reg_index] == BR_REG_F64 ||
+            reg_type[reg_index] == BR_REG_STR) {
           set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
           return JIT_BRIDGE_TYPE_MISMATCH;
         }

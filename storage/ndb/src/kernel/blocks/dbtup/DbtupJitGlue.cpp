@@ -679,6 +679,41 @@ ndb_jit_h_load_col_dec(JitState *s, uint32_t col_id, uint32_t dst_reg,
   }
 }
 
+/* ndb_jit_h_minmax_str — Phase 5F-1 FUSED string MIN/MAX
+ * (OP_MINMAX_STR_NDB). One call covers load + collation compare +
+ * winner-buffer update by delegating to
+ * AggInterpreterBase::jitMinMaxStringCol (exact interpreter-kernel
+ * reuse — charsets, StringResult sidecar, AGG_CHAR wire format and
+ * the eviction/API pipeline all come with it). packed =
+ * (is_max << 8) | agg_index. The kernel mutates the AggResItem
+ * directly and this helper never touches value_updated, so the glue's
+ * masked writeback leaves string slots alone. NULL column values are
+ * the kernel's skip (return 0 — no fallback of any kind); kernel
+ * errors (alloc failure etc.) take the per-row fallback so the
+ * interpreter re-runs the row and surfaces the exact ZAGG error. */
+extern "C" void
+ndb_jit_h_minmax_str(JitState *s, uint32_t col_id, uint32_t packed) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->agg == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr ||
+      ctx->agg_res_ptr == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_minmax_str: JitState.ctx is malformed (col_id=%u) — "
+        "fused string ops are aggregation-only",
+        col_id);
+    abort();
+  }
+  const Uint32 agg_index = packed & 0xFFu;
+  const bool   is_max    = (packed & 0x100u) != 0;
+  Int32 ret = ctx->agg->jitMinMaxStringCol(
+      ctx->block_tup, ctx->req_struct, col_id, agg_index, is_max,
+      ctx->agg_res_ptr);
+  if (ret != 0) {
+    s->row_fallback = 1;
+  }
+}
+
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
  * BIGUNSIGNED columns (OP_LOAD_COL_NDB_U64). The u64 value's bits are
  * stored into regs_i64[dst_reg]; the u64 consumer stencils
@@ -943,6 +978,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64_nb));
   jit1_register_helper("ndb_jit_h_load_col_dec",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_dec));
+  jit1_register_helper("ndb_jit_h_minmax_str",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_minmax_str));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
   jit1_register_helper("ndb_jit_h_branch_attr_op_arg",
@@ -974,6 +1011,7 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   ctx.req_struct = req_struct;
   ctx.prog_buf   = nullptr;  /* aggregation path emits no BRANCH_ATTR_OP_ARG */
   ctx.param_buf  = nullptr;
+  ctx.agg_res_ptr = agg_res_ptr;
 #ifdef ERROR_INSERT
   ctx.trace_enabled = dbtup_jit_trace_start(agg, block_tup,
                                             &ctx.trace_row_no,
@@ -1466,6 +1504,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   ctx.req_struct = req_struct;
   ctx.prog_buf   = prog_buf;
   ctx.param_buf  = param_buf;
+  ctx.agg_res_ptr = nullptr;   /* scan filters have no aggregate slots */
 #ifdef ERROR_INSERT
   ctx.trace_enabled = false;   /* 4063 row trace is aggregation-only for now */
   ctx.trace_row_no  = 0;
