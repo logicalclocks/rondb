@@ -165,7 +165,7 @@ SELECT MIN(tf.f), MAX(tf.f), MIN(tf.d), MAX(tf.d),
 MIN(tf.dec0), MAX(tf.dec0), MIN(tf.dec2), MAX(tf.dec2)
 FROM td JOIN tf ON tf.pk = td.pk;
 MIN(tf.f)	MAX(tf.f)	MIN(tf.d)	MAX(tf.d)	MIN(tf.dec0)	MAX(tf.dec0)	MIN(tf.dec2)	MAX(tf.dec2)
--6.5	5.5	-13.5	11.25	NULL	NULL	NULL	NULL
+-6.5	5.5	-13.5	11.25	-666	555	-66.66	55.55
 ############################################################
 # Test 6: MIN/MAX over DECIMAL at the 12-digit boundary
 ############################################################
@@ -178,7 +178,7 @@ SET ndb_join_pushdown_aggregate=ON;
 SELECT MIN(tb.dec0), MAX(tb.dec0), MIN(tb.dec2), MAX(tb.dec2)
 FROM td JOIN tb ON tb.pk = td.pk;
 MIN(tb.dec0)	MAX(tb.dec0)	MIN(tb.dec2)	MAX(tb.dec2)
-NULL	NULL	NULL	NULL
+-999999999999	999999999999	-9999999999.99	9999999999.99
 ############################################################
 # Test 7: SUM over DECIMAL scale-0 and scale-2, GROUP BY dim
 ############################################################
