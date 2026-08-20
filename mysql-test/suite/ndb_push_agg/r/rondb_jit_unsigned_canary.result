@@ -35,29 +35,26 @@ grp	MIN(u)	MAX(u)	COUNT(u)
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 q2_jit_compiled
 1
-# Q3: SUM over a BIGINT UNSIGNED column must JIT (the u64
-#     carry-checked sum). The summed values stay BELOW 2^63:
-#     the pushed-SUM consumption in mysqld routes the result
-#     through a signed int64 (set_pushed_value_int — see
-#     ha_ndbcluster_push_agg.cc's Bigunsigned case), so a sum
-#     past the signed boundary prints wrapped UNDER PUSHDOWN
-#     REGARDLESS of JIT vs interpreter — a pre-existing
-#     consumption gap recorded in phase_5c_plan.md. The
-#     past-2^63 accumulation itself is proven at the JitState
-#     level by coldcall T21.
+# Q3: SUM over values above the SIGNED boundary must JIT — the
+#     u64 carry-checked sum accumulates past 2^63 where a signed
+#     checked add would falsely overflow. 3 × (2^62 + 1) =
+#     13835058055282163715. End-to-end unsignedness (kernel u64
+#     sum -> value_unsigned writeback -> wire -> mysqld DECIMAL
+#     conversion) relies on the RONDB-733 set_pushed_value_uint
+#     fix — before it, this printed signed-wrapped.
 CREATE TABLE t2 (
 pk BIGINT NOT NULL,
 u  BIGINT UNSIGNED NOT NULL,
 PRIMARY KEY (pk)
 ) ENGINE=NDB;
 INSERT INTO t2 VALUES
-(1, 1000000000000000000),
-(2, 1000000000000000000),
-(3, 1000000000000000000);
+(1, 4611686018427387905),
+(2, 4611686018427387905),
+(3, 4611686018427387905);
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(u) FROM t2;
 SUM(u)
-3000000000000000000
+13835058055282163715
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 q3_jit_compiled
 1

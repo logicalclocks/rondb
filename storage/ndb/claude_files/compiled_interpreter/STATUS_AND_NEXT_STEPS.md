@@ -379,13 +379,14 @@ mixed signed/unsigned/double arms feeding one agg slot (per-row
 writeback masks can't represent the interpreter's dynamic per-row
 signedness). Tests: bridge 74, coldcall 23, new
 `rondb_jit_unsigned_canary` (boundary values 2^63+5 / 2^64-1 for
-MIN/MAX; SUM kept below 2^63 — verification uncovered a PRE-EXISTING
-pushdown bug, not JIT-related: mysqld's pushed-SUM consumption routes
-Bigunsigned results through a signed int64
-(`set_pushed_value_int(static_cast<int64_t>(...))`, no unsigned flag
-on `m_pushed_value_int`), so sums past 2^63 print signed-wrapped
-under pushdown with interpreter and JIT alike; details + proposed
-sql-layer fix in `phase_5c_plan.md` §5C-3). The sweep also flushed
+MIN/MAX, SUM past 2^63 — verification uncovered a PRE-EXISTING
+pushdown bug, not JIT-related: mysqld's pushed-SUM/AVG consumption
+routed Bigunsigned results through a signed int64 with no unsigned
+flag, printing sums past 2^63 signed-wrapped under pushdown with
+interpreter and JIT alike; **FIXED in the standalone backportable
+commit `d815f2c1d18`** — sql-layer `m_pushed_value_is_unsigned` +
+unsigned setters, honored by every converting reader; JIT-free test
+`ndb_push_agg_unsigned`; details in `phase_5c_plan.md` §5C-3). The sweep also flushed
 out a LATENT node crash (since the outer-join merge, not 5C-3's
 doing): the join-agg JIT dispatch deref'd the nullptr req_struct on
 outer-join NULL-EXTENDED rows — fixed by never dispatching such rows

@@ -229,7 +229,12 @@ already skips). The guard also covers `processRecWithLinkedAttrs`'s
 CTE_LOOKUP feed (block_tup == nullptr sets the same flag).
 
 **PRE-EXISTING upstream bug discovered during verification
-(2026-08-20), NOT a JIT issue**: `SUM(bigunsigned_col)` whose sum
+(2026-08-20), NOT a JIT issue — FIXED the same day in the standalone,
+backportable commit `d815f2c1d18` ("RONDB-733: Fix signed-wrapped
+SUM/AVG over BIGINT UNSIGNED under pushdown"; verified: new JIT-free
+`ndb_push_agg_unsigned` test + full ndb_push_agg sweep green). The
+unsigned canary's Q3 has since been upgraded back to past-2^63
+values. Original record follows.**: `SUM(bigunsigned_col)` whose sum
 exceeds 2^63 prints SIGNED-WRAPPED under aggregation pushdown — with
 the interpreter as much as with the JIT. The entire kernel/API chain
 is faithful (verified hop by hop: the u64 SUM stencil stores
