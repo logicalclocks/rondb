@@ -74,17 +74,15 @@ AVG(u)
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
 q4_jit_compiled
 1
-# Q5: negative control — arithmetic over an unsigned register
-#     has no JIT lowering yet: correct results via the
-#     interpreter, compile counters move by exactly 0. No 4060
-#     (deliberate fallback). Full-table scan on t3 — no WHERE,
-#     so no scan-filter compile can move the counters either.
+# Q5 (Phase 5C-4): unsigned arithmetic must JIT — SUM(u + 1)
+#     lowers to the u64 checked add (the BIGINT constant 1 is a
+#     non-negative constant, u64-compatible).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(u + 1) FROM t3;
 SUM(u + 1)
 124
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q5_stays_on_interpreter;
-q5_stays_on_interpreter
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+q5_jit_compiled
 1
 DROP TABLE t3;
 # Q6 (Phase 5D-2): nullable BIGINT UNSIGNED column must JIT under

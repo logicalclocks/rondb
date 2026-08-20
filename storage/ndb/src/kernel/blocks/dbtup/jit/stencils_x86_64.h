@@ -674,6 +674,81 @@ static const Hole holes_op_load_col_ndb_nb[] = {
   { .byte_offset = 38, .kind = HK_BRANCH_FALL, .width = 4 },
 };
 
+/* op_load_col_ndb_f64_nb — 42 bytes, 5 holes */
+static const uint8_t bytes_op_load_col_ndb_f64_nb[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00, 0x4c,
+  0x89, 0xe7, 0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xff, 0xd0, 0x85, 0xc0, 0x74, 0x06, 0x58, 0xe9, 0x00, 0x00, 0x00, 0x00,
+  0x58, 0xe9, 0x00, 0x00, 0x00, 0x00,
+};
+static const Hole holes_op_load_col_ndb_f64_nb[] = {
+  { .byte_offset = 2, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 7, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 16, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_load_col_f64_nb" },
+  { .byte_offset = 32, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 38, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_load_col_ndb_u64_nb — 42 bytes, 5 holes */
+static const uint8_t bytes_op_load_col_ndb_u64_nb[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00, 0x4c,
+  0x89, 0xe7, 0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xff, 0xd0, 0x85, 0xc0, 0x74, 0x06, 0x58, 0xe9, 0x00, 0x00, 0x00, 0x00,
+  0x58, 0xe9, 0x00, 0x00, 0x00, 0x00,
+};
+static const Hole holes_op_load_col_ndb_u64_nb[] = {
+  { .byte_offset = 2, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 7, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 16, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_load_col_u64_nb" },
+  { .byte_offset = 32, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 38, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_add_u64_checked — 39 bytes, 5 holes */
+static const uint8_t bytes_op_add_u64_checked[] = {
+  0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x04, 0xc4, 0xb9, 0x00, 0x00,
+  0x00, 0x00, 0x49, 0x03, 0x04, 0xcc, 0x73, 0x05, 0xe9, 0x00, 0x00, 0x00,
+  0x00, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x89, 0x04, 0xcc, 0xe9, 0x00,
+  0x00, 0x00, 0x00,
+};
+static const Hole holes_op_add_u64_checked[] = {
+  { .byte_offset = 1, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 10, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 21, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 26, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 35, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_minus_u64_checked — 39 bytes, 5 holes */
+static const uint8_t bytes_op_minus_u64_checked[] = {
+  0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x04, 0xc4, 0xb9, 0x00, 0x00,
+  0x00, 0x00, 0x49, 0x2b, 0x04, 0xcc, 0x73, 0x05, 0xe9, 0x00, 0x00, 0x00,
+  0x00, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x89, 0x04, 0xcc, 0xe9, 0x00,
+  0x00, 0x00, 0x00,
+};
+static const Hole holes_op_minus_u64_checked[] = {
+  { .byte_offset = 1, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 10, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 21, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 26, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 35, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_mul_u64_checked — 39 bytes, 5 holes */
+static const uint8_t bytes_op_mul_u64_checked[] = {
+  0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x04, 0xc4, 0xb9, 0x00, 0x00,
+  0x00, 0x00, 0x49, 0xf7, 0x24, 0xcc, 0x71, 0x05, 0xe9, 0x00, 0x00, 0x00,
+  0x00, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x89, 0x04, 0xcc, 0xe9, 0x00,
+  0x00, 0x00, 0x00,
+};
+static const Hole holes_op_mul_u64_checked[] = {
+  { .byte_offset = 1, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 10, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 21, .kind = HK_OVERFLOW_TAKE, .width = 4 },
+  { .byte_offset = 26, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 35, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -736,6 +811,11 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_MAX_U64] = STENCIL_(op_max_u64),
   [OP_LOAD_COL_NDB_U64] = STENCIL_(op_load_col_ndb_u64),
   [OP_LOAD_COL_NDB_NB] = STENCIL_(op_load_col_ndb_nb),
+  [OP_LOAD_COL_NDB_F64_NB] = STENCIL_(op_load_col_ndb_f64_nb),
+  [OP_LOAD_COL_NDB_U64_NB] = STENCIL_(op_load_col_ndb_u64_nb),
+  [OP_ADD_U64_CHECKED] = STENCIL_(op_add_u64_checked),
+  [OP_MINUS_U64_CHECKED] = STENCIL_(op_minus_u64_checked),
+  [OP_MUL_U64_CHECKED] = STENCIL_(op_mul_u64_checked),
 };
 
 #endif /* NDB_JIT_STENCILS_X86_64_H */

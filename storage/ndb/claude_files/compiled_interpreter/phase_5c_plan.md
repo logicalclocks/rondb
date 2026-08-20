@@ -1,7 +1,49 @@
 # Phase 5C — DOUBLE family + unsigned BIGINT (and why the lattice shrank)
 
-**Status: PHASE COMPLETE — 5C-1, 5C-2 and 5C-3 all DONE & VERIFIED
-(2026-08-20; full ndb_push_agg sweeps green post-regen).**
+**Status: PHASE COMPLETE — 5C-1/2/3/4 all DONE & VERIFIED
+(2026-08-20; full ndb_push_agg sweeps green post-regen; 5C-4 verified
+with bridge_tests 85/85, coldcall_tests 29/29, unsigned canary Q5 as
+4060 must-JIT, and the census's unsigned_arith flipped to 0).**
+
+## 5C-4 — unsigned checked arithmetic (census-driven, 2026-08-20)
+
+The fallback census showed `SUM(u + 1)` is pushed by the SQL planner
+and rejected by the 5C-3 tracker fence (TYPE_MISMATCH at
+kOpPlusBigint) — the planner emits integer literals as BIGINT
+(`LoadInt64`), so the demanded shape is MIXED unsigned ⊕ constant.
+
+Kernel audits (`RegPlus/Minus/MulBigint`): the uniform-unsigned paths
+AND the mixed unsigned ⊕ non-negative-signed paths all reduce exactly
+to u64 arithmetic — add with carry ⇒ error (TestIfSumOverflowsUint64),
+subtract with borrow ⇒ error, 32×32-decomposed multiply with any u64
+overflow ⇒ error. Mixed with a NEGATIVE constant or a signed VARIABLE
+takes sign-dependent kernel logic with no clean lowering — those keep
+the whole-program fallback.
+
+Implementation: 3 stencils (`op_add/minus/mul_u64_checked` —
+u64 `__builtin_*_overflow` ⇒ the per-family OVF targets; ADD_*/
+MINUS_*/MUL_* holes and OVF symbols reused like op_sum_u64_checked
+reuses SUM_*; `_checked` names get KEEP_ALL automatically). The
+tracker grows **BR_REG_NNC** (non-negative BIGINT constant —
+compatible with BOTH integer tracks; produced by kOpLoadConst BIGINT
+value >= 0, propagated by Mov). The Bigint-arith bridge case becomes
+a classifier: either operand proven u64 ⇒ UNSIGNED lowering with both
+operands required u64-compatible (U64/NNC), dst becomes u64 (feeding
+SUM_U64 etc. downstream); otherwise the signed lowering with pre-5C-4
+rules (NNC counts as i64-compatible, so NNC-only arithmetic stays
+signed, matching the interpreter's signed const registers). The
+nb-conversion pass classification lists grow the three kinds.
+
+Tests: bridge 85 (T57a census shape SUM(u+const) with the u64 NB load
+feeding ADD_U64→SUM_U64; T57b const-first; T57c negative-const
+reject; T57d NNC-only stays signed; T53a mixed-variable reject holds
+unchanged), coldcall 29 (T26 battery past the signed boundary, T27
+borrow ⇒ overflow-exit, T28 mul overflow). Unsigned canary Q5 FLIPS
+from stays-on-interpreter to 4060 must-JIT; the census's
+unsigned_arith expectation flips 1 → 0. Regen done. One
+verification finding: literal `*/` sequences inside C comments
+("ADD_*/MINUS_*/...") terminated the comments early — reworded; the
+matching clangd diagnostic had been wrongly dismissed as noise.
 
 ## Headline finding: the full type-state lattice is NOT needed
 

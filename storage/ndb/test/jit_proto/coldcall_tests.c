@@ -1465,6 +1465,118 @@ static void test_nb_u64_load_null_skip(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* T26: unsigned checked arithmetic battery — values past the SIGNED
+ * boundary flow without spurious overflow: r2 = 2^62 + 3,
+ * r3 = r2 - 3 = 2^62, r4 = r3 * 3 = 3*2^62 (> 2^63). */
+static void test_u64_arith_battery(void) {
+  const char *name = "T26 u64_arith_battery";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 5;
+  p.ops[0] = (Op){ .kind = OP_ADD_U64_CHECKED,   .a = 2, .b = 0, .c = 1,
+                   .d = 4 };
+  p.ops[1] = (Op){ .kind = OP_MINUS_U64_CHECKED, .a = 3, .b = 2, .c = 1,
+                   .d = 4 };
+  p.ops[2] = (Op){ .kind = OP_MUL_U64_CHECKED,   .a = 4, .b = 3, .c = 1,
+                   .d = 4 };
+  p.ops[3] = (Op){ .kind = OP_EXIT };
+  p.ops[4] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — stencils "
+              "regenerated?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[0] = (int64_t)(UINT64_C(1) << 62);
+  s.regs_i64[1] = 3;
+  jit1_entry(jp)(&s);
+
+  if ((uint64_t)s.regs_i64[2] != (UINT64_C(1) << 62) + 3 ||
+      (uint64_t)s.regs_i64[3] != (UINT64_C(1) << 62) ||
+      (uint64_t)s.regs_i64[4] != UINT64_C(3) << 62 ||
+      s.row_overflowed != 0) {
+    mark_fail(name, "r2=0x%" PRIx64 " r3=0x%" PRIx64 " r4=0x%" PRIx64
+              " ovf=%u", (uint64_t)s.regs_i64[2],
+              (uint64_t)s.regs_i64[3], (uint64_t)s.regs_i64[4],
+              s.row_overflowed);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T27: unsigned subtraction borrow (1 - 2) → overflow exit; the
+ * destination is not written. */
+static void test_u64_minus_borrow(void) {
+  const char *name = "T27 u64_minus_borrow";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_MINUS_U64_CHECKED, .a = 2, .b = 0, .c = 1,
+                   .d = 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+  p.ops[2] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[0] = 1;
+  s.regs_i64[1] = 2;
+  jit1_entry(jp)(&s);
+  if (s.row_overflowed != 1 || s.regs_i64[2] != 0) {
+    mark_fail(name, "ovf=%u r2=0x%" PRIx64 ", want 1/0",
+              s.row_overflowed, (uint64_t)s.regs_i64[2]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T28: unsigned multiplication overflow (2^32 * 2^32) → overflow exit. */
+static void test_u64_mul_overflow(void) {
+  const char *name = "T28 u64_mul_overflow";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_MUL_U64_CHECKED, .a = 2, .b = 0, .c = 1,
+                   .d = 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+  p.ops[2] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[0] = (int64_t)(UINT64_C(1) << 32);
+  s.regs_i64[1] = (int64_t)(UINT64_C(1) << 32);
+  jit1_entry(jp)(&s);
+  if (s.row_overflowed != 1) {
+    mark_fail(name, "row_overflowed=%u, want 1", s.row_overflowed);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -1514,6 +1626,9 @@ int main(void) {
   test_nb_load_null_skips_accumulator();
   test_nb_f64_load_null_skip();
   test_nb_u64_load_null_skip();
+  test_u64_arith_battery();
+  test_u64_minus_borrow();
+  test_u64_mul_overflow();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

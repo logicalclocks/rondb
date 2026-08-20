@@ -1164,6 +1164,45 @@ STENCIL op_max_u64(JitState *s) {
   TAIL_NEXT(s);
 }
 
+/* Phase 5C-4 — unsigned checked arithmetic. u64 add/sub/mul with
+ * unsigned overflow/borrow checks, matching the kernels' uniform-
+ * unsigned (and unsigned x nonneg-const) paths: any u64 overflow or
+ * borrow ⇒ ZAGG_MATH_OVERFLOW via the per-family overflow targets.
+ * Reuses the ADD / MINUS / MUL fold-hole families and OVF symbols
+ * the same way op_sum_u64_checked reuses the SUM ones. */
+STENCIL op_add_u64_checked(JitState *s) {
+  uint64_t result;
+  if (__builtin_add_overflow((uint64_t)HOLE_LOAD_REG(ADD_A, s),
+                             (uint64_t)HOLE_LOAD_REG(ADD_B, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_ADD_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(ADD_DST, s, (int64_t)result);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_minus_u64_checked(JitState *s) {
+  uint64_t result;
+  if (__builtin_sub_overflow((uint64_t)HOLE_LOAD_REG(MINUS_A, s),
+                             (uint64_t)HOLE_LOAD_REG(MINUS_B, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_MINUS_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(MINUS_DST, s, (int64_t)result);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_mul_u64_checked(JitState *s) {
+  uint64_t result;
+  if (__builtin_mul_overflow((uint64_t)HOLE_LOAD_REG(MUL_A, s),
+                             (uint64_t)HOLE_LOAD_REG(MUL_B, s),
+                             &result)) {
+    [[clang::musttail]] return HOLE_MUL_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(MUL_DST, s, (int64_t)result);
+  TAIL_NEXT(s);
+}
+
 /* op_load_col_ndb_u64 — cold-call load for declared BIGUNSIGNED
  * columns; same shape as op_load_col_ndb. The helper stores the u64
  * bits into regs_i64[dst]; NULL or an unexpected declared type takes
@@ -1292,4 +1331,7 @@ const StencilTailFn g_stencil_anchor[] = {
     op_load_col_ndb_nb,
     op_load_col_ndb_f64_nb,
     op_load_col_ndb_u64_nb,
+    op_add_u64_checked,
+    op_minus_u64_checked,
+    op_mul_u64_checked,
 };

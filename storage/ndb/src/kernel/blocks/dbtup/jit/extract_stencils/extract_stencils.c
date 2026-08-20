@@ -1026,6 +1026,9 @@ static const OpkindMap kOpkindMap[] = {
   { "op_load_col_ndb_nb",       "OP_LOAD_COL_NDB_NB"       },
   { "op_load_col_ndb_f64_nb",   "OP_LOAD_COL_NDB_F64_NB"   },
   { "op_load_col_ndb_u64_nb",   "OP_LOAD_COL_NDB_U64_NB"   },
+  { "op_add_u64_checked",       "OP_ADD_U64_CHECKED"       },
+  { "op_minus_u64_checked",     "OP_MINUS_U64_CHECKED"     },
+  { "op_mul_u64_checked",       "OP_MUL_U64_CHECKED"       },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

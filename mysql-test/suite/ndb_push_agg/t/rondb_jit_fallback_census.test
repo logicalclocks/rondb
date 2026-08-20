@@ -117,7 +117,8 @@ SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT MIN(dt), MAX(dt) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS date_min_fell_back;
 
---echo # unsigned_arith: arithmetic over BIGINT UNSIGNED (5C-3 deferral).
+--echo # unsigned_arith: arithmetic over BIGINT UNSIGNED (compiles since
+--echo # Phase 5C-4 — u64 checked arithmetic).
 --sleep 11
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(u + 1) FROM t1;

@@ -301,6 +301,17 @@ static const struct {
   { "MAGIC_MM_SLOT_FOLD",      "op_max_u64",           2 },  /* L+S */
   { "MAGIC_MM_SRC_FOLD",       "op_max_u64",           1 },
   { "MAGIC_MM_RESULT_FOLD",    "op_max_u64",           4 },  /* L+3×S */
+  /* Phase 5C-4 unsigned checked arithmetic: reuses the ADD / MINUS /
+   * MUL hole families like the signed checked stencils. */
+  { "MAGIC_ADD_DST_FOLD",      "op_add_u64_checked",   1 },
+  { "MAGIC_ADD_A_FOLD",        "op_add_u64_checked",   1 },
+  { "MAGIC_ADD_B_FOLD",        "op_add_u64_checked",   1 },
+  { "MAGIC_MINUS_DST_FOLD",    "op_minus_u64_checked", 1 },
+  { "MAGIC_MINUS_A_FOLD",      "op_minus_u64_checked", 1 },
+  { "MAGIC_MINUS_B_FOLD",      "op_minus_u64_checked", 1 },
+  { "MAGIC_MUL_DST_FOLD",      "op_mul_u64_checked",   1 },
+  { "MAGIC_MUL_A_FOLD",        "op_mul_u64_checked",   1 },
+  { "MAGIC_MUL_B_FOLD",        "op_mul_u64_checked",   1 },
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);

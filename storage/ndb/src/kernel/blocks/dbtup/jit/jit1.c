@@ -197,6 +197,11 @@ static inline int op_has_overflow_target(uint8_t kind) {
     case OP_SUM_F64:
     /* Phase 5C-3: u64 SUM carry check → HOLE_SUM_OVF_TGT via op->d. */
     case OP_SUM_U64_CHECKED:
+    /* Phase 5C-4: unsigned checked arithmetic — per-family OVF
+     * targets, patched from op->d. */
+    case OP_ADD_U64_CHECKED:
+    case OP_MINUS_U64_CHECKED:
+    case OP_MUL_U64_CHECKED:
       return 1;
     default:
       return 0;

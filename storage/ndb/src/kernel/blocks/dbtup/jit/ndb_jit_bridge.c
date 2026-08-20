@@ -325,6 +325,9 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_LOAD_COL_NDB_NB:      return "load_col_ndb_nb";
     case OP_LOAD_COL_NDB_F64_NB:  return "load_col_ndb_f64_nb";
     case OP_LOAD_COL_NDB_U64_NB:  return "load_col_ndb_u64_nb";
+    case OP_ADD_U64_CHECKED:      return "add_u64_checked";
+    case OP_MINUS_U64_CHECKED:    return "minus_u64_checked";
+    case OP_MUL_U64_CHECKED:      return "mul_u64_checked";
     default:                      return "jit_op?";
   }
 }
@@ -1345,6 +1348,9 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
     case OP_MINUS_F64:
     case OP_MUL_F64:
     case OP_DIV_F64:
+    case OP_ADD_U64_CHECKED:
+    case OP_MINUS_U64_CHECKED:
+    case OP_MUL_U64_CHECKED:
       return op->b == reg || op->c == reg;
     /* Accumulators read their source register (op->b). COUNT is
      * listed deliberately: its stencil ignores the register, but the
@@ -1401,6 +1407,9 @@ static int nb_op_written_reg(const Op *op) {
     case OP_MINUS_F64:
     case OP_MUL_F64:
     case OP_DIV_F64:
+    case OP_ADD_U64_CHECKED:
+    case OP_MINUS_U64_CHECKED:
+    case OP_MUL_U64_CHECKED:
       return op->a;
     default:
       return -1;
@@ -1557,17 +1566,17 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
    *   itself skips embedded blocks, and the planner re-loads outer
    *   registers after them — same convention). */
   enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2,
-         BR_REG_U64 = 3 };
+         BR_REG_U64 = 3,
+         /* Phase 5C-4: a NON-NEGATIVE BIGINT constant — compatible
+          * with BOTH integer tracks (its bits are identical as i64
+          * and u64, and the kernels' mixed unsigned/nonneg-signed
+          * arithmetic reduces exactly to u64 arithmetic). Produced
+          * only by kOpLoadConst type BIGINT with value >= 0; the SQL
+          * planner emits integer literals that way (LoadInt64), so
+          * SUM(u + 1) is the mixed shape this exists for. */
+         BR_REG_NNC = 4 };
   uint8_t reg_type[BC_MAX_REGS];
   memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
-#define BR_REJECT_IF_F64_OR_U64(r)                                 \
-  do {                                                             \
-    if (reg_type[(r)] == BR_REG_F64 ||                             \
-        reg_type[(r)] == BR_REG_U64) {                             \
-      set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);    \
-      return JIT_BRIDGE_TYPE_MISMATCH;                             \
-    }                                                              \
-  } while (0)
 #define BR_REQUIRE_F64(r)                                          \
   do {                                                             \
     if (reg_type[(r)] != BR_REG_F64) {                             \
@@ -1670,6 +1679,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         reg_type[reg_index] =
             (type == BR_NDB_TYPE_DOUBLE)      ? BR_REG_F64 :
             (type == BR_NDB_TYPE_BIGUNSIGNED) ? BR_REG_U64 :
+            (value >= 0)                      ? BR_REG_NNC :
                                                 BR_REG_I64;
         pos += 3;
         break;
@@ -1762,13 +1772,45 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        BR_REJECT_IF_F64_OR_U64(dst);
-        BR_REJECT_IF_F64_OR_U64(src);
+        /* Phase 5C-4 signed/unsigned classifier. F64 operands always
+         * mismatch. If EITHER operand is proven u64, the op lowers
+         * UNSIGNED — and then BOTH operands must be u64-compatible
+         * (U64 or a non-negative BIGINT constant; the kernels' mixed
+         * unsigned/nonneg-signed paths reduce exactly to u64
+         * arithmetic). A u64 mixed with a signed VARIABLE keeps the
+         * whole-program fallback (the kernel's sign-dependent mixed
+         * logic has no lowering). Otherwise the op lowers SIGNED with
+         * the pre-5C-4 rules (I64/NNC/UNKNOWN operands). */
+        if (reg_type[dst] == BR_REG_F64 || reg_type[src] == BR_REG_F64) {
+          set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+          return JIT_BRIDGE_TYPE_MISMATCH;
+        }
+        int arith_unsigned =
+            (reg_type[dst] == BR_REG_U64 || reg_type[src] == BR_REG_U64);
+        if (arith_unsigned) {
+          int dst_ok = (reg_type[dst] == BR_REG_U64 ||
+                        reg_type[dst] == BR_REG_NNC);
+          int src_ok = (reg_type[src] == BR_REG_U64 ||
+                        reg_type[src] == BR_REG_NNC);
+          if (!dst_ok || !src_ok) {
+            set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+            return JIT_BRIDGE_TYPE_MISMATCH;
+          }
+        }
         uint8_t our_kind;
         switch (op) {
-          case BR_kOpPlusBigint:  our_kind = OP_ADD_INT_INT_CHECKED;   break;
-          case BR_kOpMinusBigint: our_kind = OP_MINUS_INT_INT_CHECKED; break;
-          default:                our_kind = OP_MUL_INT_INT_CHECKED;   break;
+          case BR_kOpPlusBigint:
+            our_kind = arith_unsigned ? OP_ADD_U64_CHECKED
+                                      : OP_ADD_INT_INT_CHECKED;
+            break;
+          case BR_kOpMinusBigint:
+            our_kind = arith_unsigned ? OP_MINUS_U64_CHECKED
+                                      : OP_MINUS_INT_INT_CHECKED;
+            break;
+          default:
+            our_kind = arith_unsigned ? OP_MUL_U64_CHECKED
+                                      : OP_MUL_INT_INT_CHECKED;
+            break;
         }
         if (!emit_op(out_prog, our_kind, dst, dst, src, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
@@ -1776,7 +1818,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         checked_arith_ops[n_checked_arith_ops++] =
             (uint16_t)(out_prog->n_ops - 1);
-        reg_type[dst] = BR_REG_I64;
+        reg_type[dst] = arith_unsigned ? BR_REG_U64 : BR_REG_I64;
         pos += 1;
         break;
       }
@@ -2104,7 +2146,6 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   nb_convert_loads(out_prog, op_from_emb);
 
   return JIT_BRIDGE_OK;
-#undef BR_REJECT_IF_F64_OR_U64
 #undef BR_REQUIRE_F64
 #undef BR_CLAIM_ACC_FAMILY
 }

@@ -249,7 +249,19 @@ typedef enum {
    * (FLOAT promotes to double; strict declared-type contracts). */
   OP_LOAD_COL_NDB_F64_NB   = 50,
   OP_LOAD_COL_NDB_U64_NB   = 51,
-  OP_KIND_MAX           = OP_LOAD_COL_NDB_U64_NB
+  /* Phase 5C-4 (census-driven): unsigned checked arithmetic. Same
+   * operand layout as the signed checked family (a=dst, b=lhs,
+   * c=rhs, d=overflow-exit pc), but u64 add/sub/mul with unsigned
+   * overflow/borrow checks. Admitted by the bridge only for
+   * operands proven u64 or NON-NEGATIVE BIGINT constants — the
+   * kernel's mixed unsigned/nonneg-signed paths reduce exactly to
+   * u64 arithmetic (RegPlus/Minus/MulBigint audits in
+   * phase_5c_plan.md §5C-4); genuinely mixed unsigned/signed-
+   * variable shapes keep the whole-program fallback. */
+  OP_ADD_U64_CHECKED       = 52,
+  OP_MINUS_U64_CHECKED     = 53,
+  OP_MUL_U64_CHECKED       = 54,
+  OP_KIND_MAX           = OP_MUL_U64_CHECKED
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

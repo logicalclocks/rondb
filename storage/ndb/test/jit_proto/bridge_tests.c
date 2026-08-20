@@ -2128,6 +2128,91 @@ static void test_nb_u64_simple(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5C-4 — unsigned checked arithmetic.                           */
+/* ------------------------------------------------------------------ */
+
+/* T57a: the census shape — SUM(u + 1). The BIGINT constant 1 is a
+ * NON-NEGATIVE constant (NNC), u64-compatible, so the addition lowers
+ * UNSIGNED and the result register carries u64 into an unsigned SUM. */
+static void test_u64_arith_mixed_const(void) {
+  const char *name = "T57a u64_arith_mixed_const";
+  uint32_t prog[6];
+  prog[0] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0);
+  prog[1] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[2] = 1u;          /* value 1, low word */
+  prog[3] = 0u;          /* high word */
+  prog[4] = enc_2reg(kOpPlusBigint, 0, 1);
+  prog[5] = enc_sum(/*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]U64_NB(c=4) [1]CONST [2]ADD_U64 [3]SUM_U64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64_NB)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 5)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T57b: const-first form (1 + u) — the NNC destination becomes u64. */
+static void test_u64_arith_const_first(void) {
+  const char *name = "T57b u64_arith_const_first";
+  uint32_t prog[6];
+  prog[0] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0);
+  prog[1] = 2u;
+  prog[2] = 0u;
+  prog[3] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/1, /*col=*/0);
+  prog[4] = enc_2reg(kOpPlusBigint, 0, 1);
+  prog[5] = enc_sum(/*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]CONST [1]U64_NB(c=4) [2]ADD_U64 [3]SUM_U64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T57c: a NEGATIVE constant mixed with u64 keeps the fallback — the
+ * kernel's sign-dependent mixed logic has no lowering. */
+static void test_u64_arith_negative_const_reject(void) {
+  uint32_t prog[5];
+  prog[0] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0);
+  prog[1] = (uint32_t)(int32_t)-5;   /* low word of -5 */
+  prog[2] = 0xFFFFFFFFu;             /* high word (sign extension) */
+  prog[3] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/1, /*col=*/0);
+  prog[4] = enc_2reg(kOpPlusBigint, 1, 0);
+  assert_rejected("T57c u64_arith_negative_const_reject", prog, 5,
+                  JIT_BRIDGE_TYPE_MISMATCH, 4, kOpPlusBigint);
+}
+
+/* T57d: NNC-only arithmetic stays SIGNED (no u64 operand). */
+static void test_nnc_arith_stays_signed(void) {
+  const char *name = "T57d nnc_arith_stays_signed";
+  uint32_t prog[8];
+  prog[0] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0);
+  prog[1] = 7u;
+  prog[2] = 0u;
+  prog[3] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[4] = 8u;
+  prog[5] = 0u;
+  prog[6] = enc_2reg(kOpPlusBigint, 0, 1);
+  prog[7] = enc_sum(/*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]CONST [1]CONST [2]ADD_INT_CHECKED [3]SUM_BIGINT_CHECKED
+   * [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_INT_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2213,6 +2298,10 @@ int main(void) {
   test_nb_reload_same_register();
   test_nb_f64_simple();
   test_nb_u64_simple();
+  test_u64_arith_mixed_const();
+  test_u64_arith_const_first();
+  test_u64_arith_negative_const_reject();
+  test_nnc_arith_stays_signed();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
