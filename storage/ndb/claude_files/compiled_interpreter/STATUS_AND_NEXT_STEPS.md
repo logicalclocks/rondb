@@ -374,8 +374,11 @@ siblings) DONE & VERIFIED (2026-08-20; regen clean, bridge 81/81 +
 coldcall 26/26, double canary Q9 + unsigned canary Q6 green under
 4060, full sweep to completion). 5D-3 (embedded READ_ATTR) deferred
 until fallback data — otherwise Phase 5D is complete. Remaining
-Phase 5 sub-phases: 5E (int div/mod — would retire the Test 27 kOpMod
-canary), 5F (string MIN/MAX).** Key planning
+Phase 5 sub-phases RE-RANKED by the fallback census (2026-08-20, see
+`rondb_jit_fallback_census` + roadmap): 5C-4 unsigned arithmetic
+(census-surfaced, small) → 5F string MIN/MAX (confirmed demand) →
+DECIMAL load audit → 5E int div/mod (ZERO SQL-side demand — planner
+never pushes those shapes; API/RonSQL-only).** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
 the load's cold call (helper returns "was null", the load stencil
 becomes a cold-call branch in op_branch_attr_eq_null's proven shape)

@@ -19,6 +19,32 @@ rate-limited fallback log (they name the rejecting site + opcode) from
 Mikael's benchmarks and RonSQL workloads — measured demand beats the
 a-priori order.
 
+**MEASURED (2026-08-20, the `rondb_jit_fallback_census` MTR test —
+its recorded result file is the living coverage tracker):**
+
+- All controls compile: Phase 4 SUM, 5A CASE, 5C-2 double division,
+  5C-3 unsigned MIN/MAX, 5D nullable SUM.
+- **5E has ZERO SQL-side demand**: `SUM(a DIV b)`, `SUM(a % b)` and
+  integer `SUM(a / b)` never reach the bridge — the SQL planner does
+  not push them (integer '/' is DECIMAL-typed in MySQL; DIV/% have no
+  emit path). 5E's opcodes arrive only from the NDB API / RonSQL.
+  Demoted below 5F; the Test 27 kOpMod fallback canary stays valid.
+- **5F confirmed real**: `MIN/MAX(VARCHAR)` is pushed and falls back
+  (reason=2 NON_BIGINT, detail=7 kOpLoadCol).
+- **NEW census-surfaced items:** (1) unsigned checked arithmetic —
+  `SUM(u + 1)` is pushed and rejected by the 5C-3 tracker fence
+  (reason=8 TYPE_MISMATCH, detail=20 kOpPlusBigint); ~3 stencils,
+  best effort-to-value on the board → slice 5C-4. (2) a DECIMAL load
+  path — `SUM(DECIMAL)` is pushed and rejected at the load; the
+  optimizer maps DECIMAL scale=0 to the BIGINT track and scale>0 to
+  DOUBLE, so a cold-call DECIMAL load helper may unlock it with no
+  new accumulator stencils (audit queued).
+- `MIN/MAX(DATE)` is NOT pushed by the SQL planner (RonSQL-only per
+  the D17 notes) — no JIT work applicable.
+- Minor observation: rejected programs re-attempt compilation per
+  fragment per execution (8 attempts/query here) — no negative
+  caching in the progcache; revisit if programs_fallback gets hot.
+
 ## Where coverage stands (2026-08-19)
 
 Admitted today — outer: `kOpLoadCol` (non-null BIGINT), `kOpLoadConst`,
