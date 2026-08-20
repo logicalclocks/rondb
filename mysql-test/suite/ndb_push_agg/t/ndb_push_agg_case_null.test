@@ -1,0 +1,137 @@
+--source include/have_ndb.inc
+
+# Pushed CASE aggregation over NULLABLE condition columns.
+#
+# SQL semantics: a WHEN condition that evaluates to UNKNOWN (any
+# comparison with NULL) simply does not match — evaluation falls
+# through to the next WHEN / ELSE.  Two pre-existing bugs broke this
+# for pushed CASE aggregates:
+#
+# 1. Integer conditions: the planner emitted READ_ATTR +
+#    BRANCH_XX_REG_REG with no null guard.  A NULL column value made
+#    the interpreter's register compare raise ZREGISTER_INIT_ERROR —
+#    surfacing as a hard query error (NDB 1872) instead of a result.
+#    Fixed by emitting a BRANCH_REG_EQ_NULL guard after READ_ATTR for
+#    nullable columns (jump past the compare = condition fails).
+#
+# 2. String conditions: BranchCol used NULL_CMP_EQUAL, which orders
+#    NULL lowest and COMPARES it — so `c <> 'x'` with a NULL value
+#    took the branch and counted NULL rows as matching.  Fixed by
+#    IF_NULL_CONTINUE (never take the branch on NULL); identical for
+#    non-NULL values.
+#
+# Every query runs with pushdown OFF (baseline) then ON — the outputs
+# must be identical.
+
+--echo ############################################################
+--echo # Pushed CASE aggregation with NULL condition values
+--echo ############################################################
+
+CREATE TABLE tn (
+  pk INT PRIMARY KEY,
+  grp INT NOT NULL,
+  val INT,
+  c CHAR(4),
+  amt INT NOT NULL
+) ENGINE=NDB;
+
+INSERT INTO tn VALUES
+  (1, 1, 10,   'aa', 100),
+  (2, 1, NULL, 'bb', 200),
+  (3, 1, 30,   NULL, 300),
+  (4, 2, NULL, NULL, 400),
+  (5, 2, 50,   'aa', 500),
+  (6, 3, NULL, NULL, 600),
+  (7, 3, NULL, NULL, 700);
+
+--echo # Baseline: pushdown OFF (server-side aggregation).
+--echo # Q1: searched CASE, all 6 integer operators - NULL rows take ELSE.
+--echo # Q2: multi-WHEN - NULL falls through BOTH conditions to ELSE.
+--echo # Q3: string EQ and NE - NULL rows count for NEITHER (ne_aa = 1,
+--echo #     not 5, is the NULL_CMP_EQUAL regression trap).
+--echo # Q4: simple CASE, nullable search column - NULL matches no WHEN.
+--echo # Q5: mixed integer + string conditions in one searched CASE.
+--echo # Q6: MIN/MAX over CASE with a nullable condition column.
+--echo # Q7: control - NOT NULL condition column (unchanged wire).
+--echo # Q8: negative constant (LOAD_CONST64 path) with the null guard.
+--echo # Q9: plain aggregate + CASE aggregate in one program.
+SET ndb_pushdown_aggregate=OFF;
+SELECT
+  SUM(CASE WHEN val =  30 THEN 1 ELSE 0 END) AS eq_30,
+  SUM(CASE WHEN val != 30 THEN 1 ELSE 0 END) AS ne_30,
+  SUM(CASE WHEN val <  30 THEN 1 ELSE 0 END) AS lt_30,
+  SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS le_30,
+  SUM(CASE WHEN val >  30 THEN 1 ELSE 0 END) AS gt_30,
+  SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tn;
+--sorted_result
+SELECT grp,
+  SUM(CASE WHEN val <= 30 THEN amt WHEN val <= 50 THEN 1 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+SELECT
+  SUM(CASE WHEN c =  'aa' THEN 1 ELSE 0 END) AS eq_aa,
+  SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa
+FROM tn;
+--sorted_result
+SELECT grp,
+  SUM(CASE val WHEN 10 THEN 1 WHEN 50 THEN 2 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+SELECT
+  SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
+FROM tn;
+SELECT
+  MIN(CASE WHEN val >= 30 THEN val ELSE 999 END) AS mn,
+  MAX(CASE WHEN val >= 30 THEN val ELSE 0 END) AS mx
+FROM tn;
+SELECT
+  SUM(CASE WHEN grp = 1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+SELECT
+  SUM(CASE WHEN val > -1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+SELECT
+  SUM(amt) AS total,
+  SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS s
+FROM tn;
+
+--echo # Pushdown ON - every result must match the baseline above.
+SET ndb_pushdown_aggregate=ON;
+SELECT
+  SUM(CASE WHEN val =  30 THEN 1 ELSE 0 END) AS eq_30,
+  SUM(CASE WHEN val != 30 THEN 1 ELSE 0 END) AS ne_30,
+  SUM(CASE WHEN val <  30 THEN 1 ELSE 0 END) AS lt_30,
+  SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS le_30,
+  SUM(CASE WHEN val >  30 THEN 1 ELSE 0 END) AS gt_30,
+  SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tn;
+--sorted_result
+SELECT grp,
+  SUM(CASE WHEN val <= 30 THEN amt WHEN val <= 50 THEN 1 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+SELECT
+  SUM(CASE WHEN c =  'aa' THEN 1 ELSE 0 END) AS eq_aa,
+  SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa
+FROM tn;
+--sorted_result
+SELECT grp,
+  SUM(CASE val WHEN 10 THEN 1 WHEN 50 THEN 2 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+SELECT
+  SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
+FROM tn;
+SELECT
+  MIN(CASE WHEN val >= 30 THEN val ELSE 999 END) AS mn,
+  MAX(CASE WHEN val >= 30 THEN val ELSE 0 END) AS mx
+FROM tn;
+SELECT
+  SUM(CASE WHEN grp = 1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+SELECT
+  SUM(CASE WHEN val > -1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+SELECT
+  SUM(amt) AS total,
+  SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS s
+FROM tn;
+
+DROP TABLE tn;
