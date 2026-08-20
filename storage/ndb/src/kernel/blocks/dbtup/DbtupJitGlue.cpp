@@ -364,6 +364,108 @@ ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
 #endif
 }
 
+/* ndb_jit_h_load_col_nb — Phase 5D-1 NULL-BRANCHING load
+ * (OP_LOAD_COL_NDB_NB). Decodes exactly like ndb_jit_h_load_col, but
+ * a NULL column value RETURNS 1 — the stencil then takes its branch,
+ * skipping the loaded register's whole consumer chain (the
+ * interpreter kernels' null-skip), so NULL rows stay on the JIT
+ * instead of the per-row fallback. Read errors and declared types
+ * the signed-i64 model cannot represent keep the row_fallback
+ * defense (return 0 — the blob continues, the glue discards the
+ * row). */
+extern "C" int
+ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_nb: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  Uint32 read_buf[4];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  if (header->isNULL()) {
+    /* The whole point: take the null branch, stay on the JIT. */
+    s->regs_i64[dst_reg] = 0;
+#ifdef ERROR_INSERT
+    if (ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=load_col_nb col=%u dst=r%u "
+          "NULL -> branch",
+          ctx->trace_row_no, col_id, dst_reg);
+    }
+#endif
+    return 1;
+  }
+
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
+  Int64 value;
+  switch (type_id) {
+    case NDB_TYPE_TINYINT:
+      value = (Int64)*reinterpret_cast<const Int8 *>(data);
+      break;
+    case NDB_TYPE_TINYUNSIGNED:
+      value = (Int64)(Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLINT:
+      value = (Int64)(Int16)sint2korr(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      value = (Int64)(Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMINT:
+      value = (Int64)sint3korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      value = (Int64)(Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_INT:
+      value = (Int64)sint4korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      value = (Int64)(Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGINT:
+      value = (Int64)sint8korr(data);
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return 0;
+  }
+  s->regs_i64[dst_reg] = value;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col_nb col=%u dst=r%u "
+        "value=%lld",
+        ctx->trace_row_no, col_id, dst_reg,
+        (long long)s->regs_i64[dst_reg]);
+  }
+#endif
+  return 0;
+}
+
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
  * BIGUNSIGNED columns (OP_LOAD_COL_NDB_U64). The u64 value's bits are
  * stored into regs_i64[dst_reg]; the u64 consumer stencils
@@ -620,6 +722,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64));
   jit1_register_helper("ndb_jit_h_load_col_u64",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64));
+  jit1_register_helper("ndb_jit_h_load_col_nb",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_nb));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
   jit1_register_helper("ndb_jit_h_branch_attr_op_arg",

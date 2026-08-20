@@ -1180,6 +1180,32 @@ STENCIL op_load_col_ndb_u64(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5D-1 — op_load_col_ndb_nb: NULL-BRANCHING load.              */
+/*                                                                    */
+/* A cold-call BRANCH in op_branch_attr_eq_null's shape: the helper   */
+/* loads like ndb_jit_h_load_col but RETURNS "value was NULL", and    */
+/* the taken edge (HOLE_LCNB_TGT, patched from op->c) skips the       */
+/* loaded register's whole consumer chain — the bridge computes the   */
+/* target with a taint walk. This reproduces the interpreter          */
+/* kernels' null-skip exactly, keeping NULL rows on the JIT instead   */
+/* of the per-row interpreter fallback. Read errors / declared-type   */
+/* mismatches still take the row_fallback defense inside the helper   */
+/* (return 0, blob continues, glue discards the row).                 */
+/* ------------------------------------------------------------------ */
+DECLARE_NARROW_HOLE(LCNB_COL);
+DECLARE_NARROW_HOLE(LCNB_DST);
+extern int ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id,
+                                 uint32_t dst_reg);
+extern __attribute__((preserve_none)) void HOLE_LCNB_TGT(JitState *);
+STENCIL op_load_col_ndb_nb(JitState *s) {
+  if (ndb_jit_h_load_col_nb(s, (uint32_t)HOLE_NARROW(LCNB_COL),
+                            (uint32_t)HOLE_NARROW(LCNB_DST))) {
+    [[clang::musttail]] return HOLE_LCNB_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -1234,4 +1260,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_min_u64,
     op_max_u64,
     op_load_col_ndb_u64,
+    op_load_col_ndb_nb,
 };

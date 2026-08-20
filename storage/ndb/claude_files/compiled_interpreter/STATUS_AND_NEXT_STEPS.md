@@ -364,7 +364,13 @@ mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
 (2026-08-20; regen clean, double + unsigned canaries green, full
 ndb_push_agg sweeps to completion). `phase_5c_plan.md`.**
 
-**Phase 5D — PLANNED (2026-08-20): `phase_5d_plan.md`.** Key planning
+**Phase 5D — 5D-1 DONE & VERIFIED (2026-08-20; regen clean, bridge
+79/79 + coldcall 24/24, nullable canary green under 4060 incl. the
+nullable-expression query, full sweep to completion —
+`phase_5d_plan.md` carries the implementation record: 1 stencil
+`op_load_col_ndb_nb` + helper + the bridge's `nb_convert_loads` taint
+post-pass with per-load degradation). 5D-2 (f64/u64 siblings) next;
+5D-3 deferred.** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
 the load's cold call (helper returns "was null", the load stencil
 becomes a cold-call branch in op_branch_attr_eq_null's proven shape)

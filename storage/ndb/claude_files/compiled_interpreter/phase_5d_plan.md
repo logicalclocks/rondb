@@ -1,6 +1,40 @@
 # Phase 5D — nullable columns without a null-tracking matrix
 
-**Status: PLANNED (2026-08-20). Code: not started.**
+**Status: 5D-1 DONE & VERIFIED (2026-08-20; regen clean, bridge_tests
+79/79, coldcall_tests 24/24, nullable canary green under 4060 incl.
+the nullable-expression Q3, full ndb_push_agg sweep to completion).
+5D-2 (f64/u64 siblings) next; 5D-3 deferred.**
+
+## 5D-1 implementation record (2026-08-20)
+
+Landed as planned: `op_load_col_ndb_nb` (cold-call branch, KEEP_ALL
+tail policy — learned from 5C-2), helper `ndb_jit_h_load_col_nb`
+(NULL returns 1 → branch; read errors / unrepresentable declared
+types keep the row_fallback defense), `nb_convert_loads` post-pass in
+the bridge (runs LAST, after all fixups — op indexes are final):
+taint walk finds the last transitively-dependent op, then a
+safety pass verifies every op in the range is skippable — dependent
+ops, earlier-converted NB loads whose own target stays in bounds, or
+pure register writes whose value is dead after the range; anything
+else (independent accumulators, branches, embedded-emitted ops)
+degrades THAT LOAD to the row-fallback form. Embedded spans are
+tracked via a per-op flag recorded around translate_embedded_block.
+COUNT is deliberately classified as READING its source register —
+the stencil ignores it, but the interpreter's Count kernel skips
+null registers, and range membership is what gives COUNT(nullable)
+its null-skip. Jumps INTO a skip range (CASE-arm dispositions) are
+safe: the null branch only reroutes rows that went through the load;
+arm-fed rows still reach the accumulator with their staged register.
+
+Tests: bridge 79 (T5/T6/T6b/T22b/T22c/T47 updated for conversion;
+new T55a expression chain, T55b interleaved-accumulator degradation,
+T55c branch-in-range degradation, T55d COUNT-in-range, T55e
+same-register reload), coldcall 24 (T23: NULL row branches past the
+accumulator leaving acc/masks untouched, non-null row accumulates),
+`rondb_jit_nullable_canary` upgraded to 4060 MUST-JIT (the per-row
+fallback would abort under 4060 — surviving it proves NULL rows,
+including the all-NULL group and the nullable-expression Q3, stayed
+on the JIT). **Requires regen-stencils.** Original plan follows.
 
 ## Where null handling stands (post-5C)
 

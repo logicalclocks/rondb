@@ -430,9 +430,11 @@ static void test_load_col_255_accept(void) {
               r, err.offending_word, err.offending_op);
     return;
   }
+  /* Phase 5D-1: the outer load converts to the null-branching form —
+   * col_id rides b, c is the null-branch target (past the SUM). */
   if (p.n_ops != 4 ||
-      p.ops[0].kind != OP_LOAD_COL_NDB ||
-      p.ops[0].c != 255) {
+      p.ops[0].kind != OP_LOAD_COL_NDB_NB ||
+      p.ops[0].b != 255 || p.ops[0].c != 2) {
     mark_fail("T5 load_col_255_accept",
               "unexpected translated column op");
     return;
@@ -457,10 +459,10 @@ static void test_load_col_256_accept(void) {
     return;
   }
   if (p.n_ops != 4 ||
-      p.ops[0].kind != OP_LOAD_COL_NDB ||
-      p.ops[0].c != 256) {
+      p.ops[0].kind != OP_LOAD_COL_NDB_NB ||
+      p.ops[0].b != 256 || p.ops[0].c != 2) {
     mark_fail("T6 load_col_256_accept",
-              "unexpected translated column op (c=%u)", p.ops[0].c);
+              "unexpected translated column op (b=%u)", p.ops[0].b);
     return;
   }
   mark_pass("T6 load_col_256_accept");
@@ -483,10 +485,10 @@ static void test_load_col_4095_accept(void) {
     return;
   }
   if (p.n_ops != 4 ||
-      p.ops[0].kind != OP_LOAD_COL_NDB ||
-      p.ops[0].c != 4095) {
+      p.ops[0].kind != OP_LOAD_COL_NDB_NB ||
+      p.ops[0].b != 4095 || p.ops[0].c != 2) {
     mark_fail("T6b load_col_4095_accept",
-              "unexpected translated column op (c=%u)", p.ops[0].c);
+              "unexpected translated column op (b=%u)", p.ops[0].b);
     return;
   }
   mark_pass("T6b load_col_4095_accept");
@@ -890,8 +892,11 @@ static void test_embedded_linked_accept_path(void) {
                        "kind", p.ops[4].kind, OP_JUMP)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 4,
                        "c", p.ops[4].c, 5)) return;
+  /* Phase 5D-1: the outer load converts to the null-branching form. */
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 5,
-                       "kind", p.ops[5].kind, OP_LOAD_COL_NDB)) return;
+                       "kind", p.ops[5].kind, OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 5,
+                       "c", p.ops[5].c, 7)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 6,
                        "kind", p.ops[6].kind, OP_SUM_BIGINT_CHECKED)) return;
   if (!expect_op_field("T22b embedded_linked_accept_path", &p, 6,
@@ -940,11 +945,15 @@ static void test_embedded_case_skip_offset_accept(void) {
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 4,
                        "c", p.ops[4].c, 7)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 5,
-                       "kind", p.ops[5].kind, OP_LOAD_COL_NDB)) return;
+                       "kind", p.ops[5].kind, OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 5,
+                       "c", p.ops[5].c, 7)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 6,
                        "kind", p.ops[6].kind, OP_SUM_BIGINT_CHECKED)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 7,
-                       "kind", p.ops[7].kind, OP_LOAD_COL_NDB)) return;
+                       "kind", p.ops[7].kind, OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 7,
+                       "c", p.ops[7].c, 9)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 8,
                        "kind", p.ops[8].kind, OP_SUM_BIGINT_CHECKED)) return;
   if (!expect_op_field("T22c embedded_case_skip_offset_accept", &p, 6,
@@ -1529,8 +1538,11 @@ static void test_case_condition_family_accept(void) {
                        OP_LOAD_CONST_UINT16)) return;
   if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind, OP_JUMP)) return;
   if (!expect_op_field(name, &p, 5, "c", p.ops[5].c, 6)) return;
+  /* Phase 5D-1: the outer load converts (the embedded READ_ATTR at
+   * op 0 stays OP_LOAD_COL_NDB — embedded loads are never converted). */
   if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind,
-                       OP_LOAD_COL_NDB)) return;
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 6, "c", p.ops[6].c, 8)) return;
   if (!expect_op_field(name, &p, 7, "kind", p.ops[7].kind,
                        OP_SUM_BIGINT_CHECKED)) return;
   if (!expect_op_field(name, &p, 7, "c", p.ops[7].c, 0)) return;
@@ -1958,6 +1970,121 @@ static void test_mov_preserves_u64_accept(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5D-1 — null-branching load conversion.                        */
+/* ------------------------------------------------------------------ */
+
+/* T55a: expression chain — SUM(a + c). BOTH loads convert; both null
+ * branches target past the SUM (either operand NULL means the row
+ * contributes nothing — the interpreter's null propagation + kernel
+ * skip). The second load sits inside the first's skip range as an
+ * already-converted NB whose own target stays within bounds. */
+static void test_nb_expression_chain(void) {
+  const char *name = "T55a nb_expression_chain";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpPlusBigint, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]NB [1]NB [2]ADD_CHECKED [3]SUM_CHECKED [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 0)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 4)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 1, "b", p.ops[1].b, 1)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 4)) return;
+  mark_pass(name);
+}
+
+/* T55b: per-load degradation — an INDEPENDENT accumulator inside the
+ * skip range (interleaved chains) must not be skipped, so that load
+ * keeps the row-fallback form; the well-formed chain still converts. */
+static void test_nb_interleaved_degradation(void) {
+  const char *name = "T55b nb_interleaved_degradation";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]LOAD (degraded: r1's SUM sits untainted inside r0's range)
+   * [1]NB(c=3) [2]SUM [3]SUM [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 0)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 3)) return;
+  mark_pass(name);
+}
+
+/* T55c: a branch (outer kOpSkip's OP_JUMP) inside the skip range
+ * degrades the load — control flow inside a skipped region is not
+ * analyzed. */
+static void test_nb_branch_in_range_degradation(void) {
+  const char *name = "T55c nb_branch_in_range_degradation";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_op(kOpSkip, /*skip_count=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LOAD (degraded) [1]JUMP(c=2) [2]SUM [3]EXIT [4]OVF. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_JUMP)) return;
+  mark_pass(name);
+}
+
+/* T55d: COUNT joins the skip range — the interpreter's Count kernel
+ * skips null registers, so COUNT(nullable_col) must skip too. */
+static void test_nb_count_in_range(void) {
+  const char *name = "T55d nb_count_in_range";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]NB(c=2) [1]COUNT [2]EXIT — COUNT is unchecked, no OVF tail. */
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_COUNT_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T55e: two independent chains on the SAME register — each load's
+ * range ends where the register is re-loaded; both convert. */
+static void test_nb_reload_same_register(void) {
+  const char *name = "T55e nb_reload_same_register";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/1),
+    enc_sum(/*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]NB(c=2) [1]SUM [2]NB(c=4) [3]SUM [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2036,6 +2163,11 @@ int main(void) {
   test_u64_mixed_acc_family_reject();
   test_u64_count_accept();
   test_mov_preserves_u64_accept();
+  test_nb_expression_chain();
+  test_nb_interleaved_degradation();
+  test_nb_branch_in_range_degradation();
+  test_nb_count_in_range();
+  test_nb_reload_same_register();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

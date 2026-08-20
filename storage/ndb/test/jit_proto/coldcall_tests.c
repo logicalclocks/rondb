@@ -69,6 +69,8 @@ typedef struct {
   /* Last-call snapshots for caller assertions. */
   uint32_t last_col_id;
   uint32_t last_dst_reg;
+  /* Phase 5D-1: makes mock_load_col_nb report NULL. */
+  uint32_t nb_null;
 } MockCtx;
 
 /* Mock-A: writes col_id * 10 into dst_reg, bumps call counter. */
@@ -1076,6 +1078,23 @@ static void mock_load_col_u64(JitState *s, uint32_t col_id,
       (int64_t)(UINT64_C(0x8000000000000000) + col_id);
 }
 
+/* Phase 5D-1 mock for ndb_jit_h_load_col_nb: MockCtx.nb_null drives
+ * the return (1 = NULL, take the branch); non-null writes col_id*10
+ * like mock_load_col. */
+static int mock_load_col_nb(JitState *s, uint32_t col_id,
+                            uint32_t dst_reg) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  if (ctx->nb_null) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+  s->regs_i64[dst_reg] = (int64_t)col_id * 10;
+  return 0;
+}
+
 /* T20: MIN/MAX_U64 ordering across the signed boundary. Rows
  * {2^63+5, 3, 2^64-1}: unsigned order gives min 3, max 2^64-1; a
  * signed compare would call 2^63+5 the minimum (negative as i64) and
@@ -1234,6 +1253,72 @@ static void test_u64_load_col_coldcall(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* T23: OP_LOAD_COL_NDB_NB — a NULL row takes the branch past the
+ * accumulator (no acc update, no mask marks: the kernels' null-skip),
+ * a non-null row proceeds normally. Program:
+ *   [0] NB load r0 <- col 7, null target 2
+ *   [1] SUM_BIGINT acc0 += r0 (unchecked — no OVF tail needed)
+ *   [2] EXIT */
+static void test_nb_load_null_skips_accumulator(void) {
+  const char *name = "T23 nb_load_null_skips_accumulator";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB_NB, .a = 0, .b = 7, .c = 2 };
+  p.ops[1] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0, .c = 0 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — nb helper "
+              "registered / stencils regenerated?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+
+  /* Row 1: NULL — branch taken, nothing accumulates or marks. */
+  ctx.nb_null = 1;
+  entry(&s);
+  if (ctx.n_calls != 1 || ctx.last_col_id != 7 || ctx.last_dst_reg != 0) {
+    mark_fail(name, "helper calls=%u col=%u dst=%u, want 1/7/0",
+              ctx.n_calls, ctx.last_col_id, ctx.last_dst_reg);
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  if (s.acc_i64[0] != 0 || s.value_updated[0] != 0 ||
+      s.row_fallback != 0) {
+    mark_fail(name, "NULL row leaked: acc=%lld updated=%" PRIu64
+              " fallback=%u, want 0/0/0",
+              (long long)s.acc_i64[0], s.value_updated[0],
+              s.row_fallback);
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+
+  /* Row 2: non-null — normal accumulate (col 7 -> 70). */
+  ctx.nb_null = 0;
+  entry(&s);
+  if (s.acc_i64[0] != 70 || s.value_updated[0] != 1) {
+    mark_fail(name, "non-null row: acc=%lld updated=%" PRIu64
+              ", want 70/1",
+              (long long)s.acc_i64[0], s.value_updated[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -1247,7 +1332,9 @@ int main(void) {
       jit1_register_helper("ndb_jit_h_load_col_f64",
                             (JitHelperFn)&mock_load_col_f64) != 0 ||
       jit1_register_helper("ndb_jit_h_load_col_u64",
-                            (JitHelperFn)&mock_load_col_u64) != 0) {
+                            (JitHelperFn)&mock_load_col_u64) != 0 ||
+      jit1_register_helper("ndb_jit_h_load_col_nb",
+                            (JitHelperFn)&mock_load_col_nb) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1274,6 +1361,7 @@ int main(void) {
   test_u64_min_max_ordering();
   test_u64_sum_carry();
   test_u64_load_col_coldcall();
+  test_nb_load_null_skips_accumulator();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

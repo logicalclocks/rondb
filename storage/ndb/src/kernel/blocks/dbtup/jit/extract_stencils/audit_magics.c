@@ -139,6 +139,9 @@ static const struct {
   /* Phase 5C-3: op_load_col_ndb_u64 helper-argument holes. */
   { "MAGIC_LU64_COL_NARROW",  "op_load_col_ndb_u64"       },
   { "MAGIC_LU64_DST_NARROW",  "op_load_col_ndb_u64"       },
+  /* Phase 5D-1: op_load_col_ndb_nb helper-argument holes. */
+  { "MAGIC_LCNB_COL_NARROW",  "op_load_col_ndb_nb"        },
+  { "MAGIC_LCNB_DST_NARROW",  "op_load_col_ndb_nb"        },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

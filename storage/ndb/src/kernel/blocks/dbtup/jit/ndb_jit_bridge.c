@@ -322,6 +322,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_SUM_U64_CHECKED:      return "sum_u64_checked";
     case OP_MIN_U64:              return "min_u64";
     case OP_MAX_U64:              return "max_u64";
+    case OP_LOAD_COL_NDB_NB:      return "load_col_ndb_nb";
     default:                      return "jit_op?";
   }
 }
@@ -1314,6 +1315,194 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5D-1 — null-branch conversion pass.                          */
+/*                                                                    */
+/* Rewrites eligible outer OP_LOAD_COL_NDB ops to OP_LOAD_COL_NDB_NB, */
+/* whose taken edge (a NULL column value) skips the loaded register's */
+/* whole consumer chain — reproducing the interpreter kernels'        */
+/* null-skip (no accumulator update, no writeback-mask marks, no      */
+/* arithmetic on garbage). Loads whose skip range cannot be proven    */
+/* safe simply KEEP the row-fallback stencil — per-load degradation,  */
+/* never a program-level reject.                                      */
+/* ------------------------------------------------------------------ */
+
+/* Register read-set / written-register classification for the op     */
+/* kinds that can appear in the translated stream. Kinds not listed   */
+/* read and write no REGISTERS (helper branches, jumps, terminators). */
+static int nb_op_reads_reg(const Op *op, uint8_t reg) {
+  switch (op->kind) {
+    case OP_MOV_INT_INT:
+      return op->b == reg;
+    case OP_ADD_INT_INT:
+    case OP_MINUS_INT_INT:
+    case OP_MUL_INT_INT:
+    case OP_ADD_INT_INT_CHECKED:
+    case OP_MINUS_INT_INT_CHECKED:
+    case OP_MUL_INT_INT_CHECKED:
+    case OP_ADD_F64:
+    case OP_MINUS_F64:
+    case OP_MUL_F64:
+    case OP_DIV_F64:
+      return op->b == reg || op->c == reg;
+    /* Accumulators read their source register (op->b). COUNT is
+     * listed deliberately: its stencil ignores the register, but the
+     * INTERPRETER's Count kernel skips null registers — treating
+     * COUNT as a reader is exactly what gives COUNT(nullable_col)
+     * its null-skip via the branch. */
+    case OP_SUM_BIGINT:
+    case OP_SUM_BIGINT_CHECKED:
+    case OP_SUM_U64_CHECKED:
+    case OP_SUM_F64:
+    case OP_MIN_BIGINT:
+    case OP_MAX_BIGINT:
+    case OP_MIN_U64:
+    case OP_MAX_U64:
+    case OP_MIN_F64:
+    case OP_MAX_F64:
+    case OP_COUNT_BIGINT:
+      return op->b == reg;
+    case OP_BRANCH_LT_INT_INT:
+    case OP_BRANCH_LE_INT_INT:
+    case OP_BRANCH_EQ_INT_INT:
+    case OP_BRANCH_GT_INT_INT:
+    case OP_BRANCH_GE_INT_INT:
+    case OP_BRANCH_NE_INT_INT:
+      return op->a == reg || op->b == reg;
+    default:
+      return 0;
+  }
+}
+
+/* Returns the register the op writes, or -1. */
+static int nb_op_written_reg(const Op *op) {
+  switch (op->kind) {
+    case OP_LOAD_CONST_INT:
+    case OP_LOAD_CONST_UINT16:
+    case OP_LOAD_CONST_INT16:
+    case OP_LOAD_CONST_UINT32:
+    case OP_LOAD_CONST_INT32:
+    case OP_LOAD_COL_INT:
+    case OP_LOAD_COL_NDB:
+    case OP_LOAD_COL_NDB_F64:
+    case OP_LOAD_COL_NDB_U64:
+    case OP_LOAD_COL_NDB_NB:
+    case OP_MOV_INT_INT:
+    case OP_ADD_INT_INT:
+    case OP_MINUS_INT_INT:
+    case OP_MUL_INT_INT:
+    case OP_ADD_INT_INT_CHECKED:
+    case OP_MINUS_INT_INT_CHECKED:
+    case OP_MUL_INT_INT_CHECKED:
+    case OP_ADD_F64:
+    case OP_MINUS_F64:
+    case OP_MUL_F64:
+    case OP_DIV_F64:
+      return op->a;
+    default:
+      return -1;
+  }
+}
+
+static int nb_op_is_accumulator(uint8_t kind) {
+  switch (kind) {
+    case OP_SUM_BIGINT:
+    case OP_SUM_BIGINT_CHECKED:
+    case OP_SUM_U64_CHECKED:
+    case OP_SUM_F64:
+    case OP_MIN_BIGINT:
+    case OP_MAX_BIGINT:
+    case OP_MIN_U64:
+    case OP_MAX_U64:
+    case OP_MIN_F64:
+    case OP_MAX_F64:
+    case OP_COUNT_BIGINT:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+static int nb_op_is_terminator(uint8_t kind) {
+  return kind == OP_EXIT || kind == OP_SKIP ||
+         kind == OP_OVERFLOW_EXIT || kind == OP_FILTER_REJECT_EXIT;
+}
+
+/* True when `reg`, written by an op inside a candidate's skip range,
+ * is dead after the range: rewritten by another register-writing op
+ * before any read, or never touched again. */
+static int nb_reg_dead_after(const Program *prog, uint16_t from,
+                             uint8_t reg) {
+  for (uint16_t k = from; k < prog->n_ops; k++) {
+    const Op *op = &prog->ops[k];
+    if (nb_op_is_terminator(op->kind)) return 1;
+    if (nb_op_reads_reg(op, reg)) return 0;
+    if (nb_op_written_reg(op) == (int)reg) return 1;
+  }
+  return 1;
+}
+
+static void nb_convert_loads(Program *prog, const uint8_t *op_from_emb) {
+  uint8_t dep[BC_MAX_OPS];
+  for (uint16_t i = 0; i < prog->n_ops; i++) {
+    if (prog->ops[i].kind != OP_LOAD_COL_NDB || op_from_emb[i]) continue;
+
+    /* Pass 1: taint walk — find the last op that (transitively)
+     * depends on the loaded register, recording per-op dependence. */
+    uint8_t taint[BC_MAX_REGS];
+    memset(taint, 0, sizeof(taint));
+    memset(dep, 0, sizeof(dep));
+    taint[prog->ops[i].a] = 1;
+    uint16_t last_dep = i;
+    for (uint16_t j = (uint16_t)(i + 1); j < prog->n_ops; j++) {
+      const Op *op = &prog->ops[j];
+      if (nb_op_is_terminator(op->kind)) break;
+      int reads_taint = 0;
+      for (uint8_t r = 0; r < BC_MAX_REGS; r++) {
+        if (taint[r] && nb_op_reads_reg(op, r)) { reads_taint = 1; break; }
+      }
+      int wr = nb_op_written_reg(op);
+      if (reads_taint) {
+        dep[j] = 1;
+        last_dep = j;
+        if (wr >= 0) taint[wr] = 1;
+      } else if (wr >= 0 && taint[wr]) {
+        taint[wr] = 0;   /* overwritten with an untainted value */
+      }
+    }
+    if (last_dep == i) continue;   /* dead load — leave it alone */
+    uint16_t target = (uint16_t)(last_dep + 1);
+
+    /* Pass 2: every op in (i, last_dep] must be safe to skip. */
+    int ok = 1;
+    for (uint16_t j = (uint16_t)(i + 1); j <= last_dep && ok; j++) {
+      const Op *op = &prog->ops[j];
+      if (op_from_emb[j]) { ok = 0; break; }
+      if (dep[j]) continue;        /* dependent — skipping IS the goal */
+      /* Independent op inside the range. An earlier-converted NB load
+       * is fine if its own null branch stays within our skip range. */
+      if (op->kind == OP_LOAD_COL_NDB_NB) {
+        if (op->c > target) ok = 0;
+        continue;
+      }
+      if (bc_op_is_branch(op->kind)) { ok = 0; break; }
+      if (nb_op_is_accumulator(op->kind)) { ok = 0; break; }
+      int wr = nb_op_written_reg(op);
+      if (wr < 0) { ok = 0; break; }   /* unknown side effects */
+      /* A pure register write is skippable only if nothing after the
+       * range reads the value it would have produced. */
+      if (!nb_reg_dead_after(prog, target, (uint8_t)wr)) { ok = 0; break; }
+    }
+    if (!ok) continue;               /* keep the row-fallback load */
+
+    /* Convert: col_id moves c -> b, target rides c (the engine patches
+     * HK_BRANCH_TAKE displacement from op->c). */
+    prog->ops[i].kind = OP_LOAD_COL_NDB_NB;
+    prog->ops[i].b = prog->ops[i].c;
+    prog->ops[i].c = target;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Main translation.                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -1403,6 +1592,11 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   uint32_t outer_word_pos[BC_MAX_OPS];
   uint16_t outer_op_idx[BC_MAX_OPS];
   uint16_t n_outer_map = 0;
+  /* Phase 5D-1: which output ops were emitted by an embedded block —
+   * the null-branch conversion pass must neither convert those loads
+   * nor skip over embedded ops. */
+  uint8_t op_from_emb[BC_MAX_OPS];
+  memset(op_from_emb, 0, sizeof(op_from_emb));
   while (pos < n_words) {
     uint32_t word = ndb_prog[pos];
     uint8_t  op   = (uint8_t)((word & 0xFC000000u) >> 26);
@@ -1816,6 +2010,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_MALFORMED, this_pos, op);
           return JIT_BRIDGE_MALFORMED;
         }
+        uint16_t emb_first_op = out_prog->n_ops;
         JitBridgeReason rc = translate_embedded_block(
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
             pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
@@ -1824,6 +2019,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);
         if (rc != JIT_BRIDGE_OK) return rc;
+        for (uint16_t m = emb_first_op; m < out_prog->n_ops; m++) {
+          op_from_emb[m] = 1;
+        }
         /* Phase 5C-1: an embedded block writes registers this linear
          * walk cannot see (READ_ATTR / LOAD_CONST16/64) — invalidate
          * everything, matching the optimizer's own skip-the-block
@@ -1886,6 +2084,10 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
       out_prog->ops[checked_arith_ops[i]].d = overflow_exit_pc;
     }
   }
+
+  /* Phase 5D-1: convert eligible outer loads to null-branching form
+   * (runs last — targets are indexes into the final op stream). */
+  nb_convert_loads(out_prog, op_from_emb);
 
   return JIT_BRIDGE_OK;
 #undef BR_REJECT_IF_F64_OR_U64

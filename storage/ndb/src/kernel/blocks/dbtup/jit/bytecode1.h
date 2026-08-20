@@ -228,7 +228,22 @@ typedef enum {
   OP_SUM_U64_CHECKED       = 46,
   OP_MIN_U64               = 47,
   OP_MAX_U64               = 48,
-  OP_KIND_MAX           = OP_MAX_U64
+  /* Phase 5D-1: null-branching load — a cold-call BRANCH in
+   * op_branch_attr_eq_null's shape. The helper
+   * (ndb_jit_h_load_col_nb) loads like OP_LOAD_COL_NDB but RETURNS
+   * "value was NULL"; the taken edge skips the loaded register's
+   * whole consumer chain (bridge-computed by a taint walk),
+   * reproducing the interpreter kernels' null-skip exactly: no
+   * accumulator update, no writeback-mask marks (per-group SQL NULL
+   * preserved), and the chain's arithmetic never runs on garbage (no
+   * spurious overflow). NULL rows thus stay on the JIT instead of
+   * taking the per-row interpreter fallback. Operand layout differs
+   * from OP_LOAD_COL_NDB: a = dst reg, b = col_id (moved from c —
+   * the engine patches branch displacement from op->c),
+   * c = null-branch target pc. Read errors / declared-type
+   * mismatches keep the row_fallback defense inside the helper. */
+  OP_LOAD_COL_NDB_NB       = 49,
+  OP_KIND_MAX           = OP_LOAD_COL_NDB_NB
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -250,6 +265,7 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_LINKED_NE_NULL:
     case OP_BRANCH_ATTR_OP_ARG:
     case OP_JUMP:
+    case OP_LOAD_COL_NDB_NB:
       return 1;
     default:
       return 0;

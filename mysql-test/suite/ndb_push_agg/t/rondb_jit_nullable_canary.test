@@ -1,22 +1,25 @@
 --source include/have_ndb.inc
+--source have_ndb_error_insert.inc
 
-# RONDB-1056 Phase 5A — nullable-column aggregation canary.
+# RONDB-1056 nullable-column aggregation canary.
 #
-# The JIT's load helper used to abort() on a NULL column value (its
-# comment wrongly claimed admission rejects nullable columns — the
-# bridge only sees bytecode and the SQL planner pushes aggregation over
-# nullable columns), so SELECT SUM(nullable) with any NULL row crashed
-# the data node with CompiledInterpreter=AUTO. Phase 5A replaced the
-# abort with a per-row interpreter fallback: the NULL-bearing row's JIT
-# run is discarded and the row re-runs on the interpreter (exact
-# null-skip semantics); non-NULL rows keep the JIT.
+# History: the JIT's load helper originally abort()ed on a NULL column
+# value (SELECT SUM(nullable) with any NULL row crashed the node).
+# Phase 5A replaced the abort with a PER-ROW interpreter fallback.
+# Phase 5D-1 replaces the fallback with NULL-BRANCHING loads: the load
+# helper returns "was NULL" and the stencil branches past the loaded
+# register's whole consumer chain — the interpreter kernels' null-skip
+# (no accumulator update, no writeback marks) at JIT speed. NULL rows
+# now STAY on the JIT.
 #
-# No ERROR_INSERT 4060 here — the per-row fallback is deliberate. The
-# counter check proves the program still COMPILES (admission is
-# unaffected by nullability); before the fix this test crashed a node.
+# That makes ERROR_INSERT 4060 the proof: the per-row fallback path
+# falls through to the interpreter loop, where the 4060 guard aborts —
+# so these queries surviving under 4060 proves every row, NULL rows
+# included, ran the compiled program. (Pre-5D this test could not use
+# 4060 at all.)
 
 --echo ############################################################
---echo # RONDB-1056 nullable-column JIT canary (per-row fallback)
+--echo # RONDB-1056 nullable-column JIT canary (null-branching loads)
 --echo ############################################################
 
 CREATE TABLE tn (
@@ -33,18 +36,35 @@ INSERT INTO tn VALUES
 
 SET ndb_pushdown_aggregate=ON;
 
---echo # Q1: scalar SUM/COUNT over a nullable column — NULL rows fall back
---echo #     per row, non-NULL rows run the JIT; the program compiles.
+--echo # Q1: scalar SUM/COUNT over a nullable column must JIT — NULL rows
+--echo #     take the null branch (no fallback; 4060 would abort on one).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
 SELECT SUM(v), COUNT(v) FROM tn;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: grouped — including a group whose rows are ALL NULL (grp 3):
---echo #     SUM/MIN stay SQL NULL and COUNT is 0 for that group, the
---echo #     per-group NULL semantics that pushed SQL could not otherwise
---echo #     express. MIN (Phase 5B) rides the same per-row fallback for
---echo #     NULL rows; non-NULL rows JIT with first-row-init per group.
+--echo #     SUM/MIN stay SQL NULL and COUNT is 0 for that group. Every
+--echo #     row of that group takes the null branch, so even the
+--echo #     all-NULL group is a pure JIT run under 4060.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
 --sorted_result
 SELECT grp, SUM(v), COUNT(v), MIN(v) FROM tn GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: nullable expression — SUM(v + pk): a NULL v skips the whole
+--echo #     arithmetic chain (no garbage arithmetic, no spurious
+--echo #     overflow) and the row contributes nothing, matching the
+--echo #     interpreter's null propagation.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(v + pk) FROM tn;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 DROP TABLE tn;
+
+--remove_file $NDB_TOOLS_OUTPUT

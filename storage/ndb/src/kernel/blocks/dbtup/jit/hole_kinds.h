@@ -209,6 +209,13 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
    * across signedness variants like ADD_* across checked/unchecked). */
   { "HOLE_LU64_COL",      HK_OP_C          },
   { "HOLE_LU64_DST",      HK_OP_A          },
+  /* Phase 5D-1 op_load_col_ndb_nb — null-branching load. col_id rides
+   * op->b (NOT c like the other loads): the engine patches the
+   * HK_BRANCH_TAKE displacement from op->c, which carries the
+   * null-branch target pc. */
+  { "HOLE_LCNB_COL",      HK_OP_B          },
+  { "HOLE_LCNB_DST",      HK_OP_A          },
+  { "HOLE_LCNB_TGT",      HK_BRANCH_TAKE   },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -364,6 +371,9 @@ static const size_t kHoleSymbolTableLen =
 /* Phase 5C-3 op_load_col_ndb_u64 cold-call helper arguments. */
 #define MAGIC_LU64_COL_NARROW     0xdc0eu
 #define MAGIC_LU64_DST_NARROW     0x6067u
+/* Phase 5D-1 op_load_col_ndb_nb cold-call helper arguments. */
+#define MAGIC_LCNB_COL_NARROW     0xda81u
+#define MAGIC_LCNB_DST_NARROW     0xaa26u
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -515,6 +525,9 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   /* Phase 5C-3: op_load_col_ndb_u64 helper arguments. */
   { MAGIC_LU64_COL_NARROW,  HK_OP_C,  "MAGIC_LU64_COL_NARROW"  },
   { MAGIC_LU64_DST_NARROW,  HK_OP_A,  "MAGIC_LU64_DST_NARROW"  },
+  /* Phase 5D-1: op_load_col_ndb_nb helper arguments (col in op->b). */
+  { MAGIC_LCNB_COL_NARROW,  HK_OP_B,  "MAGIC_LCNB_COL_NARROW"  },
+  { MAGIC_LCNB_DST_NARROW,  HK_OP_A,  "MAGIC_LCNB_DST_NARROW"  },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

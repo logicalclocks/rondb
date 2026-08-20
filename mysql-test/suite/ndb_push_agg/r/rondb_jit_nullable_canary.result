@@ -1,5 +1,5 @@
 ############################################################
-# RONDB-1056 nullable-column JIT canary (per-row fallback)
+# RONDB-1056 nullable-column JIT canary (null-branching loads)
 ############################################################
 CREATE TABLE tn (
 pk  BIGINT NOT NULL,
@@ -12,8 +12,8 @@ INSERT INTO tn VALUES
 (4, 2, NULL), (5, 2, NULL), (6, 2, 60),
 (7, 3, NULL);
 SET ndb_pushdown_aggregate=ON;
-# Q1: scalar SUM/COUNT over a nullable column — NULL rows fall back
-#     per row, non-NULL rows run the JIT; the program compiles.
+# Q1: scalar SUM/COUNT over a nullable column must JIT — NULL rows
+#     take the null branch (no fallback; 4060 would abort on one).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(v), COUNT(v) FROM tn;
 SUM(v)	COUNT(v)
@@ -22,13 +22,27 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q1_jit_compiled
 1
 # Q2: grouped — including a group whose rows are ALL NULL (grp 3):
-#     SUM/MIN stay SQL NULL and COUNT is 0 for that group, the
-#     per-group NULL semantics that pushed SQL could not otherwise
-#     express. MIN (Phase 5B) rides the same per-row fallback for
-#     NULL rows; non-NULL rows JIT with first-row-init per group.
+#     SUM/MIN stay SQL NULL and COUNT is 0 for that group. Every
+#     row of that group takes the null branch, so even the
+#     all-NULL group is a pure JIT run under 4060.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT grp, SUM(v), COUNT(v), MIN(v) FROM tn GROUP BY grp;
 grp	SUM(v)	COUNT(v)	MIN(v)
 1	40	2	10
 2	60	1	60
 3	NULL	0	NULL
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: nullable expression — SUM(v + pk): a NULL v skips the whole
+#     arithmetic chain (no garbage arithmetic, no spurious
+#     overflow) and the row contributes nothing, matching the
+#     interpreter's null propagation.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(v + pk) FROM tn;
+SUM(v + pk)
+110
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
 DROP TABLE tn;

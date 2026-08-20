@@ -226,6 +226,7 @@ const char *bc_op_name(uint8_t kind) {
     case OP_SUM_U64_CHECKED:       return "sum_u64_checked";
     case OP_MIN_U64:               return "min_u64";
     case OP_MAX_U64:               return "max_u64";
+    case OP_LOAD_COL_NDB_NB:       return "load_col_ndb_nb";
     default:                   return "?";
   }
 }
