@@ -211,6 +211,17 @@ const char *bc_op_name(uint8_t kind) {
     case OP_OVERFLOW_EXIT:         return "overflow_exit";
     case OP_JUMP:                  return "jump";
     case OP_FILTER_REJECT_EXIT:    return "filter_reject_exit";
+    case OP_COUNT_BIGINT:          return "count_bigint";
+    case OP_MIN_BIGINT:            return "min_bigint";
+    case OP_MAX_BIGINT:            return "max_bigint";
+    case OP_LOAD_COL_NDB_F64:      return "load_col_ndb_f64";
+    case OP_ADD_F64:               return "add_f64";
+    case OP_MINUS_F64:             return "minus_f64";
+    case OP_MUL_F64:               return "mul_f64";
+    case OP_DIV_F64:               return "div_f64";
+    case OP_SUM_F64:               return "sum_f64";
+    case OP_MIN_F64:               return "min_f64";
+    case OP_MAX_F64:               return "max_f64";
     default:                   return "?";
   }
 }

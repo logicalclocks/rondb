@@ -762,6 +762,304 @@ static void test_min_max_first_row_init(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5C-2 — the DOUBLE family. f64 values live bit-cast in the    */
+/* i64 register file / accumulators.                                  */
+/* ------------------------------------------------------------------ */
+
+static int64_t f64_bits(double d) {
+  int64_t v;
+  memcpy(&v, &d, sizeof(v));
+  return v;
+}
+
+static double bits_f64(int64_t v) {
+  double d;
+  memcpy(&d, &v, sizeof(d));
+  return d;
+}
+
+/* Mock for ndb_jit_h_load_col_f64: writes (double)col_id * 0.5. */
+static void mock_load_col_f64(JitState *s, uint32_t col_id,
+                              uint32_t dst_reg) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  s->regs_i64[dst_reg] = f64_bits((double)col_id * 0.5);
+}
+
+/* T15: SUM/MIN/MAX_F64 battery with first-row initialization. The
+ * accumulators start with garbage and value_initialized = 0; the
+ * first row must overwrite all three (for SUM too — the kernel
+ * stores the first value verbatim). Rows 1.5, -2.25, 4.0 →
+ * sum 3.25, min -2.25, max 4.0. All three mark value_double. */
+static void test_f64_accumulator_battery(void) {
+  const char *name = "T15 f64_accumulator_battery";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 5;
+  p.ops[0] = (Op){ .kind = OP_SUM_F64, .a = 0, .b = 1, .c = 0, .d = 4 };
+  p.ops[1] = (Op){ .kind = OP_MIN_F64, .a = 1, .b = 1, .c = 1 };
+  p.ops[2] = (Op){ .kind = OP_MAX_F64, .a = 2, .b = 1, .c = 2 };
+  p.ops[3] = (Op){ .kind = OP_EXIT };
+  p.ops[4] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  if (arena == NULL) {
+    mark_fail(name, "arena_create failed");
+    return;
+  }
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — stencils regenerated?",
+              errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.acc_i64[0] = 777;    /* garbage — must be overwritten, not added */
+  s.acc_i64[1] = 777;
+  s.acc_i64[2] = -777;
+  const double rows[3] = {1.5, -2.25, 4.0};
+  for (int i = 0; i < 3; ++i) {
+    memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    memset(s.value_updated, 0, sizeof(s.value_updated));
+    memset(s.value_double, 0, sizeof(s.value_double));
+    s.regs_i64[1] = f64_bits(rows[i]);
+    entry(&s);
+  }
+
+  if (bits_f64(s.acc_i64[0]) != 3.25 ||
+      bits_f64(s.acc_i64[1]) != -2.25 ||
+      bits_f64(s.acc_i64[2]) != 4.0) {
+    mark_fail(name, "sum=%f min=%f max=%f, want 3.25/-2.25/4.0",
+              bits_f64(s.acc_i64[0]), bits_f64(s.acc_i64[1]),
+              bits_f64(s.acc_i64[2]));
+  } else if (s.value_updated[0] != 1 || s.value_updated[1] != 1 ||
+             s.value_updated[2] != 1) {
+    mark_fail(name, "value_updated={%" PRIu64 ",%" PRIu64 ",%" PRIu64
+              "}, want {1,1,1}",
+              s.value_updated[0], s.value_updated[1], s.value_updated[2]);
+  } else if (s.value_double[0] != 1 || s.value_double[1] != 1 ||
+             s.value_double[2] != 1) {
+    mark_fail(name, "value_double={%" PRIu64 ",%" PRIu64 ",%" PRIu64
+              "}, want {1,1,1}",
+              s.value_double[0], s.value_double[1], s.value_double[2]);
+  } else if (s.row_overflowed != 0) {
+    mark_fail(name, "row_overflowed=%u, want 0", s.row_overflowed);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T15b: single-row SUM_F64(-0.0) preserves the sign bit — the init
+ * path stores the value verbatim (0.0 + -0.0 would yield +0.0). */
+static void test_f64_sum_negative_zero_init(void) {
+  const char *name = "T15b f64_sum_negative_zero_init";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_SUM_F64, .a = 0, .b = 0, .c = 0, .d = 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+  p.ops[2] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.acc_i64[0] = 777;                        /* garbage */
+  s.regs_i64[0] = f64_bits(-0.0);
+  jit1_entry(jp)(&s);
+
+  if ((uint64_t)s.acc_i64[0] != UINT64_C(0x8000000000000000)) {
+    mark_fail(name, "acc bits=0x%" PRIx64 ", want 0x8000000000000000 "
+              "(the -0.0 sign bit must survive first-row init)",
+              (uint64_t)s.acc_i64[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T16: f64 arithmetic chain — r2=r0+r1, r3=r2*r0, r4=r3/r1, then
+ * SUM. r0=3.0, r1=2.0 → 5.0, 15.0, 7.5 → acc 7.5. */
+static void test_f64_arith_chain(void) {
+  const char *name = "T16 f64_arith_chain";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 6;
+  p.ops[0] = (Op){ .kind = OP_ADD_F64, .a = 2, .b = 0, .c = 1, .d = 5 };
+  p.ops[1] = (Op){ .kind = OP_MUL_F64, .a = 3, .b = 2, .c = 0, .d = 5 };
+  p.ops[2] = (Op){ .kind = OP_DIV_F64, .a = 4, .b = 3, .c = 1, .d = 5 };
+  p.ops[3] = (Op){ .kind = OP_SUM_F64, .a = 0, .b = 4, .c = 0, .d = 5 };
+  p.ops[4] = (Op){ .kind = OP_EXIT };
+  p.ops[5] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[0] = f64_bits(3.0);
+  s.regs_i64[1] = f64_bits(2.0);
+  jit1_entry(jp)(&s);
+
+  if (bits_f64(s.regs_i64[2]) != 5.0 ||
+      bits_f64(s.regs_i64[3]) != 15.0 ||
+      bits_f64(s.regs_i64[4]) != 7.5 ||
+      bits_f64(s.acc_i64[0]) != 7.5) {
+    mark_fail(name, "r2=%f r3=%f r4=%f acc=%f, want 5/15/7.5/7.5",
+              bits_f64(s.regs_i64[2]), bits_f64(s.regs_i64[3]),
+              bits_f64(s.regs_i64[4]), bits_f64(s.acc_i64[0]));
+  } else if (s.row_overflowed != 0 || s.row_fallback != 0) {
+    mark_fail(name, "overflowed=%u fallback=%u, want 0/0",
+              s.row_overflowed, s.row_fallback);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T17: non-finite result → overflow exit. DBL_MAX * 2.0 = inf; the
+ * store is skipped and row_overflowed is set (⇒ ZAGG_MATH_OVERFLOW
+ * in the glue). */
+static void test_f64_mul_overflow(void) {
+  const char *name = "T17 f64_mul_overflow";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_MUL_F64, .a = 2, .b = 0, .c = 1, .d = 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+  p.ops[2] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[0] = f64_bits(1.7976931348623157e308);   /* DBL_MAX */
+  s.regs_i64[1] = f64_bits(2.0);
+  jit1_entry(jp)(&s);
+
+  if (s.row_overflowed != 1) {
+    mark_fail(name, "row_overflowed=%u, want 1", s.row_overflowed);
+  } else if (s.regs_i64[2] != 0) {
+    mark_fail(name, "dst reg written on overflow (bits=0x%" PRIx64 ")",
+              (uint64_t)s.regs_i64[2]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T18: divisor == 0 → per-row fallback, NOT overflow. The stencil
+ * stores 0.0, sets row_fallback and CONTINUES — the downstream SUM
+ * still runs (its result is discarded by the glue on fallback). */
+static void test_f64_div_by_zero_fallback(void) {
+  const char *name = "T18 f64_div_by_zero_fallback";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 4;
+  p.ops[0] = (Op){ .kind = OP_DIV_F64, .a = 2, .b = 0, .c = 1, .d = 3 };
+  p.ops[1] = (Op){ .kind = OP_SUM_F64, .a = 0, .b = 2, .c = 0, .d = 3 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+  p.ops[3] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[0] = f64_bits(5.0);
+  s.regs_i64[1] = f64_bits(0.0);
+  jit1_entry(jp)(&s);
+
+  if (s.row_fallback != 1) {
+    mark_fail(name, "row_fallback=%u, want 1", s.row_fallback);
+  } else if (s.row_overflowed != 0) {
+    mark_fail(name, "row_overflowed=%u, want 0 (x/0 is fallback, "
+              "not overflow)", s.row_overflowed);
+  } else if (bits_f64(s.regs_i64[2]) != 0.0) {
+    mark_fail(name, "dst=%f, want 0.0", bits_f64(s.regs_i64[2]));
+  } else if (s.value_updated[0] != 1) {
+    mark_fail(name, "downstream SUM did not run (value_updated[0]=%"
+              PRIu64 ") — the blob must run to completion on fallback",
+              s.value_updated[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T19: OP_LOAD_COL_NDB_F64 cold-call — the helper's bits land in the
+ * register file and flow into SUM_F64. col 6 → 3.0 via the mock. */
+static void test_f64_load_col_coldcall(void) {
+  const char *name = "T19 f64_load_col_coldcall";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 4;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB_F64, .a = 0, .c = 6 };
+  p.ops[1] = (Op){ .kind = OP_SUM_F64, .a = 0, .b = 0, .c = 0, .d = 3 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+  p.ops[3] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — f64 helper "
+              "registered?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  jit1_entry(jp)(&s);
+
+  if (ctx.n_calls != 1 || ctx.last_col_id != 6 || ctx.last_dst_reg != 0) {
+    mark_fail(name, "helper calls=%u col=%u dst=%u, want 1/6/0",
+              ctx.n_calls, ctx.last_col_id, ctx.last_dst_reg);
+  } else if (bits_f64(s.acc_i64[0]) != 3.0) {
+    mark_fail(name, "acc=%f, want 3.0", bits_f64(s.acc_i64[0]));
+  } else if (s.value_double[0] != 1) {
+    mark_fail(name, "value_double[0]=%" PRIu64 ", want 1",
+              s.value_double[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -769,9 +1067,11 @@ int main(void) {
   /* T1 must run BEFORE registration (it asserts ENOENT). */
   test_no_helper_registered();
 
-  /* Register the mock for the rest of the tests. */
+  /* Register the mocks for the rest of the tests. */
   if (jit1_register_helper("ndb_jit_h_load_col",
-                            (JitHelperFn)&mock_load_col) != 0) {
+                            (JitHelperFn)&mock_load_col) != 0 ||
+      jit1_register_helper("ndb_jit_h_load_col_f64",
+                            (JitHelperFn)&mock_load_col_f64) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -789,6 +1089,12 @@ int main(void) {
   test_describe_pc_registry();
   test_count_bigint();
   test_min_max_first_row_init();
+  test_f64_accumulator_battery();
+  test_f64_sum_negative_zero_init();
+  test_f64_arith_chain();
+  test_f64_mul_overflow();
+  test_f64_div_by_zero_fallback();
+  test_f64_load_col_coldcall();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

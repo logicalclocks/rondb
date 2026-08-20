@@ -1,6 +1,7 @@
 # Phase 5C — DOUBLE family + unsigned BIGINT (and why the lattice shrank)
 
-**Status: PLANNED (2026-08-19). Code: not started.**
+**Status: 5C-1 + 5C-2 DONE & VERIFIED (2026-08-20 — full ndb_push_agg
+sweep green post-regen). 5C-3 (unsigned BIGINT) remains.**
 
 ## Headline finding: the full type-state lattice is NOT needed
 
@@ -56,7 +57,18 @@ outer stream. The full lattice is deferred until an emitter does.
 
 ## Slices
 
-### 5C-1 — bridge register-type tracker (no regen)
+### 5C-1 — bridge register-type tracker (no regen) — **IMPLEMENTED (2026-08-19)**
+
+In the tree: `reg_type[8] ∈ {UNKNOWN, I64, F64}` in the outer translate
+walk; producers set types (loads/consts → I64 today, Mov copies,
+Bigint arithmetic → I64), i64 consumers (arith operands, SUM/COUNT/
+MIN/MAX source registers) reject F64 with the new
+`JIT_BRIDGE_TYPE_MISMATCH` reason but tolerate UNKNOWN (documented
+invariant: everything producible today, incl. 5A's embedded writes, is
+i64); embedded blocks invalidate all registers. **Behavior-neutral by
+construction until 5C-2 introduces an F64 producer — the reject paths
+are unreachable today, so verification = the existing bridge_tests +
+suite still pass unchanged; the F64-mismatch tests land with 5C-2.**
 
 `reg_type[8]` in the outer translate walk: set by `kOpLoadCol` /
 `kOpLoadConst` type fields and `kOpMov`; embedded blocks invalidate all
@@ -66,7 +78,75 @@ types and reject on mismatch (JIT_BRIDGE_NON_BIGINT reason reused or a
 new TYPE_MISMATCH). Pure hardening + the foundation 5C-2/3 hang off;
 behavior-neutral for all currently admitted programs (i64-only).
 
-### 5C-2 — the DOUBLE family (regen, ~9 stencils)
+### 5C-2 — the DOUBLE family — **DONE & VERIFIED (2026-08-20)**
+
+Verified: regen-stencils clean (incl. the fold-magic audit's new f64
+expected counts), bridge_tests 64/64, coldcall_tests 20/20,
+`rondb_jit_double_canary` green (Q1–Q5 must-JIT under 4060 + counter
+delta all held — the planner does push every double shape the canary
+assumes), full ndb_push_agg sweep to completion. Two verification
+findings: (1) the extractor's `classify_tail` keyed KEEP_ALL off the
+`_checked` name pattern, so the f64 overflow-branch stencils (same
+shape: taken jmp + fall-through jmp) initially fell to the strip path
+and their `HOLE_F64_OVF_TGT` PLT32 reloc was rejected as an operand
+hole — the five names are now listed explicitly; (2) the div-by-zero
+canary query raises "Division by 0" warnings whose count is an
+evaluation-frequency implementation detail — suppressed via
+`--disable_warnings`, the values are the assertion.
+
+Landed as planned with four deviations worth recording:
+
+1. **`OP_ROW_FALLBACK_EXIT` was not needed.** The 5A cold-call
+   convention already covers div-by-zero: `op_div_f64` sets
+   `JitState::row_fallback` INLINE (a plain baked-offset field store,
+   like `op_filter_reject_exit`'s), stores 0.0, and the blob keeps
+   running to completion — the glue discards the row and the
+   interpreter re-runs it. No new terminator, no two-target stencil.
+2. **COUNT's 5C-1 type check was wrong and is removed.**
+   `AVG(double_col)` decomposes into `kOpSumDouble` + `kOpCount` over
+   the SAME f64 register; the COUNT stencil never reads the register's
+   bits (`acc += 1`), so any register type is fine. The 5C-1
+   `BR_REJECT_IF_F64` there would have knocked out every double AVG
+   (bridge_tests T51g locks the shape in).
+3. **Generic `kOpDiv` lowers when both operands are proven f64** (the
+   optimizer never rewrites it to `kOpDivDouble` — it only marks dst
+   DOUBLE — so SQL division arrives as generic `kOpDiv`); non-f64
+   operands reject UNSUPPORTED (an unimplemented conversion, not a
+   type bug → distinct from TYPE_MISMATCH in the fallback logs).
+4. **No new f64 register-file accessors.** The stencils load the i64
+   bits through the existing fold holes and reinterpret via
+   `__builtin_memcpy` (lowers to fmov/movq); finiteness is checked on
+   the BIT PATTERN (`(bits & ~sign) >= exp-mask`) because
+   `__builtin_isfinite` materialises an FP constant in .rodata — a
+   relocation class the extractor doesn't support.
+
+In the tree: 8 new OpKinds (`OP_LOAD_COL_NDB_F64`, `OP_{ADD,MINUS,MUL,
+DIV}_F64`, `OP_{SUM,MIN,MAX}_F64`, OP_KIND_MAX = 44); 8 stencils with
+shared `FAR_*` / `FSUM_*` / `FMM_*` fold holes and ONE shared
+`HOLE_F64_OVF_TGT` overflow symbol (relocations are per-stencil, so
+sharing the name is safe); `JitState::value_double[]` mask (appended
+last) with writeback to `type = NDB_TYPE_DOUBLE` +
+`value.val_double`; helper `ndb_jit_h_load_col_f64` (DOUBLE bit copy,
+FLOAT promote via floatget, NULL/unexpected type → per-row fallback);
+bridge admission for DOUBLE consts (bits ride the imm64 path),
+DOUBLE/FLOAT loads (full 6-bit type decode), the four arithmetic ops
+(both operands proven f64; same d-target overflow fixup list) and the
+three accumulators (source proven f64; SUM checked). SUM_F64 keeps the
+`value_initialized` first-row init — 0.0 + -0.0 would flip the sign of
+a single-row SUM(-0.0) (coldcall T15b).
+
+Tests: bridge_tests 64 (T9 flipped to accept + T9b, T50/T50b lowering
+batteries, T51a–g tracker rejects/accepts), coldcall_tests 20
+(T15/T15b/T16/T17/T18/T19: accumulator battery, -0.0 init, arith
+chain, overflow exit, div-by-zero fallback, f64 cold-call), MTR canary
+`rondb_jit_double_canary` (Q1–Q8: scalar/grouped/FLOAT/AVG/arith under
+4060 + counter delta; division and DECIMAL as differentials; -0.0
+baseline comparison).
+
+Regen-stencils done — the regenerated headers carry the 8 new
+stencils and the audit validated the f64 fold-magic counts.
+
+Original plan follows.
 
 - `OP_LOAD_COL_NDB_F64` (cold-call, new helper `ndb_jit_h_load_col_f64`):
   DOUBLE columns load their bits; FLOAT columns promote to double

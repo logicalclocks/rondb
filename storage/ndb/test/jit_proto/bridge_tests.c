@@ -63,9 +63,18 @@
 #define kOpDiv            4
 #define kOpSkip          29
 #define kOpSetRegNull    30
+/* Phase 5C-2: the optimizer's DOUBLE-track rewrites. */
+#define kOpSumDouble     15
+#define kOpMaxDouble     17
+#define kOpMinDouble     19
+#define kOpPlusDouble    21
+#define kOpMinusDouble   23
+#define kOpMulDouble     25
+#define kOpDivDouble     26
 
 #define NDB_TYPE_BIGINT  9
-#define NDB_TYPE_DOUBLE  18
+#define NDB_TYPE_FLOAT   11
+#define NDB_TYPE_DOUBLE  12
 
 /* Encode opcode + operands into a single Uint32. */
 static uint32_t enc_op(uint32_t op, uint32_t lower) {
@@ -101,6 +110,13 @@ static uint32_t enc_sum(uint32_t reg_index, uint32_t agg_index) {
 static uint32_t enc_count(uint32_t reg_index, uint32_t agg_index) {
   return enc_op(kOpCount,
                 ((reg_index & 0x0Fu) << 16) | (agg_index & 0xFFFFu));
+}
+
+/* Generic aggregate encoder (Sum/Min/Max families all share the
+ * kOpSumBigint wire layout). */
+static uint32_t enc_agg(uint32_t op, uint32_t reg_index,
+                        uint32_t agg_index) {
+  return enc_op(op, ((reg_index & 0x0Fu) << 16) | (agg_index & 0xFFFFu));
 }
 
 /* ------------------------------------------------------------------ */
@@ -500,20 +516,55 @@ static void test_embedded_interp_reject(void) {
                    /*offending_op=*/0);
 }
 
-/* T8: kOpDiv — must reject (no division support in Phase 4). */
+/* T8: generic kOpDiv over registers NOT proven f64 — must reject
+ * (the kernel's runtime i64→double conversion has no JIT lowering;
+ * only the all-double case lowers — see T50b). Both regs are UNKNOWN
+ * here, so this rejects as an unimplemented conversion, not a type
+ * bug. */
 static void test_div_reject(void) {
   uint32_t prog[1] = { enc_2reg(kOpDiv, 0, 1) };
   assert_rejected("T8 div_reject", prog, 1,
                    JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpDiv);
 }
 
-/* T9: kOpLoadConst with NDB_TYPE_DOUBLE — must reject (non-bigint). */
-static void test_load_const_double_reject(void) {
-  uint32_t prog[3] = {
+/* T9 (flipped in Phase 5C-2): kOpLoadConst with NDB_TYPE_DOUBLE now
+ * ACCEPTS — the two value words carry the double's bit pattern, which
+ * rides the normal imm64 path (bits are bits), and the tracker marks
+ * the register f64 so it can feed kOpSumDouble.
+ * Value 2.0 = 0x4000000000000000. */
+static void test_load_const_double_accept(void) {
+  const char *name = "T9 load_const_double_accept";
+  uint32_t prog[4] = {
     enc_load_const(NDB_TYPE_DOUBLE, 0),
+    0x00000000u, 0x40000000u,   /* 2.0, low word first */
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* ops: [0]LOAD_CONST_INT (bit pattern > 2^32) [1]SUM_F64
+   *      [2]tail EXIT [3]OVERFLOW_EXIT (SUM_F64 is checked). */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/4)) return;
+  if (p.ops[0].imm != (int64_t)0x4000000000000000LL) {
+    mark_fail(name, "decoded imm=0x%" PRIx64 ", want 0x4000000000000000",
+              (uint64_t)p.ops[0].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_SUM_F64))
+    return;
+  if (!expect_op_field(name, &p, 1, "d", p.ops[1].d, 3)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_OVERFLOW_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T9b: kOpLoadConst with a type that is neither BIGINT nor DOUBLE —
+ * must reject. 18 = NDB_TYPE_VARCHAR territory; any non-numeric-const
+ * type takes this path. */
+static void test_load_const_unsupported_type_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_const(/*type=*/18, 0),
     0x00000000u, 0x40000000u,   /* doesn't matter */
   };
-  assert_rejected("T9 load_const_double_reject", prog, 3,
+  assert_rejected("T9b load_const_unsupported_type_reject", prog, 3,
                    JIT_BRIDGE_NON_BIGINT, 0, kOpLoadConst);
 }
 
@@ -1613,6 +1664,179 @@ static void test_skip_lowers_to_jump(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5C-2 — the DOUBLE family.                                     */
+/* ------------------------------------------------------------------ */
+
+/* T50: full double lowering battery. DOUBLE and FLOAT columns both
+ * enter the f64 track (FLOAT promotes in the helper); all four
+ * arithmetic ops lower with the shared overflow target; the three
+ * accumulators lower with c = agg_index; SUM is checked, MIN/MAX are
+ * not. */
+static void test_double_family_lowering_accept(void) {
+  const char *name = "T50 double_family_lowering_accept";
+  uint32_t prog[9] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_FLOAT,  /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpPlusDouble,  0, 1),
+    enc_2reg(kOpMulDouble,   0, 0),
+    enc_2reg(kOpMinusDouble, 0, 1),
+    enc_2reg(kOpDivDouble,   0, 1),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMinDouble, /*reg=*/1, /*agg=*/1),
+    enc_agg(kOpMaxDouble, /*reg=*/1, /*agg=*/2),
+  };
+  Program p;
+  /* ops: [0][1]LOAD_COL_NDB_F64 [2]ADD [3]MUL [4]MINUS [5]DIV
+   *      [6]SUM_F64 [7]MIN_F64 [8]MAX_F64 [9]tail EXIT
+   *      [10]OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/11)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_F64)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_COL_NDB_F64)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_ADD_F64))
+    return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MUL_F64))
+    return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_MINUS_F64))
+    return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind, OP_DIV_F64))
+    return;
+  if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind, OP_SUM_F64))
+    return;
+  if (!expect_op_field(name, &p, 7, "kind", p.ops[7].kind, OP_MIN_F64))
+    return;
+  if (!expect_op_field(name, &p, 8, "kind", p.ops[8].kind, OP_MAX_F64))
+    return;
+  /* Checked ops all point at the tail OVERFLOW_EXIT (pc 10). */
+  for (uint16_t pc = 2; pc <= 6; pc++) {
+    if (!expect_op_field(name, &p, pc, "d", p.ops[pc].d, 10)) return;
+  }
+  /* MIN/MAX are unchecked. */
+  if (!expect_op_field(name, &p, 7, "d", p.ops[7].d, 0)) return;
+  if (!expect_op_field(name, &p, 8, "d", p.ops[8].d, 0)) return;
+  /* Accumulator operand shape: a = c = agg_index, b = src reg. */
+  if (!expect_op_field(name, &p, 6, "a", p.ops[6].a, 0)) return;
+  if (!expect_op_field(name, &p, 6, "b", p.ops[6].b, 0)) return;
+  if (!expect_op_field(name, &p, 6, "c", p.ops[6].c, 0)) return;
+  if (!expect_op_field(name, &p, 7, "a", p.ops[7].a, 1)) return;
+  if (!expect_op_field(name, &p, 7, "b", p.ops[7].b, 1)) return;
+  if (!expect_op_field(name, &p, 8, "a", p.ops[8].a, 2)) return;
+  mark_pass(name);
+}
+
+/* T50b: generic kOpDiv over two PROVEN-f64 registers lowers to
+ * OP_DIV_F64 (the kernel's runtime conversion is a no-op when both
+ * operands are already double). */
+static void test_generic_div_f64_lowering_accept(void) {
+  const char *name = "T50b generic_div_f64_lowering_accept";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpDiv, 0, 1),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0][1]LOAD_COL_NDB_F64 [2]DIV_F64 [3]SUM_F64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_DIV_F64))
+    return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 5)) return;
+  mark_pass(name);
+}
+
+/* T51: the 5C-1 tracker's rejects, now constructible with f64
+ * producers in the opcode set. */
+static void test_type_mismatch_f64_into_i64_sum(void) {
+  /* SUM_BIGINT over an f64 register — optimizer-bug fence. */
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T51a type_mismatch_f64_into_sum_bigint", prog, 2,
+                  JIT_BRIDGE_TYPE_MISMATCH, 1, kOpSumBigint);
+}
+
+static void test_type_mismatch_i64_into_f64_sum(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T51b type_mismatch_i64_into_sum_double", prog, 2,
+                  JIT_BRIDGE_TYPE_MISMATCH, 1, kOpSumDouble);
+}
+
+static void test_type_mismatch_f64_into_i64_arith(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_load_col(NDB_TYPE_DOUBLE, 1, 1),
+    enc_2reg(kOpPlusBigint, 0, 1),
+  };
+  assert_rejected("T51c type_mismatch_f64_into_plus_bigint", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, kOpPlusBigint);
+}
+
+static void test_type_mismatch_i64_into_f64_arith(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_2reg(kOpPlusDouble, 0, 1),
+  };
+  assert_rejected("T51d type_mismatch_i64_into_plus_double", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, kOpPlusDouble);
+}
+
+/* T51e: kOpMov is type-preserving — a moved f64 register still feeds
+ * kOpSumDouble. */
+static void test_mov_preserves_f64_accept(void) {
+  const char *name = "T51e mov_preserves_f64_accept";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
+    enc_2reg(kOpMov, /*dst=*/1, /*src=*/0),
+    enc_agg(kOpSumDouble, /*reg=*/1, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LOAD_COL_NDB_F64 [1]MOV [2]SUM_F64 [3]EXIT [4]OVF. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_SUM_F64))
+    return;
+  mark_pass(name);
+}
+
+/* T51g: the AVG(double_col) decomposition — kOpSumDouble + kOpCount
+ * over the SAME f64 register — must accept. COUNT never reads the
+ * register's bits (acc += 1), so its operand type is irrelevant; a
+ * type check there would knock out every double AVG. */
+static void test_avg_double_shape_accept(void) {
+  const char *name = "T51g avg_double_shape_accept";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+    enc_count(/*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]LOAD_COL_NDB_F64 [1]SUM_F64 [2]COUNT [3]EXIT [4]OVF. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_COUNT_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T51f: an embedded block invalidates the tracker — an f64 register
+ * from before the block may not feed an f64 consumer after it (the
+ * planner re-loads outer registers after embedded blocks, so real
+ * programs never hit this; an optimizer/emitter bug would). */
+static void test_embedded_invalidates_f64_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T51f embedded_invalidates_f64_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, kOpSumDouble);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -1627,7 +1851,8 @@ int main(void) {
   test_load_col_4096_reject();
   test_embedded_interp_reject();
   test_div_reject();
-  test_load_const_double_reject();
+  test_load_const_double_accept();
+  test_load_const_unsupported_type_reject();
   test_load_const_truncated_reject();
   test_reg_oor_reject();
   test_set_reg_null_reject();
@@ -1675,6 +1900,15 @@ int main(void) {
   test_skip_lowers_to_jump();
   test_min_max_lowering_accept();
   test_min_slot_oor_reject();
+  test_double_family_lowering_accept();
+  test_generic_div_f64_lowering_accept();
+  test_type_mismatch_f64_into_i64_sum();
+  test_type_mismatch_i64_into_f64_sum();
+  test_type_mismatch_f64_into_i64_arith();
+  test_type_mismatch_i64_into_f64_arith();
+  test_mov_preserves_f64_accept();
+  test_avg_double_shape_accept();
+  test_embedded_invalidates_f64_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

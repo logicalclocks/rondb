@@ -183,6 +183,27 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_SUM_OVF_TGT",   HK_OVERFLOW_TAKE },
   /* CASE accept-path unconditional jump. */
   { "HOLE_JMP_TGT",       HK_BRANCH_TAKE   },
+  /* Phase 5C-2 DOUBLE family. FAR_* are shared by op_add_f64 /
+   * op_minus_f64 / op_mul_f64 / op_div_f64 (same a=dst, b=lhs, c=rhs
+   * layout as the int arithmetic); FSUM_* / FMM_* mirror the bigint
+   * SUM / MIN-MAX accumulator hole shapes. One overflow target symbol
+   * is shared by every f64 stencil with a non-finite check — the
+   * extractor records relocations per stencil, so sharing the name is
+   * safe (same pattern as the ndb_jit_h_* helper symbols). */
+  { "HOLE_FAR_DST",       HK_OP_A          },
+  { "HOLE_FAR_A",         HK_OP_B          },
+  { "HOLE_FAR_B",         HK_OP_C          },
+  { "HOLE_FSUM_SLOT",     HK_OP_A          },
+  { "HOLE_FSUM_SRC",      HK_OP_B          },
+  { "HOLE_FSUM_RESULT",   HK_OP_C          },
+  { "HOLE_FMM_SLOT",      HK_OP_A          },
+  { "HOLE_FMM_SRC",       HK_OP_B          },
+  { "HOLE_FMM_RESULT",    HK_OP_C          },
+  { "HOLE_F64_OVF_TGT",   HK_OVERFLOW_TAKE },
+  /* op_load_col_ndb_f64 cold-call helper arguments (narrow path,
+   * like LCN_*). */
+  { "HOLE_LCF_COL",       HK_OP_C          },
+  { "HOLE_LCF_DST",       HK_OP_A          },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -331,6 +352,10 @@ static const size_t kHoleSymbolTableLen =
 /* Phase 7 op_branch_attr_op_arg — instruction word-offset hole (narrow).
  * sha256("RONDB-1056-Phase4_5-narrow-magic-v1|MAGIC_BAOA_OFF_NARROW")[0:2] LE. */
 #define MAGIC_BAOA_OFF_NARROW     0xd4fbu
+/* Phase 5C-2 op_load_col_ndb_f64 cold-call helper arguments (same v1
+ * narrow salt). */
+#define MAGIC_LCF_COL_NARROW      0xcef1u
+#define MAGIC_LCF_DST_NARROW      0x5f9bu
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -401,6 +426,17 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_MM_SLOT_FOLD       0x71au
 #define MAGIC_MM_SRC_FOLD        0x2e4u
 #define MAGIC_MM_RESULT_FOLD     0xc93u
+/* Phase 5C-2 DOUBLE family. FAR_* shared by op_{add,minus,mul,div}_f64;
+ * FSUM_* by op_sum_f64; FMM_* by op_min_f64 / op_max_f64. */
+#define MAGIC_FAR_DST_FOLD       0x666u
+#define MAGIC_FAR_A_FOLD         0xa7fu
+#define MAGIC_FAR_B_FOLD         0x935u
+#define MAGIC_FSUM_SLOT_FOLD     0xf73u
+#define MAGIC_FSUM_SRC_FOLD      0xd5eu
+#define MAGIC_FSUM_RESULT_FOLD   0x90fu
+#define MAGIC_FMM_SLOT_FOLD      0x78au
+#define MAGIC_FMM_SRC_FOLD       0xf48u
+#define MAGIC_FMM_RESULT_FOLD    0xfe4u
 
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
@@ -465,6 +501,9 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   { MAGIC_LLM_POS_NARROW,   HK_OP_B,  "MAGIC_LLM_POS_NARROW"   },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { MAGIC_BAOA_OFF_NARROW,  HK_OP_B,  "MAGIC_BAOA_OFF_NARROW"  },
+  /* Phase 5C-2: op_load_col_ndb_f64 helper arguments. */
+  { MAGIC_LCF_COL_NARROW,   HK_OP_C,  "MAGIC_LCF_COL_NARROW"   },
+  { MAGIC_LCF_DST_NARROW,   HK_OP_A,  "MAGIC_LCF_DST_NARROW"   },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);
@@ -531,6 +570,15 @@ static const HoleFoldMagicEntry kHoleFoldMagicTable[] = {
   { MAGIC_MM_SLOT_FOLD,       HK_OP_A,  "MAGIC_MM_SLOT_FOLD"       },
   { MAGIC_MM_SRC_FOLD,        HK_OP_B,  "MAGIC_MM_SRC_FOLD"        },
   { MAGIC_MM_RESULT_FOLD,     HK_OP_C,  "MAGIC_MM_RESULT_FOLD"     },
+  { MAGIC_FAR_DST_FOLD,       HK_OP_A,  "MAGIC_FAR_DST_FOLD"       },
+  { MAGIC_FAR_A_FOLD,         HK_OP_B,  "MAGIC_FAR_A_FOLD"         },
+  { MAGIC_FAR_B_FOLD,         HK_OP_C,  "MAGIC_FAR_B_FOLD"         },
+  { MAGIC_FSUM_SLOT_FOLD,     HK_OP_A,  "MAGIC_FSUM_SLOT_FOLD"     },
+  { MAGIC_FSUM_SRC_FOLD,      HK_OP_B,  "MAGIC_FSUM_SRC_FOLD"      },
+  { MAGIC_FSUM_RESULT_FOLD,   HK_OP_C,  "MAGIC_FSUM_RESULT_FOLD"   },
+  { MAGIC_FMM_SLOT_FOLD,      HK_OP_A,  "MAGIC_FMM_SLOT_FOLD"      },
+  { MAGIC_FMM_SRC_FOLD,       HK_OP_B,  "MAGIC_FMM_SRC_FOLD"       },
+  { MAGIC_FMM_RESULT_FOLD,    HK_OP_C,  "MAGIC_FMM_RESULT_FOLD"    },
 };
 static const size_t kHoleFoldMagicTableLen =
     sizeof(kHoleFoldMagicTable) / sizeof(kHoleFoldMagicTable[0]);

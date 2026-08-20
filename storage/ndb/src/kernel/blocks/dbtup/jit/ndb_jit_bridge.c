@@ -106,6 +106,8 @@
 
 /* From storage/ndb/include/ndb_constants.h. */
 #define BR_NDB_TYPE_BIGINT  9
+#define BR_NDB_TYPE_FLOAT   11
+#define BR_NDB_TYPE_DOUBLE  12
 
 /* ------------------------------------------------------------------ */
 /* Embedded-interpreter opcodes (mirror of                            */
@@ -197,6 +199,8 @@ const char *ndb_jit_bridge_reason_name(JitBridgeReason reason) {
       return "embedded_too_large";
     case JIT_BRIDGE_EMBEDDED_BACKWARD:
       return "embedded_backward";
+    case JIT_BRIDGE_TYPE_MISMATCH:
+      return "type_mismatch";
     default:
       return "unknown";
   }
@@ -302,6 +306,17 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_OVERFLOW_EXIT:        return "overflow_exit";
     case OP_JUMP:                 return "jump";
     case OP_FILTER_REJECT_EXIT:   return "filter_reject_exit";
+    case OP_COUNT_BIGINT:         return "count_bigint";
+    case OP_MIN_BIGINT:           return "min_bigint";
+    case OP_MAX_BIGINT:           return "max_bigint";
+    case OP_LOAD_COL_NDB_F64:     return "load_col_ndb_f64";
+    case OP_ADD_F64:              return "add_f64";
+    case OP_MINUS_F64:            return "minus_f64";
+    case OP_MUL_F64:              return "mul_f64";
+    case OP_DIV_F64:              return "div_f64";
+    case OP_SUM_F64:              return "sum_f64";
+    case OP_MIN_F64:              return "min_f64";
+    case OP_MAX_F64:              return "max_f64";
     default:                      return "jit_op?";
   }
 }
@@ -1309,6 +1324,45 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
     out_err->offending_op   = 0;
   }
 
+  /* Phase 5C-1: linear register-type tracker. The kernel-side
+   * OptimizeProgramBuffer type-specializes the bytecode before every
+   * compile (both the Create and DblqhProxy paths), so the bridge only
+   * sees typed opcodes — this tracker validates that the operand
+   * registers actually carry the type the opcode claims (defense in
+   * depth against optimizer bugs, and the safety fence that keeps an
+   * f64 bit pattern out of an i64 op once 5C-2 lands).
+   *
+   * Rules (documented invariants, not a dataflow lattice):
+   * - Producers set their destination's type (loads/consts from their
+   *   explicit type field; Mov copies; Bigint arithmetic yields I64).
+   * - I64-consuming ops reject F64 operands but TOLERATE UNKNOWN:
+   *   everything producible today — including the 5A embedded ops,
+   *   which write registers this linear walk cannot see — is i64.
+   *   Revisit that tolerance if an embedded op ever produces f64.
+   * - F64-consuming ops (5C-2) REQUIRE proven F64 — the f64 stencils
+   *   reinterpret the register bits as a double, so an UNKNOWN
+   *   (embedded-invalidated) register must not reach them.
+   * - An embedded block invalidates every register (the optimizer
+   *   itself skips embedded blocks, and the planner re-loads outer
+   *   registers after them — same convention). */
+  enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2 };
+  uint8_t reg_type[BC_MAX_REGS];
+  memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
+#define BR_REJECT_IF_F64(r)                                        \
+  do {                                                             \
+    if (reg_type[(r)] == BR_REG_F64) {                             \
+      set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);    \
+      return JIT_BRIDGE_TYPE_MISMATCH;                             \
+    }                                                              \
+  } while (0)
+#define BR_REQUIRE_F64(r)                                          \
+  do {                                                             \
+    if (reg_type[(r)] != BR_REG_F64) {                             \
+      set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);    \
+      return JIT_BRIDGE_TYPE_MISMATCH;                             \
+    }                                                              \
+  } while (0)
+
   uint32_t pos = 0;
   uint16_t checked_arith_ops[BC_MAX_OPS];
   uint16_t n_checked_arith_ops = 0;
@@ -1339,7 +1393,11 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         uint8_t type      = (uint8_t)((word >> 21) & 0x1Fu);
         uint8_t reg_index = (uint8_t)((word >> 16) & 0x0Fu);
-        if (type != BR_NDB_TYPE_BIGINT) {
+        /* Phase 5C-2: DOUBLE constants are admitted — bits are bits.
+         * The two value words carry the double's bit pattern, which
+         * rides the same imm64 path as an integer constant; only the
+         * tracker type differs. */
+        if (type != BR_NDB_TYPE_BIGINT && type != BR_NDB_TYPE_DOUBLE) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
@@ -1368,6 +1426,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        reg_type[reg_index] =
+            (type == BR_NDB_TYPE_DOUBLE) ? BR_REG_F64 : BR_REG_I64;
         pos += 3;
         break;
       }
@@ -1390,10 +1450,23 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * aarch64 narrow MOVZ / x86_64 imm32 operand holes both carry the
          * full 16-bit value, so no engine change is needed — only this
          * admission bound and dropping the former (uint8_t) cast. */
-        uint8_t  type      = (uint8_t)((word >> 21) & 0x1Fu);
+        /* Full 6-bit type decode, mirroring decodeLoadColType (bit 20
+         * extends the 5-bit field for DATETIME2/TIMESTAMP2). Neither
+         * of those is admitted, but decoding them as their real values
+         * keeps the reject reason honest. */
+        uint8_t  type      = (uint8_t)(((word >> 21) & 0x1Fu) |
+                                       (((word >> 20) & 0x1u) << 5));
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t col_index = (uint16_t)(word & 0xFFFFu);
-        if (type != BR_NDB_TYPE_BIGINT) {
+        /* Phase 5C-2: declared FLOAT/DOUBLE columns load through the
+         * f64 cold-call variant (FLOAT promotes to double in the
+         * helper, matching the interpreter's floatget path). The wire
+         * type is the column's DECLARED type, so this admission is
+         * static; the helper's own descriptor check is defense in
+         * depth. */
+        int is_f64 =
+            (type == BR_NDB_TYPE_DOUBLE || type == BR_NDB_TYPE_FLOAT);
+        if (type != BR_NDB_TYPE_BIGINT && !is_f64) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
@@ -1401,11 +1474,13 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        if (!emit_op(out_prog, OP_LOAD_COL_NDB,
+        if (!emit_op(out_prog,
+                     is_f64 ? OP_LOAD_COL_NDB_F64 : OP_LOAD_COL_NDB,
                      reg_index, 0, col_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        reg_type[reg_index] = is_f64 ? BR_REG_F64 : BR_REG_I64;
         pos += 1;
         break;
       }
@@ -1421,6 +1496,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        /* A 64-bit register move is type-preserving (bits are bits). */
+        reg_type[dst] = reg_type[src];
         pos += 1;
         break;
       }
@@ -1437,6 +1514,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
+        BR_REJECT_IF_F64(dst);
+        BR_REJECT_IF_F64(src);
         uint8_t our_kind;
         switch (op) {
           case BR_kOpPlusBigint:  our_kind = OP_ADD_INT_INT_CHECKED;   break;
@@ -1449,6 +1528,60 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         checked_arith_ops[n_checked_arith_ops++] =
             (uint16_t)(out_prog->n_ops - 1);
+        reg_type[dst] = BR_REG_I64;
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpPlusDouble:
+      case BR_kOpMinusDouble:
+      case BR_kOpMulDouble:
+      case BR_kOpDivDouble:
+      case BR_kOpDiv: {
+        /* Phase 5C-2: double arithmetic — same 2-operand wire form as
+         * the Bigint family. Both operands must be PROVEN f64 (the
+         * stencils reinterpret the register bits as doubles).
+         *
+         * kOpDiv is the GENERIC division: the optimizer never rewrites
+         * it (it only marks dst DOUBLE), and its kernel converts i64
+         * operands to double at runtime. The bridge lowers only the
+         * all-double case — conversion ops don't exist yet — and calls
+         * anything else UNSUPPORTED (an unimplemented conversion, not
+         * a type bug). For the explicitly typed kOp*Double ops a
+         * non-f64 operand IS a type bug → TYPE_MISMATCH.
+         *
+         * All four carry the interpreter kernels' non-finite check →
+         * overflow exit (same d-target fixup list as checked int
+         * arithmetic). OP_DIV_F64 additionally takes the per-row
+         * fallback on divisor == 0 (kernel: result register becomes
+         * NULL) — handled inside the stencil, no extra target. */
+        uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
+        uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
+        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (op == BR_kOpDiv &&
+            (reg_type[dst] != BR_REG_F64 || reg_type[src] != BR_REG_F64)) {
+          set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        BR_REQUIRE_F64(dst);
+        BR_REQUIRE_F64(src);
+        uint8_t our_kind;
+        switch (op) {
+          case BR_kOpPlusDouble:  our_kind = OP_ADD_F64;   break;
+          case BR_kOpMinusDouble: our_kind = OP_MINUS_F64; break;
+          case BR_kOpMulDouble:   our_kind = OP_MUL_F64;   break;
+          default:                our_kind = OP_DIV_F64;   break;
+        }
+        if (!emit_op(out_prog, our_kind, dst, dst, src, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        checked_arith_ops[n_checked_arith_ops++] =
+            (uint16_t)(out_prog->n_ops - 1);
+        reg_type[dst] = BR_REG_F64;
         pos += 1;
         break;
       }
@@ -1468,6 +1601,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
+        BR_REJECT_IF_F64(reg_index);
         if (!emit_op(out_prog, OP_SUM_BIGINT_CHECKED,
                      (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
@@ -1493,6 +1627,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
+        /* NO type check on the register: the COUNT stencil never reads
+         * its bits (acc += 1; the interpreter's null-register skip is
+         * covered by the non-null load contract), so any register type
+         * — i64, f64, unknown — is fine. AVG(double_col) relies on
+         * this: it decomposes into kOpSumDouble + kOpCount over the
+         * SAME f64 register. */
         /* c = agg_index (the AggResItem index) — see the kOpSumBigint
          * comment on the Phase 5A mask-index fix. */
         if (!emit_op(out_prog, OP_COUNT_BIGINT,
@@ -1519,12 +1659,49 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
+        BR_REJECT_IF_F64(reg_index);
         uint8_t out_kind =
             (op == BR_kOpMinBigint) ? OP_MIN_BIGINT : OP_MAX_BIGINT;
         if (!emit_op(out_prog, out_kind,
                      (uint8_t)agg_index, reg_index, agg_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpSumDouble:
+      case BR_kOpMinDouble:
+      case BR_kOpMaxDouble: {
+        /* Phase 5C-2: double accumulators. Same wire layout as their
+         * Bigint siblings; the source register must be PROVEN f64
+         * (these stencils reinterpret its bits as a double). c =
+         * agg_index — the AggResItem index (5A mask-index fix). All
+         * three mark value_double so the writeback glue produces a
+         * DOUBLE result; SUM additionally overflow-exits on a
+         * non-finite update, joining the same d-target fixup list. */
+        uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
+        uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        BR_REQUIRE_F64(reg_index);
+        uint8_t out_kind;
+        switch (op) {
+          case BR_kOpSumDouble: out_kind = OP_SUM_F64; break;
+          case BR_kOpMinDouble: out_kind = OP_MIN_F64; break;
+          default:              out_kind = OP_MAX_F64; break;
+        }
+        if (!emit_op(out_prog, out_kind,
+                     (uint8_t)agg_index, reg_index, agg_index, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        if (op == BR_kOpSumDouble) {
+          checked_arith_ops[n_checked_arith_ops++] =
+              (uint16_t)(out_prog->n_ops - 1);
         }
         pos += 1;
         break;
@@ -1578,14 +1755,19 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);
         if (rc != JIT_BRIDGE_OK) return rc;
+        /* Phase 5C-1: an embedded block writes registers this linear
+         * walk cannot see (READ_ATTR / LOAD_CONST16/64) — invalidate
+         * everything, matching the optimizer's own skip-the-block
+         * convention. Embedded writes are always i64 today, which is
+         * why UNKNOWN is tolerated by i64 consumers. */
+        memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
         pos += 1 + emb_len;
         break;
       }
 
-      /* Everything else — kOpDiv*, kOpMod, all double / max / min /
-       * count variants, generic untyped kOpPlus / kOpSum,
-       * kOpSetRegNull, kOpSkip — is unsupported. Reject the entire
-       * program. */
+      /* Everything else — kOpDivInt*, kOpMod, generic untyped
+       * kOpPlus / kOpSum / kOpMin / kOpMax (string / DECIMAL tracks),
+       * kOpSetRegNull — is unsupported. Reject the entire program. */
       default:
         set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
         return JIT_BRIDGE_UNSUPPORTED_OP;
@@ -1637,4 +1819,6 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   }
 
   return JIT_BRIDGE_OK;
+#undef BR_REJECT_IF_F64
+#undef BR_REQUIRE_F64
 }

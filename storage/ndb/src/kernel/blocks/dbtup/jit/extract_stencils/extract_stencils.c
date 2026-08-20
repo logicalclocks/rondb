@@ -304,6 +304,16 @@ static TailPolicy classify_tail(const char *name) {
   if (strcmp(name, "op_jump") == 0) return TAIL_KEEP_ALL;
   if (starts_with(name, "op_branch_")) return TAIL_KEEP_ALL;
   if (strstr(name, "_checked") != NULL) return TAIL_KEEP_ALL;
+  /* Phase 5C-2: the f64 stencils with a non-finite → HOLE_F64_OVF_TGT
+   * branch have the checked-arithmetic shape (taken branch + fall-
+   * through jmp to next) — both jmps must be kept and recorded as
+   * HK_OVERFLOW_TAKE / HK_BRANCH_FALL holes. op_min_f64 / op_max_f64 /
+   * op_load_col_ndb_f64 have no branch and stay on the strip path. */
+  if (strcmp(name, "op_add_f64") == 0) return TAIL_KEEP_ALL;
+  if (strcmp(name, "op_minus_f64") == 0) return TAIL_KEEP_ALL;
+  if (strcmp(name, "op_mul_f64") == 0) return TAIL_KEEP_ALL;
+  if (strcmp(name, "op_div_f64") == 0) return TAIL_KEEP_ALL;
+  if (strcmp(name, "op_sum_f64") == 0) return TAIL_KEEP_ALL;
   return TAIL_STRIP_TAIL;
 }
 
@@ -996,6 +1006,14 @@ static const OpkindMap kOpkindMap[] = {
   { "op_count_bigint",          "OP_COUNT_BIGINT"          },
   { "op_min_bigint",            "OP_MIN_BIGINT"            },
   { "op_max_bigint",            "OP_MAX_BIGINT"            },
+  { "op_load_col_ndb_f64",      "OP_LOAD_COL_NDB_F64"      },
+  { "op_add_f64",               "OP_ADD_F64"               },
+  { "op_minus_f64",             "OP_MINUS_F64"             },
+  { "op_mul_f64",               "OP_MUL_F64"               },
+  { "op_div_f64",               "OP_DIV_F64"               },
+  { "op_sum_f64",               "OP_SUM_F64"               },
+  { "op_min_f64",               "OP_MIN_F64"               },
+  { "op_max_f64",               "OP_MAX_F64"               },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

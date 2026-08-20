@@ -288,6 +288,82 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
 #endif
 }
 
+/* ndb_jit_h_load_col_f64 — Phase 5C-2 cold-call load for declared
+ * FLOAT/DOUBLE columns (OP_LOAD_COL_NDB_F64). Same read path as
+ * ndb_jit_h_load_col; the double's BIT PATTERN is stored into
+ * regs_i64[dst_reg] (f64 values live bit-cast in the i64 register
+ * file — the f64 stencils reinterpret on use). FLOAT promotes to
+ * double, mirroring the interpreter's floatget load. NULL values and
+ * any declared type other than FLOAT/DOUBLE (the bridge admits by the
+ * wire type, so a mismatch here means the program no longer matches
+ * the schema) take the per-row interpreter fallback. */
+extern "C" void
+ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_f64: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  /* 1 word AttributeHeader + 8 bytes for a DOUBLE. */
+  Uint32 read_buf[4];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  if (header->isNULL()) {
+    /* Same per-row fallback as the i64 load — registers have no null
+     * tracking until Phase 5D. */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  const uchar *data = reinterpret_cast<const uchar *>(&read_buf[1]);
+  double value;
+  switch (type_id) {
+    case NDB_TYPE_FLOAT:
+      value = (double)floatget(data);
+      break;
+    case NDB_TYPE_DOUBLE:
+      value = doubleget(data);
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  s->regs_i64[dst_reg] = bits;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col_f64 col=%u dst=r%u "
+        "value=%f",
+        ctx->trace_row_no, col_id, dst_reg, value);
+  }
+#endif
+}
+
 /* ndb_jit_h_branch_attr_null — Phase 5.0 cold-call branch helper.
  *
  * Used by both op_branch_attr_eq_null (want_null=1) and
@@ -474,6 +550,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
    * enforce the call ABI at codegen time. */
   jit1_register_helper("ndb_jit_h_load_col",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col));
+  jit1_register_helper("ndb_jit_h_load_col_f64",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
   jit1_register_helper("ndb_jit_h_branch_attr_op_arg",
@@ -579,10 +657,20 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
    * SUM a signed one. */
   for (Uint32 i = 0; i < n_agg_results; i++) {
     if (s.value_updated[i] != 0) {
-      agg_res_ptr[i].type        = NDB_TYPE_BIGINT;
-      agg_res_ptr[i].is_unsigned = (s.value_unsigned[i] != 0);
-      agg_res_ptr[i].is_null     = false;
-      agg_res_ptr[i].value.val_int64 = s.acc_i64[i];
+      if (s.value_double[i] != 0) {
+        /* Phase 5C-2: a double accumulator (SUM/MIN/MAX_F64). The
+         * acc slot holds the double's bit pattern. */
+        agg_res_ptr[i].type        = NDB_TYPE_DOUBLE;
+        agg_res_ptr[i].is_unsigned = false;
+        agg_res_ptr[i].is_null     = false;
+        std::memcpy(&agg_res_ptr[i].value.val_double, &s.acc_i64[i],
+                    sizeof(double));
+      } else {
+        agg_res_ptr[i].type        = NDB_TYPE_BIGINT;
+        agg_res_ptr[i].is_unsigned = (s.value_unsigned[i] != 0);
+        agg_res_ptr[i].is_null     = false;
+        agg_res_ptr[i].value.val_int64 = s.acc_i64[i];
+      }
     }
   }
 

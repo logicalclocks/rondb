@@ -132,6 +132,10 @@ static const struct {
   { "MAGIC_LLM_POS_NARROW",   "op_load_linked_to_mem"     },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { "MAGIC_BAOA_OFF_NARROW",  "op_branch_attr_op_arg"     },
+  /* Phase 5C-2: op_load_col_ndb_f64 helper-argument holes (narrow for
+   * the same reason as LCN_* — scalar bl arguments, not array indices). */
+  { "MAGIC_LCF_COL_NARROW",   "op_load_col_ndb_f64"       },
+  { "MAGIC_LCF_DST_NARROW",   "op_load_col_ndb_f64"       },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);
@@ -245,6 +249,33 @@ static const struct {
   { "MAGIC_MM_SLOT_FOLD",      "op_max_bigint",        2 },  /* L+S */
   { "MAGIC_MM_SRC_FOLD",       "op_max_bigint",        1 },
   { "MAGIC_MM_RESULT_FOLD",    "op_max_bigint",        3 },  /* L+2×S */
+  /* Phase 5C-2 DOUBLE family. FAR_* shared by the four f64 arithmetic
+   * stencils (one load per source, one store to dst — op_div_f64 has a
+   * single store site covering both the fallback and the quotient
+   * path). FSUM_SLOT: init store + update load + update store; the
+   * RESULT indices count the value_initialized load plus the
+   * initialized/updated/double mask stores. */
+  { "MAGIC_FAR_A_FOLD",        "op_add_f64",           1 },
+  { "MAGIC_FAR_B_FOLD",        "op_add_f64",           1 },
+  { "MAGIC_FAR_DST_FOLD",      "op_add_f64",           1 },
+  { "MAGIC_FAR_A_FOLD",        "op_minus_f64",         1 },
+  { "MAGIC_FAR_B_FOLD",        "op_minus_f64",         1 },
+  { "MAGIC_FAR_DST_FOLD",      "op_minus_f64",         1 },
+  { "MAGIC_FAR_A_FOLD",        "op_mul_f64",           1 },
+  { "MAGIC_FAR_B_FOLD",        "op_mul_f64",           1 },
+  { "MAGIC_FAR_DST_FOLD",      "op_mul_f64",           1 },
+  { "MAGIC_FAR_A_FOLD",        "op_div_f64",           1 },
+  { "MAGIC_FAR_B_FOLD",        "op_div_f64",           1 },
+  { "MAGIC_FAR_DST_FOLD",      "op_div_f64",           1 },
+  { "MAGIC_FSUM_SLOT_FOLD",    "op_sum_f64",           3 },  /* 2×S+L */
+  { "MAGIC_FSUM_SRC_FOLD",     "op_sum_f64",           1 },
+  { "MAGIC_FSUM_RESULT_FOLD",  "op_sum_f64",           4 },  /* L+3×S */
+  { "MAGIC_FMM_SLOT_FOLD",     "op_min_f64",           2 },  /* L+S */
+  { "MAGIC_FMM_SRC_FOLD",      "op_min_f64",           1 },
+  { "MAGIC_FMM_RESULT_FOLD",   "op_min_f64",           4 },  /* L+3×S */
+  { "MAGIC_FMM_SLOT_FOLD",     "op_max_f64",           2 },  /* L+S */
+  { "MAGIC_FMM_SRC_FOLD",      "op_max_f64",           1 },
+  { "MAGIC_FMM_RESULT_FOLD",   "op_max_f64",           4 },  /* L+3×S */
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);

@@ -187,6 +187,14 @@ static inline int op_has_overflow_target(uint8_t kind) {
     case OP_MINUS_INT_INT_CHECKED:
     case OP_MUL_INT_INT_CHECKED:
     case OP_SUM_BIGINT_CHECKED:
+    /* Phase 5C-2: every f64 op with a non-finite check carries the
+     * shared HOLE_F64_OVF_TGT, patched from op->d like the checked
+     * int arithmetic. (MIN/MAX_F64 have no arithmetic — no target.) */
+    case OP_ADD_F64:
+    case OP_MINUS_F64:
+    case OP_MUL_F64:
+    case OP_DIV_F64:
+    case OP_SUM_F64:
       return 1;
     default:
       return 0;

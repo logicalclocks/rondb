@@ -26,11 +26,14 @@
  * uint32_t* array; NDB types like `Register` or `Uint32` are not
  * referenced.
  *
- * Current coverage: type-specialised bigint hot ops from Phase 4
- * plus the Phase 5 embedded filter/row-disposition subset
- * (BRANCH_ATTR_*_NULL, READ_LINKED_TO_MEM, BRANCH_LINKED_*_NULL,
- * LOAD_CONST16, WRITE_INTERPRETER_OUTPUT slot 0, EXIT_OK,
- * EXIT_REFUSE). Everything else returns JIT_BRIDGE_UNSUPPORTED_OP.
+ * Current coverage: type-specialised bigint hot ops from Phase 4,
+ * the Phase 5C-2 DOUBLE family (kOp{Plus,Minus,Mul,Div}Double,
+ * kOp{Sum,Min,Max}Double, DOUBLE/FLOAT loads and DOUBLE constants,
+ * generic kOpDiv over proven-f64 operands), plus the Phase 5
+ * embedded filter/row-disposition subset (BRANCH_ATTR_*_NULL,
+ * READ_LINKED_TO_MEM, BRANCH_LINKED_*_NULL, LOAD_CONST16,
+ * WRITE_INTERPRETER_OUTPUT slot 0, EXIT_OK, EXIT_REFUSE).
+ * Everything else returns JIT_BRIDGE_UNSUPPORTED_OP.
  */
 
 #ifndef NDB_JIT_BRIDGE_H
@@ -57,6 +60,8 @@ typedef enum {
   JIT_BRIDGE_REG_OUT_OF_RANGE = 5,  /* register index ≥ BC_MAX_REGS */
   JIT_BRIDGE_EMBEDDED_TOO_LARGE = 6,/* embedded block exceeds Phase 5.0 cap */
   JIT_BRIDGE_EMBEDDED_BACKWARD = 7, /* embedded block has a backward branch */
+  JIT_BRIDGE_TYPE_MISMATCH   = 8,   /* operand register type does not match
+                                     * the typed opcode (Phase 5C tracker) */
 } JitBridgeReason;
 
 typedef struct {

@@ -222,18 +222,21 @@ conditionally store. Marks `value_updated` either way.
   case), bridge lowering, MTR canary extension (grouped MIN/MAX under
   4060 + counter delta; all-rejected group stays NULL).
 
-## 5C — DOUBLE family + unsigned BIGINT — **PLANNED, see `phase_5c_plan.md`**
+## 5C — DOUBLE family + unsigned BIGINT — **5C-1 + 5C-2 DONE & VERIFIED (2026-08-20, full ndb_push_agg sweep green post-regen); 5C-3 remains. See `phase_5c_plan.md`**
 
 **Planning finding (2026-08-19): the full type-state lattice is NOT
 needed.** `OptimizeProgramBuffer` already type-specializes the outer
 bytecode on both compile paths, so the bridge sees typed opcodes; a
 linear register-type tracker with embedded-block invalidation
 suffices (join meets deferred until an emitter produces cross-branch
-register flows). Slices: 5C-1 tracker (no regen), 5C-2 DOUBLE family
-(~9 stencils incl. the new OP_ROW_FALLBACK_EXIT terminator — div-by-
-zero's NULL-register semantics via per-row fallback, no 5D needed),
-5C-3 unsigned BIGINT (~4 stencils). Full detail: `phase_5c_plan.md`.
-The section below is the pre-planning sketch.
+register flows). Slices: 5C-1 tracker (no regen) — **done**;
+5C-2 DOUBLE family (8 stencils, bit-cast f64 storage; the planned
+OP_ROW_FALLBACK_EXIT proved unnecessary — div-by-zero sets
+row_fallback inline and continues) — **done & verified 2026-08-20**;
+5C-3 unsigned BIGINT (~4 stencils) — next. Implementation
+record incl. deviations (COUNT type-check removal for AVG(double),
+generic kOpDiv lowering): `phase_5c_plan.md`. The section below is
+the pre-planning sketch.
 
 **BIGINT UNSIGNED belongs here** (decided 2026-08-19). Today it never
 JITs and fails safe twice: the outer `kOpLoadCol` gate rejects any

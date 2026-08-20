@@ -118,6 +118,8 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
       ((state)->value_initialized[HOLE(name)])
 #  define HOLE_STORE_VALUE_INITIALIZED(name, state, value)  \
       ((state)->value_initialized[HOLE(name)] = (uint64_t)(value))
+#  define HOLE_STORE_VALUE_DOUBLE(name, state, value)  \
+      ((state)->value_double[HOLE(name)] = (uint64_t)(value))
 #  define HOLE_LOAD_COL(name, state)  \
       ((state)->row_cols_i64[HOLE(name)])
 #elif defined(__aarch64__)
@@ -341,6 +343,21 @@ static inline void aarch64_store_value_initialized_(uint32_t magic_byte_off,
   );
 }
 
+__attribute__((always_inline))
+__attribute__((unused))
+static inline void aarch64_store_value_double_(uint32_t magic_byte_off,
+                                               JitState *state,
+                                               uint64_t value) {
+  __asm__ volatile (
+    "str %[v], [%[base], %[off]]"
+    :
+    : [v]    "r"  (value),
+      [base] "r"  (state->value_double),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+    : "memory"
+  );
+}
+
 /* row_cols_i64 variant. row_cols_i64 is a *pointer* member of
  * JitState (offset 96), not an embedded array — clang loads the
  * pointer once into a register, then uses it as the imm12 base. */
@@ -377,6 +394,8 @@ static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
       aarch64_load_value_initialized_(MAGIC_##name##_FOLD * 8u, (state))
 #  define HOLE_STORE_VALUE_INITIALIZED(name, state, value) \
       aarch64_store_value_initialized_(MAGIC_##name##_FOLD * 8u, (state), (value))
+#  define HOLE_STORE_VALUE_DOUBLE(name, state, value) \
+      aarch64_store_value_double_(MAGIC_##name##_FOLD * 8u, (state), (value))
 #  define HOLE_LOAD_COL(name, state)         \
       aarch64_load_col_(MAGIC_##name##_FOLD * 8u, (state))
 #else
@@ -910,6 +929,189 @@ STENCIL op_filter_reject_exit(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5C-2 — the DOUBLE family.                                    */
+/*                                                                    */
+/* f64 values live BIT-CAST in the existing regs_i64 / acc_i64 slots: */
+/* the accessors below load the i64 bits through the same imm12-fold  */
+/* holes as the integer stencils and reinterpret via __builtin_memcpy */
+/* (clang lowers to a plain fmov/movq — no memory round-trip, no      */
+/* strict-aliasing UB). No new register-file accessor machinery.      */
+/*                                                                    */
+/* Finiteness checks are done on the BIT PATTERN                      */
+/* ((bits & ~sign) >= exponent-mask ⇔ inf or NaN) instead of          */
+/* __builtin_isfinite: the latter compares against an FP constant     */
+/* that clang materialises in .rodata — a relocation class the        */
+/* extractor doesn't support. The integer immediates below lower to   */
+/* movabs (x86_64) / AND-bitmask-immediate + shifted MOVZ (aarch64),  */
+/* both inline. (0x7ff0'0000'0000'0000 is MOVZ #0x7ff0, lsl #48 —     */
+/* imm16 slot 0x7ff0 collides with no narrow magic.)                  */
+/*                                                                    */
+/* Non-finite results branch to the shared HOLE_F64_OVF_TGT           */
+/* (HK_OVERFLOW_TAKE, patched from op->d) — the interpreter kernels   */
+/* return ZAGG_MATH_OVERFLOW on !isfinite. Divisor == 0 in            */
+/* op_div_f64 does NOT branch: the kernel NULLs the result register   */
+/* (SQL x/0 = NULL) which the JIT cannot represent until 5D, so the   */
+/* stencil sets JitState::row_fallback INLINE (plain baked-offset     */
+/* field store, the 5A helper convention) and keeps executing — the   */
+/* glue discards the row and the interpreter re-runs it.              */
+/* ------------------------------------------------------------------ */
+
+__attribute__((always_inline))
+static inline double f64_from_bits_(int64_t bits) {
+  double d;
+  __builtin_memcpy(&d, &bits, sizeof(d));
+  return d;
+}
+
+__attribute__((always_inline))
+static inline int64_t f64_to_bits_(double d) {
+  int64_t bits;
+  __builtin_memcpy(&bits, &d, sizeof(bits));
+  return bits;
+}
+
+__attribute__((always_inline))
+static inline int f64_bits_nonfinite_(int64_t bits) {
+  return (bits & INT64_C(0x7FFFFFFFFFFFFFFF)) >=
+         INT64_C(0x7FF0000000000000);
+}
+
+/* op_add_f64 / op_minus_f64 / op_mul_f64 / op_div_f64 — same operand
+ * layout as the checked int arithmetic (a=dst, b=lhs, c=rhs,
+ * d=overflow-exit pc), shared FAR_* holes (like the MM_* pair). */
+DECLARE_FOLD_HOLE(FAR_DST);
+DECLARE_FOLD_HOLE(FAR_A);
+DECLARE_FOLD_HOLE(FAR_B);
+extern __attribute__((preserve_none)) void HOLE_F64_OVF_TGT(JitState *);
+
+STENCIL op_add_f64(JitState *s) {
+  int64_t rb = f64_to_bits_(f64_from_bits_(HOLE_LOAD_REG(FAR_A, s)) +
+                            f64_from_bits_(HOLE_LOAD_REG(FAR_B, s)));
+  if (f64_bits_nonfinite_(rb)) {
+    [[clang::musttail]] return HOLE_F64_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(FAR_DST, s, rb);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_minus_f64(JitState *s) {
+  int64_t rb = f64_to_bits_(f64_from_bits_(HOLE_LOAD_REG(FAR_A, s)) -
+                            f64_from_bits_(HOLE_LOAD_REG(FAR_B, s)));
+  if (f64_bits_nonfinite_(rb)) {
+    [[clang::musttail]] return HOLE_F64_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(FAR_DST, s, rb);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_mul_f64(JitState *s) {
+  int64_t rb = f64_to_bits_(f64_from_bits_(HOLE_LOAD_REG(FAR_A, s)) *
+                            f64_from_bits_(HOLE_LOAD_REG(FAR_B, s)));
+  if (f64_bits_nonfinite_(rb)) {
+    [[clang::musttail]] return HOLE_F64_OVF_TGT(s);
+  }
+  HOLE_STORE_REG(FAR_DST, s, rb);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_div_f64(JitState *s) {
+  double divisor = f64_from_bits_(HOLE_LOAD_REG(FAR_B, s));
+  int64_t rb;
+  if (divisor == 0.0) {
+    /* Kernel semantics: result register becomes NULL. Take the per-row
+     * interpreter fallback; store a harmless 0.0 so downstream ops of
+     * this (discarded) run stay finite. One store site + one TAIL_NEXT
+     * for the whole stencil — the extractor strips exactly one
+     * trailing tail-call. */
+    s->row_fallback = 1u;
+    rb = 0;
+  } else {
+    rb = f64_to_bits_(f64_from_bits_(HOLE_LOAD_REG(FAR_A, s)) / divisor);
+    if (f64_bits_nonfinite_(rb)) {
+      [[clang::musttail]] return HOLE_F64_OVF_TGT(s);
+    }
+  }
+  HOLE_STORE_REG(FAR_DST, s, rb);
+  TAIL_NEXT(s);
+}
+
+/* op_sum_f64 — SumDouble's shape: first-row-initialize via the
+ * value_initialized input mask (matters even for SUM — the kernel
+ * stores the first value verbatim, and 0.0 + -0.0 would flip the sign
+ * of a single-row SUM(-0.0)); non-finite update → overflow exit (the
+ * init path is unchecked, like the kernel). Marks value_updated,
+ * value_initialized AND value_double. a=slot, b=src, c=result,
+ * d=overflow-exit pc. */
+DECLARE_FOLD_HOLE(FSUM_SLOT);
+DECLARE_FOLD_HOLE(FSUM_SRC);
+DECLARE_FOLD_HOLE(FSUM_RESULT);
+STENCIL op_sum_f64(JitState *s) {
+  int64_t src_bits = HOLE_LOAD_REG(FSUM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(FSUM_RESULT, s)) {
+    HOLE_STORE_ACC(FSUM_SLOT, s, src_bits);
+  } else {
+    int64_t rb =
+        f64_to_bits_(f64_from_bits_(HOLE_LOAD_ACC(FSUM_SLOT, s)) +
+                     f64_from_bits_(src_bits));
+    if (f64_bits_nonfinite_(rb)) {
+      [[clang::musttail]] return HOLE_F64_OVF_TGT(s);
+    }
+    HOLE_STORE_ACC(FSUM_SLOT, s, rb);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(FSUM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(FSUM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_DOUBLE(FSUM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+/* op_min_f64 / op_max_f64 — the 5B MIN/MAX shape with double compares
+ * (plain < / >, matching MinDouble/MaxDouble; NaN cannot reach them —
+ * column values are finite by storage contract and every arithmetic
+ * producer overflow-exits on non-finite). Marks value_double alongside
+ * updated/initialized. Shared FMM_* holes. Unchecked — no arithmetic. */
+DECLARE_FOLD_HOLE(FMM_SLOT);
+DECLARE_FOLD_HOLE(FMM_SRC);
+DECLARE_FOLD_HOLE(FMM_RESULT);
+STENCIL op_min_f64(JitState *s) {
+  int64_t vb = HOLE_LOAD_REG(FMM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(FMM_RESULT, s) ||
+      f64_from_bits_(vb) < f64_from_bits_(HOLE_LOAD_ACC(FMM_SLOT, s))) {
+    HOLE_STORE_ACC(FMM_SLOT, s, vb);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(FMM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(FMM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_DOUBLE(FMM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_max_f64(JitState *s) {
+  int64_t vb = HOLE_LOAD_REG(FMM_SRC, s);
+  if (!HOLE_LOAD_VALUE_INITIALIZED(FMM_RESULT, s) ||
+      f64_from_bits_(vb) > f64_from_bits_(HOLE_LOAD_ACC(FMM_SLOT, s))) {
+    HOLE_STORE_ACC(FMM_SLOT, s, vb);
+  }
+  HOLE_STORE_VALUE_INITIALIZED(FMM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_UPDATED(FMM_RESULT, s, 1u);
+  HOLE_STORE_VALUE_DOUBLE(FMM_RESULT, s, 1u);
+  TAIL_NEXT(s);
+}
+
+/* op_load_col_ndb_f64 — cold-call load for declared FLOAT/DOUBLE
+ * columns; same shape as op_load_col_ndb. The helper decodes by the
+ * column's declared type (DOUBLE: bit copy; FLOAT: promote to double)
+ * and stores the double's bit pattern into regs_i64[dst]; NULL or an
+ * unexpected declared type takes the per-row fallback. */
+DECLARE_NARROW_HOLE(LCF_COL);
+DECLARE_NARROW_HOLE(LCF_DST);
+extern void ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id,
+                                   uint32_t dst_reg);
+STENCIL op_load_col_ndb_f64(JitState *s) {
+  ndb_jit_h_load_col_f64(s, (uint32_t)HOLE_NARROW(LCF_COL),
+                         (uint32_t)HOLE_NARROW(LCF_DST));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -952,4 +1154,12 @@ const StencilTailFn g_stencil_anchor[] = {
     op_jump,
     op_filter_reject_exit,
     op_branch_attr_op_arg,
+    op_add_f64,
+    op_minus_f64,
+    op_mul_f64,
+    op_div_f64,
+    op_sum_f64,
+    op_min_f64,
+    op_max_f64,
+    op_load_col_ndb_f64,
 };

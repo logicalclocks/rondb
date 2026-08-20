@@ -1,0 +1,117 @@
+############################################################
+# RONDB-1056 DOUBLE family JIT canary
+############################################################
+CREATE TABLE t1 (
+pk   BIGINT NOT NULL,
+grp  BIGINT NOT NULL,
+d    DOUBLE NOT NULL,
+f    FLOAT NOT NULL,
+dec9 DECIMAL(9,2) NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1,  1, 0.5,  0.25, 1.10),
+(2,  1, 1.0,  0.50, 2.20),
+(3,  1, 1.5,  0.75, 3.30),
+(4,  1, 2.0,  1.00, 4.40),
+(5,  2, 2.5,  1.25, 5.50),
+(6,  2, 3.0,  1.50, 6.60),
+(7,  2, 3.5,  1.75, 7.70),
+(8,  3, 4.0,  2.00, 8.80),
+(9,  3, 4.5,  2.25, 9.90),
+(10, 3, 5.0,  2.50, 11.00),
+(11, 3, 5.5,  2.75, 12.10),
+(12, 3, 6.0,  3.00, 13.20);
+SET ndb_pushdown_aggregate=ON;
+# Q1: scalar SUM/MIN/MAX over a DOUBLE column must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(d), MIN(d), MAX(d) FROM t1;
+SUM(d)	MIN(d)	MAX(d)
+39	0.5	6
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: grouped SUM/MIN/MAX over a DOUBLE column must JIT (the
+#     accumulators' first-row init works per group record).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, SUM(d), MIN(d), MAX(d) FROM t1 GROUP BY grp;
+grp	SUM(d)	MIN(d)	MAX(d)
+1	5	0.5	2
+2	9	2.5	3.5
+3	25	4	6
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: FLOAT column must JIT via the promote-to-double load.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(f), MIN(f), MAX(f) FROM t1;
+SUM(f)	MIN(f)	MAX(f)
+19.5	0.25	3
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+# Q4: AVG over a DOUBLE column must JIT — AVG decomposes into a
+#     pushed SUM (SumDouble) + COUNT pair; mysqld divides.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, AVG(d) FROM t1 GROUP BY grp;
+grp	AVG(d)
+1	1.25
+2	3
+3	5
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
+# Q5: double arithmetic must JIT (kOpPlusDouble / kOpMinusDouble /
+#     kOpMulDouble — FLOAT operands ride the DOUBLE track, so the
+#     optimizer rewrites the generic ops to the Double variants).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(d * f), SUM(d + f), SUM(d - f) FROM t1;
+SUM(d * f)	SUM(d + f)	SUM(d - f)
+81.25	58.5	19.5
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+q5_jit_compiled
+1
+# Q6: division differential — one divisor-zero row. x/0 is NULL
+#     (kernel: result register becomes NULL), which under the JIT
+#     takes the PER-ROW interpreter fallback; correct results, no
+#     4060 (the fallback row would abort under it).
+CREATE TABLE t2 (
+pk BIGINT NOT NULL,
+a  DOUBLE NOT NULL,
+b  DOUBLE NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES (1, 10, 2), (2, 9, 3), (3, 5, 0), (4, 7, 2);
+SELECT SUM(a / b), COUNT(a / b) FROM t2;
+SUM(a / b)	COUNT(a / b)
+11.5	3
+DROP TABLE t2;
+# Q7: negative control — DECIMAL aggregation stays on the
+#     interpreter (the bridge rejects non-BIGINT/DOUBLE/FLOAT load
+#     types); correct results and the compile counters move by
+#     exactly 0. No 4060 (deliberate fallback).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(dec9) FROM t1;
+SUM(dec9)
+85.80
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q7_stays_on_interpreter;
+q7_stays_on_interpreter
+1
+# Q8: -0.0 sign preservation — SUM's first-row init stores the
+#     value verbatim (0.0 + -0.0 would flip the sign). Compare the
+#     JIT'd result's text form against the pushdown-OFF baseline.
+CREATE TABLE t3 (
+pk BIGINT NOT NULL,
+d  DOUBLE NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t3 VALUES (1, -0.0);
+SET ndb_pushdown_aggregate=OFF;
+SELECT CAST(SUM(d) AS CHAR) INTO @baseline FROM t3;
+SET ndb_pushdown_aggregate=ON;
+SELECT CAST(SUM(d) AS CHAR) INTO @jitted FROM t3;
+SELECT @jitted = @baseline AS q8_sign_matches_baseline;
+q8_sign_matches_baseline
+1
+DROP TABLE t3;
+DROP TABLE t1;

@@ -360,14 +360,41 @@ must-JIT. Details: `phase_5_roadmap.md` §5A. Verify: rebuild ndbmtd +
 host tools; bridge_tests (T47 family + updated T22b/c), coldcall;
 mtr groupby + nullable canaries + full ndb_push_agg + testCaseAgg.
 
-**Phase 5C — PLANNED (2026-08-19): `phase_5c_plan.md`.** Key planning
-finding: the original design's full type-state lattice is unnecessary —
-`OptimizeProgramBuffer` pre-types the bytecode on both compile paths,
-so a linear bridge-side register-type tracker suffices. Slices: 5C-1
-tracker, 5C-2 DOUBLE family (~9 stencils; SumDouble needs
-value_initialized + isfinite→overflow; div-by-zero's NULL-register
-semantics handled by a new OP_ROW_FALLBACK_EXIT terminator → per-row
-interpreter fallback, no 5D dependency), 5C-3 unsigned BIGINT.
+**Phase 5C — 5C-1 + 5C-2 DONE & VERIFIED (2026-08-20; regen clean,
+bridge 64/64 + coldcall 20/20, double canary green, full ndb_push_agg
+sweep to completion); 5C-3 (unsigned BIGINT) remains.
+`phase_5c_plan.md`.** Key
+planning finding: the original design's full type-state lattice is
+unnecessary — `OptimizeProgramBuffer` pre-types the bytecode on both
+compile paths, so a linear bridge-side register-type tracker suffices.
+**5C-1**: `reg_type[8]` tracker in the outer translate walk with the
+new `JIT_BRIDGE_TYPE_MISMATCH` reject reason (i64 consumers reject
+proven-f64 operands; embedded blocks invalidate; behavior-neutral
+until 5C-2's f64 producers). **5C-2**: the DOUBLE family —
+aggregation over DOUBLE/FLOAT columns JITs. 8 new stencils
+(**regen-stencils required**): `op_load_col_ndb_f64` (new helper;
+FLOAT promotes, NULL → per-row fallback), `op_{add,minus,mul,div}_f64`
+(bit-pattern finiteness check → the shared `HOLE_F64_OVF_TGT` /
+`OP_OVERFLOW_EXIT`; **no** `.rodata` FP constants — extractor can't
+relocate them), `op_{sum,min,max}_f64` (first-row init via
+value_initialized — preserves single-row SUM(-0.0)'s sign — plus the
+new `JitState::value_double[]` writeback mask → `NDB_TYPE_DOUBLE`
+results). f64 values live BIT-CAST in regs_i64/acc_i64 (no new
+accessor machinery — memcpy reinterpret in the stencil source).
+Div-by-zero (kernel: result register → NULL) sets `row_fallback`
+INLINE and continues — the planned OP_ROW_FALLBACK_EXIT terminator
+proved unnecessary. Generic `kOpDiv` lowers when both operands are
+proven f64 (the optimizer never rewrites it to kOpDivDouble). One
+5C-1 correction: COUNT's operand type check removed —
+`AVG(double_col)` is SumDouble + Count over the SAME f64 register and
+COUNT never reads the bits (bridge T51g). Tests: bridge 64, coldcall
+20, new `rondb_jit_double_canary` (Q1–Q8; all five must-JIT asserts
+held — the planner pushes every double shape the canary assumes).
+Verification findings: the extractor's `classify_tail` needed the five
+f64 overflow-branch stencils listed for KEEP_ALL (they lack the
+`_checked` name pattern the policy keyed off), and the div-by-zero
+canary query's "Division by 0" warnings are suppressed (count is an
+evaluation-frequency implementation detail).
 
 **Phase 5B — DONE & VERIFIED (2026-08-19; full ndb_push_agg sweep
 green post-regen).**

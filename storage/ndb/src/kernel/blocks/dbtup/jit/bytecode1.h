@@ -170,7 +170,38 @@ typedef enum {
    * (== a, the AggResItem index). Unchecked — no arithmetic. */
   OP_MIN_BIGINT            = 35,
   OP_MAX_BIGINT            = 36,
-  OP_KIND_MAX           = OP_MAX_BIGINT
+  /* Phase 5C-2: the DOUBLE family. f64 values live BIT-CAST in the
+   * same regs_i64 / acc_i64 arrays (bits are bits — copy-in/copy-out
+   * and OP_MOV_INT_INT are type-agnostic); the bridge's register-type
+   * tracker (5C-1) keeps i64 and f64 consumers apart statically.
+   *
+   * OP_LOAD_COL_NDB_F64: cold-call load for declared FLOAT/DOUBLE
+   * columns (helper ndb_jit_h_load_col_f64; FLOAT promotes to double,
+   * NULL / unexpected type takes the per-row fallback). Same operand
+   * layout as OP_LOAD_COL_NDB (a=dst_reg, c=col_id).
+   *
+   * Arithmetic (a=dst, b=lhs, c=rhs, d=overflow-exit pc): fadd/fsub/
+   * fmul/fdiv with the interpreter kernels' non-finite check routed
+   * to OP_OVERFLOW_EXIT (⇒ ZAGG_MATH_OVERFLOW). OP_DIV_F64 handles
+   * divisor == 0 by setting JitState::row_fallback inline (the kernel
+   * NULLs the result register — SQL semantics the JIT reproduces by
+   * re-running the row on the interpreter) and continuing.
+   *
+   * Accumulators (a=acc slot, b=src reg, c=result index, SUM also
+   * d=overflow-exit pc): first-row-initialize via value_initialized
+   * (SumDouble/MinDouble/MaxDouble all initialize on first value —
+   * needed even for SUM: 0.0 + -0.0 flips the sign of a single-row
+   * SUM(-0.0)); all three mark value_updated AND value_double so the
+   * writeback glue produces a DOUBLE AggResItem. */
+  OP_LOAD_COL_NDB_F64      = 37,
+  OP_ADD_F64               = 38,
+  OP_MINUS_F64             = 39,
+  OP_MUL_F64               = 40,
+  OP_DIV_F64               = 41,
+  OP_SUM_F64               = 42,
+  OP_MIN_F64               = 43,
+  OP_MAX_F64               = 44,
+  OP_KIND_MAX           = OP_MAX_F64
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

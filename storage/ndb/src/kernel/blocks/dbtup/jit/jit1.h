@@ -71,6 +71,15 @@ typedef struct JitState {
    * Only helpers touch this field (no stencil loads/stores it), so
    * adding it required no stencil regen. */
   uint32_t  row_fallback;
+  /* Phase 5C-2: per-row "this result is a double" flags, set alongside
+   * value_updated by the f64 accumulator stencils (SUM/MIN/MAX_F64).
+   * The writeback glue produces type = NDB_TYPE_DOUBLE and copies the
+   * accumulator's bit pattern into AggResItem::value.val_double for
+   * marked results. uint64_t entries like the other masks — the
+   * aarch64 imm12-fold store addresses them at index*8. Appended last
+   * so existing stencils' baked field offsets are unchanged (regen
+   * required anyway for the new f64 stencils). */
+  uint64_t  value_double[BC_MAX_ACCS];
 } JitState;
 
 /* Per-row entry function — produced by jit1_compile.

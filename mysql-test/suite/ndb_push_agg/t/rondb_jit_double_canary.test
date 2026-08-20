@@ -1,0 +1,141 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5C-2 — DOUBLE family canary.
+#
+# Aggregation over DOUBLE/FLOAT columns now JITs: f64 values live
+# bit-cast in the i64 register file, loads go through the
+# OP_LOAD_COL_NDB_F64 cold-call (FLOAT promotes to double), the
+# kOp*Double arithmetic lowers with the kernels' non-finite check
+# routed to OP_OVERFLOW_EXIT, and SUM/MIN/MAX_F64 write back DOUBLE
+# results via the value_double mask. Division by zero takes the
+# per-row interpreter fallback (kernel semantics: the result register
+# becomes NULL), so division queries are verified as differentials
+# WITHOUT error 4060 — the fallback row would abort under it.
+#
+# Proof pattern (see rondb_jit_compound_canary): ERROR_INSERT 4060
+# (a compiled program must execute via JIT) + an ndbinfo.jit
+# programs_compiled + programs_reused delta >= 1.
+#
+# Requires regenerated stencils (regen-stencils) in the build.
+
+--echo ############################################################
+--echo # RONDB-1056 DOUBLE family JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk   BIGINT NOT NULL,
+  grp  BIGINT NOT NULL,
+  d    DOUBLE NOT NULL,
+  f    FLOAT NOT NULL,
+  dec9 DECIMAL(9,2) NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+# d = pk * 0.5 and f = pk * 0.25 are exactly representable, so every
+# aggregate below is exact and the expected output is stable.
+INSERT INTO t1 VALUES
+  (1,  1, 0.5,  0.25, 1.10),
+  (2,  1, 1.0,  0.50, 2.20),
+  (3,  1, 1.5,  0.75, 3.30),
+  (4,  1, 2.0,  1.00, 4.40),
+  (5,  2, 2.5,  1.25, 5.50),
+  (6,  2, 3.0,  1.50, 6.60),
+  (7,  2, 3.5,  1.75, 7.70),
+  (8,  3, 4.0,  2.00, 8.80),
+  (9,  3, 4.5,  2.25, 9.90),
+  (10, 3, 5.0,  2.50, 11.00),
+  (11, 3, 5.5,  2.75, 12.10),
+  (12, 3, 6.0,  3.00, 13.20);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo # Q1: scalar SUM/MIN/MAX over a DOUBLE column must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(d), MIN(d), MAX(d) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: grouped SUM/MIN/MAX over a DOUBLE column must JIT (the
+--echo #     accumulators' first-row init works per group record).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, SUM(d), MIN(d), MAX(d) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: FLOAT column must JIT via the promote-to-double load.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(f), MIN(f), MAX(f) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+
+--echo # Q4: AVG over a DOUBLE column must JIT — AVG decomposes into a
+--echo #     pushed SUM (SumDouble) + COUNT pair; mysqld divides.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, AVG(d) FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+
+--echo # Q5: double arithmetic must JIT (kOpPlusDouble / kOpMinusDouble /
+--echo #     kOpMulDouble — FLOAT operands ride the DOUBLE track, so the
+--echo #     optimizer rewrites the generic ops to the Double variants).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(d * f), SUM(d + f), SUM(d - f) FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+
+--echo # Q6: division differential — one divisor-zero row. x/0 is NULL
+--echo #     (kernel: result register becomes NULL), which under the JIT
+--echo #     takes the PER-ROW interpreter fallback; correct results, no
+--echo #     4060 (the fallback row would abort under it).
+CREATE TABLE t2 (
+  pk BIGINT NOT NULL,
+  a  DOUBLE NOT NULL,
+  b  DOUBLE NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES (1, 10, 2), (2, 9, 3), (3, 5, 0), (4, 7, 2);
+# The zero-divisor row raises "Division by 0" warnings whose count
+# depends on how often the expression is evaluated (an implementation
+# detail) — suppress them; the values are the assertion.
+--disable_warnings
+SELECT SUM(a / b), COUNT(a / b) FROM t2;
+--enable_warnings
+DROP TABLE t2;
+
+--echo # Q7: negative control — DECIMAL aggregation stays on the
+--echo #     interpreter (the bridge rejects non-BIGINT/DOUBLE/FLOAT load
+--echo #     types); correct results and the compile counters move by
+--echo #     exactly 0. No 4060 (deliberate fallback).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(dec9) FROM t1;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q7_stays_on_interpreter;
+
+--echo # Q8: -0.0 sign preservation — SUM's first-row init stores the
+--echo #     value verbatim (0.0 + -0.0 would flip the sign). Compare the
+--echo #     JIT'd result's text form against the pushdown-OFF baseline.
+CREATE TABLE t3 (
+  pk BIGINT NOT NULL,
+  d  DOUBLE NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t3 VALUES (1, -0.0);
+SET ndb_pushdown_aggregate=OFF;
+SELECT CAST(SUM(d) AS CHAR) INTO @baseline FROM t3;
+SET ndb_pushdown_aggregate=ON;
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT CAST(SUM(d) AS CHAR) INTO @jitted FROM t3;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT @jitted = @baseline AS q8_sign_matches_baseline;
+DROP TABLE t3;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT
