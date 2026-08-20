@@ -376,7 +376,22 @@ Test 27/28 fallback-canary op again: when `kOpMod` lowers, repoint the
 canary at a synthetic invalid opcode or a deliberately-reserved one
 (document it as permanently unsupported).
 
-## 5F — string aggregation MIN/MAX
+## 5F — string aggregation MIN/MAX — **PLANNED, see `phase_5f_plan.md`**
+
+**Planning finding (2026-08-20): NO string register model.** The
+interpreter's string machinery is pure cold-call territory (collation
+compares + winner-buffer management), and its kernel (`minMaxString`,
+public) mutates the group's AggResItem directly. 5F fuses load +
+kernel into ONE cold call per string aggregate via a small public
+façade on AggInterpreterBase (exact kernel reuse: charsets, sidecar,
+AGG_CHAR wire, eviction, API merge all come for free), with the
+writeback-mask discipline keeping the glue's hands off string slots.
+The JIT's real value: MIXED programs (SUM(int), MIN(str)) stay hot
+instead of falling back whole; nullable string MIN/MAX is 4060-safe
+from day one (the kernel's null skip — no fallback of any kind).
+Slices: 5F-1 local columns (1 stencil + bridge fusion +
+BR_REG_STR/BR_ACC_STR tracker states), 5F-2 linked columns deferred.
+Original sketch below.
 
 `minMaxString` (CHAR/VARCHAR MIN/MAX): cold-call helpers carrying the
 charset compare (the scan-filter string path already proved the

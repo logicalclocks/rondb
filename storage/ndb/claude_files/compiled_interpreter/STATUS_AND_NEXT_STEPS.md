@@ -392,8 +392,11 @@ mysqld bug: pushed MIN/MAX over DECIMAL printed NULL —
 Item_sum_hybrid::val_str's pushed branch fell through to the
 never-populated value cache for non-string values; fixed +
 backportable test ndb_push_agg_decimal_minmax (see roadmap §5G).
-NEXT → 5F string MIN/MAX (confirmed demand, the last major Phase 5
-item) → 5E int div/mod (ZERO SQL-side demand; API/RonSQL-only).** Key planning
+NEXT → 5F string MIN/MAX PLANNED (`phase_5f_plan.md` — no string
+register model: load + kernel fuse into one cold call per string
+aggregate through a public façade reusing minMaxString exactly;
+mixed programs stay hot; nullable strings 4060-safe day one) →
+5E int div/mod (ZERO SQL-side demand; API/RonSQL-only).** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
 the load's cold call (helper returns "was null", the load stencil
 becomes a cold-call branch in op_branch_attr_eq_null's proven shape)
