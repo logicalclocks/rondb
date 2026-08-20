@@ -140,34 +140,78 @@ WHERE EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id AND l_qty > 30)|
 
 --echo
 --echo
---echo === Test 4: NOT EXISTS in the main WHERE + CTE join (DISABLED - wrong results) ===
-# NEXT-PHASE: correlated NOT EXISTS in the main WHERE of a CTE join
-# query returns WRONG RESULTS (found 2026-08-19 while recording this
-# test): RonSQL returned 4/8 where mysql returns 1/2 — only orders 1-2
-# were filtered out, consistent with the EXISTS→IN substitution list
-# being truncated or the negated IN-list filter being mis-emitted on
-# the join-root path.  Single-table NOT EXISTS is green
-# (ronsql_subquery.test Tests 19-23) and correlated EXISTS + CTE join
-# is green (Test 3 above), so the gap is specifically NOT EXISTS ×
-# join-main.  See test_benchmark_extension_plan.md §5b.
-#   WITH cust_stats AS (
-#     SELECT o_cust AS k, COUNT(*) AS n
-#     FROM sq_ord GROUP BY o_cust)
-#   SELECT COUNT(*), SUM(cust_stats.n)
-#   FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
-#   WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id);
+--echo === Test 4: NOT EXISTS in the main WHERE + CTE join ===
+# Regression net: returned 4/8 instead of 1/2 before the
+# NdbInterpretedCode::finalise idempotency fix.  The join-root emit
+# finalised the filter program twice (NdbScanFilter::end +on top of an
+# explicit finalise); the second pass reinterpreted patched relative
+# branch offsets as label numbers and silently re-patched the small
+# ones, corrupting NAND-group (NOT) filters.  The NOT EXISTS transform
+# lowers to NOT(o_id = v1 OR ...) which simplify_ce De Morganizes to
+# AND-of-NOT(=) — a NAND-heavy program, hence this shape caught it.
+let $QUERY=
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id)|
 
 --echo
 --echo
-# An EXPLICIT IN-subquery in the main WHERE of a CTE join query is
-# cleanly rejected ("Not an aggregate query.") — inconsistent with
-# correlated EXISTS x CTE-join (accepted + correct, Test 3) and with
-# single-table IN-subqueries (green in ronsql_subquery.test).  Assert
-# the current rejection; flip to a compare-case when support lands.
-# See test_benchmark_extension_plan.md §5b.
---echo === Test 5 (rejection): explicit IN-subquery in the main WHERE of a CTE join ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT 2>&1 -e 'WITH li_stats AS (SELECT l_ord AS k, SUM(l_price) AS p FROM sq_li GROUP BY l_ord) SELECT COUNT(*), SUM(li_stats.p) FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200);'
+--echo === Test 4b: literal NOT(OR-chain) on the pushed join root ===
+# The substitution-free distillation of Test 4's failing filter shape
+# (multi-label NAND program on a pushed join root).
+let $QUERY=
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT (o.o_id = 1 OR o.o_id = 2 OR o.o_id = 3 OR o.o_id = 4 OR o.o_id = 5);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT (o.o_id = 1 OR o.o_id = 2 OR o.o_id = 3 OR o.o_id = 4 OR o.o_id = 5)|
+
+--echo
+--echo
+--echo === Test 5: explicit IN-subquery in the main WHERE of a CTE join ===
+# Was a clean rejection ("Not an aggregate query.") before the
+# RONDB-1108 non-agg rebase relaxed the gate; now executes correctly.
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_price) AS p
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.p)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_price) AS p
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.p)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200)|
 
 --echo
 --echo
@@ -192,22 +236,25 @@ WHERE o.o_total > (SELECT SUM(l_qty) FROM sq_li WHERE l_ord = o.o_id)|
 
 --echo
 --echo
---echo === Test 7: Scalar subquery result type DECIMAL (DISABLED - crashes RDRS) ===
-# NEXT-PHASE: a DECIMAL-typed scalar subquery CRASHED the RDRS server
-# process (found 2026-08-19 while recording this test; curl exit 52,
-# "Server rdrs.1.1 failed during test run").  The subquery machinery is
-# text-based and parses "99.99" as a float fine, so the suspect is
-# downstream: the float-substituted constant compared against a DECIMAL
-# column in the single-table filter path (encode_constant /
-# NdbScanFilter encoding a double literal into DECIMAL(10,2)).  To
-# bisect, run the substitution-free equivalent manually:
-#   SELECT COUNT(*) FROM sq_ord WHERE o_price < 99.99;
-# — if that also crashes, the bug is the DECIMAL-vs-float-literal
-# filter itself, not the subquery substitution.
-# See test_benchmark_extension_plan.md §5b.
-#   SELECT COUNT(*), MIN(o_price), MAX(o_price)
-#   FROM sq_ord
-#   WHERE o_price < (SELECT MAX(o_price) FROM sq_ord);
+--echo === Test 7: Scalar subquery result type DECIMAL (single-table main) ===
+# Regression net: this exact query crashed the RDRS process before the
+# encode_constant fix — subquery-substituted float constants carry
+# ls = {NULL, 0} (no source text) and the DECIMAL comparison arm passed
+# that NULL to decimal_str2bin.  The substitution-free literal form
+# (WHERE o_price < 99.99) was never affected (ls = source text), and
+# DOUBLE columns were never affected (their arm consumes .dbl, not .ls
+# — Test 8).
+let $QUERY=
+SELECT COUNT(*), MIN(o_price), MAX(o_price)
+FROM sq_ord
+WHERE o_price < (SELECT MAX(o_price) FROM sq_ord);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*), MIN(o_price), MAX(o_price)
+FROM sq_ord
+WHERE o_price < (SELECT MAX(o_price) FROM sq_ord)|
 
 --echo
 --echo

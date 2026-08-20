@@ -8,11 +8,13 @@ passing means the `x-ronsql-phases` header is verified end-to-end.
 Remaining optional: CLI benchmark smoke (`go build`, `.bench_ronsql
 fs_floor` for the phase-breakdown table). Findings ledger in §5b:
 3 crashes (EXPLAIN SUM(CASE) abort **fixed**; DECIMAL scalar subquery
-RDRS crash **probed**; big-06 8-node RDRS crash **probed**), 2 ORDER BY
+RDRS crash **FIXED** — NULL-ls float constant into decimal_str2bin;
+big-06 8-node RDRS crash **probed**), 2 ORDER BY
 explain mis-prints **fixed**, 1 hang **probed** (anti-join + INNER CTE
-join), 2 wrong-results (NOT EXISTS × CTE-join **probed**;
-scalar-CTE duplicate feed **FIXED** — see §5b, was misdiagnosed as MIN
-merge polarity), 1 clean-reject **asserted**
+join), 2 wrong-results **FIXED** (NOT-heavy join-root
+filters — double-finalise branch corruption, was filed as NOT EXISTS ×
+CTE-join; scalar-CTE duplicate feed — was misdiagnosed as MIN merge
+polarity), 1 clean-reject **obsoleted**
 (explicit IN × CTE-join), 2 future-extension TODOs (§7), 2 capability
 upgrades pinned as EXPLAIN regressions (I.16 rewrite, CTE shadowing).
 The probed engine bugs are the natural input for a follow-up fix phase
@@ -520,94 +522,50 @@ done
   `ronsql_parser_cte` now uses a non-FORCE launcher for that case.
   Worth knowing when reading EXPLAIN output generally: a printed plan
   does not prove the shape executes.
-- **WRONG RESULTS: correlated NOT EXISTS in the main WHERE of a CTE
-  join** (`ronsql_cte_subquery` Test 4, now a NEXT-PHASE probe): RonSQL
-  returned 4/8 where mysql returns 1/2 on a 6-order dataset — only
-  o_id 1-2 were filtered, consistent with the EXISTS→IN substitution
-  list being truncated to its first entries or the negated IN-list
-  filter being mis-emitted on the join-root path. Bounding evidence:
-  single-table NOT EXISTS is green (ronsql_subquery.test Tests 19-23),
-  correlated EXISTS × CTE-join is green (Test 4's sibling Test 3, a
-  1-element IN list), scalar subqueries × CTE-join are green (Tests
-  1-2). Suspected area: substitute_subquery_results' NOT-IN expansion
-  meeting the join-root filter emission (apply_filter_top_level /
-  emit-side DNF). Needs a kernel/RonSQL fix pass — same disposition as
-  the cte_fix_plan.md items; NOT a test bug.
-- **Explicit IN-subquery × CTE-join is cleanly rejected** ("Not an
-  aggregate query.", `ronsql_cte_subquery` Test 5, now a
-  rejection-assert): the I_IN_SUBQUERY path trips the non-aggregate
-  gate when a WITH clause is present, even though the main SELECT
-  aggregates. Inconsistent with correlated EXISTS × CTE-join (accepted
-  + correct results) and single-table IN (accepted). Together with the
-  NOT EXISTS finding above, the subquery × CTE-join matrix reads:
-  scalar ✓, EXISTS ✓, NOT EXISTS ✗ wrong results, explicit IN ✗ clean
-  reject — the fix pass should unify these paths.
-- **CRASH: DECIMAL-typed scalar subquery kills the RDRS process**
-  (`ronsql_cte_subquery` Test 7, now a NEXT-PHASE probe): `SELECT
-  COUNT(*), MIN(o_price), MAX(o_price) FROM sq_ord WHERE o_price <
-  (SELECT MAX(o_price) FROM sq_ord)` with o_price DECIMAL(10,2) crashed
-  rdrs.1.1 mid-test (curl exit 52, empty reply). The subquery execution
-  is text-based and parses the DECIMAL text as a float, so the suspect
-  is the substituted FLOAT constant meeting a DECIMAL column in the
-  single-table filter path (encode_constant / NdbScanFilter double →
-  DECIMAL encoding). Bisect with the substitution-free
-  `WHERE o_price < 99.99` literal form: if that also crashes, the bug
-  is the DECIMAL-vs-float-literal filter generally, and the exposure is
-  any user query — same production severity class as the EXPLAIN CASE
-  abort. The rdrs crash trace from the failed run pins the abort site.
-  Positive results bounding this: correlated scalar subquery ×
-  CTE-join (Test 6) is green, and the DOUBLE-typed scalar subquery
-  (Test 8, `o_ratio <= (SELECT MAX(o_ratio) …)` on a DOUBLE column) is
-  green — so the crash is specific to the DECIMAL column comparison,
-  not to float-substituted constants in filters generally. The suite
-  recorded green with Test 7 as the only probe of this finding.
-- **HANG: anti-join + positive INNER CTE join in one main query**
-  (`body_bigquery.inc` big-07, now a NEXT-PHASE probe): `customer LEFT
-  JOIN hiprio … JOIN lifetime … WHERE hiprio.cnt IS NULL GROUP BY
-  c_nationkey` stalls in the data nodes — every attempt dies on NDB
-  error 274 (transaction deadlock timeout) through all 10 ronsql_op
-  retries. Bounding: the Phase K anti-join alone is green
-  (offline_fs_anti shape) and mixed LEFT+INNER without the IS NULL
-  filter is green. Suspect: the ANTI_JOIN promotion meeting a second
-  agg-feed CTE_LOOKUP child in the JoinAgg batch/completion protocol —
-  same hang family as cte_fix_plan.md's D-findings; candidate for that
-  plan's Phase 1 queue.
-- **CRASH: big-06 kills the RDRS process at 8 nodes only**
-  (`body_bigquery.inc` big-06, now a NEXT-PHASE probe with bisect
-  halves): the GREATEST/LEAST-with-nullable-operand body WHERE + CASE
-  main aggregate over a CTE join crashed rdrs.1.1 on ronsql_cte_ng4r2
-  (8 nodes / 4 node groups) after recording green on the default,
-  ng1r3, ng2r2 and ng2r3 topologies — big-01..05 passed in the same
-  8-node run. The crash is in the RDRS process, pointing at API-side
-  handling of the 8-node result stream (NdbAggregator parse / result
-  merge) for this shape rather than kernel row processing. The probe
-  comment carries the two bisect halves (body WHERE alone, CASE main
-  aggregate alone); the rdrs crash trace from the failed run pins the
-  abort site.
-- **WRONG RESULTS: scalar-CTE duplicate feed (FIXED)** — originally
-  filed as "scalar-CTE MIN merge polarity-inverted"; runtime tracing
-  (mergeScalarAccumulators slot dump) proved the cross-node merge fully
-  CORRECT and located the real bug one layer up: `cteScanAggFeed`'s
-  scalar branch (the joinAggStateKey path an aggregating main takes,
-  distinct from cteScanEmitResults which already had
-  cteScanShouldEmitScalar) had NO single-feeder rule.  After the I.17e
-  scalar redistribute, every node still held its local pre-redistribute
-  accumulators and fed them into its node's main aggregator alongside
-  the DBTC-node owner's merged ones; the main query's MAX over those
-  duplicate rows computed max-of-per-node-minima.  Explains all three
-  observations exactly (correct only when the global-min row is scanned
-  on a NON-owner node, whose fed local min coincides with the merged
-  min).  The grouped path never had this because redistribution REMOVES
-  shipped groups from the sender's hash map.  Fix: new
-  `JoinAggregationState::m_cte_scalar_shipped` set when a peer ships in
-  `continueJoinAggRedistribute`, gating `cteScanAggFeed`'s scalar
-  branch (single-row CTEs never ship, so their one-node state feeds
-  unconditionally); companion: `mergeScalarAccumulators` bumps
-  `m_processed_rows` per inbound merge so an owner that scanned no
-  local rows still passes the `processed_rows() > 0` feed gate
-  (previously masked by the duplicate feeding).  Regression: dtw-19
-  (full-table, ng4r2 catcher) + dtw-19b (WHERE d_id <= 240, the 2-node
-  reproducer) re-enabled as live cases.
+- **WRONG RESULTS: NOT-heavy filters on pushed join roots (FIXED)** —
+  originally filed as "correlated NOT EXISTS × CTE-join wrong results".
+  Literal-bisect repros proved subqueries innocent: a plain
+  `NOT (a OR b OR …)` (and its De Morgan CNF form) mis-filtered on any
+  pushed join root while identical shapes worked on single-table scans.
+  Root cause: `NdbInterpretedCode::finalise()` was not idempotent, and
+  the RonSQL join-root emit sites finalise twice (once inside
+  `NdbScanFilter::end()` via handleFilterDefined, once explicitly).
+  The second pass reinterprets already-patched relative branch offsets
+  as label numbers: offsets larger than the label count fail the 4517
+  validity check *before* writing (which is why single-label programs —
+  plain AND-of-!= — stayed intact), but multi-label NAND programs have
+  small offsets that pass the check and get silently re-patched to
+  garbage targets.  The single-table path finalises once
+  (operation-attached NdbScanFilter), which is why the NOT EXISTS
+  single-table tests were always green.  Fix: idempotency guard in
+  `finalise()` (return 0 when already Finalised) — protects every
+  caller; RonSQL's explicit finalise calls remain for raw-built
+  programs.  Regression: ronsql_cte_subquery Test 4 (NOT EXISTS ×
+  CTE-join) re-enabled + new Test 4b (literal NOT(OR-chain) on the
+  join root, the distilled shape).
+- **Explicit IN-subquery × CTE-join (OBSOLETED)** — was cleanly
+  rejected ("Not an aggregate query."); after rebasing onto the
+  RONDB-1108 non-agg phases the gate accepts the shape and it executes
+  correctly.  ronsql_cte_subquery Test 5 converted from a
+  rejection-assert to a live compare case.
+- **CRASH: DECIMAL-typed scalar subquery killed the RDRS process
+  (FIXED)** — `SELECT … FROM sq_ord WHERE o_price < (SELECT MAX(o_price)
+  FROM sq_ord)` with o_price DECIMAL(10,2). Root cause: every
+  subquery-substitution site builds T_FLOAT constants with
+  `constant_float.ls = {NULL, 0}` (there is no source text), but
+  `encode_constant`'s DECIMAL comparison arm consumes `.ls` and passed
+  the NULL pointer to `decimal_str2bin` → SEGV. The literal form
+  (`WHERE o_price < 99.99`) was never affected (ls = source text) and
+  DOUBLE columns were never affected (their arm consumes `.dbl`, which
+  is why Test 8 passed). Fix: encode_constant renders `.dbl` at the
+  COLUMN's scale (`%.*f`) into a stack buffer when `.ls` is NULL — the
+  inner query formatted the value at that scale, so same-scale rounding
+  recovers it exactly, whereas a round-trip-exact `%.17g` rendering
+  surfaces the double's binary error as extra digits and fails
+  decimal_str2bin with E_DEC_TRUNCATED; the EXPLAIN condition printer
+  gained the same NULL-ls guard (printed an empty value before).
+  Regression: ronsql_cte_subquery Test 7 re-enabled as a live compare
+  case.
 - **A CTE named like a stored table shadows it — accepted, not
   ambiguous**: the fifth recording showed `WITH pt2 AS (… FROM pt1 …)`
   resolving the `pt2` join target to the CTE (`CTE_LOOKUP CTE:pt2`,
