@@ -23,8 +23,10 @@
 #include "json_parser.hpp"
 #include <drogon/HttpTypes.h>
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
+#include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
 #include "api_key.hpp"
 #include <metrics.hpp>
+#include <cstdio>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SQL_CTRL 1
@@ -45,6 +47,40 @@
 #endif
 
 using std::endl;
+
+#ifdef RONSQL_PHASE_STATS
+/*
+ * Serialize per-request phase timings for the x-ronsql-phases response
+ * header.  All values are microseconds (last ronsql_op attempt); rows is
+ * the drained row count and attempts the ronsql_op attempt count.  Field
+ * order and names are pinned by mysql-test/suite/ronsql/t/ronsql_phase_stats
+ * and parsed by tools/rondb-cli (ronsql_bench.go).
+ */
+static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s) {
+  char buf[512];
+  snprintf(buf, sizeof(buf),
+           "parse=%llu,analyze=%llu,load=%llu,plan=%llu,compile=%llu,"
+           "prepare=%llu,subquery=%llu,ndbprep=%llu,send=%llu,"
+           "firstbatch=%llu,drain=%llu,print=%llu,execute=%llu,"
+           "rows=%llu,attempts=%u",
+           (unsigned long long)s.parse_us,
+           (unsigned long long)s.analyze_us,
+           (unsigned long long)s.load_us,
+           (unsigned long long)s.plan_us,
+           (unsigned long long)s.compile_us,
+           (unsigned long long)s.prepare_us,
+           (unsigned long long)s.subquery_us,
+           (unsigned long long)s.ndbprep_us,
+           (unsigned long long)s.send_us,
+           (unsigned long long)s.firstbatch_us,
+           (unsigned long long)s.drain_us,
+           (unsigned long long)s.print_us,
+           (unsigned long long)s.execute_us,
+           (unsigned long long)s.rows_drained,
+           (unsigned)s.attempts);
+  return std::string(buf);
+}
+#endif  // RONSQL_PHASE_STATS
 
 void RonSQLCtrl::ronsql(
   const drogon::HttpRequestPtr &req,
@@ -96,6 +132,10 @@ void RonSQLCtrl::ronsql(
 
   ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
   RonSQLExecParams params;
+#ifdef RONSQL_PHASE_STATS
+  RonSQLPhaseStats phase_stats;
+  params.phase_stats = &phase_stats;
+#endif
 
   std::string& database = reqStruct.database;
   status = ronsql_validate_database_name(database);
@@ -278,6 +318,9 @@ void RonSQLCtrl::ronsql(
       abort();
     }
     DEB_TRACE();
+#ifdef RONSQL_PHASE_STATS
+    resp->addHeader("x-ronsql-phases", ronsql_phase_stats_header(phase_stats));
+#endif
     resp->setBody(out_str);
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   }

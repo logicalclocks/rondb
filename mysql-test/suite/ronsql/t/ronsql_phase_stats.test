@@ -1,0 +1,108 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--source include/have_util_sed.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# x-ronsql-phases response header: per-request RonSQL phase timings
+# (RonSQLPhaseStats, serialized by ronsql_ctrl.cpp).  Requires RDRS
+# built with RONSQL_PHASE_STATS (the default — see RonSQLPerf.hpp).
+#
+# The header value is "parse=<us>,analyze=<us>,...,rows=<n>,attempts=<n>".
+# Timing values vary per run, so the assertions normalize every number
+# to N and pin the exact field list, order, and names — the same list
+# tools/rondb-cli (ronsql_bench.go parseRonSQLPhases) and the docs rely
+# on.  See test_benchmark_extension_plan.md (Phase B4).
+
+--echo
+--echo === Create table ===
+--echo
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE ph1 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  PRIMARY KEY USING HASH (a)
+) ENGINE=NDB;
+INSERT INTO ph1 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 3);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === Single-table aggregate: header present and well-formed ===
+--exec printf '{"query":"SELECT b, COUNT(*), SUM(a) FROM ph1 GROUP BY b;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-1
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-1 -o $MYSQL_TMP_DIR/phase-out-1 -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-1
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-1
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-1 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Result body (sorted) ==
+--exec sort $MYSQL_TMP_DIR/phase-out-1
+--remove_file $MYSQL_TMP_DIR/phase-body-1
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-1
+--remove_file $MYSQL_TMP_DIR/phase-out-1
+
+--echo
+--echo === CTE join aggregate: header present and well-formed ===
+--exec printf '{"query":"WITH agg AS (SELECT b AS g, COUNT(*) AS cnt FROM ph1 GROUP BY b) SELECT MAX(agg.cnt), COUNT(*) FROM ph1 AS p JOIN agg ON agg.g = p.b;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-2
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-2 -o $MYSQL_TMP_DIR/phase-out-2 -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-2
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-2
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-2 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Result body (sorted) ==
+--exec sort $MYSQL_TMP_DIR/phase-out-2
+--remove_file $MYSQL_TMP_DIR/phase-body-2
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-2
+--remove_file $MYSQL_TMP_DIR/phase-out-2
+
+--echo
+--echo === Single-table pass-through scan (non-aggregate): header present ===
+# RONDB-1108 non-agg path, scan arm: ndbprep/send/firstbatch/drain/rows.
+--exec printf '{"query":"SELECT a, b FROM ph1;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-4
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-4 -o $MYSQL_TMP_DIR/phase-out-4 -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-4
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-4
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-4 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Result body (sorted) ==
+--exec sort $MYSQL_TMP_DIR/phase-out-4
+--remove_file $MYSQL_TMP_DIR/phase-body-4
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-4
+--remove_file $MYSQL_TMP_DIR/phase-out-4
+
+--echo
+--echo === Single-table pass-through PK lookup (non-aggregate): header present ===
+# RONDB-1108 non-agg path, PK-lookup arm: firstbatch = fused execute(Commit).
+--exec printf '{"query":"SELECT a, b FROM ph1 WHERE a = 3;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-5
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-5 -o $MYSQL_TMP_DIR/phase-out-5 -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-5
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-5
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-5 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Result body (sorted) ==
+--exec sort $MYSQL_TMP_DIR/phase-out-5
+--remove_file $MYSQL_TMP_DIR/phase-body-5
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-5
+--remove_file $MYSQL_TMP_DIR/phase-out-5
+
+--echo
+--echo === EXPLAIN: header still present (no execution phases) ===
+--exec printf '{"query":"EXPLAIN SELECT b, COUNT(*) FROM ph1 GROUP BY b;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/phase-body-3
+--exec curl -s -D $MYSQL_TMP_DIR/phase-hdrs-3 -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/phase-body-3
+--echo == Header count (must be 1) ==
+--exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-3
+--echo == Normalized header (values masked to N) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-3 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--remove_file $MYSQL_TMP_DIR/phase-body-3
+--remove_file $MYSQL_TMP_DIR/phase-hdrs-3
+
+--echo
+--echo === Cleanup ===
+--disable_query_log
+DROP TABLE ph1;
+--enable_query_log

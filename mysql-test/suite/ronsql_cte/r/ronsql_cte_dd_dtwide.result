@@ -1,0 +1,556 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create and load the wide-type tables ===
+
+
+=== dtw-01: MIN/MAX over TINYINT signed + unsigned (boundary rows included) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_ti) AS mn_ti, MAX(d_ti) AS mx_ti,
+MIN(d_tiu) AS mn_tiu, MAX(d_tiu) AS mx_tiu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_ti), MAX(t.mx_ti), MIN(t.mn_tiu), MAX(t.mx_tiu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_ti) AS mn_ti, MAX(d_ti) AS mx_ti,
+MIN(d_tiu) AS mn_tiu, MAX(d_tiu) AS mx_tiu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_ti), MAX(t.mx_ti), MIN(t.mn_tiu), MAX(t.mx_tiu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_ti)	MAX(t.mx_ti)	MIN(t.mn_tiu)	MAX(t.mx_tiu)
+23	-128	127	0	255
+
+=== dtw-02: MIN/MAX over SMALLINT signed + unsigned ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_si) AS mn_si, MAX(d_si) AS mx_si,
+MIN(d_siu) AS mn_siu, MAX(d_siu) AS mx_siu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_si), MAX(t.mx_si), MIN(t.mn_siu), MAX(t.mx_siu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_si) AS mn_si, MAX(d_si) AS mx_si,
+MIN(d_siu) AS mn_siu, MAX(d_siu) AS mx_siu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_si), MAX(t.mx_si), MIN(t.mn_siu), MAX(t.mx_siu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_si)	MAX(t.mx_si)	MIN(t.mn_siu)	MAX(t.mx_siu)
+23	-32768	32767	0	65535
+
+=== dtw-03: MIN/MAX over MEDIUMINT signed + unsigned ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_mi) AS mn_mi, MAX(d_mi) AS mx_mi,
+MIN(d_miu) AS mn_miu, MAX(d_miu) AS mx_miu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_mi), MAX(t.mx_mi), MIN(t.mn_miu), MAX(t.mx_miu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_mi) AS mn_mi, MAX(d_mi) AS mx_mi,
+MIN(d_miu) AS mn_miu, MAX(d_miu) AS mx_miu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_mi), MAX(t.mx_mi), MIN(t.mn_miu), MAX(t.mx_miu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_mi)	MAX(t.mx_mi)	MIN(t.mn_miu)	MAX(t.mx_miu)
+23	-8388608	8388607	0	16777215
+
+=== dtw-04: MIN/MAX over INT signed + unsigned ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_i) AS mn_i, MAX(d_i) AS mx_i,
+MIN(d_iu) AS mn_iu, MAX(d_iu) AS mx_iu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_i), MAX(t.mx_i), MIN(t.mn_iu), MAX(t.mx_iu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_i) AS mn_i, MAX(d_i) AS mx_i,
+MIN(d_iu) AS mn_iu, MAX(d_iu) AS mx_iu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_i), MAX(t.mx_i), MIN(t.mn_iu), MAX(t.mx_iu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_i)	MAX(t.mx_i)	MIN(t.mn_iu)	MAX(t.mx_iu)
+23	-2147483648	2147483647	0	4294967295
+
+=== dtw-05: MIN/MAX over BIGINT signed + unsigned (Int64/Uint64 extremes) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_bi) AS mn_bi, MAX(d_bi) AS mx_bi,
+MIN(d_biu) AS mn_biu, MAX(d_biu) AS mx_biu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_bi), MAX(t.mx_bi), MIN(t.mn_biu), MAX(t.mx_biu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_bi) AS mn_bi, MAX(d_bi) AS mx_bi,
+MIN(d_biu) AS mn_biu, MAX(d_biu) AS mx_biu
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_bi), MAX(t.mx_bi), MIN(t.mn_biu), MAX(t.mx_biu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_bi)	MAX(t.mx_bi)	MIN(t.mn_biu)	MAX(t.mx_biu)
+23	-9223372036854775808	9223372036854775807	0	18446744073709551615
+
+=== dtw-06: SUM over every signed int width (moderate rows only) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_ti) AS s_ti, SUM(d_si) AS s_si, SUM(d_mi) AS s_mi,
+SUM(d_i) AS s_i, SUM(d_bi) AS s_bi
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.s_ti), SUM(t.s_si), SUM(t.s_mi), SUM(t.s_i), SUM(t.s_bi)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_ti) AS s_ti, SUM(d_si) AS s_si, SUM(d_mi) AS s_mi,
+SUM(d_i) AS s_i, SUM(d_bi) AS s_bi
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.s_ti), SUM(t.s_si), SUM(t.s_mi), SUM(t.s_i), SUM(t.s_bi)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	SUM(t.s_ti)	SUM(t.s_si)	SUM(t.s_mi)	SUM(t.s_i)	SUM(t.s_bi)
+20	-2800	-5832000	-1576216000	-397599928000	0
+
+=== dtw-07: SUM over every unsigned int width (moderate rows only) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_tiu) AS s_tiu, SUM(d_siu) AS s_siu,
+SUM(d_miu) AS s_miu, SUM(d_iu) AS s_iu, SUM(d_biu) AS s_biu
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.s_tiu), SUM(t.s_siu), SUM(t.s_miu), SUM(t.s_iu), SUM(t.s_biu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_tiu) AS s_tiu, SUM(d_siu) AS s_siu,
+SUM(d_miu) AS s_miu, SUM(d_iu) AS s_iu, SUM(d_biu) AS s_biu
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.s_tiu), SUM(t.s_siu), SUM(t.s_miu), SUM(t.s_iu), SUM(t.s_biu)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	SUM(t.s_tiu)	SUM(t.s_siu)	SUM(t.s_miu)	SUM(t.s_iu)	SUM(t.s_biu)
+20	24000	312000	23928000	2399784000	24000072000
+
+=== dtw-08: SUM over DECIMAL scale-0 (exact BIGINT) and scale-2 (DOUBLE widening) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_dec0) AS s0, SUM(d_dec2) AS s2, COUNT(*) AS n
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.s0), SUM(t.s2), SUM(t.n)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_dec0) AS s0, SUM(d_dec2) AS s2, COUNT(*) AS n
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.s0), SUM(t.s2), SUM(t.n)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	SUM(t.s0)	SUM(t.s2)	SUM(t.n)
+20	-3720000	9348080.00	240
+
+=== dtw-09: MIN/MAX over FLOAT and DOUBLE (exact binary fractions) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_f) AS mn_f, MAX(d_f) AS mx_f,
+MIN(d_d) AS mn_d, MAX(d_d) AS mx_d
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_f), MAX(t.mx_f), MIN(t.mn_d), MAX(t.mx_d)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_f) AS mn_f, MAX(d_f) AS mx_f,
+MIN(d_d) AS mn_d, MAX(d_d) AS mx_d
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_f), MAX(t.mx_f), MIN(t.mn_d), MAX(t.mx_d)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_f)	MAX(t.mx_f)	MIN(t.mn_d)	MAX(t.mx_d)
+23	-5	4.75	-5	4.875
+
+=== dtw-10: MIN/MAX over CHAR and VARCHAR (empty + multi-byte strings) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_ch) AS mn_ch, MAX(d_ch) AS mx_ch,
+MIN(d_vc) AS mn_vc, MAX(d_vc) AS mx_vc
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_ch), MAX(t.mx_ch), MIN(t.mn_vc), MAX(t.mx_vc)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_ch) AS mn_ch, MAX(d_ch) AS mx_ch,
+MIN(d_vc) AS mn_vc, MAX(d_vc) AS mx_vc
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_ch), MAX(t.mx_ch), MIN(t.mn_vc), MAX(t.mx_vc)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_ch)	MAX(t.mx_ch)	MIN(t.mn_vc)	MAX(t.mx_vc)
+23		zzzzzzzzzz		zzz
+
+=== dtw-11: MIN/MAX over DATE and DATETIME (range ends, NULL rows skipped) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_dt) AS mn_dt, MAX(d_dt) AS mx_dt,
+MIN(d_dtt) AS mn_dtt, MAX(d_dtt) AS mx_dtt
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_dt), MAX(t.mx_dt), MIN(t.mn_dtt), MAX(t.mx_dtt)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_dt) AS mn_dt, MAX(d_dt) AS mx_dt,
+MIN(d_dtt) AS mn_dtt, MAX(d_dtt) AS mx_dtt
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn_dt), MAX(t.mx_dt), MIN(t.mn_dtt), MAX(t.mx_dtt)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	MIN(t.mn_dt)	MAX(t.mx_dt)	MIN(t.mn_dtt)	MAX(t.mx_dtt)
+23	1000-01-01	9999-12-31	1000-01-01 00:00:00	9999-12-31 23:59:59
+
+=== dtw-12: COUNT(*) vs COUNT(nullable col) per type family ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, COUNT(*) AS c_all, COUNT(d_ti) AS c_ti, COUNT(d_f) AS c_f,
+COUNT(d_dec2) AS c_dec, COUNT(d_vc) AS c_vc, COUNT(d_dt) AS c_dt
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.c_all), SUM(t.c_ti), SUM(t.c_f), SUM(t.c_dec),
+SUM(t.c_vc), SUM(t.c_dt)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, COUNT(*) AS c_all, COUNT(d_ti) AS c_ti, COUNT(d_f) AS c_f,
+COUNT(d_dec2) AS c_dec, COUNT(d_vc) AS c_vc, COUNT(d_dt) AS c_dt
+FROM dtw GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.c_all), SUM(t.c_ti), SUM(t.c_f), SUM(t.c_dec),
+SUM(t.c_vc), SUM(t.c_dt)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	SUM(t.c_all)	SUM(t.c_ti)	SUM(t.c_f)	SUM(t.c_dec)	SUM(t.c_vc)	SUM(t.c_dt)
+23	244	202	202	202	202	202
+
+=== dtw-13: CTE body GROUP BY a TINYINT key, scalar main re-aggregation ===
+== Query ==
+WITH t AS (
+SELECT d_kti AS g, COUNT(*) AS n, SUM(d_i) AS s
+FROM dtw WHERE d_id <= 240 GROUP BY d_kti)
+SELECT COUNT(*), SUM(t.n), SUM(t.s) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_kti AS g, COUNT(*) AS n, SUM(d_i) AS s
+FROM dtw WHERE d_id <= 240 GROUP BY d_kti)
+SELECT COUNT(*), SUM(t.n), SUM(t.s) FROM t|
+COUNT(*)	SUM(t.n)	SUM(t.s)
+7	240	-397599928000
+
+=== dtw-14: CTE body GROUP BY a CHAR key, scalar main re-aggregation ===
+== Query ==
+WITH t AS (
+SELECT d_kch AS g, COUNT(*) AS n, SUM(d_si) AS s
+FROM dtw WHERE d_id <= 240 GROUP BY d_kch)
+SELECT COUNT(*), SUM(t.n), SUM(t.s) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_kch AS g, COUNT(*) AS n, SUM(d_si) AS s
+FROM dtw WHERE d_id <= 240 GROUP BY d_kch)
+SELECT COUNT(*), SUM(t.n), SUM(t.s) FROM t|
+COUNT(*)	SUM(t.n)	SUM(t.s)
+4	240	-5832000
+
+=== dtw-15: CTE body GROUP BY a DATE key, scalar main re-aggregation ===
+== Query ==
+WITH t AS (
+SELECT d_kdt AS g, COUNT(*) AS n, SUM(d_mi) AS s
+FROM dtw WHERE d_id <= 240 GROUP BY d_kdt)
+SELECT COUNT(*), SUM(t.n), SUM(t.s) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_kdt AS g, COUNT(*) AS n, SUM(d_mi) AS s
+FROM dtw WHERE d_id <= 240 GROUP BY d_kdt)
+SELECT COUNT(*), SUM(t.n), SUM(t.s) FROM t|
+COUNT(*)	SUM(t.n)	SUM(t.s)
+5	240	-1576216000
+
+=== dtw-16: boundary-only slice through MIN/MAX (Int64/INT extremes isolated) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_bi) AS mn, MAX(d_bi) AS mx,
+MIN(d_i) AS mn_i, MAX(d_i) AS mx_i
+FROM dtw WHERE d_id > 1000 GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn), MAX(t.mx), MIN(t.mn_i), MAX(t.mx_i) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_bi) AS mn, MAX(d_bi) AS mx,
+MIN(d_i) AS mn_i, MAX(d_i) AS mx_i
+FROM dtw WHERE d_id > 1000 GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn), MAX(t.mx), MIN(t.mn_i), MAX(t.mx_i) FROM t|
+COUNT(*)	MIN(t.mn)	MAX(t.mx)	MIN(t.mn_i)	MAX(t.mx_i)
+3	-9223372036854775808	9223372036854775807	-2147483648	2147483647
+
+=== dtw-17: all-NULL group (every aggregate returns NULL, COUNTs return 0) ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_i) AS mn, MAX(d_vc) AS mx,
+COUNT(d_i) AS c, COUNT(*) AS n
+FROM dtw WHERE d_id > 1002 GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn), MAX(t.mx), SUM(t.c), SUM(t.n) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, MIN(d_i) AS mn, MAX(d_vc) AS mx,
+COUNT(d_i) AS c, COUNT(*) AS n
+FROM dtw WHERE d_id > 1002 GROUP BY d_grp)
+SELECT COUNT(*), MIN(t.mn), MAX(t.mx), SUM(t.c), SUM(t.n) FROM t|
+COUNT(*)	MIN(t.mn)	MAX(t.mx)	SUM(t.c)	SUM(t.n)
+1	NULL	NULL	0	2
+
+=== dtw-18: wide output — 10 aggregates over 8 distinct columns in one CTE ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, COUNT(*) AS n, SUM(d_i) AS s_i, SUM(d_biu) AS s_biu,
+MIN(d_si) AS mn_si, MAX(d_siu) AS mx_siu, MIN(d_dec2) AS mn_dec,
+MAX(d_dec0) AS mx_dec, MIN(d_dt) AS mn_dt, MAX(d_ch) AS mx_ch,
+MAX(d_d) AS mx_d
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.n), SUM(t.s_i), SUM(t.s_biu), MIN(t.mn_si),
+MAX(t.mx_siu), MIN(t.mn_dec), MAX(t.mx_dec), MIN(t.mn_dt),
+MAX(t.mx_ch), MAX(t.mx_d)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, COUNT(*) AS n, SUM(d_i) AS s_i, SUM(d_biu) AS s_biu,
+MIN(d_si) AS mn_si, MAX(d_siu) AS mx_siu, MIN(d_dec2) AS mn_dec,
+MAX(d_dec0) AS mx_dec, MIN(d_dt) AS mn_dt, MAX(d_ch) AS mx_ch,
+MAX(d_d) AS mx_d
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT COUNT(*), SUM(t.n), SUM(t.s_i), SUM(t.s_biu), MIN(t.mn_si),
+MAX(t.mx_siu), MIN(t.mn_dec), MAX(t.mx_dec), MIN(t.mn_dt),
+MAX(t.mx_ch), MAX(t.mx_d)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id|
+COUNT(*)	SUM(t.n)	SUM(t.s_i)	SUM(t.s_biu)	MIN(t.mn_si)	MAX(t.mx_siu)	MIN(t.mn_dec)	MAX(t.mx_dec)	MIN(t.mn_dt)	MAX(t.mx_ch)	MAX(t.mx_d)
+20	240	-397599928000	24000072000	-29993	3107	233.25	1450455	1995-01-04	echo	4.875
+
+=== dtw-19: scalar CTE (no GROUP BY) over BIGINT extremes ===
+== Query ==
+WITH t AS (
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+FROM dtw)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+FROM dtw)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t|
+MAX(t.n)	MAX(t.mn)	MAX(t.mx)	MAX(t.mxu)
+244	-9223372036854775808	9223372036854775807	18446744073709551615
+
+=== dtw-19b: scalar CTE MIN with a body WHERE (2-node duplicate-feed reproducer) ===
+== Query ==
+WITH t AS (
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+FROM dtw WHERE d_id <= 240)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT COUNT(*) AS n, MIN(d_bi) AS mn, MAX(d_bi) AS mx, MAX(d_biu) AS mxu
+FROM dtw WHERE d_id <= 240)
+SELECT MAX(t.n), MAX(t.mn), MAX(t.mx), MAX(t.mxu) FROM t|
+MAX(t.n)	MAX(t.mn)	MAX(t.mx)	MAX(t.mxu)
+240	-11900000833	11900000833	239000717
+
+=== dtw-20: P-GB — GROUP BY a dimension column over a mixed-type CTE leaf ===
+== Query ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_si) AS s, MIN(d_dt) AS mn_dt
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT m.g_name, COUNT(*), SUM(t.s), MIN(t.mn_dt)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id
+GROUP BY m.g_name;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (
+SELECT d_grp AS g, SUM(d_si) AS s, MIN(d_dt) AS mn_dt
+FROM dtw WHERE d_id <= 240 GROUP BY d_grp)
+SELECT m.g_name, COUNT(*), SUM(t.s), MIN(t.mn_dt)
+FROM dtw_dim AS m JOIN t ON t.g = m.g_id
+GROUP BY m.g_name|
+g_name	COUNT(*)	SUM(t.s)	MIN(t.mn_dt)
+grp#1	1	-350676	1995-01-04
+grp#10	1	-233280	1995-01-31
+grp#11	1	-349836	1995-02-03
+grp#12	1	-232608	1995-04-07
+grp#13	1	-349668	1995-02-09
+grp#14	1	-233616	1995-02-12
+grp#15	1	-349500	1995-02-15
+grp#16	1	-232944	1995-02-18
+grp#17	1	-349332	1995-02-21
+grp#18	1	-232272	1995-04-25
+grp#19	1	-349164	1995-02-27
+grp#2	1	-234288	1995-01-07
+grp#20	1	-233280	1995-03-02
+grp#3	1	-350508	1995-01-10
+grp#4	1	-233616	1995-01-13
+grp#5	1	-350340	1995-01-16
+grp#6	1	-232944	1995-03-20
+grp#7	1	-350172	1995-01-22
+grp#8	1	-233952	1995-01-25
+grp#9	1	-350004	1995-01-28
+
+=== Cleanup ===

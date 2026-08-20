@@ -1185,17 +1185,32 @@ Int32 AggInterpreterBase::Max(const Register& a, AggResItem* res, bool print) {
       res->is_unsigned = true;
     } else {
       assert(!a.is_unsigned && res->is_unsigned);
+      /* Mixed-signedness CASE arms (big-06 family): the old code
+       * assigned the COMPARISON RESULT (0/1) to the accumulator. */
       if (a.value.val_int64 < 0) {
+        // res (unsigned) is already larger
       } else {
-        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64) >
-                                res->value.val_uint64;
+        res->value.val_uint64 =
+            static_cast<Uint64>(a.value.val_int64) > res->value.val_uint64 ?
+            static_cast<Uint64>(a.value.val_int64) : res->value.val_uint64;
       }
     }
   } else {
     assert(res_type == NDB_TYPE_DOUBLE);
-    res->value.val_double = (a.value.val_double > res->value.val_double) ?
-                             a.value.val_double : res->value.val_double;
+    /* Either side may still be a BIGINT being promoted to DOUBLE —
+     * convert like Sum() does instead of reading raw bits. */
+    const double val0 = (a.type == NDB_TYPE_DOUBLE) ?
+        a.value.val_double :
+        (a.is_unsigned ? static_cast<double>(a.value.val_uint64)
+                       : static_cast<double>(a.value.val_int64));
+    const double val1 = (res->type == NDB_TYPE_DOUBLE) ?
+        res->value.val_double :
+        (res->is_unsigned ? static_cast<double>(res->value.val_uint64)
+                          : static_cast<double>(res->value.val_int64));
+    res->value.val_double = val0 > val1 ? val0 : val1;
+    res->is_unsigned = false;
   }
+  res->type = res_type;
   res->is_null = false;
 
 #ifdef DEBUG_PA_INTERP
@@ -1373,9 +1388,20 @@ Int32 AggInterpreterBase::Min(const Register& a, AggResItem* res, bool print) {
     }
   } else {
     assert(res_type == NDB_TYPE_DOUBLE);
-    res->value.val_double = (a.value.val_double < res->value.val_double) ?
-                             a.value.val_double : res->value.val_double;
+    /* Either side may still be a BIGINT being promoted to DOUBLE —
+     * convert like Sum() does instead of reading raw bits. */
+    const double val0 = (a.type == NDB_TYPE_DOUBLE) ?
+        a.value.val_double :
+        (a.is_unsigned ? static_cast<double>(a.value.val_uint64)
+                       : static_cast<double>(a.value.val_int64));
+    const double val1 = (res->type == NDB_TYPE_DOUBLE) ?
+        res->value.val_double :
+        (res->is_unsigned ? static_cast<double>(res->value.val_uint64)
+                          : static_cast<double>(res->value.val_int64));
+    res->value.val_double = val0 < val1 ? val0 : val1;
+    res->is_unsigned = false;
   }
+  res->type = res_type;
   res->is_null = false;
 
 #ifdef DEBUG_PA_INTERP

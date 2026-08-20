@@ -1,0 +1,746 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for parser tests ===
+
+
+===== Section (a): pure parse errors (no schema needed) =====
+===== WITH: missing parens around body =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH x AS SELECT COUNT(*) FROM t SELECT MAX(x.n) FROM x;
+!           ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: missing AS =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH x (SELECT COUNT(*) FROM t) SELECT MAX(x.n) FROM x;
+!        ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: missing CTE name =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH AS (SELECT COUNT(*) FROM t) SELECT MAX(x.n) FROM x;
+!      ^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: trailing comma in CTE list =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH x AS (SELECT COUNT(*) AS n FROM t), SELECT MAX(x.n) FROM x;
+!                                          ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: unterminated body paren =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH x AS (SELECT COUNT(*) AS n FROM t SELECT MAX(x.n) FROM x;
+!                                        ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: missing main SELECT =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH x AS (SELECT COUNT(*) AS n FROM t);
+!                                        ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: empty body =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH x AS () SELECT MAX(x.n) FROM x;
+!            ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== WITH: reserved keyword as CTE name =====
+Syntax error in SQL statement: Unexpected at this point
+> WITH select AS (SELECT COUNT(*) AS n FROM t) SELECT MAX(n) FROM select;
+!      ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== JOIN: missing ON clause =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) FROM t JOIN u;
+!                              ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== JOIN: missing table before ON =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) FROM t JOIN ON u.a = t.a;
+!                             ^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== JOIN: implicit table alias rejected =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) FROM t x JOIN u AS y ON y.a = x.a;
+!                        ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== CASE without END =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT SUM(CASE WHEN a > 1 THEN 1 ELSE 0) FROM t;
+!                                         ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== CASE without WHEN =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT SUM(CASE THEN 1 ELSE 0 END) FROM t;
+!                 ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== CASE as a WHERE predicate is not in the grammar =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) FROM t WHERE CASE WHEN a > 1 THEN 1 ELSE 0 END = 1;
+!                              ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== Index hint: missing parens =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) FROM t FORCE INDEX idx;
+!                                    ^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== FRAGS_PER_WORKER: missing value =====
+Syntax error in SQL statement: Unexpected at this point
+> FRAGS_PER_WORKER SELECT COUNT(*) FROM t;
+!                  ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== FRAGS_PER_WORKER: non-integer value =====
+Syntax error in SQL statement: Unexpected at this point
+> FRAGS_PER_WORKER = abc SELECT COUNT(*) FROM t;
+!                    ^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== FRAGS_PER_WORKER: missing value after equals =====
+Syntax error in SQL statement: Unexpected at this point
+> FRAGS_PER_WORKER = SELECT COUNT(*) FROM t;
+!                    ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== Comments not supported: block comment =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) /* comment */ FROM t;
+!                 ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== Comments not supported: line comment =====
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) -- a line comment
+!                 ^
+> FROM t;
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+===== Section (b): parse-accept + plan shape (EXPLAIN FORCE with schema) =====
+===== Basic WITH + complete-key CTE join, aggregating main =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt, s
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt, s
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`b`
+   = C2:`b`
+  Out_1:`COUNT(*)`
+   = A0:Count(1)
+  Out_2:`SUM(agg2.cnt)`
+   = A1:Sum(`cnt`)
+  Out_3:`SUM(agg2.s)`
+   = A2:Sum(`s`)
+FROM pt1
+GROUP BY
+  C2:`b`
+
+Aggregation program (6 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C03 r00 = C03:`cnt`
+Sum    A01  r00 A01:SUM <- r00:`cnt`
+Load   r00  C04 r00 = C04:`s`
+Sum    A02  r00 A02:SUM <- r00:`s`
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 14 instructions.
+
+===== Keyword case-mixing =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(agg2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`CoUnT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== Backtick-quoted CTE name and aliases =====
+CTE definitions:
+  CTE[0] my cte — source: pt2
+    Outputs: the group, row count
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p 1
+╰─ 1: [INNER] CTE_LOOKUP CTE:my cte AS my cte  <- p 1
+     CTE outputs: the group, row count
+     Key: the group = p 1.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(``my cte``.``row count``)`
+   = A0:Max(`row count`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`row count`
+Max    A00  r00 A00:MAX <- r00:`row count`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== Whitespace torture =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX( agg2 . cnt )`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== Three sibling CTEs =====
+CTE definitions:
+  CTE[0] c1 — source: pt2
+    Outputs: g, n
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+  CTE[1] c2 — source: pt2
+    Outputs: g, s
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+  CTE[2] c3 — source: pt2
+    Outputs: g, m
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (4 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+├─ 1: [INNER] CTE_LOOKUP CTE:c1 AS c1  <- p
+│    CTE outputs: g, n
+│    Key: g = p.b
+├─ 2: [INNER] CTE_LOOKUP CTE:c2 AS c2  <- p
+│    CTE outputs: g, s
+│    Key: g = p.b
+╰─ 3: [INNER] CTE_LOOKUP CTE:c3 AS c3  <- p
+     CTE outputs: g, m
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`COUNT(*)`
+   = A0:Count(1)
+  Out_1:`SUM(c1.n)`
+   = A1:Sum(`n`)
+  Out_2:`SUM(c2.s)`
+   = A2:Sum(`s`)
+  Out_3:`MAX(c3.m)`
+   = A3:Max(`m`)
+FROM pt1
+
+Aggregation program (8 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C02 r00 = C02:`n`
+Sum    A01  r00 A01:SUM <- r00:`n`
+Load   r00  C03 r00 = C03:`s`
+Sum    A02  r00 A02:SUM <- r00:`s`
+Load   r00  C04 r00 = C04:`m`
+Max    A03  r00 A03:MAX <- r00:`m`
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 14 instructions.
+
+===== Chained CTE-of-CTE =====
+CTE definitions:
+  CTE[0] base — source: pt2
+    Outputs: g, s
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+  CTE[1] top2 — source: base
+    Outputs: g, m
+    GROUP BY: col_2
+    Body root: CTE_SCAN
+
+Query parse tree:
+SELECT
+  Out_0:`COUNT(*)`
+   = A0:Count(1)
+  Out_1:`SUM(top2.m)`
+   = A1:Sum(`m`)
+FROM top2
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C04 r00 = C04:`m`
+Sum    A01  r00 A01:SUM <- r00:`m`
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== GREATEST/LEAST (2-arg and 3-arg) in CTE-body WHERE =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(agg2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C03 r00 = C03:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== CASE inside an aggregate: parent condition + CTE THEN arm =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`SUM(CASE WHEN p.c > 20 THEN agg2.cnt ELSE 0 END)`
+   = A0:Sum(CASE WHEN <condition> THEN `cnt` ELSE 0 END)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (8 instructions):
+Instr. DEST SRC DESCRIPTION
+EmbInt C00  ---
+Load   r00  C02 r00 = C02:`cnt`
+Sum    A00  r00 A00:SUM <- r00:`cnt`
+Skip   ---  00
+LoadI  r00  I00 r00 = I00:0
+AggRep A00  r00
+LoadI  r00  I01 r00 = I01:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== CASE inside an aggregate: CTE-column condition (Phase I.4) =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`SUM(CASE WHEN agg2.g = 1 THEN agg2.cnt ELSE 0 END)`
+   = A0:Sum(CASE WHEN <condition> THEN `cnt` ELSE 0 END)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (8 instructions):
+Instr. DEST SRC DESCRIPTION
+EmbInt C00  ---
+Load   r00  C02 r00 = C02:`cnt`
+Sum    A00  r00 A00:SUM <- r00:`cnt`
+Skip   ---  00
+LoadI  r00  I00 r00 = I00:0
+AggRep A00  r00
+LoadI  r00  I01 r00 = I01:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== IS NULL / IS NOT NULL + DNF in CTE-body WHERE =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(agg2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C03 r00 = C03:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== FORCE INDEX on the CTE-body root =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: INDEX_SCAN using idx_pt2_grp
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(agg2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== USE INDEX () forces a table scan =====
+Query parse tree:
+SELECT
+  Out_0:`b`
+   = C0:`b`
+  Out_1:`COUNT(*)`
+   = A0:Count(1)
+FROM pt1
+WHERE
+  =
+  ├─ `b`
+  ╰─ 1
+GROUP BY
+  C0:`b`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `b`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== FRAGS_PER_WORKER statement head on a CTE join query =====
+FRAGS_PER_WORKER = 4 (requested; the NDB API normalizes to a power of two <= 8 and may clamp or ignore it, see frags_per_worker_plan.md)
+
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(agg2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== EXPLAIN FRAGS_PER_WORKER combination =====
+FRAGS_PER_WORKER = 2 (requested; the NDB API normalizes to a power of two <= 8 and may clamp or ignore it, see frags_per_worker_plan.md)
+
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(agg2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== ORDER BY alias + LIMIT on aggregate main =====
+CTE definitions:
+  CTE[0] agg2 — source: pt2
+    Outputs: g, s
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
+     CTE outputs: g, s
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`b`
+   = C2:`b`
+  Out_1:`total`
+   = A0:Sum(`s`)
+FROM pt1
+GROUP BY
+  C2:`b`
+ORDER BY
+  Out_1:`total` DESC
+LIMIT 2
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C03 r00 = C03:`s`
+Sum    A00  r00 A00:SUM <- r00:`s`
+
+
+Result sorted by `total` DESC.
+Result limited to 2 rows.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+
+===== Section (c): prepare-time rejections (schema-dependent) =====
+===== Duplicate CTE name =====
+Duplicate CTE name 'x'.
+Error handling: RPE
+ronsql_cli caught exception: Duplicate CTE name.
+===== CTE named like a stored table shadows it (resolves to the CTE) =====
+CTE definitions:
+  CTE[0] pt2 — source: pt1
+    Outputs: g, cnt
+    GROUP BY: col_0
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+╰─ 1: [INNER] CTE_LOOKUP CTE:pt2 AS pt2  <- p
+     CTE outputs: g, cnt
+     Key: g = p.b
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(pt2.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== Index hint on a joined (non-root) table is rejected =====
+Error handling: RPE
+ronsql_cli caught exception: Index hints (FORCE/USE/IGNORE INDEX) are only supported on the root table of a query or CTE body, not on a joined table.
+===== Partial-key INNER join to a multi-key CTE triggers the I.16 root rewrite =====
+CTE definitions:
+  CTE[0] mk — source: pt2
+    Outputs: g1, g2, cnt
+    GROUP BY: col_0, col_1
+    Body root: TABLE_SCAN
+
+Join plan (2 operations):
+├─ 0: [ROOT] CTE_SCAN CTE:mk AS mk
+│    CTE outputs: g1, g2, cnt
+╰─ 1: [INNER] INDEX_SCAN pt1 AS p  <- mk
+     Index: idx_pt1_b(b)
+     Key: b = mk.g1
+     ** Aggregation leaf **
+
+Query parse tree:
+SELECT
+  Out_0:`MAX(mk.cnt)`
+   = A0:Max(`cnt`)
+  Out_1:`COUNT(*)`
+   = A1:Count(1)
+FROM pt1
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C02 r00 = C02:`cnt`
+Max    A00  r00 A00:MAX <- r00:`cnt`
+LoadI  r00  I00 r00 = I00:1
+Count  A01  r00 A01:COUNT <- r00:1
+
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== Partial-key LEFT join to a multi-key CTE is rejected (I.16a, at execution) =====
+Error handling: RPE
+ronsql_cli caught exception: Partial CTE lookup key not supported.  The virtual CTE primary key matches the CTE body's GROUP BY column list and the join must bind every key column.  Workaround: place the multi-key CTE on the joined root and join the smaller table to it.
+
+=== Cleanup ===

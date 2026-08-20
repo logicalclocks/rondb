@@ -1,0 +1,31 @@
+############################################################
+# Pushed MIN/MAX over DECIMAL columns
+############################################################
+CREATE TABLE t1 (
+pk  BIGINT NOT NULL,
+d90 DECIMAL(9,0) NOT NULL,
+d92 DECIMAL(9,2) NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 10, 1.25),
+(2, 20, 2.50),
+(3, 30, 3.25),
+(4, 40, 4.00);
+# Baseline: pushdown OFF (server-side aggregation).
+SET ndb_pushdown_aggregate=OFF;
+SELECT MIN(d90), MAX(d90), SUM(d90) FROM t1;
+MIN(d90)	MAX(d90)	SUM(d90)
+10	40	100
+SELECT MIN(d92), MAX(d92), SUM(d92) FROM t1;
+MIN(d92)	MAX(d92)	SUM(d92)
+1.25	4.00	11.00
+# Pushdown ON — results must match the baseline above.
+SET ndb_pushdown_aggregate=ON;
+SELECT MIN(d90), MAX(d90), SUM(d90) FROM t1;
+MIN(d90)	MAX(d90)	SUM(d90)
+10	40	100
+SELECT MIN(d92), MAX(d92), SUM(d92) FROM t1;
+MIN(d92)	MAX(d92)	SUM(d92)
+1.25	4.00	11.00
+DROP TABLE t1;

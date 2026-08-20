@@ -1,0 +1,499 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== gc-1: root real scan + grouped CTE arm ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_orderkey) AS s
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, pc.s
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 8;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_orderkey) AS s
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, pc.s
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 8|
+c_custkey	cnt	s
+1	5	3005
+2	5	3010
+3	5	3015
+4	5	3020
+5	5	3025
+6	5	3030
+7	5	3035
+
+=== gc-2: snowflake chain, CTE keyed on a lookup child ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT o.o_orderkey, cu.c_mktsegment, pc.cnt
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN pc ON pc.k = cu.c_custkey
+WHERE o.o_orderkey < 12;
+
+Number of output lines, including header: 12
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT o.o_orderkey, cu.c_mktsegment, pc.cnt
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN pc ON pc.k = cu.c_custkey
+WHERE o.o_orderkey < 12|
+o_orderkey	c_mktsegment	cnt
+1	BUILDING	5
+10	AUTOMOBILE	5
+11	BUILDING	5
+2	FURNITURE	5
+3	HOUSEHOLD	5
+4	MACHINERY	5
+5	AUTOMOBILE	5
+6	BUILDING	5
+7	FURNITURE	5
+8	HOUSEHOLD	5
+9	MACHINERY	5
+
+=== gc-3: star with a real branch and a CTE branch ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, n.n_name, pc.cnt
+FROM customer AS c
+JOIN nation AS n ON n.n_nationkey = c.c_nationkey
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 10;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, n.n_name, pc.cnt
+FROM customer AS c
+JOIN nation AS n ON n.n_nationkey = c.c_nationkey
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 10|
+c_custkey	n_name	cnt
+1	NATION1	5
+2	NATION2	5
+3	NATION3	5
+4	NATION4	5
+5	NATION5	5
+6	NATION6	5
+7	NATION7	5
+8	NATION8	5
+9	NATION9	5
+
+=== gc-4: CTE keyed on an INDEX_SCAN child ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT n.n_name, cu.c_custkey, pc.cnt
+FROM nation AS n
+JOIN customer AS cu ON cu.c_nationkey = n.n_nationkey
+JOIN pc ON pc.k = cu.c_custkey
+WHERE n.n_nationkey < 3;
+
+Number of output lines, including header: 37
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT n.n_name, cu.c_custkey, pc.cnt
+FROM nation AS n
+JOIN customer AS cu ON cu.c_nationkey = n.n_nationkey
+JOIN pc ON pc.k = cu.c_custkey
+WHERE n.n_nationkey < 3|
+n_name	c_custkey	cnt
+NATION0	100	5
+NATION0	125	5
+NATION0	150	5
+NATION0	175	5
+NATION0	200	5
+NATION0	225	5
+NATION0	25	5
+NATION0	250	5
+NATION0	275	5
+NATION0	300	5
+NATION0	50	5
+NATION0	75	5
+NATION1	1	5
+NATION1	101	5
+NATION1	126	5
+NATION1	151	5
+NATION1	176	5
+NATION1	201	5
+NATION1	226	5
+NATION1	251	5
+NATION1	26	5
+NATION1	276	5
+NATION1	51	5
+NATION1	76	5
+NATION2	102	5
+NATION2	127	5
+NATION2	152	5
+NATION2	177	5
+NATION2	2	5
+NATION2	202	5
+NATION2	227	5
+NATION2	252	5
+NATION2	27	5
+NATION2	277	5
+NATION2	52	5
+NATION2	77	5
+
+=== gc-5: LEFT JOIN grouped CTE with NULL groups ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_orderkey < 100 GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt
+FROM customer AS c
+LEFT JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey > 90 AND c.c_custkey < 110;
+
+Number of output lines, including header: 20
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders WHERE o_orderkey < 100 GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt
+FROM customer AS c
+LEFT JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey > 90 AND c.c_custkey < 110|
+c_custkey	cnt
+100	NULL
+101	NULL
+102	NULL
+103	NULL
+104	NULL
+105	NULL
+106	NULL
+107	NULL
+108	NULL
+109	NULL
+91	1
+92	1
+93	1
+94	1
+95	1
+96	1
+97	1
+98	1
+99	1
+
+=== gc-6: two grouped CTEs on the same parent ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey),
+pk AS (SELECT o_clerk AS k, MAX(o_orderkey) AS mx
+FROM orders GROUP BY o_clerk)
+SELECT c.c_custkey, pc.cnt, pk.mx
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN pk ON pk.k = c.c_custkey
+WHERE c.c_custkey < 6;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey),
+pk AS (SELECT o_clerk AS k, MAX(o_orderkey) AS mx
+FROM orders GROUP BY o_clerk)
+SELECT c.c_custkey, pc.cnt, pk.mx
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN pk ON pk.k = c.c_custkey
+WHERE c.c_custkey < 6|
+c_custkey	cnt	mx
+1	5	1480
+2	5	1481
+3	5	1482
+4	5	1483
+5	5	1444
+
+=== gc-7: two grouped CTEs on different parents (probe) ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey),
+pn AS (SELECT c_nationkey AS k, COUNT(*) AS nc
+FROM customer GROUP BY c_nationkey)
+SELECT o.o_orderkey, pc.cnt, pn.nc
+FROM orders AS o
+JOIN pc ON pc.k = o.o_custkey
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN pn ON pn.k = cu.c_nationkey
+WHERE o.o_orderkey < 10;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey),
+pn AS (SELECT c_nationkey AS k, COUNT(*) AS nc
+FROM customer GROUP BY c_nationkey)
+SELECT o.o_orderkey, pc.cnt, pn.nc
+FROM orders AS o
+JOIN pc ON pc.k = o.o_custkey
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN pn ON pn.k = cu.c_nationkey
+WHERE o.o_orderkey < 10|
+o_orderkey	cnt	nc
+1	5	12
+2	5	12
+3	5	12
+4	5	12
+5	5	12
+6	5	12
+7	5	12
+8	5	12
+9	5	12
+
+=== gc-8: real PK lookup below a CTE_LOOKUP (probe) ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, c2.c_mktsegment
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN customer AS c2 ON c2.c_custkey = pc.k
+WHERE c.c_custkey < 6;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, c2.c_mktsegment
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN customer AS c2 ON c2.c_custkey = pc.k
+WHERE c.c_custkey < 6|
+c_custkey	cnt	c_mktsegment
+1	5	BUILDING
+2	5	FURNITURE
+3	5	HOUSEHOLD
+4	5	MACHINERY
+5	5	AUTOMOBILE
+
+=== gc-9: CTE root + two-level real chain below (probe) ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT pc.k, pc.cnt, cu.c_mktsegment, n.n_name
+FROM pc
+JOIN customer AS cu ON cu.c_custkey = pc.k
+JOIN nation AS n ON n.n_nationkey = cu.c_nationkey
+WHERE pc.k < 7;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT pc.k, pc.cnt, cu.c_mktsegment, n.n_name
+FROM pc
+JOIN customer AS cu ON cu.c_custkey = pc.k
+JOIN nation AS n ON n.n_nationkey = cu.c_nationkey
+WHERE pc.k < 7|
+k	cnt	c_mktsegment	n_name
+1	5	BUILDING	NATION1
+2	5	FURNITURE	NATION2
+3	5	HOUSEHOLD	NATION3
+4	5	MACHINERY	NATION4
+5	5	AUTOMOBILE	NATION5
+6	5	BUILDING	NATION6
+
+=== gc-10: multi-key CTE, complete key permuted ===
+== Query ==
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, g.g_b, pt.cnt
+FROM gckey AS g
+JOIN pt ON pt.cl = g.g_b AND pt.k = g.g_a;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, g.g_b, pt.cnt
+FROM gckey AS g
+JOIN pt ON pt.cl = g.g_b AND pt.k = g.g_a|
+g_a	g_b	cnt
+1	2	3
+15	16	3
+2	3	2
+45	6	3
+
+=== gc-11: WHERE mix, root bound + CTE-output filter ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt, MAX(o_orderkey) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, pc.mx
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 20 AND pc.mx > 1300;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt, MAX(o_orderkey) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, pc.mx
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 20 AND pc.mx > 1300|
+c_custkey	cnt	mx
+
+=== gc-12: DATE + DECIMAL grouped outputs ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, MIN(o_orderdate) AS d,
+MAX(o_totalprice) AS p
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.d, pc.p
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 5;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, MIN(o_orderdate) AS d,
+MAX(o_totalprice) AS p
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.d, pc.p
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+WHERE c.c_custkey < 5|
+c_custkey	d	p
+1	1995-01-02	16057.37
+2	1995-01-03	16070.74
+3	1995-01-04	16084.11
+4	1995-01-05	16097.48
+
+=== gc-13: VARCHAR MIN/MAX grouped outputs ===
+== Query ==
+WITH sm AS (SELECT c_nationkey AS k, MIN(c_mktsegment) AS lo,
+MAX(c_mktsegment) AS hi
+FROM customer GROUP BY c_nationkey)
+SELECT n.n_name, sm.lo, sm.hi
+FROM nation AS n
+JOIN sm ON sm.k = n.n_nationkey
+WHERE n.n_nationkey < 4;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sm AS (SELECT c_nationkey AS k, MIN(c_mktsegment) AS lo,
+MAX(c_mktsegment) AS hi
+FROM customer GROUP BY c_nationkey)
+SELECT n.n_name, sm.lo, sm.hi
+FROM nation AS n
+JOIN sm ON sm.k = n.n_nationkey
+WHERE n.n_nationkey < 4|
+n_name	lo	hi
+NATION0	AUTOMOBILE	AUTOMOBILE
+NATION1	BUILDING	BUILDING
+NATION2	FURNITURE	FURNITURE
+NATION3	HOUSEHOLD	HOUSEHOLD
+
+=== gc-P1 (rejection): partial-key join to the 2-key CTE ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
+scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
+GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
+broader roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.
+
+=== gc-P2 (rejection): multi-key CTE keyed off two aliases ===
+All ON conditions in a single JOIN must reference the same parent table.
+Error handling: RPE
+ronsql_cli caught exception: Mixed parent tables in ON conditions.
+
+=== gc-P3 (rejection): non-aggregating CTE body ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
+scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
+GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
+broader roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.

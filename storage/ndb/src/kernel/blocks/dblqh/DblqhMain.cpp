@@ -19989,8 +19989,20 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
 
     /* Regular virtual column read */
     if (attrId < n_gb_cols) {
-      /* GROUP BY key column — walk key data to the N-th entry */
+      /* GROUP BY key column — walk key data to the N-th entry.
+       * NULL-row emit (no groupData): the column is NULL. */
       jam();
+      if (groupData == nullptr) {
+        jam();
+        if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+          jam();
+          return -1;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, 0);
+        outPos += 1;
+        pos += 1;
+        continue;
+      }
       const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
       const Uint32 keyWords = keyLen >> 2;
       Uint32 kp = 0;
@@ -20020,8 +20032,20 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
         outPos += 1;
       }
     } else if (attrId < n_gb_cols + n_agg_results) {
-      /* Aggregate result — convert AggResItem to column data. */
+      /* Aggregate result — convert AggResItem to column data.
+       * NULL-row emit (no accumulators): the column is NULL. */
       jam();
+      if (accumulators == nullptr) {
+        jam();
+        if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+          jam();
+          return -1;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, 0);
+        outPos += 1;
+        pos += 1;
+        continue;
+      }
       const Uint32 aggIdx = attrId - n_gb_cols;
       const AggResItem &item = accumulators[aggIdx];
       if (!emitCteOutputAggSlot(interp, item, aggIdx, attrId,
@@ -20055,8 +20079,14 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                                  const Uint32 *cinBuf, Uint32 attrInfoLen) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
-  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
-      groupData + req.keyLen);
+  /* groupData == nullptr is the outer-chain NULL-row emit (big-07 fix):
+   * every virtual-column read produces NULL, only CORR_FACTOR reads
+   * carry data — the row exists solely to drive the chained next op
+   * for an unmatched parent. */
+  const AggResItem *accumulators =
+      (groupData != nullptr)
+          ? reinterpret_cast<const AggResItem *>(groupData + req.keyLen)
+          : nullptr;
 
   /* Parse 5-word AttrInfo header and skip to final-read section */
   const Uint32 initReadLen = cinBuf[0];
@@ -20064,8 +20094,11 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
   const Uint32 finalUpdateLen = cinBuf[2];
   const Uint32 finalRLen = cinBuf[3];
 
+  /* finalRLen may legitimately be 0 or 1: an intermediate CTE_LOOKUP
+   * with nothing referenced downstream reads nothing, or only the
+   * CORR_FACTOR32 (no FLUSH_AI — its row goes to DBSPJ, not the API). */
   const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
-  if (unlikely(finalRStart + finalRLen > attrInfoLen || finalRLen < 2)) {
+  if (unlikely(finalRStart + finalRLen > attrInfoLen)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
@@ -20087,7 +20120,8 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
   Uint32 *outBuf = cevictBuffer;
   const Uint32 *finalR = &cinBuf[finalRStart];
   Int32 outPos = emitCteGroupOutput(signal, params, interp,
-                                    groupData, req.keyLen,
+                                    groupData,
+                                    groupData != nullptr ? req.keyLen : 0,
                                     finalR, finalRLen,
                                     n_gb_cols, n_agg_results,
                                     accumulators, outBuf);
@@ -20326,8 +20360,13 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
 
   /* Validate minimum AttrInfo — only for non-agg path (FLUSH_AI to API).
    * The agg-feed path (joinAggStateKey != RNIL) doesn't use AttrInfo;
-   * it builds linked_attr_data directly from the CTE hash table. */
-  if (req.joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
+   * it builds linked_attr_data directly from the CTE hash table.
+   * The floor is the 5-word interpreted section header: an outer-chain
+   * or INNER intermediate CTE_LOOKUP with nothing referenced downstream
+   * legitimately carries just [header][ExitOK][CORR_FACTOR32] (7 words)
+   * — its result row is only the correlation that drives the chained
+   * next op (big-07 fix). */
+  if (req.joinAggStateKey == RNIL && unlikely(attrInfoLen < 5)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
@@ -20375,15 +20414,18 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * directly (gb_map is nullptr). Return the scalar result regardless
      * of the lookup key.  The key is a dummy constant provided by the
      * NdbQueryBuilder for cross-join support.
+     *
+     * A scalar aggregate over EMPTY input is still one row (COUNT = 0,
+     * SUM/MIN/MAX = NULL) per MySQL semantics — exactly what the
+     * scalar CTE_SCAN emit path produces (JoinAggInterpreter::Init
+     * pre-zeroes the COUNT slots and leaves the other slots is_null,
+     * so m_agg_results is valid for emit even when processed_rows()
+     * is 0).  An earlier processed_rows() == 0 early REF here
+     * (GROUP_NOT_FOUND) dropped every cross-join parent row via
+     * MatchNonNull, on both the pass-through and aggregate paths
+     * (found by non_aggregate_phase_4.md sc-6).
      */
     jam();
-    if (interp->processed_rows() == 0) {
-      jam();
-      /* Empty table — no result to return */
-      sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
-      return;
-    }
     groupData = reinterpret_cast<const char *>(interp->agg_results());
     /* Override keyLen to 0 so cteLookupEmitResult computes
      * accumulators = groupData + 0 = m_agg_results correctly. */
@@ -20424,6 +20466,20 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       return;
     }
 #endif
+    /* Outer-chain protocol (outer/anti intermediate of an aggregating
+     * main query): a miss must not drop the parent row — emit a
+     * NULL-extended result row + CONF so DBSPJ's row-driven exec plan
+     * still drives the chained next op for the unmatched parent
+     * (big-07 fix). */
+    if (req.joinAggStateKey == RNIL &&
+        (req.flags & CteLookupReq::CTE_LOOKUP_OUTER_CHAIN_FLAG)) {
+      jam();
+      DEB_CTE(("(%u) CTE_LOOKUP outer-chain miss: NULL row, corr=0x%x",
+               instance(), req.correlation));
+      cteLookupEmitResult(signal, req, state, interp, nullptr,
+                          cinBuf, attrInfoLen);
+      return;
+    }
     /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
@@ -20438,6 +20494,15 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
     const CteFilterResult fr = runCteFilter(signal, interp, groupData,
                                              req.keyLen, cinBuf, attrInfoLen);
     if (fr == CTE_FILTER_REJECT) {
+      /* Under the outer-chain protocol a filter reject is a miss:
+       * the parent row must still continue down the chain. */
+      if (req.joinAggStateKey == RNIL &&
+          (req.flags & CteLookupReq::CTE_LOOKUP_OUTER_CHAIN_FLAG)) {
+        jam();
+        cteLookupEmitResult(signal, req, state, interp, nullptr,
+                            cinBuf, attrInfoLen);
+        return;
+      }
       sendCteLookupRef(signal, req.senderRef, req.senderData,
                        ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
       return;
@@ -20470,6 +20535,21 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
     }
     cteLookupAggFeed(signal, req, interp, groupData,
                      attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
+    return;
+  }
+
+  /* Outer-chain + anti: a found match means the anti-joined parent row
+   * must be dropped — answer REF(GROUP_NOT_FOUND).  DBSPJ's REF handler
+   * accounts for the (never sent) TRANSID_AI and simply does not drive
+   * the chained next op for this parent (big-07 fix; the agg-feed anti
+   * arm above is the Phase K equivalent for agg-leaf anti nodes). */
+  if ((req.flags & CteLookupReq::CTE_LOOKUP_OUTER_CHAIN_FLAG) &&
+      (req.flags & CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG)) {
+    jam();
+    DEB_CTE(("(%u) CTE_LOOKUP outer-chain anti match: drop, corr=0x%x",
+             instance(), req.correlation));
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
     return;
   }
 
@@ -20684,10 +20764,22 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     }
   } else if (interp->n_gb_cols() == 0 &&
              interp->processed_rows() > 0 &&
-             groupsSent == 0) {
+             groupsSent == 0 &&
+             !state->m_cte_scalar_shipped) {
     /**
      * Scalar aggregate (no GROUP BY): single result in m_agg_results.
      * Build linked_attr_data and feed into target aggregator once.
+     *
+     * Single-feeder rule (dtw-19b): a node that shipped its scalar
+     * accumulators to the DBTC-node owner during the I.17e scalar
+     * redistribute holds a stale partial and must NOT also feed it —
+     * otherwise the main aggregator sees one row per node and e.g.
+     * MAX(cte_min) computes max-of-per-node-minima.  The owner's
+     * m_cte_scalar_shipped stays false and it feeds the cluster-wide
+     * merged result; single-row CTEs (one-node state, no redistribute)
+     * never ship and feed unconditionally.  processed_rows() > 0 also
+     * covers an owner that scanned no local rows: inbound scalar
+     * merges bump it (see mergeScalarAccumulators).
      */
     jam();
     const AggResItem *accumulators = interp->agg_results();
@@ -21564,6 +21656,14 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         jam();
         sendScalarRedistributeReq(signal, state, interp, ownerNode,
                                   aggStateKey);
+        /* Single-feeder rule (dtw-19b): our local accumulators are now
+         * a stale partial — the DBTC-node owner holds the cluster-wide
+         * merged result.  Mark shipped so cteScanAggFeed /
+         * cteScanEmitResults never feed or emit the stale copy (the
+         * grouped path gets this for free because redistribution
+         * REMOVES shipped groups from the sender's hash map; scalar
+         * accumulators have no such removal). */
+        state->m_cte_scalar_shipped = true;
       } else {
         jam();
         DEB_CTE(("(%u) CTE REDIST: scalar — this node is owner "

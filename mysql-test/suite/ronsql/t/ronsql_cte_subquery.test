@@ -1,0 +1,341 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Subquery × CTE interaction + subquery result-type coverage.
+#
+# The existing subquery tests (ronsql_subquery*.test) and the CTE tests
+# are disjoint: nothing exercises a WHERE subquery on a statement that
+# also has a WITH clause, and the scalar-subquery substitution path is
+# only proven for INT results.  This test covers:
+#   - scalar / EXISTS / NOT EXISTS / IN / correlated-scalar subqueries
+#     in the MAIN WHERE of a WITH query (subqueries execute first and
+#     substitute constants; the CTE join then runs as usual),
+#   - scalar subqueries whose result type is DECIMAL and DOUBLE,
+#   - multiple subqueries + multiple CTEs in one statement.
+# Uncertain shapes are recorded as NEXT-PHASE probes (never executed):
+# a subquery INSIDE a CTE body, an IN-subquery reading a CTE, and a
+# DATE-typed scalar subquery.
+#
+# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
+# doesn't refresh dictionary cache for join queries) and rely on
+# RDRS comparison against MySQL.
+# See test_benchmark_extension_plan.md (Phase T4).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for subquery x CTE tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE sq_ord (
+  o_id INT NOT NULL,
+  o_cust INT NOT NULL,
+  o_total INT NOT NULL,
+  o_price DECIMAL(10,2) NOT NULL,
+  o_ratio DOUBLE NOT NULL,
+  o_date DATE NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+CREATE INDEX idx_sq_ord_cust ON sq_ord (o_cust);
+
+CREATE TABLE sq_li (
+  l_id INT NOT NULL,
+  l_ord INT NOT NULL,
+  l_qty INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY USING HASH (l_id)
+) ENGINE=NDB;
+CREATE INDEX idx_sq_li_ord ON sq_li (l_ord);
+
+INSERT INTO sq_ord VALUES
+  (1, 100, 500, 12.50, 0.10, '2024-01-05'),
+  (2, 100, 300, 37.25, 0.25, '2024-02-10'),
+  (3, 200, 700, 99.99, 0.50, '2024-03-15'),
+  (4, 200, 200,  5.00, 0.75, '2024-04-20'),
+  (5, 300, 400, 62.10, 0.90, '2024-05-25'),
+  (6, 300,  50,  1.10, 0.05, '2024-06-30');
+
+INSERT INTO sq_li VALUES
+  (1, 1, 10, 100), (2, 1, 20, 200),
+  (3, 2,  5,  50), (4, 2, 15, 150),
+  (5, 3, 30, 300), (6, 3, 25, 250),
+  (7, 4,  8,  80), (8, 4, 12, 120),
+  (9, 5, 40, 400), (10, 5, 35, 350);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === Test 1: Scalar subquery (INT) in the main WHERE of a WITH query ===
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_qty) AS q, COUNT(*) AS n
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_qty) AS q, COUNT(*) AS n
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)|
+
+--echo
+--echo
+--echo === Test 2: Scalar subquery with inner WHERE + CTE join, GROUP BY main ===
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_qty) AS q
+  FROM sq_li GROUP BY l_ord)
+SELECT o.o_cust, COUNT(*), SUM(li_stats.q)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total >= (SELECT MAX(l_price) FROM sq_li WHERE l_qty < 20)
+GROUP BY o.o_cust;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_qty) AS q
+  FROM sq_li GROUP BY l_ord)
+SELECT o.o_cust, COUNT(*), SUM(li_stats.q)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total >= (SELECT MAX(l_price) FROM sq_li WHERE l_qty < 20)
+GROUP BY o.o_cust|
+
+--echo
+--echo
+--echo === Test 3: EXISTS (correlated) in the main WHERE + CTE join ===
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, COUNT(*) AS n
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id AND l_qty > 30);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, COUNT(*) AS n
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id AND l_qty > 30)|
+
+--echo
+--echo
+--echo === Test 4: NOT EXISTS in the main WHERE + CTE join ===
+# Regression net: returned 4/8 instead of 1/2 before the
+# NdbInterpretedCode::finalise idempotency fix.  The join-root emit
+# finalised the filter program twice (NdbScanFilter::end +on top of an
+# explicit finalise); the second pass reinterpreted patched relative
+# branch offsets as label numbers and silently re-patched the small
+# ones, corrupting NAND-group (NOT) filters.  The NOT EXISTS transform
+# lowers to NOT(o_id = v1 OR ...) which simplify_ce De Morganizes to
+# AND-of-NOT(=) — a NAND-heavy program, hence this shape caught it.
+let $QUERY=
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id)|
+
+--echo
+--echo
+--echo === Test 4b: literal NOT(OR-chain) on the pushed join root ===
+# The substitution-free distillation of Test 4's failing filter shape
+# (multi-label NAND program on a pushed join root).
+let $QUERY=
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT (o.o_id = 1 OR o.o_id = 2 OR o.o_id = 3 OR o.o_id = 4 OR o.o_id = 5);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cust_stats AS (
+  SELECT o_cust AS k, COUNT(*) AS n
+  FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT (o.o_id = 1 OR o.o_id = 2 OR o.o_id = 3 OR o.o_id = 4 OR o.o_id = 5)|
+
+--echo
+--echo
+--echo === Test 5: explicit IN-subquery in the main WHERE of a CTE join ===
+# Was a clean rejection ("Not an aggregate query.") before the
+# RONDB-1108 non-agg rebase relaxed the gate; now executes correctly.
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_price) AS p
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.p)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_price) AS p
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.p)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200)|
+
+--echo
+--echo
+--echo === Test 6: Correlated scalar subquery in the main WHERE + CTE join ===
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, COUNT(*) AS n
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT SUM(l_qty) FROM sq_li WHERE l_ord = o.o_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, COUNT(*) AS n
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT SUM(l_qty) FROM sq_li WHERE l_ord = o.o_id)|
+
+--echo
+--echo
+--echo === Test 7: Scalar subquery result type DECIMAL (single-table main) ===
+# Regression net: this exact query crashed the RDRS process before the
+# encode_constant fix — subquery-substituted float constants carry
+# ls = {NULL, 0} (no source text) and the DECIMAL comparison arm passed
+# that NULL to decimal_str2bin.  The substitution-free literal form
+# (WHERE o_price < 99.99) was never affected (ls = source text), and
+# DOUBLE columns were never affected (their arm consumes .dbl, not .ls
+# — Test 8).
+let $QUERY=
+SELECT COUNT(*), MIN(o_price), MAX(o_price)
+FROM sq_ord
+WHERE o_price < (SELECT MAX(o_price) FROM sq_ord);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*), MIN(o_price), MAX(o_price)
+FROM sq_ord
+WHERE o_price < (SELECT MAX(o_price) FROM sq_ord)|
+
+--echo
+--echo
+--echo === Test 8: Scalar subquery result type DOUBLE (single-table main) ===
+let $QUERY=
+SELECT COUNT(*), MIN(o_ratio), MAX(o_ratio)
+FROM sq_ord
+WHERE o_ratio <= (SELECT MAX(o_ratio) FROM sq_ord WHERE o_ratio < 0.80);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*), MIN(o_ratio), MAX(o_ratio)
+FROM sq_ord
+WHERE o_ratio <= (SELECT MAX(o_ratio) FROM sq_ord WHERE o_ratio < 0.80)|
+
+--echo
+--echo
+--echo === Test 9: Two scalar subqueries + two CTEs in one statement ===
+let $QUERY=
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_qty) AS q
+  FROM sq_li GROUP BY l_ord),
+     li_price AS (
+  SELECT l_ord AS k2, MAX(l_price) AS mp
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), MAX(li_price.mp)
+FROM sq_ord AS o
+JOIN li_stats ON li_stats.k = o.o_id
+JOIN li_price ON li_price.k2 = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)
+  AND o.o_total < (SELECT SUM(l_price) FROM sq_li);|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li_stats AS (
+  SELECT l_ord AS k, SUM(l_qty) AS q
+  FROM sq_li GROUP BY l_ord),
+     li_price AS (
+  SELECT l_ord AS k2, MAX(l_price) AS mp
+  FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), MAX(li_price.mp)
+FROM sq_ord AS o
+JOIN li_stats ON li_stats.k = o.o_id
+JOIN li_price ON li_price.k2 = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)
+  AND o.o_total < (SELECT SUM(l_price) FROM sq_li)|
+
+DELIMITER ;|
+
+# ---------------------------------------------------------------------
+# NEXT-PHASE probes — uncertain shapes, deliberately NOT executed.
+# Run manually against a disposable cluster before promoting to a MAIN
+# case or a rejection-assert.
+#
+# NEXT-PHASE: scalar subquery INSIDE a CTE body — subquery analysis runs
+# on the main statement; a body-level subquery is unproven and may not
+# be cleanly rejected:
+#   WITH li_stats AS (
+#     SELECT l_ord AS k, COUNT(*) AS n FROM sq_li
+#     WHERE l_price > (SELECT MIN(l_price) FROM sq_li)
+#     GROUP BY l_ord)
+#   SELECT COUNT(*), SUM(li_stats.n)
+#   FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id;
+#
+# NEXT-PHASE: IN-subquery whose inner SELECT reads a CTE:
+#   WITH li_stats AS (
+#     SELECT l_ord AS k, COUNT(*) AS n FROM sq_li GROUP BY l_ord)
+#   SELECT COUNT(*) FROM sq_ord AS o
+#   WHERE o.o_id IN (SELECT k FROM li_stats);
+#
+# NEXT-PHASE: DATE-typed scalar subquery — SubqueryResult carries
+# int64/double only; DATE substitution unproven:
+#   SELECT COUNT(*) FROM sq_ord
+#   WHERE o_date >= (SELECT MIN(o_date) FROM sq_ord);
+# ---------------------------------------------------------------------
+
+--echo
+--echo === Cleanup ===
+--disable_query_log
+DROP TABLE sq_ord;
+DROP TABLE sq_li;
+--enable_query_log

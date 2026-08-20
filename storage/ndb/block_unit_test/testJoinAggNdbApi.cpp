@@ -5874,6 +5874,92 @@ fakeOkLineForErrorInsertTest(int testNum)
 }
 #endif
 
+/* ------------------------------------------------------------------ */
+/* Test 24: Aggregate lookup-rooted query def rejected at prepare      */
+/*                                                                     */
+/* An aggregate query whose first operation is a lookup (readTuple     */
+/* root, no CTEs) cannot execute: DBTC's JOIN_AGG_SETUP only exists on */
+/* the scan (SCAN_TABREQ) path, so such a request reaches DBSPJ with   */
+/* an empty m_aggNodes — previously an ndbrequire node failure in      */
+/* lookup_send (DbspjMain.cpp), now also rejected at DBSPJ build time  */
+/* with InvalidAggregateFlags for unpatched clients.  This test pins   */
+/* the API layer: NdbQueryDefImpl must reject the def at prepare()     */
+/* with QRY_WRONG_OPERATION_TYPE (4820).                               */
+/* ------------------------------------------------------------------ */
+
+static int
+testLookupRootAggRejected(Ndb *ndb)
+{
+  printf("Test 24: aggregate lookup-rooted query def rejected ... ");
+  fflush(stdout);
+
+  const int QRY_WRONG_OPERATION_TYPE_CODE = 4820;
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
+  const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.LoadColumn("amount", 0) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  /* Lookup ROOT: full PK bound by a constant — the shape RonSQL used
+   * to emit for an aggregate query with a fully PK-covered root and no
+   * CTE (the rpr-1 crash shape). */
+  const NdbQueryOperand *rootKey[] = { qb->constValue((Int32)1), nullptr };
+  const NdbQueryLookupOperationDef *rootOp =
+      qb->readTuple(parentTab, rootKey);
+  if (rootOp == nullptr) {
+    printf("FAILED (readTuple root: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(rootOp, "id"),
+    nullptr
+  };
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts.setAggregation(agg);
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple child: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef != nullptr) {
+    printf("FAILED (prepare accepted an aggregate LookupQuery)\n");
+    queryDef->destroy();
+    qb->destroy();
+    return -1;
+  }
+  const int errCode = qb->getNdbError().code;
+  qb->destroy();
+  if (errCode != QRY_WRONG_OPERATION_TYPE_CODE) {
+    printf("FAILED (expected error %d, got %d)\n",
+           QRY_WRONG_OPERATION_TYPE_CODE, errCode);
+    return -1;
+  }
+
+  printf("OK (prepare rejected with %d)\n", errCode);
+  return 0;
+}
+
 static bool
 shouldRun(int testNum)
 {
@@ -6242,6 +6328,16 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest18Tables(conn);
+        }
+
+        /* Test 24: aggregate lookup-rooted query def rejected */
+        if (shouldRun(24)) {
+          if (createTestTables(conn) == 0) {
+            if (testLookupRootAggRejected(&ndb) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
         }
 
         mysql_close(conn);

@@ -61,6 +61,18 @@ struct CteLookupReq {
   // to deliver only NULL-injected unmatched parents into the
   // aggregator.  See cte_filter_phase_k.md.
   static constexpr Uint32 CTE_LOOKUP_ANTI_JOIN_FLAG = 0x2;
+  // Outer-joined (incl. anti) CTE_LOOKUP that is an intermediate node
+  // of an aggregating main query (set by DBSPJ cte_lookup_send).  The
+  // exec plan chains the next op behind this node and drives it from
+  // this node's result rows, so DBLQH must answer row-shaped: on a
+  // miss (or filter reject) emit a NULL-extended result row + CONF
+  // instead of REF(GROUP_NOT_FOUND), so the unmatched parent row still
+  // continues down the chain (LEFT JOIN semantics).  Combined with
+  // CTE_LOOKUP_ANTI_JOIN_FLAG, a found match instead answers
+  // REF(GROUP_NOT_FOUND) so the matched parent row is dropped
+  // (anti-join semantics).  Not set for pass-through (non-aggregate)
+  // requests — those keep REF-on-miss and the API's NULL-fill.
+  static constexpr Uint32 CTE_LOOKUP_OUTER_CHAIN_FLAG = 0x4;
 };
 
 /**

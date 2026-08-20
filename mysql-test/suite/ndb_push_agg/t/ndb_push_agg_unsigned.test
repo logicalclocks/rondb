@@ -1,0 +1,66 @@
+--source include/have_ndb.inc
+
+# Pushed SUM/AVG over BIGINT UNSIGNED must keep unsignedness end to
+# end. The data-node kernel and the NdbAggregator API carry the
+# unsigned flag correctly; the bug fixed here was the last hop —
+# mysqld's Bigunsigned consumption routed the value through a signed
+# int64 (Item_sum::m_pushed_value_int had no unsigned companion
+# flag), so results past 2^63 printed signed-wrapped, e.g.
+# SUM = 13835058055282163712 printed as -4611686018427387904.
+# MIN/MAX were unaffected (their result items carry the column's
+# unsigned_flag); COUNT is unaffected.
+#
+# Every query runs with pushdown OFF then ON — the outputs must be
+# identical. AVG group sums are chosen exactly representable in
+# double (multiples of 2^62) so both AVG evaluation paths (the
+# temp-table decimal division and the direct double division) print
+# the same digits.
+
+--echo ############################################################
+--echo # Pushed aggregation over BIGINT UNSIGNED past 2^63
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  u   BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+# grp 1 sums to 3 * 2^62 = 13835058055282163712 (> 2^63).
+INSERT INTO t1 VALUES
+  (1, 1, 9223372036854775808),
+  (2, 1, 4611686018427387904),
+  (3, 2, 100),
+  (4, 2, 5);
+
+CREATE TABLE t2 (
+  pk BIGINT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+  (1, 3),
+  (2, 9223372036854775813),
+  (3, 18446744073709551615);
+
+--echo # Baseline: pushdown OFF (server-side aggregation).
+SET ndb_pushdown_aggregate=OFF;
+SELECT SUM(u) FROM t1;
+--sorted_result
+SELECT grp, SUM(u) FROM t1 GROUP BY grp;
+--sorted_result
+SELECT grp, AVG(u) FROM t1 GROUP BY grp;
+SELECT MIN(u), MAX(u) FROM t2;
+
+--echo # Pushdown ON — every result must match the baseline above.
+SET ndb_pushdown_aggregate=ON;
+SELECT SUM(u) FROM t1;
+--sorted_result
+SELECT grp, SUM(u) FROM t1 GROUP BY grp;
+--sorted_result
+SELECT grp, AVG(u) FROM t1 GROUP BY grp;
+SELECT MIN(u), MAX(u) FROM t2;
+
+DROP TABLE t1;
+DROP TABLE t2;

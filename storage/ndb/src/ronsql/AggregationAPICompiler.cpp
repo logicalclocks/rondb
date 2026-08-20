@@ -1137,6 +1137,20 @@ AggregationAPICompiler::print(Expr* expr)
     m_out << ')';
     return;
   }
+  if (expr->op == AggregationAPICompiler::ExprOp::Case)
+  {
+    // expr->case_condition is a parse-tree ConditionalExpression, not an
+    // SVM Expr; EXPLAIN prints a placeholder for it rather than growing a
+    // second condition printer here.  Without this arm, a CASE expression
+    // fell through to the binary-operator tail and hit abort() — any
+    // EXPLAIN of SUM(CASE ...) crashed the process.
+    m_out << "CASE WHEN <condition> THEN ";
+    print(expr->left);
+    m_out << " ELSE ";
+    print(expr->right);
+    m_out << " END";
+    return;
+  }
   m_out << '(';
   print(expr->left);
   switch (expr->op)

@@ -1,0 +1,44 @@
+--source include/have_ndb.inc
+
+# Pushed MIN/MAX over DECIMAL columns must print their values. The bug
+# fixed here was in Item_sum_hybrid::val_str's pushed branch: it only
+# handled STRING pushed values and otherwise fell through to the
+# unpushed code path, reading the never-populated internal value cache
+# — so MIN/MAX over DECIMAL (whose DECIMAL-typed hybrid displays via
+# val_str) printed NULL under pushdown, with the interpreter as much
+# as with the JIT. SUM was unaffected (Item_sum_sum::val_str routes
+# DECIMAL through val_decimal); MIN/MAX over integer/double columns
+# were unaffected (they display via val_int/val_real).
+#
+# Every query runs with pushdown OFF then ON — outputs must match.
+# The scale-2 values are exact quarters so the pushed double-track
+# representation prints the same digits as server-side DECIMAL math.
+
+--echo ############################################################
+--echo # Pushed MIN/MAX over DECIMAL columns
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk  BIGINT NOT NULL,
+  d90 DECIMAL(9,0) NOT NULL,
+  d92 DECIMAL(9,2) NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 10, 1.25),
+  (2, 20, 2.50),
+  (3, 30, 3.25),
+  (4, 40, 4.00);
+
+--echo # Baseline: pushdown OFF (server-side aggregation).
+SET ndb_pushdown_aggregate=OFF;
+SELECT MIN(d90), MAX(d90), SUM(d90) FROM t1;
+SELECT MIN(d92), MAX(d92), SUM(d92) FROM t1;
+
+--echo # Pushdown ON — results must match the baseline above.
+SET ndb_pushdown_aggregate=ON;
+SELECT MIN(d90), MAX(d90), SUM(d90) FROM t1;
+SELECT MIN(d92), MAX(d92), SUM(d92) FROM t1;
+
+DROP TABLE t1;

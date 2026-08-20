@@ -88,6 +88,25 @@ static inline void ronsql_utc_sec_to_TIME(time_t t, MYSQL_TIME *out)
   out->time_type = MYSQL_TIMESTAMP_DATETIME;
 }
 
+/*
+ * TIMESTAMP my_timeval -> MYSQL_TIME, including the zero-value rule:
+ * MySQL reserves tv_sec == 0 for the zero timestamp 0000-00-00 00:00:00
+ * (Field_timestampf::get_date_internal_at, sql/field.cc) — the valid
+ * range starts at 1970-01-01 00:00:01.  Routing tv_sec == 0 through the
+ * epoch converter would wrongly print 1970-01-01 00:00:00.
+ */
+static inline void ronsql_timestamp_tv_to_TIME(const my_timeval &tv,
+                                               MYSQL_TIME *out)
+{
+  if (tv.m_tv_sec == 0) {
+    memset(out, 0, sizeof(*out));
+    out->time_type = MYSQL_TIMESTAMP_DATETIME;
+    return;
+  }
+  ronsql_utc_sec_to_TIME((time_t)tv.m_tv_sec, out);
+  out->second_part = (unsigned long)tv.m_tv_usec;
+}
+
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 #define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
@@ -165,13 +184,14 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
+                             const ColumnMetadata* column_metadata,
                              RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err,
                              bool /*passthrough_marker*/):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
-  m_column_metadata(NULL),
+  m_column_metadata(column_metadata),
   m_output_format(output_format),
   m_err(err),
   m_program(amalloc),
@@ -822,10 +842,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
             MYSQL_TIME lTime;
-            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
-            lTime.second_part = myTV.m_tv_usec;
+            ronsql_timestamp_tv_to_TIME(myTV, &lTime);
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -1136,6 +1154,96 @@ ResultPrinter::setup_output_format()
   }
 }
 
+// Phase 0b: decode a packed temporal value into its MySQL text form.
+// The packed Uint64 is the kernel's Bigunsigned MIN/MAX representation
+// — the column's native bytes (little-endian for DATE/YEAR, big-endian
+// for DATETIME2/TIME2/TIMESTAMP2) loaded into a register — which is
+// also what a raw column re-packs to (see print_passthrough_value).
+// `quote` wraps the text ("" for TSV and aggregate results, "\"" for
+// JSON pass-through output).
+static void
+print_temporal_packed(std::ostream& out, Uint64 w,
+                      ResultPrinter::TemporalDisplay temporal, int fsp,
+                      const char* quote)
+{
+  using TemporalDisplay = ResultPrinter::TemporalDisplay;
+  char buf[64];
+  buf[0] = '\0';
+  switch (temporal)
+  {
+  case TemporalDisplay::DATE:
+  {
+    // w = (year<<9)|(month<<5)|day; w==0 → 0000-00-00 (MySQL zero date).
+    Uint32 day = (Uint32)(w & 31);
+    Uint32 month = (Uint32)((w >> 5) & 15);
+    Uint32 year = (Uint32)(w >> 9);
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
+    break;
+  }
+  case TemporalDisplay::YEAR:
+  {
+    // 1-byte YEAR: 0 → 0000, else stored value + 1900.
+    if (w == 0)
+      snprintf(buf, sizeof(buf), "0000");
+    else
+      snprintf(buf, sizeof(buf), "%04u", (Uint32)(w + 1900));
+    break;
+  }
+  case TemporalDisplay::DATETIME2:
+  {
+    // NDB stores DATETIME2 in MySQL's big-endian packed binary (proven by
+    // the encode path's my_datetime_packed_to_binary).  Reconstruct the
+    // n = 5+flen on-disk bytes from the big-endian value the kernel loaded,
+    // then decode with MySQL's own codec so the string matches exactly.
+    Uint32 flen = (1u + (Uint32)fsp) / 2u;
+    Uint32 n = 5u + flen;
+    Uint8 bytes[8];
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+    Int64 packed = my_datetime_packed_from_binary(bytes, fsp);
+    MYSQL_TIME mt;
+    TIME_from_longlong_datetime_packed(&mt, packed);
+    my_TIME_to_str(mt, buf, fsp);
+    break;
+  }
+  case TemporalDisplay::TIME2:
+  {
+    Uint32 flen = (1u + (Uint32)fsp) / 2u;
+    Uint32 n = 3u + flen;
+    Uint8 bytes[8];
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+    Int64 packed = my_time_packed_from_binary(bytes, fsp);
+    MYSQL_TIME mt;
+    TIME_from_longlong_time_packed(&mt, packed);
+    my_TIME_to_str(mt, buf, fsp);
+    break;
+  }
+  case TemporalDisplay::TIMESTAMP2:
+  {
+    // TIMESTAMP2 stores the UTC epoch (4+flen bytes, big-endian); decode the
+    // reconstructed bytes to a my_timeval and break the epoch down in UTC
+    // (RonSQL/RDRS treat the server as UTC; the mysql baseline runs with
+    // time_zone='+00:00').  Uses the lock-free ronsql_utc_sec_to_TIME, not
+    // gmtime_r.
+    Uint32 flen = (1u + (Uint32)fsp) / 2u;
+    Uint32 n = 4u + flen;
+    Uint8 bytes[8];
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
+    my_timeval tv{};
+    my_timestamp_from_binary(&tv, bytes, fsp);
+    MYSQL_TIME mt;
+    ronsql_timestamp_tv_to_TIME(tv, &mt);
+    my_TIME_to_str(mt, buf, fsp);
+    break;
+  }
+  case TemporalDisplay::NONE:
+    break; // unreachable (callers guard)
+  }
+  out << quote << buf << quote;
+}
+
 // Phase E.3 + I.12 helpers: format a single NdbRecAttr value for the
 // projection-only pass-through path.  Mirrors the type cases the
 // aggregator path handles in print_record (see Column::data_*) but
@@ -1147,13 +1255,26 @@ ResultPrinter::setup_output_format()
 // columns (testCteNdbApiOuterJoin.cpp Test 1 etc.) work.
 void
 ResultPrinter::print_passthrough_value(std::ostream& out,
-                                       const NdbRecAttr* attr)
+                                       const NdbRecAttr* attr,
+                                       const ColumnMetadata* meta)
 {
   if (attr == NULL || attr->isNULL() == 1) {
     out << m_null_representation;
     return;
   }
   NdbDictionary::Column::Type t = attr->getType();
+  // Phase 0b: a CTE MIN/MAX over a temporal column arrives as a
+  // Bigunsigned virt column carrying the packed value (D17 + temporal
+  // extension); the virt column itself has no temporal type, so the
+  // decode is driven by the resolved source column's metadata.
+  if (meta != NULL && meta->has_metadata &&
+      meta->temporal != TemporalDisplay::NONE &&
+      t == NdbDictionary::Column::Bigunsigned)
+  {
+    print_temporal_packed(out, attr->u_64_value(), meta->temporal,
+                          meta->temporal_fsp, m_quote);
+    return;
+  }
   switch (t) {
   case NdbDictionary::Column::Tinyint:
     out << (int)attr->int8_value(); break;
@@ -1240,12 +1361,66 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       out << m_quote;
       break;
     }
+  case NdbDictionary::Column::Date:
+    // 3-byte little-endian (year<<9 | month<<5 | day) — identical to
+    // the kernel's packed MIN/MAX representation, so the shared decoder
+    // applies directly.
+    print_temporal_packed(out, (Uint64)attr->u_medium_value(),
+                          TemporalDisplay::DATE, 0, m_quote);
+    break;
+  case NdbDictionary::Column::Year:
+    print_temporal_packed(out, (Uint64)attr->u_8_value(),
+                          TemporalDisplay::YEAR, 0, m_quote);
+    break;
+  case NdbDictionary::Column::Datetime2:
+  case NdbDictionary::Column::Time2:
+  case NdbDictionary::Column::Timestamp2:
+    {
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on temporal NdbRecAttr");
+      int fsp = col->getPrecision();
+      Uint32 base = (t == NdbDictionary::Column::Datetime2) ? 5u :
+                    (t == NdbDictionary::Column::Time2) ? 3u : 4u;
+      Uint32 n = base + (1u + (Uint32)fsp) / 2u;
+      // Re-pack the big-endian on-disk bytes into the Uint64 form the
+      // shared decoder expects.
+      const unsigned char* bytes = (const unsigned char*)attr->aRef();
+      Uint64 w = 0;
+      for (Uint32 i = 0; i < n; i++)
+        w = (w << 8) | bytes[i];
+      TemporalDisplay td =
+          (t == NdbDictionary::Column::Datetime2)
+              ? TemporalDisplay::DATETIME2
+              : (t == NdbDictionary::Column::Time2)
+                    ? TemporalDisplay::TIME2
+                    : TemporalDisplay::TIMESTAMP2;
+      print_temporal_packed(out, w, td, fsp, m_quote);
+      break;
+    }
+  case NdbDictionary::Column::Decimal:
+  case NdbDictionary::Column::Decimalunsigned:
+    {
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on DECIMAL NdbRecAttr");
+      constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
+      char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
+      decimal_bin2str((const void*)attr->aRef(),
+                      attr->get_size_in_bytes(),
+                      col->getPrecision(),
+                      col->getScale(),
+                      decStr,
+                      DECIMAL_MAX_STR_LEN_IN_BYTES);
+      out << decStr;
+      break;
+    }
   default:
-    // Other types would need format-specific handling matching
-    // print_record (DATE/TIMESTAMP, DECIMAL, BIT, BLOB, BINARY).
-    // Add as needed when a query exercises them.
+    // Old temporal formats (pre-5.6 Datetime/Time/Timestamp),
+    // Olddecimal, BIT, BINARY/VARBINARY and BLOB/TEXT are not
+    // supported in pass-through results.
+    *m_err << "Unsupported column type (" << (int)t
+           << ") in pass-through result." << endl;
     throw RonSQLPermanentError(
-        "Unsupported column type in projection-only CTE_SCAN result.");
+        "Unsupported column type in pass-through result.");
   }
 }
 
@@ -1272,6 +1447,15 @@ ResultPrinter::print_passthrough_header(const NdbRecAttr* const* /*attrs*/,
   }
 }
 
+const ResultPrinter::ColumnMetadata*
+ResultPrinter::passthrough_column_metadata(const Outputs* o) const
+{
+  if (m_column_metadata == NULL || o == NULL ||
+      o->type != Outputs::Type::COLUMN)
+    return NULL;
+  return &m_column_metadata[o->column.col_idx];
+}
+
 void
 ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
                                       Uint32 num_cols,
@@ -1288,19 +1472,23 @@ ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
       assert(o != NULL);
       if (i > 0) out << ',';
       out << '"' << o->output_name << "\":";
-      // Numbers print without quotes; strings/temporals would need
-      // quoting once supported (see print_passthrough_value's default
-      // branch — currently rejects).
-      print_passthrough_value(out, attrs[i]);
+      // Numbers print without quotes; strings and temporals quote
+      // themselves (m_quote) inside print_passthrough_value.
+      print_passthrough_value(out, attrs[i],
+                              passthrough_column_metadata(o));
       o = o->next;
     }
     out << '}';
     return;
   }
   if (m_tsv_output) {
+    Outputs* o = m_query->outputs;
     for (Uint32 i = 0; i < num_cols; i++) {
+      assert(o != NULL);
       if (i > 0) out << '\t';
-      print_passthrough_value(out, attrs[i]);
+      print_passthrough_value(out, attrs[i],
+                              passthrough_column_metadata(o));
+      o = o->next;
     }
     out << '\n';
   }
@@ -1614,10 +1802,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             my_timestamp_from_binary(&myTV,
                                      (const unsigned char *)column.data(),
                                      (unsigned int) precision);
-            // Lock-free UTC epoch -> MYSQL_TIME (no glibc tzset_lock).
             MYSQL_TIME lTime;
-            ronsql_utc_sec_to_TIME((time_t)myTV.m_tv_sec, &lTime);
-            lTime.second_part = myTV.m_tv_usec;
+            ronsql_timestamp_tv_to_TIME(myTV, &lTime);
             char to[MAX_DATE_STRING_REP_LENGTH];
             my_TIME_to_str(lTime, to, precision);
             out << m_quote << to << m_quote;
@@ -2121,82 +2307,8 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
   if (temporal != TemporalDisplay::NONE &&
       result.type() == NdbDictionary::Column::Bigunsigned)
   {
-    Uint64 w = result.data_uint64();
-    char buf[64];
-    switch (temporal)
-    {
-    case TemporalDisplay::DATE:
-    {
-      // w = (year<<9)|(month<<5)|day; w==0 → 0000-00-00 (MySQL zero date).
-      Uint32 day = (Uint32)(w & 31);
-      Uint32 month = (Uint32)((w >> 5) & 15);
-      Uint32 year = (Uint32)(w >> 9);
-      snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
-      break;
-    }
-    case TemporalDisplay::YEAR:
-    {
-      // 1-byte YEAR: 0 → 0000, else stored value + 1900.
-      if (w == 0)
-        snprintf(buf, sizeof(buf), "0000");
-      else
-        snprintf(buf, sizeof(buf), "%04u", (Uint32)(w + 1900));
-      break;
-    }
-    case TemporalDisplay::DATETIME2:
-    {
-      // NDB stores DATETIME2 in MySQL's big-endian packed binary (proven by
-      // the encode path's my_datetime_packed_to_binary).  Reconstruct the
-      // n = 5+flen on-disk bytes from the big-endian value the kernel loaded,
-      // then decode with MySQL's own codec so the string matches exactly.
-      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
-      Uint32 n = 5u + flen;
-      Uint8 bytes[8];
-      for (Uint32 i = 0; i < n; i++)
-        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
-      Int64 packed = my_datetime_packed_from_binary(bytes, temporal_fsp);
-      MYSQL_TIME mt;
-      TIME_from_longlong_datetime_packed(&mt, packed);
-      my_TIME_to_str(mt, buf, temporal_fsp);
-      break;
-    }
-    case TemporalDisplay::TIME2:
-    {
-      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
-      Uint32 n = 3u + flen;
-      Uint8 bytes[8];
-      for (Uint32 i = 0; i < n; i++)
-        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
-      Int64 packed = my_time_packed_from_binary(bytes, temporal_fsp);
-      MYSQL_TIME mt;
-      TIME_from_longlong_time_packed(&mt, packed);
-      my_TIME_to_str(mt, buf, temporal_fsp);
-      break;
-    }
-    case TemporalDisplay::TIMESTAMP2:
-    {
-      // TIMESTAMP2 stores the UTC epoch (4+flen bytes, big-endian); decode the
-      // reconstructed bytes to a my_timeval and break the epoch down in UTC
-      // (RonSQL/RDRS treat the server as UTC; the mysql baseline runs with
-      // time_zone='+00:00').  Uses the lock-free ronsql_utc_sec_to_TIME, not
-      // gmtime_r.  Mirrors the passthrough decode below.
-      Uint32 flen = (1u + (Uint32)temporal_fsp) / 2u;
-      Uint32 n = 4u + flen;
-      Uint8 bytes[8];
-      for (Uint32 i = 0; i < n; i++)
-        bytes[i] = (Uint8)((w >> (8u * (n - 1u - i))) & 0xFFu);
-      my_timeval tv{};
-      my_timestamp_from_binary(&tv, bytes, temporal_fsp);
-      MYSQL_TIME mt;
-      ronsql_utc_sec_to_TIME((time_t)tv.m_tv_sec, &mt);
-      mt.second_part = (unsigned long)tv.m_tv_usec;
-      my_TIME_to_str(mt, buf, temporal_fsp);
-      break;
-    }
-    case TemporalDisplay::NONE:
-      break; // unreachable (guarded above)
-    }
-    out << buf;
+    print_temporal_packed(out, result.data_uint64(), temporal,
+                          temporal_fsp, "");
     return;
   }
 
@@ -2449,9 +2561,34 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
     {
       if (i > 0) out << ", ";
       OrderbySpec& spec = m_orderby_specs[i];
-      Uint32 col_idx = m_groupby_cols[spec.groupby_idx];
-      out << quoted_identifier(column_names[col_idx])
-          << (spec.ascending ? " ASC" : " DESC");
+      if (spec.kind == OrderbySpec::Kind::GROUPBY_COL)
+      {
+        Uint32 col_idx = m_groupby_cols[spec.groupby_idx];
+        out << quoted_identifier(column_names[col_idx]);
+      }
+      else
+      {
+        // AGGREGATE: the union holds agg_result_idx, not groupby_idx.
+        // Print the SELECT output alias that produced this aggregate
+        // result when we can find it, else the result index.
+        const char* alias_str = NULL;
+        size_t alias_len = 0;
+        for (const Outputs* o = m_query->outputs; o != NULL; o = o->next)
+        {
+          if (o->type == Outputs::Type::AGGREGATE &&
+              o->aggregate.agg_index == spec.agg_result_idx)
+          {
+            alias_str = o->output_name.str;
+            alias_len = o->output_name.len;
+            break;
+          }
+        }
+        if (alias_str != NULL)
+          out << quoted_identifier(LexCString(alias_str, alias_len));
+        else
+          out << "aggregate result " << spec.agg_result_idx;
+      }
+      out << (spec.ascending ? " ASC" : " DESC");
     }
     out << ".\n";
   }

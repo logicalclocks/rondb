@@ -5,7 +5,7 @@ INSERT INTO tbl (sint8) VALUES (7);
 Overflow using multiplication:
 Error handling: SRE,te->RPE
 NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
-ronsql_cli caught exception: Failed to execute table scan aggregation.
+ronsql_cli caught exception: Failed to execute scan aggregation.
 
 
 

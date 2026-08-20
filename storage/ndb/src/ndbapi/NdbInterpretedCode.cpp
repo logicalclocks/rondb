@@ -2375,6 +2375,18 @@ int NdbInterpretedCode::compareMetaInfo(const void *va, const void *vb) {
 
 int NdbInterpretedCode::finalise() {
   if (m_error.code) return -1;
+  if (m_flags & Finalised) {
+    /* Already finalised — calling again must be a no-op.  Re-running
+     * the label patch loop would reinterpret the already-patched
+     * relative branch offsets as label numbers: offsets larger than
+     * m_number_of_labels fail with 4517, but small offsets pass the
+     * validity check and get silently re-patched to garbage targets,
+     * corrupting the program.  Seen as wrong results on pushed join
+     * roots whose emit path finalised once via
+     * NdbScanFilter::handleFilterDefined and once explicitly
+     * (NOT (a OR b) filters lost most of their branches). */
+    return 0;
+  }
   if (m_instructions_length == 0) {
     /* We will attempt to add a single EXIT_OK instruction
      * rather than returning an error.

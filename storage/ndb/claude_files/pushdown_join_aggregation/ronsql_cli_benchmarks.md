@@ -154,12 +154,15 @@ sweeps belong in `offline_fs_*`).
 
 | Name | Shape | Source rows (SF=1) | Engines |
 |------|-------|--------------------|---------|
+| `fs_floor` | Single-table `COUNT(*)` over region (5 rows) — fixed-overhead floor; the denominator for phase-timing analysis | 5 | both |
 | `fs_point` | CTE body filtered `o_custkey = <random>`, scalar main agg | ~10 orders | both |
 | `fs_batch` | Per-entity feature vectors for a random 100-customer segment ({KEY}/{KEY2} range in CTE body + main WHERE), `GROUP BY c_custkey` | ~1k orders, 100 output rows | both |
 | `fs_freshness` | Two CTEs (lifetime + last-order) over a random 500-customer segment, joined to the same customer range | ~10k orders | both |
 | `fs_supplier` | Per-supplier features over a 3-day `l_shipdate` window (index scan), joined to one random nation's suppliers | ~7k lineitems, ~400 suppliers | both |
 | `fs_nation` | Recent-window (`o_orderdate >= 1998-06-01`, index scan) per-customer CTE joined to one nation's customers, `GROUP BY c_mktsegment` | ~40k orders | both |
 | `fs_topk` | Recent-spend CTE joined to customer in aggregate form (`GROUP BY c_custkey, c_name`; MAX = identity per unique key), `ORDER BY top_spend DESC LIMIT 100` | thousands | both |
+| `fs_minmax` | Datatype-heavy MIN/MAX (DECIMAL prices, DATE ship dates, DECIMAL qty) over a 3-day `l_shipdate` window, re-aggregated per supplier nation | ~7k lineitems | both |
+| `fs_dnf` | 4-disjunct DNF in the CTE body WHERE (`o_orderstatus`/`o_totalprice`/`o_orderpriority`) over a random 200-customer segment — interpreter filter cost | ~2k orders | both |
 | `fs_history` | Order-history page for a 200-customer segment, `ORDER BY o_orderdate DESC LIMIT 1000` | ~2k orders | **MySQL only** |
 
 `fs_topk` was rewritten from its natural projection-only form into the
@@ -184,6 +187,8 @@ across the entity table (the former `fs_batch`/`fs_multi`/`fs_join_body`/
 | `offline_fs_multi` | Two CTEs (lifetime stats + date-filtered recent stats) both joined to customer |
 | `offline_fs_join_body` | CTE body = `lineitem JOIN orders` with WHERE, `GROUP BY l_suppkey`; joined to supplier. **Exploratory**: real-table⋈real-table CTE bodies are grammatically supported but not covered by existing MTR |
 | `offline_fs_anti` | `customer LEFT JOIN recent-orders-CTE WHERE cnt IS NULL, GROUP BY nation` (churn detection, Phase K anti-join) |
+| `offline_fs_wide` | 7-aggregate per-customer CTE re-aggregated into 10 output columns `GROUP BY c_mktsegment` (result-width cost) |
+| `offline_fs_chain` | Three-level chained CTE-of-CTE (per-customer → rollup → scalar reduce): CTE materialization + redistribute cost per chain phase |
 | `offline_fs_scalar` | Scalar `COUNT/SUM/MAX/MIN` reduce over the per-customer CTE (pure materialization + redistribution cost) |
 
 ### TPC-H with CTEs (`tpch_q*` in `.bench_ronsql`, `cte_tpch_q*` in `.bench_sql`)
@@ -238,17 +243,47 @@ the CLI-generated data where the official values would match nothing:
   `.bench_sql X` indicate a correctness bug and take priority over any
   latency comparison.
 
-## Next steps: phase timing
+## Phase timing (x-ronsql-phases)
 
-These benchmarks measure end-to-end latency only. To break down microseconds
-per phase, the natural follow-ups are:
+**Implemented** (RonSQL-side; see `test_benchmark_extension_plan.md` Phase
+B2/B3). When RDRS is built with `RONSQL_PHASE_STATS` (default on, kill
+switch in `RonSQLPerf.hpp`), every successful `/ronsql` response carries
+an `x-ronsql-phases` header with per-request phase timings in µs,
+captured at the pre-existing PERF_TS boundaries via a `RonSQLPhaseStats`
+sink on `RonSQLExecParams` (null for ronsql_cli — a null test per phase
+boundary is the only cost for callers that don't ask):
 
-1. **RonSQL-side**: instrument `RonSQLPreparer` / executor with per-phase
-   timestamps (parse, prepare/plan, NDB dictionary access, execute,
-   result-format) and return them in the RDRS response (e.g. an optional
-   `"stats": true` request field); the CLI benchmark can then aggregate
-   per-phase percentiles.
-2. **Data-node-side**: correlate with existing counters (`m_rows_examined`,
-   ScanFragConf `rowsExamined`) and add DBSPJ/DBLQH timing around
-   CTE_SCAN/CTE_LOOKUP materialization, JOIN_AGG_COMPLETE merge, and
-   redistribution, exposed via ndbinfo or DUMP.
+```
+parse=…,analyze=…,load=…,plan=…,compile=…,prepare=…,subquery=…,
+ndbprep=…,send=…,firstbatch=…,drain=…,print=…,execute=…,rows=…,attempts=…
+```
+
+- `parse/analyze/load/plan/compile` split the RonSQLPreparer constructor
+  (`prepare` = its total, captured in ronsql_op); `load` isolates NDB
+  dictionary access (schema-cache effectiveness).
+- `ndbprep` = NdbQueryBuilder::prepare (join/CTE) or scan-op definition
+  (single-table); `send` = trans->execute; `firstbatch` = wait for the
+  first result row — the closest API-side proxy for data-node execution
+  incl. CTE materialization; `drain` = remaining rows; `rows` = drained
+  row count. On the single-table path the NDB API fuses send+drain
+  inside DoAggregation, reported as `firstbatch` (send/drain stay 0).
+- `print` = ResultPrinter formatting; `execute` = execute() total.
+- Retry semantics: **last attempt wins**; `attempts` counts ronsql_op
+  attempts (1 = no retry).
+
+`.bench_ronsql` reads the header per request and prints a per-phase
+avg/p95/p99/max table after the end-to-end results (plus the warmup's
+raw values); end-to-end latency minus `prepare`+`execute` approximates
+RDRS/HTTP overhead. `fs_floor` is the fixed-cost floor to compare
+against. Header format is pinned by
+`mysql-test/suite/ronsql/t/ronsql_phase_stats.test` and parsed by
+`ronsql_bench.go` (`parseRonSQLPhases`).
+
+### Next step: data-node-side phase counters
+
+Still open: correlate with existing counters (`m_rows_examined`,
+ScanFragConf `rowsExamined`) and add DBSPJ/DBLQH timing around
+CTE_SCAN/CTE_LOOKUP materialization, JOIN_AGG_COMPLETE merge, and
+redistribution, exposed via ndbinfo or DUMP. The API-side `firstbatch`
+value bounds the total data-node time but cannot attribute it to
+kernel phases.

@@ -2090,7 +2090,8 @@ my_decimal *Item_sum_sum::val_decimal(my_decimal *val) {
     if (m_pushed_is_double) {
       double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
     } else {
-      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int,
+                     m_pushed_value_is_unsigned, val);
     }
     return val;
   }
@@ -2351,8 +2352,11 @@ double Item_sum_avg::val_real() {
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
     if (m_pushed_null || m_pushed_avg_count == 0) return 0.0;
-    const double sum = m_pushed_is_double ? m_pushed_value_double
-                                          : static_cast<double>(m_pushed_value_int);
+    const double sum =
+        m_pushed_is_double ? m_pushed_value_double
+        : m_pushed_value_is_unsigned
+            ? static_cast<double>(static_cast<uint64_t>(m_pushed_value_int))
+            : static_cast<double>(m_pushed_value_int);
     return sum / static_cast<double>(m_pushed_avg_count);
   }
   if (m_is_window_function) {
@@ -2385,8 +2389,11 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
     if (null_value || m_pushed_avg_count == 0) return nullptr;
-    const double sum = m_pushed_is_double ? m_pushed_value_double
-                                          : static_cast<double>(m_pushed_value_int);
+    const double sum =
+        m_pushed_is_double ? m_pushed_value_double
+        : m_pushed_value_is_unsigned
+            ? static_cast<double>(static_cast<uint64_t>(m_pushed_value_int))
+            : static_cast<double>(m_pushed_value_int);
     const double avg = sum / static_cast<double>(m_pushed_avg_count);
     double2my_decimal(E_DEC_FATAL_ERROR, avg, val);
     return val;
@@ -3017,7 +3024,13 @@ double Item_sum_hybrid::val_real() {
   assert(fixed);
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
-    return m_pushed_value_double;
+    if (m_pushed_is_double) return m_pushed_value_double;
+    // Integer-pushed value read as real (e.g. MIN over a scale-0
+    // DECIMAL column) — convert, honoring unsignedness.
+    return m_pushed_value_is_unsigned
+               ? static_cast<double>(
+                     static_cast<uint64_t>(m_pushed_value_int))
+               : static_cast<double>(m_pushed_value_int);
   }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
@@ -3035,6 +3048,10 @@ longlong Item_sum_hybrid::val_int() {
   assert(fixed);
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
+    // Double-pushed value read as int — round, matching Item
+    // conventions for real-to-int reads.
+    if (m_pushed_is_double)
+      return llrint_with_overflow_check(m_pushed_value_double);
     return m_pushed_value_int;
   }
   if (m_is_window_function) {
@@ -3081,7 +3098,8 @@ my_decimal *Item_sum_hybrid::val_decimal(my_decimal *val) {
     if (m_pushed_is_double) {
       double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
     } else {
-      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int,
+                     m_pushed_value_is_unsigned || unsigned_flag, val);
     }
     return val;
   }
@@ -3126,6 +3144,14 @@ String *Item_sum_hybrid::val_str(String *str) {
     null_value = m_pushed_null;
     if (null_value) return nullptr;
     if (m_pushed_is_string) return &m_pushed_value_string;
+    // Non-string pushed values must NOT fall through to the unpushed
+    // code below — the internal `value` cache is never populated in
+    // pushed mode (MIN/MAX over DECIMAL columns display via val_str
+    // and printed NULL before this routing). Convert from the pushed
+    // representation; val_decimal/val_real/val_int handle it.
+    if (hybrid_type == DECIMAL_RESULT) return val_string_from_decimal(str);
+    if (m_pushed_is_double) return val_string_from_real(str);
+    return val_string_from_int(str);
   }
   if (m_is_window_function) {
     if (wf_common_init()) return error_str();
@@ -3507,7 +3533,8 @@ void Item_sum_sum::reset_field() {
         if (m_pushed_is_double) {
           double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, &dec);
         } else {
-          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int,
+                         m_pushed_value_is_unsigned, &dec);
         }
         result_field->store_decimal(&dec);
       } else {
@@ -3564,13 +3591,18 @@ void Item_sum_avg::reset_field() {
         if (m_pushed_is_double) {
           double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, &dec);
         } else {
-          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int,
+                         m_pushed_value_is_unsigned, &dec);
         }
         my_decimal2binary(E_DEC_FATAL_ERROR, &dec, res, f_precision, f_scale);
         res += dec_bin_size;
       } else {
         if (m_pushed_is_double) {
           float8store(res, m_pushed_value_double);
+        } else if (m_pushed_value_is_unsigned) {
+          float8store(
+              res,
+              static_cast<double>(static_cast<uint64_t>(m_pushed_value_int)));
         } else {
           float8store(res, static_cast<double>(m_pushed_value_int));
         }

@@ -1330,6 +1330,13 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
         reinterpret_cast<Uint16 *>(
             static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
   }
+  /* Request objects come from a TransientPool (no constructor runs) and
+   * the lookup protocol carries no aggStateKeys section, so without this
+   * clear a recycled Request keeps the previous occupant's m_aggNodes
+   * bits — defeating validateAggregateFlags' empty-check and potentially
+   * routing agg feeds with stale keys.  The ScanFragReq do_init has the
+   * same clear. */
+  requestP->m_aggNodes.clear();
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -2514,6 +2521,19 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       return DbspjErr::InvalidAggregateFlags;
     }
     if (unlikely(!aggregate_leaf_all_are_leaves)) {
+      jam();
+      return DbspjErr::InvalidAggregateFlags;
+    }
+
+    /* Main aggregation needs the per-node agg state supplied by the
+     * request's [nodeId, aggStateKey] pairs (parsed into m_aggNodes).
+     * DBTC only performs JOIN_AGG_SETUP on the scan path, so a
+     * lookup-protocol (TCKEYREQ) aggregate request — or a scan request
+     * missing its aggStateKeys section — arrives with an empty
+     * m_aggNodes.  The tree bits are API-controlled data: fail the
+     * query, not the node (the aggregate-leaf sends previously
+     * ndbrequire-crashed on this at DbspjMain.cpp:8748). */
+    if (unlikely(requestPtr.p->m_aggNodes.isclear())) {
       jam();
       return DbspjErr::InvalidAggregateFlags;
     }
@@ -6761,6 +6781,24 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       lookupFlags |= CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG;
     }
 
+    /* Outer-joined CTE_LOOKUP intermediate of an aggregating main
+     * query: request the row-shaped outer protocol from DBLQH.  On a
+     * miss the reply is a NULL-extended result row + CONF (instead of
+     * REF), so the chained next op is still driven for the unmatched
+     * parent row (LEFT JOIN semantics); combined with the ANTI flag
+     * above, a found match REFs instead so the matched parent row is
+     * dropped (anti-join semantics).  parseDA guaranteed at least a
+     * CORR_FACTOR32 read + T_EXPECT_TRANSID_AI for these nodes.  Not
+     * set for pass-through (non-aggregate) requests: those keep the
+     * REF-on-miss protocol and the API's NULL-fill handling. */
+    if ((requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0 &&
+        treeNodePtr.p->m_cteId == RNIL &&
+        (treeNodePtr.p->m_bits &
+         (TreeNode::T_AGGREGATE_LEAF | TreeNode::T_INNER_JOIN)) == 0) {
+      jam();
+      lookupFlags |= CteLookupReq::CTE_LOOKUP_OUTER_CHAIN_FLAG;
+    }
+
     DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u "
              "cteIdx=%u targetAggKey=%u keyLenBytes=%u flags=0x%x",
              instance(), targetNodeId,
@@ -10073,6 +10111,24 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
   if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) ||
       (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) ||
       treeNodePtr.p->m_scanAncestorPtrI == RNIL) {
+    jam();
+    return 0;
+  }
+
+  /* Main-query CTE_LOOKUP intermediates using the outer-chain protocol
+   * are excluded from this completion-time sweep (isLookup() includes
+   * them): the row-shaped
+   * CTE_LOOKUP_OUTER_CHAIN protocol already resolves every parent row
+   * inline — a miss emits a NULL-extended row that drives the chained
+   * next op, and an anti-join match is deliberately answered with
+   * REF(GROUP_NOT_FOUND) so the parent row drops.  Sweeping here would
+   * re-interpret those deliberate drops as unmatched parents (no match
+   * bit, since no TRANSID_AI row was sent) and NULL-inject them past
+   * the INNER next op into the aggregator — the big-07a leak: the
+   * final root batch's anti-dropped customers reappeared with
+   * lifetime-NULL rows. */
+  if (treeNodePtr.p->m_info == &g_CteLookupOpInfo &&
+      treeNodePtr.p->m_cteId == RNIL) {
     jam();
     return 0;
   }
@@ -15454,8 +15510,29 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
     const Uint32 mask = DABits::NI_LINKED_ATTR | DABits::NI_ATTR_INTERPRET |
                         DABits::NI_ATTR_LINKED;
 
-    if (((treeBits & mask) |
-         (paramBits & (DABits::PI_ATTR_LIST | DABits::PI_ATTR_INTERPRET))) != 0) {
+    /**
+     * Outer-joined (incl. anti) CTE_LOOKUP that is not the aggregation
+     * feed point, in an aggregating main query: the exec plan chains
+     * the next op behind this node and drives it from this node's
+     * result rows (planSequentialExec + the tree-parent pinning in the
+     * RonSQL / API CTE chain emission).  DBLQH answers these lookups
+     * row-shaped (CTE_LOOKUP_OUTER_CHAIN_FLAG in cte_lookup_send), so
+     * the AttrInfo must carry the interpreted 5-word header and at
+     * least a CORR_FACTOR32 read even when the suppressed user
+     * projection and absent linked attrs would otherwise leave it
+     * empty (see the big-07 fix in test_benchmark_extension_plan.md).
+     */
+    const bool cteAggOuterIntermediate =
+        treeNodePtr.p->m_info == &g_CteLookupOpInfo &&
+        (requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0 &&
+        ctx.m_cteSubtreeRemaining == 0 &&
+        (treeNodePtr.p->m_bits &
+         (TreeNode::T_AGGREGATE_LEAF | TreeNode::T_INNER_JOIN)) == 0;
+
+    if ((((treeBits & mask) |
+          (paramBits & (DABits::PI_ATTR_LIST | DABits::PI_ATTR_INTERPRET)))
+         != 0) ||
+        cteAggOuterIntermediate) {
       jam();
       /**
        * OPTIONAL PART 3: attrinfo handling
@@ -15482,7 +15559,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           (treeBits & (DABits::NI_ATTR_INTERPRET |
                        DABits::NI_ATTR_LINKED)) ||
           (paramBits & DABits::PI_ATTR_INTERPRET) ||
-          (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED);
+          (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED) ||
+          cteAggOuterIntermediate;
 
       if (interpreted) {
         DEBUG("interpreted");
@@ -15862,10 +15940,15 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
        * the API, the SPJ-block does its own request of a CORR_FACTOR.
        * Will be used to keep track of whether a 'match' was found
        * for the requested parent row.
+       *
+       * Outer-chain CTE_LOOKUP intermediates (cteAggOuterIntermediate)
+       * also need the CORR read: their (possibly NULL-extended) result
+       * row is what drives the chained next op for each parent row.
        */
       else if (requestPtr.p->isScan() &&
-               (treeNodePtr.p->m_bits &
-                (TreeNode::T_INNER_JOIN | TreeNode::T_FIRST_MATCH))) {
+               ((treeNodePtr.p->m_bits &
+                 (TreeNode::T_INNER_JOIN | TreeNode::T_FIRST_MATCH)) != 0 ||
+                cteAggOuterIntermediate)) {
         jam();
         Uint32 cnt = 0;
         /**

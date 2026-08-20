@@ -44,16 +44,24 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
+      // Phase stats are last-attempt-wins: each attempt overwrites the
+      // previous attempt's values; attempts records how many ran.
+      STAT_COUNT(params.phase_stats, attempts, (Uint32)(attempt + 1));
       PERF_TS(t_total);
+      STAT_TS(params.phase_stats, s_total);
       RonSQLPreparer executor(params);
       PERF_TS(t_prepare_end);
       PERF_LOG("prepare (constructor)", t_total, t_prepare_end);
+      STAT_TS(params.phase_stats, s_prepare_end);
+      STAT_SET(params.phase_stats, prepare_us, s_total, s_prepare_end);
 
       DEB_TRACE();
       executor.execute();
       PERF_TS(t_exec_end);
       PERF_LOG("execute", t_prepare_end, t_exec_end);
       PERF_LOG("total (ronsql_op)", t_total, t_exec_end);
+      STAT_TS(params.phase_stats, s_exec_end);
+      STAT_SET(params.phase_stats, execute_us, s_prepare_end, s_exec_end);
 
       DEB_TRACE();
       return RS_OK;

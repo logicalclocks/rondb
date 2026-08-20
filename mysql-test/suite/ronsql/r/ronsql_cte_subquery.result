@@ -1,0 +1,280 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for subquery x CTE tests ===
+
+
+=== Test 1: Scalar subquery (INT) in the main WHERE of a WITH query ===
+== Query ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_qty) AS q, COUNT(*) AS n
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_qty) AS q, COUNT(*) AS n
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)|
+COUNT(*)	SUM(li_stats.q)	SUM(li_stats.n)
+5	200	10
+
+
+=== Test 2: Scalar subquery with inner WHERE + CTE join, GROUP BY main ===
+== Query ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_qty) AS q
+FROM sq_li GROUP BY l_ord)
+SELECT o.o_cust, COUNT(*), SUM(li_stats.q)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total >= (SELECT MAX(l_price) FROM sq_li WHERE l_qty < 20)
+GROUP BY o.o_cust;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_qty) AS q
+FROM sq_li GROUP BY l_ord)
+SELECT o.o_cust, COUNT(*), SUM(li_stats.q)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total >= (SELECT MAX(l_price) FROM sq_li WHERE l_qty < 20)
+GROUP BY o.o_cust|
+o_cust	COUNT(*)	SUM(li_stats.q)
+100	2	50
+200	2	75
+300	1	75
+
+
+=== Test 3: EXISTS (correlated) in the main WHERE + CTE join ===
+== Query ==
+WITH li_stats AS (
+SELECT l_ord AS k, COUNT(*) AS n
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id AND l_qty > 30);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li_stats AS (
+SELECT l_ord AS k, COUNT(*) AS n
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id AND l_qty > 30)|
+COUNT(*)	SUM(li_stats.n)
+1	2
+
+
+=== Test 4: NOT EXISTS in the main WHERE + CTE join ===
+== Query ==
+WITH cust_stats AS (
+SELECT o_cust AS k, COUNT(*) AS n
+FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust_stats AS (
+SELECT o_cust AS k, COUNT(*) AS n
+FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT EXISTS (SELECT l_id FROM sq_li WHERE l_ord = o.o_id)|
+COUNT(*)	SUM(cust_stats.n)
+1	2
+
+
+=== Test 4b: literal NOT(OR-chain) on the pushed join root ===
+== Query ==
+WITH cust_stats AS (
+SELECT o_cust AS k, COUNT(*) AS n
+FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT (o.o_id = 1 OR o.o_id = 2 OR o.o_id = 3 OR o.o_id = 4 OR o.o_id = 5);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust_stats AS (
+SELECT o_cust AS k, COUNT(*) AS n
+FROM sq_ord GROUP BY o_cust)
+SELECT COUNT(*), SUM(cust_stats.n)
+FROM sq_ord AS o JOIN cust_stats ON cust_stats.k = o.o_cust
+WHERE NOT (o.o_id = 1 OR o.o_id = 2 OR o.o_id = 3 OR o.o_id = 4 OR o.o_id = 5)|
+COUNT(*)	SUM(cust_stats.n)
+1	2
+
+
+=== Test 5: explicit IN-subquery in the main WHERE of a CTE join ===
+== Query ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_price) AS p
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.p)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_price) AS p
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.p)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_id IN (SELECT l_ord FROM sq_li WHERE l_price > 200)|
+COUNT(*)	SUM(li_stats.p)
+2	1300
+
+
+=== Test 6: Correlated scalar subquery in the main WHERE + CTE join ===
+== Query ==
+WITH li_stats AS (
+SELECT l_ord AS k, COUNT(*) AS n
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT SUM(l_qty) FROM sq_li WHERE l_ord = o.o_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li_stats AS (
+SELECT l_ord AS k, COUNT(*) AS n
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.n)
+FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id
+WHERE o.o_total > (SELECT SUM(l_qty) FROM sq_li WHERE l_ord = o.o_id)|
+COUNT(*)	SUM(li_stats.n)
+5	10
+
+
+=== Test 7: Scalar subquery result type DECIMAL (single-table main) ===
+== Query ==
+SELECT COUNT(*), MIN(o_price), MAX(o_price)
+FROM sq_ord
+WHERE o_price < (SELECT MAX(o_price) FROM sq_ord);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*), MIN(o_price), MAX(o_price)
+FROM sq_ord
+WHERE o_price < (SELECT MAX(o_price) FROM sq_ord)|
+COUNT(*)	MIN(o_price)	MAX(o_price)
+5	1.10	62.10
+
+
+=== Test 8: Scalar subquery result type DOUBLE (single-table main) ===
+== Query ==
+SELECT COUNT(*), MIN(o_ratio), MAX(o_ratio)
+FROM sq_ord
+WHERE o_ratio <= (SELECT MAX(o_ratio) FROM sq_ord WHERE o_ratio < 0.80);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*), MIN(o_ratio), MAX(o_ratio)
+FROM sq_ord
+WHERE o_ratio <= (SELECT MAX(o_ratio) FROM sq_ord WHERE o_ratio < 0.80)|
+COUNT(*)	MIN(o_ratio)	MAX(o_ratio)
+5	0.05	0.75
+
+
+=== Test 9: Two scalar subqueries + two CTEs in one statement ===
+== Query ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_qty) AS q
+FROM sq_li GROUP BY l_ord),
+li_price AS (
+SELECT l_ord AS k2, MAX(l_price) AS mp
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), MAX(li_price.mp)
+FROM sq_ord AS o
+JOIN li_stats ON li_stats.k = o.o_id
+JOIN li_price ON li_price.k2 = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)
+AND o.o_total < (SELECT SUM(l_price) FROM sq_li);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li_stats AS (
+SELECT l_ord AS k, SUM(l_qty) AS q
+FROM sq_li GROUP BY l_ord),
+li_price AS (
+SELECT l_ord AS k2, MAX(l_price) AS mp
+FROM sq_li GROUP BY l_ord)
+SELECT COUNT(*), SUM(li_stats.q), MAX(li_price.mp)
+FROM sq_ord AS o
+JOIN li_stats ON li_stats.k = o.o_id
+JOIN li_price ON li_price.k2 = o.o_id
+WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)
+AND o.o_total < (SELECT SUM(l_price) FROM sq_li)|
+COUNT(*)	SUM(li_stats.q)	MAX(li_price.mp)
+5	200	400
+
+=== Cleanup ===

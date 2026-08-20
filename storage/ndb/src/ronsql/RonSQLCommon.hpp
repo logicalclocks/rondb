@@ -42,6 +42,55 @@ typedef Int32 TokenKind; /* The type of the T_* values used to indicate token
 
 class RdrsSchemaCache;  // Forward declaration — optional, for index list caching
 
+/*
+ * Per-request phase timing statistics.  All *_us values are microseconds
+ * from a monotonic clock.  A phase that did not run for the given query
+ * shape stays 0.  On internal retries (ronsql_op), values reflect the LAST
+ * attempt; attempts counts how many attempts ran (1 = no retry).  Capture
+ * sites are compiled in only under RONSQL_PHASE_STATS (RonSQLPerf.hpp,
+ * default on) and additionally require this sink to be non-NULL on
+ * RonSQLExecParams::phase_stats.
+ *
+ * Phase meanings per execution path:
+ * - join/CTE aggregate path: ndbprep = NdbQueryBuilder::prepare;
+ *   send = trans->execute; firstbatch = wait for the first result row
+ *   (data-node execution incl. CTE materialization); drain = remaining
+ *   rows; print = ResultPrinter.
+ * - pass-through (non-aggregate) path: send = trans->execute;
+ *   firstbatch = first nextResult; drain = remaining rows; print stays 0
+ *   (rows are printed inside the drain loop).
+ * - single-table path: ndbprep = scan-op definition (bounds, filter,
+ *   aggregation code); firstbatch = DoAggregation (the NDB API fuses
+ *   send + execute + drain); send/drain stay 0.
+ * - single-table pass-through scan arm: like the pass-through path
+ *   (ndbprep = scan-op definition + getValue wiring; send / firstbatch /
+ *   drain split; rows printed inside the drain, print stays 0).
+ * - single-table pass-through PK-lookup arm: ndbprep = lookup-op
+ *   definition; firstbatch = execute(Commit) (the NDB API fuses send +
+ *   read); send/drain stay 0; rows is 0 or 1.
+ */
+struct RonSQLPhaseStats
+{
+  Uint64 parse_us = 0;      // lex + parse + ORDER BY alias resolution
+  Uint64 analyze_us = 0;    // CTE / subquery / SELECT-subquery analysis
+  Uint64 load_us = 0;       // NDB dictionary access (schema load)
+  Uint64 plan_us = 0;       // CTE shape validation + index/filter planning
+  Uint64 compile_us = 0;    // agg-program compile + linked projections
+  Uint64 prepare_us = 0;    // RonSQLPreparer constructor total
+  Uint64 subquery_us = 0;   // execute_subqueries + result substitution
+  Uint64 ndbprep_us = 0;    // NdbQueryBuilder::prepare / scan-op definition
+  Uint64 send_us = 0;       // transaction execute (send + first wait)
+  Uint64 firstbatch_us = 0; // wait for the first result row / DoAggregation
+  Uint64 drain_us = 0;      // drain of the remaining result rows
+  Uint64 print_us = 0;      // result formatting into the output stream
+  Uint64 execute_us = 0;    // RonSQLPreparer::execute total
+  Uint64 rows_drained = 0;  // rows pulled from the NDB API (aggregate
+                            // records on the agg path, result rows on the
+                            // pass-through path; 0 on the fused
+                            // single-table path)
+  Uint32 attempts = 0;      // ronsql_op attempts (1 = no retry)
+};
+
 struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
@@ -80,6 +129,9 @@ struct RonSQLExecParams
                            // we EXPLAIN. This is needed by RDRS to determine
                            // content type.
   RdrsSchemaCache* schema_cache = nullptr;  // Optional: avoids dict->listIndexes()
+  RonSQLPhaseStats* phase_stats = nullptr;  // Optional: per-phase timing sink
+                                            // (captured only when non-NULL and
+                                            // RONSQL_PHASE_STATS is compiled in)
   static const Uint32 ARENA_MALLOC_PAGE_SIZE = 2048;
 };
 

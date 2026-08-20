@@ -1,7 +1,7 @@
 // vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
 
 /*
-   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -168,22 +168,31 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     PERF_TS(t_prep_start);
     configure();
     PERF_TS(t_parse_start);
+    STAT_TS(m_conf.phase_stats, s_parse_start);
     parse();
     resolve_orderby_aliases();
     PERF_TS(t_parse_end);
     PERF_LOG("  parse", t_parse_start, t_parse_end);
+    STAT_TS(m_conf.phase_stats, s_parse_end);
+    STAT_SET(m_conf.phase_stats, parse_us, s_parse_start, s_parse_end);
     analyze_ctes();
     analyze_subqueries();
     analyze_select_subqueries();
     PERF_TS(t_load_start);
+    STAT_TS(m_conf.phase_stats, s_load_start);
+    STAT_SET(m_conf.phase_stats, analyze_us, s_parse_end, s_load_start);
     load();
     PERF_TS(t_load_end);
     PERF_LOG("  load (dict)", t_load_start, t_load_end);
+    STAT_TS(m_conf.phase_stats, s_load_end);
+    STAT_SET(m_conf.phase_stats, load_us, s_load_start, s_load_end);
     if (m_has_ctes)
       validate_cte_execution_shapes();
     if (!is_join_query())
       plan_index_and_filter();
     PERF_TS(t_compile_start);
+    STAT_TS(m_conf.phase_stats, s_compile_start);
+    STAT_SET(m_conf.phase_stats, plan_us, s_load_end, s_compile_start);
     compile();
     if (is_join_query())
       build_agg_linked_projections();
@@ -191,6 +200,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
       build_cte_linked_projections();
     PERF_TS(t_compile_end);
     PERF_LOG("  compile", t_compile_start, t_compile_end);
+    STAT_TS(m_conf.phase_stats, s_compile_end);
+    STAT_SET(m_conf.phase_stats, compile_us, s_compile_start, s_compile_end);
     determine_explain();
     PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
@@ -563,6 +574,16 @@ RonSQLPreparer::parse()
       ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
+    // Part B (join_nest_semantics_plan.md): LEFT->INNER promotion must
+    // run before the non-aggregate gate (whose INNER-below-LEFT check
+    // is thereby demoted to a defensive dead-man's check) and applies
+    // to aggregate queries too — the emitted tree for an unpromoted
+    // chain (MatchNonNull child of a MatchAll node, no nest metadata)
+    // expresses `t LEFT (b INNER c)` instead of SQL's left-associative
+    // `(t LEFT b) INNER c`, with verified wrong results on both the
+    // aggregate path (ns-1: COUNT(*) 30 vs 10) and the pass-through
+    // row path (sn-15).
+    promote_left_joins();
     m_is_aggregate_query = (has_aggregate_outputs || has_having_aggregates ||
                             has_subquery_agg_outputs);
     if (!m_is_aggregate_query)
@@ -612,96 +633,149 @@ RonSQLPreparer::parse()
       bool projection_only_cte_scan =
           (from_is_cte && all_column_outputs && !has_groupby &&
            !has_having && !has_orderby && !has_limit && !has_joins);
-      // Phase I.8/I.11/I.12: projection-only join chains over CTE-and-
-      // real-table operands.  Accepted shapes:
-      //   - I.8/I.11: FROM <real> JOIN <cte> [JOIN ...] (real root,
-      //     INNER chain).
-      //   - I.12 relaxation A: FROM <cte> JOIN <real> [JOIN ...]
-      //     (CTE root, INNER chain).  testCteNdbApiOuterJoin.cpp
-      //     Test 1 shape.
-      //   - I.12 relaxation B: any join in the chain may be
-      //     LEFT_OUTER_JOIN.  testCteNdbApiOuterJoin.cpp Tests 2, 3.
-      // Constraints (unchanged across A and B): every CTE join must
-      // be a complete-key CTE_LOOKUP (ExactOrdered or ExactPermuted
-      // via cte_key_coverage); no ORDER BY / GROUP BY / HAVING /
-      // LIMIT / aggregate outputs.  Phase G's defensive reject for
+      // Phase 1 (non_aggregate_phase_1.md, W1): projection-only
+      // single-table queries over a real table — the first shape with
+      // no aggregation and no CTE.  Requires a FROM table (the Phase
+      // I.17h optional-FROM path cannot resolve COLUMN outputs) and no
+      // CTE definitions at all (a WITH prefix on a single-table
+      // projection stays rejected rather than silently ignoring the
+      // CTE).  ORDER BY / LIMIT stay rejected — they layer on via
+      // ronsql_orderby_limit_plan.md.
+      bool has_from = (m_context.ast_root.table.str != NULL &&
+                       m_context.ast_root.table.len > 0);
+      bool projection_only_single_table =
+          (has_from && !from_is_cte && !has_joins && all_column_outputs &&
+           !has_groupby && !has_having && !has_orderby && !has_limit &&
+           m_context.ast_root.cte_list == NULL);
+      // Projection-only join chains (Phase I.8/I.11/I.12 for
+      // CTE-involving shapes; Phase 2 of non_aggregate_pushdown_plan.md
+      // extends the same walk to pure real-table snowflake chains by
+      // dropping the previous at-least-one-CTE requirement).  Accepted:
+      // strictly left-deep INNER / LEFT_OUTER chains whose ON
+      // conditions bind the joined alias's columns to an
+      // already-visible alias, with every CTE operand a complete-key
+      // CTE_LOOKUP (ExactOrdered or ExactPermuted via
+      // cte_key_coverage); no ORDER BY / GROUP BY / HAVING / LIMIT /
+      // aggregate outputs.  Phase G's defensive reject for
       // CTE_SCAN-as-outer-join-child still fires later in
       // validate_cte_execution_shapes() for any planner-produced
       // shape outside this conservative class.
-      bool cte_lookup_join_chain = false;
+      bool projection_only_join_chain = false;
       if (all_column_outputs && !has_groupby &&
           !has_having && !has_orderby && !has_limit && has_joins) {
-        cte_lookup_join_chain = true;
-        // CTE root already counts as a CTE in the query.
-        bool query_has_cte = from_is_cte;
+        projection_only_join_chain = true;
         LexCString visible_aliases[MAX_SPJ_TREE_NODES];
+        // Defensive dead-man's check (join_nest_semantics_plan.md): an
+        // alias is "under LEFT" when it was LEFT-joined itself or
+        // reached through one.  promote_left_joins() runs before this
+        // gate and rewrites every INNER-below-LEFT flat chain to
+        // all-INNER (equality join conditions are null-rejecting), so
+        // this check firing means a promotion bug or a future
+        // non-equality join condition — without promotion the emitted
+        // tree (no nest metadata) would deliver NULL-extended rows the
+        // INNER join must eliminate (verified wrong results, sn-15).
+        bool alias_under_left[MAX_SPJ_TREE_NODES];
         Uint32 num_visible_aliases = 0;
+        alias_under_left[num_visible_aliases] = false;
         visible_aliases[num_visible_aliases++] =
             m_context.ast_root.root_table->alias;
         for (const JoinClause* join = m_context.ast_root.joins;
              join != NULL; join = join->next) {
+          // Phase 4 (non_aggregate_phase_4.md, W1): a conditionless
+          // join clause is acceptable only as the comma cross-join of
+          // a SCALAR CTE (the grammar's one conditionless production;
+          // a scalar CTE always produces exactly one row, so the
+          // cross join is a semantics-preserving 1-row multiplier —
+          // and its coverage state is ScalarDummy by construction).
+          // Real-table and grouped-CTE comma joins stay rejected.
+          const CteDefinition* join_cte =
+              find_cte_definition(join->table.name);
+          bool scalar_cte_cross_join =
+              (join->conditions == NULL && join_cte != NULL &&
+               join_cte->stmt->groupby_columns == NULL &&
+               join->join_type == JoinClause::INNER_JOIN);
           if (num_visible_aliases >= MAX_SPJ_TREE_NODES ||
               (join->join_type != JoinClause::INNER_JOIN &&
                join->join_type != JoinClause::LEFT_OUTER_JOIN) ||
-              join->conditions == NULL) {
-            cte_lookup_join_chain = false;
+              (join->conditions == NULL && !scalar_cte_cross_join)) {
+            projection_only_join_chain = false;
             break;
           }
           const LexCString& join_alias = join->table.alias;
+          bool any_parent_under_left = false;
           for (const JoinCondition* jc = join->conditions;
                jc != NULL; jc = jc->next) {
             if (!(jc->child_table == join_alias)) {
-              cte_lookup_join_chain = false;
+              projection_only_join_chain = false;
               break;
             }
             bool parent_seen = false;
             for (Uint32 a = 0; a < num_visible_aliases; a++) {
               if (jc->parent_table == visible_aliases[a]) {
                 parent_seen = true;
+                if (alias_under_left[a]) any_parent_under_left = true;
                 break;
               }
             }
             if (!parent_seen) {
-              cte_lookup_join_chain = false;
+              projection_only_join_chain = false;
               break;
             }
           }
-          if (!cte_lookup_join_chain) break;
-          const CteDefinition* cte = find_cte_definition(join->table.name);
-          if (cte != NULL) {
+          if (!projection_only_join_chain) break;
+          if (join->join_type == JoinClause::INNER_JOIN &&
+              any_parent_under_left) {
+            ndbrequire(m_conf.err_stream != NULL);
+            std::basic_ostream<char>& err = *m_conf.err_stream;
+            err << "INNER JOIN below a LEFT JOIN is not supported in"
+                   " projection-only queries: RonSQL does not yet emit"
+                   " outer-join nest metadata, and NDB would deliver"
+                   " NULL-extended rows the INNER join must eliminate.\n";
+            throw RonSQLPermanentError(
+                "INNER JOIN below LEFT JOIN not supported.");
+          }
+          if (join_cte != NULL) {
             LexCString child_names[MAX_JOIN_KEY_COLS];
             Uint32 num_keys = 0;
             for (const JoinCondition* jc = join->conditions;
                  jc != NULL; jc = jc->next) {
               if (num_keys >= MAX_JOIN_KEY_COLS) {
-                cte_lookup_join_chain = false;
+                projection_only_join_chain = false;
                 break;
               }
               child_names[num_keys++] = jc->child_column;
             }
-            if (!cte_lookup_join_chain) break;
+            if (!projection_only_join_chain) break;
             CteKeyCoverageResult coverage;
-            if (!cte_key_coverage(cte, child_names, num_keys, coverage) ||
+            // Phase 4: ScalarDummy (scalar CTE, no keys) joins the
+            // accepted set — its producer restricts it to exactly the
+            // conditionless-scalar case admitted above.
+            if (!cte_key_coverage(join_cte, child_names, num_keys,
+                                  coverage) ||
                 (coverage.state != CteKeyCoverage::ExactOrdered &&
-                 coverage.state != CteKeyCoverage::ExactPermuted)) {
-              cte_lookup_join_chain = false;
+                 coverage.state != CteKeyCoverage::ExactPermuted &&
+                 coverage.state != CteKeyCoverage::ScalarDummy)) {
+              projection_only_join_chain = false;
               break;
             }
-            query_has_cte = true;
           }
+          alias_under_left[num_visible_aliases] =
+              (join->join_type == JoinClause::LEFT_OUTER_JOIN) ||
+              any_parent_under_left;
           visible_aliases[num_visible_aliases++] = join_alias;
         }
-        cte_lookup_join_chain =
-            cte_lookup_join_chain && query_has_cte;
       }
-      if (!projection_only_cte_scan && !cte_lookup_join_chain) {
+      if (!projection_only_cte_scan && !projection_only_join_chain &&
+          !projection_only_single_table) {
         ndbrequire(m_conf.err_stream != NULL);
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
                "Currently, RonSQL only supports aggregate queries and projection-only\n"
-               "SELECTs over supported CTE shapes (Phase E.3/I.8/I.11/I.12).  See\n"
-               "ronsql_join_phase7.md for the\n"
-               "broader non-aggregate roadmap.\n";
+               "SELECTs: single-table, left-deep join chains over real tables and/or\n"
+               "complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of\n"
+               "scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /\n"
+               "GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the\n"
+               "broader roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
     }
@@ -2328,6 +2402,11 @@ RonSQLPreparer::plan_index_and_filter()
     // No connection, so we can't discover indexes.
     return;
   }
+  // Phase 1 W2: a non-aggregate WHERE fully consumed as PK equalities
+  // executes as a single-row PK lookup — no scan config needed.
+  if (detect_pk_lookup()) {
+    return;
+  }
   // Add scan config candidates, including both index scans and table scan. This
   // will guarantee that we get at least one candidate.
   generate_scan_config_candidates();
@@ -2364,6 +2443,66 @@ RonSQLPreparer::generate_scan_config_candidates()
                                m_toplevel_conditions,
                                m_scan_config_candidates,
                                m_context.ast_root.root_table);
+}
+
+bool
+RonSQLPreparer::detect_pk_lookup()
+{
+  // Aggregate queries never take the lookup: single-table aggregation
+  // runs through NdbScanOperation + SO_AGGREGATION; a plain readTuple
+  // has no aggregator path (the single-table twin of the Phase 0
+  // lookup-root rule).
+  if (m_is_aggregate_query) return false;
+  const NdbDictionary::Table* tab = m_main_scope.table;
+  if (tab == NULL) return false;
+  const int nkeys = tab->getNoOfPrimaryKeys();
+  if (nkeys <= 0) return false;
+  const Uint32 num_conds = m_toplevel_conditions.size();
+  if (num_conds == 0) return false;  // no WHERE — full scan
+  ConditionalExpression** pk_const =
+      m_amalloc->alloc_exc<ConditionalExpression*>(nkeys);
+  for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
+  // v1 policy (non_aggregate_phase_1.md): every conjunct must be a
+  // `pk_col = const` equality and each PK column must be bound exactly
+  // once.  Anything else — a residual conjunct, a duplicate, a partial
+  // cover, a non-equality — falls back to the scan-config path, which
+  // is always correct (the RecAttr-style NdbOperation read has no
+  // interpreted-code facility to carry residual filters).
+  for (Uint32 i = 0; i < num_conds; i++) {
+    ConditionalExpression* ce = m_toplevel_conditions[i];
+    if (ce->op != T_EQUALS) return false;
+    ConditionalExpression* col_side = NULL;
+    ConditionalExpression* const_side = NULL;
+    if (ce->args.left->op == T_IDENTIFIER &&
+        ce->args.right->op != T_IDENTIFIER) {
+      col_side = ce->args.left;
+      const_side = ce->args.right;
+    } else if (ce->args.right->op == T_IDENTIFIER &&
+               ce->args.left->op != T_IDENTIFIER) {
+      col_side = ce->args.right;
+      const_side = ce->args.left;
+    } else {
+      return false;
+    }
+    const char* col_name = m_columns[col_side->col_idx].c_str();
+    bool matched = false;
+    for (int k = 0; k < nkeys; k++) {
+      const char* pk_name = tab->getPrimaryKey(k);
+      if (pk_name != NULL && strcmp(pk_name, col_name) == 0) {
+        if (pk_const[k] != NULL) return false;  // duplicate equality
+        pk_const[k] = const_side;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;  // equality on a non-PK column
+  }
+  for (int k = 0; k < nkeys; k++) {
+    if (pk_const[k] == NULL) return false;  // partial PK cover
+  }
+  m_pk_lookup = true;
+  m_pk_lookup_const = pk_const;
+  return true;
 }
 
 void
@@ -5161,65 +5300,14 @@ RonSQLPreparer::compile()
   // execute_join), so ResultPrinter's normal construction applies.
   // Phase E.3: projection-only CTE_SCAN-root queries skip the
   // GROUP-BY-validating compile() path and use the pass-through
-  // formatter helpers instead.
+  // formatter helpers instead — Phase 0b gives them the same column
+  // metadata so temporal / DECIMAL outputs format correctly.
   if (m_is_aggregate_query) {
-    ResultPrinter::ColumnMetadata* column_metadata =
-        m_amalloc->alloc_exc<ResultPrinter::ColumnMetadata>(m_columns.size());
-    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-      column_metadata[col_idx].charset = NULL;
-      column_metadata[col_idx].precision = 0;
-      column_metadata[col_idx].scale = 0;
-      column_metadata[col_idx].has_metadata = false;
-      column_metadata[col_idx].temporal =
-          ResultPrinter::TemporalDisplay::NONE;
-      column_metadata[col_idx].temporal_fsp = 0;
-      if (m_main_scope.resolved_columns == NULL) continue;
-      const QueryScope::ResolvedColumnRef& ref =
-          m_main_scope.resolved_columns[col_idx];
-      const NdbDictionary::Column* col = ref.dict_column;
-      if (col == NULL) continue;
-      column_metadata[col_idx].charset = col->getCharset();
-      column_metadata[col_idx].precision = col->getPrecision();
-      column_metadata[col_idx].scale = col->getScale();
-      column_metadata[col_idx].has_metadata = true;
-      // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
-      // ref.dict_column back to the original source column even through a CTE
-      // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal
-      // column itself.  Tag it so the printer decodes the Bigunsigned packed
-      // value back to its text form.
-      switch (col->getType()) {
-      case NdbDictionary::Column::Date:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::DATE;
-        break;
-      case NdbDictionary::Column::Year:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::YEAR;
-        break;
-      case NdbDictionary::Column::Datetime2:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::DATETIME2;
-        column_metadata[col_idx].temporal_fsp = col->getPrecision();
-        break;
-      case NdbDictionary::Column::Time2:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::TIME2;
-        column_metadata[col_idx].temporal_fsp = col->getPrecision();
-        break;
-      case NdbDictionary::Column::Timestamp2:
-        column_metadata[col_idx].temporal =
-            ResultPrinter::TemporalDisplay::TIMESTAMP2;
-        column_metadata[col_idx].temporal_fsp = col->getPrecision();
-        break;
-      default:
-        break;
-      }
-    }
     m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
       ResultPrinter(m_amalloc,
                     &m_context.ast_root,
                     &m_columns,
-                    column_metadata,
+                    build_result_column_metadata(),
                     m_conf.output_format,
                     m_conf.err_stream);
   } else {
@@ -5227,10 +5315,69 @@ RonSQLPreparer::compile()
       ResultPrinter(m_amalloc,
                     &m_context.ast_root,
                     &m_columns,
+                    build_result_column_metadata(),
                     m_conf.output_format,
                     m_conf.err_stream,
                     /*passthrough_marker=*/true);
   }
+}
+
+ResultPrinter::ColumnMetadata*
+RonSQLPreparer::build_result_column_metadata()
+{
+  ResultPrinter::ColumnMetadata* column_metadata =
+      m_amalloc->alloc_exc<ResultPrinter::ColumnMetadata>(m_columns.size());
+  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    column_metadata[col_idx].charset = NULL;
+    column_metadata[col_idx].precision = 0;
+    column_metadata[col_idx].scale = 0;
+    column_metadata[col_idx].has_metadata = false;
+    column_metadata[col_idx].temporal =
+        ResultPrinter::TemporalDisplay::NONE;
+    column_metadata[col_idx].temporal_fsp = 0;
+    if (m_main_scope.resolved_columns == NULL) continue;
+    const QueryScope::ResolvedColumnRef& ref =
+        m_main_scope.resolved_columns[col_idx];
+    const NdbDictionary::Column* col = ref.dict_column;
+    if (col == NULL) continue;
+    column_metadata[col_idx].charset = col->getCharset();
+    column_metadata[col_idx].precision = col->getPrecision();
+    column_metadata[col_idx].scale = col->getScale();
+    column_metadata[col_idx].has_metadata = true;
+    // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
+    // ref.dict_column back to the original source column even through a CTE
+    // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal
+    // column itself.  Tag it so the printer decodes the Bigunsigned packed
+    // value back to its text form.
+    switch (col->getType()) {
+    case NdbDictionary::Column::Date:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::DATE;
+      break;
+    case NdbDictionary::Column::Year:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::YEAR;
+      break;
+    case NdbDictionary::Column::Datetime2:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::DATETIME2;
+      column_metadata[col_idx].temporal_fsp = col->getPrecision();
+      break;
+    case NdbDictionary::Column::Time2:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::TIME2;
+      column_metadata[col_idx].temporal_fsp = col->getPrecision();
+      break;
+    case NdbDictionary::Column::Timestamp2:
+      column_metadata[col_idx].temporal =
+          ResultPrinter::TemporalDisplay::TIMESTAMP2;
+      column_metadata[col_idx].temporal_fsp = col->getPrecision();
+      break;
+    default:
+      break;
+    }
+  }
+  return column_metadata;
 }
 
 void
@@ -5764,12 +5911,23 @@ RonSQLPreparer::execute()
     require_prm(ndb != NULL, "Cannot query without ndb object.");
 
     if (m_has_subqueries) {
+      STAT_TS(m_conf.phase_stats, s_subq_start);
       execute_subqueries();
       substitute_subquery_results();
+      STAT_TS(m_conf.phase_stats, s_subq_end);
+      STAT_SET(m_conf.phase_stats, subquery_us, s_subq_start, s_subq_end);
     }
 
     if (is_join_query()) {
       execute_join();
+      cleanup_trans();
+      return;
+    }
+
+    if (!m_is_aggregate_query) {
+      // Phase 1 (non_aggregate_phase_1.md): projection-only
+      // single-table queries — plain-API pass-through execution.
+      execute_single_table_passthrough();
       cleanup_trans();
       return;
     }
@@ -5782,130 +5940,316 @@ RonSQLPreparer::execute()
     NdbAggregator aggregator(m_main_scope.table);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
-    ScanConfig& sc = *m_scan_config;
-    const NdbDictionary::Index* index = sc.index;
-    bool has_filter = false;
-    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-      if (sc.condition_handling_map[i] == -1) {
-        has_filter = true;
-      }
-    }
-    // End of general preparation
-
-    if(index == NULL) {
-      // Prepare and execute full table scan
-      DEB_TRACE();
-      NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
-      require_sch(myScanOp != NULL, "Failed to get scan operation.");
-      require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
-                  "Failed to initialize scan operation.");
-      DEB_TRACE();
-      if (has_filter)
-      {
-        DEB_TRACE();
-        NdbScanFilter filter(myScanOp);
-        DBGV(filter.setSqlCmpSemantics());
-        DEB_TRACE();
-        apply_filter_top_level(&filter);
-        DEB_TRACE();
-      }
-      DEB_TRACE();
-      require_run(DBG(myScanOp->setAggregationCode(&aggregator)) >= 0,
-                  "Failed to set aggregation code.");
-      DEB_TRACE();
-      require_run(DBG(myScanOp->DoAggregation()) >= 0,
-                  "Failed to execute table scan aggregation.");
-      DEB_TRACE();
-    } else {
-      DEB_TRACE();
-      // Prepare and execute index scan
-      require_sch(DBG(index->getTableId()) == DBG(m_main_scope.table->getObjectId()) &&
-                  DBG(index->getTableVersion()) ==
-                  DBG(m_main_scope.table->getObjectVersion()),
-                  "Table id/version mismatch");
-      NdbIndexScanOperation *myIndexScanOp =
-        DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
-      require_run(myIndexScanOp != NULL,
-                  "Failed getting index scan operation.");
-      Uint32 scanFlags = 0;
-      // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
-      require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
-                                                DBG(scanFlags))) == 0,
-                  "Failed to initialize index scan operation.");
-      for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
-      {
-        int index_col_idx = DBG(sc.condition_handling_map[i]);
-        if (index_col_idx == -1) {
-          // This condition could not be configured for the index scan. It will
-          // be applied as part of the filter instead.
-          continue;
-        }
-        ConditionalExpression* ce = m_toplevel_conditions[i];
-        Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
-        ConditionalExpression* condition_constant = ce->args.right;
-        TokenKind op = DBG(ce->op);
-        NdbIndexScanOperation::BoundType bt;
-        switch (op) {
-        case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
-        /* This mapping might seem surprising.
-         * - In RonSQL, we have normalized the conditional expressions to have
-         *   the column name on the left and the constant on the right. Thus,
-         *   T_GE means column value >= constant, or in other words, the
-         *   constant is a lower bound.
-         * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
-         */
-        case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
-        case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
-        case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
-        case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
-        default: abort();
-        }
-        const char* colName = m_columns[condition_col_idx].c_str();
-        require_run(m_main_scope.resolved_columns != NULL,
-                    "Index scan bound: missing resolved columns.");
-        const QueryScope::ResolvedColumnRef& condition_ref =
-            m_main_scope.resolved_columns[condition_col_idx];
-        require_prm(
-            condition_ref.kind ==
-            QueryScope::ResolvedColumnRef::Kind::StoredColumn,
-            "Index scan bound requires a stored-table column.");
-        require_prm(condition_ref.dict_column != NULL,
-                    "Index scan bound column descriptor missing.");
-        raw_value rv = encode_constant(condition_constant,
-                                       condition_ref.dict_column);
-        require_run(DBG(myIndexScanOp->setBound(DBG(colName),
-                                                DBG(bt),
-                                                DBG(rv).val)) == 0,
-                    "Failed to set bound for index scan.");
-        DEB_TRACE();
-      }
-      DEB_TRACE();
-      // todo Is this necessary after removing the multirange flag?
-      require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
-                  "Failed to set end of bound.");
-      if (has_filter)
-      {
-        DEB_TRACE();
-        NdbScanFilter filter(myIndexScanOp);
-        DBGV(filter.setSqlCmpSemantics());
-        apply_filter_top_level(&filter);
-      }
-      DEB_TRACE();
-      require_run(DBG(myIndexScanOp->setAggregationCode(&aggregator)) >= 0,
-                  "Failed to set aggregation code.");
-      require_run(DBG(myIndexScanOp->DoAggregation()) >= 0,
-                  "Failed to execute index scan aggregation.");
-    }
+    STAT_TS(m_conf.phase_stats, s_scandef_start);
+    NdbScanOperation* scanOp = open_single_table_scan_op();
+    DEB_TRACE();
+    require_run(DBG(scanOp->setAggregationCode(&aggregator)) >= 0,
+                "Failed to set aggregation code.");
+    STAT_TS(m_conf.phase_stats, s_agg_start);
+    STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_agg_start);
+    require_run(DBG(scanOp->DoAggregation()) >= 0,
+                "Failed to execute scan aggregation.");
+    STAT_TS(m_conf.phase_stats, s_agg_end);
+    STAT_SET(m_conf.phase_stats, firstbatch_us, s_agg_start, s_agg_end);
     DEB_TRACE();
 
     // Print results
+    STAT_TS(m_conf.phase_stats, s_print_start);
     m_resultprinter->print_result(&aggregator, m_conf.out_stream);
+    STAT_TS(m_conf.phase_stats, s_print_end);
+    STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
     DEB_TRACE();
 
     cleanup_trans();
   }
   catch (...) {
     handle_ronsql_exception(std::current_exception());
+  }
+}
+
+NdbScanOperation*
+RonSQLPreparer::open_single_table_scan_op()
+{
+  ScanConfig& sc = *m_scan_config;
+  const NdbDictionary::Index* index = sc.index;
+  bool has_filter = false;
+  for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+    if (sc.condition_handling_map[i] == -1) {
+      has_filter = true;
+    }
+  }
+
+  if (index == NULL) {
+    // Prepare full table scan
+    DEB_TRACE();
+    NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
+    require_sch(myScanOp != NULL, "Failed to get scan operation.");
+    require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
+                "Failed to initialize scan operation.");
+    DEB_TRACE();
+    if (has_filter)
+    {
+      DEB_TRACE();
+      NdbScanFilter filter(myScanOp);
+      DBGV(filter.setSqlCmpSemantics());
+      DEB_TRACE();
+      apply_filter_top_level(&filter);
+      DEB_TRACE();
+    }
+    DEB_TRACE();
+    return myScanOp;
+  }
+
+  DEB_TRACE();
+  // Prepare index scan
+  require_sch(DBG(index->getTableId()) == DBG(m_main_scope.table->getObjectId()) &&
+              DBG(index->getTableVersion()) ==
+              DBG(m_main_scope.table->getObjectVersion()),
+              "Table id/version mismatch");
+  NdbIndexScanOperation *myIndexScanOp =
+    DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
+  require_run(myIndexScanOp != NULL,
+              "Failed getting index scan operation.");
+  Uint32 scanFlags = 0;
+  // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
+  require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
+                                            DBG(scanFlags))) == 0,
+              "Failed to initialize index scan operation.");
+  for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
+  {
+    int index_col_idx = DBG(sc.condition_handling_map[i]);
+    if (index_col_idx == -1) {
+      // This condition could not be configured for the index scan. It will
+      // be applied as part of the filter instead.
+      continue;
+    }
+    ConditionalExpression* ce = m_toplevel_conditions[i];
+    Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
+    ConditionalExpression* condition_constant = ce->args.right;
+    TokenKind op = DBG(ce->op);
+    NdbIndexScanOperation::BoundType bt;
+    switch (op) {
+    case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
+    /* This mapping might seem surprising.
+     * - In RonSQL, we have normalized the conditional expressions to have
+     *   the column name on the left and the constant on the right. Thus,
+     *   T_GE means column value >= constant, or in other words, the
+     *   constant is a lower bound.
+     * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
+     */
+    case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
+    case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
+    case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
+    case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
+    default: abort();
+    }
+    const char* colName = m_columns[condition_col_idx].c_str();
+    require_run(m_main_scope.resolved_columns != NULL,
+                "Index scan bound: missing resolved columns.");
+    const QueryScope::ResolvedColumnRef& condition_ref =
+        m_main_scope.resolved_columns[condition_col_idx];
+    require_prm(
+        condition_ref.kind ==
+        QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+        "Index scan bound requires a stored-table column.");
+    require_prm(condition_ref.dict_column != NULL,
+                "Index scan bound column descriptor missing.");
+    raw_value rv = encode_constant(condition_constant,
+                                   condition_ref.dict_column);
+    require_run(DBG(myIndexScanOp->setBound(DBG(colName),
+                                            DBG(bt),
+                                            DBG(rv).val)) == 0,
+                "Failed to set bound for index scan.");
+    DEB_TRACE();
+  }
+  DEB_TRACE();
+  // todo Is this necessary after removing the multirange flag?
+  require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
+              "Failed to set end of bound.");
+  if (has_filter)
+  {
+    DEB_TRACE();
+    NdbScanFilter filter(myIndexScanOp);
+    DBGV(filter.setSqlCmpSemantics());
+    apply_filter_top_level(&filter);
+  }
+  DEB_TRACE();
+  return myIndexScanOp;
+}
+
+void
+RonSQLPreparer::register_passthrough_getvalues(NdbOperation* op,
+                                               const NdbRecAttr** attrs,
+                                               Uint32 num_cols)
+{
+  require_run(m_main_scope.resolved_columns != NULL,
+              "Single-table pass-through: missing resolved columns.");
+  Uint32 i = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next, i++) {
+    ndbrequire(o->type == Outputs::Type::COLUMN);
+    const QueryScope::ResolvedColumnRef& col_ref =
+        m_main_scope.resolved_columns[o->column.col_idx];
+    require_prm(col_ref.kind ==
+                    QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "Single-table pass-through: output is not a stored column.");
+    require_run(col_ref.dict_column != NULL,
+                "Single-table pass-through: column descriptor missing.");
+    attrs[i] = op->getValue(col_ref.dict_column);
+    require_run(attrs[i] != NULL,
+                "Single-table pass-through: getValue() failed.");
+  }
+  ndbrequire(i == num_cols);
+}
+
+void
+RonSQLPreparer::execute_single_table_passthrough()
+{
+  /*
+   * Phase 1 (non_aggregate_phase_1.md, W3): projection-only
+   * single-table execution.  PK-lookup arm when the WHERE was fully
+   * consumed as PK equalities (detect_pk_lookup); otherwise the shared
+   * scan setup + a streaming NdbRecAttr drain.  Output framing mirrors
+   * execute_passthrough_drain: JSON always frames '[' ... ']' (an
+   * empty array is the correct empty representation); TSV defers the
+   * header until the first row so empty results produce no output,
+   * matching the mysql client baseline ronsql_compare.inc diffs
+   * against.
+   */
+  Ndb* ndb = m_conf.ndb;
+  ndbrequire(m_trans == NULL);
+  m_trans = DBG(ndb->startTransaction());
+  require_run(m_trans != NULL, "Failed to start transaction.");
+  ndbrequire(m_main_scope.table != NULL);
+
+  Uint32 num_cols = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next) {
+    num_cols++;
+  }
+  ndbrequire(num_cols > 0);
+  const NdbRecAttr** attrs =
+      m_amalloc->alloc_exc<const NdbRecAttr*>(num_cols);
+
+  const bool is_json =
+      (m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
+       m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII);
+  bool header_emitted = false;
+
+  STAT_TS(m_conf.phase_stats, s_scandef_start);
+
+  if (m_pk_lookup) {
+    // Single-row primary key lookup.
+    NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
+    require_sch(op != NULL, "Failed to get lookup operation.");
+    require_run(DBG(op->readTuple(NdbOperation::LM_CommittedRead)) == 0,
+                "Failed to initialize lookup operation.");
+    const int nkeys = m_main_scope.table->getNoOfPrimaryKeys();
+    for (int k = 0; k < nkeys; k++) {
+      const char* pk_name = m_main_scope.table->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col =
+          m_main_scope.table->getColumn(pk_name);
+      ndbrequire(pk_col != NULL);
+      raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
+      require_run(DBG(op->equal(pk_name,
+                                static_cast<const char*>(rv.val))) == 0,
+                  "Failed to set primary key value for lookup.");
+    }
+    register_passthrough_getvalues(op, attrs, num_cols);
+    // Phase stats: ndbprep = lookup-op definition; the NDB API fuses
+    // send + read for a committed lookup, reported as firstbatch (send
+    // and drain stay 0, like the fused single-table aggregate path).
+    STAT_TS(m_conf.phase_stats, s_pk_defined);
+    STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_pk_defined);
+    bool have_row = true;
+    if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0 ||
+        op->getNdbError().code != 0) {
+      // A missing row surfaces as NoDataFound — the one place a failed
+      // NDB call is a normal, empty result.  Anything else is a real
+      // error, classified by handle_ronsql_exception.
+      const NdbError& op_err = op->getNdbError();
+      const NdbError& trans_err = m_trans->getNdbError();
+      if (op_err.classification == NdbError::NoDataFound ||
+          trans_err.classification == NdbError::NoDataFound) {
+        have_row = false;
+      } else {
+        require_run(false, "Failed to execute lookup.");
+      }
+    }
+    STAT_TS(m_conf.phase_stats, s_pk_done);
+    STAT_SET(m_conf.phase_stats, firstbatch_us, s_pk_defined, s_pk_done);
+    STAT_COUNT(m_conf.phase_stats, rows_drained, have_row ? 1 : 0);
+    if (is_json) {
+      m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                m_conf.out_stream);
+      header_emitted = true;
+    }
+    if (have_row) {
+      if (!header_emitted) {
+        m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                  m_conf.out_stream);
+        header_emitted = true;
+      }
+      m_resultprinter->print_passthrough_row(attrs, num_cols,
+                                             /*is_first_row=*/true,
+                                             m_conf.out_stream);
+    }
+    if (header_emitted) {
+      m_resultprinter->print_passthrough_finish(m_conf.out_stream);
+    }
+    return;
+  }
+
+  // Scan arm: shared setup, then a streaming drain.
+  NdbScanOperation* scanOp = open_single_table_scan_op();
+  register_passthrough_getvalues(scanOp, attrs, num_cols);
+  STAT_TS(m_conf.phase_stats, s_exec_start);
+  STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_exec_start);
+  require_run(DBG(m_trans->execute(NdbTransaction::NoCommit)) == 0,
+              "Failed to execute transaction (single-table pass-through).");
+  STAT_TS(m_conf.phase_stats, s_exec_sent);
+  STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
+
+  if (is_json) {
+    m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                              m_conf.out_stream);
+    header_emitted = true;
+  }
+  Uint32 row_count = 0;
+  int rc;
+  for (;;) {
+    rc = DBG(scanOp->nextResult(true));
+    if (row_count == 0) {
+      // First nextResult covers data-node execution up to the first
+      // result batch (captured whether or not a row arrived).
+      STAT_TS(m_conf.phase_stats, s_first_row);
+      STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
+    }
+    if (rc != 0) break;
+    if (!header_emitted) {
+      m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                m_conf.out_stream);
+      header_emitted = true;
+    }
+    m_resultprinter->print_passthrough_row(attrs, num_cols,
+                                           /*is_first_row=*/(row_count == 0),
+                                           m_conf.out_stream);
+    row_count++;
+  }
+  STAT_TS(m_conf.phase_stats, s_drain_done);
+#ifdef RONSQL_PHASE_STATS
+  if (m_conf.phase_stats != nullptr) {
+    // Rows are printed inside the drain loop on this path, so print_us
+    // stays 0 and drain_us includes the formatting cost (same
+    // convention as execute_passthrough_drain).
+    m_conf.phase_stats->drain_us =
+        (s_drain_done - s_exec_sent) - m_conf.phase_stats->firstbatch_us;
+    m_conf.phase_stats->rows_drained = row_count;
+  }
+#endif
+  require_run(rc == 1, "Single-table pass-through scan failed.");
+  if (header_emitted) {
+    m_resultprinter->print_passthrough_finish(m_conf.out_stream);
   }
 }
 
@@ -5920,16 +6264,60 @@ RonSQLPreparer::cleanup_trans() {
 }
 
 void
+RonSQLPreparer::promote_left_joins()
+{
+  JoinClause* joins = m_context.ast_root.joins;
+  if (joins == NULL) return;
+  JoinClause* list[MAX_SPJ_TREE_NODES];
+  Uint32 num_joins = 0;
+  for (JoinClause* j = joins;
+       j != NULL && num_joins < MAX_SPJ_TREE_NODES; j = j->next) {
+    list[num_joins++] = j;
+  }
+  // Aliases referenced by the ON conditions of effectively-INNER joins
+  // processed so far (backward walk).  Capacity bounds: a query with
+  // more joins or more conditions per join than fits here is rejected
+  // by the planner's own caps before execution, so silently skipping
+  // the overflow is safe (a missed promotion then at worst hits the
+  // gate's defensive INNER-below-LEFT rejection).
+  static const Uint32 MAX_INNER_REFS =
+      MAX_SPJ_TREE_NODES * MAX_JOIN_KEY_COLS;
+  LexCString inner_refs[MAX_INNER_REFS];
+  Uint32 num_inner_refs = 0;
+  for (Uint32 i = num_joins; i-- > 0; ) {
+    JoinClause* j = list[i];
+    if (j->join_type == JoinClause::LEFT_OUTER_JOIN) {
+      const LexCString& alias = j->table.alias;
+      for (Uint32 r = 0; r < num_inner_refs; r++) {
+        if (inner_refs[r] == alias) {
+          j->join_type = JoinClause::INNER_JOIN;
+          break;
+        }
+      }
+    }
+    if (j->join_type == JoinClause::INNER_JOIN) {
+      for (const JoinCondition* jc = j->conditions;
+           jc != NULL; jc = jc->next) {
+        if (num_inner_refs < MAX_INNER_REFS) {
+          inner_refs[num_inner_refs++] = jc->parent_table;
+        }
+      }
+    }
+  }
+}
+
+void
 RonSQLPreparer::collect_pk_equalities(
     struct ConditionalExpression* ce,
     const NdbDictionary::Table* table,
-    struct ConditionalExpression* pk_const[])
+    struct ConditionalExpression* pk_const[],
+    struct ConditionalExpression* pk_eq_ce[])
 {
   if (ce == NULL) return;
   if (ce->op == T_AND)
   {
-    collect_pk_equalities(ce->args.left, table, pk_const);
-    collect_pk_equalities(ce->args.right, table, pk_const);
+    collect_pk_equalities(ce->args.left, table, pk_const, pk_eq_ce);
+    collect_pk_equalities(ce->args.right, table, pk_const, pk_eq_ce);
     return;
   }
   if (ce->op != T_EQUALS) return;
@@ -5956,9 +6344,74 @@ RonSQLPreparer::collect_pk_equalities(
     if (pk_name != NULL && strcmp(pk_name, col_name) == 0)
     {
       pk_const[k] = const_side;
+      if (pk_eq_ce != NULL) pk_eq_ce[k] = ce;
       break;
     }
   }
+}
+
+// Phase 0a helper: AND-flatten a simplified WHERE tree into its
+// top-level conjuncts.  Sets *overflow instead of throwing so callers
+// can fall back to the whole-tree filter path, which never flattens.
+static void
+flatten_and_conjuncts(ConditionalExpression* ce,
+                      ConditionalExpression* out[],
+                      Uint32* num,
+                      bool* overflow)
+{
+  if (ce == NULL || *overflow) return;
+  if (ce->op == T_AND)
+  {
+    flatten_and_conjuncts(ce->args.left, out, num, overflow);
+    flatten_and_conjuncts(ce->args.right, out, num, overflow);
+    return;
+  }
+  if (*num >= MAX_WHERE_CONJUNCTS)
+  {
+    *overflow = true;
+    return;
+  }
+  out[(*num)++] = ce;
+}
+
+bool
+RonSQLPreparer::build_root_residual(
+    struct ConditionalExpression* where_ce,
+    struct ConditionalExpression* const consumed[],
+    int nkeys,
+    struct ConditionalExpression** residual_out)
+{
+  *residual_out = NULL;
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num = 0;
+  bool overflow = false;
+  flatten_and_conjuncts(where_ce, conjuncts, &num, &overflow);
+  if (overflow) return false;
+  ConditionalExpression* residual = NULL;
+  for (Uint32 i = 0; i < num; i++)
+  {
+    bool used = false;
+    for (int k = 0; k < nkeys; k++)
+    {
+      if (consumed[k] == conjuncts[i]) { used = true; break; }
+    }
+    if (used) continue;
+    if (residual == NULL)
+    {
+      residual = conjuncts[i];
+    }
+    else
+    {
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = residual;
+      combined->args.right = conjuncts[i];
+      residual = combined;
+    }
+  }
+  *residual_out = residual;
+  return true;
 }
 
 void
@@ -6345,10 +6798,13 @@ RonSQLPreparer::execute_join()
 
   // Prepare and execute
   PERF_TS(t_qb_prepare);
+  STAT_TS(m_conf.phase_stats, s_qb_prepare);
   const NdbQueryDef* queryDef = qb->prepare(ndb);
   require_run(queryDef != NULL, "Failed to prepare query.");
   PERF_TS(t_qb_prepared);
   PERF_LOG("  qb->prepare", t_qb_prepare, t_qb_prepared);
+  STAT_TS(m_conf.phase_stats, s_qb_prepared);
+  STAT_SET(m_conf.phase_stats, ndbprep_us, s_qb_prepare, s_qb_prepared);
 
   NdbQuery* query = m_trans->createQuery(queryDef);
   require_run(query != NULL, "Failed to create query.");
@@ -6368,16 +6824,31 @@ RonSQLPreparer::execute_join()
     PERF_LOG("  execute total", t_qb_prepare, t_drain_done);
   } else {
     PERF_TS(t_exec_start);
+    STAT_TS(m_conf.phase_stats, s_exec_start);
     require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
                 "Failed to execute transaction.");
     PERF_TS(t_exec_sent);
     PERF_LOG("  trans->execute", t_exec_start, t_exec_sent);
+    STAT_TS(m_conf.phase_stats, s_exec_sent);
+    STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
 
-    // Consume all rows
-    NdbQuery::NextResultOutcome rc;
-    while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+    // Consume all rows.  The first nextResult covers data-node execution
+    // up to the first result batch (incl. CTE materialization for CTE
+    // queries); the remaining drain is result transfer + local unpack.
+    Uint64 n_rows = 0;
+    NdbQuery::NextResultOutcome rc = query->nextResult(true);
+    STAT_TS(m_conf.phase_stats, s_first_row);
+    STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
+    while (rc == NdbQuery::NextResult_gotRow) {
+      n_rows++;
+      rc = query->nextResult(true);
+    }
     PERF_TS(t_drain_done);
     PERF_LOG("  drain results", t_exec_sent, t_drain_done);
+    STAT_TS(m_conf.phase_stats, s_drain_done);
+    STAT_SET(m_conf.phase_stats, drain_us, s_first_row, s_drain_done);
+    STAT_COUNT(m_conf.phase_stats, rows_drained, n_rows);
+    (void)n_rows;
     if (rc == NdbQuery::NextResult_error)
     {
       const NdbError& err = query->getNdbError();
@@ -6402,12 +6873,15 @@ RonSQLPreparer::execute_join()
 
     // Collect and print aggregation results
     PERF_TS(t_result_start);
+    STAT_TS(m_conf.phase_stats, s_result_start);
     NdbAggregator* resultAgg = query->getAggregator();
     ndbrequire(resultAgg != NULL);
     m_resultprinter->print_result(resultAgg, m_conf.out_stream);
     PERF_TS(t_result_done);
     PERF_LOG("  print results", t_result_start, t_result_done);
     PERF_LOG("  execute total", t_qb_prepare, t_result_done);
+    STAT_TS(m_conf.phase_stats, s_result_done);
+    STAT_SET(m_conf.phase_stats, print_us, s_result_start, s_result_done);
   }
 
   // Cleanup
@@ -6634,8 +7108,11 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   DEB_DRAIN(("[drain] before execute(NoCommit): numTotalOps=%u numMainOps=%u "
              "numCteSubtreeOps=%u num_cols=%u\n",
              numTotalOps, numMainOps, numCteSubtreeOps, num_cols));
+  STAT_TS(m_conf.phase_stats, s_exec_start);
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
               "Failed to execute transaction (pass-through).");
+  STAT_TS(m_conf.phase_stats, s_exec_sent);
+  STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
   DEB_DRAIN(("[drain] execute(NoCommit) returned OK; entering drain\n"));
 
   // For JSON output we always want the framing '[' ... ']' (an empty
@@ -6663,6 +7140,12 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   for (;;) {
     DEB_DRAIN(("[drain] calling nextResult(true), row_count=%u\n", row_count));
     rc = query->nextResult(true);
+    if (row_count == 0) {
+      // First nextResult covers data-node execution up to the first result
+      // batch (captured whether or not a row arrived).
+      STAT_TS(m_conf.phase_stats, s_first_row);
+      STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
+    }
     DEB_DRAIN(("[drain] nextResult returned rc=%d "
                "(gotRow=%d scanComplete=%d error=%d bufferEmpty=%d)\n",
                (int)rc, (int)NdbQuery::NextResult_gotRow,
@@ -6691,6 +7174,16 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     row_count++;
   }
   DEB_DRAIN(("[drain] loop exited: rc=%d total_rows=%u\n", (int)rc, row_count));
+  STAT_TS(m_conf.phase_stats, s_drain_done);
+#ifdef RONSQL_PHASE_STATS
+  if (m_conf.phase_stats != nullptr) {
+    // Rows are printed inside the drain loop on this path, so print_us
+    // stays 0 and drain_us includes the formatting cost.
+    m_conf.phase_stats->drain_us =
+        (s_drain_done - s_exec_sent) - m_conf.phase_stats->firstbatch_us;
+    m_conf.phase_stats->rows_drained = row_count;
+  }
+#endif
   if (rc == NdbQuery::NextResult_error) {
     const NdbError& err = query->getNdbError();
     std::basic_ostream<char>& errout = *m_conf.err_stream;
@@ -6824,6 +7317,55 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
   return def;
 }
 
+const NdbQueryOperationDef*
+RonSQLPreparer::emit_pk_equality_index_scan_root(
+    NdbQueryBuilder* qb, QueryScope& scope,
+    const NdbDictionary::Table* root_table,
+    ConditionalExpression* const pk_const[], int nkeys,
+    ConditionalExpression* residual,
+    NdbQueryOptions& rootOpts)
+{
+  const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  for (int k = 0; k < nkeys; k++)
+    pk_col_names[k] = root_table->getPrimaryKey(k);
+  const NdbDictionary::Index* pk_ordered_idx =
+      QueryPlanner::findOrderedIndex(
+          m_dict, root_table, pk_col_names, (Uint32)nkeys);
+  if (pk_ordered_idx == NULL)
+    return NULL;
+  const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+  for (int k = 0; k < nkeys; k++)
+  {
+    const NdbDictionary::Column* pk_col =
+        root_table->getColumn(pk_col_names[k]);
+    ndbrequire(pk_col != NULL);
+    raw_value rv = encode_constant(pk_const[k], pk_col);
+    pk_keys[k] = qb->constValue(rv.val, rv.len);
+    require_run(pk_keys[k] != NULL,
+                "Failed to create const value for PK index scan.");
+  }
+  pk_keys[nkeys] = nullptr;
+  if (residual != NULL)
+  {
+    // Phase 0a: residual conjuncts (not consumed as equality bounds) go
+    // through an InterpretedCode filter, mirroring emit_index_scan_root.
+    NdbInterpretedCode code(root_table);
+    NdbScanFilter filter(&code);
+    filter.setSqlCmpSemantics();
+    filter.begin(NdbScanFilter::AND);
+    apply_filter(&filter, scope, residual);
+    filter.end();
+    code.finalise();
+    require_run(rootOpts.setInterpretedCode(code) == 0,
+                "Failed to set interpreted code on root PK index scan.");
+  }
+  NdbQueryIndexBound bound(pk_keys);
+  const NdbQueryOperationDef* def =
+      qb->scanIndex(pk_ordered_idx, root_table, &bound, &rootOpts);
+  require_run(def != NULL, "Failed to create root PK index scan.");
+  return def;
+}
+
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
 // lookup when WHERE fully covers the PK and no child is a scan; ordered
 // index scan with equality bounds when PK-covered with a scan child;
@@ -6874,6 +7416,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     bool root_pk_covered = false;
     int root_nkeys = 0;
     ConditionalExpression* root_pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    ConditionalExpression* root_pk_eq[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    ConditionalExpression* root_residual = NULL;
     bool root_has_scan_child = false;
     bool root_cte_is_scalar =
         (plan.ops[0].cte_def != NULL &&
@@ -6933,15 +7477,29 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     {
       ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
       root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
-      for (int k = 0; k < root_nkeys; k++) root_pk_const[k] = NULL;
+      for (int k = 0; k < root_nkeys; k++)
+      {
+        root_pk_const[k] = NULL;
+        root_pk_eq[k] = NULL;
+      }
       if (root_nkeys > 0)
       {
-        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const);
+        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const,
+                              root_pk_eq);
         root_pk_covered = true;
         for (int k = 0; k < root_nkeys; k++)
         {
           if (root_pk_const[k] == NULL) { root_pk_covered = false; break; }
         }
+      }
+      // Phase 0a: conjuncts not consumed as virt-PK equalities must be
+      // applied as a CTE_LOOKUP filter — they were silently dropped
+      // before.  On flatten overflow fall back to scanCte below, which
+      // applies the whole WHERE.
+      if (root_pk_covered &&
+          !build_root_residual(w, root_pk_eq, root_nkeys, &root_residual))
+      {
+        root_pk_covered = false;
       }
       if (root_pk_covered)
       {
@@ -7029,6 +7587,19 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                     "Failed to create const value for CTE root lookup.");
       }
       lookup_keys[root_nkeys] = nullptr;
+      if (root_residual != NULL)
+      {
+        // Phase 0a: residual conjuncts ride the same CTE_LOOKUP
+        // jump-table filter the scalar and scanCte branches already
+        // use; emit_cte_lookup_filter finalises the program and throws
+        // a clean error on unsupported atoms (which were silently
+        // dropped before).
+        NdbInterpretedCode residual_code(cteVirtualTables[0]);
+        emit_cte_lookup_filter(residual_code, scope, /*op_idx=*/0,
+                               cteVirtualTables[0], root_residual);
+        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
+                    "Failed to set interpreted code on CTE_LOOKUP root.");
+      }
       if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
           plan.num_agg_leaves == 0 && scope.agg != NULL)
       {
@@ -7095,6 +7666,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   bool has_scan_child = false;
   int nkeys = 0;
   ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  ConditionalExpression* pk_eq_ce[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  ConditionalExpression* root_residual = NULL;
 
   if (scope.join_where_ce[0] != NULL)
   {
@@ -7102,12 +7675,25 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
 
     nkeys = root_table->getNoOfPrimaryKeys();
     for (int k = 0; k < nkeys; k++)
+    {
       pk_const[k] = NULL;
-    collect_pk_equalities(where_ce, root_table, pk_const);
+      pk_eq_ce[k] = NULL;
+    }
+    collect_pk_equalities(where_ce, root_table, pk_const, pk_eq_ce);
     pk_covered = true;
     for (int k = 0; k < nkeys; k++)
     {
       if (pk_const[k] == NULL) { pk_covered = false; break; }
+    }
+
+    // Phase 0a: conjuncts not consumed as PK equalities must be applied
+    // as an interpreted filter — they were silently dropped before.  On
+    // flatten overflow skip the PK-equality optimization; the table-scan
+    // fallback applies the whole WHERE.
+    if (pk_covered &&
+        !build_root_residual(where_ce, pk_eq_ce, nkeys, &root_residual))
+    {
+      pk_covered = false;
     }
 
     if (pk_covered)
@@ -7124,53 +7710,91 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     }
   }
 
-  if (pk_covered && !has_scan_child)
+  // A readTuple root makes this a lookup-rooted (TCKEYREQ) query when
+  // no CTE subtree precedes it, and DBTC's JOIN_AGG_SETUP only exists
+  // on the scan path — an aggregate LookupQuery reaches DBSPJ with an
+  // empty m_aggNodes and fails lookup_send's ndbrequire (node failure;
+  // also rejected at prepare time by NdbQueryDefImpl since Phase 0a).
+  // Emit the readTuple root only when nothing aggregates here
+  // (pass-through main query), or when this is the main scope of a
+  // CTE-containing query — the CTE materialisation scan makes the
+  // compound query scan-rooted (the proven fpw-6 shape).  CTE-body
+  // scopes always aggregate and may themselves be op[0], so they
+  // always take the scan fallbacks.
+  bool lookup_root_supported = (singleAgg == NULL && scope.agg == NULL);
+  if (!lookup_root_supported && &scope == &m_main_scope)
   {
-    const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-    for (int k = 0; k < nkeys; k++)
+    for (Uint32 ci = 0; ci < plan.num_ops; ci++)
     {
-      const char* pk_name = root_table->getPrimaryKey(k);
-      const NdbDictionary::Column* pk_col =
-          root_table->getColumn(pk_name);
-      ndbrequire(pk_col != NULL);
-      raw_value rv = encode_constant(pk_const[k], pk_col);
-      pk_keys[k] = qb->constValue(rv.val, rv.len);
-      require_run(pk_keys[k] != NULL,
-                  "Failed to create const value for PK lookup.");
+      if (plan.ops[ci].type == JoinOp::CTE_LOOKUP ||
+          plan.ops[ci].type == JoinOp::CTE_SCAN)
+      {
+        lookup_root_supported = true;
+        break;
+      }
     }
-    pk_keys[nkeys] = nullptr;
-    opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
-    require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
-    return;
   }
 
-  if (pk_covered && has_scan_child)
+  if (pk_covered && !has_scan_child && lookup_root_supported)
   {
-    const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
-    for (int k = 0; k < nkeys; k++)
-      pk_col_names[k] = root_table->getPrimaryKey(k);
-    const NdbDictionary::Index* pk_ordered_idx =
-        QueryPlanner::findOrderedIndex(
-            m_dict, root_table, pk_col_names, (Uint32)nkeys);
-    if (pk_ordered_idx != NULL)
+    // Lookup-op interpreted programs ride inside every LQHKEYREQ, so cap
+    // them like ha_ndbcluster caps pushed conditions on lookups (64
+    // words); getWordsUsed() overcounts by 2 words per label, which only
+    // makes the cap more conservative.  An over-cap residual falls
+    // through to the ordered-PK-index scan / table-scan branches below
+    // (scan programs travel in SCAN_FRAGREQ sections instead).
+    static const Uint32 ROOT_LOOKUP_FILTER_MAX_WORDS = 64;
+    NdbInterpretedCode residual_code(root_table);
+    bool residual_fits = true;
+    if (root_residual != NULL)
+    {
+      NdbScanFilter filter(&residual_code);
+      filter.setSqlCmpSemantics();
+      filter.begin(NdbScanFilter::AND);
+      apply_filter(&filter, scope, root_residual);
+      filter.end();
+      residual_code.finalise();
+      residual_fits =
+          (residual_code.getWordsUsed() <= ROOT_LOOKUP_FILTER_MAX_WORDS);
+    }
+    if (residual_fits)
     {
       const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
       for (int k = 0; k < nkeys; k++)
       {
+        const char* pk_name = root_table->getPrimaryKey(k);
         const NdbDictionary::Column* pk_col =
-            root_table->getColumn(pk_col_names[k]);
+            root_table->getColumn(pk_name);
         ndbrequire(pk_col != NULL);
         raw_value rv = encode_constant(pk_const[k], pk_col);
         pk_keys[k] = qb->constValue(rv.val, rv.len);
         require_run(pk_keys[k] != NULL,
-                    "Failed to create const value for PK index scan.");
+                    "Failed to create const value for PK lookup.");
       }
       pk_keys[nkeys] = nullptr;
-      NdbQueryIndexBound bound(pk_keys);
-      opDefs[0] = qb->scanIndex(pk_ordered_idx, root_table,
-                                &bound, &rootOpts);
-      require_run(opDefs[0] != NULL,
-                  "Failed to create root PK index scan.");
+      if (root_residual != NULL)
+      {
+        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
+                    "Failed to set interpreted code on root PK lookup.");
+      }
+      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
+      return;
+    }
+  }
+
+  if (pk_covered)
+  {
+    // Reached with a scan child (a readTuple root cannot have scan
+    // children — NDB API restriction) or with a residual filter too
+    // large for a lookup op.
+    const NdbQueryOperationDef* def =
+        emit_pk_equality_index_scan_root(qb, scope, root_table,
+                                         pk_const, nkeys, root_residual,
+                                         rootOpts);
+    if (def != NULL)
+    {
+      opDefs[0] = def;
       return;
     }
     // No ordered index on PK — fall through to table scan with filter
@@ -8588,7 +9212,13 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       const NdbQueryOperand* effective_keys[2];
       const NdbQueryOperand** keys_to_use = keys;
       if (coverage.state == CteKeyCoverage::ScalarDummy) {
-        require_run(opts.setParent(opDefs[op.parent_op_idx]) == 0,
+        // Phase 4 (W2): parent on tree_parent_op_idx, not
+        // parent_op_idx — identical for every 2-CTE shape, but with
+        // three or more comma-joined scalar CTEs the planner chains
+        // the sibling CTE_LOOKUPs via tree_parent_op_idx (SPJ rejects
+        // un-chained sibling CTEs) and setParent(root) would clobber
+        // that chain.
+        require_run(opts.setParent(opDefs[op.tree_parent_op_idx]) == 0,
                     "Failed to set parent for scalar CTE cross-join.");
         // D8: the scalar CTE's virtual PK is its FIRST output column (I.21),
         // whose type is the derived aggregate type — Bigint, Bigunsigned,
@@ -9273,8 +9903,15 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
-      throw RonSQLMaybeStaleSchema("Integer type column compared to an integer"
-                                   " literal out of range.");
+      // Permanent, not RonSQLMaybeStaleSchema: the literal lies outside
+      // the column type's domain — a property of the query text against
+      // the declared schema, not a transient condition.  Classifying it
+      // retryable burned 10 doomed attempts per query (and the join-path
+      // unload_schema comparison misreports "schema changed" whenever
+      // the root table has an ordered index, so the RMS disambiguation
+      // never converged — see non_aggregate_phase_0.md).
+      throw RonSQLPermanentError("Integer type column compared to an integer"
+                                 " literal out of range.");
     }
     Int64* val = m_amalloc->alloc_exc<Int64>(1);
     *val = ce->constant_integer;
@@ -9321,18 +9958,41 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       dec.buf = digits;
       if (type == NdbDictionary::Column::Type::Decimalunsigned &&
           ce->constant_integer < 0) {
-        throw RonSQLMaybeStaleSchema("Decimal type column compared to an"
-                                     " integer literal out of range.");
+        // Permanent for the same reason as the integer out-of-range case.
+        throw RonSQLPermanentError("Decimal type column compared to an"
+                                   " integer literal out of range.");
       }
       longlong2decimal(ce->constant_integer, &dec);
       err = decimal2bin(&dec, (unsigned char *)bin, prec, scale);
     } else if (op == T_FLOAT) {
       if (type == NdbDictionary::Column::Type::Decimalunsigned &&
           ce->constant_float.dbl < 0) {
-        throw RonSQLMaybeStaleSchema("Decimal type column compared to a"
-                                     " float literal out of range.");
+        // Permanent for the same reason as the integer out-of-range case.
+        throw RonSQLPermanentError("Decimal type column compared to a"
+                                   " float literal out of range.");
       }
       LexString ls = ce->constant_float.ls;
+      char dbl_buf[400];
+      if (ls.str == NULL) {
+        /* A subquery-substituted float constant carries only .dbl —
+         * every substitution site sets ls = {NULL, 0} since there is
+         * no source text to point at.  decimal_str2bin on the NULL
+         * pointer crashed the whole process when a scalar subquery
+         * result was compared against a DECIMAL column
+         * (ronsql_cte_subquery Test 7).  Render at the COLUMN's scale:
+         * the subquery text was formatted at that scale by the inner
+         * query, and rounding the double back at the same scale
+         * recovers the exact original value (DECIMAL digits within
+         * double's exact range).  A round-trip-exact %.17g rendering
+         * instead surfaces the double's binary error as extra digits
+         * and fails decimal_str2bin with E_DEC_TRUNCATED.  The buffer
+         * covers %.f of any double (up to ~309 integer digits). */
+        int n = snprintf(dbl_buf, sizeof(dbl_buf), "%.*f", scale,
+                         ce->constant_float.dbl);
+        require_prm(n > 0 && n < (int)sizeof(dbl_buf),
+                    "Failed to render substituted float constant.");
+        ls = LexString{ dbl_buf, (size_t)n };
+      }
       err = decimal_str2bin(ls.str, ls.len, prec, scale, bin, bin_len);
     } else {
       throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
@@ -11638,6 +12298,13 @@ RonSQLPreparer::print()
         out << op.table->getName();
       }
       if (op.alias.len > 0) out << " AS " << op.alias.c_str();
+      // Phase 3 (W2): show the topology — a star and a chain used to
+      // print identically.  No recorded baseline contains this print
+      // (it goes to ronsql_explain.inc's $EXPLAIN_FILE), so the
+      // annotation is baseline-safe.
+      if (!op.is_root) {
+        out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
+      }
       out << '\n';
       const char *indent = is_last ? "   " : "│  ";
       if ((op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) &&
@@ -11838,11 +12505,28 @@ RonSQLPreparer::print()
     out << "ORDER BY\n";
     while (orderby != NULL)
     {
-      Uint32 col_idx = orderby->col_idx;
       bool ascending = orderby->ascending;
-      out << "  C" << col_idx << ":" <<
-        quoted_identifier(column_idx_to_name(col_idx)) <<
-        (ascending ? " ASC" : " DESC") << '\n';
+      if (orderby->kind == OrderbyColumns::Kind::OUTPUT_REF)
+      {
+        // The union holds output_idx here, not col_idx: an alias target
+        // resolved to a SELECT output.  Print it like the SELECT section
+        // (Out_N:`alias`) instead of misreading it as a column index.
+        Uint32 output_idx = orderby->output_idx;
+        out << "  Out_" << output_idx;
+        Outputs* ob_output = ast_root.outputs;
+        for (Uint32 i = 0; ob_output != NULL && i < output_idx; i++)
+          ob_output = ob_output->next;
+        if (ob_output != NULL)
+          out << ":" << quoted_identifier(ob_output->output_name);
+        out << (ascending ? " ASC" : " DESC") << '\n';
+      }
+      else
+      {
+        Uint32 col_idx = orderby->col_idx;
+        out << "  C" << col_idx << ":" <<
+          quoted_identifier(column_idx_to_name(col_idx)) <<
+          (ascending ? " ASC" : " DESC") << '\n';
+      }
       orderby = orderby->next;
     }
   }
@@ -11868,6 +12552,20 @@ RonSQLPreparer::print()
   // Print scan information
   if (m_conf.ndb == NULL) {
     out << "No NDB connection, so no index scan analysis.\n";
+  } else if (m_pk_lookup) {
+    // Phase 1 W5: unlike the join path's emit-time refinements, the
+    // single-table access choice lives in planner state, so EXPLAIN
+    // can tell the whole truth here.
+    Uint32 cond_cnt = m_toplevel_conditions.size();
+    out << "Execute as primary key lookup.\n"
+        << "KEYS (" << cond_cnt << "):\n";
+    for (Uint32 i = 0; i < cond_cnt; i++) {
+      out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+      print(m_toplevel_conditions[i],
+            i + 1 == cond_cnt
+            ? LexString{"   ", 3}
+            : LexString{"│  ", 5});
+    }
   } else if (m_scan_config == NULL) {
     // Join plan already printed at the top
   } else {
@@ -11978,6 +12676,11 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   case T_FLOAT:
     {
       LexString ls = ce->constant_float.ls;
+      if (ls.str == NULL) {
+        // Subquery-substituted constant — no source text; print the value.
+        out << ce->constant_float.dbl << '\n';
+        return;
+      }
       while (ls.len > 0 && ls.str[ls.len-1]=='0') ls.len--;
       if (ls.len > 0 && ls.str[ls.len-1]=='.') ls.len--;
       out << ls << '\n';
