@@ -114,4 +114,21 @@ SELECT @jitted = @baseline AS q8_sign_matches_baseline;
 q8_sign_matches_baseline
 1
 DROP TABLE t3;
+# Q9 (Phase 5D-2): nullable DOUBLE column must JIT under 4060 —
+#     NULL rows take the f64 null-branching load's branch instead
+#     of the per-row fallback (which would abort under 4060).
+CREATE TABLE t4 (
+pk BIGINT NOT NULL,
+d  DOUBLE,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t4 VALUES (1, 0.5), (2, NULL), (3, 2.25), (4, NULL), (5, 4.0);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(d), COUNT(d), MIN(d), MAX(d) FROM t4;
+SUM(d)	COUNT(d)	MIN(d)	MAX(d)
+6.75	3	0.5	4
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q9_jit_compiled;
+q9_jit_compiled
+1
+DROP TABLE t4;
 DROP TABLE t1;

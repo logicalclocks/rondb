@@ -142,6 +142,11 @@ static const struct {
   /* Phase 5D-1: op_load_col_ndb_nb helper-argument holes. */
   { "MAGIC_LCNB_COL_NARROW",  "op_load_col_ndb_nb"        },
   { "MAGIC_LCNB_DST_NARROW",  "op_load_col_ndb_nb"        },
+  /* Phase 5D-2: f64/u64 null-branching load helper-argument holes. */
+  { "MAGIC_LFNB_COL_NARROW",  "op_load_col_ndb_f64_nb"    },
+  { "MAGIC_LFNB_DST_NARROW",  "op_load_col_ndb_f64_nb"    },
+  { "MAGIC_LUNB_COL_NARROW",  "op_load_col_ndb_u64_nb"    },
+  { "MAGIC_LUNB_DST_NARROW",  "op_load_col_ndb_u64_nb"    },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

@@ -1095,6 +1095,40 @@ static int mock_load_col_nb(JitState *s, uint32_t col_id,
   return 0;
 }
 
+/* Phase 5D-2 mocks: f64 sibling writes bits of col_id * 0.5; u64
+ * sibling writes 2^63 + col_id. Both honor MockCtx.nb_null. */
+static int mock_load_col_f64_nb(JitState *s, uint32_t col_id,
+                                uint32_t dst_reg) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  if (ctx->nb_null) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+  double d = (double)col_id * 0.5;
+  int64_t bits;
+  memcpy(&bits, &d, sizeof(bits));
+  s->regs_i64[dst_reg] = bits;
+  return 0;
+}
+
+static int mock_load_col_u64_nb(JitState *s, uint32_t col_id,
+                                uint32_t dst_reg) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  if (ctx->nb_null) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+  s->regs_i64[dst_reg] =
+      (int64_t)(UINT64_C(0x8000000000000000) + col_id);
+  return 0;
+}
+
 /* T20: MIN/MAX_U64 ordering across the signed boundary. Rows
  * {2^63+5, 3, 2^64-1}: unsigned order gives min 3, max 2^64-1; a
  * signed compare would call 2^63+5 the minimum (negative as i64) and
@@ -1319,6 +1353,118 @@ static void test_nb_load_null_skips_accumulator(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* T24: OP_LOAD_COL_NDB_F64_NB — a NULL row skips SUM_F64, leaving
+ * the accumulator and ALL masks (updated/initialized/double)
+ * untouched; a non-null row accumulates (col 6 -> 3.0). */
+static void test_nb_f64_load_null_skip(void) {
+  const char *name = "T24 nb_f64_load_null_skip";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 4;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB_F64_NB, .a = 0, .b = 6,
+                   .c = 2 };
+  p.ops[1] = (Op){ .kind = OP_SUM_F64, .a = 0, .b = 0, .c = 0, .d = 3 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+  p.ops[3] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+
+  ctx.nb_null = 1;
+  entry(&s);
+  if (s.acc_i64[0] != 0 || s.value_updated[0] != 0 ||
+      s.value_initialized[0] != 0 || s.value_double[0] != 0) {
+    mark_fail(name, "NULL row leaked: acc=0x%" PRIx64 " upd=%" PRIu64
+              " init=%" PRIu64 " dbl=%" PRIu64 ", want all 0",
+              (uint64_t)s.acc_i64[0], s.value_updated[0],
+              s.value_initialized[0], s.value_double[0]);
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+
+  ctx.nb_null = 0;
+  entry(&s);
+  if (bits_f64(s.acc_i64[0]) != 3.0 || s.value_updated[0] != 1 ||
+      s.value_double[0] != 1) {
+    mark_fail(name, "non-null row: acc=%f upd=%" PRIu64 " dbl=%" PRIu64
+              ", want 3.0/1/1",
+              bits_f64(s.acc_i64[0]), s.value_updated[0],
+              s.value_double[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
+/* T25: OP_LOAD_COL_NDB_U64_NB — a NULL row skips MAX_U64 (no masks,
+ * no init); a non-null row stores 2^63 + 9 with the unsigned mark. */
+static void test_nb_u64_load_null_skip(void) {
+  const char *name = "T25 nb_u64_load_null_skip";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 3;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB_U64_NB, .a = 0, .b = 9,
+                   .c = 2 };
+  p.ops[1] = (Op){ .kind = OP_MAX_U64, .a = 0, .b = 0, .c = 0 };
+  p.ops[2] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+
+  ctx.nb_null = 1;
+  entry(&s);
+  if (s.acc_i64[0] != 0 || s.value_updated[0] != 0 ||
+      s.value_initialized[0] != 0 || s.value_unsigned[0] != 0) {
+    mark_fail(name, "NULL row leaked: acc=0x%" PRIx64 " upd=%" PRIu64
+              " init=%" PRIu64 " uns=%" PRIu64 ", want all 0",
+              (uint64_t)s.acc_i64[0], s.value_updated[0],
+              s.value_initialized[0], s.value_unsigned[0]);
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+
+  ctx.nb_null = 0;
+  entry(&s);
+  if ((uint64_t)s.acc_i64[0] != UINT64_C(0x8000000000000009) ||
+      s.value_updated[0] != 1 || s.value_unsigned[0] != 1) {
+    mark_fail(name, "non-null row: acc=0x%" PRIx64 " upd=%" PRIu64
+              " uns=%" PRIu64 ", want 0x8000000000000009/1/1",
+              (uint64_t)s.acc_i64[0], s.value_updated[0],
+              s.value_unsigned[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -1334,7 +1480,11 @@ int main(void) {
       jit1_register_helper("ndb_jit_h_load_col_u64",
                             (JitHelperFn)&mock_load_col_u64) != 0 ||
       jit1_register_helper("ndb_jit_h_load_col_nb",
-                            (JitHelperFn)&mock_load_col_nb) != 0) {
+                            (JitHelperFn)&mock_load_col_nb) != 0 ||
+      jit1_register_helper("ndb_jit_h_load_col_f64_nb",
+                            (JitHelperFn)&mock_load_col_f64_nb) != 0 ||
+      jit1_register_helper("ndb_jit_h_load_col_u64_nb",
+                            (JitHelperFn)&mock_load_col_u64_nb) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1362,6 +1512,8 @@ int main(void) {
   test_u64_sum_carry();
   test_u64_load_col_coldcall();
   test_nb_load_null_skips_accumulator();
+  test_nb_f64_load_null_skip();
+  test_nb_u64_load_null_skip();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -323,6 +323,8 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_MIN_U64:              return "min_u64";
     case OP_MAX_U64:              return "max_u64";
     case OP_LOAD_COL_NDB_NB:      return "load_col_ndb_nb";
+    case OP_LOAD_COL_NDB_F64_NB:  return "load_col_ndb_f64_nb";
+    case OP_LOAD_COL_NDB_U64_NB:  return "load_col_ndb_u64_nb";
     default:                      return "jit_op?";
   }
 }
@@ -1386,6 +1388,8 @@ static int nb_op_written_reg(const Op *op) {
     case OP_LOAD_COL_NDB_F64:
     case OP_LOAD_COL_NDB_U64:
     case OP_LOAD_COL_NDB_NB:
+    case OP_LOAD_COL_NDB_F64_NB:
+    case OP_LOAD_COL_NDB_U64_NB:
     case OP_MOV_INT_INT:
     case OP_ADD_INT_INT:
     case OP_MINUS_INT_INT:
@@ -1444,7 +1448,15 @@ static int nb_reg_dead_after(const Program *prog, uint16_t from,
 static void nb_convert_loads(Program *prog, const uint8_t *op_from_emb) {
   uint8_t dep[BC_MAX_OPS];
   for (uint16_t i = 0; i < prog->n_ops; i++) {
-    if (prog->ops[i].kind != OP_LOAD_COL_NDB || op_from_emb[i]) continue;
+    /* 5D-1: i64 loads; 5D-2: their f64/u64 siblings. */
+    uint8_t nb_kind;
+    switch (prog->ops[i].kind) {
+      case OP_LOAD_COL_NDB:     nb_kind = OP_LOAD_COL_NDB_NB;     break;
+      case OP_LOAD_COL_NDB_F64: nb_kind = OP_LOAD_COL_NDB_F64_NB; break;
+      case OP_LOAD_COL_NDB_U64: nb_kind = OP_LOAD_COL_NDB_U64_NB; break;
+      default: continue;
+    }
+    if (op_from_emb[i]) continue;
 
     /* Pass 1: taint walk — find the last op that (transitively)
      * depends on the loaded register, recording per-op dependence. */
@@ -1480,7 +1492,9 @@ static void nb_convert_loads(Program *prog, const uint8_t *op_from_emb) {
       if (dep[j]) continue;        /* dependent — skipping IS the goal */
       /* Independent op inside the range. An earlier-converted NB load
        * is fine if its own null branch stays within our skip range. */
-      if (op->kind == OP_LOAD_COL_NDB_NB) {
+      if (op->kind == OP_LOAD_COL_NDB_NB ||
+          op->kind == OP_LOAD_COL_NDB_F64_NB ||
+          op->kind == OP_LOAD_COL_NDB_U64_NB) {
         if (op->c > target) ok = 0;
         continue;
       }
@@ -1496,7 +1510,7 @@ static void nb_convert_loads(Program *prog, const uint8_t *op_from_emb) {
 
     /* Convert: col_id moves c -> b, target rides c (the engine patches
      * HK_BRANCH_TAKE displacement from op->c). */
-    prog->ops[i].kind = OP_LOAD_COL_NDB_NB;
+    prog->ops[i].kind = nb_kind;
     prog->ops[i].b = prog->ops[i].c;
     prog->ops[i].c = target;
   }

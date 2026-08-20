@@ -243,7 +243,13 @@ typedef enum {
    * c = null-branch target pc. Read errors / declared-type
    * mismatches keep the row_fallback defense inside the helper. */
   OP_LOAD_COL_NDB_NB       = 49,
-  OP_KIND_MAX           = OP_LOAD_COL_NDB_NB
+  /* Phase 5D-2: f64/u64 siblings of the null-branching load — same
+   * operand layout (a = dst, b = col_id, c = null-branch target) and
+   * semantics, decoding like OP_LOAD_COL_NDB_F64 / _U64 respectively
+   * (FLOAT promotes to double; strict declared-type contracts). */
+  OP_LOAD_COL_NDB_F64_NB   = 50,
+  OP_LOAD_COL_NDB_U64_NB   = 51,
+  OP_KIND_MAX           = OP_LOAD_COL_NDB_U64_NB
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -266,6 +272,8 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_ATTR_OP_ARG:
     case OP_JUMP:
     case OP_LOAD_COL_NDB_NB:
+    case OP_LOAD_COL_NDB_F64_NB:
+    case OP_LOAD_COL_NDB_U64_NB:
       return 1;
     default:
       return 0;

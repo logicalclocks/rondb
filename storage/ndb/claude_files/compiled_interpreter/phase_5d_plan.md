@@ -3,7 +3,32 @@
 **Status: 5D-1 DONE & VERIFIED (2026-08-20; regen clean, bridge_tests
 79/79, coldcall_tests 24/24, nullable canary green under 4060 incl.
 the nullable-expression Q3, full ndb_push_agg sweep to completion).
-5D-2 (f64/u64 siblings) next; 5D-3 deferred.**
+5D-2 DONE & VERIFIED (2026-08-20; regen clean, bridge_tests 81/81,
+coldcall_tests 26/26, double canary Q9 + unsigned canary Q6 green
+under 4060, full ndb_push_agg sweep to completion). 5D-3 (embedded
+READ_ATTR) deferred until fallback data — otherwise the phase is
+complete.**
+
+## 5D-2 implementation record (2026-08-20)
+
+Mechanical siblings as planned: `op_load_col_ndb_f64_nb` /
+`op_load_col_ndb_u64_nb` (same cold-call-branch shape, KEEP_ALL tail
+policy; helpers `ndb_jit_h_load_col_f64_nb` / `_u64_nb` with the same
+strict declared-type contracts as their void counterparts),
+`nb_convert_loads` extended to the OP_LOAD_COL_NDB_F64/_U64
+candidates via a kind-mapping switch. One shape worth recording from
+the updated T50 battery: in the double-family program, the FIRST load
+(r0) correctly DEGRADES — its skip range ends at the SUM while the
+r1 load sits untainted inside it and r1 is read after the range
+(MIN/MAX) — while the SECOND load (r1) converts with its branch
+targeting past MAX. Per-load degradation working exactly as designed.
+
+Tests: bridge 81 (T50/T52 updated for conversion + degradation,
+T56a/T56b simple f64/u64 conversions), coldcall 26 (T24/T25: NULL
+rows leave acc and every mask — updated/initialized/double/unsigned —
+untouched; non-null rows accumulate), double canary Q9 + unsigned
+canary Q6 (nullable columns under 4060 must-JIT; the unsigned one
+crosses 2^63). Regen done.
 
 ## 5D-1 implementation record (2026-08-20)
 
@@ -34,7 +59,7 @@ accumulator leaving acc/masks untouched, non-null row accumulates),
 `rondb_jit_nullable_canary` upgraded to 4060 MUST-JIT (the per-row
 fallback would abort under 4060 — surviving it proves NULL rows,
 including the all-NULL group and the nullable-expression Q3, stayed
-on the JIT). **Requires regen-stencils.** Original plan follows.
+on the JIT). Original plan follows.
 
 ## Where null handling stands (post-5C)
 

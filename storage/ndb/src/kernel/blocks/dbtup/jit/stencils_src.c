@@ -1205,6 +1205,35 @@ STENCIL op_load_col_ndb_nb(JitState *s) {
   TAIL_NEXT(s);
 }
 
+/* Phase 5D-2: f64/u64 siblings of the null-branching load — same
+ * shape, decoding like their void row-fallback counterparts (FLOAT
+ * promotes to double; strict declared-type contracts). */
+DECLARE_NARROW_HOLE(LFNB_COL);
+DECLARE_NARROW_HOLE(LFNB_DST);
+extern int ndb_jit_h_load_col_f64_nb(JitState *s, uint32_t col_id,
+                                     uint32_t dst_reg);
+extern __attribute__((preserve_none)) void HOLE_LFNB_TGT(JitState *);
+STENCIL op_load_col_ndb_f64_nb(JitState *s) {
+  if (ndb_jit_h_load_col_f64_nb(s, (uint32_t)HOLE_NARROW(LFNB_COL),
+                                (uint32_t)HOLE_NARROW(LFNB_DST))) {
+    [[clang::musttail]] return HOLE_LFNB_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+DECLARE_NARROW_HOLE(LUNB_COL);
+DECLARE_NARROW_HOLE(LUNB_DST);
+extern int ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
+                                     uint32_t dst_reg);
+extern __attribute__((preserve_none)) void HOLE_LUNB_TGT(JitState *);
+STENCIL op_load_col_ndb_u64_nb(JitState *s) {
+  if (ndb_jit_h_load_col_u64_nb(s, (uint32_t)HOLE_NARROW(LUNB_COL),
+                                (uint32_t)HOLE_NARROW(LUNB_DST))) {
+    [[clang::musttail]] return HOLE_LUNB_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
@@ -1261,4 +1290,6 @@ const StencilTailFn g_stencil_anchor[] = {
     op_max_u64,
     op_load_col_ndb_u64,
     op_load_col_ndb_nb,
+    op_load_col_ndb_f64_nb,
+    op_load_col_ndb_u64_nb,
 };

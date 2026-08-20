@@ -314,9 +314,11 @@ static TailPolicy classify_tail(const char *name) {
   if (strcmp(name, "op_mul_f64") == 0) return TAIL_KEEP_ALL;
   if (strcmp(name, "op_div_f64") == 0) return TAIL_KEEP_ALL;
   if (strcmp(name, "op_sum_f64") == 0) return TAIL_KEEP_ALL;
-  /* Phase 5D-1: the null-branching load is a cold-call branch —
-   * taken jmp (HOLE_LCNB_TGT) + fall-through jmp to next, both kept. */
+  /* Phase 5D-1/2: the null-branching loads are cold-call branches —
+   * taken jmp (HOLE_L*NB_TGT) + fall-through jmp to next, both kept. */
   if (strcmp(name, "op_load_col_ndb_nb") == 0) return TAIL_KEEP_ALL;
+  if (strcmp(name, "op_load_col_ndb_f64_nb") == 0) return TAIL_KEEP_ALL;
+  if (strcmp(name, "op_load_col_ndb_u64_nb") == 0) return TAIL_KEEP_ALL;
   return TAIL_STRIP_TAIL;
 }
 
@@ -1022,6 +1024,8 @@ static const OpkindMap kOpkindMap[] = {
   { "op_min_u64",               "OP_MIN_U64"               },
   { "op_max_u64",               "OP_MAX_U64"               },
   { "op_load_col_ndb_nb",       "OP_LOAD_COL_NDB_NB"       },
+  { "op_load_col_ndb_f64_nb",   "OP_LOAD_COL_NDB_F64_NB"   },
+  { "op_load_col_ndb_u64_nb",   "OP_LOAD_COL_NDB_U64_NB"   },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

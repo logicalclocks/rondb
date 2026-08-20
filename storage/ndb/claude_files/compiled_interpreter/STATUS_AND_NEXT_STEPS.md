@@ -369,8 +369,13 @@ ndb_push_agg sweeps to completion). `phase_5c_plan.md`.**
 nullable-expression query, full sweep to completion —
 `phase_5d_plan.md` carries the implementation record: 1 stencil
 `op_load_col_ndb_nb` + helper + the bridge's `nb_convert_loads` taint
-post-pass with per-load degradation). 5D-2 (f64/u64 siblings) next;
-5D-3 deferred.** Key planning
+post-pass with per-load degradation). 5D-2 (f64/u64 null-branching
+siblings) DONE & VERIFIED (2026-08-20; regen clean, bridge 81/81 +
+coldcall 26/26, double canary Q9 + unsigned canary Q6 green under
+4060, full sweep to completion). 5D-3 (embedded READ_ATTR) deferred
+until fallback data — otherwise Phase 5D is complete. Remaining
+Phase 5 sub-phases: 5E (int div/mod — would retire the Test 27 kOpMod
+canary), 5F (string MIN/MAX).** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
 the load's cold call (helper returns "was null", the load stencil
 becomes a cold-call branch in op_branch_attr_eq_null's proven shape)

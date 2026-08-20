@@ -466,6 +466,112 @@ ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   return 0;
 }
 
+/* ndb_jit_h_load_col_f64_nb / _u64_nb — Phase 5D-2 null-branching
+ * siblings of the f64/u64 loads: NULL returns 1 (the stencil takes
+ * its branch, skipping the consumer chain); read errors and
+ * unexpected declared types keep the row_fallback defense. */
+extern "C" int
+ndb_jit_h_load_col_f64_nb(JitState *s, uint32_t col_id,
+                          uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_f64_nb: JitState.ctx is malformed "
+        "(col_id=%u)", col_id);
+    abort();
+  }
+
+  Uint32 read_buf[4];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  if (header->isNULL()) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  const uchar *data = reinterpret_cast<const uchar *>(&read_buf[1]);
+  double value;
+  switch (type_id) {
+    case NDB_TYPE_FLOAT:
+      value = (double)floatget(data);
+      break;
+    case NDB_TYPE_DOUBLE:
+      value = doubleget(data);
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return 0;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  s->regs_i64[dst_reg] = bits;
+  return 0;
+}
+
+extern "C" int
+ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
+                          uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_u64_nb: JitState.ctx is malformed "
+        "(col_id=%u)", col_id);
+    abort();
+  }
+
+  Uint32 read_buf[4];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  if (header->isNULL()) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  if (type_id != NDB_TYPE_BIGUNSIGNED) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
+  s->regs_i64[dst_reg] = (Int64)(Uint64)uint8korr(data);
+  return 0;
+}
+
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
  * BIGUNSIGNED columns (OP_LOAD_COL_NDB_U64). The u64 value's bits are
  * stored into regs_i64[dst_reg]; the u64 consumer stencils
@@ -724,6 +830,10 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64));
   jit1_register_helper("ndb_jit_h_load_col_nb",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_nb));
+  jit1_register_helper("ndb_jit_h_load_col_f64_nb",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64_nb));
+  jit1_register_helper("ndb_jit_h_load_col_u64_nb",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64_nb));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
   jit1_register_helper("ndb_jit_h_branch_attr_op_arg",

@@ -1704,10 +1704,16 @@ static void test_double_family_lowering_accept(void) {
    *      [6]SUM_F64 [7]MIN_F64 [8]MAX_F64 [9]tail EXIT
    *      [10]OVERFLOW_EXIT. */
   if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/11)) return;
+  /* Phase 5D-2: load [1] (r1) converts — its chain runs through every
+   * arithmetic op to MAX at [8], so its null branch targets 9. Load
+   * [0] (r0) DEGRADES by design: its range ends at the SUM ([6]) with
+   * the untainted r1 load inside it, and r1 is read after the range
+   * ([7]/[8]) — a NULL in r0's column keeps the per-row fallback. */
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_COL_NDB_F64)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
-                       OP_LOAD_COL_NDB_F64)) return;
+                       OP_LOAD_COL_NDB_F64_NB)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 9)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_ADD_F64))
     return;
   if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MUL_F64))
@@ -1870,8 +1876,11 @@ static void test_u64_lowering_accept(void) {
   /* [0]LOAD_COL_NDB_U64 [1]SUM_U64_CHECKED [2]MIN_U64 [3]MAX_U64
    * [4]tail EXIT [5]OVERFLOW_EXIT. */
   if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  /* Phase 5D-2: the u64 load converts to its null-branching form. */
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
-                       OP_LOAD_COL_NDB_U64)) return;
+                       OP_LOAD_COL_NDB_U64_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 0)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 4)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
                        OP_SUM_U64_CHECKED)) return;
   if (!expect_op_field(name, &p, 1, "d", p.ops[1].d, 5)) return;
@@ -2085,6 +2094,40 @@ static void test_nb_reload_same_register(void) {
   mark_pass(name);
 }
 
+/* T56a: f64 null-branching load — simple chain converts. */
+static void test_nb_f64_simple(void) {
+  const char *name = "T56a nb_f64_simple";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/3),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]F64_NB(c=2) [1]SUM_F64 [2]EXIT [3]OVF. */
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_F64_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 3)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  mark_pass(name);
+}
+
+/* T56b: u64 null-branching load — simple chain converts. */
+static void test_nb_u64_simple(void) {
+  const char *name = "T56b nb_u64_simple";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/5),
+    enc_agg(kOpMinBigint, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]U64_NB(c=2) [1]MIN_U64 [2]EXIT. */
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 5)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2168,6 +2211,8 @@ int main(void) {
   test_nb_branch_in_range_degradation();
   test_nb_count_in_range();
   test_nb_reload_same_register();
+  test_nb_f64_simple();
+  test_nb_u64_simple();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
