@@ -433,7 +433,16 @@ div-by-zero → per-row fallback like op_div_f64, LLONG_MIN/-1 →
 overflow-exit with explicit pre-divide guards for the x86 idiv trap;
 repoint Test 27 to kOpSetRegNull); 5E-3 = generic '/' over int
 operands (1 cold-call stencil implementing RegDivReg's ±2^53
-conversion guards; edges → per-row fallback). NEXT → 5F-2 stays
+conversion guards; edges → per-row fallback). 5E-1 DONE & VERIFIED
+(2026-08-21 — NO regen, bridge 116/116 + canary green: generic-arith bridge case +
+RONSQL_CLI in mtr + rondb_jit_ronsql_canary, bridge 116/116.
+CORRECTION found in review: the data node's OptimizeProgramBuffer
+already rewrites generic arith to typed BEFORE compilation when
+operand types are inferable, so RonSQL's int/double arithmetic
+already compiled — the LIVE 5E-1 win is DECIMAL arithmetic, which
+the optimizer leaves untyped but the bridge's 5G decimal typing can
+lower (canary Q7/Q8, T62g/h); Q1-Q5 are pipeline regression
+canaries). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

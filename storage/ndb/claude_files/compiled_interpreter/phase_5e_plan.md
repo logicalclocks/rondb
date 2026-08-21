@@ -1,6 +1,61 @@
 # Phase 5E — division, modulo, and GENERIC arithmetic; RonSQL as the test platform
 
-**Status: PLANNED (2026-08-21). Code: not started.**
+**Status: 5E-1 DONE & VERIFIED (2026-08-21 — NO regen; bridge_tests
+116/116, rondb_jit_ronsql_canary green incl. the decimal must-JITs
+Q7/Q8 and the 4060 pipeline canaries; see the CORRECTION in the
+record below — the data node optimizer already types most generic
+arith, the live 5E-1 win is DECIMAL arithmetic).
+5E-2/5E-3 not started.**
+
+## 5E-1 implementation record (2026-08-21)
+
+**Correction (caught in review by Mikael): the data node OPTIMIZES
+generic ops to typed BEFORE compilation.** The pipeline in
+`PushdownInterpreterFactory::Create` is Init → OptimizeProgram →
+dbtup_jit_compile_agg, and `OptimizeProgramBuffer` rewrites
+kOpPlus/kOpMinus/kOpMul to the kOp*Bigint/kOp*Double forms in place
+whenever both operand types are statically inferable (all integer
+widths — incl. BIGUNSIGNED — infer BIGINT; FLOAT/DOUBLE infer
+DOUBLE; kOpDivInt similarly becomes kOpDivIntBigint; kOpSum/Min/Max
+become typed). So RonSQL's BIGINT and DOUBLE arithmetic already
+reached the bridge TYPED and already compiled — the plan's original
+"RonSQL arithmetic falls back wholesale" claim was wrong.
+
+What genuinely stays GENERIC at the bridge (from the optimizer's
+own code): arithmetic with a DECIMAL operand (the optimizer types
+DECIMAL loads UNDEFINED), mixed BIGINT/DOUBLE operands, kOpDiv
+always, kOpMod always, and kOpDivInt with non-BIGINT operands. The
+5E-2/5E-3 slices are unaffected (they target exactly the never-
+rewritten opcodes).
+
+The new bridge case therefore has one LIVE lowering win — **DECIMAL
+arithmetic** (`SUM(price * qty)`, the TPC-H Q9 pattern): the bridge's
+5G decimal loads type registers I64/U64/F64 by scale, richer than
+the optimizer's UNDEFINED, so the generic case lowers scale>0 pairs
+into F64 arith and scale-0 pairs into checked signed arith. Bridge
+case as implemented: both-F64 → OP_ADD/MINUS/MUL_F64; known integer
+tracks → the 5C-4 classifier verbatim; UNKNOWN / STR / mixed
+int-double / u64-with-signed-variable → UNSUPPORTED (deliberately
+not TYPE_MISMATCH — the kernel handles those shapes, the lowering
+doesn't). All emitted ops ride the existing checked_arith_ops
+overflow-target fixup. The case is also the robustness backstop for
+any producer path that reaches the bridge untyped.
+
+RonSQL platform: `RONSQL_CLI` found by mysql-test-run.pl
+(my_find_bin, NOT_REQUIRED — tests skip without it). New canary
+`rondb_jit_ronsql_canary`: every query runs through mysqld first
+(server-side compute — the planner never pushes these shapes) as the
+ground-truth differential, then through ronsql_cli under 4060 with
+compile-counter deltas. Q1-Q5 are optimizer+bridge PIPELINE
+regression canaries (int chains, double chains incl. the all-double
+generic '/', u64+NNC, narrow INT, grouped via TEXT_NOHEADER | sort)
+— nothing ever ran RonSQL under 4060 before; Q6 is the mixed
+int/double NEGATIVE control (fallback counter, no 4060); Q7/Q8 are
+the NEW-lowering must-JITs (DECIMAL(9,2) multiply → F64 track,
+DECIMAL(9,0) add → checked signed track). Bridge tests 116/116
+(T62a-f: i64 chain, f64 chain incl. '/', u64+const, mixed reject,
+u64+signed-variable reject, UNKNOWN-after-embedded reject; T62g/h:
+the LIVE decimal paths at both scales).
 
 ## The finding that reshaped this phase
 

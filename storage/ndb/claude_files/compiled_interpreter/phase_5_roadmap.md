@@ -410,11 +410,15 @@ flips 1 → 0.
 
 ## 5E — division/modulo + GENERIC arithmetic — **PLANNED, see `phase_5e_plan.md`**
 
-**Scoping finding (2026-08-21): RonSQL emits the GENERIC arithmetic
-opcodes** (kOpPlus/kOpMinus/kOpMul/kOpDiv via NdbAggregator::Add
-etc.), which the bridge does not lower — so every RonSQL query with
-ANY arithmetic falls back wholesale today, a far bigger gap than
-div/mod. 5E-1 lowers the generic ops through the existing 5C-4/f64
+**Scoping finding (2026-08-21, corrected in review): RonSQL emits
+the GENERIC arithmetic opcodes** (kOpPlus/kOpMinus/kOpMul/kOpDiv via
+NdbAggregator::Add etc.) — but the data node's OptimizeProgramBuffer
+rewrites them to the typed forms BEFORE compilation whenever operand
+types are statically inferable, so RonSQL's int/double arithmetic
+already compiled. What stays generic at the bridge: arithmetic with
+DECIMAL operands (the optimizer types decimal loads UNDEFINED — the
+5E-1 generic case lowers these via the bridge's richer 5G typing),
+mixed int/double, and kOpDiv/kOpMod/untyped-kOpDivInt always. 5E-1 lowers the generic ops through the existing 5C-4/f64
 classifiers (no regen) and establishes RonSQL as the test platform
 (RONSQL_CLI + rondb_jit_ronsql_canary); 5E-2 adds the four integer
 DIV/MOD hot stencils (div-by-zero → per-row fallback, the op_div_f64

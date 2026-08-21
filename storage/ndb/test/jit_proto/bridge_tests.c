@@ -49,6 +49,9 @@
 /* construct programs in the format the bridge expects).              */
 /* ------------------------------------------------------------------ */
 
+#define kOpPlus           1
+#define kOpMinus          2
+#define kOpMul            3
 #define kOpLoadCol        7
 #define kOpLoadConst      8
 #define kOpMov            9
@@ -2747,6 +2750,181 @@ static void test_narrow_unsigned_const_arith(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5E-1: GENERIC arithmetic (RonSQL's NdbAggregator::Add/Minus/ */
+/* Mul emit untyped kOpPlus/kOpMinus/kOpMul). Lowered by the          */
+/* tracker's proof: both-f64 -> F64 stencils; integer tracks -> the   */
+/* 5C-4 classifier; UNKNOWN / STR / mixed int-double / u64-with-      */
+/* signed-variable -> UNSUPPORTED (missing conversion, not a type     */
+/* bug — the kernel handles those shapes, the lowering doesn't).      */
+/* ------------------------------------------------------------------ */
+
+/* T62a: generic +,-,* over two BIGINT loads -> checked signed. */
+static void test_generic_arith_i64(void) {
+  const char *name = "T62a generic_arith_i64";
+  uint32_t prog[6] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpPlus, 0, 1),
+    enc_2reg(kOpMinus, 0, 1),
+    enc_2reg(kOpMul, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]load r0 [1]load r1 [2]ADD [3]MINUS [4]MUL [5]SUM [6]EXIT
+   * [7]OVERFLOW_EXIT (loads convert/degrade per the 5D-1 rules). */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_INT_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_MINUS_INT_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_MUL_INT_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T62b: generic +,* and generic '/' over two DOUBLE loads -> the F64
+ * stencils (kOpDiv-all-double was already lowered; the +,* forms are
+ * new). Generic Sum over the f64 result -> SUM_F64. */
+static void test_generic_arith_f64(void) {
+  const char *name = "T62b generic_arith_f64";
+  uint32_t prog[6] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/2),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/3),
+    enc_2reg(kOpPlus, 0, 1),
+    enc_2reg(kOpMul, 0, 1),
+    enc_2reg(kOpDiv, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_F64)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_MUL_F64)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_DIV_F64)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
+}
+
+/* T62c: generic + over u64 column and non-negative constant -> u64
+ * checked (the 5C-4 NNC rule through the generic opcode). */
+static void test_generic_arith_u64_const(void) {
+  const char *name = "T62c generic_arith_u64_const";
+  uint32_t prog[6];
+  prog[0] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0);
+  prog[1] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[2] = 5u;
+  prog[3] = 0u;
+  prog[4] = enc_2reg(kOpPlus, 0, 1);
+  prog[5] = enc_sum(/*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]U64_NB [1]CONST [2]ADD_U64 [3]SUM_U64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T62d: generic + over mixed int/double operands -> UNSUPPORTED (the
+ * kernel converts the int inline; the JIT has no conversion op). */
+static void test_generic_arith_mixed_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_load_col(NDB_TYPE_DOUBLE, 1, 2),
+    enc_2reg(kOpPlus, 0, 1),
+  };
+  assert_rejected("T62d generic_arith_mixed_reject", prog, 3,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpPlus);
+}
+
+/* T62e: generic + over u64 and a signed VARIABLE -> UNSUPPORTED
+ * (same mixed-track rule as the typed family, softer reason). */
+static void test_generic_arith_u64_signed_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, 0, 0),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_2reg(kOpPlus, 0, 1),
+  };
+  assert_rejected("T62e generic_arith_u64_signed_reject", prog, 3,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpPlus);
+}
+
+/* T62f: generic + over UNKNOWN registers (invalidated by an embedded
+ * block) -> UNSUPPORTED. An untyped op over an unproven register
+ * could be int or double — the typed families tolerate UNKNOWN
+ * because their opcode IS the type proof; the generic ones cannot. */
+static void test_generic_arith_unknown_reject(void) {
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
+    enc_2reg(kOpPlus, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T62f generic_arith_unknown_reject", prog, 5,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 3, kOpPlus);
+}
+
+/* T62g: THE LIVE PATH for the generic case — DECIMAL operands. The
+ * data node's OptimizeProgramBuffer rewrites generic arith to the
+ * typed kOp*Bigint/kOp*Double forms BEFORE compilation whenever both
+ * operand types are statically known — but it types DECIMAL loads as
+ * UNDEFINED, so decimal arithmetic reaches the bridge GENERIC. The
+ * bridge's 5G decimal loads know better (I64/U64/F64 by scale), so
+ * the generic case lowers what the optimizer could not type:
+ * scale>0 pair -> F64 arith; scale-0 pair -> checked signed arith. */
+static void test_generic_arith_decimal(void) {
+  const char *name = "T62g generic_arith_decimal";
+  uint32_t prog[7] = {
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/0, /*col=*/2),
+    enc_dec_info(9, 2),
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/1, /*col=*/3),
+    enc_dec_info(9, 2),
+    enc_2reg(kOpMul, 0, 1),
+    enc_2reg(kOpPlus, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LCD [1]LCD [2]MUL_F64 [3]ADD_F64 [4]SUM_F64 [5]EXIT [6]OVF. */
+  if (!expect_accepted(name, prog, 7, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MUL_F64)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_ADD_F64)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
+}
+
+/* T62h: scale-0 DECIMAL pair -> the generic op lands in the checked
+ * signed integer track. */
+static void test_generic_arith_decimal_scale0(void) {
+  const char *name = "T62h generic_arith_decimal_scale0";
+  uint32_t prog[6] = {
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/0, /*col=*/2),
+    enc_dec_info(9, 0),
+    enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/1, /*col=*/3),
+    enc_dec_info(9, 0),
+    enc_2reg(kOpPlus, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LCD [1]LCD [2]ADD_CHECKED [3]SUM_CHECKED [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_INT_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2859,6 +3037,14 @@ int main(void) {
   test_narrow_mixed_arith_reject();
   test_narrow_signed_arith();
   test_narrow_unsigned_const_arith();
+  test_generic_arith_i64();
+  test_generic_arith_f64();
+  test_generic_arith_u64_const();
+  test_generic_arith_mixed_reject();
+  test_generic_arith_u64_signed_reject();
+  test_generic_arith_unknown_reject();
+  test_generic_arith_decimal();
+  test_generic_arith_decimal_scale0();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

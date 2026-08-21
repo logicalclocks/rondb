@@ -2117,6 +2117,92 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         break;
       }
 
+      case BR_kOpPlus:
+      case BR_kOpMinus:
+      case BR_kOpMul: {
+        /* Phase 5E-1: GENERIC arithmetic — RonSQL's NdbAggregator::
+         * Add/Minus/Mul emit these untyped forms (the mysqld planner
+         * emits the typed kOp*Bigint / kOp*Double families below).
+         * The generic kernels (RegPlusReg et al.) ARE the typed
+         * kernels once operand types are known: uniform-BIGINT
+         * operands run the exact signed/unsigned dance the 5C-4
+         * classifier models, and double operands run the F64
+         * semantics (double op + isfinite → overflow exit). So lower
+         * by the TRACKER's proof:
+         *   - both proven F64      → the F64 stencils;
+         *   - known integer tracks → the 5C-4 classifier → checked
+         *     signed / u64 stencils;
+         *   - anything else — UNKNOWN (an untyped op over an
+         *     unproven register could be int or double), STR, mixed
+         *     int/double (the kernel converts inline; the JIT has no
+         *     conversion op), or u64 mixed with a signed VARIABLE →
+         *     UNSUPPORTED, whole-program fallback. Deliberately not
+         *     TYPE_MISMATCH: the kernel handles these shapes — the
+         *     LOWERING doesn't. */
+        uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
+        uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
+        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        int both_f64 = (reg_type[dst] == BR_REG_F64 &&
+                        reg_type[src] == BR_REG_F64);
+        int dst_int = (reg_type[dst] == BR_REG_I64 ||
+                       reg_type[dst] == BR_REG_U64 ||
+                       reg_type[dst] == BR_REG_NNC);
+        int src_int = (reg_type[src] == BR_REG_I64 ||
+                       reg_type[src] == BR_REG_U64 ||
+                       reg_type[src] == BR_REG_NNC);
+        uint8_t our_kind;
+        if (both_f64) {
+          switch (op) {
+            case BR_kOpPlus:  our_kind = OP_ADD_F64;   break;
+            case BR_kOpMinus: our_kind = OP_MINUS_F64; break;
+            default:          our_kind = OP_MUL_F64;   break;
+          }
+          reg_type[dst] = BR_REG_F64;
+        } else if (dst_int && src_int) {
+          int arith_unsigned =
+              (reg_type[dst] == BR_REG_U64 || reg_type[src] == BR_REG_U64);
+          if (arith_unsigned) {
+            int dst_ok = (reg_type[dst] == BR_REG_U64 ||
+                          reg_type[dst] == BR_REG_NNC);
+            int src_ok = (reg_type[src] == BR_REG_U64 ||
+                          reg_type[src] == BR_REG_NNC);
+            if (!dst_ok || !src_ok) {
+              set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+              return JIT_BRIDGE_UNSUPPORTED_OP;
+            }
+          }
+          switch (op) {
+            case BR_kOpPlus:
+              our_kind = arith_unsigned ? OP_ADD_U64_CHECKED
+                                        : OP_ADD_INT_INT_CHECKED;
+              break;
+            case BR_kOpMinus:
+              our_kind = arith_unsigned ? OP_MINUS_U64_CHECKED
+                                        : OP_MINUS_INT_INT_CHECKED;
+              break;
+            default:
+              our_kind = arith_unsigned ? OP_MUL_U64_CHECKED
+                                        : OP_MUL_INT_INT_CHECKED;
+              break;
+          }
+          reg_type[dst] = arith_unsigned ? BR_REG_U64 : BR_REG_I64;
+        } else {
+          set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        if (!emit_op(out_prog, our_kind, dst, dst, src, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        checked_arith_ops[n_checked_arith_ops++] =
+            (uint16_t)(out_prog->n_ops - 1);
+        pos += 1;
+        break;
+      }
+
       case BR_kOpPlusBigint:
       case BR_kOpMinusBigint:
       case BR_kOpMulBigint: {
@@ -2508,9 +2594,10 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         break;
       }
 
-      /* Everything else — kOpDivInt*, kOpMod, generic untyped
-       * kOpPlus / kOpSum / kOpMin / kOpMax (string / DECIMAL tracks),
-       * kOpSetRegNull — is unsupported. Reject the entire program. */
+      /* Everything else — kOpDivInt / kOpDivIntBigint / kOpMod
+       * (5E-2), and kOpSetRegNull (permanently unsupported — the
+       * Test 27 fallback canary's opcode) — is unsupported. Reject
+       * the entire program. */
       default:
         set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
         return JIT_BRIDGE_UNSUPPORTED_OP;

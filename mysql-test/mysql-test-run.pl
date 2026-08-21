@@ -3449,6 +3449,17 @@ sub environment_setup {
       mtr_verbose("NDB_TEST_DEADLOCK_BINARY: $test_deadlock_binary");
     }
 
+    # RONDB-1056: ronsql_cli — RonSQL command-line client, used by the
+    # JIT canaries as the producer of generic-arithmetic / div / mod
+    # aggregation programs (the mysqld planner never pushes those).
+    my $ronsql_cli_binary =
+      my_find_bin($bindir, [ "runtime_output_directory", "bin" ],
+                  "ronsql_cli", NOT_REQUIRED);
+    if ($ronsql_cli_binary) {
+      $ENV{'RONSQL_CLI'} = $ronsql_cli_binary;
+      mtr_verbose("RONSQL_CLI: $ronsql_cli_binary");
+    }
+
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";
     $ENV{'NDB_TOOLS_OUTPUT'} = $path_ndb_testrun_log;
 

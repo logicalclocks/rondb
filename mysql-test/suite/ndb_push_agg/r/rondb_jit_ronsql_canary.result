@@ -1,0 +1,119 @@
+############################################################
+# RONDB-1056 RonSQL generic-arithmetic JIT canary
+############################################################
+CREATE TABLE t1 (
+pk  INT PRIMARY KEY,
+grp INT NOT NULL,
+a   BIGINT NOT NULL,
+b   BIGINT NOT NULL,
+d   DOUBLE NOT NULL,
+e   DOUBLE NOT NULL,
+u   BIGINT UNSIGNED NOT NULL,
+i   INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 10, 3, 1.5, 0.5, 100, 7),
+(2, 1, 20, 4, 2.5, 0.5, 200, 8),
+(3, 2, 30, 5, 4.0, 2.0, 300, 9),
+(4, 2, 40, 6, 6.0, 4.0, 400, 10);
+# Q1: integer +,-,* chains. mysqld baseline, then RonSQL
+#     must-JIT.
+SELECT SUM(a + b) AS s1, SUM(a * b - a) AS s2 FROM t1;
+s1	s2
+118	400
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+118	400
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: double +,* and the all-double generic '/'.
+SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;
+s1	s2	s3
+21	34	11.5
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2	s3
+21	34	11.5
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: unsigned column + non-negative constant (u64 + NNC).
+SELECT SUM(u + 1) AS s FROM t1;
+s
+1004
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+1004
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+# Q4: narrow INT columns through RonSQL (5H + 5E-1 composition).
+SELECT SUM(i + i) AS s FROM t1;
+s
+68
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+68
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
+# Q5: grouped RonSQL arithmetic (TEXT_NOHEADER piped through
+#     sort for deterministic group order).
+SELECT grp, SUM(a + b) AS s FROM t1 GROUP BY grp;
+grp	s
+1	37
+2	81
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+1	37
+2	81
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+q5_jit_compiled
+1
+# Q6: NEGATIVE control — mixed int/double operands have no JIT
+#     conversion; the program must fall back whole (correct
+#     results via the interpreter, fallback counter moves, no
+#     4060).
+SELECT SUM(a + d) AS s FROM t1;
+s
+114
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+s
+114
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS q6_fell_back;
+q6_fell_back
+1
+DROP TABLE t1;
+# Q7: DECIMAL(9,2) arithmetic — the NEW 5E-1 lowering (generic
+#     kOpMul over F64-tracked decimal loads; the optimizer
+#     leaves DECIMAL operands untyped).
+CREATE TABLE td (
+pk INT PRIMARY KEY,
+p  DECIMAL(9,2) NOT NULL,
+q  DECIMAL(9,2) NOT NULL,
+s0 DECIMAL(9,0) NOT NULL,
+t0 DECIMAL(9,0) NOT NULL
+) ENGINE=NDB;
+INSERT INTO td VALUES
+(1, 1.50, 2.00, 10, 3),
+(2, 2.50, 4.00, 20, 4);
+SELECT SUM(p * q) AS s FROM td;
+s
+13.0000
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+13
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+q7_jit_compiled
+1
+# Q8: scale-0 DECIMAL arithmetic lands in the checked signed
+#     integer track.
+SELECT SUM(s0 + t0) AS s FROM td;
+s
+37
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+37
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q8_jit_compiled;
+q8_jit_compiled
+1
+DROP TABLE td;
