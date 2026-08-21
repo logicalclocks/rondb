@@ -2,7 +2,12 @@
 
 **Status: 5F-1 DONE & VERIFIED (2026-08-20 — regen, bridge 96/96,
 coldcall 31/31, string canary + census green, full ndb_push_agg sweep
-passed). 5F-2 (linked columns) deferred.**
+passed). 5F-2 DONE & VERIFIED (2026-08-21 — NO regen; bridge 131/131,
+rondb_jit_linked_canary green under 4060 incl. the linked string
+MIN/MAX with collation-discriminating values, full ndb_push_agg
+sweep passed; scoping found the whole linked-column family was
+falling back, not just strings — see the 5F-2 record below).
+PHASE 5F COMPLETE.**
 
 ## 5F-1 implementation record (2026-08-20)
 
@@ -146,10 +151,44 @@ rest hot), coldcall (mock records col/packed; direct-write discipline
 counter deltas; mixed-program must-JIT), census `string_min` flips
 1 → 0. Full sweep.
 
-### 5F-2 — linked-column strings (join-agg) — DEFERRED
+### 5F-2 — linked columns (join-agg) — DONE & VERIFIED (2026-08-21)
 
-The linked READ path has its own capture flow; defer until fallback
-data shows join-agg string MIN/MAX demand.
+Scoping found the REAL gap (the 5E-1 pattern again): the bridge had
+NO handling of AGG_LINKED_COL_FLAG (bit 15 of kOpLoadCol's col field)
+— flagged ids failed the MAX_ATTRIBUTES_IN_TABLE bound, so EVERY
+aggregate over a parent-table / CTE column in a pushed join fell
+back wholesale, all types — strings were one corner.
+
+Implemented (NO regen — the 16-bit col operand already carries the
+flag through the existing stencils):
+
+- `JoinAggInterpreter::readLinkedAttrIntoBuf` — the linked-buffer
+  walk + CTE-metadata resolution extracted verbatim from ProcessRec's
+  kOpLoadCol arm (which now calls it — zero drift); public facades
+  `jitReadLinkedAttr` (JIT loads; skips the program-offset metadata
+  fallback — that rare path degrades to the per-row fallback) and
+  `jitMinMaxStringLinked` (the linked sibling of jitMinMaxStringCol:
+  type + charset from the CTE words, same protected load + public
+  minMaxString kernel).
+- Glue: ONE shared prologue `jit_load_col_read` now feeds all seven
+  load helpers — local columns via readSingleAttributeForJit +
+  descriptor type, linked columns via ctx->join_agg's walk + the CTE
+  word's type. NULL/error semantics per helper unchanged (NB loads
+  branch on linked NULLs too). ndb_jit_h_minmax_str routes flagged
+  cols to the linked facade; a linked col on a non-join dispatch has
+  no buffer → per-row fallback.
+- Bridge: local cols keep the 4095 bound; flagged cols admit for
+  every family (i64/u64/f64/DECIMAL 2-word/narrow ints/NB conversion/
+  string fusion — the fused op's b carries the flag).
+
+Tests: bridge 131/131 (T65a linked i64 + NB conversion with the flag
+in b, T65b f64/DECIMAL/u64 families, T65c linked string fusion). New
+canary `rondb_jit_linked_canary`: pushed 2-table PK join with
+OFF-baseline + ON-under-4060 counter deltas over parent columns —
+BIGINT SUM/MIN/MAX, DOUBLE, BIGUNSIGNED, the LINKED STRING MIN/MAX
+with collation-discriminating values (proving the linked charset
+metadata), a nullable linked column (linked NB path), DECIMAL,
+narrow INT, local+linked in one program, and a grouped variant.
 
 ## Non-goals
 

@@ -22,6 +22,7 @@
 #include <ndb_global.h>
 #include <my_byteorder.h>      /* sint8korr / sint4korr / ... */
 #include <AttributeDescriptor.hpp>  /* column type decode for READ_ATTR */
+#include <CteLinkedAttr.hpp>        /* linked-attr metadata words (5F-2) */
 
 #include <atomic>              /* observability counters */
 #include <cmath>               /* std::isfinite (div_conv helper) */
@@ -162,6 +163,53 @@ static void dbtup_jit_trace_accs(const char *stage,
 /* Cold-call helpers.                                                 */
 /* ------------------------------------------------------------------ */
 
+/* jit_load_col_read — Phase 5F-2 shared read prologue for every
+ * column-load helper. LOCAL columns read via readSingleAttributeForJit
+ * with the declared type from the table descriptor; LINKED columns
+ * (bit 15 of col_id — join aggregation's parent-table / CTE
+ * attributes) read via the JoinAggInterpreter's linked-buffer walk,
+ * with the type from the resolved CTE metadata word. On success
+ * *out_header / *out_data / *out_type are set (local data lives in
+ * the caller's read_buf; linked data in the interpreter's
+ * m_attr_read_buf). Nonzero = read or metadata failure — the caller
+ * takes its fallback path (a linked col on a non-join dispatch lands
+ * here too: ctx->join_agg is null). */
+static int jit_load_col_read(dbtup_jit_call_ctx *ctx, uint32_t col_id,
+                             Uint32 *read_buf, Uint32 read_buf_words,
+                             AttributeHeader **out_header,
+                             const char **out_data, Uint32 *out_type) {
+  if ((col_id & 0x8000u) != 0) {
+    Uint32 w0 = 0;
+    Uint32 w1 = 0;
+    AttributeHeader *header = nullptr;
+    if (ctx->join_agg == nullptr ||
+        ctx->join_agg->jitReadLinkedAttr(col_id & 0x7FFFu, &header,
+                                         &w0, &w1) != 0) {
+      return -1;
+    }
+    *out_header = header;
+    *out_data = reinterpret_cast<const char *>(
+        reinterpret_cast<Uint32 *>(header) + 1);
+    *out_type = CteLinkedAttr::decodeTypeId(w0);
+    return 0;
+  }
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf, read_buf_words);
+  if (ret < 0) {
+    return ret;
+  }
+  *out_header = reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  *out_data = reinterpret_cast<const char *>(&read_buf[1]);
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  *out_type = type_id;
+  return 0;
+}
+
 extern "C" void
 ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   dbtup_jit_call_ctx *ctx =
@@ -182,27 +230,21 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
 
   /* Read buffer: 1 word AttributeHeader + up to 2 words (8 bytes)
    * for a BIGINT. 4 words gives breathing room for alignment.
-   *
-   * readSingleAttribute is private on Dbtup; the glue reaches it via
-   * the public Dbtup::readSingleAttributeForJit forwarder (the same
-   * call AggInterpreterBase::readAttributeForJit makes), so this
-   * helper no longer depends on an AggInterpreter instance. */
+   * The shared prologue routes linked columns (bit 15) through the
+   * JoinAggInterpreter's buffer walk instead. */
   Uint32 read_buf[4];
-
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
-    /* Column read failed — flag the row for interpreter fallback so
-     * the interpreter path produces its normal error handling for it.
-     * (Pre-5A this abort()ed.) */
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    /* Read / linked-metadata failure — interpreter fallback gives the
+     * exact error handling. (Pre-5A this abort()ed.) */
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     /* NULL column value. The bridge cannot see nullability (it only
      * sees bytecode) and the SQL planner pushes aggregation over
@@ -233,13 +275,6 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
    * DOUBLE (until Phase 5C), strings, and pseudo columns. Narrower
    * unsigned ints zero-extend to non-negative i64 and compare
    * correctly. */
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
-  }
-  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
   Int64 value;
   switch (type_id) {
     case NDB_TYPE_TINYINT:
@@ -312,17 +347,16 @@ ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
 
   /* 1 word AttributeHeader + 8 bytes for a DOUBLE. */
   Uint32 read_buf[4];
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     /* Same per-row fallback as the i64 load — registers have no null
      * tracking until Phase 5D. */
@@ -330,21 +364,13 @@ ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
     s->regs_i64[dst_reg] = 0;
     return;
   }
-
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
-  }
-  const uchar *data = reinterpret_cast<const uchar *>(&read_buf[1]);
   double value;
   switch (type_id) {
     case NDB_TYPE_FLOAT:
-      value = (double)floatget(data);
+      value = (double)floatget(reinterpret_cast<const uchar *>(data));
       break;
     case NDB_TYPE_DOUBLE:
-      value = doubleget(data);
+      value = doubleget(reinterpret_cast<const uchar *>(data));
       break;
     default:
       s->row_fallback = 1;
@@ -387,17 +413,16 @@ ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   }
 
   Uint32 read_buf[4];
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return 0;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     /* The whole point: take the null branch, stay on the JIT. */
     s->regs_i64[dst_reg] = 0;
@@ -412,13 +437,6 @@ ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id, uint32_t dst_reg) {
     return 1;
   }
 
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
-  }
-  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
   Int64 value;
   switch (type_id) {
     case NDB_TYPE_TINYINT:
@@ -485,36 +503,27 @@ ndb_jit_h_load_col_f64_nb(JitState *s, uint32_t col_id,
   }
 
   Uint32 read_buf[4];
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return 0;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     s->regs_i64[dst_reg] = 0;
     return 1;
   }
-
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
-  }
-  const uchar *data = reinterpret_cast<const uchar *>(&read_buf[1]);
   double value;
   switch (type_id) {
     case NDB_TYPE_FLOAT:
-      value = (double)floatget(data);
+      value = (double)floatget(reinterpret_cast<const uchar *>(data));
       break;
     case NDB_TYPE_DOUBLE:
-      value = doubleget(data);
+      value = doubleget(reinterpret_cast<const uchar *>(data));
       break;
     default:
       s->row_fallback = 1;
@@ -541,31 +550,22 @@ ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
   }
 
   Uint32 read_buf[4];
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return 0;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     s->regs_i64[dst_reg] = 0;
     return 1;
   }
-
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
-  }
   /* Narrow-int admission: same unsigned-width decode as the void
    * sibling — the bridge routes every unsigned width here. */
-  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
   Uint64 uval;
   switch (type_id) {
     case NDB_TYPE_TINYUNSIGNED:
@@ -624,28 +624,20 @@ ndb_jit_h_load_col_dec(JitState *s, uint32_t col_id, uint32_t dst_reg,
   /* 1 word AttributeHeader + up to decimal_bin_size(65, 30) ≈ 30
    * bytes of packed decimal. 16 words is comfortably enough. */
   Uint32 read_buf[16];
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
-  }
-
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
   }
   if (type_id != (dec_uns ? (Uint32)NDB_TYPE_DECIMALUNSIGNED
                           : (Uint32)NDB_TYPE_DECIMAL)) {
@@ -658,7 +650,7 @@ ndb_jit_h_load_col_dec(JitState *s, uint32_t col_id, uint32_t dst_reg,
   decimal_t dec;
   dec.buf = dec_buf;
   dec.len = AggInterpreterBase::AGG_DECIMAL_BUFF_LENGTH;
-  if (bin2decimal(reinterpret_cast<const uchar *>(&read_buf[1]),
+  if (bin2decimal(reinterpret_cast<const uchar *>(data),
                   &dec, precision, scale) != E_DEC_OK) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
@@ -726,9 +718,25 @@ ndb_jit_h_minmax_str(JitState *s, uint32_t col_id, uint32_t packed) {
   }
   const Uint32 agg_index = packed & 0xFFu;
   const bool   is_max    = (packed & 0x100u) != 0;
-  Int32 ret = ctx->agg->jitMinMaxStringCol(
-      ctx->block_tup, ctx->req_struct, col_id, agg_index, is_max,
-      ctx->agg_res_ptr);
+  Int32 ret;
+  if ((col_id & 0x8000u) != 0) {
+    /* Phase 5F-2: LINKED string column (parent-table / CTE). The
+     * JoinAggInterpreter facade walks the linked buffer, resolves
+     * the CTE metadata (type + charset), and runs the same protected
+     * load + public minMaxString kernel. A linked column on a
+     * non-join dispatch has no buffer — per-row fallback. */
+    if (ctx->join_agg == nullptr) {
+      s->row_fallback = 1;
+      return;
+    }
+    ret = ctx->join_agg->jitMinMaxStringLinked(
+        ctx->req_struct, col_id & 0x7FFFu, agg_index, is_max,
+        ctx->agg_res_ptr);
+  } else {
+    ret = ctx->agg->jitMinMaxStringCol(
+        ctx->block_tup, ctx->req_struct, col_id, agg_index, is_max,
+        ctx->agg_res_ptr);
+  }
   if (ret != 0) {
     s->row_fallback = 1;
   }
@@ -822,17 +830,16 @@ ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
 
   /* 1 word AttributeHeader + 8 bytes for a BIGUNSIGNED. */
   Uint32 read_buf[4];
-  int ret = ctx->block_tup->readSingleAttributeForJit(
-      ctx->req_struct, col_id, read_buf,
-      sizeof(read_buf) / sizeof(Uint32));
-  if (ret < 0) {
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
   }
-
-  AttributeHeader *header =
-      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   if (header->isNULL()) {
     /* Same per-row fallback as the other loads — registers have no
      * null tracking until Phase 5D. */
@@ -840,14 +847,6 @@ ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
     s->regs_i64[dst_reg] = 0;
     return;
   }
-
-  Uint32 type_id = NDB_TYPE_UNDEFINED;
-  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
-    const Uint32 attrDesc1 =
-        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
-    type_id = AttributeDescriptor::getType(attrDesc1);
-  }
-  const char *data = reinterpret_cast<const char *>(&read_buf[1]);
   Uint64 uval;
   switch (type_id) {
     case NDB_TYPE_TINYUNSIGNED:

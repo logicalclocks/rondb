@@ -456,7 +456,17 @@ both-F64 stays hot; bridge 128/128, coldcall 32/32; RonSQL canary
 Q14/Q15). PHASE 5E COMPLETE — the RonSQL/API opcode space is
 covered except the documented durable negatives (string CASE
 conditions, double trunc-DIV/fmod, mixed int/double +/-/*,
-kOpSetRegNull). NEXT → 5F-2 stays
+kOpSetRegNull). → 5F-2 DONE & VERIFIED (2026-08-21 —
+NO regen, bridge 131/131, linked canary + full sweep green: scoping found the bridge rejected AGG_LINKED_COL_FLAG
+entirely, so ALL parent-table/CTE-column aggregates in pushed joins
+fell back, every type — not just strings. JoinAggInterpreter's
+linked walk extracted into a shared core + JIT facades; one shared
+glue prologue routes all 7 load helpers local-vs-linked; string
+fusion routes to jitMinMaxStringLinked; bridge admits flagged cols
+for every family. new rondb_jit_linked_canary). PHASE 5F COMPLETE. With 5E and 5F
+both closed, every parked coverage item is done — remaining
+unlowered surface is only the documented durable negatives; next
+milestone is Phase 6 (the pushdown-join + CTE branch merge). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

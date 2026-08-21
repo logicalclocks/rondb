@@ -2015,7 +2015,15 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
-        if (reg_index >= BC_MAX_REGS || col_index > BR_MAX_LOCAL_ATTR_ID) {
+        /* Phase 5F-2: bit 15 marks a LINKED column (join aggregation's
+         * parent-table / CTE attribute at position col & 0x7FFF) — the
+         * load helpers route it through the JoinAggInterpreter's
+         * linked-buffer walk, all type families incl. the fused string
+         * MIN/MAX. Local columns keep the MAX_ATTRIBUTES_IN_TABLE
+         * bound. */
+        if (reg_index >= BC_MAX_REGS ||
+            ((col_index & 0x8000u) == 0 &&
+             col_index > BR_MAX_LOCAL_ATTR_ID)) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }

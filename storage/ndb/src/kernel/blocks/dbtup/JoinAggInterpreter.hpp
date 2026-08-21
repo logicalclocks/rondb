@@ -132,6 +132,25 @@ class JoinAggInterpreter : public AggInterpreterBase {
     return block_tup->cheapMemory[0];
   }
 
+  /* Phase 5F-2: JIT facades for LINKED column loads.
+   * jitReadLinkedAttr walks the current row's linked buffer to
+   * `position`, resolves the typed CTE metadata words, and copies
+   * [AttributeHeader][data] into m_attr_read_buf (the JIT load
+   * helpers then decode from there with the type from *out_w0).
+   * Returns 0 on success; nonzero -> the helper takes the per-row
+   * fallback. jitMinMaxStringLinked is the linked sibling of
+   * AggInterpreterBase::jitMinMaxStringCol — same protected load +
+   * public minMaxString kernel, metadata from the linked words. */
+  Int32 jitReadLinkedAttr(Uint32 position, AttributeHeader **out_header,
+                          Uint32 *out_w0, Uint32 *out_w1) {
+    m_attr_read_pos = 0;
+    return readLinkedAttrIntoBuf(position, /*load_program_offset=*/-1,
+                                 out_header, out_w0, out_w1);
+  }
+  Int32 jitMinMaxStringLinked(Dbtup::KeyReqStruct *req_struct,
+                              Uint32 position, Uint32 agg_index,
+                              bool is_max, AggResItem *agg_res_ptr);
+
 #ifdef ERROR_INSERT
   bool jitTraceEnabledForJit(Dbtup *block_tup,
                              Uint32 *trace_limit) const {
@@ -372,6 +391,16 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 
   // Linked attribute buffer for join aggregation
+  /* Phase 5F-2: shared linked-attr capture used by ProcessRec's
+   * kOpLoadCol arm AND the JIT facades — walk to `position`, resolve
+   * the CTE metadata words (inline marker, ColumnMeta by attr id, or
+   * — only when load_program_offset >= 0 — the offset-keyed
+   * LoadColumnMeta fallback), copy [header][data] into
+   * m_attr_read_buf at m_attr_read_pos. */
+  Int32 readLinkedAttrIntoBuf(Uint32 position, Int64 load_program_offset,
+                              AttributeHeader **out_header,
+                              Uint32 *out_w0, Uint32 *out_w1);
+
   const Uint32* m_linked_attr_data;// Points to current row's linked attrs
   Uint32 m_linked_attr_len;        // Current length in words
   bool m_null_local_columns;       // When true, local column read NULL

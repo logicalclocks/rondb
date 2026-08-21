@@ -758,6 +758,106 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
 /*
  * ProcessRec for join aggregation — includes linked attribute resolution
  */
+
+/* Phase 5F-2: shared linked-attr capture — see JoinAggInterpreter.hpp.
+ * Extracted verbatim from ProcessRec's kOpLoadCol linked branch so the
+ * interpreter and the JIT facades share one walk + one metadata
+ * resolution. load_program_offset < 0 skips the offset-keyed
+ * LoadColumnMeta fallback (the JIT has no program offset; that rare
+ * path degrades to the per-row interpreter fallback instead). */
+Int32 JoinAggInterpreter::readLinkedAttrIntoBuf(
+    Uint32 position, Int64 load_program_offset,
+    AttributeHeader **out_header, Uint32 *out_w0, Uint32 *out_w1) {
+  if (m_linked_attr_data == nullptr) {
+    return ZAGG_OTHER_ERROR;
+  }
+  const Uint32* p = m_linked_attr_data;
+  const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+  Uint32 pos_count = 0;
+  while (p < p_end) {
+    if (pos_count == position) break;
+    p += 2;
+    p += 1 + AttributeHeader::getDataSize(*p);
+    pos_count++;
+  }
+  if (p + 2 >= p_end) {
+    g_eventLogger->debug("JoinAggInterpreter::readLinkedAttrIntoBuf "
+        "ZAGG_OTHER_ERROR: linked position %u not found in buffer "
+        "(linked_len=%u)", position, m_linked_attr_len);
+    return ZAGG_OTHER_ERROR;
+  }
+  Uint32 linked_word0 = p[0];
+  Uint32 linked_word1 = p[1];
+  bool resolved = CteLinkedAttr::isCteMarker(linked_word0);
+  if (!resolved) {
+    const Uint32 linked_attr_id =
+        AttributeHeader(p[2]).getAttributeId();
+    const ColumnMeta *column_meta =
+        findColumnMeta(linked_word0, linked_word1, linked_attr_id);
+    if (column_meta != nullptr) {
+      linked_word0 = CteLinkedAttr::encodeWord0(column_meta->typeId,
+                                                column_meta->maxBytes);
+      linked_word1 = CteLinkedAttr::encodeWord1(column_meta->csNumber);
+      resolved = true;
+    } else if (load_program_offset >= 0) {
+      const LoadColumnMeta *meta =
+          findLoadColumnMeta((Uint32)load_program_offset);
+      if (meta != nullptr) {
+        linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                  meta->maxBytes);
+        linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+        resolved = true;
+      }
+    }
+    if (!resolved) {
+      return ZAGG_OTHER_ERROR;
+    }
+  }
+  p += 2;
+  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+  memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+  *out_header = reinterpret_cast<AttributeHeader*>(
+      m_attr_read_buf + m_attr_read_pos);
+  *out_w0 = linked_word0;
+  *out_w1 = linked_word1;
+  return 0;
+}
+
+/* Phase 5F-2: linked sibling of AggInterpreterBase::jitMinMaxStringCol
+ * — the type and charset come from the resolved linked metadata words
+ * instead of the local table descriptor; everything downstream is the
+ * same protected load + public minMaxString kernel (which mutates the
+ * AggResItem directly, so the JIT glue's writeback-mask discipline is
+ * unchanged). */
+Int32 JoinAggInterpreter::jitMinMaxStringLinked(
+    Dbtup::KeyReqStruct *req_struct, Uint32 position, Uint32 agg_index,
+    bool is_max, AggResItem *agg_res_ptr) {
+  constexpr Uint32 kScratchReg = kRegTotal - 1;
+  AttributeHeader *header = nullptr;
+  Uint32 w0 = 0;
+  Uint32 w1 = 0;
+  m_attr_read_pos = 0;
+  Int32 ret = readLinkedAttrIntoBuf(position, /*load_program_offset=*/-1,
+                                    &header, &w0, &w1);
+  if (ret != 0) {
+    return ret;
+  }
+  const DataType type = CteLinkedAttr::decodeTypeId(w0);
+  if (type != NDB_TYPE_CHAR && type != NDB_TYPE_VARCHAR &&
+      type != NDB_TYPE_LONGVARCHAR) {
+    return ZAGG_COL_TYPE_UNSUPPORTED;
+  }
+  Uint32 exec_pos_dummy = 0;
+  Int32 lret = loadColumnTypedFromBuf(
+      type, /*is_unsigned=*/false, kScratchReg, header,
+      /*attrDescriptor=*/nullptr, /*linked_cte_attr=*/true, w0, w1,
+      req_struct, exec_pos_dummy, "JitMinMaxStrLinked");
+  if (lret != 0) {
+    return lret;
+  }
+  return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
+}
+
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id,
@@ -1061,53 +1161,14 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         linked_cte_attr = false;
         Uint32 col_id_raw = value & 0x0000FFFF;
         if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+          /* Phase 5F-2: the walk + metadata resolution is shared with
+           * the JIT facades (readLinkedAttrIntoBuf) — zero drift. */
           Uint32 position = col_id_raw & 0x7FFF;
-          const Uint32* p = m_linked_attr_data;
-          const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-          Uint32 pos_count = 0;
-          while (p < p_end) {
-            if (pos_count == position) break;
-            p += 2;
-            p += 1 + AttributeHeader::getDataSize(*p);
-            pos_count++;
-          }
-          if (p + 2 >= p_end) {
-            g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
-                "kOpLoadCol linked position %u not found in buffer "
-                "(linked_len=%u)", position, m_linked_attr_len);
-            return ZAGG_OTHER_ERROR;
-          }
-          linked_word0 = p[0];
-          linked_word1 = p[1];
-          linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
-          if (!linked_cte_attr) {
-            const Uint32 linked_attr_id =
-                AttributeHeader(p[2]).getAttributeId();
-            const ColumnMeta *column_meta =
-                findColumnMeta(linked_word0, linked_word1, linked_attr_id);
-            if (column_meta != nullptr) {
-              linked_word0 = CteLinkedAttr::encodeWord0(column_meta->typeId,
-                                                        column_meta->maxBytes);
-              linked_word1 = CteLinkedAttr::encodeWord1(column_meta->csNumber);
-              linked_cte_attr = true;
-            } else {
-              const LoadColumnMeta *meta =
-                  findLoadColumnMeta(load_program_offset);
-              if (meta != nullptr) {
-                linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
-                                                          meta->maxBytes);
-                linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
-                linked_cte_attr = true;
-              }
-            }
-            if (!linked_cte_attr) {
-              return ZAGG_OTHER_ERROR;
-            }
-          }
-          p += 2;
-          Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-          memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
-          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+          Int32 lrret = readLinkedAttrIntoBuf(
+              position, (Int64)load_program_offset,
+              &header, &linked_word0, &linked_word1);
+          if (lrret != 0) return lrret;
+          linked_cte_attr = true;
           attrDescriptor = nullptr;
         } else if (m_null_local_columns) {
           AttributeHeader null_ah(col_id_raw, 0);

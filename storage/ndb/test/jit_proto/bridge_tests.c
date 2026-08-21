@@ -3157,6 +3157,83 @@ static void test_div_conv_both_f64_hot(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5F-2: LINKED columns (join aggregation's parent-table / CTE  */
+/* attributes) — bit 15 of the col field marks them; the bridge now   */
+/* admits every type family with the flag, and the load helpers walk  */
+/* the linked buffer at runtime.                                      */
+/* ------------------------------------------------------------------ */
+
+/* T65a: linked BIGINT load + Sum — the flagged col id rides the same
+ * 16-bit operand into the (NB-converted) load. */
+static void test_linked_i64_load(void) {
+  const char *name = "T65a linked_i64_load";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0x8003),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 0x8003)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T65b: linked DOUBLE, DECIMAL (2-word) and BIGUNSIGNED loads route
+ * to their family stencils with the flag intact. */
+static void test_linked_families(void) {
+  const char *name = "T65b linked_families";
+  uint32_t prog[7];
+  prog[0] = enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0x8001);
+  prog[1] = enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/1, /*col=*/0x8002);
+  prog[2] = enc_dec_info(9, 2);
+  prog[3] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/2, /*col=*/0x8004);
+  prog[4] = enc_agg(kOpSum, /*reg=*/0, /*agg=*/0);
+  prog[5] = enc_agg(kOpSum, /*reg=*/1, /*agg=*/1);
+  prog[6] = enc_agg(kOpSum, /*reg=*/2, /*agg=*/2);
+  Program p;
+  /* [0]F64 load [1]LCD [2]U64 load [3]SUM_F64 [4]SUM_F64(dec s2)
+   * [5]SUM_U64 [6]EXIT [7]OVF. The three consumer chains INTERLEAVE,
+   * so each load's 5D-1 skip range contains another chain's live ops
+   * — the loads correctly DEGRADE to their row-fallback forms (T50's
+   * interleaved-degradation rule), whose operand layout carries the
+   * flagged col in c. */
+  if (!expect_accepted(name, prog, 7, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_F64)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 0x8001)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_COL_NDB_DEC)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 0x8002)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_LOAD_COL_NDB_U64)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 0x8004)) return;
+  mark_pass(name);
+}
+
+/* T65c: linked STRING MIN/MAX fuses with the flag in the fused op's
+ * col operand — the helper routes to the linked facade at runtime. */
+static void test_linked_string_fusion(void) {
+  const char *name = "T65c linked_string_fusion";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/0x8002),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]MINMAX_STR(b=0x8002,c=0x000) [1]MINMAX_STR(c=0x101) [2]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 0x8002)) return;
+  if (!expect_op_field(name, &p, 1, "b", p.ops[1].b, 0x8002)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 0x101)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3289,6 +3366,9 @@ int main(void) {
   test_div_conv_mixed();
   test_div_conv_unknown_reject();
   test_div_conv_both_f64_hot();
+  test_linked_i64_load();
+  test_linked_families();
+  test_linked_string_fusion();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
