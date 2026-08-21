@@ -1325,6 +1325,19 @@ STENCIL op_div_conv_f64(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_arith_conv_f64 (Phase 5I): GENERIC +/-/* with MIXED int/double  */
+/* operands. Cold call — plain int→double casts (no precision guard,  */
+/* matching the kernels), the op, isfinite → per-row fallback.        */
+/* packed = (op_sel << 12) | (flags << 8) | (dst << 4) | src.         */
+/* ------------------------------------------------------------------ */
+DECLARE_NARROW_HOLE(ACV_ARG);
+extern void ndb_jit_h_arith_conv(JitState *s, uint32_t packed);
+STENCIL op_arith_conv_f64(JitState *s) {
+  ndb_jit_h_arith_conv(s, (uint32_t)HOLE_NARROW(ACV_ARG));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Integer division / modulo (Phase 5E-2).                            */
 /*                                                                    */
 /* Kernel equivalences: RegDivIntBigint / RegModReg integer paths.    */
@@ -1472,4 +1485,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_div_u64,
     op_mod_u64,
     op_div_conv_f64,
+    op_arith_conv_f64,
 };

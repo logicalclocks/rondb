@@ -465,8 +465,17 @@ glue prologue routes all 7 load helpers local-vs-linked; string
 fusion routes to jitMinMaxStringLinked; bridge admits flagged cols
 for every family. new rondb_jit_linked_canary). PHASE 5F COMPLETE. With 5E and 5F
 both closed, every parked coverage item is done — remaining
-unlowered surface is only the documented durable negatives; next
-milestone is Phase 6 (the pushdown-join + CTE branch merge). NEXT → 5F-2 stays
+unlowered surface is only the documented durable negatives; → 5I mixed
+int/double arithmetic DONE & VERIFIED (2026-08-21 — regen clean,
+all tests green; 1 cold-call stencil OP_ARITH_CONV_F64: the kernels'
+guard-free casts + op + isfinite, errors via per-row fallback;
+closes the TPC-H Q9 mixed-decimal shape; bridge 134/134, coldcall
+33/33; RonSQL canary Q6 flips to must-JIT; census mixed_arith
+probe; new rondb_jit_mixed_canary). Remaining durable negatives
+after 5I: string CASE conditions (next candidate), double
+trunc-DIV/fmod (no demand), temporal MIN/MAX (RonSQL-demand-gated),
+kOpSetRegNull (permanent). Next milestone: Phase 6 (the
+pushdown-join + CTE branch merge). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

@@ -77,6 +77,15 @@ SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(n), COUNT(n) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS nullable_sum_fell_back;
 
+--echo # mixed_arith: int + double operands in one expression (Phase
+--echo # 5I — the conversion cold call; includes the TPC-H Q9 shape
+--echo # of NNC-const arithmetic over scaled DECIMAL).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--disable_result_log
+SELECT SUM(a + d), SUM(dec9 * (1 - f)) FROM t1;
+--enable_result_log
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS mixed_arith_fell_back;
+
 --echo # case_nullable: CASE over a NULLABLE condition column (Phase
 --echo # 5D-3 — the planner's BRANCH_REG_EQ_NULL guard fuses with the
 --echo # READ_ATTR into a null-branching load; NULL rows stay on the

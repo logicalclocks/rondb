@@ -1,0 +1,54 @@
+############################################################
+# RONDB-1056 mixed-arithmetic JIT canary
+############################################################
+CREATE TABLE t1 (
+pk INT PRIMARY KEY,
+grp INT NOT NULL,
+a  BIGINT NOT NULL,
+u  BIGINT UNSIGNED NOT NULL,
+d  DOUBLE NOT NULL,
+p  DECIMAL(9,2) NOT NULL,
+q  DECIMAL(9,2) NOT NULL
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 10, 100, 1.5,  1.25, 0.25),
+(2, 1, 20, 200, 2.5,  2.50, 0.50),
+(3, 2, 30, 300, 4.0,  3.75, 0.75),
+(4, 2, 40, 400, 0.25, 5.00, 0.25);
+# Q1: BIGINT + DOUBLE and BIGINT * DOUBLE in one program.
+SELECT SUM(a + d) AS s1, SUM(a * d) AS s2 FROM t1;
+s1	s2
+108.25	195
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(a + d) AS s1, SUM(a * d) AS s2 FROM t1;
+s1	s2
+108.25	195
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: the TPC-H Q9 shape — integer constant minus a scaled
+#     DECIMAL, times another DECIMAL.
+SELECT SUM(p * (1 - q)) AS s FROM t1;
+s
+6.8750
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(p * (1 - q)) AS s FROM t1;
+s
+6.8750
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: unsigned * double, grouped.
+SELECT grp, SUM(u * d) AS s FROM t1 GROUP BY grp;
+grp	s
+1	650
+2	1300
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, SUM(u * d) AS s FROM t1 GROUP BY grp;
+grp	s
+1	650
+2	1300
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+DROP TABLE t1;

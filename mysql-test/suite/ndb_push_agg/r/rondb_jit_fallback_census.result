@@ -65,6 +65,14 @@ SUM(n)	COUNT(n)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS nullable_sum_fell_back;
 nullable_sum_fell_back
 0
+# mixed_arith: int + double operands in one expression (Phase
+# 5I — the conversion cold call; includes the TPC-H Q9 shape
+# of NNC-const arithmetic over scaled DECIMAL).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(a + d), SUM(dec9 * (1 - f)) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS mixed_arith_fell_back;
+mixed_arith_fell_back
+0
 # case_nullable: CASE over a NULLABLE condition column (Phase
 # 5D-3 — the planner's BRANCH_REG_EQ_NULL guard fuses with the
 # READ_ATTR into a null-branching load; NULL rows stay on the

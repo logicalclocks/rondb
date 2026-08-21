@@ -155,6 +155,7 @@ static const struct {
   { "MAGIC_MMS_COL_NARROW",   "op_minmax_str_ndb"         },
   { "MAGIC_MMS_ARG_NARROW",   "op_minmax_str_ndb"         },
   { "MAGIC_DCV_ARG_NARROW",   "op_div_conv_f64"           },
+  { "MAGIC_ACV_ARG_NARROW",   "op_arith_conv_f64"         },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

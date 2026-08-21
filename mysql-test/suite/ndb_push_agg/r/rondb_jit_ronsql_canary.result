@@ -69,18 +69,17 @@ SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
 q5_jit_compiled
 1
-# Q6: NEGATIVE control — mixed int/double operands have no JIT
-#     conversion; the program must fall back whole (correct
-#     results via the interpreter, fallback counter moves, no
-#     4060).
+# Q6: mixed int/double operands — the Phase 5I conversion cold
+#     call (formerly this canary's whole-program-fallback
+#     negative control). Must-JIT now.
 SELECT SUM(a + d) AS s FROM t1;
 s
 114
-SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 s
 114
-SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS q6_fell_back;
-q6_fell_back
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q6_jit_compiled;
+q6_jit_compiled
 1
 DROP TABLE t1;
 # Q7: DECIMAL(9,2) arithmetic — the NEW 5E-1 lowering (generic

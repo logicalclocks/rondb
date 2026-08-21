@@ -818,6 +818,16 @@ static const Hole holes_op_div_conv_f64[] = {
   { .byte_offset = 16, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_div_conv" },
 };
 
+/* op_arith_conv_f64 — 24 bytes, 2 holes */
+static const uint8_t bytes_op_arith_conv_f64[] = {
+  0xfd, 0x7b, 0xbf, 0xa9, 0x41, 0xa3, 0x81, 0x52, 0xe0, 0x03, 0x14, 0xaa,
+  0xfd, 0x03, 0x00, 0x91, 0x00, 0x00, 0x00, 0x94, 0xfd, 0x7b, 0xc1, 0xa8,
+};
+static const Hole holes_op_arith_conv_f64[] = {
+  { .byte_offset = 4, .kind = HK_OP_C, .width = 2 },
+  { .byte_offset = 16, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_arith_conv" },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -892,6 +902,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_DIV_U64] = STENCIL_(op_div_u64),
   [OP_MOD_U64] = STENCIL_(op_mod_u64),
   [OP_DIV_CONV_F64] = STENCIL_(op_div_conv_f64),
+  [OP_ARITH_CONV_F64] = STENCIL_(op_arith_conv_f64),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */

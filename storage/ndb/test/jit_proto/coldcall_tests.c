@@ -1580,6 +1580,50 @@ static void test_div_conv_coldcall(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* Phase 5I mixed-arith mock: records the packed argument. */
+static void mock_arith_conv(JitState *s, uint32_t packed) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_pinfo = packed;
+}
+
+/* T33: OP_ARITH_CONV_F64 cold call — the packed operand hole reaches
+ * the helper intact ((sel << 12) | (flags << 8) | (dst << 4) | src). */
+static void test_arith_conv_coldcall(void) {
+  const char *name = "T33 arith_conv_coldcall";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 2;
+  p.ops[0] = (Op){ .kind = OP_ARITH_CONV_F64, .a = 1, .b = 2,
+                   .c = (2 << 12) | (0x6 << 8) | (1 << 4) | 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — arith_conv "
+              "helper registered / stencils regenerated?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  jit1_entry(jp)(&s);
+
+  if (ctx.n_calls != 1 ||
+      ctx.last_pinfo != ((2u << 12) | (0x6u << 8) | 0x12u)) {
+    mark_fail(name, "helper calls=%u packed=0x%x, want 1/0x2612",
+              ctx.n_calls, ctx.last_pinfo);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 /* T30: OP_LOAD_COL_NDB_DEC cold call — all three operand holes
  * (col, dst, pinfo) reach the helper and the value flows into the
  * accumulator. */
@@ -1761,7 +1805,9 @@ int main(void) {
       jit1_register_helper("ndb_jit_h_minmax_str",
                             (JitHelperFn)&mock_minmax_str) != 0 ||
       jit1_register_helper("ndb_jit_h_div_conv",
-                            (JitHelperFn)&mock_div_conv) != 0) {
+                            (JitHelperFn)&mock_div_conv) != 0 ||
+      jit1_register_helper("ndb_jit_h_arith_conv",
+                            (JitHelperFn)&mock_arith_conv) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1797,6 +1843,7 @@ int main(void) {
   test_dec_load_col_coldcall();
   test_minmax_str_coldcall();
   test_div_conv_coldcall();
+  test_arith_conv_coldcall();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

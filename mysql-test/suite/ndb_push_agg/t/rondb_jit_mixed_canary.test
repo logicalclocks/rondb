@@ -1,0 +1,68 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5I — mixed int/double arithmetic canary.
+#
+# The SQL planner pushes +/-/* over ANY numeric mix, and the data
+# node optimizer leaves mixed operands generic — pre-5I every such
+# program fell back wholesale, including the TPC-H Q9 pattern
+# (integer-constant arithmetic over scaled DECIMAL, which lands in
+# the F64 track). The bridge now emits the conversion cold call
+# (plain casts + op + isfinite, exactly the kernels' double arm).
+#
+# All values are EXACT in binary (halves/quarters), so both engines
+# print identical digits. Every query runs under ERROR_INSERT 4060
+# with a compile-counter delta.
+#
+# Requires a build with generated stencils (regen-stencils).
+
+--echo ############################################################
+--echo # RONDB-1056 mixed-arithmetic JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk INT PRIMARY KEY,
+  grp INT NOT NULL,
+  a  BIGINT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL,
+  d  DOUBLE NOT NULL,
+  p  DECIMAL(9,2) NOT NULL,
+  q  DECIMAL(9,2) NOT NULL
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 1, 10, 100, 1.5,  1.25, 0.25),
+  (2, 1, 20, 200, 2.5,  2.50, 0.50),
+  (3, 2, 30, 300, 4.0,  3.75, 0.75),
+  (4, 2, 40, 400, 0.25, 5.00, 0.25);
+
+--echo # Q1: BIGINT + DOUBLE and BIGINT * DOUBLE in one program.
+SELECT SUM(a + d) AS s1, SUM(a * d) AS s2 FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(a + d) AS s1, SUM(a * d) AS s2 FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: the TPC-H Q9 shape — integer constant minus a scaled
+--echo #     DECIMAL, times another DECIMAL.
+SELECT SUM(p * (1 - q)) AS s FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(p * (1 - q)) AS s FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: unsigned * double, grouped.
+--sorted_result
+SELECT grp, SUM(u * d) AS s FROM t1 GROUP BY grp;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--sorted_result
+SELECT grp, SUM(u * d) AS s FROM t1 GROUP BY grp;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

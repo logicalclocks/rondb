@@ -2835,16 +2835,22 @@ static void test_generic_arith_u64_const(void) {
   mark_pass(name);
 }
 
-/* T62d: generic + over mixed int/double operands -> UNSUPPORTED (the
- * kernel converts the int inline; the JIT has no conversion op). */
-static void test_generic_arith_mixed_reject(void) {
+/* T62d: generic + over mixed int/double operands — REJECTED until
+ * Phase 5I, now the conversion cold call (T66a-c carry the detailed
+ * packed-operand assertions; this pins the former reject boundary). */
+static void test_generic_arith_mixed(void) {
+  const char *name = "T62d generic_arith_mixed";
   uint32_t prog[3] = {
     enc_load_col(NDB_TYPE_BIGINT, 0, 0),
     enc_load_col(NDB_TYPE_DOUBLE, 1, 2),
     enc_2reg(kOpPlus, 0, 1),
   };
-  assert_rejected("T62d generic_arith_mixed_reject", prog, 3,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpPlus);
+  Program p;
+  /* [0]load [1]load [2]ARITH_CONV [3]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ARITH_CONV_F64)) return;
+  mark_pass(name);
 }
 
 /* T62e: generic + over u64 and a signed VARIABLE -> UNSUPPORTED
@@ -3234,6 +3240,81 @@ static void test_linked_string_fusion(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5I: MIXED int/double GENERIC +/-/* — OP_ARITH_CONV_F64       */
+/* (cold call; plain casts + op + isfinite, errors via per-row        */
+/* fallback). packed(op->c) = (sel<<12)|(flags<<8)|(dst<<4)|src.      */
+/* ------------------------------------------------------------------ */
+
+/* T66a: i64 + f64 kOpPlus -> conversion arith; generic Sum lands
+ * SUM_F64 (result register is F64). */
+static void test_arith_conv_mixed_plus(void) {
+  const char *name = "T66a arith_conv_mixed_plus";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/2),
+    enc_2reg(kOpPlus, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]load [1]load [2]ARITH_CONV [3]SUM_F64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ARITH_CONV_F64)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 1)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (0u << 12) | (0x4u << 8) | (0 << 4) | 1)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
+}
+
+/* T66b: the TPC-H Q9 shape — NNC const MINUS a scaled-DECIMAL (F64)
+ * register, then MUL by another decimal. Both mixed ops convert. */
+static void test_arith_conv_q9_shape(void) {
+  const char *name = "T66b arith_conv_q9_shape";
+  uint32_t prog[9];
+  prog[0] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0);
+  prog[1] = 1u;
+  prog[2] = 0u;
+  prog[3] = enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/1, /*col=*/2);
+  prog[4] = enc_dec_info(9, 2);
+  prog[5] = enc_2reg(kOpMinus, 0, 1);   /* NNC - F64 -> mixed conv */
+  prog[6] = enc_load_col(NDB_TYPE_DECIMAL, /*reg=*/2, /*col=*/3);
+  prog[7] = enc_dec_info(9, 2);
+  prog[8] = enc_2reg(kOpMul, 0, 2);     /* F64 * F64 -> HOT MUL_F64 */
+  Program p;
+  /* [0]CONST [1]LCD [2]ARITH_CONV(sub) [3]LCD [4]MUL_F64 [5]EXIT
+   * [6]OVF. */
+  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ARITH_CONV_F64)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (1u << 12) | (0x4u << 8) | (0 << 4) | 1)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_MUL_F64)) return;
+  mark_pass(name);
+}
+
+/* T66c: u64 * f64 kOpMul — the unsigned flag on the dividend side. */
+static void test_arith_conv_u64_mul(void) {
+  const char *name = "T66c arith_conv_u64_mul";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/2),
+    enc_2reg(kOpMul, 0, 1),
+  };
+  Program p;
+  /* [0]load [1]load [2]ARITH_CONV [3]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ARITH_CONV_F64)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (2u << 12) | (0x6u << 8) | (0 << 4) | 1)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3349,7 +3430,7 @@ int main(void) {
   test_generic_arith_i64();
   test_generic_arith_f64();
   test_generic_arith_u64_const();
-  test_generic_arith_mixed_reject();
+  test_generic_arith_mixed();
   test_generic_arith_u64_signed_reject();
   test_generic_arith_unknown_reject();
   test_generic_arith_decimal();
@@ -3369,6 +3450,9 @@ int main(void) {
   test_linked_i64_load();
   test_linked_families();
   test_linked_string_fusion();
+  test_arith_conv_mixed_plus();
+  test_arith_conv_q9_shape();
+  test_arith_conv_u64_mul();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

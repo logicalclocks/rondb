@@ -408,6 +408,35 @@ crosses 2^32), AVG, grouped both-tracks program, nullable narrow
 columns on both NB families, narrow arithmetic. Census `int_sum`
 flips 1 → 0.
 
+## 5I — mixed int/double arithmetic — **DONE & VERIFIED (2026-08-21 — regen clean, bridge 134/134, coldcall 33/33, mixed + RonSQL canaries and census green, full ndb_push_agg sweep passed)**
+
+Assessment-driven (post-5E review): the SQL planner pushes +/-/*
+over ANY numeric mix and the data node optimizer leaves mixed
+operands generic — so every mixed program fell back wholesale,
+INCLUDING the TPC-H Q9 pattern (integer-constant arithmetic over
+scaled DECIMAL: `price * (1 - discount)` is NNC ⊕ F64 at the
+bridge), which undercut the 5E-1 decimal win for exactly its target
+queries.
+
+One cold-call stencil `OP_ARITH_CONV_F64` (62; regen) + ctx-free
+helper mirroring Reg{Plus,Minus,Mul}Reg's double arm exactly: plain
+int→double casts (the kernels have NO ±2^53 guard here, unlike
+division), the op, isfinite → per-row fallback (=
+ZAGG_MATH_OVERFLOW via the interpreter re-run). packed =
+(op_sel << 12) | (flags << 8) | (dst << 4) | src. The 5E-1 generic
+case's reject arm becomes the emit; uniform tracks keep their
+hot/typed paths; STR/UNKNOWN still reject.
+
+Tests: bridge 134/134 (T66a mixed plus with packed assertions +
+SUM_F64 typing, T66b the Q9 shape — mixed sub then HOT both-F64
+mul, T66c u64×f64), coldcall 33/33 (T33 packed round trip). RonSQL
+canary Q6 FLIPS from the whole-program-fallback negative control to
+a 4060 must-JIT. Census gains a `mixed_arith` compile probe
+(counter-only — decimal→double display digits are conversion-
+dependent). New canary `rondb_jit_mixed_canary`: binary-exact
+values, BIGINT⊕DOUBLE, the Q9 decimal shape, u64×double grouped —
+all 4060 must-JIT with mysqld-computed baselines.
+
 ## 5E — division/modulo + GENERIC arithmetic — **PLANNED, see `phase_5e_plan.md`**
 
 **Scoping finding (2026-08-21, corrected in review): RonSQL emits

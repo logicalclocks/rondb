@@ -352,6 +352,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_DIV_U64:              return "div_u64";
     case OP_MOD_U64:              return "mod_u64";
     case OP_DIV_CONV_F64:         return "div_conv_f64";
+    case OP_ARITH_CONV_F64:       return "arith_conv_f64";
     default:                      return "jit_op?";
   }
 }
@@ -1598,9 +1599,10 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
     case OP_DIV_U64:
     case OP_MOD_U64:
       return op->b == reg || op->c == reg;
-    /* Phase 5E-3 conversion divide: a = dst (also the lhs), b = src;
-     * c is the packed helper argument, NOT a register. */
+    /* Conversion divide/arith (5E-3/5I): a = dst (also the lhs),
+     * b = src; c is the packed helper argument, NOT a register. */
     case OP_DIV_CONV_F64:
+    case OP_ARITH_CONV_F64:
       return op->a == reg || op->b == reg;
     /* Accumulators read their source register (op->b). COUNT is
      * listed deliberately: its stencil ignores the register, but the
@@ -1666,6 +1668,7 @@ static int nb_op_written_reg(const Op *op) {
     case OP_DIV_U64:
     case OP_MOD_U64:
     case OP_DIV_CONV_F64:
+    case OP_ARITH_CONV_F64:
       return op->a;
     default:
       return -1;
@@ -2288,6 +2291,31 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
               break;
           }
           reg_type[dst] = arith_unsigned ? BR_REG_U64 : BR_REG_I64;
+        } else if ((dst_int || reg_type[dst] == BR_REG_F64) &&
+                   (src_int || reg_type[src] == BR_REG_F64)) {
+          /* Phase 5I: MIXED int/double operands — the kernel's double
+           * arm converts the integer side with a PLAIN cast (no ±2^53
+           * guard, unlike division) and isfinite-checks the result.
+           * One conversion cold call mirrors it exactly; errors ride
+           * the per-row fallback, so no overflow-target fixup. This
+           * closes the TPC-H Q9 shape (NNC const ⊕ scaled DECIMAL). */
+          uint16_t sel = (op == BR_kOpPlus)  ? 0u
+                       : (op == BR_kOpMinus) ? 1u : 2u;
+          uint16_t flags =
+              (uint16_t)(((reg_type[dst] == BR_REG_F64) ? 0x1u : 0u) |
+                         ((reg_type[dst] == BR_REG_U64) ? 0x2u : 0u) |
+                         ((reg_type[src] == BR_REG_F64) ? 0x4u : 0u) |
+                         ((reg_type[src] == BR_REG_U64) ? 0x8u : 0u));
+          uint16_t packed = (uint16_t)((sel << 12) | (flags << 8) |
+                                       ((uint16_t)dst << 4) | src);
+          if (!emit_op(out_prog, OP_ARITH_CONV_F64, dst, src, packed,
+                       0)) {
+            set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          reg_type[dst] = BR_REG_F64;
+          pos += 1;
+          break;
         } else {
           set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
           return JIT_BRIDGE_UNSUPPORTED_OP;

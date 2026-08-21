@@ -321,7 +321,19 @@ typedef enum {
    * bit1 = a-is-u64, bit2 = b-is-f64, bit3 = b-is-u64 (neither bit =
    * signed/NNC i64). No overflow hole — errors ride the fallback. */
   OP_DIV_CONV_F64          = 61,
-  OP_KIND_MAX           = OP_DIV_CONV_F64
+  /* Phase 5I: GENERIC +/-/* with MIXED int/double operands — a cold
+   * call mirroring Reg{Plus,Minus,Mul}Reg's double arm exactly: each
+   * integer-track operand converts with a PLAIN cast (unlike
+   * division there is NO ±2^53 precision guard in the kernel), then
+   * the op, then isfinite — a non-finite result is the kernel's
+   * ZAGG_MATH_OVERFLOW, reproduced via the per-row fallback. The hot
+   * path writes the f64 result bits to dst. Uniform-track operands
+   * never get here (typed/hot classifiers above). Operand layout:
+   * a = dst (also the lhs), b = src, c = packed
+   * (op_sel << 12) | (flags << 8) | (dst << 4) | src with op_sel
+   * 0=add 1=sub 2=mul and flags per OP_DIV_CONV_F64. */
+  OP_ARITH_CONV_F64        = 62,
+  OP_KIND_MAX           = OP_ARITH_CONV_F64
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
