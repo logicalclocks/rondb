@@ -805,7 +805,7 @@ ndb_jit_h_div_conv(JitState *s, uint32_t packed) {
 }
 
 /* ndb_jit_h_arith_conv — Phase 5I cold call for OP_ARITH_CONV_F64:
- * GENERIC +/-/* with MIXED int/double operands. packed =
+ * GENERIC plus/minus/mul with MIXED int/double operands. packed =
  * (op_sel << 12) | (flags << 8) | (dst << 4) | src. Mirrors
  * Reg{Plus,Minus,Mul}Reg's double arm exactly: integer operands
  * convert with a PLAIN cast (signed or unsigned per the flags — the
@@ -1164,7 +1164,13 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   ctx.join_agg   = join_agg;
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
-  ctx.prog_buf   = nullptr;  /* aggregation path emits no BRANCH_ATTR_OP_ARG */
+  /* String-CASE unblock: embedded BRANCH_ATTR_OP_ARG ops carry their
+   * instruction-word offset relative to the program past the GROUP BY
+   * metadata — point prog_buf there so the helper can read the
+   * condition words. Aggregation programs never carry OP_PARAM (the
+   * kernel validator's whitelist excludes it), so param_buf stays
+   * null. */
+  ctx.prog_buf   = agg->agg_program() + agg->agg_prog_start_pos();
   ctx.param_buf  = nullptr;
   ctx.agg_res_ptr = agg_res_ptr;
 #ifdef ERROR_INSERT

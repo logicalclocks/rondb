@@ -1325,7 +1325,7 @@ STENCIL op_div_conv_f64(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* op_arith_conv_f64 (Phase 5I): GENERIC +/-/* with MIXED int/double  */
+/* op_arith_conv_f64 (Phase 5I): GENERIC plus/minus/mul, MIXED types   */
 /* operands. Cold call — plain int→double casts (no precision guard,  */
 /* matching the kernels), the op, isfinite → per-row fallback.        */
 /* packed = (op_sel << 12) | (flags << 8) | (dst << 4) | src.         */

@@ -3241,7 +3241,7 @@ static void test_linked_string_fusion(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Phase 5I: MIXED int/double GENERIC +/-/* — OP_ARITH_CONV_F64       */
+/* Phase 5I: MIXED int/double GENERIC plus/minus/mul: OP_ARITH_CONV_F64  */
 /* (cold call; plain casts + op + isfinite, errors via per-row        */
 /* fallback). packed(op->c) = (sel<<12)|(flags<<8)|(dst<<4)|src.      */
 /* ------------------------------------------------------------------ */
@@ -3312,6 +3312,67 @@ static void test_arith_conv_u64_mul(void) {
                        OP_ARITH_CONV_F64)) return;
   if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
                        (2u << 12) | (0x6u << 8) | (0 << 4) | 1)) return;
+  mark_pass(name);
+}
+
+/* ------------------------------------------------------------------ */
+/* String CASE conditions on the AGGREGATION path: embedded           */
+/* BRANCH_ATTR_OP_ARG is now admitted with its op->b as the ABSOLUTE  */
+/* word offset (embedded base = header pos + 1), matching the         */
+/* dispatch's ctx->prog_buf = program + agg_prog_start_pos.           */
+/* ------------------------------------------------------------------ */
+
+/* T67a: embedded string condition at program start — b = 0 + 1 + 0. */
+static void test_agg_attr_op_arg_start(void) {
+  const char *name = "T67a agg_attr_op_arg_start";
+  uint32_t prog[9] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
+                    (3u << 6) | (0u << 12) | (5u << 16)),  /* EQ -> +5 */
+    (1u << 16) | 8u,           /* attrId 1, byte len 8 (2 data words) */
+    0x00000005u,
+    0x00000000u,
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]BRANCH_ATTR_OP_ARG(b=1,c=2) [1]EXIT(refuse) [2..]outer. */
+  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_ATTR_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 1)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T67b: embedded block mid-program — the base tracks the block's
+ * position (header at word 2 -> b = 3 + emb_pc). */
+static void test_agg_attr_op_arg_mid(void) {
+  const char *name = "T67b agg_attr_op_arg_mid";
+  uint32_t prog[11] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
+                    (3u << 6) | (0u << 12) | (5u << 16)),
+    (2u << 16) | 8u,
+    0x00000005u,
+    0x00000000u,
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/1),
+  };
+  Program p;
+  /* [0]load [1]SUM [2]BRANCH_ATTR_OP_ARG(b=3) [3]EXIT [4]load [5]SUM
+   * [6]EXIT [7]OVF. */
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_ATTR_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 3)) return;
   mark_pass(name);
 }
 
@@ -3453,6 +3514,8 @@ int main(void) {
   test_arith_conv_mixed_plus();
   test_arith_conv_q9_shape();
   test_arith_conv_u64_mul();
+  test_agg_attr_op_arg_start();
+  test_agg_attr_op_arg_mid();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

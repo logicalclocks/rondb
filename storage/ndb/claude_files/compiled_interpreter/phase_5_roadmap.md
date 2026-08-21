@@ -408,6 +408,35 @@ crosses 2^32), AVG, grouped both-tracks program, nullable narrow
 columns on both NB families, narrow arithmetic. Census `int_sum`
 flips 1 → 0.
 
+## 5J — string CASE conditions on the aggregation path — **DONE & VERIFIED (2026-08-21 — no regen; bridge 136/136, case-nullable canary Q4/Q5 green as 4060 must-JITs, census case_string flipped to 0, full ndb_push_agg sweep passed — the census is FULLY GREEN for every planner-pushed shape, no exceptions)**
+
+The LAST census-confirmed red (`case_string` = 1: the planner pushes
+`SUM(CASE WHEN char_col = '...' ...)` and the bridge rejected it).
+The block was plumbing, not lowering: OP_BRANCH_ATTR_OP_ARG's helper
+reads the condition's instruction words via ctx->prog_buf + op->b,
+which only the scan-filter dispatch wired. NO regen, NO new ops:
+
+- translate_embedded_block gains `attr_op_arg_base`: the scan filter
+  passes 0 (its prog_buf IS the embedded words); the aggregation
+  path passes header_pos + 1, so op->b becomes the ABSOLUTE word
+  offset within the compiled region (≤ 1024, comfortably inside the
+  16-bit operand hole).
+- dbtup_jit_invoke now sets ctx->prog_buf = agg_program() +
+  agg_prog_start_pos() — the same base both compile paths use
+  (PushdownInterpreter Create and the DBLQH leaf-program compile).
+  param_buf stays null: the kernel validator excludes OP_PARAM from
+  aggregation programs.
+- The helper's NULL semantics (incl. IF_NULL_CONTINUE from the 5D-3
+  mysqld fix) already lived in evalBranchColForJit — string
+  conditions over NULLABLE columns are 4060-safe day one.
+
+Tests: bridge 136/136 (T67a embedded string condition at program
+start — b = 1; T67b mid-program block — b tracks the header
+position). rondb_jit_case_nullable_canary Q4/Q5 UPGRADE from
+interpreter-correctness probes to 4060 must-JITs. Census
+`case_string` flips 1 → 0 — the census scoreboard is fully green
+for every shape the SQL planner pushes, with no exceptions.
+
 ## 5I — mixed int/double arithmetic — **DONE & VERIFIED (2026-08-21 — regen clean, bridge 134/134, coldcall 33/33, mixed + RonSQL canaries and census green, full ndb_push_agg sweep passed)**
 
 Assessment-driven (post-5E review): the SQL planner pushes +/-/*

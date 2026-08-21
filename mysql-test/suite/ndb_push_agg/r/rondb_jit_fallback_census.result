@@ -163,15 +163,14 @@ SUM(i)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_sum_fell_back;
 int_sum_fell_back
 0
-# case_string: STRING condition in a CASE aggregate — the
-# BRANCH_ATTR_OP_ARG lowering is wired for the scan-filter path
-# only; the aggregation path rejects it (needs per-block
-# prog_buf base plumbing — future work).
+# case_string: STRING condition in a CASE aggregate (compiles
+# since the aggregation-path BRANCH_ATTR_OP_ARG unblock —
+# absolute instruction offsets + prog_buf at dispatch).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(CASE WHEN ch = 'beta' THEN 1 ELSE 0 END) FROM t1;
 SUM(CASE WHEN ch = 'beta' THEN 1 ELSE 0 END)
 1
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_string_fell_back;
 case_string_fell_back
-1
+0
 DROP TABLE t1;

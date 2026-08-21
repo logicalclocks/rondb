@@ -637,6 +637,7 @@ static JitBridgeReason translate_embedded_block(
     uint8_t exit_ok_kind,
     int allow_linked_ops,
     int allow_attr_op_arg,
+    uint32_t attr_op_arg_base,
     int allow_reg_ops,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps,
@@ -1119,14 +1120,28 @@ static JitBridgeReason translate_embedded_block(
           }
           return JIT_BRIDGE_MALFORMED;
         }
-        /* op->b = the instruction's word offset within the exec region
-         * (= ctx->prog_buf base at runtime). emb_pc < emb_len ≤
-         * BR_EMB_MAX_LEN (1024), so it fits the 16-bit op->b / narrow-MOVZ
-         * hole — same shape as the attr_id hole on BRANCH_ATTR_*_NULL.
-         * op->c is the branch target (pass-2 fixup). */
+        /* op->b = the instruction's word offset within ctx->prog_buf.
+         * The BASE differs per path (the string-CASE unblock): the
+         * scan filter's prog_buf IS the embedded words (base 0); the
+         * aggregation path's prog_buf is the whole program past the
+         * GROUP BY metadata, so its embedded words sit at
+         * outer_word_pos + 1 — the caller passes attr_op_arg_base
+         * accordingly. Both bases + emb_pc stay ≤
+         * MAX_AGG_PROGRAM_WORD_SIZE (1024), well inside the 16-bit
+         * op->b / narrow-MOVZ hole. op->c is the branch target
+         * (pass-2 fixup). */
+        if (attr_op_arg_base + emb_pc > 0xFFFFu) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
         pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
         if (!emit_op(out_prog, OP_BRANCH_ATTR_OP_ARG, /*a=*/0,
-                     /*b=*/(uint16_t)emb_pc, /*c=*/0, /*imm=*/0)) {
+                     /*b=*/(uint16_t)(attr_op_arg_base + emb_pc),
+                     /*c=*/0, /*imm=*/0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -1493,7 +1508,8 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   OP_EXIT,
                                   BR_EXIT_OK_FALLTHROUGH,
                                   /*allow_linked_ops=*/1,
-                                  /*allow_attr_op_arg=*/0,
+                                  /*allow_attr_op_arg=*/1,
+                                  /*attr_op_arg_base=*/outer_word_pos + 1,
                                   /*allow_reg_ops=*/1,
                                   pending_case_jumps,
                                   &n_pending_case_jumps,
@@ -1527,6 +1543,7 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                /*exit_ok_kind=*/OP_EXIT,
                                /*allow_linked_ops=*/0,
                                /*allow_attr_op_arg=*/1,
+                               /*attr_op_arg_base=*/0,
                                /*allow_reg_ops=*/0,
                                pending_case_jumps,
                                &n_pending_case_jumps,
@@ -2732,7 +2749,8 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         JitBridgeReason rc = translate_embedded_block(
             ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos,
             pos + 1 + emb_len, OP_EXIT, BR_EXIT_OK_FALLTHROUGH,
-            /*allow_linked_ops=*/1, /*allow_attr_op_arg=*/0,
+            /*allow_linked_ops=*/1, /*allow_attr_op_arg=*/1,
+            /*attr_op_arg_base=*/this_pos + 1,
             /*allow_reg_ops=*/1,
             pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);

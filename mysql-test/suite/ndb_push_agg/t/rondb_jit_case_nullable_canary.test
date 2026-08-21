@@ -15,12 +15,6 @@
 # JIT fallback) — surviving it proves NULL condition rows ran pure
 # JIT — plus a programs_compiled/reused counter delta.
 #
-# STRING conditions are the exception: BRANCH_ATTR_OP_ARG is wired
-# for the scan-filter path only (the aggregation path rejects it —
-# whole-program interpreter fallback, census probe case_string), so
-# the string queries here check CORRECTNESS of the IF_NULL_CONTINUE
-# semantics on the interpreter without 4060.
-#
 # THEN-value COLUMNS are BIGINT here on purpose: arm value loads go
 # through the OUTER kOpLoadCol path, whose admission is BIGINT-only
 # (narrow INT columns are a pre-existing whole-program fallback —
@@ -80,18 +74,27 @@ FROM t1;
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 --echo # Q4: string EQ and NE over a nullable CHAR — IF_NULL_CONTINUE
---echo #     means NULL rows match NEITHER. Interpreter path (string
---echo #     conditions are not JIT-admitted for aggregation) — this
---echo #     probes the NULL semantics fix, not compilation.
+--echo #     means NULL rows match NEITHER. String conditions now JIT
+--echo #     (the aggregation-path BRANCH_ATTR_OP_ARG unblock): NULL
+--echo #     values take the not-taken edge inside the cold call — no
+--echo #     fallback, so 4060-armed.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
 SELECT SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa,
        SUM(CASE WHEN c = 'aa' THEN amt ELSE 0 END) AS eq_amt
 FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
 
 --echo # Q5: mixed integer + string conditions in one searched CASE —
---echo #     also interpreter-path (the string condition rejects the
---echo #     whole program); NULL falls through both conditions.
+--echo #     the guard's null edge targets the string condition's
+--echo #     BRANCH_ATTR word; NULL falls through both conditions.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
 SELECT SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
 FROM t1;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
 
 --echo # Q6: CASE aggregate + plain aggregates in one program; the THEN
 --echo #     arm loads the nullable column itself (5D-1 NB load).

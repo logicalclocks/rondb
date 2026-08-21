@@ -49,21 +49,30 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q3_jit_compiled
 1
 # Q4: string EQ and NE over a nullable CHAR — IF_NULL_CONTINUE
-#     means NULL rows match NEITHER. Interpreter path (string
-#     conditions are not JIT-admitted for aggregation) — this
-#     probes the NULL semantics fix, not compilation.
+#     means NULL rows match NEITHER. String conditions now JIT
+#     (the aggregation-path BRANCH_ATTR_OP_ARG unblock): NULL
+#     values take the not-taken edge inside the cold call — no
+#     fallback, so 4060-armed.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa,
 SUM(CASE WHEN c = 'aa' THEN amt ELSE 0 END) AS eq_amt
 FROM t1;
 ne_aa	eq_amt
 1	600
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
 # Q5: mixed integer + string conditions in one searched CASE —
-#     also interpreter-path (the string condition rejects the
-#     whole program); NULL falls through both conditions.
+#     the guard's null edge targets the string condition's
+#     BRANCH_ATTR word; NULL falls through both conditions.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
 FROM t1;
 s
 11
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+q5_jit_compiled
+1
 # Q6: CASE aggregate + plain aggregates in one program; the THEN
 #     arm loads the nullable column itself (5D-1 NB load).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);

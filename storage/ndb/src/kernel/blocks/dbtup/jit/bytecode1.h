@@ -321,7 +321,7 @@ typedef enum {
    * bit1 = a-is-u64, bit2 = b-is-f64, bit3 = b-is-u64 (neither bit =
    * signed/NNC i64). No overflow hole — errors ride the fallback. */
   OP_DIV_CONV_F64          = 61,
-  /* Phase 5I: GENERIC +/-/* with MIXED int/double operands — a cold
+  /* Phase 5I: GENERIC plus/minus/mul with MIXED int/double operands — a cold
    * call mirroring Reg{Plus,Minus,Mul}Reg's double arm exactly: each
    * integer-track operand converts with a PLAIN cast (unlike
    * division there is NO ±2^53 precision guard in the kernel), then

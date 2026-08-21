@@ -471,11 +471,17 @@ all tests green; 1 cold-call stencil OP_ARITH_CONV_F64: the kernels'
 guard-free casts + op + isfinite, errors via per-row fallback;
 closes the TPC-H Q9 mixed-decimal shape; bridge 134/134, coldcall
 33/33; RonSQL canary Q6 flips to must-JIT; census mixed_arith
-probe; new rondb_jit_mixed_canary). Remaining durable negatives
-after 5I: string CASE conditions (next candidate), double
-trunc-DIV/fmod (no demand), temporal MIN/MAX (RonSQL-demand-gated),
-kOpSetRegNull (permanent). Next milestone: Phase 6 (the
-pushdown-join + CTE branch merge). NEXT → 5F-2 stays
+probe; new rondb_jit_mixed_canary). → 5J string CASE
+conditions DONE & VERIFIED (2026-08-21 — NO regen, all green: the
+block was plumbing — embedded BRANCH_ATTR_OP_ARG now carries the
+ABSOLUTE instruction offset (attr_op_arg_base) and dbtup_jit_invoke
+points ctx->prog_buf at program + start_pos; bridge 136/136;
+case-nullable canary Q4/Q5 upgrade to 4060 must-JIT; census
+case_string flips to 0 — the census is then FULLY green for every
+planner-pushed shape, no exceptions). Remaining durable negatives:
+double trunc-DIV/fmod (no demand), temporal MIN/MAX
+(RonSQL-demand-gated), kOpSetRegNull (permanent). Next milestone:
+Phase 6 (the pushdown-join + CTE branch merge). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning
