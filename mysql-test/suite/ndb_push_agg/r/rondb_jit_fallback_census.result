@@ -140,18 +140,16 @@ SUM(u + 1)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS unsigned_arith_fell_back;
 unsigned_arith_fell_back
 0
-# int_sum: SUM over a plain INT column. The OUTER kOpLoadCol
-# admission is BIGINT-only (narrow widths were never added even
-# though the load helpers already decode them — found during
-# 5D-3); every narrow-integer aggregate is a whole-program
-# fallback. High-value follow-up slice.
+# int_sum: SUM over a plain INT column (compiles since the
+# narrow-int admission — signed widths ride the i64 track,
+# unsigned widths the u64 track).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(i) FROM t1;
 SUM(i)
 10
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_sum_fell_back;
 int_sum_fell_back
-1
+0
 # case_string: STRING condition in a CASE aggregate — the
 # BRANCH_ATTR_OP_ARG lowering is wired for the scan-filter path
 # only; the aggregation path rejects it (needs per-block

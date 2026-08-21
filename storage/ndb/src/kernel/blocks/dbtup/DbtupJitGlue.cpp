@@ -562,13 +562,32 @@ ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
         ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
     type_id = AttributeDescriptor::getType(attrDesc1);
   }
-  if (type_id != NDB_TYPE_BIGUNSIGNED) {
-    s->row_fallback = 1;
-    s->regs_i64[dst_reg] = 0;
-    return 0;
-  }
+  /* Narrow-int admission: same unsigned-width decode as the void
+   * sibling — the bridge routes every unsigned width here. */
   const char *data = reinterpret_cast<const char *>(&read_buf[1]);
-  s->regs_i64[dst_reg] = (Int64)(Uint64)uint8korr(data);
+  Uint64 uval;
+  switch (type_id) {
+    case NDB_TYPE_TINYUNSIGNED:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      uval = (Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      uval = (Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGUNSIGNED:
+      uval = uint8korr(data);
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return 0;
+  }
+  s->regs_i64[dst_reg] = (Int64)uval;
   return 0;
 }
 
@@ -715,13 +734,17 @@ ndb_jit_h_minmax_str(JitState *s, uint32_t col_id, uint32_t packed) {
 }
 
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
- * BIGUNSIGNED columns (OP_LOAD_COL_NDB_U64). The u64 value's bits are
- * stored into regs_i64[dst_reg]; the u64 consumer stencils
+ * unsigned-integer columns (OP_LOAD_COL_NDB_U64). The u64 value's bits
+ * are stored into regs_i64[dst_reg]; the u64 consumer stencils
  * (SUM_U64_CHECKED, MIN/MAX_U64) reinterpret them unsigned. Kept
  * separate from the signed helper so a schema drift cannot feed u64
  * bits (which misorder under signed compares for values >= 2^63) into
- * a signed-contract site: only a descriptor-BIGUNSIGNED column loads
- * here; anything else takes the per-row fallback. */
+ * a signed-contract site: only a descriptor-unsigned column loads
+ * here; anything else takes the per-row fallback. Narrow-int
+ * admission: TINY/SMALL/MEDIUM/UNSIGNED zero-extend, mirroring the
+ * interpreter's loadColumnTypedFromBuf arms — the bridge routes every
+ * unsigned width here so the u64 kernels' unsigned accumulation and
+ * is_unsigned result metadata match the interpreter exactly. */
 extern "C" void
 ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   dbtup_jit_call_ctx *ctx =
@@ -761,13 +784,30 @@ ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
         ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
     type_id = AttributeDescriptor::getType(attrDesc1);
   }
-  if (type_id != NDB_TYPE_BIGUNSIGNED) {
-    s->row_fallback = 1;
-    s->regs_i64[dst_reg] = 0;
-    return;
-  }
   const char *data = reinterpret_cast<const char *>(&read_buf[1]);
-  s->regs_i64[dst_reg] = (Int64)(Uint64)uint8korr(data);
+  Uint64 uval;
+  switch (type_id) {
+    case NDB_TYPE_TINYUNSIGNED:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      uval = (Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      uval = (Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGUNSIGNED:
+      uval = uint8korr(data);
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  s->regs_i64[dst_reg] = (Int64)uval;
 
 #ifdef ERROR_INSERT
   if (ctx->trace_enabled) {

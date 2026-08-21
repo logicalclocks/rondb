@@ -105,6 +105,14 @@
 #define BR_kOpSetRegNull    30
 
 /* From storage/ndb/include/ndb_constants.h. */
+#define BR_NDB_TYPE_TINYINT          1
+#define BR_NDB_TYPE_TINYUNSIGNED     2
+#define BR_NDB_TYPE_SMALLINT         3
+#define BR_NDB_TYPE_SMALLUNSIGNED    4
+#define BR_NDB_TYPE_MEDIUMINT        5
+#define BR_NDB_TYPE_MEDIUMUNSIGNED   6
+#define BR_NDB_TYPE_INT              7
+#define BR_NDB_TYPE_UNSIGNED         8
 #define BR_NDB_TYPE_BIGINT      9
 #define BR_NDB_TYPE_BIGUNSIGNED 10
 #define BR_NDB_TYPE_FLOAT       11
@@ -1958,14 +1966,34 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * bits into another's consumers). */
         int is_f64 =
             (type == BR_NDB_TYPE_DOUBLE || type == BR_NDB_TYPE_FLOAT);
-        int is_u64 = (type == BR_NDB_TYPE_BIGUNSIGNED);
+        /* Narrow-int admission (post-5D-3, census probe int_sum): the
+         * SIGNED widths sign-extend into the i64 track and the
+         * UNSIGNED widths zero-extend into the u64 track — the same
+         * split the interpreter makes (IsUnsigned(type) tags the
+         * register, and the Sum/Min/Max kernels then pick signed vs
+         * unsigned accumulation/compare and set the result's
+         * is_unsigned). Narrow-unsigned must NOT ride the i64 track:
+         * the interpreter accumulates unsigned registers as u64 (SUM
+         * up to 2^64-1 with a u64 overflow check) and marks the
+         * result unsigned — a signed SUM would overflow-exit at 2^63
+         * and drop the metadata. The load helpers already decode
+         * every width; this admission is the only gate. */
+        int is_i64 = (type == BR_NDB_TYPE_BIGINT ||
+                      type == BR_NDB_TYPE_TINYINT ||
+                      type == BR_NDB_TYPE_SMALLINT ||
+                      type == BR_NDB_TYPE_MEDIUMINT ||
+                      type == BR_NDB_TYPE_INT);
+        int is_u64 = (type == BR_NDB_TYPE_BIGUNSIGNED ||
+                      type == BR_NDB_TYPE_TINYUNSIGNED ||
+                      type == BR_NDB_TYPE_SMALLUNSIGNED ||
+                      type == BR_NDB_TYPE_MEDIUMUNSIGNED ||
+                      type == BR_NDB_TYPE_UNSIGNED);
         int is_dec = (type == BR_NDB_TYPE_DECIMAL ||
                       type == BR_NDB_TYPE_DECIMALUNSIGNED);
         int is_str = (type == BR_NDB_TYPE_CHAR ||
                       type == BR_NDB_TYPE_VARCHAR ||
                       type == BR_NDB_TYPE_LONGVARCHAR);
-        if (type != BR_NDB_TYPE_BIGINT && !is_f64 && !is_u64 &&
-            !is_dec && !is_str) {
+        if (!is_i64 && !is_f64 && !is_u64 && !is_dec && !is_str) {
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }

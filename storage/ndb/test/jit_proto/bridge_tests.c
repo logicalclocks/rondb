@@ -75,6 +75,14 @@
 #define kOpMulDouble     25
 #define kOpDivDouble     26
 
+#define NDB_TYPE_TINYINT          1
+#define NDB_TYPE_TINYUNSIGNED     2
+#define NDB_TYPE_SMALLINT         3
+#define NDB_TYPE_SMALLUNSIGNED    4
+#define NDB_TYPE_MEDIUMINT        5
+#define NDB_TYPE_MEDIUMUNSIGNED   6
+#define NDB_TYPE_INT              7
+#define NDB_TYPE_UNSIGNED         8
 #define NDB_TYPE_BIGINT      9
 #define NDB_TYPE_BIGUNSIGNED 10
 #define NDB_TYPE_FLOAT       11
@@ -2601,6 +2609,144 @@ static void test_nb_case_guard_two_conditions(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Narrow-int admission (census probe int_sum). SIGNED widths         */
+/* sign-extend into the i64 track, UNSIGNED widths zero-extend into   */
+/* the u64 track — the interpreter's IsUnsigned(type) split, so the   */
+/* kernels' accumulation signedness and is_unsigned result metadata   */
+/* match exactly. The load helpers already decoded every width; the   */
+/* bridge admission was the only gate.                                */
+/* ------------------------------------------------------------------ */
+
+/* T61a: INT column -> i64 track (signed checked SUM); the load
+ * null-branch-converts like any i64 load. */
+static void test_narrow_int_sum(void) {
+  const char *name = "T61a narrow_int_sum";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_INT, /*reg=*/0, /*col=*/3),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]NB load [1]SUM_CHECKED [2]tail EXIT [3]OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 3)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T61b: SMALLUNSIGNED -> u64 track: generic Sum/Min/Max lower to the
+ * unsigned accumulators and the load converts to the u64 NB form. */
+static void test_narrow_unsigned_aggregates(void) {
+  const char *name = "T61b narrow_unsigned_aggregates";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_SMALLUNSIGNED, /*reg=*/0, /*col=*/4),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/1),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]U64_NB [1]SUM_U64 [2]MIN_U64 [3]MAX_U64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 4)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 4)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MIN_U64))
+    return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MAX_U64))
+    return;
+  mark_pass(name);
+}
+
+/* T61c: TINYINT MIN/MAX -> signed compares (a negative TINYINT must
+ * order below 0 — the u64 track would misorder it). */
+static void test_narrow_signed_min_max(void) {
+  const char *name = "T61c narrow_signed_min_max";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_TINYINT, /*reg=*/0, /*col=*/1),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]NB load [1]MIN_BIGINT [2]MAX_BIGINT [3]tail EXIT — no checked
+   * arithmetic, so no OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_MIN_BIGINT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MAX_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T61d: narrow-unsigned + narrow-signed VARIABLE arithmetic keeps the
+ * whole-program fallback — same mixed-track rule as the BIGUNSIGNED
+ * family (the interpreter's mixed kernels are not lowered). */
+static void test_narrow_mixed_arith_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_MEDIUMUNSIGNED, 0, 2),
+    enc_load_col(NDB_TYPE_INT, 1, 3),
+    enc_2reg(kOpPlusBigint, 1, 0),
+  };
+  assert_rejected("T61d narrow_mixed_arith_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, kOpPlusBigint);
+}
+
+/* T61e: narrow-signed arithmetic chain -> checked signed adds, exactly
+ * like BIGINT (both operands sign-extended i64). */
+static void test_narrow_signed_arith(void) {
+  const char *name = "T61e narrow_signed_arith";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_SMALLINT, /*reg=*/0, /*col=*/1),
+    enc_load_col(NDB_TYPE_INT, /*reg=*/1, /*col=*/2),
+    enc_2reg(kOpPlusBigint, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* Both loads DEGRADE to the row-fallback form? No: load r0's skip
+   * range ends at the SUM while load r1 sits inside it and r1 is dead
+   * after the ADD — per-load conversion applies as in T50:
+   * [0]NB(r0) degrades or converts per the 5D-1 rules. Assert only
+   * the kinds that matter: the ADD is checked-signed and the SUM is
+   * checked-signed. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_INT_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T61f: narrow-unsigned + non-negative BIGINT constant -> u64 checked
+ * arithmetic (the census unsigned_arith shape at narrow width). */
+static void test_narrow_unsigned_const_arith(void) {
+  const char *name = "T61f narrow_unsigned_const_arith";
+  uint32_t prog[6];
+  prog[0] = enc_load_col(NDB_TYPE_UNSIGNED, /*reg=*/0, /*col=*/0);
+  prog[1] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[2] = 1u;          /* value 1, low word */
+  prog[3] = 0u;          /* high word */
+  prog[4] = enc_2reg(kOpPlusBigint, 0, 1);
+  prog[5] = enc_sum(/*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]U64_NB(c=4) [1]CONST [2]ADD_U64 [3]SUM_U64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64_NB)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ADD_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -2707,6 +2853,12 @@ int main(void) {
   test_nb_case_guard_reg_mismatch_reject();
   test_nb_case_guard_null_path_reads_reject();
   test_nb_case_guard_two_conditions();
+  test_narrow_int_sum();
+  test_narrow_unsigned_aggregates();
+  test_narrow_signed_min_max();
+  test_narrow_mixed_arith_reject();
+  test_narrow_signed_arith();
+  test_narrow_unsigned_const_arith();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

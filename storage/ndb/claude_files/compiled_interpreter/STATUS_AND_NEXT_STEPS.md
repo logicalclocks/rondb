@@ -414,7 +414,13 @@ first run ALSO surfaced that the OUTER kOpLoadCol admission is
 BIGINT-only — every narrow-INT-column aggregate is a whole-program
 fallback although the load helpers already decode every width
 (census probe int_sum; likely the highest-demand gap left and a
-small bridge-admission slice). NEXT → 5F-2 /
+small bridge-admission slice). → 5H narrow-int admission DONE &
+VERIFIED (2026-08-21 — NO regen, NO mysqld change: signed
+widths → i64 track, unsigned widths → u64 track per the
+interpreter's IsUnsigned split; u64 helpers decode all unsigned
+widths; bridge 108/108; new rondb_jit_int_canary with boundary
+values on all 8 widths; census int_sum flipped to 0, full
+sweep passed — see phase_5_roadmap.md §5H). NEXT → 5F-2 /
 5E stay parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

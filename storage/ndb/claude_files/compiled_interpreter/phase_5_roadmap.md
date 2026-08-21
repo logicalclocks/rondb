@@ -367,6 +367,47 @@ val_real/val_int pushed branches convert across representations
 (int-pushed read as real honors unsignedness; double-pushed read as
 int rounds). Portable OFF/ON test: `ndb_push_agg_decimal_minmax`.
 
+## 5H — narrow-int admission — **DONE & VERIFIED (2026-08-21; no regen, bridge 108/108, rondb_jit_int_canary green under 4060 on all 8 widths, census int_sum flipped to 0, full ndb_push_agg sweep passed)**
+
+Census-driven (probe `int_sum`, found by the 5D-3 canary's first run):
+the OUTER kOpLoadCol admission was BIGINT-only, so every aggregate
+over a plain TINYINT / SMALLINT / MEDIUMINT / INT column — MySQL's
+default integer types — was a whole-program fallback, even though
+`ndb_jit_h_load_col` and its `_nb` sibling already decoded every
+width (added for the embedded READ_ATTR, which shares them).
+
+Slice contents — bridge admission + u64-helper decode only, NO new
+stencil, NO regen, NO mysqld change:
+
+- Bridge: SIGNED widths (TINYINT/SMALLINT/MEDIUMINT/INT) sign-extend
+  into the i64 track (`OP_LOAD_COL_NDB`, existing stencils); UNSIGNED
+  widths zero-extend into the u64 track (`OP_LOAD_COL_NDB_U64`). This
+  is the interpreter's own IsUnsigned(type) split: unsigned registers
+  accumulate as u64 (SUM to 2^64-1 with the u64 overflow check) and
+  set the result's is_unsigned — riding the i64 track instead would
+  overflow-exit at 2^63 and drop the metadata. The 5D null-branching
+  conversion applies unchanged to both (same opcodes).
+- Helpers: `ndb_jit_h_load_col_u64` / `_u64_nb` extend their decode
+  from strict BIGUNSIGNED to all five unsigned widths (zero-extend,
+  mirroring loadColumnTypedFromBuf); the signed helpers already
+  decoded everything. Schema drift keeps the per-row fallback via the
+  descriptor switch default.
+- Everything downstream is untouched: tracker tracks, generic-
+  aggregate lowering, u64 checked arithmetic (5C-4 rules — narrow
+  unsigned + NNC constants compile; mixed unsigned/signed VARIABLES
+  keep the fallback), acc families, writeback masks.
+
+Tests: bridge 108/108 (T61a INT→i64 SUM; T61b SMALLUNSIGNED→u64
+Sum/Min/Max; T61c TINYINT signed MIN/MAX — a negative value must
+order below 0; T61d mixed narrow unsigned+signed variable arith
+rejects; T61e narrow signed arith chain; T61f narrow unsigned +
+const → u64 checked arith). New canary `rondb_jit_int_canary`: all
+8 widths under 4060 with boundary values (signed minima prove sign
+extension, unsigned maxima prove zero extension, INT UNSIGNED SUM
+crosses 2^32), AVG, grouped both-tracks program, nullable narrow
+columns on both NB families, narrow arithmetic. Census `int_sum`
+flips 1 → 0.
+
 ## 5E — integer division / modulo
 
 `kOpDivInt`/`kOpDivIntBigint`, `kOpMod`, `kOpDiv`: cold-call helpers

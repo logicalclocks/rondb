@@ -136,12 +136,9 @@ SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(u + 1) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS unsigned_arith_fell_back;
 
---echo # int_sum: SUM over a plain INT column. The OUTER kOpLoadCol
---echo # admission is BIGINT-only (narrow widths were never added even
---echo # though the load helpers already decode them — found during
---echo # 5D-3); every narrow-integer aggregate is a whole-program
---echo # fallback. High-value follow-up slice.
---sleep 11
+--echo # int_sum: SUM over a plain INT column (compiles since the
+--echo # narrow-int admission — signed widths ride the i64 track,
+--echo # unsigned widths the u64 track).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(i) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_sum_fell_back;
