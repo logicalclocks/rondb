@@ -336,10 +336,6 @@ LIMIT 0;
 Number of output lines, including header: 0
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -0,0 +1 @@
-+char_gr	count(*)
 ==========
 
 
