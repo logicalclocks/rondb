@@ -1,6 +1,17 @@
 # RonSQL ORDER BY / LIMIT Support Plan
 
-**Status: PLAN — not yet implemented.**
+**Status: Phase 0 IMPLEMENTED (2026-08-20, RONDB-1107; pending user
+build + first `--record`); Phases 1-6 not yet implemented.**  Phase 0
+adds `reject_ignored_orderby_limit` (RonSQLPreparer) called from
+`analyze_ctes` (per CTE body), `analyze_subqueries_ce` (scalar / IN /
+EXISTS arms — checked on the ORIGINAL parsed statements before the
+decorrelation text rewrites can strip the clauses), and
+`analyze_select_subqueries` (SELECT-list subqueries).  MTR:
+`ronsql_cte_dd_orderby_limit_reject.test` (obl-1..7, base suite only —
+prepare-time rejection is topology-independent).  Audit confirmed no
+existing MTR case or RonSQL-enabled benchmark query used ORDER BY /
+LIMIT in a body/subquery position, so the behavior change breaks no
+green coverage.
 
 ## Trigger
 
@@ -86,7 +97,7 @@ silently. The correlated-subquery rewrite additionally strips
 
 ## Phases
 
-### Phase 0 — correctness: reject silently-ignored ORDER BY / LIMIT (small; ship first)
+### Phase 0 — correctness: reject silently-ignored ORDER BY / LIMIT (small; ship first) — ✅ IMPLEMENTED (see Status)
 
 Reject with `RonSQLPermanentError` at prepare time:
 

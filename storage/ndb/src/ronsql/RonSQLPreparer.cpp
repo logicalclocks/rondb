@@ -4031,6 +4031,31 @@ RonSQLPreparer::decorrelate_scalar()
 }
 
 void
+RonSQLPreparer::reject_ignored_orderby_limit(const SelectStatement* stmt,
+                                             const char* what,
+                                             const char* name)
+{
+  if (stmt == NULL)
+    return;
+  const bool has_orderby = (stmt->orderby_columns != NULL);
+  const bool has_limit = (stmt->limit >= 0);
+  if (!has_orderby && !has_limit)
+    return;
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  err << (has_orderby && has_limit ? "ORDER BY and LIMIT"
+          : has_orderby ? "ORDER BY"
+                        : "LIMIT")
+      << " inside " << what;
+  if (name != NULL)
+    err << " '" << name << "'";
+  err << " is not supported. It is only supported at the main SELECT"
+         " level; accepting it here would silently ignore it, changing"
+         " results compared to MySQL." << std::endl;
+  throw RonSQLPermanentError(
+      "ORDER BY / LIMIT in a CTE body or subquery is not supported.");
+}
+
+void
 RonSQLPreparer::analyze_ctes()
 {
   CteDefinition* cte = m_context.ast_root.cte_list;
@@ -4042,6 +4067,12 @@ RonSQLPreparer::analyze_ctes()
 
   for (; cte != NULL; cte = cte->next)
   {
+    /* Phase 0 of ronsql_orderby_limit_plan.md: the grammar parses
+     * ORDER BY / LIMIT on CTE bodies but nothing ever applied them —
+     * the body ran unordered and UNLIMITED, silently diverging from
+     * MySQL.  Reject until body-level support ships. */
+    reject_ignored_orderby_limit(cte->stmt, "CTE body", cte->name.c_str());
+
     /* Phase I.17: a CTE without GROUP BY is valid as long as every
      * output column is an aggregate (scalar aggregate CTE — one
      * synthetic group, exactly one materialized result row).  CTEs
@@ -4600,6 +4631,13 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   {
   case I_SUBQUERY:
   {
+    /* Phase 0 of ronsql_orderby_limit_plan.md: subquery-body ORDER BY /
+     * LIMIT was parsed but never applied (and the decorrelation
+     * rewrites additionally strip it textually) — reject instead of
+     * silently changing results.  Checked here on the ORIGINAL parsed
+     * statement, before any rewrite replaces it. */
+    reject_ignored_orderby_limit(ce->subquery.stmt, "a scalar subquery",
+                                 NULL);
     SubqueryInfo info;
     info.ce_node = ce;
     info.inner_stmt = ce->subquery.stmt;
@@ -4609,7 +4647,11 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   }
   case T_EXISTS:
     // Transformed into I_IN_SUBQUERY in decorrelate_exists() during load().
-    // SubqueryInfo is registered there, not here.
+    // SubqueryInfo is registered there, not here.  The transform builds a
+    // fresh inner statement from rewritten text, so the ORDER BY / LIMIT
+    // rejection must inspect the original statement here.
+    reject_ignored_orderby_limit(ce->subquery.stmt, "an EXISTS subquery",
+                                 NULL);
     return;
   case T_NOT:
   case T_EXCLAMATION:
@@ -4618,6 +4660,8 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
     return;
   case I_IN_SUBQUERY:
   {
+    reject_ignored_orderby_limit(ce->in_subquery.stmt, "an IN subquery",
+                                 NULL);
     SubqueryInfo info;
     info.ce_node = ce;
     info.inner_stmt = ce->in_subquery.stmt;
@@ -4713,6 +4757,9 @@ RonSQLPreparer::analyze_select_subqueries()
                 "SELECT-list subquery must not have GROUP BY.");
     require_prm(inner->having_expression == NULL,
                 "SELECT-list subquery must not have HAVING.");
+
+    // Phase 0 of ronsql_orderby_limit_plan.md: parsed but never applied.
+    reject_ignored_orderby_limit(inner, "a SELECT-list subquery", NULL);
 
     // Inner SELECT must have exactly one aggregate output
     Outputs *inner_out = inner->outputs;
