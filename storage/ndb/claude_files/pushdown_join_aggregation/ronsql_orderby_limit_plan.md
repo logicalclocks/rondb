@@ -1,6 +1,25 @@
 # RonSQL ORDER BY / LIMIT Support Plan
 
-**Status: PLAN — not yet implemented.**
+**Status: Phase 0 IMPLEMENTED (2026-08-20, RONDB-1107; pending user
+build + first `--record`); Phase 1 IMPLEMENTED (2026-08-21 —
+`body_orderby_limit.inc` ob-1..ob-22 + ob-P1..P3, ×5 topology suites,
+plus two engine fixes the first record surfaced:
+`canonicalize_orderby_columns` for mixed bare/qualified ORDER BY vs
+GROUP BY spellings, and ResultPrinter LIMIT-0 header suppression
+(mysql-client empty-result parity; requires re-recording `ronsql_basic`
++ `ronsql_orderby_stress` whose baselines baked the old header in);
+pending user rebuild + first `--record`); Phases
+2-6 not yet implemented.**  Phase 0
+adds `reject_ignored_orderby_limit` (RonSQLPreparer) called from
+`analyze_ctes` (per CTE body), `analyze_subqueries_ce` (scalar / IN /
+EXISTS arms — checked on the ORIGINAL parsed statements before the
+decorrelation text rewrites can strip the clauses), and
+`analyze_select_subqueries` (SELECT-list subqueries).  MTR:
+`ronsql_cte_dd_orderby_limit_reject.test` (obl-1..7, base suite only —
+prepare-time rejection is topology-independent).  Audit confirmed no
+existing MTR case or RonSQL-enabled benchmark query used ORDER BY /
+LIMIT in a body/subquery position, so the behavior change breaks no
+green coverage.
 
 ## Trigger
 
@@ -86,7 +105,7 @@ silently. The correlated-subquery rewrite additionally strips
 
 ## Phases
 
-### Phase 0 — correctness: reject silently-ignored ORDER BY / LIMIT (small; ship first)
+### Phase 0 — correctness: reject silently-ignored ORDER BY / LIMIT (small; ship first) — ✅ IMPLEMENTED (see Status)
 
 Reject with `RonSQLPermanentError` at prepare time:
 
@@ -105,12 +124,78 @@ Implementing body-level ORDER BY + LIMIT for real means distributed
 top-N in the kernel (per-fragment sorted+limited scan + merge) — a large
 separate feature. Rejection is the honest v1; revisit in Phase 6.
 
-### Phase 1 — verify and lock in: aggregate join/CTE ORDER BY + LIMIT
+### Phase 1 — verify and lock in: aggregate join/CTE ORDER BY + LIMIT — ✅ IMPLEMENTED (see Status)
 
-Expected to need little or no engine code — the machinery is shared with
-the tested single-table path. Deliverable is an MTR family
-(`body_orderby_limit.inc` + `ronsql_cte_dd_orderby_limit.test` ×5
-topology suites, following the `body_main_root_index.inc` pattern):
+**Second first-record finding (FIXED): LIMIT 0 printed a bare TSV
+header.**  ob-5 diffed against MySQL's empty output with a lone header
+line.  Long-standing, not join-specific: the mysql client prints
+nothing for an empty result set, and the base-suite LIMIT 0 baselines
+(`ronsql_basic.result`, `ronsql_orderby_stress.result`) had the exact
+mismatch baked in as recorded diffs under the non-strict `|| true`
+compare — the strict order-verifying family is what finally failed on
+it.  Fix in ResultPrinter: buffered `print_result_ordered` gates the
+TSV header on `print_count > 0` (matching its `num_rows == 0` early
+return), and the streaming TSV path checks the LIMIT cutoff before the
+deferred header block (ob-20's scalar LIMIT 0 arm).  JSON was already
+consistent (`[]`).  `ronsql_basic` + `ronsql_orderby_stress` need
+re-recording — their baselines memorialize the old behavior.
+
+**First-record finding (FIXED — engine change 1 of this phase):**
+ob-1 failed its first record: bare `ORDER BY c_nationkey` against
+qualified `GROUP BY cu.c_nationkey` threw "ORDER BY column not in GROUP
+BY clause" (MySQL accepts it).  The parser registers (qualifier, name)
+pairs as distinct col_idx entries and
+`ResultPrinter::validate_orderby_columns` matches GROUP BY membership by
+raw col_idx equality; big-12 dodged it because its unaliased
+`SELECT c.c_custkey` output made `ORDER BY c_custkey` an OUTPUT_REF.
+Fix: `RonSQLPreparer::canonicalize_orderby_columns()` (called from
+`compile()` before ResultPrinter construction) rewrites TABLE_COLUMN
+ORDER BY col_idx values to the GROUP BY entry's col_idx when both
+resolve to the same underlying column via
+`m_main_scope.resolved_columns` (StoredColumn: join_op_idx + attr_id;
+CteResultColumn: cte_def_idx + cte_result_idx); works for join and
+single-table paths (both populate resolved_columns).  ob-1/ob-2 pin
+both spelling directions.  The adjacent sharp edge — SELECT output
+spelling differing from GROUP BY spelling — is ORDER BY-independent and
+out of scope here.
+
+**As implemented (2026-08-21):**
+`body_orderby_limit.inc` + `ronsql_cte_dd_orderby_limit.test` in
+`ronsql_cte` + the 4 topology siblings.  Unlike the other families (and
+bigquery big-12), the ORDER BY cases set `$skip_sort=yes` so
+`ronsql_compare.inc` strict-diffs the RonSQL and MySQL outputs in
+DELIVERED row order — every ORDER BY is made a total order (unique
+leading key or explicit tie-breaker) so the diff is deterministic.
+Case map: ob-1/2/3 GROUP BY-column ordering (bare ORDER BY vs qualified
+GROUP BY ASC, the reverse spelling mix DESC — both pinning the
+canonicalize fix above — and multi-column mixed-direction with a
+VARCHAR leading key); ob-4/5/6 LIMIT
+10/0/1000 on the buffered ordered path; ob-7 streaming LIMIT cutoff
+without ORDER BY (group column omitted from SELECT so the truncated
+rows are value-uniform); ob-8..ob-15 aggregate-alias ordering — COUNT
+DESC, SUM ASC with the LIMIT boundary inside a tie run, MIN/MAX int
+unique-key ordering, string MIN/MAX (constant-per-group mktsegment ties
++ varying p_name), DATE MIN/MAX ASC+DESC (D17 packing), and
+DATETIME/TIMESTAMP(6) via an evlog self-CTE-join; ob-16 fs_topk
+aggregate shape (MAX-of-SUM(DECIMAL) alias DESC + LIMIT 20, plus
+non-fatal EXPLAIN greps for "Result sorted by" / "Result limited to");
+ob-17 two-CTE query with an all-tie primary sort key; ob-18 HAVING +
+ORDER BY + LIMIT; ob-19 scalar-CTE cross-join (cs14 shape) + LIMIT 1;
+ob-20 scalar aggregate + LIMIT 0; ob-21 qualified ORDER BY on a CHAR(1)
+CTE virt column (agg-17 CTE_SCAN-root re-agg — the charset-metadata
+fallout candidate); ob-22 big-12 shape with qualified GROUP BY-column
+ordering.  Probes: ob-P1 ORDER BY column not in GROUP BY (permanent
+error), ob-P2 `ORDER BY SUM(...)` pinned as a syntax error (identifiers
+/ aliases only — this is why body_mainmode.inc's old deferral probes
+never worked), ob-P3 `LIMIT off,cnt` syntax rejected (OFFSET is Phase
+6).  GROUP BY `<cte>.col` on the JOIN path (vs the CTE_SCAN-root re-agg)
+has no green precedent and is recorded as a NEXT-PHASE probe, not
+executed.  body_mainmode.inc's stale "ORDER BY / LIMIT / HAVING on CTE
+queries deferred" markers were rewritten to point here (DISTINCT and
+projection-only ORDER BY / LIMIT remain deferred there).  MTR result
+files need the first `--record` ×5 suites.
+
+Original scope (all covered above):
 
 - Join-agg: `ORDER BY <groupby col>` ASC/DESC; multi-column with unique
   tie-breaker; `LIMIT 0 / N / > result set`.

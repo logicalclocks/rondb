@@ -1089,7 +1089,10 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   else if (m_tsv_output)
   {
     DEB_TRACE();
-    if (m_tsv_headers)
+    // The mysql client prints nothing at all for an empty result set —
+    // including LIMIT 0 — so suppress the header when no row will be
+    // printed (matches the num_rows == 0 early return above).
+    if (m_tsv_headers && print_count > 0)
     {
       bool first_column = true;
       for (Uint32 i = 0; i < m_outputs.size(); i++)
@@ -1557,6 +1560,12 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
          record = aggregator->FetchResultRecord())
     {
       DEB_TRACE();
+      // Check the LIMIT cutoff before the header so LIMIT 0 prints
+      // nothing at all, like the mysql client does for an empty result.
+      if (m_query->limit >= 0 && row_count >= m_query->limit)
+      {
+        break;
+      }
       if (!headers_printed && m_tsv_headers)
       {
         DEB_TRACE();
@@ -1570,10 +1579,6 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
         }
         out << '\n';
         headers_printed = true;
-      }
-      if (m_query->limit >= 0 && row_count >= m_query->limit)
-      {
-        break;
       }
       print_record(record, out);
       row_count++;

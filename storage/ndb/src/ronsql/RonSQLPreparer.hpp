@@ -398,6 +398,7 @@ private:
   void configure();
   void parse();
   void resolve_orderby_aliases();
+  void canonicalize_orderby_columns();
   bool has_width(size_t pos);
   void load();
   void load_single_table();
@@ -554,6 +555,13 @@ private:
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();
+  // ORDER BY / LIMIT are parsed on every SELECT body but only the main
+  // SELECT's are ever applied (ResultPrinter).  Reject them everywhere
+  // else at prepare time instead of silently ignoring them (wrong
+  // results vs MySQL) — see ronsql_orderby_limit_plan.md Phase 0.
+  void reject_ignored_orderby_limit(const SelectStatement* stmt,
+                                    const char* what,
+                                    const char* name);
   void merge_same_table_subqueries();
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();

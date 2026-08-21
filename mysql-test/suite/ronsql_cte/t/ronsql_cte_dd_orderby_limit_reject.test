@@ -1,0 +1,73 @@
+# ORDER BY / LIMIT in a CTE body or subquery is now cleanly + PERMANENTLY
+# rejected (was: parsed and SILENTLY IGNORED — wrong results vs MySQL).
+#
+# Phase 0 of ronsql_orderby_limit_plan.md.  The grammar stores
+# orderby_columns / limit on every SELECT body, but only the main
+# SELECT's are ever applied (ResultPrinter); a CTE body such as
+# `WITH c AS (SELECT ... ORDER BY x LIMIT 10)` ran WITHOUT the LIMIT and
+# returned different results than MySQL, silently.  The decorrelation
+# rewrites additionally stripped GROUP BY / ORDER BY / LIMIT textually
+# from EXISTS / correlated-scalar subqueries.  RonSQL now rejects all of
+# these at prepare time with a clean RonSQLPermanentError
+# (reject_ignored_orderby_limit, checked on the ORIGINAL parsed
+# statements in analyze_ctes / analyze_subqueries_ce /
+# analyze_select_subqueries — before any rewrite can strip them).
+# Real body-level ORDER BY + LIMIT support (distributed top-N) is a later
+# phase of the same plan; main-SELECT-level ORDER BY / LIMIT is unchanged
+# and stays covered by the aggregate families (e.g. bigquery big-12).
+#
+# This is a rejection-assert regression (prepare-time error -> no data
+# touched), run via $RONSQL_CLI_EXE with --error 1, mirroring
+# ronsql_cte_dd_d4_colvscol.test.  --record to refresh r/ when the
+# message changes.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === obl-1: CTE body with ORDER BY (no LIMIT) — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey ORDER BY o_custkey) SELECT COUNT(*), SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey;' 2>&1
+
+--echo
+--echo === obl-2: CTE body with LIMIT (no ORDER BY) — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey LIMIT 10) SELECT COUNT(*), SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey;' 2>&1
+
+--echo
+--echo === obl-3: CTE body with ORDER BY + LIMIT — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey ORDER BY n DESC LIMIT 10) SELECT COUNT(*), SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey;' 2>&1
+
+--echo
+--echo === obl-4: scalar subquery with LIMIT — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM orders WHERE o_totalprice < (SELECT MAX(o_totalprice) FROM orders LIMIT 1);' 2>&1
+
+--echo
+--echo === obl-5: IN subquery with ORDER BY + LIMIT — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM orders WHERE o_custkey IN (SELECT c_custkey FROM customer ORDER BY c_acctbal DESC LIMIT 5);' 2>&1
+
+--echo
+--echo === obl-6: EXISTS subquery with LIMIT — permanent rejection ===
+# The EXISTS body mirrors the green ronsql_cte_subquery Test 3 shape
+# (column output, not SELECT 1 — a bare literal output does not parse).
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM orders AS o WHERE EXISTS (SELECT l_orderkey FROM lineitem WHERE l_orderkey = o.o_orderkey LIMIT 1);' 2>&1
+
+--echo
+--echo === obl-7: SELECT-list subquery with LIMIT — permanent rejection ===
+# Mirrors the green ronsql_subquery_agg shape (qualified refs + AS alias
+# — an unaliased SELECT-list subquery does not parse).
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_custkey, (SELECT COUNT(o.o_orderkey) FROM orders AS o WHERE o.o_custkey = c.c_custkey LIMIT 1) AS n FROM customer AS c;' 2>&1
+
+--source suite/ronsql_cte/include/cte_drop.inc

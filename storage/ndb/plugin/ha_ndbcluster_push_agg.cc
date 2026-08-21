@@ -475,12 +475,20 @@ static bool emit_agg_op(NdbAggregator *agg, Item_sum::Sumfunctype agg_type,
 
 /**
  * Compute the number of embedded interpreter words for one integer
- * comparison: READ_ATTR + LOAD_CONST + BRANCH.
+ * comparison: READ_ATTR [+ NULL guard] + LOAD_CONST + BRANCH.
+ *
+ * For a nullable column a BRANCH_REG_EQ_NULL guard follows the
+ * READ_ATTR, jumping past this condition's compare when the value is
+ * NULL.  Without it the interpreter's BRANCH_XX_REG_REG raises
+ * ZREGISTER_INIT_ERROR on the null register — a hard query error
+ * (NDB 1872) — where SQL semantics require the WHEN condition to
+ * simply not match (fall through to the next WHEN / ELSE).
  */
-static Uint32 int_comparison_words(longlong const_val) {
+static Uint32 int_comparison_words(longlong const_val, bool field_nullable) {
   const bool use_const16 = (const_val >= 0 && const_val <= 65535);
-  // READ_ATTR(1) + LOAD_CONST16(1) or LOAD_CONST64(3) + BRANCH(1)
-  return 1 + (use_const16 ? 1 : 3) + 1;
+  // READ_ATTR(1) [+ BRANCH_REG_EQ_NULL(1)] +
+  // LOAD_CONST16(1) or LOAD_CONST64(3) + BRANCH(1)
+  return 1 + (field_nullable ? 1 : 0) + (use_const16 ? 1 : 3) + 1;
 }
 
 /**
@@ -514,9 +522,23 @@ static bool emit_int_comparison_branch(
   // READ_ATTR_INTO_REG reg0, attr_id
   if (!agg->EmitEmbeddedWord(Interpreter::Read(attr_id, 0))) return false;
 
-  // LOAD_CONST16/64 reg1, const_val
   const longlong const_val = cmp_const->val_int();
   const bool use_const16 = (const_val >= 0 && const_val <= 65535);
+
+  // NULL guard for a nullable column: a NULL value means this WHEN
+  // condition is UNKNOWN — jump past the compare to the next
+  // condition (or the ELSE fall-through).  Target = guard position +
+  // offset; the first word after this condition's BRANCH lies
+  // guard(1) + LOAD_CONST(1 or 3) + BRANCH(1) words ahead, counted
+  // from the guard itself.
+  if (cmp_field->field->is_nullable()) {
+    const Uint32 guard_offset = 1 + (use_const16 ? 1 : 3) + 1;
+    if (!agg->EmitEmbeddedWord(Interpreter::BRANCH_REG_EQ_NULL |
+                               (0 << 6) | (guard_offset << 16)))
+      return false;
+  }
+
+  // LOAD_CONST16/64 reg1, const_val
   if (use_const16) {
     if (!agg->EmitEmbeddedWord(
             Interpreter::LoadConst16(1, static_cast<Uint32>(const_val))))
@@ -604,8 +626,15 @@ static bool emit_string_branch(Uint32 attr_id, Uint32 col_byte_len,
                                 Interpreter::BinaryCondition cond,
                                 Uint32 branch_offset, NdbAggregator *agg) {
   // Word 0: BranchCol encoding with branch offset.
+  //
+  // IF_NULL_CONTINUE: a NULL column value makes the WHEN condition
+  // UNKNOWN in SQL — never take the branch, fall through to the next
+  // condition / ELSE.  (The former NULL_CMP_EQUAL compared NULL as
+  // lowest, so `col <> 'x'` with a NULL value TOOK the branch and
+  // counted NULL rows as matching — wrong vs SQL.)  For non-NULL
+  // values the two modes are identical.
   if (!agg->EmitEmbeddedWord(
-          Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
+          Interpreter::BranchCol(cond, Interpreter::IF_NULL_CONTINUE) |
           (branch_offset << 16)))
     return false;
 
@@ -678,11 +707,16 @@ static Uint32 searched_comparison_words(Item *when_item,
   Item *cmp_left = when_func->arguments()[0];
   Item *cmp_right = when_func->arguments()[1];
   Item_int *cmp_const;
-  if (cmp_left->type() == Item::INT_ITEM)
+  const Item_field *cmp_field;
+  if (cmp_left->type() == Item::INT_ITEM) {
     cmp_const = down_cast<Item_int *>(cmp_left);
-  else
+    cmp_field = down_cast<const Item_field *>(cmp_right);
+  } else {
     cmp_const = down_cast<Item_int *>(cmp_right);
-  return int_comparison_words(cmp_const->val_int());
+    cmp_field = down_cast<const Item_field *>(cmp_left);
+  }
+  return int_comparison_words(cmp_const->val_int(),
+                              cmp_field->field->is_nullable());
 }
 
 /**
@@ -824,10 +858,21 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
       (down_cast<const Item_field *>(args[first_expr_num])
            ->field->type() == MYSQL_TYPE_STRING);
 
+  // A nullable integer search column needs a BRANCH_REG_EQ_NULL guard
+  // after the top READ_ATTR: a NULL search value matches no WHEN (every
+  // comparison is UNKNOWN in SQL), so jump straight to the ELSE output
+  // block.  Without the guard the interpreter's BRANCH_EQ_REG_REG on
+  // the null register raises ZREGISTER_INIT_ERROR (NDB error 1872).
+  const bool search_nullable =
+      is_simple_case && !is_string_search &&
+      down_cast<const Item_field *>(args[first_expr_num])
+          ->field->is_nullable();
+
   Uint32 total_cond_words = 0;
   if (is_simple_case) {
     if (!is_string_search) {
-      total_cond_words += 1;  // READ_ATTR for integer search (once)
+      // READ_ATTR for integer search (once) [+ NULL guard]
+      total_cond_words += search_nullable ? 2 : 1;
     }
     for (int i = 0; i < n_pairs; i++) {
       cond_words[i] = simple_case_cond_words(args[i * 2], is_string_search,
@@ -890,6 +935,14 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
     if (ndb_col == nullptr) return false;
     if (!agg->EmitEmbeddedWord(Interpreter::Read(ndb_col->getAttrId(), 0)))
       return false;
+    if (search_nullable) {
+      // Guard sits at embedded pc 1; the ELSE output block starts at
+      // total_cond_words; target = instruction_pos + offset.
+      const Uint32 guard_offset = total_cond_words - 1;
+      if (!agg->EmitEmbeddedWord(Interpreter::BRANCH_REG_EQ_NULL |
+                                 (0 << 6) | (guard_offset << 16)))
+        return false;
+    }
   }
 
   // Emit conditions with branches to THEN labels.
@@ -906,7 +959,8 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
   // the offset is also from the BRANCH instruction word itself.
   // Both use "offset from the instruction word that contains the offset field".
 
-  Uint32 cond_pos = (is_simple_case && !is_string_search) ? 1 : 0;
+  Uint32 cond_pos =
+      (is_simple_case && !is_string_search) ? (search_nullable ? 2u : 1u) : 0u;
   for (int i = 0; i < n_pairs; i++) {
     // For BRANCH_ATTR_OP_ARG: offset is from the first word of instruction.
     // For BRANCH_XX_REG_REG: offset is from the BRANCH word (last of cond).
