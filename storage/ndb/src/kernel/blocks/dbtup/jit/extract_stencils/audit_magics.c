@@ -154,6 +154,7 @@ static const struct {
   /* Phase 5F-1: op_minmax_str_ndb helper-argument holes. */
   { "MAGIC_MMS_COL_NARROW",   "op_minmax_str_ndb"         },
   { "MAGIC_MMS_ARG_NARROW",   "op_minmax_str_ndb"         },
+  { "MAGIC_DCV_ARG_NARROW",   "op_div_conv_f64"           },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

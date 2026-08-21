@@ -98,8 +98,10 @@ SUM(a % b)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_mod_fell_back;
 int_mod_fell_back
 0
-# generic_div_int: '/' over INTEGER operands (5E-adjacent — the
-# kernel converts i64 to double at runtime; no JIT conversion ops).
+# generic_div_int: '/' over INTEGER operands (lowered since
+# Phase 5E-3 — the conversion cold call; the SQL planner does
+# not push '/', so 0 here means never-pushed —
+# rondb_jit_ronsql_canary exercises the lowering).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(a / b) FROM t1;
 SUM(a / b)

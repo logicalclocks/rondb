@@ -306,7 +306,22 @@ typedef enum {
   OP_MOD_INT               = 58,
   OP_DIV_U64               = 59,
   OP_MOD_U64               = 60,
-  OP_KIND_MAX           = OP_MOD_U64
+  /* Phase 5E-3: GENERIC '/' with integer operand(s) — a cold call
+   * mirroring RegDivReg(is_div_int=false): each BIGINT-track operand
+   * converts to double behind a ±2^53 magnitude guard (violation →
+   * ZAGG_MATH_OVERFLOW in the kernel), then double-divides. EVERY
+   * edge — magnitude guard, divisor 0 (SQL NULL result), non-finite
+   * quotient — takes the per-row fallback, so the interpreter re-run
+   * reproduces the exact NULL or ZAGG_MATH_OVERFLOW. The hot path
+   * writes the f64 quotient bits to the dst register. Both-proven-F64
+   * divisions stay on the hot OP_DIV_F64 — this op is emitted only
+   * when a conversion is actually needed. Operand layout: a = dst
+   * (also the lhs), b = src, c = packed
+   * (flags << 8) | (dst << 4) | src with flags bit0 = a-is-f64,
+   * bit1 = a-is-u64, bit2 = b-is-f64, bit3 = b-is-u64 (neither bit =
+   * signed/NNC i64). No overflow hole — errors ride the fallback. */
+  OP_DIV_CONV_F64          = 61,
+  OP_KIND_MAX           = OP_DIV_CONV_F64
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

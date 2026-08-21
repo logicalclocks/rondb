@@ -199,3 +199,39 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q13_jit_compiled
 1
 DROP TABLE tovf;
+# Q14: GENERIC '/' over integer columns (Phase 5E-3 conversion
+#      cold call) — must-JIT; values exact in binary.
+CREATE TABLE tgd (
+pk INT PRIMARY KEY,
+a  BIGINT NOT NULL,
+b  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgd VALUES (1, 10, 4), (2, 9, 2), (3, 30, 8);
+SELECT SUM(a / b) AS s FROM tgd;
+s
+10.7500
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+10.75
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q14_jit_compiled;
+q14_jit_compiled
+1
+# Q15: '/' edge rows — correctness-only (per-row fallbacks):
+#      zero divisor -> SQL NULL row; a magnitude past 2^53 ->
+#      the kernel's precision guard errors the query (mysqld
+#      has no such guard and returns a value — an intentional
+#      engine difference, so only RonSQL's behavior is probed).
+CREATE TABLE tgz (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgz VALUES (1, 10, 4), (2, 9, 0), (3, 30, 8);
+SELECT SUM(x / y) AS s, COUNT(x / y) AS c FROM tgz;
+s	c
+6.2500	2
+s	c
+6.25	2
+INSERT INTO tgz VALUES (4, 9007199254740993, 1);
+DROP TABLE tgz;
+DROP TABLE tgd;

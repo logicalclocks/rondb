@@ -24,6 +24,7 @@
 #include <AttributeDescriptor.hpp>  /* column type decode for READ_ATTR */
 
 #include <atomic>              /* observability counters */
+#include <cmath>               /* std::isfinite (div_conv helper) */
 #include <cstdlib>             /* malloc / free for cache products */
 #include <cstring>
 #include <ctime>               /* rate-limited fallback logging */
@@ -733,6 +734,68 @@ ndb_jit_h_minmax_str(JitState *s, uint32_t col_id, uint32_t packed) {
   }
 }
 
+/* jit_div_conv_operand — one operand's int→double conversion for
+ * ndb_jit_h_div_conv, mirroring RegDivReg(is_div_int=false)'s BIGINT
+ * arm exactly: unsigned magnitudes above 2^53-1 and signed values
+ * outside ±2^53 refuse (the kernel's precision guard → the caller
+ * takes the per-row fallback and the interpreter re-run raises
+ * ZAGG_MATH_OVERFLOW); in-range values cast like the kernel (the
+ * signed cast — identical to the unsigned one below 2^53). */
+static bool jit_div_conv_operand(Int64 raw, bool is_f64, bool is_u64,
+                                 double *out) {
+  if (is_f64) {
+    double d;
+    std::memcpy(&d, &raw, sizeof(d));
+    *out = d;
+    return true;
+  }
+  if (is_u64) {
+    if ((Uint64)raw > ((1ull << 53) - 1)) {
+      return false;
+    }
+  } else if (raw >= 0 ? raw > (Int64)((1ull << 53) - 1)
+                      : raw < -(Int64)(1ull << 53)) {
+    return false;
+  }
+  *out = static_cast<double>(raw);
+  return true;
+}
+
+/* ndb_jit_h_div_conv — Phase 5E-3 cold call for OP_DIV_CONV_F64:
+ * GENERIC '/' with at least one integer-track operand. packed =
+ * (flags << 8) | (dst << 4) | src, flags per bytecode1.h. Pure
+ * register math — no ctx needed. Every edge (±2^53 conversion
+ * guard, divisor 0 → SQL NULL result, non-finite quotient) takes
+ * the per-row fallback; the interpreter re-run reproduces the exact
+ * NULL or ZAGG_MATH_OVERFLOW. */
+extern "C" void
+ndb_jit_h_div_conv(JitState *s, uint32_t packed) {
+  const uint32_t src   = packed & 0xFu;
+  const uint32_t dst   = (packed >> 4) & 0xFu;
+  const uint32_t flags = (packed >> 8) & 0xFu;
+  double v0, v1;
+  if (!jit_div_conv_operand(s->regs_i64[dst],
+                            (flags & 0x1u) != 0, (flags & 0x2u) != 0,
+                            &v0) ||
+      !jit_div_conv_operand(s->regs_i64[src],
+                            (flags & 0x4u) != 0, (flags & 0x8u) != 0,
+                            &v1) ||
+      v1 == 0.0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  const double res = v0 / v1;
+  if (!std::isfinite(res)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &res, sizeof(bits));
+  s->regs_i64[dst] = bits;
+}
+
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
  * unsigned-integer columns (OP_LOAD_COL_NDB_U64). The u64 value's bits
  * are stored into regs_i64[dst_reg]; the u64 consumer stencils
@@ -1018,6 +1081,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64_nb));
   jit1_register_helper("ndb_jit_h_load_col_dec",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_dec));
+  jit1_register_helper("ndb_jit_h_div_conv",
+                       reinterpret_cast<JitHelperFn>(ndb_jit_h_div_conv));
   jit1_register_helper("ndb_jit_h_minmax_str",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_minmax_str));
   jit1_register_helper("ndb_jit_h_branch_attr_null",

@@ -240,6 +240,8 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   /* Phase 5F-1 op_minmax_str_ndb — fused string MIN/MAX. */
   { "HOLE_MMS_COL",       HK_OP_B          },
   { "HOLE_MMS_ARG",       HK_OP_C          },
+  /* Phase 5E-3 op_div_conv_f64. */
+  { "HOLE_DCV_ARG",       HK_OP_C          },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -410,6 +412,8 @@ static const size_t kHoleSymbolTableLen =
 /* Phase 5F-1 op_minmax_str_ndb helper arguments. */
 #define MAGIC_MMS_COL_NARROW      0x2273u
 #define MAGIC_MMS_ARG_NARROW      0xe27fu
+/* Phase 5E-3 op_div_conv_f64 packed helper argument. */
+#define MAGIC_DCV_ARG_NARROW      0x9c87u
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -584,6 +588,8 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   /* Phase 5F-1: op_minmax_str_ndb helper arguments. */
   { MAGIC_MMS_COL_NARROW,   HK_OP_B,  "MAGIC_MMS_COL_NARROW"   },
   { MAGIC_MMS_ARG_NARROW,   HK_OP_C,  "MAGIC_MMS_ARG_NARROW"   },
+  /* Phase 5E-3: op_div_conv_f64 packed helper argument. */
+  { MAGIC_DCV_ARG_NARROW,   HK_OP_C,  "MAGIC_DCV_ARG_NARROW"   },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

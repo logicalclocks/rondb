@@ -1312,6 +1312,19 @@ STENCIL op_minmax_str_ndb(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_div_conv_f64 (Phase 5E-3): GENERIC '/' with integer operand(s). */
+/* Cold call — the helper does the ±2^53-guarded int→double           */
+/* conversions and the divide; every edge takes the per-row fallback. */
+/* packed = (flags << 8) | (dst << 4) | src (see bytecode1.h).        */
+/* ------------------------------------------------------------------ */
+DECLARE_NARROW_HOLE(DCV_ARG);
+extern void ndb_jit_h_div_conv(JitState *s, uint32_t packed);
+STENCIL op_div_conv_f64(JitState *s) {
+  ndb_jit_h_div_conv(s, (uint32_t)HOLE_NARROW(DCV_ARG));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Integer division / modulo (Phase 5E-2).                            */
 /*                                                                    */
 /* Kernel equivalences: RegDivIntBigint / RegModReg integer paths.    */
@@ -1458,4 +1471,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_mod_int,
     op_div_u64,
     op_mod_u64,
+    op_div_conv_f64,
 };

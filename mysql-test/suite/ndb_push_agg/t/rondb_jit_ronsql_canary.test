@@ -215,4 +215,40 @@ SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q13_jit_compiled;
 DROP TABLE tovf;
 
+--echo # Q14: GENERIC '/' over integer columns (Phase 5E-3 conversion
+--echo #      cold call) — must-JIT; values exact in binary.
+CREATE TABLE tgd (
+  pk INT PRIMARY KEY,
+  a  BIGINT NOT NULL,
+  b  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgd VALUES (1, 10, 4), (2, 9, 2), (3, 30, 8);
+SELECT SUM(a / b) AS s FROM tgd;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(a / b) AS s FROM tgd;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q14_jit_compiled;
+
+--echo # Q15: '/' edge rows — correctness-only (per-row fallbacks):
+--echo #      zero divisor -> SQL NULL row; a magnitude past 2^53 ->
+--echo #      the kernel's precision guard errors the query (mysqld
+--echo #      has no such guard and returns a value — an intentional
+--echo #      engine difference, so only RonSQL's behavior is probed).
+CREATE TABLE tgz (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgz VALUES (1, 10, 4), (2, 9, 0), (3, 30, 8);
+--disable_warnings
+SELECT SUM(x / y) AS s, COUNT(x / y) AS c FROM tgz;
+--enable_warnings
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x / y) AS s, COUNT(x / y) AS c FROM tgz;"
+INSERT INTO tgz VALUES (4, 9007199254740993, 1);
+--error 1
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x / y) AS s FROM tgz;"
+DROP TABLE tgz;
+DROP TABLE tgd;
+
 --remove_file $NDB_TOOLS_OUTPUT

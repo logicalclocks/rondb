@@ -448,7 +448,15 @@ OP_MOD_U64; divisor-0 → per-row fallback, INT64_MIN/-1 pre-divide
 guards (x86 idiv trap), MOD result-signedness follows the dividend;
 bridge 123/123; Test 27 repointed to kOpSetRegNull (permanent);
 RonSQL canary Q9-Q13 incl. negative-operand truncation, div-by-zero
-NULL semantics, and the overflow error under 4060). NEXT → 5F-2 stays
+NULL semantics, and the overflow error under 4060). → 5E-3 DONE & VERIFIED
+(2026-08-21 — regen clean, all tests green; 1 cold-call stencil
+OP_DIV_CONV_F64 + ctx-free helper: RegDivReg's ±2^53 conversion
+guards, zero-divisor NULL, non-finite — all edges per-row fallback;
+both-F64 stays hot; bridge 128/128, coldcall 32/32; RonSQL canary
+Q14/Q15). PHASE 5E COMPLETE — the RonSQL/API opcode space is
+covered except the documented durable negatives (string CASE
+conditions, double trunc-DIV/fmod, mixed int/double +/-/*,
+kOpSetRegNull). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

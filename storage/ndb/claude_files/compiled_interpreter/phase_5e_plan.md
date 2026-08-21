@@ -9,7 +9,43 @@ arith, the live 5E-1 win is DECIMAL arithmetic).
 bridge_tests 123/123, RonSQL canary Q9-Q13 green incl. div-by-zero
 NULL semantics and the INT64_MIN/-1 overflow under 4060, Test 27
 repointed and green, census green, full ndb_push_agg sweep passed).
-5E-3 not started.**
+5E-3 DONE & VERIFIED (2026-08-21 — regen clean, bridge_tests
+128/128, coldcall_tests 32/32, RonSQL canary Q14/Q15 green, census
+green, full ndb_push_agg sweep passed). PHASE 5E COMPLETE — the
+RonSQL/API opcode space is covered except the documented durable
+negatives (string CASE conditions, double trunc-DIV/fmod, mixed
+int/double +/-/*, kOpSetRegNull).**
+
+## 5E-3 implementation record (2026-08-21)
+
+Landed as planned: `OP_DIV_CONV_F64` (61) — one cold-call stencil
+(narrow hole DCV_ARG, packed = (flags << 8) | (dst << 4) | src) and
+the ctx-free helper `ndb_jit_h_div_conv` implementing
+RegDivReg(is_div_int=false)'s BIGINT arm exactly: per-operand ±2^53
+precision guards (unsigned > 2^53-1 / signed outside ±2^53 → the
+kernel errors ZAGG_MATH_OVERFLOW), divisor 0 → SQL-NULL result,
+non-finite quotient → overflow — EVERY edge sets row_fallback and
+the interpreter re-run reproduces the exact NULL or error; the hot
+path writes the f64 quotient bits to dst. The bridge's kOpDiv arm
+now emits it for any KNOWN operand mix (I64/NNC/U64/F64) that is not
+both-F64 — both-proven-F64 keeps the hot OP_DIV_F64 (T64e pins it);
+STR/UNKNOWN keep the whole-program fallback. Result register F64.
+New kind joined the nb-pass tables (a=dst is also the lhs read, b=
+src; c is NOT a register) and all name tables.
+
+Tests: bridge 128/128 (T64a i64/i64 with packed-flag assertions and
+SUM_F64 result-typing, T64b u64/NNC flags, T64c mixed f64/i64 —
+previously UNSUPPORTED, T64d UNKNOWN-after-embedded reject, T64e
+both-F64 stays hot). Coldcall 32/32 (T32: packed operand round
+trip). RonSQL canary Q14 (SUM(a / b) over BIGINT must-JIT under
+4060, mysqld DECIMAL vs RonSQL compact-double formatting noted) and
+Q15 (zero-divisor row → SQL NULL semantics vs mysqld; a 2^53+1
+magnitude errors the query — the kernel's precision guard, which
+mysqld does not have: an intentional engine difference, probed on
+the RonSQL side only). Census generic_div_int comment updated
+(still 0 = never pushed by the SQL planner). Verified 2026-08-21:
+regen clean, bridge 128/128, coldcall 32/32, canary + census green,
+full sweep passed.
 
 ## 5E-2 implementation record (2026-08-21)
 

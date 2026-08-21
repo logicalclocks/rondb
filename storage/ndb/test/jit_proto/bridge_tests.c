@@ -3059,6 +3059,104 @@ static void test_div_u64_signed_reject(void) {
                   JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpDivInt);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5E-3: GENERIC '/' with integer operand(s) — OP_DIV_CONV_F64  */
+/* (cold call; ±2^53 conversion guards + divide, edges via per-row    */
+/* fallback). Both-proven-F64 stays on the hot OP_DIV_F64.            */
+/* packed(op->c) = (flags << 8) | (dst << 4) | src.                   */
+/* ------------------------------------------------------------------ */
+
+/* T64a: i64 / i64 -> conversion divide, result lands F64 (generic
+ * Sum picks SUM_F64). */
+static void test_div_conv_i64(void) {
+  const char *name = "T64a div_conv_i64";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpDiv, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]load [1]load [2]DIV_CONV [3]SUM_F64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_CONV_F64)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 1)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (0x0 << 8) | (0 << 4) | 1)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
+}
+
+/* T64b: u64 / NNC -> flags mark the u64 dividend (bit1). */
+static void test_div_conv_u64_const(void) {
+  const char *name = "T64b div_conv_u64_const";
+  uint32_t prog[5];
+  prog[0] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0);
+  prog[1] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[2] = 3u;
+  prog[3] = 0u;
+  prog[4] = enc_2reg(kOpDiv, 0, 1);
+  Program p;
+  /* [0]U64 load (stays row-fallback form: no consumer chain to skip
+   * matters here) [1]CONST [2]DIV_CONV [3]EXIT. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_CONV_F64)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (0x2 << 8) | (0 << 4) | 1)) return;
+  mark_pass(name);
+}
+
+/* T64c: mixed f64 / i64 -> conversion divide with the f64 flag on
+ * the dividend (previously UNSUPPORTED). */
+static void test_div_conv_mixed(void) {
+  const char *name = "T64c div_conv_mixed";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/2),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpDiv, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_CONV_F64)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (0x1 << 8) | (0 << 4) | 1)) return;
+  mark_pass(name);
+}
+
+/* T64d: UNKNOWN operand (post-embedded) still rejects. */
+static void test_div_conv_unknown_reject(void) {
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
+    enc_2reg(kOpDiv, 0, 1),
+  };
+  assert_rejected("T64d div_conv_unknown_reject", prog, 4,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 3, kOpDiv);
+}
+
+/* T64e: both-F64 keeps the HOT OP_DIV_F64 (regression pin). */
+static void test_div_conv_both_f64_hot(void) {
+  const char *name = "T64e div_conv_both_f64_hot";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/2),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/3),
+    enc_2reg(kOpDiv, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_F64)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3186,6 +3284,11 @@ int main(void) {
   test_mod_dividend_signedness();
   test_div_mod_f64_reject();
   test_div_u64_signed_reject();
+  test_div_conv_i64();
+  test_div_conv_u64_const();
+  test_div_conv_mixed();
+  test_div_conv_unknown_reject();
+  test_div_conv_both_f64_hot();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
