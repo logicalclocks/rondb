@@ -408,14 +408,22 @@ crosses 2^32), AVG, grouped both-tracks program, nullable narrow
 columns on both NB families, narrow arithmetic. Census `int_sum`
 flips 1 → 0.
 
-## 5E — integer division / modulo
+## 5E — division/modulo + GENERIC arithmetic — **PLANNED, see `phase_5e_plan.md`**
 
-`kOpDivInt`/`kOpDivIntBigint`, `kOpMod`, `kOpDiv`: cold-call helpers
-with MySQL semantics — division by zero yields SQL NULL, which
-requires null-capable results, hence after 5D. This also consumes the
-Test 27/28 fallback-canary op again: when `kOpMod` lowers, repoint the
-canary at a synthetic invalid opcode or a deliberately-reserved one
-(document it as permanently unsupported).
+**Scoping finding (2026-08-21): RonSQL emits the GENERIC arithmetic
+opcodes** (kOpPlus/kOpMinus/kOpMul/kOpDiv via NdbAggregator::Add
+etc.), which the bridge does not lower — so every RonSQL query with
+ANY arithmetic falls back wholesale today, a far bigger gap than
+div/mod. 5E-1 lowers the generic ops through the existing 5C-4/f64
+classifiers (no regen) and establishes RonSQL as the test platform
+(RONSQL_CLI + rondb_jit_ronsql_canary); 5E-2 adds the four integer
+DIV/MOD hot stencils (div-by-zero → per-row fallback, the op_div_f64
+pattern; LLONG_MIN/-1 guarded before the hardware divide — x86 idiv
+traps; Test 27's fallback canary repoints from kOpMod to
+kOpSetRegNull, the permanent unsupported op); 5E-3 adds the generic
+'/'-over-integers cold call with RegDivReg's ±2^53 conversion
+guards. The SQL planner never pushes /, DIV, or % at all — mysqld
+serves as the ground-truth differential in every RonSQL canary.
 
 ## 5F — string aggregation MIN/MAX — **PLANNED, see `phase_5f_plan.md`**
 

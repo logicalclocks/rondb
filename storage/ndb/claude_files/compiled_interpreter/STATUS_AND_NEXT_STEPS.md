@@ -420,8 +420,21 @@ widths → i64 track, unsigned widths → u64 track per the
 interpreter's IsUnsigned split; u64 helpers decode all unsigned
 widths; bridge 108/108; new rondb_jit_int_canary with boundary
 values on all 8 widths; census int_sum flipped to 0, full
-sweep passed — see phase_5_roadmap.md §5H). NEXT → 5F-2 /
-5E stay parked pending demand data; string CASE conditions
+sweep passed — see phase_5_roadmap.md §5H). → 5E PLANNED
+(2026-08-21, `phase_5e_plan.md`): scoping against RonSQL — the
+platform that emits these opcodes — found the REAL gap: RonSQL emits
+GENERIC kOpPlus/kOpMinus/kOpMul/kOpDiv (NdbAggregator::Add etc.), and
+the bridge only lowers the typed families, so EVERY RonSQL query with
+any arithmetic falls back wholesale today. 5E-1 = generic-arith
+lowering through the existing classifiers (NO regen) + the RonSQL
+test platform (RONSQL_CLI in mtr, rondb_jit_ronsql_canary with 4060 +
+mysqld differentials); 5E-2 = integer DIV/MOD (4 hot stencils, regen;
+div-by-zero → per-row fallback like op_div_f64, LLONG_MIN/-1 →
+overflow-exit with explicit pre-divide guards for the x86 idiv trap;
+repoint Test 27 to kOpSetRegNull); 5E-3 = generic '/' over int
+operands (1 cold-call stencil implementing RegDivReg's ±2^53
+conversion guards; edges → per-row fallback). NEXT → 5F-2 stays
+parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning
 finding: no null-tracking matrix needed — the null test FUSES into
