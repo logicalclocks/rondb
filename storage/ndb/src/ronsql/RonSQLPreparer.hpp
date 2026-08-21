@@ -398,6 +398,7 @@ private:
   void configure();
   void parse();
   void resolve_orderby_aliases();
+  void canonicalize_orderby_columns();
   bool has_width(size_t pos);
   void load();
   void load_single_table();

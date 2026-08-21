@@ -1065,6 +1065,75 @@ RonSQLPreparer::resolve_orderby_aliases()
 }
 
 /*
+ * The parser registers column references keyed on the (qualifier, name)
+ * pair, so the same column reached through different spellings — bare
+ * `c_nationkey` vs qualified `cu.c_nationkey` — carries different
+ * col_idx values.  ResultPrinter::validate_orderby_columns matches
+ * ORDER BY targets against GROUP BY by raw col_idx equality, so without
+ * canonicalization a legal query like
+ *   ... GROUP BY cu.c_nationkey ORDER BY c_nationkey
+ * is wrongly rejected as "ORDER BY column not in GROUP BY clause".
+ * Rewrite each TABLE_COLUMN ORDER BY col_idx to the GROUP BY entry's
+ * col_idx when both resolve to the same underlying column.  Runs after
+ * scoped resolution (which has already rejected ambiguous unqualified
+ * names, so a resolved spelling is unique) and before ResultPrinter
+ * construction.  Aliases were already converted to OUTPUT_REF by
+ * resolve_orderby_aliases and are not affected.
+ */
+void
+RonSQLPreparer::canonicalize_orderby_columns()
+{
+  OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+  GroupbyColumns* gb_head = m_context.ast_root.groupby_columns;
+  QueryScope::ResolvedColumnRef* resolved = m_main_scope.resolved_columns;
+  if (ob == NULL || gb_head == NULL || resolved == NULL)
+    return;
+  Uint32 num_cols = m_columns.size();
+  for (; ob != NULL; ob = ob->next)
+  {
+    if (ob->kind != OrderbyColumns::Kind::TABLE_COLUMN)
+      continue;
+    Uint32 ob_idx = ob->col_idx;
+    if (ob_idx >= num_cols)
+      continue;
+    bool literal_match = false;
+    for (GroupbyColumns* gb = gb_head; gb != NULL; gb = gb->next)
+    {
+      if (gb->col_idx == ob_idx)
+      {
+        literal_match = true;
+        break;
+      }
+    }
+    if (literal_match)
+      continue;
+    const QueryScope::ResolvedColumnRef& obr = resolved[ob_idx];
+    if (obr.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+        obr.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
+      continue;
+    for (GroupbyColumns* gb = gb_head; gb != NULL; gb = gb->next)
+    {
+      if (gb->col_idx >= num_cols)
+        continue;
+      const QueryScope::ResolvedColumnRef& gbr = resolved[gb->col_idx];
+      if (gbr.kind != obr.kind || gbr.join_op_idx != obr.join_op_idx)
+        continue;
+      bool same_column;
+      if (obr.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+        same_column = (gbr.attr_id == obr.attr_id);
+      else
+        same_column = (gbr.cte_def_idx == obr.cte_def_idx &&
+                       gbr.cte_result_idx == obr.cte_result_idx);
+      if (same_column)
+      {
+        ob->col_idx = gb->col_idx;
+        break;
+      }
+    }
+  }
+}
+
+/*
  * Return false if the position is a UTF-8 continuation byte and part of a
  * prefix of a correct UTF-8 multi-byte sequence, otherwise true.
  */
@@ -5341,6 +5410,12 @@ RonSQLPreparer::compile()
       }
     }
   }
+
+  // Unify ORDER BY spellings with GROUP BY spellings (bare vs qualified
+  // references to the same column carry different col_idx values) so
+  // ResultPrinter's col_idx-equality GROUP BY membership check accepts
+  // e.g. GROUP BY cu.c_nationkey ORDER BY c_nationkey.
+  canonicalize_orderby_columns();
 
   // Compile post-processing/printer program. CTE queries use the main
   // aggregator on a physical-table leaf (CTE-at-leaf is rejected in
