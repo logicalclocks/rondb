@@ -52,6 +52,9 @@
 #define kOpPlus           1
 #define kOpMinus          2
 #define kOpMul            3
+#define kOpDivInt         5
+#define kOpMod            6
+#define kOpDivIntBigint  27
 #define kOpLoadCol        7
 #define kOpLoadConst      8
 #define kOpMov            9
@@ -2925,6 +2928,137 @@ static void test_generic_arith_decimal_scale0(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5E-2: integer DIV / MOD. kOpDivIntBigint is the optimizer's  */
+/* typed rewrite of kOpDivInt; kOpMod is never rewritten. Signed DIV  */
+/* carries the INT64_MIN/-1 overflow target in d; MOD and the u64     */
+/* pair have none. Divisor 0 is a runtime per-row fallback inside the */
+/* stencils — invisible to admission.                                 */
+/* ------------------------------------------------------------------ */
+
+/* T63a: signed DIV -> OP_DIV_INT_CHECKED with the d-target fixup. */
+static void test_div_int_signed(void) {
+  const char *name = "T63a div_int_signed";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpDivInt, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]load [1]load [2]DIV_INT_CHECKED [3]SUM_CHECKED [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 1)) return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 5)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T63b: the typed kOpDivIntBigint lowers identically. */
+static void test_div_int_bigint_typed(void) {
+  const char *name = "T63b div_int_bigint_typed";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpDivIntBigint, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_INT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 5)) return;
+  mark_pass(name);
+}
+
+/* T63c: signed MOD -> OP_MOD_INT, no overflow target. */
+static void test_mod_int_signed(void) {
+  const char *name = "T63c mod_int_signed";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpMod, 0, 1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MOD_INT)) return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 0)) return;
+  mark_pass(name);
+}
+
+/* T63d: u64 dividend, NNC divisor -> OP_DIV_U64 (no overflow) and
+ * OP_MOD_U64; the u64 result feeds SUM_U64. */
+static void test_div_mod_u64(void) {
+  const char *name = "T63d div_mod_u64";
+  uint32_t prog[6];
+  prog[0] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0);
+  prog[1] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[2] = 7u;
+  prog[3] = 0u;
+  prog[4] = enc_2reg(kOpDivInt, 0, 1);
+  prog[5] = enc_agg(kOpSum, /*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]U64_NB [1]CONST [2]DIV_U64 [3]SUM_U64 [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIV_U64)) return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 0)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T63e: MOD's result signedness follows the DIVIDEND — an NNC
+ * dividend with a u64 divisor computes on the unsigned stencil but
+ * lands the result in the SIGNED track (kernel: a_unsigned only). */
+static void test_mod_dividend_signedness(void) {
+  const char *name = "T63e mod_dividend_signedness";
+  uint32_t prog[6];
+  prog[0] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0);
+  prog[1] = 100u;
+  prog[2] = 0u;
+  prog[3] = enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/1, /*col=*/1);
+  prog[4] = enc_2reg(kOpMod, 0, 1);
+  prog[5] = enc_agg(kOpSum, /*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]CONST [1]U64_NB [2]MOD_U64 [3]SUM_BIGINT_CHECKED [4]EXIT
+   * [5]OVF — the SUM kind is the assertion: dividend-signed result. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MOD_U64)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T63f: DIV/MOD over doubles (trunc-DIV / fmod) stay unsupported. */
+static void test_div_mod_f64_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 2),
+    enc_load_col(NDB_TYPE_DOUBLE, 1, 3),
+    enc_2reg(kOpMod, 0, 1),
+  };
+  assert_rejected("T63f div_mod_f64_reject", prog, 3,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpMod);
+}
+
+/* T63g: u64 mixed with a signed VARIABLE keeps the fallback. */
+static void test_div_u64_signed_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, 0, 0),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_2reg(kOpDivInt, 0, 1),
+  };
+  assert_rejected("T63g div_u64_signed_reject", prog, 3,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpDivInt);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3045,6 +3179,13 @@ int main(void) {
   test_generic_arith_unknown_reject();
   test_generic_arith_decimal();
   test_generic_arith_decimal_scale0();
+  test_div_int_signed();
+  test_div_int_bigint_typed();
+  test_mod_int_signed();
+  test_div_mod_u64();
+  test_mod_dividend_signedness();
+  test_div_mod_f64_reject();
+  test_div_u64_signed_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

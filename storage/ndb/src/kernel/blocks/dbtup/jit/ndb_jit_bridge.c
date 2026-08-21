@@ -347,6 +347,10 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_MUL_U64_CHECKED:      return "mul_u64_checked";
     case OP_LOAD_COL_NDB_DEC:     return "load_col_ndb_dec";
     case OP_MINMAX_STR_NDB:       return "minmax_str_ndb";
+    case OP_DIV_INT_CHECKED:      return "div_int_checked";
+    case OP_MOD_INT:              return "mod_int";
+    case OP_DIV_U64:              return "div_u64";
+    case OP_MOD_U64:              return "mod_u64";
     default:                      return "jit_op?";
   }
 }
@@ -1588,6 +1592,10 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
     case OP_ADD_U64_CHECKED:
     case OP_MINUS_U64_CHECKED:
     case OP_MUL_U64_CHECKED:
+    case OP_DIV_INT_CHECKED:
+    case OP_MOD_INT:
+    case OP_DIV_U64:
+    case OP_MOD_U64:
       return op->b == reg || op->c == reg;
     /* Accumulators read their source register (op->b). COUNT is
      * listed deliberately: its stencil ignores the register, but the
@@ -1648,6 +1656,10 @@ static int nb_op_written_reg(const Op *op) {
     case OP_ADD_U64_CHECKED:
     case OP_MINUS_U64_CHECKED:
     case OP_MUL_U64_CHECKED:
+    case OP_DIV_INT_CHECKED:
+    case OP_MOD_INT:
+    case OP_DIV_U64:
+    case OP_MOD_U64:
       return op->a;
     default:
       return -1;
@@ -2113,6 +2125,79 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         /* A 64-bit register move is type-preserving (bits are bits). */
         reg_type[dst] = reg_type[src];
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpDivInt:
+      case BR_kOpDivIntBigint:
+      case BR_kOpMod: {
+        /* Phase 5E-2: integer division / modulo. kOpDivIntBigint is
+         * the optimizer's typed rewrite of kOpDivInt (both operands
+         * statically BIGINT to it); kOpDivInt itself arrives when an
+         * operand was not (DECIMAL loads), and kOpMod is never
+         * rewritten. All three lower identically off the tracker's
+         * proof. Kernel semantics (RegDivIntBigint / RegModReg
+         * integer paths): C truncating division / remainder; divisor
+         * 0 → NULL result (the stencil takes the per-row fallback);
+         * DIV's INT64_MIN / -1 → overflow exit; DIV's result
+         * signedness is a|b, MOD's follows the DIVIDEND only. f64 /
+         * STR / UNKNOWN operands (the double trunc-DIV and fmod
+         * paths — durable negatives) and u64 mixed with a signed
+         * VARIABLE have no lowering → UNSUPPORTED. */
+        uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
+        uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
+        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        int dst_int = (reg_type[dst] == BR_REG_I64 ||
+                       reg_type[dst] == BR_REG_U64 ||
+                       reg_type[dst] == BR_REG_NNC);
+        int src_int = (reg_type[src] == BR_REG_I64 ||
+                       reg_type[src] == BR_REG_U64 ||
+                       reg_type[src] == BR_REG_NNC);
+        if (!dst_int || !src_int) {
+          set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        int arith_unsigned =
+            (reg_type[dst] == BR_REG_U64 || reg_type[src] == BR_REG_U64);
+        if (arith_unsigned) {
+          int dst_ok = (reg_type[dst] == BR_REG_U64 ||
+                        reg_type[dst] == BR_REG_NNC);
+          int src_ok = (reg_type[src] == BR_REG_U64 ||
+                        reg_type[src] == BR_REG_NNC);
+          if (!dst_ok || !src_ok) {
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
+        }
+        uint8_t our_kind;
+        int is_checked = 0;
+        if (op == BR_kOpMod) {
+          our_kind = arith_unsigned ? OP_MOD_U64 : OP_MOD_INT;
+          /* Result signedness follows the DIVIDEND (kernel uses
+           * a_unsigned only): a u64 dividend stays u64; an NNC
+           * dividend with a u64 divisor yields a small non-negative
+           * value — signed track. The unsigned stencil still computes
+           * it (urem of the zero-extended magnitudes = the kernel's
+           * magnitude dance for non-negative operands). */
+          reg_type[dst] = (reg_type[dst] == BR_REG_U64) ? BR_REG_U64
+                                                        : BR_REG_I64;
+        } else {
+          our_kind = arith_unsigned ? OP_DIV_U64 : OP_DIV_INT_CHECKED;
+          is_checked = !arith_unsigned;
+          reg_type[dst] = arith_unsigned ? BR_REG_U64 : BR_REG_I64;
+        }
+        if (!emit_op(out_prog, our_kind, dst, dst, src, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        if (is_checked) {
+          checked_arith_ops[n_checked_arith_ops++] =
+              (uint16_t)(out_prog->n_ops - 1);
+        }
         pos += 1;
         break;
       }
@@ -2594,10 +2679,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         break;
       }
 
-      /* Everything else — kOpDivInt / kOpDivIntBigint / kOpMod
-       * (5E-2), and kOpSetRegNull (permanently unsupported — the
-       * Test 27 fallback canary's opcode) — is unsupported. Reject
-       * the entire program. */
+      /* Everything else — only kOpSetRegNull today (permanently
+       * unsupported by design: the Test 27 fallback canary's
+       * opcode). Reject the entire program. */
       default:
         set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
         return JIT_BRIDGE_UNSUPPORTED_OP;

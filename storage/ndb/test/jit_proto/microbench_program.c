@@ -234,6 +234,10 @@ const char *bc_op_name(uint8_t kind) {
     case OP_MUL_U64_CHECKED:       return "mul_u64_checked";
     case OP_LOAD_COL_NDB_DEC:      return "load_col_ndb_dec";
     case OP_MINMAX_STR_NDB:        return "minmax_str_ndb";
+    case OP_DIV_INT_CHECKED:       return "div_int_checked";
+    case OP_MOD_INT:               return "mod_int";
+    case OP_DIV_U64:               return "div_u64";
+    case OP_MOD_U64:               return "mod_u64";
     default:                   return "?";
   }
 }

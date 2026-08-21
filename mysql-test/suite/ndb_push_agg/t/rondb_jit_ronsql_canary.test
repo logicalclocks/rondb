@@ -133,4 +133,86 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 
 DROP TABLE td;
 
+--echo # Q9: integer DIV and % through RonSQL (Phase 5E-2) — must-JIT.
+CREATE TABLE tdm (
+  pk INT PRIMARY KEY,
+  a  BIGINT NOT NULL,
+  b  BIGINT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdm VALUES
+  (1, 10, 3, 100),
+  (2, 20, 4, 200),
+  (3, 30, 5, 300),
+  (4, 40, 6, 400);
+SELECT SUM(a DIV b) AS s1, SUM(a % b) AS s2 FROM tdm;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(a DIV b) AS s1, SUM(a % b) AS s2 FROM tdm;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q9_jit_compiled;
+
+--echo # Q10: NEGATIVE operands — TRUNCATING division (-7 DIV 2 = -3,
+--echo #      not floor's -4) and remainder sign follows the DIVIDEND.
+CREATE TABLE tneg (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tneg VALUES
+  (1, -7, 2), (2, 9, -4), (3, -9, -4), (4, 10, 3);
+SELECT MIN(x DIV y) AS d1, MAX(x DIV y) AS d2,
+       MIN(x % y) AS m1, MAX(x % y) AS m2 FROM tneg;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT MIN(x DIV y) AS d1, MAX(x DIV y) AS d2, MIN(x % y) AS m1, MAX(x % y) AS m2 FROM tneg;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q10_jit_compiled;
+DROP TABLE tneg;
+
+--echo # Q11: unsigned DIV/% with constant divisors (u64 + NNC).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(u DIV 3) AS s1, SUM(u % 7) AS s2 FROM tdm;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(u DIV 3) AS s1, SUM(u % 7) AS s2 FROM tdm;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q11_jit_compiled;
+DROP TABLE tdm;
+
+--echo # Q12: DIVISION BY ZERO rows — SQL NULL per row (the stencils
+--echo #      take the per-row fallback; SUM skips, COUNT drops them).
+--echo #      Correctness-only: per-row fallbacks cannot sit under 4060.
+CREATE TABLE tz (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tz VALUES (1, 10, 2), (2, 9, 0), (3, 7, 3);
+--disable_warnings
+SELECT SUM(x DIV y) AS s1, SUM(x % y) AS s2, COUNT(x DIV y) AS c FROM tz;
+--enable_warnings
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x DIV y) AS s1, SUM(x % y) AS s2, COUNT(x DIV y) AS c FROM tz;"
+DROP TABLE tz;
+
+--echo # Q13: INT64_MIN DIV -1 — the overflow exit. Both engines error;
+--echo #      under 4060 the RonSQL error proves it came from the JIT's
+--echo #      overflow exit, not a fallback.
+CREATE TABLE tovf (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tovf VALUES (1, -9223372036854775808, -1);
+--disable_result_log
+--error ER_DATA_OUT_OF_RANGE
+SELECT SUM(x DIV y) FROM tovf;
+--enable_result_log
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--error 1
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x DIV y) AS s FROM tovf;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q13_jit_compiled;
+DROP TABLE tovf;
+
 --remove_file $NDB_TOOLS_OUTPUT

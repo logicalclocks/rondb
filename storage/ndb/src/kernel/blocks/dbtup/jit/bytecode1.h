@@ -286,7 +286,27 @@ typedef enum {
    * error. Operand layout: b = col_id,
    * c = (is_max << 8) | agg_index; a = agg_index (diagnostics). */
   OP_MINMAX_STR_NDB        = 56,
-  OP_KIND_MAX           = OP_MINMAX_STR_NDB
+  /* Phase 5E-2: integer division / modulo. Same operand layout as
+   * the checked arithmetic family (a=dst, b=lhs, c=rhs; DIV_INT also
+   * d = overflow-exit pc). Divisor 0 makes the interpreter's result
+   * register NULL — the stencils take the PER-ROW fallback for it
+   * (op_div_f64's zero-divisor pattern: set row_fallback, store 0,
+   * continue; the interpreter re-runs the row with exact SQL-NULL
+   * semantics). OP_DIV_INT_CHECKED's only overflow is INT64_MIN / -1
+   * (magnitude 2^63 unrepresentable) → the d target
+   * (⇒ ZAGG_MATH_OVERFLOW); the guard sits BEFORE the hardware
+   * divide because x86-64 idiv TRAPS on that input. OP_MOD_INT's
+   * INT64_MIN % -1 is 0 via the same guard (no overflow hole — a
+   * remainder's magnitude is always < |divisor|). The u64 pair are
+   * plain udiv/urem with the zero-divisor fallback. The bridge
+   * admits uniform tracks only (5C-4 NNC rules; MOD's result
+   * signedness follows the DIVIDEND, matching the kernel's
+   * a_unsigned-only rule; DIV's is the OR of both operands'). */
+  OP_DIV_INT_CHECKED       = 57,
+  OP_MOD_INT               = 58,
+  OP_DIV_U64               = 59,
+  OP_MOD_U64               = 60,
+  OP_KIND_MAX           = OP_MOD_U64
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

@@ -5,7 +5,60 @@
 Q7/Q8 and the 4060 pipeline canaries; see the CORRECTION in the
 record below — the data node optimizer already types most generic
 arith, the live 5E-1 win is DECIMAL arithmetic).
-5E-2/5E-3 not started.**
+5E-2 DONE & VERIFIED (2026-08-21 — regen clean on both arches,
+bridge_tests 123/123, RonSQL canary Q9-Q13 green incl. div-by-zero
+NULL semantics and the INT64_MIN/-1 overflow under 4060, Test 27
+repointed and green, census green, full ndb_push_agg sweep passed).
+5E-3 not started.**
+
+## 5E-2 implementation record (2026-08-21)
+
+Landed as planned. Four stencils: `op_div_int_checked` (divisor 0 →
+row_fallback per op_div_f64's pattern; dividend==INT64_MIN &&
+divisor==-1 guarded BEFORE the hardware divide — x86-64 idiv traps —
+and routed to HOLE_DIV_OVF_TGT via op->d), `op_mod_int` (same zero
+fallback; INT64_MIN % -1 → 0 via the guard; no overflow hole — a
+remainder's magnitude is always < |divisor|), `op_div_u64` /
+`op_mod_u64` (plain udiv/urem + the zero fallback). New DIV_*/MOD_*
+fold-hole trios (sha-recipe magics, shared signed/unsigned like the
+ADD family) + the HOLE_DIV_OVF_TGT symbol; op_div_int_checked rides
+the `_checked` KEEP_ALL naming rule, the other three are STRIP_TAIL
+single-tail stencils. jit1's op_has_overflow_target gains
+OP_DIV_INT_CHECKED.
+
+Bridge: one case for kOpDivInt / kOpDivIntBigint (the optimizer's
+typed rewrite — both lower identically) / kOpMod, off the tracker's
+proof with the 5C-4 unsigned rules. DIV's result track is U64 iff
+either operand is (kernel is_unsigned = a|b); MOD's follows the
+DIVIDEND only (kernel a_unsigned) — an NNC dividend with a u64
+divisor computes on OP_MOD_U64 but lands I64 (T63e pins it). f64 /
+STR / UNKNOWN operands and u64-mixed-signed-variable → UNSUPPORTED
+(double trunc-DIV and fmod stay durable negatives). The new kinds
+join the nb-pass read/write tables and every name table.
+
+Test 27 (testJoinAggNdbApi) repointed from kOpMod to kOpSetRegNull —
+SUM(0) with a dead SetRegNull(1), the bridge's PERMANENTLY
+unsupported opcode, so the canary never needs repointing again.
+
+Tests: bridge 123/123 (T63a-g: signed DIV with d-fixup, typed
+kOpDivIntBigint, signed MOD without one, u64 DIV via NNC divisor,
+the MOD dividend-signedness rule, f64 reject, mixed-variable
+reject). RonSQL canary Q9-Q13: DIV/% must-JIT, negative operands
+(truncation + dividend-sign, MIN/MAX-discriminated), unsigned with
+constant divisors, division-by-zero rows as correctness-only
+NULL-semantics probes (per-row fallback — no 4060), and INT64_MIN
+DIV -1 erroring from the JIT's overflow exit UNDER 4060 on both
+engines. Census int_div/int_mod comments updated (still 0 =
+never-pushed by the SQL planner).
+
+Regen war story: the first arm64 regen failed with an unrecognised
+relocation to `next` mid-body — clang TAIL-DUPLICATED the exit for
+the divisor==0 if/else, which STRIP_TAIL cannot strip. Fixed by
+making all four bodies branchless (safe-divisor-1 divide + csel of
+the result; MOD additionally uses the exact identity x % -1 == 0 to
+kill the trapping input without a branch). Lesson for future
+stencils: a second path that ends in its own store + TAIL_NEXT WILL
+get duplicated — keep one exit reachable by straight line.
 
 ## 5E-1 implementation record (2026-08-21)
 

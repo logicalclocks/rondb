@@ -79,7 +79,9 @@ case_nullable_fell_back
 #
 # ---- Shapes expected to FALL BACK (the census proper) ----
 #
-# int_div: integer division (5E — kOpDivIntBigint).
+# int_div: integer division (lowered since Phase 5E-2; the SQL
+# planner does not push DIV, so 0 here means never-pushed —
+# rondb_jit_ronsql_canary exercises the lowering).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(a DIV b) FROM t1;
 SUM(a DIV b)
@@ -87,7 +89,8 @@ SUM(a DIV b)
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_div_fell_back;
 int_div_fell_back
 0
-# int_mod: modulo (5E — kOpMod; the Test 27 canary's opcode).
+# int_mod: modulo (lowered since Phase 5E-2, same not-pushed
+# caveat; Test 27's fallback canary now uses kOpSetRegNull).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(a % b) FROM t1;
 SUM(a % b)

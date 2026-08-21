@@ -202,6 +202,10 @@ static inline int op_has_overflow_target(uint8_t kind) {
     case OP_ADD_U64_CHECKED:
     case OP_MINUS_U64_CHECKED:
     case OP_MUL_U64_CHECKED:
+    /* Phase 5E-2: signed integer division's INT64_MIN / -1 overflow →
+     * HOLE_DIV_OVF_TGT via op->d. MOD and the u64 pair carry no
+     * overflow hole (remainders can't overflow; u64 divide can't). */
+    case OP_DIV_INT_CHECKED:
       return 1;
     default:
       return 0;

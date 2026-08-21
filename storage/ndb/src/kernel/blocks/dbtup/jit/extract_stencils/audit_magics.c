@@ -319,6 +319,20 @@ static const struct {
   { "MAGIC_MUL_DST_FOLD",      "op_mul_u64_checked",   1 },
   { "MAGIC_MUL_A_FOLD",        "op_mul_u64_checked",   1 },
   { "MAGIC_MUL_B_FOLD",        "op_mul_u64_checked",   1 },
+  /* Phase 5E-2 integer DIV/MOD: the DIV_* trio is shared by the
+   * signed and unsigned divide, the MOD_* trio by both remainders. */
+  { "MAGIC_DIV_DST_FOLD",      "op_div_int_checked",   1 },
+  { "MAGIC_DIV_A_FOLD",        "op_div_int_checked",   1 },
+  { "MAGIC_DIV_B_FOLD",        "op_div_int_checked",   1 },
+  { "MAGIC_DIV_DST_FOLD",      "op_div_u64",           1 },
+  { "MAGIC_DIV_A_FOLD",        "op_div_u64",           1 },
+  { "MAGIC_DIV_B_FOLD",        "op_div_u64",           1 },
+  { "MAGIC_MOD_DST_FOLD",      "op_mod_int",           1 },
+  { "MAGIC_MOD_A_FOLD",        "op_mod_int",           1 },
+  { "MAGIC_MOD_B_FOLD",        "op_mod_int",           1 },
+  { "MAGIC_MOD_DST_FOLD",      "op_mod_u64",           1 },
+  { "MAGIC_MOD_A_FOLD",        "op_mod_u64",           1 },
+  { "MAGIC_MOD_B_FOLD",        "op_mod_u64",           1 },
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);

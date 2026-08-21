@@ -442,7 +442,13 @@ operand types are inferable, so RonSQL's int/double arithmetic
 already compiled — the LIVE 5E-1 win is DECIMAL arithmetic, which
 the optimizer leaves untyped but the bridge's 5G decimal typing can
 lower (canary Q7/Q8, T62g/h); Q1-Q5 are pipeline regression
-canaries). NEXT → 5F-2 stays
+canaries). → 5E-2 DONE & VERIFIED (2026-08-21 — regen clean,
+bridge 123/123, canaries + census + full sweep green; 4 stencils: OP_DIV_INT_CHECKED / OP_MOD_INT / OP_DIV_U64 /
+OP_MOD_U64; divisor-0 → per-row fallback, INT64_MIN/-1 pre-divide
+guards (x86 idiv trap), MOD result-signedness follows the dividend;
+bridge 123/123; Test 27 repointed to kOpSetRegNull (permanent);
+RonSQL canary Q9-Q13 incl. negative-operand truncation, div-by-zero
+NULL semantics, and the overflow error under 4060). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

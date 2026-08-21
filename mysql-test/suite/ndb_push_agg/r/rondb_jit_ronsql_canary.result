@@ -117,3 +117,85 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q8_jit_compiled
 1
 DROP TABLE td;
+# Q9: integer DIV and % through RonSQL (Phase 5E-2) — must-JIT.
+CREATE TABLE tdm (
+pk INT PRIMARY KEY,
+a  BIGINT NOT NULL,
+b  BIGINT NOT NULL,
+u  BIGINT UNSIGNED NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdm VALUES
+(1, 10, 3, 100),
+(2, 20, 4, 200),
+(3, 30, 5, 300),
+(4, 40, 6, 400);
+SELECT SUM(a DIV b) AS s1, SUM(a % b) AS s2 FROM tdm;
+s1	s2
+20	5
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+20	5
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q9_jit_compiled;
+q9_jit_compiled
+1
+# Q10: NEGATIVE operands — TRUNCATING division (-7 DIV 2 = -3,
+#      not floor's -4) and remainder sign follows the DIVIDEND.
+CREATE TABLE tneg (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tneg VALUES
+(1, -7, 2), (2, 9, -4), (3, -9, -4), (4, 10, 3);
+SELECT MIN(x DIV y) AS d1, MAX(x DIV y) AS d2,
+MIN(x % y) AS m1, MAX(x % y) AS m2 FROM tneg;
+d1	d2	m1	m2
+-3	3	-1	1
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+d1	d2	m1	m2
+-3	3	-1	1
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q10_jit_compiled;
+q10_jit_compiled
+1
+DROP TABLE tneg;
+# Q11: unsigned DIV/% with constant divisors (u64 + NNC).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+332	13
+SELECT SUM(u DIV 3) AS s1, SUM(u % 7) AS s2 FROM tdm;
+s1	s2
+332	13
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q11_jit_compiled;
+q11_jit_compiled
+1
+DROP TABLE tdm;
+# Q12: DIVISION BY ZERO rows — SQL NULL per row (the stencils
+#      take the per-row fallback; SUM skips, COUNT drops them).
+#      Correctness-only: per-row fallbacks cannot sit under 4060.
+CREATE TABLE tz (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tz VALUES (1, 10, 2), (2, 9, 0), (3, 7, 3);
+SELECT SUM(x DIV y) AS s1, SUM(x % y) AS s2, COUNT(x DIV y) AS c FROM tz;
+s1	s2	c
+7	1	2
+s1	s2	c
+7	1	2
+DROP TABLE tz;
+# Q13: INT64_MIN DIV -1 — the overflow exit. Both engines error;
+#      under 4060 the RonSQL error proves it came from the JIT's
+#      overflow exit, not a fallback.
+CREATE TABLE tovf (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tovf VALUES (1, -9223372036854775808, -1);
+SELECT SUM(x DIV y) FROM tovf;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q13_jit_compiled;
+q13_jit_compiled
+1
+DROP TABLE tovf;

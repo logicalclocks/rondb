@@ -1312,6 +1312,86 @@ STENCIL op_minmax_str_ndb(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Integer division / modulo (Phase 5E-2).                            */
+/*                                                                    */
+/* Kernel equivalences: RegDivIntBigint / RegModReg integer paths.    */
+/* Divisor 0 → the interpreter NULLs the result register — take the   */
+/* per-row fallback (op_div_f64's zero-divisor pattern; the stored 0  */
+/* keeps this discarded run's downstream ops well-defined). The       */
+/* signed pair guard dividend == INT64_MIN && divisor == -1 BEFORE    */
+/* dividing: x86-64 idiv TRAPS on that input (DIV's magnitude 2^63    */
+/* overflows → OVF target; MOD's result is 0 — a remainder is always  */
+/* smaller in magnitude than the divisor, so MOD needs no overflow    */
+/* hole). One store site + one TAIL_NEXT each.                        */
+/* ------------------------------------------------------------------ */
+DECLARE_FOLD_HOLE(DIV_DST);
+DECLARE_FOLD_HOLE(DIV_A);
+DECLARE_FOLD_HOLE(DIV_B);
+extern __attribute__((preserve_none)) void HOLE_DIV_OVF_TGT(JitState *);
+/* All four bodies are BRANCHLESS past their (at most one) musttail
+ * branch: a divisor==0 path with its own store + TAIL_NEXT tempts
+ * clang into tail-duplicating the exit, and a duplicated jmp-to-next
+ * is exactly what the STRIP_TAIL extractor cannot strip (seen live
+ * on arm64: "unrecognised relocation target=next" mid-body). Instead
+ * the zero case divides by a SAFE divisor of 1 and csel's the result
+ * to 0, with row_fallback OR-ed in unconditionally. */
+STENCIL op_div_int_checked(JitState *s) {
+  int64_t divisor  = HOLE_LOAD_REG(DIV_B, s);
+  int64_t dividend = HOLE_LOAD_REG(DIV_A, s);
+  if (dividend == INT64_MIN && divisor == -1) {
+    [[clang::musttail]] return HOLE_DIV_OVF_TGT(s);
+  }
+  uint32_t zero = (divisor == 0);
+  s->row_fallback |= zero;
+  /* Past the overflow guard, divisor == -1 implies dividend !=
+   * INT64_MIN — the unconditional divide below cannot trap. */
+  int64_t safe = zero ? 1 : divisor;
+  int64_t result = dividend / safe;
+  HOLE_STORE_REG(DIV_DST, s, zero ? 0 : result);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_div_u64(JitState *s) {
+  uint64_t divisor  = (uint64_t)HOLE_LOAD_REG(DIV_B, s);
+  uint64_t dividend = (uint64_t)HOLE_LOAD_REG(DIV_A, s);
+  uint32_t zero = (divisor == 0);
+  s->row_fallback |= zero;
+  uint64_t safe = zero ? 1u : divisor;
+  uint64_t result = dividend / safe;
+  HOLE_STORE_REG(DIV_DST, s, zero ? 0 : (int64_t)result);
+  TAIL_NEXT(s);
+}
+
+DECLARE_FOLD_HOLE(MOD_DST);
+DECLARE_FOLD_HOLE(MOD_A);
+DECLARE_FOLD_HOLE(MOD_B);
+STENCIL op_mod_int(JitState *s) {
+  int64_t divisor  = HOLE_LOAD_REG(MOD_B, s);
+  int64_t dividend = HOLE_LOAD_REG(MOD_A, s);
+  uint32_t zero = (divisor == 0);
+  s->row_fallback |= zero;
+  int64_t safe = zero ? 1 : divisor;
+  /* x % -1 == 0 for EVERY x, so forcing the dividend to 0 when the
+   * divisor is -1 is exact — and removes the INT64_MIN % -1 input
+   * that traps x86-64's idiv. */
+  int64_t safe_dividend = (safe == -1) ? 0 : dividend;
+  int64_t result = safe_dividend % safe;
+  HOLE_STORE_REG(MOD_DST, s, zero ? 0 : result);
+  TAIL_NEXT(s);
+}
+
+STENCIL op_mod_u64(JitState *s) {
+  uint64_t divisor  = (uint64_t)HOLE_LOAD_REG(MOD_B, s);
+  uint64_t dividend = (uint64_t)HOLE_LOAD_REG(MOD_A, s);
+  uint32_t zero = (divisor == 0);
+  s->row_fallback |= zero;
+  uint64_t safe = zero ? 1u : divisor;
+  uint64_t result = dividend % safe;
+  HOLE_STORE_REG(MOD_DST, s, zero ? 0 : (int64_t)result);
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
 /* stencils.o. They are static so they would normally be discarded,   */
 /* but `used` keeps them.                                             */
@@ -1374,4 +1454,8 @@ const StencilTailFn g_stencil_anchor[] = {
     op_mul_u64_checked,
     op_load_col_ndb_dec,
     op_minmax_str_ndb,
+    op_div_int_checked,
+    op_mod_int,
+    op_div_u64,
+    op_mod_u64,
 };

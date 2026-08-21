@@ -178,6 +178,7 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BLNN_TGT",  HK_BRANCH_TAKE  },   /* ne variant */
   /* Overflow-checked arithmetic variants. */
   { "HOLE_ADD_OVF_TGT",   HK_OVERFLOW_TAKE },
+  { "HOLE_DIV_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_MINUS_OVF_TGT", HK_OVERFLOW_TAKE },
   { "HOLE_MUL_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_SUM_OVF_TGT",   HK_OVERFLOW_TAKE },
@@ -199,6 +200,14 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_FMM_SLOT",      HK_OP_A          },
   { "HOLE_FMM_SRC",       HK_OP_B          },
   { "HOLE_FMM_RESULT",    HK_OP_C          },
+  /* Phase 5E-2 integer DIV/MOD (shared by the signed and unsigned
+   * stencil of each family, like the ADD/MINUS/MUL trios). */
+  { "HOLE_DIV_DST",       HK_OP_A          },
+  { "HOLE_DIV_A",         HK_OP_B          },
+  { "HOLE_DIV_B",         HK_OP_C          },
+  { "HOLE_MOD_DST",       HK_OP_A          },
+  { "HOLE_MOD_A",         HK_OP_B          },
+  { "HOLE_MOD_B",         HK_OP_C          },
   { "HOLE_F64_OVF_TGT",   HK_OVERFLOW_TAKE },
   /* op_load_col_ndb_f64 cold-call helper arguments (narrow path,
    * like LCN_*). */
@@ -482,6 +491,14 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_FMM_SLOT_FOLD      0x78au
 #define MAGIC_FMM_SRC_FOLD       0xf48u
 #define MAGIC_FMM_RESULT_FOLD    0xfe4u
+/* Phase 5E-2 integer DIV/MOD operand holes (shared by the signed and
+ * unsigned stencil of each family, like the ADD/MINUS/MUL trios). */
+#define MAGIC_DIV_DST_FOLD       0xd27u
+#define MAGIC_DIV_A_FOLD         0x50bu
+#define MAGIC_DIV_B_FOLD         0x82fu
+#define MAGIC_MOD_DST_FOLD       0xf62u
+#define MAGIC_MOD_A_FOLD         0x1a8u
+#define MAGIC_MOD_B_FOLD         0x593u
 
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
@@ -642,6 +659,12 @@ static const HoleFoldMagicEntry kHoleFoldMagicTable[] = {
   { MAGIC_FMM_SLOT_FOLD,      HK_OP_A,  "MAGIC_FMM_SLOT_FOLD"      },
   { MAGIC_FMM_SRC_FOLD,       HK_OP_B,  "MAGIC_FMM_SRC_FOLD"       },
   { MAGIC_FMM_RESULT_FOLD,    HK_OP_C,  "MAGIC_FMM_RESULT_FOLD"    },
+  { MAGIC_DIV_DST_FOLD,       HK_OP_A,  "MAGIC_DIV_DST_FOLD"       },
+  { MAGIC_DIV_A_FOLD,         HK_OP_B,  "MAGIC_DIV_A_FOLD"         },
+  { MAGIC_DIV_B_FOLD,         HK_OP_C,  "MAGIC_DIV_B_FOLD"         },
+  { MAGIC_MOD_DST_FOLD,       HK_OP_A,  "MAGIC_MOD_DST_FOLD"       },
+  { MAGIC_MOD_A_FOLD,         HK_OP_B,  "MAGIC_MOD_A_FOLD"         },
+  { MAGIC_MOD_B_FOLD,         HK_OP_C,  "MAGIC_MOD_B_FOLD"         },
 };
 static const size_t kHoleFoldMagicTableLen =
     sizeof(kHoleFoldMagicTable) / sizeof(kHoleFoldMagicTable[0]);

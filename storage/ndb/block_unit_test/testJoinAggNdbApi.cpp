@@ -1438,18 +1438,16 @@ testJitLinkedNullSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 /* This test proves that reject path produces the correct result and   */
 /* never errors the query.                                             */
 /*                                                                     */
-/* SUM(amount % amount) is the shape (= 0; kOpMod is unlowered).       */
-/* Historically MAX(amount) — repointed when Phase 5B lowered          */
-/* kOpMaxBigint, per the original durability note. Deliberately runs   */
-/* with NO error inserts: 4060 (fallback fatal) and 5120 (setup-       */
-/* compile fatal) would both abort precisely the path we want to       */
-/* exercise. A developer can confirm the reject reason manually with a */
-/* one-off 5120 run; that fatal variant is intentionally kept out of   */
-/* MTR. Because it needs no error inserts, this test also runs for     */
-/* real in production builds.                                          */
-/*                                                                     */
-/* Durability note: when Phase 5E lowers Mod/DivInt, repoint again —   */
-/* to a DOUBLE shape (until 5C) or a string MIN/MAX (until 5F).        */
+/* SUM(0) with a dead kOpSetRegNull is the shape (= 0; kOpSetRegNull   */
+/* is the bridge's PERMANENTLY unsupported opcode — documented as      */
+/* such, so this canary needs no further repointing). Historically     */
+/* MAX(amount) (until 5B), then SUM(amount % amount) (until 5E-2       */
+/* lowered kOpMod). Deliberately runs with NO error inserts: 4060      */
+/* (fallback fatal) and 5120 (setup-compile fatal) would both abort    */
+/* precisely the path we want to exercise. A developer can confirm    */
+/* the reject reason manually with a one-off 5120 run; that fatal      */
+/* variant is intentionally kept out of MTR. Because it needs no       */
+/* error inserts, this test also runs for real in production builds.   */
 /* ------------------------------------------------------------------ */
 static int
 testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
@@ -1459,7 +1457,7 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
   fflush(stdout);
 
   if (verifyScalarWithMysql(conn, testName,
-        "SELECT SUM(amount % amount) FROM jagg_parent "
+        "SELECT SUM(0) FROM jagg_parent "
         "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id",
         {expectedSum}) != 0) {
     printf("FAILED (MySQL verification)\n");
@@ -1476,13 +1474,13 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
     return -1;
   }
 
-  /* SUM(amount % amount): kOpMod is outside the bridge's main switch, so
-   * the program is rejected at setup and the query runs on the
-   * interpreter. (amount is never 0 in the fixture, so no div-by-zero.) */
+  /* SUM(0) plus a DEAD SetRegNull: kOpSetRegNull is the bridge's
+   * permanently unsupported opcode, so the program is rejected at
+   * setup and the query runs on the interpreter (where SetRegNull
+   * merely nulls the unused register 1). */
   NdbAggregator agg(childTab);
-  if (!agg.LoadColumn("amount", 0) ||
-      !agg.LoadColumn("amount", 1) ||
-      !agg.Mod(0, 1) ||
+  if (!agg.LoadInt64(0, 0) ||
+      !agg.SetRegNull(1) ||
       !agg.Sum(0, 0) ||
       !agg.Finalize()) {
     printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
@@ -7645,9 +7643,10 @@ int main(int argc, char **argv)
           dropT25Tables(conn);
         }
 
-        /* Test 27: unsupported-program fallback (MAX is not JIT-lowered).
-         * No error inserts: this exercises the clean reject->interpreter
-         * path, which 4060/4062 would abort. Reuses the Test 23 tables. */
+        /* Test 27: unsupported-program fallback (kOpSetRegNull is the
+         * permanently unsupported opcode). No error inserts: this
+         * exercises the clean reject->interpreter path, which 4060/4062
+         * would abort. Reuses the Test 23 tables. */
         if (shouldRun(27)) {
           if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
             if (testJitUnsupportedFallback(&ndb, conn, 0) != 0)
