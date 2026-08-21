@@ -408,6 +408,34 @@ crosses 2^32), AVG, grouped both-tracks program, nullable narrow
 columns on both NB families, narrow arithmetic. Census `int_sum`
 flips 1 → 0.
 
+## 5K — temporal MIN/MAX (RonSQL) — **DONE & VERIFIED (2026-08-21 — no regen; bridge 138/138, RonSQL canary Q16-Q18 green under 4060 incl. the hand-predicted temporal display formats, census green, full ndb_push_agg sweep passed)**
+
+RonSQL pushes MIN/MAX over DATE / YEAR / TIME2 / DATETIME2 /
+TIMESTAMP2 (NdbAggregator::TypeSupported admits them; Sum/AVG are
+rejected at program build) and fell back wholesale; mysqld never
+pushes temporals (its result-decode gap — unchanged). NO regen:
+
+- Bridge: the five temporal type ids (19/26/31/32/33 — the ≥32 pair
+  exercising the wire's 6-bit bit-20 type encoding) join the u64
+  track. The interpreter loads each type's native packed value as an
+  unsigned integer and tags the register unsigned BIGINT, so
+  unsigned MIN/MAX over the packed value IS temporal MIN/MAX, and
+  any other consumer sees exactly the interpreter's register
+  semantics — no fencing needed.
+- Helpers: the u64 load pair grows the interpreter's exact decode
+  arms — DATE uint3korr, YEAR single byte, and the *2 types'
+  big-endian byte fold over header->getByteSize() (memcmp order ==
+  chronological order). Nullable temporals ride the NB variant like
+  every u64 column.
+
+Tests: bridge 138/138 (T68a DATE MIN/MAX with the NB-converted u64
+load; T68b DATETIME2/TIMESTAMP2 through the wide-type encoding).
+RonSQL canary Q16-Q18: DATE/YEAR and DATETIME(3)/TIME(3) MIN/MAX as
+4060 must-JITs with mysqld server-side baselines, TIMESTAMP(3) as a
+counter-only probe (RonSQL displays UTC vs mysqld's session
+timezone — outputs not comparable by design). Census date_min
+comment updated (still 0 = never pushed by the SQL planner).
+
 ## 5J — string CASE conditions on the aggregation path — **DONE & VERIFIED (2026-08-21 — no regen; bridge 136/136, case-nullable canary Q4/Q5 green as 4060 must-JITs, census case_string flipped to 0, full ndb_push_agg sweep passed — the census is FULLY GREEN for every planner-pushed shape, no exceptions)**
 
 The LAST census-confirmed red (`case_string` = 1: the planner pushes

@@ -234,3 +234,48 @@ s	c
 INSERT INTO tgz VALUES (4, 9007199254740993, 1);
 DROP TABLE tgz;
 DROP TABLE tgd;
+# Q16: TEMPORAL MIN/MAX (Phase 5K) — DATE / YEAR / DATETIME(3) /
+#      TIME(3) ride the u64 track as packed values (unsigned
+#      order = chronological order); RonSQL decodes for display,
+#      mysqld computes server-side (it never pushes temporals).
+CREATE TABLE ttmp (
+pk INT PRIMARY KEY,
+d  DATE NOT NULL,
+y  YEAR NOT NULL,
+dt DATETIME(3) NOT NULL,
+tm TIME(3) NOT NULL,
+ts TIMESTAMP(3) NOT NULL
+) ENGINE=NDB;
+INSERT INTO ttmp VALUES
+(1, '2026-01-15', 1999, '2026-01-15 10:30:00.500', '10:30:00.500', '2026-01-15 10:30:00.500'),
+(2, '2026-03-20', 2026, '2026-01-15 10:30:00.250', '09:15:00.000', '2026-01-15 10:30:00.250'),
+(3, '2025-12-31', 2004, '2025-06-01 00:00:00.000', '23:59:59.999', '2025-06-01 00:00:00.000');
+SELECT MIN(d) AS d1, MAX(d) AS d2, MIN(y) AS y1, MAX(y) AS y2 FROM ttmp;
+d1	d2	y1	y2
+2025-12-31	2026-03-20	1999	2026
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+d1	d2	y1	y2
+2025-12-31	2026-03-20	1999	2026
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q16_jit_compiled;
+q16_jit_compiled
+1
+# Q17: DATETIME(3) and TIME(3) — the big-endian memcmp-packed
+#      *2 formats (6-bit wide type ids on the wire).
+SELECT MIN(dt) AS dt1, MAX(dt) AS dt2, MIN(tm) AS t1, MAX(tm) AS t2 FROM ttmp;
+dt1	dt2	t1	t2
+2025-06-01 00:00:00.000	2026-01-15 10:30:00.500	09:15:00.000	23:59:59.999
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+dt1	dt2	t1	t2
+2025-06-01 00:00:00.000	2026-01-15 10:30:00.500	09:15:00.000	23:59:59.999
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q17_jit_compiled;
+q17_jit_compiled
+1
+# Q18: TIMESTAMP(3) — compile/counter probe only (RonSQL
+#      displays UTC while mysqld uses the session timezone, so
+#      the outputs are not comparable; values are checked by
+#      the epoch ordering being absolute).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q18_jit_compiled;
+q18_jit_compiled
+1
+DROP TABLE ttmp;

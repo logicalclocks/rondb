@@ -583,6 +583,29 @@ ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
     case NDB_TYPE_BIGUNSIGNED:
       uval = uint8korr(data);
       break;
+    case NDB_TYPE_DATE:
+      /* 3-byte little-endian packed (year<<9)|(month<<5)|day. */
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_YEAR:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIMESTAMP2: {
+      /* MySQL's memcmp-comparable packed binary, big-endian — fold
+       * the column's exact byte count MSB-first so the unsigned
+       * compare reproduces memcmp order (== chronological order),
+       * exactly the interpreter's loadColumnTypedFromBuf arm. */
+      const unsigned char *src =
+          reinterpret_cast<const unsigned char *>(data);
+      const Uint32 nbytes = header->getByteSize();
+      uval = 0;
+      for (Uint32 i = 0; i < nbytes; i++) {
+        uval = (uval << 8) | (Uint64)src[i];
+      }
+      break;
+    }
     default:
       s->row_fallback = 1;
       s->regs_i64[dst_reg] = 0;
@@ -913,6 +936,29 @@ ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
     case NDB_TYPE_BIGUNSIGNED:
       uval = uint8korr(data);
       break;
+    case NDB_TYPE_DATE:
+      /* 3-byte little-endian packed (year<<9)|(month<<5)|day. */
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_YEAR:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIMESTAMP2: {
+      /* MySQL's memcmp-comparable packed binary, big-endian — fold
+       * the column's exact byte count MSB-first so the unsigned
+       * compare reproduces memcmp order (== chronological order),
+       * exactly the interpreter's loadColumnTypedFromBuf arm. */
+      const unsigned char *src =
+          reinterpret_cast<const unsigned char *>(data);
+      const Uint32 nbytes = header->getByteSize();
+      uval = 0;
+      for (Uint32 i = 0; i < nbytes; i++) {
+        uval = (uval << 8) | (Uint64)src[i];
+      }
+      break;
+    }
     default:
       s->row_fallback = 1;
       s->regs_i64[dst_reg] = 0;

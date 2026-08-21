@@ -91,6 +91,11 @@
 #define NDB_TYPE_UNSIGNED         8
 #define NDB_TYPE_BIGINT      9
 #define NDB_TYPE_BIGUNSIGNED 10
+#define NDB_TYPE_DATE            19
+#define NDB_TYPE_YEAR            26
+#define NDB_TYPE_TIME2           31
+#define NDB_TYPE_DATETIME2       32
+#define NDB_TYPE_TIMESTAMP2      33
 #define NDB_TYPE_FLOAT       11
 #define NDB_TYPE_DOUBLE      12
 #define NDB_TYPE_DECIMAL         29
@@ -3376,6 +3381,65 @@ static void test_agg_attr_op_arg_mid(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5K: TEMPORAL MIN/MAX — DATE/YEAR/TIME2/DATETIME2/TIMESTAMP2  */
+/* ride the u64 track (packed values, unsigned order = chronological  */
+/* order). The >= 32 ids exercise the wire's 6-bit type encoding      */
+/* (bit 20 extension).                                                */
+/* ------------------------------------------------------------------ */
+static uint32_t enc_load_col_wide(uint32_t type, uint32_t reg_index,
+                                  uint32_t col_index) {
+  return enc_op(kOpLoadCol,
+                ((type & 0x1Fu) << 21) | (((type >> 5) & 0x1u) << 20) |
+                ((reg_index & 0x0Fu) << 16) | (col_index & 0xFFFFu));
+}
+
+/* T68a: DATE MIN/MAX -> the unsigned accumulators over the packed
+ * value; the load rides the u64 family (NB-converted). */
+static void test_temporal_date_min_max(void) {
+  const char *name = "T68a temporal_date_min_max";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DATE, /*reg=*/0, /*col=*/1),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]U64_NB [1]MIN_U64 [2]MAX_U64 [3]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64_NB)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_MIN_U64))
+    return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MAX_U64))
+    return;
+  mark_pass(name);
+}
+
+/* T68b: DATETIME2 (type id 32 — the bit-20 wide encoding) and
+ * TIMESTAMP2 (33) both route u64. */
+static void test_temporal_wide_types(void) {
+  const char *name = "T68b temporal_wide_types";
+  uint32_t prog[4] = {
+    enc_load_col_wide(NDB_TYPE_DATETIME2, /*reg=*/0, /*col=*/2),
+    enc_load_col_wide(NDB_TYPE_TIMESTAMP2, /*reg=*/1, /*col=*/3),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/1, /*agg=*/1),
+  };
+  Program p;
+  /* [0]u64 load [1]u64 load [2]MIN_U64 [3]MAX_U64 [4]EXIT — the
+   * interleaved chains degrade the loads to row-fallback forms. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_U64)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_COL_NDB_U64)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MIN_U64))
+    return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MAX_U64))
+    return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3516,6 +3580,8 @@ int main(void) {
   test_arith_conv_u64_mul();
   test_agg_attr_op_arg_start();
   test_agg_attr_op_arg_mid();
+  test_temporal_date_min_max();
+  test_temporal_wide_types();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

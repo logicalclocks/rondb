@@ -478,10 +478,15 @@ ABSOLUTE instruction offset (attr_op_arg_base) and dbtup_jit_invoke
 points ctx->prog_buf at program + start_pos; bridge 136/136;
 case-nullable canary Q4/Q5 upgrade to 4060 must-JIT; census
 case_string flips to 0 — the census is then FULLY green for every
-planner-pushed shape, no exceptions). Remaining durable negatives:
-double trunc-DIV/fmod (no demand), temporal MIN/MAX
-(RonSQL-demand-gated), kOpSetRegNull (permanent). Next milestone:
-Phase 6 (the pushdown-join + CTE branch merge). NEXT → 5F-2 stays
+planner-pushed shape, no exceptions). → 5K temporal MIN/MAX
+DONE & VERIFIED (2026-08-21 — NO regen, all green: the five
+temporal ids join the u64 track, helpers grow the interpreter's
+exact packed-value decode arms incl. the *2 big-endian fold; bridge
+138/138; RonSQL canary Q16-Q18 with a UTC-vs-session-tz caveat on
+TIMESTAMP). Remaining durable negatives after 5K: double
+trunc-DIV/fmod (no demand) and kOpSetRegNull (permanent — the
+fallback canary opcode). Next milestone: Phase 6 (the pushdown-join
++ CTE branch merge). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

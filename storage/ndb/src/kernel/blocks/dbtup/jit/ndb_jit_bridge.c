@@ -115,6 +115,11 @@
 #define BR_NDB_TYPE_UNSIGNED         8
 #define BR_NDB_TYPE_BIGINT      9
 #define BR_NDB_TYPE_BIGUNSIGNED 10
+#define BR_NDB_TYPE_DATE            19
+#define BR_NDB_TYPE_YEAR            26
+#define BR_NDB_TYPE_TIME2           31
+#define BR_NDB_TYPE_DATETIME2       32
+#define BR_NDB_TYPE_TIMESTAMP2      33
 #define BR_NDB_TYPE_FLOAT       11
 #define BR_NDB_TYPE_DOUBLE      12
 #define BR_NDB_TYPE_DECIMAL         29
@@ -2021,11 +2026,25 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                       type == BR_NDB_TYPE_SMALLINT ||
                       type == BR_NDB_TYPE_MEDIUMINT ||
                       type == BR_NDB_TYPE_INT);
+        /* Phase 5K: TEMPORAL columns ride the u64 track — the
+         * interpreter loads each type's native packed value as an
+         * unsigned integer (DATE/YEAR little-endian, the *2 types
+         * big-endian memcmp-ordered bytes), tags the register
+         * unsigned BIGINT, and unsigned MIN/MAX over the packed value
+         * IS temporal MIN/MAX. The API rejects SUM/AVG over temporals
+         * at program build; any other consumer sees exactly the
+         * interpreter's register semantics. RonSQL decodes the packed
+         * result for display (mysqld never pushes temporals). */
         int is_u64 = (type == BR_NDB_TYPE_BIGUNSIGNED ||
                       type == BR_NDB_TYPE_TINYUNSIGNED ||
                       type == BR_NDB_TYPE_SMALLUNSIGNED ||
                       type == BR_NDB_TYPE_MEDIUMUNSIGNED ||
-                      type == BR_NDB_TYPE_UNSIGNED);
+                      type == BR_NDB_TYPE_UNSIGNED ||
+                      type == BR_NDB_TYPE_DATE ||
+                      type == BR_NDB_TYPE_YEAR ||
+                      type == BR_NDB_TYPE_TIME2 ||
+                      type == BR_NDB_TYPE_DATETIME2 ||
+                      type == BR_NDB_TYPE_TIMESTAMP2);
         int is_dec = (type == BR_NDB_TYPE_DECIMAL ||
                       type == BR_NDB_TYPE_DECIMALUNSIGNED);
         int is_str = (type == BR_NDB_TYPE_CHAR ||

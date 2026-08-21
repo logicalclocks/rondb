@@ -133,9 +133,9 @@ SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(dec9) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS decimal_sum_fell_back;
 
---echo # date_min: MIN/MAX over DATE (temporal follow-up on the u64
---echo # stencils — see phase_5c_plan.md).
---sleep 11
+--echo # date_min: MIN/MAX over DATE (lowered since Phase 5K on the u64
+--echo # track; the SQL planner does not push temporals — 0 here means
+--echo # never-pushed; rondb_jit_ronsql_canary Q16-Q18 exercise it).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT MIN(dt), MAX(dt) FROM t1;
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS date_min_fell_back;
