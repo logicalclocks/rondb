@@ -358,6 +358,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_MOD_U64:              return "mod_u64";
     case OP_DIV_CONV_F64:         return "div_conv_f64";
     case OP_ARITH_CONV_F64:       return "arith_conv_f64";
+    case OP_DIVMOD_CONV:          return "divmod_conv";
     default:                      return "jit_op?";
   }
 }
@@ -1625,6 +1626,7 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
      * b = src; c is the packed helper argument, NOT a register. */
     case OP_DIV_CONV_F64:
     case OP_ARITH_CONV_F64:
+    case OP_DIVMOD_CONV:
       return op->a == reg || op->b == reg;
     /* Accumulators read their source register (op->b). COUNT is
      * listed deliberately: its stencil ignores the register, but the
@@ -1691,6 +1693,7 @@ static int nb_op_written_reg(const Op *op) {
     case OP_MOD_U64:
     case OP_DIV_CONV_F64:
     case OP_ARITH_CONV_F64:
+    case OP_DIVMOD_CONV:
       return op->a;
     default:
       return -1;
@@ -2211,8 +2214,34 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                        reg_type[src] == BR_REG_U64 ||
                        reg_type[src] == BR_REG_NNC);
         if (!dst_int || !src_int) {
-          set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
-          return JIT_BRIDGE_UNSUPPORTED_OP;
+          /* Phase 5L: a DOUBLE-track operand on the GENERIC forms
+           * (kOpDivInt / kOpMod — the optimizer leaves those untyped)
+           * lowers to the conversion cold call: trunc-DIV retypes dst
+           * into the SIGNED i64 track (the kernel truncates into a
+           * signed BIGINT result), fmod stays F64. The TYPED
+           * kOpDivIntBigint with an f64 operand is a producer bug —
+           * keep rejecting. STR/UNKNOWN keep the fallback. */
+          int dst_known = (dst_int || reg_type[dst] == BR_REG_F64);
+          int src_known = (src_int || reg_type[src] == BR_REG_F64);
+          if (op == BR_kOpDivIntBigint || !dst_known || !src_known) {
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
+          uint16_t sel = (op == BR_kOpMod) ? 1u : 0u;
+          uint16_t flags =
+              (uint16_t)(((reg_type[dst] == BR_REG_F64) ? 0x1u : 0u) |
+                         ((reg_type[dst] == BR_REG_U64) ? 0x2u : 0u) |
+                         ((reg_type[src] == BR_REG_F64) ? 0x4u : 0u) |
+                         ((reg_type[src] == BR_REG_U64) ? 0x8u : 0u));
+          uint16_t packed = (uint16_t)((sel << 12) | (flags << 8) |
+                                       ((uint16_t)dst << 4) | src);
+          if (!emit_op(out_prog, OP_DIVMOD_CONV, dst, src, packed, 0)) {
+            set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          reg_type[dst] = (op == BR_kOpMod) ? BR_REG_F64 : BR_REG_I64;
+          pos += 1;
+          break;
         }
         int arith_unsigned =
             (reg_type[dst] == BR_REG_U64 || reg_type[src] == BR_REG_U64);

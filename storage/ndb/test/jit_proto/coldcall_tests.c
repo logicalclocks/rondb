@@ -1624,6 +1624,49 @@ static void test_arith_conv_coldcall(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* Phase 5L divmod mock: records the packed argument. */
+static void mock_divmod_conv(JitState *s, uint32_t packed) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_pinfo = packed;
+}
+
+/* T34: OP_DIVMOD_CONV cold call — packed operand round trip. */
+static void test_divmod_conv_coldcall(void) {
+  const char *name = "T34 divmod_conv_coldcall";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 2;
+  p.ops[0] = (Op){ .kind = OP_DIVMOD_CONV, .a = 0, .b = 1,
+                   .c = (1 << 12) | (0x5 << 8) | (0 << 4) | 1 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d) — divmod_conv "
+              "helper registered / stencils regenerated?", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  jit1_entry(jp)(&s);
+
+  if (ctx.n_calls != 1 ||
+      ctx.last_pinfo != ((1u << 12) | (0x5u << 8) | 0x01u)) {
+    mark_fail(name, "helper calls=%u packed=0x%x, want 1/0x1501",
+              ctx.n_calls, ctx.last_pinfo);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 /* T30: OP_LOAD_COL_NDB_DEC cold call — all three operand holes
  * (col, dst, pinfo) reach the helper and the value flows into the
  * accumulator. */
@@ -1807,7 +1850,9 @@ int main(void) {
       jit1_register_helper("ndb_jit_h_div_conv",
                             (JitHelperFn)&mock_div_conv) != 0 ||
       jit1_register_helper("ndb_jit_h_arith_conv",
-                            (JitHelperFn)&mock_arith_conv) != 0) {
+                            (JitHelperFn)&mock_arith_conv) != 0 ||
+      jit1_register_helper("ndb_jit_h_divmod_conv",
+                            (JitHelperFn)&mock_divmod_conv) != 0) {
     fprintf(stderr, "FATAL: jit1_register_helper failed\n");
     return 2;
   }
@@ -1844,6 +1889,7 @@ int main(void) {
   test_minmax_str_coldcall();
   test_div_conv_coldcall();
   test_arith_conv_coldcall();
+  test_divmod_conv_coldcall();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -1037,6 +1037,7 @@ static const OpkindMap kOpkindMap[] = {
   { "op_mod_u64",               "OP_MOD_U64"               },
   { "op_div_conv_f64",          "OP_DIV_CONV_F64"          },
   { "op_arith_conv_f64",        "OP_ARITH_CONV_F64"        },
+  { "op_divmod_conv",           "OP_DIVMOD_CONV"           },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

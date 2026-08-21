@@ -408,6 +408,30 @@ crosses 2^32), AVG, grouped both-tracks program, nullable narrow
 columns on both NB families, narrow arithmetic. Census `int_sum`
 flips 1 → 0.
 
+## 5L — double trunc-DIV / fmod — **DONE & VERIFIED (2026-08-21 — regen clean, bridge 141/141, coldcall 34/34, RonSQL canary Q19/Q20 green under 4060, full ndb_push_agg sweep passed). THE OPCODE SPACE IS FULLY COVERED — the only unlowered opcode is kOpSetRegNull, the permanent unsupported-fallback canary, by design.**
+
+The last demand-bearing unlowered shapes: kOpDivInt / kOpMod with a
+DOUBLE-track operand (RonSQL-only — the SQL planner never pushes
+DIV/%). One cold-call stencil `OP_DIVMOD_CONV` (63; regen) + a
+ctx-free helper: sel 0 = truncating DIV (RegDivReg's is_div_int
+double arm — divide, isfinite → per-row fallback for overflow, then
+floor/ceil toward zero into a SIGNED BIGINT result; the bridge
+retypes dst to the i64 track, and a truncated quotient outside int64
+also falls back so the interpreter defines that edge); sel 1 = fmod
+(RegModReg's double arm — result stays F64; fmod of finite operands
+is finite). Divisor 0 → NULL result via the per-row fallback. The
+TYPED kOpDivIntBigint with an f64 operand stays rejected (the
+optimizer only emits it on both-BIGINT proofs). After 5L the ONLY
+unlowered opcode is kOpSetRegNull — the permanent
+unsupported-fallback canary, by design.
+
+Tests: bridge 141/141 (T69a trunc-DIV with the i64-track retype
+pinned by a SIGNED checked SUM, T69b fmod staying F64, T69c the
+typed-with-f64 reject), coldcall 34/34 (T34 packed round trip).
+RonSQL canary Q19 (SUM(d DIV 2) + SUM(d % e), binary-exact) and
+Q20 (negative trunc-DIV: toward zero, not floor) — 4060 must-JITs
+with mysqld server-side baselines.
+
 ## 5K — temporal MIN/MAX (RonSQL) — **DONE & VERIFIED (2026-08-21 — no regen; bridge 138/138, RonSQL canary Q16-Q18 green under 4060 incl. the hand-predicted temporal display formats, census green, full ndb_push_agg sweep passed)**
 
 RonSQL pushes MIN/MAX over DATE / YEAR / TIME2 / DATETIME2 /

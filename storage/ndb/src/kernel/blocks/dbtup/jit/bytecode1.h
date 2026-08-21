@@ -333,7 +333,21 @@ typedef enum {
    * (op_sel << 12) | (flags << 8) | (dst << 4) | src with op_sel
    * 0=add 1=sub 2=mul and flags per OP_DIV_CONV_F64. */
   OP_ARITH_CONV_F64        = 62,
-  OP_KIND_MAX           = OP_ARITH_CONV_F64
+  /* Phase 5L: DIV/MOD with a DOUBLE-track operand — the last
+   * unlowered demand-bearing shapes. One cold call, selector in the
+   * packed operand: sel 0 = truncating DIV (RegDivReg's is_div_int
+   * double arm: divide, isfinite -> overflow via per-row fallback,
+   * then floor/ceil toward zero into a SIGNED BIGINT result — the
+   * bridge retypes dst to the i64 track); sel 1 = fmod (RegModReg's
+   * double arm: std::fmod, result stays F64; fmod of finite operands
+   * is finite). Divisor 0 -> NULL result register = per-row
+   * fallback, and a truncated quotient outside int64 range also
+   * falls back (the interpreter re-run defines the edge). packed =
+   * (sel << 12) | (flags << 8) | (dst << 4) | src, flags as
+   * OP_DIV_CONV_F64. Typed kOpDivIntBigint with an f64 operand stays
+   * rejected — the optimizer only emits it for both-BIGINT proofs. */
+  OP_DIVMOD_CONV           = 63,
+  OP_KIND_MAX           = OP_DIVMOD_CONV
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

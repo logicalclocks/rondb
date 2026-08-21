@@ -297,4 +297,29 @@ SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q18_jit_compiled;
 DROP TABLE ttmp;
 
+--echo # Q19: DOUBLE DIV and DOUBLE % — the Phase 5L conversion cold
+--echo #      call (trunc-DIV lands a SIGNED BIGINT result; fmod stays
+--echo #      double). Values exact in binary.
+CREATE TABLE tdd (
+  pk INT PRIMARY KEY,
+  d  DOUBLE NOT NULL,
+  e  DOUBLE NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdd VALUES (1, 1.5, 0.5), (2, 2.5, 0.5), (3, 4.0, 2.0), (4, 6.0, 4.0);
+SELECT SUM(d DIV 2) AS s1, SUM(d % e) AS s2 FROM tdd;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(d DIV 2) AS s1, SUM(d % e) AS s2 FROM tdd;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q19_jit_compiled;
+
+--echo # Q20: negative trunc-DIV — toward-zero, not floor.
+SELECT SUM((0 - d) DIV 2) AS s FROM tdd;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM((0 - d) DIV 2) AS s FROM tdd;"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q20_jit_compiled;
+DROP TABLE tdd;
+
 --remove_file $NDB_TOOLS_OUTPUT

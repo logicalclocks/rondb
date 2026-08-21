@@ -240,6 +240,7 @@ const char *bc_op_name(uint8_t kind) {
     case OP_MOD_U64:               return "mod_u64";
     case OP_DIV_CONV_F64:          return "div_conv_f64";
     case OP_ARITH_CONV_F64:        return "arith_conv_f64";
+    case OP_DIVMOD_CONV:           return "divmod_conv";
     default:                   return "?";
   }
 }

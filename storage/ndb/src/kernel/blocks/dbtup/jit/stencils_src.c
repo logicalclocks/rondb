@@ -1338,6 +1338,19 @@ STENCIL op_arith_conv_f64(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_divmod_conv (Phase 5L): DIV/MOD with a DOUBLE-track operand.    */
+/* Cold call — trunc-DIV or fmod per the packed selector; every edge  */
+/* (zero divisor, non-finite, out-of-int64 truncation) rides the      */
+/* per-row fallback. packed = (sel<<12)|(flags<<8)|(dst<<4)|src.      */
+/* ------------------------------------------------------------------ */
+DECLARE_NARROW_HOLE(DMC_ARG);
+extern void ndb_jit_h_divmod_conv(JitState *s, uint32_t packed);
+STENCIL op_divmod_conv(JitState *s) {
+  ndb_jit_h_divmod_conv(s, (uint32_t)HOLE_NARROW(DMC_ARG));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* Integer division / modulo (Phase 5E-2).                            */
 /*                                                                    */
 /* Kernel equivalences: RegDivIntBigint / RegModReg integer paths.    */
@@ -1486,4 +1499,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_mod_u64,
     op_div_conv_f64,
     op_arith_conv_f64,
+    op_divmod_conv,
 };

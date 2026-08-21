@@ -3048,15 +3048,24 @@ static void test_mod_dividend_signedness(void) {
   mark_pass(name);
 }
 
-/* T63f: DIV/MOD over doubles (trunc-DIV / fmod) stay unsupported. */
-static void test_div_mod_f64_reject(void) {
+/* T63f: MOD over two doubles — REJECTED until Phase 5L, now the
+ * fmod selector of the conversion cold call (T69a-c carry the
+ * detailed assertions; this pins the former reject boundary). */
+static void test_div_mod_f64(void) {
+  const char *name = "T63f div_mod_f64";
   uint32_t prog[3] = {
     enc_load_col(NDB_TYPE_DOUBLE, 0, 2),
     enc_load_col(NDB_TYPE_DOUBLE, 1, 3),
     enc_2reg(kOpMod, 0, 1),
   };
-  assert_rejected("T63f div_mod_f64_reject", prog, 3,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpMod);
+  Program p;
+  /* [0]load [1]load [2]DIVMOD_CONV(fmod) [3]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIVMOD_CONV)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (1u << 12) | (0x5u << 8) | (0 << 4) | 1)) return;
+  mark_pass(name);
 }
 
 /* T63g: u64 mixed with a signed VARIABLE keeps the fallback. */
@@ -3440,6 +3449,68 @@ static void test_temporal_wide_types(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5L: DIV/MOD with a DOUBLE-track operand — OP_DIVMOD_CONV     */
+/* (sel 0 = trunc-DIV retyping dst into the SIGNED i64 track; sel 1 = */
+/* fmod staying F64). Typed kOpDivIntBigint with f64 stays rejected.  */
+/* ------------------------------------------------------------------ */
+
+/* T69a: DOUBLE DIV const -> trunc-DIV; the retyped dst feeds a
+ * SIGNED checked SUM (the kernel's BIGINT truncation result). */
+static void test_divmod_conv_trunc_div(void) {
+  const char *name = "T69a divmod_conv_trunc_div";
+  uint32_t prog[6];
+  prog[0] = enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/2);
+  prog[1] = enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1);
+  prog[2] = 2u;
+  prog[3] = 0u;
+  prog[4] = enc_2reg(kOpDivInt, 0, 1);
+  prog[5] = enc_agg(kOpSum, /*reg=*/0, /*agg=*/0);
+  Program p;
+  /* [0]load [1]CONST [2]DIVMOD_CONV [3]SUM_BIGINT_CHECKED [4]EXIT
+   * [5]OVF. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIVMOD_CONV)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (0u << 12) | (0x1u << 8) | (0 << 4) | 1)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T69b: DOUBLE % BIGINT -> fmod; the result stays on the F64 track. */
+static void test_divmod_conv_fmod(void) {
+  const char *name = "T69b divmod_conv_fmod";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/2),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_2reg(kOpMod, 0, 1),
+    enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_DIVMOD_CONV)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c,
+                       (1u << 12) | (0x1u << 8) | (0 << 4) | 1)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
+}
+
+/* T69c: the TYPED kOpDivIntBigint with an f64 operand is a producer
+ * bug — stays rejected. */
+static void test_divmod_typed_f64_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, 0, 2),
+    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
+    enc_2reg(kOpDivIntBigint, 0, 1),
+  };
+  assert_rejected("T69c divmod_typed_f64_reject", prog, 3,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpDivIntBigint);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3565,7 +3636,7 @@ int main(void) {
   test_mod_int_signed();
   test_div_mod_u64();
   test_mod_dividend_signedness();
-  test_div_mod_f64_reject();
+  test_div_mod_f64();
   test_div_u64_signed_reject();
   test_div_conv_i64();
   test_div_conv_u64_const();
@@ -3582,6 +3653,9 @@ int main(void) {
   test_agg_attr_op_arg_mid();
   test_temporal_date_min_max();
   test_temporal_wide_types();
+  test_divmod_conv_trunc_div();
+  test_divmod_conv_fmod();
+  test_divmod_typed_f64_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

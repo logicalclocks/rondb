@@ -483,10 +483,16 @@ DONE & VERIFIED (2026-08-21 — NO regen, all green: the five
 temporal ids join the u64 track, helpers grow the interpreter's
 exact packed-value decode arms incl. the *2 big-endian fold; bridge
 138/138; RonSQL canary Q16-Q18 with a UTC-vs-session-tz caveat on
-TIMESTAMP). Remaining durable negatives after 5K: double
-trunc-DIV/fmod (no demand) and kOpSetRegNull (permanent — the
-fallback canary opcode). Next milestone: Phase 6 (the pushdown-join
-+ CTE branch merge). NEXT → 5F-2 stays
+TIMESTAMP). → 5L double trunc-DIV/fmod
+DONE & VERIFIED (2026-08-21 — regen clean, all tests green; 1
+cold-call stencil OP_DIVMOD_CONV: trunc-DIV retypes into the signed
+i64 track with out-of-int64 truncations falling back, fmod stays
+F64; typed kOpDivIntBigint-with-f64 stays rejected; bridge 141/141,
+coldcall 34/34; RonSQL canary Q19/Q20 incl. negative
+toward-zero truncation). After 5L the ONLY unlowered opcode is
+kOpSetRegNull — the permanent unsupported-fallback canary, by
+design. Next milestone: Phase 6 (the pushdown-join + CTE branch
+merge). NEXT → 5F-2 stays
 parked pending demand data; string CASE conditions
 (BRANCH_ATTR_OP_ARG per-block prog_buf plumbing) noted as future
 work; Phase 6 when merged with the pushdown-join + CTE branch.** Key planning

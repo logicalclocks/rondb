@@ -279,3 +279,32 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q18_jit_compiled
 1
 DROP TABLE ttmp;
+# Q19: DOUBLE DIV and DOUBLE % — the Phase 5L conversion cold
+#      call (trunc-DIV lands a SIGNED BIGINT result; fmod stays
+#      double). Values exact in binary.
+CREATE TABLE tdd (
+pk INT PRIMARY KEY,
+d  DOUBLE NOT NULL,
+e  DOUBLE NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdd VALUES (1, 1.5, 0.5), (2, 2.5, 0.5), (3, 4.0, 2.0), (4, 6.0, 4.0);
+SELECT SUM(d DIV 2) AS s1, SUM(d % e) AS s2 FROM tdd;
+s1	s2
+6	2
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+6	2
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q19_jit_compiled;
+q19_jit_compiled
+1
+# Q20: negative trunc-DIV — toward-zero, not floor.
+SELECT SUM((0 - d) DIV 2) AS s FROM tdd;
+s
+-6
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+-6
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q20_jit_compiled;
+q20_jit_compiled
+1
+DROP TABLE tdd;

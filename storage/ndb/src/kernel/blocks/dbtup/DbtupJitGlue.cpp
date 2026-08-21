@@ -876,6 +876,75 @@ ndb_jit_h_arith_conv(JitState *s, uint32_t packed) {
   s->regs_i64[dst] = bits;
 }
 
+/* ndb_jit_h_divmod_conv — Phase 5L cold call for OP_DIVMOD_CONV:
+ * DIV/MOD with a DOUBLE-track operand. packed =
+ * (sel << 12) | (flags << 8) | (dst << 4) | src; sel 0 = truncating
+ * DIV (RegDivReg's is_div_int double arm), sel 1 = fmod (RegModReg's
+ * double arm). Operands convert with the kernels' plain casts.
+ * Edges — divisor 0 (NULL result), non-finite quotient
+ * (ZAGG_MATH_OVERFLOW), truncated quotient outside int64 — take the
+ * per-row fallback; the interpreter re-run defines them exactly. */
+extern "C" void
+ndb_jit_h_divmod_conv(JitState *s, uint32_t packed) {
+  const uint32_t src   = packed & 0xFu;
+  const uint32_t dst   = (packed >> 4) & 0xFu;
+  const uint32_t flags = (packed >> 8) & 0xFu;
+  const uint32_t sel   = (packed >> 12) & 0x3u;
+  double v0;
+  double v1;
+  {
+    const Int64 raw = s->regs_i64[dst];
+    if ((flags & 0x1u) != 0) {
+      std::memcpy(&v0, &raw, sizeof(v0));
+    } else if ((flags & 0x2u) != 0) {
+      v0 = static_cast<double>((Uint64)raw);
+    } else {
+      v0 = static_cast<double>(raw);
+    }
+  }
+  {
+    const Int64 raw = s->regs_i64[src];
+    if ((flags & 0x4u) != 0) {
+      std::memcpy(&v1, &raw, sizeof(v1));
+    } else if ((flags & 0x8u) != 0) {
+      v1 = static_cast<double>((Uint64)raw);
+    } else {
+      v1 = static_cast<double>(raw);
+    }
+  }
+  if (v1 == 0.0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  if (sel == 1u) {
+    /* fmod of finite operands is finite — no further checks. */
+    const double res = std::fmod(v0, v1);
+    Int64 bits;
+    std::memcpy(&bits, &res, sizeof(bits));
+    s->regs_i64[dst] = bits;
+    return;
+  }
+  const double res = v0 / v1;
+  if (!std::isfinite(res)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  const double truncated =
+      (res > 0.0) ? std::floor(res) : (res < 0.0) ? std::ceil(res) : 0.0;
+  if (truncated < -9223372036854775808.0 ||
+      truncated >= 9223372036854775808.0) {
+    /* Outside int64 — the double->int conversion would be
+     * implementation-defined; let the interpreter's kernel define
+     * the row instead. */
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  s->regs_i64[dst] = static_cast<Int64>(truncated);
+}
+
 /* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
  * unsigned-integer columns (OP_LOAD_COL_NDB_U64). The u64 value's bits
  * are stored into regs_i64[dst_reg]; the u64 consumer stencils
@@ -1179,6 +1248,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                        reinterpret_cast<JitHelperFn>(ndb_jit_h_div_conv));
   jit1_register_helper("ndb_jit_h_arith_conv",
                        reinterpret_cast<JitHelperFn>(ndb_jit_h_arith_conv));
+  jit1_register_helper("ndb_jit_h_divmod_conv",
+                       reinterpret_cast<JitHelperFn>(ndb_jit_h_divmod_conv));
   jit1_register_helper("ndb_jit_h_minmax_str",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_minmax_str));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
