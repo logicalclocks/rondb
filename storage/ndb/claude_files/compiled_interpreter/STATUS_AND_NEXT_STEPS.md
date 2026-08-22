@@ -1,6 +1,6 @@
 # RONDB-1056 Compiled Interpreter — Status & Next Steps
 
-**Updated: 2026-08-19.** Single entry point for resuming work. Branch:
+**Updated: 2026-08-22.** Single entry point for resuming work. Branch:
 `RONDB-1056-compiled-interpreter`.
 
 > ⚠️ **Docs-vs-reality note.** `plan.md`'s header still says
@@ -8,6 +8,29 @@
 > implemented and wired end-to-end (~34 real code commits across
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
+
+## Session 2026-08-22 — 26.04-main rebase + Phase 6 plan
+
+The branch was rebased onto latest `26.04-main` (`3ac91d6a023`); the
+only conflict was `testJoinAggNdbApi` renumbering (our JIT canaries
+shifted +1 again, Tests 24–29 → **25–30**, fixed in `469edceaff1`).
+The rebase delivered the parallel pushdown-join + CTE branch's whole
+test fleet (`testCte*`, `testStarJoinAgg*`, `testOuterJoinAgg*`,
+`testInterpreterTypedRegs`, … + the `ronsql_cte` ×5 topology suites)
+— the harness the original Phase 6 was waiting for. **Phase 6 is now
+planned: see `phase_6_plan.md`** (post-rebase verification + fleet
+census 6-0, CTE-consumer null-`tablePtrP` hardening 6-1, must-JIT
+conformance pinning 6-2, multi-leaf/star-join JIT 6-3, join-agg
+reuse-cache routing 6-4; CTE-filter JIT 6-5 parked; docs/coordination
+6-6). Key survey findings behind it: CTE aggregation already reaches
+the JIT (consumer feeds carry a null `tablePtrP` the JIT derefs
+unguarded), multi-leaf is compile-gated to leaf 0 with a
+single-`m_jit_entry` hazard in the per-row leaf switch, and join-agg
+compiles bypass both the reuse cache and the `ndbinfo.jit` compile
+counters (direct `jit1_compile` in `DblqhProxy.cpp:2888`). The three
+standalone RONDB-733 mysqld fixes (`c7e8dd1ff89`, `f0a3d38d451`,
+`3c2c228535f`) survived the rebase and remain branch-local — separate
+PR to 26.04-main pending.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 
