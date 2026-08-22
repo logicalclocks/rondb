@@ -3,7 +3,7 @@ Running rondb_jit_ndbapi_linked_null
 Connect string: #
 MySQL port: #
 
-Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)
+Test 27: JIT linked NULL filter ... OK (sum=900, JIT required)
 
 All tests PASSED
 PASSED

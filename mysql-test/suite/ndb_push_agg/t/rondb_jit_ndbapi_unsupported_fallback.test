@@ -1,6 +1,6 @@
 --source include/have_ndb.inc
 
-# Test 27: an aggregation program that is a JIT candidate by shape but uses
+# Test 28: an aggregation program that is a JIT candidate by shape but uses
 # an opcode the bridge does not lower (SUM(amount % amount) -> kOpMod;
 # repointed from MAX when Phase 5B lowered kOpMaxBigint). The program is
 # rejected at JOIN_AGG_SETUP_REQ and runs on the interpreter; this canary
@@ -9,7 +9,7 @@
 
 --echo Running rondb_jit_ndbapi_unsupported_fallback
 --replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/ /Connecting to management server at [^\n]*\n//
---exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 27 2>&1
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 28 2>&1
 --echo PASSED
 
 # Clean up database created by test program

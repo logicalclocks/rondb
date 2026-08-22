@@ -3,7 +3,7 @@ Running rondb_jit_ndbapi_null_sum
 Connect string: #
 MySQL port: #
 
-Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
+Test 25: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
 
 All tests PASSED
 PASSED

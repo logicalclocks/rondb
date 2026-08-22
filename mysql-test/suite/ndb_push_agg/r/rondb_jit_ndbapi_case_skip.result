@@ -3,7 +3,7 @@ Running rondb_jit_ndbapi_case_skip
 Connect string: #
 MySQL port: #
 
-Test 29: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
+Test 30: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
 
 All tests PASSED
 PASSED

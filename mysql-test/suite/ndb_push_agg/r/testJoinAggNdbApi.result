@@ -27,12 +27,12 @@ Test 21: Early query close ... OK (early close handled, cleanup verified)
 Test 22: COMPLETE_REF error handling (ERROR_INSERT 5124) ... OK (COMPLETE_REF handled, cleanup verified)
 Test 23: fragsPerWorker result equality (unset/1/2/4/8) ... OK (identical results for all fragsPerWorker values)
 Test 24: aggregate lookup-rooted query def rejected ... OK (prepare rejected with 4820)
-Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
-Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
-Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)
-Test 27: Unsupported JIT shape falls back cleanly ... OK (sum=0 via interpreter fallback)
-Test 28: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)
-Test 29: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
+Test 25: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
+Test 26: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
+Test 27: JIT linked NULL filter ... OK (sum=900, JIT required)
+Test 28: Unsupported JIT shape falls back cleanly ... OK (sum=0 via interpreter fallback)
+Test 29: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)
+Test 30: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
 
 All tests PASSED
 PASSED

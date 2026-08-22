@@ -3,7 +3,7 @@ Running rondb_jit_ndbapi_unsupported_fallback
 Connect string: #
 MySQL port: #
 
-Test 27: Unsupported JIT shape falls back cleanly ... OK (sum=0 via interpreter fallback)
+Test 28: Unsupported JIT shape falls back cleanly ... OK (sum=0 via interpreter fallback)
 
 All tests PASSED
 PASSED

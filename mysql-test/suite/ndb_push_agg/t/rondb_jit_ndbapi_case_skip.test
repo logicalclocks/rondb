@@ -8,7 +8,7 @@
 
 --echo Running rondb_jit_ndbapi_case_skip
 --replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/ /Connecting to management server at [^\n]*\n//
---exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 29 2>&1
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 30 2>&1
 --echo PASSED
 
 # Clean up database created by test program
