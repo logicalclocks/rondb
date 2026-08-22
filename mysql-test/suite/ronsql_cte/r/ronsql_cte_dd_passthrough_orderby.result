@@ -1,0 +1,721 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== po-1: CTE_SCAN root, ORDER BY CTE key ASC ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, t FROM cf ORDER BY k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, t FROM cf ORDER BY k|
+k	t
+1	5
+2	10
+3	15
+4	20
+5	0
+6	5
+7	10
+8	15
+9	20
+10	0
+11	5
+12	10
+13	15
+14	20
+15	0
+16	5
+17	10
+18	15
+19	20
+20	0
+21	5
+22	10
+23	15
+24	20
+25	0
+26	5
+27	10
+28	15
+29	20
+30	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+300	0
+
+=== po-2: CTE_SCAN root, ORDER BY CTE aggregate output DESC + LIMIT ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, t FROM cf ORDER BY t DESC, k ASC LIMIT 10;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, t FROM cf ORDER BY t DESC, k ASC LIMIT 10|
+k	t
+4	20
+9	20
+14	20
+19	20
+24	20
+29	20
+34	20
+39	20
+44	20
+49	20
+
+=== po-3: CTE_SCAN root, ORDER BY + LIMIT 0 (empty, no header) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, t FROM cf ORDER BY k LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT k, t FROM cf ORDER BY k LIMIT 0|
+k	t
+
+=== po-4: CTE_SCAN root, ORDER BY a CTE column NOT in the SELECT ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT t FROM cf ORDER BY k LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT t FROM cf ORDER BY k LIMIT 5|
+t
+5
+10
+15
+20
+0
+
+=== po-5: join chain, ORDER BY root column DESC ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey <= 20
+ORDER BY c_custkey DESC;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey <= 20
+ORDER BY c_custkey DESC|
+c_custkey	n
+20	5
+19	5
+18	5
+17	5
+16	5
+15	5
+14	5
+13	5
+12	5
+11	5
+10	5
+9	5
+8	5
+7	5
+6	5
+5	5
+4	5
+3	5
+2	5
+1	5
+
+=== po-6: join chain, ORDER BY a real-table column NOT in the SELECT ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.n, cu.c_mktsegment
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey <= 10
+ORDER BY cu.c_custkey DESC;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.n, cu.c_mktsegment
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey <= 10
+ORDER BY cu.c_custkey DESC|
+n	c_mktsegment
+5	AUTOMOBILE
+5	MACHINERY
+5	HOUSEHOLD
+5	FURNITURE
+5	BUILDING
+5	AUTOMOBILE
+5	MACHINERY
+5	HOUSEHOLD
+5	FURNITURE
+5	BUILDING
+
+=== po-7: join chain, string collation order + tie-breaker ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_mktsegment, cu.c_custkey
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey <= 25
+ORDER BY c_mktsegment ASC, c_custkey ASC;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_mktsegment, cu.c_custkey
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
+WHERE cu.c_custkey <= 25
+ORDER BY c_mktsegment ASC, c_custkey ASC|
+c_mktsegment	c_custkey
+AUTOMOBILE	5
+AUTOMOBILE	10
+AUTOMOBILE	15
+AUTOMOBILE	20
+AUTOMOBILE	25
+BUILDING	1
+BUILDING	6
+BUILDING	11
+BUILDING	16
+BUILDING	21
+FURNITURE	2
+FURNITURE	7
+FURNITURE	12
+FURNITURE	17
+FURNITURE	22
+HOUSEHOLD	3
+HOUSEHOLD	8
+HOUSEHOLD	13
+HOUSEHOLD	18
+HOUSEHOLD	23
+MACHINERY	4
+MACHINERY	9
+MACHINERY	14
+MACHINERY	19
+MACHINERY	24
+
+=== po-8: LEFT JOIN, NULLs first in ASC + LIMIT across the NULL run ===
+== Query ==
+WITH co AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 60 GROUP BY o_custkey)
+SELECT cu.c_custkey, co.n
+FROM customer AS cu LEFT JOIN co ON co.k = cu.c_custkey
+WHERE cu.c_custkey <= 70
+ORDER BY co.n ASC, c_custkey ASC
+LIMIT 15;
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH co AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 60 GROUP BY o_custkey)
+SELECT cu.c_custkey, co.n
+FROM customer AS cu LEFT JOIN co ON co.k = cu.c_custkey
+WHERE cu.c_custkey <= 70
+ORDER BY co.n ASC, c_custkey ASC
+LIMIT 15|
+c_custkey	n
+61	NULL
+62	NULL
+63	NULL
+64	NULL
+65	NULL
+66	NULL
+67	NULL
+68	NULL
+69	NULL
+70	NULL
+1	1
+2	1
+3	1
+4	1
+5	1
+
+=== po-9: LEFT JOIN, DESC puts NULLs last + LIMIT ===
+== Query ==
+WITH co AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 60 GROUP BY o_custkey)
+SELECT cu.c_custkey, co.n
+FROM customer AS cu LEFT JOIN co ON co.k = cu.c_custkey
+WHERE cu.c_custkey <= 70
+ORDER BY co.n DESC, c_custkey DESC
+LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH co AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_orderkey <= 60 GROUP BY o_custkey)
+SELECT cu.c_custkey, co.n
+FROM customer AS cu LEFT JOIN co ON co.k = cu.c_custkey
+WHERE cu.c_custkey <= 70
+ORDER BY co.n DESC, c_custkey DESC
+LIMIT 5|
+c_custkey	n
+60	1
+59	1
+58	1
+57	1
+56	1
+
+=== po-10: single-table, ORDER BY DESC ===
+== Query ==
+SELECT c_custkey, c_acctbal FROM customer
+WHERE c_nationkey = 7 ORDER BY c_custkey DESC;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c_custkey, c_acctbal FROM customer
+WHERE c_nationkey = 7 ORDER BY c_custkey DESC|
+c_custkey	c_acctbal
+282	4965.00
+257	4533.75
+232	4102.50
+207	3671.25
+182	3240.00
+157	2808.75
+132	2377.50
+107	1946.25
+82	1515.00
+57	1083.75
+32	652.50
+7	221.25
+
+=== po-11: single-table, ORDER BY a column NOT in the SELECT + LIMIT ===
+== Query ==
+SELECT c_acctbal FROM customer
+WHERE c_nationkey = 7 ORDER BY c_custkey ASC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c_acctbal FROM customer
+WHERE c_nationkey = 7 ORDER BY c_custkey ASC LIMIT 5|
+c_acctbal
+221.25
+652.50
+1083.75
+1515.00
+1946.25
+
+=== po-12: single-table, DATE ordering ASC + unique tie-breaker ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_custkey = 57 ORDER BY o_orderdate ASC, o_orderkey ASC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_custkey = 57 ORDER BY o_orderdate ASC, o_orderkey ASC|
+o_orderkey	o_orderdate
+57	1995-02-27
+1257	1995-09-15
+357	1995-12-24
+657	1996-10-19
+957	1997-08-15
+
+=== po-13: single-table PK lookup + ORDER BY (single row) ===
+== Query ==
+SELECT o_orderkey, o_orderstatus FROM orders
+WHERE o_orderkey = 77 ORDER BY o_orderstatus;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderstatus FROM orders
+WHERE o_orderkey = 77 ORDER BY o_orderstatus|
+o_orderkey	o_orderstatus
+77	P
+
+=== po-14: single-table, DECIMAL ordering DESC + LIMIT ===
+== Query ==
+SELECT c_custkey, c_acctbal FROM customer
+WHERE c_nationkey = 7 ORDER BY c_acctbal DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c_custkey, c_acctbal FROM customer
+WHERE c_nationkey = 7 ORDER BY c_acctbal DESC LIMIT 5|
+c_custkey	c_acctbal
+282	4965.00
+257	4533.75
+232	4102.50
+207	3671.25
+182	3240.00
+
+=== po-P1 (rejection): GROUP BY on a projection-only query ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs: single-table, left-deep join chains over real tables and/or
+complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
+scalar CTEs, and CTE_SCAN roots — all without GROUP BY /
+expressions (ORDER BY and LIMIT are supported).  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.

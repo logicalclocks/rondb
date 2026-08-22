@@ -160,20 +160,21 @@ sweeps belong in `offline_fs_*`).
 | `fs_freshness` | Two CTEs (lifetime + last-order) over a random 500-customer segment, joined to the same customer range | ~10k orders | both |
 | `fs_supplier` | Per-supplier features over a 3-day `l_shipdate` window (index scan), joined to one random nation's suppliers | ~7k lineitems, ~400 suppliers | both |
 | `fs_nation` | Recent-window (`o_orderdate >= 1998-06-01`, index scan) per-customer CTE joined to one nation's customers, `GROUP BY c_mktsegment` | ~40k orders | both |
-| `fs_topk` | Recent-spend CTE joined to customer in aggregate form (`GROUP BY c_custkey, c_name`; MAX = identity per unique key), `ORDER BY top_spend DESC LIMIT 100` | thousands | both |
+| `fs_topk` | Recent-spend CTE joined to customer, projection-only, client-side `ORDER BY recent.spend DESC LIMIT 100` | thousands | both |
 | `fs_minmax` | Datatype-heavy MIN/MAX (DECIMAL prices, DATE ship dates, DECIMAL qty) over a 3-day `l_shipdate` window, re-aggregated per supplier nation | ~7k lineitems | both |
 | `fs_dnf` | 4-disjunct DNF in the CTE body WHERE (`o_orderstatus`/`o_totalprice`/`o_orderpriority`) over a random 200-customer segment — interpreter filter cost | ~2k orders | both |
-| `fs_history` | Order-history page for a 200-customer segment, `ORDER BY o_orderdate DESC LIMIT 1000` | ~2k orders | **MySQL only** |
+| `fs_history` | Order-history page for a 200-customer segment, single-table projection, client-side `ORDER BY o_orderdate DESC LIMIT 1000` | ~2k orders | both |
 
-`fs_topk` was rewritten from its natural projection-only form into the
-equivalent aggregate form: `c_custkey` is unique, so grouping by
-`(c_custkey, c_name)` yields one group per customer and `MAX()` is the
-identity — same result set, but inside the aggregate ORDER BY/LIMIT
-envelope. The projection-only original needs `ronsql_orderby_limit_plan.md`
-Phase 3. `fs_history` is a single-table non-aggregate SELECT (Phase 4
-there); `.bench_ronsql` rejects it with a pointer to `.bench_sql`. Note the
-aggregate-path LIMIT is a print-time cutoff, not a scan reduction (early
-close is Phase N / I.14).
+`fs_topk` ran in an interim aggregate-form rewrite (`GROUP BY c_custkey,
+c_name` with `MAX()` as the per-unique-key identity) while projection-only
+ORDER BY was unsupported; `ronsql_orderby_limit_plan.md` Phase 3 shipped
+the buffered client-side sort for pass-through shapes, so the natural
+projection-only form is restored.  `fs_history` (single-table projection +
+ORDER BY + LIMIT) unlocked on the same phase — both benchmarks now buffer
+rows client-side, sort with NdbSqlUtil comparators, and cut at the LIMIT
+via partial_sort.  Note the aggregate-path LIMIT is a print-time cutoff,
+not a scan reduction (early close is Phase N / I.14); the pass-through
+LIMIT-without-ORDER-BY path does close the scan early (plan Phase 2).
 
 ### Offline Feature-Store-style (`offline_fs_*`)
 

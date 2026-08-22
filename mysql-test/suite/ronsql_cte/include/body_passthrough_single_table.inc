@@ -26,8 +26,9 @@
 #   12  no WHERE -> full table scan (nation, 25 rows)
 #   13  temporal projection sweep (evlog)
 #   14  NULL values in a projected column (o_clerk)
-#   P1  rejection: ORDER BY on a single-table projection
-#   P2  rejection: LIMIT
+#   (P1/P2 ORDER-BY-rejection probes retired — ORDER BY / LIMIT shipped
+#    via ronsql_orderby_limit_plan.md Phases 2+3; see
+#    body_passthrough_limit.inc / body_passthrough_orderby.inc)
 #   P3  rejection: expression in the projection
 #   P4  rejection: WITH prefix on a single-table projection
 #
@@ -233,16 +234,10 @@ SELECT o_orderkey, o_clerk FROM orders WHERE o_orderkey < 22|
 
 DELIMITER ;|
 
---echo
---echo === st-P1 (rejection): ORDER BY on a single-table projection ===
-# Layered on later via ronsql_orderby_limit_plan.md.
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_orderkey FROM orders WHERE o_custkey = 7 ORDER BY o_orderkey;' 2>&1
-
---echo
---echo === st-P2 (rejection): LIMIT on a single-table projection ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_orderkey FROM orders WHERE o_custkey = 7 LIMIT 5;' 2>&1
+# st-P1/P2 (ORDER BY / ORDER BY + LIMIT rejection probes) were retired
+# when ronsql_orderby_limit_plan.md Phases 2+3 shipped LIMIT streaming
+# and the buffered client-side sort; positive coverage lives in
+# body_passthrough_limit.inc and body_passthrough_orderby.inc.
 
 --echo
 --echo === st-P3 (rejection): expression in the projection ===

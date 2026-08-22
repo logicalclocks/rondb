@@ -13,9 +13,11 @@
 # dummy getValue), so BOTH modes are exercised and ENABLED here: mode (a)
 # projection-only main SELECTs (MM1-MM6, MM13/MM14/MM16) and mode (b) aggregating
 # / P-GB main SELECTs (MM7-MM12, MM15).  ORDER BY / LIMIT / HAVING on the
-# AGGREGATING mode are covered by body_orderby_limit.inc; DISTINCT and
-# ORDER BY / LIMIT on the projection-only mode remain deferred as probes
-# (see the tail of this file).  See findings/mainmode.md.
+# AGGREGATING mode are covered by body_orderby_limit.inc; LIMIT and
+# ORDER BY on the projection-only mode by body_passthrough_limit.inc /
+# body_passthrough_orderby.inc (Phases 2+3).  Only DISTINCT remains
+# deferred as a probe (see the tail of this file).  See
+# findings/mainmode.md.
 #
 # CTE always aggregates.  The aggregating main SELECTs wrap the CTE outputs in
 # SUM/COUNT/MIN/MAX and GROUP BY a parent column (or scalar).  The harness sorts
@@ -398,9 +400,10 @@ SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.
 # plan.md Phase 1) — the earlier "deferred" markers here dated from before
 # that family and used the ORDER BY SUM(...) expression form, which is a
 # grammar-level syntax error (only identifiers/aliases are accepted in
-# ORDER BY; pinned by ob-P2 there).  Only DISTINCT remains deferred, plus
-# ORDER BY / LIMIT on the PROJECTION-ONLY main modes of this family (parse
-# gate; plan Phases 2-3).
+# ORDER BY; pinned by ob-P2 there).  LIMIT and ORDER BY on the
+# PROJECTION-ONLY modes are covered by body_passthrough_limit.inc /
+# body_passthrough_orderby.inc (plan Phases 2+3).  Only DISTINCT remains
+# deferred.
 # ----------------------------------------------------------------------------
 
 # NEXT-PHASE: DISTINCT in a CTE / main SELECT — deferred (matrix).
@@ -409,14 +412,6 @@ SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey WHERE c.
 #     FROM orders GROUP BY o_custkey)
 #   SELECT DISTINCT c.c_mktsegment
 #   FROM customer AS c JOIN cust ON cust.k = c.c_custkey;
-
-# NEXT-PHASE: ORDER BY / LIMIT on a projection-only main SELECT over a CTE
-#   (mode (a) above) — rejected at the non-aggregate parse gate; streaming
-#   LIMIT is ronsql_orderby_limit_plan.md Phase 2, buffered ORDER BY Phase 3.
-#   WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t
-#                 FROM orders GROUP BY o_custkey)
-#   SELECT c.c_custkey FROM customer AS c JOIN cust ON cust.k = c.c_custkey
-#   ORDER BY c_custkey LIMIT 3;
 
 DELIMITER ;|
 

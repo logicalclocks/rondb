@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
+#include <algorithm>
 #include <vector>
 #include <map>
 #include <set>
@@ -616,9 +617,12 @@ RonSQLPreparer::parse()
       }
       bool has_groupby   = (m_context.ast_root.groupby_columns != NULL);
       bool has_having    = (m_context.ast_root.having_expression != NULL);
-      bool has_orderby   = (m_context.ast_root.orderby_columns != NULL);
-      bool has_limit     = (m_context.ast_root.limit >= 0);
       bool has_joins     = (m_context.ast_root.joins != NULL);
+      // Phases 2+3 (ronsql_orderby_limit_plan.md): LIMIT and ORDER BY
+      // are accepted on every projection-only shape.  LIMIT alone
+      // streams with an early scan close; ORDER BY buffers the rows for
+      // a client-side sort in the drains (LIMIT then applies post-sort
+      // via partial_sort).
       // All projection-only outputs must be plain COLUMN refs.
       bool all_column_outputs = true;
       for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
@@ -632,20 +636,19 @@ RonSQLPreparer::parse()
       // no joins.
       bool projection_only_cte_scan =
           (from_is_cte && all_column_outputs && !has_groupby &&
-           !has_having && !has_orderby && !has_limit && !has_joins);
+           !has_having && !has_joins);
       // Phase 1 (non_aggregate_phase_1.md, W1): projection-only
       // single-table queries over a real table — the first shape with
       // no aggregation and no CTE.  Requires a FROM table (the Phase
       // I.17h optional-FROM path cannot resolve COLUMN outputs) and no
       // CTE definitions at all (a WITH prefix on a single-table
       // projection stays rejected rather than silently ignoring the
-      // CTE).  ORDER BY / LIMIT stay rejected — they layer on via
-      // ronsql_orderby_limit_plan.md.
+      // CTE).
       bool has_from = (m_context.ast_root.table.str != NULL &&
                        m_context.ast_root.table.len > 0);
       bool projection_only_single_table =
           (has_from && !from_is_cte && !has_joins && all_column_outputs &&
-           !has_groupby && !has_having && !has_orderby && !has_limit &&
+           !has_groupby && !has_having &&
            m_context.ast_root.cte_list == NULL);
       // Projection-only join chains (Phase I.8/I.11/I.12 for
       // CTE-involving shapes; Phase 2 of non_aggregate_pushdown_plan.md
@@ -655,14 +658,15 @@ RonSQLPreparer::parse()
       // conditions bind the joined alias's columns to an
       // already-visible alias, with every CTE operand a complete-key
       // CTE_LOOKUP (ExactOrdered or ExactPermuted via
-      // cte_key_coverage); no ORDER BY / GROUP BY / HAVING / LIMIT /
-      // aggregate outputs.  Phase G's defensive reject for
+      // cte_key_coverage); no GROUP BY / HAVING / aggregate outputs
+      // (ORDER BY buffers + sorts client-side, LIMIT streams or applies
+      // post-sort — Phases 2+3).  Phase G's defensive reject for
       // CTE_SCAN-as-outer-join-child still fires later in
-      // validate_cte_execution_shapes() for any planner-produced
-      // shape outside this conservative class.
+      // validate_cte_execution_shapes() for any planner-produced shape
+      // outside this conservative class.
       bool projection_only_join_chain = false;
       if (all_column_outputs && !has_groupby &&
-          !has_having && !has_orderby && !has_limit && has_joins) {
+          !has_having && has_joins) {
         projection_only_join_chain = true;
         LexCString visible_aliases[MAX_SPJ_TREE_NODES];
         // Defensive dead-man's check (join_nest_semantics_plan.md): an
@@ -773,9 +777,9 @@ RonSQLPreparer::parse()
                "Currently, RonSQL only supports aggregate queries and projection-only\n"
                "SELECTs: single-table, left-deep join chains over real tables and/or\n"
                "complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of\n"
-               "scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /\n"
-               "GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the\n"
-               "broader roadmap.\n";
+               "scalar CTEs, and CTE_SCAN roots — all without GROUP BY /\n"
+               "expressions (ORDER BY and LIMIT are supported).  See\n"
+               "non_aggregate_pushdown_plan.md for the broader roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
     }
@@ -1050,10 +1054,27 @@ RonSQLPreparer::resolve_orderby_aliases()
           // Match found — convert to OUTPUT_REF
           ob->kind = OrderbyColumns::Kind::OUTPUT_REF;
           ob->output_idx = output_pos;
-          // Mark this col_idx so load_join/load_single_table skips it
-          while (m_col_is_alias.size() <= col_idx)
-            m_col_is_alias.push(false);
-          m_col_is_alias[col_idx] = true;
+          // Mark this col_idx so load_join/load_single_table skips it —
+          // UNLESS the matched output is a plain COLUMN spelled the
+          // same way (e.g. `SELECT k ... ORDER BY k`, both bare): then
+          // the ORDER BY name and the output share ONE registry entry,
+          // which must still resolve as a real column for the output
+          // itself.  The scoped resolver treats an alias-marked entry
+          // as AliasOnly BEFORE attempting column resolution, so
+          // marking a shared entry poisons the output's resolution
+          // ("output is not a table or CTE column" in the pass-through
+          // drain; found by po-1 on first record).  The single-table
+          // resolver was already robust — it tries the real column
+          // first and falls back to AliasOnly only on lookup failure.
+          bool shares_entry_with_column_output =
+              (out->type == Outputs::Type::COLUMN &&
+               out->column.col_idx == col_idx);
+          if (!shares_entry_with_column_output)
+          {
+            while (m_col_is_alias.size() <= col_idx)
+              m_col_is_alias.push(false);
+            m_col_is_alias[col_idx] = true;
+          }
           break;
         }
         out = out->next;
@@ -1062,6 +1083,26 @@ RonSQLPreparer::resolve_orderby_aliases()
     }
     ob = ob->next;
   }
+}
+
+/*
+ * Two resolved column references denote the same underlying column when
+ * they landed on the same join-plan op and the same stored attribute
+ * (or the same CTE result column).  Used to unify differently-spelled
+ * references (bare vs qualified) after scoped resolution.
+ */
+bool
+RonSQLPreparer::same_resolved_column(const QueryScope::ResolvedColumnRef& a,
+                                     const QueryScope::ResolvedColumnRef& b)
+{
+  if (a.kind != b.kind || a.join_op_idx != b.join_op_idx)
+    return false;
+  if (a.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+    return a.attr_id == b.attr_id;
+  if (a.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
+    return a.cte_def_idx == b.cte_def_idx &&
+           a.cte_result_idx == b.cte_result_idx;
+  return false;
 }
 
 /*
@@ -1115,16 +1156,7 @@ RonSQLPreparer::canonicalize_orderby_columns()
     {
       if (gb->col_idx >= num_cols)
         continue;
-      const QueryScope::ResolvedColumnRef& gbr = resolved[gb->col_idx];
-      if (gbr.kind != obr.kind || gbr.join_op_idx != obr.join_op_idx)
-        continue;
-      bool same_column;
-      if (obr.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
-        same_column = (gbr.attr_id == obr.attr_id);
-      else
-        same_column = (gbr.cte_def_idx == obr.cte_def_idx &&
-                       gbr.cte_result_idx == obr.cte_result_idx);
-      if (same_column)
+      if (same_resolved_column(obr, resolved[gb->col_idx]))
       {
         ob->col_idx = gb->col_idx;
         break;
@@ -6224,6 +6256,147 @@ RonSQLPreparer::register_passthrough_getvalues(NdbOperation* op,
   ndbrequire(i == num_cols);
 }
 
+/*
+ * Phase 3 (ronsql_orderby_limit_plan.md): client-side ORDER BY for
+ * projection-only shapes.  Rows arrive via per-row NdbRecAttr buffers
+ * that are overwritten each fetch, so the drains buffer every row as an
+ * array of NdbRecAttr clones (heap; ~PassthroughSortBuffer deletes them
+ * on every exit path incl. exceptions), sort with NdbSqlUtil
+ * comparators, then print through the unchanged NdbRecAttr-based
+ * pass-through printer.  A NULL entry in a stored row denotes SQL NULL
+ * from an op-level LEFT JOIN NULL-extended row.  Stored-row layout:
+ * slots 0..num_cols-1 are the SELECT outputs (printed); ORDER BY-only
+ * columns occupy extra slots after them (sorted on, never printed).
+ */
+namespace {
+
+struct PassthroughSortKey {
+  Uint32 slot;                        // index into the stored row array
+  bool ascending;
+  const NdbDictionary::Column* col;   // type + charset for the comparator
+};
+
+struct PassthroughSortBuffer {
+  DynamicArray<NdbRecAttr**> rows;
+  Uint32 num_stored;
+  Uint64 bytes = 0;
+  PassthroughSortBuffer(ArenaMalloc* am, Uint32 n)
+    : rows(am), num_stored(n) {}
+  ~PassthroughSortBuffer() {
+    for (Uint32 r = 0; r < rows.size(); r++) {
+      NdbRecAttr** row = rows[r];
+      for (Uint32 c = 0; c < num_stored; c++) delete row[c];
+    }
+  }
+};
+
+/* Generous fixed caps: the buffered result is unaggregated and
+ * unbounded, and LIMIT cannot reduce the buffering (top-N still has to
+ * see every row).  Exceeding either cap is a clean permanent error. */
+static const Uint32 PASSTHROUGH_SORT_MAX_ROWS = 1000000;
+static const Uint64 PASSTHROUGH_SORT_MAX_BYTES = 256 * 1024 * 1024;
+
+/* NULLs sort first in ASC (MySQL semantics) — same rules as the
+ * aggregate path's ResultPrinter::compare_rows GROUP BY-column arm. */
+static int
+compare_passthrough_rows(NdbRecAttr* const* a, NdbRecAttr* const* b,
+                         const PassthroughSortKey* keys, Uint32 nkeys)
+{
+  for (Uint32 i = 0; i < nkeys; i++) {
+    const PassthroughSortKey& k = keys[i];
+    const NdbRecAttr* va = a[k.slot];
+    const NdbRecAttr* vb = b[k.slot];
+    bool a_null = (va == NULL || va->isNULL());
+    bool b_null = (vb == NULL || vb->isNULL());
+    if (a_null && b_null) continue;
+    if (a_null) return k.ascending ? -1 : 1;
+    if (b_null) return k.ascending ? 1 : -1;
+    const NdbSqlUtil::Type& sqlType =
+        NdbSqlUtil::getType(static_cast<Uint32>(k.col->getType()));
+    int cmp = (*sqlType.m_cmp)(k.col->getCharset(),
+                               va->aRef(), va->get_size_in_bytes(),
+                               vb->aRef(), vb->get_size_in_bytes());
+    if (cmp != 0) return k.ascending ? cmp : -cmp;
+  }
+  return 0;
+}
+
+/* Clone one delivered row into the buffer.  `ops` routes the op-level
+ * LEFT JOIN NULL-row marker (isRowNULL) per slot; NULL for the
+ * single-table path.  The row array is pushed before cloning so a
+ * mid-row exception still frees the clones made so far. */
+static void
+buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
+                       const NdbRecAttr* const* attrs,
+                       NdbQueryOperation* const* ops,
+                       std::basic_ostream<char>* err_stream)
+{
+  if (buf.rows.size() >= PASSTHROUGH_SORT_MAX_ROWS ||
+      buf.bytes > PASSTHROUGH_SORT_MAX_BYTES) {
+    *err_stream
+        << "ORDER BY on a projection-only query buffers the full result "
+           "for a client-side sort; this result exceeded the sort buffer "
+           "cap (" << PASSTHROUGH_SORT_MAX_ROWS << " rows / "
+        << (PASSTHROUGH_SORT_MAX_BYTES >> 20) << " MB).  Tighten the "
+           "WHERE clause or use an aggregate query.\n";
+    throw RonSQLPermanentError("Pass-through ORDER BY result too large.");
+  }
+  Uint32 n = buf.num_stored;
+  NdbRecAttr** row = amalloc->alloc_exc<NdbRecAttr*>(n);
+  for (Uint32 c = 0; c < n; c++) row[c] = NULL;
+  buf.rows.push(row);
+  for (Uint32 c = 0; c < n; c++) {
+    const NdbRecAttr* src = attrs[c];
+    if (src == NULL || (ops != NULL && ops[c] != NULL && ops[c]->isRowNULL()))
+      continue;  // stored as SQL NULL
+    row[c] = src->clone();
+    require_run(row[c] != NULL,
+                "Pass-through sort: failed to clone a row value.");
+    buf.bytes += row[c]->get_size_in_bytes();
+  }
+}
+
+/* Sort the buffered rows and print the first min(limit, n).  The TSV
+ * header stays deferred until the first printed row (LIMIT 0 or an
+ * empty result prints nothing); JSON's '[' was emitted by the caller
+ * before draining and `header_emitted` reflects that. */
+static void
+sort_and_print_passthrough_rows(PassthroughSortBuffer& buf,
+                                const PassthroughSortKey* keys, Uint32 nkeys,
+                                Uint32 num_cols, Int64 limit,
+                                ArenaMalloc* amalloc, ResultPrinter* printer,
+                                bool& header_emitted,
+                                std::basic_ostream<char>* out)
+{
+  Uint32 n = buf.rows.size();
+  if (n == 0) return;
+  // Copy to a plain array for std::sort (DynamicArray lacks
+  // random-access iterators), mirroring print_result_ordered.
+  NdbRecAttr*** arr = amalloc->alloc_exc<NdbRecAttr**>(n);
+  for (Uint32 i = 0; i < n; i++) arr[i] = buf.rows[i];
+  auto less = [keys, nkeys](NdbRecAttr** ra, NdbRecAttr** rb) {
+    return compare_passthrough_rows(ra, rb, keys, nkeys) < 0;
+  };
+  Uint32 print_count = n;
+  if (limit >= 0 && (Int64)n > limit) print_count = (Uint32)limit;
+  if (print_count < n)
+    std::partial_sort(arr, arr + print_count, arr + n, less);
+  else
+    std::sort(arr, arr + n, less);
+  for (Uint32 i = 0; i < print_count; i++) {
+    const NdbRecAttr* const* row =
+        const_cast<const NdbRecAttr* const*>(arr[i]);
+    if (!header_emitted) {
+      printer->print_passthrough_header(row, num_cols, out);
+      header_emitted = true;
+    }
+    printer->print_passthrough_row(row, num_cols, /*is_first_row=*/(i == 0),
+                                   out);
+  }
+}
+
+}  // namespace
+
 void
 RonSQLPreparer::execute_single_table_passthrough()
 {
@@ -6250,8 +6423,17 @@ RonSQLPreparer::execute_single_table_passthrough()
     num_cols++;
   }
   ndbrequire(num_cols > 0);
+  // Phase 3 (ronsql_orderby_limit_plan.md): ORDER BY on the
+  // pass-through path — count entries up front so `attrs` has room for
+  // ORDER BY-only extra slots on the scan arm.  The PK-lookup arm
+  // returns at most one row, so sorting is a no-op there.
+  Uint32 n_orderby = 0;
+  for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+       ob != NULL; ob = ob->next)
+    n_orderby++;
+  const bool sorting = (n_orderby > 0);
   const NdbRecAttr** attrs =
-      m_amalloc->alloc_exc<const NdbRecAttr*>(num_cols);
+      m_amalloc->alloc_exc<const NdbRecAttr*>(num_cols + n_orderby);
 
   const bool is_json =
       (m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
@@ -6298,6 +6480,9 @@ RonSQLPreparer::execute_single_table_passthrough()
         require_run(false, "Failed to execute lookup.");
       }
     }
+    // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT 0 prints nothing
+    // (any LIMIT >= 1 cannot constrain a single-row lookup further).
+    if (m_context.ast_root.limit == 0) have_row = false;
     STAT_TS(m_conf.phase_stats, s_pk_done);
     STAT_SET(m_conf.phase_stats, firstbatch_us, s_pk_defined, s_pk_done);
     STAT_COUNT(m_conf.phase_stats, rows_drained, have_row ? 1 : 0);
@@ -6325,6 +6510,60 @@ RonSQLPreparer::execute_single_table_passthrough()
   // Scan arm: shared setup, then a streaming drain.
   NdbScanOperation* scanOp = open_single_table_scan_op();
   register_passthrough_getvalues(scanOp, attrs, num_cols);
+  // Phase 3: resolve ORDER BY sort keys BEFORE execute.  A sort column
+  // already in the SELECT reuses its output slot; others get an extra
+  // getValue in a slot after the outputs (fetched for the comparator,
+  // never printed).
+  Uint32 num_stored = num_cols;
+  PassthroughSortKey* sort_keys = NULL;
+  Uint32 n_sort_keys = 0;
+  if (sorting) {
+    sort_keys = m_amalloc->alloc_exc<PassthroughSortKey>(n_orderby);
+    for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+         ob != NULL; ob = ob->next) {
+      Uint32 slot;
+      if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+        require_prm(ob->output_idx < num_cols,
+                    "ORDER BY alias resolves outside the SELECT outputs.");
+        slot = ob->output_idx;
+      } else {
+        const QueryScope::ResolvedColumnRef& R =
+            m_main_scope.resolved_columns[ob->col_idx];
+        require_prm(R.kind ==
+                        QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                    "ORDER BY column is not a stored-table column.");
+        bool found = false;
+        Uint32 oi = 0;
+        slot = 0;
+        for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+             o = o->next, oi++) {
+          if (same_resolved_column(
+                  R, m_main_scope.resolved_columns[o->column.col_idx])) {
+            slot = oi;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          require_run(R.dict_column != NULL,
+                      "ORDER BY column descriptor missing.");
+          slot = num_stored++;
+          attrs[slot] = scanOp->getValue(R.dict_column);
+          require_run(attrs[slot] != NULL,
+                      "ORDER BY column getValue() failed.");
+        }
+      }
+      const NdbDictionary::Column* kcol = attrs[slot]->getColumn();
+      require_prm(NdbSqlUtil::getType(
+                      static_cast<Uint32>(kcol->getType())).m_cmp != NULL,
+                  "ORDER BY is not supported on this column type.");
+      sort_keys[n_sort_keys].slot = slot;
+      sort_keys[n_sort_keys].ascending = ob->ascending;
+      sort_keys[n_sort_keys].col = kcol;
+      n_sort_keys++;
+    }
+  }
+  PassthroughSortBuffer sort_buf(m_amalloc, num_stored);
   STAT_TS(m_conf.phase_stats, s_exec_start);
   STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_exec_start);
   require_run(DBG(m_trans->execute(NdbTransaction::NoCommit)) == 0,
@@ -6337,9 +6576,16 @@ RonSQLPreparer::execute_single_table_passthrough()
                                               m_conf.out_stream);
     header_emitted = true;
   }
+  // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT without ORDER BY —
+  // stream rows and stop at the limit, then close the scan early
+  // instead of draining the remaining batches.  limit == -1 means no
+  // LIMIT.  With LIMIT 0 the loop never runs, so the deferred TSV
+  // header is never printed (JSON keeps its framing).
+  const Int64 limit = m_context.ast_root.limit;
   Uint32 row_count = 0;
-  int rc;
-  for (;;) {
+  int rc = 1;  // pre-set "scan complete" for the LIMIT-0 no-loop case
+  bool limit_reached = (limit == 0);
+  while (!limit_reached) {
     rc = DBG(scanOp->nextResult(true));
     if (row_count == 0) {
       // First nextResult covers data-node execution up to the first
@@ -6348,6 +6594,14 @@ RonSQLPreparer::execute_single_table_passthrough()
       STAT_SET(m_conf.phase_stats, firstbatch_us, s_exec_sent, s_first_row);
     }
     if (rc != 0) break;
+    if (sorting) {
+      // Phase 3: buffer the row for the post-drain sort.  The streaming
+      // LIMIT cutoff below must not fire — top-N needs every row.
+      buffer_passthrough_row(sort_buf, m_amalloc, attrs, NULL,
+                             m_conf.err_stream);
+      row_count++;
+      continue;
+    }
     if (!header_emitted) {
       m_resultprinter->print_passthrough_header(attrs, num_cols,
                                                 m_conf.out_stream);
@@ -6357,6 +6611,7 @@ RonSQLPreparer::execute_single_table_passthrough()
                                            /*is_first_row=*/(row_count == 0),
                                            m_conf.out_stream);
     row_count++;
+    if (limit >= 0 && (Int64)row_count >= limit) limit_reached = true;
   }
   STAT_TS(m_conf.phase_stats, s_drain_done);
 #ifdef RONSQL_PHASE_STATS
@@ -6369,7 +6624,22 @@ RonSQLPreparer::execute_single_table_passthrough()
     m_conf.phase_stats->rows_drained = row_count;
   }
 #endif
-  require_run(rc == 1, "Single-table pass-through scan failed.");
+  if (limit_reached) {
+    // Early close (Phase 2): release the still-open scan instead of
+    // draining its remaining batches.
+    scanOp->close();
+  } else {
+    require_run(rc == 1, "Single-table pass-through scan failed.");
+  }
+  if (sorting) {
+    // Phase 3: sort the buffered rows and print the first
+    // min(limit, n).  The deferred TSV header is emitted here on the
+    // first printed row.
+    sort_and_print_passthrough_rows(sort_buf, sort_keys, n_sort_keys,
+                                    num_cols, limit, m_amalloc,
+                                    m_resultprinter, header_emitted,
+                                    m_conf.out_stream);
+  }
   if (header_emitted) {
     m_resultprinter->print_passthrough_finish(m_conf.out_stream);
   }
@@ -7080,14 +7350,21 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   for (const Outputs* o = m_context.ast_root.outputs; o != NULL; o = o->next)
     num_cols++;
   require_run(num_cols > 0, "Pass-through drain: no outputs to deliver.");
+  // Phase 3 (ronsql_orderby_limit_plan.md): ORDER BY-only columns
+  // occupy extra slots after the outputs, so all per-slot arrays get
+  // room for them up front.
+  Uint32 n_orderby = 0;
+  for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+       ob != NULL; ob = ob->next)
+    n_orderby++;
   NdbRecAttr** attrs =
-      m_amalloc->alloc_exc<NdbRecAttr*>(num_cols);
+      m_amalloc->alloc_exc<NdbRecAttr*>(num_cols + n_orderby);
   // Phase I.12: parallel array tracking the NdbQueryOperation that
   // produced each output column.  Needed at row-delivery time so we
   // can call op->isRowNULL() — the LEFT JOIN NULL-row marker is on
   // the operation, not on individual NdbRecAttrs.
   NdbQueryOperation** output_ops =
-      m_amalloc->alloc_exc<NdbQueryOperation*>(num_cols);
+      m_amalloc->alloc_exc<NdbQueryOperation*>(num_cols + n_orderby);
   // Per-row effective_attrs[]: attrs[] with NULL substituted for
   // every column whose owning op reports isRowNULL().  Allocated
   // once, refilled per row.
@@ -7199,6 +7476,83 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     output_ops[i] = op;
   }
 
+  // Phase 3 (ronsql_orderby_limit_plan.md): resolve ORDER BY sort keys
+  // BEFORE execute.  A sort column already in the SELECT reuses its
+  // output slot; an ORDER BY-only real-table column gets an extra
+  // getValue on its op, and an ORDER BY-only CTE column reuses the
+  // always-fetched virt-table registration (the kernel emits every
+  // virt-table column regardless of the projection).
+  const bool sorting = (n_orderby > 0);
+  Uint32 num_stored = num_cols;
+  PassthroughSortKey* sort_keys = NULL;
+  Uint32 n_sort_keys = 0;
+  if (sorting) {
+    sort_keys = m_amalloc->alloc_exc<PassthroughSortKey>(n_orderby);
+    for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+         ob != NULL; ob = ob->next) {
+      Uint32 slot;
+      if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+        require_prm(ob->output_idx < num_cols,
+                    "ORDER BY alias resolves outside the SELECT outputs.");
+        slot = ob->output_idx;
+      } else {
+        const QueryScope::ResolvedColumnRef& R =
+            m_main_scope.resolved_columns[ob->col_idx];
+        require_prm(
+            R.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+            R.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+            "ORDER BY target is not a table or CTE column.");
+        bool found = false;
+        Uint32 oi = 0;
+        slot = 0;
+        for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+             o = o->next, oi++) {
+          if (same_resolved_column(
+                  R, m_main_scope.resolved_columns[o->column.col_idx])) {
+            slot = oi;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          Uint32 plan_op_idx = R.join_op_idx;
+          require_run(plan_op_idx < numMainOps,
+                      "ORDER BY column resolves to an op outside the "
+                      "main JoinPlan.");
+          NdbQueryOperation* op =
+              query->getQueryOperation(numCteSubtreeOps + plan_op_idx);
+          require_run(op != NULL,
+                      "Failed to resolve the op for an ORDER BY column.");
+          slot = num_stored++;
+          if (R.kind ==
+              QueryScope::ResolvedColumnRef::Kind::CteResultColumn) {
+            ndbrequire(cteAttrsByCol[plan_op_idx] != NULL);
+            attrs[slot] = cteAttrsByCol[plan_op_idx][R.cte_result_idx];
+            require_run(attrs[slot] != NULL,
+                        "ORDER BY CTE column NdbRecAttr lookup failed.");
+          } else {
+            require_run(R.dict_column != NULL,
+                        "ORDER BY column descriptor missing.");
+            attrs[slot] = op->getValue(R.dict_column);
+            require_run(attrs[slot] != NULL,
+                        "ORDER BY column getValue() failed.");
+            op_has_value[plan_op_idx] = true;
+          }
+          output_ops[slot] = op;
+        }
+      }
+      const NdbDictionary::Column* kcol = attrs[slot]->getColumn();
+      require_prm(NdbSqlUtil::getType(
+                      static_cast<Uint32>(kcol->getType())).m_cmp != NULL,
+                  "ORDER BY is not supported on this column type.");
+      sort_keys[n_sort_keys].slot = slot;
+      sort_keys[n_sort_keys].ascending = ob->ascending;
+      sort_keys[n_sort_keys].col = kcol;
+      n_sort_keys++;
+    }
+  }
+  PassthroughSortBuffer sort_buf(m_amalloc, num_stored);
+
   // D3/H1 + empty-projection fix: the NDB API only drives (and sizes the
   // receive buffer for) a query operation that has at least one getValue().
   // A real-table main op with an EMPTY projection either hangs (root op — the
@@ -7254,12 +7608,25 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   }
 
   Uint32 row_count = 0;
-  NdbQuery::NextResultOutcome rc;
+  // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT without ORDER BY —
+  // stop fetching once `limit` rows are printed and return; the
+  // caller's query->close() then closes the still-open scan early
+  // (I.14 kernel/API early close, block-tested).  limit == -1 means no
+  // LIMIT.  With LIMIT 0 the loop never runs, so the deferred TSV
+  // header is never printed — matching the mysql client's empty-result
+  // output (JSON keeps its '[' ... ']' framing).
+  const Int64 limit = m_context.ast_root.limit;
+  // rc pre-set for the post-loop error check when LIMIT 0 skips the loop.
+  NdbQuery::NextResultOutcome rc = NdbQuery::NextResult_scanComplete;
   // D3-hang instrumentation: log BEFORE each nextResult(true) and the rc it
   // returns.  If the consumer hangs, the last line will be "calling nextResult,
   // row_count=N" with NO following "returned rc=..." — i.e. it blocked in
   // nextResult after N rows instead of returning scanComplete.
-  for (;;) {
+  // Phase 3: with ORDER BY every row is fetched and buffered (the LIMIT
+  // is applied post-sort) — except LIMIT 0, which prints nothing either
+  // way and skips the drain entirely.
+  while ((sorting && limit != 0) ||
+         limit < 0 || (Int64)row_count < limit) {
     DEB_DRAIN(("[drain] calling nextResult(true), row_count=%u\n", row_count));
     rc = query->nextResult(true);
     if (row_count == 0) {
@@ -7275,6 +7642,15 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
                (int)NdbQuery::NextResult_error,
                (int)NdbQuery::NextResult_bufferEmpty));
     if (rc != NdbQuery::NextResult_gotRow) break;
+    if (sorting) {
+      // Phase 3: buffer the row (clones; op-level LEFT JOIN NULL rows
+      // stored as SQL NULL) for the post-drain sort.
+      buffer_passthrough_row(sort_buf, m_amalloc,
+                             const_cast<const NdbRecAttr* const*>(attrs),
+                             output_ops, m_conf.err_stream);
+      row_count++;
+      continue;
+    }
     if (!header_emitted) {
       m_resultprinter->print_passthrough_header(
           const_cast<const NdbRecAttr* const*>(attrs), num_cols,
@@ -7312,6 +7688,16 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     errout << "Pass-through query failed: " << err.message
            << " (code " << err.code << ")" << std::endl;
     throw RonSQLRetryableError("Pass-through drain failed.");
+  }
+
+  if (sorting) {
+    // Phase 3: sort the buffered rows and print the first
+    // min(limit, n).  The deferred TSV header is emitted here on the
+    // first printed row.
+    sort_and_print_passthrough_rows(sort_buf, sort_keys, n_sort_keys,
+                                    num_cols, limit, m_amalloc,
+                                    m_resultprinter, header_emitted,
+                                    m_conf.out_stream);
   }
 
   // Only finish if we actually opened a frame (JSON always; TSV

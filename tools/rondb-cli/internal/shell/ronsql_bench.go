@@ -252,27 +252,24 @@ GROUP BY c.c_mktsegment;`,
 	{
 		Name:        "fs_topk",
 		Category:    benchCatFS,
-		Description: "Top-100 recent spenders in one nation (aggregate-form CTE join, ORDER BY spend DESC LIMIT 100)",
+		Description: "Top-100 recent spenders in one nation (projection-only CTE join, ORDER BY spend DESC LIMIT 100)",
 		Database:    "tpch",
 		RandKey:     true,
 		KeySQL:      "SELECT MAX(c_nationkey) FROM tpch.customer",
 		KeyDefault:  24,
-		// Aggregate-form equivalent of the natural projection-only query
-		// (SELECT c_custkey, c_name, recent.cnt, recent.spend ... ORDER BY
-		// recent.spend DESC): c_custkey is unique, so grouping by
-		// (c_custkey, c_name) yields one group per customer and MAX() is
-		// the identity. RonSQL supports ORDER BY/LIMIT on aggregate
-		// queries only; the projection-only form needs
-		// ronsql_orderby_limit_plan.md Phase 3.
+		// Natural projection-only form, restored after
+		// ronsql_orderby_limit_plan.md Phase 3 shipped the buffered
+		// client-side sort for pass-through shapes (the interim
+		// aggregate-form rewrite grouped by (c_custkey, c_name) with
+		// MAX() as the per-unique-key identity).
 		SQL: `WITH recent AS (
   SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_totalprice) AS spend
   FROM orders WHERE o_orderdate >= '1998-06-01'
   GROUP BY o_custkey)
-SELECT c.c_custkey, c.c_name, MAX(recent.cnt) AS cnt, MAX(recent.spend) AS top_spend
+SELECT c.c_custkey, c.c_name, recent.cnt, recent.spend
 FROM customer AS c JOIN recent ON recent.k = c.c_custkey
 WHERE c.c_nationkey = {KEY}
-GROUP BY c.c_custkey, c.c_name
-ORDER BY top_spend DESC
+ORDER BY recent.spend DESC
 LIMIT 100;`,
 	},
 	{
@@ -323,7 +320,10 @@ GROUP BY c.c_nationkey;`,
 	{
 		Name:        "fs_history",
 		Category:    benchCatFS,
-		MySQLOnly:   true,
+		// Unlocked by ronsql_orderby_limit_plan.md Phase 3: single-table
+		// projection + ORDER BY + LIMIT runs on the pass-through path
+		// with the buffered client-side sort (~2k rows, well under the
+		// 1M-row / 256 MB sort cap).
 		Description: "Order-history page for a random 200-customer segment (~2k orders, ORDER BY o_orderdate DESC LIMIT 1000)",
 		Database:    "tpch",
 		RandKey:     true,

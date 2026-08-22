@@ -538,28 +538,6 @@ o_orderkey	o_clerk
 8	9
 9	10
 
-=== st-P1 (rejection): ORDER BY on a single-table projection ===
-This query has no aggregate expression, so it is not an aggregate query.
-Currently, RonSQL only supports aggregate queries and projection-only
-SELECTs: single-table, left-deep join chains over real tables and/or
-complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
-scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
-GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
-broader roadmap.
-Error handling: RPE
-ronsql_cli caught exception: Not an aggregate query.
-
-=== st-P2 (rejection): LIMIT on a single-table projection ===
-This query has no aggregate expression, so it is not an aggregate query.
-Currently, RonSQL only supports aggregate queries and projection-only
-SELECTs: single-table, left-deep join chains over real tables and/or
-complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
-scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
-GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
-broader roadmap.
-Error handling: RPE
-ronsql_cli caught exception: Not an aggregate query.
-
 === st-P3 (rejection): expression in the projection ===
 Syntax error in SQL statement: Unexpected at this point
 > SELECT o_orderkey + 1 FROM orders WHERE o_orderkey = 77;
@@ -572,8 +550,8 @@ This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only
 SELECTs: single-table, left-deep join chains over real tables and/or
 complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
-scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
-GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
-broader roadmap.
+scalar CTEs, and CTE_SCAN roots — all without GROUP BY /
+expressions (ORDER BY and LIMIT are supported).  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.

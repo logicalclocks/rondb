@@ -1,0 +1,1128 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== pl-1: CTE_SCAN root, truncating LIMIT (uniform projection) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT n FROM cf LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT n FROM cf LIMIT 3|
+n
+5
+5
+5
+
+=== pl-2: CTE_SCAN root, LIMIT 260 stops mid-scan past the 256-row batch boundary ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT n FROM cf LIMIT 260;
+
+Number of output lines, including header: 261
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT n FROM cf LIMIT 260|
+n
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+
+=== pl-3: CTE_SCAN root, LIMIT 0 (empty result, no header) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT k, n FROM cf LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT k, n FROM cf LIMIT 0|
+k	n
+
+=== pl-4: CTE_SCAN root, LIMIT larger than the result set ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT k, n FROM cf LIMIT 1000;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT k, n FROM cf LIMIT 1000|
+k	n
+1	5
+10	5
+100	5
+101	5
+102	5
+103	5
+104	5
+105	5
+106	5
+107	5
+108	5
+109	5
+11	5
+110	5
+111	5
+112	5
+113	5
+114	5
+115	5
+116	5
+117	5
+118	5
+119	5
+12	5
+120	5
+121	5
+122	5
+123	5
+124	5
+125	5
+126	5
+127	5
+128	5
+129	5
+13	5
+130	5
+131	5
+132	5
+133	5
+134	5
+135	5
+136	5
+137	5
+138	5
+139	5
+14	5
+140	5
+141	5
+142	5
+143	5
+144	5
+145	5
+146	5
+147	5
+148	5
+149	5
+15	5
+150	5
+151	5
+152	5
+153	5
+154	5
+155	5
+156	5
+157	5
+158	5
+159	5
+16	5
+160	5
+161	5
+162	5
+163	5
+164	5
+165	5
+166	5
+167	5
+168	5
+169	5
+17	5
+170	5
+171	5
+172	5
+173	5
+174	5
+175	5
+176	5
+177	5
+178	5
+179	5
+18	5
+180	5
+181	5
+182	5
+183	5
+184	5
+185	5
+186	5
+187	5
+188	5
+189	5
+19	5
+190	5
+191	5
+192	5
+193	5
+194	5
+195	5
+196	5
+197	5
+198	5
+199	5
+2	5
+20	5
+200	5
+201	5
+202	5
+203	5
+204	5
+205	5
+206	5
+207	5
+208	5
+209	5
+21	5
+210	5
+211	5
+212	5
+213	5
+214	5
+215	5
+216	5
+217	5
+218	5
+219	5
+22	5
+220	5
+221	5
+222	5
+223	5
+224	5
+225	5
+226	5
+227	5
+228	5
+229	5
+23	5
+230	5
+231	5
+232	5
+233	5
+234	5
+235	5
+236	5
+237	5
+238	5
+239	5
+24	5
+240	5
+241	5
+242	5
+243	5
+244	5
+245	5
+246	5
+247	5
+248	5
+249	5
+25	5
+250	5
+251	5
+252	5
+253	5
+254	5
+255	5
+256	5
+257	5
+258	5
+259	5
+26	5
+260	5
+261	5
+262	5
+263	5
+264	5
+265	5
+266	5
+267	5
+268	5
+269	5
+27	5
+270	5
+271	5
+272	5
+273	5
+274	5
+275	5
+276	5
+277	5
+278	5
+279	5
+28	5
+280	5
+281	5
+282	5
+283	5
+284	5
+285	5
+286	5
+287	5
+288	5
+289	5
+29	5
+290	5
+291	5
+292	5
+293	5
+294	5
+295	5
+296	5
+297	5
+298	5
+299	5
+3	5
+30	5
+300	5
+31	5
+32	5
+33	5
+34	5
+35	5
+36	5
+37	5
+38	5
+39	5
+4	5
+40	5
+41	5
+42	5
+43	5
+44	5
+45	5
+46	5
+47	5
+48	5
+49	5
+5	5
+50	5
+51	5
+52	5
+53	5
+54	5
+55	5
+56	5
+57	5
+58	5
+59	5
+6	5
+60	5
+61	5
+62	5
+63	5
+64	5
+65	5
+66	5
+67	5
+68	5
+69	5
+7	5
+70	5
+71	5
+72	5
+73	5
+74	5
+75	5
+76	5
+77	5
+78	5
+79	5
+8	5
+80	5
+81	5
+82	5
+83	5
+84	5
+85	5
+86	5
+87	5
+88	5
+89	5
+9	5
+90	5
+91	5
+92	5
+93	5
+94	5
+95	5
+96	5
+97	5
+98	5
+99	5
+
+=== pl-5: join chain, truncating LIMIT (uniform projection) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.n FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey LIMIT 4;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.n FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey LIMIT 4|
+n
+5
+5
+5
+5
+
+=== pl-6: join chain, LIMIT 0 (empty result, no header) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey LIMIT 0|
+c_custkey	n
+
+=== pl-7: join chain, LIMIT larger than the result set ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey LIMIT 2000;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cu.c_custkey, cf.n
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey LIMIT 2000|
+c_custkey	n
+1	5
+10	5
+100	5
+101	5
+102	5
+103	5
+104	5
+105	5
+106	5
+107	5
+108	5
+109	5
+11	5
+110	5
+111	5
+112	5
+113	5
+114	5
+115	5
+116	5
+117	5
+118	5
+119	5
+12	5
+120	5
+121	5
+122	5
+123	5
+124	5
+125	5
+126	5
+127	5
+128	5
+129	5
+13	5
+130	5
+131	5
+132	5
+133	5
+134	5
+135	5
+136	5
+137	5
+138	5
+139	5
+14	5
+140	5
+141	5
+142	5
+143	5
+144	5
+145	5
+146	5
+147	5
+148	5
+149	5
+15	5
+150	5
+151	5
+152	5
+153	5
+154	5
+155	5
+156	5
+157	5
+158	5
+159	5
+16	5
+160	5
+161	5
+162	5
+163	5
+164	5
+165	5
+166	5
+167	5
+168	5
+169	5
+17	5
+170	5
+171	5
+172	5
+173	5
+174	5
+175	5
+176	5
+177	5
+178	5
+179	5
+18	5
+180	5
+181	5
+182	5
+183	5
+184	5
+185	5
+186	5
+187	5
+188	5
+189	5
+19	5
+190	5
+191	5
+192	5
+193	5
+194	5
+195	5
+196	5
+197	5
+198	5
+199	5
+2	5
+20	5
+200	5
+201	5
+202	5
+203	5
+204	5
+205	5
+206	5
+207	5
+208	5
+209	5
+21	5
+210	5
+211	5
+212	5
+213	5
+214	5
+215	5
+216	5
+217	5
+218	5
+219	5
+22	5
+220	5
+221	5
+222	5
+223	5
+224	5
+225	5
+226	5
+227	5
+228	5
+229	5
+23	5
+230	5
+231	5
+232	5
+233	5
+234	5
+235	5
+236	5
+237	5
+238	5
+239	5
+24	5
+240	5
+241	5
+242	5
+243	5
+244	5
+245	5
+246	5
+247	5
+248	5
+249	5
+25	5
+250	5
+251	5
+252	5
+253	5
+254	5
+255	5
+256	5
+257	5
+258	5
+259	5
+26	5
+260	5
+261	5
+262	5
+263	5
+264	5
+265	5
+266	5
+267	5
+268	5
+269	5
+27	5
+270	5
+271	5
+272	5
+273	5
+274	5
+275	5
+276	5
+277	5
+278	5
+279	5
+28	5
+280	5
+281	5
+282	5
+283	5
+284	5
+285	5
+286	5
+287	5
+288	5
+289	5
+29	5
+290	5
+291	5
+292	5
+293	5
+294	5
+295	5
+296	5
+297	5
+298	5
+299	5
+3	5
+30	5
+300	5
+31	5
+32	5
+33	5
+34	5
+35	5
+36	5
+37	5
+38	5
+39	5
+4	5
+40	5
+41	5
+42	5
+43	5
+44	5
+45	5
+46	5
+47	5
+48	5
+49	5
+5	5
+50	5
+51	5
+52	5
+53	5
+54	5
+55	5
+56	5
+57	5
+58	5
+59	5
+6	5
+60	5
+61	5
+62	5
+63	5
+64	5
+65	5
+66	5
+67	5
+68	5
+69	5
+7	5
+70	5
+71	5
+72	5
+73	5
+74	5
+75	5
+76	5
+77	5
+78	5
+79	5
+8	5
+80	5
+81	5
+82	5
+83	5
+84	5
+85	5
+86	5
+87	5
+88	5
+89	5
+9	5
+90	5
+91	5
+92	5
+93	5
+94	5
+95	5
+96	5
+97	5
+98	5
+99	5
+
+=== pl-8: real-table chain + root residual WHERE, truncating LIMIT ===
+== Query ==
+SELECT cu.c_nationkey
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_custkey = 57 LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT cu.c_nationkey
+FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+WHERE o.o_custkey = 57 LIMIT 3|
+c_nationkey
+7
+7
+7
+
+=== pl-9: single-table index scan + WHERE, truncating LIMIT (uniform) ===
+== Query ==
+SELECT c_nationkey FROM customer WHERE c_nationkey = 7 LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c_nationkey FROM customer WHERE c_nationkey = 7 LIMIT 3|
+c_nationkey
+7
+7
+7
+
+=== pl-10: single-table full scan, LIMIT larger than the result set ===
+== Query ==
+SELECT r_regionkey, r_name FROM region LIMIT 100;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r_regionkey, r_name FROM region LIMIT 100|
+r_regionkey	r_name
+0	AFRICA
+1	AMERICA
+2	ASIA
+3	EUROPE
+4	MIDEAST
+
+=== pl-11: single-table scan, LIMIT 0 (empty result, no header) ===
+== Query ==
+SELECT c_custkey FROM customer LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c_custkey FROM customer LIMIT 0|
+c_custkey
+
+=== pl-12: single-table PK lookup + LIMIT 1 ===
+== Query ==
+SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 77 LIMIT 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 77 LIMIT 1|
+o_orderkey	o_orderstatus
+77	P
+
+=== pl-13: single-table PK lookup + LIMIT 0 (empty, no header) ===
+== Query ==
+SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 77 LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 77 LIMIT 0|
+o_orderkey	o_orderstatus
+
+=== pl-14: single-table PK lookup MISS + LIMIT 1 (empty) ===
+== Query ==
+SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 999999 LIMIT 1;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 999999 LIMIT 1|
+o_orderkey	o_orderstatus

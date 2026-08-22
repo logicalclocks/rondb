@@ -399,6 +399,8 @@ private:
   void parse();
   void resolve_orderby_aliases();
   void canonicalize_orderby_columns();
+  static bool same_resolved_column(const QueryScope::ResolvedColumnRef& a,
+                                   const QueryScope::ResolvedColumnRef& b);
   bool has_width(size_t pos);
   void load();
   void load_single_table();

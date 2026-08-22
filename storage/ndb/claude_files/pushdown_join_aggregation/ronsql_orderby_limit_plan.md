@@ -1,15 +1,31 @@
 # RonSQL ORDER BY / LIMIT Support Plan
 
-**Status: Phase 0 IMPLEMENTED (2026-08-20, RONDB-1107; pending user
-build + first `--record`); Phase 1 IMPLEMENTED (2026-08-21 —
-`body_orderby_limit.inc` ob-1..ob-22 + ob-P1..P3, ×5 topology suites,
-plus two engine fixes the first record surfaced:
+**Status: Phases 0-3 SHIPPED (recorded green ×5 topology suites,
+2026-08-21).**  Phase 3 = buffered client-side sort for projection-only
+ORDER BY [+ LIMIT]: cloned-NdbRecAttr row buffering, NdbSqlUtil
+comparators, partial_sort top-N, 1M-row/256MB cap;
+`body_passthrough_orderby.inc` po-1..14 + P1 ×5 suites (first record
+surfaced + fixed the shared-bare-spelling alias-mark poisoning — see
+the Phase 3 section); retired the pl-P1/P2 + st-P1/P2
+ORDER-BY-rejection probes (`body_passthrough_limit` +
+`body_passthrough_single_table` re-recorded); CLI: fs_topk restored to
+projection-only form, fs_history un-flagged.  Phase 4's
+fs_history-unlock role collapsed into Phase 3 (the single-table shape
+already existed); remaining Phase 4 value = the optional 4b SF_OrderBy
+index-order streaming top-N; Phases 5-6 partially delivered / deferred
+as noted inline.**
+Phase 0 (2026-08-20, RONDB-1107): body/subquery ORDER BY / LIMIT
+rejection.  Phase 1 (2026-08-21, commits `1d41ae61713` /
+`8e3b7725493` / `9821d27f49c`): `body_orderby_limit.inc` ob-1..ob-22 +
+ob-P1..P3 plus the two engine fixes the first record surfaced —
 `canonicalize_orderby_columns` for mixed bare/qualified ORDER BY vs
 GROUP BY spellings, and ResultPrinter LIMIT-0 header suppression
-(mysql-client empty-result parity; requires re-recording `ronsql_basic`
-+ `ronsql_orderby_stress` whose baselines baked the old header in);
-pending user rebuild + first `--record`); Phases
-2-6 not yet implemented.**  Phase 0
+(mysql-client empty-result parity; `ronsql_basic` +
+`ronsql_orderby_stress` baselines re-recorded).  Phase 2 (2026-08-21,
+all green on first record): LIMIT streams with early close on all
+three projection-only gate shapes; MTR `body_passthrough_limit.inc`
+pl-1..14 + P1/P2 ×5 suites + the st-P2 conversion in
+`body_passthrough_single_table.inc`.**  Phase 0
 adds `reject_ignored_orderby_limit` (RonSQLPreparer) called from
 `analyze_ctes` (per CTE body), `analyze_subqueries_ce` (scalar / IN /
 EXISTS arms — checked on the ORIGINAL parsed statements before the
@@ -216,18 +232,97 @@ to source dict columns via `resolve_cte_output_columns_for_scope`, but
 ORDER BY on a virt col is untested), and collation-order vs binary-order
 mismatches versus MySQL baselines.
 
-### Phase 2 — projection-only shapes: LIMIT alone (streaming)
+### Phase 2 — projection-only shapes: LIMIT alone (streaming) — ✅ SHIPPED (2026-08-21, all green on first record ×5 topology suites)
 
-Relax the two gates (`:569`, `:588`) to accept `has_limit` while still
-requiring `!has_orderby`. In `execute_passthrough_drain`: count printed
-rows, stop at the limit, then `query->close()` — early close of the scan
-is the part of I.14 that already works at kernel/API level
-(block-tested; see `cte_filter_phase_n.md`). LIMIT 0 keeps the
-deferred-header convention (no header, matching empty-result baselines).
-MTR: LIMIT on E.3 root scans and I.8 join chains, including a case where
-LIMIT stops mid-scan on a large body.
+**As implemented:** since this plan was written, the projection-only
+envelope grew (non_aggregate_pushdown_plan.md Phases 1-5), so the "two
+gates" are now the three shape conditions of the unified non-aggregate
+gate — E.3 CTE_SCAN root, single-table, and join chains — and ALL three
+drop `!has_limit` (ORDER BY stays rejected until Phase 3).  Streaming
+cutoff in both drains:
 
-### Phase 3 — projection-only shapes: ORDER BY [+ LIMIT] (buffered client-side sort)
+- `execute_passthrough_drain` (multi-op): the fetch loop stops once
+  `limit` rows are printed and returns — the caller's unconditional
+  `query->close()` right after IS the early close (I.14 kernel/API
+  early close, block-tested).  With LIMIT 0 the loop never runs, so
+  the deferred TSV header is never printed (mysql-client empty-result
+  parity); JSON keeps its `[` ... `]` framing.
+- `execute_single_table_passthrough`: the scan arm gets the same loop
+  restructure + an explicit `scanOp->close()` on early termination;
+  the PK-lookup arm treats LIMIT 0 as "print nothing" (LIMIT >= 1
+  cannot constrain a single-row lookup further).
+
+EXPLAIN needed no work — the parse-tree section already prints
+`LIMIT N` unconditionally.  MTR: `body_passthrough_limit.inc` +
+`ronsql_cte_dd_passthrough_limit.test` ×5 topology suites (pl-1..14 +
+pl-P1/P2): CTE_SCAN root truncating/batch-boundary (LIMIT 260 of 300
+crosses the 256-row API batch)/LIMIT 0/LIMIT > set, join-chain
+truncating/0/> set, real-table snowflake chain + residual WHERE +
+LIMIT, single-table index-scan/full-scan/PK-lookup (hit + miss) with
+LIMIT 1/0/> set; truncating cases project value-uniform columns for
+determinism.  Probes pin ORDER BY (± LIMIT) still rejected.
+`body_passthrough_single_table.inc` st-P2 ("LIMIT rejected") converted
+to an ORDER BY + LIMIT rejection — that family needs re-recording ×5.
+No CLI registry flips: fs_topk / fs_history both need ORDER BY
+(Phases 3 / 4b).
+
+Original scope: relax the gates to accept `has_limit` while still
+requiring `!has_orderby`; count printed rows, stop at the limit, then
+`query->close()`; LIMIT 0 keeps the deferred-header convention; MTR
+incl. a case where LIMIT stops mid-scan on a large body.  (All covered
+above.)
+
+### Phase 3 — projection-only shapes: ORDER BY [+ LIMIT] (buffered client-side sort) — ✅ SHIPPED (2026-08-21, all green on record ×5 topology suites)
+
+**First-record finding (FIXED): shared bare spelling poisoned output
+resolution.**  po-1 (`SELECT k, t FROM cf ORDER BY k`) failed: the
+ORDER BY name and the bare column output share one parser registry
+entry, and `resolve_orderby_aliases`' `m_col_is_alias` mark made the
+scoped resolver classify the entry AliasOnly before trying column
+resolution — the output then failed the drain's kind check.  Fix: skip
+the alias mark when the matched output is a plain COLUMN with the same
+col_idx (the entry is provably a real column reference; the
+single-table resolver already resolved column-first).  Also cures the
+latent aggregate-path variant with all-bare `SELECT k ... GROUP BY k
+ORDER BY k` over a CTE, which the always-aliased ob- family never hit.
+
+**As implemented:** the gate drops its last ORDER BY restriction on all
+three projection-only shapes.  Instead of the sketched
+StoredPassthroughRow byte copies, rows are buffered as arrays of
+`NdbRecAttr::clone()`s (public API, delete-by-application), which keeps
+ResultPrinter formatting-only — the plan's preferred split — and reuses
+`print_passthrough_row` unchanged; an RAII `PassthroughSortBuffer`
+frees the clones on every exit path.  Sort keys resolve to stored-row
+slots by resolved-column identity (`same_resolved_column`, shared with
+the Phase 1 canonicalize fix): a sort column already in the SELECT
+reuses its output slot, an ORDER BY-only real-table column gets an
+extra `getValue` on its op, an ORDER BY-only CTE column reuses the
+always-fetched virt-table registration.  Comparator =
+`NdbSqlUtil::getType(col->getType()).m_cmp` with `col->getCharset()`
+on the clones' raw attribute bytes (length prefixes included, same as
+the aggregate path's GROUP BY-column arm); NULLs first in ASC; op-level
+LEFT JOIN NULL rows stored as NULL pointers; column types without an
+m_cmp are rejected at key-resolution time.  LIMIT applies post-sort via
+`std::partial_sort`; LIMIT 0 skips the drain entirely (deferred-header
+convention).  Fixed caps: 1,000,000 rows / 256 MB of cloned data →
+clean permanent error (LIMIT cannot reduce the buffering).  The
+PK-lookup arm sorts trivially (≤ 1 row) and is unchanged beyond its
+Phase 2 LIMIT-0 suppression.  MTR: `body_passthrough_orderby.inc` +
+`ronsql_cte_dd_passthrough_orderby.test` ×5 topology suites (po-1..14
++ po-P1), `$skip_sort=yes` order-verifying strict diffs with
+total-order tie-breakers: CTE_SCAN root incl. ORDER BY a CTE aggregate
+output DESC + LIMIT cutting inside a tie run and ORDER BY a
+non-projected CTE column; join chains incl. a non-projected real-table
+sort column (extra getValue) and string collation order; LEFT JOIN
+NULLs-first-ASC / NULLs-last-DESC with LIMIT across the NULL run;
+single-table DESC / non-projected sort column / DATE / DECIMAL / PK
+lookup.  The Phase-2-era ORDER-BY-rejection probes (pl-P1/P2, st-P1/P2)
+are retired — `body_passthrough_limit` and `body_passthrough_single_table`
+need re-recording ×5 alongside the new family's first record.  CLI
+(Phase 5 delivery): `fs_topk` restored to its natural projection-only
+form; `fs_history` un-flagged (`MySQLOnly` removed).
+
+Original sketch (superseded where noted above):
 
 Relax the gates fully. Rows arrive via per-row `NdbRecAttr` buffers that
 are overwritten each fetch, so sorting requires buffering:
@@ -304,13 +399,14 @@ blockers beyond ORDER BY/LIMIT — comma-join syntax (q2/q11/q15), derived
 tables in FROM (q13/q22), correlated/scalar subqueries (all), LIKE /
 SUBSTRING / IN (q2/q13/q22) — so none can flip regardless of this plan.
 
-Remaining for this phase:
-- Flip `MySQLOnly` off: `fs_topk` original projection-only form (after
-  Phase 3 — optionally revert the aggregate-form rewrite then),
-  `fs_history` (after Phase 4).
-- Phase 1's MTR family retroactively locks in the shapes the early
-  delivery relies on (ORDER BY aggregate alias DESC + LIMIT on a
-  CTE-join aggregate; ORDER BY GROUP BY col).
+Remaining for this phase — **DONE with Phase 3 (2026-08-21)**:
+- ~~Flip `MySQLOnly` off~~: `fs_topk` reverted to its original
+  projection-only form and `fs_history` un-flagged — both ride the
+  Phase 3 buffered client-side sort (fs_history's single-table shape
+  had already been built by non_aggregate_phase_1.md, so Phase 4's
+  role in unlocking it collapsed into Phase 3).
+- ~~Phase 1's MTR family retroactively locks in the shapes~~ — done
+  (body_orderby_limit.inc, recorded green ×5).
 
 ### Phase 6 — deferred follow-ups (out of scope by default)
 
