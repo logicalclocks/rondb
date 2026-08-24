@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -666,6 +666,8 @@ class Dbdict : public SimulatedBlock {
   typedef Ptr<NodeRecord> NodeRecordPtr;
   CArray<NodeRecord> c_nodes;
   NdbNodeBitmask c_aliveNodes;
+  NdbNodeBitmask c_restartLockTakeoverNodes;
+  bool c_restartLockTakeoverReady;
 
   struct PageRecord {
     Uint32 word[8192];
@@ -1016,6 +1018,7 @@ class Dbdict : public SimulatedBlock {
   void execNODE_FAILREP(Signal *signal);
 
   void send_nf_complete_rep(Signal *signal, const NodeFailRep *);
+  void restartLockTakeoverReport(Signal *signal, Uint32 nodeId);
 
   void execINCL_NODEREQ(Signal *signal);
   void execAPI_FAILREQ(Signal *signal);

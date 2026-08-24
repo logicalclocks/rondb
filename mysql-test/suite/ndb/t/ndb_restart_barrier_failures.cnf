@@ -1,0 +1,3 @@
+# Same cluster layout as ndb_restart_barrier: at least 4 data nodes
+# in 2 node groups, StopOnError=0 (RONDB-1096).
+!include suite/ndb/t/ndb_restart_barrier.cnf

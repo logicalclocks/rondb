@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -226,6 +226,37 @@ void Ndbcntr::execCONTINUEB(Signal *signal) {
         jam();
         trySystemRestart(signal);
         // Fall-through
+      }
+
+      if (m_restart_barrier_waiting) {
+        jam();
+        /**
+         * Parked at the restart barrier in start phase 110. The node
+         * is fully recovered and only waits for other restarting
+         * nodes, so this wait must not consume the StartFailureTimeout
+         * budget; keep moving the start time forward while parked.
+         */
+        c_start.m_startTime = NdbTick_getCurrentTicks();
+        if (c_restart_barrier_timeout_ms > 0) {
+          const Uint64 waited =
+              NdbTick_Elapsed(m_restart_barrier_entry_time,
+                              NdbTick_getCurrentTicks())
+                  .milliSec();
+          if (waited > c_restart_barrier_timeout_ms) {
+            jam();
+            warningEvent(
+                "Restart barrier wait exceeded RestartBarrierTimeout"
+                " (%u ms), completing start although other nodes are"
+                " still restarting",
+                c_restart_barrier_timeout_ms);
+            g_eventLogger->warning(
+                "Restart barrier wait exceeded RestartBarrierTimeout"
+                " (%u ms), completing start although other nodes are"
+                " still restarting",
+                c_restart_barrier_timeout_ms);
+            leave_restart_barrier(signal, "RestartBarrierTimeout exceeded");
+          }
+        }
       }
 
       const Uint64 elapsed =
@@ -1473,6 +1504,11 @@ void Ndbcntr::execREAD_CONFIG_REQ(Signal *signal) {
       m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
+  Uint32 restart_barrier_timeout = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_RESTART_BARRIER_TIMEOUT,
+                            &restart_barrier_timeout);
+  c_restart_barrier_timeout_ms = restart_barrier_timeout;
+
   Uint32 encrypted_filesystem = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_ENCRYPTED_FILE_SYSTEM,
                             &encrypted_filesystem);
@@ -1608,6 +1644,10 @@ void Ndbcntr::execSTTOR(Signal *signal) {
     case ZSTART_PHASE_9:
       jam();
       startPhase9Lab(signal);
+      break;
+    case ZSTART_PHASE_110:
+      jam();
+      handle_start_phase_110(signal);
       break;
     default:
       jam();
@@ -1996,8 +2036,25 @@ void Ndbcntr::execREAD_NODESCONF(Signal *signal) {
 
 void Ndbcntr::execCM_ADD_REP(Signal *signal) {
   jamEntry();
-  ndbrequire(signal->theData[0] < MAX_NDB_NODES);
-  c_clusterNodes.set(signal->theData[0]);
+  const NodeId nodeId = signal->theData[0];
+  ndbrequire(nodeId < MAX_NDB_NODES);
+  c_clusterNodes.set(nodeId);
+  /**
+   * A node joining the cluster starts a new restart, it is not
+   * recovered until it reports reaching the restart barrier again.
+   */
+  c_recoveredNodeSet.clear(nodeId);
+
+  if (m_restart_barrier_waiting &&
+      !ndbd_restart_phase_110_barrier(getNodeInfo(nodeId).m_version)) {
+    jam();
+    g_eventLogger->info(
+        "Node %u, which does not support the restart barrier, joined"
+        " while this node was waiting; completing start without waiting",
+        nodeId);
+    leave_restart_barrier(
+        signal, "a data node without restart barrier support joined");
+  }
 }
 
 void Ndbcntr::sendCntrStartReq(Signal *signal) {
@@ -2179,6 +2236,13 @@ void Ndbcntr::execCNTR_START_REP(Signal *signal) {
   rep->startNodeId = nodeId;
   rep->reason = StartPermRep::CompletedStart;
   execSTART_PERMREP(signal);
+
+  /**
+   * The node that completed its start may have been the last node
+   * holding the restart barrier closed (e.g. an old version node
+   * that never reports reaching the barrier), so re-evaluate it.
+   */
+  check_restart_barrier(signal);
 }
 
 void Ndbcntr::execSTART_PERMREP(Signal *signal) {
@@ -2267,6 +2331,12 @@ void Ndbcntr::execCNTR_START_REQ(Signal *signal) {
    */
   const bool starting = (nodeState.startLevel != NodeState::SL_STARTED);
 
+  /**
+   * The node begins a new restart, clear any leftover recovered state
+   * from a previous restart so the restart barrier waits for it.
+   */
+  c_recoveredNodeSet.clear(nodeId);
+
   c_start.m_waiting.set(nodeId);
   switch (st) {
     case NodeState::ST_INITIAL_START:
@@ -2341,6 +2411,12 @@ void Ndbcntr::execCNTR_START_REQ(Signal *signal) {
       rep->nodeId = nodeId;
       EXECUTE_DIRECT(DBDIH, GSN_NDBCNTR_START_WAIT_REP, signal,
                      NdbcntrStartWaitRep::SignalLength);
+      /**
+       * The node has been queued waiting to start and no longer
+       * holds the restart barrier closed, re-evaluate it
+       * (RONDB-1096).
+       */
+      check_restart_barrier(signal);
       return;
     }
   }
@@ -2352,6 +2428,11 @@ void Ndbcntr::execCNTR_START_REQ(Signal *signal) {
     jam();
     startWaitingNodes(signal);
   }
+  /**
+   * Queueing or granting the node may have changed the set of nodes
+   * the restart barrier waits for, re-evaluate it (RONDB-1096).
+   */
+  check_restart_barrier(signal);
   return;
 }
 
@@ -3388,6 +3469,219 @@ void Ndbcntr::wait_sp_rep(Signal *signal) {
   sendSignal(rg, GSN_CNTR_WAITREP, signal, CntrWaitRep::SignalLength, JBB);
 }
 
+/**
+ * Restart barrier in start phase 110 (RONDB-1096)
+ * ------------------------------------------------
+ * A restarting node dies if any other data node is stopped while it is
+ * still in its start phases, even when the stop is a graceful stop by
+ * command. Under Kubernetes the data nodes of each node group form a
+ * StatefulSet whose rolling restarts are gated on the node reporting
+ * started, but nothing coordinates restarts across node groups.
+ *
+ * The restart barrier closes this gap: a node restart parks in start
+ * phase 110 when it is fully recovered (all fragments synchronised,
+ * SUMA handover completed in phase 101) but before it reports started.
+ * While parked the node still reports "starting" to the MGM server,
+ * which keeps its Kubernetes pod not-ready and thereby stops further
+ * pod restarts. The NDBCNTR master releases all parked nodes together
+ * when every node currently in restart state has reached the barrier.
+ *
+ * The barrier-entry report is broadcast to all NDBCNTRs (not only the
+ * master) into c_recoveredNodeSet, so that a master taking over after
+ * a master failure already has the reports of all barrier waiters.
+ * The release condition is evaluated over is_node_restarting(), which
+ * covers the whole restart from QMGR membership (CM_ADD_REP) until
+ * the CNTR_START_REP broadcast, but excludes nodes merely queued in
+ * c_start.m_waiting (a same-node-group waiter cannot start until the
+ * parked node completes, so waiting for it would deadlock).
+ *
+ * Example flow: 6 data nodes, NG0 = {1,2,3}, NG1 = {4,5,6}, NDBCNTR
+ * master = node 1, nodes 3 and 6 restarting concurrently:
+ *
+ * Node 3 (NG0)          Node 6 (NG1)          Master (1)      Nodes 2,4,5
+ *   |                     |                    |                |
+ *   | phases 2..101       | phases 2..101      |                |
+ *   | (restore, REDO,     | (slower)           |                |
+ *   |  copy frag, SUMA)   |                    |                |
+ *   |                     |                    |                |
+ *   | STTOR sp 110: all 6 members barrier-capable -> PARK       |
+ *   |   m_restart_barrier_waiting = true                        |
+ *   |   NodeState = SL_STARTING sp 110                          |
+ *   |   (MGM shows "starting", k8s pod not ready,               |
+ *   |    but TC is open: node serves API transactions)          |
+ *   |                     |                    |                |
+ *   |-- CNTR_WAITREP(WaitFor, node=3) broadcast to 1..6 + self -|
+ *   |                     |                    |                |
+ *   |   every receiver: c_recoveredNodeSet.set(3)               |
+ *   |                    check_restart_barrier()                |
+ *   |   nodes 2..6:  not master -> return                       |
+ *   |   master (1):  restarting = {3,6}                         |
+ *   |                6 not recovered -> BARRIER STAYS CLOSED    |
+ *   |                     |                    |                |
+ *   |  (parked, serving   | STTOR sp 110 -> PARK                |
+ *   |   traffic)          |                    |                |
+ *   |                     |-- CNTR_WAITREP(WaitFor, node=6) --> |
+ *   |                     |                    |                |
+ *   |   every receiver: c_recoveredNodeSet.set(6)               |
+ *   |   master (1):  restarting = {3,6}, all recovered          |
+ *   |                -> RELEASE                                 |
+ *   |                     |                    |                |
+ *   |<---- CNTR_WAITREP(Grant) to receiver group {3,6} ---------|
+ *   |                     |<-------------------|                |
+ *   |                     |                    |                |
+ *   | leave_restart_barrier("all restarting nodes have          |
+ *   |   recovered") -> sendSttorry, phases 111..255             |
+ *   |                     |                    |                |
+ *   |-- CNTR_START_REP(3) broadcast: c_startedNodeSet.set(3) -->|
+ *   |                     |-- CNTR_START_REP(6) idem ---------->|
+ *   |                     |                    |                |
+ *   | SL_STARTED, MGM "started", pod ready -> rolling restart   |
+ *   | may proceed to the next pod in each StatefulSet           |
+ */
+void Ndbcntr::handle_start_phase_110(Signal *signal) {
+  switch (ctypeOfStart) {
+    case NodeState::ST_NODE_RESTART:
+    case NodeState::ST_INITIAL_NODE_RESTART:
+      jam();
+      break;
+    default:
+      jam();
+      /**
+       * System restart and initial start are already synchronized
+       * between the nodes through wait_sp, no barrier is needed.
+       */
+      sendSttorry(signal);
+      return;
+  }
+
+  NdbNodeBitmask unsupportedNodes;
+  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+    if (c_clusterNodes.get(n) &&
+        !ndbd_restart_phase_110_barrier(getNodeInfo(n).m_version)) {
+      unsupportedNodes.set(n);
+    }
+  }
+  if (!unsupportedNodes.isclear()) {
+    jam();
+    /**
+     * Every current data-node member must understand both the barrier
+     * report and the recovered-node semantics. Any member can become
+     * master or president after a failure, so checking only the current
+     * master is insufficient in a mixed-version cluster.
+     */
+    char buf[NdbNodeBitmask::TextLength + 1];
+    g_eventLogger->info(
+        "Data nodes %s do not support the restart barrier,"
+        " completing start without waiting",
+        unsupportedNodes.getText(buf));
+    sendSttorry(signal);
+    return;
+  }
+
+  m_restart_barrier_waiting = true;
+  m_restart_barrier_entry_time = NdbTick_getCurrentTicks();
+
+  /**
+   * Report start phase 110 in the node state so that the MGM server
+   * shows the node as starting in phase 110 while it is parked here.
+   */
+  NodeState newState(NodeState::SL_STARTING, ZSTART_PHASE_110,
+                     (NodeState::StartType)ctypeOfStart);
+  updateNodeState(signal, newState);
+
+  g_eventLogger->info(
+      "Fully recovered, waiting at restart barrier (start phase 110)"
+      " until all restarting nodes have completed their recovery");
+  infoEvent("Waiting at restart barrier for all restarting nodes");
+
+  /**
+   * Every current member supports the barrier (checked above), so
+   * the barrier-entry report goes to all of them.
+   */
+  CntrWaitRep *rep = (CntrWaitRep *)signal->getDataPtrSend();
+  rep->nodeId = getOwnNodeId();
+  rep->waitPoint = CntrWaitRep::ZWAITPOINT_RESTART_BARRIER;
+  rep->request = CntrWaitRep::WaitFor;
+  rep->sp = ZSTART_PHASE_110;
+  NodeReceiverGroup rg(NDBCNTR, c_clusterNodes);
+  sendSignal(rg, GSN_CNTR_WAITREP, signal, CntrWaitRep::SignalLength, JBB);
+}
+
+void Ndbcntr::restart_barrier_rep(Signal *signal) {
+  CntrWaitRep rep = *(CntrWaitRep *)signal->getDataPtr();
+  switch (rep.request) {
+    case CntrWaitRep::WaitFor:
+      jam();
+      ndbrequire(rep.nodeId < MAX_NDB_NODES);
+      /**
+       * The node has completed its recovery and waits at the barrier.
+       */
+      c_recoveredNodeSet.set(rep.nodeId);
+      check_restart_barrier(signal);
+      return;
+    case CntrWaitRep::Grant:
+      jam();
+      if (m_restart_barrier_waiting) {
+        jam();
+        leave_restart_barrier(signal, "all restarting nodes have recovered");
+      }
+      /**
+       * A Grant can arrive after we already left the barrier through
+       * RestartBarrierTimeout, simply ignore it in that case.
+       */
+      return;
+  }
+  ndbabort();
+}
+
+void Ndbcntr::check_restart_barrier(Signal *signal) {
+  if (cmasterNodeId != getOwnNodeId()) {
+    jam();
+    return;
+  }
+  NdbNodeBitmask waiters;
+  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+    if (!is_node_restarting(n)) continue;
+    if (!c_recoveredNodeSet.get(n)) {
+      jam();
+      jamLine(Uint16(n));
+      /**
+       * Node n is restarting and has not reached the barrier yet,
+       * the barrier stays closed. Note that this also covers old
+       * version nodes that never report; they hold the barrier until
+       * their CNTR_START_REP arrives, which is the correct semantics
+       * since they are indeed still restarting.
+       */
+      return;
+    }
+    waiters.set(n);
+  }
+  if (waiters.isclear()) {
+    jam();
+    return;
+  }
+  char buf[NdbNodeBitmask::TextLength + 1];
+  g_eventLogger->info(
+      "All restarting nodes have completed their recovery,"
+      " releasing restart barrier for nodes: %s",
+      waiters.getText(buf));
+  CntrWaitRep *conf = (CntrWaitRep *)signal->getDataPtrSend();
+  conf->nodeId = getOwnNodeId();
+  conf->waitPoint = CntrWaitRep::ZWAITPOINT_RESTART_BARRIER;
+  conf->request = CntrWaitRep::Grant;
+  conf->sp = ZSTART_PHASE_110;
+  NodeReceiverGroup rg(NDBCNTR, waiters);
+  sendSignal(rg, GSN_CNTR_WAITREP, signal, CntrWaitRep::SignalLength, JBB);
+}
+
+void Ndbcntr::leave_restart_barrier(Signal *signal, const char *reason) {
+  ndbrequire(m_restart_barrier_waiting);
+  m_restart_barrier_waiting = false;
+  g_eventLogger->info("Restart barrier released: %s", reason);
+  infoEvent("Restart barrier released: %s", reason);
+  sendSttorry(signal);
+}
+
 /*******************************/
 /*  CNTR_WAITREP               */
 /*******************************/
@@ -3452,6 +3746,11 @@ void Ndbcntr::execCNTR_WAITREP(Signal *signal) {
       jam();
       waitpoint42To(signal);
       break;
+    case CntrWaitRep::ZWAITPOINT_RESTART_BARRIER:
+      jam();
+      ndbrequire(signal->getLength() >= CntrWaitRep::SignalLength);
+      restart_barrier_rep(signal);
+      return;
     case RNIL:
       ndbrequire(signal->getLength() >= CntrWaitRep::SignalLength);
       wait_sp_rep(signal);
@@ -3535,9 +3834,32 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
   c_clusterNodes.bitANDC(allFailed);
   c_cntr_startedNodeSet.bitANDC(allFailed);
   c_startedNodeSet.bitANDC(allFailed);
+  c_recoveredNodeSet.bitANDC(allFailed);
 
+  /**
+   * A node parked at the restart barrier in start phase 110 is fully
+   * recovered and must not die here; it takes the full started-node
+   * path below so that the failure is handled by all blocks (QMGR and
+   * DBDIH are informed, DBDIH sends NDB_FAILCONF when the failure
+   * handling completes) instead of the short-circuit reply used by
+   * nodes that are still restarting (RONDB-1096).
+   *
+   * No mixed-version check is needed to survive here: being parked
+   * implies that every data node in the cluster supports the restart
+   * barrier, so every survivor of this failure, including a successor
+   * master, can handle a restarting node that outlives it. The
+   * invariant holds because handle_start_phase_110 refuses to park
+   * while any incompatible node is a member, execCM_ADD_REP unparks
+   * the moment one joins (QMGR delivers CM_ADD_REP before any later
+   * cluster event, so there is no window where we act as parked in a
+   * mixed cluster), and a member cannot change version without
+   * rejoining. A recovered node that is NOT parked (it bailed out of
+   * parking in a mixed cluster or already left the barrier) can face
+   * an old-version successor master; that case keeps the pre-barrier
+   * behaviour and dies in Dbdih::execNODE_FAILREP on master takeover.
+   */
   const NodeState &st = getNodeState();
-  if (st.startLevel == st.SL_STARTING) {
+  if (st.startLevel == st.SL_STARTING && !st.getNodeRecovered()) {
     jam();
 
     const Uint32 phase = st.starting.startPhase;
@@ -3664,6 +3986,28 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
     signal->theData[1] = nodeId;
     sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 3, JBB);
   }  // for
+
+  /**
+   * A failed node may have been the last node holding the restart
+   * barrier closed (a restarting node that will now never reach the
+   * barrier), so re-evaluate the barrier. This also covers the case
+   * where the master failed and we just took over as master; the
+   * barrier reports are broadcast to all NDBCNTRs so we already have
+   * them in c_recoveredNodeSet.
+   */
+  if (tMasterFailed && m_restart_barrier_waiting &&
+      !ndbd_restart_phase_110_barrier(
+          getNodeInfo(cmasterNodeId).m_version)) {
+    jam();
+    g_eventLogger->info(
+        "New master node %u does not support the restart barrier,"
+        " completing start without waiting",
+        cmasterNodeId);
+    leave_restart_barrier(
+        signal, "new master does not support the restart barrier");
+  } else {
+    check_restart_barrier(signal);
+  }
 
   return;
 }  // Ndbcntr::execNODE_FAILREP()
@@ -4133,12 +4477,13 @@ void Ndbcntr::sendSttorry(Signal *signal, Uint32 delayed) {
   // skip simulated phase 7
   signal->theData[9] = ZSTART_PHASE_8;
   signal->theData[10] = ZSTART_PHASE_9;
-  signal->theData[11] = ZSTART_PHASE_END;
+  signal->theData[11] = ZSTART_PHASE_110;
+  signal->theData[12] = ZSTART_PHASE_END;
   if (delayed == 0) {
-    sendSignal(NDBCNTR_REF, GSN_STTORRY, signal, 12, JBB);
+    sendSignal(NDBCNTR_REF, GSN_STTORRY, signal, 13, JBB);
     return;
   }
-  sendSignalWithDelay(NDBCNTR_REF, GSN_STTORRY, signal, delayed, 12);
+  sendSignalWithDelay(NDBCNTR_REF, GSN_STTORRY, signal, delayed, 13);
 }  // Ndbcntr::sendSttorry()
 
 void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
@@ -4150,6 +4495,10 @@ void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
     infoEvent("Cntr: cstartPhase = %d, cinternalStartphase = %d, block = %d",
               cstartPhase, cinternalStartphase, cndbBlocksCount);
     infoEvent("Cntr: cmasterNodeId = %d", cmasterNodeId);
+    char buf[NdbNodeBitmask::TextLength + 1];
+    infoEvent("Cntr: restart barrier waiting = %u, recovered nodes: %s",
+              (Uint32)m_restart_barrier_waiting,
+              c_recoveredNodeSet.getText(buf));
   }
 
   if (arg == DumpStateOrd::NdbcntrTestStopOnError) {
@@ -4193,15 +4542,30 @@ void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
   if (arg == DumpStateOrd::NdbcntrStallStartPhase) {
 #ifdef ERROR_INSERT
     if (signal->getLength() == 2) {
-      c_error_insert_extra = signal->theData[1];
+      /**
+       * SET_ERROR_INSERT_VALUE resets c_error_insert_extra, so the
+       * stall phase must be assigned together with the error insert
+       * value using SET_ERROR_INSERT_VALUE2, not before it. With the
+       * old order the stall phase was always overwritten with 0 and
+       * the stall never engaged.
+       */
+      SET_ERROR_INSERT_VALUE2(1002, signal->theData[1]);
       g_eventLogger->info("NDBCNTR: DUMP 71 stalling start phase %u",
                           c_error_insert_extra);
-      SET_ERROR_INSERT_VALUE(1002);
     } else if (ERROR_INSERTED(1002)) {
       g_eventLogger->info("NDBCNTR: DUMP 71 clearing start phase stall");
       CLEAR_ERROR_INSERT_VALUE;
     }
 #endif
+  }
+
+  if (arg == DumpStateOrd::NdbcntrSetRestartBarrierTimeout) {
+    if (signal->getLength() == 2) {
+      c_restart_barrier_timeout_ms = signal->theData[1];
+      g_eventLogger->info(
+          "NDBCNTR: DUMP 72 set RestartBarrierTimeout to %u ms",
+          c_restart_barrier_timeout_ms);
+    }
   }
 
 }  // Ndbcntr::execDUMP_STATE_ORD()
@@ -4377,7 +4741,9 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
                JBB);
     return;
   } else if (!singleuser) {
-    if (StopReq::getSystemStop(c_stopRec.stopReq.requestInfo)) {
+    const bool systemStop =
+        StopReq::getSystemStop(c_stopRec.stopReq.requestInfo);
+    if (systemStop) {
       jam();
       if (StopReq::getPerformRestart(c_stopRec.stopReq.requestInfo)) {
         ((Configuration &)m_ctx.m_config).stopOnError(false);
@@ -4388,6 +4754,21 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
       jam();
       return;
     }
+
+    if (!systemStop) {
+      /**
+       * Obtain permission before leaving SL_STARTED. In particular, a
+       * restart below the phase-110 barrier can then postpone this stop
+       * without making this node unavailable to the cluster.
+       */
+      StopPermReq *permReq = (StopPermReq *)&signal->theData[0];
+      permReq->senderRef = reference();
+      permReq->senderData = 12;
+      sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
+                 StopPermReq::SignalLength, JBB);
+      return;
+    }
+
     signal->theData[0] = NDB_LE_NDBStopStarted;
     signal->theData[1] =
         StopReq::getSystemStop(c_stopRec.stopReq.requestInfo) ? 1 : 0;
@@ -4515,7 +4896,8 @@ bool Ndbcntr::StopRecord::checkNodeFail(Signal *signal) {
 
   stopReq.senderRef = 0;
 
-  if (cntr.getNodeState().startLevel != NodeState::SL_SINGLEUSER) {
+  if (cntr.getNodeState().startLevel != NodeState::SL_SINGLEUSER &&
+      cntr.getNodeState().startLevel != NodeState::SL_STARTED) {
     NodeState newState(NodeState::SL_STARTED);
     cntr.updateNodeState(signal, newState);
     cntr.send_node_started_rep(signal);
@@ -4596,11 +4978,11 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
       }
     } else {
       jam();
-      StopPermReq *req = (StopPermReq *)&signal->theData[0];
+      AbortAllReq *req = (AbortAllReq *)&signal->theData[0];
       req->senderRef = cntr.reference();
       req->senderData = 12;
-      cntr.sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
-                      StopPermReq::SignalLength, JBB);
+      cntr.sendSignal(DBTC_REF, GSN_ABORT_ALL_REQ, signal,
+                      AbortAllReq::SignalLength, JBB);
     }
     return;
   }
@@ -4609,22 +4991,46 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
 }
 
 void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
-  // StopPermRef* const ref = (StopPermRef*)&signal->theData[0];
-
   jamEntry();
 
-  signal->theData[0] = ZSHUTDOWN;
-  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
+  if (c_stopRec.stopReq.senderRef == 0) {
+    jam();
+    return;
+  }
+
+  if (!c_stopRec.checkNodeFail(signal)) {
+    jam();
+    return;
+  }
+
+  StopPermReq *req = (StopPermReq *)&signal->theData[0];
+  req->senderRef = reference();
+  req->senderData = 12;
+  sendSignalWithDelay(DBDIH_REF, GSN_STOP_PERM_REQ, signal, 100,
+                      StopPermReq::SignalLength);
 }
 
 void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
   jamEntry();
 
-  AbortAllReq *req = (AbortAllReq *)&signal->theData[0];
-  req->senderRef = reference();
-  req->senderData = 12;
-  sendSignal(DBTC_REF, GSN_ABORT_ALL_REQ, signal, AbortAllReq::SignalLength,
-             JBB);
+  if (c_stopRec.stopReq.senderRef == 0) {
+    jam();
+    return;
+  }
+
+  ndbrequire(getNodeState().startLevel == NodeState::SL_STARTED);
+
+  signal->theData[0] = NDB_LE_NDBStopStarted;
+  signal->theData[1] = 0;
+  sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
+
+  DEB_NODE_STOP(("Setting node state to SL_STOPPING_1"));
+  NodeState newState(NodeState::SL_STOPPING_1, false);
+  updateNodeState(signal, newState);
+
+  c_stopRec.stopInitiatedTime = NdbTick_getCurrentTicks();
+  signal->theData[0] = ZSHUTDOWN;
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 1);
 }
 
 void Ndbcntr::execABORT_ALL_CONF(Signal *signal) {
@@ -6924,8 +7330,14 @@ bool Ndbcntr::is_nodegroup_starting(Signal *signal, NodeId node_id) {
     if (mask.get(i) && i != getOwnNodeId()) {
       jam();
       jamLine(Uint16(i));
-      /* Node i is in same node group */
-      if (is_node_starting(i)) {
+      /**
+       * Node i is in same node group. is_node_restarting() rather
+       * than is_node_starting() so that a master that took over
+       * during another node's restart (e.g. with a node parked at
+       * the restart barrier) does not grant a second start in the
+       * same node group (RONDB-1096).
+       */
+      if (is_node_restarting(i)) {
         jam();
         return true;
       }
@@ -6946,8 +7358,53 @@ bool Ndbcntr::is_node_starting(NodeId node_id) {
   }
 }
 
+bool Ndbcntr::is_node_restarting(NodeId node_id) {
+  /**
+   * Is the node somewhere in a restart. Unlike is_node_starting()
+   * this is maintained on ALL nodes: c_clusterNodes through
+   * CM_ADD_REP / READ_NODESCONF and c_startedNodeSet through the
+   * CNTR_START_REP broadcast, both pruned on node failure on every
+   * node. A master taking over after a master failure therefore has
+   * the correct view, whereas c_start.m_starting and
+   * c_cntr_startedNodeSet are only maintained on the master and on
+   * the starting node itself, which made restarting nodes invisible
+   * to a new master (RONDB-1096).
+   *
+   * Nodes queued waiting to start (m_waiting) are excluded: a
+   * same-node-group waiter cannot start until a parked node has
+   * completed, so counting it would deadlock the restart barrier.
+   */
+  if (c_start.m_waiting.get(node_id)) {
+    jam();
+    return false;
+  }
+  if (c_start.m_starting.get(node_id)) {
+    jam();
+    return true;
+  }
+  return c_clusterNodes.get(node_id) && !c_startedNodeSet.get(node_id);
+}
+
+bool Ndbcntr::is_any_node_below_restart_barrier() {
+  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+    if (is_node_restarting(n) && !c_recoveredNodeSet.get(n)) {
+      jam();
+      jamLine(Uint16(n));
+      return true;
+    }
+  }
+  jam();
+  return false;
+}
+
 bool Ndbcntr::is_node_started(NodeId node_id) {
-  if (c_startedNodeSet.get(node_id)) {
+  /**
+   * A node that has reached the restart barrier in start phase 110 is
+   * a fully synchronized replica and is counted as started here, so
+   * that e.g. the arbitration check counts it among the previously
+   * alive nodes (RONDB-1096).
+   */
+  if (c_startedNodeSet.get(node_id) || c_recoveredNodeSet.get(node_id)) {
     jam();
     return true;
   } else {

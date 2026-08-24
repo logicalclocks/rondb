@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2006, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -53,7 +54,12 @@ class DictLockReq {
     DropFileLock = 10,
     DropFilegroupLock = 11,
     SumaStartMe = 12,
-    SumaHandOver = 13
+    SumaHandOver = 13,
+    /**
+     * Re-register NodeRestartLock state after DICT master takeover.
+     * userPtr == RNIL reports that the sender holds no restart lock.
+     */
+    NodeRestartLockTakeover = 14
   };
 
  private:

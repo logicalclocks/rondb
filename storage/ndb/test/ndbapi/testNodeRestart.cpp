@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,7 +42,9 @@
 #include <Vector.hpp>
 #include <cstring>
 #include <signaldata/DumpStateOrd.hpp>
+#include <signaldata/SchemaTrans.hpp>
 #include "../../src/ndbapi/NdbInfo.hpp"
+#include "../../src/ndbapi/NdbDictionaryImpl.hpp"
 #include "my_sys.h"
 #include "mysql/strings/m_ctype.h"
 #include "util/require.h"
@@ -10146,6 +10148,7 @@ int runMixedLoadExtra(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+<<<<<<< HEAD
 /**
  * Wait for a crashed node to come back to the started state, regardless of
  * whether its angel brings it back in nostart mode (it is then started
@@ -10277,6 +10280,316 @@ int runNodeFailLeakDuringNodeStart(NDBT_Context *ctx, NDBT_Step *step) {
   CHECK(res.startNodes(&nodeF, 1) == 0, "Failed to start F");
   CHECK(res.waitNodesStarted(&nodeF, 1, 300) == 0, "F did not rejoin");
   CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return NDBT_OK;
+}
+
+int runPrepareUpdatesTransaction(NDBT_Context *ctx, NDBT_Step *step) {
+  ndb::scoped_barrier steps_barrier(*ctx->getStepsBarrierPtr());
+  int result = NDBT_OK;
+  int records = ctx->getNumRecords();
+  int batch = std::min(100, records / step->getStepTypeCount());
+  int step_num = step->getStepTypeNo();
+  Ndb *pNdb = GETNDB(step);
+  NdbRestarter restarter;
+  std::string prefix;
+  prefix = prefix + "Step thread " + std::to_string(step_num) + ": " +
+           __func__ + ": ";
+  const char *step_prefix = prefix.c_str();
+  int i = 0;
+  while (!ctx->isTestStopped()) {
+    g_info << i << ": ";
+
+    // Try wait for whole cluster up and connected before preceeding, not
+    // critical
+    restarter.waitClusterStarted();
+    CHK_NDB_READY(pNdb);
+
+    int nodeid = restarter.getDbNodeId(rand() % restarter.getNumDbNodes());
+
+    ndbout_c("%sPreparing transaction on node %d.", step_prefix, nodeid);
+
+    HugoOperations hugoOps(*ctx->getTab());
+
+    if (hugoOps.startTransaction(pNdb, nodeid, 0) != NDBT_OK) {
+      ndbout_c("%sFailed to start transaction.", step_prefix);
+      hugoOps.closeTransaction(pNdb);
+      continue;
+    }
+    // Check actual node id of transaction
+    NdbConnection *pCon = hugoOps.getTransaction();
+    nodeid = pCon->getConnectedNodeId();
+
+    int op_count = 0;
+    for (int j = 0; j < batch; j++) {
+      int record_no = step_num * batch + j;
+      if (hugoOps.pkUpdateRecord(pNdb, record_no, 1, rand())) {
+        ndbout_c("%sFailed to update record number = %d.", step_prefix,
+                 record_no);
+      } else {
+        op_count++;
+      }
+    }
+    if (hugoOps.execute_NoCommit(pNdb) != 0) {
+      ndbout_c("%sFailed to execute no commit.", step_prefix);
+      hugoOps.closeTransaction(pNdb);
+      continue;
+    }
+    ndbout_c("%sPrepared transaction with %d updates on node %d.", step_prefix,
+             op_count, nodeid);
+
+    steps_barrier.arrive_and_wait();  // Transaction is prepared
+
+    ndbout_c("%sWaiting for node restart to complete.", step_prefix);
+    steps_barrier.arrive_and_wait();  // Wait for a restart
+
+    hugoOps.closeTransaction(pNdb);
+
+    i++;
+  }
+  return result;
+}
+
+int runSlowCompleteNF(NDBT_Context *ctx, NDBT_Step *step) {
+  ndb::scoped_barrier steps_barrier(*ctx->getStepsBarrierPtr());
+  int result = NDBT_OK;
+  NdbRestarter restarter;
+  // Error codes to slow down completion of transactions
+  const Uint32 err_codes[] = {0, 8123, 8127};
+  int loops = ctx->getNumLoops();
+
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "Too few nodes" << endl;
+    ctx->stopTest();
+    return NDBT_SKIPPED;
+  }
+
+  for (int i = 0; i < loops && result == NDBT_OK && !ctx->isTestStopped();
+       i++) {
+    for (unsigned j = 0; j < std::size(err_codes) && !ctx->isTestStopped();
+         j++) {
+      int errorCode = err_codes[j];
+      // sending at TC
+      ndbout << "Injecting error " << errorCode << " for slow complete."
+             << endl;
+      restarter.insertErrorInAllNodes(errorCode);
+
+      ndbout << "Waiting for transactions to be prepared." << endl;
+      steps_barrier.arrive_and_wait();  // Wait for transactions preparation
+
+      const int id = restarter.getNode(NdbRestarter::NS_RANDOM);
+      ndbout << "Restart node " << id << endl;
+
+      {
+        // NRT_NoStart_Restart = 1
+        const int dumpVals[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+        CHECK((restarter.dumpStateOneNode(id, dumpVals, 2) == NDBT_OK),
+              "Failed to request error insert restart");
+      }
+
+      /* Next cause an error insert failure */
+      CHECK((restarter.insertErrorInNode(id, 9999) == NDBT_OK),
+            "Failed to request node crash");
+      if (restarter.waitNodesNoStart(&id, 1)) {
+        g_err << "Failed to waitNodesNoStart" << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+      if (restarter.startNodes(&id, 1)) {
+        g_err << "Failed to start node" << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+      if (restarter.waitClusterStarted() != 0) {
+        result = NDBT_FAILED;
+        break;
+      }
+
+      CHECK((restarter.insertErrorInNode(id, 0) == NDBT_OK),
+            "Failed to clear error injections");
+
+      /* Ensure connected */
+      if (GETNDB(step)->get_ndb_cluster_connection().wait_until_ready(30, 30) !=
+          0) {
+        g_err << "Timeout waiting for NdbApi reconnect" << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+
+      ndbout << "Restart completed." << endl;
+      steps_barrier.arrive_and_wait();  // Restart done
+    }
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  ctx->stopTest();
+
+  if (result != NDBT_OK) {
+    // TODO dump ops and trans
+    ndbout_c("%s: Dump TC operations", __func__);
+    int val1[] = {2517, 0, 99999, 1, 1};
+    if (restarter.dumpStateAllNodes(val1, std::size(val1)) == 0) {
+      NdbSleep_SecSleep(5);
+    }
+    ndbout_c("%s: Dump LQH operations", __func__);
+    int val2[] = {DumpStateOrd::LqhDumpAllTcRec};
+    if (restarter.dumpStateAllNodes(val2, 1) == 0) {
+      NdbSleep_SecSleep(5);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Restart barrier tests (RONDB-1096)
+ * ----------------------------------
+ * A node restart parks in start phase 110 (the restart barrier) when
+ * it is fully recovered, until all concurrently restarting nodes have
+ * completed their recovery. The tests below stall one restarting node
+ * below the barrier using DUMP 71 (NdbcntrStallStartPhase, error
+ * insert 1002) and restart a second node in another node group, which
+ * then parks at the barrier.
+ *
+ * The tests require at least 4 data nodes in at least 2 node groups;
+ * with a single restarting node the barrier releases immediately and
+ * nothing can be observed.
+ */
+static const int RESTART_BARRIER_PHASE = 110;
+static const int RESTART_BARRIER_STALL_PHASE = 100;
+
+static int restartBarrierCheckPrereqs(NdbRestarter &res) {
+  if (res.getNumDbNodes() < 4) {
+    g_err << "[SKIPPED] Test requires at least 4 data nodes" << endl;
+    return NDBT_SKIPPED;
+  }
+  if (res.getNumNodeGroups() < 2) {
+    g_err << "[SKIPPED] Test requires at least 2 node groups" << endl;
+    return NDBT_SKIPPED;
+  }
+  return NDBT_OK;
+}
+
+static int restartBarrierPickNodes(NdbRestarter &res, int &stalledNode,
+                                   int &parkedNode) {
+  stalledNode = res.getRandomNotMasterNodeId(rand());
+  if (stalledNode == -1) return NDBT_FAILED;
+  parkedNode = res.getRandomNodeOtherNodeGroup(stalledNode, rand());
+  if (parkedNode == -1) return NDBT_FAILED;
+  if (parkedNode == res.getMasterNodeId()) {
+    /* Keep the master out of the restarts, pick its node group peer */
+    parkedNode = res.getRandomNodeSameNodeGroup(parkedNode, rand());
+    if (parkedNode == -1 || parkedNode == res.getMasterNodeId())
+      return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+static int restartBarrierStallAndPark(NdbRestarter &res, int stalledNode,
+                                      int parkedNode) {
+  ndbout_c("restart barrier: stalled node %u, parked node %u", stalledNode,
+           parkedNode);
+
+  /**
+   * Stop both nodes before starting either of them. The stalled node
+   * must not be mid-restart when the parked node is aborted, that
+   * would kill it, which is the very problem the restart barrier
+   * solves.
+   */
+  if (res.restartOneDbNode(stalledNode, false, true, true)) return NDBT_FAILED;
+  if (res.waitNodesNoStart(&stalledNode, 1)) return NDBT_FAILED;
+  if (res.restartOneDbNode(parkedNode, false, true, true)) return NDBT_FAILED;
+  if (res.waitNodesNoStart(&parkedNode, 1)) return NDBT_FAILED;
+
+  /**
+   * Start the first node and stall its restart below the barrier
+   * phase. The stall (DUMP 71) is set once the node is visibly
+   * restarting: a node waiting in not-started state does not reliably
+   * process the DUMP. A restarting node spends a long time in the
+   * copy fragment / LCP wait part of the restart, reported as start
+   * phase <= 4, so the DUMP arrives well before the stall phase 100
+   * is reached.
+   */
+  if (res.startNodes(&stalledNode, 1)) return NDBT_FAILED;
+  if (res.waitNodesStartPhase(&stalledNode, 1, 2, 300)) return NDBT_FAILED;
+  int dump[] = {DumpStateOrd::NdbcntrStallStartPhase,
+                RESTART_BARRIER_STALL_PHASE};
+  if (res.dumpStateOneNode(stalledNode, dump, 2)) return NDBT_FAILED;
+
+  /**
+   * Confirm the stall engaged: a node stalled entering phase 100
+   * reports "starting" with last completed phase 99 and stays there.
+   * If the node races to started state instead, the stall was set
+   * too late and the wait below times out.
+   */
+  if (res.waitNodesStartPhase(&stalledNode, 1, RESTART_BARRIER_STALL_PHASE - 1,
+                              300))
+    return NDBT_FAILED;
+
+  /* Restart the second node, it must park at the barrier */
+  if (res.startNodes(&parkedNode, 1)) return NDBT_FAILED;
+  if (res.waitNodesStartPhase(&parkedNode, 1, RESTART_BARRIER_PHASE, 600))
+    return NDBT_FAILED;
+  return NDBT_OK;
+}
+
+static int restartBarrierClearStall(NdbRestarter &res, int stalledNode) {
+  int dump[] = {DumpStateOrd::NdbcntrStallStartPhase};
+  return res.dumpStateOneNode(stalledNode, dump, 1);
+}
+
+/**
+ * Verify that the parked node survived an event and is still parked
+ * (or already released and completing); a node that died shows up as
+ * no-contact or not-started while the angel restarts it.
+ */
+static int restartBarrierCheckSurvived(NdbRestarter &res, int parkedNode) {
+  NdbSleep_SecSleep(3);
+  const int status = res.getNodeStatus(parkedNode);
+  if (status != NDB_MGM_NODE_STATUS_STARTING &&
+      status != NDB_MGM_NODE_STATUS_STARTED) {
+    g_err << "Parked node " << parkedNode << " did not survive, status "
+          << status << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+static int restartBarrierExpectNodeRestartLock(NDBT_Step *step,
+                                               bool expectLocked) {
+  NdbDictionary::Dictionary *dict = GETNDB(step)->getDictionary();
+  NdbDictionaryImpl &dictImpl = NdbDictionaryImpl::getImpl(*dict);
+
+  const int result = dictImpl.beginSchemaTrans(false);
+  if (expectLocked) {
+    if (result == 0) {
+      dictImpl.endSchemaTrans(
+          NdbDictionary::Dictionary::SchemaTransAbort);
+      g_err << "Schema transaction started while NodeRestartLock should"
+               " be held"
+            << endl;
+      return NDBT_FAILED;
+    }
+
+    const NdbError &error = dictImpl.getNdbError();
+    if (error.code != SchemaTransBeginRef::BusyWithNR) {
+      g_err << "Expected BusyWithNR while NodeRestartLock is held, got "
+            << error << endl;
+      return NDBT_FAILED;
+    }
+    return NDBT_OK;
+  }
+
+  if (result != 0) {
+    g_err << "Schema transaction remained blocked after node restarts: "
+          << dictImpl.getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+  if (dictImpl.endSchemaTrans(
+          NdbDictionary::Dictionary::SchemaTransAbort) != 0) {
+    g_err << "Failed to abort NodeRestartLock probe transaction: "
+          << dictImpl.getNdbError() << endl;
+    return NDBT_FAILED;
+  }
   return NDBT_OK;
 }
 
@@ -10418,6 +10731,455 @@ int runFailRepBeforeJoin(NDBT_Context *ctx, NDBT_Step *step) {
   g_err << "Could not produce the FAIL_REP-before-join window in 3 attempts"
         << endl;
   return NDBT_FAILED;
+}
+
+/**
+ * Bring the cluster back to fully started, starting any node that
+ * ended up in not-started state (nodes stopped with nostart, or
+ * crashed nodes when StopOnError is set).
+ */
+static int restartBarrierRecoverAll(NdbRestarter &res) {
+  for (int retry = 0; retry < 120; retry++) {
+    bool allStarted = true;
+    for (int i = 0; i < res.getNumDbNodes(); i++) {
+      int nodeId = res.getDbNodeId(i);
+      const int status = res.getNodeStatus(nodeId);
+      if (status == NDB_MGM_NODE_STATUS_NOT_STARTED) {
+        res.startNodes(&nodeId, 1);
+        allStarted = false;
+      } else if (status != NDB_MGM_NODE_STATUS_STARTED) {
+        allStarted = false;
+      }
+    }
+    if (allStarted) return NDBT_OK;
+    NdbSleep_SecSleep(5);
+  }
+  g_err << "Cluster did not return to fully started state" << endl;
+  return NDBT_FAILED;
+}
+
+int runRestartBarrierWaitRelease(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /* The barrier must hold while the stalled node is below phase 110 */
+  NdbSleep_SecSleep(3);
+  if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+    g_err << "Node " << parkedNode << " did not stay parked at the barrier"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Release the stalled node, both must now complete together */
+  if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
+  if (res.waitClusterStarted(600)) return NDBT_FAILED;
+  return NDBT_OK;
+}
+
+int runRestartBarrierRepeatedWaves(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  for (int wave = 0; wave < 2; wave++) {
+    ndbout_c("restart barrier wave %u: stalled node %u, parked node %u",
+             wave + 1, stalledNode, parkedNode);
+    if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+      return NDBT_FAILED;
+
+    if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+      return NDBT_FAILED;
+
+    NdbSleep_SecSleep(3);
+    if (res.getNodeStatus(parkedNode) !=
+        NDB_MGM_NODE_STATUS_STARTING) {
+      g_err << "Node " << parkedNode
+            << " did not remain parked in wave " << wave + 1 << endl;
+      return NDBT_FAILED;
+    }
+
+    if (restartBarrierClearStall(res, stalledNode))
+      return NDBT_FAILED;
+    if (res.waitClusterStarted(600))
+      return NDBT_FAILED;
+
+    /* Allow the final asynchronous unlock to reach the DICT master. */
+    NdbSleep_SecSleep(1);
+    if (restartBarrierExpectNodeRestartLock(step, false) != NDBT_OK)
+      return NDBT_FAILED;
+
+    const int previousStalledNode = stalledNode;
+    stalledNode = parkedNode;
+    parkedNode = previousStalledNode;
+  }
+
+  return NDBT_OK;
+}
+
+int runRestartBarrierStarterFail(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /**
+   * Kill the stalled node. Its failure must release the barrier so
+   * that the parked node completes its start.
+   */
+  ndbout_c("killing stalled node %u", stalledNode);
+  if (res.restartOneDbNode(stalledNode, false, true, true)) return NDBT_FAILED;
+  if (restartBarrierCheckSurvived(res, parkedNode)) return NDBT_FAILED;
+  if (res.waitNodesStarted(&parkedNode, 1, 300)) return NDBT_FAILED;
+
+  /* The killed node starts fresh (new process, no stall) */
+  return restartBarrierRecoverAll(res);
+}
+
+int runRestartBarrierStartedNodeFail(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  int peerNode = res.getRandomNodeSameNodeGroup(parkedNode, rand());
+  if (peerNode == -1 || peerNode == parkedNode) return NDBT_FAILED;
+
+  /**
+   * Crash the parked node's started node group peer. The parked node
+   * must survive (before the restart barrier existed a restarting
+   * node died with NDBD_EXIT_SR_OTHERNODEFAILED here) and its node
+   * group is then represented only by the parked node, which also
+   * verifies that arbitration counts a parked node as alive. The
+   * stalled node is still below the barrier and dies on the failure
+   * of a started node; its death releases the barrier and the parked
+   * node completes its start.
+   */
+  ndbout_c("crashing started node %u", peerNode);
+  if (res.restartOneDbNode(peerNode, false, true, true)) return NDBT_FAILED;
+  if (restartBarrierCheckSurvived(res, parkedNode)) return NDBT_FAILED;
+  if (res.waitNodesStarted(&parkedNode, 1, 300)) return NDBT_FAILED;
+
+  return restartBarrierRecoverAll(res);
+}
+
+int runRestartBarrierMasterFail(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+
+  /**
+   * The stalled node must be in a different node group than the
+   * master: the stalled node dies together with the master failure
+   * (it is below the barrier), and if they shared a node group that
+   * group would lose both its members and the cluster would go down.
+   * The parked node is chosen as the master's node group peer, so
+   * that group stays represented by the parked (recovered) node.
+   */
+  const int master = res.getMasterNodeId();
+  int stalledNode = res.getRandomNodeOtherNodeGroup(master, rand());
+  int parkedNode = res.getRandomNodeSameNodeGroup(master, rand());
+  if (stalledNode == -1 || parkedNode == -1 || parkedNode == master)
+    return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /**
+   * A restarted node normally has the newest dynamic ID and therefore
+   * cannot become president. Make the parked node the deterministic
+   * successor on every QMGR before crashing the current master.
+   */
+  int dynamicId[] = {DumpStateOrd::QmgrSetDynamicId, parkedNode, 1};
+  if (res.dumpStateAllNodes(dynamicId, 3)) {
+    g_err << "Failed to make parked node " << parkedNode
+          << " the next master" << endl;
+    return NDBT_FAILED;
+  }
+
+  /**
+   * Crash the master. The parked node must survive the master
+   * takeover (previously it died in DBDIH with
+   * NDBD_EXIT_MASTER_FAILURE_DURING_NR or in QMGR with 2308). The
+   * stalled node dies on the master failure; its death must release
+   * the barrier under the new master, which validates that the
+   * barrier state survives a master takeover (barrier reports are
+   * broadcast to all NDBCNTRs).
+   */
+  ndbout_c("crashing master node %u", master);
+  if (res.restartOneDbNode(master, false, true, true)) return NDBT_FAILED;
+  if (restartBarrierCheckSurvived(res, parkedNode)) return NDBT_FAILED;
+  if (res.waitNodesStarted(&parkedNode, 1, 300)) return NDBT_FAILED;
+
+  if (res.getMasterNodeId() != parkedNode) {
+    g_err << "Parked node " << parkedNode
+          << " did not become master; master is "
+          << res.getMasterNodeId() << endl;
+    return NDBT_FAILED;
+  }
+
+  return restartBarrierRecoverAll(res);
+}
+
+int runRestartBarrierMasterFailDictLock(NDBT_Context *ctx,
+                                        NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+
+  const int master = res.getMasterNodeId();
+  int stalledNode = res.getRandomNodeOtherNodeGroup(master, rand());
+  int parkedNode = res.getRandomNodeSameNodeGroup(master, rand());
+  if (stalledNode == -1 || parkedNode == -1 || parkedNode == master)
+    return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /**
+   * Once the barrier is released, hold the parked node immediately
+   * after phase 110. It remains fully recovered and keeps its
+   * NodeRestartLock, giving the test a deterministic interval in
+   * which to inspect the reconstructed lock queue.
+   */
+  int stallAfterBarrier[] = {DumpStateOrd::NdbcntrStallStartPhase,
+                             RESTART_BARRIER_PHASE + 1};
+  if (res.dumpStateOneNode(parkedNode, stallAfterBarrier, 2))
+    return NDBT_FAILED;
+
+  if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+    return NDBT_FAILED;
+
+  /**
+   * Make the parked lock holder the successor. Its local DIH lock
+   * record must be re-registered in its new local DICT master.
+   */
+  int dynamicId[] = {DumpStateOrd::QmgrSetDynamicId, parkedNode, 1};
+  if (res.dumpStateAllNodes(dynamicId, 3)) {
+    g_err << "Failed to make parked node " << parkedNode
+          << " the next master" << endl;
+    return NDBT_FAILED;
+  }
+
+  ndbout_c("crashing master node %u with NodeRestartLock held by node %u",
+           master, parkedNode);
+  if (res.restartOneDbNode(master, false, true, true))
+    return NDBT_FAILED;
+  if (restartBarrierCheckSurvived(res, parkedNode))
+    return NDBT_FAILED;
+
+  for (int retry = 0;
+       retry < 60 && res.getMasterNodeId() != parkedNode;
+       retry++) {
+    NdbSleep_SecSleep(1);
+  }
+  if (res.getMasterNodeId() != parkedNode) {
+    g_err << "Parked node " << parkedNode
+          << " did not become master; master is "
+          << res.getMasterNodeId() << endl;
+    return NDBT_FAILED;
+  }
+
+  NdbSleep_SecSleep(3);
+  if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+    g_err << "Parked master node " << parkedNode
+          << " did not remain stalled after the barrier" << endl;
+    return NDBT_FAILED;
+  }
+
+  /**
+   * This is the central assertion: the old master's lock queue is
+   * gone, so BusyWithNR can only come from NodeRestartLockTakeover
+   * rebuilding the lock in the new master.
+   */
+  if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+    return NDBT_FAILED;
+
+  if (restartBarrierClearStall(res, parkedNode))
+    return NDBT_FAILED;
+  if (res.waitNodesStarted(&parkedNode, 1, 300))
+    return NDBT_FAILED;
+  if (restartBarrierRecoverAll(res))
+    return NDBT_FAILED;
+
+  return restartBarrierExpectNodeRestartLock(step, false);
+}
+
+int runRestartBarrierMasterFailRemoteDictLock(NDBT_Context *ctx,
+                                              NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+
+  /**
+   * Keep the parked node in the old master's node group. The successor
+   * is the started peer of the stalled node in the other node group,
+   * making the parked lock holder remote from the new DICT master.
+   */
+  const int master = res.getMasterNodeId();
+  int stalledNode = res.getRandomNodeOtherNodeGroup(master, rand());
+  int parkedNode = res.getRandomNodeSameNodeGroup(master, rand());
+  if (stalledNode == -1 || parkedNode == -1 || parkedNode == master)
+    return NDBT_FAILED;
+
+  int successorNode =
+      res.getRandomNodeSameNodeGroup(stalledNode, rand());
+  if (successorNode == -1 || successorNode == stalledNode ||
+      successorNode == master || successorNode == parkedNode)
+    return NDBT_FAILED;
+
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  int stallAfterBarrier[] = {DumpStateOrd::NdbcntrStallStartPhase,
+                             RESTART_BARRIER_PHASE + 1};
+  if (res.dumpStateOneNode(parkedNode, stallAfterBarrier, 2))
+    return NDBT_FAILED;
+
+  if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+    return NDBT_FAILED;
+
+  int dynamicId[] = {DumpStateOrd::QmgrSetDynamicId, successorNode, 1};
+  if (res.dumpStateAllNodes(dynamicId, 3)) {
+    g_err << "Failed to make started node " << successorNode
+          << " the next master" << endl;
+    return NDBT_FAILED;
+  }
+
+  ndbout_c("crashing master node %u; successor %u, remote lock holder %u",
+           master, successorNode, parkedNode);
+  if (res.restartOneDbNode(master, false, true, true))
+    return NDBT_FAILED;
+  if (restartBarrierCheckSurvived(res, parkedNode))
+    return NDBT_FAILED;
+
+  for (int retry = 0;
+       retry < 60 && res.getMasterNodeId() != successorNode;
+       retry++) {
+    NdbSleep_SecSleep(1);
+  }
+  if (res.getMasterNodeId() != successorNode) {
+    g_err << "Started node " << successorNode
+          << " did not become master; master is "
+          << res.getMasterNodeId() << endl;
+    return NDBT_FAILED;
+  }
+
+  NdbSleep_SecSleep(3);
+  if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+    g_err << "Remote lock holder " << parkedNode
+          << " did not remain stalled after the barrier" << endl;
+    return NDBT_FAILED;
+  }
+
+  /**
+   * BusyWithNR now depends on the parked node reporting its private
+   * DIH lock record to the new remote DICT master.
+   */
+  if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+    return NDBT_FAILED;
+
+  if (restartBarrierClearStall(res, parkedNode))
+    return NDBT_FAILED;
+  if (res.waitNodesStarted(&parkedNode, 1, 300))
+    return NDBT_FAILED;
+  if (restartBarrierRecoverAll(res))
+    return NDBT_FAILED;
+
+  return restartBarrierExpectNodeRestartLock(step, false);
+}
+
+int runRestartBarrierServeWhileParked(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /**
+   * A node parked at the restart barrier must serve transactions as
+   * TC although it still reports "starting" to the MGM server: the
+   * NDB API marks it alive on the next API_REGCONF heartbeat and
+   * DBTC accepts remote TCSEIZEREQ at start phase >= 110. Start
+   * transactions hinted at the parked node (the hint is only honored
+   * if the API considers the node usable) and execute a committed
+   * read through it.
+   */
+  Ndb *pNdb = GETNDB(step);
+  HugoOperations hugoOps(*ctx->getTab());
+  bool served = false;
+  for (int retry = 0; retry < 60 && !served; retry++) {
+    if (hugoOps.startTransaction(pNdb, parkedNode, 0) == 0) {
+      if (hugoOps.getTransaction()->getConnectedNodeId() ==
+          (Uint32)parkedNode) {
+        if (hugoOps.pkReadRecord(pNdb, 0) != 0) {
+          hugoOps.closeTransaction(pNdb);
+          return NDBT_FAILED;
+        }
+        if (hugoOps.execute_Commit(pNdb) == 0) {
+          served = true;
+        }
+      }
+      hugoOps.closeTransaction(pNdb);
+    }
+    if (!served) NdbSleep_SecSleep(1);
+  }
+  if (!served) {
+    g_err << "Parked node " << parkedNode
+          << " did not serve any transaction as TC" << endl;
+    return NDBT_FAILED;
+  }
+  ndbout_c("parked node %u served a committed read as TC", parkedNode);
+
+  /* While serving, the node must still report "starting" to the MGMd */
+  if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+    g_err << "Node " << parkedNode
+          << " no longer reports starting while parked" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Release the stalled node and finish */
+  if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
+  if (res.waitClusterStarted(600)) return NDBT_FAILED;
+  return NDBT_OK;
+}
+
+int runRestartBarrierTimeout(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+  if (restartBarrierStallAndPark(res, stalledNode, parkedNode))
+    return NDBT_FAILED;
+
+  /**
+   * Set RestartBarrierTimeout to 5 seconds on the parked node; it
+   * must then complete its start alone (fail open) although the
+   * stalled node is still below the barrier.
+   */
+  int dump[] = {DumpStateOrd::NdbcntrSetRestartBarrierTimeout, 5000};
+  if (res.dumpStateOneNode(parkedNode, dump, 2)) return NDBT_FAILED;
+  if (res.waitNodesStarted(&parkedNode, 1, 120)) return NDBT_FAILED;
+
+  /* Release the stalled node and finish */
+  if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
+  if (res.waitClusterStarted(600)) return NDBT_FAILED;
+  return NDBT_OK;
 }
 
 NDBT_TESTSUITE(testNodeRestart);
@@ -11258,6 +12020,72 @@ TESTCASE("FailRepBeforeJoin",
          "joined the cluster dies with the graceful error 2308 instead of "
          "the 2341 ndbrequire") {
   INITIALIZER(runFailRepBeforeJoin);
+}
+TESTCASE("PreparedUpdatesNF",
+         "Test node failure handling with prepared transactions with updates") {
+  INITIALIZER(runLoadTable);
+  STEPS(runPrepareUpdatesTransaction, 3);
+  STEP(runSlowCompleteNF);
+  FINALIZER(runClearTable);
+}
+TESTCASE("RestartBarrierWaitRelease",
+         "Verify that a node restart parks at the restart barrier in start "
+         "phase 110 while another node is restarting, and that all parked "
+         "nodes complete together when the last one has recovered "
+         "(RONDB-1096)") {
+  INITIALIZER(runRestartBarrierWaitRelease);
+}
+TESTCASE("RestartBarrierRepeatedWaves",
+         "Verify that consecutive restart barrier waves reset their "
+         "membership state and NodeRestartLock queue before the same "
+         "nodes restart again with their roles reversed "
+         "(RONDB-1096)") {
+  INITIALIZER(runRestartBarrierRepeatedWaves);
+}
+TESTCASE("RestartBarrierStarterFail",
+         "Verify that the failure of a restarting node releases the restart "
+         "barrier so that parked nodes complete (RONDB-1096)") {
+  INITIALIZER(runRestartBarrierStarterFail);
+}
+TESTCASE("RestartBarrierStartedNodeFail",
+         "Verify that a node parked at the restart barrier survives the "
+         "crash of a started node, keeps its node group alive and completes "
+         "its start (RONDB-1096)") {
+  INITIALIZER(runRestartBarrierStartedNodeFail);
+}
+TESTCASE("RestartBarrierMasterFail",
+         "Verify that a node parked at the restart barrier survives a "
+         "master failure and that the barrier state survives the master "
+         "takeover (RONDB-1096)") {
+  INITIALIZER(runRestartBarrierMasterFail);
+}
+TESTCASE("RestartBarrierMasterFailDictLock",
+         "Verify that NodeRestartLock is reconstructed when its parked "
+         "holder takes over as master, continues to block schema "
+         "transactions and is released when restart completes "
+         "(RONDB-1096)") {
+  INITIALIZER(runRestartBarrierMasterFailDictLock);
+}
+TESTCASE("RestartBarrierMasterFailRemoteDictLock",
+         "Verify that a parked node re-registers NodeRestartLock with "
+         "a different started node taking over as DICT master, and "
+         "that schema transactions remain blocked until restart "
+         "completion (RONDB-1096)") {
+  INITIALIZER(runRestartBarrierMasterFailRemoteDictLock);
+}
+TESTCASE("RestartBarrierTimeout",
+         "Verify that RestartBarrierTimeout releases a parked node on its "
+         "own (fail open) although another node is still restarting "
+         "(RONDB-1096)") {
+  INITIALIZER(runRestartBarrierTimeout);
+}
+TESTCASE("RestartBarrierServeWhileParked",
+         "Verify that a node parked at the restart barrier serves "
+         "transactions as TC while still reporting starting to the MGM "
+         "server (RONDB-1096)") {
+  INITIALIZER(runLoadTable);
+  INITIALIZER(runRestartBarrierServeWhileParked);
+  FINALIZER(runClearTable);
 }
 NDBT_TESTSUITE_END(testNodeRestart)
 

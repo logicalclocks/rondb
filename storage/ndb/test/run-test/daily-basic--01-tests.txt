@@ -1,5 +1,5 @@
 # Copyright (c) 2015, 2025, Oracle and/or its affiliates.
-# Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -148,3 +148,39 @@ cmd: testSystemRestart
 args: -n SR1 T1
 max-time: 4140
 
+
+cmd: testNodeRestart
+args: -n RestartBarrierWaitRelease T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierRepeatedWaves T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierStarterFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierStartedNodeFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierMasterFail T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierMasterFailDictLock T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierMasterFailRemoteDictLock T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierTimeout T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n RestartBarrierServeWhileParked T1
+max-time: 900

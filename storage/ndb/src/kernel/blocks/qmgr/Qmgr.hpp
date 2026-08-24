@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -877,6 +877,8 @@ class Qmgr : public SimulatedBlock {
   bool m_hb_order_config_used;
   bool m_graceful_shutdown_started;
   NDB_TICKS m_graceful_shutdown_start_time;
+  // GracefulShutdownTimeout in ms, 0 = wait forever (RONDB-1096)
+  Uint32 m_graceful_shutdown_timeout_ms;
 
 #ifdef ERROR_INSERT
   Uint32 nodeFailCount;

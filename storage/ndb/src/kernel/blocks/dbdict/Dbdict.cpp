@@ -2486,6 +2486,8 @@ void Dbdict::initCommonData() {
   c_initialNodeRestart = false;
   c_nodeRestart = false;
   c_takeOverInProgress = false;
+  c_restartLockTakeoverNodes.clear();
+  c_restartLockTakeoverReady = false;
 
   m_current_allocated_rate = 0;
   m_current_allocated_memory_quota_mb = 0;
@@ -5317,10 +5319,54 @@ void Dbdict::execNODE_FAILREP(Signal *signal) {
       rollforward or rollback.
      */
     jam();
+    c_restartLockTakeoverNodes = c_aliveNodes;
+    for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+      if (c_restartLockTakeoverNodes.get(nodeId) &&
+          !ndbd_restart_phase_110_barrier(
+              getNodeInfo(nodeId).m_version)) {
+        c_restartLockTakeoverNodes.clear(nodeId);
+      }
+    }
+    c_restartLockTakeoverReady = false;
+
     ownNodePtr.p->nodeState = NodeRecord::NDB_MASTER_TAKEOVER;
     ownNodePtr.p->nodeFailRep = nodeFailRep;
     infoEvent("Node %u taking over as DICT master", c_masterNodeId);
     handle_master_takeover(signal);
+    return;
+  }
+
+  if (ownNodePtr.p->nodeState == NodeRecord::NDB_MASTER_TAKEOVER) {
+    jam();
+    /**
+     * A further node failure arrived while we, as new master, still
+     * defer the master-failure handling (schema-trans takeover and/or
+     * outstanding NodeRestartLock takeover reports).
+     *
+     * Dead nodes send no takeover report, so drop them from the
+     * expected set or the deferred NF_COMPLETEREP never runs. This
+     * failure's own handling must not be swallowed by the deferral
+     * gate in send_nf_complete_rep either: fold the failed nodes into
+     * the stored NodeFailRep so the deferred replay handles every
+     * failed node.
+     */
+    NdbNodeBitmask stored;
+    stored.assign(NdbNodeBitmask::Size, ownNodePtr.p->nodeFailRep.theNodes);
+    stored.bitOR(failedNodes);
+    stored.copyto(NdbNodeBitmask::Size, ownNodePtr.p->nodeFailRep.theNodes);
+    ownNodePtr.p->nodeFailRep.noOfNodes = stored.count();
+    ownNodePtr.p->nodeFailRep.failNo = nodeFail->failNo;
+
+    c_restartLockTakeoverNodes.bitANDC(failedNodes);
+    if (c_restartLockTakeoverNodes.isclear() &&
+        c_restartLockTakeoverReady) {
+      jam();
+      /**
+       * The failed node was the last outstanding reporter, trigger
+       * the deferred completion now.
+       */
+      send_nf_complete_rep(signal, &ownNodePtr.p->nodeFailRep);
+    }
     return;
   }
 
@@ -5330,13 +5376,21 @@ void Dbdict::execNODE_FAILREP(Signal *signal) {
 
 void Dbdict::send_nf_complete_rep(Signal *signal, const NodeFailRep *nodeFail) {
   jam();
+  NodeRecordPtr ownNodePtr;
+  c_nodes.getPtr(ownNodePtr, getOwnNodeId());
+  if (ownNodePtr.p->nodeState == NodeRecord::NDB_MASTER_TAKEOVER &&
+      !c_restartLockTakeoverNodes.isclear()) {
+    jam();
+    c_restartLockTakeoverReady = true;
+    return;
+  }
+  c_restartLockTakeoverReady = false;
+
   Uint32 theFailedNodes[NdbNodeBitmask::Size];
   memcpy(theFailedNodes, nodeFail->theNodes, sizeof(theFailedNodes));
   NdbNodeBitmask tmp;
   tmp.assign(NdbNodeBitmask::Size, theFailedNodes);
 
-  NodeRecordPtr ownNodePtr;
-  c_nodes.getPtr(ownNodePtr, getOwnNodeId());
   ownNodePtr.p->nodeState = NodeRecord::NDB_NODE_ALIVE;  // reset take-over
 
   for (unsigned i = 1; i < MAX_NDB_NODES; i++) {
@@ -5367,6 +5421,21 @@ void Dbdict::send_nf_complete_rep(Signal *signal, const NodeFailRep *nodeFail) {
 
   c_sub_startstop_lock.bitANDC(tmp);
 }  // send_nf_complete_rep
+
+void Dbdict::restartLockTakeoverReport(Signal *signal, Uint32 nodeId) {
+  ndbrequire(c_restartLockTakeoverNodes.get(nodeId));
+  c_restartLockTakeoverNodes.clear(nodeId);
+
+  if (c_restartLockTakeoverNodes.isclear() &&
+      c_restartLockTakeoverReady) {
+    jam();
+    NodeRecordPtr ownNodePtr;
+    c_nodes.getPtr(ownNodePtr, getOwnNodeId());
+    ndbrequire(ownNodePtr.p->nodeState ==
+               NodeRecord::NDB_MASTER_TAKEOVER);
+    send_nf_complete_rep(signal, &ownNodePtr.p->nodeFailRep);
+  }
+}
 
 void Dbdict::handle_master_takeover(Signal *signal) {
   /*
@@ -21053,9 +21122,14 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
   lockReq.senderData = req.userPtr;
   lockReq.lockId = 0;
   lockReq.requestInfo = 0;
-  lockReq.extra = req.lockType;
+  const bool restartLockTakeover =
+      req.lockType == (Uint32)DictLockReq::NodeRestartLockTakeover;
+  const Uint32 nodeId = refToNode(req.userRef);
+  lockReq.extra = restartLockTakeover
+                      ? (Uint32)DictLockReq::NodeRestartLock
+                      : req.lockType;
 
-  const DictLockType *lt = getDictLockType(req.lockType);
+  const DictLockType *lt = getDictLockType(lockReq.extra);
 
   Uint32 err;
   if (req.lockType == DictLockReq::SumaStartMe ||
@@ -21092,7 +21166,7 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
     return;
   }
 
-  if (req.lockType == DictLockReq::NodeRestartLock) {
+  if (lockReq.extra == DictLockReq::NodeRestartLock) {
     jam();
     lockReq.requestInfo |= UtilLockReq::SharedLock;
   }
@@ -21118,10 +21192,33 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
     goto ref;
   }
 
-  if (c_aliveNodes.get(refToNode(req.userRef))) {
+  if (restartLockTakeover &&
+      !c_restartLockTakeoverNodes.get(nodeId)) {
+    jam();
+    if (req.userPtr == RNIL) {
+      jam();
+      /**
+       * Duplicate "holds no NodeRestartLock" report, e.g. a delayed
+       * retry that crossed a master takeover whose fresh report was
+       * already accepted. The report is idempotent - drop it, a REF
+       * would crash the reporter.
+       */
+      return;
+    }
+    err = DictLockRef::TooLate;
+    goto ref;
+  }
+
+  if (c_aliveNodes.get(nodeId) && !restartLockTakeover) {
     jam();
     err = DictLockRef::TooLate;
     goto ref;
+  }
+
+  if (restartLockTakeover && req.userPtr == RNIL) {
+    jam();
+    restartLockTakeoverReport(signal, nodeId);
+    return;
   }
 
   res = m_dict_lock.lock(this, m_dict_lock_pool, &lockReq, 0);
@@ -21147,8 +21244,8 @@ void Dbdict::execDICT_LOCK_REQ(Signal *signal) {
 
 ref : {
   DictLockRef *ref = (DictLockRef *)signal->getDataPtrSend();
-  ref->userPtr = lockReq.senderData;
-  ref->lockType = lockReq.extra;
+  ref->userPtr = req.userPtr;
+  ref->lockType = req.lockType;
   ref->errorCode = err;
   sendSignal(lockReq.senderRef, GSN_DICT_LOCK_REF, signal,
              DictLockRef::SignalLength, JBB);
@@ -21164,6 +21261,10 @@ conf : {
 
   sendSignal(lockReq.senderRef, GSN_DICT_LOCK_CONF, signal,
              DictLockConf::SignalLength, JBB);
+
+  if (restartLockTakeover) {
+    restartLockTakeoverReport(signal, refToNode(lockReq.senderRef));
+  }
 }
   return;
 }
@@ -22260,7 +22361,6 @@ Uint32 Dbdict::dict_lock_unlock(Signal *signal, const DictLockReq *_req,
       break;
     case UtilUnlockRef::NotInLockQueue:
       ndbassert(false);
-      return res;
   }
 
   LockQueue::Iterator iter;

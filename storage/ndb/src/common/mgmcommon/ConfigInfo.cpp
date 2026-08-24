@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -698,6 +698,35 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "8",
     "8",
     "32" },
+
+  {
+    CFG_DB_RESTART_BARRIER_TIMEOUT,
+    "RestartBarrierTimeout",
+    DB_TOKEN,
+    "Max time in ms a node restart waits at the restart barrier in start "
+    "phase 110 for other restarting nodes to complete their recovery "
+    "before proceeding on its own. 0=Wait forever",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "0",
+    "0",
+    STR_VALUE(MAX_INT_RNIL) },
+
+  {
+    CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT,
+    "GracefulShutdownTimeout",
+    DB_TOKEN,
+    "Max time in ms a graceful shutdown initiated by SIGTERM may take "
+    "before it escalates into an immediate stop. A graceful stop can be "
+    "delayed by the cluster, e.g. while another node restart is below the "
+    "restart barrier in start phase 110. 0=Wait forever",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "27000",
+    "0",
+    STR_VALUE(MAX_INT_RNIL) },
 
   {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,

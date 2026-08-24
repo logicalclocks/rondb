@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -115,7 +116,10 @@ struct CntrWaitRep {
     ZWAITPOINT_6_2 = 6,
     ZWAITPOINT_7_1 = 7,
     ZWAITPOINT_7_2 = 8,
-    ZWAITPOINT_4_2_TO = 9  // We are forced to TO (during SR)
+    ZWAITPOINT_4_2_TO = 9,  // We are forced to TO (during SR)
+    // Restart barrier in start phase 110, node restarts wait for
+    // each other before reporting started (RONDB-1096)
+    ZWAITPOINT_RESTART_BARRIER = 10
   };
 };
 

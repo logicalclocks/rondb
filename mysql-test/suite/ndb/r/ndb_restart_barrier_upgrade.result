@@ -1,0 +1,24 @@
+CREATE TABLE t1 (
+a INT PRIMARY KEY,
+b INT
+) ENGINE NDB;
+INSERT INTO t1 VALUES (1, 10);
+# Upgrade one node in each node group
+# Mixed-version cluster: restart barrier must be bypassed
+Waiting for node 1 to reach start phase 2 or later
+Waiting for node 1 to enter start phase 99
+# Node 3 started while node 1 remained below the barrier
+Waiting for node 1 to enter start phase 99
+# Upgrade the remaining data nodes
+# Fully upgraded cluster: restart barrier must be active
+Waiting for node 1 to reach start phase 2 or later
+Waiting for node 1 to enter start phase 99
+Waiting for node 3 to enter start phase 110
+# Node 3 remains parked while node 1 is stalled
+Waiting for node 3 to enter start phase 110
+# Release the restart wave
+SELECT COUNT(*) FROM t1;
+COUNT(*)
+1
+DROP TABLE t1;
+# Restart barrier rolling-upgrade test passed

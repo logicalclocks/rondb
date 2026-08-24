@@ -1,0 +1,33 @@
+!include ../my.cnf
+
+# The restart barrier tests need at least 4 data nodes in 2 node
+# groups: one node group restarts a node that is stalled below the
+# barrier while a node in another node group parks at the barrier
+# (RONDB-1096).
+
+[cluster_config.1]
+NoOfReplicas=                  2
+ndbd=,,,
+ndb_mgmd=
+mysqld=,
+ndbapi=,,,,,,,,,,,
+# The barrier tests deliberately let a restarting node die on a node
+# failure (expected error 2308). With the default StopOnError=1 such a
+# node exits permanently and the test cannot bring the cluster back;
+# with StopOnError=0 the angel restarts it automatically and the
+# recovery step just waits for it to rejoin.
+StopOnError=0
+
+[mysqld]
+# Make all mysqlds use cluster
+ndbcluster
+ndb-wait-connected=20
+ndb-wait-setup=60
+ndb-extra-logging=99
+skip-log-bin
+skip-log-replica-updates
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port
