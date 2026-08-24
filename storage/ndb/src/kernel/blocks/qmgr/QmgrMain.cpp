@@ -2754,6 +2754,7 @@ void Qmgr::execCM_ADD(Signal *signal) {
       break;
     case CmAdd::AddCommit: {
       jam();
+      CRASH_INSERTION(962);
       ndbrequire(addNodePtr.p->phase == ZSTARTING);
       addNodePtr.p->phase = ZRUNNING;
       DEB_STARTUP(("2:phase(%u) = ZRUNNING", addNodePtr.i));

@@ -10146,6 +10146,280 @@ int runMixedLoadExtra(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Wait for a crashed node to come back to the started state, regardless of
+ * whether its angel brings it back in nostart mode (it is then started
+ * explicitly) or performs a full automatic restart.
+ */
+static int waitNodeBackToStarted(NdbRestarter &res, int node,
+                                 int timeoutSec) {
+  for (int elapsed = 0; elapsed < timeoutSec; elapsed++) {
+    const int status = res.getNodeStatus(node);
+    if (status == NDB_MGM_NODE_STATUS_STARTED) {
+      return 0;
+    }
+    if (status == NDB_MGM_NODE_STATUS_NOT_STARTED) {
+      if (res.startNodes(&node, 1) != 0) {
+        g_err << "startNodes(" << node << ") failed, retrying" << endl;
+      }
+    }
+    NdbSleep_SecSleep(1);
+  }
+  g_err << "Node " << node << " did not return to started state within "
+        << timeoutSec << " seconds" << endl;
+  return -1;
+}
+
+/**
+ * Reproduce the DBDIH m_NF_COMPLETE_REP leak: a node that dies while it is
+ * starting can never re-allocate its node id (error 1703) if any node that
+ * owed an NF_COMPLETEREP for its death dies before reporting it.
+ *
+ * Interleaving (all steps deterministic through error inserts armed
+ * before F starts - error inserts sent to a node that is already inside
+ * its early start phases are not delivered promptly):
+ * 1. Node F is stopped, armed with error insert 7121 (crash on receiving
+ *    START_PERMCONF) and started again.
+ * 2. Witness W (other node group) is armed with error insert 1006:
+ *    crash when NODE_FAILREP is received, at the entry of
+ *    Ndbcntr::execNODE_FAILREP, before the report reaches DBDIH.
+ * 3. F crashes at START_PERMCONF: the master grants start permission only
+ *    after every alive node acknowledged START_INFOREQ, and DIH inclusion
+ *    (which would make F ALIVE) comes much later - so F dies while it is
+ *    STARTING, not ALIVE, in DIH on every survivor. The survivors run the
+ *    "node not even started" branch of failedNodeSynchHandling: F is
+ *    marked DEAD but its m_NF_COMPLETE_REP mask was already armed with
+ *    all then-alive nodes.
+ * 4. W crashes while processing F's NODE_FAILREP, before broadcasting its
+ *    NF_COMPLETEREP for F. W's bit in F's mask stays set on every
+ *    survivor: DBDIH never sends NDB_FAILCONF, QMGR keeps failState
+ *    WAITING_FOR_NDB_FAILCONF and refuses F's node id with error 1703.
+ *
+ * On a broken build F's fresh process can never re-allocate its node id.
+ * On a fixed build the failure handling of W itself rescues F's record,
+ * and F rejoins within seconds.
+ */
+int runNodeFailLeakDuringNodeStart(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  if (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2 ||
+      res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups with at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  /* Keep the master out of the crash roles to avoid takeover noise */
+  const int master = res.getMasterNodeId();
+  const int nodeF = res.getRandomNotMasterNodeId(rand());
+  int nodeW = -1;
+  for (int i = 0; i < 50; i++) {
+    nodeW = res.getRandomNodeOtherNodeGroup(nodeF, rand());
+    if (nodeW != -1 && nodeW != master) break;
+  }
+  CHECK(nodeF != -1 && nodeW != -1 && nodeW != master,
+        "Failed to select test nodes");
+  ndbout_c("F (dies while starting) = %d, W (witness) = %d", nodeF, nodeW);
+
+  /* Make error insert crashes come back in nostart mode */
+  int dumpRestartOnEI[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  CHECK(res.dumpStateOneNode(nodeW, dumpRestartOnEI, 2) == 0,
+        "Failed to set RestartOnErrorInsert on W");
+
+  ndbout_c("Stopping node %d", nodeF);
+  CHECK(res.restartOneDbNode(nodeF, /* initial */ false, /* nostart */ true,
+                             /* abort */ true) == 0,
+        "Failed to stop F");
+  CHECK(res.waitNodesNoStart(&nodeF, 1) == 0, "F did not reach nostart");
+  CHECK(res.dumpStateOneNode(nodeF, dumpRestartOnEI, 2) == 0,
+        "Failed to set RestartOnErrorInsert on F");
+
+  /* F: crash on receiving START_PERMCONF, i.e. while every survivor
+   * regards F as STARTING (not ALIVE) in DIH */
+  CHECK(res.insertErrorInNode(nodeF, 7121) == 0, "EI 7121 in F failed");
+  /* W: crash when the next NODE_FAILREP (= F's death below) is received */
+  CHECK(res.insertErrorInNode(nodeW, 1006) == 0, "EI 1006 in W failed");
+
+  ndbout_c("Starting node %d; it will crash at START_PERMCONF", nodeF);
+  CHECK(res.startNodes(&nodeF, 1) == 0, "Failed to start F");
+
+  /**
+   * Prove the interleaving: W must crash on F's NODE_FAILREP. If W did not
+   * die, error insert 1006 never fired and the test setup is broken.
+   */
+  ndbout_c("Waiting for witness %d to crash on F's NODE_FAILREP", nodeW);
+  if (res.waitNodesNoStart(&nodeW, 1, 120) != 0) {
+    g_err << "Witness " << nodeW << " did not crash on NODE_FAILREP - "
+          << "test setup failed to produce the leak interleaving" << endl;
+    return NDBT_FAILED;
+  }
+
+  ndbout_c("Bringing witness %d back", nodeW);
+  CHECK(res.startNodes(&nodeW, 1) == 0, "Failed to start W");
+  CHECK(res.waitNodesStarted(&nodeW, 1, 300) == 0, "W did not restart");
+
+  /**
+   * The regression assert: F's fresh process must be able to re-allocate
+   * its node id. On a broken build the surviving nodes never conclude F's
+   * failure handling, so every allocation attempt is refused with error
+   * 1703 and F never reaches the nostart state.
+   */
+  ndbout_c("Checking that node %d can re-allocate its node id", nodeF);
+  if (res.waitNodesNoStart(&nodeF, 1, 180) != 0) {
+    g_err << "Node " << nodeF << " could not re-allocate its node id within"
+          << " 180s: m_NF_COMPLETE_REP leak (error 1703 wedge) reproduced"
+          << endl;
+    /* Dump the DIH node failure state to the cluster log for post-mortem
+     * (on the master; a dump to the dead node F itself would fail) */
+    int dumpNfState[] = {7019, nodeF};
+    res.dumpStateOneNode(res.getMasterNodeId(), dumpNfState, 2);
+    return NDBT_FAILED;
+  }
+  CHECK(res.startNodes(&nodeF, 1) == 0, "Failed to start F");
+  CHECK(res.waitNodesStarted(&nodeF, 1, 300) == 0, "F did not rejoin");
+  CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return NDBT_OK;
+}
+
+/**
+ * Reproduce QMGR receiving FAIL_REP while the own node has not yet joined
+ * the cluster, and check that the node dies with the graceful error 2308
+ * (NDBD_EXIT_SR_OTHERNODEFAILED) instead of error 2341 (failed ndbrequire).
+ *
+ * Interleaving (deterministic through error insert 962):
+ * 1. Node X is stopped and started again.
+ * 2. Node Y (a running member in another node group) is armed with error
+ *    insert 962: crash when processing CM_ADD(AddCommit) for X. At that
+ *    point every running member starts regarding X as ZRUNNING, while X
+ *    itself is still ZSTARTING waiting for CM_ADD(CommitNew) - which the
+ *    president cannot send yet, since the CM_ACKADD it needs died with Y.
+ * 3. The members detect Y's death and broadcast FAIL_REP(Y) to every node
+ *    they consider running - X included. X receives FAIL_REP while its own
+ *    phase is still ZSTARTING.
+ *
+ * The forced shutdown of X is observed through the NDBStopForced cluster
+ * log event and its error code is asserted.
+ */
+int runFailRepBeforeJoin(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  if (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2 ||
+      res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups with at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  /* Keep the master out of the crash roles: if the president itself dies
+   * at AddCommit the add protocol unwinds differently and the FAIL_REP
+   * delivery to X is no longer deterministic. */
+  const int master = res.getMasterNodeId();
+  const int nodeX = res.getRandomNotMasterNodeId(rand());
+  int nodeY = -1;
+  for (int i = 0; i < 50; i++) {
+    nodeY = res.getRandomNodeOtherNodeGroup(nodeX, rand());
+    if (nodeY != -1 && nodeY != master) break;
+  }
+  CHECK(nodeX != -1 && nodeY != -1 && nodeY != master,
+        "Failed to select test nodes");
+  ndbout_c("X (joining) = %d, Y (fails during X's join) = %d", nodeX, nodeY);
+
+  int dumpRestartOnEI[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+
+  /**
+   * Y's crash also makes X observe a transporter disconnect. While X is
+   * not fully started, execDISCONNECT_REP has a pre-existing graceful
+   * 2308 exit of its own; if that raced ahead of the FAIL_REP the test
+   * would pass without exercising the FAIL_REP path at all. Error insert
+   * 932 sits in that execDISCONNECT_REP branch and turns such a run into
+   * an error-insert shutdown, which is retried instead of counted as a
+   * pass.
+   */
+  int result = NDBT_FAILED;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    ndbout_c("Attempt %d: stopping node %d", attempt, nodeX);
+    CHECK(res.restartOneDbNode(nodeX, /* initial */ false, /* nostart */ true,
+                               /* abort */ true) == 0,
+          "Failed to stop X");
+    CHECK(res.waitNodesNoStart(&nodeX, 1) == 0, "X did not reach nostart");
+
+    CHECK(res.dumpStateOneNode(nodeY, dumpRestartOnEI, 2) == 0,
+          "Failed to set RestartOnErrorInsert on Y");
+    /* Y: crash when processing CM_ADD(AddCommit) for the joining X */
+    CHECK(res.insertErrorInNode(nodeY, 962) == 0, "EI 962 in Y failed");
+    /* X: guard against a disconnect-first execution (see above) */
+    CHECK(res.insertErrorInNode(nodeX, 932) == 0, "EI 932 in X failed");
+
+    /* Watch the cluster log for forced node shutdowns */
+    int filter[] = {15, NDB_MGM_EVENT_CATEGORY_STARTUP, 0};
+    NdbLogEventHandle handle =
+        ndb_mgm_create_logevent_handle(res.handle, filter);
+    CHECK(handle != NULL, "Failed to create log event handle");
+
+    ndbout_c("Starting node %d", nodeX);
+    if (res.startNodes(&nodeX, 1) != 0) {
+      g_err << "Failed to start X" << endl;
+      ndb_mgm_destroy_logevent_handle(&handle);
+      return NDBT_FAILED;
+    }
+
+    bool seenStopX = false;
+    bool retry = false;
+    struct ndb_logevent event;
+    const time_t deadline = time(NULL) + 120;
+    while (!seenStopX && time(NULL) < deadline) {
+      const int r = ndb_logevent_get_next(handle, &event, 500);
+      if (r < 0) {
+        g_err << "Error reading log events" << endl;
+        break;
+      }
+      if (r == 0 || event.type != NDB_LE_NDBStopForced) {
+        continue;
+      }
+      if ((int)event.source_nodeid == nodeY) {
+        ndbout_c("Node %d stopped (error insert 962, expected), error %u",
+                 nodeY, event.NDBStopForced.error);
+        continue;
+      }
+      if ((int)event.source_nodeid != nodeX) {
+        continue;
+      }
+      seenStopX = true;
+      ndbout_c("Node %d forced shutdown: error %u in start phase %u", nodeX,
+               event.NDBStopForced.error, event.NDBStopForced.sphase);
+      if (event.NDBStopForced.error == 2341) {
+        g_err << "Defect reproduced: node " << nodeX << " died with error"
+              << " 2341 (failed ndbrequire) on a FAIL_REP received before"
+              << " joining, instead of the graceful error 2308" << endl;
+      } else if (event.NDBStopForced.error == 2308) {
+        result = NDBT_OK;
+      } else {
+        ndbout_c("Shutdown not caused by FAIL_REP (likely the DISCONNECT_REP"
+                 " guard, error insert 932) - retrying");
+        retry = true;
+      }
+    }
+    ndb_mgm_destroy_logevent_handle(&handle);
+
+    if (!seenStopX) {
+      ndbout_c("No forced shutdown of node %d observed - retrying", nodeX);
+      retry = true;
+    }
+
+    /* Recover the cluster before finishing or retrying. Both crashed
+     * nodes come back: Y in nostart mode (RestartOnErrorInsert), X either
+     * by a full angel restart or in nostart mode. */
+    CHECK(waitNodeBackToStarted(res, nodeY, 300) == 0, "Y did not rejoin");
+    CHECK(waitNodeBackToStarted(res, nodeX, 300) == 0, "X did not rejoin");
+    CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+
+    if (!retry) {
+      return result;
+    }
+  }
+  g_err << "Could not produce the FAIL_REP-before-join window in 3 attempts"
+        << endl;
+  return NDBT_FAILED;
+}
+
 NDBT_TESTSUITE(testNodeRestart);
 TESTCASE("NoLoad",
          "Test that one node at a time can be stopped and then restarted "
@@ -10971,6 +11245,19 @@ TESTCASE("timeout_apifail", "Timeout handling api failure") {
   FINALIZER(runClearErrorInjections);
   FINALIZER(runClearExtraConnections);
   FINALIZER(runClearTable);
+}
+TESTCASE("NodeFailLeakDuringNodeStart",
+         "Check that a node that dies while starting can re-allocate its "
+         "node id even when a node that owed an NF_COMPLETEREP for its "
+         "death dies before reporting it "
+         "(m_NF_COMPLETE_REP leak, node id refused with error 1703)") {
+  INITIALIZER(runNodeFailLeakDuringNodeStart);
+}
+TESTCASE("FailRepBeforeJoin",
+         "Check that a starting node that receives FAIL_REP before it has "
+         "joined the cluster dies with the graceful error 2308 instead of "
+         "the 2341 ndbrequire") {
+  INITIALIZER(runFailRepBeforeJoin);
 }
 NDBT_TESTSUITE_END(testNodeRestart)
 
