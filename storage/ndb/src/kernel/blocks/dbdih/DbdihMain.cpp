@@ -9872,7 +9872,8 @@ void Dbdih::failedNodeSynchHandling(Signal *signal,
       failedNodePtr.p->m_NF_COMPLETE_REP.setWaitingFor(nodePtr.i);
     } else {
       jam();
-      if ((nodePtr.p->nodeStatus == NodeRecord::DYING) &&
+      if ((nodePtr.p->nodeStatus == NodeRecord::DYING ||
+           nodePtr.p->nodeStatus == NodeRecord::DEAD) &&
           (nodePtr.p->m_NF_COMPLETE_REP.isWaitingFor(failedNodePtr.i))) {
         jam();
         /*----------------------------------------------------*/
@@ -9881,6 +9882,9 @@ void Dbdih::failedNodeSynchHandling(Signal *signal,
         /*       REPORT THAT NODE FAILURE HANDLING WAS        */
         /*       COMPLETED ON THE NEW FAILED NODE FOR THIS    */
         /*       PARTICULAR OLD FAILED NODE.                  */
+        /*       A DEAD NODE CAN ALSO BE WAITING: A NODE THAT */
+        /*       FAILED WHILE STARTING IS MARKED DEAD BELOW   */
+        /*       WITH ITS MASK STILL ARMED.                   */
         /*----------------------------------------------------*/
         NFCompleteRep *const nf = (NFCompleteRep *)&signal->theData[0];
         nf->blockNo = 0;
