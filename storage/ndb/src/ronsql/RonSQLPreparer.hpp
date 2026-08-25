@@ -287,6 +287,17 @@ private:
     int* condition_handling_map = NULL;
     // An estimate of how performant the scan configuration will be.
     int goodness = 0;
+    // Phase 4b (ronsql_orderby_limit_plan.md): the ordered index of this
+    // candidate delivers the query's ORDER BY order directly (ORDER BY
+    // list == the index columns after any leading equality-bound
+    // columns, uniform direction), so the pass-through scan runs with
+    // SF_OrderBy [| SF_Descending] — the NDB API merge-sorts the
+    // per-fragment ordered scans — and streams rows in global index
+    // order with the Phase 2 LIMIT cutoff instead of buffering for the
+    // Phase 3 client-side sort.  Only ever set on the single-table
+    // pass-through path (index == NULL candidates never qualify).
+    bool index_order = false;
+    bool index_order_desc = false;
   };
   enum class CteKeyCoverage {
     ExactOrdered,
@@ -442,7 +453,46 @@ private:
   // residual conjunct, duplicate, partial cover or non-equality falls
   // back to the scan-config path (always correct).
   bool detect_pk_lookup();
-  void generate_scan_config_candidates();
+  // `defer_force_check` (Phase 4b): skip build_scan_config_candidates'
+  // FORCE INDEX satisfiability throws so the ORDER BY index pass can
+  // still qualify the forced index; plan_index_and_filter then runs
+  // validate_force_hint_after_orderby().
+  void generate_scan_config_candidates(bool defer_force_check = false);
+  // Phase 4b (ronsql_orderby_limit_plan.md): ORDER BY-driven index-order
+  // candidates for single-table pass-through queries.  Resolves the ORDER
+  // BY list to stored columns + a uniform direction, then for every
+  // ordered index admitted by the table's index hint: an existing
+  // bound-based candidate whose index serves the order is tagged
+  // index_order and gets ORDERBY_INDEX_BONUS goodness (a tie-breaker
+  // below any bound's value — WHERE-selected indexes keep priority); an
+  // index with no bound candidate that serves the order is pushed as a
+  // bonus-only candidate (all conjuncts residual filters) so it beats
+  // the goodness-0 table scan.  No-op when any ORDER BY target is not a
+  // stored column, directions mix, or no index matches (the query then
+  // takes the Phase 3 buffered sort).
+  void add_orderby_scan_config_candidates();
+  // True when `index` delivers the ORDER BY order for candidate bounds
+  // `condition_handling_map` (NULL = no bounds): walking the ORDER BY
+  // list against the index columns, a non-matching index column may be
+  // skipped only if it carries an equality bound (constant within the
+  // scanned range).  `descending` receives the uniform direction.
+  bool index_serves_orderby(const NdbDictionary::Index* index,
+                            const int* condition_handling_map,
+                            bool& descending) const;
+  // The stored column an ORDER BY entry denotes on the single-table
+  // path (TABLE_COLUMN via the main scope; OUTPUT_REF via the SELECT
+  // output it names, a plain COLUMN under the pass-through gate); NULL
+  // when it does not resolve to a stored column.
+  static const NdbDictionary::Column* orderby_stored_column(
+      const SelectStatement& ast_root,
+      const QueryScope::ResolvedColumnRef* resolved,
+      const OrderbyColumns* ob);
+  // Deferred FORCE INDEX satisfiability check for the pass-through ORDER
+  // BY path (see defer_force_check); throws RonSQLPermanentError with
+  // the same messages as build_scan_config_candidates plus the
+  // ORDER BY-aware no-WHERE variant.
+  void validate_force_hint_after_orderby() const;
+  static const int ORDERBY_INDEX_BONUS = 10;
   // Phase 1 W4: the single-table scan setup shared by the aggregate
   // path and the pass-through drain — table or index scan per
   // m_scan_config, bounds from condition_handling_map (with the
@@ -474,7 +524,8 @@ private:
       DynamicArray<const NdbDictionary::Index*>& indexes,
       DynamicArray<ConditionalExpression*>& toplevel_conditions,
       DynamicArray<ScanConfig>& out_candidates,
-      const TableRef* hint);
+      const TableRef* hint,
+      bool defer_force_check = false);
   // True if `index` is named in the table ref's index-hint list (case
   // insensitive).  Used to apply FORCE/USE/IGNORE INDEX.
   static bool index_named_in_hint(const NdbDictionary::Index* index,

@@ -163,7 +163,8 @@ sweeps belong in `offline_fs_*`).
 | `fs_topk` | Recent-spend CTE joined to customer, projection-only, client-side `ORDER BY recent.spend DESC LIMIT 100` | thousands | both |
 | `fs_minmax` | Datatype-heavy MIN/MAX (DECIMAL prices, DATE ship dates, DECIMAL qty) over a 3-day `l_shipdate` window, re-aggregated per supplier nation | ~7k lineitems | both |
 | `fs_dnf` | 4-disjunct DNF in the CTE body WHERE (`o_orderstatus`/`o_totalprice`/`o_orderpriority`) over a random 200-customer segment — interpreter filter cost | ~2k orders | both |
-| `fs_history` | Order-history page for a 200-customer segment, single-table projection, client-side `ORDER BY o_orderdate DESC LIMIT 1000` | ~2k orders | both |
+| `fs_history` | Order-history page for a 200-customer segment, single-table projection, client-side `ORDER BY o_orderdate DESC LIMIT 1000` (idx_orders_custkey serves the range, not the order) | ~2k orders | both |
+| `fs_latest` | Latest 100 orders: single-table projection, no WHERE, `ORDER BY o_orderdate DESC LIMIT 100` — SF_OrderBy index-order streaming on idx_orders_orderdate, early close at the LIMIT, no client-side sort (plan Phase 4b) | ~100 orders read per fragment batch | both |
 
 `fs_topk` ran in an interim aggregate-form rewrite (`GROUP BY c_custkey,
 c_name` with `MAX()` as the per-unique-key identity) while projection-only
@@ -175,6 +176,16 @@ rows client-side, sort with NdbSqlUtil comparators, and cut at the LIMIT
 via partial_sort.  Note the aggregate-path LIMIT is a print-time cutoff,
 not a scan reduction (early close is Phase N / I.14); the pass-through
 LIMIT-without-ORDER-BY path does close the scan early (plan Phase 2).
+`fs_latest` (plan Phase 4b) is the index-order counterpart: when the
+planner's ordered index delivers the ORDER BY order (ORDER BY list = the
+index columns after any leading equality-bound columns, one direction),
+the single-table pass-through scan runs with `SF_OrderBy [| SF_Descending]`
+— the NDB API merge-sorts the per-fragment ordered scans — and the drain
+streams with the Phase 2 LIMIT cutoff, so a top-N reads roughly one batch
+per fragment and never buffers.  `.explain_ronsql fs_latest` prints
+`ORDER BY: index order (SF_OrderBy | SF_Descending merge ...)`;
+`.explain_ronsql fs_history` prints `ORDER BY: client-side sort ...`
+because its WHERE-chosen index (idx_orders_custkey) is not in date order.
 
 ### Offline Feature-Store-style (`offline_fs_*`)
 

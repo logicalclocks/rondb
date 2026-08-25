@@ -1,7 +1,27 @@
 # RonSQL ORDER BY / LIMIT Support Plan
 
 **Status: Phases 0-3 SHIPPED (recorded green ×5 topology suites,
-2026-08-21).**  Phase 3 = buffered client-side sort for projection-only
+2026-08-21, committed `02e01ac07df`); Phase 4b SHIPPED (2026-08-25,
+recorded green ×5 suites + regression pass over the `_orderby` /
+`_limit` / `_single_table` families and `ronsql_index_hints`).**
+Phase 4b =
+ORDER BY served by ordered-index scan order on the single-table
+pass-through path: `plan_index_and_filter` tags a candidate whose
+index delivers the ORDER BY (list = index columns after any leading
+equality-bound columns, uniform direction) with
+`ScanConfig::index_order` + a tie-break bonus, pushes bonus-only
+candidates for order-serving indexes without WHERE bounds (beating the
+table scan), honours FORCE/USE/IGNORE hints (FORCE satisfiability
+check deferred past the ORDER BY pass), and `open_single_table_scan_op`
+sets `SF_OrderBy [| SF_Descending]` so the drain streams the
+API-merged global order through the Phase 2 LIMIT cutoff instead of
+buffering; EXPLAIN prints `ORDER BY: index order ...` vs
+`ORDER BY: client-side sort ...`.  MTR `body_passthrough_orderby_index.inc`
+poi-1..18 + P1/P2 ×5 suites (FATAL EXPLAIN greps + runtime `rows=`
+pins via the new `ronsql_phase_rows.inc`); CLI `fs_latest`
+added as the index-order benchmark (fs_history stays buffered — its
+WHERE index is not in date order).  See the Phase 4 section.**
+Phase 3 = buffered client-side sort for projection-only
 ORDER BY [+ LIMIT]: cloned-NdbRecAttr row buffering, NdbSqlUtil
 comparators, partial_sort top-N, 1M-row/256MB cap;
 `body_passthrough_orderby.inc` po-1..14 + P1 ×5 suites (first record
@@ -358,6 +378,89 @@ JOIN NULL ordering, tie-breakers.
 
 ### Phase 4 — single-table non-aggregate SELECT (new shape; unlocks fs_history)
 
+**Status: 4a (the shape itself) was delivered by
+`non_aggregate_phase_1.md`; fs_history's unlock collapsed into Phase 3;
+4b SHIPPED 2026-08-25 (recorded green ×5 suites; the pre-existing
+`_orderby` / `_limit` / `_single_table` / `ronsql_index_hints`
+baselines did not move).**
+
+**4b as shipped** (RonSQL-only; `RonSQLPreparer.{hpp,cpp}`):
+
+- **Planner** (`plan_index_and_filter`, single-table pass-through with
+  ORDER BY only): after the generic bound-based candidate generation,
+  `add_orderby_scan_config_candidates()` resolves the ORDER BY list to
+  stored columns (TABLE_COLUMN via the main scope, OUTPUT_REF alias via
+  the SELECT output — `orderby_stored_column`) and a uniform direction,
+  then per ordered index admitted by the table's hint:
+  `index_serves_orderby(index, condition_handling_map)` walks the ORDER
+  BY against the index columns, skipping an index column only if it
+  carries an equality bound (constant within the scanned range) — so
+  `WHERE a = 5 ORDER BY b` on `(a, b)` is in b order and a range-bound
+  leading column is never skipped.  An existing bound candidate that
+  serves the order gets `ScanConfig::index_order` /
+  `index_order_desc` + `ORDERBY_INDEX_BONUS` (10, a tie-breaker below
+  any bound's 100+ — **WHERE-first**: a better bound elsewhere still
+  wins and the query sorts client-side); an order-serving index with no
+  usable bound is pushed as a bonus-only candidate (all conjuncts
+  residual filters) so it beats the goodness-0 table scan.
+  FORCE/USE/IGNORE hints use the generator's semantics; the generator's
+  two FORCE satisfiability throws are deferred (`defer_force_check`)
+  past the ORDER BY pass and re-run by
+  `validate_force_hint_after_orderby()` with ORDER BY-aware messages,
+  so FORCE INDEX on an index serving only the ORDER BY (no WHERE) is
+  now accepted.  Aggregate / CTE-body / join-root generators untouched.
+- **Execution**: `open_single_table_scan_op` sets
+  `SF_OrderBy [| SF_Descending]` when `sc.index_order` (old/RecAttr API
+  auto-upgrades to `SF_OrderByFull` — index key columns added to the
+  read set, full fragment parallelism — and merge-sorts the per-fragment
+  ordered scans; NULLs lowest, so first in ASC / last in DESC = MySQL);
+  `execute_single_table_passthrough` treats `index_order` as
+  `sorting = false` and streams through the Phase 2 LIMIT cutoff +
+  early close.  Under `ORDER BY indexed_col LIMIT n` this reads roughly
+  one batch per fragment — MySQL's top-N-via-index plan; without LIMIT
+  it trades the Phase 3 buffer (and its 1M-row / 256 MB cap) for the
+  serialised merge.  Resolves the old `open_single_table_scan_op`
+  "todo Decide whether SF_OrderBy is good for performance".  The
+  aggregate single-table scan never sets the flag.
+- **EXPLAIN**: the single-table scan block prints
+  `ORDER BY: index order (SF_OrderBy[ | SF_Descending] merge of the
+  fragment scans, streamed, no client-side sort).` or
+  `ORDER BY: client-side sort (rows buffered, then sorted; LIMIT
+  applied after the sort).` (PK lookup: `single-row primary key lookup,
+  no sort needed`); a bound-less ORDER BY-driven index candidate prints
+  `Chosen for ORDER BY index order (no bounds).` + FILTERS in place of
+  the CONDITIONS block (the two `ndbrequire(... > 0)` relaxed for it).
+- **MTR**: `body_passthrough_orderby_index.inc` +
+  `ronsql_cte_dd_passthrough_orderby_index.test` ×5 suites, poi-1..18 +
+  poi-P1/P2 — equality prefix ASC/DESC, bound on the ORDER BY column,
+  no-WHERE ORDER BY-driven choice, tied-date key-only projections,
+  NULLs first/last under index order, LIMIT 260 batch boundary under
+  the ordered merge, reversed conjunct order + composite bounds, the
+  three client-side fallbacks (mixed directions, fs_history shape,
+  range-bound leading column), FORCE accepted on ORDER BY-only /
+  IGNORE → table scan, LIMIT 0, residual filter, VARCHAR collation,
+  alias target; P1/P2 pin the FORCE rejections.  All strict-order
+  diffs; EXPLAIN greps FATAL; and every case additionally pins the
+  **runtime** behaviour through the new
+  `suite/ronsql/include/ronsql_phase_rows.inc` — it POSTs the query to
+  RDRS and asserts the `x-ronsql-phases` `rows=` counter
+  (`rows_drained`): index-order cases drain exactly min(LIMIT, matches)
+  (the early close happened — poi-4 12/1500, poi-8 260/1500, poi-16
+  6/100, poi-17 62/300, poi-15 0), client-side fallbacks drain every
+  matching row (poi-10 500, poi-11 15, poi-12 1000, poi-14 1500).
+  Findings: `findings/passthrough_orderby_index.md`.
+- **CLI**: `fs_latest` registry entry (`ORDER BY o_orderdate DESC
+  LIMIT 100`, no WHERE — index order on idx_orders_orderdate);
+  `fs_history` keeps the buffered sort (its WHERE index is not in date
+  order) and says so in its comment.
+- **Deferred**: switching away from a WHERE-chosen index to an ORDER BY
+  index with the WHERE as filter (MySQL does it for small LIMITs;
+  needs selectivity); multi-range ordered scans (single-table emits
+  one range); ORDER BY on an index column whose equality is a filter
+  rather than a bound (valid order, conservatively not matched).
+
+Original sketch (kept for history):
+
 Bigger than ORDER BY/LIMIT itself, but the missing pieces are mostly
 assembly of existing machinery:
 
@@ -440,5 +543,11 @@ Remaining for this phase — **DONE with Phase 3 (2026-08-21)**:
 - `./mtr --suite=ronsql ronsql_basic` (regression) and the new
   `ronsql_cte_dd_orderby_limit` family ×5 topology suites.
 - `.bench_ronsql fs_topk` / `.bench_sql fs_topk` (Phase 3),
-  `.bench_ronsql fs_history` (Phase 4), `.explain_ronsql` showing the
-  ORDER BY / LIMIT sections and (4b) index-order vs buffered sort.
+  `.bench_ronsql fs_history` (Phase 3 buffered) and `fs_latest` (4b
+  index order), `.explain_ronsql` showing the ORDER BY / LIMIT sections
+  and the 4b `ORDER BY: index order` vs `client-side sort` line.
+- 4b: `./mtr --suite=ronsql_cte ronsql_cte_dd_passthrough_orderby_index
+  --record` (then the 4 topology suites), plus a regression pass over
+  `ronsql_cte_dd_passthrough_orderby` / `_limit` /
+  `_single_table` and `ronsql_index_hints` (FORCE-check deferral is
+  pass-through-ORDER-BY-only, so those baselines must not move).

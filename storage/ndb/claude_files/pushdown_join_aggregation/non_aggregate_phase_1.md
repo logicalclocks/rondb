@@ -42,9 +42,10 @@ accepts a query with **no aggregation and no CTE**:
   filter.
 
 Projection-only (`all_column_outputs`), no joins, no CTEs, no GROUP
-BY / HAVING.  ORDER BY / LIMIT stay rejected — they layer on top via
-`ronsql_orderby_limit_plan.md` (whose Phase 4 reduces to its 4b
-`SF_OrderBy` item once this ships).
+BY / HAVING.  ORDER BY / LIMIT were rejected at the time — they layered
+on top via `ronsql_orderby_limit_plan.md` (Phase 2 streaming LIMIT,
+Phase 3 buffered sort, Phase 4b `SF_OrderBy` index-order streaming —
+all shipped / implemented since).
 
 ## Execution mechanism (decided in the parent plan, confirmed here)
 
@@ -255,10 +256,11 @@ filter; st-11 shows table scan + filter.
 
 - `is_join_query()` routing, the aggregate single-table path, and
   everything join/CTE are untouched (W4 refactor excepted).
-- `ronsql_orderby_limit_plan.md`: its Phase 4 becomes "add ORDER BY /
-  LIMIT to this path" (buffered sort / streaming limit / 4b
-  `SF_OrderBy` index-order top-N).  `fs_history` unlocks only after
-  that — Phase 1 alone does not flip any CLI benchmark flags.
+- `ronsql_orderby_limit_plan.md`: its Phase 4 became "add ORDER BY /
+  LIMIT to this path" (Phase 2 streaming limit / Phase 3 buffered sort
+  / 4b `SF_OrderBy` index-order top-N — all delivered).  `fs_history`
+  unlocked with Phase 3 (buffered); `fs_latest` is the 4b index-order
+  benchmark.  Phase 1 alone did not flip any CLI benchmark flags.
 - Parent-plan Phase 2 (snowflake joins) is independent — it relaxes
   the same gate for join shapes and runs on NdbQueryBuilder.
 

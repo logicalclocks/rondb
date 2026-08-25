@@ -398,9 +398,9 @@ This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only
 SELECTs: single-table, left-deep join chains over real tables and/or
 complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
-scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
-GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
-broader roadmap.
+scalar CTEs, and CTE_SCAN roots — all without GROUP BY /
+expressions (ORDER BY and LIMIT are supported).  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 ===== Too big integer constant =====

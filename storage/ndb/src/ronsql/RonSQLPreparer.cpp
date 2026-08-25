@@ -622,7 +622,9 @@ RonSQLPreparer::parse()
       // are accepted on every projection-only shape.  LIMIT alone
       // streams with an early scan close; ORDER BY buffers the rows for
       // a client-side sort in the drains (LIMIT then applies post-sort
-      // via partial_sort).
+      // via partial_sort) — or, on the single-table path, streams in
+      // index order when an ordered index serves the ORDER BY
+      // (Phase 4b, ScanConfig::index_order).
       // All projection-only outputs must be plain COLUMN refs.
       bool all_column_outputs = true;
       for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
@@ -2508,9 +2510,21 @@ RonSQLPreparer::plan_index_and_filter()
   if (detect_pk_lookup()) {
     return;
   }
+  // Phase 4b (ronsql_orderby_limit_plan.md): on the single-table
+  // pass-through path an ORDER BY can be served by an ordered index
+  // (SF_OrderBy streaming) instead of the Phase 3 buffered sort.  The
+  // generator's FORCE INDEX satisfiability throws are deferred past
+  // the ORDER BY pass so a forced index that serves only the ORDER BY
+  // still counts as usable.
+  const bool passthrough_orderby =
+      (!m_is_aggregate_query &&
+       m_context.ast_root.orderby_columns != NULL);
   // Add scan config candidates, including both index scans and table scan. This
   // will guarantee that we get at least one candidate.
-  generate_scan_config_candidates();
+  generate_scan_config_candidates(/*defer_force_check=*/passthrough_orderby);
+  if (passthrough_orderby) {
+    add_orderby_scan_config_candidates();
+  }
   // Choose a scan config candidate
   Uint32 chosen_candidate = 0;
   for (Uint32 i = 1; i < m_scan_config_candidates.size(); i++) {
@@ -2521,6 +2535,9 @@ RonSQLPreparer::plan_index_and_filter()
     }
   }
   m_scan_config = &m_scan_config_candidates[chosen_candidate];
+  if (passthrough_orderby) {
+    validate_force_hint_after_orderby();
+  }
 }
 
 void
@@ -2538,12 +2555,13 @@ RonSQLPreparer::collect_toplevel_conditions(ConditionalExpression* ce)
 }
 
 void
-RonSQLPreparer::generate_scan_config_candidates()
+RonSQLPreparer::generate_scan_config_candidates(bool defer_force_check)
 {
   build_scan_config_candidates(m_indexes,
                                m_toplevel_conditions,
                                m_scan_config_candidates,
-                               m_context.ast_root.root_table);
+                               m_context.ast_root.root_table,
+                               defer_force_check);
 }
 
 bool
@@ -2611,7 +2629,8 @@ RonSQLPreparer::build_scan_config_candidates(
     DynamicArray<const NdbDictionary::Index*>& indexes,
     DynamicArray<ConditionalExpression*>& toplevel_conditions,
     DynamicArray<ScanConfig>& out_candidates,
-    const TableRef* hint)
+    const TableRef* hint,
+    bool defer_force_check)
 {
   const Uint32 num_conds = toplevel_conditions.size();
   const TableRef::HintKind hint_kind =
@@ -2627,9 +2646,10 @@ RonSQLPreparer::build_scan_config_candidates(
     out_candidates.push(ScanConfig { NULL, condition_handling_map, 0 });
   }
   // With no WHERE clause there is no usable index bound, so the table scan
-  // is the only candidate.  A FORCE hint then cannot be satisfied.
+  // is the only candidate.  A FORCE hint then cannot be satisfied (unless
+  // the caller defers the check for a later ORDER BY index pass).
   if (num_conds == 0) {
-    if (hint_kind == TableRef::HintKind::HINT_FORCE) {
+    if (hint_kind == TableRef::HintKind::HINT_FORCE && !defer_force_check) {
       throw RonSQLPermanentError(
         "FORCE INDEX cannot be used: the query has no WHERE condition that "
         "can serve as an index bound.");
@@ -2748,8 +2768,9 @@ RonSQLPreparer::build_scan_config_candidates(
   // FORCE INDEX must end up choosing one of the named indexes.  A usable
   // FORCE-named index yields goodness > 0 and therefore beats the goodness-0
   // table-scan candidate during selection, so it is enough here to verify
-  // that at least one named index produced a usable candidate.
-  if (hint_kind == TableRef::HintKind::HINT_FORCE) {
+  // that at least one named index produced a usable candidate.  (Deferred
+  // for the pass-through ORDER BY path: validate_force_hint_after_orderby.)
+  if (hint_kind == TableRef::HintKind::HINT_FORCE && !defer_force_check) {
     bool forced_usable = false;
     for (Uint32 i = 0; i < out_candidates.size(); i++) {
       if (out_candidates[i].index != NULL &&
@@ -2803,6 +2824,166 @@ RonSQLPreparer::index_named_in_hint(const NdbDictionary::Index* index,
     if (ci_equal(iname, h->index_name.c_str())) return true;
   }
   return false;
+}
+
+/*
+ * Phase 4b (ronsql_orderby_limit_plan.md) helpers: ORDER BY served by
+ * ordered-index scan order on the single-table pass-through path.
+ */
+
+// The stored column an ORDER BY entry denotes on the single-table path:
+// a TABLE_COLUMN resolves through the main scope; an OUTPUT_REF (alias)
+// goes through the SELECT output it names, which the pass-through gate
+// guarantees is a plain COLUMN.  NULL when either does not resolve to a
+// stored column (the caller then falls back to the buffered sort).
+const NdbDictionary::Column*
+RonSQLPreparer::orderby_stored_column(
+    const SelectStatement& ast_root,
+    const QueryScope::ResolvedColumnRef* resolved,
+    const OrderbyColumns* ob)
+{
+  if (resolved == NULL) return NULL;
+  Uint32 col_idx;
+  if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+    const Outputs* o = ast_root.outputs;
+    for (Uint32 i = 0; o != NULL && i < ob->output_idx; i++) o = o->next;
+    if (o == NULL || o->type != Outputs::Type::COLUMN) return NULL;
+    col_idx = o->column.col_idx;
+  } else {
+    col_idx = ob->col_idx;
+  }
+  const QueryScope::ResolvedColumnRef& R = resolved[col_idx];
+  if (R.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+    return NULL;
+  return R.dict_column;
+}
+
+bool
+RonSQLPreparer::index_serves_orderby(const NdbDictionary::Index* index,
+                                     const int* condition_handling_map,
+                                     bool& descending) const
+{
+  const OrderbyColumns* first = m_context.ast_root.orderby_columns;
+  if (index == NULL || first == NULL) return false;
+  const bool desc = !first->ascending;
+  const Uint32 ncols = index->getNoOfColumns();
+  const Uint32 num_conds = m_toplevel_conditions.size();
+  // An index column carrying an equality bound is constant across the
+  // scanned range, so it may be skipped when matching the ORDER BY list
+  // (WHERE a = 5 ORDER BY b on index (a, b) is in b order).
+  auto eq_bound = [&](Uint32 pos) -> bool {
+    if (condition_handling_map == NULL) return false;
+    for (Uint32 i = 0; i < num_conds; i++) {
+      if (condition_handling_map[i] == (int)pos &&
+          m_toplevel_conditions[i]->op == T_EQUALS)
+        return true;
+    }
+    return false;
+  };
+  Uint32 pos = 0;
+  for (const OrderbyColumns* ob = first; ob != NULL; ob = ob->next) {
+    if (ob->ascending == desc) return false;  // mixed directions
+    const NdbDictionary::Column* col = orderby_stored_column(
+        m_context.ast_root, m_main_scope.resolved_columns, ob);
+    if (col == NULL) return false;
+    const char* want = col->getName();
+    while (pos < ncols &&
+           strcmp(index->getColumn(pos)->getName(), want) != 0 &&
+           eq_bound(pos))
+      pos++;
+    if (pos >= ncols || strcmp(index->getColumn(pos)->getName(), want) != 0)
+      return false;
+    pos++;
+  }
+  descending = desc;
+  return true;
+}
+
+void
+RonSQLPreparer::add_orderby_scan_config_candidates()
+{
+  const TableRef* hint = m_context.ast_root.root_table;
+  const TableRef::HintKind hint_kind =
+      (hint != NULL) ? hint->hint_kind : TableRef::HintKind::HINT_NONE;
+  const Uint32 num_conds = m_toplevel_conditions.size();
+  for (Uint32 i = 0; i < m_indexes.size(); i++) {
+    const NdbDictionary::Index* index = m_indexes[i];
+    // Same hint semantics as build_scan_config_candidates: IGNORE skips
+    // named indexes; USE / FORCE consider only named ones.
+    if (hint_kind != TableRef::HintKind::HINT_NONE) {
+      const bool named = index_named_in_hint(index, hint);
+      if (hint_kind == TableRef::HintKind::HINT_IGNORE && named) continue;
+      if ((hint_kind == TableRef::HintKind::HINT_USE ||
+           hint_kind == TableRef::HintKind::HINT_FORCE) && !named) continue;
+    }
+    bool desc = false;
+    ScanConfig* existing = NULL;
+    for (Uint32 c = 0; c < m_scan_config_candidates.size(); c++) {
+      if (m_scan_config_candidates[c].index == index) {
+        existing = &m_scan_config_candidates[c];
+        break;
+      }
+    }
+    if (existing != NULL) {
+      // A bound-based candidate: its equality bounds may let the ORDER
+      // BY skip leading index columns.  The bonus only breaks ties
+      // between equally good bound candidates — a better bound
+      // elsewhere still wins and the query sorts client-side.
+      if (index_serves_orderby(index, existing->condition_handling_map,
+                               desc)) {
+        existing->index_order = true;
+        existing->index_order_desc = desc;
+        existing->goodness += ORDERBY_INDEX_BONUS;
+      }
+      continue;
+    }
+    // No usable bound on this index: it still beats the table scan when
+    // it delivers the ORDER BY order (full index scan in key order,
+    // every conjunct a residual filter, early close under LIMIT).
+    if (!index_serves_orderby(index, NULL, desc)) continue;
+    int* condition_handling_map =
+        m_amalloc->alloc_exc<int>(num_conds == 0 ? 1 : num_conds);
+    for (Uint32 j = 0; j < num_conds; j++) condition_handling_map[j] = -1;
+    ScanConfig sc;
+    sc.index = index;
+    sc.condition_handling_map = condition_handling_map;
+    sc.goodness = ORDERBY_INDEX_BONUS;
+    sc.index_order = true;
+    sc.index_order_desc = desc;
+    m_scan_config_candidates.push(sc);
+  }
+}
+
+void
+RonSQLPreparer::validate_force_hint_after_orderby() const
+{
+  const TableRef* hint = m_context.ast_root.root_table;
+  if (hint == NULL || hint->hint_kind != TableRef::HintKind::HINT_FORCE)
+    return;
+  for (Uint32 c = 0; c < m_scan_config_candidates.size(); c++) {
+    const ScanConfig& sc = m_scan_config_candidates[c];
+    if (sc.index != NULL && index_named_in_hint(sc.index, hint)) return;
+  }
+  bool present = false;
+  for (Uint32 i = 0; i < m_indexes.size(); i++) {
+    if (index_named_in_hint(m_indexes[i], hint)) { present = true; break; }
+  }
+  const char* nm = (hint->hint_indexes != NULL)
+                     ? hint->hint_indexes->index_name.c_str() : "";
+  std::ostringstream msg;
+  if (!present) {
+    msg << "FORCE INDEX names '" << nm << "', which is not an available "
+           "ordered index on the scanned table.";
+  } else if (m_toplevel_conditions.size() == 0) {
+    msg << "FORCE INDEX '" << nm << "' cannot be used: the query has no "
+           "WHERE condition that can serve as an index bound, and the "
+           "ORDER BY is not a prefix of the index.";
+  } else {
+    msg << "FORCE INDEX '" << nm << "' cannot be used: no WHERE condition "
+           "matches its leading column, and the ORDER BY is not a prefix "
+           "of the index.";
+  }
+  throw RonSQLPermanentError(msg.str().c_str());
 }
 
 void
@@ -6165,10 +6346,26 @@ RonSQLPreparer::open_single_table_scan_op()
   require_run(myIndexScanOp != NULL,
               "Failed getting index scan operation.");
   Uint32 scanFlags = 0;
-  // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
+  if (sc.index_order) {
+    // Phase 4b (ronsql_orderby_limit_plan.md): the index delivers the
+    // pass-through ORDER BY order.  SF_OrderBy makes the NDB API
+    // merge-sort the per-fragment ordered scans into one globally
+    // ordered stream (the RecAttr API auto-adds the index key columns
+    // to the read set and forces full fragment parallelism);
+    // SF_Descending reverses the index order incl. NULL placement
+    // (NULLs first ASC / last DESC, matching MySQL).  Under
+    // ORDER BY indexed_col LIMIT n this is MySQL's top-N-via-index
+    // plan: the drain stops at the limit and closes the scan early,
+    // having fetched roughly one batch per fragment.  Aggregate
+    // single-table scans never set index_order — the aggregator
+    // consumes every row, so the serialised merge would be pure cost.
+    scanFlags |= NdbScanOperation::SF_OrderBy;
+    if (sc.index_order_desc) scanFlags |= NdbScanOperation::SF_Descending;
+  }
   require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
                                             DBG(scanFlags))) == 0,
               "Failed to initialize index scan operation.");
+  bool any_bound = false;
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
   {
     int index_col_idx = DBG(sc.condition_handling_map[i]);
@@ -6177,6 +6374,7 @@ RonSQLPreparer::open_single_table_scan_op()
       // be applied as part of the filter instead.
       continue;
     }
+    any_bound = true;
     ConditionalExpression* ce = m_toplevel_conditions[i];
     Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
     ConditionalExpression* condition_constant = ce->args.right;
@@ -6217,9 +6415,15 @@ RonSQLPreparer::open_single_table_scan_op()
     DEB_TRACE();
   }
   DEB_TRACE();
+  // Close the (single) range only when a bound was added: end_of_bound
+  // fails with 4259 "Invalid set of range scan bounds" when no setBound
+  // preceded it, and a Phase 4b ORDER BY-driven candidate may carry no
+  // bounds at all (full index scan in key order, conjuncts as filters).
   // todo Is this necessary after removing the multirange flag?
-  require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
-              "Failed to set end of bound.");
+  if (any_bound) {
+    require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
+                "Failed to set end of bound.");
+  }
   if (has_filter)
   {
     DEB_TRACE();
@@ -6431,7 +6635,15 @@ RonSQLPreparer::execute_single_table_passthrough()
   for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
        ob != NULL; ob = ob->next)
     n_orderby++;
-  const bool sorting = (n_orderby > 0);
+  // Phase 4b: when the planner picked an ordered index that delivers
+  // the ORDER BY order (ScanConfig::index_order), the scan runs with
+  // SF_OrderBy and rows arrive already globally sorted — stream them
+  // through the Phase 2 LIMIT cutoff instead of buffering for the
+  // Phase 3 sort.  (m_scan_config is NULL on the PK-lookup arm, which
+  // returns at most one row.)
+  const bool index_order_streaming =
+      (!m_pk_lookup && m_scan_config != NULL && m_scan_config->index_order);
+  const bool sorting = (n_orderby > 0) && !index_order_streaming;
   const NdbRecAttr** attrs =
       m_amalloc->alloc_exc<const NdbRecAttr*>(num_cols + n_orderby);
 
@@ -6580,7 +6792,9 @@ RonSQLPreparer::execute_single_table_passthrough()
   // stream rows and stop at the limit, then close the scan early
   // instead of draining the remaining batches.  limit == -1 means no
   // LIMIT.  With LIMIT 0 the loop never runs, so the deferred TSV
-  // header is never printed (JSON keeps its framing).
+  // header is never printed (JSON keeps its framing).  Phase 4b's
+  // index-order streaming takes the same path: the SF_OrderBy merge
+  // delivers rows in ORDER BY order, so the cutoff is the top-N.
   const Int64 limit = m_context.ast_root.limit;
   Uint32 row_count = 0;
   int rc = 1;  // pre-set "scan complete" for the LIMIT-0 no-loop case
@@ -13099,7 +13313,6 @@ RonSQLPreparer::print()
       out << ")\nWith goodness " << sc.goodness << " it's the best of "
           << m_scan_config_candidates.size() << " options.\n";
       Uint32 cond_cnt = m_toplevel_conditions.size();
-      ndbrequire(cond_cnt > 0);
       Uint32 filter_cnt = 0;
       for (Uint32 i = 0; i < cond_cnt; i++) {
         if (sc.condition_handling_map[i] == -1) {
@@ -13107,33 +13320,65 @@ RonSQLPreparer::print()
         }
       }
       Uint32 bound_cnt = cond_cnt - filter_cnt;
-      ndbrequire(bound_cnt > 0);
-      out << "CONDITIONS (" << bound_cnt << " bound"
-          << (bound_cnt == 1 ? "" : "s");
-      if (filter_cnt > 0) {
-        out << " and " << filter_cnt << " filter"
-            << (filter_cnt == 1 ? "" : "s");
-      }
-      out << "):\n";
-      for (Uint32 i = 0; i < cond_cnt; i++) {
-        out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
-        int handling = sc.condition_handling_map[i];
-        Uint32 prefixlen;
-        if (handling == -1) {
-          out << "FILTER: ";
-          prefixlen = 11;
-        } else {
-          out << "INDEX[" << handling << "]: ";
-          prefixlen = 13;
-          if (handling > 9) {
-            prefixlen++;
-          }
+      // Phase 4b: an ORDER BY-driven candidate may carry no bounds at
+      // all (full index scan in key order, conjuncts as filters).
+      ndbrequire(bound_cnt > 0 || sc.index_order);
+      if (bound_cnt == 0) {
+        out << "Chosen for ORDER BY index order (no bounds).\n"
+            << (cond_cnt ? "FILTERS:\n" : "No filters.\n");
+        for (Uint32 i = 0; i < cond_cnt; i++) {
+          out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+          print(m_toplevel_conditions[i],
+                i + 1 == cond_cnt
+                ? LexString{"   ", 3}
+                : LexString{"│  ", 5});
         }
-        print(m_toplevel_conditions[i],
-              i + 1 == cond_cnt
-              ? LexString{"              ", prefixlen}
-              : LexString{"│             ", prefixlen + 2});
+      } else {
+        out << "CONDITIONS (" << bound_cnt << " bound"
+            << (bound_cnt == 1 ? "" : "s");
+        if (filter_cnt > 0) {
+          out << " and " << filter_cnt << " filter"
+              << (filter_cnt == 1 ? "" : "s");
+        }
+        out << "):\n";
+        for (Uint32 i = 0; i < cond_cnt; i++) {
+          out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+          int handling = sc.condition_handling_map[i];
+          Uint32 prefixlen;
+          if (handling == -1) {
+            out << "FILTER: ";
+            prefixlen = 11;
+          } else {
+            out << "INDEX[" << handling << "]: ";
+            prefixlen = 13;
+            if (handling > 9) {
+              prefixlen++;
+            }
+          }
+          print(m_toplevel_conditions[i],
+                i + 1 == cond_cnt
+                ? LexString{"              ", prefixlen}
+                : LexString{"│             ", prefixlen + 2});
+        }
       }
+    }
+  }
+  // Phase 4b (ronsql_orderby_limit_plan.md): pass-through ORDER BY
+  // strategy — index order (SF_OrderBy streaming) vs the Phase 3
+  // buffered client-side sort.  Aggregate queries sort in the
+  // ResultPrinter and report that below.
+  if (!m_is_aggregate_query && ast_root.orderby_columns != NULL &&
+      m_conf.ndb != NULL) {
+    if (m_pk_lookup) {
+      out << "ORDER BY: single-row primary key lookup, no sort needed.\n";
+    } else if (m_scan_config != NULL && m_scan_config->index_order) {
+      out << "ORDER BY: index order (SF_OrderBy"
+          << (m_scan_config->index_order_desc ? " | SF_Descending" : "")
+          << " merge of the fragment scans, streamed, no client-side "
+             "sort).\n";
+    } else {
+      out << "ORDER BY: client-side sort (rows buffered, then sorted; "
+             "LIMIT applied after the sort).\n";
     }
   }
 
