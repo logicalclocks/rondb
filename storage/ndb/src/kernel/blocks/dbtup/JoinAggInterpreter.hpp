@@ -279,6 +279,15 @@ class JoinAggInterpreter : public AggInterpreterBase {
    */
   void setCteMode(bool v) { m_cte_mode = v; }
 
+  /* Phase 6-3: the CURRENT leaf's accumulator count for the JIT
+   * dispatch. 0 = single-leaf (use m_n_agg_results, which the
+   * multi-leaf setup overrides to the COMBINED total via
+   * setTotalAggResults — passing that into dbtup_jit_invoke would
+   * read/write past the leaf's slice of the group record). Set by
+   * the per-row leaf switch alongside m_prog/m_acc_offset/
+   * m_jit_entry. */
+  Uint32 m_jit_leaf_n_agg = 0;
+
   /**
    * Multi-leaf aggregation support.
    *

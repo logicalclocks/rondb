@@ -2851,148 +2851,147 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 #else
   const bool fatal_compile_failure = false;
 #endif
-  if (dbtup_jit_enabled() && state->m_num_leaves == 1) {
+  if (dbtup_jit_enabled()) {
     jam();
     /* First JIT activity on this node may be a join-agg compile — make
      * sure the JIT-CRASH signal interposer is installed (idempotent). */
     dbtup_jit_install_crash_handler();
-    LeafProgram &lp = state->m_leaf_programs[0];
-    Uint32 bc_off = lp.m_agg_prog_start_pos;
-    if (bc_off < lp.m_agg_program_len) {
-      Uint32 bc_words = lp.m_agg_program_len - bc_off;
-#ifdef DEBUG_JIT
-      if (dump_jit_program) {
-        g_eventLogger->info("[RONDB-1056] ERROR_INSERT 5119: "
-                            "dumping JIT setup for key=%u", key);
-        ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
-                                  lp.m_agg_program + bc_off, bc_words,
-                                  ndb_jit_event_logger, nullptr);
-      }
-#endif
-      Program p;
-      JitBridgeError berr;
-      /*
-       * Two-stage compiler pipeline:
-       *
-       * 1. ndb_jit_bridge_translate() understands NDB aggregation bytecode
-       *    (kOp* word encoding, embedded normal-interpreter blocks, NDB-side
-       *    admission/reject reasons) and lowers it into the normalized
-       *    internal Program/Op[] form used by the JIT engine.
-       *
-       * 2. jit1_compile() is deliberately NDB-agnostic. It validates the
-       *    normalized Program, copies machine-code stencils, patches operand
-       *    holes, seals executable memory, and returns a callable entry point.
-       *
-       * The stencils copied by jit1_compile() are generated offline:
-       *
-       *   a. stencils_src.c is compiled to ordinary object code using the
-       *      pinned upstream clang version.
-       *   b. extract_stencils reads that object file, extracts each op_*
-       *      function's machine-code bytes and patch holes, and writes the
-       *      checked-in stencils_x86_64.h / stencils_arm64.h headers.
-       *   c. Normal ndbd builds include those generated headers. At setup
-       *      time jit1_compile() uses copy-and-patch on the checked-in byte
-       *      arrays; it does not invoke clang or the extractor.
-       */
-      JitBridgeReason brc =
-          ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
-                                    bc_words, &p, &berr);
-      if (brc == JIT_BRIDGE_OK) {
-#ifdef DEBUG_JIT
+    /* Phase 6-3: EVERY leaf compiles independently — the per-row leaf
+     * switch in processRecWithLinkedAttrs installs the current leaf's
+     * entry and accumulator count, so a leaf that fails admission
+     * leaves only ITS OWN entry null (that leaf's rows run the
+     * interpreter; the others stay native). Under ERROR_INSERT 5120
+     * any leaf's bridge/compile reject is fatal — the old "skip
+     * multi-leaf entirely" arm is gone. */
+    for (Uint32 jit_leaf = 0; jit_leaf < state->m_num_leaves; jit_leaf++) {
+      LeafProgram &lp = state->m_leaf_programs[jit_leaf];
+      Uint32 bc_off = lp.m_agg_prog_start_pos;
+      if (bc_off < lp.m_agg_program_len) {
+        Uint32 bc_words = lp.m_agg_program_len - bc_off;
+  #ifdef DEBUG_JIT
         if (dump_jit_program) {
-          ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
+          g_eventLogger->info("[RONDB-1056] ERROR_INSERT 5119: "
+                              "dumping JIT setup for key=%u leaf=%u",
+                              key, jit_leaf);
+          ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
+                                    lp.m_agg_program + bc_off, bc_words,
+                                    ndb_jit_event_logger, nullptr);
         }
-#endif
-        /* Compile into the node-global code-memory manager (free-capable,
-         * shared). Freed by jit1_free at JOIN_AGG teardown (Slice 3b). */
-        Jit1Timing jt;
-        Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
-        if (jp != nullptr) {
-          dbtup_jit_note_compile_ns(jt.total_ns);
-          lp.m_jit_prog  = jp;
-          lp.m_jit_entry = jit1_entry(jp);
-          DEB_JIT_IF(log_jit_decision,
-                     ("[RONDB-1056] JIT compiled program key=%u "
-                      "leaf 0 (%u bytecode words, %zu bytes emitted)",
-                      key, bc_words, jit1_emitted_size(jp)));
+  #endif
+        Program p;
+        JitBridgeError berr;
+        /*
+         * Two-stage compiler pipeline:
+         *
+         * 1. ndb_jit_bridge_translate() understands NDB aggregation bytecode
+         *    (kOp* word encoding, embedded normal-interpreter blocks, NDB-side
+         *    admission/reject reasons) and lowers it into the normalized
+         *    internal Program/Op[] form used by the JIT engine.
+         *
+         * 2. jit1_compile() is deliberately NDB-agnostic. It validates the
+         *    normalized Program, copies machine-code stencils, patches operand
+         *    holes, seals executable memory, and returns a callable entry point.
+         *
+         * The stencils copied by jit1_compile() are generated offline:
+         *
+         *   a. stencils_src.c is compiled to ordinary object code using the
+         *      pinned upstream clang version.
+         *   b. extract_stencils reads that object file, extracts each op_*
+         *      function's machine-code bytes and patch holes, and writes the
+         *      checked-in stencils_x86_64.h / stencils_arm64.h headers.
+         *   c. Normal ndbd builds include those generated headers. At setup
+         *      time jit1_compile() uses copy-and-patch on the checked-in byte
+         *      arrays; it does not invoke clang or the extractor.
+         */
+        JitBridgeReason brc =
+            ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
+                                      bc_words, &p, &berr);
+        if (brc == JIT_BRIDGE_OK) {
+  #ifdef DEBUG_JIT
+          if (dump_jit_program) {
+            ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
+          }
+  #endif
+          /* Compile into the node-global code-memory manager (free-capable,
+           * shared). Freed by jit1_free at JOIN_AGG teardown (Slice 3b). */
+          Jit1Timing jt;
+          Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
+          if (jp != nullptr) {
+            dbtup_jit_note_compile_ns(jt.total_ns);
+            lp.m_jit_prog  = jp;
+            lp.m_jit_entry = jit1_entry(jp);
+            DEB_JIT_IF(log_jit_decision,
+                       ("[RONDB-1056] JIT compiled program key=%u "
+                        "leaf %u (%u bytecode words, %zu bytes emitted)",
+                        key, jit_leaf, bc_words, jit1_emitted_size(jp)));
+          } else {
+            const Jit1AdmitError *aerr = jit1_last_admit_error();
+            dbtup_jit_note_fallback("join-agg compile", (int)aerr->reason,
+                                    aerr->offending_kind);
+            DEB_JIT_IF(log_jit_decision,
+                       ("[RONDB-1056] JIT admission rejected key=%u "
+                        "leaf=%u reason=%d pc=%u target=%u kind=%u (%s) - "
+                        "interpreter fallback",
+                        key, jit_leaf, (int)aerr->reason,
+                        (unsigned)aerr->offending_pc,
+                        (unsigned)aerr->offending_target,
+                        (unsigned)aerr->offending_kind,
+                        ndb_jit_bridge_jit_op_name(aerr->offending_kind)));
+            if (fatal_compile_failure) {
+              g_eventLogger->error(
+                  "ERROR_INSERT 5120: JIT admission rejected key=%u "
+                  "leaf=%u reason=%d pc=%u target=%u kind=%u (%s). Aborting.",
+                  key, jit_leaf, (int)aerr->reason,
+                  (unsigned)aerr->offending_pc,
+                  (unsigned)aerr->offending_target,
+                  (unsigned)aerr->offending_kind,
+                  ndb_jit_bridge_jit_op_name(aerr->offending_kind));
+              abort();
+            }
+          }
         } else {
-          const Jit1AdmitError *aerr = jit1_last_admit_error();
-          dbtup_jit_note_fallback("join-agg compile", (int)aerr->reason,
-                                  aerr->offending_kind);
+          dbtup_jit_note_fallback("join-agg bridge", (int)brc,
+                                  berr.offending_op);
+          Uint32 ow = (berr.offending_word < bc_words)
+                         ? (lp.m_agg_program + bc_off)[berr.offending_word]
+                         : 0u;
           DEB_JIT_IF(log_jit_decision,
-                     ("[RONDB-1056] JIT admission rejected key=%u "
-                      "reason=%d pc=%u target=%u kind=%u (%s) - "
-                      "interpreter fallback",
-                      key, (int)aerr->reason,
-                      (unsigned)aerr->offending_pc,
-                      (unsigned)aerr->offending_target,
-                      (unsigned)aerr->offending_kind,
-                      ndb_jit_bridge_jit_op_name(aerr->offending_kind)));
+                     ("[RONDB-1056] JIT bridge rejected key=%u "
+                      "leaf=%u reason=%d (%s) word=%u op=%u (%s) value=0x%08x "
+                      "- interpreter fallback",
+                      key, jit_leaf, (int)brc,
+                      ndb_jit_bridge_reason_name(brc),
+                      (unsigned)berr.offending_word,
+                      (unsigned)berr.offending_op,
+                      ndb_jit_bridge_agg_op_name(berr.offending_op),
+                      ow));
           if (fatal_compile_failure) {
+  #ifdef DEBUG_JIT
+            if (!dump_jit_program) {
+              ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
+                                        lp.m_agg_program + bc_off, bc_words,
+                                        ndb_jit_event_logger, nullptr);
+            }
+  #endif
             g_eventLogger->error(
-                "ERROR_INSERT 5120: JIT admission rejected key=%u "
-                "reason=%d pc=%u target=%u kind=%u (%s). Aborting.",
-                key, (int)aerr->reason,
-                (unsigned)aerr->offending_pc,
-                (unsigned)aerr->offending_target,
-                (unsigned)aerr->offending_kind,
-                ndb_jit_bridge_jit_op_name(aerr->offending_kind));
+                "ERROR_INSERT 5120: JIT bridge rejected key=%u "
+                "leaf=%u reason=%d (%s) word=%u op=%u (%s) value=0x%08x. "
+                "Aborting.",
+                key, jit_leaf, (int)brc, ndb_jit_bridge_reason_name(brc),
+                (unsigned)berr.offending_word,
+                (unsigned)berr.offending_op,
+                ndb_jit_bridge_agg_op_name(berr.offending_op),
+                ow);
             abort();
           }
         }
-      } else {
-        dbtup_jit_note_fallback("join-agg bridge", (int)brc,
-                                berr.offending_op);
-        Uint32 ow = (berr.offending_word < bc_words)
-                       ? (lp.m_agg_program + bc_off)[berr.offending_word]
-                       : 0u;
-        DEB_JIT_IF(log_jit_decision,
-                   ("[RONDB-1056] JIT bridge rejected key=%u "
-                    "reason=%d (%s) word=%u op=%u (%s) value=0x%08x "
-                    "- interpreter fallback",
-                    key, (int)brc,
-                    ndb_jit_bridge_reason_name(brc),
-                    (unsigned)berr.offending_word,
-                    (unsigned)berr.offending_op,
-                    ndb_jit_bridge_agg_op_name(berr.offending_op),
-                    ow));
-        if (fatal_compile_failure) {
-#ifdef DEBUG_JIT
-          if (!dump_jit_program) {
-            ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
-                                      lp.m_agg_program + bc_off, bc_words,
-                                      ndb_jit_event_logger, nullptr);
-          }
-#endif
-          g_eventLogger->error(
-              "ERROR_INSERT 5120: JIT bridge rejected key=%u "
-              "reason=%d (%s) word=%u op=%u (%s) value=0x%08x. Aborting.",
-              key, (int)brc, ndb_jit_bridge_reason_name(brc),
-              (unsigned)berr.offending_word,
-              (unsigned)berr.offending_op,
-              ndb_jit_bridge_agg_op_name(berr.offending_op),
-              ow);
-          abort();
-        }
+      } else if (fatal_compile_failure) {
+        g_eventLogger->error(
+            "ERROR_INSERT 5120: JIT setup found no aggregation bytecode "
+            "for key=%u leaf=%u (start=%u len=%u). Aborting.",
+            key, jit_leaf, (unsigned)bc_off, (unsigned)lp.m_agg_program_len);
+        abort();
       }
-    } else if (fatal_compile_failure) {
-      g_eventLogger->error(
-          "ERROR_INSERT 5120: JIT setup found no aggregation bytecode "
-          "for key=%u (start=%u len=%u). Aborting.",
-          key, (unsigned)bc_off, (unsigned)lp.m_agg_program_len);
-      abort();
-    }
-  } else {
-    DEB_JIT_IF(log_jit_decision,
-               ("[RONDB-1056] JIT skipped (multi-leaf, %u leaves) "
-                "key=%u — interpreter fallback",
-                state->m_num_leaves, key));
-    if (fatal_compile_failure) {
-      g_eventLogger->error(
-          "ERROR_INSERT 5120: JIT skipped for multi-leaf setup "
-          "(%u leaves) key=%u. Aborting.",
-          state->m_num_leaves, key);
-      abort();
     }
   }
 

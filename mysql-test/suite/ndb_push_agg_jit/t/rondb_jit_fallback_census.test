@@ -170,9 +170,8 @@ SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_string_fel
 --echo # DblqhProxy::execJOIN_AGG_SETUP_REQ: bridge/compile rejects DO
 --echo # bump programs_fallback, but successful compiles do NOT bump
 --echo # programs_compiled (direct jit1_compile, no reuse cache until
---echo # 6-4), and a multi-leaf compile-gate skip bumps NOTHING — so on
---echo # these rows 0 proves "no reject", not "compiled"; must-JIT
---echo # proof stays with the 4060 canaries.
+--echo # 6-4) — so on these rows 0 proves "no reject", not "compiled";
+--echo # must-JIT proof stays with the 4060 canaries.
 
 CREATE TABLE tj_parent (
   pk  BIGINT NOT NULL,
@@ -214,11 +213,12 @@ SELECT SUM(c.amount), COUNT(*) FROM tj_parent p LEFT JOIN tj_c1 c ON c.parent_id
 SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS outer_join_sum_fell_back;
 
 --echo # star_two_leaf: aggregates over TWO child tables in one query.
---echo # If this pushes as a multi-leaf setup, the JIT compile gate
---echo # (m_num_leaves == 1) skips it WITHOUT bumping any counter —
---echo # 0 here documents that blind spot until 6-3 lifts the gate and
---echo # 6-4 makes join-agg compiles countable. The star fleet
---echo # (testStarJoinAgg*) is the definitive multi-leaf exercise.
+--echo # Since Phase 6-3 every leaf of a multi-leaf setup compiles
+--echo # independently (the old compile-gate skip is gone); note the SQL
+--echo # planner itself never emits multi-leaf setups, so this row probes
+--echo # whatever single-leaf shape the planner produces. The definitive
+--echo # multi-leaf exercises are testJoinAggJit Test 7 (must-JIT under
+--echo # 4060) and the testStarJoinAgg* fleet.
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(c1.amount), SUM(c2.qty)
 FROM tj_parent p

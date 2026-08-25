@@ -24,7 +24,15 @@ runs at --parallel=10 hit a machine-wide connect blip (4 workers, 4
 ports, one 11 s window: curl status 7 / mgm connect retries) —
 infra, not engine; --parallel=6 was clean. Use reduced parallelism
 for the ronsql_cte suites on this machine.)
-Remaining slices 6-3 → 6-4 execute with the usual
+6-3 DONE & VERIFIED (2026-08-25 — all tests passed: testJoinAggJit
+Test 7 green under 4060 [2-leaf star, leaf B at acc_offset 1], the
+star fleet now dispatches native per leaf against its recorded
+baselines in the jit arm, delta pins unmoved, OFF arm untouched, CTE
+census green; host tests unchanged at 141/34 — no bridge/stencil/glue
+changes were needed. The last program-shape exclusion is gone: every
+aggregation program the planner or API can push is JIT-eligible; the
+"JIT skipped (multi-leaf)" log line no longer exists.)
+Remaining slice 6-4 executes with the usual
 implement → verify → commit cycle; 6-5 is parked (demand-driven);
 6-6 threads through every slice.**
 
@@ -291,7 +299,7 @@ dumps):**
 |---|---|---|---|
 | `testJoinAgg{,NdbApi,Spj,ScanScan,Idempotency}` | join-agg single-leaf | compile (the deliberate-fallback canary is now testJoinAggJit Test 4) | green ×2 arms; the expected kOpSetRegNull reject (r=1 d=30) observed |
 | `testOuterJoinAgg{,NdbApi}`, `testMultiOuterJoinAggNdbApi` | join-agg single-leaf | compile; NULL-extended rows interpreter per-row | green ×2 arms; no attributed rejects |
-| `testStarJoinAgg{,NdbApi,Spj}` | multi-leaf | compile-gate skip, SILENT (no counter) — 6-3 territory | green ×2 arms; skip stays invisible until 6-3/6-4 |
+| `testStarJoinAgg{,NdbApi,Spj}` | multi-leaf | per-leaf compile + dispatch since 6-3 (gate removed) | green ×2 arms; post-6-3 the jit arm runs these native per leaf |
 | `testCte{Dbtc,Lookup,NdbApi,NdbApiFilter,NdbApiOuterJoin,Phase6}` | CTE producer + consumer setups | compile (linked-column programs); CTE WHERE filters never JIT (structural, 6-5) | green ×2 arms; unattributed fleet rejects (see harvest) to pin in 6-2 |
 | `testCaseAgg` | join-agg embedded CASE | compile (5A/5J coverage) | green ×2 arms |
 | `testVarcharMinMax` | string MIN/MAX | compile (5F-1) | green ×2 arms |
@@ -509,7 +517,7 @@ the JIT; each pinned by the instruments above rather than 4060):
 | Register index ≥ `BC_MAX_REGS` (8) | "aggregation bridge reason=5" in the harvest; exact tests fall out of the recorded deltas | bridge admission boundary | raise the cap if the deltas show real demand |
 | Scan filters beyond the Phase 7 v1 subset (e.g. `READ_ATTR_INTO_REG`) | fleet + mysqld WHERE shapes | Phase 7 v1 lowers NULL-branch + comparison predicates only | durable note; INELIGIBLE state is 4060-exempt |
 | NULL-extended outer-join rows | any outer-join aggregation | only the interpreter can synthesize NULL loads for the missing tuple; 4060-exempt via null `block_tup` | permanent (per-row) |
-| Multi-leaf (star) setups | `testStarJoinAgg*`, star/snowflake CTE bodies | compile-gate skip; `m_jit_entry==0` would abort under 4060 — never arm 4060 near star shapes | 6-3 removes |
+| Multi-leaf (star) setups | `testStarJoinAgg*`, star/snowflake CTE bodies | ~~compile-gate skip~~ REMOVED by 6-3: every leaf compiles, the leaf switch installs entry + count; testJoinAggJit Test 7 pins it under 4060 | resolved (6-3) |
 | CTE WHERE filters | consumer-side filtering | structural: no `scan_rec`, jump-table interpreter only | 6-5 (parked) |
 | 1-word `EXIT_OK_LAST` internal scans | NdbIndexStat / listEvents | INELIGIBLE since 6-0 (nothing to speed up; not counted as fallback) | permanent |
 
@@ -655,6 +663,70 @@ fact-plus-dimensions pattern, the `testStarJoinAgg*` fleet, the
 snowflake/star CTE bodies — runs native. After this slice, every
 aggregation program shape the planner can push is JIT-eligible; the
 exclusion list shrinks to per-row conditions only.
+
+**Implemented (2026-08-25).** Smaller than planned, because the audit
+found the runtime already 90% multi-leaf-ready:
+- **The group prologue already offsets `agg_res_ptr` by
+  `m_acc_offset` BEFORE the dispatch site** (both grouped arms and
+  the scalar arm, `JoinAggInterpreter.cpp:542/575/578`), and the
+  invoke glue uses only its parameters — so the JIT sees the leaf's
+  slice with leaf-local indices automatically, and the interpreter
+  re-run on a per-row fallback uses the identical pointer.
+- The only two real gaps: the per-row leaf switch did not install
+  the leaf's entry, and the dispatch passed `m_n_agg_results` — the
+  COMBINED total in multi-leaf mode (the glue's copy/writeback loops
+  would overrun the leaf's slice and, for the last leaf, the group
+  record). Fix: `m_jit_entry` + new `m_jit_leaf_n_agg` (leaf-local
+  count; 0 = single-leaf → `m_n_agg_results`) join both leaf
+  switches (`processRecWithLinkedAttrs` and `processNullExtendedRow`
+  — the latter never dispatches, but a stale entry must not survive),
+  and the dispatch passes the leaf-aware count.
+- `DblqhProxy`: the leaf-0 block became a per-leaf loop (`jit_leaf`
+  over `m_num_leaves`); the "JIT skipped (multi-leaf)" arm and its
+  5120 abort are GONE — 5120 now means "any leaf's bridge/compile
+  reject is fatal", per leaf, and all diagnostics carry the leaf
+  index. A leaf that fails admission leaves only its own entry null
+  (mixed JIT/interpreter per leaf is safe: each row runs exactly one
+  leaf). Teardown already freed all leaves ("uncompiled leaves are
+  fine") — no change needed.
+- **No stencil, bridge, or glue changes** — each leaf program is an
+  ordinary program to the compiler; multi-leaf-ness is purely a
+  runtime placement concern, as predicted.
+- Must-JIT proof: NEW `testJoinAggJit` **Test 7** — a 2-leaf star
+  SUM (leaf B at `m_acc_offset` 1) under 4060; wrong entry/count
+  selection would corrupt or overrun the accumulator slices and fail
+  the sum checks, and any leaf left uncompiled aborts a node. The SQL
+  planner never emits multi-leaf setups (checked:
+  `ha_ndbcluster_push_agg.cc` has no multi-leaf emission), so the
+  census `star_two_leaf` row was re-annotated and the NDB API is the
+  proof surface. Grouped multi-leaf correctness rides the
+  `testStarJoinAgg*` fleet, which under `ndb_push_agg_jit` now
+  dispatches native per leaf against its recorded baselines (and
+  stays interpreter-only under `ndb_push_agg` — the differential
+  covers the new path automatically).
+- Observed while auditing (pre-existing, NOT touched): the string
+  sidecar `m_string_results[]` is indexed by the instruction's
+  leaf-LOCAL `agg_index` in the shared kernels while accumulator
+  slots use the offset base — a multi-leaf program with string
+  MIN/MAX on leaf > 0 would collide sidecar slots between leaves ON
+  THE INTERPRETER TOO. The JIT calls the same kernels with the same
+  inputs (bug-compatible parity); flagged for the pushdown team.
+
+**Verification (Mikael runs).**
+- Rebuild (data node + `testJoinAggJit`).
+- Host tests unchanged (`bridge_tests` 141, `coldcall_tests` 34 — no
+  bridge/glue changes).
+- `./mtr --suite=ndb_push_agg_jit` — the star fleet now runs native
+  per leaf against its recorded baselines; `testJoinAggJit` runs
+  Test 7 under 4060; delta pins must not move (compiles are not
+  fallbacks).
+- `./mtr --suite=ndb_push_agg` — the OFF arm proves the interpreter
+  path is untouched.
+- `./mtr --suite=ronsql_cte ronsql_cte_jit_census` (--parallel=6 for
+  full-suite runs on this machine).
+
+**Exit.** Test 7 green under 4060; both arms green with unmoved
+pins; the "JIT skipped (multi-leaf)" log line no longer exists.
 
 **Verification.** Host tests (bridge unchanged, coldcall for any new
 glue seams); `testStarJoinAgg`, `testStarJoinAggNdbApi`,

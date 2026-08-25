@@ -107,8 +107,28 @@ census now proves the CTE pipeline runs native. Also: 18 arming
 tests converted to per-test mgm log files (check-testcase state);
 ronsql_cte full-suite runs on this machine need reduced parallelism
 (--parallel=6 clean; 10 workers hit a machine-wide connect blip).
-NEXT: 6-3 (multi-leaf/star-join JIT — the main implementation
-slice).
+**6-3 DONE & VERIFIED (2026-08-25 — all tests passed):** multi-leaf
+(star schema) JIT. The audit found the runtime 90% ready — the group
+prologue already offsets agg_res_ptr by m_acc_offset BEFORE dispatch
+and the invoke glue is parameter-pure, so only two gaps existed: the
+per-row leaf switch did not install the leaf's compiled entry, and
+dispatch passed the COMBINED accumulator total (slice overrun for
+leaf > 0). Fix: m_jit_entry + new m_jit_leaf_n_agg join both leaf
+switches; dispatch passes the leaf-aware count; DblqhProxy's leaf-0
+compile block became a per-leaf loop; the "JIT skipped (multi-leaf)"
+arm is GONE and 5120 now means "any leaf's reject is fatal", per
+leaf. NO stencil/bridge/glue changes. Must-JIT proof: NEW
+testJoinAggJit Test 7 (2-leaf star SUM under 4060; leaf B at
+acc_offset 1 — wrong entry/count selection would corrupt the slices).
+The SQL planner never emits multi-leaf (verified), so the NDB API is
+the proof surface; grouped multi-leaf correctness rides the
+testStarJoinAgg* fleet, now native per leaf in the jit arm against
+recorded baselines. Flagged pre-existing (untouched): the string
+sidecar m_string_results[] is leaf-LOCAL-indexed in the shared
+kernels while accumulator slots use the offset base — multi-leaf
+string MIN/MAX would collide sidecar slots on the interpreter too;
+the JIT is bug-compatible (same kernels). NEXT: 6-4 (join-agg
+compiles through the reuse cache — the last unparked Phase 6 slice).
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

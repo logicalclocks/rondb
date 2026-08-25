@@ -89,6 +89,9 @@ static const char *T5_PARENT = "jit5_parent";
 static const char *T5_CHILD  = "jit5_child";
 static const char *T6_PARENT = "jit6_parent";
 static const char *T6_CHILD  = "jit6_child";
+static const char *T7_ROOT   = "jit7_root";
+static const char *T7_LEAF_A = "jit7_leaf_a";
+static const char *T7_LEAF_B = "jit7_leaf_b";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -1469,6 +1472,257 @@ testJitCaseSkipOffset(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 7: JIT star 2-leaf SUM (Phase 6-3 multi-leaf)                  */
+/*                                                                     */
+/* Two aggregation leaves on one root scan — a star. Before 6-3 the    */
+/* compile gate (m_num_leaves == 1) skipped multi-leaf setups          */
+/* entirely and 4060 could never be armed near a star shape. Now      */
+/* every leaf compiles independently and the per-row leaf switch      */
+/* installs the current leaf's entry + accumulator count; leaf B's    */
+/* accumulator sits at m_acc_offset 1, so a green run under 4060      */
+/* proves BOTH leaves executed native code against the correct        */
+/* accumulator slices (running leaf 0's code for leaf B rows, or the  */
+/* combined count, would corrupt/overrun the slice and fail the sum   */
+/* checks).                                                            */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT SUM(a.val_a), SUM(b.val_b)                                 */
+/*   FROM jit7_root r                                                  */
+/*   JOIN jit7_leaf_a a ON a.root_id = r.id                            */
+/*   JOIN jit7_leaf_b b ON b.root_id = r.id                            */
+/* ------------------------------------------------------------------ */
+
+static int
+createT7Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS jit7_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS jit7_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS jit7_root");
+
+  if (sqlExec(conn,
+        "CREATE TABLE jit7_root ("
+        "  id INT NOT NULL PRIMARY KEY"
+        ") ENGINE=NDB") != 0) return -1;
+  if (sqlExec(conn,
+        "CREATE TABLE jit7_leaf_a ("
+        "  root_id INT NOT NULL PRIMARY KEY,"
+        "  val_a BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  if (sqlExec(conn,
+        "CREATE TABLE jit7_leaf_b ("
+        "  root_id INT NOT NULL PRIMARY KEY,"
+        "  val_b BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  return 0;
+}
+
+static int
+insertT7Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO jit7_root VALUES (1),(2),(3),(4),(5)") != 0) return -1;
+  if (sqlExec(conn,
+        "INSERT INTO jit7_leaf_a VALUES "
+        "(1,10),(2,20),(3,30),(4,40),(5,50)") != 0) return -1;
+  if (sqlExec(conn,
+        "INSERT INTO jit7_leaf_b VALUES "
+        "(1,1),(2,2),(3,3),(4,4),(5,5)") != 0) return -1;
+  return 0;
+}
+
+static int
+dropT7Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS jit7_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS jit7_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS jit7_root");
+  return 0;
+}
+
+static int
+testJitStarTwoLeafSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
+                      Int64 expectedSumA, Int64 expectedSumB)
+{
+  const char *testName = "Test 7: JIT star 2-leaf SUM";
+  printf("%s ... ", testName);
+  fflush(stdout);
+
+  if (verifyScalarWithMysql(conn, testName,
+        "SELECT SUM(a.val_a), SUM(b.val_b) "
+        "FROM jit7_root r "
+        "JOIN jit7_leaf_a a ON a.root_id = r.id "
+        "JOIN jit7_leaf_b b ON b.root_id = r.id",
+        {expectedSumA, expectedSumB}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T7_ROOT);
+  dict->invalidateTable(T7_LEAF_A);
+  dict->invalidateTable(T7_LEAF_B);
+  const NdbDictionary::Table *rootTab = dict->getTable(T7_ROOT);
+  const NdbDictionary::Table *leafATab = dict->getTable(T7_LEAF_A);
+  const NdbDictionary::Table *leafBTab = dict->getTable(T7_LEAF_B);
+  if (rootTab == nullptr || leafATab == nullptr || leafBTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* One aggregation program per leaf; leaf B's accumulator lands at
+   * m_acc_offset 1 in the combined layout. */
+  NdbAggregator aggA(leafATab);
+  if (!aggA.LoadColumn("val_a", 0) ||
+      !aggA.Sum(0, 0) ||
+      !aggA.Finalize()) {
+    printf("FAILED (aggA program: %s)\n", aggA.GetError().err_msg_);
+    return -1;
+  }
+  NdbAggregator aggB(leafBTab);
+  if (!aggB.LoadColumn("val_b", 0) ||
+      !aggB.Sum(0, 0) ||
+      !aggB.Finalize()) {
+    printf("FAILED (aggB program: %s)\n", aggB.GetError().err_msg_);
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4060) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4060))\n");
+    return -1;
+  }
+  bool mustCompileSet = true;
+  auto clearMustCompile = [&]() {
+    if (mustCompileSet) {
+      restarter.insertErrorInAllNodes(0);
+      mustCompileSet = false;
+      V("  ERROR_INSERT cleared\n");
+    }
+  };
+  V("\n  ERROR_INSERT 4060 set (JIT fallback is fatal, both leaves)\n");
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *joinKeyA[] = {
+    qb->linkedValue(rootOp, "id"),
+    nullptr
+  };
+  NdbQueryOptions optsA;
+  optsA.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsA.setAggregation(aggA);
+  const NdbQueryLookupOperationDef *leafAOp =
+      qb->readTuple(leafATab, joinKeyA, &optsA);
+  if (leafAOp == nullptr) {
+    printf("FAILED (readTuple leaf_a: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *joinKeyB[] = {
+    qb->linkedValue(rootOp, "id"),
+    nullptr
+  };
+  NdbQueryOptions optsB;
+  optsB.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsB.setAggregation(aggB);
+  const NdbQueryLookupOperationDef *leafBOp =
+      qb->readTuple(leafBTab, joinKeyB, &optsB);
+  if (leafBOp == nullptr) {
+    printf("FAILED (readTuple leaf_b: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    clearMustCompile();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    clearMustCompile();
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  clearMustCompile();
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result sumARes = rec.FetchAggregationResult();
+  Int64 actualSumA = sumARes.data_int64();
+  NdbAggregator::Result sumBRes = rec.FetchAggregationResult();
+  Int64 actualSumB = sumBRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actualSumA != expectedSumA || actualSumB != expectedSumB) {
+    printf("FAILED (expected (%lld, %lld), got (%lld, %lld))\n",
+           (long long)expectedSumA, (long long)expectedSumB,
+           (long long)actualSumA, (long long)actualSumB);
+    return -1;
+  }
+
+  printf("OK (sum_a=%lld, sum_b=%lld, 2 leaves, JIT required)\n",
+         (long long)actualSumA, (long long)actualSumB);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1494,6 +1748,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 3: return "Test 3: JIT linked NULL filter ... OK (sum=900, JIT required)";
     case 5: return "Test 5: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)";
     case 6: return "Test 6: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)";
+    case 7: return "Test 7: JIT star 2-leaf SUM ... OK (sum_a=150, sum_b=15, 2 leaves, JIT required)";
     default: return nullptr;
   }
 }
@@ -1675,6 +1930,18 @@ int main(int argc, char **argv)
               exitCode = 1;
             }
             dropT6Tables(conn);
+          }
+
+          /* Test 7: star 2-leaf SUM — Phase 6-3 multi-leaf JIT. */
+          if (shouldRun(7)) {
+            NdbRestarter restarter(connectString);
+            if (createT7Tables(conn) == 0 && insertT7Data(conn) == 0) {
+              if (testJitStarTwoLeafSum(&ndb, conn, restarter, 150, 15) != 0)
+                exitCode = 1;
+            } else {
+              exitCode = 1;
+            }
+            dropT7Tables(conn);
           }
         }
         mysql_close(conn);

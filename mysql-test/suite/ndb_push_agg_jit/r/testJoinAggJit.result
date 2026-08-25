@@ -9,6 +9,7 @@ Test 3: JIT linked NULL filter ... OK (sum=900, JIT required)
 Test 4: Unsupported JIT shape falls back cleanly ... OK (sum=0 via interpreter fallback)
 Test 5: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)
 Test 6: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
+Test 7: JIT star 2-leaf SUM ... OK (sum_a=150, sum_b=15, 2 leaves, JIT required)
 
 All tests PASSED
 PASSED

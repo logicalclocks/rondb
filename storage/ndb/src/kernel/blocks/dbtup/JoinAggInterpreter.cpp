@@ -1059,9 +1059,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
    * the group prologue above has already resolved agg_res_ptr to this
    * row's group record, so the JIT'd program runs against the right
    * slots (per-group SQL-NULL semantics come from the glue's
-   * value_updated writeback). Single-leaf only (compile gate
-   * m_num_leaves == 1), so m_acc_offset-shifted multi-leaf layouts
-   * never reach a compiled entry.
+   * value_updated writeback). Multi-leaf (Phase 6-3): every leaf
+   * compiles independently, and the per-row leaf switch installs the
+   * CURRENT leaf's entry and accumulator count alongside m_prog and
+   * m_acc_offset, so shifted layouts dispatch with matching code.
    *
    * The dispatch glue (in DbtupJitGlue.cpp) handles JitState
    * setup, accumulator copy in/out, and helper-context wiring.
@@ -1090,9 +1091,19 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
      * as linked-NULL). */
     req_struct->m_linked_attr_data = m_linked_attr_data;
     req_struct->m_linked_attr_len = m_linked_attr_len;
+    /* Phase 6-3 multi-leaf: agg_res_ptr is ALREADY the leaf's slice
+     * (the group prologue added m_acc_offset), the compiled code uses
+     * leaf-LOCAL accumulator indices, and m_jit_leaf_n_agg is the
+     * leaf's own count — m_n_agg_results holds the COMBINED total in
+     * multi-leaf mode and would run the glue's copy/writeback loops
+     * past the leaf's slice (and past the group record for the last
+     * leaf). The interpreter re-run on a per-row fallback uses the
+     * same offset pointer with the same leaf-local indices. */
+    const Uint32 jit_n_agg =
+        (m_jit_leaf_n_agg != 0) ? m_jit_leaf_n_agg : m_n_agg_results;
     int jit_rc = dbtup_jit_invoke(this, block_tup, req_struct,
                                   m_jit_entry, agg_res_ptr,
-                                  m_n_agg_results, this);
+                                  jit_n_agg, this);
     req_struct->m_linked_attr_data = nullptr;
     req_struct->m_linked_attr_len = 0;
     if (jit_rc != NDB_JIT_ROW_FALLBACK) {
@@ -1306,12 +1317,21 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
 
   // Switch to leaf program under mutex protection.
   // For single-leaf queries, leaf is nullptr — no switch needed.
+  // Phase 6-3: the leaf's JIT entry and accumulator count switch WITH
+  // the program — running leaf 0's compiled code against leaf N's
+  // m_acc_offset layout would silently corrupt accumulators, which is
+  // why the old compile gate (m_num_leaves == 1) existed. Every
+  // multi-leaf row passes a non-null leaf (handleJoinAggRow decodes
+  // leafIndex from the encoded state key), so the entry is always the
+  // current leaf's.
   if (leaf != nullptr) {
     thrjam(jamBuf);
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
     m_acc_offset = leaf->m_acc_offset;
+    m_jit_entry = leaf->m_jit_entry;
+    m_jit_leaf_n_agg = leaf->m_n_agg_results;
   }
 
   m_linked_attr_data = linked_attr_data;
@@ -2042,6 +2062,11 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
     m_acc_offset = leaf->m_acc_offset;
+    /* Phase 6-3: keep the JIT fields in sync with the program even
+     * here — this row never dispatches (m_null_local_columns), but a
+     * stale entry must not survive into any future dispatch path. */
+    m_jit_entry = leaf->m_jit_entry;
+    m_jit_leaf_n_agg = leaf->m_n_agg_results;
   }
 
   m_linked_attr_data = linked_attr_data;

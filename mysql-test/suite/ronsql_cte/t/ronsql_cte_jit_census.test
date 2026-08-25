@@ -21,8 +21,9 @@
 #
 # Phase 6-2 upgrades: MUST-JIT. Each query runs under ERROR_INSERT
 # 4060 (any m_jit_entry==0 dispatch in the CTE pipeline aborts a data
-# node — including a silent multi-leaf compile-gate skip, which no
-# counter records), and a compile-activity assert requires the
+# node — before Phase 6-3 that included the silent multi-leaf
+# compile-gate skip; the gate is gone now, every leaf compiles), and
+# a compile-activity assert requires the
 # compile_ns_total delta to be > 0: join-agg compiles bypass the
 # reuse cache (recompile per setup, Phase 6-4), so a pushed pipeline
 # ALWAYS bumps it — delta 0 would mean the query was not pushed at
