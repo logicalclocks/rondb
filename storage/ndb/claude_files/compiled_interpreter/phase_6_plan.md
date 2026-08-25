@@ -40,7 +40,12 @@ hit-stable, delta pins unmoved, teardown releases instead of frees.
 F4 is fully closed — ndbinfo.jit reports the truth for all three
 compile paths. ALL UNPARKED IMPLEMENTATION SLICES OF PHASE 6 ARE
 DONE; remaining: the 6-6 documentation closeout and the parked 6-5.)
-6-5 is parked (demand-driven); 6-6 closes out the phase.**
+6-6 DONE (2026-08-25 — docs-only closeout: touchpoints section in the
+pushdown CLAUDE.md, coordination notes in the two colliding plans,
+claude_files index row, backport bookkeeping [4 standalone commits],
+add-on backlog §4, successor milestone §5).
+**PHASE 6 COMPLETE.** 6-5 stays parked (unparks with the successor
+milestone, §5). Next: `ronsql_jit` / `ronsql_cte_jit` (§5).**
 
 ## 0. Context — what Phase 6 has become
 
@@ -890,6 +895,97 @@ prevention still beats detection.)
 **What it brings.** The two workstreams stop being mutually
 invisible, and Phase 6's exit state survives contact with the next
 months of pushdown development.
+
+**Implemented (2026-08-25) — PHASE 6 CLOSEOUT.**
+- "Compiled Interpreter (RONDB-1056) Touchpoints" section written
+  into `pushdown_join_aggregation/CLAUDE.md`: compile hook, dispatch
+  gate, the rules the JIT relies on (NULL-extended rows, CTE-consumer
+  null `tablePtrP`, the unsigned-marker contract), the ERROR_INSERT
+  probes, the upcoming-bytecode policy, and the flagged string-sidecar
+  hazard.
+- Coordination notes inserted at the TOP of
+  `local_execution_mode_plan.md` and
+  `aggregation_treenode_alternative_plan.md`: the compile hook and
+  dispatch gate move with the sites; the conformance suites are the
+  acceptance gate.
+- `storage/ndb/CLAUDE.md` claude_files index gains the
+  compiled_interpreter row.
+- **Backport bookkeeping**: FOUR standalone data-node/mysqld fixes
+  are branch-local and PR-able to 26.04-main independently of the
+  JIT: `c7e8dd1ff89` (RONDB-733 nullable-CASE), `f0a3d38d451`
+  (RONDB-733 unsigned SUM/AVG), `3c2c228535f` (RONDB-733 DECIMAL
+  MIN/MAX), `9f5c157fc81` (unsigned CTE aggregate-slot markers — also
+  fixes the latent ≥2^63 interpreter misread). Cherry-pick branch on
+  request.
+
+## 4. Add-on backlog (recorded at phase close, 2026-08-25)
+
+Measured candidates (from the 6-2 delta pins) and open tracks, in
+rough priority order:
+
+1. **Perf validation** — the original plan gated on bench_q9/q12
+   speedup but every phase since has been correctness-only. The
+   two-suite structure makes it nearly free: bench set under
+   `ndb_push_agg` (OFF) vs `ndb_push_agg_jit` (ON). Its numbers
+   arbitrate items 4, 6 and the aarch64 track.
+2. **Embedded `READ_AGG_REG_TO_REG` lowering** (op 43;
+   `testCteNdbApi` delta = 2) — acc→reg is directly representable
+   via `JitState.acc_i64`. Small.
+3. **Attribute-and-lower the remaining pin deltas**:
+   `ndb_pushdown_agg` 16, `ndb_push_agg_case_null` 8,
+   `testVarcharMinMax` 8, `ndb_join_pushdown_agg{,_types,_evict}`
+   3/6/2; plus the `BC_MAX_REGS`=8 cap if attribution shows real
+   programs.
+4. **Phase 7 scan-filter expansion** — the largest measured surface
+   (`testInterpreterTypedRegs` 1888): general WHERE programs beyond
+   the v1 NULL-branch + comparison subset (register arithmetic, mem
+   ops, typed-register opcodes 44/45/62); `EXIT_OK_LAST` needs a
+   tri-state disposition. REQUIRED for the successor milestone below.
+5. **Planner-side pushes (mysqld)** — DIV / `%` / generic `/` /
+   temporal MIN/MAX are lowered but never pushed by
+   `ha_ndbcluster_push_agg`; teaching the planner turns dead coverage
+   into live wins. mysqld-layer work.
+6. **6-5 CTE filter JIT** — parked; REQUIRED for the successor
+   milestone's CTE arm (consumer-side WHERE). Counter-invisible by
+   construction — demand evidence must come from benches/workloads.
+7. **Infrastructure**: per-site fallback counters in `ndbinfo.jit`;
+   progcache memory-pressure sweep (pinned entries live forever under
+   the code-memory cap today); aarch64 perf tuning; persistent
+   compiled-program cache (post-v1).
+8. **Hygiene**: `ndb_push_agg_dist` OFF+mirror decision; the 6-1
+   end-to-end negative (consumer local-column program → clean query
+   error); `CompiledInterpreter=ON` semantics (still reserved ==
+   AUTO); the interpreter string-sidecar multi-leaf collision
+   (pushdown team's).
+
+## 5. Successor milestone (Mikael, 2026-08-25): `ronsql_jit` and `ronsql_cte_jit`
+
+**Goal:** mirror suites for the `ronsql` and `ronsql_cte` categories
+that ENSURE every query in those corpora executes on compiled
+interpreter code — extending the 6-2 conformance instrument from
+canaries to the full RonSQL query surface.
+
+Design notes recorded at phase close:
+- **Enforcement instrument**: blanket 4060 is too strong — it also
+  aborts on legitimate PER-ROW fallbacks (NULL edges, div-by-zero,
+  ±2^53 guards), which are by-design interpreter re-runs present in
+  the corpora. The right tool is a NEW error insert ("4060-lite"):
+  abort ONLY on a program-level miss (`m_jit_entry == 0` at
+  dispatch), letting per-row edges pass — combined with per-test
+  `programs_fallback` delta pins (= 0 → no bridge rejects) and
+  compile-activity sums, per the 6-2/6-4 pattern.
+- **Scope forcing**: "all queries" includes RonSQL WHERE filters
+  (scan-filter path — forces backlog item 4, the Phase 7 expansion,
+  since v1's subset cannot cover RonSQL's emission) and CTE consumer
+  filters (forces item 6 / unparks 6-5). The suites are therefore
+  both the goal AND the forcing function: build them census-first
+  (mirror + pins, enforcement off), enumerate every reject the
+  corpora produce, lower the gaps, then flip on the strict insert.
+- **Topology**: mirror the base `ronsql` and `ronsql_cte` suites
+  only (the ×4 extra topologies test distribution, not coverage);
+  reduced parallelism on this machine (--parallel=6).
+- Method: the census-first, pin-everything, then-enforce sequence
+  that Phase 6 proved out.
 
 ## 3. Ordering and risks
 

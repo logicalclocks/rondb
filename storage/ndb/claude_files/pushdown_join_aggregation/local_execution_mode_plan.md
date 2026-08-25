@@ -2,6 +2,16 @@
 
 **Status: PLAN (not yet implemented)**
 
+> **Compiled-interpreter coordination (RONDB-1056, Phase 6-6):** this
+> plan moves the aggregation setup/feed sites the JIT hooks
+> (`JOIN_AGG_SETUP_REQ` compile hook in DblqhProxy, `handleJoinAggRow`
+> dispatch). Whoever implements it must carry the compile hook (agg
+> reuse-cache acquire per leaf + release at teardown) and the dispatch
+> gate to the new sites, and use the conformance suites as the
+> acceptance gate: `ndb_push_agg` (OFF) + `ndb_push_agg_jit` (ON) +
+> `ronsql_cte_jit_census` must-JIT. See "Compiled Interpreter
+> Touchpoints" in this directory's CLAUDE.md.
+
 > **Alternative under evaluation:** `aggregation_treenode_alternative_plan.md`
 > proposes replacing the feed mechanism of §4.2/§4.3 (Phase 3) with an
 > explicit aggregation TreeNode in the query tree — orthogonal to the LOCAL

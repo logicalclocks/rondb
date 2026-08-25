@@ -143,9 +143,21 @@ detail preserved; admission rejects counted by the cache callback as
 compile_ns_total deltas → programs_compiled+reused sums (monotone
 across hits) in ronsql_cte_jit_census and rondb_jit_outer_join_canary.
 F4 fully closed. ALL UNPARKED PHASE 6 IMPLEMENTATION SLICES DONE.
-NEXT: 6-6 closeout (pushdown-doc cross-references, coordination notes
-into the two colliding plans, RONDB-733 backport PR, future-probe
-list); 6-5 stays parked pending demand.
+**6-6 DONE (2026-08-25 — docs-only) → PHASE 6 COMPLETE.**
+Touchpoints section in `pushdown_join_aggregation/CLAUDE.md`
+(compile hook, dispatch gate, JIT-relied rules, upcoming-bytecode
+policy, string-sidecar hazard); coordination notes at the top of
+`local_execution_mode_plan.md` and
+`aggregation_treenode_alternative_plan.md`; compiled_interpreter row
+in `storage/ndb/CLAUDE.md`; backport bookkeeping (4 standalone
+commits: `c7e8dd1ff89`, `f0a3d38d451`, `3c2c228535f`, `9f5c157fc81` —
+cherry-pick branch on request); add-on backlog in `phase_6_plan.md`
+§4. **NEXT MILESTONE (Mikael): `ronsql_jit` + `ronsql_cte_jit`** —
+mirror suites ensuring EVERY query in those corpora runs on compiled
+interpreter code (`phase_6_plan.md` §5: census-first build, per-test
+pins, then a new program-level-only "4060-lite" error insert;
+full-corpus enforcement forces the Phase 7 scan-filter expansion and
+unparks 6-5 for CTE consumer filters).
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 
