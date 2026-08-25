@@ -61,8 +61,27 @@ classified INELIGIBLE before reaching the bridge
 filled fleet census table in `phase_6_plan.md` §6-0 (notables for
 6-2: embedded `READ_AGG_REG_TO_REG` rejects, `REG_OUT_OF_RANGE` on
 fleet programs past `BC_MAX_REGS`, scan-filter `READ_ATTR_INTO_REG`
-= the Phase 7 v1 subset limit). NEXT: 6-1 (CTE-consumer
-null-`tablePtrP` hardening).
+= the Phase 7 v1 subset limit).
+
+**6-1 DONE & VERIFIED (2026-08-25 — all tests passed, zero baseline
+movement):** the JIT can no longer deref a CTE-consumer feed's null
+`tablePtrP`. Four guards, all mapping to the per-row-fallback
+convention so the interpreter re-run surfaces the clean
+ZAGG_OTHER_ERROR: `jit_load_col_read`'s local arm (returns -1 —
+covers every load helper via the shared prologue),
+`ndb_jit_h_branch_attr_null` / `ndb_jit_h_branch_attr_op_arg` /
+`ndb_jit_h_minmax_str`'s local arm (inline `row_fallback = 1`, the
+div-by-zero pattern — their contracts return values, not rcs). Plus
+a soundness fix: `dbtup_jit_invoke_scan_filter` FAIL-FASTS on an
+unexpected `row_fallback` (previously ignored; no per-row fallback
+exists on that path, and guessing accept/reject would silently
+corrupt results). F8 stale comments fixed (the two pre-Phase-8
+`m_n_gb_cols == 0` gate descriptions in `DbtupJitGlue.hpp`,
+DblqhProxy's aspirational "each leaf independently compiled").
+Planned coldcall test recorded as NOT BUILDABLE (real helpers are
+kernel C++, coldcall_tests uses mocks) — armor verified by
+behavioral no-change; end-to-end negative noted as a 6-2 candidate.
+NEXT: 6-2 (conformance pinning: 4060-arm the fleet per the census).
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

@@ -193,6 +193,19 @@ static int jit_load_col_read(dbtup_jit_call_ctx *ctx, uint32_t col_id,
     *out_type = CteLinkedAttr::decodeTypeId(w0);
     return 0;
   }
+  /* CTE-consumer safety (Phase 6-1): consumer feeds
+   * (Dblqh::cteLookupAggFeed / cteScanAggFeed) dispatch with a
+   * synthetic KeyReqStruct whose tablePtrP is deliberately null —
+   * there is no scanned tuple behind the virtual row, only the
+   * linked buffer. The interpreter's kOpLoadCol arm aborts such a
+   * local read cleanly with ZAGG_OTHER_ERROR; return the fallback
+   * here so the interpreter re-run raises exactly that error
+   * instead of this prologue dereferencing the null table pointer
+   * (readSingleAttributeForJit and the descriptor lookup below both
+   * would). */
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    return -1;
+  }
   int ret = ctx->block_tup->readSingleAttributeForJit(
       ctx->req_struct, col_id, read_buf, read_buf_words);
   if (ret < 0) {
@@ -756,6 +769,13 @@ ndb_jit_h_minmax_str(JitState *s, uint32_t col_id, uint32_t packed) {
         ctx->req_struct, col_id & 0x7FFFu, agg_index, is_max,
         ctx->agg_res_ptr);
   } else {
+    /* CTE-consumer safety (Phase 6-1): a LOCAL string column needs
+     * the local tuple — absent on a consumer feed's virtual row
+     * (tablePtrP deliberately null). Per-row fallback. */
+    if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+      s->row_fallback = 1;
+      return;
+    }
     ret = ctx->agg->jitMinMaxStringCol(
         ctx->block_tup, ctx->req_struct, col_id, agg_index, is_max,
         ctx->agg_res_ptr);
@@ -1079,6 +1099,17 @@ ndb_jit_h_branch_attr_null(JitState *s,
     abort();
   }
 
+  /* CTE-consumer safety (Phase 6-1): no local tuple behind a
+   * consumer feed's virtual row (tablePtrP deliberately null, see
+   * jit_load_col_read). Discard this row's JIT run — the interpreter
+   * re-run surfaces the clean ZAGG error. Scan filters always carry
+   * a real tuple, so this cannot fire on that path (and its invoke
+   * fail-fasts if it ever does). */
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    s->row_fallback = 1;
+    return 0;
+  }
+
   /* Read just the AttributeHeader; the value bytes that follow
    * don't matter for a null check. 4 words still gives breathing
    * room for the readAttributes path's worst-case header
@@ -1130,6 +1161,14 @@ ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
         "ndb_jit_h_branch_attr_op_arg: JitState.ctx is malformed "
         "(inst_word_off=%u)", inst_word_off);
     abort();
+  }
+  /* CTE-consumer safety (Phase 6-1): evalBranchColForJit reads the
+   * column from the local tuple — impossible on a consumer feed's
+   * virtual row (tablePtrP deliberately null). Per-row fallback, as
+   * in ndb_jit_h_branch_attr_null above. */
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    s->row_fallback = 1;
+    return 0;
   }
   int rc = ctx->block_tup->evalBranchColForJit(
       ctx->req_struct, ctx->prog_buf + inst_word_off, ctx->param_buf);
@@ -1804,6 +1843,17 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
    * miscompiled program can never leak a row past the filter. */
   if (s.row_overflowed != 0) {
     return false;
+  }
+  if (unlikely(s.row_fallback != 0)) {
+    /* No per-row fallback exists on the scan-filter path (fallback is
+     * per-program, at compile time), and the admitted helpers only set
+     * this flag for a null tablePtrP — impossible for a real scanned
+     * tuple. If it fires, a helper contract broke: fail fast rather
+     * than guess an accept/reject verdict (either guess silently
+     * corrupts results). */
+    g_eventLogger->error(
+        "dbtup_jit_invoke_scan_filter: unexpected row_fallback");
+    abort();
   }
   return s.row_filter_rejected == 0;
 }

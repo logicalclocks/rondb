@@ -2820,12 +2820,14 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   /* Phase 4 RONDB-1056: JIT compile attempt.
    *
-   * Run for single-leaf programs only — multi-leaf is Phase 5. Each
-   * leaf is independently JIT-compiled; failure on one (bridge or
-   * admission reject) leaves m_jit_entry == nullptr so the
-   * corresponding JoinAggInterpreter falls back to the interpreter
-   * loop on every row. The decision is per-leaf, per-program; no
-   * per-row re-evaluation downstream.
+   * Run for single-leaf programs only: only m_leaf_programs[0] is
+   * ever compiled (multi-leaf/star is Phase 6-3, which must also make
+   * the per-row leaf switch in processRecWithLinkedAttrs select the
+   * current leaf's entry — the interpreter holds a single
+   * m_jit_entry). A failed attempt (bridge or admission reject)
+   * leaves m_jit_entry == nullptr so the JoinAggInterpreter runs the
+   * interpreter loop on every row. The decision is per-program at
+   * setup; no per-row re-evaluation downstream.
    *
    * Bytecode handed to the bridge starts at lp.m_agg_program +
    * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede

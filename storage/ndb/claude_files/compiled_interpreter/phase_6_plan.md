@@ -6,7 +6,12 @@ and its full mirror `ndb_push_agg_jit` green under ON = the
 structural always-JIT differential; `ronsql_cte_jit_census` baseline
 recorded with both asserts holding after the EXIT_OK_LAST
 counter-hygiene fix; fallback-log harvest recorded in §6-0).
-Remaining slices 6-1 → 6-4 execute with the usual
+6-1 DONE & VERIFIED (2026-08-25 — all tests passed with zero baseline
+movement, exactly the armor-only expectation: host tests at 141/34,
+both differential arms green, CTE census still reject-free; the four
+null-`tablePtrP` guards, the scan-filter row_fallback fail-fast, and
+the F8 comment fixes are in).
+Remaining slices 6-2 → 6-4 execute with the usual
 implement → verify → commit cycle; 6-5 is parked (demand-driven);
 6-6 threads through every slice.**
 
@@ -374,13 +379,49 @@ any query that works today. The JIT path can no longer downgrade
 "clean query error" into "node crash" on CTE-consumer rows. The
 smallest slice of the phase.
 
-**Verification.** Host tests; `testCteNdbApi` / `testCteNdbApiFilter` /
-`testCteLookup` wrappers re-run (behavior must be unchanged — today's
-consumer programs are linked-only, the guard is armor, not a
-behavior change); full sweep.
+**Implemented (2026-08-25).** Four guards + one fail-fast:
+- `jit_load_col_read`'s local arm returns -1 (→ per-row fallback) on
+  null `tablePtrP` BEFORE `readSingleAttributeForJit` and the
+  descriptor lookup — one guard covers every load helper via the
+  shared prologue.
+- `ndb_jit_h_branch_attr_null` and `ndb_jit_h_branch_attr_op_arg`
+  set `s->row_fallback = 1` and return "fall through" (their contract
+  returns a branch bool, so the -1 convention doesn't apply; the
+  row's JIT run is discarded and the interpreter re-run surfaces the
+  clean error — the div-by-zero inline-fallback pattern).
+- `ndb_jit_h_minmax_str`'s LOCAL arm takes the same inline fallback
+  (its linked arm never needs the tuple).
+- `dbtup_jit_invoke_scan_filter` now FAIL-FASTS on an unexpected
+  `row_fallback` (previously silently ignored): no per-row fallback
+  exists on that path and the flag is unreachable for a real scanned
+  tuple — if it fires, a helper contract broke, and guessing an
+  accept/reject verdict would silently corrupt results either way.
+- F8 comment fixes: the two `DbtupJitGlue.hpp` blocks describing the
+  pre-Phase-8 `m_n_gb_cols == 0` gate, and `DblqhProxy.cpp`'s
+  "each leaf is independently JIT-compiled" (now states the leaf-0
+  reality and points at 6-3's entry-switch requirement).
 
-**Exit.** Coldcall green with the new tests; CTE fleet unchanged; no
-JIT code path can deref a null `tablePtrP`.
+**Deviation from the planned test.** The planned "coldcall test with
+a mocked null `tablePtrP`" is not buildable: `coldcall_tests.c`
+registers MOCK helpers to exercise stencil call plumbing — the real
+helpers are kernel C++ in `DbtupJitGlue.cpp` and are not host-
+linkable. The guards are pure armor (unreachable by any program
+RonSQL emits today — consumer programs are linked-column-only), so
+verification is behavioral no-change across the full suite matrix,
+plus the scan-filter fail-fast for the cannot-happen case. A true
+end-to-end negative (a hand-crafted CTE consumer program with a
+local-column read, expecting a clean query error) needs signal-level
+CTE machinery — noted as a candidate `testCte*` addition for 6-2.
+
+**Verification.** Build; host tests (bridge 141, coldcall 34 —
+unchanged counts); `./mtr --suite=ndb_push_agg` (OFF arm) and
+`./mtr --suite=ndb_push_agg_jit` (ON arm) — all green, no baseline
+movement; `./mtr --suite=ronsql_cte ronsql_cte_jit_census` (the CTE
+pipeline still reject-free).
+
+**Exit.** Suites unchanged; no JIT code path can deref a null
+`tablePtrP`; an impossible `row_fallback` on the scan-filter path
+aborts instead of guessing.
 
 ### 6-2 — Conformance pinning: the fleet as a standing must-JIT harness
 

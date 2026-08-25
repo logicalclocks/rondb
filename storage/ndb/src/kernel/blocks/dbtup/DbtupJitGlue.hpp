@@ -156,9 +156,13 @@ void dbtup_jit_register_helpers(void);
 
 } /* extern "C" */
 
-/* Per-row dispatch entry — invoked from AggInterpreter::ProcessRec or
- * JoinAggInterpreter::ProcessRec when m_jit_entry != nullptr AND
- * m_n_gb_cols == 0. Returns 0 on success; the existing ProcessRec
+/* Per-row dispatch entry — invoked from AggInterpreter::ProcessRec
+ * (gate: m_jit_entry != nullptr) or JoinAggInterpreter::ProcessRec
+ * (gate: m_jit_entry != nullptr && !m_null_local_columns — outer-join
+ * NULL-extended rows stay on the interpreter). GROUP BY programs run
+ * the JIT too since the Phase 8 gate lift: the caller's group
+ * prologue resolves agg_res_ptr to the row's group slots before each
+ * dispatch. Returns 0 on success; the existing ProcessRec
  * error codes otherwise.
  *
  * Sets up JitState with the cold-call ctx, copies accumulators
@@ -214,9 +218,10 @@ void dbtup_jit_release_scan_filter(void *cache_handle);
  * jit1_compile into the code-memory manager. Returns the JIT entry as a
  * void* (cast to JitEntry), or nullptr if not JIT-eligible / OOM.
  * out_cache_handle (nullable) receives the handle to pass to
- * dbtup_jit_release_agg when the interpreter is torn down. Used only for
- * scalar (n_gb_cols == 0) programs — the dispatch gate never runs the
- * JIT entry for GROUP BY. `pinned` (from the program's
+ * dbtup_jit_release_agg when the interpreter is torn down. Serves
+ * scalar and GROUP BY programs alike since the Phase 8 gate lift (the
+ * dispatcher resolves per-group accumulator slots before each
+ * invocation). `pinned` (from the program's
  * AGG_PROG_FLAG_REUSABLE header bit — RonSQL / prepared statements)
  * keeps the entry cached at refcount 0 so a re-sent identical program
  * hits instead of recompiling (Phase 8 Slice 4); sticky on an existing
