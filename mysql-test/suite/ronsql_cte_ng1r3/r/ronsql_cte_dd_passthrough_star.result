@@ -346,7 +346,7 @@ e_id	m_seq	m_val	v_seq	v_tag
 5	4	54	2	502
 5	4	54	3	503
 
-=== sr-6: bushy scan star + per-branch WHERE filters ===
+=== sr-6: bushy scan star + per-branch WHERE bounds ===
 == Query ==
 SELECT e.e_id, m.m_seq, v.v_seq
 FROM star_e AS e
@@ -361,6 +361,7 @@ Number of output lines, including header: 31
 
 
 
+== Explain Query ==
 == Expected result ==
 SELECT e.e_id, m.m_seq, v.v_seq
 FROM star_e AS e

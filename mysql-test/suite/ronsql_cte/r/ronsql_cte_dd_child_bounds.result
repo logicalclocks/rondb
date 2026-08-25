@@ -1,0 +1,625 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cb-1: low const bound on the child index ===
+== Query ==
+SELECT p.p_id, c.c_seq, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 3;
+
+Number of output lines, including header: 61
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_seq, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 3|
+p_id	c_seq	c_val
+1	3	13
+1	4	14
+1	5	15
+10	3	103
+10	4	104
+10	5	105
+11	3	113
+11	4	114
+11	5	115
+12	3	123
+12	4	124
+12	5	125
+13	3	133
+13	4	134
+13	5	135
+14	3	143
+14	4	144
+14	5	145
+15	3	153
+15	4	154
+15	5	155
+16	3	163
+16	4	164
+16	5	165
+17	3	173
+17	4	174
+17	5	175
+18	3	183
+18	4	184
+18	5	185
+19	3	193
+19	4	194
+19	5	195
+2	3	23
+2	4	24
+2	5	25
+20	3	203
+20	4	204
+20	5	205
+3	3	33
+3	4	34
+3	5	35
+4	3	43
+4	4	44
+4	5	45
+5	3	53
+5	4	54
+5	5	55
+6	3	63
+6	4	64
+6	5	65
+7	3	73
+7	4	74
+7	5	75
+8	3	83
+8	4	84
+8	5	85
+9	3	93
+9	4	94
+9	5	95
+
+=== cb-2: high-only const bound (fixupBound fix case) ===
+== Query ==
+SELECT p.p_id, c.c_seq
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq <= 2;
+
+Number of output lines, including header: 41
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_seq
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq <= 2|
+p_id	c_seq
+1	1
+1	2
+10	1
+10	2
+11	1
+11	2
+12	1
+12	2
+13	1
+13	2
+14	1
+14	2
+15	1
+15	2
+16	1
+16	2
+17	1
+17	2
+18	1
+18	2
+19	1
+19	2
+2	1
+2	2
+20	1
+20	2
+3	1
+3	2
+4	1
+4	2
+5	1
+5	2
+6	1
+6	2
+7	1
+7	2
+8	1
+8	2
+9	1
+9	2
+
+=== cb-3: closed const range on one column ===
+== Query ==
+SELECT p.p_id, c.c_seq
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 2 AND c.c_seq <= 4;
+
+Number of output lines, including header: 61
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_seq
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 2 AND c.c_seq <= 4|
+p_id	c_seq
+1	2
+1	3
+1	4
+10	2
+10	3
+10	4
+11	2
+11	3
+11	4
+12	2
+12	3
+12	4
+13	2
+13	3
+13	4
+14	2
+14	3
+14	4
+15	2
+15	3
+15	4
+16	2
+16	3
+16	4
+17	2
+17	3
+17	4
+18	2
+18	3
+18	4
+19	2
+19	3
+19	4
+2	2
+2	3
+2	4
+20	2
+20	3
+20	4
+3	2
+3	3
+3	4
+4	2
+4	3
+4	4
+5	2
+5	3
+5	4
+6	2
+6	3
+6	4
+7	2
+7	3
+7	4
+8	2
+8	3
+8	4
+9	2
+9	3
+9	4
+
+=== cb-4: EQ const bound ===
+== Query ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq = 3;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq = 3|
+p_id	c_val
+1	13
+10	103
+11	113
+12	123
+13	133
+14	143
+15	153
+16	163
+17	173
+18	183
+19	193
+2	23
+20	203
+3	33
+4	43
+5	53
+6	63
+7	73
+8	83
+9	93
+
+=== cb-5: grandchild bound + two-candidate index scoring ===
+== Query ==
+SELECT p.p_id, c.c_seq, x.x_seq
+FROM cb_p AS p
+JOIN cb_c AS c ON c.c_pid = p.p_id
+JOIN cb_x AS x ON x.x_pid = c.c_seq
+WHERE p.p_id <= 3 AND x.x_seq >= 2;
+
+Number of output lines, including header: 46
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_seq, x.x_seq
+FROM cb_p AS p
+JOIN cb_c AS c ON c.c_pid = p.p_id
+JOIN cb_x AS x ON x.x_pid = c.c_seq
+WHERE p.p_id <= 3 AND x.x_seq >= 2|
+p_id	c_seq	x_seq
+1	1	2
+1	1	3
+1	1	4
+1	2	2
+1	2	3
+1	2	4
+1	3	2
+1	3	3
+1	3	4
+1	4	2
+1	4	3
+1	4	4
+1	5	2
+1	5	3
+1	5	4
+2	1	2
+2	1	3
+2	1	4
+2	2	2
+2	2	3
+2	2	4
+2	3	2
+2	3	3
+2	3	4
+2	4	2
+2	4	3
+2	4	4
+2	5	2
+2	5	3
+2	5	4
+3	1	2
+3	1	3
+3	1	4
+3	2	2
+3	2	3
+3	2	4
+3	3	2
+3	3	3
+3	3	4
+3	4	2
+3	4	3
+3	4	4
+3	5	2
+3	5	3
+3	5	4
+
+=== cb-6: aggregate twin with the child bound ===
+== Query ==
+SELECT p.p_grp, COUNT(*) AS cnt, SUM(c.c_val) AS s
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 3
+GROUP BY p.p_grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_grp, COUNT(*) AS cnt, SUM(c.c_val) AS s
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 3
+GROUP BY p.p_grp|
+p_grp	cnt	s
+0	15	1410
+1	15	1560
+2	15	1710
+3	15	1860
+
+=== cb-7: non-index conjunct stays a filter ===
+== Query ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_val > 100;
+
+Number of output lines, including header: 56
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_val > 100|
+p_id	c_val
+10	101
+10	102
+10	103
+10	104
+10	105
+11	111
+11	112
+11	113
+11	114
+11	115
+12	121
+12	122
+12	123
+12	124
+12	125
+13	131
+13	132
+13	133
+13	134
+13	135
+14	141
+14	142
+14	143
+14	144
+14	145
+15	151
+15	152
+15	153
+15	154
+15	155
+16	161
+16	162
+16	163
+16	164
+16	165
+17	171
+17	172
+17	173
+17	174
+17	175
+18	181
+18	182
+18	183
+18	184
+18	185
+19	191
+19	192
+19	193
+19	194
+19	195
+20	201
+20	202
+20	203
+20	204
+20	205
+
+=== cb-8: nullable indexed column stays a filter (v1 guard) ===
+== Query ==
+SELECT p.p_id, c.c_note
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_note >= 4;
+
+Number of output lines, including header: 41
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_note
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_note >= 4|
+p_id	c_note
+1	4
+1	5
+10	4
+10	5
+11	4
+11	5
+12	4
+12	5
+13	4
+13	5
+14	4
+14	5
+15	4
+15	5
+16	4
+16	5
+17	4
+17	5
+18	4
+18	5
+19	4
+19	5
+2	4
+2	5
+20	4
+20	5
+3	4
+3	5
+4	4
+4	5
+5	4
+5	5
+6	4
+6	5
+7	4
+7	5
+8	4
+8	5
+9	4
+9	5
+
+=== cb-9: LEFT JOIN + null-rejecting WHERE -> promoted + bound ===
+== Query ==
+SELECT p.p_id, c.c_seq
+FROM cb_p AS p LEFT JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 4;
+
+Number of output lines, including header: 41
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_seq
+FROM cb_p AS p LEFT JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 4|
+p_id	c_seq
+1	4
+1	5
+10	4
+10	5
+11	4
+11	5
+12	4
+12	5
+13	4
+13	5
+14	4
+14	5
+15	4
+15	5
+16	4
+16	5
+17	4
+17	5
+18	4
+18	5
+19	4
+19	5
+2	4
+2	5
+20	4
+20	5
+3	4
+3	5
+4	4
+4	5
+5	4
+5	5
+6	4
+6	5
+7	4
+7	5
+8	4
+8	5
+9	4
+9	5
+
+=== cb-10: 3-col index EQ-continue (both conjuncts bound) ===
+== Query ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq = 2 AND c.c_val >= 100;
+
+Number of output lines, including header: 12
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq = 2 AND c.c_val >= 100|
+p_id	c_val
+10	102
+11	112
+12	122
+13	132
+14	142
+15	152
+16	162
+17	172
+18	182
+19	192
+20	202
+
+=== cb-11: aggregate mixed cross-table EQ + const range bounds ===
+== Query ==
+SELECT SUM(c.c_val) AS s
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq = p.p_grp AND c.c_val >= 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT SUM(c.c_val) AS s
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq = p.p_grp AND c.c_val >= 50|
+s
+1584
+
+=== cb-12: range blocks the later index column ===
+== Query ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 2 AND c.c_val = 105;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT p.p_id, c.c_val
+FROM cb_p AS p JOIN cb_c AS c ON c.c_pid = p.p_id
+WHERE c.c_seq >= 2 AND c.c_val = 105|
+p_id	c_val
+10	105

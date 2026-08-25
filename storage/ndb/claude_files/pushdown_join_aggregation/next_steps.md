@@ -506,26 +506,34 @@ root-focused; a review on July 2026 found the following follow-up items.
    conjuncts have been scanned and no usable bound was found for the current
    index column.
 
-2. **Discover constant bounds for non-root scans.**
-   Non-root `INDEX_SCAN` operations are selected only from join-key columns by
-   `QueryPlanner::findOrderedIndex()`. Child-local WHERE predicates are emitted
-   as interpreted filters. Missing shape:
+2. **~~Discover constant bounds for non-root scans.~~ DONE (August
+   2026, child_bounds feature)**: `assign_cross_table_index_bounds`
+   generalized to `assign_child_index_bounds(QueryScope&)` —
+   child-local constant conjuncts (same eligibility set as the root
+   generator; NOT NULL columns only in v1) become `RangeBound`s with
+   `const_cond` set, consumed out of `join_where_ce[op]`; emit builds
+   `constValue` operands (memoized so EQ pairs collapse to BoundEQ).
+   Required a DBSPJ fix: `scanFrag_fixupBound`'s renumbering assumed
+   every upper bound follows a lower for the same column — an
+   upper-only tail (EQ,...,EQ,GE — `col <= X` after the key prefix)
+   got the previous column's id.  Fixed by tracking the previous
+   entry's bound type.  (That bug was also reachable via the
+   cross-table `T_LT/T_LE` direction, untested before.)  MTR:
+   `body_child_bounds.inc` cb-1..12 ×5 topologies + sr-6 EXPLAIN pins.
 
-   ```sql
-   ... JOIN orders o ON o.o_custkey = c.c_custkey
-   WHERE o.o_orderdate >= '1998-01-01'
-   ```
-
-   With an ordered index `(o_custkey, o_orderdate)`, the date predicate should
-   become a constant range bound after the linked join-key prefix instead of a
-   post-scan filter.
-
-3. **Choose the best child ordered index, not the first matching prefix.**
-   If both `(join_key)` and `(join_key, filter_col)` exist,
-   `findOrderedIndex()` can return the shorter first match and lose the
-   opportunity to bind the constant child predicate. Child index selection needs
-   scoring similar to scan-config selection, using join-key coverage plus
-   additional linked or constant bounds.
+3. **~~Choose the best child ordered index, not the first matching
+   prefix.~~ DONE (August 2026, same feature)**: `assign_child_index_bounds`
+   scores every join-key-prefix candidate
+   (`QueryPlanner::collectOrderedIndexCandidates`) by additional
+   bindable columns (EQ=3 and continue, range=1 and stop) and switches
+   on strictly-better; ties keep the planner's choice so existing
+   plans are stable.  While landing this, a latent hazard was found
+   and fixed in `QueryPlanner::plan`: the index matchers accept a
+   PERMUTED join-key set but emit binds key operands positionally, so
+   a permuted ON order bound keys to the wrong index / PK columns —
+   keys are now normalized to physical column order with an exact
+   bijection check (which also rejects duplicate child columns in one
+   ON list).
 
 4. **Enable multi-op CTE body root index scans.**
    `build_cte_scopes()` still calls `select_root_scan_config()` only when
@@ -538,18 +546,31 @@ root-focused; a review on July 2026 found the following follow-up items.
    `|| true`. Once the plan output is stable, make these assertions hard
    failures so a regression back to TABLE_SCAN is caught.
 
-**Implementation notes:**
+**Implementation notes (items 2+3 as landed):**
 
-- Add per-op scan-config metadata before supporting child local bounds; the
-  current `body_scan_config` state is root-scoped.
-- Extend child bound representation to handle constant bounds as well as the
-  existing parent-linked `RangeBound`s.
-- Revisit joined-table index hints after child scan-config selection exists:
-  either support `FORCE/USE/IGNORE INDEX` on joined tables or reject with a
-  message that reflects the remaining limitation.
-- Add MTR coverage for reordered residual/root composite predicates,
-  child composite constant bounds, child best-index choice, and multi-op CTE
-  body root bounds.
+- No per-op ScanConfig was needed: children already carry per-op state
+  (`join_where_ce[op]` for conjuncts, `JoinOp::low_bounds/high_bounds`
+  for bounds); the `RangeBound::const_cond` extension (whole conjunct
+  stored — RHS for `encode_constant`, inclusivity, printable node) was
+  sufficient.  `body_scan_config` stays root-only.
+- The pass runs for the main scope (load_join, after classification +
+  LEFT→INNER promotion) and each CTE-body scope (build_cte_scopes), so
+  multi-op CTE-body children are covered too.
+- Subquery-leaf inner filters merge into `join_where_ce` AFTER the
+  pass, so they are deliberately not bound-eligible (safe-retreat
+  choice; revisit if profiling asks for it).
+- Joined-table index hints remain rejected (`reject_index_hints_on_joins`);
+  child index selection is now automatic via scoring — hint support on
+  joined tables stays deferred.
+- New correctness suspicion recorded while landing: the ROOT path's
+  `build_scan_config_candidates` has no nullability guard, so a
+  high-only root bound on a NULLABLE column may include NULL rows that
+  SQL comparison semantics exclude (NULL sorts below all values in NDB
+  ordered indexes).  The child path guards this (v1 NOT NULL only);
+  the root path needs its own audit — tracked here as a NEW item.
+- Remaining MTR wish: reordered residual/root composite predicates
+  (item 1) and multi-op CTE body root bounds (item 4) — both still
+  open.
 
 ### Future: Reduce Fixed Overhead for Small-Range CTE Queries (RonSQL) (Priority: Low)
 

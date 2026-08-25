@@ -59,21 +59,20 @@ half is fully reusable: `plan_index_and_filter()`
 the bound-type inversion mapping (`:5848-5862`).  Only the delivery
 half is new.
 
-**v1 policy for residuals on PK lookups.**  The RecAttr-style
-`NdbOperation` read has no interpreted-code facility — `OO_INTERPRETED`
-on `readTuple` exists only in the NdbRecord API
+**v1 policy for residuals on PK lookups — SUPERSEDED (August 2026).**
+The RecAttr-style `NdbOperation` read has no interpreted-code facility
+— `OO_INTERPRETED` on `readTuple` exists only in the NdbRecord API
 (`NdbTransaction.hpp:751`), and RonSQL's single-table path (and the
-Phase 0b printer) is RecAttr end-to-end.  So in v1:
-
-- Full PK equality cover **and no residual conjuncts** → PK lookup.
-- Full PK cover **with** residuals → the normal scan-config path
-  (bounds + filter — always correct; on a hash-PK table this is a
-  table scan, the same envelope the aggregate path has today).
-- Named follow-up (not v1): an NdbRecord-based `readTuple` with
-  `OO_INTERPRETED` (+ `OO_GETVALUE` extra gets, or an NdbRecord row
-  decode in the printer) to carry residuals on lookups — or routing
-  the shape through NdbQueryBuilder where Phase 0 already does
-  readTuple + filter, at the cost of the SPJ hop.
+Phase 0b printer) is RecAttr end-to-end.  The v1 policy therefore
+routed full-PK-cover-with-residuals to the scan-config path.  The
+named follow-up has since shipped as
+`non_aggregate_pk_residual_lookup.md`: an NdbRecord `readTuple`
+carries the residuals as an `OO_INTERPRETED` filter program while
+`OO_GETVALUE` extra reads keep the printer on plain NdbRecAttr
+results; the scan fallback survives only for residual programs over
+the 64-word lookup cap or with types the filter emit does not support.
+(The NdbQueryBuilder alternative was rejected — SPJ hop + drain
+rewrite against this phase's plain-API principle.)
 
 This differs from the join path deliberately: there, Phase 0 attaches
 lookup filters via `NdbQueryOptions` because the pushed-query API
@@ -277,10 +276,11 @@ filter; st-11 shows table scan + filter.
   volume is the client's concern until LIMIT lands.
 - **Committed reads**, same as every RonSQL query; a scan sees no
   snapshot.  Document, don't fix.
-- The v1 PK+residual scan fallback on hash-PK tables reads the whole
-  table for one row — same suboptimality class as the Phase 0
-  aggregate no-CTE gap, resolved by the named NdbRecord
-  `OO_INTERPRETED` follow-up rather than v1 scope creep.
+- ~~The v1 PK+residual scan fallback on hash-PK tables reads the whole
+  table for one row~~ — resolved by the NdbRecord `OO_INTERPRETED`
+  follow-up, shipped as `non_aggregate_pk_residual_lookup.md` (August
+  2026); the fallback survives only for over-cap / unsupported-type
+  residual programs.
 
 ## Verification (user-run)
 

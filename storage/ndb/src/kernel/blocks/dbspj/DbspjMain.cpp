@@ -6868,15 +6868,19 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     SectionHandle handle(this);
     getSection(handle.m_ptr[CteLookupReq::KeySectionNum], keyInfoPtrI);
     handle.m_cnt = 1;
-    if (joinAggStateKey != RNIL &&
-        (treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) &&
+    if ((treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) &&
         attrInfoPtrI != RNIL) {
       /**
-       * Agg feed path WITH linked parent columns: expand m_attrParamPattern
-       * with the parent row data, same mechanism as lookup_parent_row.
-       * The expanded AttrInfo carries the parent's linked columns in the
-       * interpreter subroutine section so cteLookupAggFeed can prepend
-       * them to the CTE result columns in linked_attr_data.
+       * Linked parent columns present: expand m_attrParamPattern with
+       * the parent row data, same mechanism as lookup_parent_row.
+       * The expanded AttrInfo carries the parent's linked columns in
+       * the interpreter subroutine section so DBLQH can prepend them
+       * to the CTE result columns in linked_attr_data — consumed by
+       * cteLookupAggFeed on the agg-feed path, and by runCteFilter /
+       * buildCteLinkedBuffer on the non-agg (row emit) path too
+       * (cte_filter_phase_i26.md: real-column-vs-CTE-output filter
+       * atoms reference parent linked columns; the row-emit path
+       * previously never expanded, which was the single kernel gap).
        */
       jam();
 
@@ -6920,18 +6924,15 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
 
       getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
       handle.m_cnt = 2;
-    } else if (joinAggStateKey == RNIL && attrInfoPtrI != RNIL) {
-      // Non-agg path: send base AttrInfo for FLUSH_AI formatting
-      jam();
-      getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
-      handle.m_cnt = 2;
-    } else if ((treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED) &&
-               attrInfoPtrI != RNIL) {
-      /* Agg-feed path without linked parent columns, but the user
-       * attached an interpreted-code filter via setInterpretedCode().
-       * Forward the base AttrInfo (containing the 5-word header and
-       * the filter program) so the DBLQH filter gate can execute it
-       * against the CTE group row before the agg feed. */
+    } else if (attrInfoPtrI != RNIL &&
+               (joinAggStateKey == RNIL ||
+                (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED))) {
+      /* No linked parent columns.  Non-agg path: send base AttrInfo
+       * for FLUSH_AI formatting (and any attached filter program).
+       * Agg-feed path with a setInterpretedCode() filter: forward the
+       * base AttrInfo (5-word header + filter program) so the DBLQH
+       * filter gate can execute it against the CTE group row before
+       * the agg feed. */
       jam();
       getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
       handle.m_cnt = 2;
@@ -12249,24 +12250,32 @@ void Dbspj::scanFrag_fixupBound(Uint32 ptrI, Uint32 corrVal) {
   // Renumber attribute ids in bound entries.
   // Each entry is: BoundType(1) + AttributeHeader(1) + Data(len32).
   // For EQ bounds (BoundEQ=4), one entry per column → id advances.
-  // For range bounds, lower (BoundLE=0/BoundLT=1) advances id,
-  // upper (BoundGE=2/BoundGT=3) reuses the same id as the preceding lower.
+  // For range bounds, lower (BoundLE=0/BoundLT=1) advances id; an
+  // upper (BoundGE=2/BoundGT=3) reuses the preceding id ONLY when the
+  // preceding entry was a lower for the same column (the low+high pair
+  // shape).  An upper-only tail (EQ,...,EQ,upper — e.g. a child bound
+  // `col <= const` after the equality join-key prefix) has no
+  // preceding lower and must advance to its own column id; the old
+  // unconditional `id - 1` stamped it with the previous column's id,
+  // producing conflicting bounds on that column.
   Uint32 boundType;
   ndbrequire(r0.peekWord(&boundType));
   ndbrequire(r0.step(1));  // Skip first BoundType
 
   Uint32 id = 0;
   Uint32 len32;
+  bool prevWasLower = false;
   do {
-    // Assign id: upper bounds (GE=2,GT=3) reuse previous id
-    Uint32 thisId = id;
     // BoundLE=0, BoundLT=1 (lower), BoundGE=2, BoundGT=3 (upper), BoundEQ=4
+    Uint32 thisId;
     bool isUpperBound = (boundType == 2 || boundType == 3);
-    if (isUpperBound && id > 0) {
-      thisId = id - 1;  // Reuse previous column's id
+    if (isUpperBound && prevWasLower) {
+      ndbassert(id > 0);
+      thisId = id - 1;  // Second half of a low+high pair on one column
     } else {
       thisId = id++;    // Advance to next column
     }
+    prevWasLower = (boundType == 0 || boundType == 1);
 
     ndbrequire(r0.peekWord(&tmp));
     AttributeHeader ah(tmp);

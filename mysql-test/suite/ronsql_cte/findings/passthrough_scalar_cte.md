@@ -15,11 +15,14 @@ cross join returned 0 instead of the parent count) — pinned by sc-10.
 Phase 4 of `non_aggregate_pushdown_plan.md` (detailed plan:
 `non_aggregate_phase_4.md`): scalar aggregating CTEs comma-cross-joined
 into projection-only queries.  Cases sc-1..9 lock in the supported
-envelope; sc-P1..P3 pin the rejections.
+envelope; sc-11..18 add the Phase i26 real-vs-CTE comparisons;
+sc-P1..P4 pin the remaining rejections.
 
 | Shape | Minimal repro query | Disposition | Suspected capability/phase | Location |
 |---|---|---|---|---|
-| Real column vs scalar-CTE output | `WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders) SELECT cu.c_custkey FROM customer AS cu, s WHERE cu.c_custkey > s.m;` | rejection-assert (sc-P1) — **deferred feature, missing on BOTH paths**: classifies cross-table; the non-agg path rejects at compile(), and even the aggregate embedded-filter machinery requires `StoredColumn` operands (no test anywhere exercises it).  Fix directions: extend `emit_cte_lookup_filter` to linked parent columns, or the cross-table machinery to CTE operands | non_aggregate_phase_4.md "out of scope" | body_passthrough_scalar_cte.inc |
+| Real column vs scalar-CTE output | `WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders) SELECT cu.c_custkey FROM customer AS cu, s WHERE cu.c_custkey > s.m;` | **SHIPPED** (sc-11..18, `cte_filter_phase_i26.md`): routed to the CTE_LOOKUP jump-table filter — real column rides the linked-attr buffer as a linked parent projection (DBSPJ non-agg expansion + typed-register comparisons), both paths.  The route also fixed a latent base-offset bug (agg linked projections + CTE-output filter compared wrong buffer entries — sc-17 pins) and closed rpr-P1 (typed col-vs-col beyond Bigint, now rpr-16/16b) | cte_filter_phase_i26.md | body_passthrough_scalar_cte.inc |
+| Sibling-branch real column vs scalar output | `... o JOIN cu ..., s WHERE cu.c_custkey > s.m` | rejection-assert (new sc-P1) — the routed shape requires the real column's op to be a tree ancestor of the CTE op | cte_filter_phase_i26.md deferred | body_passthrough_scalar_cte.inc |
+| DECIMAL operand in real-vs-CTE compare | `... WHERE cu.c_acctbal > s.m` | rejection-assert (sc-P4) — typed-register envelope is integers + FLOAT + DOUBLE | cte_filter_phase_i26.md deferred | body_passthrough_scalar_cte.inc |
 | Comma cross-join of real tables | `SELECT ... FROM customer AS cu, orders AS o;` | rejection-assert (sc-P2) | conditionless joins accepted only for scalar CTE operands | body_passthrough_scalar_cte.inc |
 | Grouped CTE comma-joined | `WITH g AS (... GROUP BY ...) SELECT ... FROM customer AS cu, g;` | rejection-assert (sc-P3) | Partial coverage — same envelope as the aggregate path | body_passthrough_scalar_cte.inc |
 | 3+ sibling scalar CTEs | `SELECT a.m, b.n, c.r FROM a, b, c` | covered (sc-8) — first-ever 3-CTE chain on either path; enabled by the ScalarDummy `setParent(tree_parent_op_idx)` fix (the old `setParent(root)` clobbered the planner's sibling chain, re-creating the topology SPJ rejects) | non_aggregate_phase_4.md W2 | body_passthrough_scalar_cte.inc |

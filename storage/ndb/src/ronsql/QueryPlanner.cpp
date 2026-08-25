@@ -103,6 +103,7 @@ QueryPlanner::plan(
   rootOp.num_key_cols = 0;
   rootOp.num_low_bounds = 0;
   rootOp.num_high_bounds = 0;
+  rootOp.needs_parent_linked_attrs = false;
 
   if (root_cte_match != NULL)
   {
@@ -171,6 +172,7 @@ QueryPlanner::plan(
     childOp.index = NULL;
     childOp.cte_def = NULL;
     childOp.cte_def_idx = 0;
+    childOp.needs_parent_linked_attrs = false;
 
     if (cte_match != NULL)
     {
@@ -196,6 +198,7 @@ QueryPlanner::plan(
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;
     bool found_parent = false;
+    bool multi_parent = false;
     for (const JoinCondition *cond = jc->conditions;
          cond != NULL;
          cond = cond->next)
@@ -207,42 +210,99 @@ QueryPlanner::plan(
         throw RonSQLPermanentError("Too many join key columns.");
       }
 
-      /* Find parent operation from first condition, verify consistent */
+      /* Per-key parent sources (non_aggregate_phase_6.md, gc-P2 lift):
+       * resolve EVERY condition's parent alias among the already-built
+       * ops — the ON conditions of one JOIN may reference different
+       * ancestor aliases. */
       const char *parent_alias = cond->parent_table.c_str();
-      if (num_keys == 0)
+      Uint32 this_parent = 0;
+      bool this_found = false;
+      for (Uint32 p = 0; p < out.num_ops; p++)
       {
-        for (Uint32 p = 0; p < out.num_ops; p++)
+        if (strcmp(out.ops[p].alias.c_str(), parent_alias) == 0)
         {
-          if (strcmp(out.ops[p].alias.c_str(), parent_alias) == 0)
-          {
-            parent_idx = p;
-            found_parent = true;
-            break;
-          }
-        }
-        if (!found_parent)
-        {
-          err << "Join condition references unknown table '" << parent_alias
-              << "'. Tables must be joined in order, each referencing a "
-              << "previously defined table." << std::endl;
-          throw RonSQLPermanentError("Join references unknown table.");
+          this_parent = p;
+          this_found = true;
+          break;
         }
       }
-      else
+      if (!this_found)
       {
-        /* All conditions must reference the same parent */
-        if (strcmp(out.ops[parent_idx].alias.c_str(), parent_alias) != 0)
-        {
-          err << "All ON conditions in a single JOIN must reference the "
-              << "same parent table." << std::endl;
-          throw RonSQLPermanentError(
-              "Mixed parent tables in ON conditions.");
-        }
+        err << "Join condition references unknown table '" << parent_alias
+            << "'. Tables must be joined in order, each referencing a "
+            << "previously defined table." << std::endl;
+        throw RonSQLPermanentError("Join references unknown table.");
+      }
+      if (!found_parent)
+      {
+        parent_idx = this_parent;
+        found_parent = true;
+      }
+      else if (this_parent != parent_idx)
+      {
+        multi_parent = true;
       }
 
       childOp.child_key_col_names[num_keys] = cond->child_column.c_str();
       childOp.parent_key_col_names[num_keys] = cond->parent_column.c_str();
+      childOp.key_parent_op_idx[num_keys] = this_parent;
       num_keys++;
+    }
+
+    if (multi_parent)
+    {
+      /* Effective parent = the deepest key-source op; every other key
+       * source must lie on its ancestor chain.  This mirrors exactly
+       * how NdbQueryBuilder's linkWithParent resolves the operation's
+       * parent (any-ancestor accepted, grandparents replaced by deeper
+       * sources; unrelated branches fail with QRY_MULTIPLE_PARENTS) —
+       * the planner check fires first with a clear message.  Ancestry
+       * walks parent_op_idx: at this point tree_parent_op_idx ==
+       * parent_op_idx for every built op (the sibling-CTE re-chain
+       * below only deepens chains, never breaks ancestry). */
+      Uint32 deepest = childOp.key_parent_op_idx[0];
+      Uint32 deepest_depth = 0;
+      for (Uint32 a = deepest; a != 0; a = out.ops[a].parent_op_idx)
+        deepest_depth++;
+      for (Uint32 k = 1; k < num_keys; k++)
+      {
+        Uint32 p = childOp.key_parent_op_idx[k];
+        Uint32 d = 0;
+        for (Uint32 a = p; a != 0; a = out.ops[a].parent_op_idx)
+          d++;
+        if (d > deepest_depth)
+        {
+          deepest = p;
+          deepest_depth = d;
+        }
+      }
+      for (Uint32 k = 0; k < num_keys; k++)
+      {
+        Uint32 want = childOp.key_parent_op_idx[k];
+        bool on_chain = false;
+        Uint32 a = deepest;
+        while (true)
+        {
+          if (a == want)
+          {
+            on_chain = true;
+            break;
+          }
+          if (a == 0)
+            break;
+          a = out.ops[a].parent_op_idx;
+        }
+        if (!on_chain)
+        {
+          err << "ON conditions reference tables from unrelated join "
+              << "branches. Multi-table ON conditions are supported only "
+              << "when the referenced tables lie on a single ancestor "
+              << "chain." << std::endl;
+          throw RonSQLPermanentError(
+              "ON parents not on one ancestor chain.");
+        }
+      }
+      parent_idx = deepest;
     }
 
     childOp.parent_op_idx = parent_idx;
@@ -293,6 +353,62 @@ QueryPlanner::plan(
       }
     }
 
+    /* Normalize key order to the physical index / PK column order.
+     * isPrimaryKey / findUniqueIndex / findOrderedIndex accept a
+     * PERMUTED key set, but emit binds key operands positionally
+     * (NdbQueryIndexBound and the readTuple key arrays map to index /
+     * PK columns in declaration order), so a permuted ON-condition
+     * order would bind keys to the wrong columns.  Reorder the per-key
+     * arrays into physical order and require an exact bijection —
+     * which also catches a duplicate child column in the ON list, a
+     * shape the set-membership matchers above accept.  CTE_LOOKUP keys
+     * are normalized at the AST level (normalize_cte_join_key_order).
+     */
+    if (num_keys > 0 &&
+        (childOp.type == JoinOp::PK_LOOKUP ||
+         childOp.type == JoinOp::UNIQUE_LOOKUP ||
+         childOp.type == JoinOp::INDEX_SCAN))
+    {
+      for (Uint32 pos = 0; pos < num_keys; pos++)
+      {
+        const char *want =
+            (childOp.type == JoinOp::PK_LOOKUP)
+                ? childOp.table->getPrimaryKey((int)pos)
+                : childOp.index->getColumn(pos)->getName();
+        bool found = false;
+        for (Uint32 k = pos; want != NULL && k < num_keys; k++)
+        {
+          if (strcmp(childOp.child_key_col_names[k], want) == 0)
+          {
+            if (k != pos)
+            {
+              const char *tc = childOp.child_key_col_names[pos];
+              childOp.child_key_col_names[pos] =
+                  childOp.child_key_col_names[k];
+              childOp.child_key_col_names[k] = tc;
+              const char *tp = childOp.parent_key_col_names[pos];
+              childOp.parent_key_col_names[pos] =
+                  childOp.parent_key_col_names[k];
+              childOp.parent_key_col_names[k] = tp;
+              Uint32 ti = childOp.key_parent_op_idx[pos];
+              childOp.key_parent_op_idx[pos] =
+                  childOp.key_parent_op_idx[k];
+              childOp.key_parent_op_idx[k] = ti;
+            }
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+        {
+          err << "Join key columns do not match the chosen index key "
+              << "prefix for table '" << child_table_name << "'."
+              << std::endl;
+          throw RonSQLPermanentError("Join key order mismatch.");
+        }
+      }
+    }
+
     /* Phase 2 (non_aggregate_phase_2.md, W2): pre-check the NDB API's
      * linked-operand rule for real-table links — the child key column
      * and the parent column must be identically declared (type,
@@ -301,15 +417,20 @@ QueryPlanner::plan(
      * permanent error instead of a runtime NDB error from
      * NdbQueryBuilder's linkedValue/bindOperand.  CTE operands are
      * skipped — virtual-table typing is handled by the CTE machinery.
+     * Per-key parent sources: each key checks against its own
+     * key-source op's table.
      */
-    if (childOp.table != NULL && out.ops[parent_idx].table != NULL)
+    if (childOp.table != NULL)
     {
       for (Uint32 k = 0; k < num_keys; k++)
       {
+        const JoinOp &key_parent = out.ops[childOp.key_parent_op_idx[k]];
+        if (key_parent.table == NULL)
+          continue;  /* CTE key source — CTE machinery handles typing */
         const NdbDictionary::Column *child_col =
             childOp.table->getColumn(childOp.child_key_col_names[k]);
         const NdbDictionary::Column *parent_col =
-            out.ops[parent_idx].table->getColumn(
+            key_parent.table->getColumn(
                 childOp.parent_key_col_names[k]);
         if (child_col == NULL || parent_col == NULL)
         {
@@ -539,4 +660,54 @@ QueryPlanner::findOrderedIndex(const NdbDictionary::Dictionary *dict,
     if (idx != NULL) return idx;
   }
   return NULL;
+}
+
+void
+QueryPlanner::collectOrderedIndexCandidates(
+    const NdbDictionary::Dictionary *dict,
+    const NdbDictionary::Table *table,
+    const char *col_names[], Uint32 num_cols,
+    RdrsSchemaCache *cache,
+    const char *database,
+    std::vector<const NdbDictionary::Index*> &out)
+{
+  NdbDictionary::Dictionary::List fallback_list;
+  const auto* cached = getIndexList(dict, table, cache, database, fallback_list);
+
+  // Same predicate as findOrderedIndex's checkIndex.
+  auto checkIndex = [&](const char* idx_name) -> const NdbDictionary::Index* {
+    const NdbDictionary::Index *idx = dict->getIndex(idx_name, *table);
+    if (idx == NULL) return NULL;
+    if ((Uint32)idx->getNoOfColumns() < num_cols) return NULL;
+    for (Uint32 c = 0; c < num_cols; c++) {
+      bool found = false;
+      for (Uint32 j = 0; j < num_cols && j < (Uint32)idx->getNoOfColumns(); j++) {
+        const NdbDictionary::Column *idx_col = idx->getColumn(j);
+        if (idx_col != NULL && strcmp(idx_col->getName(), col_names[c]) == 0) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) return NULL;
+    }
+    return idx;
+  };
+
+  if (cached != nullptr) {
+    for (const auto& ci : *cached) {
+      if (ci.type != NdbDictionary::Object::OrderedIndex) continue;
+      if (ci.state != NdbDictionary::Object::StateOnline) continue;
+      const NdbDictionary::Index *idx = checkIndex(ci.name.c_str());
+      if (idx != NULL) out.push_back(idx);
+    }
+    return;
+  }
+
+  for (Uint32 i = 0; i < fallback_list.count; i++) {
+    NdbDictionary::Dictionary::List::Element &elem = fallback_list.elements[i];
+    if (elem.type != NdbDictionary::Object::OrderedIndex) continue;
+    if (elem.state != NdbDictionary::Object::StateOnline) continue;
+    const NdbDictionary::Index *idx = checkIndex(elem.name);
+    if (idx != NULL) out.push_back(idx);
+  }
 }

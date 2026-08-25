@@ -419,9 +419,44 @@ GROUP BY cu.c_custkey|
 ck	sn
 42	5
 
-=== rpr-P1 (rejection): full-key CTE root + col-vs-col residual ===
-Error handling: RPE
-ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: both columns must resolve to Bigint (signed 64-bit).  Bigunsigned, mixed-width, float, decimal, and string col-vs-col comparisons are not yet supported — cast in the CTE body or use a constant-vs-column comparison.
+=== rpr-16: full-key CTE root + col-vs-col residual (rejecting) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > cf.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > cf.k|
+k	n
+
+=== rpr-16b: accepting col-vs-col residual ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n < cf.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n < cf.k|
+k	n
+7	5
 
 === rpr-P2 (rejection): out-of-range literal is a PERMANENT error ===
 Error handling: RPE

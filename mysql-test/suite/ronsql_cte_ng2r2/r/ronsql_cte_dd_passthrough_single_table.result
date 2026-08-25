@@ -53,7 +53,7 @@ FROM lineitem WHERE l_linenumber = 2 AND l_orderkey = 10|
 l_orderkey	l_linenumber	l_quantity	l_extendedprice
 10	2	13	93.24
 
-=== st-4: PK equality + accepting residual (scan fallback) ===
+=== st-4: PK equality + accepting residual (PK lookup + filter) ===
 == Query ==
 SELECT o_orderkey, o_custkey FROM orders
 WHERE o_orderkey = 77 AND o_shippriority >= 0;
@@ -65,6 +65,9 @@ Number of output lines, including header: 2
 
 
 
+== Explain Query ==
+== Phase rows ==
+rows=1
 == Expected result ==
 SELECT o_orderkey, o_custkey FROM orders
 WHERE o_orderkey = 77 AND o_shippriority >= 0|
@@ -83,6 +86,9 @@ Number of output lines, including header: 0
 
 
 
+== Explain Query ==
+== Phase rows ==
+rows=0
 == Expected result ==
 SELECT o_orderkey, o_custkey FROM orders
 WHERE o_orderkey = 77 AND o_custkey < 0|
@@ -537,6 +543,187 @@ o_orderkey	o_clerk
 7	NULL
 8	9
 9	10
+
+=== st-15: PK equality + multi-conjunct accepting residual ===
+== Query ==
+SELECT o_orderkey, o_totalprice FROM orders
+WHERE o_orderkey = 77 AND o_shippriority >= 0 AND o_totalprice > 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1
+== Expected result ==
+SELECT o_orderkey, o_totalprice FROM orders
+WHERE o_orderkey = 77 AND o_shippriority >= 0 AND o_totalprice > 0|
+o_orderkey	o_totalprice
+77	1029.49
+
+=== st-16: OR / IS NULL nesting in the residual program ===
+== Query ==
+SELECT o_orderkey, o_clerk FROM orders
+WHERE o_orderkey = 77 AND (o_clerk IS NULL OR o_clerk > 0);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1
+== Expected result ==
+SELECT o_orderkey, o_clerk FROM orders
+WHERE o_orderkey = 77 AND (o_clerk IS NULL OR o_clerk > 0)|
+o_orderkey	o_clerk
+77	NULL
+
+=== st-17: composite hash-PK full equality + residual ===
+== Query ==
+SELECT l_orderkey, l_linenumber, l_quantity
+FROM lineitem
+WHERE l_orderkey = 10 AND l_linenumber = 2 AND l_quantity > 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1
+== Expected result ==
+SELECT l_orderkey, l_linenumber, l_quantity
+FROM lineitem
+WHERE l_orderkey = 10 AND l_linenumber = 2 AND l_quantity > 0|
+l_orderkey	l_linenumber	l_quantity
+10	2	13
+
+=== st-18a: duplicate PK equality -> lookup ===
+== Query ==
+SELECT o_orderkey FROM orders
+WHERE o_orderkey = 77 AND o_orderkey = 77;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1
+== Expected result ==
+SELECT o_orderkey FROM orders
+WHERE o_orderkey = 77 AND o_orderkey = 77|
+o_orderkey
+77
+
+=== st-18b: contradictory PK equality -> empty ===
+== Query ==
+SELECT o_orderkey FROM orders
+WHERE o_orderkey = 77 AND o_orderkey = 78;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=0
+== Expected result ==
+SELECT o_orderkey FROM orders
+WHERE o_orderkey = 77 AND o_orderkey = 78|
+o_orderkey
+
+=== st-19: over-cap residual (long OR chain) -> scan fallback ===
+== Query ==
+SELECT o_orderkey, o_clerk FROM orders
+WHERE o_orderkey = 77 AND (o_clerk = 1 OR o_clerk = 2 OR o_clerk = 3
+OR o_clerk = 4 OR o_clerk = 5 OR o_clerk = 6 OR o_clerk = 7
+OR o_clerk = 8 OR o_clerk = 9 OR o_clerk = 10 OR o_clerk = 11
+OR o_clerk = 12 OR o_clerk = 13 OR o_clerk = 14 OR o_clerk = 15
+OR o_clerk = 16 OR o_clerk = 17 OR o_clerk = 18 OR o_clerk = 19
+OR o_clerk = 20 OR o_clerk = 21 OR o_clerk = 22 OR o_clerk = 23
+OR o_clerk = 24);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT o_orderkey, o_clerk FROM orders
+WHERE o_orderkey = 77 AND (o_clerk = 1 OR o_clerk = 2 OR o_clerk = 3
+OR o_clerk = 4 OR o_clerk = 5 OR o_clerk = 6 OR o_clerk = 7
+OR o_clerk = 8 OR o_clerk = 9 OR o_clerk = 10 OR o_clerk = 11
+OR o_clerk = 12 OR o_clerk = 13 OR o_clerk = 14 OR o_clerk = 15
+OR o_clerk = 16 OR o_clerk = 17 OR o_clerk = 18 OR o_clerk = 19
+OR o_clerk = 20 OR o_clerk = 21 OR o_clerk = 22 OR o_clerk = 23
+OR o_clerk = 24)|
+o_orderkey	o_clerk
+
+=== st-20: unsupported-type residual -> plan-time scan fallback ===
+== Explain Query ==
+Error handling: RMS->RPE
+ronsql_cli caught exception: Unsupported column type in comparison condition. Supported types are integer types, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
+
+=== st-21: VARCHAR-PK plain lookup ===
+== Query ==
+SELECT v_code, v_num FROM vkey1 WHERE v_code = 'beta';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1
+== Expected result ==
+SELECT v_code, v_num FROM vkey1 WHERE v_code = 'beta'|
+v_code	v_num
+beta	2
+
+=== st-22: VARCHAR-PK lookup + residual ===
+== Query ==
+SELECT v_code, v_num, v_note FROM vkey1
+WHERE v_code = 'gamma-longer-key' AND v_num >= 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1
+== Expected result ==
+SELECT v_code, v_num, v_note FROM vkey1
+WHERE v_code = 'gamma-longer-key' AND v_num >= 0|
+v_code	v_num	v_note
+gamma-longer-key	3	cc
 
 === st-P3 (rejection): expression in the projection ===
 Syntax error in SQL statement: Unexpected at this point

@@ -2028,6 +2028,20 @@ int NdbInterpretedCode::read_linked_to_mem(Uint32 position) {
   DBUG_RETURN(add1(Interpreter::READ_LINKED_TO_MEM | (position << 16)));
 }
 
+/* Phase i26: typed one-word load of a linked-attr buffer entry into an
+ * aggregation-interpreter register (READ_LINKED_COLUMN_TO_REG).  The
+ * kernel handler range-checks the type code at runtime; the encoder
+ * accepts any 8-bit code so the same emit serves future widenings. */
+int NdbInterpretedCode::read_linked_column_to_reg(Uint32 RegDest,
+                                                  Uint32 position,
+                                                  Uint32 ndb_type) {
+  DBUG_ENTER("NdbInterpretedCode::read_linked_column_to_reg");
+  if (RegDest >= MaxReg || position > 0xFF || ndb_type > 0xFF)
+    DBUG_RETURN(-1);
+  DBUG_RETURN(add1(
+      Interpreter::ReadLinkedColumnIntoReg(RegDest, position, ndb_type)));
+}
+
 int NdbInterpretedCode::branch_col_and_mask_eq_mask(const void *mask, Uint32,
                                                     Uint32 attrId,
                                                     Uint32 label) {

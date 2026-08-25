@@ -171,7 +171,12 @@ JOIN star_v AS v ON v.v_eid = e.e_id
 WHERE e.e_id < 6|
 
 --echo
---echo === sr-6: bushy scan star + per-branch WHERE filters ===
+--echo === sr-6: bushy scan star + per-branch WHERE bounds ===
+# child_bounds (next_steps.md item 2, body_child_bounds.inc family):
+# the per-branch constant predicates now emit as index bounds after
+# the join-key prefix on the ordered composite PKs — m_seq >= 2 a low
+# bound, v_seq <= 2 an upper-only bound (the scanFrag_fixupBound
+# renumbering fix case) — instead of interpreted filters.
 let $QUERY=
 SELECT e.e_id, m.m_seq, v.v_seq
 FROM star_e AS e
@@ -179,6 +184,17 @@ JOIN star_m AS m ON m.m_eid = e.e_id
 JOIN star_v AS v ON v.v_eid = e.e_id
 WHERE e.e_id < 6 AND m.m_seq >= 2 AND v.v_seq <= 2;|
 --source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_sr_6.out
+let $QUERY=
+SELECT e.e_id, m.m_seq, v.v_seq
+FROM star_e AS e
+JOIN star_m AS m ON m.m_eid = e.e_id
+JOIN star_v AS v ON v.v_eid = e.e_id
+WHERE e.e_id < 6 AND m.m_seq >= 2 AND v.v_seq <= 2;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Bounds: m_seq >= 2' $EXPLAIN_FILE
+--exec grep -qF 'Bounds: v_seq <= 2' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
 SELECT e.e_id, m.m_seq, v.v_seq

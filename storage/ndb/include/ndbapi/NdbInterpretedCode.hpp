@@ -1023,6 +1023,22 @@ class NdbInterpretedCode {
   int read_linked_to_mem(Uint32 position);
 
   /*
+   * Phase i26: one-word typed load of a linked-attr buffer entry into
+   * an aggregation-interpreter register (READ_LINKED_COLUMN_TO_REG,
+   * the Phase I.5 v5 kernel opcode).  Unlike the read_linked_to_mem +
+   * read_int64_to_reg_const pair this decodes the entry by its NDB
+   * column type (all 10 integer widths with correct sign extension,
+   * plus Float / Double), producing a typed register that compares
+   * correctly across mixed signedness and int-vs-double via the
+   * typed-register branch instructions.  `ndb_type` is the
+   * NdbDictionary::Column::Type code of the entry's source column;
+   * the kernel handler range-checks it at runtime.
+   * Returns 0 on success, -1 on overflow.
+   */
+  int read_linked_column_to_reg(Uint32 RegDest, Uint32 position,
+                                Uint32 ndb_type);
+
+  /*
    * Variants comparing an Attribute from this table with a parameter
    * value specified in the supplied attrInfo section.
    *

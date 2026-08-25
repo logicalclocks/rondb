@@ -164,9 +164,10 @@ the deferred probes.
 
 - **Nest options for mixed INNER/LEFT chains** — follow
   `ha_ndbcluster_push.cc:2589-2625` if sn-15-style probes ever diff.
-- **Child-local constant bounds** emitted as filters instead of bounds
-  — the known optimizer gap shared with the aggregate path
-  (`next_steps.md`, join-root follow-ups item 2).
+- ~~**Child-local constant bounds** emitted as filters instead of bounds~~
+  — **DONE (August 2026, child_bounds feature)**: constant conjuncts
+  now emit as index bounds after the linked prefix on all paths; see
+  `next_steps.md` items 2+3 (done) and `body_child_bounds.inc`.
 - **Genuine multi-batch scan-scan verification at scale** — the shared
   schema tops out at `customer JOIN orders` (sn-9); a
   `load_ronsql_large`-based case in the `ronsql_large` suite is the

@@ -30,7 +30,8 @@
 #         (the scan-rooted compound shape where an aggregate readTuple
 #         main root is protocol-legal)
 #   15    agg + CTE, over-cap residual -> table-scan fallback
-#   P1    rejection: full-key CTE root + col-vs-col residual atom
+#   16/16b full-key CTE root + col-vs-col residual (former P1
+#         rejection, flipped by Phase i26's typed-register upgrade)
 #   P2    rejection: out-of-range literal -> permanent error, no retries
 #
 # NOTE (discovered by rpr-1 on first record): aggregate queries WITHOUT
@@ -427,15 +428,39 @@ WHERE cu.c_custkey = 42
   AND cu.c_nationkey < 127
 GROUP BY cu.c_custkey|
 
-DELIMITER ;|
+--echo
+--echo === rpr-16: full-key CTE root + col-vs-col residual (rejecting) ===
+# Phase i26 (typed col-vs-col upgrade) flipped the former rpr-P1
+# rejection: the CTE_LOOKUP jump-table filter now emits typed-register
+# col-vs-col atoms beyond Bigint (here INT GB key vs Bigunsigned
+# COUNT).  Pre-0a the conjunct was silently dropped (wrong results);
+# pre-i26 it was cleanly rejected.  Here the filter rejects the group
+# (n=5 > k=7 is false) -> empty result.
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > cf.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > cf.k|
 
 --echo
---echo === rpr-P1 (rejection): full-key CTE root + col-vs-col residual ===
-# The CTE_LOOKUP jump-table filter rejects col-vs-col atoms with a clean
-# permanent error.  Pre-0a this query SUCCEEDED with wrong results (the
-# cf.n > cf.k conjunct was silently dropped).
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey) SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > cf.k;' 2>&1
+--echo === rpr-16b: accepting col-vs-col residual ===
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n < cf.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n < cf.k|
+
+DELIMITER ;|
 
 --echo
 --echo === rpr-P2 (rejection): out-of-range literal is a PERMANENT error ===

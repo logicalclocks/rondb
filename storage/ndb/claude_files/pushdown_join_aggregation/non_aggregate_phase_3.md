@@ -140,8 +140,10 @@ Status updates here, parent plan, CLAUDE.md; findings file
 - **Genuine multi-batch bushy verification at scale** — sr-7 is the
   in-suite stress; the `load_ronsql_large` case remains the named
   follow-up (shared with Phase 2's scan-scan item).
-- **Constant bounds on scan branches** — same optimizer gap as
-  Phase 2b (filters, not bounds); tracked in `next_steps.md`.
+- ~~**Constant bounds on scan branches**~~ — **DONE (August 2026,
+  child_bounds feature)**: sr-6's branch predicates now emit as
+  bounds (fatal EXPLAIN greps); see `next_steps.md` items 2+3 and
+  `body_child_bounds.inc`.
 - Sibling scan branches execute sequentially in DBSPJ (legacy
   protocol) — a perf note, not correctness.
 

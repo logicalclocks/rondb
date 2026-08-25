@@ -48,6 +48,14 @@ struct JoinOp
   const NdbDictionary::Table *table;  // NULL for CTE_LOOKUP
   const NdbDictionary::Index *index;
   LexCString alias;
+  // Effective parent = the deepest key-source op.  With per-key parent
+  // sources (non_aggregate_phase_6.md, gc-P2 lift) the ON conditions of
+  // one JOIN may reference different ancestor aliases; parent_op_idx is
+  // then the deepest referenced op (every other key source must lie on
+  // its ancestor chain — validated in plan()), matching exactly how
+  // NdbQueryBuilder's linkWithParent resolves the operation's parent.
+  // In the common single-parent case it equals every
+  // key_parent_op_idx[k].
   Uint32 parent_op_idx;
   // Tree parent in the SPJ query tree. Normally equals parent_op_idx (the
   // op whose column provides this op's join key — also used as the key-
@@ -62,15 +70,24 @@ struct JoinOp
   bool is_root;
   const char *child_key_col_names[MAX_JOIN_KEY_COLS];
   const char *parent_key_col_names[MAX_JOIN_KEY_COLS];
+  // Per-key key-source op (the op whose column provides key k's value;
+  // emit passes it to linkedValue).  Generalizes keys the way
+  // RangeBound::parent_op_idx already generalizes bounds.
+  Uint32 key_parent_op_idx[MAX_JOIN_KEY_COLS];
   Uint32 num_key_cols;
 
-  // Range bounds from cross-table WHERE on index columns (after join keys).
-  // These extend the index scan bounds beyond the equality join keys.
+  // Range bounds on index columns after the join-key prefix — from
+  // cross-table WHERE conjuncts (parent-linked values) or child-local
+  // constant conjuncts (child_bounds feature, next_steps.md item 2).
   struct RangeBound {
     const char *child_col_name;    // child index column
     const char *parent_col_name;   // parent column providing the bound value
     Uint32 parent_op_idx;          // parent operation index
     bool inclusive;                 // true = <=/>= , false = </>
+    // Non-NULL => constant bound: the whole conjunct (IDENT op CONST);
+    // emit encodes args.right via encode_constant and the parent_*
+    // fields are unused.  NULL => parent-linked bound as before.
+    ConditionalExpression *const_cond;
   };
   RangeBound low_bounds[MAX_JOIN_KEY_COLS];
   Uint32 num_low_bounds;
@@ -80,6 +97,14 @@ struct JoinOp
   // CTE-specific fields (valid when type == CTE_LOOKUP)
   CteDefinition *cte_def;  // Pointer to CTE definition AST node
   Uint32 cte_def_idx;      // Index of CTE in cte_list (0-based)
+
+  // Phase i26 (cte_filter_phase_i26.md): this CTE_LOOKUP op's filter
+  // references ancestor real-table columns (e.g. `t.col > s.m`), so
+  // emit must attach the plan's linked projections even when no
+  // aggregator sits on the op — DBLQH prepends them to the CTE outputs
+  // in the linked-attr buffer and the filter reads them by projection
+  // index.  Set by classify_where_by_table.
+  bool needs_parent_linked_attrs;
 };
 
 struct JoinPlan
@@ -119,6 +144,20 @@ public:
                    const char *col_names[], Uint32 num_cols,
                    RdrsSchemaCache *cache = nullptr,
                    const char *database = nullptr);
+
+  // All online ordered indexes whose first num_cols columns contain the
+  // given columns (the findOrderedIndex predicate, every match instead
+  // of the first).  Used by the child-bounds index re-selection
+  // (next_steps.md item 3): a later candidate can beat the planner's
+  // first match when it additionally serves child-local constant or
+  // cross-table bounds.
+  static void
+  collectOrderedIndexCandidates(const NdbDictionary::Dictionary *dict,
+                                const NdbDictionary::Table *table,
+                                const char *col_names[], Uint32 num_cols,
+                                RdrsSchemaCache *cache,
+                                const char *database,
+                                std::vector<const NdbDictionary::Index*> &out);
 
 private:
   static bool isPrimaryKey(const NdbDictionary::Table *table,

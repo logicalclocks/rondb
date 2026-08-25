@@ -114,10 +114,14 @@ notes.
 
 ## Kept restrictions (pinned, not lifted)
 
-- Partial-key CTE joins (gc-P1) — same envelope as I.16; evaluating
-  the I.16b/c root-rewrite for non-aggregate queries is a follow-up.
-- Multi-key CTEs keyed off multiple aliases (gc-P2) — planner
-  limitation, per-key parent sources deferred.
+- ~~Partial-key CTE joins (gc-P1)~~ — **LIFTED by
+  `non_aggregate_phase_6.md`** (August 2026): the I.16b/c root-rewrite
+  now runs pre-gate for non-aggregate queries (gc-14..16); residual
+  partial shapes throw the clean I.16a-mirror message (gc-P1a/b/c).
+- ~~Multi-key CTEs keyed off multiple aliases (gc-P2)~~ — **LIFTED by
+  `non_aggregate_phase_6.md`**: per-key parent sources in QueryPlanner
+  + emit, both paths (gc-17..20); sibling-branch key sources stay
+  rejected with a clean planner error (gc-P2b).
 - Non-aggregating CTE bodies (gc-P3) — CTE bodies must aggregate;
   lifting this is a separate kernel-facing feature.
 - `CTE_SCAN` as a keyed join child — inexpressible through the gate

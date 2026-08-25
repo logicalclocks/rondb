@@ -323,15 +323,26 @@ private:
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
   // Phase 1 (non_aggregate_phase_1.md, W2): single-row PK lookup for
-  // non-aggregate single-table queries whose WHERE is fully consumed
-  // as PK equalities.  When set, m_scan_config stays NULL and
-  // m_pk_lookup_const holds one constant per PK column (in PK order,
-  // arena-allocated).  Aggregate queries never set this — single-table
-  // aggregation needs the scan protocol (SO_AGGREGATION); a plain
-  // readTuple has no aggregator path (the single-table twin of the
-  // Phase 0 lookup-root rule).
+  // non-aggregate single-table queries whose WHERE covers the full
+  // primary key with equalities.  When set, m_scan_config stays NULL
+  // and m_pk_lookup_const holds one constant per PK column (in PK
+  // order, arena-allocated).  Aggregate queries never set this —
+  // single-table aggregation needs the scan protocol (SO_AGGREGATION);
+  // a plain readTuple has no aggregator path (the single-table twin of
+  // the Phase 0 lookup-root rule).
+  // PK+residual follow-up (non_aggregate_pk_residual_lookup.md):
+  // residual conjuncts no longer force the scan fallback — they ride
+  // the lookup as an NdbRecord OO_INTERPRETED filter program.
+  // m_pk_lookup_cond_map maps each m_toplevel_conditions entry to the
+  // PK ordinal it binds, or -1 for a residual filter conjunct (same
+  // idiom as ScanConfig::condition_handling_map, so EXPLAIN prints in
+  // the same format).  The scan fallback remains for residuals whose
+  // program exceeds the lookup word cap or uses types apply_filter /
+  // encode_constant cannot emit (trial build at detection time).
   bool m_pk_lookup = false;
+  bool m_pk_lookup_has_residual = false;
   struct ConditionalExpression** m_pk_lookup_const = NULL;
+  int* m_pk_lookup_cond_map = NULL;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -416,6 +427,12 @@ private:
   void load();
   void load_single_table();
   void load_join();
+  // Phase I.16b/c partial-key-CTE root rewrite, extracted from
+  // load_join() (non_aggregate_phase_6.md): also called from parse()
+  // ahead of the projection-only gate for non-aggregate queries, so
+  // the gate's coverage check evaluates the post-rewrite tree.
+  // Idempotent — a second call bails on the promoted CTE root.
+  void maybe_rewrite_partial_key_cte_root();
   /* Phase I.17h: synthesise a FROM clause from qualified column refs
    * to scalar CTEs when the parser produced a NULL root_table.  No-op
    * when an explicit FROM was given. */
@@ -440,18 +457,63 @@ private:
                                    ConditionalExpression* ce) const;
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
+  // Phase i26: register linked projections for ancestor columns in
+  // routed CTE-op filters.  Runs after load_join's GROUP BY
+  // linked-projection block (GB projections must keep slots 0..n-1 —
+  // GroupByLinked positions are a sequential counter over the GROUP BY
+  // list); dedups via find_or_add_linked_proj.
+  void register_cte_filter_linked_projs(QueryScope& scope);
   void promote_left_to_inner_for_where(QueryScope& scope);
   static bool is_anti_join_promotable(const QueryScope& scope,
                                        Uint32 op_idx,
                                        const ConditionalExpression* ce);
-  void assign_cross_table_index_bounds();
+  // Child-op index bounds (child_bounds feature, next_steps.md items
+  // 2+3; formerly assign_cross_table_index_bounds): per non-root
+  // INDEX_SCAN op, walk index columns after the join-key prefix and
+  // bind consecutive columns from cross-table WHERE filters
+  // (parent-linked bounds) and child-local constant conjuncts
+  // (RangeBound::const_cond); consumed local conjuncts leave
+  // join_where_ce[op].  Re-selects the op's index when another
+  // join-key-prefix candidate binds strictly more columns.  Called
+  // for the main scope (load_join) and each CTE-body scope
+  // (build_cte_scopes); no-op for single-op plans.
+  void assign_child_index_bounds(QueryScope& scope);
+  // The normalized (child-side) comparison op if `ctf` provides a
+  // bound on column idx_col_name of op op_idx; (TokenKind)0 otherwise.
+  // Outputs child/parent column names + the parent op index.
+  TokenKind cross_table_bound_op(QueryScope& scope, Uint32 op_idx,
+                                 CrossTableFilter& ctf,
+                                 const char* idx_col_name,
+                                 const char** out_child_col,
+                                 const char** out_parent_col,
+                                 Uint32* out_parent_op);
+  // The comparison op if `ce` is a bound-eligible child-local constant
+  // conjunct (IDENT op CONST, identifier = column idx_col_name of op
+  // op_idx, constant in the encode_constant-servable set, column NOT
+  // NULL — the v1 nullability guard); (TokenKind)0 otherwise.
+  TokenKind child_const_bound_op(QueryScope& scope, Uint32 op_idx,
+                                 ConditionalExpression* ce,
+                                 const char* idx_col_name,
+                                 const NdbDictionary::Table* table);
+  // Dry-run of the assign walk for index re-selection scoring:
+  // EQ-bound column = +3 (walk continues), range-bound = +1 (walk
+  // stops), unmatched column stops.
+  Uint32 score_child_index_bounds(QueryScope& scope, Uint32 op_idx,
+                                  const NdbDictionary::Index* idx,
+                                  ConditionalExpression** local_conjuncts,
+                                  Uint32 num_local,
+                                  Uint32 num_key_cols,
+                                  const NdbDictionary::Table* table);
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
-  // Phase 1 W2: returns true (and sets m_pk_lookup + m_pk_lookup_const)
-  // when every top-level WHERE conjunct is a `pk_col = const` equality
-  // and together they cover the full primary key — the v1 policy: any
-  // residual conjunct, duplicate, partial cover or non-equality falls
-  // back to the scan-config path (always correct).
+  // Phase 1 W2 + PK+residual follow-up: returns true (and sets
+  // m_pk_lookup, m_pk_lookup_const, m_pk_lookup_cond_map,
+  // m_pk_lookup_has_residual) when the top-level WHERE conjuncts cover
+  // the full primary key with equalities.  Conjuncts not consumed as
+  // keys become residual filters carried by the lookup's interpreted
+  // program; a trial build gates on the lookup word cap and on
+  // emit-supported types, falling back to the scan-config path
+  // (always correct) when the program cannot be carried.
   bool detect_pk_lookup();
   // `defer_force_check` (Phase 4b): skip build_scan_config_candidates'
   // FORCE INDEX satisfiability throws so the ORDER BY index pass can
@@ -507,6 +569,13 @@ private:
   void register_passthrough_getvalues(NdbOperation* op,
                                       const NdbRecAttr** attrs,
                                       Uint32 num_cols);
+  // PK+residual follow-up: the NdbRecord-lookup twin of
+  // register_passthrough_getvalues — same outputs walk and checks, but
+  // fills OO_GETVALUE GetValueSpec entries (an NdbRecord operation
+  // cannot take RecAttr getValue() calls; the specs' recAttr results
+  // are the same NdbRecAttr* the printer consumes).
+  void build_passthrough_getvalue_specs(NdbOperation::GetValueSpec* gets,
+                                        Uint32 num_cols);
   // Shared scan-config candidate generator used by both the
   // single-table path (`generate_scan_config_candidates`) and the
   // per-scope path (`select_root_scan_config`).  Pushes one TABLE_SCAN candidate

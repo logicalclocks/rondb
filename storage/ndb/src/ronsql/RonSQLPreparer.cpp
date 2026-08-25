@@ -370,6 +370,14 @@ RonSQLPreparer::classify_ce_table_resolved(
 static Uint32 filter_expr_reg_depth(ConditionalExpression* ce);
 static const Uint32 MAX_WHERE_CONJUNCTS = 64;
 
+// Defined later in this file; forward-declared for the Phase i26
+// real-vs-CTE filter routing in classify_where_by_table.
+static Uint32 find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx,
+                                      const char* col_name);
+static bool linked_source_is_leaf_ancestor(const JoinPlan& plan,
+                                           Uint32 leaf_idx,
+                                           Uint32 target_op_idx);
+
 /*
  * Flatten nested AND nodes into an array of conjuncts.
  */
@@ -604,6 +612,15 @@ RonSQLPreparer::parse()
       // do the cheap parse-time guards here (no aggregates already
       // implies no HAVING aggregates) and require the FROM root to be
       // a CTE alias; remaining shape rejection is deferred.
+      //
+      // Phase 6 (non_aggregate_phase_6.md, gc-P1 lift): run the
+      // I.16b/c partial-key-CTE root rewrite BEFORE the gate walk, so
+      // a partial-key INNER join to a multi-key CTE becomes the
+      // shipped CTE_SCAN-root shape instead of failing the
+      // complete-key coverage check below.  The load_join() call
+      // stays (aggregate-path timing unchanged); this earlier
+      // invocation makes that one a no-op via its root_is_cte bail.
+      maybe_rewrite_partial_key_cte_root();
       bool from_is_cte = false;
       for (const CteDefinition* cte = m_context.ast_root.cte_list;
            cte != NULL; cte = cte->next) {
@@ -757,10 +774,45 @@ RonSQLPreparer::parse()
             // accepted set — its producer restricts it to exactly the
             // conditionless-scalar case admitted above.
             if (!cte_key_coverage(join_cte, child_names, num_keys,
-                                  coverage) ||
-                (coverage.state != CteKeyCoverage::ExactOrdered &&
-                 coverage.state != CteKeyCoverage::ExactPermuted &&
-                 coverage.state != CteKeyCoverage::ScalarDummy)) {
+                                  coverage)) {
+              projection_only_join_chain = false;
+              break;
+            }
+            // Phase 6 (non_aggregate_phase_6.md): the pre-gate
+            // I.16b/c rewrite above already promoted the first
+            // eligible partial-key INNER CTE join to root, so a
+            // Partial state reaching this walk is a residual shape
+            // the rewrite cannot serve (LEFT JOIN on the partial CTE
+            // join itself, a non-root parent alias, a second partial
+            // CTE, or a CTE-on-CTE root).  Throw the emit-side I.16a
+            // wording instead of the generic gate text; same for
+            // WrongColumns (the I.20 message).
+            if (coverage.state == CteKeyCoverage::Partial) {
+              ndbrequire(m_conf.err_stream != NULL);
+              std::basic_ostream<char>& err = *m_conf.err_stream;
+              err << "Partial CTE lookup key not supported.  The virtual"
+                     " CTE primary key matches the CTE body's GROUP BY"
+                     " column list and the join must bind every key"
+                     " column.  Workaround: place the multi-key CTE on"
+                     " the joined root and join the smaller table to it"
+                     " (an INNER join from the root parent is rewritten"
+                     " that way automatically).\n";
+              throw RonSQLPermanentError(
+                  "Partial CTE lookup key not supported.");
+            }
+            if (coverage.state == CteKeyCoverage::WrongColumns) {
+              ndbrequire(m_conf.err_stream != NULL);
+              std::basic_ostream<char>& err = *m_conf.err_stream;
+              err << "CTE lookup key references a CTE output column that"
+                     " is not part of the virtual primary key.  The"
+                     " virtual CTE primary key matches the CTE body's"
+                     " GROUP BY column list.\n";
+              throw RonSQLPermanentError(
+                  "CTE lookup key references a non-key CTE column.");
+            }
+            if (coverage.state != CteKeyCoverage::ExactOrdered &&
+                coverage.state != CteKeyCoverage::ExactPermuted &&
+                coverage.state != CteKeyCoverage::ScalarDummy) {
               projection_only_join_chain = false;
               break;
             }
@@ -1657,30 +1709,40 @@ RonSQLPreparer::normalize_cte_join_key_order()
   }
 }
 
+/*
+ * Phase I.16b / I.16c: detect a partial-key INNER join to a multi-key
+ * CTE somewhere in the join chain and rewrite the AST so the CTE
+ * becomes the joined root.  After the swap the planner produces a
+ * CTE_SCAN root with the original parent as a child operation via its
+ * existing PK / unique / index lookup logic; the remaining joins keep
+ * their alias-based parent references and resolve unchanged.
+ *
+ * Applies when:
+ *   - the original root is a real table (not a CTE)
+ *   - the multikey-CTE-join is INNER (LEFT_OUTER would change
+ *     semantics under the swap — bail to I.16a's clean reject)
+ *   - the CTE body has GROUP BY with N columns and the join binds
+ *     fewer than N column-pairs (would otherwise hit I.16a)
+ *
+ * Other joins in the chain may be INNER or LEFT_OUTER and any count.
+ * Non-root CTE_SCAN child shapes are out of scope — scanCte() in the
+ * NDB API doesn't take a key array, so RonSQL follows what the API
+ * supports.
+ *
+ * Called from two sites (non_aggregate_phase_6.md): load_join() (the
+ * original aggregate-path timing, byte-identical behavior) and, for
+ * non-aggregate queries, parse() BEFORE the projection-only gate — the
+ * gate's complete-key CTE coverage check then evaluates the
+ * post-rewrite tree (a CTE_SCAN root + real chain, the shipped gc-9
+ * shape needing no gate relaxation).  The second invocation is a
+ * natural no-op: post-rewrite the root IS the CTE, so the root_is_cte
+ * bail fires.  Pure AST + m_amalloc work, safe at parse time
+ * (cte_key_coverage is AST-only; the gate already calls it at parse
+ * time).
+ */
 void
-RonSQLPreparer::load_join()
+RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
 {
-  std::basic_ostream<char>& err = *m_conf.err_stream;
-
-  // Phase I.16b / I.16c: detect a partial-key INNER join to a
-  // multi-key CTE somewhere in the join chain and rewrite the AST so
-  // the CTE becomes the joined root.  After the swap the planner
-  // produces a CTE_SCAN root with the original parent as a child
-  // operation via its existing PK / unique / index lookup logic; the
-  // remaining joins keep their alias-based parent references and
-  // resolve unchanged.
-  //
-  // Applies when:
-  //   - the original root is a real table (not a CTE)
-  //   - the multikey-CTE-join is INNER (LEFT_OUTER would change
-  //     semantics under the swap — bail to I.16a's clean reject)
-  //   - the CTE body has GROUP BY with N columns and the join binds
-  //     fewer than N column-pairs (would otherwise hit I.16a)
-  //
-  // Other joins in the chain may be INNER or LEFT_OUTER and any
-  // count.  Non-root CTE_SCAN child shapes are out of scope —
-  // scanCte() in the NDB API doesn't take a key array, so RonSQL
-  // follows what the API supports.
   if (m_context.ast_root.root_table != NULL &&
       m_context.ast_root.joins != NULL)
   {
@@ -1743,6 +1805,14 @@ RonSQLPreparer::load_join()
         JoinClause* new_jc = m_amalloc->alloc_exc<JoinClause>(1);
         new_jc->join_type = JoinClause::INNER_JOIN;
         new_jc->table = *m_context.ast_root.root_table;
+        // A root index hint does not survive the demotion: on the
+        // aggregate path reject_index_hints_on_joins already ran (the
+        // hint was silently dropped — nothing reads join-clause hints
+        // after it); on the pre-gate parse() call the reject runs
+        // later and would otherwise newly trip on the demoted copy.
+        // Clearing keeps both paths at the established behavior.
+        new_jc->table.hint_kind = TableRef::HintKind::HINT_NONE;
+        new_jc->table.hint_indexes = NULL;
         new_jc->conditions = match->conditions;
         for (JoinCondition* jc = new_jc->conditions;
              jc != NULL; jc = jc->next) {
@@ -1761,9 +1831,78 @@ RonSQLPreparer::load_join()
         // Promote the matched CTE TableRef to root.  TableRef in
         // the AST root is a pointer; copy the value in.
         *m_context.ast_root.root_table = match->table;
+        // Note: ast_root.table (the FROM name LexString set once by
+        // the parser) deliberately keeps the pre-rewrite name — the
+        // shipped aggregate-path rewrite always left it stale, and
+        // its consumers (get_table_name(), ParseOnly) read the
+        // original FROM name.
       }
     }
   }
+}
+
+/*
+ * Phase i26: register linked projections for the ancestor real-table
+ * columns referenced by CTE-op jump-table filters
+ * (JoinOp::needs_parent_linked_attrs, set by classify_where_by_table's
+ * routing).  Deliberately NOT done at classification time: the
+ * aggregation program's GroupByLinked positions are a sequential
+ * counter over the GROUP BY list, which requires GROUP BY linked
+ * projections to occupy the first slots of plan.linked_projs — this
+ * pass therefore runs after load_join's GB block and dedups via
+ * find_or_add_linked_proj.  Walks every identifier in the routed
+ * filter CE; StoredColumn refs on other ops are ancestors by the
+ * routing gate's construction.
+ */
+void
+RonSQLPreparer::register_cte_filter_linked_projs(QueryScope& scope)
+{
+  if (scope.resolved_columns == NULL) return;
+  JoinPlan& plan = scope.join_plan;
+  for (Uint32 i = 1; i < plan.num_ops; i++) {
+    if (!plan.ops[i].needs_parent_linked_attrs) continue;
+    ConditionalExpression* ce = scope.join_where_ce[i];
+    if (ce == NULL) continue;
+    std::function<void(ConditionalExpression*)> walk =
+        [&](ConditionalExpression* e) {
+      if (e == NULL) return;
+      if (e->op == T_IDENTIFIER) {
+        const QueryScope::ResolvedColumnRef& r =
+            scope.resolved_columns[e->col_idx];
+        if (r.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+            r.join_op_idx != i) {
+          find_or_add_linked_proj(plan, r.join_op_idx,
+                                  m_columns[e->col_idx].c_str());
+        }
+        return;
+      }
+      switch (e->op) {
+      case T_AND: case T_OR:
+      case T_EQUALS: case T_NOT_EQUALS:
+      case T_LT: case T_LE: case T_GT: case T_GE:
+        walk(e->args.left);
+        walk(e->args.right);
+        return;
+      case T_IS:
+        walk(e->is.arg);
+        return;
+      default:
+        return;  // constants and anything else carry no column refs
+      }
+    };
+    walk(ce);
+  }
+}
+
+void
+RonSQLPreparer::load_join()
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  // No-op for non-aggregate queries — parse() already ran the rewrite
+  // ahead of the projection-only gate; for aggregate queries this is
+  // the original (byte-identical) timing.
+  maybe_rewrite_partial_key_cte_root();
   normalize_cte_join_key_order();
 
   // Build the join plan via QueryPlanner
@@ -1807,7 +1946,7 @@ RonSQLPreparer::load_join()
   promote_left_to_inner_for_where(m_main_scope);
 
   // Convert cross-table WHERE filters to index range bounds where possible
-  assign_cross_table_index_bounds();
+  assign_child_index_bounds(m_main_scope);
 
   // Apply inner subquery filters to the corresponding leaf operations
   if (m_has_select_subqueries) {
@@ -1830,7 +1969,14 @@ RonSQLPreparer::load_join()
     }
   }
 
-  // Build linked projections for GROUP BY columns on non-leaf tables
+  // Build linked projections for GROUP BY columns on non-leaf tables.
+  // INVARIANT: this block must stay the FIRST producer of
+  // plan.linked_projs — the aggregation program's GroupByLinked
+  // positions are emitted as a sequential counter over the GROUP BY
+  // list, so GB projections must occupy slots 0..n-1.  Every other
+  // producer (build_agg_linked_projections' loads / cross-table /
+  // CASE columns, register_cte_filter_linked_projs) runs later and
+  // dedups via find_or_add_linked_proj.
   require_run(m_main_scope.resolved_columns != NULL,
               "GROUP BY linked projection setup: missing resolved columns.");
   Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
@@ -1852,6 +1998,14 @@ RonSQLPreparer::load_join()
     }
     groupby = groupby->next;
   }
+
+  // Phase i26: register linked projections for ancestor real-table
+  // columns referenced by CTE-op filters (needs_parent_linked_attrs,
+  // set by classify_where_by_table).  Must run AFTER the GB block
+  // above so GB projections keep slots 0..n-1 (find_or_add dedups
+  // against them); emit_cte_lookup_filter later resolves the same
+  // (op, name) pairs find-only.
+  register_cte_filter_linked_projs(m_main_scope);
 
   // Root scan-config selection (join_root_index_scan_plan.md): consider
   // an ordered-index scan for the main-query root when the
@@ -1971,6 +2125,81 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
                         (Uint32)tables_seen[0] : (Uint32)tables_seen[1];
       Uint32 parent_t = ((Uint32)tables_seen[0] > (Uint32)tables_seen[1]) ?
                          (Uint32)tables_seen[1] : (Uint32)tables_seen[0];
+
+      /*
+       * Phase i26 (cte_filter_phase_i26.md): a conjunct comparing this
+       * CTE_LOOKUP op's outputs against a TREE-ANCESTOR real-table
+       * column (`t.col > s.m`, the watermark shape) routes to the CTE
+       * op's jump-table filter instead of the cross-table machinery.
+       * The ancestor columns ride the linked-attr buffer as linked
+       * parent projections: DBSPJ expands them per parent row, DBLQH
+       * prepends them ahead of the CTE outputs, and the filter reads
+       * them by projection index.  v1 gate:
+       *  - the higher op is a CTE_LOOKUP and the other op is a tree
+       *    ancestor of it (sibling branches stay cross-table);
+       *  - every atom side is a bare identifier or constant (already
+       *    validated as simple comparisons above; arithmetic falls
+       *    back to the cross-table path);
+       *  - projection bookkeeping is safe: no multi-leaf aggregation,
+       *    and any single-leaf aggregator sits on this CTE op — the
+       *    plan's linked_projs list is shared, so an aggregator on a
+       *    DIFFERENT op would get the filter's projections attached
+       *    and its buffer positions would shift.
+       */
+      {
+        JoinPlan& plan = scope.join_plan;
+        bool routable =
+            (&scope == &m_main_scope &&  // CTE-body scopes deferred
+             scope.resolved_columns != NULL &&
+             child_t < plan.num_ops && parent_t < plan.num_ops &&
+             plan.ops[child_t].type == JoinOp::CTE_LOOKUP &&
+             child_t != parent_t &&
+             linked_source_is_leaf_ancestor(plan, child_t, parent_t) &&
+             plan.num_agg_leaves == 0 &&
+             (scope.agg == NULL || plan.agg_leaf_idx == child_t));
+        if (routable) {
+          for (Uint32 a = 0; a < num_atoms && routable; a++) {
+            ConditionalExpression* atom = or_atoms[a];
+            ConditionalExpression* atom_sides[2] = {atom->args.left,
+                                                    atom->args.right};
+            for (int s2 = 0; s2 < 2 && routable; s2++) {
+              ConditionalExpression* e = atom_sides[s2];
+              if (e->op == T_IDENTIFIER || e->op == T_INT ||
+                  e->op == T_FLOAT || e->op == T_STRING ||
+                  e->op == T_NULL) {
+                continue;
+              }
+              routable = false;
+            }
+          }
+        }
+        if (routable) {
+          // Only mark + route here.  The ancestor columns' linked
+          // projections are registered LATER, by
+          // register_cte_filter_linked_projs after load_join's
+          // GROUP BY linked-projection block: the aggregation
+          // program's GroupByLinked positions are a sequential
+          // counter over the GROUP BY list, which requires GB
+          // projections to occupy the FIRST slots of
+          // plan.linked_projs — registering filter columns here
+          // (before the GB pass) shifted them and the target
+          // aggregator read the wrong buffer entries (the sc-17
+          // VARCHAR GB-key crash on first record).
+          plan.ops[child_t].needs_parent_linked_attrs = true;
+          if (scope.join_where_ce[child_t] == NULL) {
+            scope.join_where_ce[child_t] = ce;
+          } else {
+            ConditionalExpression* combined =
+                m_amalloc->alloc_exc<ConditionalExpression>(1);
+            combined->op = T_AND;
+            combined->args.left = scope.join_where_ce[child_t];
+            combined->args.right = ce;
+            scope.join_where_ce[child_t] = combined;
+          }
+          continue;
+        }
+      }
+
       CrossTableFilter ctf;
       ctf.ce = ce;
       ctf.child_table_idx = child_t;
@@ -2126,22 +2355,250 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
   }
 }
 
-void
-RonSQLPreparer::assign_cross_table_index_bounds()
+TokenKind
+RonSQLPreparer::cross_table_bound_op(QueryScope& scope, Uint32 op_idx,
+                                     CrossTableFilter& ctf,
+                                     const char* idx_col_name,
+                                     const char** out_child_col,
+                                     const char** out_parent_col,
+                                     Uint32* out_parent_op)
 {
-  // For each child operation that is an INDEX_SCAN, iterate the index
-  // columns after the join key prefix and try to match cross-table
-  // filters to consecutive columns.  Matching filters become index
-  // range bounds; unmatched filters stay as embedded-interpreter
-  // aggregation predicates.
+  if (ctf.ce == NULL) return (TokenKind)0;  // Already consumed
+  if (ctf.child_table_idx != op_idx && ctf.parent_table_idx != op_idx)
+    return (TokenKind)0;  // Not for this operation
+  ConditionalExpression* cf = ctf.ce;
+  // Only simple comparisons can serve as bounds; guard before touching
+  // col_idx (an OR-shaped cross-table filter carries comparison nodes,
+  // not identifiers, in args.left/right).
+  if (cf->op != T_EQUALS && cf->op != T_GE && cf->op != T_GT &&
+      cf->op != T_LE && cf->op != T_LT)
+    return (TokenKind)0;
+  if (cf->args.left == NULL || cf->args.left->op != T_IDENTIFIER ||
+      cf->args.right == NULL || cf->args.right->op != T_IDENTIFIER)
+    return (TokenKind)0;
+  Uint32 left_cidx = cf->args.left->col_idx;
+  Uint32 right_cidx = cf->args.right->col_idx;
+  require_run(scope.resolved_columns != NULL,
+              "Cross-table index bound setup: missing resolved "
+              "columns.");
+  const QueryScope::ResolvedColumnRef& left_ref =
+      scope.resolved_columns[left_cidx];
+  const QueryScope::ResolvedColumnRef& right_ref =
+      scope.resolved_columns[right_cidx];
+  require_prm(
+      left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+      right_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+      "Cross-table index bound setup requires stored-table columns.");
+
+  bool left_is_child = (left_ref.join_op_idx == op_idx);
+  Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
+  const char* child_col_name = m_columns[child_cidx].c_str();
+
+  if (strcmp(idx_col_name, child_col_name) != 0)
+    return (TokenKind)0;  // Not this index column
+
+  // Match found. Normalize operator to child_col OP parent_col.
+  Uint32 parent_cidx = left_is_child ? right_cidx : left_cidx;
+  TokenKind filter_op = cf->op;
+  if (!left_is_child)
+  {
+    switch (filter_op) {
+    case T_LT: filter_op = T_GT; break;
+    case T_LE: filter_op = T_GE; break;
+    case T_GT: filter_op = T_LT; break;
+    case T_GE: filter_op = T_LE; break;
+    default: break;
+    }
+  }
+  *out_child_col = child_col_name;
+  *out_parent_col = m_columns[parent_cidx].c_str();
+  *out_parent_op = scope.resolved_columns[parent_cidx].join_op_idx;
+  return filter_op;
+}
+
+TokenKind
+RonSQLPreparer::child_const_bound_op(QueryScope& scope, Uint32 op_idx,
+                                     ConditionalExpression* ce,
+                                     const char* idx_col_name,
+                                     const NdbDictionary::Table* table)
+{
+  TokenKind op = ce->op;
+  if (op != T_EQUALS && op != T_GE && op != T_GT &&
+      op != T_LE && op != T_LT)
+    return (TokenKind)0;
+  ConditionalExpression* ident = ce->args.left;
+  if (ident == NULL || ident->op != T_IDENTIFIER)
+    return (TokenKind)0;
+  // Same constant-eligibility set as build_scan_config_candidates —
+  // encode_constant can serve these at emit; anything else stays a
+  // residual filter.  (I_SUBQUERY placeholders are substituted with
+  // constants before any emit path runs.)
+  ConditionalExpression* cconst = ce->args.right;
+  if (cconst == NULL ||
+      (cconst->op != T_INT && cconst->op != T_FLOAT &&
+       cconst->op != T_STRING && cconst->op != I_MYSQL_TIME &&
+       cconst->op != I_SUBQUERY))
+    return (TokenKind)0;
+  if (scope.resolved_columns == NULL) return (TokenKind)0;
+  const QueryScope::ResolvedColumnRef& ref =
+      scope.resolved_columns[ident->col_idx];
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+      ref.join_op_idx != op_idx)
+    return (TokenKind)0;
+  if (strcmp(m_columns[ident->col_idx].c_str(), idx_col_name) != 0)
+    return (TokenKind)0;
+  // v1 nullability guard: NULL sorts below every value in NDB ordered
+  // indexes, so an index bound on a nullable column would include /
+  // exclude NULL rows differently from SQL comparison semantics
+  // (col <= X is UNKNOWN for NULL, but NULL < X in index order).
+  // NOT NULL columns only; nullable columns keep the filter.
+  const NdbDictionary::Column* tab_col = table->getColumn(idx_col_name);
+  if (tab_col == NULL || tab_col->getNullable())
+    return (TokenKind)0;
+  return op;
+}
+
+Uint32
+RonSQLPreparer::score_child_index_bounds(QueryScope& scope, Uint32 op_idx,
+                                         const NdbDictionary::Index* idx,
+                                         ConditionalExpression** local_conjuncts,
+                                         Uint32 num_local,
+                                         Uint32 num_key_cols,
+                                         const NdbDictionary::Table* table)
+{
+  Uint32 score = 0;
+  Uint32 num_idx_cols = (Uint32)idx->getNoOfColumns();
+  for (Uint32 col_pos = num_key_cols; col_pos < num_idx_cols; col_pos++)
+  {
+    const NdbDictionary::Column* idx_col = idx->getColumn(col_pos);
+    if (idx_col == NULL) break;
+    const char* idx_col_name = idx_col->getName();
+    bool has_eq = false, has_low = false, has_high = false;
+    auto count_op = [&](TokenKind t) {
+      if (t == T_EQUALS) has_eq = true;
+      else if (t == T_GT || t == T_GE) has_low = true;
+      else if (t == T_LT || t == T_LE) has_high = true;
+    };
+    for (Uint32 f = 0;
+         !has_eq && f < scope.cross_table_where_filters.size();
+         f++)
+    {
+      const char* cc; const char* pc; Uint32 po;
+      count_op(cross_table_bound_op(scope, op_idx,
+                                    scope.cross_table_where_filters[f],
+                                    idx_col_name, &cc, &pc, &po));
+    }
+    for (Uint32 ci = 0; !has_eq && ci < num_local; ci++)
+    {
+      if (local_conjuncts[ci] == NULL) continue;
+      count_op(child_const_bound_op(scope, op_idx, local_conjuncts[ci],
+                                    idx_col_name, table));
+    }
+    if (has_eq) { score += 3; continue; }
+    if (has_low) score += 1;
+    if (has_high) score += 1;
+    break;  // A range (or nothing) ends the prefix walk
+  }
+  return score;
+}
+
+void
+RonSQLPreparer::assign_child_index_bounds(QueryScope& scope)
+{
+  // For each non-root INDEX_SCAN operation, walk the index columns
+  // after the join-key prefix and bind consecutive columns from (a)
+  // cross-table WHERE filters (parent-linked range bounds) and (b)
+  // child-local CONSTANT conjuncts (child_bounds feature,
+  // next_steps.md item 2).  Matches become index bounds — bounds
+  // prune reads, filters only prune transfer; everything unmatched
+  // stays a filter (cross-table: embedded-interpreter aggregation
+  // predicate; child-local: the op's NdbScanFilter via
+  // join_where_ce).
   //
   // Index bounds must follow prefix order: once a column has a
   // non-equality bound, later columns cannot be bounded.
-  for (Uint32 op_idx = 1; op_idx < m_main_scope.join_plan.num_ops; op_idx++)
+  const char* database =
+      m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
+  for (Uint32 op_idx = 1; op_idx < scope.join_plan.num_ops; op_idx++)
   {
-    JoinOp& op = m_main_scope.join_plan.ops[op_idx];
-    if (op.type != JoinOp::INDEX_SCAN || op.index == NULL)
+    JoinOp& op = scope.join_plan.ops[op_idx];
+    if (op.type != JoinOp::INDEX_SCAN || op.index == NULL ||
+        op.table == NULL)
       continue;
+
+    // Flatten this op's child-local conjuncts once; consumed entries
+    // are NULLed and the remainder rebuilt into join_where_ce below.
+    ConditionalExpression* local_conjuncts[MAX_WHERE_CONJUNCTS];
+    Uint32 num_local = 0;
+    if (scope.join_where_ce[op_idx] != NULL)
+    {
+      ConditionalExpression* simplified =
+          simplify_ce(scope.join_where_ce[op_idx], -1);
+      flatten_and_conjuncts(simplified, local_conjuncts, &num_local);
+    }
+
+    // Index re-selection (next_steps.md item 3): findOrderedIndex took
+    // the FIRST join-key-prefix match; another candidate can bind
+    // strictly more columns as bounds (e.g. idx(a) vs idx(a, b) with a
+    // `b >= const` conjunct).  Ties keep the planner's choice, so
+    // every existing plan is stable.
+    if (m_dict != NULL)
+    {
+      std::vector<const NdbDictionary::Index*> candidates;
+      QueryPlanner::collectOrderedIndexCandidates(
+          m_dict, op.table, op.child_key_col_names, op.num_key_cols,
+          m_conf.schema_cache, database, candidates);
+      const NdbDictionary::Index* best = op.index;
+      Uint32 best_score = score_child_index_bounds(
+          scope, op_idx, op.index, local_conjuncts, num_local,
+          op.num_key_cols, op.table);
+      for (Uint32 c = 0; c < candidates.size(); c++)
+      {
+        const NdbDictionary::Index* cand = candidates[c];
+        if (strcmp(cand->getName(), op.index->getName()) == 0)
+          continue;
+        Uint32 s = score_child_index_bounds(
+            scope, op_idx, cand, local_conjuncts, num_local,
+            op.num_key_cols, op.table);
+        if (s > best_score)
+        {
+          best_score = s;
+          best = cand;
+        }
+      }
+      if (best != op.index)
+      {
+        op.index = best;
+        // Re-normalize the key arrays to the new index's column order
+        // (QueryPlanner::plan normalized for its original choice).
+        for (Uint32 pos = 0; pos < op.num_key_cols; pos++)
+        {
+          const char* want = best->getColumn(pos)->getName();
+          bool found = false;
+          for (Uint32 k = pos; k < op.num_key_cols; k++)
+          {
+            if (strcmp(op.child_key_col_names[k], want) == 0)
+            {
+              if (k != pos)
+              {
+                const char* tc = op.child_key_col_names[pos];
+                op.child_key_col_names[pos] = op.child_key_col_names[k];
+                op.child_key_col_names[k] = tc;
+                const char* tp = op.parent_key_col_names[pos];
+                op.parent_key_col_names[pos] = op.parent_key_col_names[k];
+                op.parent_key_col_names[k] = tp;
+                Uint32 ti = op.key_parent_op_idx[pos];
+                op.key_parent_op_idx[pos] = op.key_parent_op_idx[k];
+                op.key_parent_op_idx[k] = ti;
+              }
+              found = true;
+              break;
+            }
+          }
+          require_bug(found, "Re-selected child index lost a join key.");
+        }
+      }
+    }
 
     const NdbDictionary::Index* idx = op.index;
     Uint32 num_idx_cols = (Uint32)idx->getNoOfColumns();
@@ -2156,55 +2613,19 @@ RonSQLPreparer::assign_cross_table_index_bounds()
       if (idx_col == NULL) break;
       const char* idx_col_name = idx_col->getName();
 
-      // Find a cross-table filter matching this index column + operation
+      // (a) A cross-table filter matching this index column + operation
       bool matched = false;
-      for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
+      for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++)
       {
-        CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
-        if (ctf.ce == NULL) continue;  // Already consumed
-        if (ctf.child_table_idx != op_idx && ctf.parent_table_idx != op_idx)
-          continue;  // Not for this operation
-
-        ConditionalExpression* cf = ctf.ce;
-        Uint32 left_cidx = cf->args.left->col_idx;
-        Uint32 right_cidx = cf->args.right->col_idx;
-        require_run(m_main_scope.resolved_columns != NULL,
-                    "Cross-table index bound setup: missing resolved "
-                    "columns.");
-        const QueryScope::ResolvedColumnRef& left_ref =
-            m_main_scope.resolved_columns[left_cidx];
-        const QueryScope::ResolvedColumnRef& right_ref =
-            m_main_scope.resolved_columns[right_cidx];
-        require_prm(
-            left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
-            right_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
-            "Cross-table index bound setup requires stored-table columns.");
-
-        bool left_is_child = (left_ref.join_op_idx == op_idx);
-        Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
-        const char* child_col_name = m_columns[child_cidx].c_str();
-
-        if (strcmp(idx_col_name, child_col_name) != 0)
-          continue;  // Not this index column
-
-        // Match found. Normalize operator to child_col OP parent_col.
-        Uint32 parent_cidx = left_is_child ? right_cidx : left_cidx;
-        TokenKind filter_op = cf->op;
-        if (!left_is_child)
-        {
-          switch (filter_op) {
-          case T_LT: filter_op = T_GT; break;
-          case T_LE: filter_op = T_GE; break;
-          case T_GT: filter_op = T_LT; break;
-          case T_GE: filter_op = T_LE; break;
-          default: break;
-          }
-        }
-
-        const char* parent_col_name = m_columns[parent_cidx].c_str();
-        const QueryScope::ResolvedColumnRef& parent_ref =
-            m_main_scope.resolved_columns[parent_cidx];
-        Uint32 parent_op = parent_ref.join_op_idx;
+        CrossTableFilter& ctf = scope.cross_table_where_filters[f];
+        const char* child_col_name;
+        const char* parent_col_name;
+        Uint32 parent_op;
+        TokenKind filter_op =
+            cross_table_bound_op(scope, op_idx, ctf, idx_col_name,
+                                 &child_col_name, &parent_col_name,
+                                 &parent_op);
+        if (filter_op == (TokenKind)0) continue;
         bool assigned = false;
 
         if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
@@ -2216,6 +2637,7 @@ RonSQLPreparer::assign_cross_table_index_bounds()
             lb.parent_col_name = parent_col_name;
             lb.parent_op_idx = parent_op;
             lb.inclusive = (filter_op == T_GE || filter_op == T_EQUALS);
+            lb.const_cond = NULL;
             assigned = true;
           }
         }
@@ -2228,6 +2650,7 @@ RonSQLPreparer::assign_cross_table_index_bounds()
             hb.parent_col_name = parent_col_name;
             hb.parent_op_idx = parent_op;
             hb.inclusive = (filter_op == T_LE || filter_op == T_EQUALS);
+            hb.const_cond = NULL;
             assigned = true;
           }
         }
@@ -2243,9 +2666,99 @@ RonSQLPreparer::assign_cross_table_index_bounds()
         }
       }
 
-      // If no filter matched this column, stop — prefix must be contiguous
+      // (b) Child-local constant conjuncts on this index column.  Like
+      // the root generator, a column can take one lower AND one upper
+      // bound (closed range) or a single EQ (both sides at once, and
+      // the walk may continue to the next column).
+      if (!matched)
+      {
+        bool lbound_set = false;
+        bool ubound_set = false;
+        bool range_seen = false;
+        for (Uint32 ci = 0;
+             ci < num_local && !(lbound_set && ubound_set);
+             ci++)
+        {
+          if (local_conjuncts[ci] == NULL) continue;  // Consumed
+          TokenKind cop = child_const_bound_op(scope, op_idx,
+                                               local_conjuncts[ci],
+                                               idx_col_name, op.table);
+          if (cop == (TokenKind)0) continue;
+          ConditionalExpression* cond = local_conjuncts[ci];
+          const char* child_col_name =
+              m_columns[cond->args.left->col_idx].c_str();
+          bool wants_low = (cop == T_GT || cop == T_GE || cop == T_EQUALS);
+          bool wants_high = (cop == T_LT || cop == T_LE || cop == T_EQUALS);
+          if ((wants_low && lbound_set) || (wants_high && ubound_set))
+            continue;  // ndbapi would refuse a second bound on one side
+          bool assigned = false;
+
+          if (wants_low && op.num_low_bounds < MAX_JOIN_KEY_COLS)
+          {
+            JoinOp::RangeBound& lb = op.low_bounds[op.num_low_bounds++];
+            lb.child_col_name = child_col_name;
+            lb.parent_col_name = NULL;
+            lb.parent_op_idx = 0;
+            lb.inclusive = (cop == T_GE || cop == T_EQUALS);
+            lb.const_cond = cond;
+            lbound_set = true;
+            assigned = true;
+          }
+          if (wants_high && op.num_high_bounds < MAX_JOIN_KEY_COLS)
+          {
+            JoinOp::RangeBound& hb = op.high_bounds[op.num_high_bounds++];
+            hb.child_col_name = child_col_name;
+            hb.parent_col_name = NULL;
+            hb.parent_op_idx = 0;
+            hb.inclusive = (cop == T_LE || cop == T_EQUALS);
+            hb.const_cond = cond;
+            ubound_set = true;
+            assigned = true;
+          }
+
+          if (assigned)
+          {
+            local_conjuncts[ci] = NULL;  // Consumed
+            matched = true;
+            if (cop != T_EQUALS)
+              range_seen = true;
+            else
+              break;  // EQ binds the column completely
+          }
+        }
+        if (range_seen)
+          later_blocked = true;
+      }
+
+      // If nothing matched this column, stop — prefix must be contiguous
       if (!matched)
         break;
+    }
+
+    // Rebuild the op's residual filter from the unconsumed local
+    // conjuncts (the ctf.ce = NULL consumption already handles the
+    // cross-table side).
+    if (num_local > 0)
+    {
+      ConditionalExpression* rebuilt = NULL;
+      for (Uint32 ci = 0; ci < num_local; ci++)
+      {
+        if (local_conjuncts[ci] == NULL) continue;
+        if (rebuilt == NULL)
+        {
+          rebuilt = local_conjuncts[ci];
+        }
+        else
+        {
+          ConditionalExpression* combined =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+          combined->op = T_AND;
+          combined->args.left = rebuilt;
+          combined->args.right = local_conjuncts[ci];
+          rebuilt = combined;
+        }
+      }
+      scope.join_where_ce[op_idx] = rebuilt;
     }
   }
 }
@@ -2564,6 +3077,14 @@ RonSQLPreparer::generate_scan_config_candidates(bool defer_force_check)
                                defer_force_check);
 }
 
+// Interpreted programs on lookup operations ride inside every
+// LQHKEYREQ, so cap them like ha_ndbcluster caps pushed conditions on
+// lookups (64 words); getWordsUsed() overcounts by 2 words per label,
+// which only makes the cap more conservative.  Shared by the join-root
+// PK lookup (emit_root_op) and the single-table PK+residual lookup
+// (detect_pk_lookup).
+static const Uint32 LOOKUP_FILTER_MAX_WORDS = 64;
+
 bool
 RonSQLPreparer::detect_pk_lookup()
 {
@@ -2581,15 +3102,26 @@ RonSQLPreparer::detect_pk_lookup()
   ConditionalExpression** pk_const =
       m_amalloc->alloc_exc<ConditionalExpression*>(nkeys);
   for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
-  // v1 policy (non_aggregate_phase_1.md): every conjunct must be a
-  // `pk_col = const` equality and each PK column must be bound exactly
-  // once.  Anything else — a residual conjunct, a duplicate, a partial
-  // cover, a non-equality — falls back to the scan-config path, which
-  // is always correct (the RecAttr-style NdbOperation read has no
-  // interpreted-code facility to carry residual filters).
+  int* cond_map = m_amalloc->alloc_exc<int>(num_conds);
+  Uint32 num_residual = 0;
+  /*
+   * PK+residual policy (non_aggregate_pk_residual_lookup.md): each
+   * conjunct either binds a not-yet-bound PK column as `pk_col = const`
+   * (cond_map[i] = PK ordinal) or stays a residual filter conjunct
+   * (cond_map[i] = -1) carried by the lookup's OO_INTERPRETED program.
+   * Duplicate and contradictory PK equalities become residuals too —
+   * the program re-checks them against the fetched row, so
+   * `pk = 77 AND pk = 78` correctly yields an empty result.  The
+   * lookup is taken only when every PK column is bound and, if
+   * residuals exist, a trial build proves the program fits the lookup
+   * word cap using only emit-supported types; otherwise the
+   * scan-config path takes over (always correct, possibly a full
+   * table scan on a hash-PK table).
+   */
   for (Uint32 i = 0; i < num_conds; i++) {
     ConditionalExpression* ce = m_toplevel_conditions[i];
-    if (ce->op != T_EQUALS) return false;
+    cond_map[i] = -1;
+    if (ce->op != T_EQUALS) { num_residual++; continue; }
     ConditionalExpression* col_side = NULL;
     ConditionalExpression* const_side = NULL;
     if (ce->args.left->op == T_IDENTIFIER &&
@@ -2601,26 +3133,67 @@ RonSQLPreparer::detect_pk_lookup()
       col_side = ce->args.right;
       const_side = ce->args.left;
     } else {
-      return false;
+      num_residual++;  // col-vs-col or const-vs-const equality
+      continue;
     }
     const char* col_name = m_columns[col_side->col_idx].c_str();
     bool matched = false;
     for (int k = 0; k < nkeys; k++) {
       const char* pk_name = tab->getPrimaryKey(k);
-      if (pk_name != NULL && strcmp(pk_name, col_name) == 0) {
-        if (pk_const[k] != NULL) return false;  // duplicate equality
+      if (pk_name != NULL && strcmp(pk_name, col_name) == 0 &&
+          pk_const[k] == NULL) {
         pk_const[k] = const_side;
+        cond_map[i] = k;
         matched = true;
         break;
       }
     }
-    if (!matched) return false;  // equality on a non-PK column
+    if (!matched) num_residual++;  // non-PK column or duplicate equality
   }
   for (int k = 0; k < nkeys; k++) {
     if (pk_const[k] == NULL) return false;  // partial PK cover
   }
+  if (num_residual > 0) {
+    /*
+     * Trial build of the residual program, discarded afterwards (the
+     * execute arm rebuilds it, mirroring the scan arm's per-execute
+     * NdbScanFilter build).  Failures fall back to the scan-config
+     * path rather than throwing: plan_index_and_filter runs at
+     * prepare time — including for EXPLAIN — and the scan path throws
+     * the same errors at execute time, keeping error timing and
+     * classification identical to the pre-lookup behavior for
+     * unsupported residual types (e.g. constants encode_constant
+     * cannot encode).
+     */
+    try {
+      NdbInterpretedCode trial_code(tab);
+      {
+        NdbScanFilter trial_filter(&trial_code);
+        DBGV(trial_filter.setSqlCmpSemantics());
+        if (DBG(trial_filter.begin(NdbScanFilter::AND)) < 0) return false;
+        for (Uint32 i = 0; i < num_conds; i++) {
+          if (cond_map[i] == -1) {
+            apply_filter(&trial_filter, m_main_scope,
+                         m_toplevel_conditions[i]);
+          }
+        }
+        if (DBG(trial_filter.end()) < 0) return false;
+      }
+      if (DBG(trial_code.finalise()) != 0) return false;
+      if (trial_code.getWordsUsed() > LOOKUP_FILTER_MAX_WORDS)
+        return false;
+    } catch (RonSQLPermanentError&) {
+      return false;
+    } catch (RonSQLMaybeStaleSchema&) {
+      return false;
+    } catch (RonSQLRetryableError&) {
+      return false;
+    }
+  }
   m_pk_lookup = true;
   m_pk_lookup_const = pk_const;
+  m_pk_lookup_cond_map = cond_map;
+  m_pk_lookup_has_residual = (num_residual > 0);
   return true;
 }
 
@@ -4447,6 +5020,9 @@ RonSQLPreparer::build_cte_scopes()
     // selection and emit.  See check_no_cte_body_col_vs_col.
     check_no_cte_body_col_vs_col(cte->stmt->where_expression);
     promote_left_to_inner_for_where(*scope);
+    // child_bounds: constant bounds on multi-op CTE-body child index
+    // scans (no-op for single-op bodies — the loop starts at op 1).
+    assign_child_index_bounds(*scope);
     // W1: an index hint on a joined table inside a CTE body is rejected;
     // only the body's root scan honors FORCE/USE/IGNORE INDEX.
     reject_index_hints_on_joins(cte->stmt->joins);
@@ -6460,6 +7036,41 @@ RonSQLPreparer::register_passthrough_getvalues(NdbOperation* op,
   ndbrequire(i == num_cols);
 }
 
+void
+RonSQLPreparer::build_passthrough_getvalue_specs(
+    NdbOperation::GetValueSpec* gets, Uint32 num_cols)
+{
+  /*
+   * The NdbRecord-lookup twin of register_passthrough_getvalues: the
+   * identical outputs walk and checks, filling OO_GETVALUE specs
+   * instead of calling getValue() (an NdbRecord operation cannot take
+   * RecAttr reads directly).  The walk preserves the outputs-order ==
+   * attrs-order contract the printer metadata lookup relies on.  The
+   * spec array is arena-allocated (alloc_exc runs no constructors), so
+   * every field is set explicitly.
+   */
+  require_run(m_main_scope.resolved_columns != NULL,
+              "Single-table pass-through: missing resolved columns.");
+  Uint32 i = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next, i++) {
+    ndbrequire(o->type == Outputs::Type::COLUMN);
+    const QueryScope::ResolvedColumnRef& col_ref =
+        m_main_scope.resolved_columns[o->column.col_idx];
+    require_prm(col_ref.kind ==
+                    QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "Single-table pass-through: output is not a stored column.");
+    require_run(col_ref.dict_column != NULL,
+                "Single-table pass-through: column descriptor missing.");
+    gets[i].column = col_ref.dict_column;
+    gets[i].appStorage = NULL;
+    gets[i].recAttr = NULL;
+    gets[i].m_startPos = 0;
+    gets[i].m_size = 0;
+  }
+  ndbrequire(i == num_cols);
+}
+
 /*
  * Phase 3 (ronsql_orderby_limit_plan.md): client-side ORDER BY for
  * projection-only shapes.  Rows arrive via per-row NdbRecAttr buffers
@@ -6655,23 +7266,111 @@ RonSQLPreparer::execute_single_table_passthrough()
   STAT_TS(m_conf.phase_stats, s_scandef_start);
 
   if (m_pk_lookup) {
-    // Single-row primary key lookup.
-    NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
-    require_sch(op != NULL, "Failed to get lookup operation.");
-    require_run(DBG(op->readTuple(NdbOperation::LM_CommittedRead)) == 0,
-                "Failed to initialize lookup operation.");
+    /*
+     * Single-row primary key lookup.  Two definition arms share the
+     * execute + print tail below: the RecAttr readTuple when the WHERE
+     * was fully consumed as keys, and an NdbRecord readTuple carrying
+     * residual conjuncts as an OO_INTERPRETED filter program (the
+     * RecAttr-style operation has no interpreted-code facility —
+     * OO_INTERPRETED is NdbRecord-only).  The interpreted-code object
+     * and the arena rows must outlive execute(), hence block scope.
+     */
+    const NdbOperation* exec_op = NULL;
+    NdbInterpretedCode residual_code(m_main_scope.table);
     const int nkeys = m_main_scope.table->getNoOfPrimaryKeys();
-    for (int k = 0; k < nkeys; k++) {
-      const char* pk_name = m_main_scope.table->getPrimaryKey(k);
-      const NdbDictionary::Column* pk_col =
-          m_main_scope.table->getColumn(pk_name);
-      ndbrequire(pk_col != NULL);
-      raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
-      require_run(DBG(op->equal(pk_name,
-                                static_cast<const char*>(rv.val))) == 0,
-                  "Failed to set primary key value for lookup.");
+    if (!m_pk_lookup_has_residual) {
+      NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
+      require_sch(op != NULL, "Failed to get lookup operation.");
+      require_run(DBG(op->readTuple(NdbOperation::LM_CommittedRead)) == 0,
+                  "Failed to initialize lookup operation.");
+      for (int k = 0; k < nkeys; k++) {
+        const char* pk_name = m_main_scope.table->getPrimaryKey(k);
+        const NdbDictionary::Column* pk_col =
+            m_main_scope.table->getColumn(pk_name);
+        ndbrequire(pk_col != NULL);
+        raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
+        require_run(DBG(op->equal(pk_name,
+                                  static_cast<const char*>(rv.val))) == 0,
+                    "Failed to set primary key value for lookup.");
+      }
+      register_passthrough_getvalues(op, attrs, num_cols);
+      exec_op = op;
+    } else {
+      const NdbRecord* rec = m_main_scope.table->getDefaultRecord();
+      require_sch(rec != NULL, "Failed to get default record for lookup.");
+      const Uint32 rowlen = NdbDictionary::getRecordRowLength(rec);
+      require_run(rowlen > 0, "Empty default record for lookup.");
+      char* key_row = m_amalloc->alloc_exc<char>(rowlen);
+      memset(key_row, 0, rowlen);
+      /*
+       * The result record/row are pure scaffolding: the all-zero mask
+       * requests no NdbRecord result columns, and the projected
+       * columns instead arrive as OO_GETVALUE extra reads — plain
+       * NdbRecAttr results, so the pass-through printer keeps its
+       * RecAttr path unchanged.
+       */
+      char* result_row = m_amalloc->alloc_exc<char>(rowlen);
+      memset(result_row, 0, rowlen);
+      const Uint32 mask_len =
+          ((Uint32)m_main_scope.table->getNoOfColumns() + 7) / 8;
+      unsigned char* zero_mask = m_amalloc->alloc_exc<unsigned char>(mask_len);
+      memset(zero_mask, 0, mask_len);
+      for (int k = 0; k < nkeys; k++) {
+        const char* pk_name = m_main_scope.table->getPrimaryKey(k);
+        const NdbDictionary::Column* pk_col =
+            m_main_scope.table->getColumn(pk_name);
+        ndbrequire(pk_col != NULL);
+        // encode_constant produces the column's NdbRecord byte format
+        // for every supported PK type (little-endian ints at column
+        // width, space-padded CHAR, length-prefixed VARCHAR, packed
+        // temporals), so the bytes go into the key row verbatim.
+        raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
+        char* dst = NdbDictionary::getValuePtr(rec, key_row,
+                                               pk_col->getAttrId());
+        require_run(dst != NULL, "Failed to locate key column in record.");
+        memcpy(dst, rv.val, rv.len);
+      }
+      // Residual filter program, rebuilt per execute like the scan
+      // arm's NdbScanFilter; the detection-time trial build proved it
+      // fits LOOKUP_FILTER_MAX_WORDS with emit-supported types.
+      {
+        NdbScanFilter filter(&residual_code);
+        DBGV(filter.setSqlCmpSemantics());
+        require_run(DBG(filter.begin(NdbScanFilter::AND)) >= 0,
+                    "Failed to apply lookup filter.");
+        Uint32 num_residual = 0;
+        for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+          if (m_pk_lookup_cond_map[i] == -1) {
+            apply_filter(&filter, m_main_scope, m_toplevel_conditions[i]);
+            num_residual++;
+          }
+        }
+        ndbrequire(num_residual > 0);
+        require_run(DBG(filter.end()) >= 0, "Failed to apply lookup filter.");
+      }
+      require_run(DBG(residual_code.finalise()) == 0,
+                  "Failed to finalise lookup filter.");
+      NdbOperation::GetValueSpec* gets =
+          m_amalloc->alloc_exc<NdbOperation::GetValueSpec>(num_cols);
+      build_passthrough_getvalue_specs(gets, num_cols);
+      NdbOperation::OperationOptions opts;
+      memset(&opts, 0, sizeof(opts));
+      opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED |
+                            NdbOperation::OperationOptions::OO_GETVALUE;
+      opts.interpretedCode = &residual_code;
+      opts.extraGetValues = gets;
+      opts.numExtraGetValues = num_cols;
+      exec_op = DBG(m_trans->readTuple(rec, key_row, rec, result_row,
+                                       NdbOperation::LM_CommittedRead,
+                                       zero_mask, &opts, sizeof(opts)));
+      require_sch(exec_op != NULL, "Failed to define lookup operation.");
+      for (Uint32 i = 0; i < num_cols; i++) {
+        // OO_GETVALUE RecAttrs are populated at definition time.
+        attrs[i] = gets[i].recAttr;
+        require_run(attrs[i] != NULL,
+                    "Single-table pass-through: OO_GETVALUE failed.");
+      }
     }
-    register_passthrough_getvalues(op, attrs, num_cols);
     // Phase stats: ndbprep = lookup-op definition; the NDB API fuses
     // send + read for a committed lookup, reported as firstbatch (send
     // and drain stay 0, like the fused single-table aggregate path).
@@ -6679,11 +7378,18 @@ RonSQLPreparer::execute_single_table_passthrough()
     STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_pk_defined);
     bool have_row = true;
     if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0 ||
-        op->getNdbError().code != 0) {
+        exec_op->getNdbError().code != 0) {
       // A missing row surfaces as NoDataFound — the one place a failed
-      // NDB call is a normal, empty result.  Anything else is a real
-      // error, classified by handle_ronsql_exception.
-      const NdbError& op_err = op->getNdbError();
+      // NDB call is a normal, empty result.  On the residual arm this
+      // also covers a fetched-but-rejected row: NdbScanFilter's reject
+      // path is interpret_exit_nok() with the default error code 626,
+      // whose classification is NoDataFound — indistinguishable from
+      // row-absent by design, and both mean an empty result here.
+      // (The NdbRecord readTuple defaults to AO_IgnoreError, so
+      // execute() may return 0 with only the op error set — hence the
+      // dual check above.)  Anything else is a real error, classified
+      // by handle_ronsql_exception.
+      const NdbError& op_err = exec_op->getNdbError();
       const NdbError& trans_err = m_trans->getNdbError();
       if (op_err.classification == NdbError::NoDataFound ||
           trans_err.classification == NdbError::NoDataFound) {
@@ -8459,13 +9165,10 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
 
   if (pk_covered && !has_scan_child && lookup_root_supported)
   {
-    // Lookup-op interpreted programs ride inside every LQHKEYREQ, so cap
-    // them like ha_ndbcluster caps pushed conditions on lookups (64
-    // words); getWordsUsed() overcounts by 2 words per label, which only
-    // makes the cap more conservative.  An over-cap residual falls
-    // through to the ordered-PK-index scan / table-scan branches below
-    // (scan programs travel in SCAN_FRAGREQ sections instead).
-    static const Uint32 ROOT_LOOKUP_FILTER_MAX_WORDS = 64;
+    // An over-cap residual falls through to the ordered-PK-index scan /
+    // table-scan branches below (scan programs travel in SCAN_FRAGREQ
+    // sections instead of LQHKEYREQ; cap rationale at the shared
+    // LOOKUP_FILTER_MAX_WORDS definition).
     NdbInterpretedCode residual_code(root_table);
     bool residual_fits = true;
     if (root_residual != NULL)
@@ -8477,7 +9180,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       filter.end();
       residual_code.finalise();
       residual_fits =
-          (residual_code.getWordsUsed() <= ROOT_LOOKUP_FILTER_MAX_WORDS);
+          (residual_code.getWordsUsed() <= LOOKUP_FILTER_MAX_WORDS);
     }
     if (residual_fits)
     {
@@ -9198,6 +9901,72 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
   require_prm(num_disjuncts <= MAX_DNF_DISJUNCTS,
               "CTE_LOOKUP filter: too many top-level OR disjuncts.");
 
+  /*
+   * Phase i26 (W3): when linked parent projections attach to this op,
+   * Dblqh::buildCteLinkedBuffer PREPENDS them ahead of the CTE
+   * outputs, so every CTE-side buffer position is offset by
+   * num_linked_projs.  Projections attach for (a) a single-leaf
+   * aggregator sitting on this op with linked projections — the
+   * latent base-offset bug: filters on the CTE's own outputs compared
+   * the wrong buffer entries when GROUP BY linked projections were
+   * present — and (b) the needs_parent_linked_attrs filter
+   * projections (real-vs-CTE atoms).  Root CTE ops keep base 0
+   * naturally: a root has no ancestors, so no projections can attach.
+   */
+  Uint32 linked_base = 0;
+  {
+    const JoinPlan& jplan = scope.join_plan;
+    const JoinOp& jop = jplan.ops[op_idx];
+    bool has_linked_attach = jop.needs_parent_linked_attrs;
+    if (scope.agg != NULL && jplan.num_agg_leaves == 0 &&
+        jplan.agg_leaf_idx == op_idx && jplan.num_linked_projs > 0) {
+      has_linked_attach = true;
+    }
+    if (has_linked_attach) {
+      linked_base = jplan.num_linked_projs;
+    }
+  }
+
+  // Find-only linked-projection position for an ancestor column
+  // (classify_where_by_table registered them via
+  // find_or_add_linked_proj; positions equal projection indices).
+  auto find_proj_pos = [&](Uint32 src_op_idx,
+                           const char* col_name) -> Uint32 {
+    const JoinPlan& jplan = scope.join_plan;
+    for (Uint32 j = 0; j < jplan.num_linked_projs; j++) {
+      if (jplan.linked_projs[j].source_op_idx == src_op_idx &&
+          strcmp(jplan.linked_projs[j].column_name, col_name) == 0) {
+        return j;
+      }
+    }
+    require_prm(false,
+                "CTE_LOOKUP filter: ancestor column has no registered "
+                "linked projection.  Please report a bug.");
+    return 0;  // unreachable
+  };
+
+  // Type envelope for typed register loads (READ_LINKED_COLUMN_TO_REG
+  // kernel arms: the 10 integer widths + Float + Double).
+  auto is_typed_reg_loadable = [](NdbDictionary::Column::Type t) -> bool {
+    switch (t) {
+    case NdbDictionary::Column::Tinyint:
+    case NdbDictionary::Column::Tinyunsigned:
+    case NdbDictionary::Column::Smallint:
+    case NdbDictionary::Column::Smallunsigned:
+    case NdbDictionary::Column::Mediumint:
+    case NdbDictionary::Column::Mediumunsigned:
+    case NdbDictionary::Column::Int:
+    case NdbDictionary::Column::Unsigned:
+    case NdbDictionary::Column::Bigint:
+    case NdbDictionary::Column::Bigunsigned:
+    case NdbDictionary::Column::Float:
+    case NdbDictionary::Column::Double:
+      return true;
+    default:
+      return false;
+    }
+  };
+
   const Uint32 REJECT = 0;
   const Uint32 ACCEPT = 1;
   Uint32 next_label = 2;  // FAIL_i labels start here
@@ -9250,7 +10019,8 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       }
 
       Uint32 cte_col_idx = col_ref.cte_result_idx;
-      Uint32 position = cte_col_idx;
+      // W3: CTE outputs sit after any prepended linked projections.
+      Uint32 position = linked_base + cte_col_idx;
       int rc = atom->is.null
           ? code.branch_linked_isnotnull(position, fail_label)
           : code.branch_linked_isnull(position, fail_label);
@@ -9273,48 +10043,76 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     require_prm(left != NULL && right != NULL,
                 "CTE_LOOKUP filter: comparison has NULL operand.");
 
-    // Phase I.3: column-vs-column on the same CTE_LOOKUP.  Both
-    // virt-columns must resolve to Bigint (signed 64-bit) so the
-    // 5-instruction reg-cmp sequence below has correct sign
-    // semantics.  Bigunsigned, mixed-width, float, decimal, string,
-    // and parent-vs-CTE comparisons are all rejected with explicit
-    // messages.  See cte_filter_phase_i3.md.
+    // Phase I.3 → i26 (W2 typed upgrade + W6 parent sides):
+    // column-vs-column via typed register loads.  Each side is either
+    // an output of THIS CTE (buffer position = linked_base +
+    // cte_result_idx, type from the virt-table column) or a
+    // TREE-ANCESTOR real-table column riding the linked projections
+    // (buffer position = projection index, type from the dictionary
+    // column).  READ_LINKED_COLUMN_TO_REG decodes with correct sign
+    // extension for all 10 integer widths plus Float / Double, and
+    // I.18's typed registers make the reg-vs-reg branches compare
+    // correctly across mixed signedness and int-vs-double
+    // (compareTypedRegs).  DECIMAL / string / temporal operands are
+    // rejected.  This flips both rpr-P1 (CTE-own-output col-vs-col
+    // beyond Bigint) and sc-P1 (real-vs-scalar-CTE watermarks).
     if (left->op == T_IDENTIFIER && right->op == T_IDENTIFIER) {
-      Uint32 col_l = left->col_idx;
-      Uint32 col_r = right->col_idx;
       require_run(scope.resolved_columns != NULL,
                   "CTE_LOOKUP filter: missing resolved columns.");
-      const QueryScope::ResolvedColumnRef& ref_l =
-          scope.resolved_columns[col_l];
-      const QueryScope::ResolvedColumnRef& ref_r =
-          scope.resolved_columns[col_r];
-      require_prm(
-          ref_l.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
-          ref_l.join_op_idx == op_idx,
-                  "CTE_LOOKUP filter col-vs-col: left column does not "
-                  "reference this CTE.  Cross-CTE / parent-vs-CTE "
-                  "comparisons not yet supported.");
-      require_prm(
-          ref_r.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
-          ref_r.join_op_idx == op_idx,
-                  "CTE_LOOKUP filter col-vs-col: right column does not "
-                  "reference this CTE.  Cross-CTE / parent-vs-CTE "
-                  "comparisons not yet supported.");
-      Uint32 pos_l = ref_l.cte_result_idx;
-      Uint32 pos_r = ref_r.cte_result_idx;
-      const NdbDictionary::Column* vc_l = virtTab->getColumn((int)pos_l);
-      const NdbDictionary::Column* vc_r = virtTab->getColumn((int)pos_r);
-      require_prm(vc_l != NULL && vc_r != NULL,
-                  "CTE_LOOKUP filter col-vs-col: virt-table missing "
-                  "column descriptor.");
-      require_prm(vc_l->getType() == NdbDictionary::Column::Bigint &&
-                  vc_r->getType() == NdbDictionary::Column::Bigint,
-                  "CTE_LOOKUP filter col-vs-col: both columns must "
-                  "resolve to Bigint (signed 64-bit).  Bigunsigned, "
-                  "mixed-width, float, decimal, and string col-vs-col "
-                  "comparisons are not yet supported — cast in the CTE "
-                  "body or use a constant-vs-column comparison.");
+      // Resolve one side to (buffer position, NDB type).
+      auto resolve_side =
+          [&](ConditionalExpression* side, Uint32& out_pos,
+              NdbDictionary::Column::Type& out_type) -> void {
+        Uint32 cidx = side->col_idx;
+        const QueryScope::ResolvedColumnRef& ref =
+            scope.resolved_columns[cidx];
+        if (ref.kind ==
+                QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+            ref.join_op_idx == op_idx) {
+          Uint32 cte_idx = ref.cte_result_idx;
+          const NdbDictionary::Column* vc =
+              virtTab->getColumn((int)cte_idx);
+          require_prm(vc != NULL,
+                      "CTE_LOOKUP filter col-vs-col: virt-table missing "
+                      "column descriptor.");
+          out_pos = linked_base + cte_idx;
+          out_type = vc->getType();
+          return;
+        }
+        if (ref.kind ==
+                QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+            ref.join_op_idx != op_idx &&
+            linked_source_is_leaf_ancestor(scope.join_plan, op_idx,
+                                           ref.join_op_idx)) {
+          require_prm(ref.dict_column != NULL,
+                      "CTE_LOOKUP filter col-vs-col: ancestor column "
+                      "descriptor missing.");
+          out_pos = find_proj_pos(ref.join_op_idx,
+                                  m_columns[cidx].c_str());
+          out_type = ref.dict_column->getType();
+          return;
+        }
+        require_prm(false,
+                    "CTE_LOOKUP filter col-vs-col: column must be an "
+                    "output of this CTE or a tree-ancestor real-table "
+                    "column.  Cross-CTE and sibling-branch comparisons "
+                    "not yet supported.");
+      };
+      Uint32 pos_l = 0, pos_r = 0;
+      NdbDictionary::Column::Type type_l = NdbDictionary::Column::Bigint;
+      NdbDictionary::Column::Type type_r = NdbDictionary::Column::Bigint;
+      resolve_side(left, pos_l, type_l);
+      resolve_side(right, pos_r, type_r);
+      require_prm(is_typed_reg_loadable(type_l) &&
+                  is_typed_reg_loadable(type_r),
+                  "CTE_LOOKUP filter col-vs-col: only integer, FLOAT "
+                  "and DOUBLE operands are supported — DECIMAL, string "
+                  "and temporal comparisons need a cast or a "
+                  "constant-vs-column form.");
 
+      // UNKNOWN rejects the row/disjunct: guard both operands' NULL
+      // flags before the typed loads (a NULL register would raise
+      // ZREGISTER_INIT_ERROR instead of rejecting).
       require_prm(code.branch_linked_isnull(pos_l, fail_label) == 0,
                   "CTE_LOOKUP filter col-vs-col: failed to emit left "
                   "NULL guard.");
@@ -9322,23 +10120,14 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                   "CTE_LOOKUP filter col-vs-col: failed to emit right "
                   "NULL guard.");
 
-      // Stage left into cheapMemory, copy to R1; stage right, copy to
-      // R2; signed reg-vs-reg branch with the inverted operator so we
-      // jump to fail_label when the SQL predicate is FALSE.  Data
-      // starts at offset 4 in cheapMemory (4-byte AttrHeader prefix
-      // written by handleReadLinkedToMem).
       const Uint32 R1 = 1, R2 = 2;
-      require_prm(code.read_linked_to_mem(pos_l) == 0,
-                  "CTE_LOOKUP filter col-vs-col: read_linked_to_mem "
-                  "(left) failed.");
-      require_prm(code.read_int64_to_reg_const(R1, 4) == 0,
-                  "CTE_LOOKUP filter col-vs-col: read_int64 (left) "
+      require_prm(code.read_linked_column_to_reg(R1, pos_l,
+                                                 (Uint32)type_l) == 0,
+                  "CTE_LOOKUP filter col-vs-col: typed load (left) "
                   "failed.");
-      require_prm(code.read_linked_to_mem(pos_r) == 0,
-                  "CTE_LOOKUP filter col-vs-col: read_linked_to_mem "
-                  "(right) failed.");
-      require_prm(code.read_int64_to_reg_const(R2, 4) == 0,
-                  "CTE_LOOKUP filter col-vs-col: read_int64 (right) "
+      require_prm(code.read_linked_column_to_reg(R2, pos_r,
+                                                 (Uint32)type_r) == 0,
+                  "CTE_LOOKUP filter col-vs-col: typed load (right) "
                   "failed.");
 
       int rc = -1;
@@ -9388,6 +10177,84 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                 "CTE_LOOKUP filter: missing resolved columns.");
     const QueryScope::ResolvedColumnRef& col_ref =
         scope.resolved_columns[col_idx];
+
+    // i26 (W6): ancestor real-table column vs constant, inside a
+    // conjunct classify_where_by_table routed to this CTE op.  The
+    // buffer entry is a real-table [tableId][schemaVersion]-prefixed
+    // linked value at the projection index — exactly what the
+    // branch_linked_mem_* family resolves; the constant encodes
+    // against the real column descriptor.
+    if (col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+        col_ref.join_op_idx != op_idx &&
+        linked_source_is_leaf_ancestor(scope.join_plan, op_idx,
+                                       col_ref.join_op_idx)) {
+      require_prm(col_ref.dict_column != NULL,
+                  "CTE_LOOKUP filter: ancestor column descriptor "
+                  "missing.");
+      Uint32 anc_position = find_proj_pos(col_ref.join_op_idx,
+                                          m_columns[col_idx].c_str());
+      const NdbDictionary::Table* anc_table =
+          scope.join_plan.ops[col_ref.join_op_idx].table;
+      require_prm(anc_table != NULL,
+                  "CTE_LOOKUP filter: ancestor op has no physical "
+                  "table.");
+      Uint32 anc_attrId = (Uint32)col_ref.dict_column->getColumnNo();
+      raw_value anc_rv = encode_constant(const_side, col_ref.dict_column);
+      require_prm(code.branch_linked_isnull(anc_position, fail_label) == 0,
+                  "CTE_LOOKUP filter: failed to emit ancestor NULL "
+                  "guard.");
+      TokenKind anc_op = atom->op;
+      if (swapped) {
+        switch (anc_op) {
+        case T_LT: anc_op = T_GT; break;
+        case T_LE: anc_op = T_GE; break;
+        case T_GT: anc_op = T_LT; break;
+        case T_GE: anc_op = T_LE; break;
+        default: break;
+        }
+      }
+      int anc_rc = -1;
+      switch (anc_op) {
+      case T_EQUALS:
+        anc_rc = code.branch_linked_mem_ne(anc_position, anc_table,
+                                           anc_attrId, anc_rv.val,
+                                           anc_rv.len, fail_label);
+        break;
+      case T_NOT_EQUALS:
+        anc_rc = code.branch_linked_mem_eq(anc_position, anc_table,
+                                           anc_attrId, anc_rv.val,
+                                           anc_rv.len, fail_label);
+        break;
+      case T_LT:
+        anc_rc = code.branch_linked_mem_le(anc_position, anc_table,
+                                           anc_attrId, anc_rv.val,
+                                           anc_rv.len, fail_label);
+        break;
+      case T_LE:
+        anc_rc = code.branch_linked_mem_lt(anc_position, anc_table,
+                                           anc_attrId, anc_rv.val,
+                                           anc_rv.len, fail_label);
+        break;
+      case T_GT:
+        anc_rc = code.branch_linked_mem_ge(anc_position, anc_table,
+                                           anc_attrId, anc_rv.val,
+                                           anc_rv.len, fail_label);
+        break;
+      case T_GE:
+        anc_rc = code.branch_linked_mem_gt(anc_position, anc_table,
+                                           anc_attrId, anc_rv.val,
+                                           anc_rv.len, fail_label);
+        break;
+      default:
+        require_prm(false,
+                    "Unsupported CTE_LOOKUP filter operator "
+                    "(ancestor).");
+      }
+      require_prm(anc_rc == 0,
+                  "CTE_LOOKUP filter: failed to emit ancestor branch.");
+      return;
+    }
+
     require_prm(
         col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
         col_ref.join_op_idx == op_idx,
@@ -9398,9 +10265,10 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     // cte_col_idx is the 0-based CTE output index (see load_join CTE
     // branch). The linked-buffer position used by handleReadLinkedToMem
     // matches the addColumn order — GB keys first, then aggregate
-    // results — which is also the order of CTE outputs.
+    // results — which is also the order of CTE outputs (offset by
+    // linked_base when linked projections are prepended, W3).
     Uint32 cte_col_idx = col_ref.cte_result_idx;
-    Uint32 position = cte_col_idx;
+    Uint32 position = linked_base + cte_col_idx;
 
     // The compare path depends on whether the CTE output is a direct
     // column projection or an aggregate result:
@@ -9754,9 +10622,16 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
                   "Failed to set tree parent override.");
     }
 
+    // Per-key parent sources (non_aggregate_phase_6.md): each key links
+    // from its own key-source op.  NdbQueryBuilder's linkWithParent
+    // resolves the operation's effective parent to the deepest source —
+    // by construction equal to op.parent_op_idx (validated in
+    // QueryPlanner::plan) — and a tree-parent pin (chained CTEs) is
+    // always at-or-below every key source, so the pin above is never
+    // clobbered by the builder's grandparent replacement.
     const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
     for (Uint32 k = 0; k < op.num_key_cols; k++) {
-      keys[k] = qb->linkedValue(opDefs[op.parent_op_idx],
+      keys[k] = qb->linkedValue(opDefs[op.key_parent_op_idx[k]],
                                  op.parent_key_col_names[k]);
       require_run(keys[k] != NULL, "Failed to create linked value.");
     }
@@ -9836,6 +10711,28 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         require_run(opts.addLinkedProjection(lv) == 0,
                     "Failed to add linked projection.");
       }
+    } else if (op.type == JoinOp::CTE_LOOKUP &&
+               op.needs_parent_linked_attrs) {
+      // i26 (W5): filtered CTE op with ancestor-column atoms but no
+      // aggregator here — attach the plan's linked projections so
+      // DBLQH prepends them for the jump-table filter (the API
+      // serializes addLinkedProjection for CTE_LOOKUP nodes
+      // unconditionally; classify_where_by_table guaranteed any
+      // single-leaf aggregator sits on THIS op, which the branch
+      // above already handled).
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        require_prm(
+            linked_source_is_leaf_ancestor(plan, i,
+                                           plan.linked_projs[j].source_op_idx),
+            "CTE filter references a column from a join branch that is "
+            "not an ancestor of the CTE lookup.");
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
+      }
     }
 
     switch (op.type) {
@@ -9859,18 +10756,45 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
 
         for (Uint32 k = 0; k < op.num_key_cols; k++) {
           lowKeys[k] = highKeys[k] = qb->linkedValue(
-              opDefs[op.parent_op_idx], op.parent_key_col_names[k]);
+              opDefs[op.key_parent_op_idx[k]], op.parent_key_col_names[k]);
           require_run(lowKeys[k] != NULL, "Failed to create linked value.");
         }
+
+        // child_bounds: a RangeBound with const_cond carries a
+        // constant (child-local conjunct) instead of a parent-linked
+        // value.  Operands are memoized by conjunct so an EQ pushed to
+        // both sides reuses ONE operand — appendBoundPattern then
+        // collapses the identical low/high pair to BoundEQ.
+        const ConditionalExpression* cb_conds[MAX_JOIN_KEY_COLS * 2];
+        const NdbQueryOperand* cb_operands[MAX_JOIN_KEY_COLS * 2];
+        Uint32 num_cb_operands = 0;
+        auto bound_operand =
+            [&](const JoinOp::RangeBound& rb) -> const NdbQueryOperand* {
+          if (rb.const_cond == NULL) {
+            return qb->linkedValue(opDefs[rb.parent_op_idx],
+                                   rb.parent_col_name);
+          }
+          for (Uint32 m = 0; m < num_cb_operands; m++) {
+            if (cb_conds[m] == rb.const_cond) return cb_operands[m];
+          }
+          const NdbDictionary::Column* bcol =
+              op.table->getColumn(rb.child_col_name);
+          require_run(bcol != NULL, "Unknown bound column.");
+          raw_value rv = encode_constant(rb.const_cond->args.right, bcol);
+          const NdbQueryOperand* cv = qb->constValue(rv.val, rv.len);
+          ndbrequire(num_cb_operands < MAX_JOIN_KEY_COLS * 2);
+          cb_conds[num_cb_operands] = rb.const_cond;
+          cb_operands[num_cb_operands] = cv;
+          num_cb_operands++;
+          return cv;
+        };
 
         bool lowIncl = true;
         Uint32 lowIdx = op.num_key_cols;
         for (Uint32 b = 0; b < op.num_low_bounds; b++) {
-          lowKeys[lowIdx] = qb->linkedValue(
-              opDefs[op.low_bounds[b].parent_op_idx],
-              op.low_bounds[b].parent_col_name);
+          lowKeys[lowIdx] = bound_operand(op.low_bounds[b]);
           require_run(lowKeys[lowIdx] != NULL,
-                      "Failed to create linked lower bound.");
+                      "Failed to create lower bound operand.");
           lowIncl = op.low_bounds[b].inclusive;
           lowIdx++;
         }
@@ -9879,11 +10803,9 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         bool highIncl = true;
         Uint32 highIdx = op.num_key_cols;
         for (Uint32 b = 0; b < op.num_high_bounds; b++) {
-          highKeys[highIdx] = qb->linkedValue(
-              opDefs[op.high_bounds[b].parent_op_idx],
-              op.high_bounds[b].parent_col_name);
+          highKeys[highIdx] = bound_operand(op.high_bounds[b]);
           require_run(highKeys[highIdx] != NULL,
-                      "Failed to create linked upper bound.");
+                      "Failed to create upper bound operand.");
           highIncl = op.high_bounds[b].inclusive;
           highIdx++;
         }
@@ -13100,27 +14022,61 @@ RonSQLPreparer::print()
         out << indent << "  Key: ";
         for (Uint32 k = 0; k < op.num_key_cols; k++) {
           if (k > 0) out << ", ";
+          // Per-key parent sources: print each key's own source alias
+          // (byte-identical to the old parent_op_idx print for every
+          // single-parent plan).
           out << op.child_key_col_names[k] << " = "
-              << jp.ops[op.parent_op_idx].alias.c_str()
+              << jp.ops[op.key_parent_op_idx[k]].alias.c_str()
               << "." << op.parent_key_col_names[k];
         }
         out << '\n';
       }
       if (op.num_low_bounds > 0 || op.num_high_bounds > 0) {
+        // child_bounds: a const_cond bound prints its constant value;
+        // parent-linked bounds print alias.column as before.
+        auto print_bound_source = [&](const JoinOp::RangeBound& rb) {
+          if (rb.const_cond == NULL) {
+            out << jp.ops[rb.parent_op_idx].alias.c_str()
+                << "." << rb.parent_col_name;
+            return;
+          }
+          const ConditionalExpression* c = rb.const_cond->args.right;
+          switch (c->op) {
+          case T_INT:
+            out << c->constant_integer;
+            break;
+          case T_FLOAT:
+            out << c->constant_float.dbl;
+            break;
+          case T_STRING:
+            out << '\'';
+            out.write(c->string.str, c->string.len);
+            out << '\'';
+            break;
+          default:
+            out << "<const>";
+            break;
+          }
+        };
         out << indent << "  Bounds:";
         for (Uint32 b = 0; b < op.num_low_bounds; b++) {
           out << " " << op.low_bounds[b].child_col_name
-              << (op.low_bounds[b].inclusive ? " >= " : " > ")
-              << jp.ops[op.low_bounds[b].parent_op_idx].alias.c_str()
-              << "." << op.low_bounds[b].parent_col_name;
+              << (op.low_bounds[b].inclusive ? " >= " : " > ");
+          print_bound_source(op.low_bounds[b]);
         }
         for (Uint32 b = 0; b < op.num_high_bounds; b++) {
           out << " " << op.high_bounds[b].child_col_name
-              << (op.high_bounds[b].inclusive ? " <= " : " < ")
-              << jp.ops[op.high_bounds[b].parent_op_idx].alias.c_str()
-              << "." << op.high_bounds[b].parent_col_name;
+              << (op.high_bounds[b].inclusive ? " <= " : " < ");
+          print_bound_source(op.high_bounds[b]);
         }
         out << '\n';
+      }
+      // child_bounds: make the residual visible next to the bounds so
+      // an EXPLAIN grep can pin bound-vs-filter routing per op (real
+      // tables only — CTE ops route WHERE to the jump-table filter).
+      if (!op.is_root && op.table != NULL &&
+          m_main_scope.join_where_ce[i] != NULL) {
+        out << indent << "  Residual filter: yes\n";
       }
       if (jp.num_agg_leaves > 0) {
         for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
@@ -13279,14 +14235,51 @@ RonSQLPreparer::print()
     // single-table access choice lives in planner state, so EXPLAIN
     // can tell the whole truth here.
     Uint32 cond_cnt = m_toplevel_conditions.size();
-    out << "Execute as primary key lookup.\n"
-        << "KEYS (" << cond_cnt << "):\n";
-    for (Uint32 i = 0; i < cond_cnt; i++) {
-      out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
-      print(m_toplevel_conditions[i],
-            i + 1 == cond_cnt
-            ? LexString{"   ", 3}
-            : LexString{"│  ", 5});
+    if (!m_pk_lookup_has_residual) {
+      out << "Execute as primary key lookup.\n"
+          << "KEYS (" << cond_cnt << "):\n";
+      for (Uint32 i = 0; i < cond_cnt; i++) {
+        out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+        print(m_toplevel_conditions[i],
+              i + 1 == cond_cnt
+              ? LexString{"   ", 3}
+              : LexString{"│  ", 5});
+      }
+    } else {
+      // PK+residual lookup: per-conjunct KEY[pk ordinal] / FILTER
+      // labels in the index-scan CONDITIONS idiom, driven by
+      // m_pk_lookup_cond_map.
+      Uint32 filter_cnt = 0;
+      for (Uint32 i = 0; i < cond_cnt; i++) {
+        if (m_pk_lookup_cond_map[i] == -1) {
+          filter_cnt++;
+        }
+      }
+      Uint32 key_cnt = cond_cnt - filter_cnt;
+      out << "Execute as primary key lookup.\n"
+          << "CONDITIONS (" << key_cnt << " key"
+          << (key_cnt == 1 ? "" : "s")
+          << " and " << filter_cnt << " filter"
+          << (filter_cnt == 1 ? "" : "s") << "):\n";
+      for (Uint32 i = 0; i < cond_cnt; i++) {
+        out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+        int handling = m_pk_lookup_cond_map[i];
+        Uint32 prefixlen;
+        if (handling == -1) {
+          out << "FILTER: ";
+          prefixlen = 11;
+        } else {
+          out << "KEY[" << handling << "]: ";
+          prefixlen = 11;
+          if (handling > 9) {
+            prefixlen++;
+          }
+        }
+        print(m_toplevel_conditions[i],
+              i + 1 == cond_cnt
+              ? LexString{"              ", prefixlen}
+              : LexString{"│             ", prefixlen + 2});
+      }
     }
   } else if (m_scan_config == NULL) {
     // Join plan already printed at the top
