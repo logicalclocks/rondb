@@ -224,3 +224,12 @@ static inline void cpu_pause() { YieldProcessor(); }
 #endif
 
 #endif
+
+/* RISC-V: NDB has no arch branch for riscv; define the CPU pause hint so
+   NdbSpin() gets emitted. Barriers/xcng already come from the generic path.
+   .word 0x0100000f is the PAUSE hint (needs no zihintpause in -march; decodes
+   as a no-op FENCE hint on harts that do not implement Zihintpause). */
+#if defined(__riscv) && !defined(NDB_HAVE_CPU_PAUSE)
+#define NDB_HAVE_CPU_PAUSE
+static inline void cpu_pause() { __asm__ __volatile__(".word 0x0100000f" ::: "memory"); }
+#endif
