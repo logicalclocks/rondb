@@ -161,7 +161,7 @@ char*
 NdbConfig_ErrorFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_error.log");
+  snprintf(buf+len, PATH_MAX - len, "_error.log");
   return buf;
 }
 
@@ -169,7 +169,7 @@ char*
 NdbConfig_ClusterLogFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_cluster.log");
+  snprintf(buf+len, PATH_MAX - len, "_cluster.log");
   return buf;
 }
 
@@ -177,7 +177,7 @@ char*
 NdbConfig_SignalLogFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_signal.log");
+  snprintf(buf+len, PATH_MAX - len, "_signal.log");
   return buf;
 }
 
@@ -185,7 +185,7 @@ char*
 NdbConfig_TraceFileName(int node_id, int file_no){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_trace.log.%u", file_no);
+  snprintf(buf+len, PATH_MAX - len, "_trace.log.%u", file_no);
   return buf;
 }
 
@@ -193,7 +193,7 @@ char*
 NdbConfig_NextTraceFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_trace.log.next");
+  snprintf(buf+len, PATH_MAX - len, "_trace.log.next");
   return buf;
 }
 
@@ -201,7 +201,7 @@ char*
 NdbConfig_PidFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, true);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, ".pid");
+  snprintf(buf+len, PATH_MAX - len, ".pid");
   return buf;
 }
 
@@ -209,6 +209,6 @@ char*
 NdbConfig_StdoutFileName(int node_id){
   char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
-  snprintf(buf+len, PATH_MAX, "_out.log");
+  snprintf(buf+len, PATH_MAX - len, "_out.log");
   return buf;
 }
