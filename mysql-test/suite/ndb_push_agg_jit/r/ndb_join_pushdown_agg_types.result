@@ -1,0 +1,315 @@
+############################################################
+# Pushed join aggregation: data-type sweep
+#
+# Every query runs twice: ndb_join_pushdown_aggregate=OFF
+# (MySQL-evaluated baseline) and =ON (pushed when supported).
+# A type the pushdown path cannot handle falls back to the
+# non-pushed plan, so OFF/ON result equality must always hold;
+# a divergence is a pushed-aggregation correctness bug.
+#
+# tf carries moderate values (SUM/COUNT/GROUP BY safe), tb
+# carries per-width boundary values (MIN/MAX only, so no SUM
+# accumulator can overflow).  TIMESTAMP is deliberately left
+# out (time-zone display; covered elsewhere).
+# See test_benchmark_extension_plan.md (Phase T5).
+############################################################
+# Create dimension + fact tables
+CREATE TABLE td (
+pk INT PRIMARY KEY,
+grp VARCHAR(10)
+) ENGINE=NDB;
+CREATE TABLE tf (
+pk INT PRIMARY KEY,
+ti TINYINT, tiu TINYINT UNSIGNED,
+si SMALLINT, siu SMALLINT UNSIGNED,
+mi MEDIUMINT, miu MEDIUMINT UNSIGNED,
+i INT, iu INT UNSIGNED,
+bi BIGINT, biu BIGINT UNSIGNED,
+f FLOAT, d DOUBLE,
+dec0 DECIMAL(12,0), dec2 DECIMAL(12,2),
+ch CHAR(10), vc VARCHAR(24),
+dt DATE, dtt DATETIME
+) ENGINE=NDB;
+CREATE TABLE tb (
+pk INT PRIMARY KEY,
+ti TINYINT, tiu TINYINT UNSIGNED,
+si SMALLINT, siu SMALLINT UNSIGNED,
+mi MEDIUMINT, miu MEDIUMINT UNSIGNED,
+i INT, iu INT UNSIGNED,
+bi BIGINT, biu BIGINT UNSIGNED,
+dec0 DECIMAL(12,0), dec2 DECIMAL(12,2),
+ch CHAR(10), vc VARCHAR(24),
+dt DATE, dtt DATETIME
+) ENGINE=NDB;
+# Load moderate-value fact rows (rows 7-8 carry NULLs)
+INSERT INTO td VALUES
+(1, 'A'), (2, 'A'), (3, 'B'), (4, 'B'),
+(5, 'C'), (6, 'C'), (7, 'A'), (8, 'B'),
+(9, 'D'), (10, 'D');
+INSERT INTO tf VALUES
+(1,  -1,  1,  -10,  10,  -100,  100,  -1000,  1000,  -10000,  10000,
+1.5,  2.25,  111,  11.11, 'alpha', 'one',   '2024-01-01', '2024-01-01 10:00:00'),
+(2,   2,  2,   20,  20,   200,  200,   2000,  2000,   20000,  20000,
+-2.5, -4.5,  -222, -22.22, 'bravo', 'two',   '2024-02-02', '2024-02-02 11:30:00'),
+(3,  -3,  3,  -30,  30,  -300,  300,  -3000,  3000,  -30000,  30000,
+3.5,  6.75,  333,  33.33, 'alpha', 'three', '2024-03-03', '2024-03-03 12:45:15'),
+(4,   4,  4,   40,  40,   400,  400,   4000,  4000,   40000,  40000,
+-4.5, -9.0,  -444, -44.44, 'delta', 'four',  '2024-04-04', '2024-04-04 14:00:30'),
+(5,  -5,  5,  -50,  50,  -500,  500,  -5000,  5000,  -50000,  50000,
+5.5,  11.25, 555,  55.55, 'bravo', 'five',  '2024-05-05', '2024-05-05 15:15:45'),
+(6,   6,  6,   60,  60,   600,  600,   6000,  6000,   60000,  60000,
+-6.5, -13.5, -666, -66.66, 'alpha', 'six',   '2024-06-06', '2024-06-06 16:30:00'),
+(7, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(8, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+# Load boundary-value rows (MIN/MAX only)
+INSERT INTO tb VALUES
+(1, -128, 0, -32768, 0, -8388608, 0,
+-2147483648, 0, -9223372036854775808, 0,
+-999999999999, -9999999999.99, '', '', '1000-01-01', '1000-01-01 00:00:00'),
+(2, 127, 255, 32767, 65535, 8388607, 16777215,
+2147483647, 4294967295, 9223372036854775807, 18446744073709551615,
+999999999999, 9999999999.99, 'zzzzzzzzzz', 'zzzzzzzz', '9999-12-31', '9999-12-31 23:59:59'),
+(3, 0, 10, 0, 10, 0, 10,
+0, 10, 0, 10,
+0, 0.01, 'middle', 'middle', '2024-06-15', '2024-06-15 12:00:00'),
+(4, -1, 20, -1, 20, -1, 20,
+-1, 20, -1, 20,
+-1, -0.01, 'MIXEDcase', 'MIXEDcase', '2024-06-16', '2024-06-16 12:00:01'),
+(5, 1, 30, 1, 30, 1, 30,
+1, 30, 1, 30,
+1, 1.00, 'aaa', 'aaa', '2024-06-17', '2024-06-17 12:00:02'),
+(6, NULL, NULL, NULL, NULL, NULL, NULL,
+NULL, NULL, NULL, NULL,
+NULL, NULL, NULL, NULL, NULL, NULL);
+############################################################
+# Test 1: SUM + COUNT over signed int widths, GROUP BY dim
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT td.grp, SUM(tf.ti), SUM(tf.si), SUM(tf.mi), SUM(tf.i), SUM(tf.bi), COUNT(*)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	SUM(tf.ti)	SUM(tf.si)	SUM(tf.mi)	SUM(tf.i)	SUM(tf.bi)	COUNT(*)
+A	1	10	100	1000	10000	3
+B	1	10	100	1000	10000	3
+C	1	10	100	1000	10000	2
+SET ndb_join_pushdown_aggregate=ON;
+SELECT td.grp, SUM(tf.ti), SUM(tf.si), SUM(tf.mi), SUM(tf.i), SUM(tf.bi), COUNT(*)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	SUM(tf.ti)	SUM(tf.si)	SUM(tf.mi)	SUM(tf.i)	SUM(tf.bi)	COUNT(*)
+A	1	10	100	1000	10000	3
+B	1	10	100	1000	10000	3
+C	1	10	100	1000	10000	2
+############################################################
+# Test 2: SUM over unsigned int widths, GROUP BY dim
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT td.grp, SUM(tf.tiu), SUM(tf.siu), SUM(tf.miu), SUM(tf.iu), SUM(tf.biu)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	SUM(tf.tiu)	SUM(tf.siu)	SUM(tf.miu)	SUM(tf.iu)	SUM(tf.biu)
+A	3	30	300	3000	30000
+B	7	70	700	7000	70000
+C	11	110	1100	11000	110000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT td.grp, SUM(tf.tiu), SUM(tf.siu), SUM(tf.miu), SUM(tf.iu), SUM(tf.biu)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	SUM(tf.tiu)	SUM(tf.siu)	SUM(tf.miu)	SUM(tf.iu)	SUM(tf.biu)
+A	3	30	300	3000	30000
+B	7	70	700	7000	70000
+C	11	110	1100	11000	110000
+############################################################
+# Test 3: MIN/MAX over signed int widths at their boundaries
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT MIN(tb.ti), MAX(tb.ti), MIN(tb.si), MAX(tb.si), MIN(tb.mi), MAX(tb.mi),
+MIN(tb.i), MAX(tb.i), MIN(tb.bi), MAX(tb.bi)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.ti)	MAX(tb.ti)	MIN(tb.si)	MAX(tb.si)	MIN(tb.mi)	MAX(tb.mi)	MIN(tb.i)	MAX(tb.i)	MIN(tb.bi)	MAX(tb.bi)
+-128	127	-32768	32767	-8388608	8388607	-2147483648	2147483647	-9223372036854775808	9223372036854775807
+SET ndb_join_pushdown_aggregate=ON;
+SELECT MIN(tb.ti), MAX(tb.ti), MIN(tb.si), MAX(tb.si), MIN(tb.mi), MAX(tb.mi),
+MIN(tb.i), MAX(tb.i), MIN(tb.bi), MAX(tb.bi)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.ti)	MAX(tb.ti)	MIN(tb.si)	MAX(tb.si)	MIN(tb.mi)	MAX(tb.mi)	MIN(tb.i)	MAX(tb.i)	MIN(tb.bi)	MAX(tb.bi)
+-128	127	-32768	32767	-8388608	8388607	-2147483648	2147483647	-9223372036854775808	9223372036854775807
+############################################################
+# Test 4: MIN/MAX over unsigned int widths at their boundaries
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT MIN(tb.tiu), MAX(tb.tiu), MIN(tb.siu), MAX(tb.siu), MIN(tb.miu), MAX(tb.miu),
+MIN(tb.iu), MAX(tb.iu), MIN(tb.biu), MAX(tb.biu)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.tiu)	MAX(tb.tiu)	MIN(tb.siu)	MAX(tb.siu)	MIN(tb.miu)	MAX(tb.miu)	MIN(tb.iu)	MAX(tb.iu)	MIN(tb.biu)	MAX(tb.biu)
+0	255	0	65535	0	16777215	0	4294967295	0	18446744073709551615
+SET ndb_join_pushdown_aggregate=ON;
+SELECT MIN(tb.tiu), MAX(tb.tiu), MIN(tb.siu), MAX(tb.siu), MIN(tb.miu), MAX(tb.miu),
+MIN(tb.iu), MAX(tb.iu), MIN(tb.biu), MAX(tb.biu)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.tiu)	MAX(tb.tiu)	MIN(tb.siu)	MAX(tb.siu)	MIN(tb.miu)	MAX(tb.miu)	MIN(tb.iu)	MAX(tb.iu)	MIN(tb.biu)	MAX(tb.biu)
+0	255	0	65535	0	16777215	0	4294967295	0	18446744073709551615
+############################################################
+# Test 5: MIN/MAX over FLOAT / DOUBLE / DECIMAL
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT MIN(tf.f), MAX(tf.f), MIN(tf.d), MAX(tf.d),
+MIN(tf.dec0), MAX(tf.dec0), MIN(tf.dec2), MAX(tf.dec2)
+FROM td JOIN tf ON tf.pk = td.pk;
+MIN(tf.f)	MAX(tf.f)	MIN(tf.d)	MAX(tf.d)	MIN(tf.dec0)	MAX(tf.dec0)	MIN(tf.dec2)	MAX(tf.dec2)
+-6.5	5.5	-13.5	11.25	-666	555	-66.66	55.55
+SET ndb_join_pushdown_aggregate=ON;
+SELECT MIN(tf.f), MAX(tf.f), MIN(tf.d), MAX(tf.d),
+MIN(tf.dec0), MAX(tf.dec0), MIN(tf.dec2), MAX(tf.dec2)
+FROM td JOIN tf ON tf.pk = td.pk;
+MIN(tf.f)	MAX(tf.f)	MIN(tf.d)	MAX(tf.d)	MIN(tf.dec0)	MAX(tf.dec0)	MIN(tf.dec2)	MAX(tf.dec2)
+-6.5	5.5	-13.5	11.25	-666	555	-66.66	55.55
+############################################################
+# Test 6: MIN/MAX over DECIMAL at the 12-digit boundary
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT MIN(tb.dec0), MAX(tb.dec0), MIN(tb.dec2), MAX(tb.dec2)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.dec0)	MAX(tb.dec0)	MIN(tb.dec2)	MAX(tb.dec2)
+-999999999999	999999999999	-9999999999.99	9999999999.99
+SET ndb_join_pushdown_aggregate=ON;
+SELECT MIN(tb.dec0), MAX(tb.dec0), MIN(tb.dec2), MAX(tb.dec2)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.dec0)	MAX(tb.dec0)	MIN(tb.dec2)	MAX(tb.dec2)
+-999999999999	999999999999	-9999999999.99	9999999999.99
+############################################################
+# Test 7: SUM over DECIMAL scale-0 and scale-2, GROUP BY dim
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT td.grp, SUM(tf.dec0), SUM(tf.dec2)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	SUM(tf.dec0)	SUM(tf.dec2)
+A	-111	-11.11
+B	-111	-11.11
+C	-111	-11.11
+SET ndb_join_pushdown_aggregate=ON;
+SELECT td.grp, SUM(tf.dec0), SUM(tf.dec2)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	SUM(tf.dec0)	SUM(tf.dec2)
+A	-111	-11.11
+B	-111	-11.11
+C	-111	-11.11
+############################################################
+# Test 8: MIN/MAX over CHAR / VARCHAR (incl. empty string)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT MIN(tb.ch), MAX(tb.ch), MIN(tb.vc), MAX(tb.vc)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.ch)	MAX(tb.ch)	MIN(tb.vc)	MAX(tb.vc)
+	zzzzzzzzzz		zzzzzzzz
+SET ndb_join_pushdown_aggregate=ON;
+SELECT MIN(tb.ch), MAX(tb.ch), MIN(tb.vc), MAX(tb.vc)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.ch)	MAX(tb.ch)	MIN(tb.vc)	MAX(tb.vc)
+                                        	zzzzzzzzzz                              		zzzzzzzz
+############################################################
+# Test 9: MIN/MAX over DATE / DATETIME at their boundaries
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT MIN(tb.dt), MAX(tb.dt), MIN(tb.dtt), MAX(tb.dtt)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.dt)	MAX(tb.dt)	MIN(tb.dtt)	MAX(tb.dtt)
+1000-01-01	9999-12-31	1000-01-01 00:00:00	9999-12-31 23:59:59
+SET ndb_join_pushdown_aggregate=ON;
+SELECT MIN(tb.dt), MAX(tb.dt), MIN(tb.dtt), MAX(tb.dtt)
+FROM td JOIN tb ON tb.pk = td.pk;
+MIN(tb.dt)	MAX(tb.dt)	MIN(tb.dtt)	MAX(tb.dtt)
+1000-01-01	9999-12-31	1000-01-01 00:00:00	9999-12-31 23:59:59
+############################################################
+# Test 10: COUNT(*) vs COUNT(nullable) per type family
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT td.grp, COUNT(*), COUNT(tf.ti), COUNT(tf.f), COUNT(tf.dec2),
+COUNT(tf.vc), COUNT(tf.dt)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	COUNT(*)	COUNT(tf.ti)	COUNT(tf.f)	COUNT(tf.dec2)	COUNT(tf.vc)	COUNT(tf.dt)
+A	3	2	2	2	2	2
+B	3	2	2	2	2	2
+C	2	2	2	2	2	2
+SET ndb_join_pushdown_aggregate=ON;
+SELECT td.grp, COUNT(*), COUNT(tf.ti), COUNT(tf.f), COUNT(tf.dec2),
+COUNT(tf.vc), COUNT(tf.dt)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY td.grp;
+grp	COUNT(*)	COUNT(tf.ti)	COUNT(tf.f)	COUNT(tf.dec2)	COUNT(tf.vc)	COUNT(tf.dt)
+A	3	2	2	2	2	2
+B	3	2	2	2	2	2
+C	2	2	2	2	2	2
+############################################################
+# Test 11: GROUP BY a CHAR key from the fact table
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tf.ch, COUNT(*), SUM(tf.i), MIN(tf.dec2), MAX(tf.dec2)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY tf.ch;
+ch	COUNT(*)	SUM(tf.i)	MIN(tf.dec2)	MAX(tf.dec2)
+NULL	2	NULL	NULL	NULL
+alpha	3	2000	-66.66	33.33
+bravo	2	-3000	-22.22	55.55
+delta	1	4000	-44.44	-44.44
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tf.ch, COUNT(*), SUM(tf.i), MIN(tf.dec2), MAX(tf.dec2)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY tf.ch;
+ch	COUNT(*)	SUM(tf.i)	MIN(tf.dec2)	MAX(tf.dec2)
+NULL	2	NULL	NULL	NULL
+alpha	3	2000	-66.66	33.33
+bravo	2	-3000	-22.22	55.55
+delta	1	4000	-44.44	-44.44
+############################################################
+# Test 12: GROUP BY a DATE key from the fact table
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tf.dt, COUNT(*), SUM(tf.i)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY tf.dt;
+dt	COUNT(*)	SUM(tf.i)
+2024-01-01	1	-1000
+2024-02-02	1	2000
+2024-03-03	1	-3000
+2024-04-04	1	4000
+2024-05-05	1	-5000
+2024-06-06	1	6000
+NULL	2	NULL
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tf.dt, COUNT(*), SUM(tf.i)
+FROM td JOIN tf ON tf.pk = td.pk
+GROUP BY tf.dt;
+dt	COUNT(*)	SUM(tf.i)
+2024-01-01	1	-1000
+2024-02-02	1	2000
+2024-03-03	1	-3000
+2024-04-04	1	4000
+2024-05-05	1	-5000
+2024-06-06	1	6000
+NULL	2	NULL
+############################################################
+# Test 13: All-NULL rows only (aggregates return NULL)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT COUNT(*), COUNT(tf.i), SUM(tf.i), MIN(tf.vc), MAX(tf.dt)
+FROM td JOIN tf ON tf.pk = td.pk
+WHERE td.pk > 6;
+COUNT(*)	COUNT(tf.i)	SUM(tf.i)	MIN(tf.vc)	MAX(tf.dt)
+2	0	NULL	NULL	NULL
+SET ndb_join_pushdown_aggregate=ON;
+SELECT COUNT(*), COUNT(tf.i), SUM(tf.i), MIN(tf.vc), MAX(tf.dt)
+FROM td JOIN tf ON tf.pk = td.pk
+WHERE td.pk > 6;
+COUNT(*)	COUNT(tf.i)	SUM(tf.i)	MIN(tf.vc)	MAX(tf.dt)
+2	0	NULL	NULL	NULL
+SET ndb_join_pushdown_aggregate=DEFAULT;
+# Cleanup
+DROP TABLE tf;
+DROP TABLE tb;
+DROP TABLE td;

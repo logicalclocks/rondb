@@ -1,0 +1,230 @@
+--source include/have_ndb.inc
+
+# RONDB-1056 — JIT fallback census.
+#
+# One labelled query per aggregation shape, each bracketed by an
+# ndbinfo.jit programs_fallback snapshot: `<label>_fell_back = 1`
+# means the bridge rejected the program (whole-program interpreter
+# fallback), 0 means it compiled. The recorded result file is living
+# documentation of JIT coverage — expectations flip as phases land.
+#
+# The `--sleep 11` before each expected-fallback query defeats the
+# fallback log's 10-second rate limiter, so EVERY rejecting shape
+# gets its own "RONDB-1056 JIT fallback: ... (reason=N detail=M)"
+# line in the data node log. After running, analyze with:
+#   grep -h "JIT fallback" <build>/mysql-test/var/mysql_cluster.1/ndbd.1/ndbd.log
+# (reason 1 = unsupported op; detail = the offending opcode).
+#
+# Caveats: `fell_back = 0` can also mean the planner did not PUSH the
+# shape at all (nothing reached the bridge). Per-row fallbacks
+# (e.g. CASE conditions over double columns) are invisible to this
+# counter by design.
+
+--echo ############################################################
+--echo # RONDB-1056 JIT fallback census
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk   BIGINT NOT NULL,
+  a    BIGINT NOT NULL,
+  b    BIGINT NOT NULL,
+  u    BIGINT UNSIGNED NOT NULL,
+  d    DOUBLE NOT NULL,
+  f    FLOAT NOT NULL,
+  dec9 DECIMAL(9,2) NOT NULL,
+  s    VARCHAR(16) NOT NULL,
+  ch   CHAR(8) NOT NULL,
+  i    INT NOT NULL,
+  dt   DATE NOT NULL,
+  n    BIGINT,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 10, 3, 100, 2.5, 0.5, 1.10, 'beta',  'beta',  1, '2026-01-15', NULL),
+  (2, 20, 4, 200, 3.5, 0.5, 2.20, 'alpha', 'alpha', 2, '2026-02-15', 5),
+  (3, 30, 5, 300, 4.0, 2.0, 3.30, 'gamma', 'gamma', 3, '2026-03-15', 7),
+  (4, 40, 6, 400, 6.0, 4.0, 4.40, 'delta', 'delta', 4, '2026-04-15', NULL);
+
+SET ndb_pushdown_aggregate=ON;
+
+--echo #
+--echo # ---- Shapes expected to COMPILE (controls) ----
+--echo #
+
+--echo # sum_bigint: plain SUM (Phase 4).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(a) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS sum_bigint_fell_back;
+
+--echo # case_int: integer CASE aggregation (Phase 5A).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN a > 25 THEN a ELSE 0 END) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_int_fell_back;
+
+--echo # sum_double + double division (Phase 5C-2).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(d), SUM(d / f) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS double_div_fell_back;
+
+--echo # min_max_u64: unsigned MIN/MAX (Phase 5C-3).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT MIN(u), MAX(u) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS min_max_u64_fell_back;
+
+--echo # nullable_sum: NULL rows on the JIT (Phase 5D).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(n), COUNT(n) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS nullable_sum_fell_back;
+
+--echo # mixed_arith: int + double operands in one expression (Phase
+--echo # 5I — the conversion cold call; includes the TPC-H Q9 shape
+--echo # of NNC-const arithmetic over scaled DECIMAL).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--disable_result_log
+SELECT SUM(a + d), SUM(dec9 * (1 - f)) FROM t1;
+--enable_result_log
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS mixed_arith_fell_back;
+
+--echo # case_nullable: CASE over a NULLABLE condition column (Phase
+--echo # 5D-3 — the planner's BRANCH_REG_EQ_NULL guard fuses with the
+--echo # READ_ATTR into a null-branching load; NULL rows stay on the
+--echo # JIT).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN n > 5 THEN 1 ELSE 0 END) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_nullable_fell_back;
+
+--echo #
+--echo # ---- Shapes expected to FALL BACK (the census proper) ----
+--echo #
+
+--echo # int_div: integer division (lowered since Phase 5E-2; the SQL
+--echo # planner does not push DIV, so 0 here means never-pushed —
+--echo # rondb_jit_ronsql_canary exercises the lowering).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(a DIV b) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_div_fell_back;
+
+--echo # int_mod: modulo (lowered since Phase 5E-2, same not-pushed
+--echo # caveat; Test 27's fallback canary now uses kOpSetRegNull).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(a % b) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_mod_fell_back;
+
+--echo # generic_div_int: '/' over INTEGER operands (lowered since
+--echo # Phase 5E-3 — the conversion cold call; the SQL planner does
+--echo # not push '/', so 0 here means never-pushed —
+--echo # rondb_jit_ronsql_canary exercises the lowering).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(a / b) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS generic_div_int_fell_back;
+
+--echo # string_min: MIN over VARCHAR (compiles since Phase 5F-1 — the
+--echo # fused string MIN/MAX cold call).
+--sleep 11
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT MIN(s), MAX(s) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS string_min_fell_back;
+
+--echo # decimal_sum: SUM over DECIMAL (compiles since Phase 5G — the
+--echo # DECIMAL load + generic-aggregate lowering).
+--sleep 11
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(dec9) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS decimal_sum_fell_back;
+
+--echo # date_min: MIN/MAX over DATE (lowered since Phase 5K on the u64
+--echo # track; the SQL planner does not push temporals — 0 here means
+--echo # never-pushed; rondb_jit_ronsql_canary Q16-Q18 exercise it).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT MIN(dt), MAX(dt) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS date_min_fell_back;
+
+--echo # unsigned_arith: arithmetic over BIGINT UNSIGNED (compiles since
+--echo # Phase 5C-4 — u64 checked arithmetic).
+--sleep 11
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(u + 1) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS unsigned_arith_fell_back;
+
+--echo # int_sum: SUM over a plain INT column (compiles since the
+--echo # narrow-int admission — signed widths ride the i64 track,
+--echo # unsigned widths the u64 track).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(i) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_sum_fell_back;
+
+--echo # case_string: STRING condition in a CASE aggregate (compiles
+--echo # since the aggregation-path BRANCH_ATTR_OP_ARG unblock —
+--echo # absolute instruction offsets + prog_buf at dispatch).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(CASE WHEN ch = 'beta' THEN 1 ELSE 0 END) FROM t1;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_string_fell_back;
+
+--echo #
+--echo # ---- Phase 6-0: the JOIN-AGGREGATION compile path ----
+--echo #
+--echo # Every row above runs the STANDALONE scan-aggregation path
+--echo # (PushdownInterpreterFactory -> cached compile, counters
+--echo # visible). Joined aggregation compiles separately in
+--echo # DblqhProxy::execJOIN_AGG_SETUP_REQ: bridge/compile rejects DO
+--echo # bump programs_fallback, but successful compiles do NOT bump
+--echo # programs_compiled (direct jit1_compile, no reuse cache until
+--echo # 6-4), and a multi-leaf compile-gate skip bumps NOTHING — so on
+--echo # these rows 0 proves "no reject", not "compiled"; must-JIT
+--echo # proof stays with the 4060 canaries.
+
+CREATE TABLE tj_parent (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+CREATE TABLE tj_c1 (
+  parent_id BIGINT NOT NULL,
+  amount    BIGINT NOT NULL,
+  PRIMARY KEY (parent_id)
+) ENGINE=NDB;
+CREATE TABLE tj_c2 (
+  parent_id BIGINT NOT NULL,
+  qty       BIGINT NOT NULL,
+  PRIMARY KEY (parent_id)
+) ENGINE=NDB;
+
+INSERT INTO tj_parent VALUES (1, 1), (2, 1), (3, 2);
+INSERT INTO tj_c1 VALUES (1, 10), (2, 20);
+INSERT INTO tj_c2 VALUES (1, 5), (2, 7);
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+
+--echo # join_sum: two-table inner-join SUM over a child column — the
+--echo # canonical JOIN_AGG_SETUP shape (compiles since Phase 4;
+--echo # must-JIT proof in testJoinAggJit Test 1).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(c.amount) FROM tj_parent p JOIN tj_c1 c ON c.parent_id = p.pk;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS join_sum_fell_back;
+
+--echo # outer_join_sum: LEFT JOIN aggregation (pushed since
+--echo # RONDB-1035). The program compiles; NULL-EXTENDED rows for
+--echo # unmatched parents (pk=3 here) never dispatch to the JIT — a
+--echo # per-row exclusion invisible to this program-level counter by
+--echo # design (see the 6-2 exemption list).
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(c.amount), COUNT(*) FROM tj_parent p LEFT JOIN tj_c1 c ON c.parent_id = p.pk;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS outer_join_sum_fell_back;
+
+--echo # star_two_leaf: aggregates over TWO child tables in one query.
+--echo # If this pushes as a multi-leaf setup, the JIT compile gate
+--echo # (m_num_leaves == 1) skips it WITHOUT bumping any counter —
+--echo # 0 here documents that blind spot until 6-3 lifts the gate and
+--echo # 6-4 makes join-agg compiles countable. The star fleet
+--echo # (testStarJoinAgg*) is the definitive multi-leaf exercise.
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SELECT SUM(c1.amount), SUM(c2.qty)
+FROM tj_parent p
+JOIN tj_c1 c1 ON c1.parent_id = p.pk
+JOIN tj_c2 c2 ON c2.parent_id = p.pk;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS star_two_leaf_fell_back;
+
+DROP TABLE tj_c2, tj_c1, tj_parent;
+DROP TABLE t1;

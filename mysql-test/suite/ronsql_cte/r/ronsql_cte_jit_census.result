@@ -1,0 +1,39 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cte-jit-1 (= agg-04): CTE_LOOKUP join, re-aggregation (form A) ===
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+== Query ==
+WITH ord AS (
+SELECT o_custkey AS k, MIN(o_shippriority) AS mn, MAX(o_shippriority) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.mx)
+FROM customer AS c
+JOIN ord ON ord.k = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+include/assert.inc [cte-jit-1: no JIT program fallback in the CTE pipeline]
+
+=== cte-jit-2 (= agg-18): CTE_SCAN root, scalar main aggregation (form B) ===
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+== Query ==
+WITH x AS (
+SELECT o_custkey AS k, SUM(o_shippriority) AS t
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(x.t), MIN(x.t), MAX(x.t)
+FROM x;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+include/assert.inc [cte-jit-2: no JIT program fallback in the CTE pipeline]

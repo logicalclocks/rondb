@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# Test 29: operand-width boundary canary (RONDB-1056). A wide child table
+# places the aggregated column at column id 260, past the old 255 cap.
+# ERROR_INSERT 4060 makes JIT fallback fatal, so this passes only if the
+# high-id LoadCol actually compiled through JIT -- proving the bridge
+# admits col_id up to 4095 (NDB MAX_ATTRIBUTES_IN_TABLE = 4096).
+
+--echo Running rondb_jit_ndbapi_wide_column
+--replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/ /Connecting to management server at [^\n]*\n//
+--exec $NDB_PUSH_AGG_DIR/testJoinAggJit -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 5 2>&1
+--echo PASSED
+
+# Clean up database created by test program
+DROP DATABASE IF EXISTS test_db;

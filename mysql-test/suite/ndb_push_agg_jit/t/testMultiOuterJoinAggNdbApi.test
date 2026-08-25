@@ -1,0 +1,4 @@
+# Mirror of suite/ndb_push_agg/t/testMultiOuterJoinAggNdbApi.test with the JIT active
+# (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056
+# differential. Test logic lives ONLY in the sourced original.
+--source suite/ndb_push_agg/t/testMultiOuterJoinAggNdbApi.test

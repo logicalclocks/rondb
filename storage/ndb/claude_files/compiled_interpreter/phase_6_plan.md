@@ -1,9 +1,14 @@
 # Phase 6 — post-merge integration: fleet conformance, CTE safety, star-join JIT
 
-**Status: PLANNED (2026-08-22). Awaiting approval; execute as
-sequential slices 6-0 → 6-4 with the usual
-implement → verify → commit cycle per slice. 6-5 is parked
-(demand-driven); 6-6 threads through every slice.**
+**Status: 6-0 DONE & VERIFIED (2026-08-25 — all tests passed: host
+tests green; suite `ndb_push_agg` green under CompiledInterpreter=OFF
+and its full mirror `ndb_push_agg_jit` green under ON = the
+structural always-JIT differential; `ronsql_cte_jit_census` baseline
+recorded with both asserts holding after the EXIT_OK_LAST
+counter-hygiene fix; fallback-log harvest recorded in §6-0).
+Remaining slices 6-1 → 6-4 execute with the usual
+implement → verify → commit cycle; 6-5 is parked (demand-driven);
+6-6 threads through every slice.**
 
 ## 0. Context — what Phase 6 has become
 
@@ -178,22 +183,155 @@ JIT does with their programs: compiled? rejected by the bridge
   as a counted probe or a documented "never reaches the JIT because
   ..." comment row, same style as the existing rows.
 
+**Implemented — the structural differential (2026-08-22, Mikael's
+design): suites `ndb_push_agg` (OFF) / `ndb_push_agg_jit` (ON).**
+Instead of a manual my.cnf edit per run, the differential is now
+permanent suite structure, following the `ronsql_cte` ×5 precedent:
+- `suite/ndb_push_agg/my.cnf` pins `CompiledInterpreter=OFF` — the
+  interpreter arm. (The config default is AUTO = JIT on, so without
+  this line the "normal" suite was silently running the JIT.)
+- NEW `suite/ndb_push_agg_jit/`: `my.cnf` includes the base suite's
+  and overrides `CompiledInterpreter=ON` (mysqltest resolves
+  `!include` root-relative; later section values win). All 24
+  `rondb_jit_*` canaries moved here (`git mv`, plus a copy of
+  `have_ndb_error_insert.inc` — mysqltest resolves bare `--source`
+  names against the current file's directory first,
+  `mysqltest.cc:3181`). Every non-bench functional test is mirrored
+  as a one-line `--source suite/ndb_push_agg/t/<name>.test` wrapper
+  with a copied `.result` — test logic lives only in the original,
+  and identical baselines passing under both suites IS the always-JIT
+  differential. `bench*` tests are deliberately unmirrored;
+  `ndb_push_agg_dist` is untouched for now (flipping it OFF without a
+  mirror would lose multinode JIT coverage — open item).
+- **`testJoinAggNdbApi` split**: its former Tests 25–30 (the JIT
+  canaries, which arm 4060 and would abort every data node under
+  CompiledInterpreter=OFF) moved to the NEW binary `testJoinAggJit`
+  (block_unit_test, own CMake target), renumbered Tests 1–6 with
+  dedicated tables renamed `jit3_*`/`jit5_*`/`jit6_*`. The parent
+  binary now ends at Test 24 and carries no JIT dependency. Wrappers:
+  `testJoinAggJit.test` (whole binary) is new in the jit suite; the
+  six `rondb_jit_ndbapi_*` wrappers now exec `testJoinAggJit
+  --only 1..6`. Three latent defects found and fixed by the split:
+  (a) `rondb_jit_ndbapi_null_sum` had run `--only 25` (= must-compile,
+  not null-sum) since the merge renumbering — its recorded baseline
+  matched, so the wrong-test run was invisible; now `--only 2`;
+  (b) `fakeOkLineForErrorInsertTest`'s JIT entries still carried
+  pre-merge numbers (24–29) — production builds would have printed
+  wrong/no fake-OK lines; the moved table is renumbered 1–6;
+  (c) `createT30Tables` dropped the Test-29 tables instead of its own
+  — fixed in the split copy (`createT6Tables` drops `jit6_*`).
+
+**Implemented probes (2026-08-22).**
+- `rondb_jit_fallback_census` gained a "JOIN-AGGREGATION compile
+  path" section (every pre-existing row ran the STANDALONE path
+  only): `join_sum` (inner join, canonical JOIN_AGG_SETUP shape),
+  `outer_join_sum` (LEFT JOIN under
+  `ndb_join_pushdown_aggregate_outer_join=ON`; NULL-extended rows
+  documented as per-row-invisible), `star_two_leaf` (two child
+  tables; documents the multi-leaf blind spot — the compile-gate
+  skip bumps no counter). Hand-authored `.result`.
+- NEW `suite/ronsql_cte/t/ronsql_cte_jit_census.test` — the CTE
+  pipeline probes live in the `ronsql_cte` suite because CTE queries
+  execute only through the RDRS arm (every CTE body sets
+  `$suppress_ronsql_cli`). Two literally-recorded-green queries
+  copied from `body_agg.inc` (agg-04 form A: CTE_LOOKUP join +
+  re-aggregation; agg-18 form B: CTE_SCAN root), each through the
+  strict-diff compare harness (mysqld server-side compute = ground
+  truth) and each bracketed by an `include/assert.inc` on the
+  `programs_fallback` delta — a reject in either the producer or the
+  consumer JOIN_AGG_SETUP fails the test even under `--record`.
+  Baseline to be recorded on the first run.
+
+**First census catch (2026-08-22): phantom scan-filter fallbacks from
+internal EXIT_OK_LAST scans — FIXED.** The first
+`ronsql_cte_jit_census` run failed its cte-jit-1 assert with a
+fallback delta of 16 — but the CTE aggregation pipeline was clean
+(zero join-agg fallbacks, empty strict diff). The ndbd fallback log
+showed `scan-filter bridge rejected (reason=1 detail=22)`: opcode 22
+= `EXIT_OK_LAST`. Source: internal scans — `NdbIndexStat.cpp:177`
+(index-stat sample scans) and `NdbDictionaryImpl.cpp:7013`
+(listEvents) — attach the classic 1-word `EXIT_OK_LAST` program
+("accept every row, close the scan"). The Phase 7 scan-filter path
+attempted to compile it once per fragment's storedProc (8
+partitions × 2 nodes = 16), and each bridge reject bumped the
+node-global `programs_fallback` — timing noise that could pollute
+ANY counter bracket, in any census. Fix (`DbtupExecQuery.cpp`,
+`scanCopyAttrinfo` eligibility gate): the 1-word `EXIT_OK_LAST`
+program is classified INELIGIBLE before reaching the bridge — it has
+no per-row filtering work to speed up, so "fallback" was the wrong
+category. A LONGER program containing `EXIT_OK_LAST` still reaches
+the bridge and counts its reject (a real Phase 7 coverage note: the
+scan-filter bridge lowers `EXIT_OK` but not `EXIT_OK_LAST`, whose
+accept-and-close disposition the invoke contract cannot express —
+durable negative unless demand appears).
+
+**Fleet census (fill the Measured column from the 6-0 run —
+`programs_fallback` deltas, the fallback log, and where needed 5119
+dumps):**
+
+| Fleet test(s) | Compile path | Pre-run analysis | Measured |
+|---|---|---|---|
+| `testJoinAgg{,NdbApi,Spj,ScanScan,Idempotency}` | join-agg single-leaf | compile (the deliberate-fallback canary is now testJoinAggJit Test 4) | green ×2 arms; the expected kOpSetRegNull reject (r=1 d=30) observed |
+| `testOuterJoinAgg{,NdbApi}`, `testMultiOuterJoinAggNdbApi` | join-agg single-leaf | compile; NULL-extended rows interpreter per-row | green ×2 arms; no attributed rejects |
+| `testStarJoinAgg{,NdbApi,Spj}` | multi-leaf | compile-gate skip, SILENT (no counter) — 6-3 territory | green ×2 arms; skip stays invisible until 6-3/6-4 |
+| `testCte{Dbtc,Lookup,NdbApi,NdbApiFilter,NdbApiOuterJoin,Phase6}` | CTE producer + consumer setups | compile (linked-column programs); CTE WHERE filters never JIT (structural, 6-5) | green ×2 arms; unattributed fleet rejects (see harvest) to pin in 6-2 |
+| `testCaseAgg` | join-agg embedded CASE | compile (5A/5J coverage) | green ×2 arms |
+| `testVarcharMinMax` | string MIN/MAX | compile (5F-1) | green ×2 arms |
+| `testInterpreterTypedRegs` | normal interpreter | mostly outside the agg JIT; scan-filter eligibility only | green ×2 arms |
+| `ronsql_cte` ×5 suites | CTE pipeline | compile; probes committed (`ronsql_cte_jit_census`) | census asserts GREEN: producer + consumer setups reject-free, strict diff empty |
+| `benchJoinAgg`, `bench_*` | — | perf only, out of census scope | — |
+
+**Fallback-log harvest (2026-08-25, surviving parallel-worker ndbd
+logs of the verified JIT-arm sweeps — all suites green, so every line
+below is benign; per-test attribution is 6-2's job):**
+- `join-agg bridge reason=1 detail=30` (kOpSetRegNull) — the
+  permanent deliberate-fallback canary shape. Expected.
+- `join-agg bridge reason=1 detail=43` — an EMBEDDED block containing
+  normal-interpreter opcode 43 = `READ_AGG_REG_TO_REG`, which the
+  embedded translator does not lower. New coverage note from the
+  fleet; candidate 6-2 exemption or future lowering.
+- `aggregation bridge reason=5 detail=14/12` and `join-agg bridge
+  reason=5 detail=13` — `JIT_BRIDGE_REG_OUT_OF_RANGE` at
+  kOpSumBigint/kOpMin/kOpCount: fleet programs use register indices
+  past the bridge's cap (`BC_MAX_REGS`). A register-count admission
+  boundary the SQL planner never crosses; candidate 6-2 exemption or
+  cap raise if demand shows.
+- `scan-filter bridge reason=1 detail=1` (`READ_ATTR_INTO_REG`) —
+  the known Phase 7 v1 subset limit (NULL-branch + comparison
+  predicates only). Durable note.
+- One worker logged 25–27 cumulative fallbacks — the 10 s rate
+  limiter hides multiplicity; counters, not log lines, are counts.
+
 **What it brings.** Confidence the rebase is sound, plus a *measured*
 map of JIT coverage over the new territory. That map scopes and ranks
 6-2/6-3 by data instead of guesswork.
 
 **Verification (Mikael runs).**
+- Build (the new `testJoinAggJit` binary compiles; `testJoinAggNdbApi`
+  still compiles after the split).
 - Host: `bridge_tests` (141), `coldcall_tests` (34).
-- Full `ndb_push_agg` sweep (all `rondb_jit_*` canaries + the fleet
-  wrappers) and `ndb_push_agg_dist`, under the default
-  `CompiledInterpreter=AUTO` — this is the JIT arm of the
-  differential.
-- The same sweep once with `CompiledInterpreter=OFF` (suite `my.cnf`
-  edit for the run, not committed) — the interpreter arm. Identical
-  `.result` baselines passing under both arms is the always-JIT
-  differential the original Phase 6 asked for.
-- One representative RonSQL CTE topology suite (`ronsql_cte`) under
-  both arms; the other four topologies under AUTO only.
+- Record the CTE census baseline:
+  `./mtr --record --suite=ronsql_cte ronsql_cte_jit_census`
+  (the embedded asserts fail loudly on any fallback even while
+  recording; the two `== Diff ==` sections must record empty).
+- **Interpreter arm**: `./mtr --suite=ndb_push_agg` — now pinned
+  `CompiledInterpreter=OFF`. Everything must stay green (proves the
+  fleet + functional baselines are JIT-independent, and that
+  `testJoinAggNdbApi` post-split runs clean without the JIT).
+- **JIT arm**: `./mtr --suite=ndb_push_agg_jit` — the same tests
+  mirrored under `CompiledInterpreter=ON`, plus all 24 `rondb_jit_*`
+  canaries and the new `testJoinAggJit` (Tests 1–6, incl. the
+  repaired null-sum coverage). Identical mirror baselines green under
+  both suites is the always-JIT differential.
+- `./mtr --suite=ndb_push_agg_dist` unchanged (still JIT-on via the
+  AUTO default; the OFF/mirror question there is an open item).
+- One RonSQL CTE topology suite: `./mtr --suite=ronsql_cte` (JIT on
+  via AUTO default) — CTE-pipeline arm.
+- After the JIT-arm sweeps, harvest the fallback log for the census
+  table: `grep -h "JIT fallback"
+  <build>/mysql-test/var/**/ndbd*/ndbd.log` (reason/detail per
+  line; rate-limited to one line per 10s — the counters, not the
+  log, are the counts).
 
 **Exit.** Both arms green; census table committed; 6-2/6-3 scope
 confirmed or re-ranked from the measurements.
@@ -468,6 +606,7 @@ rewritten by it.
 - *Counter re-records* (6-4): canaries that pinned exact
   compiled/reused deltas may need re-recording; use sums and `>=`
   where possible.
-- *OFF-arm mechanics* (6-0): `CompiledInterpreter=OFF` needs a
-  cluster-config edit for the run; keep it a documented local edit,
-  not a committed suite change.
+- *Mirror-suite maintenance* (6-0): every re-record of a mirrored
+  test must be done in BOTH `ndb_push_agg` and `ndb_push_agg_jit`;
+  the one-line `--source` mirrors prevent logic drift, and result
+  drift fails loudly.

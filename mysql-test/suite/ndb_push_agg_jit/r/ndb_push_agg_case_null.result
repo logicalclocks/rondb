@@ -1,0 +1,147 @@
+############################################################
+# Pushed CASE aggregation with NULL condition values
+############################################################
+CREATE TABLE tn (
+pk INT PRIMARY KEY,
+grp INT NOT NULL,
+val INT,
+c CHAR(4),
+amt INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tn VALUES
+(1, 1, 10,   'aa', 100),
+(2, 1, NULL, 'bb', 200),
+(3, 1, 30,   NULL, 300),
+(4, 2, NULL, NULL, 400),
+(5, 2, 50,   'aa', 500),
+(6, 3, NULL, NULL, 600),
+(7, 3, NULL, NULL, 700);
+# Baseline: pushdown OFF (server-side aggregation).
+# Q1: searched CASE, all 6 integer operators - NULL rows take ELSE.
+# Q2: multi-WHEN - NULL falls through BOTH conditions to ELSE.
+# Q3: string EQ and NE - NULL rows count for NEITHER (ne_aa = 1,
+#     not 5, is the NULL_CMP_EQUAL regression trap).
+# Q4: simple CASE, nullable search column - NULL matches no WHEN.
+# Q5: mixed integer + string conditions in one searched CASE.
+# Q6: MIN/MAX over CASE with a nullable condition column.
+# Q7: control - NOT NULL condition column (unchanged wire).
+# Q8: negative constant (LOAD_CONST64 path) with the null guard.
+# Q9: plain aggregate + CASE aggregate in one program.
+SET ndb_pushdown_aggregate=OFF;
+SELECT
+SUM(CASE WHEN val =  30 THEN 1 ELSE 0 END) AS eq_30,
+SUM(CASE WHEN val != 30 THEN 1 ELSE 0 END) AS ne_30,
+SUM(CASE WHEN val <  30 THEN 1 ELSE 0 END) AS lt_30,
+SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS le_30,
+SUM(CASE WHEN val >  30 THEN 1 ELSE 0 END) AS gt_30,
+SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tn;
+eq_30	ne_30	lt_30	le_30	gt_30	ge_30
+1	2	1	2	1	2
+SELECT grp,
+SUM(CASE WHEN val <= 30 THEN amt WHEN val <= 50 THEN 1 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+grp	s
+1	400
+2	1
+3	0
+SELECT
+SUM(CASE WHEN c =  'aa' THEN 1 ELSE 0 END) AS eq_aa,
+SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa
+FROM tn;
+eq_aa	ne_aa
+2	1
+SELECT grp,
+SUM(CASE val WHEN 10 THEN 1 WHEN 50 THEN 2 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+grp	s
+1	1
+2	2
+3	0
+SELECT
+SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
+FROM tn;
+s
+11
+SELECT
+MIN(CASE WHEN val >= 30 THEN val ELSE 999 END) AS mn,
+MAX(CASE WHEN val >= 30 THEN val ELSE 0 END) AS mx
+FROM tn;
+mn	mx
+30	50
+SELECT
+SUM(CASE WHEN grp = 1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+s
+3
+SELECT
+SUM(CASE WHEN val > -1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+s
+3
+SELECT
+SUM(amt) AS total,
+SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS s
+FROM tn;
+total	s
+2800	2
+# Pushdown ON - every result must match the baseline above.
+SET ndb_pushdown_aggregate=ON;
+SELECT
+SUM(CASE WHEN val =  30 THEN 1 ELSE 0 END) AS eq_30,
+SUM(CASE WHEN val != 30 THEN 1 ELSE 0 END) AS ne_30,
+SUM(CASE WHEN val <  30 THEN 1 ELSE 0 END) AS lt_30,
+SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS le_30,
+SUM(CASE WHEN val >  30 THEN 1 ELSE 0 END) AS gt_30,
+SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tn;
+eq_30	ne_30	lt_30	le_30	gt_30	ge_30
+1	2	1	2	1	2
+SELECT grp,
+SUM(CASE WHEN val <= 30 THEN amt WHEN val <= 50 THEN 1 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+grp	s
+1	400
+2	1
+3	0
+SELECT
+SUM(CASE WHEN c =  'aa' THEN 1 ELSE 0 END) AS eq_aa,
+SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa
+FROM tn;
+eq_aa	ne_aa
+2	1
+SELECT grp,
+SUM(CASE val WHEN 10 THEN 1 WHEN 50 THEN 2 ELSE 0 END) AS s
+FROM tn GROUP BY grp;
+grp	s
+1	1
+2	2
+3	0
+SELECT
+SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
+FROM tn;
+s
+11
+SELECT
+MIN(CASE WHEN val >= 30 THEN val ELSE 999 END) AS mn,
+MAX(CASE WHEN val >= 30 THEN val ELSE 0 END) AS mx
+FROM tn;
+mn	mx
+30	50
+SELECT
+SUM(CASE WHEN grp = 1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+s
+3
+SELECT
+SUM(CASE WHEN val > -1 THEN 1 ELSE 0 END) AS s
+FROM tn;
+s
+3
+SELECT
+SUM(amt) AS total,
+SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS s
+FROM tn;
+total	s
+2800	2
+DROP TABLE tn;

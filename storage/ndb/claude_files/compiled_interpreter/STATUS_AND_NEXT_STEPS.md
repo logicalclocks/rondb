@@ -32,6 +32,38 @@ standalone RONDB-733 mysqld fixes (`c7e8dd1ff89`, `f0a3d38d451`,
 `3c2c228535f`) survived the rebase and remain branch-local — separate
 PR to 26.04-main pending.
 
+**6-0 restructure (Mikael's design): the differential is now suite
+structure.** `ndb_push_agg` pins `CompiledInterpreter=OFF` (the
+interpreter arm — the config default is AUTO, so it had been running
+the JIT); NEW suite `ndb_push_agg_jit` (`my.cnf` !includes the base +
+`CompiledInterpreter=ON`) holds all 24 moved `rondb_jit_*` canaries
+plus one-line `--source` mirrors of every non-bench functional test
+with copied baselines. `testJoinAggNdbApi`'s JIT Tests 25–30 split
+out into the NEW binary `testJoinAggJit` (Tests 1–6, tables
+`jit3_*`/`jit5_*`/`jit6_*`; the parent binary now ends at Test 24 and
+runs under OFF). The split flushed three latent defects: the
+`null_sum` wrapper ran `--only 25` (must-compile, not null-sum) since
+the merge; the fake-OK table still had pre-merge numbers; and
+`createT30Tables` dropped the Test-29 tables. Full record in
+`phase_6_plan.md` §6-0. `ndb_push_agg_dist` untouched (open item:
+OFF + mirror vs leave JIT-on).
+
+**6-0 DONE & VERIFIED (2026-08-25 — all tests passed):** host tests
+green; `ndb_push_agg` green under OFF and the full `ndb_push_agg_jit`
+mirror green under ON (the structural always-JIT differential);
+`ronsql_cte_jit_census` baseline recorded with both asserts holding.
+The census's first catch was COUNTER NOISE, fixed at the source: the
+internal 1-word EXIT_OK_LAST scans (NdbIndexStat samples, listEvents)
+were being bridge-rejected once per fragment's storedProc, polluting
+`programs_fallback` (16 phantom counts in one bracket) — now
+classified INELIGIBLE before reaching the bridge
+(`DbtupExecQuery.cpp` scanCopyAttrinfo). Fallback-log harvest +
+filled fleet census table in `phase_6_plan.md` §6-0 (notables for
+6-2: embedded `READ_AGG_REG_TO_REG` rejects, `REG_OUT_OF_RANGE` on
+fleet programs past `BC_MAX_REGS`, scan-filter `READ_ATTR_INTO_REG`
+= the Phase 7 v1 subset limit). NEXT: 6-1 (CTE-consumer
+null-`tablePtrP` hardening).
+
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 
 Three things happened after the 2026-06-22 state described below. **The

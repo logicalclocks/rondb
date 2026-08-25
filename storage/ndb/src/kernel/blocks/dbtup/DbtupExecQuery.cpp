@@ -1097,7 +1097,22 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
              * always begins at word (5 + RinitReadLen); the input-param
              * offset cancels out (see interpreterStartLab's
              * RinstructionCounter arithmetic). */
-            if (rexec > 0 && rfupd == 0 &&
+            /* The 1-word EXIT_OK_LAST program (NdbIndexStat sample
+             * scans, NdbDictionaryImpl listEvents) is INELIGIBLE, not a
+             * fallback: it accepts every row and closes the scan — there
+             * is no per-row filtering work for the JIT to speed up, so
+             * attempting (and bridge-rejecting) it would only pollute the
+             * programs_fallback counter, once per fragment's storedProc.
+             * Found by the Phase 6-0 CTE census: an index-stat auto-update
+             * landing inside a counter bracket added 16 phantom fallbacks.
+             * A LONGER program containing EXIT_OK_LAST still reaches the
+             * bridge and counts its reject — that is a real Phase 7
+             * coverage gap, not counter noise. */
+            const bool trivial_exit_last =
+                (rexec == 1 &&
+                 (Uint64(5) + rinit) < storedPtr.p->cachedLinearLen &&
+                 cache[5 + rinit] == Interpreter::EXIT_OK_LAST);
+            if (rexec > 0 && rfupd == 0 && !trivial_exit_last &&
                 (Uint64(5) + rinit + rexec) <= storedPtr.p->cachedLinearLen) {
               Uint32 reject_code = 0;
               void *cache_handle = nullptr;
@@ -1121,8 +1136,9 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
          * scan's entry — the blob it points at is freed when that scan's
          * stored procedure dies), then either install the compiled entry
          * or mark the interpreter fallback as deliberate so ERROR_INSERT
-         * 4060 doesn't abort on a bridge-rejected filter (e.g. the
-         * EXIT_OK_LAST table-stats scan). */
+         * 4060 doesn't abort on an ineligible or bridge-rejected filter
+         * (e.g. the 1-word EXIT_OK_LAST table-stats scan, which is
+         * classified ineligible above without reaching the bridge). */
         scan_rec_ptr->m_jit_filter_entry = nullptr;
         scan_rec_ptr->m_jit_filter_reject_code = 0;
         if (storedPtr.p->m_jit_filter_state == JIT_FILTER_COMPILED) {

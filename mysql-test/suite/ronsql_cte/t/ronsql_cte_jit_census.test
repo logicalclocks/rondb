@@ -1,0 +1,65 @@
+# RONDB-1056 Phase 6-0 — CTE-pipeline JIT fallback census.
+#
+# Two literally-recorded-green CTE queries copied from body_agg.inc
+# (agg-04, form A: CTE_LOOKUP join + re-aggregation; agg-18, form B:
+# CTE_SCAN root), each bracketed by an ndbinfo.jit programs_fallback
+# delta that MUST stay 0 (include/assert.inc — a bridge/compile
+# reject on either the CTE producer program or the consumer program
+# fails the test loudly, even under --record).
+#
+# What 0 proves: no join-agg bridge/compile reject anywhere in the
+# CTE pipeline (producer + consumer JOIN_AGG_SETUPs). What it does
+# NOT prove: that the programs compiled — join-agg compiles bypass
+# the programs_compiled counter until Phase 6-4, and a multi-leaf
+# compile-gate skip bumps nothing. Must-JIT (4060) pinning is Phase
+# 6-2.
+#
+# The mysql-vs-RonSQL strict diff doubles as the JIT differential:
+# mysqld computes the WITH query server-side (ground truth), while
+# the RDRS arm runs it through the pushed CTE machinery with the JIT
+# active.
+
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === cte-jit-1 (= agg-04): CTE_LOOKUP join, re-aggregation (form A) ===
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+DELIMITER |;
+let $QUERY=
+WITH ord AS (
+  SELECT o_custkey AS k, MIN(o_shippriority) AS mn, MAX(o_shippriority) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT MIN(ord.mn), MAX(ord.mx), SUM(ord.mx)
+FROM customer AS c
+JOIN ord ON ord.k = c.c_custkey;|
+DELIMITER ;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $assert_text = cte-jit-1: no JIT program fallback in the CTE pipeline
+--let $assert_cond = [SELECT SUM(programs_fallback) - @c0 AS delta FROM ndbinfo.jit, delta, 1] = 0
+--source include/assert.inc
+
+--echo
+--echo === cte-jit-2 (= agg-18): CTE_SCAN root, scalar main aggregation (form B) ===
+SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+DELIMITER |;
+let $QUERY=
+WITH x AS (
+  SELECT o_custkey AS k, SUM(o_shippriority) AS t
+  FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(x.t), MIN(x.t), MAX(x.t)
+FROM x;|
+DELIMITER ;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $assert_text = cte-jit-2: no JIT program fallback in the CTE pipeline
+--let $assert_cond = [SELECT SUM(programs_fallback) - @c0 AS delta FROM ndbinfo.jit, delta, 1] = 0
+--source include/assert.inc
+
+--source suite/ronsql_cte/include/cte_drop.inc
