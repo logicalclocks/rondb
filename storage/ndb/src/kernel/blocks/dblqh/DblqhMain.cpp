@@ -19900,6 +19900,22 @@ emitCteLinkedAggSlot(const JoinAggInterpreter *interp,
                      Uint32 maxWords) {
   Uint32 typeId = item.type;
   if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+  /* RONDB-1056 Phase 6-2: AggResItem carries unsignedness as a
+   * SEPARATE flag (type stays NDB_TYPE_BIGINT) — encode it into the
+   * marker type, or every consumer misreads the slot as signed.
+   * RonSQL's virt table already widens unsigned aggregates to
+   * Bigunsigned, so the consumer program's wire type says
+   * Bigunsigned; a BIGINT marker made (a) the JIT's u64 load helper
+   * take the per-row fallback on EVERY consumer row (found by the
+   * must-JIT CTE census under ERROR_INSERT 4060 — invisible to all
+   * counters, results still correct via the interpreter re-run), and
+   * (b) the interpreter consumer tag the register SIGNED, silently
+   * misordering MIN/MAX and misreading SUM for values >= 2^63
+   * (latent — test data never crosses it; same defect class as the
+   * RONDB-733 unsigned pushdown fix). */
+  if (typeId == NDB_TYPE_BIGINT && item.is_unsigned) {
+    typeId = NDB_TYPE_BIGUNSIGNED;
+  }
 
   if (isStringAggType(typeId) && !item.is_null) {
     const StringResult *stringResults = interp->string_results();
