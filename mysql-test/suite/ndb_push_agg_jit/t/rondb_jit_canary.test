@@ -56,19 +56,19 @@ INSERT INTO t2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
 --echo #     Expected: SUM(t2.c2) for matched pks = 100+200+300+400+500 = 1500
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=ON;
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log
 SELECT SUM(t2.c2)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log
 
 --echo ############################################################
 --echo # Q2: SUM of child-local bigint arithmetic over the same join.
 --echo #     Expected: SUM(t2.c2 + t2.pk) = (100+1)+(200+2)+(300+3)+(400+4)+(500+5) = 1515
 --echo ############################################################
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log
 SELECT SUM(t2.c2 + t2.pk)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log
 
 --echo ############################################################
 --echo # Q3: SUM of child-local mixed arithmetic (Plus + Minus + Mul).
@@ -76,10 +76,10 @@ SELECT SUM(t2.c2 + t2.pk)
 --echo #             = (100-1)+(200-2)+(300-3)+(400-4)+(500-5)
 --echo #             = 99+198+297+396+495 = 1485
 --echo ############################################################
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log
 SELECT SUM(t2.c2 - t2.pk + t2.pk * 0)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log
 
 --echo ############################################################
 --echo # Q4 (fallback): query with WHERE clause — admission MUST reject
@@ -98,4 +98,4 @@ SELECT SUM(t2.c2)
 DROP TABLE t2;
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_canary_mgm.log

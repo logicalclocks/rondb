@@ -27,32 +27,32 @@ INSERT INTO t1 VALUES
   (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 50);
 
 --echo # Q1: WHERE v IS NOT NULL must JIT (filter rejects the NULL rows).
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk, v FROM t1 WHERE v IS NOT NULL;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q2: WHERE v IS NULL must JIT (filter keeps the NULL rows).
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk FROM t1 WHERE v IS NULL;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q3: differential — same filter without the error insert matches Q1.
 --sorted_result
 SELECT pk, v FROM t1 WHERE v IS NOT NULL;
 
 --echo # Q4: WHERE v > 25 must JIT (BRANCH_ATTR_OP_ARG, integer GT literal).
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk, v FROM t1 WHERE v > 25;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q5: WHERE v = 30 must JIT (BRANCH_ATTR_OP_ARG, integer EQ literal).
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk, v FROM t1 WHERE v = 30;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q6: differential — same comparison without the error insert matches Q4.
 --sorted_result
@@ -62,17 +62,17 @@ SELECT pk, v FROM t1 WHERE v > 25;
 --echo #     the ndbcluster handler pushes a non-const param via cmp_param).
 PREPARE pstmt FROM 'SELECT pk, v FROM t1 WHERE v > ?';
 SET @lim = 25;
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 EXECUTE pstmt USING @lim;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 DEALLOCATE PREPARE pstmt;
 
 --echo # Q8: WHERE pk < v (column vs column) must JIT (BRANCH_ATTR_OP_ATTR).
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk, v FROM t1 WHERE pk < v;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q9: differential — same col-vs-col comparison without the error insert.
 --sorted_result
@@ -94,16 +94,16 @@ INSERT INTO t2 VALUES
 
 --echo # Q10: WHERE s = 'cherry' (VARCHAR literal) must JIT — string compare
 --echo #      via the column's charset, read into the large coutBuffer.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk, s FROM t2 WHERE s = 'cherry';
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q11: WHERE s < 'cherry' (VARCHAR range) must JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 --sorted_result
 SELECT pk, s FROM t2 WHERE s < 'cherry';
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
 
 --echo # Q12: differential — same string filter without the error insert.
 --sorted_result
@@ -111,4 +111,4 @@ SELECT pk, s FROM t2 WHERE s = 'cherry';
 
 DROP TABLE t2;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log

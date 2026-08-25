@@ -81,7 +81,34 @@ DblqhProxy's aspirational "each leaf independently compiled").
 Planned coldcall test recorded as NOT BUILDABLE (real helpers are
 kernel C++, coldcall_tests uses mocks) — armor verified by
 behavioral no-change; end-to-end negative noted as a 6-2 candidate.
-NEXT: 6-2 (conformance pinning: 4060-arm the fleet per the census).
+
+**6-2 DONE & VERIFIED (2026-08-25 — all arms green):** conformance
+pinning via three instruments (whole-binary 4060 arming rejected —
+the rate-limited fallback log makes attribution incomplete):
+(1) `ronsql_cte_jit_census` upgraded to MUST-JIT — 4060 + a
+compile_ns_total-delta assert per query (join-agg compiles bypass
+the cache, so pushed = compiled; delta 0 = not pushed — re-check at
+6-4); (2) NEW `rondb_jit_outer_join_canary` (RONDB-1035 shapes under
+4060 + compile proof; NULL-extended rows 4060-exempt by design);
+(3) recorded fallback-delta pins on all 25 jit-suite mirrors — the
+recorded value IS the pin; attribution complete
+(testInterpreterTypedRegs 1888 = Phase 7 subset boundary;
+ndb_pushdown_agg 16, case_null 8, VarcharMinMax 8 = future-lowering
+candidates; testCteNdbApi 2 = embedded READ_AGG_REG_TO_REG; 17
+tests at 0). Exemption list committed in `phase_6_plan.md` §6-2.
+**The must-JIT census caught a REAL cross-engine bug on its first
+armed run**: `emitCteLinkedAggSlot` dropped `AggResItem.is_unsigned`
+— unsigned CTE aggregate slots marked BIGINT while RonSQL's virt
+table says Bigunsigned, so the JIT's u64 load helper per-row-fell-
+back on EVERY consumer row (invisible to all counters, results
+correct via interpreter re-run) and the interpreter consumer carried
+a latent ≥2^63 sign bug. Fixed (standalone commit, DblqhMain.cpp);
+census now proves the CTE pipeline runs native. Also: 18 arming
+tests converted to per-test mgm log files (check-testcase state);
+ronsql_cte full-suite runs on this machine need reduced parallelism
+(--parallel=6 clean; 10 workers hit a machine-wide connect blip).
+NEXT: 6-3 (multi-leaf/star-join JIT — the main implementation
+slice).
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # RONDB-733: Single-Table Aggregation Pushdown
 ############################################################
@@ -1124,3 +1125,7 @@ grp	avg_double
 DROP TABLE ta;
 DROP TABLE ts;
 DROP TABLE td;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_pushdown_agg_jit_fallback_delta;
+ndb_pushdown_agg_jit_fallback_delta
+16

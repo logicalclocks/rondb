@@ -1,2 +1,7 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 Running testCteDbtc
 PASSED
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS testCteDbtc_jit_fallback_delta;
+testCteDbtc_jit_fallback_delta
+0

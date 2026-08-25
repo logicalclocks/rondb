@@ -38,24 +38,24 @@ INSERT INTO t2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
 SET ndb_join_pushdown_aggregate=ON;
 
 --echo # Q1: SUM over one child column must compile and run through JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log
 SELECT SUM(t2.c2)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log
 
 --echo # Q2: SUM over child-local bigint plus must compile and run through JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log
 SELECT SUM(t2.c2 + t2.pk)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log
 
 --echo # Q3: SUM over child-local plus, minus and mul must compile and run through JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log
 SELECT SUM(t2.c2 - t2.pk + t2.pk * 0)
   FROM t1 JOIN t2 ON t2.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log
 
 DROP TABLE t2;
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_must_compile_mgm.log

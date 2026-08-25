@@ -3,6 +3,7 @@ call mtr.add_suppression("Participant timeout");
 
 === cte-jit-1 (= agg-04): CTE_LOOKUP join, re-aggregation (form A) ===
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
 == Query ==
 WITH ord AS (
 SELECT o_custkey AS k, MIN(o_shippriority) AS mn, MAX(o_shippriority) AS mx
@@ -19,9 +20,11 @@ Number of output lines, including header: 2
 
 
 include/assert.inc [cte-jit-1: no JIT program fallback in the CTE pipeline]
+include/assert.inc [cte-jit-1: join-agg compile activity observed (the pipeline was pushed and compiled)]
 
 === cte-jit-2 (= agg-18): CTE_SCAN root, scalar main aggregation (form B) ===
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
 == Query ==
 WITH x AS (
 SELECT o_custkey AS k, SUM(o_shippriority) AS t
@@ -37,3 +40,4 @@ Number of output lines, including header: 2
 
 
 include/assert.inc [cte-jit-2: no JIT program fallback in the CTE pipeline]
+include/assert.inc [cte-jit-2: join-agg compile activity observed (the pipeline was pushed and compiled)]

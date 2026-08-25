@@ -1,4 +1,16 @@
 # Mirror of suite/ndb_push_agg/t/testStarJoinAggNdbApi.test with the JIT active
 # (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056
 # differential. Test logic lives ONLY in the sourced original.
+#
+# The recorded fallback delta below is the Phase 6-2 coverage pin for
+# this test: every JIT program reject it causes (join-agg, standalone
+# aggregation, scan filter — one count per compile attempt) is
+# counted. A change in EITHER direction is a coverage change:
+# investigate, then re-record deliberately. Deltas are deterministic:
+# compile attempts are per setup / per storedProc, background stat
+# scans are ineligible (not fallbacks) since 6-0, and per-row
+# fallbacks never touch this counter.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 --source suite/ndb_push_agg/t/testStarJoinAggNdbApi.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS testStarJoinAggNdbApi_jit_fallback_delta;

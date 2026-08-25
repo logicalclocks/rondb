@@ -39,9 +39,9 @@ SET ndb_pushdown_aggregate=ON;
 --echo # Q1: scalar SUM/COUNT over a nullable column must JIT — NULL rows
 --echo #     take the null branch (no fallback; 4060 would abort on one).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log
 SELECT SUM(v), COUNT(v) FROM tn;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: grouped — including a group whose rows are ALL NULL (grp 3):
@@ -49,10 +49,10 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --echo #     row of that group takes the null branch, so even the
 --echo #     all-NULL group is a pure JIT run under 4060.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log
 --sorted_result
 SELECT grp, SUM(v), COUNT(v), MIN(v) FROM tn GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
 --echo # Q3: nullable expression — SUM(v + pk): a NULL v skips the whole
@@ -60,11 +60,11 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --echo #     overflow) and the row contributes nothing, matching the
 --echo #     interpreter's null propagation.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log
 SELECT SUM(v + pk) FROM tn;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 DROP TABLE tn;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_nullable_canary_mgm.log

@@ -41,30 +41,30 @@ SET ndb_pushdown_aggregate=ON;
 --echo # Q1: BIGINT + DOUBLE and BIGINT * DOUBLE in one program.
 SELECT SUM(a + d) AS s1, SUM(a * d) AS s2 FROM t1;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log
 SELECT SUM(a + d) AS s1, SUM(a * d) AS s2 FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: the TPC-H Q9 shape — integer constant minus a scaled
 --echo #     DECIMAL, times another DECIMAL.
 SELECT SUM(p * (1 - q)) AS s FROM t1;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log
 SELECT SUM(p * (1 - q)) AS s FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
 --echo # Q3: unsigned * double, grouped.
 --sorted_result
 SELECT grp, SUM(u * d) AS s FROM t1 GROUP BY grp;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log
 --sorted_result
 SELECT grp, SUM(u * d) AS s FROM t1 GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_mixed_canary_mgm.log

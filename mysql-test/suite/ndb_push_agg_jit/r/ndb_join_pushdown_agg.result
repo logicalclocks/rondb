@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # RONDB-733 Phase 10: 3+ Way Join Aggregation Pushdown
 ############################################################
@@ -1359,3 +1360,7 @@ grp	AVG(ta2.val * 2)
 3	150.0000
 # Cleanup AVG tables
 DROP TABLE ta2, ta1;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_join_pushdown_agg_jit_fallback_delta;
+ndb_join_pushdown_agg_jit_fallback_delta
+3

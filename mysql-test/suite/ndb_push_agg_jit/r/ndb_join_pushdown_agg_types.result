@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # Pushed join aggregation: data-type sweep
 #
@@ -313,3 +314,7 @@ SET ndb_join_pushdown_aggregate=DEFAULT;
 DROP TABLE tf;
 DROP TABLE tb;
 DROP TABLE td;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_join_pushdown_agg_types_jit_fallback_delta;
+ndb_join_pushdown_agg_types_jit_fallback_delta
+6

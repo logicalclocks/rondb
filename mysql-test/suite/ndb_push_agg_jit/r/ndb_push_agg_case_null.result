@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # Pushed CASE aggregation with NULL condition values
 ############################################################
@@ -145,3 +146,7 @@ FROM tn;
 total	s
 2800	2
 DROP TABLE tn;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_push_agg_case_null_jit_fallback_delta;
+ndb_push_agg_case_null_jit_fallback_delta
+8

@@ -1,3 +1,8 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 Running testJoinAggScanScan
 PASSED
 DROP DATABASE IF EXISTS test_db;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS testJoinAggScanScan_jit_fallback_delta;
+testJoinAggScanScan_jit_fallback_delta
+0

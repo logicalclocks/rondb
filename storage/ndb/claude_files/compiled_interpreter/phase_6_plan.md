@@ -11,7 +11,20 @@ movement, exactly the armor-only expectation: host tests at 141/34,
 both differential arms green, CTE census still reject-free; the four
 null-`tablePtrP` guards, the scan-filter row_fallback fail-fast, and
 the F8 comment fixes are in).
-Remaining slices 6-2 → 6-4 execute with the usual
+6-2 DONE & VERIFIED (2026-08-25 — ndb_push_agg_jit green twice with
+the 25 recorded delta pins stable, ndb_push_agg green, the upgraded
+must-JIT CTE census green with all four asserts under 4060 after the
+unsigned-marker fix, the new outer-join canary green with
+compile-activity proof, and the full ronsql_cte suite green as the
+marker-change regression guard. The census's second catch was a REAL
+cross-engine bug — unsigned CTE aggregate slots marked signed, JIT
+consumer rows silently interpreter-bound, latent ≥2^63 interpreter
+misread — fixed in DblqhMain.cpp as a standalone commit. Full-suite
+runs at --parallel=10 hit a machine-wide connect blip (4 workers, 4
+ports, one 11 s window: curl status 7 / mgm connect retries) —
+infra, not engine; --parallel=6 was clean. Use reduced parallelism
+for the ronsql_cte suites on this machine.)
+Remaining slices 6-3 → 6-4 execute with the usual
 implement → verify → commit cycle; 6-5 is parked (demand-driven);
 6-6 threads through every slice.**
 
@@ -455,6 +468,131 @@ unpinned.
 *at the commit that introduces them*. This is the durable replacement
 for the one-off `--force-jit` run the original plan imagined — not a
 mode someone remembers to run, but the standing state of the suite.
+
+**Implemented (2026-08-25).** Three pinning instruments, chosen after
+the attribution pass showed whole-binary 4060 arming is unsafe (the
+10 s rate limiter makes the 6-0 fallback-log harvest INCOMPLETE — a
+binary could submit a rejecting program the log never showed, and one
+unattributed reject under 4060 = node abort = suite failure):
+1. **`ronsql_cte_jit_census` upgraded to must-JIT**: both queries run
+   under 4060 (any `m_jit_entry==0` dispatch in the CTE pipeline
+   aborts — including a silent multi-leaf compile-gate skip), plus a
+   `compile_ns_total`-delta assert per query: join-agg compiles
+   bypass the reuse cache, so a pushed pipeline ALWAYS bumps it —
+   delta 0 means "not pushed at all", which neither 4060 nor the
+   fallback assert can detect. Re-check both compile asserts when
+   6-4's cache lands.
+2. **NEW `rondb_jit_outer_join_canary`** (ndb_push_agg_jit): the
+   outer-join path (RONDB-1035) pinned under 4060 + the same
+   compile-activity proof — scalar and grouped shapes copied from the
+   proven-pushed `ndb_join_pushdown_agg` Tests 38/40/41, each with a
+   mysqld ground-truth run (outer-join pushdown OFF) first.
+   NULL-extended rows are 4060-exempt by design (null `block_tup`).
+   Inner joins were already pinned by `rondb_jit_canary` Q1-Q3.
+3. **Recorded fallback-delta pins on all 25 mirror wrappers**: each
+   jit-suite mirror brackets its `--source` with a
+   `SUM(programs_fallback)` delta emitted into the recorded baseline
+   — the recorded value IS the pin (MTR's diff enforces it forever),
+   with no abort risk and no guessed expectations. A delta change in
+   either direction fails the test; re-recording is a deliberate
+   coverage decision. The recorded values also complete the census
+   attribution the logs could not (e.g. which binaries carry the
+   REG_OUT_OF_RANGE programs).
+
+**The 6-2 exemption list** (shapes that legitimately do not run on
+the JIT; each pinned by the instruments above rather than 4060):
+
+| Shape | Where | Why | Disposition |
+|---|---|---|---|
+| `kOpSetRegNull` program | `testJoinAggJit` Test 4, `rondb_jit_ndbapi_unsupported_fallback` | THE permanent deliberate-fallback canary | permanent |
+| Embedded `READ_AGG_REG_TO_REG` (op 43) | `testCteNdbApi.cpp:~5717` — consumer program comparing two CTE aggregate outputs | embedded translator doesn't lower acc→reg | future-lowering candidate (`JitState.acc_i64` makes it representable); pinned via the recorded delta |
+| Register index ≥ `BC_MAX_REGS` (8) | "aggregation bridge reason=5" in the harvest; exact tests fall out of the recorded deltas | bridge admission boundary | raise the cap if the deltas show real demand |
+| Scan filters beyond the Phase 7 v1 subset (e.g. `READ_ATTR_INTO_REG`) | fleet + mysqld WHERE shapes | Phase 7 v1 lowers NULL-branch + comparison predicates only | durable note; INELIGIBLE state is 4060-exempt |
+| NULL-extended outer-join rows | any outer-join aggregation | only the interpreter can synthesize NULL loads for the missing tuple; 4060-exempt via null `block_tup` | permanent (per-row) |
+| Multi-leaf (star) setups | `testStarJoinAgg*`, star/snowflake CTE bodies | compile-gate skip; `m_jit_entry==0` would abort under 4060 — never arm 4060 near star shapes | 6-3 removes |
+| CTE WHERE filters | consumer-side filtering | structural: no `scan_rec`, jump-table interpreter only | 6-5 (parked) |
+| 1-word `EXIT_OK_LAST` internal scans | NdbIndexStat / listEvents | INELIGIBLE since 6-0 (nothing to speed up; not counted as fallback) | permanent |
+
+**Recorded delta pins (2026-08-25 first recording — now the standing
+baselines; nonzero = the test's programs that legitimately stay on
+the interpreter):**
+
+| Test | Delta | Reading |
+|---|---|---|
+| `testInterpreterTypedRegs` | **1888** | the typed-register interpreter matrix probes the Phase 7 scan-filter subset boundary per storedProc per fragment — the dominant reject source by far (the harvest's `REG_OUT_OF_RANGE` + unsupported-opcode families) |
+| `ndb_pushdown_agg` | 16 | mysqld standalone-agg shapes still rejecting — worth a targeted census look at WHICH queries (future lowering candidates) |
+| `ndb_push_agg_case_null` | 8 | some RONDB-733 nullable-CASE shapes fall back — candidate follow-up |
+| `testVarcharMinMax` | 8 | string MIN/MAX shapes beyond 5F-1's fused lowering |
+| `ndb_join_pushdown_agg_types` | 6 | typed-column join-agg shapes |
+| `ndb_join_pushdown_agg` | 3 | |
+| `ndb_join_pushdown_agg_evict` | 2 | |
+| `testCteNdbApi` | 2 | the embedded `READ_AGG_REG_TO_REG` consumer program (op 43, `testCteNdbApi.cpp:~5717`) — one per node |
+| everything else (17 tests) | 0 | incl. ALL star tests — the multi-leaf skip counts nothing (the known blind spot, 6-3/6-4) — and the whole CTE fleet minus NdbApi |
+
+**Second census catch (2026-08-25): unsigned CTE aggregate slots were
+marked SIGNED — the JIT consumer path never actually ran, and the
+interpreter consumer carried a latent ≥2^63 correctness bug. FIXED.**
+The first must-JIT run of the upgraded CTE census aborted both data
+nodes under 4060: `JoinAggInterpreter` (consumer, `m_n_gb_cols=0`)
+reached the interpreter loop with a NON-null `m_jit_entry` — a
+per-row fallback, on every row. Chain: `AggResItem` stores
+unsignedness as a separate `is_unsigned` flag (`type` stays
+`NDB_TYPE_BIGINT`); `emitCteLinkedAggSlot` (`DblqhMain.cpp`) encoded
+`typeId = item.type`, dropping the flag — the CTE marker said BIGINT
+while RonSQL's virt table correctly widens unsigned aggregates to
+Bigunsigned, so the consumer program's wire type compiled the u64
+load helper, whose runtime type check hit its `default:` fallback arm
+on every row. Results stayed correct (interpreter re-run) and NO
+counter recorded it — 6-0's fallback census was structurally blind to
+it, which is exactly why 6-2 added the 4060 + compile-activity layer.
+Worse, the same wrong marker made the INTERPRETER consumer tag the
+register signed: MIN/MAX misorder and SUM misreads for values ≥ 2^63
+(latent — suite data never crosses it; the same defect class as the
+RONDB-733 `m_pushed_value_is_unsigned` fix). Fix: the marker now
+encodes `BIGUNSIGNED` when `item.is_unsigned` (one site;
+`emitCteOutputAggSlot` emits no marker, GB columns carry true source
+types, DBSPJ's synthetic NULLs are never value-decoded).
+
+**Bring-up fix (first run):** the new canary failed MTR's
+check-testcase — `>> $NDB_TOOLS_OUTPUT` CREATED the shared
+`var/tmp/ndb_testrun.log` on its worker (the pre-existing canaries
+all created AND removed it, a self-consistent closed set; the two new
+tests appended without removing and broke the invariant). Fixed by
+converting ALL 18 arming tests (16 canaries + outer-join canary +
+CTE census) to a per-test `$MYSQL_TMP_DIR/<name>_mgm.log` with
+`--remove_file` at the end — self-consistent AND immune to any other
+writer of the shared file (removing a shared file an earlier test
+left behind fails check-testcase just as surely as creating one).
+
+**Deferred within 6-2:** the 6-1 end-to-end negative (a hand-crafted
+CTE consumer program with a local-column read, expecting a clean
+query error) still needs signal-level CTE machinery — carried as a
+candidate `testCte*` addition, not blocking.
+
+**Verification (Mikael runs).**
+- Build not required beyond the current binaries (test-only slice).
+- Record the 25 delta pins (ONLY the mirrors — the canaries must NOT
+  be recorded, their expectations are hand-authored):
+  `./mtr --record --suite=ndb_push_agg_jit ndb_join_pushdown_agg
+  ndb_join_pushdown_agg_evict ndb_join_pushdown_agg_linked
+  ndb_join_pushdown_agg_types ndb_push_agg_case_null
+  ndb_push_agg_decimal_minmax ndb_push_agg_unsigned ndb_pushdown_agg
+  testCaseAgg testCteDbtc testCteLookup testCteNdbApi
+  testCteNdbApiFilter testCteNdbApiOuterJoin testCtePhase6
+  testInterpreterTypedRegs testJoinAgg testJoinAggNdbApi
+  testJoinAggScanScan testJoinAggSpj testMultiOuterJoinAggNdbApi
+  testStarJoinAgg testStarJoinAggNdbApi testStarJoinAggSpj
+  testVarcharMinMax`
+- Then full normal runs: `./mtr --suite=ndb_push_agg_jit` (twice —
+  the second run proves the recorded deltas are stable),
+  `./mtr --suite=ndb_push_agg` (OFF arm untouched by this slice),
+  `./mtr --suite=ronsql_cte ronsql_cte_jit_census` (now must-JIT).
+
+**Exit (revised).** The census + canaries hold under 4060 with
+compile-activity proof; the 25 recorded deltas are stable across two
+runs and become the standing coverage pins; the exemption list above
+is the committed record of what legitimately stays on the
+interpreter.
 
 **Verification.** The armed fleet + canaries green; deliberately
 reverting one Phase-5 admission (local experiment) must turn the

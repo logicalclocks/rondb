@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # RONDB-733: Linked Columns in Aggregation Expressions
 # Tests for SUM/MIN/MAX/AVG/COUNT on parent-table columns
@@ -590,3 +591,7 @@ C	X	500
 C	Z	600
 # Cleanup
 DROP TABLE t3, t2, t1;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_join_pushdown_agg_linked_jit_fallback_delta;
+ndb_join_pushdown_agg_linked_jit_fallback_delta
+0

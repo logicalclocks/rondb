@@ -24,23 +24,23 @@ INSERT INTO t1 VALUES
 SET ndb_pushdown_aggregate=ON;
 
 --echo # Q1: SUM over one BIGINT NOT NULL column must JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log
 SELECT SUM(v) FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log
 
 --echo # Q2: SUM over simple bigint addition must JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log
 SELECT SUM(v + pk) FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log
 
 --echo # Q3: SUM over plus, minus and mul must JIT.
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log
 SELECT SUM(v - pk + pk * 0) FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log
 
 --echo # Q4: WHERE clause remains a fallback smoke query.
 SELECT SUM(v) FROM t1 WHERE pk >= 3;
 
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_standalone_canary_mgm.log

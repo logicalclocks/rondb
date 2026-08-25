@@ -49,28 +49,28 @@ SET ndb_pushdown_aggregate=ON;
 --echo # Q1: multi-WHEN searched CASE — a NULL falls through BOTH
 --echo #     guarded conditions to the ELSE, all on the JIT.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT SUM(CASE WHEN val <= 30 THEN amt WHEN val <= 50 THEN 1 ELSE 0 END) AS s
 FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: grouped, incl. a group whose condition values are ALL NULL.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 --sorted_result
 SELECT grp, SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS s
 FROM t1 GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
 --echo # Q3: simple CASE — a NULL search value jumps straight to the
 --echo #     ELSE output block (one guard after the top READ_ATTR).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT SUM(CASE val WHEN 10 THEN 1 WHEN 50 THEN 2 ELSE 0 END) AS s
 FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 --echo # Q4: string EQ and NE over a nullable CHAR — IF_NULL_CONTINUE
@@ -79,33 +79,33 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --echo #     values take the not-taken edge inside the cold call — no
 --echo #     fallback, so 4060-armed.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT SUM(CASE WHEN c <> 'aa' THEN 1 ELSE 0 END) AS ne_aa,
        SUM(CASE WHEN c = 'aa' THEN amt ELSE 0 END) AS eq_amt
 FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
 
 --echo # Q5: mixed integer + string conditions in one searched CASE —
 --echo #     the guard's null edge targets the string condition's
 --echo #     BRANCH_ATTR word; NULL falls through both conditions.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT SUM(CASE WHEN val < 20 THEN 1 WHEN c = 'aa' THEN 10 ELSE 0 END) AS s
 FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
 
 --echo # Q6: CASE aggregate + plain aggregates in one program; the THEN
 --echo #     arm loads the nullable column itself (5D-1 NB load).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT SUM(amt) AS total, COUNT(*) AS cnt,
        SUM(CASE WHEN val >= 10 THEN val ELSE 0 END) AS s
 FROM t1;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q6_jit_compiled;
 
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_case_nullable_canary_mgm.log

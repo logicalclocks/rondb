@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 Running testJoinAggNdbApi
 === testJoinAggNdbApi ===
 Connect string: #
@@ -31,3 +32,7 @@ Test 24: aggregate lookup-rooted query def rejected ... OK (prepare rejected wit
 All tests PASSED
 PASSED
 DROP DATABASE IF EXISTS test_db;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS testJoinAggNdbApi_jit_fallback_delta;
+testJoinAggNdbApi_jit_fallback_delta
+0

@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # RONDB-733 Phase 13: Eviction Testing via ERROR_INSERT
 ############################################################
@@ -411,3 +412,7 @@ G	16200	162	6	700	4700	7	47
 H	16800	168	6	800	4800	8	48
 # Cleanup
 DROP TABLE t3, t2, t1;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_join_pushdown_agg_evict_jit_fallback_delta;
+ndb_join_pushdown_agg_evict_jit_fallback_delta
+2

@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # Pushed aggregation over BIGINT UNSIGNED past 2^63
 ############################################################
@@ -55,3 +56,7 @@ MIN(u)	MAX(u)
 3	18446744073709551615
 DROP TABLE t1;
 DROP TABLE t2;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_push_agg_unsigned_jit_fallback_delta;
+ndb_push_agg_unsigned_jit_fallback_delta
+0

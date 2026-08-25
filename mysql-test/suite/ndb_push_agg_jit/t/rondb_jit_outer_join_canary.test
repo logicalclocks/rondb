@@ -1,0 +1,82 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 6-2 — outer-join aggregation must-JIT canary.
+#
+# Inner-join aggregation is pinned under 4060 by rondb_jit_canary
+# Q1-Q3; this canary pins the OUTER-join path (RONDB-1035). Shapes
+# mirror the proven-pushed ndb_join_pushdown_agg Tests 38/40/41:
+# scalar COUNT(*)/COUNT(col)/SUM(col) and the grouped variant.
+#
+# Two proofs per query:
+# - ERROR_INSERT 4060: any m_jit_entry==0 dispatch aborts a data
+#   node. NULL-EXTENDED rows (unmatched parents pk=4,5) are exempt
+#   BY DESIGN — processNullExtendedRow dispatches with a null
+#   block_tup, which the 4060 check skips; only the interpreter can
+#   synthesize NULL loads for the missing tuple (see the 6-2
+#   exemption list in phase_6_plan.md).
+# - compile_ns_total delta > 0: join-agg compiles bypass the reuse
+#   cache (until Phase 6-4), so a PUSHED query always compiles fresh
+#   — delta 0 would mean the planner did not push at all, which 4060
+#   alone cannot detect. Re-check when 6-4 lands (a cache hit skips
+#   compilation; the first compile per node still bumps).
+#
+# Ground truth: each query first runs with outer-join pushdown OFF
+# (mysqld computes) — the recorded values must match the pushed runs.
+
+CREATE TABLE oj_parent (
+  pk  BIGINT NOT NULL,
+  grp BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+CREATE TABLE oj_child (
+  parent_id BIGINT NOT NULL,
+  amount    BIGINT NOT NULL,
+  PRIMARY KEY (parent_id)
+) ENGINE=NDB;
+
+INSERT INTO oj_parent VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 3);
+INSERT INTO oj_child VALUES (1, 100), (2, 200), (3, 300);
+
+SET ndb_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate=ON;
+
+--echo # Ground truth (outer-join pushdown OFF, mysqld computes):
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+SELECT COUNT(*), COUNT(c.amount), SUM(c.amount)
+FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk;
+--sorted_result
+SELECT p.grp, COUNT(*), COUNT(c.amount), SUM(c.amount)
+FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk
+GROUP BY p.grp;
+
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+
+--echo # Q1 must-JIT: scalar outer-join aggregation (Test 41 shape).
+SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
+SELECT COUNT(*), COUNT(c.amount), SUM(c.amount)
+FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
+SELECT (SELECT SUM(compile_ns_total) FROM ndbinfo.jit) > @t0 AS q1_join_agg_compiled;
+
+--echo # Q2 must-JIT: grouped outer-join aggregation (Test 38/40 shape).
+--echo # grp 3 has no matched children — its SUM is NULL, produced by
+--echo # NULL-EXTENDED rows on the interpreter (the documented per-row
+--echo # exemption); matched rows run the JIT.
+SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
+--sorted_result
+SELECT p.grp, COUNT(*), COUNT(c.amount), SUM(c.amount)
+FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk
+GROUP BY p.grp;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
+SELECT (SELECT SUM(compile_ns_total) FROM ndbinfo.jit) > @t0 AS q2_join_agg_compiled;
+
+DROP TABLE oj_child, oj_parent;
+
+# The mgm output file is test-local so MTR's check-testcase sees
+# identical vardir state before and after: appending to the shared
+# ndb_testrun.log fails the FIRST test on a worker that creates it,
+# and removing the shared file fails when an earlier test left it.
+--remove_file $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log

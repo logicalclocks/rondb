@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 Running testStarJoinAggNdbApi
 === testStarJoinAggNdbApi ===
 Connect string: #
@@ -22,3 +23,7 @@ Test 15: Reject query with 33 tree nodes (> NDB_SPJ_MAX) ... OK (rejected as exp
 All tests PASSED
 PASSED
 DROP DATABASE IF EXISTS test_db;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS testStarJoinAggNdbApi_jit_fallback_delta;
+testStarJoinAggNdbApi_jit_fallback_delta
+0

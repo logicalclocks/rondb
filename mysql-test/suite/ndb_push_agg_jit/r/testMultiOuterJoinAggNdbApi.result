@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 Running testMultiOuterJoinAggNdbApi
 === testMultiOuterJoinAggNdbApi ===
 Connect string: #
@@ -20,3 +21,7 @@ Test 13: 3-scan deferred null row (scan->LEFT scan->LEFT scan) ... OK (4 groups)
 === ALL TESTS PASSED ===
 PASSED
 DROP DATABASE IF EXISTS test_db;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS testMultiOuterJoinAggNdbApi_jit_fallback_delta;
+testMultiOuterJoinAggNdbApi_jit_fallback_delta
+0

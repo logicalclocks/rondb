@@ -54,10 +54,10 @@ SELECT SUM(t1.pval), MIN(t1.pval), MAX(t1.pval)
 FROM t1 JOIN t3 ON t3.pk = t1.pk;
 SET ndb_join_pushdown_aggregate=ON;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT SUM(t1.pval), MIN(t1.pval), MAX(t1.pval)
 FROM t1 JOIN t3 ON t3.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: linked DOUBLE and BIGINT UNSIGNED.
@@ -65,9 +65,9 @@ SET ndb_join_pushdown_aggregate=OFF;
 SELECT SUM(t1.pd), SUM(t1.pu) FROM t1 JOIN t3 ON t3.pk = t1.pk;
 SET ndb_join_pushdown_aggregate=ON;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT SUM(t1.pd), SUM(t1.pu) FROM t1 JOIN t3 ON t3.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
 --echo # Q3: LINKED STRING MIN/MAX — collation order (ai_ci: apple <
@@ -77,9 +77,9 @@ SET ndb_join_pushdown_aggregate=OFF;
 SELECT MIN(t1.ps), MAX(t1.ps) FROM t1 JOIN t3 ON t3.pk = t1.pk;
 SET ndb_join_pushdown_aggregate=ON;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT MIN(t1.ps), MAX(t1.ps) FROM t1 JOIN t3 ON t3.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 --echo # Q4: NULLABLE linked column — the linked null-branching path.
@@ -87,9 +87,9 @@ SET ndb_join_pushdown_aggregate=OFF;
 SELECT SUM(t1.pn), COUNT(t1.pn) FROM t1 JOIN t3 ON t3.pk = t1.pk;
 SET ndb_join_pushdown_aggregate=ON;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT SUM(t1.pn), COUNT(t1.pn) FROM t1 JOIN t3 ON t3.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
 
 --echo # Q5: linked DECIMAL and narrow INT.
@@ -97,9 +97,9 @@ SET ndb_join_pushdown_aggregate=OFF;
 SELECT SUM(t1.pdec), SUM(t1.pi) FROM t1 JOIN t3 ON t3.pk = t1.pk;
 SET ndb_join_pushdown_aggregate=ON;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT SUM(t1.pdec), SUM(t1.pi) FROM t1 JOIN t3 ON t3.pk = t1.pk;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
 
 --echo # Q6: local + linked in ONE program, and a grouped variant.
@@ -110,15 +110,15 @@ SELECT t1.grp, SUM(t1.pval), MIN(t1.ps)
 FROM t1 JOIN t3 ON t3.pk = t1.pk GROUP BY t1.grp;
 SET ndb_join_pushdown_aggregate=ON;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT SUM(t3.amount), SUM(t1.pval) FROM t1 JOIN t3 ON t3.pk = t1.pk;
 --sorted_result
 SELECT t1.grp, SUM(t1.pval), MIN(t1.ps)
 FROM t1 JOIN t3 ON t3.pk = t1.pk GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q6_jit_compiled;
 
 DROP TABLE t3;
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_linked_canary_mgm.log

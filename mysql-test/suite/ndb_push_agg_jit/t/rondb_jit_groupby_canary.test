@@ -35,19 +35,19 @@ SET ndb_pushdown_aggregate=ON;
 
 --echo # Q1: grouped SUM must JIT (the basic gate lift).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 --sorted_result
 SELECT grp, SUM(v) FROM t1 GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: grouped COUNT + SUM must JIT (OP_COUNT_BIGINT — count results
 --echo #     are unsigned BIGINT via the value_unsigned writeback mask).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 --sorted_result
 SELECT grp, COUNT(v), SUM(v) FROM t1 GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
 --echo # Q3: grouped CASE aggregation must JIT (Phase 5A: the embedded
@@ -56,10 +56,10 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --echo #     fixed). Note the planner still only pushes CASE with a
 --echo #     pushable ELSE value — ELSE NULL is evaluated server-side.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 --sorted_result
 SELECT grp, SUM(CASE WHEN v > 115 THEN v ELSE 0 END) AS s FROM t1 GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
 
 --echo # Q4: high-cardinality differential — 2048 rows over 500 groups
@@ -120,10 +120,10 @@ SET ndb_join_pushdown_aggregate=ON;
 # aggregation paths — a program that failed to compile reaches the
 # interpreter and aborts (the agg 4060 guards have no
 # deliberate-fallback exemption, unlike the scan-filter one).
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 --sorted_result
 SELECT jt1.grp, SUM(jt2.c2) FROM jt1 JOIN jt2 ON jt2.pk = jt1.pk GROUP BY jt1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 DROP TABLE jt1;
 DROP TABLE jt2;
 
@@ -140,12 +140,12 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 
 --echo #     a broken first-row initialization (fresh accumulator's 0
 --echo #     winning the MIN) would show as MIN = 0.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
---exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 --sorted_result
 SELECT grp, MIN(v), MAX(v) FROM t1 GROUP BY grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
 
 DROP TABLE t1;
 
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $MYSQL_TMP_DIR/rondb_jit_groupby_canary_mgm.log

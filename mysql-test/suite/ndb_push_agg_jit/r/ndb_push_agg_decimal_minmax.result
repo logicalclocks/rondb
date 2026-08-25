@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 # Pushed MIN/MAX over DECIMAL columns
 ############################################################
@@ -29,3 +30,7 @@ SELECT MIN(d92), MAX(d92), SUM(d92) FROM t1;
 MIN(d92)	MAX(d92)	SUM(d92)
 1.25	4.00	11.00
 DROP TABLE t1;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_push_agg_decimal_minmax_jit_fallback_delta;
+ndb_push_agg_decimal_minmax_jit_fallback_delta
+0
