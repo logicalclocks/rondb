@@ -255,9 +255,10 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
 }
 
 DblqhProxy::~DblqhProxy() {
-  /* RONDB-1056 Phase 8: nothing JIT to tear down here. Compiled leaf
-   * programs are freed at JOIN_AGG teardown (jit1_free) and the code
-   * memory they use belongs to the node-global manager, not this block. */
+  /* RONDB-1056: nothing JIT to tear down here. Compiled leaf programs
+   * are reuse-cache entries released at JOIN_AGG teardown
+   * (dbtup_jit_release_agg, Phase 6-4) and the code memory they use
+   * belongs to the node-global manager, not this block. */
 }
 
 SimulatedBlock *DblqhProxy::newWorker(Uint32 instanceNo) {
@@ -2355,12 +2356,14 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         lc_ndbd_pool_free(state->m_column_meta_buf);
       }
       if (state->m_leaf_programs != nullptr) {
-        /* RONDB-1056 Phase 8: return each leaf's compiled JIT program to
-         * the code-memory manager before releasing the descriptor array.
-         * jit1_free(nullptr) is a no-op, so uncompiled leaves are fine. */
+        /* RONDB-1056 Phase 6-4: release each leaf's reuse-cache handle
+         * before freeing the descriptor array. An unpinned entry at
+         * refcount 0 is destroyed (blob back to the code-memory
+         * manager); a pinned one stays cached. Release of nullptr is a
+         * no-op, so uncompiled leaves are fine. */
         for (Uint32 i = 0; i < state->m_num_leaves; i++) {
-          jit1_free(state->m_leaf_programs[i].m_jit_prog);
-          state->m_leaf_programs[i].m_jit_prog = nullptr;
+          dbtup_jit_release_agg(state->m_leaf_programs[i].m_jit_cache_handle);
+          state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
         }
         lc_ndbd_pool_free(state->m_leaf_programs);
       }
@@ -2699,10 +2702,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_leaf_programs[i].m_acc_offset = accOffset;
       state->m_leaf_programs[i].m_n_agg_results = leafNAggResults;
       state->m_leaf_programs[i].m_agg_prog_start_pos = 8 + leafNGBCols;
-      /* Phase 4: JIT result fields default to nullptr; the actual
+      /* JIT result fields default to nullptr; the actual
        * compile attempt happens further down, after
        * OptimizeProgramBuffer has type-specialised the bytecode. */
-      state->m_leaf_programs[i].m_jit_prog  = nullptr;
+      state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
       state->m_leaf_programs[i].m_jit_entry = nullptr;
       DEB_STAR_AGG(("STAR_AGG SETUP: leaf[%u] progLen=%u n_gb=%u "
                     "n_agg=%u acc_off=%u prog_start=%u",
@@ -2902,6 +2905,15 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
          *   c. Normal ndbd builds include those generated headers. At setup
          *      time jit1_compile() uses copy-and-patch on the checked-in byte
          *      arrays; it does not invoke clang or the extractor.
+         *
+         * Phase 6-4: on a cache MISS both stages run inside the agg
+         * reuse cache's compile callback (dbtup_jit_compile_agg below);
+         * on a HIT neither runs. The translate right here is the
+         * DIAGNOSTIC pass: it keeps the bridge-reject fallback site
+         * ("join-agg bridge"), the 5119 dump and the 5120 fatal detail
+         * exactly as before — a bridge-rejected program never reaches
+         * the cache (negative results are not cached), and for accepted
+         * programs this linear pass costs microseconds per setup.
          */
         JitBridgeReason brc =
             ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
@@ -2912,22 +2924,39 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
             ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
           }
   #endif
-          /* Compile into the node-global code-memory manager (free-capable,
-           * shared). Freed by jit1_free at JOIN_AGG teardown (Slice 3b). */
-          Jit1Timing jt;
-          Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
-          if (jp != nullptr) {
-            dbtup_jit_note_compile_ns(jt.total_ns);
-            lp.m_jit_prog  = jp;
-            lp.m_jit_entry = jit1_entry(jp);
+          /* Phase 6-4: acquire from the node-global agg reuse cache,
+           * keyed on the exact bytecode words. Hit → shared blob
+           * (refcount bump, counts programs_reused). Miss → the cache
+           * callback translates + compiles (counts programs_compiled +
+           * compile_ns_total). Released per leaf at JOIN_AGG teardown
+           * via dbtup_jit_release_agg; a PINNED entry — the program
+           * carried AGG_PROG_FLAG_REUSABLE (RonSQL / prepared
+           * statements, prog[3] bit 0) — survives release at refcount
+           * 0, so the next execution of the identical program (e.g. a
+           * re-sent CTE stage) hits instead of recompiling. */
+          const bool jit_pinned =
+              (lp.m_agg_program[3] & AGG_PROG_FLAG_REUSABLE) != 0;
+          void *cache_handle = nullptr;
+          void *entry = dbtup_jit_compile_agg(lp.m_agg_program + bc_off,
+                                              bc_words, &cache_handle,
+                                              jit_pinned);
+          if (entry != nullptr) {
+            lp.m_jit_cache_handle = cache_handle;
+            lp.m_jit_entry = reinterpret_cast<JitEntry>(entry);
             DEB_JIT_IF(log_jit_decision,
-                       ("[RONDB-1056] JIT compiled program key=%u "
-                        "leaf %u (%u bytecode words, %zu bytes emitted)",
-                        key, jit_leaf, bc_words, jit1_emitted_size(jp)));
+                       ("[RONDB-1056] JIT ready key=%u "
+                        "leaf %u (%u bytecode words, cached%s)",
+                        key, jit_leaf, bc_words,
+                        jit_pinned ? ", pinned" : ""));
           } else {
+            /* Admission reject or code-memory OOM inside the cache's
+             * compile callback, which already counted the fallback
+             * (site "aggregation compile"). jit1_last_admit_error() is
+             * fresh: the callback ran on THIS thread and its translate
+             * succeeded (ours just did), so the failure was
+             * jit1_compile's. On a pure OOM the admit error may carry
+             * an earlier reject — test-only diagnostics, acceptable. */
             const Jit1AdmitError *aerr = jit1_last_admit_error();
-            dbtup_jit_note_fallback("join-agg compile", (int)aerr->reason,
-                                    aerr->offending_kind);
             DEB_JIT_IF(log_jit_decision,
                        ("[RONDB-1056] JIT admission rejected key=%u "
                         "leaf=%u reason=%d pc=%u target=%u kind=%u (%s) - "
@@ -3167,13 +3196,14 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_column_meta_len = 0;
     }
     if (state->m_leaf_programs != nullptr) {
-      /* RONDB-1056 Phase 8: free each leaf's compiled JIT program back to
-       * the code-memory manager before releasing the descriptor array.
-       * All workers have finished by the RELEASE phase, so no row is
-       * executing the blob; the loop runs before m_num_leaves is zeroed. */
+      /* RONDB-1056 Phase 6-4: release each leaf's reuse-cache handle
+       * before freeing the descriptor array. All workers have finished
+       * by the RELEASE phase, so no row is executing the blob; the loop
+       * runs before m_num_leaves is zeroed. Unpinned entries die at
+       * refcount 0; pinned ones stay cached for the next execution. */
       for (Uint32 i = 0; i < state->m_num_leaves; i++) {
-        jit1_free(state->m_leaf_programs[i].m_jit_prog);
-        state->m_leaf_programs[i].m_jit_prog = nullptr;
+        dbtup_jit_release_agg(state->m_leaf_programs[i].m_jit_cache_handle);
+        state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
       }
       lc_ndbd_pool_free(state->m_leaf_programs);
       state->m_leaf_programs = nullptr;

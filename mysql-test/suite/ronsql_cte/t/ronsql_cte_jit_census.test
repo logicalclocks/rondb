@@ -24,14 +24,14 @@
 # node — before Phase 6-3 that included the silent multi-leaf
 # compile-gate skip; the gate is gone now, every leaf compiles), and
 # a compile-activity assert requires the
-# compile_ns_total delta to be > 0: join-agg compiles bypass the
-# reuse cache (recompile per setup, Phase 6-4), so a pushed pipeline
-# ALWAYS bumps it — delta 0 would mean the query was not pushed at
-# all, which the fallback assert alone cannot detect. (The mysqld arm
-# runs inside the armed window too — safe: it computes the WITH
-# server-side with pushdown off, so it dispatches nothing
-# JIT-eligible.) Re-check the compile assert when 6-4 lands (a cache
-# hit skips compilation; the first compile per node still bumps).
+# programs_compiled + programs_reused delta to be > 0: since Phase
+# 6-4 join-agg programs go through the agg reuse cache, so every
+# pushed setup bumps compiled (miss) or reused (hit) — the sum is
+# monotone across cache hits, and delta 0 means the query was not
+# pushed at all, which the fallback assert alone cannot detect. (The
+# mysqld arm runs inside the armed window too — safe: it computes the
+# WITH server-side with pushdown off, so it dispatches nothing
+# JIT-eligible.)
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -46,7 +46,7 @@ call mtr.add_suppression("Participant timeout");
 --echo
 --echo === cte-jit-1 (= agg-04): CTE_LOOKUP join, re-aggregation (form A) ===
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
-SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/ronsql_cte_jit_census_mgm.log
 DELIMITER |;
 let $QUERY=
@@ -63,13 +63,13 @@ DELIMITER ;|
 --let $assert_cond = [SELECT SUM(programs_fallback) - @c0 AS delta FROM ndbinfo.jit, delta, 1] = 0
 --source include/assert.inc
 --let $assert_text = cte-jit-1: join-agg compile activity observed (the pipeline was pushed and compiled)
---let $assert_cond = [SELECT SUM(compile_ns_total) - @t0 AS d FROM ndbinfo.jit, d, 1] > 0
+--let $assert_cond = [SELECT SUM(programs_compiled + programs_reused) - @t0 AS d FROM ndbinfo.jit, d, 1] > 0
 --source include/assert.inc
 
 --echo
 --echo === cte-jit-2 (= agg-18): CTE_SCAN root, scalar main aggregation (form B) ===
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
-SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/ronsql_cte_jit_census_mgm.log
 DELIMITER |;
 let $QUERY=
@@ -85,7 +85,7 @@ DELIMITER ;|
 --let $assert_cond = [SELECT SUM(programs_fallback) - @c0 AS delta FROM ndbinfo.jit, delta, 1] = 0
 --source include/assert.inc
 --let $assert_text = cte-jit-2: join-agg compile activity observed (the pipeline was pushed and compiled)
---let $assert_cond = [SELECT SUM(compile_ns_total) - @t0 AS d FROM ndbinfo.jit, d, 1] > 0
+--let $assert_cond = [SELECT SUM(programs_compiled + programs_reused) - @t0 AS d FROM ndbinfo.jit, d, 1] > 0
 --source include/assert.inc
 
 --source suite/ronsql_cte/include/cte_drop.inc

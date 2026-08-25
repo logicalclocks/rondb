@@ -127,8 +127,25 @@ recorded baselines. Flagged pre-existing (untouched): the string
 sidecar m_string_results[] is leaf-LOCAL-indexed in the shared
 kernels while accumulator slots use the offset base — multi-leaf
 string MIN/MAX would collide sidecar slots on the interpreter too;
-the JIT is bug-compatible (same kernels). NEXT: 6-4 (join-agg
-compiles through the reuse cache — the last unparked Phase 6 slice).
+the JIT is bug-compatible (same kernels). **6-4 DONE & VERIFIED (2026-08-25 — all tests passed incl.
+--repeat=2 warm-cache passes):** join-agg compiles route through the
+agg reuse cache (dbtup_jit_compile_agg keyed on bytecode bytes;
+LeafProgram.m_jit_prog → m_jit_cache_handle; teardown releases via
+dbtup_jit_release_agg). Pinning is LIVE for join aggregation:
+AGG_PROG_FLAG_REUSABLE (prog[3] bit 0) maps to the cache's pinned
+flag — unpinned entries die at refcount 0 (the cache is
+dedup-for-concurrent + pin-for-reuse), so mysqld setups keep
+one-compile-per-setup + dedup + counter visibility while RonSQL's
+re-sent CTE-stage programs get true cross-execution reuse. The local
+translate stays as a diagnostic pass (bridge-reject site/5119/5120
+detail preserved; admission rejects counted by the cache callback as
+"aggregation compile"). Canary proofs went cache-aware:
+compile_ns_total deltas → programs_compiled+reused sums (monotone
+across hits) in ronsql_cte_jit_census and rondb_jit_outer_join_canary.
+F4 fully closed. ALL UNPARKED PHASE 6 IMPLEMENTATION SLICES DONE.
+NEXT: 6-6 closeout (pushdown-doc cross-references, coordination notes
+into the two colliding plans, RONDB-733 backport PR, future-probe
+list); 6-5 stays parked pending demand.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

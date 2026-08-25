@@ -70,29 +70,30 @@ struct LeafProgram {
   Uint32  m_n_agg_results;      // Number of accumulators for this leaf
   Uint32  m_agg_prog_start_pos; // Instruction start offset within program
 
-  /* Phase 4 RONDB-1056: per-leaf JIT compile result.
+  /* RONDB-1056: per-leaf JIT compile result.
    *
-   * On JOIN_AGG_SETUP_REQ, DblqhProxy attempts to translate this
-   * leaf's bytecode (starting at m_agg_program + m_agg_prog_start_pos)
-   * via ndb_jit_bridge + jit1_compile, storing the resulting
-   * handle and entry pointer here.
+   * On JOIN_AGG_SETUP_REQ, DblqhProxy compiles EVERY leaf's bytecode
+   * (Phase 6-3) through the node-global agg reuse cache (Phase 6-4:
+   * dbtup_jit_compile_agg — identical programs across setups and
+   * leaves share one compiled blob; a hit counts programs_reused, a
+   * miss translates + compiles inside the cache callback and counts
+   * programs_compiled).
    *
    * Both fields are nullptr when:
-   *   - The bridge rejects (unsupported opcode like kOpEmbeddedInterp,
-   *     non-bigint type, malformed bytecode, etc.).
+   *   - The bridge rejects (unsupported opcode, malformed bytecode,
+   *     out-of-range register, etc.).
    *   - jit1_compile rejects via the admission walk.
    *   - The code-memory manager is out of memory (cap reached / mmap
-   *     failure on a hardened kernel); jit1_compile returns NULL and the
-   *     leaf falls back to the interpreter.
-   *   - Multi-leaf programs in Phase 4 (only m_num_leaves == 1
-   *     is JIT-eligible; multi-leaf is Phase 5 territory).
+   *     failure on a hardened kernel) — the leaf falls back to the
+   *     interpreter.
    *
-   * When set, every JoinAggInterpreter that runs this leaf reads
-   * m_jit_entry once at Init and dispatches via it in ProcessRec.
-   * Workers hold borrowed pointers; the proxy owns m_jit_prog and frees
-   * it with jit1_free() at JOIN_AGG teardown (which returns the blob's
-   * code-memory slot to the node-global manager — Phase 8). */
-  Jit1Prog *m_jit_prog;
+   * When set, the per-row leaf switch installs m_jit_entry (and the
+   * leaf's accumulator count) before dispatch. Workers hold borrowed
+   * pointers; the proxy owns the cache handle and releases it with
+   * dbtup_jit_release_agg() at JOIN_AGG teardown (an unpinned entry
+   * at refcount 0 is destroyed; a pinned one — the program carried
+   * AGG_PROG_FLAG_REUSABLE — stays cached for the next execution). */
+  void     *m_jit_cache_handle;
   JitEntry  m_jit_entry;
 };
 

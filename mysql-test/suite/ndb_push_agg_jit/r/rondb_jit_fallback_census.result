@@ -181,10 +181,10 @@ case_string_fell_back
 # (PushdownInterpreterFactory -> cached compile, counters
 # visible). Joined aggregation compiles separately in
 # DblqhProxy::execJOIN_AGG_SETUP_REQ: bridge/compile rejects DO
-# bump programs_fallback, but successful compiles do NOT bump
-# programs_compiled (direct jit1_compile, no reuse cache until
-# 6-4) — so on these rows 0 proves "no reject", not "compiled";
-# must-JIT proof stays with the 4060 canaries.
+# bump programs_fallback, and since Phase 6-4 successful compiles
+# go through the agg reuse cache (programs_compiled / reused move
+# for join aggregation too) — these rows stay fallback-delta
+# probes; must-JIT proof stays with the 4060 canaries.
 CREATE TABLE tj_parent (
 pk  BIGINT NOT NULL,
 grp BIGINT NOT NULL,

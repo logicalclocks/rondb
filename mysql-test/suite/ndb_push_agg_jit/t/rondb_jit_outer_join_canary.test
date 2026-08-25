@@ -15,11 +15,11 @@
 #   block_tup, which the 4060 check skips; only the interpreter can
 #   synthesize NULL loads for the missing tuple (see the 6-2
 #   exemption list in phase_6_plan.md).
-# - compile_ns_total delta > 0: join-agg compiles bypass the reuse
-#   cache (until Phase 6-4), so a PUSHED query always compiles fresh
-#   — delta 0 would mean the planner did not push at all, which 4060
-#   alone cannot detect. Re-check when 6-4 lands (a cache hit skips
-#   compilation; the first compile per node still bumps).
+# - programs_compiled + programs_reused delta > 0: since Phase 6-4
+#   join-agg programs go through the agg reuse cache, so a PUSHED
+#   query always bumps compiled (miss) or reused (hit); the sum is
+#   monotone across cache hits, and delta 0 would mean the planner
+#   did not push at all, which 4060 alone cannot detect.
 #
 # Ground truth: each query first runs with outer-join pushdown OFF
 # (mysqld computes) — the recorded values must match the pushed runs.
@@ -53,25 +53,25 @@ GROUP BY p.grp;
 SET ndb_join_pushdown_aggregate_outer_join=ON;
 
 --echo # Q1 must-JIT: scalar outer-join aggregation (Test 41 shape).
-SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
 SELECT COUNT(*), COUNT(c.amount), SUM(c.amount)
 FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk;
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
-SELECT (SELECT SUM(compile_ns_total) FROM ndbinfo.jit) > @t0 AS q1_join_agg_compiled;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @t0 AS q1_join_agg_compiled;
 
 --echo # Q2 must-JIT: grouped outer-join aggregation (Test 38/40 shape).
 --echo # grp 3 has no matched children — its SUM is NULL, produced by
 --echo # NULL-EXTENDED rows on the interpreter (the documented per-row
 --echo # exemption); matched rows run the JIT.
-SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
 --sorted_result
 SELECT p.grp, COUNT(*), COUNT(c.amount), SUM(c.amount)
 FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk
 GROUP BY p.grp;
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_outer_join_canary_mgm.log
-SELECT (SELECT SUM(compile_ns_total) FROM ndbinfo.jit) > @t0 AS q2_join_agg_compiled;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @t0 AS q2_join_agg_compiled;
 
 DROP TABLE oj_child, oj_parent;
 

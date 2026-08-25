@@ -168,10 +168,10 @@ SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS case_string_fel
 --echo # (PushdownInterpreterFactory -> cached compile, counters
 --echo # visible). Joined aggregation compiles separately in
 --echo # DblqhProxy::execJOIN_AGG_SETUP_REQ: bridge/compile rejects DO
---echo # bump programs_fallback, but successful compiles do NOT bump
---echo # programs_compiled (direct jit1_compile, no reuse cache until
---echo # 6-4) — so on these rows 0 proves "no reject", not "compiled";
---echo # must-JIT proof stays with the 4060 canaries.
+--echo # bump programs_fallback, and since Phase 6-4 successful compiles
+--echo # go through the agg reuse cache (programs_compiled / reused move
+--echo # for join aggregation too) — these rows stay fallback-delta
+--echo # probes; must-JIT proof stays with the 4060 canaries.
 
 CREATE TABLE tj_parent (
   pk  BIGINT NOT NULL,

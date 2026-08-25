@@ -32,9 +32,15 @@ census green; host tests unchanged at 141/34 — no bridge/stencil/glue
 changes were needed. The last program-shape exclusion is gone: every
 aggregation program the planner or API can push is JIT-eligible; the
 "JIT skipped (multi-leaf)" log line no longer exists.)
-Remaining slice 6-4 executes with the usual
-implement → verify → commit cycle; 6-5 is parked (demand-driven);
-6-6 threads through every slice.**
+6-4 DONE & VERIFIED (2026-08-25 — all tests passed incl. --repeat=2
+warm-cache passes: join-agg compiles now go through the agg reuse
+cache with AGG_PROG_FLAG_REUSABLE pinning live [RonSQL CTE-stage
+programs reuse across executions], counter-sum canary proofs
+hit-stable, delta pins unmoved, teardown releases instead of frees.
+F4 is fully closed — ndbinfo.jit reports the truth for all three
+compile paths. ALL UNPARKED IMPLEMENTATION SLICES OF PHASE 6 ARE
+DONE; remaining: the 6-6 documentation closeout and the parked 6-5.)
+6-5 is parked (demand-driven); 6-6 closes out the phase.**
 
 ## 0. Context — what Phase 6 has become
 
@@ -770,6 +776,54 @@ latency, less code-memory churn — most visible on CTE-heavy and
 high-QPS workloads), and one uniform observability story:
 `ndbinfo.jit` finally reports the truth for all three compile paths,
 closing the census blind spot 6-0 had to work around.
+
+**Implemented (2026-08-25).**
+- The DblqhProxy per-leaf loop now acquires from the agg reuse cache
+  (`dbtup_jit_compile_agg`, keyed on the exact bytecode words) and
+  stores the handle in `LeafProgram.m_jit_cache_handle` (replacing
+  `m_jit_prog`); both teardown sites release via
+  `dbtup_jit_release_agg` instead of `jit1_free`.
+- **Pinning is live for join aggregation**: `AGG_PROG_FLAG_REUSABLE`
+  (program header word [3] bit 0 — RonSQL / prepared statements) maps
+  to the cache's pinned flag. Semantics discovered during design: an
+  UNPINNED entry dies at refcount 0 on release (the cache is
+  dedup-for-concurrent + pin-for-reuse), so mysqld's unflagged
+  setups keep today's one-compile-per-setup cost (plus dedup across
+  concurrent identical setups and counter visibility), while RonSQL's
+  re-sent CTE stage programs get true cross-execution reuse — exactly
+  the "CTE producers/consumers benefit most" prediction.
+- **The local translate stays as a DIAGNOSTIC pass**: it preserves
+  the bridge-reject fallback site ("join-agg bridge"), the 5119 dump
+  and the 5120 fatal detail exactly as before — a bridge-rejected
+  program never reaches the cache (negative results are not cached),
+  and the linear pass costs microseconds per setup. Admission/OOM
+  rejects are now counted by the cache callback (site "aggregation
+  compile"); the 5120 arm reads `jit1_last_admit_error()` (fresh —
+  same thread, translate proven OK).
+- **Cache-aware canary proofs**: `compile_ns_total`-delta asserts
+  became `programs_compiled + programs_reused`-delta asserts (the sum
+  is monotone across cache hits; identical program BYTES occur across
+  different tables/tests, so hits are expected) in
+  `ronsql_cte_jit_census` and `rondb_jit_outer_join_canary`; the
+  fallback census's join-section header no longer documents the
+  counter blind spot. F4 is fully closed.
+
+**Verification (Mikael runs).**
+- Rebuild (data node).
+- Host tests unchanged (141/34).
+- `./mtr --suite=ndb_push_agg_jit` — outer-join canary's new
+  counter-sum proofs; delta pins unmoved (fallback counting
+  unchanged); repeated suite run exercises cache hits.
+- `./mtr --suite=ndb_push_agg` — OFF arm.
+- `./mtr --suite=ronsql_cte ronsql_cte_jit_census` — the CTE census's
+  compile-activity asserts on the counter sums; the CTE pipeline's
+  RonSQL programs are REUSABLE-flagged, so re-runs exercise pinned
+  hits.
+
+**Exit — MET (2026-08-25).** Join-agg compiles visible in
+`ndbinfo.jit`; identical pinned programs reuse across executions
+(proven by the --repeat=2 warm-cache passes); teardown releases
+instead of frees; no counter-based baseline broke.
 
 **Verification.** Host tests; repeated identical join query shows
 `programs_reused` movement; full sweep; a CTE-heavy `ronsql_cte`

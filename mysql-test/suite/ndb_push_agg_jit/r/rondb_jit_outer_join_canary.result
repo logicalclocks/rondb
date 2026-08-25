@@ -27,19 +27,19 @@ grp	COUNT(*)	COUNT(c.amount)	SUM(c.amount)
 3	1	0	NULL
 SET ndb_join_pushdown_aggregate_outer_join=ON;
 # Q1 must-JIT: scalar outer-join aggregation (Test 41 shape).
-SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT COUNT(*), COUNT(c.amount), SUM(c.amount)
 FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk;
 COUNT(*)	COUNT(c.amount)	SUM(c.amount)
 5	3	600
-SELECT (SELECT SUM(compile_ns_total) FROM ndbinfo.jit) > @t0 AS q1_join_agg_compiled;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @t0 AS q1_join_agg_compiled;
 q1_join_agg_compiled
 1
 # Q2 must-JIT: grouped outer-join aggregation (Test 38/40 shape).
 # grp 3 has no matched children — its SUM is NULL, produced by
 # NULL-EXTENDED rows on the interpreter (the documented per-row
 # exemption); matched rows run the JIT.
-SET @t0 = (SELECT SUM(compile_ns_total) FROM ndbinfo.jit);
+SET @t0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT p.grp, COUNT(*), COUNT(c.amount), SUM(c.amount)
 FROM oj_parent p LEFT JOIN oj_child c ON c.parent_id = p.pk
 GROUP BY p.grp;
@@ -47,7 +47,7 @@ grp	COUNT(*)	COUNT(c.amount)	SUM(c.amount)
 1	2	2	300
 2	2	1	300
 3	1	0	NULL
-SELECT (SELECT SUM(compile_ns_total) FROM ndbinfo.jit) > @t0 AS q2_join_agg_compiled;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @t0 AS q2_join_agg_compiled;
 q2_join_agg_compiled
 1
 DROP TABLE oj_child, oj_parent;
