@@ -9575,18 +9575,18 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
 
     /**
      * A node parked at the restart barrier in start phase 110 is
-     * fully recovered and can take over as master like a started
-     * node, so it must not die here (RONDB-1096).
+     * fully recovered and can survive master takeover like a started
+     * node when the successor supports the barrier (RONDB-1096).
      *
      * Surviving is only safe when the new master also supports the
      * restart barrier: an older master expects a restarting node to
      * die with the failed master, cannot accept a NodeRestartLock
      * re-registration, and lacks the master takeover fixes for a
-     * surviving restarting node. The parked state itself implies a
-     * barrier-capable master (a node never parks in a mixed-version
-     * cluster), but a recovered node that is completing its final
-     * start phases without having parked can face an old master, so
-     * keep the pre-barrier behaviour and die in that case.
+     * surviving restarting node. Mixed-version barrier nodes can park
+     * under an old master, so if that master fails and its successor
+     * is also incapable, the condition below deliberately terminates
+     * even a recovered parked node. This keeps the pre-barrier
+     * behaviour for an old successor.
      */
     if (getNodeState().getNodeRestartInProgress() &&
         (!getNodeState().getNodeRecovered() ||

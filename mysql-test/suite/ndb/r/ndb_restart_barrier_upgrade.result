@@ -14,6 +14,7 @@ Waiting for node 1 to enter start phase 99
 # Release the mixed restart wave: local release, no master Grant
 # Node failure while parked in the mixed cluster: fail open
 # A node is parked at the barrier, killing the old non-master node
+include/assert_grep.inc [parked node used mixed-version fail-open]
 # Parked node completed through fail-open, stalled node died below the barrier
 # Upgrade the remaining data node
 # Fully upgraded cluster: restart barrier must be active

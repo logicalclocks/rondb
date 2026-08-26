@@ -24,7 +24,7 @@ must therefore key on 26.2.10, while the helm
 26.2.9.
 
 Parent feature: RONDB-1096 (`rondb_1096_restart_barrier_plan.md`).
-Ticket: RONDB-XXXX (assign before first commit).
+Ticket: RONDB-1113.
 
 ## 1. Problem statement
 
@@ -267,7 +267,12 @@ Explicit non-changes: `Grant` sending logic, `RestartBarrierTimeout`
       survivor (the parked node covers the killed node's group, the
       old master covers the stalled node's group). The role node ids
       vary per run, so those phase waits use the `$_quiet_wait` mode
-      added to ndb_wait_start_phase*.inc. The die path is not
+      added to ndb_wait_start_phase*.inc. The test asserts the parked
+      node's exact `Restart barrier released: node failure in a
+      mixed-version cluster` log message; merely observing the final
+      started state is insufficient because the node could otherwise
+      release locally after the below-barrier stalled node dies. The
+      die path is not
       institutionalized in MTR — deliberately taking the whole
       cluster down and relying on the StopOnError=0 system restart
       asserts nothing useful — but it was validated live once (§3).

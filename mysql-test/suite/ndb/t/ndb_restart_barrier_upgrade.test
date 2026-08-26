@@ -167,6 +167,16 @@ EOF
 --exec $_waiter_cmd --not-started -w$fo_kill >> $NDB_TOOLS_OUTPUT
 --exec $_waiter_cmd -w$fo_park --timeout=300 >> $NDB_TOOLS_OUTPUT
 
+# The final node states alone cannot distinguish mixed-version fail-open
+# from a later local release after the stalled node dies. Verify the exact
+# release path in the parked node's log.
+--let $assert_text= parked node used mixed-version fail-open
+--let $assert_file= $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.$fo_park/ndbd.log
+--let $assert_only_after= Fully recovered, waiting at restart barrier
+--let $assert_select= Restart barrier released: node failure in a mixed-version cluster
+--let $assert_count= 1
+--source include/assert_grep.inc
+
 --echo # Parked node completed through fail-open, stalled node died below the barrier
 # The stalled node was below the barrier and dies with the node
 # failure (NDBD_EXIT_SR_OTHERNODEFAILED, expected); StopOnError=0
