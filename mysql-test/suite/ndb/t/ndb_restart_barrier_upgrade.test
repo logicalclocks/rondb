@@ -1,10 +1,15 @@
 # RONDB-1096: restart barrier during a rolling upgrade.
 #
 # The cluster starts with all data nodes running ndbmtd_v2. The old
-# binary must predate restart-barrier support (26.2.9). The test
-# upgrades one node in each node group and verifies that old live data
-# nodes disable the barrier. It then completes the rolling upgrade and
-# verifies that the barrier becomes active.
+# binary must predate restart-barrier support (25.10.18 in the 25.10
+# series, 26.2.9 from 26.02 on). The test upgrades one node in each
+# node group and verifies that the barrier engages for the upgraded
+# nodes although the master is still an old node: the barrier report
+# goes to the barrier-capable members only, parked nodes release
+# through the local release evaluation (an old master never sends a
+# Grant), and a node failure while old members remain fails the
+# barrier open. It then completes the rolling upgrade and verifies
+# the full barrier semantics.
 
 --source include/have_ndb.inc
 --source include/have_ndbmtd_v2.inc
@@ -13,7 +18,7 @@
 --source ndb_waiter.inc
 
 # Do not run against an "old" binary which already supports the
-# restart barrier; the mixed-version expectation would be invalid.
+# restart barrier; the mixed-version expectations would be invalid.
 --perl
 use strict;
 my $exe = $ENV{'NDBMTD_V2_EXE'} or die "NDBMTD_V2_EXE not set";
@@ -23,13 +28,16 @@ my $version = do { local $/; <$version_pipe> };
 close($version_pipe) or die "$exe --version failed";
 $version =~ /RonDB-(\d+)\.(\d+)\.(\d+)/
   or die "Unable to parse ndbmtd_v2 version: $version";
-my $version_id = $1 * 10000 + $2 * 100 + $3;
+my ($maj, $min, $rel) = ($1, $2, $3);
+# Mirror ndbd_restart_phase_110_barrier() in ndb_version.h
+my $capable = ($maj == 25 && $min == 10 && $rel >= 18)
+  || ($maj * 10000 + $min * 100 + $rel >= 260209);
 my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
 open(my $include, '>', "$vardir/tmp/restart_barrier_upgrade_version.inc")
   or die "$!";
-if ($version_id >= 260209) {
+if ($capable) {
   print $include
-    "--skip Requires an ndbmtd_v2 binary older than 26.2.9\n";
+    "--skip Requires an ndbmtd_v2 binary without restart barrier support\n";
 }
 close($include);
 EOF
@@ -55,10 +63,12 @@ INSERT INTO t1 VALUES (1, 10);
 --exec $_mgm_cmd -e "3 START" >> $NDB_TOOLS_OUTPUT
 --exec $_waiter_cmd -w3 >> $NDB_TOOLS_OUTPUT
 
---echo # Mixed-version cluster: restart barrier must be bypassed
+--echo # Mixed-version cluster: the restart barrier must engage
 
 # Stop the upgraded nodes in different node groups. Nodes 2 and 4
-# remain started on the old version.
+# remain started on the old version, and the master is one of them
+# for the whole mixed-version part of the test (mastership passed to
+# an old node when node 1 restarted).
 --exec $_mgm_cmd -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
 --exec $_waiter_cmd --not-started -w1 >> $NDB_TOOLS_OUTPUT
 --exec $_mgm_cmd -e "3 RESTART -n" >> $NDB_TOOLS_OUTPUT
@@ -73,27 +83,108 @@ INSERT INTO t1 VALUES (1, 10);
 --let $_start_phase= 99
 --source suite/ndb/t/ndb_wait_start_phase.inc
 
-# Because old data nodes are still live, node 3 must not wait at phase
-# 110. Waiting specifically for node 3 allows node 1 to remain stalled.
+# Node 3 must park at the barrier although the master is an old node.
 --exec $_mgm_cmd -e "3 START" >> $NDB_TOOLS_OUTPUT
---exec $_waiter_cmd -w3 --timeout=300 >> $NDB_TOOLS_OUTPUT
-
---echo # Node 3 started while node 1 remained below the barrier
+--let $_ndb_nodeid= 3
+--let $_start_phase= 110
 --source suite/ndb/t/ndb_wait_start_phase.inc
+
+--echo # Node 3 remains parked under the old master while node 1 is stalled
+--sleep 3
+--source suite/ndb/t/ndb_wait_start_phase.inc
+--let $_ndb_nodeid= 1
+--let $_start_phase= 99
+--source suite/ndb/t/ndb_wait_start_phase.inc
+
+--echo # Release the mixed restart wave: local release, no master Grant
 --exec $_mgm_cmd -e "1 DUMP 71" >> $NDB_TOOLS_OUTPUT
 --exec $_waiter_cmd --timeout=600 >> $NDB_TOOLS_OUTPUT
 
---echo # Upgrade the remaining data nodes
+--echo # Node failure while parked in the mixed cluster: fail open
 
---exec $_mgm_cmd -e "2 RESTART -n" >> $NDB_TOOLS_OUTPUT
---exec $_waiter_cmd --not-started -w2 >> $NDB_TOOLS_OUTPUT
---exec $_mgm_cmd -e "2 START" >> $NDB_TOOLS_OUTPUT
---exec $_waiter_cmd -w2 >> $NDB_TOOLS_OUTPUT
+# The scenario must kill the old NON-master node: killing the old
+# master while one node is parked and another is stalled below the
+# barrier takes the whole cluster down (the parked node is terminated
+# by DBDIH since the successor master is old, the stalled node dies
+# with the failure, and the killed node's node group loses its last
+# member) - exactly the pre-barrier blast radius of a master failure
+# during concurrent restarts. Detect which old node holds mastership
+# and choose the stall/park/kill roles so that every node group keeps
+# a live member: the parked node covers the killed node's group and
+# the old master covers the stalled node's group. The node ids
+# therefore depend on the run, so the phase waits run quietly.
+--perl
+use strict;
+use File::Basename;
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $cs = $ENV{'NDB_CONNECTSTRING'} or die "NDB_CONNECTSTRING not set";
+my $out = `$mgm_bin --ndb-connectstring="$cs" -e show 2>&1`;
+my $master = 0;
+for my $line (split /\n/, $out) {
+  if ($line =~ /^id=(\d+).*Nodegroup.*\*\s*\)/) { $master = $1; }
+}
+$master == 2 || $master == 4
+  or die "Expected an old data node (2 or 4) as master, got '$master':\n$out";
+open(my $f, '>', "$vardir/tmp/barrier_upgrade_roles.inc") or die "$!";
+if ($master == 2) {
+  print $f "--let \$fo_stall= 1\n--let \$fo_park= 3\n"
+    . "--let \$fo_kill= 4\n--let \$last_old= 2\n";
+} else {
+  print $f "--let \$fo_stall= 3\n--let \$fo_park= 1\n"
+    . "--let \$fo_kill= 2\n--let \$last_old= 4\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/barrier_upgrade_roles.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/barrier_upgrade_roles.inc
+--let $_quiet_wait= 1
 
---exec $_mgm_cmd -e "4 RESTART -n" >> $NDB_TOOLS_OUTPUT
---exec $_waiter_cmd --not-started -w4 >> $NDB_TOOLS_OUTPUT
---exec $_mgm_cmd -e "4 START" >> $NDB_TOOLS_OUTPUT
---exec $_waiter_cmd -w4 >> $NDB_TOOLS_OUTPUT
+--exec $_mgm_cmd -e "$fo_stall RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd --not-started -w$fo_stall >> $NDB_TOOLS_OUTPUT
+--exec $_mgm_cmd -e "$fo_park RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd --not-started -w$fo_park >> $NDB_TOOLS_OUTPUT
+
+--exec $_mgm_cmd -e "$fo_stall START" >> $NDB_TOOLS_OUTPUT
+--let $_ndb_nodeid= $fo_stall
+--let $_start_phase= 2
+--source suite/ndb/t/ndb_wait_start_phase_at_least.inc
+--exec $_mgm_cmd -e "$fo_stall DUMP 71 100" >> $NDB_TOOLS_OUTPUT
+--let $_start_phase= 99
+--source suite/ndb/t/ndb_wait_start_phase.inc
+
+--exec $_mgm_cmd -e "$fo_park START" >> $NDB_TOOLS_OUTPUT
+--let $_ndb_nodeid= $fo_park
+--let $_start_phase= 110
+--source suite/ndb/t/ndb_wait_start_phase.inc
+--echo # A node is parked at the barrier, killing the old non-master node
+
+# The parked node must complete its start immediately (mixed-version
+# fail-open) instead of staying parked through old-version failure
+# handling.
+--exec $_mgm_cmd -e "$fo_kill RESTART -a -n" >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd --not-started -w$fo_kill >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd -w$fo_park --timeout=300 >> $NDB_TOOLS_OUTPUT
+
+--echo # Parked node completed through fail-open, stalled node died below the barrier
+# The stalled node was below the barrier and dies with the node
+# failure (NDBD_EXIT_SR_OTHERNODEFAILED, expected); StopOnError=0
+# restarts it and the fresh process completes without the stall.
+--exec $_waiter_cmd -w$fo_stall --timeout=600 >> $NDB_TOOLS_OUTPUT
+
+# Restarting the killed node upgrades it: the binary link already
+# points at the new version.
+--exec $_mgm_cmd -e "$fo_kill START" >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd -w$fo_kill --timeout=600 >> $NDB_TOOLS_OUTPUT
+--let $_quiet_wait= 0
+
+--echo # Upgrade the remaining data node
+
+--exec $_mgm_cmd -e "$last_old RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd --not-started -w$last_old >> $NDB_TOOLS_OUTPUT
+--exec $_mgm_cmd -e "$last_old START" >> $NDB_TOOLS_OUTPUT
+--exec $_waiter_cmd -w$last_old >> $NDB_TOOLS_OUTPUT
 
 --echo # Fully upgraded cluster: restart barrier must be active
 
@@ -126,5 +217,7 @@ INSERT INTO t1 VALUES (1, 10);
 
 SELECT COUNT(*) FROM t1;
 DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT
 
 --echo # Restart barrier rolling-upgrade test passed

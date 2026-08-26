@@ -4,12 +4,18 @@ b INT
 ) ENGINE NDB;
 INSERT INTO t1 VALUES (1, 10);
 # Upgrade one node in each node group
-# Mixed-version cluster: restart barrier must be bypassed
+# Mixed-version cluster: the restart barrier must engage
 Waiting for node 1 to reach start phase 2 or later
 Waiting for node 1 to enter start phase 99
-# Node 3 started while node 1 remained below the barrier
+Waiting for node 3 to enter start phase 110
+# Node 3 remains parked under the old master while node 1 is stalled
+Waiting for node 3 to enter start phase 110
 Waiting for node 1 to enter start phase 99
-# Upgrade the remaining data nodes
+# Release the mixed restart wave: local release, no master Grant
+# Node failure while parked in the mixed cluster: fail open
+# A node is parked at the barrier, killing the old non-master node
+# Parked node completed through fail-open, stalled node died below the barrier
+# Upgrade the remaining data node
 # Fully upgraded cluster: restart barrier must be active
 Waiting for node 1 to reach start phase 2 or later
 Waiting for node 1 to enter start phase 99

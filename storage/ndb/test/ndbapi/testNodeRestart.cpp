@@ -10905,6 +10905,53 @@ int runRestartBarrierWaitRelease(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runRestartBarrierSelfRelease(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+
+  /**
+   * Suppress the master's barrier Grant (EI 1027). The parked nodes
+   * must then complete through the local release evaluation, which is
+   * the release path under an old-version master in a mixed-version
+   * cluster (a state this homogeneous test cluster cannot enter for
+   * real).
+   */
+  const int master = res.getMasterNodeId();
+  ndbout_c("suppressing restart barrier Grant on master %u", master);
+  if (res.insertErrorInNode(master, 1027)) return NDBT_FAILED;
+
+  int result = NDBT_FAILED;
+  do {
+    if (restartBarrierStallAndPark(res, stalledNode, parkedNode)) break;
+
+    /* The barrier must hold while the stalled node is below phase 110 */
+    NdbSleep_SecSleep(3);
+    if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+      g_err << "Node " << parkedNode << " did not stay parked at the barrier"
+            << endl;
+      break;
+    }
+
+    /**
+     * Release the stall; with the Grant suppressed both nodes must
+     * still complete, each through its own local release.
+     */
+    if (restartBarrierClearStall(res, stalledNode)) break;
+    if (res.waitClusterStarted(600)) {
+      g_err << "Parked nodes did not release themselves with the master"
+            << " Grant suppressed" << endl;
+      break;
+    }
+    result = NDBT_OK;
+  } while (0);
+
+  res.insertErrorInAllNodes(0);
+  return result;
+}
+
 int runRestartBarrierRepeatedWaves(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter res;
   int r = restartBarrierCheckPrereqs(res);
@@ -12174,6 +12221,13 @@ TESTCASE("RestartBarrierWaitRelease",
          "nodes complete together when the last one has recovered "
          "(RONDB-1096)") {
   INITIALIZER(runRestartBarrierWaitRelease);
+}
+TESTCASE("RestartBarrierSelfRelease",
+         "Verify that parked nodes release themselves through the local "
+         "release evaluation when the master never sends a Grant, the "
+         "release path under an old-version master in a rolling upgrade "
+         "(RONDB-1096)") {
+  INITIALIZER(runRestartBarrierSelfRelease);
 }
 TESTCASE("RestartBarrierRepeatedWaves",
          "Verify that consecutive restart barrier waves reset their "
