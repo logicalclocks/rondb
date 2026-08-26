@@ -10148,7 +10148,6 @@ int runMixedLoadExtra(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
-<<<<<<< HEAD
 /**
  * Wait for a crashed node to come back to the started state, regardless of
  * whether its angel brings it back in nostart mode (it is then started
@@ -10731,6 +10730,131 @@ int runFailRepBeforeJoin(NDBT_Context *ctx, NDBT_Step *step) {
   g_err << "Could not produce the FAIL_REP-before-join window in 3 attempts"
         << endl;
   return NDBT_FAILED;
+}
+
+/**
+ * Reproduce a TC take over master failing with a partially delivered
+ * TAKE_OVERTCCONF broadcast (DBTC error inserts 8308 + 8309) and check
+ * that the survivors handle both halves of the split broadcast:
+ *
+ * 1. Node A is stopped with abort. The master runs the TC take over of
+ *    A, completes it, broadcasts TAKE_OVERTCCONF and crashes shortly
+ *    after (error insert 8308, delayed so that the broadcast is
+ *    flushed to the other nodes first).
+ * 2. One chosen survivor, the victim, discards its copy of the
+ *    broadcast (error insert 8309), as if the master had died before
+ *    the send to it left the node.
+ *
+ * With the victim being the next master (TcTakeOverConfDuplicate) the
+ * new master still has A in its take over queue, takes A over again
+ * and broadcasts a second TAKE_OVERTCCONF: the other survivors, which
+ * received the original, must drop the duplicate instead of failing
+ * the ndbrequire in execTAKE_OVERTCCONF.
+ *
+ * With the victim being a non-master survivor (TcTakeOverConfLost)
+ * the new master has seen A's take over complete and must re-announce
+ * TAKE_OVERTCCONF at master take over: without that the victim's node
+ * failure handling for A never completes, A can never rejoin and GCP
+ * completion stays blocked on the victim.
+ *
+ * In both cases no survivor may crash and both stopped nodes must be
+ * able to rejoin.
+ */
+int runTcTakeOverConfPartialBroadcast(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  const bool victimIsNextMaster =
+      ctx->getProperty("VictimIsNextMaster", Uint32(0)) != 0;
+  if (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2 ||
+      res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups with at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  const int master = res.getMasterNodeId();
+  const int nextMaster = res.getNextMasterNodeId(master);
+
+  /* A is the node whose failure starts the take over. A and the master
+   * are dead at the same time, so A must belong to another node group
+   * than the master. */
+  int nodeA = -1;
+  for (int i = 0; i < 50; i++) {
+    nodeA = res.getRandomNodeOtherNodeGroup(master, rand());
+    if (nodeA != -1 && nodeA != nextMaster) break;
+    nodeA = -1;
+  }
+  CHECK(nodeA != -1, "Failed to select node A");
+
+  /* The victim discards the master's TAKE_OVERTCCONF broadcast */
+  int victim = -1;
+  if (victimIsNextMaster) {
+    victim = nextMaster;
+  } else {
+    for (int i = 0; i < res.getNumDbNodes(); i++) {
+      const int node = res.getDbNodeId(i);
+      if (node != master && node != nextMaster && node != nodeA) {
+        victim = node;
+        break;
+      }
+    }
+  }
+  CHECK(victim != -1, "Failed to select a victim node");
+  ndbout_c("master = %d, next master = %d, A (fails first) = %d,"
+           " victim (discards TAKE_OVERTCCONF) = %d",
+           master, nextMaster, nodeA, victim);
+
+  /* Make the master's error insert crash come back in nostart mode */
+  int dumpRestartOnEI[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  CHECK(res.dumpStateOneNode(master, dumpRestartOnEI, 2) == 0,
+        "Failed to set RestartOnErrorInsert on the master");
+
+  /* Victim: discard one incoming TAKE_OVERTCCONF */
+  CHECK(res.insertErrorInNode(victim, 8309) == 0, "EI 8309 failed");
+  /* Master: crash shortly after broadcasting TAKE_OVERTCCONF */
+  CHECK(res.insertErrorInNode(master, 8308) == 0, "EI 8308 failed");
+
+  ndbout_c("Stopping node %d with abort", nodeA);
+  CHECK(res.restartOneDbNode(nodeA, /* initial */ false, /* nostart */ true,
+                             /* abort */ true) == 0,
+        "Failed to stop A");
+  CHECK(res.waitNodesNoStart(&nodeA, 1) == 0, "A did not reach nostart");
+
+  ndbout_c("Waiting for master %d to crash after the broadcast", master);
+  CHECK(res.waitNodesNoStart(&master, 1, 120) == 0,
+        "Master did not crash after broadcasting TAKE_OVERTCCONF");
+
+  /**
+   * Let the new master conclude the take overs of the failed master
+   * and of A (redone or re-announced) and the survivors process the
+   * resulting TAKE_OVERTCCONF.
+   */
+  NdbSleep_SecSleep(10);
+
+  /* No survivor may have crashed or restarted */
+  for (int i = 0; i < res.getNumDbNodes(); i++) {
+    const int node = res.getDbNodeId(i);
+    if (node == master || node == nodeA) continue;
+    if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
+      g_err << "Node " << node << " is no longer started: it crashed"
+            << " or restarted during the take over master failure" << endl;
+      return NDBT_FAILED;
+    }
+  }
+
+  CHECK(res.insertErrorInAllNodes(0) == 0, "Failed to clear error inserts");
+
+  /**
+   * Both stopped nodes must be able to rejoin. On a broken build the
+   * lost CONF wedges the victim's node failure handling for A, which
+   * blocks A from rejoining.
+   */
+  int startlist[] = {nodeA, master};
+  ndbout_c("Restarting nodes %d and %d", nodeA, master);
+  CHECK(res.startNodes(startlist, 2) == 0, "Failed to start nodes");
+  CHECK(res.waitNodesStarted(startlist, 2, 300) == 0,
+        "Stopped nodes did not rejoin");
+  CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return NDBT_OK;
 }
 
 /**
@@ -12020,6 +12144,22 @@ TESTCASE("FailRepBeforeJoin",
          "joined the cluster dies with the graceful error 2308 instead of "
          "the 2341 ndbrequire") {
   INITIALIZER(runFailRepBeforeJoin);
+}
+TESTCASE("TcTakeOverConfDuplicate",
+         "The TC take over master fails right after broadcasting "
+         "TAKE_OVERTCCONF and the next master missed the broadcast: the "
+         "redone take over broadcasts a duplicate TAKE_OVERTCCONF that "
+         "the other survivors must drop instead of crashing") {
+  TC_PROPERTY("VictimIsNextMaster", 1);
+  INITIALIZER(runTcTakeOverConfPartialBroadcast);
+}
+TESTCASE("TcTakeOverConfLost",
+         "The TC take over master fails right after broadcasting "
+         "TAKE_OVERTCCONF and a non-master survivor missed the broadcast: "
+         "the new master must re-announce the completed take over at "
+         "master take over so the survivor is unblocked") {
+  TC_PROPERTY("VictimIsNextMaster", Uint32(0));
+  INITIALIZER(runTcTakeOverConfPartialBroadcast);
 }
 TESTCASE("PreparedUpdatesNF",
          "Test node failure handling with prepared transactions with updates") {
