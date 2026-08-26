@@ -1,0 +1,85 @@
+# TC take over master failure with a partially delivered
+# TAKE_OVERTCCONF broadcast
+#
+# Runs the TcTakeOverConfDuplicate and TcTakeOverConfLost cases from
+# the testNodeRestart NDBT program against a cluster with 4 data nodes
+# in 2 node groups (see ndb_tc_takeover_conf.cnf). The cases crash the
+# TC take over master right after it broadcasts TAKE_OVERTCCONF (error
+# insert 8308) while one chosen survivor discards its copy of the
+# broadcast (error insert 8309), and verify that the surviving nodes
+# neither crash on the duplicate TAKE_OVERTCCONF from the redone take
+# over nor hang forever on the lost one, and that the stopped nodes
+# can rejoin the cluster.
+#
+# The error inserts need error-insert capable ndbmtd binaries, and
+# the testNodeRestart binary is only present in WITH_NDB_TEST builds.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its test table (TEST_DB.T1) directly via
+# the NDB API. Tables created outside of the MySQL Server crash the
+# MySQL Server, so both MySQL Servers are shut down while the NDBT
+# cases run and started again after the NDBT table has been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # Duplicate TAKE_OVERTCCONF from a redone take over is dropped
+--exec $TEST_NODE_RESTART -n TcTakeOverConfDuplicate T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Lost TAKE_OVERTCCONF is re-announced at master take over
+--exec $TEST_NODE_RESTART -n TcTakeOverConfLost T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops its auto-created table when a case
+# completes cleanly, so the table only exists here if the last case
+# left it behind; a missing table is not an error.
+--echo "[dropping NDBT test table]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # All TC take over CONF tests passed
