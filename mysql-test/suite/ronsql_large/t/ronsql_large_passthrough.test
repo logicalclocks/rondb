@@ -1,0 +1,117 @@
+# ronsql_large_passthrough — projection-only pushed joins at genuine
+# multi-batch scale (the RT_REPEAT_SCAN_RESULT proof the parent plan
+# called mandatory: non_aggregate_pushdown_plan.md "Scan-scan repeat
+# protocol is the one place where 'the API already supports it' needs
+# proof at our layer").
+#
+# Data (deterministic, load_ronsql_large): lg_cust 20,000 rows (lc_id
+# 1..20000, lc_region = id % 5), lg_orders 100,000 rows with lg_cust =
+# (i % 20000) + 1 — exactly 5 orders per customer, every order matched.
+# The in-suite stresses (sn-9 at 300x1500, sr-7's 480-row cross
+# product) fit in a couple of API batches; these shapes force the child
+# scan's repeat protocol across many SCAN_NEXTREQ cycles.
+#
+# Case map (lp-N):
+#   1  scan-scan chain (TABLE_SCAN root -> INDEX_SCAN child on
+#      idx_lg_cust), 100,000 result rows, strict sorted diff vs mysqld
+#   2  same shape + LIMIT 5000 straddling many batch boundaries —
+#      streaming early close mid-repeat, pinned by the x-ronsql-phases
+#      rows= counter (the row SET under LIMIT is nondeterministic, so
+#      no value diff)
+#   3  bushy star: two INDEX_SCAN branches on the same key under a
+#      restricted parent set — 4000 parents x (5 x 5) per-parent cross
+#      product = 100,000 rows through sibling-scan repeats
+#   4  aggregate twin of lp-1 (control — the proven path at scale)
+#   5  large-response sanity vs RDRS DEFAULT caps: lp-1's ~10 MB body
+#      accepted end-to-end (100,001 lines incl. header) — the
+#      big-but-legal control for Internal.MaxRespSize
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Join queries: compare mysql client against RDRS only (the CTE-suite
+# convention; ronsql_cli does not refresh its dictionary cache for
+# joins).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--echo
+--echo === Row-count sanity ===
+SELECT COUNT(*) AS lg_cust   FROM lg_cust;
+SELECT COUNT(*) AS lg_orders FROM lg_orders;
+
+--echo
+--echo === lp-1: scan-scan chain, 100k rows through the repeat protocol ===
+DELIMITER |;
+let $QUERY=
+SELECT c.lc_id, c.lc_region, o.lg_id, o.lg_qty, o.lg_amount
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+# No recorded "Expected result" block: the strict diff inside
+# ronsql_compare.inc is the assert, and a 100000-row baseline (or a
+# third execution of the query) would be pure cost.
+--echo (100000-row compare done via ronsql_compare strict diff)
+
+--echo
+--echo === lp-2: LIMIT 5000 early close mid-repeat (rows= pin) ===
+--let $EXPECT_ROWS=5000
+let $QUERY=
+SELECT c.lc_id, o.lg_id
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+LIMIT 5000;|
+--source suite/ronsql/include/ronsql_phase_rows.inc
+
+--echo
+--echo === lp-3: bushy star, 4000 parents x 25-way cross product ===
+let $QUERY=
+SELECT c.lc_id, a.lg_id, b.lg_id
+FROM lg_cust AS c
+JOIN lg_orders AS a ON a.lg_cust = c.lc_id
+JOIN lg_orders AS b ON b.lg_cust = c.lc_id
+WHERE c.lc_id < 4001;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo (100000-row bushy compare done via ronsql_compare strict diff)
+
+--echo
+--echo === lp-4: aggregate twin (control) ===
+let $QUERY=
+SELECT c.lc_region, COUNT(*) AS cnt, SUM(o.lg_qty) AS q
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c.lc_region, COUNT(*) AS cnt, SUM(o.lg_qty) AS q
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region|
+DELIMITER ;|
+
+--echo
+--echo === lp-5: ~10 MB response accepted under the DEFAULT caps ===
+# The big-but-legal control for Internal.MaxRespSize (the tiny-cap
+# rejection tests live in suite/ronsql/ronsql_size_limits): 100,000
+# rows + TSV header = 100,001 lines, well under the 64 MiB default.
+--let BODY_FILE=$MYSQL_TMP_DIR/lp5_body.json
+--write_file $BODY_FILE
+{"query":"SELECT c.lc_id, c.lc_region, o.lg_id, o.lg_qty, o.lg_amount FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id;","database":"test","outputFormat":"TEXT"}
+EOF
+--exec curl -s -o $MYSQL_TMP_DIR/lp5_out -D $MYSQL_TMP_DIR/lp5_hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$BODY_FILE
+--exec grep -qE "^HTTP/[0-9.]+ 200" $MYSQL_TMP_DIR/lp5_hdrs
+--exec test `wc -l < $MYSQL_TMP_DIR/lp5_out` -eq 100001
+--echo 200 OK with 100001 body lines
+--remove_file $BODY_FILE
+--remove_file $MYSQL_TMP_DIR/lp5_out
+--remove_file $MYSQL_TMP_DIR/lp5_hdrs
+
+--disable_query_log
+DROP TABLE lg_orders;
+DROP TABLE lg_cust;
+--enable_query_log

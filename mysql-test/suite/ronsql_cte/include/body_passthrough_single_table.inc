@@ -43,16 +43,19 @@
 #   21  local VARCHAR-PK table, plain lookup (QUERY_FILE)
 #   22  local VARCHAR-PK table + residual — pins the NdbRecord key_row
 #       length-prefix encoding, the one new byte-level path (QUERY_FILE)
+#   23  PROBE: WHERE IN-subquery on a single-table projection
+#   24  PROBE: scalar subquery constant on a single-table projection
 #   (P1/P2 ORDER-BY-rejection probes retired — ORDER BY / LIMIT shipped
 #    via ronsql_orderby_limit_plan.md Phases 2+3; see
 #    body_passthrough_limit.inc / body_passthrough_orderby.inc)
 #   P3  rejection: expression in the projection
 #   P4  rejection: WITH prefix on a single-table projection
 #
-# NEXT-PHASE: WHERE IN-subquery on a single-table projection
-#   (SELECT o_orderkey FROM orders WHERE o_custkey IN (SELECT ...)) —
-#   the subquery substitution machinery predates shape C and is
-#   untested in a non-aggregate outer query; probe before relying on it.
+# st-23/24 are the (former NEXT-PHASE) subquery probes: the subquery
+# substitution machinery predates shape C and had never run with a
+# non-aggregate outer query — the first --record decides their fate
+# (green => pinned coverage; clean reject => convert to P-cases; wrong
+# results => real finding, convert to rejection-assert + NEXT-PHASE).
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -545,6 +548,32 @@ EOF
 --sorted_result
 SELECT v_code, v_num, v_note FROM vkey1
 WHERE v_code = 'gamma-longer-key' AND v_num >= 0|
+
+--echo
+--echo === st-23: PROBE — WHERE IN-subquery on a projection ===
+let $QUERY=
+SELECT o_orderkey FROM orders
+WHERE o_custkey IN (SELECT c_custkey FROM customer
+                    WHERE c_nationkey = 3);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o_orderkey FROM orders
+WHERE o_custkey IN (SELECT c_custkey FROM customer
+                    WHERE c_nationkey = 3)|
+
+--echo
+--echo === st-24: PROBE — scalar subquery constant on a projection ===
+let $QUERY=
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = (SELECT MAX(o_orderkey) FROM orders
+                    WHERE o_orderkey < 100);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = (SELECT MAX(o_orderkey) FROM orders
+                    WHERE o_orderkey < 100)|
 
 DELIMITER ;|
 

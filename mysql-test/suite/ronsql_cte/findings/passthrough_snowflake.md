@@ -3,7 +3,7 @@
 Phase 2 of `non_aggregate_pushdown_plan.md` (detailed plan:
 `non_aggregate_phase_2.md`): real-table snowflake pushed joins,
 projection-only.  Cases sn-1..15 lock in the supported envelope;
-sn-P1..P3 pin the rejections.
+sn-P1..P5 pin the rejections.
 
 | Shape | Minimal repro query | Disposition | Suspected capability/phase | Location |
 |---|---|---|---|---|
@@ -12,5 +12,6 @@ sn-P1..P3 pin the rejections.
 | Type-mismatch join columns | `customer AS cu JOIN region AS r ON r.r_regionkey = cu.c_custkey` (TINYINT vs INT) | rejection-assert (sn-P1) | new planner pre-check for the NDB linked-operand identity rule (no implicit conversion) — applies to aggregate joins too | body_passthrough_snowflake.inc |
 | Join column with no usable index | `orders AS o JOIN lineitem AS l ON l.l_quantity = o.o_orderkey` | rejection-assert (sn-P2) | existing planner classification error | body_passthrough_snowflake.inc |
 | Cross-table WHERE residual on a pass-through join | `... WHERE cu.c_acctbal > o.o_totalprice` | rejection-assert (sn-P3) | cross-table filters need the aggregation sentinel machinery; kept restriction (parent plan) | body_passthrough_snowflake.inc |
-| Genuine multi-batch scan-scan at scale | `lg_cust JOIN lg_orders` (load_ronsql_large) | NEXT-PHASE probe | sn-9 (300 x 1500 rows) is the in-suite stress; forcing many SCAN_NEXTREQ rounds through RT_REPEAT_SCAN_RESULT needs the `ronsql_large` data | body_passthrough_snowflake.inc |
-| BLOB/TEXT join column rejection | — | code-covered only | shared schema has no BLOB/TEXT columns; planner check untested by MTR | QueryPlanner.cpp |
+| Genuine multi-batch scan-scan at scale | `lg_cust JOIN lg_orders` (load_ronsql_large) | **DONE** — `ronsql_large_passthrough` (lp-1 scan-scan 100k rows strict diff, lp-2 LIMIT-5000 early close mid-repeat, lp-3 bushy sibling-scan star, lp-4 aggregate control, lp-5 ~10 MB RDRS body under the default caps) | sn-9 (300 x 1500 rows) remains the in-suite stress; the many-SCAN_NEXTREQ / RT_REPEAT_SCAN_RESULT proof now lives in the `ronsql_large` suite | suite/ronsql_large/t/ronsql_large_passthrough.test |
+| Multi-batch remote query-thread fragment (DBSPJ) | lp-1's mysqld-baseline pushed join, 3 data nodes down | **KERNEL BUG found by lp-1's FIRST record, FIXED** — `Dblqh::sendScanFragConf` escalates every CONF to `SignalLength_v2` (rowsExamined appended, RONDB-733 `37130fa0acd`) but `Dbspj::execSCAN_FRAGCONF` consumed `senderRef` only on an exact `== SignalLength_query` match, so a REMOTE query-thread fragment's `m_next_ref` stayed at the `V_QUERY` placeholder; the first multi-batch SCAN_NEXTREQ (DbspjMain.cpp:14028) or an abort in `SFH_WAIT_NEXTREQ` (:14129) hit `ndbrequire(refToMain(m_next_ref) != V_QUERY)`.  Latent since RONDB-733: every prior suite's per-fragment data fits one batch.  Fix mirrors DBTC's `>=` handling.  Related observation (NOT fixed, mainline, error-path only): DBLQH's SCAN_FRAGREF sends populate `senderRef` but use `SignalLength` (4), so the `== SignalLength_query` REF-side updates in DBSPJ/DBTC never fire | DbspjMain.cpp execSCAN_FRAGCONF |
+| BLOB/TEXT join column rejection | `blobt AS b JOIN orders AS o ON o.o_orderstatus = b.b_txt` (TEXT parent side) | **rejection-assert (sn-P4 pass-through + sn-P5 aggregate twin)** | planner linked-column identity pre-check; note the TEXT column must be the PARENT side of the key — as the child key column the index-determination error ("no suitable index") fires first | body_passthrough_snowflake.inc |

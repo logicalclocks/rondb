@@ -725,6 +725,105 @@ WHERE v_code = 'gamma-longer-key' AND v_num >= 0|
 v_code	v_num	v_note
 gamma-longer-key	3	cc
 
+=== st-23: PROBE — WHERE IN-subquery on a projection ===
+== Query ==
+SELECT o_orderkey FROM orders
+WHERE o_custkey IN (SELECT c_custkey FROM customer
+WHERE c_nationkey = 3);
+
+Number of output lines, including header: 61
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey FROM orders
+WHERE o_custkey IN (SELECT c_custkey FROM customer
+WHERE c_nationkey = 3)|
+o_orderkey
+1003
+1028
+103
+1053
+1078
+1103
+1128
+1153
+1178
+1203
+1228
+1253
+1278
+128
+1303
+1328
+1353
+1378
+1403
+1428
+1453
+1478
+153
+178
+203
+228
+253
+278
+28
+3
+303
+328
+353
+378
+403
+428
+453
+478
+503
+528
+53
+553
+578
+603
+628
+653
+678
+703
+728
+753
+778
+78
+803
+828
+853
+878
+903
+928
+953
+978
+
+=== st-24: PROBE — scalar subquery constant on a projection ===
+== Query ==
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = (SELECT MAX(o_orderkey) FROM orders
+WHERE o_orderkey < 100);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderkey, o_custkey FROM orders
+WHERE o_orderkey = (SELECT MAX(o_orderkey) FROM orders
+WHERE o_orderkey < 100)|
+o_orderkey	o_custkey
+99	99
+
 === st-P3 (rejection): expression in the projection ===
 Syntax error in SQL statement: Unexpected at this point
 > SELECT o_orderkey + 1 FROM orders WHERE o_orderkey = 77;
