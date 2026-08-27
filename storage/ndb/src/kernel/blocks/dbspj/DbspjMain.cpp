@@ -4948,7 +4948,17 @@ void Dbspj::execSCAN_FRAGCONF(Signal *signal) {
         << ", request: " << requestPtr.i);
 
   Uint32 sig_len = signal->getLength();
-  if (likely(sig_len == ScanFragConf::SignalLength_query)) {
+  /**
+   * senderRef must be consumed from any length >= SignalLength_query:
+   * senders supporting rowsExamined escalate the signal to
+   * SignalLength_v2 (senderRef still at its fixed position), so an
+   * exact-length match would skip the m_next_ref update and leave a
+   * remote query-thread fragment pointing at the V_QUERY placeholder —
+   * the next SCAN_NEXTREQ (or an abort in SFH_WAIT_NEXTREQ) then hits
+   * ndbrequire(refToMain(m_next_ref) != V_QUERY).  Mirrors DBTC's
+   * >= handling in execSCAN_FRAGCONF.
+   */
+  if (likely(sig_len >= ScanFragConf::SignalLength_query)) {
     jam();
     scanFragHandlePtr.p->m_next_ref = conf->senderRef;
   }
