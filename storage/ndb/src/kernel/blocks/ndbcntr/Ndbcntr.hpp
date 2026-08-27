@@ -525,6 +525,14 @@ class Ndbcntr : public SimulatedBlock {
   bool is_any_node_below_restart_barrier();
 
  private:
+  /**
+   * The current data-node members that do not support the restart
+   * barrier protocol (RONDB-1096). Non-empty in a mixed-version
+   * cluster, typically during a rolling upgrade from a pre-barrier
+   * release.
+   */
+  void get_barrier_incapable_nodes(NdbNodeBitmask &incapable);
+
   bool is_nodegroup_starting(Signal *, NodeId);
   void get_node_group_mask(Signal *, NodeId, NdbNodeBitmask &);
 

@@ -21932,6 +21932,17 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
 void Dblqh::nextScanConfCopyLab(Signal *signal,
                                 const TcConnectionrecPtr tcConnectptr) {
   NextScanConf *const nextScanConf = (NextScanConf *)&signal->theData[0];
+  if (unlikely(scanptr.p->scanCompletedStatus == ZTRUE)) {
+    jam();
+    /*
+     * The copy target failed while a local fetch was outstanding.
+     * Do not process the fetched record or send it to the failed node.
+     * Discard credits from any send that raced with the close request.
+     */
+    tcConnectptr.p->copyCountWords = 0;
+    closeCopyLab(signal, tcConnectptr.p);
+    return;
+  }
   if (nextScanConf->fragId == RNIL) {
     jam();
     /*---------------------------------------------------------------------------*/
@@ -22044,12 +22055,6 @@ void Dblqh::nextScanConfCopyLab(Signal *signal,
     // If accOperationPtr == RNIL no record was returned by ACC
     if (nextScanConf->accOperationPtr == RNIL) {
       jam();
-      if (unlikely(scanptr.p->scanCompletedStatus == ZTRUE)) {
-        jam();
-        /* Copy is being abandoned, shut it down */
-        closeCopyLab(signal, tcConnectptr.p);
-        return;
-      }
 
       scanptr.p->scan_lastSeen = __LINE__;
       signal->theData[0] = scanptr.i;
