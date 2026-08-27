@@ -174,10 +174,14 @@ rejects (hopsworks 304→0; census ~1234→~556); item 2
 `BC_MAX_REGS` 16 / `BC_EMB_REG_BASE` 8, null-branch fold/jump,
 `kOpSetRegNull` → per-row-fallback stencil, Test 4 canary repointed
 to a 33-aggregate program) DONE & VERIFIED 2026-08-27 — recovered
-178 rejects (greatest_least_v4 104→0; corpus census ~556→378,
-63/80 tests reject-free; op-43-unsupported and kOpSetRegNull
-families eliminated, survivors are the deliberate F64/BIGUNSIGNED
-type-admission rejects). Records in `ronsql_jit_plan.md`.
+178 rejects (greatest_least_v4 104→0; op-43-unsupported and
+kOpSetRegNull families eliminated); item 3 (scan-filter
+unconditional BRANCH → OP_JUMP, bridge-only, incl. the
+BR_EMB_BRANCH=3→9 define fix) DONE & VERIFIED 2026-08-27 —
+recovered 172 (cte_or_body 44→0; NO scan-filter families remain).
+Corpus census ~1234→206 across items 1-3, 65/80 tests reject-free.
+Next: item 4 (op-44 READ_LINKED_COLUMN_TO_REG ≈50). Records in
+`ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

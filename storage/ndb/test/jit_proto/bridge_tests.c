@@ -3753,6 +3753,98 @@ static void test_gl_ne_null_jump(void) {
   mark_pass(name);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 3 — unconditional BRANCH (op 9).           */
+/* RonSQL's DNF filter trellis wires condition blocks to the shared   */
+/* ACCEPT/REJECT exits with it. Lowers to OP_JUMP on both paths.      */
+/* ------------------------------------------------------------------ */
+#define EMB_BRANCH_UNCOND 9
+static uint32_t enc_emb_branch_uncond(uint32_t offset) {
+  return enc_emb_op_word(EMB_BRANCH_UNCOND, (offset & 0x7FFFu) << 16);
+}
+
+/* T72a: the scan-filter trellis shape — BRANCH over the REJECT block
+ * to the ACCEPT exit. */
+static void test_scan_filter_uncond_branch_accept(void) {
+  const char *name = "T72a scan_filter_uncond_branch_accept";
+  uint32_t filter_prog[3] = {
+    enc_emb_branch_uncond(/*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  /* JUMP + FILTER_REJECT_EXIT + EXIT(exit_ok) + appended EXIT. */
+  if (!assert_scan_filter_accepted(name, filter_prog, 3, &p,
+                                   /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_FILTER_REJECT_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T72b: backward direction (bit 31) rejects — forward-only like every
+ * embedded branch. */
+static void test_uncond_branch_backward_reject(void) {
+  uint32_t filter_prog[2] = {
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_branch_uncond(1) | (1u << 31),
+  };
+  assert_scan_filter_rejected("T72b uncond_branch_backward_reject",
+                              filter_prog, 2,
+                              JIT_BRIDGE_EMBEDDED_BACKWARD,
+                              /*want_word=*/2, EMB_BRANCH_UNCOND);
+}
+
+/* T72c: a ZERO branch length is MALFORMED — the interpreter's
+ * brancher would re-execute the same word forever; lowering it would
+ * hand the JIT a guaranteed infinite self-jump. */
+static void test_uncond_branch_zero_reject(void) {
+  uint32_t filter_prog[2] = {
+    enc_emb_branch_uncond(0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_scan_filter_rejected("T72c uncond_branch_zero_reject",
+                              filter_prog, 2,
+                              JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_UNCOND);
+}
+
+/* T72d: a target past the end of the block is MALFORMED. */
+static void test_uncond_branch_range_reject(void) {
+  uint32_t filter_prog[2] = {
+    enc_emb_branch_uncond(5),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_scan_filter_rejected("T72d uncond_branch_range_reject",
+                              filter_prog, 2,
+                              JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_UNCOND);
+}
+
+/* T72e: the aggregation-embedded path lowers it too (no registers
+ * involved, so no allow_reg_ops gate). Target is the trailing
+ * EXIT_OK, which emits nothing on the fall-through model — the jump
+ * resolves to the tail OP_EXIT. */
+static void test_agg_uncond_branch_accept(void) {
+  const char *name = "T72e agg_uncond_branch_accept";
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_branch_uncond(/*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3904,6 +3996,11 @@ int main(void) {
   test_gl_import_f64_reject();
   test_gl_import_u64_bounds();
   test_gl_ne_null_jump();
+  test_scan_filter_uncond_branch_accept();
+  test_uncond_branch_backward_reject();
+  test_uncond_branch_zero_reject();
+  test_uncond_branch_range_reject();
+  test_agg_uncond_branch_accept();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

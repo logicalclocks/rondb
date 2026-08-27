@@ -380,3 +380,52 @@ never-written registers (same reject arms, word 0) with NEW
 (the old T51f program, accepted; load NB-converts per 5D — the
 first T51g run's kind=50 "failure" was the assert, not the
 bridge).
+
+### Lowering item 3 — DONE & VERIFIED (2026-08-27): scan-filter unconditional BRANCH
+
+Target family: **116+ rejects** — `scan-filter reason=1 detail=9`,
+the corpus's largest post-item-2 family. RonSQL's DNF filter trellis
+wires every condition block to the shared ACCEPT/REJECT exits with
+the interpreter's unconditional `BRANCH` (NdbScanFilter's
+`branch_label`); the v1 embedded subset never mapped it even though
+`OP_JUMP` has existed since 5J.
+
+Changes (bridge + tests ONLY — **no new stencil, no layout change,
+regen-stencils NOT needed**):
+- `ndb_jit_bridge.c`:
+  - **Define fix**: `BR_EMB_BRANCH` was 3 — which is
+    `LOAD_CONST_NULL` in Interpreter.hpp; BRANCH is **9**. The bad
+    value was only ever used in the diagnostic name table (no
+    translate case existed), so nothing mistranslated; the name
+    table now labels both correctly.
+  - New `translate_embedded_block` case `BR_EMB_BRANCH` → `OP_JUMP`
+    via the standard pending-target fixup. No registers involved, so
+    it lowers on BOTH the scan-filter and aggregation-embedded paths
+    (no `allow_reg_ops` gate). Forward-only like every embedded
+    branch; **zero branch length rejects MALFORMED** (the
+    interpreter's brancher would re-execute the word forever — a
+    lowered self-jump would hang the JIT; no emitter produces it).
+  - `emb_null_path_reg_safe` DFS scanner: BRANCH has ONE successor
+    (the target) — follow it instead of returning unsafe.
+- `bridge_tests.c` **T72a-e**: scan-filter trellis accept
+  (JUMP + FILTER_REJECT_EXIT + EXIT + appended EXIT, target fixup
+  c=2); backward reject; zero-length MALFORMED; past-end MALFORMED;
+  aggregation-embedded accept (jump to trailing EXIT_OK resolves to
+  the tail OP_EXIT).
+
+**VERIFIED 2026-08-27 (all tests passed).** Measured on the
+re-recorded pins: **172 rejects recovered** — cte_or_body 44→0,
+cte_subquery 32→0, ronsql_basic 72→32, dd_filter 48→24,
+dd_bigquery 36→4. Corpus census **378 → 206** (65/80 tests
+reject-free). The harvest confirms the clean family kill:
+`scan-filter detail=9` is GONE — in fact NO scan-filter families of
+any kind remain in the corpus; every residual is an aggregation-path
+family. `testInterpreterTypedRegs` (1888) did not move, as
+predicted (its filters carry REG ops, `allow_reg_ops=0`).
+`ndb_push_agg_jit` and the OFF arms: unchanged.
+
+Remaining 206 by family: op-44 `READ_LINKED_COLUMN_TO_REG` ≈50
+(item 4, next), reason-8 op-43 type-admission ≈52 (v5 —
+BY DESIGN: F64/BIGUNSIGNED import sources), `BRANCH_MEM_OP_ARG`
+38/40 ≈16, kOpMod-unknown ≈16, MinusBigint TYPE_MISMATCH ≈16,
+`LOAD_DOUBLE_CONST` ≈8, op-51 ≈4, PROG_TOO_LARGE ≈3.

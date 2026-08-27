@@ -282,4 +282,4 @@ COUNT(*)	SUM(li_stats.q)	MAX(li_price.mp)
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_subquery_jit_fallback_delta;
 ronsql_cte_subquery_jit_fallback_delta
-32
+0

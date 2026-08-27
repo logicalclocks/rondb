@@ -134,10 +134,16 @@
 /* admits only a small subset).                                       */
 /* ------------------------------------------------------------------ */
 
-#define BR_EMB_BRANCH                3   /* unconditional forward jump */
 /* These must equal the Interpreter:: enum values (see
  * include/kernel/Interpreter.hpp) — the bridge decodes the embedded
  * opcode via Interpreter::getOpCode and switches on it directly. */
+#define BR_EMB_LOAD_CONST_NULL       3   /* reg := SQL NULL (rejects) */
+/* ronsql_jit slice 2 item 3: the unconditional forward jump
+ * (Interpreter.hpp BRANCH = 9 — the old define said 3, which is
+ * LOAD_CONST_NULL; it was only ever used in the diagnostic name
+ * table, so nothing mistranslated). RonSQL's DNF filter trellis and
+ * NdbScanFilter's branch_label wiring are made of these. */
+#define BR_EMB_BRANCH                9
 #define BR_EMB_LOAD_CONST16          4
 /* Phase 5A: the SQL planner's CASE-condition family (see
  * ha_ndbcluster_push_agg.cc emit_int_comparison_branch): column into
@@ -274,6 +280,7 @@ const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
 
 const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
   switch (op) {
+    case BR_EMB_LOAD_CONST_NULL:       return "LOAD_CONST_NULL";
     case BR_EMB_BRANCH:                return "BRANCH";
     case BR_EMB_READ_ATTR:             return "READ_ATTR_INTO_REG";
     case BR_EMB_LOAD_CONST16:          return "LOAD_CONST16";
@@ -579,6 +586,14 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
           if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
           pc += 3;
           break;
+        /* ronsql_jit slice 2 item 3: the unconditional jump has ONE
+         * successor — the target. (A zero offset stalls on visited[]
+         * and ends the path; translate rejects it as MALFORMED before
+         * any scan verdict matters.) */
+        case BR_EMB_BRANCH:
+          if ((inst >> 31) != 0) return 0;             /* backward */
+          pc += (inst >> 16) & 0x7FFFu;
+          break;
         case BR_EMB_BRANCH_REG_EQ_NULL:
         case BR_EMB_BRANCH_REG_NE_NULL:
           if (((inst >> 6) & 0x7u) == reg) return 0;   /* reads reg */
@@ -797,6 +812,50 @@ static JitBridgeReason translate_embedded_block(
         read_attr_pending = 1;
         read_attr_dst = (uint8_t)dst_reg;
         read_attr_op_idx = out_op_idx;
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_BRANCH: {
+        /* ronsql_jit slice 2 item 3: the unconditional forward jump.
+         * RonSQL's DNF filter trellis wires every condition block to
+         * the shared ACCEPT/REJECT exits with it (NdbScanFilter's
+         * branch_label), which is why it dominated the scan-filter
+         * reject census. No registers involved, so it lowers on BOTH
+         * the scan-filter and aggregation-embedded paths: OP_JUMP to
+         * whatever op the target pc resolves to (the same pending
+         * fixup as every embedded branch; forward-only like all of
+         * them). A ZERO length is rejected as MALFORMED — the
+         * interpreter's brancher would re-execute the same word
+         * forever, so no emitter produces it; lowering it would hand
+         * the JIT a guaranteed infinite self-jump. */
+        if ((inst >> 31) != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (branch_length == 0 || target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
+        if (!emit_op(out_prog, OP_JUMP, 0, 0, /*c=*/0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
         emb_pc += 1;
         break;
       }
