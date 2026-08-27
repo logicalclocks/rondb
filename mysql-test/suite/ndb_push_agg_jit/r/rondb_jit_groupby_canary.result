@@ -108,18 +108,18 @@ grp	SUM(jt2.c2)
 2	1200
 DROP TABLE jt1;
 DROP TABLE jt2;
-# Q6: negative control — more aggregates than BC_MAX_ACCS (4) is
-#     bridge-rejected: correct results via the interpreter and the
-#     compile counters move by exactly 0. No 4060 (deliberate
-#     fallback).
+# Q6: FIVE aggregates in one grouped program. Was the negative
+#     control for the old BC_MAX_ACCS=4 cap (bridge-rejected,
+#     interpreter fallback); the ronsql_jit slice-2 raise to 32
+#     makes it a must-JIT: compile activity must move.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT grp, SUM(v), SUM(pk), SUM(v+pk), SUM(v-pk), SUM(pk*2) FROM t1 GROUP BY grp;
 grp	SUM(v)	SUM(pk)	SUM(v+pk)	SUM(v-pk)	SUM(pk*2)
 1	100	10	110	90	20
 2	180	18	198	162	36
 3	500	50	550	450	100
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q6_stays_on_interpreter;
-q6_stays_on_interpreter
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @c0 AS q6_jit_compiled;
+q6_jit_compiled
 1
 # Q7: grouped MIN/MAX must JIT (Phase 5B). All v values are > 0, so
 #     a broken first-row initialization (fresh accumulator's 0

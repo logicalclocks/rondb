@@ -27,6 +27,7 @@
 #include <atomic>              /* observability counters */
 #include <cmath>               /* std::isfinite (div_conv helper) */
 #include <cstdlib>             /* malloc / free for cache products */
+#include <cstddef>              /* offsetof (targeted JitState init) */
 #include <cstring>
 #include <ctime>               /* rate-limited fallback logging */
 
@@ -1411,12 +1412,20 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   jit_count_row();
 
   JitState s;
-  std::memset(&s, 0, sizeof(s));
+  /* Targeted init (ronsql_jit slice 2): zero only the scalar prefix
+   * (registers + flags + pointers — everything before acc_i64 in the
+   * restructured layout) plus the USED prefix of the acc-indexed
+   * arrays below. At BC_MAX_ACCS=32 a full-struct memset costs
+   * ~1.4 KB per row; real programs touch only n_agg_results slots.
+   * Slots >= n_agg_results hold stack garbage — the writeback loops
+   * never read them, and a program can only reference them if its
+   * header lied about n_agg_results (the interpreter would corrupt
+   * group records on such a program, so the exposure is shared, not
+   * new). */
+  std::memset(&s, 0, offsetof(JitState, acc_i64));
   s.ctx = &ctx;
 
-  /* Read accumulators into s.acc_i64. Phase 4 narrow: non-null
-   * BIGINT only. Cap at BC_MAX_ACCS — bridge admission rejects
-   * programs that would exceed this.
+  /* Read accumulators into s.acc_i64 and zero this row's flag slots.
    *
    * Phase 5B: value_initialized tells the MIN/MAX stencils whether the
    * accumulator holds a real value (the interpreter's first-row-
@@ -1426,6 +1435,9 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   if (n_agg_results > BC_MAX_ACCS) n_agg_results = BC_MAX_ACCS;
   for (Uint32 i = 0; i < n_agg_results; i++) {
     s.acc_i64[i] = agg_res_ptr[i].value.val_int64;
+    s.value_updated[i] = 0;
+    s.value_unsigned[i] = 0;
+    s.value_double[i] = 0;
     s.value_initialized[i] =
         (agg_res_ptr[i].type != NDB_TYPE_UNDEFINED &&
          !agg_res_ptr[i].is_null) ? 1 : 0;
@@ -1904,7 +1916,11 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   jit_count_row();
 
   JitState s;
-  std::memset(&s, 0, sizeof(s));
+  /* Scan filters touch registers and the per-row flags only — the
+   * acc-indexed arrays are aggregation state no admitted filter
+   * program references, so zeroing the scalar prefix suffices
+   * (ronsql_jit slice 2 targeted init). */
+  std::memset(&s, 0, offsetof(JitState, acc_i64));
   s.ctx = &ctx;
 
   entry_fn(&s);

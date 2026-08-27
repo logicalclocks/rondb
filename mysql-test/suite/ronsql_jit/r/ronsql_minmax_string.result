@@ -153,4 +153,4 @@ DROP TABLE str_groups;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_minmax_string_jit_fallback_delta;
 ronsql_minmax_string_jit_fallback_delta
-36
+0

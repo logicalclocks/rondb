@@ -243,3 +243,52 @@ window; the pins remain the exact per-test totals)
 5. Tail by size: `BRANCH_MEM_OP_ARG(_INLINE_TYPE)`, kOpMod-unknown,
    `kOpMinusBigint` TYPE_MISMATCH, `LOAD_DOUBLE_CONST`,
    `READ_UINT32_MEM_TO_REG`, BC_MAX_OPS for the chain tails.
+
+### Lowering item 1 — IMPLEMENTED (2026-08-27): the accumulator cap
+
+**Correction from the audit**: the ≈501 reason-5 rejects are NOT
+register indices — `kRegTotal` is 8 and `NdbAggregator` rejects
+higher at build time. `JIT_BRIDGE_REG_OUT_OF_RANGE` also covers
+**accumulator slots**, and `BC_MAX_ACCS` was **4** against the
+interpreter's `MAX_AGG_N_RESULTS = 256`: every query with ≥ 5
+aggregates rejected. That is the 55% family (wide SELECT lists,
+GREATEST/LEAST chains, hopsworks feature queries).
+
+Changes (**regen-stencils REQUIRED** — both the cap and the layout
+change stencil field offsets):
+- `BC_MAX_ACCS` 4 → 32 (`bytecode1.h`, with the raise-again note;
+  programs with > 32 aggregates still reject and the pins will say
+  if 32 is not enough).
+- **JitState restructured**: scalar prefix (registers, pointers,
+  flags incl. `row_fallback`) FIRST, the five `BC_MAX_ACCS`-indexed
+  arrays LAST — because at 32 slots a full-struct memset costs
+  ~1.4 KB per row. The dispatch glue now zeroes only
+  `offsetof(JitState, acc_i64)` (96 B) plus the USED prefix of the
+  flag arrays inside the existing copy-in loop; the scan-filter
+  invoke zeroes the prefix only (admitted filters never touch accs).
+  Slots ≥ n_agg_results hold stack garbage — writeback never reads
+  them, and only a lying program header could reference them (the
+  interpreter would corrupt group records on such a program: shared,
+  pre-existing exposure, not new).
+- Bridge/jit1/boundary tests: all keyed on the constant — the
+  acc-boundary bridge tests (`enc_count(reg, BC_MAX_ACCS)` etc.)
+  reject at 32 automatically; agg_index stays 16-bit on the wire so
+  the boundary remains expressible (unlike a register raise, which
+  the 4-bit wire field would have made untestable).
+
+**VERIFIED 2026-08-27 (all tests passed incl. stability re-runs).**
+Recovered: **678 rejects in the RonSQL corpora** — ronsql_hopsworks
+304→0 (the whole feature-store workload was blocked by the 4-slot
+cap alone), emptytable_and_nulls 144→0, basic 168→72,
+minmax_string 36→0, constants/orderby_stress 16→0, date_sub/dbt3
+8→0, feature_view 4→0, dtwide 36→2, bigquery 44→38, three dd 2s→0 —
+plus the fleet suite: testVarcharMinMax 8→0, ndb_pushdown_agg 16→8,
+ndb_join_pushdown_agg{,_types,_evict} 3/6/2→1/1/0, testCteNdbApi
+2→1 (stable across re-runs). Corpus census ~1234 → ~556. The
+GREATEST/LEAST family (224) did not move — those programs reject at
+the FIRST offending op (43/SetRegNull) before the acc check, exactly
+item 2's territory. `rondb_jit_groupby_canary` Q6 — the negative
+control for the OLD cap — was reframed as a must-JIT
+(`q6_jit_compiled`) rather than accepting the blind-recorded
+contradiction. The deliberate kOpSetRegNull canaries still reject on
+cue (breakdown: join-agg reason=1 detail=30 ×2).

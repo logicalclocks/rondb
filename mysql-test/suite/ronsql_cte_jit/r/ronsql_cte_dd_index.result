@@ -378,4 +378,4 @@ ronsql_cli caught exception: Index hints (FORCE/USE/IGNORE INDEX) are only suppo
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_index_jit_fallback_delta;
 ronsql_cte_dd_index_jit_fallback_delta
-2
+0

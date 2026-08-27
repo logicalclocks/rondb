@@ -17174,4 +17174,4 @@ VARCHAR(100) CHARACTER SET latin2: JSON format GROUP BY
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_hopsworks_jit_fallback_delta;
 ronsql_hopsworks_jit_fallback_delta
-304
+0

@@ -394,7 +394,15 @@ typedef struct {
 /* Phase 1 hard limits — generously sized for the 30-op program. */
 #define BC_MAX_OPS   64
 #define BC_MAX_REGS  8
-#define BC_MAX_ACCS  4
+/* ronsql_jit slice 2 (2026-08-27): 4 -> 32. The interpreter allows
+ * MAX_AGG_N_RESULTS (256) aggregate results; the old cap of FOUR made
+ * every query with >= 5 aggregates reject with REG_OUT_OF_RANGE —
+ * 55% of the entire RonSQL-corpus reject census. 32 covers the
+ * corpora while keeping JitState's five acc-indexed arrays at 1.25 KB
+ * (the dispatch glue zeroes only the used prefix per row — see
+ * dbtup_jit_invoke). Programs with more than 32 aggregates still
+ * reject; raise again if the census pins say so. */
+#define BC_MAX_ACCS  32
 #define BC_MAX_COLS  8
 
 typedef struct {

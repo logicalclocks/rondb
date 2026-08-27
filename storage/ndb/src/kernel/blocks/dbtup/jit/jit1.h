@@ -38,18 +38,37 @@ extern "C" {
  * Microbench code keeps ctx == nullptr; pure stencils never read
  * ctx. */
 typedef struct JitState {
+  /* Layout (ronsql_jit slice 2, 2026-08-27): the per-row SCALAR state
+   * and the register file come FIRST so the dispatch glue can zero
+   * them with one small memset(offsetof(JitState, acc_i64)); the five
+   * BC_MAX_ACCS-indexed arrays sit LAST and only their USED prefix
+   * ([0, n_agg_results)) is initialized per row — at BC_MAX_ACCS=32 a
+   * full-struct memset would cost ~1.4 KB per row. Any layout change
+   * here requires regen-stencils (stencil field offsets are baked at
+   * extraction time). */
   int64_t   regs_i64[BC_MAX_REGS];   /* per-row register file */
-  int64_t   acc_i64[BC_MAX_ACCS];    /* program-level accumulators */
   const int64_t *row_cols_i64;       /* current row's columns (microbench path) */
   void     *ctx;                     /* opaque per-call context for cold-call helpers */
-  uint64_t  value_updated[BC_MAX_ACCS]; /* per-row aggregate-result update flags */
   uint32_t  row_overflowed;          /* checked arithmetic saw signed overflow */
   uint32_t  row_filter_rejected;     /* scan-filter JIT rejected the row */
+  /* Phase 5A: per-row interpreter-fallback flag. A cold-call helper
+   * sets it when the row hits a condition the JIT cannot represent.
+   * The blob keeps running to completion (results are garbage but
+   * side-effect free); the dispatch glue sees the flag, skips the
+   * accumulator writeback, and returns a sentinel so the caller
+   * re-runs THIS ROW through the interpreter — exact interpreter
+   * semantics (null-skip kernels, ZREGISTER_INIT_ERROR on null
+   * comparisons, ...) at interpreter speed for that row only. */
+  uint32_t  row_fallback;
+  uint32_t  pad_;                    /* keep acc_i64 8-byte aligned */
+  int64_t   acc_i64[BC_MAX_ACCS];    /* program-level accumulators */
+  /* Per-row aggregate-result update flags (which slots the program
+   * wrote this row); the writeback glue honours only flagged slots. */
+  uint64_t  value_updated[BC_MAX_ACCS];
   /* Per-row "this result is unsigned" flags, set alongside
    * value_updated by ops whose interpreter kernel produces an unsigned
-   * result (COUNT). The writeback glue mirrors it into
-   * AggResItem::is_unsigned. Appended last so existing stencils' baked
-   * field offsets are unchanged. */
+   * result (COUNT, u64 SUM/MIN/MAX). The writeback glue mirrors it
+   * into AggResItem::is_unsigned. */
   uint64_t  value_unsigned[BC_MAX_ACCS];
   /* Phase 5B: per-result "accumulator holds a real value" INPUT mask,
    * set by the dispatch glue at copy-in from
@@ -59,26 +78,12 @@ typedef struct JitState {
    * store 1 after initializing. Per row — the grouped path resolves a
    * different AggResItem set each row, so this is per-group state. */
   uint64_t  value_initialized[BC_MAX_ACCS];
-  /* Phase 5A: per-row interpreter-fallback flag. A cold-call helper
-   * sets it when the row hits a condition the JIT cannot represent
-   * (today: a NULL column value in a load — registers have no null
-   * tracking until Phase 5D). The blob keeps running to completion
-   * (results are garbage but side-effect free); the dispatch glue sees
-   * the flag, skips the accumulator writeback, and returns a sentinel
-   * so the caller re-runs THIS ROW through the interpreter — exact
-   * interpreter semantics (null-skip kernels, ZREGISTER_INIT_ERROR on
-   * null comparisons, ...) at interpreter speed for that row only.
-   * Only helpers touch this field (no stencil loads/stores it), so
-   * adding it required no stencil regen. */
-  uint32_t  row_fallback;
   /* Phase 5C-2: per-row "this result is a double" flags, set alongside
    * value_updated by the f64 accumulator stencils (SUM/MIN/MAX_F64).
    * The writeback glue produces type = NDB_TYPE_DOUBLE and copies the
    * accumulator's bit pattern into AggResItem::value.val_double for
    * marked results. uint64_t entries like the other masks — the
-   * aarch64 imm12-fold store addresses them at index*8. Appended last
-   * so existing stencils' baked field offsets are unchanged (regen
-   * required anyway for the new f64 stencils). */
+   * aarch64 imm12-fold store addresses them at index*8. */
   uint64_t  value_double[BC_MAX_ACCS];
 } JitState;
 

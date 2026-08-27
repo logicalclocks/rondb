@@ -363,4 +363,4 @@ DROP TABLE api_scan;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_basic_jit_fallback_delta;
 ronsql_basic_jit_fallback_delta
-168
+72

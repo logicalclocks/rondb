@@ -525,7 +525,7 @@ the JIT; each pinned by the instruments above rather than 4060):
 |---|---|---|---|
 | `kOpSetRegNull` program | `testJoinAggJit` Test 4, `rondb_jit_ndbapi_unsupported_fallback` | THE permanent deliberate-fallback canary | permanent |
 | Embedded `READ_AGG_REG_TO_REG` (op 43) | `testCteNdbApi.cpp:~5717` — consumer program comparing two CTE aggregate outputs | embedded translator doesn't lower acc→reg | future-lowering candidate (`JitState.acc_i64` makes it representable); pinned via the recorded delta |
-| Register index ≥ `BC_MAX_REGS` (8) | "aggregation bridge reason=5" in the harvest; exact tests fall out of the recorded deltas | bridge admission boundary | raise the cap if the deltas show real demand |
+| ~~Register index ≥ `BC_MAX_REGS`~~ **Accumulator slot ≥ `BC_MAX_ACCS`** | "aggregation bridge reason=5" — the ronsql_jit slice-2 attribution corrected the diagnosis: `kRegTotal` is 8 and the API rejects higher, so these were ACC slots against the old cap of 4 | RESOLVED: `BC_MAX_ACCS` raised 4 → 32 (interpreter allows 256; raise again on demand) | resolved (ronsql_jit slice 2) |
 | Scan filters beyond the Phase 7 v1 subset (e.g. `READ_ATTR_INTO_REG`) | fleet + mysqld WHERE shapes | Phase 7 v1 lowers NULL-branch + comparison predicates only | durable note; INELIGIBLE state is 4060-exempt |
 | NULL-extended outer-join rows | any outer-join aggregation | only the interpreter can synthesize NULL loads for the missing tuple; 4060-exempt via null `block_tup` | permanent (per-row) |
 | Multi-leaf (star) setups | `testStarJoinAgg*`, star/snowflake CTE bodies | ~~compile-gate skip~~ REMOVED by 6-3: every leaf compiles, the leaf switch installs entry + count; testJoinAggJit Test 7 pins it under 4060 | resolved (6-3) |

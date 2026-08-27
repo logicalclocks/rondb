@@ -488,4 +488,4 @@ DROP TABLE tie_breaker;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_orderby_stress_jit_fallback_delta;
 ronsql_orderby_stress_jit_fallback_delta
-16
+0

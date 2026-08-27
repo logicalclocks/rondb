@@ -1699,4 +1699,4 @@ COUNT(*)	SUM(p.price)	MIN(p.price)	MAX(p.price)
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_feature_view_jit_fallback_delta;
 ronsql_feature_view_jit_fallback_delta
-4
+0

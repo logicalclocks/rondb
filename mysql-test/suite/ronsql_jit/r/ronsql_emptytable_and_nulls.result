@@ -1169,4 +1169,4 @@ DROP TABLE tbl1;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_emptytable_and_nulls_jit_fallback_delta;
 ronsql_emptytable_and_nulls_jit_fallback_delta
-144
+0

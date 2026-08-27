@@ -52,4 +52,4 @@ DROP TABLE lineitem;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_dbt3_1_2_jit_fallback_delta;
 ronsql_dbt3_1_2_jit_fallback_delta
-8
+0

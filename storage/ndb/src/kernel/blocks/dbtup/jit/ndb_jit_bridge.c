@@ -50,7 +50,7 @@
  *   kOpSumBigint (1 word):
  *     bits 19-16: src reg_index
  *     bits 15-0:  agg_index (16 bits — but we only have BC_MAX_ACCS
- *                 slots, currently 4)
+ *                 slots, currently 32)
  *
  * Program-end: implicit when the word stream is exhausted. The
  * bridge appends an OP_EXIT instruction.
