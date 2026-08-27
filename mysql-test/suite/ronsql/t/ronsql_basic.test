@@ -105,8 +105,19 @@ SELECT cchar as char_gr
 FROM api_scan
 WHERE sint8 > 1
 GROUP BY cchar;|
-#todo Remove this canonicalization when DECIMAL is fixed
---let $canonicalization_script=s/(\.[0-9])666666666[78]\t/\1667\t/;s/(\t2\.5)\$/\1000/;s/(\.[0-9]{6})[0-9]{3,6}\t/\1\t/g;
+#todo Remove this canonicalization when DECIMAL is fixed.
+# Round every decimal number to 2 places on all outputs.  Three effects
+# make the raw outputs non-deterministic or non-identical here: RonSQL
+# evaluates literal division (14/3, 18/5) in double where MySQL uses
+# DECIMAL; both clients print doubles in shortest-round-trip form (equal
+# sums can still render with different digit counts); and the float
+# SUM's fragment-merge order varies run to run (~1e-6 absolute jitter),
+# which occasionally changed the rendered length and escaped the old sed
+# truncation (it only handled 9-12 decimal digits — a 7-8 digit
+# rendering, or a short one from trailing-zero drop, slipped through).
+# sprintf ROUNDING at 2 decimals — far coarser than the jitter —
+# normalizes all of these identically on every side.
+--let $canonicalization_perl=s/(-?[0-9]+\.[0-9]+)/sprintf("%.2f", \$1)/ge;
 --source suite/ronsql/include/ronsql_compare.inc
 
 
