@@ -1020,6 +1020,37 @@ static inline bool ndbd_rate_limit_supported(Uint32 v) {
   return v >= NDBD_RATE_LIMIT_VERSION;
 }
 
+/**
+ * RonDB: DBTC drops duplicate TAKE_OVERTCCONF, and a new master
+ * re-announces completed TC take overs at master take over so that a
+ * TAKE_OVERTCCONF broadcast that was only partially delivered by a
+ * failing master can neither crash nodes (duplicate CONF) nor leave
+ * nodes waiting forever (lost CONF).  The rebroadcast may deliver a
+ * duplicate CONF to nodes that already handled the original, and old
+ * versions fail an ndbrequire on a duplicate, so the master sends
+ * the rebroadcast only to nodes that run a version that drops
+ * duplicates and skips older nodes.
+ *
+ * 25.10.18 is the first release in the 25.10 series that ships the
+ * fix.  When merging to the 26.02 series the constant below must be
+ * set to the first 26.02 release that ships the fix (assumed 26.2.10);
+ * a lower 26.02 version must never be assumed to support it.
+ */
+#define NDBD_TAKE_OVERTCCONF_REBROADCAST_2510 NDB_MAKE_VERSION(25, 10, 18)
+#define NDBD_TAKE_OVERTCCONF_REBROADCAST NDB_MAKE_VERSION(26, 2, 10)
+static inline bool ndbd_take_overtcconf_rebroadcast(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >> 8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    return (minor == 10 && rel >= 18);
+  }
+  return x >= NDBD_TAKE_OVERTCCONF_REBROADCAST;
+}
+
 /*
  * Data nodes reply to MGMD START BACKUP NOWAIT REQ from
  * MGMD with BACKUP_REF/CONF.
