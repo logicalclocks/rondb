@@ -5,4 +5,6 @@ set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_subdirectory(avro)
 add_subdirectory(src)
-add_subdirectory(test)
+if(WITH_UNIT_TESTS)
+  add_subdirectory(test)
+endif()
