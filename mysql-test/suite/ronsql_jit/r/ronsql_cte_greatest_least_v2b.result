@@ -273,4 +273,4 @@ ronsql_cli caught exception: GREATEST/LEAST requires at least one column operand
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_greatest_least_v2b_jit_fallback_delta;
 ronsql_cte_greatest_least_v2b_jit_fallback_delta
-24
+0

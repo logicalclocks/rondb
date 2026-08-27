@@ -347,7 +347,22 @@ typedef enum {
    * OP_DIV_CONV_F64. Typed kOpDivIntBigint with an f64 operand stays
    * rejected — the optimizer only emits it for both-BIGINT proofs. */
   OP_DIVMOD_CONV           = 63,
-  OP_KIND_MAX           = OP_DIVMOD_CONV
+
+  /* ronsql_jit slice 2 item 2 — kOpSetRegNull's lowering. The
+   * interpreter marks a register SQL-NULL preserving its value type;
+   * JIT registers carry no null state, so a row that EXECUTES this
+   * op needs interpreter null semantics: the stencil sets
+   * JitState::row_fallback and continues (results discarded, the
+   * interpreter re-runs the row). In the GREATEST/LEAST emission only
+   * NULL-input rows reach it — the skip trellis jumps past it
+   * otherwise — so non-null rows stay fully native. This converts
+   * kOpSetRegNull from THE permanent whole-program reject (the
+   * historical Test-27/Test-4 canary opcode) into a per-row edge;
+   * the deliberate-fallback canaries repoint to an
+   * agg-slot-out-of-range program (>= BC_MAX_ACCS), which stays a
+   * durable whole-program reject. */
+  OP_SET_REG_NULL_FB       = 64,
+  OP_KIND_MAX           = OP_SET_REG_NULL_FB
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -393,7 +408,18 @@ typedef struct {
 
 /* Phase 1 hard limits — generously sized for the 30-op program. */
 #define BC_MAX_OPS   64
-#define BC_MAX_REGS  8
+/* ronsql_jit slice 2 item 2 (2026-08-27): 8 -> 16. The INTERPRETER
+ * has two disjoint 8-register files — the outer aggregation
+ * interpreter's m_registers and the embedded normal-interpreter's
+ * TregMemBuffer — while the JIT held one shared file, which was safe
+ * only while no admitted pattern carried live outer registers across
+ * an embedded block. READ_AGG_REG_TO_REG (the GREATEST/LEAST pair-op
+ * import) does exactly that, so the JIT file is now split by
+ * renaming: OUTER registers occupy slots 0-7 and EMBEDDED registers
+ * are emitted at 8-15 (the bridge adds BC_EMB_REG_BASE to every
+ * embedded register operand). */
+#define BC_MAX_REGS  16
+#define BC_EMB_REG_BASE 8
 /* ronsql_jit slice 2 (2026-08-27): 4 -> 32. The interpreter allows
  * MAX_AGG_N_RESULTS (256) aggregate results; the old cap of FOUR made
  * every query with >= 5 aggregates reject with REG_OUT_OF_RANGE —

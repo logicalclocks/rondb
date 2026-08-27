@@ -1429,6 +1429,17 @@ STENCIL op_mod_u64(JitState *s) {
   HOLE_STORE_REG(MOD_DST, s, zero ? 0 : (int64_t)result);
   TAIL_NEXT(s);
 }
+/* ronsql_jit slice 2 item 2 — kOpSetRegNull. Executing rows need
+ * interpreter null semantics: flag the per-row fallback and keep
+ * running (the dispatch glue discards this row's writeback and the
+ * interpreter re-runs it). No holes — the op takes no operands the
+ * stencil needs. In GREATEST/LEAST only NULL-input rows land here;
+ * the skip trellis routes non-null rows past it. */
+STENCIL op_set_reg_null_fb(JitState *s) {
+  s->row_fallback = 1;
+  TAIL_NEXT(s);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
@@ -1500,4 +1511,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_div_conv_f64,
     op_arith_conv_f64,
     op_divmod_conv,
+    op_set_reg_null_fb,
 };

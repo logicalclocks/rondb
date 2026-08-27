@@ -166,7 +166,18 @@ corpora), NEW mirror suites `ronsql_jit` (55) + `ronsql_cte_jit`
 the first `--record` IS the corpus census and slice 2's ranked work
 list. Slice 2 = lower the gaps (Phase 7 scan-filter expansion, 6-5
 CTE filters, agg leftovers); slice 3 = the program-level-only
-"4060-lite" error insert armed suite-wide.
+"4060-lite" error insert armed suite-wide. Slice 2 progress: the
+fallback-breakdown attribution instrument + item 1 (`BC_MAX_ACCS`
+4→32, JitState restructure) DONE & VERIFIED — recovered ~678 corpus
+rejects (hopsworks 304→0; census ~1234→~556); item 2
+(GREATEST/LEAST: op-43 register import, register-file split
+`BC_MAX_REGS` 16 / `BC_EMB_REG_BASE` 8, null-branch fold/jump,
+`kOpSetRegNull` → per-row-fallback stencil, Test 4 canary repointed
+to a 33-aggregate program) DONE & VERIFIED 2026-08-27 — recovered
+178 rejects (greatest_least_v4 104→0; corpus census ~556→378,
+63/80 tests reject-free; op-43-unsupported and kOpSetRegNull
+families eliminated, survivors are the deliberate F64/BIGUNSIGNED
+type-admission rejects). Records in `ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

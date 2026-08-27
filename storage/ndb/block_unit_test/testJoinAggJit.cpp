@@ -34,14 +34,15 @@
  * ERROR_INSERT 4060 (any JIT fallback aborts the data node), so a green
  * run proves the program actually compiled and executed natively.
  * Test 4 is the opposite: the clean unsupported-program reject path,
- * deliberately with NO error inserts.
+ * deliberately with NO error inserts (a 33-aggregate program, one past
+ * the JIT's BC_MAX_ACCS accumulator capacity).
  *
  * Test map (former testJoinAggNdbApi number in parens):
  *   Test 1 (25): JIT must compile SUM of a local attribute
  *   Test 2 (26): all-rejected SUM preserves the NULL result
  *   Test 3 (27): linked-NULL filter path (READ_LINKED_TO_MEM +
  *                BRANCH_LINKED_NE_NULL), tables jit3_*
- *   Test 4 (28): unsupported shape (kOpSetRegNull) falls back cleanly
+ *   Test 4 (28): over-capacity shape (33 aggregates) falls back cleanly
  *   Test 5 (29): SUM of a column with id > 255, tables jit5_*
  *   Test 6 (30): embedded CASE non-zero skip_offset, tables jit6_*
  *
@@ -845,23 +846,25 @@ testJitLinkedNullSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 /* JIT candidate by shape (child leaf aggregation, no GROUP BY) but    */
 /* contains an opcode the bridge does not lower.                       */
 /*                                                                     */
-/* The division/modulo opcodes fall through to the bridge's default    */
-/* case (JIT_BRIDGE_UNSUPPORTED_OP). The program is therefore rejected */
-/* at JOIN_AGG_SETUP_REQ, m_jit_entry stays nullptr, and               */
-/* JoinAggInterpreter::ProcessRec runs the normal interpreter loop.    */
-/* This test proves that reject path produces the correct result and   */
-/* never errors the query.                                             */
+/* The program is rejected at JOIN_AGG_SETUP_REQ, m_jit_entry stays    */
+/* nullptr, and JoinAggInterpreter::ProcessRec runs the normal         */
+/* interpreter loop. This test proves that reject path produces the    */
+/* correct result and never errors the query.                          */
 /*                                                                     */
-/* SUM(0) with a dead kOpSetRegNull is the shape (= 0; kOpSetRegNull   */
-/* is the bridge's PERMANENTLY unsupported opcode — documented as      */
-/* such, so this canary needs no further repointing). Historically     */
-/* MAX(amount) (until 5B), then SUM(amount % amount) (until 5E-2       */
-/* lowered kOpMod). Deliberately runs with NO error inserts: 4060      */
-/* (fallback fatal) and 5120 (setup-compile fatal) would both abort    */
-/* precisely the path we want to exercise. A developer can confirm    */
-/* the reject reason manually with a one-off 5120 run; that fatal      */
-/* variant is intentionally kept out of MTR. Because it needs no       */
-/* error inserts, this test also runs for real in production builds.   */
+/* The shape: 33 SUM(0) aggregates (agg indices 0..32). Index 32 is    */
+/* one past the JIT's accumulator capacity (BC_MAX_ACCS = 32), so the  */
+/* bridge rejects with REG_OUT_OF_RANGE while the interpreter          */
+/* (MAX_AGG_N_RESULTS = 256) computes all 33 results fine. Durable     */
+/* until BC_MAX_ACCS is raised to >= 33 — then add more aggregates.    */
+/* Historically MAX(amount) (until 5B), SUM(amount % amount) (until    */
+/* 5E-2 lowered kOpMod), then a dead kOpSetRegNull (until ronsql_jit   */
+/* slice 2 lowered it to the per-row fallback for GREATEST/LEAST).     */
+/* Deliberately runs with NO error inserts: 4060 (fallback fatal) and  */
+/* 5120 (setup-compile fatal) would both abort precisely the path we   */
+/* want to exercise. A developer can confirm the reject reason         */
+/* manually with a one-off 5120 run; that fatal variant is             */
+/* intentionally kept out of MTR. Because it needs no error inserts,   */
+/* this test also runs for real in production builds.                  */
 /* ------------------------------------------------------------------ */
 static int
 testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
@@ -888,15 +891,17 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
     return -1;
   }
 
-  /* SUM(0) plus a DEAD SetRegNull: kOpSetRegNull is the bridge's
-   * permanently unsupported opcode, so the program is rejected at
-   * setup and the query runs on the interpreter (where SetRegNull
-   * merely nulls the unused register 1). */
+  /* 33 SUM(0) aggregates: agg index 32 is one past the JIT's
+   * accumulator capacity (BC_MAX_ACCS = 32), so the bridge rejects the
+   * program at setup and the query runs on the interpreter (whose
+   * MAX_AGG_N_RESULTS = 256 handles all 33). */
+  const Uint32 T4_N_AGGS = 33;
   NdbAggregator agg(childTab);
-  if (!agg.LoadInt64(0, 0) ||
-      !agg.SetRegNull(1) ||
-      !agg.Sum(0, 0) ||
-      !agg.Finalize()) {
+  bool progOk = agg.LoadInt64(0, 0);
+  for (Uint32 i = 0; progOk && i < T4_N_AGGS; i++) {
+    progOk = agg.Sum(i, 0);
+  }
+  if (!progOk || !agg.Finalize()) {
     printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
     return -1;
   }
@@ -967,8 +972,23 @@ testJitUnsupportedFallback(Ndb *ndb, MYSQL *conn, Int64 expectedSum)
     return -1;
   }
 
-  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
-  Int64 actualSum = sumRes.data_int64();
+  Int64 actualSum = 0;
+  for (Uint32 i = 0; i < T4_N_AGGS; i++) {
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    if (sumRes.end() || sumRes.is_null() ||
+        sumRes.data_int64() != expectedSum) {
+      printf("FAILED (agg %u: expected %lld, got %s)\n", (unsigned)i,
+             (long long)expectedSum,
+             sumRes.end() ? "end-of-record" :
+             sumRes.is_null() ? "NULL" :
+             std::to_string((long long)sumRes.data_int64()).c_str());
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    actualSum = sumRes.data_int64();
+  }
 
   NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
   if (!rec2.end()) {
@@ -1891,10 +1911,10 @@ int main(int argc, char **argv)
             dropT3Tables(conn);
           }
 
-          /* Test 4: unsupported-program fallback (kOpSetRegNull is the
-           * permanently unsupported opcode). No error inserts: this
-           * exercises the clean reject->interpreter path, which 4060/4062
-           * would abort. Reuses the shared jagg tables. */
+          /* Test 4: unsupported-program fallback (33 aggregates — one
+           * past BC_MAX_ACCS = 32). No error inserts: this exercises
+           * the clean reject->interpreter path, which 4060/4062 would
+           * abort. Reuses the shared jagg tables. */
           if (shouldRun(4)) {
             if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
               if (testJitUnsupportedFallback(&ndb, conn, 0) != 0)

@@ -341,4 +341,4 @@ g	rows_seen
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_greatest_least_v4_jit_fallback_delta;
 ronsql_cte_greatest_least_v4_jit_fallback_delta
-104
+0

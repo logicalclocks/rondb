@@ -787,4 +787,4 @@ ronsql_cli caught exception: Integer type column compared to an integer literal 
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_greatest_least_v5_jit_fallback_delta;
 ronsql_cte_greatest_least_v5_jit_fallback_delta
-54
+52

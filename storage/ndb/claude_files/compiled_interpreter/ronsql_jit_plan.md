@@ -292,3 +292,91 @@ control for the OLD cap — was reframed as a must-JIT
 (`q6_jit_compiled`) rather than accepting the blind-recorded
 contradiction. The deliberate kOpSetRegNull canaries still reject on
 cue (breakdown: join-agg reason=1 detail=30 ×2).
+
+### Lowering item 2 — DONE & VERIFIED (2026-08-27): GREATEST/LEAST enablers
+
+Target family: **≈224 rejects** — embedded `READ_AGG_REG_TO_REG`
+(op 43, 180) plus the trailer's `kOpSetRegNull` share of reason-5.
+RonSQL emits GREATEST/LEAST as an embedded compare body over two
+OUTER registers plus an outer trailer `Mov(dest,src) / Skip(1) /
+SetRegNull(dest)` selected by the CASE-style output value (0/1/2).
+
+**Design discoveries that collapsed the plan** (vs the original
+"per-register null mask" sketch):
+
+1. **Op 43 reads OUTER registers, not accumulators** — the
+   interpreter's `handleReadAggRegToReg` reads
+   `ctx.aggRegisters = m_registers`. So it is an outer→embedded
+   register IMPORT, not an accumulator read.
+2. **The register-file split**: the interpreter keeps TWO register
+   files (outer `m_registers`, embedded `TregMemBuffer`). The JIT
+   has one `regs_i64[]`. Renaming embedded regs to slots 8-15
+   (`BC_EMB_REG_BASE = 8`, `BC_MAX_REGS` 8 → 16) removes the
+   aliasing hazard wholesale; outer wire checks stay at 8.
+3. **The completing-row invariant (5D)**: on any row the JIT
+   completes, NO register holds SQL-NULL — nullable outer loads
+   per-row-fallback on NULL, NB loads branch away, consts are
+   non-null, and `kOpSetRegNull` rows fall back. Therefore embedded
+   `BRANCH_REG_EQ_NULL` **folds to nothing** (never taken) and
+   `BRANCH_REG_NE_NULL` lowers to an unconditional `OP_JUMP`. NO
+   per-register null mask needed at all.
+
+Changes (**regen-stencils REQUIRED** — one new stencil + the
+`BC_MAX_REGS` 16 layout change moves `JitState` offsets):
+- `bytecode1.h`: `BC_MAX_REGS` 16, `BC_EMB_REG_BASE` 8 (rename doc),
+  `OP_SET_REG_NULL_FB = 64` (the only new op kind).
+- `stencils_src.c`: `op_set_reg_null_fb` = `s->row_fallback = 1;`
+  + tail-next — no holes, so no audit_magics entries.
+- `ndb_jit_bridge.c`:
+  - embedded emits rename regs `+BC_EMB_REG_BASE`; outer bound
+    checks pinned to `BC_EMB_REG_BASE` (12 sites);
+  - op 43 → `OP_MOV_INT_INT(8+dst_emb, src_outer)` with type
+    admission: outer track I64/NNC always; **U64 only if
+    `reg_u63_safe`** (narrow unsigned Tiny/Small/Medium/Unsigned +
+    DATE/YEAR/TIME2 — NOT Bigunsigned/DATETIME2/TIMESTAMP2, whose
+    sign-bit-set packs would misorder under the embedded signed
+    compares); F64/STR reject TYPE_MISMATCH. `reg_u63_safe[]` is
+    tracked at LoadCol and propagated by `kOpMov`;
+  - embedded `BRANCH_REG_EQ_NULL` non-fusion → FOLD (was reject);
+    new `BRANCH_REG_NE_NULL` → `OP_JUMP`;
+  - outer `kOpSetRegNull` → `OP_SET_REG_NULL_FB` (was THE permanent
+    reject); `nb_op_reads_reg` treats it as a conservative reader;
+  - post-embedded-block tracker invalidation REMOVED — the register
+    split isolates the files, and GL's outer trailer needs live
+    tracking across the block.
+- Tests: `bridge_tests.c` T12 flipped to accept; T60c/d/e reframed
+  as fold-acceptance; new **T70a-e** (fast-path GL 13-op shape with
+  import MOVs + GE; null-check GL 17-op shape with exactly one
+  SET_REG_NULL_FB and folded guards; F64 import reject; BIGUNSIGNED
+  reject vs SMALLUNSIGNED accept; NE_NULL → JUMP).
+- **Canary repoint** (P3' resolved): `testJoinAggJit` Test 4 now
+  uses a **33-aggregate SUM(0) program** (agg index 32 one past
+  `BC_MAX_ACCS = 32` → durable REG_OUT_OF_RANGE; the 16-bit wire
+  agg_index keeps the boundary expressible). Chosen over
+  WRITE_ATTR_FROM_REG for simplicity. Wrapper + census texts
+  updated.
+
+**VERIFIED 2026-08-27 (all tests passed).** Measured on the
+re-recorded pins: **178 rejects recovered** — greatest_least_v4
+104→0, v2b 24→0, greatest_least 22→2, cte_scalar 16→2, v2a 12→6,
+v6 8→2, v5 54→52, dd_bigquery 38→36 — plus `ndb_push_agg_jit`
+testCteNdbApi 1→0 (Test 21 GREATEST(MAX,MIN), hand-updated pin).
+Corpus census **~556 → 378** (63/80 tests reject-free). The log
+harvest confirms a clean family kill: `reason=1 detail=43` and
+`detail=30` (kOpSetRegNull) are GONE; the GL survivors log as
+`reason=8 detail=43` — the deliberate type-admission rejects
+(F64/BIGUNSIGNED import sources; v5's 52 is exactly this plus
+op-44 linked variants — items 4/tail territory). Remaining corpus
+by family: scan-filter BRANCH item 3 (basic 72, dd_filter 48,
+or_body 44, overflow 24 ...), op-44, then the tail (38/40,
+kOpMod-unknown, MinusBigint, 45, 51, PROG_TOO_LARGE).
+
+Test fallout fixed during verification (each pinning OLD
+behavior, bridge was right): regen preflight caught a bare
+`TAIL_NEXT` (macro takes `(s)`); T51f/T62f/T64d manufactured
+UNKNOWN registers via an empty embedded block → reframed to
+never-written registers (same reject arms, word 0) with NEW
+**T51g** pinning that outer tracking now SURVIVES embedded blocks
+(the old T51f program, accepted; load NB-converts per 5D — the
+first T51g run's kind=50 "failure" was the assert, not the
+bridge).

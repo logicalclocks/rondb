@@ -1,9 +1,10 @@
 --source include/have_ndb.inc
 
-# Test 28: an aggregation program that is a JIT candidate by shape but uses
-# an opcode the bridge does not lower (SUM(amount % amount) -> kOpMod;
-# repointed from MAX when Phase 5B lowered kOpMaxBigint). The program is
-# rejected at JOIN_AGG_SETUP_REQ and runs on the interpreter; this canary
+# testJoinAggJit Test 4: an aggregation program that is a JIT candidate by
+# shape but exceeds the JIT's accumulator capacity (33 SUM aggregates, one
+# past BC_MAX_ACCS = 32; repointed from a dead kOpSetRegNull when ronsql_jit
+# slice 2 lowered it, before that from kOpMod / kOpMaxBigint). The program
+# is rejected at JOIN_AGG_SETUP_REQ and runs on the interpreter; this canary
 # proves the fallback produces the correct result and never errors the query.
 # No data-node error inserts are used, so it runs in every build type.
 

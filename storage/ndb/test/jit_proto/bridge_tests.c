@@ -615,11 +615,21 @@ static void test_reg_oor_reject(void) {
                    JIT_BRIDGE_REG_OUT_OF_RANGE, 0, kOpLoadCol);
 }
 
-/* T12: kOpSetRegNull — Phase 4 doesn't admit nullable handling. */
-static void test_set_reg_null_reject(void) {
+/* T12 (flipped in ronsql_jit slice 2 item 2): kOpSetRegNull lowers to
+ * OP_SET_REG_NULL_FB — a row that EXECUTES it takes the per-row
+ * interpreter fallback (JIT registers carry no null state). The
+ * GREATEST/LEAST NULL path is the real emitter; the historical
+ * "permanently unsupported" role moved to agg-slot >= BC_MAX_ACCS. */
+static void test_set_reg_null_accept(void) {
+  const char *name = "T12 set_reg_null_accept";
   uint32_t prog[1] = { enc_op(kOpSetRegNull, 0) };
-  assert_rejected("T12 set_reg_null_reject", prog, 1,
-                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpSetRegNull);
+  Program p;
+  if (!expect_accepted(name, prog, 1, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_SET_REG_NULL_FB)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 0)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  mark_pass(name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1557,8 +1567,9 @@ static void test_case_condition_family_accept(void) {
                        OP_LOAD_CONST_UINT16)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
                        OP_BRANCH_GT_INT_INT)) return;
-  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 0)) return;
-  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 1)) return;
+  /* Embedded registers rename to slots 8-15 (ronsql_jit slice 2). */
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 8)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 9)) return;
   if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
   if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_EXIT)) return;
   if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
@@ -1869,18 +1880,43 @@ static void test_avg_double_shape_accept(void) {
   mark_pass(name);
 }
 
-/* T51f: an embedded block invalidates the tracker — an f64 register
- * from before the block may not feed an f64 consumer after it (the
- * planner re-loads outer registers after embedded blocks, so real
- * programs never hit this; an optimizer/emitter bug would). */
+/* T51f: an f64 consumer over a NEVER-WRITTEN (UNKNOWN) register
+ * rejects. (Pre-ronsql_jit-slice-2 this test used an empty embedded
+ * block to invalidate a loaded register; the register-file split
+ * removed that invalidation — see T51g — so the UNKNOWN case is now
+ * produced the direct way.) */
 static void test_embedded_invalidates_f64_reject(void) {
+  uint32_t prog[1] = {
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T51f sum_double_unknown_reject", prog, 1,
+                  JIT_BRIDGE_TYPE_MISMATCH, 0, kOpSumDouble);
+}
+
+/* T51g: ronsql_jit slice 2 item 2 — outer register tracking SURVIVES
+ * an embedded block. The register files are split (embedded regs
+ * rename to slots 8-15), so embedded code cannot overwrite an outer
+ * register and there is nothing to invalidate. GREATEST/LEAST's
+ * outer trailer (Mov/SetRegNull/Sum after the embedded compare)
+ * depends on this. Exactly the pre-slice-2 T51f program, accepted. */
+static void test_tracking_survives_embedded_block(void) {
+  const char *name = "T51g tracking_survives_embedded_block";
   uint32_t prog[3] = {
     enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
     enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
     enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
   };
-  assert_rejected("T51f embedded_invalidates_f64_reject", prog, 3,
-                  JIT_BRIDGE_TYPE_MISMATCH, 2, kOpSumDouble);
+  Program p;
+  /* f64 load + SUM_F64 + agg tail(2); the empty block emits nothing.
+   * The load NB-converts (5D: its null edge branches to the tail
+   * instead of per-row-fallback) — same as every outer load whose
+   * only consumer is an aggregate. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_F64_NB)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2479,7 +2515,8 @@ static void test_nb_case_guard_fusion(void) {
   if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/10)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_COL_NDB_NB)) return;
-  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 0)) return;
+  /* Embedded dst register renamed to slot 8 (ronsql_jit slice 2). */
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 8)) return;
   if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 7)) return;
   if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 3)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
@@ -2525,29 +2562,47 @@ static void test_nb_case_guard_into_output_block(void) {
   mark_pass(name);
 }
 
-/* T60c: a guard NOT immediately after a READ_ATTR has no lowering
- * (JIT registers carry no null state) — reject. */
-static void test_nb_case_guard_no_read_attr_reject(void) {
+/* T60c (flipped in ronsql_jit slice 2 item 2): a guard NOT
+ * immediately after a READ_ATTR now FOLDS to nothing instead of
+ * rejecting — on any row the JIT completes no register holds
+ * SQL-NULL (loads take the per-row fallback on NULL, constants are
+ * non-null), so EQ_NULL is never taken on a completing row. */
+static void test_nb_case_guard_no_read_attr_fold(void) {
+  const char *name = "T60c nb_case_guard_no_read_attr_fold";
   uint32_t prog[4] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
     enc_emb_load_const16(/*reg=*/0, /*val=*/5),
     enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/1),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_rejected("T60c nb_case_guard_no_read_attr_reject", prog, 4,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 2, EMB_BRANCH_REG_EQ_NULL);
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 8)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
+  mark_pass(name);
 }
 
-/* T60d: guard on a DIFFERENT register than the READ_ATTR — reject. */
-static void test_nb_case_guard_reg_mismatch_reject(void) {
+/* T60d (flipped): guard on a DIFFERENT register than the READ_ATTR —
+ * no fusion, so it FOLDS; the load stays the PLAIN form (per-row
+ * fallback on NULL preserves the completing-row invariant). */
+static void test_nb_case_guard_reg_mismatch_fold(void) {
+  const char *name = "T60d nb_case_guard_reg_mismatch_fold";
   uint32_t prog[4] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
     enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
     enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/1),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_rejected("T60d nb_case_guard_reg_mismatch_reject", prog, 4,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 2, EMB_BRANCH_REG_EQ_NULL);
+  Program p;
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 8)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  mark_pass(name);
 }
 
 /* T60e: the null path READS the register before overwriting it — the
@@ -2555,7 +2610,12 @@ static void test_nb_case_guard_reg_mismatch_reject(void) {
  * holds a null tag (ZREGISTER_INIT_ERROR). emb_null_path_reg_safe
  * must veto the fusion -> reject. Guard target +1 = the fall-through
  * continuation, whose BRANCH_EQ reads r0. */
-static void test_nb_case_guard_null_path_reads_reject(void) {
+static void test_nb_case_guard_null_path_reads_fold(void) {
+  /* (flipped in ronsql_jit slice 2 item 2) The unsafe-null-path veto
+   * now blocks only the NB FUSION; the guard FOLDS and the load stays
+   * PLAIN — NULL rows take the per-row fallback before any compare
+   * could see an undefined value. */
+  const char *name = "T60e nb_case_guard_null_path_reads_fold";
   uint32_t prog[6] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
     enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
@@ -2564,8 +2624,18 @@ static void test_nb_case_guard_null_path_reads_reject(void) {
     enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/1),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_rejected("T60e nb_case_guard_null_path_reads_reject", prog, 6,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 2, EMB_BRANCH_REG_EQ_NULL);
+  Program p;
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_EQ_INT_INT)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 8)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 9)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 3)) return;
+  mark_pass(name);
 }
 
 /* T60f: TWO guarded conditions — the planner's multi-WHEN shape. The
@@ -2870,20 +2940,20 @@ static void test_generic_arith_u64_signed_reject(void) {
                   JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpPlus);
 }
 
-/* T62f: generic + over UNKNOWN registers (invalidated by an embedded
- * block) -> UNSUPPORTED. An untyped op over an unproven register
- * could be int or double — the typed families tolerate UNKNOWN
- * because their opcode IS the type proof; the generic ones cannot. */
+/* T62f: generic + over UNKNOWN (never-written) registers ->
+ * UNSUPPORTED. An untyped op over an unproven register could be int
+ * or double — the typed families tolerate UNKNOWN because their
+ * opcode IS the type proof; the generic ones cannot. (Formerly the
+ * UNKNOWN state came from an empty embedded block; tracking now
+ * survives blocks — T51g — so the registers are simply never
+ * loaded.) */
 static void test_generic_arith_unknown_reject(void) {
-  uint32_t prog[5] = {
-    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
-    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
+  uint32_t prog[2] = {
     enc_2reg(kOpPlus, 0, 1),
     enc_sum(/*reg=*/0, /*agg=*/0),
   };
-  assert_rejected("T62f generic_arith_unknown_reject", prog, 5,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 3, kOpPlus);
+  assert_rejected("T62f generic_arith_unknown_reject", prog, 2,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpPlus);
 }
 
 /* T62g: THE LIVE PATH for the generic case — DECIMAL operands. The
@@ -3149,16 +3219,15 @@ static void test_div_conv_mixed(void) {
   mark_pass(name);
 }
 
-/* T64d: UNKNOWN operand (post-embedded) still rejects. */
+/* T64d: UNKNOWN (never-written) operand still rejects. (Formerly
+ * post-embedded-block invalidation; tracking now survives blocks —
+ * T51g.) */
 static void test_div_conv_unknown_reject(void) {
-  uint32_t prog[4] = {
-    enc_load_col(NDB_TYPE_BIGINT, 0, 0),
-    enc_load_col(NDB_TYPE_BIGINT, 1, 1),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
+  uint32_t prog[1] = {
     enc_2reg(kOpDiv, 0, 1),
   };
-  assert_rejected("T64d div_conv_unknown_reject", prog, 4,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 3, kOpDiv);
+  assert_rejected("T64d div_conv_unknown_reject", prog, 1,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpDiv);
 }
 
 /* T64e: both-F64 keeps the HOT OP_DIV_F64 (regression pin). */
@@ -3511,6 +3580,179 @@ static void test_divmod_typed_f64_reject(void) {
                   JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpDivIntBigint);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 2 — GREATEST/LEAST enablers.               */
+/* READ_AGG_REG_TO_REG (emb op 43) imports an OUTER register into an  */
+/* embedded register: OP_MOV_INT_INT across the JIT's split file      */
+/* (outer 0-7, embedded 8-15). Null branches fold by the             */
+/* completing-row invariant; kOpSetRegNull is the per-row fallback.   */
+/* ------------------------------------------------------------------ */
+#define EMB_READ_AGG_REG_TO_REG  43
+#define EMB_BRANCH_REG_NE_NULL_OP 11
+#define EMB_BRANCH_GE_REG_REG    17
+static uint32_t enc_emb_rar(uint32_t src_outer, uint32_t dst_emb) {
+  return enc_emb_op_word(EMB_READ_AGG_REG_TO_REG,
+                         (src_outer << 16) | ((dst_emb & 0x7u) << 6));
+}
+static uint32_t enc_emb_branch_reg_ne_null(uint32_t reg, uint32_t offset) {
+  return enc_emb_op_word(EMB_BRANCH_REG_NE_NULL_OP,
+                         ((reg & 0x7u) << 6) | ((offset & 0x7FFFu) << 16));
+}
+
+/* T70a: the GL fast path (NOT NULL inputs) — two imports, one GE,    */
+/* the output trellis, trailing Mov + SUM. Fully native.              */
+static void test_gl_fast_path_accept(void) {
+  const char *name = "T70a gl_fast_path_accept";
+  uint32_t prog[14] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_rar(/*src_outer=*/0, /*dst_emb=*/1),
+    enc_emb_rar(/*src_outer=*/1, /*dst_emb=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, /*left=*/1, /*right=*/2,
+                           /*offset=*/4),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/1),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_2reg(kOpMov, /*dst=*/0, /*src=*/1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + GE + 2x(LC16+JUMP) + Mov + SUM + tail(2). */
+  if (!expect_accepted(name, prog, 14, &p, /*expected_n_ops=*/13)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MOV_INT_INT)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 9)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 0)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_MOV_INT_INT)) return;
+  if (!expect_op_field(name, &p, 3, "a", p.ops[3].a, 10)) return;
+  if (!expect_op_field(name, &p, 3, "b", p.ops[3].b, 1)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_BRANCH_GE_INT_INT)) return;
+  if (!expect_op_field(name, &p, 4, "a", p.ops[4].a, 9)) return;
+  if (!expect_op_field(name, &p, 4, "b", p.ops[4].b, 10)) return;
+  if (!expect_op_field(name, &p, 4, "c", p.ops[4].c, 7)) return;
+  if (!expect_op_field(name, &p, 9, "kind", p.ops[9].kind,
+                       OP_MOV_INT_INT)) return;
+  if (!expect_op_field(name, &p, 9, "a", p.ops[9].a, 0)) return;
+  if (!expect_op_field(name, &p, 9, "b", p.ops[9].b, 1)) return;
+  if (!expect_op_field(name, &p, 10, "kind", p.ops[10].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T70b: the GL null-check body — the two EQ_NULL guards FOLD, the    */
+/* trailing kOpSetRegNull lowers to the per-row fallback, and only    */
+/* the NULL path ever executes it.                                    */
+static void test_gl_null_check_accept(void) {
+  const char *name = "T70b gl_null_check_accept";
+  uint32_t prog[21] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/14),
+    enc_emb_rar(0, 1),
+    enc_emb_rar(1, 2),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/9),
+    enc_emb_branch_reg_eq_null(/*reg=*/2, /*offset=*/8),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, 1, 2, /*offset=*/4),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 1),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 2),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_2reg(kOpMov, 0, 1),
+    enc_op(kOpSkip, /*count=*/1),
+    enc_op(kOpSetRegNull, /*reg0 in bits 19-16=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + folds(0) + GE + 3x(LC16+JUMP) + Mov +
+   * Skip-JUMP + SET_REG_NULL_FB + SUM + tail(2) = 17. */
+  if (!expect_accepted(name, prog, 21, &p, /*expected_n_ops=*/17)) return;
+  unsigned n_set = 0, n_ge = 0, n_mov = 0;
+  for (unsigned i = 0; i < p.n_ops; i++) {
+    uint8_t k = p.ops[i].kind;
+    if (k == OP_SET_REG_NULL_FB) n_set++;
+    if (k == OP_BRANCH_GE_INT_INT) n_ge++;
+    if (k == OP_MOV_INT_INT) n_mov++;
+  }
+  if (n_set != 1 || n_ge != 1 || n_mov != 3) {
+    mark_fail(name, "structure: set=%u ge=%u mov=%u, want 1/1/3",
+              n_set, n_ge, n_mov);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T70c: import of an F64-tracked outer register rejects — the        */
+/* embedded compares are signed i64 (double bit-compare misorders).   */
+static void test_gl_import_f64_reject(void) {
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_emb_rar(0, 1),
+  };
+  assert_rejected("T70c gl_import_f64_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, EMB_READ_AGG_REG_TO_REG);
+}
+
+/* T70d: BIGUNSIGNED import rejects (values >= 2^63 misorder under    */
+/* the signed compare); a NARROW unsigned source is u63-safe and      */
+/* imports fine.                                                      */
+static void test_gl_import_u64_bounds(void) {
+  const char *name = "T70d gl_import_u64_bounds";
+  uint32_t rej[3] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_emb_rar(0, 1),
+  };
+  assert_rejected("T70d gl_import_bigunsigned_reject", rej, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, EMB_READ_AGG_REG_TO_REG);
+  uint32_t acc[5] = {
+    enc_load_col(NDB_TYPE_SMALLUNSIGNED, /*reg=*/0, /*col=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_rar(0, 1),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* LOAD + import-MOV + SUM + agg tail(2) = 5 (emb EXIT_OK emits
+   * nothing on the aggregation fall-through model). */
+  if (!expect_accepted(name, acc, 5, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_MOV_INT_INT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 9)) return;
+  if (!expect_op_field(name, &p, 1, "b", p.ops[1].b, 0)) return;
+  mark_pass(name);
+}
+
+/* T70e: BRANCH_REG_NE_NULL is ALWAYS taken on a completing row —     */
+/* lowers to an unconditional OP_JUMP.                                */
+static void test_gl_ne_null_jump(void) {
+  const char *name = "T70e gl_ne_null_jump";
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/5),
+    enc_emb_branch_reg_ne_null(/*reg=*/0, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 3)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -3529,7 +3771,7 @@ int main(void) {
   test_load_const_unsupported_type_reject();
   test_load_const_truncated_reject();
   test_reg_oor_reject();
-  test_set_reg_null_reject();
+  test_set_reg_null_accept();
   test_embedded_empty_accept();
   test_embedded_attr_ne_null_accept();
   test_embedded_backward_reject();
@@ -3583,6 +3825,7 @@ int main(void) {
   test_mov_preserves_f64_accept();
   test_avg_double_shape_accept();
   test_embedded_invalidates_f64_reject();
+  test_tracking_survives_embedded_block();
   test_u64_lowering_accept();
   test_u64_const_accept();
   test_u64_into_arith_reject();
@@ -3613,9 +3856,9 @@ int main(void) {
   test_str_dangling_load_reject();
   test_nb_case_guard_fusion();
   test_nb_case_guard_into_output_block();
-  test_nb_case_guard_no_read_attr_reject();
-  test_nb_case_guard_reg_mismatch_reject();
-  test_nb_case_guard_null_path_reads_reject();
+  test_nb_case_guard_no_read_attr_fold();
+  test_nb_case_guard_reg_mismatch_fold();
+  test_nb_case_guard_null_path_reads_fold();
   test_nb_case_guard_two_conditions();
   test_narrow_int_sum();
   test_narrow_unsigned_aggregates();
@@ -3656,6 +3899,11 @@ int main(void) {
   test_divmod_conv_trunc_div();
   test_divmod_conv_fmod();
   test_divmod_typed_f64_reject();
+  test_gl_fast_path_accept();
+  test_gl_null_check_accept();
+  test_gl_import_f64_reject();
+  test_gl_import_u64_bounds();
+  test_gl_ne_null_jump();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

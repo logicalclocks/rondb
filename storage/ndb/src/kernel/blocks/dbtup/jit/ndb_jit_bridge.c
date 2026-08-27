@@ -144,8 +144,16 @@
  * register, 64-bit constant into register, register-register compare. */
 #define BR_EMB_READ_ATTR             1   /* READ_ATTR_INTO_REG */
 #define BR_EMB_LOAD_CONST64          6   /* value in next 2 words */
-#define BR_EMB_BRANCH_REG_EQ_NULL   10   /* null guard (5D-3 fusion) */
-#define BR_EMB_BRANCH_REG_NE_NULL   11   /* rejected (no emitter) */
+#define BR_EMB_BRANCH_REG_EQ_NULL   10   /* null guard (5D-3 fusion / fold) */
+#define BR_EMB_BRANCH_REG_NE_NULL   11   /* always-taken fold (slice 2 item 2) */
+/* ronsql_jit slice 2 item 2: the GREATEST/LEAST pair-op import —
+ * copies an OUTER aggregation-interpreter register into an embedded
+ * register (the kernel's handleReadAggRegToReg). In the JIT both
+ * files live in regs_i64 (outer 0-7, embedded 8-15), so this lowers
+ * to OP_MOV_INT_INT — admitted only when the outer register's
+ * tracked type makes the embedded SIGNED compares exact (I64/NNC, or
+ * U64 with the u63-safe bound). */
+#define BR_EMB_READ_AGG_REG_TO_REG  43
 #define BR_EMB_BRANCH_EQ_REG_REG    12
 #define BR_EMB_BRANCH_NE_REG_REG    13
 #define BR_EMB_BRANCH_LT_REG_REG    14
@@ -359,6 +367,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_DIV_CONV_F64:         return "div_conv_f64";
     case OP_ARITH_CONV_F64:       return "arith_conv_f64";
     case OP_DIVMOD_CONV:          return "divmod_conv";
+    case OP_SET_REG_NULL_FB:      return "set_reg_null_fb";
     default:                      return "jit_op?";
   }
 }
@@ -558,6 +567,11 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
       switch (scan_op) {
         case BR_EMB_READ_ATTR:
         case BR_EMB_LOAD_CONST16:
+        /* ronsql_jit slice 2 item 2: the READ_AGG import writes its
+         * embedded dst like a load — an overwrite ends the tracked
+         * path safely; it reads only OUTER registers, never the
+         * embedded reg under scan. */
+        case BR_EMB_READ_AGG_REG_TO_REG:
           if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
           pc += 1;
           break;
@@ -634,6 +648,14 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
   return 1;
 }
 
+/* Register-type tracker values (Phase 5C, hoisted to file scope in
+ * ronsql_jit slice 2 item 2 so translate_embedded_block's
+ * READ_AGG_REG_TO_REG import can consult the outer walk's tracker).
+ * Full per-value docs at the tracker declaration site in
+ * ndb_jit_bridge_translate. */
+enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2,
+       BR_REG_U64 = 3, BR_REG_NNC = 4, BR_REG_STR = 5 };
+
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
     Program *out_prog, JitBridgeError *out_err,
@@ -647,7 +669,14 @@ static JitBridgeReason translate_embedded_block(
     int allow_reg_ops,
     PendingCaseJump *pending_case_jumps,
     uint16_t *n_pending_case_jumps,
-    uint32_t *out_exit_refuse_code) {
+    uint32_t *out_exit_refuse_code,
+    /* ronsql_jit slice 2 item 2: the OUTER walk's register-type
+     * tracker (+ the u63-safe flags), consulted by the
+     * READ_AGG_REG_TO_REG import. NULL on paths with no outer
+     * register file (scan filters, the embedded-only test wrapper) —
+     * the import rejects there. */
+    const uint8_t *outer_reg_type,
+    const uint8_t *outer_reg_u63) {
 
   if (emb_len == 0) {
     /* Empty embedded block — equivalent to "always pass". */
@@ -751,7 +780,8 @@ static JitBridgeReason translate_embedded_block(
           }
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        if (!emit_op(out_prog, OP_LOAD_COL_NDB, (uint8_t)dst_reg, 0,
+        if (!emit_op(out_prog, OP_LOAD_COL_NDB,
+                     (uint8_t)(BC_EMB_REG_BASE + dst_reg), 0,
                      (uint16_t)attr_id, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
@@ -824,12 +854,19 @@ static JitBridgeReason translate_embedded_block(
         if (!prev_read_attr_pending || prev_read_attr_dst != guard_reg ||
             !emb_null_path_reg_safe(emb_prog, emb_len, target_emb_pc,
                                     guard_reg)) {
-          if (out_err) {
-            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
-            out_err->offending_word = outer_word_pos + 1 + emb_pc;
-            out_err->offending_op   = emb_op;
-          }
-          return JIT_BRIDGE_UNSUPPORTED_OP;
+          /* ronsql_jit slice 2 item 2: NOT the 5D-3 fusion pattern —
+           * FOLD the guard to nothing instead of rejecting. On any
+           * row the JIT completes, no register ever holds SQL-NULL:
+           * plain loads take the per-row fallback on NULL, NB-fused
+           * loads branch their null edge away, constants are non-null,
+           * the READ_AGG import's sources are the outer registers
+           * (same invariant), and kOpSetRegNull rows fall back
+           * entirely. An EQ_NULL branch is therefore never taken on a
+           * completing row; emb_pc_to_op_idx for this pc (recorded at
+           * the loop top) resolves any branch INTO it to the next
+           * emitted op, exactly like the fused guard. */
+          emb_pc += 1;
+          break;
         }
         /* Rewrite the just-emitted load into the null-branching form.
          * Operand relayout: OP_LOAD_COL_NDB carries col_id in c;
@@ -843,6 +880,113 @@ static JitBridgeReason translate_embedded_block(
           pending_target_emb_pc[prev_read_attr_op_idx] =
               (uint16_t)target_emb_pc;
         }
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_BRANCH_REG_NE_NULL: {
+        /* ronsql_jit slice 2 item 2: by the completing-row invariant
+         * (see the EQ_NULL fold above) the register is never NULL, so
+         * NE_NULL is ALWAYS taken — lower to an unconditional
+         * OP_JUMP to the branch target. */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        if ((inst >> 31) != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
+        if (!emit_op(out_prog, OP_JUMP, 0, 0, /*c=*/0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_READ_AGG_REG_TO_REG: {
+        /* ronsql_jit slice 2 item 2 — the GREATEST/LEAST pair-op
+         * import: OUTER register (m_registers in the interpreter) into
+         * an EMBEDDED register. Both files live in regs_i64 (outer
+         * 0-7, embedded 8-15) so this is OP_MOV_INT_INT — admitted
+         * only when the outer walk proved the source's track makes
+         * the embedded SIGNED i64 compares exact: I64 or NNC always;
+         * U64 only when u63-safe (narrow unsigned / DATE / YEAR /
+         * TIME2 sources — Bigunsigned and the sign-bit-set
+         * DATETIME2/TIMESTAMP2 packs would misorder); F64 would
+         * bit-compare doubles (wrong for negatives), STR/UNKNOWN have
+         * no compare semantics — reject, program falls back whole.
+         * NULL sources need no runtime handling: every outer-register
+         * null path already left the JIT (per-row fallback /
+         * kOpSetRegNull fallback), so completing rows import real
+         * values only. */
+        if (!allow_reg_ops || outer_reg_type == NULL) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t src_outer = inst >> 16;
+        uint32_t dst_emb   = (inst >> 6) & 0x7u;
+        if (src_outer >= BC_EMB_REG_BASE) {
+          /* The interpreter's outer file has 8 registers. */
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        uint8_t track = outer_reg_type[src_outer];
+        int admissible =
+            (track == BR_REG_I64 || track == BR_REG_NNC ||
+             (track == BR_REG_U64 && outer_reg_u63 != NULL &&
+              outer_reg_u63[src_outer]));
+        if (!admissible) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_TYPE_MISMATCH;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_TYPE_MISMATCH;
+        }
+        if (!emit_op(out_prog, OP_MOV_INT_INT,
+                     (uint8_t)(BC_EMB_REG_BASE + dst_emb),
+                     (uint16_t)src_outer, 0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        const16_valid[dst_emb] = 0;
         emb_pc += 1;
         break;
       }
@@ -874,7 +1018,8 @@ static JitBridgeReason translate_embedded_block(
         uint64_t lo = emb_prog[emb_pc + 1];
         uint64_t hi = emb_prog[emb_pc + 2];
         int64_t  imm = (int64_t)(lo | (hi << 32));
-        if (!emit_op(out_prog, OP_LOAD_CONST_INT, (uint8_t)dst_reg, 0, 0,
+        if (!emit_op(out_prog, OP_LOAD_CONST_INT,
+                     (uint8_t)(BC_EMB_REG_BASE + dst_reg), 0, 0,
                      imm)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
@@ -943,8 +1088,10 @@ static JitBridgeReason translate_embedded_block(
           default:                       out_kind = OP_BRANCH_GE_INT_INT; break;
         }
         pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
-        if (!emit_op(out_prog, out_kind, (uint8_t)left_reg,
-                     (uint16_t)right_reg, /*c=*/0, 0)) {
+        if (!emit_op(out_prog, out_kind,
+                     (uint8_t)(BC_EMB_REG_BASE + left_reg),
+                     (uint16_t)(BC_EMB_REG_BASE + right_reg),
+                     /*c=*/0, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -1276,7 +1423,8 @@ static JitBridgeReason translate_embedded_block(
         uint32_t reg = (inst >> 6) & 0x7u;
         uint32_t const16 = (inst >> 16) & 0xFFFFu;
         if (allow_reg_ops) {
-          if (!emit_op(out_prog, OP_LOAD_CONST_UINT16, (uint8_t)reg, 0, 0,
+          if (!emit_op(out_prog, OP_LOAD_CONST_UINT16,
+                       (uint8_t)(BC_EMB_REG_BASE + reg), 0, 0,
                        (int64_t)const16)) {
             if (out_err) {
               out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
@@ -1519,7 +1667,9 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   /*allow_reg_ops=*/1,
                                   pending_case_jumps,
                                   &n_pending_case_jumps,
-                                  /*out_exit_refuse_code=*/NULL);
+                                  /*out_exit_refuse_code=*/NULL,
+                                  /*outer_reg_type=*/NULL,
+                                  /*outer_reg_u63=*/NULL);
 }
 
 JitBridgeReason ndb_jit_bridge_translate_scan_filter(
@@ -1553,7 +1703,9 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                /*allow_reg_ops=*/0,
                                pending_case_jumps,
                                &n_pending_case_jumps,
-                               &refuse_code);
+                               &refuse_code,
+                               /*outer_reg_type=*/NULL,
+                               /*outer_reg_u63=*/NULL);
   if (rc != JIT_BRIDGE_OK) {
     return rc;
   }
@@ -1652,6 +1804,13 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
     case OP_BRANCH_GE_INT_INT:
     case OP_BRANCH_NE_INT_INT:
       return op->a == reg || op->b == reg;
+    /* ronsql_jit slice 2 item 2: SetRegNull is conservatively a
+     * READER of its register — an NB null-skip chain containing it
+     * must degrade the load to the plain per-row-fallback form (the
+     * interpreter's null semantics for the skipped chain are not
+     * representable around it). */
+    case OP_SET_REG_NULL_FB:
+      return op->a == reg;
     default:
       return 0;
   }
@@ -1852,22 +2011,23 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
    * - An embedded block invalidates every register (the optimizer
    *   itself skips embedded blocks, and the planner re-loads outer
    *   registers after them — same convention). */
-  enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2,
-         BR_REG_U64 = 3,
-         /* Phase 5C-4: a NON-NEGATIVE BIGINT constant — compatible
-          * with BOTH integer tracks (its bits are identical as i64
-          * and u64, and the kernels' mixed unsigned/nonneg-signed
-          * arithmetic reduces exactly to u64 arithmetic). Produced
-          * only by kOpLoadConst type BIGINT with value >= 0; the SQL
-          * planner emits integer literals that way (LoadInt64), so
-          * SUM(u + 1) is the mixed shape this exists for. */
-         BR_REG_NNC = 4,
-         /* Phase 5F-1: a string load consumed by the fusion pass —
-          * only fused string MIN/MAX ever touches such a register;
-          * every other consumer rejects. */
-         BR_REG_STR = 5 };
+  /* Register-track enum hoisted to file scope (ronsql_jit slice 2
+   * item 2) — translate_embedded_block's READ_AGG_REG_TO_REG import
+   * consults the same track values. See BR_REG_* above
+   * translate_embedded_block. */
   uint8_t reg_type[BC_MAX_REGS];
   memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
+  /* ronsql_jit slice 2 item 2: per-register "u64 value provably
+   * < 2^63" flag, set alongside BR_REG_U64 for loads whose source
+   * type is width-bounded (narrow unsigned ints, DATE/YEAR/TIME2
+   * packed values) and cleared otherwise. Consulted ONLY by the
+   * embedded READ_AGG_REG_TO_REG import: the embedded compare
+   * stencils are SIGNED i64, which orders u64 values correctly iff
+   * they stay below 2^63 (Bigunsigned and the 8-byte big-endian
+   * DATETIME2/TIMESTAMP2 packs — whose sign bit is set for valid
+   * dates — do not qualify). */
+  uint8_t reg_u63_safe[BC_MAX_REGS];
+  memset(reg_u63_safe, 0, sizeof(reg_u63_safe));
 #define BR_REQUIRE_F64(r)                                          \
   do {                                                             \
     if (reg_type[(r)] != BR_REG_F64) {                             \
@@ -1942,7 +2102,11 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
-        if (reg_index >= BC_MAX_REGS) {
+        /* OUTER register bound = the interpreter's 8-register file
+         * (BC_EMB_REG_BASE). BC_MAX_REGS is 16 only because the JIT
+         * renames EMBEDDED registers into slots 8-15 (ronsql_jit
+         * slice 2 item 2) — no wire program may name them. */
+        if (reg_index >= BC_EMB_REG_BASE) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2063,7 +2227,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * linked-buffer walk, all type families incl. the fused string
          * MIN/MAX. Local columns keep the MAX_ATTRIBUTES_IN_TABLE
          * bound. */
-        if (reg_index >= BC_MAX_REGS ||
+        if (reg_index >= BC_EMB_REG_BASE ||
             ((col_index & 0x8000u) == 0 &&
              col_index > BR_MAX_LOCAL_ATTR_ID)) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
@@ -2164,6 +2328,38 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         reg_type[reg_index] = is_f64 ? BR_REG_F64 :
                               is_u64 ? BR_REG_U64 : BR_REG_I64;
+        reg_u63_safe[reg_index] = (uint8_t)(is_u64 &&
+            (type == BR_NDB_TYPE_TINYUNSIGNED ||
+             type == BR_NDB_TYPE_SMALLUNSIGNED ||
+             type == BR_NDB_TYPE_MEDIUMUNSIGNED ||
+             type == BR_NDB_TYPE_UNSIGNED ||
+             type == BR_NDB_TYPE_DATE ||
+             type == BR_NDB_TYPE_YEAR ||
+             type == BR_NDB_TYPE_TIME2));
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpSetRegNull: {
+        /* ronsql_jit slice 2 item 2: the interpreter marks the
+         * register SQL-NULL preserving its value type; JIT registers
+         * carry no null state, so a row that EXECUTES this op takes
+         * the per-row fallback (OP_SET_REG_NULL_FB sets row_fallback
+         * and continues; the interpreter re-run applies the exact
+         * semantics). GREATEST/LEAST routes only NULL-input rows
+         * here via the skip trellis — non-null rows never execute it
+         * and stay native. Tracker state: unchanged (the op preserves
+         * the value type, and rows that ran it are discarded). */
+        uint8_t nreg = (uint8_t)((word >> 16) & 0x0Fu);
+        if (nreg >= BC_EMB_REG_BASE) {
+          /* Outer registers only (0-7 on the wire). */
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (!emit_op(out_prog, OP_SET_REG_NULL_FB, nreg, 0, 0, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
         pos += 1;
         break;
       }
@@ -2171,7 +2367,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
       case BR_kOpMov: {
         uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
         uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
-        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+        if (dst >= BC_EMB_REG_BASE || src >= BC_EMB_REG_BASE) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2181,6 +2377,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         }
         /* A 64-bit register move is type-preserving (bits are bits). */
         reg_type[dst] = reg_type[src];
+        reg_u63_safe[dst] = reg_u63_safe[src];
         pos += 1;
         break;
       }
@@ -2203,7 +2400,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * VARIABLE have no lowering → UNSUPPORTED. */
         uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
         uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
-        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+        if (dst >= BC_EMB_REG_BASE || src >= BC_EMB_REG_BASE) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2308,7 +2505,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          *     LOWERING doesn't. */
         uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
         uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
-        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+        if (dst >= BC_EMB_REG_BASE || src >= BC_EMB_REG_BASE) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2403,7 +2600,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * Translate by setting a = dst, b = dst, c = src. */
         uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
         uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
-        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+        if (dst >= BC_EMB_REG_BASE || src >= BC_EMB_REG_BASE) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2483,7 +2680,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * NULL) — handled inside the stencil, no extra target. */
         uint8_t dst = (uint8_t)((word >> 12) & 0x0Fu);
         uint8_t src = (uint8_t)((word >> 8)  & 0x0Fu);
-        if (dst >= BC_MAX_REGS || src >= BC_MAX_REGS) {
+        if (dst >= BC_EMB_REG_BASE || src >= BC_EMB_REG_BASE) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2552,7 +2749,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * ordinal mis-marked the mask. */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_EMB_REG_BASE || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2593,7 +2790,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * Unchecked: Int64 row counts cannot realistically overflow. */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_EMB_REG_BASE || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2625,7 +2822,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * aggregate op. Unchecked — no arithmetic. */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_EMB_REG_BASE || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2671,7 +2868,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * string loads are not admitted.) */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_EMB_REG_BASE || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2728,7 +2925,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          * non-finite update, joining the same d-target fixup list. */
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_EMB_REG_BASE || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
@@ -2801,24 +2998,30 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             /*attr_op_arg_base=*/this_pos + 1,
             /*allow_reg_ops=*/1,
             pending_case_jumps,
-            &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL);
+            &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL,
+            reg_type, reg_u63_safe);
         if (rc != JIT_BRIDGE_OK) return rc;
         for (uint16_t m = emb_first_op; m < out_prog->n_ops; m++) {
           op_from_emb[m] = 1;
         }
-        /* Phase 5C-1: an embedded block writes registers this linear
-         * walk cannot see (READ_ATTR / LOAD_CONST16/64) — invalidate
-         * everything, matching the optimizer's own skip-the-block
-         * convention. Embedded writes are always i64 today, which is
-         * why UNKNOWN is tolerated by i64 consumers. */
-        memset(reg_type, BR_REG_UNKNOWN, sizeof(reg_type));
+        /* Phase 5C-1 invalidated the whole tracker here; since the
+         * ronsql_jit slice-2 register split (outer 0-7, embedded
+         * 8-15) an embedded block CANNOT write an outer register, so
+         * outer tracking survives the block — which GREATEST/LEAST
+         * requires: its trailing outer Mov/aggregates consume
+         * registers that were live BEFORE the pair-op's embedded
+         * body. (The interpreter's outer register file was never
+         * touched by embedded code either — the invalidation was
+         * pure conservatism.) */
         pos += 1 + emb_len;
         break;
       }
 
-      /* Everything else — only kOpSetRegNull today (permanently
-       * unsupported by design: the Test 27 fallback canary's
-       * opcode). Reject the entire program. */
+      /* Everything else — genuinely unknown / future opcodes.
+       * (kOpSetRegNull lowered in ronsql_jit slice 2 item 2; the
+       * deliberate-fallback canaries now use an agg slot >=
+       * BC_MAX_ACCS, which rejects above with REG_OUT_OF_RANGE.)
+       * Reject the entire program. */
       default:
         set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
         return JIT_BRIDGE_UNSUPPORTED_OP;

@@ -98,7 +98,8 @@ SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @c0 AS int_div_fell_ba
 int_div_fell_back
 0
 # int_mod: modulo (lowered since Phase 5E-2, same not-pushed
-# caveat; Test 27's fallback canary now uses kOpSetRegNull).
+# caveat; the NDBAPI fallback canary (testJoinAggJit Test 4)
+# now uses a 33-aggregate over-capacity program).
 SET @c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SELECT SUM(a % b) FROM t1;
 SUM(a % b)
