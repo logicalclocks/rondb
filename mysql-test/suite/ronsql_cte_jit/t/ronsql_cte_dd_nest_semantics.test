@@ -1,0 +1,13 @@
+# Mirror of suite/ronsql_cte/t/ronsql_cte_dd_nest_semantics.test with the JIT active
+# (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
+# differential. Test logic lives ONLY in the sourced original.
+#
+# The recorded fallback delta below is the coverage pin for this
+# test: every JIT program reject it causes (aggregation, scan
+# filter — one count per compile attempt) is counted. A change in
+# EITHER direction is a coverage change: investigate, then re-record
+# deliberately.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_cte/t/ronsql_cte_dd_nest_semantics.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ronsql_cte_dd_nest_semantics_jit_fallback_delta;

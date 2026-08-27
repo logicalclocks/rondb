@@ -152,12 +152,21 @@ policy, string-sidecar hazard); coordination notes at the top of
 in `storage/ndb/CLAUDE.md`; backport bookkeeping (4 standalone
 commits: `c7e8dd1ff89`, `f0a3d38d451`, `3c2c228535f`, `9f5c157fc81` —
 cherry-pick branch on request); add-on backlog in `phase_6_plan.md`
-§4. **NEXT MILESTONE (Mikael): `ronsql_jit` + `ronsql_cte_jit`** —
-mirror suites ensuring EVERY query in those corpora runs on compiled
-interpreter code (`phase_6_plan.md` §5: census-first build, per-test
-pins, then a new program-level-only "4060-lite" error insert;
-full-corpus enforcement forces the Phase 7 scan-filter expansion and
-unparks 6-5 for CTE consumer filters).
+§4. **CURRENT MILESTONE (Mikael): `ronsql_jit` + `ronsql_cte_jit`** —
+plan + slice tracking in `ronsql_jit_plan.md`. Slice 1 DONE &
+VERIFIED (2026-08-27 — all four suites green; the corpus census is
+recorded in the plan: ~1234 rejects across 30/80 tests, dominated by
+the GREATEST/LEAST family ≈224, ronsql_hopsworks 304, and the
+core-shape scan-filter tests ronsql_basic 168 +
+emptytable_and_nulls 144; 50 tests already reject-free). Slice 1
+was: base `ronsql`/`ronsql_cte` pinned
+CompiledInterpreter=OFF (first-ever pure-interpreter arm for these
+corpora), NEW mirror suites `ronsql_jit` (55) + `ronsql_cte_jit`
+(25 + the census moved natively) with per-test fallback-delta pins —
+the first `--record` IS the corpus census and slice 2's ranked work
+list. Slice 2 = lower the gaps (Phase 7 scan-filter expansion, 6-5
+CTE filters, agg leftovers); slice 3 = the program-level-only
+"4060-lite" error insert armed suite-wide.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

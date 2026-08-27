@@ -1,0 +1,137 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+CREATE TABLE tbl (sint8 TINYINT NULL) ENGINE=NDB;
+INSERT INTO tbl (sint8) VALUES (7);
+Overflow using multiplication:
+Error handling: SRE,te->RPE
+NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
+ronsql_cli caught exception: Failed to execute scan aggregation.
+
+
+
+Zero through many divisions:
+== Query ==
+SELECT sint8
+     , sum((sint8 / sint8)
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 8
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 4
+     ) as div_overflow
+FROM tbl
+GROUP BY sint8;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ sint8	div_overflow
+-7	0.000000000000000000000000000000
++7	0
+==========
+
+
+
+Zero through many integer divisions:
+== Query ==
+SELECT sint8
+     , sum(sint8
+           DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024
+     ) as intdiv_overflow
+FROM tbl
+GROUP BY sint8;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Division by zero:
+== Query ==
+SELECT sint8
+     , sum(1 / (sint8 - sint8)) as div_zero
+FROM tbl
+GROUP BY sint8;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Integer division by zero:
+== Query ==
+SELECT sint8
+     , sum(1 DIV (sint8 - sint8)) as intdiv_zero
+FROM tbl
+GROUP BY sint8;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Modulo zero:
+== Query ==
+SELECT sint8
+     , sum(1 % (sint8 - sint8)) as mod_zero
+FROM tbl
+GROUP BY sint8;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Compare MySQL and RonSQL using a query that creates a fairly deep stack
+using 100 unary minuses and 100 NOTs.
+== Query ==
+SELECT sum(sint8)
+FROM tbl
+WHERE
+  sint8 > ----------------------------------------------------------------------------------------------------1 AND
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  sint8>0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Test the maximum stack depth for unary minus and NOT that RonSQL can
+handle.
+sum(sint8)
+7
+sum(sint8)
+7
+Exceeding maximum stack depth for RonSQL should fail gracefully
+Cleanup
+DROP TABLE tbl;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_overflow_jit_fallback_delta;
+ronsql_overflow_jit_fallback_delta
+24
