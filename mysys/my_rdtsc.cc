@@ -177,6 +177,28 @@ ulonglong my_timer_cycles(void) {
     __asm __volatile__("stckf %0" : "=Q"(result) : : "cc");
     return result;
   }
+#elif defined(__GNUC__) && defined(__riscv) && (__riscv_xlen == 64)
+  /*
+    The RISC-V "time" counter is a constant-frequency counter rather than a
+    true cycle counter, in the same way as cntvct_el0 on aarch64 above. It is
+    read with rdtime, a pseudo-instruction for csrr rd, time.
+
+    "time" is used in preference to "cycle" because user-mode access to it is
+    always enabled (the vDSO needs it), because it does not vary with
+    frequency scaling, and because it is not trapped and emulated under
+    virtualization. An unavailable counter on RISC-V raises an illegal
+    instruction rather than returning zero, so reading "cycle" here would
+    abort the server during my_timer_init() on any system where user access
+    to it is disabled.
+
+    RV32 is left to fall through: there "time" is 32 bits wide and has to be
+    combined with "timeh" using a retry loop.
+  */
+  {
+    ulonglong result;
+    __asm __volatile__("rdtime %0" : "=r"(result));
+    return result;
+  }
 #elif defined(HAVE_SYS_TIMES_H) && defined(HAVE_GETHRTIME)
   /* gethrtime may appear as either cycle or nanosecond counter */
   return (ulonglong)gethrtime();
@@ -508,6 +530,8 @@ void my_timer_init(MY_TIMER_INFO *mti) {
   mti->cycles.routine = MY_TIMER_ROUTINE_ASM_AARCH64;
 #elif defined(__GNUC__) && defined(__s390x__)
   mti->cycles.routine = MY_TIMER_ROUTINE_ASM_S390X;
+#elif defined(__GNUC__) && defined(__riscv) && (__riscv_xlen == 64)
+  mti->cycles.routine = MY_TIMER_ROUTINE_ASM_RISCV64;
 #elif defined(HAVE_SYS_TIMES_H) && defined(HAVE_GETHRTIME)
   mti->cycles.routine = MY_TIMER_ROUTINE_GETHRTIME;
 #else
