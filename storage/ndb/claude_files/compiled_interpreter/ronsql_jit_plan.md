@@ -147,3 +147,99 @@ attribution pass — 5119 or the fallback log — before lowering):
    emptytable_and_nulls / hopsworks share this).
 4. CTE filters (6-5) for the consumer-side share of the filter tests.
 5. The remaining named families by measured size.
+
+## Slice 2 — attribution (opened 2026-08-27)
+
+**Static attribution, GREATEST/LEAST — SOLVED.** RonSQL's
+`emit_pair_op_embedded` (`RonSQLPreparer.cpp:11446`) shows the exact
+program shape per Greatest2/Least2 pair-op:
+- Embedded body: `READ_AGG_REG_TO_REG` ×2 (acc → reg; embedded op 43
+  — the SAME opcode `testCteNdbApi` pinned), then (null-check
+  variant) `BRANCH_REG_EQ_NULL` ×2, then `BRANCH_GE/LE_REG_REG` +
+  the LoadConst16/WriteInterpreterOutput/ExitOK skip-offset trellis
+  (all lowered since 5A/5J).
+- Outer trailer: `Mov(dest, src)`, `Skip(1)`, **`kOpSetRegNull(dest)`**
+  — the "permanently unsupported canary opcode" is a REAL RonSQL
+  emission: the NULL path of every null-checked GREATEST/LEAST.
+
+Lowering decomposition:
+- **P1 — acc→reg with null tracking**: new embedded lowering for
+  `READ_AGG_REG_TO_REG` (value from the glue's acc copy + the slot's
+  null state into a NEW per-register null mask in `JitState`), and
+  `BRANCH_REG_EQ_NULL`/`NE` over mask-tracked registers. New
+  stencils → regen. Unblocks the null-check bodies AND
+  `testCteNdbApi`'s pinned pattern.
+- **P2 — `kOpSetRegNull` → per-row fallback stencil**: a row that
+  EXECUTES it needs interpreter null semantics — set
+  `s->row_fallback = 1`. In GREATEST/LEAST only NULL-input rows
+  reach it (the skip trellis jumps past it otherwise), so non-null
+  rows stay fully native and NULL rows take the standard per-row
+  escape. Converts the family's whole-program rejection into
+  per-row-on-NULL. The fast path (NOT NULL inputs,
+  `needs_null_check == false`) needs only P1's value load — no
+  branches on null, no SetRegNull in path.
+- **P3 — canary repointing**: once `kOpSetRegNull` lowers, the
+  deliberate-fallback canaries (`testJoinAggJit` Test 4,
+  `rondb_jit_ndbapi_unsupported_fallback`, census comments) repoint
+  to a durable reject — a load targeting register ≥ `BC_MAX_REGS`
+  (wire field is 4 bits/16 regs, bridge admits 8: reason 5 forever).
+
+**Main-scan WHERE (ronsql_basic 168 / emptytable_and_nulls 144)**:
+RonSQL emits filters via `NdbScanFilter` — the family the compound
+canary PROVED compiles for column-vs-const AND/OR shapes. The reject
+source is therefore NOT obvious statically (per-storedProc
+multiplicity means ~10 rejecting filter-scans could produce 168) —
+needs the runtime breakdown.
+
+**Instrument (IMPLEMENTED, this slice): the fallback breakdown.**
+`dbtup_jit_note_fallback` now keeps exact per-(site, reason, opcode)
+counts since node start; the FIRST occurrence of each distinct
+family logs immediately (unthrottled — visible in every parallel
+worker's log), and the 10 s rate-limited line prints the whole
+cumulative table. Attribution after any suite run =
+`grep "JIT fallback" <var>/**/ndbd.log`. This permanently retires
+the Phase 6 backlog's observability item and the rate-limiter
+blindness that limited the 6-0 harvest.
+
+**Instrument verified 2026-08-27** (both jit suites green, breakdown
+harvested from the worker logs).
+
+## The reject breakdown (2026-08-27; counts are lower bounds — the
+final table dump per node lags the last rejects by up to the 10 s
+window; the pins remain the exact per-test totals)
+
+| Site | Reason | Opcode | Count | Meaning |
+|---|---|---|---|---|
+| aggregation | 5 | 14/16/13/10/18/12/15 | **≈501** | REG_OUT_OF_RANGE at kOpSum*/Min*/Max*/Count — **register indices ≥ 8**: RonSQL's SVM allocator uses the interpreter's 16 registers, `BC_MAX_REGS` admits 8. 55% of everything. |
+| agg+join-agg | 1 | 43 | **180** | embedded `READ_AGG_REG_TO_REG` — GREATEST/LEAST bodies + the CTE consumer-compare pattern |
+| scan-filter | 1 | 9 | **116** | unconditional `BRANCH` — RonSQL's DNF filter trellis (`branch_label` to ACCEPT/REJECT); the v1 subset never mapped it although `OP_JUMP` exists since 5J |
+| join-agg | 1 | 44 | 50 | `READ_LINKED_COLUMN_TO_REG` (typed-reg linked load) |
+| aggregation | 1 | 6 | 16 | `kOpMod` with statically-unknown operand types (the 5C-4/5E reject arm) |
+| aggregation | 8 | 22 | 16 | TYPE_MISMATCH at `kOpMinusBigint` |
+| join-agg | 1 | 38/40 | 16 | `BRANCH_MEM_OP_ARG(_INLINE_TYPE)` |
+| join-agg | 1 | 45 | 8 | `LOAD_DOUBLE_CONST` |
+| join-agg | 1 | 51 | 4 | `READ_UINT32_MEM_TO_REG` |
+| aggregation | 3 | 3/4 | 3 | PROG_TOO_LARGE (> BC_MAX_OPS — long GREATEST chains) |
+
+**Slice 2 lowering order (fixed by the data):**
+1. **`BC_MAX_REGS` 8 → 16** (≈501, 55%): the wire field is 4 bits =
+   16 registers and the interpreter supports 16 — the bridge cap is
+   the only barrier. Audit: `JitState.regs_i64[]` sizing, stencil
+   reg-offset hole encodings (reg×8 displacements — 15×8 fits every
+   hole form), the bridge boundary tests (reg-8-rejects flips to
+   reg-16), and the canary implication: after 16 there is NO
+   expressible out-of-range register, so durable-reject canaries
+   must repoint (see P3').
+2. **GREATEST/LEAST enablers** (≈180 + the family's reason-5 share):
+   P1 `READ_AGG_REG_TO_REG` + per-register null mask in `JitState`
+   with `BRANCH_REG_EQ/NE_NULL` over tracked regs; P2 `kOpSetRegNull`
+   → per-row-fallback stencil; P3' repoint the deliberate-fallback
+   canaries to embedded `WRITE_ATTR_FROM_REG` (a real-tuple WRITE in
+   an aggregation program — permanently outside the JIT's scope).
+3. **Scan-filter unconditional `BRANCH` → `OP_JUMP`** (116): likely
+   a small bridge-only change — the jump machinery exists.
+4. **`READ_LINKED_COLUMN_TO_REG`** (50): linked→reg, rides item 2's
+   null mask.
+5. Tail by size: `BRANCH_MEM_OP_ARG(_INLINE_TYPE)`, kOpMod-unknown,
+   `kOpMinusBigint` TYPE_MISMATCH, `LOAD_DOUBLE_CONST`,
+   `READ_UINT32_MEM_TO_REG`, BC_MAX_OPS for the chain tails.

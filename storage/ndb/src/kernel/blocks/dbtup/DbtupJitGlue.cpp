@@ -103,24 +103,97 @@ static std::atomic<Uint64> g_jit_compile_ns_total{0};
 static constexpr time_t NJT_FALLBACK_LOG_PERIOD_S = 10;
 static std::atomic<time_t> g_jit_fallback_last_log{0};
 
+/* RONDB-1056 ronsql_jit slice 2 — the fallback BREAKDOWN.
+ *
+ * The single rate-limited log line loses the (site, reason, opcode)
+ * multiplicity that reject attribution needs: a suite run produces
+ * hundreds of rejects but a handful of log lines, and the census
+ * pins count totals per test, not per family. This table keeps exact
+ * per-(site, reason, opcode) counts since node start:
+ *  - the FIRST occurrence of a distinct triple always logs
+ *    immediately ("NEW fallback family"), unthrottled — every
+ *    distinct reject family is guaranteed visible in every node's
+ *    log regardless of rate limiting or parallel MTR workers;
+ *  - the 10 s rate-limited line now prints the WHOLE table, so any
+ *    later line carries the complete cumulative breakdown.
+ * Attribution after any suite run: grep "JIT fallback" over the
+ * workers' ndbd logs. Cold path — a plain mutex is fine. */
+struct JitFallbackFamily {
+  const char *site;    /* interned literal from the call sites */
+  int         reason;
+  Uint32      detail;
+  Uint64      count;
+};
+static constexpr unsigned NJT_FALLBACK_FAMILIES = 48;
+static JitFallbackFamily g_jit_fallback_families[NJT_FALLBACK_FAMILIES];
+static unsigned g_jit_fallback_n_families = 0;
+static Uint64 g_jit_fallback_overflow = 0;
+static pthread_mutex_t g_jit_fallback_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void jit_fallback_log_breakdown(Uint64 total) {
+  /* Caller holds g_jit_fallback_mtx. One line per family keeps each
+   * line well under the event logger's limit. */
+  g_eventLogger->info(
+      "RONDB-1056 JIT fallback totals: %llu since node start, "
+      "%u distinct families%s:",
+      (unsigned long long)total, g_jit_fallback_n_families,
+      g_jit_fallback_overflow ? " (family table overflowed)" : "");
+  for (unsigned i = 0; i < g_jit_fallback_n_families; i++) {
+    const JitFallbackFamily &f = g_jit_fallback_families[i];
+    g_eventLogger->info(
+        "RONDB-1056 JIT fallback family: %s reason=%d detail=%u "
+        "count=%llu",
+        f.site, f.reason, f.detail, (unsigned long long)f.count);
+  }
+}
+
 void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail) {
   const Uint64 n =
       g_jit_fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
-  const time_t now = time(nullptr);
-  time_t last = g_jit_fallback_last_log.load(std::memory_order_relaxed);
-  if (now - last < NJT_FALLBACK_LOG_PERIOD_S) {
+
+  pthread_mutex_lock(&g_jit_fallback_mtx);
+  bool is_new = true;
+  for (unsigned i = 0; i < g_jit_fallback_n_families; i++) {
+    JitFallbackFamily &f = g_jit_fallback_families[i];
+    /* Site strings are string literals at every call site — pointer
+     * compare would work, but strcmp keeps this robust if a caller
+     * ever builds one. */
+    if (f.reason == reason && f.detail == detail &&
+        std::strcmp(f.site, path) == 0) {
+      f.count++;
+      is_new = false;
+      break;
+    }
+  }
+  if (is_new) {
+    if (g_jit_fallback_n_families < NJT_FALLBACK_FAMILIES) {
+      JitFallbackFamily &f =
+          g_jit_fallback_families[g_jit_fallback_n_families++];
+      f.site = path;
+      f.reason = reason;
+      f.detail = detail;
+      f.count = 1;
+    } else {
+      g_jit_fallback_overflow++;
+    }
+    /* First sighting of a distinct family always logs, unthrottled. */
+    g_eventLogger->info(
+        "RONDB-1056 JIT fallback NEW family: %s rejected (reason=%d "
+        "detail=%u) — the program runs on the interpreter. %llu JIT "
+        "fallbacks since node start.",
+        path, reason, (unsigned)detail, (unsigned long long)n);
+    pthread_mutex_unlock(&g_jit_fallback_mtx);
     return;
   }
-  if (!g_jit_fallback_last_log.compare_exchange_strong(
+
+  const time_t now = time(nullptr);
+  time_t last = g_jit_fallback_last_log.load(std::memory_order_relaxed);
+  if (now - last >= NJT_FALLBACK_LOG_PERIOD_S &&
+      g_jit_fallback_last_log.compare_exchange_strong(
           last, now, std::memory_order_relaxed)) {
-    return;   /* another thread just logged */
+    jit_fallback_log_breakdown(n);
   }
-  g_eventLogger->info(
-      "RONDB-1056 JIT fallback: %s rejected (reason=%d detail=%u) — the "
-      "program runs on the interpreter. %llu JIT fallbacks since node "
-      "start (logged at most every %d s).",
-      path, reason, (unsigned)detail, (unsigned long long)n,
-      (int)NJT_FALLBACK_LOG_PERIOD_S);
+  pthread_mutex_unlock(&g_jit_fallback_mtx);
 }
 
 void dbtup_jit_note_compile_ns(Uint64 ns) {
