@@ -2410,6 +2410,25 @@ RonSQLPreparer::cross_table_bound_op(QueryScope& scope, Uint32 op_idx,
     default: break;
     }
   }
+  // Nullable high-only guard (findings/nullable_bounds.md; the precise
+  // sibling of child_const_bound_op's v1 NOT-NULL-only rule): NULL
+  // sorts below every value in an NDB ordered index, so a HIGH bound
+  // with no low side would include the child's NULL entries while SQL
+  // comparison is UNKNOWN for NULL.  A cross-table high bound never
+  // gets a pairing low (the walk consumes one filter per column), and
+  // the NdbQueryBuilder emit cannot express a NULL-excluding low bound
+  // operand — so a normalized T_LT / T_LE on a nullable child column
+  // must stay a filter.  Equality pairs and low bounds (T_GT / T_GE)
+  // exclude NULLs naturally and stay allowed.
+  if (filter_op == T_LT || filter_op == T_LE) {
+    const NdbDictionary::Table* child_table =
+        scope.join_plan.ops[op_idx].table;
+    const NdbDictionary::Column* child_col =
+        (child_table != NULL) ? child_table->getColumn(child_col_name)
+                              : NULL;
+    if (child_col == NULL || child_col->getNullable())
+      return (TokenKind)0;
+  }
   *out_child_col = child_col_name;
   *out_parent_col = m_columns[parent_cidx].c_str();
   *out_parent_op = scope.resolved_columns[parent_cidx].join_op_idx;
@@ -3070,11 +3089,16 @@ RonSQLPreparer::collect_toplevel_conditions(ConditionalExpression* ce)
 void
 RonSQLPreparer::generate_scan_config_candidates(bool defer_force_check)
 {
+  // allow_nullable_high_bound = true: open_single_table_scan_op appends
+  // the NULL-excluding low bound (setBound BoundLT NULL) for nullable
+  // high-only columns, so the plan keeps the index.
   build_scan_config_candidates(m_indexes,
                                m_toplevel_conditions,
                                m_scan_config_candidates,
                                m_context.ast_root.root_table,
-                               defer_force_check);
+                               defer_force_check,
+                               m_main_scope.table,
+                               /*allow_nullable_high_bound=*/true);
 }
 
 // Interpreted programs on lookup operations ride inside every
@@ -3203,7 +3227,9 @@ RonSQLPreparer::build_scan_config_candidates(
     DynamicArray<ConditionalExpression*>& toplevel_conditions,
     DynamicArray<ScanConfig>& out_candidates,
     const TableRef* hint,
-    bool defer_force_check)
+    bool defer_force_check,
+    const NdbDictionary::Table* table,
+    bool allow_nullable_high_bound)
 {
   const Uint32 num_conds = toplevel_conditions.size();
   const TableRef::HintKind hint_kind =
@@ -3255,6 +3281,10 @@ RonSQLPreparer::build_scan_config_candidates(
       // todo Can getAttrId be used to match against the parent table?
       const char* column_name = column->getName();
       bool lbound_set = false, ubound_set = false;
+      // Conjuncts consumed for THIS column (at most a low and a high),
+      // so the nullable high-only guard below can revert them.
+      Uint32 consumed_this_col[2];
+      Uint32 num_consumed_this_col = 0;
       for(Uint32 cond_idx = 0;
           cond_idx < num_conds && !(lbound_set && ubound_set);
           cond_idx++) {
@@ -3306,8 +3336,31 @@ RonSQLPreparer::build_scan_config_candidates(
           ubound_set = ubound_set || wants_ubound;
           later_columns_blocked = op != T_EQUALS;
           condition_handling_map[cond_idx] = (int)col_idx;
+          ndbrequire(num_consumed_this_col < 2);
+          consumed_this_col[num_consumed_this_col++] = cond_idx;
         } else {
           later_columns_blocked = true;
+        }
+      }
+      // Nullable high-only guard (findings/nullable_bounds.md): a bound
+      // with no low side starts the DBTUX scan at the index head, which
+      // INCLUDES the NULL entries (NULL sorts below every value), while
+      // SQL comparison is UNKNOWN for NULL — consuming `col <= X` on a
+      // nullable column as a bare high bound returns NULL rows SQL
+      // excludes.  When the caller's emit path cannot append a
+      // NULL-excluding low bound, revert this column's conjuncts to
+      // residual filters; the column is then unbounded, ending the
+      // contiguous bound prefix (later_columns_blocked is already set
+      // by the range).  With no table descriptor, treat the column as
+      // nullable (conservative).
+      if (ubound_set && !lbound_set && !allow_nullable_high_bound) {
+        const NdbDictionary::Column* tab_col =
+            (table != NULL) ? table->getColumn(column_name) : NULL;
+        if (tab_col == NULL || tab_col->getNullable()) {
+          for (Uint32 u = 0; u < num_consumed_this_col; u++) {
+            condition_handling_map[consumed_this_col[u]] = -1;
+          }
+          ubound_set = false;
         }
       }
       if (lbound_set || ubound_set) {
@@ -3838,10 +3891,17 @@ RonSQLPreparer::select_root_scan_config(QueryScope& scope,
   //    pushes a TABLE_SCAN candidate (goodness=0) first so it's always
   //    available as the fallback, then one per usable ordered index
   //    scored with the same heuristic as the main scope.
+  // allow_nullable_high_bound = false: this path's bounds emit through
+  // NdbQueryIndexBound / emit_index_scan_root, which cannot express a
+  // NULL-excluding low bound operand — a nullable high-only conjunct
+  // must stay a residual filter.
   build_scan_config_candidates(scope.body_indexes,
                                scope.body_toplevel_conditions,
                                scope.body_scan_config_candidates,
-                               hint);
+                               hint,
+                               /*defer_force_check=*/false,
+                               scope.table,
+                               /*allow_nullable_high_bound=*/false);
 
   // 4. Pick highest-scoring candidate.
   Uint32 chosen = 0;
@@ -6942,6 +7002,15 @@ RonSQLPreparer::open_single_table_scan_op()
                                             DBG(scanFlags))) == 0,
               "Failed to initialize index scan operation.");
   bool any_bound = false;
+  // Per-index-column bound sides, for the nullable high-only fix below.
+  static const Uint32 MAX_BOUND_COLS = 32;
+  bool col_has_low[MAX_BOUND_COLS];
+  bool col_has_high[MAX_BOUND_COLS];
+  for (Uint32 c = 0; c < MAX_BOUND_COLS; c++) {
+    col_has_low[c] = false;
+    col_has_high[c] = false;
+  }
+  int max_bound_col = -1;
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
   {
     int index_col_idx = DBG(sc.condition_handling_map[i]);
@@ -6988,7 +7057,42 @@ RonSQLPreparer::open_single_table_scan_op()
                                             DBG(bt),
                                             DBG(rv).val)) == 0,
                 "Failed to set bound for index scan.");
+    if (index_col_idx >= 0 && index_col_idx < (int)MAX_BOUND_COLS) {
+      if (op == T_EQUALS || op == T_GE || op == T_GT)
+        col_has_low[index_col_idx] = true;
+      if (op == T_EQUALS || op == T_LE || op == T_LT)
+        col_has_high[index_col_idx] = true;
+      if (index_col_idx > max_bound_col) max_bound_col = index_col_idx;
+    }
     DEB_TRACE();
+  }
+  /*
+   * NULL-excluding low bound (findings/nullable_bounds.md): NULL sorts
+   * below every value in an NDB ordered index, so a HIGH-only bound on
+   * a NULLABLE column starts the scan at the index head and would
+   * return NULL rows that SQL comparison semantics exclude (col <= X
+   * is UNKNOWN for NULL).  Emit the mysqld range-optimizer idiom for
+   * such columns: setBound(col, BoundLT, NULL) — a strict low bound
+   * whose value is NULL, i.e. "col > NULL" — which keeps the conjunct
+   * a bound (plan unchanged) while excluding the NULL entries.  A
+   * high-only column is always the LAST bounded column (a range blocks
+   * later columns), so the strict low bound lands on the last low key
+   * part, as the old setBound API requires; emitting after the loop
+   * keeps earlier equality lows ahead of it.
+   */
+  for (int c = 0; c <= max_bound_col; c++) {
+    if (!col_has_high[c] || col_has_low[c]) continue;
+    const NdbDictionary::Column* idx_col = index->getColumn(c);
+    require_run(idx_col != NULL, "Index column missing for bound.");
+    const NdbDictionary::Column* tab_col =
+        m_main_scope.table->getColumn(idx_col->getName());
+    if (tab_col == NULL || tab_col->getNullable()) {
+      require_run(DBG(myIndexScanOp->setBound(
+                      DBG(idx_col->getName()),
+                      NdbIndexScanOperation::BoundType::BoundLT,
+                      /*aValue=*/NULL)) == 0,
+                  "Failed to set NULL-excluding low bound.");
+    }
   }
   DEB_TRACE();
   // Close the (single) range only when a bound was added: end_of_bound
@@ -11150,10 +11254,123 @@ RonSQLPreparer::unload_schema() {
     return (value);                 \
   } while (0)
 
-  // CTE-root queries leave m_main_scope.table NULL — there's no
-  // single physical table to invalidate, and any underlying CTE-body
-  // tables go through their own scopes. Treat as "no schema change
-  // detected" so the caller falls back to a permanent error.
+  /*
+   * Join-aware version walk (the tracked defect in
+   * findings/root_pk_residual.md): the single-table comparison below
+   * reads only m_main_scope.table + m_indexes, and m_indexes is
+   * populated only by load_single_table — so on the join path
+   * old_indexes_count was always 0 and any online ordered index on the
+   * root made the reload's count check report "schema changed",
+   * turning EVERY join-path RonSQLMaybeStaleSchema into a retryable
+   * error (10 doomed RDRS attempts / 3 CLI attempts per query).
+   * Instead, snapshot the (id, version) of every dictionary object the
+   * query actually HOLDS — the same enumeration the invalidation
+   * lambdas above walk: each scope's root table, every join-plan op's
+   * table and index, every body_indexes entry, across the main scope
+   * and all CTE scopes (CTE ops have NULL tables and synthetic virtual
+   * tables never appear here) — then invalidate everything, reload by
+   * name, and compare.
+   *
+   * Scope note: only HELD objects are compared, so a newly ADDED index
+   * on a join table is not detected.  That is fine: the join-path "no
+   * suitable index" errors are RonSQLPermanentError (never
+   * RonSQLMaybeStaleSchema), so an added-index retry was never
+   * reachable here.  This branch also covers CTE-root queries, whose
+   * child ops' real tables the old NULL-root short-circuit ignored.
+   */
+  if (is_join_query()) {
+    typedef std::pair<int, int> Idver;
+    struct OldTable { std::string name; Idver idver; };
+    struct OldIndex { std::string index; std::string table; Idver idver; };
+    std::vector<OldTable> old_tables;
+    std::vector<OldIndex> old_indexes;
+    bool changed = false;
+    auto snap_table = [&](const NdbDictionary::Table* t) {
+      if (t == NULL) return;
+      std::string n(DBG(t->getName()));
+      for (const OldTable& o : old_tables) {
+        if (o.name == n) return;
+      }
+      if (t->getObjectStatus() !=
+          NdbDictionary::Object::Status::Retrieved) {
+        changed = true;
+      }
+      old_tables.push_back({ std::move(n),
+                             { DBG(t->getObjectId()),
+                               DBG(t->getObjectVersion()) } });
+    };
+    auto snap_index = [&](const NdbDictionary::Index* ix,
+                          const NdbDictionary::Table* t) {
+      if (ix == NULL || t == NULL) return;
+      std::string in(DBG(ix->getName()));
+      std::string tn(t->getName());
+      for (const OldIndex& o : old_indexes) {
+        if (o.index == in && o.table == tn) return;
+      }
+      if (ix->getObjectStatus() !=
+          NdbDictionary::Object::Status::Retrieved) {
+        changed = true;
+      }
+      // Cross-check: the index's recorded owning-table id/version must
+      // match the table object we hold (the single-table
+      // table_idver_mismatch check, per index here).
+      const Idver owning = { (int)DBG(ix->getTableId()),
+                             (int)DBG(ix->getTableVersion()) };
+      const Idver held = { t->getObjectId(), t->getObjectVersion() };
+      if (owning != held) changed = true;
+      old_indexes.push_back({ std::move(in), std::move(tn),
+                              { DBG(ix->getObjectId()),
+                                DBG(ix->getObjectVersion()) } });
+    };
+    auto snap_scope = [&](const QueryScope& scope) {
+      snap_table(scope.table);
+      for (Uint32 i = 0; i < scope.body_indexes.size(); i++) {
+        snap_index(scope.body_indexes[i], scope.table);
+      }
+      for (Uint32 i = 0; i < scope.join_plan.num_ops; i++) {
+        const JoinOp& op = scope.join_plan.ops[i];
+        snap_table(op.table);
+        snap_index(op.index, op.table);
+      }
+    };
+    snap_scope(m_main_scope);
+    for (Uint32 i = 0; i < m_cte_scopes.size(); i++) {
+      if (m_cte_scopes[i] != NULL) snap_scope(*m_cte_scopes[i]);
+    }
+
+    // Invalidate EVERYTHING before reloading: the single-table path
+    // below invalidates only the root pre-reload, but here a child
+    // table's getTable() would otherwise return the stale cached
+    // object.  The RETURN macro invalidates again afterwards —
+    // idempotent, and it preserves the leave-everything-invalidated
+    // contract for the retry's fresh preparer.
+    invalidate_collected_schema();
+
+    for (const OldTable& ot : old_tables) {
+      if (changed) break;
+      const NdbDictionary::Table* nt =
+          DBG(dict->getTable(ot.name.c_str()));
+      if (nt == NULL) { changed = true; break; }
+      const Idver nv = { nt->getObjectId(), nt->getObjectVersion() };
+      if (nv != ot.idver) changed = true;
+    }
+    for (const OldIndex& oi : old_indexes) {
+      if (changed) break;
+      const NdbDictionary::Table* nt = dict->getTable(oi.table.c_str());
+      if (nt == NULL) { changed = true; break; }
+      const NdbDictionary::Index* ni =
+          DBG(dict->getIndex(oi.index.c_str(), *nt));
+      if (ni == NULL) { changed = true; break; }
+      const Idver nv = { ni->getObjectId(), ni->getObjectVersion() };
+      if (nv != oi.idver) changed = true;
+    }
+    DEB_TRACE();
+    RETURN_UNLOAD_SCHEMA(changed);
+  }
+
+  // Non-join queries with no root table (defensive — load_single_table
+  // either sets it or throws): treat as "no schema change detected" so
+  // the caller falls back to a permanent error.
   if (m_main_scope.table == NULL) {
     DEB_TRACE();
     RETURN_UNLOAD_SCHEMA(false);
@@ -12359,7 +12576,15 @@ RonSQLPreparer::embedded_filter_expr_word_count(QueryScope& scope,
     require_prm(ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                 "Cross-table WHERE filter expression requires a "
                 "stored-table column.");
-    return ref.join_op_idx == leaf_idx ? 1 : 2;
+    require_prm(ref.dict_column != NULL,
+                "Cross-table WHERE filter: unresolved column.");
+    // One typed load word (leaf READ_ATTR_INTO_REG / linked
+    // READ_LINKED_COLUMN_TO_REG) plus a NULL-guard word for nullable
+    // columns — UNKNOWN must reject the atom instead of erroring the
+    // query (findings/nullable_bounds.md, the nb-8 "code 1872"
+    // finding: the reg-reg branches return ZREGISTER_INIT_ERROR on a
+    // NULL register).
+    return ref.dict_column->getNullable() ? 2 : 1;
   }
   case T_INT:
     return 3;  // LOAD_CONST64 + 2 value words
@@ -12383,7 +12608,9 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
                                           ConditionalExpression* ce,
                                           Uint32 leaf_idx,
                                           Uint32 reg,
-                                          Uint32 tmp_reg)
+                                          Uint32 tmp_reg,
+                                          Uint32& cur_pos,
+                                          Uint32 null_fail_target)
 {
   switch (ce->op) {
   case T_IDENTIFIER:
@@ -12395,39 +12622,59 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     require_prm(ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                 "Cross-table WHERE filter expression requires a "
                 "stored-table column.");
+    const NdbDictionary::Column* col = ref.dict_column;
+    require_prm(col != NULL,
+                "Cross-table WHERE filter: unresolved column.");
     if (ref.join_op_idx == leaf_idx) {
+      // READ_ATTR_INTO_REG: native-typed load, sets the register's
+      // NULL_INDICATOR for NULL values.
       programAggregator_do_or_fail(agg->EmitEmbeddedWord(
           Interpreter::Read((Uint32)ref.attr_id, reg)));
+      cur_pos++;
     } else {
       Uint32 lp = find_or_add_linked_proj(
           scope.join_plan, ref.join_op_idx,
           m_columns[cidx].c_str());
-      const NdbDictionary::Column* col = ref.dict_column;
-      require_prm(col != NULL,
-                  "Cross-table WHERE filter: unresolved linked column.");
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
-          Interpreter::READ_LINKED_TO_MEM | (lp << 16)));
-
-      Uint32 read_word = 0;
-      switch (col->getSizeInBytes()) {
-      case 1:
-        read_word = Interpreter::ReadUint8FromMemIntoRegConst(reg, 4);
-        break;
-      case 2:
-        read_word = Interpreter::ReadUint16FromMemIntoRegConst(reg, 4);
-        break;
-      case 4:
-        read_word = Interpreter::ReadUint32FromMemIntoRegConst(reg, 4);
-        break;
-      case 8:
-        read_word = Interpreter::ReadInt64FromMemIntoRegConst(reg, 4);
+      // Phase I.5 v5 typed one-word load, replacing the pre-v5
+      // READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST pair which read
+      // raw bytes: no NULL flag (a NULL linked value produced a
+      // garbage register) and zero-extension of signed sub-Bigint
+      // operands.  Integer family only (the arithmetic ops below are
+      // integer ops).
+      switch (col->getType()) {
+      case NdbDictionary::Column::Tinyint:
+      case NdbDictionary::Column::Tinyunsigned:
+      case NdbDictionary::Column::Smallint:
+      case NdbDictionary::Column::Smallunsigned:
+      case NdbDictionary::Column::Mediumint:
+      case NdbDictionary::Column::Mediumunsigned:
+      case NdbDictionary::Column::Int:
+      case NdbDictionary::Column::Unsigned:
+      case NdbDictionary::Column::Bigint:
+      case NdbDictionary::Column::Bigunsigned:
         break;
       default:
         require_prm(false,
-                    "Unsupported linked integer width in cross-table "
-                    "WHERE filter.");
+                    "Unsupported linked column type in cross-table "
+                    "WHERE filter (integer columns only).");
       }
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(read_word));
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::ReadLinkedColumnIntoReg(reg, lp,
+                                               (Uint32)col->getType())));
+      cur_pos++;
+    }
+    if (col->getNullable()) {
+      // UNKNOWN rejects the atom (findings/nullable_bounds.md, the
+      // nb-8 "code 1872" finding): on NULL, jump to the atom's fail
+      // destination — the reg-reg compare branches return
+      // ZREGISTER_INIT_ERROR on a NULL register otherwise, failing
+      // the whole query instead of filtering the row.
+      Uint32 guard_offset = null_fail_target - cur_pos;
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
+                              /*Reg1=*/0, /*Reg2=*/reg) |
+          (guard_offset << 16)));
+      cur_pos++;
     }
     break;
   }
@@ -12442,16 +12689,21 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
         agg->EmitEmbeddedWord(Interpreter::LoadConst64(reg)));
     programAggregator_do_or_fail(agg->EmitEmbeddedWord(lo));
     programAggregator_do_or_fail(agg->EmitEmbeddedWord(hi));
+    cur_pos += 3;
     break;
   }
   case T_PLUS:
   case T_MINUS:
   case T_MULTIPLY:
   {
+    // Nullable inner columns guard right after their own load (an
+    // Add/Sub/Mul on a NULL register would error just like a
+    // compare), so the whole expression is UNKNOWN when any operand
+    // is NULL — matching SQL.
     emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
-                              reg, tmp_reg);
+                              reg, tmp_reg, cur_pos, null_fail_target);
     emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
-                              tmp_reg, reg);
+                              tmp_reg, reg, cur_pos, null_fail_target);
     switch (ce->op) {
     case T_PLUS:
       programAggregator_do_or_fail(
@@ -12468,6 +12720,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     default:
       break;
     }
+    cur_pos++;
     break;
   }
   default:
@@ -12551,11 +12804,19 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
     const Uint32 R1 = 1;
     const Uint32 R2 = 2;
     const Uint32 R3 = 3;
+    // NULL-guard fail destination for this atom's nullable operands
+    // (UNKNOWN rejects the atom): under AND a failed atom fails the
+    // whole conjunct — jump to the false exit; under OR it just fails
+    // this disjunct — jump past this atom's compare (for the last
+    // atom that falls into the first exit, which is OR's false exit).
+    Uint32 atom_fail = is_and ? second_exit_label : (pos + atom_words[a]);
+    Uint32 cur = pos;
     emit_embedded_filter_expr(aggregator, scope, atom->args.left, leaf_idx,
-                              R1, R3);
+                              R1, R3, cur, atom_fail);
     emit_embedded_filter_expr(aggregator, scope, atom->args.right, leaf_idx,
-                              R2, R3);
+                              R2, R3, cur, atom_fail);
     Uint32 branch_instr_pos = pos + atom_words[a] - 1;
+    ndbrequire(cur == branch_instr_pos);
     Uint32 branch_offset = second_exit_label - branch_instr_pos;
     Uint32 br_op = reg_branch_opcode(atom->op);
     programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(

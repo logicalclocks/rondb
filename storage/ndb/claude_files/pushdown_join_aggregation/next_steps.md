@@ -562,12 +562,15 @@ root-focused; a review on July 2026 found the following follow-up items.
 - Joined-table index hints remain rejected (`reject_index_hints_on_joins`);
   child index selection is now automatic via scoring — hint support on
   joined tables stays deferred.
-- New correctness suspicion recorded while landing: the ROOT path's
-  `build_scan_config_candidates` has no nullability guard, so a
-  high-only root bound on a NULLABLE column may include NULL rows that
-  SQL comparison semantics exclude (NULL sorts below all values in NDB
-  ordered indexes).  The child path guards this (v1 NOT NULL only);
-  the root path needs its own audit — tracked here as a NEW item.
+- ~~New correctness suspicion recorded while landing: the ROOT path's
+  `build_scan_config_candidates` has no nullability guard~~ —
+  **CONFIRMED and FIXED (August 2026, findings/nullable_bounds.md)**:
+  three instances (single-table bounds, join-root/CTE-body roots, and
+  cross-table child bounds also lacked the guard).  Single-table keeps
+  the bound and appends the mysqld `> NULL` idiom (`setBound(col,
+  BoundLT, NULL)`); the NdbQueryBuilder-emitted paths cannot express a
+  NULL bound operand, so nullable high-only conjuncts revert to
+  residual filters there.  MTR `body_nullable_bounds.inc` nb-1..9 ×5.
 - Remaining MTR wish: reordered residual/root composite predicates
   (item 1) and multi-op CTE body root bounds (item 4) — both still
   open.

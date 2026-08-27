@@ -589,12 +589,25 @@ private:
   // (FORCE/USE/IGNORE INDEX) constrains which indexes are considered.  NULL
   // (or a hint of kind NONE) means "no hint".  A FORCE hint that names no
   // usable index throws RonSQLPermanentError.
+  //
+  // `table` is the scanned table (nullability authority for the guard
+  // below); `allow_nullable_high_bound` (findings/nullable_bounds.md):
+  // NULL sorts below every value in an NDB ordered index, so a HIGH-only
+  // bound on a NULLABLE column would scan the NULL entries at the index
+  // head while SQL comparison is UNKNOWN for NULL — wrong results.
+  // Callers whose emit can append a NULL-excluding low bound
+  // (single-table: setBound(col, BoundLT, NULL) = "col > NULL", the
+  // mysqld range-optimizer idiom) pass true and keep the bound; the
+  // NdbQueryBuilder-emitted roots cannot express a NULL bound operand
+  // and pass false — the conjunct then stays a residual filter.
   void build_scan_config_candidates(
       DynamicArray<const NdbDictionary::Index*>& indexes,
       DynamicArray<ConditionalExpression*>& toplevel_conditions,
       DynamicArray<ScanConfig>& out_candidates,
       const TableRef* hint,
-      bool defer_force_check = false);
+      bool defer_force_check = false,
+      const NdbDictionary::Table* table = NULL,
+      bool allow_nullable_high_bound = false);
   // True if `index` is named in the table ref's index-hint list (case
   // insensitive).  Used to apply FORCE/USE/IGNORE INDEX.
   static bool index_named_in_hint(const NdbDictionary::Index* index,
@@ -824,9 +837,14 @@ private:
   Uint32 embedded_filter_expr_word_count(QueryScope& scope,
                                          struct ConditionalExpression* ce,
                                          Uint32 leaf_idx);
+  // `cur_pos` tracks the word position inside the embedded program
+  // (incremented per emitted word); `null_fail_target` is the position
+  // a nullable operand's NULL guard jumps to (UNKNOWN rejects the
+  // atom — findings/nullable_bounds.md, the nb-8 "code 1872" finding).
   void emit_embedded_filter_expr(NdbAggregator* agg, QueryScope& scope,
                                  struct ConditionalExpression* ce,
-                                 Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
+                                 Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg,
+                                 Uint32& cur_pos, Uint32 null_fail_target);
   void generate_embedded_filter_condition(NdbAggregator* aggregator,
                                           QueryScope& scope,
                                           struct ConditionalExpression* ce,

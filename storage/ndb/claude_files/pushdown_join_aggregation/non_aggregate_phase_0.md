@@ -131,9 +131,11 @@ run found one correctness defect and two coverage gaps, all fixed:
   changed" (it compares against `m_indexes`, which only
   `load_single_table` populates, so a join root with any online
   ordered index trips `new_indexes_count >= old_indexes_count` with
-  0 old entries).  Until that gets a join-aware version walk, EVERY
-  `RonSQLMaybeStaleSchema` thrown from such a join query is
-  retryable — tracked in `findings/root_pk_residual.md`.
+  0 old entries).  **Since FIXED (August 2026)** by the join-aware
+  version walk in `unload_schema` — held-object (id, version)
+  snapshot across all scopes, invalidate-all-first, reload-by-name
+  compare; rpr-P3/P4 pin it.  Resolution recorded in
+  `findings/root_pk_residual.md`.
 
 Re-record needed after these fixes: both `ronsql_cte` families ×5
 topology suites and `ndb_push_agg.testJoinAggNdbApi` (Test 24 adds an

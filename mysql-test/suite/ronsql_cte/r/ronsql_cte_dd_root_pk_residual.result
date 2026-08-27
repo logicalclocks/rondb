@@ -461,3 +461,11 @@ k	n
 === rpr-P2 (rejection): out-of-range literal is a PERMANENT error ===
 Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== rpr-P3 (rejection): join-path RMS resolves in ONE attempt ===
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an incompatible value. Only integer literals are supported.
+
+=== rpr-P4 (rejection): CTE-root RMS still resolves RMS->RPE ===
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an incompatible value. Only integer literals are supported.
