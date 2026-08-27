@@ -1,0 +1,107 @@
+# ronsql_size_limits — configurable RDRS request/response size caps.
+#
+# The companion ronsql_size_limits.cnf points the first rdrs instance
+# ($RDRS_NOKEY_*) at rdrs_config_template_limits.json:
+#   Internal.maxReqSize  = 300    -> the HTTP server refuses larger
+#                                    request bodies with 413 before
+#                                    assembly (drogon setClientMaxBodySize
+#                                    is installed from maxReqSize; its
+#                                    unset 1 MB default used to SHADOW
+#                                    the configurable limit)
+#   Internal.MaxRespSize = 65536  -> the /ronsql endpoint accumulates
+#                                    the response into a capped buffer;
+#                                    past the cap the query fails with a
+#                                    clean error instead of growing
+#                                    server memory with the result set
+#
+# Case map (rl-N):
+#   1  request body > maxReqSize -> HTTP 413 (refused before assembly)
+#   2  small valid request on the same capped instance -> 200 + rows
+#   3  response > MaxRespSize -> HTTP 500 + ERROR_RESPONSE_TOO_LARGE
+#      message naming the cap
+#   4  same query + LIMIT -> 200 (body under the cap)
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# ~82 KiB of TSV output (400 rows x ~205 bytes) — comfortably over the
+# 64 KiB response cap; LIMIT'ed subsets stay far under it.
+--disable_query_log
+CREATE TABLE szt (
+  s_id  INT NOT NULL,
+  s_pad CHAR(200) NOT NULL,
+  PRIMARY KEY (s_id)
+) ENGINE=NDB;
+CREATE TABLE _d8 (d INT) ENGINE=MEMORY;
+INSERT INTO _d8 VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+INSERT INTO szt SELECT a.d*100 + b.d*10 + c.d, REPEAT('x', 200)
+                FROM _d8 a, _d8 b, _d8 c WHERE a.d < 4;
+DROP TABLE _d8;
+--enable_query_log
+
+--echo
+--echo === rl-1: request body over maxReqSize -> 413 ===
+# Any body over 300 bytes is refused by the HTTP server before parsing;
+# the SQL inside is whitespace-padded filler that never gets looked at.
+--let BODY_FILE=$MYSQL_TMP_DIR/rl1_body.json
+--write_file $BODY_FILE
+{"query":"SELECT s_id FROM szt WHERE s_id = 1                                                                                                                                                                                                                                                                                            ","database":"test","outputFormat":"TEXT"}
+EOF
+--exec curl -s -o $MYSQL_TMP_DIR/rl1_out -D $MYSQL_TMP_DIR/rl1_hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$BODY_FILE
+--exec grep -qE "^HTTP/[0-9.]+ 413" $MYSQL_TMP_DIR/rl1_hdrs
+--echo request refused with 413
+--remove_file $BODY_FILE
+--remove_file $MYSQL_TMP_DIR/rl1_out
+--remove_file $MYSQL_TMP_DIR/rl1_hdrs
+
+--echo
+--echo === rl-2: small request on the capped instance -> 200 ===
+--let BODY_FILE=$MYSQL_TMP_DIR/rl2_body.json
+--write_file $BODY_FILE
+{"query":"SELECT s_id FROM szt WHERE s_id = 7;","database":"test","outputFormat":"TEXT"}
+EOF
+--exec curl -s -o $MYSQL_TMP_DIR/rl2_out -D $MYSQL_TMP_DIR/rl2_hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$BODY_FILE
+--exec grep -qE "^HTTP/[0-9.]+ 200" $MYSQL_TMP_DIR/rl2_hdrs
+--cat_file $MYSQL_TMP_DIR/rl2_out
+--remove_file $BODY_FILE
+--remove_file $MYSQL_TMP_DIR/rl2_out
+--remove_file $MYSQL_TMP_DIR/rl2_hdrs
+
+--echo
+--echo === rl-3: response over MaxRespSize -> 500 + clean error ===
+--let BODY_FILE=$MYSQL_TMP_DIR/rl3_body.json
+--write_file $BODY_FILE
+{"query":"SELECT s_id, s_pad FROM szt;","database":"test","outputFormat":"TEXT"}
+EOF
+--exec curl -s -o $MYSQL_TMP_DIR/rl3_out -D $MYSQL_TMP_DIR/rl3_hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$BODY_FILE
+--exec grep -qE "^HTTP/[0-9.]+ 500" $MYSQL_TMP_DIR/rl3_hdrs
+--exec grep -qF "Response exceeds the configured MaxRespSize" $MYSQL_TMP_DIR/rl3_out
+--exec grep -qF "Internal.MaxRespSize = 65536" $MYSQL_TMP_DIR/rl3_out
+--echo response refused with 500 + MaxRespSize message
+--remove_file $BODY_FILE
+--remove_file $MYSQL_TMP_DIR/rl3_out
+--remove_file $MYSQL_TMP_DIR/rl3_hdrs
+
+--echo
+--echo === rl-4: same query + LIMIT -> 200 under the cap ===
+# Project only the constant pad column so the LIMIT'ed row set is
+# deterministic.
+--let BODY_FILE=$MYSQL_TMP_DIR/rl4_body.json
+--write_file $BODY_FILE
+{"query":"SELECT s_pad FROM szt LIMIT 5;","database":"test","outputFormat":"TEXT"}
+EOF
+--exec curl -s -o $MYSQL_TMP_DIR/rl4_out -D $MYSQL_TMP_DIR/rl4_hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$BODY_FILE
+--exec grep -qE "^HTTP/[0-9.]+ 200" $MYSQL_TMP_DIR/rl4_hdrs
+--cat_file $MYSQL_TMP_DIR/rl4_out
+--remove_file $BODY_FILE
+--remove_file $MYSQL_TMP_DIR/rl4_out
+--remove_file $MYSQL_TMP_DIR/rl4_hdrs
+
+--disable_query_log
+DROP TABLE szt;
+--enable_query_log

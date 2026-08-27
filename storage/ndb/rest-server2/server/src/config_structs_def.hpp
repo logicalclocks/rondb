@@ -67,7 +67,15 @@ CLASS
 (Internal,
  CM(Uint32, maxReqSize, maxReqSize, 4 * 1024 * 1024,
     "The maximum HTTP body size for REST requests, in bytes. Must be at least"
-    " 256.")
+    " 256. This is also installed as the HTTP server's client body limit"
+    " (requests above it are refused with 413 before assembly), and it sizes"
+    " the per-REST-thread JSON parse buffers, so NumThreads * maxReqSize"
+    " bytes are pre-allocated.")
+ CM(Uint32, maxRespSize, MaxRespSize, 64 * 1024 * 1024,
+    "The maximum HTTP response body size RDRS will build, in bytes;"
+    " 0 = unlimited. Currently enforced on the /ronsql endpoint, whose"
+    " responses can grow with the query's result set; a capped query fails"
+    " with a clear error instead of exhausting server memory.")
  CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
  CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
@@ -87,6 +95,9 @@ CLASS
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
+ PROBLEM(maxReqSize < 256, "maxReqSize should be >= 256")
+ PROBLEM(maxRespSize != 0 && maxRespSize < 65536,
+         "MaxRespSize should be 0 (unlimited) or >= 65536")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")
