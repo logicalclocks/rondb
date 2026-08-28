@@ -429,3 +429,64 @@ Remaining 206 by family: op-44 `READ_LINKED_COLUMN_TO_REG` ≈50
 BY DESIGN: F64/BIGUNSIGNED import sources), `BRANCH_MEM_OP_ARG`
 38/40 ≈16, kOpMod-unknown ≈16, MinusBigint TYPE_MISMATCH ≈16,
 `LOAD_DOUBLE_CONST` ≈8, op-51 ≈4, PROG_TOO_LARGE ≈3.
+
+### Lowering item 4 — DONE & VERIFIED (2026-08-28): READ_LINKED_COLUMN_TO_REG
+
+Target family: **≈50 rejects** — `join-agg reason=1 detail=44`, the
+type-aware linked-attr-buffer load into an embedded register
+(Interpreter.hpp op 44; the CTE consumer-compare pattern's linked
+operand, GL-over-linked bodies). Wire: bits 6-8 dst reg, 16-23
+buffer position, 24-31 NDB type — the type is ON the wire, so
+admission is fully static.
+
+New stencil ⇒ **regen-stencils REQUIRED**:
+- `bytecode1.h`: `OP_LOAD_LINKED_COL = 65` (op->a = renamed dst slot,
+  op->b = `(position << 8) | ndb_type`), OP_KIND_MAX bumped.
+- `stencils_src.c`: `op_load_linked_col` — cold call
+  `ndb_jit_h_load_linked_col(s, HOLE(LLC_PT), HOLE(LLC_DST))`.
+- `hole_kinds.h`: `HOLE_LLC_PT`→HK_OP_B / `HOLE_LLC_DST`→HK_OP_A
+  string entries (x86_64 relocs) + `MAGIC_LLC_PT_NARROW 0xafe8` /
+  `MAGIC_LLC_DST_NARROW 0x8f07` (v1 narrow salt, derivation verified
+  against MAGIC_BAOA_OFF_NARROW; collision-checked against all
+  narrow + fold magics) + kHoleNarrowMagicTable rows.
+- `extract_stencils.c` kOpkindMap + `audit_magics.c`
+  kNarrowMagicToStencil ×2.
+- `DbtupJitGlue.cpp`: `ndb_jit_h_load_linked_col` mirrors the
+  interpreter's `handleReadLinkedColumnToReg` walk of
+  `req_struct->m_linked_attr_data` (entry = tableId, schemaVersion,
+  AttrHeader, data) and its integer decodes 1:1. Where the
+  interpreter sets the register's NULL_INDICATOR (NULL value,
+  missing buffer, out-of-range position), the helper sets
+  `row_fallback` instead — the folded reg-null guards' path replays
+  on the interpreter, preserving the completing-row invariant.
+  4063 trace + registration like its siblings.
+- `ndb_jit_bridge.c`: `BR_EMB_READ_LINKED_COL_TO_REG 44` case —
+  gated `allow_linked_ops && allow_reg_ops` (scan filters reject →
+  interpreter, same as op 39); type admission = signed widths +
+  narrow unsigned (exact in i64); **BIGUNSIGNED / FLOAT / DOUBLE
+  reject TYPE_MISMATCH** (op-43 policy — embedded compares are
+  signed i64; the interpreter runtime also handles FLOAT/DOUBLE via
+  typed registers, Interpreter.hpp's doc understates it). DFS
+  scanner: write-overwrite ends the tracked path (shares the op-43
+  case). `nb_op_written_reg`: writes op->a.
+- `bridge_tests.c` **T73a-e**: BIGINT accept (a=9,
+  b=(1<<8)|9), SMALLINT accept, BIGUNSIGNED reject, DOUBLE reject,
+  scan-filter-path reject.
+
+**VERIFIED 2026-08-28 (all tests passed).** Measured on the
+re-recorded pins: **46 rejects recovered** — greatest_least_v2a
+6→0 (clean), greatest_least_v5 52→28, subquery_agg_ext 38→22.
+Corpus census **206 → 160** (66/80 tests reject-free). Harvest:
+`reason=1 detail=44` GONE; new `reason=8 detail=44` entries are the
+deliberate type-admission rejects (DOUBLE/BIGUNSIGNED linked
+sources), symmetric with op-43's. (Record run at --parallel=10 hit
+the known transient RDRS connect blips — retries green, no crashes;
+validation at --parallel=6 clean.)
+
+Remaining 160 by family: reason-8 43/44 type-admission (v5's 28 +
+share elsewhere — BY DESIGN until an F64-compare embedded model
+exists), `BRANCH_MEM_OP_ARG` 38/40 ≈16, kOpMod-unknown ≈16,
+MinusBigint TYPE_MISMATCH ≈16, `LOAD_DOUBLE_CONST` (45) ≈8,
+op-51 ≈4, PROG_TOO_LARGE ≈3 — the big test-level residuals are
+ronsql_basic 32, dd_filter 24, overflow 24 (agg-path tail
+families).

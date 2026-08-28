@@ -179,9 +179,12 @@ kOpSetRegNull families eliminated); item 3 (scan-filter
 unconditional BRANCH → OP_JUMP, bridge-only, incl. the
 BR_EMB_BRANCH=3→9 define fix) DONE & VERIFIED 2026-08-27 —
 recovered 172 (cte_or_body 44→0; NO scan-filter families remain).
-Corpus census ~1234→206 across items 1-3, 65/80 tests reject-free.
-Next: item 4 (op-44 READ_LINKED_COLUMN_TO_REG ≈50). Records in
-`ronsql_jit_plan.md`.
+Item 4 (op-44 READ_LINKED_COLUMN_TO_REG → OP_LOAD_LINKED_COL
+cold-call stencil, wire-typed admission) DONE & VERIFIED 2026-08-28
+— recovered 46. Corpus census ~1234→160 across items 1-4, 66/80
+tests reject-free; residuals are tail families (38/40, kOpMod,
+MinusBigint, 45, 51, PROG_TOO_LARGE) plus by-design reason-8
+type-admission rejects. Records in `ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

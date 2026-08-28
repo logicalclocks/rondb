@@ -176,6 +176,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_LLM_POS",   HK_OP_B         },
   { "HOLE_BLEN_TGT",  HK_BRANCH_TAKE  },   /* eq variant */
   { "HOLE_BLNN_TGT",  HK_BRANCH_TAKE  },   /* ne variant */
+  /* ronsql_jit slice 2 item 4: op_load_linked_col cold-call helper
+   * arguments — packed (position << 8 | ndb_type) in op->b, dst
+   * register slot in op->a. */
+  { "HOLE_LLC_PT",    HK_OP_B         },
+  { "HOLE_LLC_DST",   HK_OP_A         },
   /* Overflow-checked arithmetic variants. */
   { "HOLE_ADD_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_DIV_OVF_TGT",   HK_OVERFLOW_TAKE },
@@ -391,6 +396,11 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_BANN_ATTR_NARROW    0xb2bfu
 /* Phase 5.1a position hole for op_load_linked_to_mem (narrow). */
 #define MAGIC_LLM_POS_NARROW      0x3c73u
+/* ronsql_jit slice 2 item 4: op_load_linked_col helper arguments
+ * (v1 narrow salt — sha256("RONDB-1056-Phase4_5-narrow-magic-v1|
+ * MAGIC_LLC_*_NARROW")[0:2] LE). */
+#define MAGIC_LLC_PT_NARROW       0xafe8u
+#define MAGIC_LLC_DST_NARROW      0x8f07u
 /* Phase 7 op_branch_attr_op_arg — instruction word-offset hole (narrow).
  * sha256("RONDB-1056-Phase4_5-narrow-magic-v1|MAGIC_BAOA_OFF_NARROW")[0:2] LE. */
 #define MAGIC_BAOA_OFF_NARROW     0xd4fbu
@@ -573,6 +583,9 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   { MAGIC_BANN_ATTR_NARROW, HK_OP_B,  "MAGIC_BANN_ATTR_NARROW" },
   /* Phase 5.1a: position hole for op_load_linked_to_mem. */
   { MAGIC_LLM_POS_NARROW,   HK_OP_B,  "MAGIC_LLM_POS_NARROW"   },
+  /* ronsql_jit slice 2 item 4: op_load_linked_col helper arguments. */
+  { MAGIC_LLC_PT_NARROW,    HK_OP_B,  "MAGIC_LLC_PT_NARROW"    },
+  { MAGIC_LLC_DST_NARROW,   HK_OP_A,  "MAGIC_LLC_DST_NARROW"   },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { MAGIC_BAOA_OFF_NARROW,  HK_OP_B,  "MAGIC_BAOA_OFF_NARROW"  },
   /* Phase 5C-2: op_load_col_ndb_f64 helper arguments. */

@@ -362,7 +362,21 @@ typedef enum {
    * agg-slot-out-of-range program (>= BC_MAX_ACCS), which stays a
    * durable whole-program reject. */
   OP_SET_REG_NULL_FB       = 64,
-  OP_KIND_MAX           = OP_SET_REG_NULL_FB
+
+  /* ronsql_jit slice 2 item 4 — READ_LINKED_COLUMN_TO_REG (embedded
+   * op 44). Cold-call: walks the row's linked-attr buffer to the
+   * patched position and decodes the value BY THE WIRE-SUPPLIED
+   * NDB type into regs_i64[op->a] (an embedded slot, 8-15). The
+   * bridge admits only types whose value is exact in signed i64
+   * (all signed widths sign-extend; narrow unsigned zero-extend;
+   * BIGUNSIGNED / FLOAT / DOUBLE reject — same admission as the
+   * op-43 import). A NULL / missing-buffer / out-of-range read sets
+   * JitState::row_fallback (the interpreter re-run takes the null
+   * path that the folded BRANCH_REG_EQ_NULL guards encode), keeping
+   * the completing-row invariant: no register ever holds SQL-NULL.
+   * op->b carries (position << 8) | ndb_type for the helper. */
+  OP_LOAD_LINKED_COL       = 65,
+  OP_KIND_MAX           = OP_LOAD_LINKED_COL
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

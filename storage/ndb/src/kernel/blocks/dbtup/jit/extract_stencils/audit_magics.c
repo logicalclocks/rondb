@@ -130,6 +130,9 @@ static const struct {
   { "MAGIC_BANN_ATTR_NARROW", "op_branch_attr_ne_null"    },
   /* Phase 5.1a: position hole for op_load_linked_to_mem. */
   { "MAGIC_LLM_POS_NARROW",   "op_load_linked_to_mem"     },
+  /* ronsql_jit slice 2 item 4: op_load_linked_col helper args. */
+  { "MAGIC_LLC_PT_NARROW",    "op_load_linked_col"        },
+  { "MAGIC_LLC_DST_NARROW",   "op_load_linked_col"        },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { "MAGIC_BAOA_OFF_NARROW",  "op_branch_attr_op_arg"     },
   /* Phase 5C-2: op_load_col_ndb_f64 helper-argument holes (narrow for

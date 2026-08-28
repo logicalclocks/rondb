@@ -1440,6 +1440,25 @@ STENCIL op_set_reg_null_fb(JitState *s) {
   TAIL_NEXT(s);
 }
 
+/* ronsql_jit slice 2 item 4 — READ_LINKED_COLUMN_TO_REG (emb op 44).
+ * Cold-call: the helper walks the linked-attr buffer to the packed
+ * position, decodes by the packed NDB type, and writes
+ * s->regs_i64[dst] itself; NULL / missing / out-of-range sets
+ * s->row_fallback (per-row interpreter re-run gives the exact null
+ * semantics — the bridge folds the reg-null guards away).
+ * Operand holes:
+ *   HOLE_LLC_PT  — (position << 8) | ndb_type   (op->b)
+ *   HOLE_LLC_DST — dst register slot            (op->a)  */
+DECLARE_NARROW_HOLE(LLC_PT);
+DECLARE_NARROW_HOLE(LLC_DST);
+extern void ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
+                                      uint32_t dst_reg);
+STENCIL op_load_linked_col(JitState *s) {
+  ndb_jit_h_load_linked_col(s, (uint32_t)HOLE_NARROW(LLC_PT),
+                            (uint32_t)HOLE_NARROW(LLC_DST));
+  TAIL_NEXT(s);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
@@ -1512,4 +1531,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_arith_conv_f64,
     op_divmod_conv,
     op_set_reg_null_fb,
+    op_load_linked_col,
 };

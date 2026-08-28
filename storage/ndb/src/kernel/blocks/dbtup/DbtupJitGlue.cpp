@@ -1333,6 +1333,115 @@ ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
   return take_branch;
 }
 
+
+/* ndb_jit_h_load_linked_col — ronsql_jit slice 2 item 4 cold-call
+ * helper for OP_LOAD_LINKED_COL (embedded READ_LINKED_COLUMN_TO_REG,
+ * op 44).
+ *
+ * Mirrors the interpreter's handleReadLinkedColumnToReg one-to-one:
+ * walks req_struct->m_linked_attr_data (per-entry layout: tableId,
+ * schemaVersion, AttrHeader, data) to the packed position and decodes
+ * the value BY THE PACKED NDB TYPE into s->regs_i64[dst_reg].
+ *
+ * NULL / missing buffer / out-of-range position: where the
+ * interpreter sets the register's NULL_INDICATOR (so the program's
+ * BRANCH_REG_EQ/NE_NULL guards fire), JIT registers carry no null
+ * state and the bridge FOLDS those guards — so the row takes the
+ * per-row interpreter fallback instead, which replays the exact null
+ * path. Completing rows therefore never hold NULL (the 5D
+ * invariant). The bridge admits only types exact in signed i64
+ * (signed widths sign-extend, narrow unsigned zero-extend); the
+ * default arm is defensive only. */
+extern "C" void
+ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
+                          uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_linked_col: JitState.ctx is malformed "
+        "(pos_type=0x%x)", pos_type);
+    abort();
+  }
+  const Uint32 position = pos_type >> 8;
+  const Uint32 type_id  = pos_type & 0xFF;
+
+  const Uint32 *linked = ctx->req_struct->m_linked_attr_data;
+  const Uint32 linked_len = ctx->req_struct->m_linked_attr_len;
+  const Uint32 *p = linked;
+  const Uint32 *p_end = linked + linked_len;
+  if (linked != nullptr) {
+    Uint32 pos_count = 0;
+    while (p < p_end) {
+      if (pos_count == position) break;
+      p += 2;  /* skip tableId, schemaVersion */
+      p += 1 + AttributeHeader::getDataSize(*p);
+      pos_count++;
+    }
+  }
+  if (linked == nullptr || p >= p_end) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  p += 2;  /* skip tableId, schemaVersion */
+  AttributeHeader ah(*p);
+  if (ah.isNULL()) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  const char *data = reinterpret_cast<const char *>(p + 1);
+  Int64 value;
+  switch (type_id) {
+    case NDB_TYPE_TINYINT:
+      value = (Int64)*reinterpret_cast<const Int8 *>(data);
+      break;
+    case NDB_TYPE_TINYUNSIGNED:
+      value = (Int64)(Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLINT:
+      value = (Int64)(Int16)sint2korr(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      value = (Int64)(Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMINT:
+      value = (Int64)sint3korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      value = (Int64)(Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_INT:
+      value = (Int64)sint4korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      value = (Int64)(Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGINT:
+      value = (Int64)sint8korr(data);
+      break;
+    default:
+      /* Not admitted by the bridge — defensive. */
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  s->regs_i64[dst_reg] = value;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_linked_col pos=%u "
+        "type=%u dst=r%u value=%lld",
+        ctx->trace_row_no, position, type_id, dst_reg,
+        (long long)s->regs_i64[dst_reg]);
+  }
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper registration.                                               */
 /* ------------------------------------------------------------------ */
@@ -1373,6 +1482,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_linked_to_mem));
   jit1_register_helper("ndb_jit_h_branch_linked_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_linked_null));
+  jit1_register_helper("ndb_jit_h_load_linked_col",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_linked_col));
 }
 
 /* ------------------------------------------------------------------ */

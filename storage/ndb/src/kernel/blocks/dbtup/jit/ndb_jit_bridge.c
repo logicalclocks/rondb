@@ -160,6 +160,13 @@
  * tracked type makes the embedded SIGNED compares exact (I64/NNC, or
  * U64 with the u63-safe bound). */
 #define BR_EMB_READ_AGG_REG_TO_REG  43
+/* ronsql_jit slice 2 item 4: type-aware linked-attr-buffer load into
+ * an embedded register (the kernel's handleReadLinkedColumnToReg).
+ * Wire: bits 6-8 dst reg, 16-23 buffer position, 24-31 NDB type.
+ * Lowers to OP_LOAD_LINKED_COL (cold call; NULL → per-row fallback).
+ * Same signed-i64 admission as the op-43 import: signed widths and
+ * narrow unsigned are exact; BIGUNSIGNED / FLOAT / DOUBLE reject. */
+#define BR_EMB_READ_LINKED_COL_TO_REG 44
 #define BR_EMB_BRANCH_EQ_REG_REG    12
 #define BR_EMB_BRANCH_NE_REG_REG    13
 #define BR_EMB_BRANCH_LT_REG_REG    14
@@ -305,6 +312,7 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_READ_LINKED_TO_MEM:    return "READ_LINKED_TO_MEM";
     case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
     case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
+    case BR_EMB_READ_LINKED_COL_TO_REG:return "READ_LINKED_COLUMN_TO_REG";
     default:                           return "EMB_OP?";
   }
 }
@@ -335,6 +343,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_BRANCH_ATTR_NE_NULL:  return "branch_attr_ne_null";
     case OP_BRANCH_ATTR_OP_ARG:   return "branch_attr_op_arg";
     case OP_LOAD_LINKED_TO_MEM:   return "load_linked_to_mem";
+    case OP_LOAD_LINKED_COL:      return "load_linked_col";
     case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
     case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
     case OP_ADD_INT_INT_CHECKED:  return "add_int_int_checked";
@@ -577,8 +586,10 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
         /* ronsql_jit slice 2 item 2: the READ_AGG import writes its
          * embedded dst like a load — an overwrite ends the tracked
          * path safely; it reads only OUTER registers, never the
-         * embedded reg under scan. */
+         * embedded reg under scan. Item 4: the linked-column load
+         * writes its dst the same way and reads no registers. */
         case BR_EMB_READ_AGG_REG_TO_REG:
+        case BR_EMB_READ_LINKED_COL_TO_REG:
           if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
           pc += 1;
           break;
@@ -1038,6 +1049,69 @@ static JitBridgeReason translate_embedded_block(
         if (!emit_op(out_prog, OP_MOV_INT_INT,
                      (uint8_t)(BC_EMB_REG_BASE + dst_emb),
                      (uint16_t)src_outer, 0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        const16_valid[dst_emb] = 0;
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_READ_LINKED_COL_TO_REG: {
+        /* ronsql_jit slice 2 item 4 — type-aware linked load into an
+         * embedded register. The wire carries the NDB type, so
+         * admission is static: signed widths sign-extend and narrow
+         * unsigned zero-extend to exact signed i64; BIGUNSIGNED /
+         * FLOAT / DOUBLE (and anything else) reject TYPE_MISMATCH —
+         * the same policy as the op-43 import (the embedded compares
+         * are signed i64). At runtime a NULL / missing-buffer /
+         * out-of-range read takes the per-row fallback (the folded
+         * reg-null guards' path replays on the interpreter). Gated
+         * like every linked op: the buffer only exists on the
+         * join-agg path (scan filters reject → interpreter). */
+        if (!allow_linked_ops || !allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t dst_emb  = (inst >> 6) & 0x7u;
+        uint32_t position = (inst >> 16) & 0xFFu;
+        uint32_t type_id  = (inst >> 24) & 0xFFu;
+        int admissible;
+        switch (type_id) {
+          case BR_NDB_TYPE_TINYINT:
+          case BR_NDB_TYPE_TINYUNSIGNED:
+          case BR_NDB_TYPE_SMALLINT:
+          case BR_NDB_TYPE_SMALLUNSIGNED:
+          case BR_NDB_TYPE_MEDIUMINT:
+          case BR_NDB_TYPE_MEDIUMUNSIGNED:
+          case BR_NDB_TYPE_INT:
+          case BR_NDB_TYPE_UNSIGNED:
+          case BR_NDB_TYPE_BIGINT:
+            admissible = 1;
+            break;
+          default:
+            admissible = 0;
+            break;
+        }
+        if (!admissible) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_TYPE_MISMATCH;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_TYPE_MISMATCH;
+        }
+        if (!emit_op(out_prog, OP_LOAD_LINKED_COL,
+                     (uint8_t)(BC_EMB_REG_BASE + dst_emb),
+                     (uint16_t)((position << 8) | type_id), 0, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -1891,6 +1965,7 @@ static int nb_op_written_reg(const Op *op) {
     case OP_LOAD_COL_NDB_F64_NB:
     case OP_LOAD_COL_NDB_U64_NB:
     case OP_LOAD_COL_NDB_DEC:
+    case OP_LOAD_LINKED_COL:
     case OP_MOV_INT_INT:
     case OP_ADD_INT_INT:
     case OP_MINUS_INT_INT:

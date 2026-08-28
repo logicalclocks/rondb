@@ -3845,6 +3845,100 @@ static void test_agg_uncond_branch_accept(void) {
   mark_pass(name);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 4 — READ_LINKED_COLUMN_TO_REG (op 44).     */
+/* Type-aware linked-buffer load into an embedded register; lowers to */
+/* OP_LOAD_LINKED_COL (cold call, NULL -> per-row fallback). Wire:    */
+/* bits 6-8 dst reg, 16-23 position, 24-31 NDB type.                  */
+/* ------------------------------------------------------------------ */
+#define EMB_READ_LINKED_COL_TO_REG 44
+static uint32_t enc_emb_rlc(uint32_t dst, uint32_t pos, uint32_t type) {
+  return enc_emb_op_word(EMB_READ_LINKED_COL_TO_REG,
+                         ((dst & 0x7u) << 6) | ((pos & 0xFFu) << 16) |
+                         ((type & 0xFFu) << 24));
+}
+
+/* T73a: BIGINT linked load accepts — op->a is the renamed embedded
+ * slot, op->b packs (position << 8) | ndb_type for the helper. */
+static void test_linked_col_bigint_accept(void) {
+  const char *name = "T73a linked_col_bigint_accept";
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/1, NDB_TYPE_BIGINT),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  /* LOAD_LINKED_COL + tail EXIT (no aggregation ops). */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 9)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
+                       (1u << 8) | NDB_TYPE_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T73b: a signed narrow type (SMALLINT — sign-extends exactly) is
+ * admitted the same way. */
+static void test_linked_col_smallint_accept(void) {
+  const char *name = "T73b linked_col_smallint_accept";
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_rlc(/*dst=*/2, /*pos=*/0, NDB_TYPE_SMALLINT),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 10)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
+                       NDB_TYPE_SMALLINT)) return;
+  mark_pass(name);
+}
+
+/* T73c: BIGUNSIGNED rejects — values >= 2^63 would misorder under
+ * the embedded signed compares (same policy as the op-43 import). */
+static void test_linked_col_bigunsigned_reject(void) {
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_rlc(1, 0, NDB_TYPE_BIGUNSIGNED),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T73c linked_col_bigunsigned_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 1,
+                  EMB_READ_LINKED_COL_TO_REG);
+}
+
+/* T73d: DOUBLE rejects (the interpreter handles it via typed
+ * registers; the JIT's embedded compares are signed i64). */
+static void test_linked_col_double_reject(void) {
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_rlc(1, 0, NDB_TYPE_DOUBLE),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T73d linked_col_double_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 1,
+                  EMB_READ_LINKED_COL_TO_REG);
+}
+
+/* T73e: rejected on the standalone scan-filter path — the linked
+ * buffer only exists on the join-agg path (same guard as T36's
+ * READ_LINKED_TO_MEM). */
+static void test_scan_filter_linked_col_reject(void) {
+  uint32_t filter_prog[2] = {
+    enc_emb_rlc(1, 0, NDB_TYPE_BIGINT),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_scan_filter_rejected("T73e scan_filter_linked_col_reject",
+                              filter_prog, 2,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/1,
+                              EMB_READ_LINKED_COL_TO_REG);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -4001,6 +4095,11 @@ int main(void) {
   test_uncond_branch_zero_reject();
   test_uncond_branch_range_reject();
   test_agg_uncond_branch_accept();
+  test_linked_col_bigint_accept();
+  test_linked_col_smallint_accept();
+  test_linked_col_bigunsigned_reject();
+  test_linked_col_double_reject();
+  test_scan_filter_linked_col_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

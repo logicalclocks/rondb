@@ -843,6 +843,18 @@ static const uint8_t bytes_op_set_reg_null_fb[] = {
   0x28, 0x00, 0x80, 0x52, 0x88, 0x9a, 0x00, 0xb9,
 };
 
+/* op_load_linked_col — 28 bytes, 3 holes */
+static const uint8_t bytes_op_load_linked_col[] = {
+  0xfd, 0x7b, 0xbf, 0xa9, 0x01, 0xfd, 0x95, 0x52, 0xe2, 0xe0, 0x91, 0x52,
+  0xe0, 0x03, 0x14, 0xaa, 0xfd, 0x03, 0x00, 0x91, 0x00, 0x00, 0x00, 0x94,
+  0xfd, 0x7b, 0xc1, 0xa8,
+};
+static const Hole holes_op_load_linked_col[] = {
+  { .byte_offset = 4, .kind = HK_OP_B, .width = 2 },
+  { .byte_offset = 8, .kind = HK_OP_A, .width = 2 },
+  { .byte_offset = 20, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_load_linked_col" },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -920,6 +932,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_ARITH_CONV_F64] = STENCIL_(op_arith_conv_f64),
   [OP_DIVMOD_CONV] = STENCIL_(op_divmod_conv),
   [OP_SET_REG_NULL_FB] = STENCIL_NOHOLES(op_set_reg_null_fb),
+  [OP_LOAD_LINKED_COL] = STENCIL_(op_load_linked_col),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */
