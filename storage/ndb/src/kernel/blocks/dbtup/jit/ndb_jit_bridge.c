@@ -189,6 +189,13 @@
  * low 16 bits are the 2nd column's attrId and there is no inline literal
  * (2-word instruction); the helper reads the 2nd column from the row. */
 #define BR_EMB_BRANCH_ATTR_OP_ATTR  27
+/* ronsql_jit slice 2 item 5: the CTE-filter compares of a
+ * cheapMemory[0] value (pre-loaded by READ_LINKED_TO_MEM) against an
+ * inline literal. 38 resolves type/charset via tablerec[tableId] +
+ * schemaVersion (2 extra header words); 40 carries them inline
+ * (1 extra header word). Both lower to OP_BRANCH_MEM_OP_ARG. */
+#define BR_EMB_BRANCH_MEM_OP_ARG        38
+#define BR_EMB_BRANCH_MEM_OP_ARG_INLINE 40
 /* Highest BinaryCondition the JIT lowers (EQ..GE); LIKE/mask reject. */
 #define BR_EMB_MAX_BINARY_COND       5
 /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
@@ -313,6 +320,9 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
     case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
     case BR_EMB_READ_LINKED_COL_TO_REG:return "READ_LINKED_COLUMN_TO_REG";
+    case BR_EMB_BRANCH_MEM_OP_ARG:     return "BRANCH_MEM_OP_ARG";
+    case BR_EMB_BRANCH_MEM_OP_ARG_INLINE:
+      return "BRANCH_MEM_OP_ARG_INLINE_TYPE";
     default:                           return "EMB_OP?";
   }
 }
@@ -344,6 +354,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_BRANCH_ATTR_OP_ARG:   return "branch_attr_op_arg";
     case OP_LOAD_LINKED_TO_MEM:   return "load_linked_to_mem";
     case OP_LOAD_LINKED_COL:      return "load_linked_col";
+    case OP_BRANCH_MEM_OP_ARG:    return "branch_mem_op_arg";
     case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
     case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
     case OP_ADD_INT_INT_CHECKED:  return "add_int_int_checked";
@@ -642,6 +653,19 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
           if (scan_op == BR_EMB_BRANCH_ATTR_OP_ARG) {
             words = 2u + (((emb_prog[pc + 1] & 0xFFFFu) + 3u) >> 2);
           }
+          if (sp >= BR_EMB_MAX_LEN) return 0;
+          stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
+          pc += words;
+          break;
+        }
+        /* ronsql_jit slice 2 item 5: the mem-compare branches fork
+         * like ATTR_OP_ARG; 38 has 4 header words, 40 has 3. */
+        case BR_EMB_BRANCH_MEM_OP_ARG:
+        case BR_EMB_BRANCH_MEM_OP_ARG_INLINE: {
+          if ((inst >> 31) != 0) return 0;
+          if (pc + 2 > emb_len) return 0;
+          uint32_t hdr = (scan_op == BR_EMB_BRANCH_MEM_OP_ARG) ? 4u : 3u;
+          uint32_t words = hdr + (((emb_prog[pc + 1] & 0xFFFFu) + 3u) >> 2);
           if (sp >= BR_EMB_MAX_LEN) return 0;
           stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
           pc += words;
@@ -1426,6 +1450,98 @@ static JitBridgeReason translate_embedded_block(
         }
         pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
         if (!emit_op(out_prog, OP_BRANCH_ATTR_OP_ARG, /*a=*/0,
+                     /*b=*/(uint16_t)(attr_op_arg_base + emb_pc),
+                     /*c=*/0, /*imm=*/0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += inst_words;
+        break;
+      }
+
+      case BR_EMB_BRANCH_MEM_OP_ARG:
+      case BR_EMB_BRANCH_MEM_OP_ARG_INLINE: {
+        /* ronsql_jit slice 2 item 5: the CTE-filter compare over the
+         * cheapMemory[0] value. Same runtime model as ATTR_OP_ARG —
+         * op->b records the instruction's word offset in
+         * ctx->prog_buf and the helper re-decodes everything there
+         * (dispatching 38 vs 40 on the opcode), so the bridge only
+         * validates shape: condition EQ..GE, forward in-range
+         * target, and the instruction's word count (38 = 4 header
+         * words + literal, 40 = 3 + literal). Linked-gated: the
+         * compared value comes from READ_LINKED_TO_MEM, which only
+         * the join-agg path wires up. */
+        if (!allow_attr_op_arg || !allow_linked_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        if (emb_pc + 2 > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t cond = (inst >> 12) & 0xFu;
+        if (cond > BR_EMB_MAX_BINARY_COND) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t direction = inst >> 31;
+        if (direction != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t inst2 = emb_prog[emb_pc + 1];
+        uint32_t arg_len_bytes = inst2 & 0xFFFFu;
+        uint32_t header_words =
+            (emb_op == BR_EMB_BRANCH_MEM_OP_ARG) ? 4u : 3u;
+        uint32_t inst_words = header_words + ((arg_len_bytes + 3u) >> 2);
+        if (emb_pc + inst_words > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        if (attr_op_arg_base + emb_pc > 0xFFFFu) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
+        if (!emit_op(out_prog, OP_BRANCH_MEM_OP_ARG, /*a=*/0,
                      /*b=*/(uint16_t)(attr_op_arg_base + emb_pc),
                      /*c=*/0, /*imm=*/0)) {
           if (out_err) {

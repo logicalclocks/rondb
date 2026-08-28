@@ -376,7 +376,19 @@ typedef enum {
    * the completing-row invariant: no register ever holds SQL-NULL.
    * op->b carries (position << 8) | ndb_type for the helper. */
   OP_LOAD_LINKED_COL       = 65,
-  OP_KIND_MAX           = OP_LOAD_LINKED_COL
+
+  /* ronsql_jit slice 2 item 5 — BRANCH_MEM_OP_ARG (embedded op 38)
+   * and BRANCH_MEM_OP_ARG_INLINE_TYPE (op 40), the CTE-filter
+   * compare-against-literal over a value pre-loaded into cheapMemory
+   * by READ_LINKED_TO_MEM. Both lower to this one kind: like
+   * OP_BRANCH_ATTR_OP_ARG, op->b is the instruction's word offset in
+   * ctx->prog_buf and the helper re-decodes the opcode there (38's
+   * type/charset come from tablerec[tableId] with a schemaVersion
+   * check; 40 carries them inline). op->c is the branch target. A
+   * runtime decode failure (stale schema etc.) takes the per-row
+   * fallback — the interpreter re-run produces the proper error. */
+  OP_BRANCH_MEM_OP_ARG     = 66,
+  OP_KIND_MAX           = OP_BRANCH_MEM_OP_ARG
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -397,6 +409,7 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_LINKED_EQ_NULL:
     case OP_BRANCH_LINKED_NE_NULL:
     case OP_BRANCH_ATTR_OP_ARG:
+    case OP_BRANCH_MEM_OP_ARG:
     case OP_JUMP:
     case OP_LOAD_COL_NDB_NB:
     case OP_LOAD_COL_NDB_F64_NB:

@@ -897,6 +897,20 @@ static const Hole holes_op_load_linked_col[] = {
   { .byte_offset = 16, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_load_linked_col" },
 };
 
+/* op_branch_mem_op_arg — 37 bytes, 4 holes */
+static const uint8_t bytes_op_branch_mem_op_arg[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xe7, 0x48, 0xb8, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xd0, 0x85, 0xc0, 0x74,
+  0x06, 0x58, 0xe9, 0x00, 0x00, 0x00, 0x00, 0x58, 0xe9, 0x00, 0x00, 0x00,
+  0x00,
+};
+static const Hole holes_op_branch_mem_op_arg[] = {
+  { .byte_offset = 2, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 11, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_branch_mem_op_arg" },
+  { .byte_offset = 27, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 33, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -975,6 +989,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_DIVMOD_CONV] = STENCIL_(op_divmod_conv),
   [OP_SET_REG_NULL_FB] = STENCIL_NOHOLES(op_set_reg_null_fb),
   [OP_LOAD_LINKED_COL] = STENCIL_(op_load_linked_col),
+  [OP_BRANCH_MEM_OP_ARG] = STENCIL_(op_branch_mem_op_arg),
 };
 
 #endif /* NDB_JIT_STENCILS_X86_64_H */

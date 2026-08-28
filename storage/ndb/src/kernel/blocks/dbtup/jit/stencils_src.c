@@ -1459,6 +1459,24 @@ STENCIL op_load_linked_col(JitState *s) {
   TAIL_NEXT(s);
 }
 
+/* ronsql_jit slice 2 item 5 — BRANCH_MEM_OP_ARG(_INLINE_TYPE).
+ * Same 1-hole shape as op_branch_attr_op_arg: the helper reads the
+ * whole instruction from ctx->prog_buf at the patched word offset
+ * (dispatching 38 vs 40 on the opcode there), compares the
+ * cheapMemory[0] value against the inline literal, and returns
+ * 1 = take / 0 = fall through; decode failures set row_fallback. */
+extern int ndb_jit_h_branch_mem_op_arg(JitState *s, uint32_t inst_word_off);
+
+DECLARE_NARROW_HOLE(BMOA_OFF);
+extern __attribute__((preserve_none)) void HOLE_BMOA_TGT(JitState *);
+STENCIL op_branch_mem_op_arg(JitState *s) {
+  if (ndb_jit_h_branch_mem_op_arg(s,
+                                  (uint32_t)HOLE_NARROW(BMOA_OFF))) {
+    [[clang::musttail]] return HOLE_BMOA_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
@@ -1532,4 +1550,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_divmod_conv,
     op_set_reg_null_fb,
     op_load_linked_col,
+    op_branch_mem_op_arg,
 };

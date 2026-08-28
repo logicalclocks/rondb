@@ -3354,6 +3354,15 @@ public:
   int evalBranchColForJit(KeyReqStruct *req_struct, const Uint32 *inst,
                           const Uint32 *param_buf);
 
+  /* ronsql_jit slice 2 item 5: JIT evaluation of BRANCH_MEM_OP_ARG /
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE — compares the cheapMemory[0] value
+   * (pre-loaded by READ_LINKED_TO_MEM) against the instruction's
+   * inline literal, dispatching the two layouts on the opcode in
+   * inst[0]. Same return convention as evalBranchColForJit; negative
+   * (stale schema, bad charset, no comparator) means the caller
+   * should fall the row back to the interpreter. */
+  int evalBranchMemForJit(const Uint32 *inst);
+
 private:
 
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,

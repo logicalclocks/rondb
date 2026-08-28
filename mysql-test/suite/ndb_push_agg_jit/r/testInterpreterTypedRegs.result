@@ -4,4 +4,4 @@ PASSED
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS testInterpreterTypedRegs_jit_fallback_delta;
 testInterpreterTypedRegs_jit_fallback_delta
-1888
+1880

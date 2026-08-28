@@ -1040,6 +1040,7 @@ static const OpkindMap kOpkindMap[] = {
   { "op_divmod_conv",           "OP_DIVMOD_CONV"           },
   { "op_set_reg_null_fb",       "OP_SET_REG_NULL_FB"       },
   { "op_load_linked_col",       "OP_LOAD_LINKED_COL"       },
+  { "op_branch_mem_op_arg",     "OP_BRANCH_MEM_OP_ARG"     },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

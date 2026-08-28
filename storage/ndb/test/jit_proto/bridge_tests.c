@@ -3939,6 +3939,125 @@ static void test_scan_filter_linked_col_reject(void) {
                               EMB_READ_LINKED_COL_TO_REG);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 5 — BRANCH_MEM_OP_ARG (38) and             */
+/* BRANCH_MEM_OP_ARG_INLINE_TYPE (40): the CTE-filter compare of a    */
+/* cheapMemory[0] value against an inline literal. Both lower to      */
+/* OP_BRANCH_MEM_OP_ARG (b = prog_buf word offset, helper decodes).   */
+/* Linked-gated: only the join-agg path wires the mem value.          */
+/* ------------------------------------------------------------------ */
+#define EMB_BRANCH_MEM_OP_ARG        38
+#define EMB_BRANCH_MEM_OP_ARG_INLINE 40
+
+/* T74a: op 38 on the aggregation-embedded path. Layout: w0 (nulls=3,
+ * cond=EQ, offset +7 -> the EXIT_REFUSE), w1 (attrId<<16)|argLen=8,
+ * w2 tableId, w3 schemaVersion, w4-5 literal, then EXIT_OK /
+ * EXIT_REFUSE. attr_op_arg_base is outer_word_pos+1 = 1, so op->b
+ * is 1 (the instruction's offset within the embedded words). */
+static void test_branch_mem_op_arg_accept(void) {
+  const char *name = "T74a branch_mem_op_arg_accept";
+  uint32_t prog[9] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG,
+                    (3u << 6) | (0u << 12) | (7u << 16)),
+    (1u << 16) | 8u,        /* attrId=1, argLen=8 */
+    7u,                     /* tableId (runtime-validated) */
+    0x00010001u,            /* schemaVersion */
+    0x00000005u,            /* literal low */
+    0x00000000u,            /* literal high */
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  Program p;
+  /* BRANCH_MEM_OP_ARG + EXIT(refuse) + tail EXIT (agg EXIT_OK emits
+   * nothing). */
+  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_MEM_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 1)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 1)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T74b: op 40 (inline type) — 3 header words instead of 4. */
+static void test_branch_mem_inline_type_accept(void) {
+  const char *name = "T74b branch_mem_inline_type_accept";
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG_INLINE,
+                    (3u << 6) | (5u << 12) | (6u << 16)),   /* GE */
+    ((uint32_t)NDB_TYPE_BIGINT << 16) | 8u,   /* typeId, argLen=8 */
+    (8u << 16) | 0u,        /* columnSizeBytes=8, csNumber=0 */
+    0x00000005u,
+    0x00000000u,
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_MEM_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 1)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 1)) return;
+  mark_pass(name);
+}
+
+/* T74c: LIKE (cond 6) is not admitted — EQ..GE only. */
+static void test_branch_mem_like_reject(void) {
+  uint32_t prog[9] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG,
+                    (3u << 6) | (6u << 12) | (7u << 16)),
+    (1u << 16) | 8u,
+    7u,
+    0x00010001u,
+    0x00000005u,
+    0x00000000u,
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_rejected("T74c branch_mem_like_reject", prog, 9,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 1, EMB_BRANCH_MEM_OP_ARG);
+}
+
+/* T74d: rejected on the standalone scan-filter path — no linked
+ * buffer there (allow_linked_ops=0), so nothing populates the mem
+ * value these ops compare. */
+static void test_scan_filter_branch_mem_reject(void) {
+  uint32_t filter_prog[7] = {
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG_INLINE,
+                    (3u << 6) | (0u << 12) | (6u << 16)),
+    ((uint32_t)NDB_TYPE_BIGINT << 16) | 8u,
+    (8u << 16) | 0u,
+    0x00000005u,
+    0x00000000u,
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_scan_filter_rejected("T74d scan_filter_branch_mem_reject",
+                              filter_prog, 7,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/1,
+                              EMB_BRANCH_MEM_OP_ARG_INLINE);
+}
+
+/* T74e: a literal that runs past the block end is MALFORMED. */
+static void test_branch_mem_truncated_reject(void) {
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG,
+                    (3u << 6) | (0u << 12) | (3u << 16)),
+    (1u << 16) | 8u,        /* argLen=8 -> needs 6 words, block has 4 */
+    7u,
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_rejected("T74e branch_mem_truncated_reject", prog, 5,
+                  JIT_BRIDGE_MALFORMED, 1, EMB_BRANCH_MEM_OP_ARG);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -4100,6 +4219,11 @@ int main(void) {
   test_linked_col_bigunsigned_reject();
   test_linked_col_double_reject();
   test_scan_filter_linked_col_reject();
+  test_branch_mem_op_arg_accept();
+  test_branch_mem_inline_type_accept();
+  test_branch_mem_like_reject();
+  test_scan_filter_branch_mem_reject();
+  test_branch_mem_truncated_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

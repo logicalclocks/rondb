@@ -5787,6 +5787,116 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
   }
 }
 
+int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
+  const Uint32 w0 = inst[0];
+  const Uint32 w1 = inst[1];
+  const Uint32 opCode = Interpreter::getOpCode(w0) % OVERFLOW_OPCODE;
+
+  /* The compared value sits in cheapMemory[0] (AttrHeader + payload),
+   * put there by the preceding READ_LINKED_TO_MEM — the JIT lowers
+   * that op too, so the buffer is populated exactly as on the
+   * interpreter path. */
+  const Uint32 *memData = (const Uint32 *)&cheapMemory[0];
+  const AttributeHeader ah(memData[0]);
+  const char *s1 = (const char *)&memData[1];
+
+  Uint32 typeId;
+  Uint32 attrLen;
+  Uint32 argLen;
+  const CHARSET_INFO *cs = nullptr;
+  const char *s2;
+  if (opCode == Interpreter::BRANCH_MEM_OP_ARG) {
+    /* [w0, w1 attrId|argLen, w2 tableId, w3 schemaVer, data...] —
+     * type/charset from the PARENT table's descriptor, validated
+     * exactly like handleBranchMemOpArg (existence, DEFINED status,
+     * schemaVersion via DBLQH). */
+    const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
+    argLen = Interpreter::getBranchCol_Len(w1);
+    const Uint32 tableId = inst[2];
+    const Uint32 schemaVersion = inst[3];
+    if (unlikely(tablerec == nullptr || tableId >= cnoOfTablerec)) {
+      return -40;
+    }
+    Tablerec *parentTablePtrP = &tablerec[tableId];
+    if (unlikely(parentTablePtrP->tableStatus != DEFINED)) {
+      return -40;
+    }
+    if (unlikely(c_lqh->tablerec == nullptr ||
+                 tableId >= c_lqh->ctabrecFileSize ||
+                 c_lqh->tablerec[tableId].schemaVersion != schemaVersion)) {
+      return -40;
+    }
+    if (unlikely(attrId >= parentTablePtrP->m_no_of_attributes)) {
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+    const Uint32 *attrDescriptor =
+        parentTablePtrP->tabDescriptor + (attrId * ZAD_SIZE);
+    const Uint32 TattrDesc1 = attrDescriptor[0];
+    const Uint32 TattrDesc2 = attrDescriptor[1];
+    typeId = AttributeDescriptor::getType(TattrDesc1);
+    if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+      const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+      cs = parentTablePtrP->charsetArray[pos];
+    }
+    attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+    s2 = (const char *)&inst[4];
+  } else {
+    /* BRANCH_MEM_OP_ARG_INLINE_TYPE:
+     * [w0, w1 typeId|argLen, w2 colSize<<16|csNumber, data...]. */
+    typeId = Interpreter::getBranchCol_AttrId(w1);
+    argLen = Interpreter::getBranchCol_Len(w1);
+    const Uint32 meta = inst[2];
+    attrLen = (meta >> 16) & 0xFFFF;
+    const Uint32 csNumber = meta & 0xFFFF;
+    if (csNumber != 0) {
+      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
+        return -40;
+      }
+      cs = all_charsets[csNumber];
+      if (unlikely(cs == nullptr)) {
+        return -40;
+      }
+    }
+    s2 = (const char *)&inst[3];
+  }
+
+  const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+  const bool r1_null = ah.isNULL();
+  const bool r2_null = (argLen == 0);
+  if (r1_null || r2_null) {
+    const Uint32 nulls = Interpreter::getNullSemantics(w0);
+    if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+      return 1;  // take the branch
+    }
+    if (nulls == Interpreter::IF_NULL_CONTINUE) {
+      return 0;  // fall through
+    }
+    /* NULL_CMP_EQUAL: fall into the comparison with res1 below. */
+  }
+
+  const Uint32 cond = Interpreter::getBinaryCondition(w0);
+  int res1;
+  if (r1_null || r2_null) {
+    res1 = (r1_null && r2_null) ? 0 : (r1_null ? -1 : 1);
+  } else {
+    if (unlikely(sqlType.m_cmp == nullptr)) {
+      return -40;
+    }
+    res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+  }
+
+  switch ((Interpreter::BinaryCondition)cond) {
+    case Interpreter::EQ: return (res1 == 0) ? 1 : 0;
+    case Interpreter::NE: return (res1 != 0) ? 1 : 0;
+    case Interpreter::LT: return (res1 > 0) ? 1 : 0;   // inverted, per cmp
+    case Interpreter::LE: return (res1 >= 0) ? 1 : 0;
+    case Interpreter::GT: return (res1 < 0) ? 1 : 0;
+    case Interpreter::GE: return (res1 <= 0) ? 1 : 0;
+    default:
+      return -40;  // LIKE / mask conditions are not JIT-admitted
+  }
+}
+
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */

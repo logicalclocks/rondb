@@ -420,8 +420,13 @@ dd_bigquery 36→4. Corpus census **378 → 206** (65/80 tests
 reject-free). The harvest confirms the clean family kill:
 `scan-filter detail=9` is GONE — in fact NO scan-filter families of
 any kind remain in the corpus; every residual is an aggregation-path
-family. `testInterpreterTypedRegs` (1888) did not move, as
-predicted (its filters carry REG ops, `allow_reg_ops=0`).
+family. `testInterpreterTypedRegs` initially appeared unmoved —
+CORRECTED at item 5's verification: its Test 13i is a PURE
+unconditional-branch filter (`[BRANCH +2, EXIT_NOK, EXIT_OK]`, no
+REG ops) and compiles since this item — pin 1888 → 1880 (the -8 =
+its per-fragment compile events; the suite had not re-measured the
+binary until then). Every other program in the matrix carries REG
+ops and stays rejected (`allow_reg_ops=0`).
 `ndb_push_agg_jit` and the OFF arms: unchanged.
 
 Remaining 206 by family: op-44 `READ_LINKED_COLUMN_TO_REG` ≈50
@@ -490,3 +495,75 @@ MinusBigint TYPE_MISMATCH ≈16, `LOAD_DOUBLE_CONST` (45) ≈8,
 op-51 ≈4, PROG_TOO_LARGE ≈3 — the big test-level residuals are
 ronsql_basic 32, dd_filter 24, overflow 24 (agg-path tail
 families).
+
+### Lowering item 5 — DONE & VERIFIED (2026-08-28): BRANCH_MEM_OP_ARG family
+
+Target family: **≈16 rejects** — `join-agg reason=1 detail=38/40`.
+`BRANCH_MEM_OP_ARG` (38) and `BRANCH_MEM_OP_ARG_INLINE_TYPE` (40)
+are THE CTE-filter compare: the CTE row value is pre-loaded into
+`cheapMemory[0]` by `READ_LINKED_TO_MEM` (which the JIT already
+lowers) and compared against an inline literal via the type's
+NdbSqlUtil comparator — 38 resolves type/charset through
+`tablerec[tableId]` + a schemaVersion check (4 header words), 40
+carries them inline for synthesized aggregate values with no real
+column (3 header words).
+
+New stencil ⇒ **regen-stencils REQUIRED**:
+- `bytecode1.h`: `OP_BRANCH_MEM_OP_ARG = 66` (b = prog_buf word
+  offset, c = branch target); added to `bc_op_is_branch`.
+- `stencils_src.c`: `op_branch_mem_op_arg` — same 1-hole shape as
+  `op_branch_attr_op_arg` (narrow `BMOA_OFF` + `HOLE_BMOA_TGT`
+  branch-take).
+- `hole_kinds.h`: string entries + `MAGIC_BMOA_OFF_NARROW 0x51fd`
+  (v1 salt, collision-checked) + narrow-table row; extractor/audit
+  maps updated.
+- `DbtupExecQuery.cpp`: new `Dbtup::evalBranchMemForJit(inst)` —
+  mirrors handleBranchMemOpArg / handleBranchMemOpArgInlineType
+  1:1 (dispatches the two layouts on the opcode in inst[0]),
+  reading `cheapMemory` directly as a Dbtup method. Same return
+  convention as evalBranchColForJit (1 take / 0 fall / <0 error).
+  Declared in `Dbtup.hpp`.
+- `DbtupJitGlue.cpp`: `ndb_jit_h_branch_mem_op_arg(s, off)` — like
+  the attr_op_arg helper but with NO tablePtrP requirement (these
+  ops never read the local tuple — that is their point: CTE
+  consumer virtual rows), and rc<0 → **per-row fallback** rather
+  than abort (stale schemaVersion is a legitimate runtime
+  condition; the interpreter re-run produces the proper error).
+- `ndb_jit_bridge.c`: translate case gated
+  `allow_attr_op_arg && allow_linked_ops` (scan filters reject —
+  nothing populates the mem value there); admission = cond EQ..GE,
+  forward in-range target, word-count validation
+  (38 = 4 + ceil(argLen/4), 40 = 3 + ceil(argLen/4)); emits with
+  b = attr_op_arg_base + emb_pc like op 23. DFS scanner forks like
+  ATTR_OP_ARG with the per-op header sizes.
+- `bridge_tests.c` **T74a-e**: 38 accept (agg path, b=1 c=1),
+  40 accept, LIKE-cond reject, scan-filter-path reject, truncated
+  literal MALFORMED.
+
+**VERIFIED 2026-08-28 (tests green; ronsql_basic value-diff flake
+waived — see below).** `detail=38/40` is GONE from the harvest and
+T74a-e pin the lowering at unit level — but the RonSQL pins did
+NOT move: the programs that used to reject on 38/40 now reject
+deeper, on remaining tail ops (45 / 51 / reason-8 type-admission)
+— a program rejects at its FIRST inadmissible op, so per-family
+census counts overlap within a program. Net corpus recovery
+lands when those blockers fall. Bonus correction:
+`testInterpreterTypedRegs` pin 1888 → 1880 — its Test 13i is a
+pure unconditional-branch filter that compiles since ITEM 3 (see
+the amended item-3 record); this was the suite's first
+re-measure since.
+
+Deferred within the tail (next items): kOpMod-unknown ≈16,
+MinusBigint TYPE_MISMATCH ≈16, LOAD_DOUBLE_CONST ≈8 (F64-embedded
+territory, pairs with the reason-8 family), op-51 ≈4,
+PROG_TOO_LARGE ≈3.
+
+Known flake (2026-08-28, pre-existing): `ronsql_jit.ronsql_basic`
+can fail its mysql-vs-ronsql VALUE diff on the float-SUM query
+(`sum(14/3 + 18/5*cfloat + uint8)`) by one ulp — per-fragment
+partial sums merge in nondeterministic order and RonSQL's
+shortest-round-trip double printing amplifies the last-ulp wobble
+into a different digit count. Not JIT-related (the fallback pin
+holds; no numeric path changed). Mikael has a fix on another
+branch (deterministic comparison/formatting); ignore until it
+lands.

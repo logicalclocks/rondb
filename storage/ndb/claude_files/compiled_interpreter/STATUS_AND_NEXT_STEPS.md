@@ -92,7 +92,7 @@ the cache, so pushed = compiled; delta 0 = not pushed — re-check at
 4060 + compile proof; NULL-extended rows 4060-exempt by design);
 (3) recorded fallback-delta pins on all 25 jit-suite mirrors — the
 recorded value IS the pin; attribution complete
-(testInterpreterTypedRegs 1888 = Phase 7 subset boundary;
+(testInterpreterTypedRegs 1880 = Phase 7 subset boundary;
 ndb_pushdown_agg 16, case_null 8, VarcharMinMax 8 = future-lowering
 candidates; testCteNdbApi 2 = embedded READ_AGG_REG_TO_REG; 17
 tests at 0). Exemption list committed in `phase_6_plan.md` §6-2.
@@ -181,10 +181,14 @@ BR_EMB_BRANCH=3→9 define fix) DONE & VERIFIED 2026-08-27 —
 recovered 172 (cte_or_body 44→0; NO scan-filter families remain).
 Item 4 (op-44 READ_LINKED_COLUMN_TO_REG → OP_LOAD_LINKED_COL
 cold-call stencil, wire-typed admission) DONE & VERIFIED 2026-08-28
-— recovered 46. Corpus census ~1234→160 across items 1-4, 66/80
-tests reject-free; residuals are tail families (38/40, kOpMod,
-MinusBigint, 45, 51, PROG_TOO_LARGE) plus by-design reason-8
-type-admission rejects. Records in `ronsql_jit_plan.md`.
+— recovered 46. Item 5 (BRANCH_MEM_OP_ARG 38/40 → OP_BRANCH_MEM_OP_ARG,
+evalBranchMemForJit) DONE & VERIFIED 2026-08-28 — family eliminated,
+net recovery deferred (same programs still reject on tail ops 45/51/
+reason-8); typed-regs census corrected 1888→1880 (Test 13i pure-BRANCH
+filter compiles since item 3). Corpus census ~1234→160 across items
+1-5, 66/80 tests reject-free; residuals: kOpMod-unknown, MinusBigint,
+LOAD_DOUBLE_CONST(45), op-51, PROG_TOO_LARGE + by-design reason-8.
+Records in `ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

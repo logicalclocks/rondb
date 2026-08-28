@@ -1442,6 +1442,47 @@ ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
 #endif
 }
 
+
+/* ndb_jit_h_branch_mem_op_arg — ronsql_jit slice 2 item 5 cold-call
+ * branch helper for BRANCH_MEM_OP_ARG / BRANCH_MEM_OP_ARG_INLINE_TYPE
+ * (the CTE-filter compare of a cheapMemory[0] value — pre-loaded by
+ * READ_LINKED_TO_MEM — against an inline literal). The whole
+ * instruction is read from ctx->prog_buf + inst_word_off and
+ * Dbtup::evalBranchMemForJit dispatches the two layouts on its
+ * opcode. Unlike branch_attr_op_arg there is NO tablePtrP
+ * requirement — these ops never read the local tuple (that is their
+ * whole point: CTE consumer virtual rows have no real table).
+ * Returns 1 to take the branch, 0 to fall through; a negative eval
+ * (stale schema version, unknown charset, no comparator) takes the
+ * per-row fallback — the interpreter re-run produces the exact
+ * error handling. */
+extern "C" int
+ndb_jit_h_branch_mem_op_arg(JitState *s, uint32_t inst_word_off) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr ||
+      ctx->prog_buf == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_mem_op_arg: JitState.ctx is malformed "
+        "(inst_word_off=%u)", inst_word_off);
+    abort();
+  }
+  int rc = ctx->block_tup->evalBranchMemForJit(ctx->prog_buf +
+                                               inst_word_off);
+  if (unlikely(rc < 0)) {
+    s->row_fallback = 1;
+    return 0;
+  }
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_mem_op_arg off=%u take=%d",
+        ctx->trace_row_no, inst_word_off, rc);
+  }
+#endif
+  return rc;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper registration.                                               */
 /* ------------------------------------------------------------------ */
@@ -1484,6 +1525,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_linked_null));
   jit1_register_helper("ndb_jit_h_load_linked_col",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_linked_col));
+  jit1_register_helper("ndb_jit_h_branch_mem_op_arg",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_mem_op_arg));
 }
 
 /* ------------------------------------------------------------------ */
