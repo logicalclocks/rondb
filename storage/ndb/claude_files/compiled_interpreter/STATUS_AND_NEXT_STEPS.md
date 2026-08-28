@@ -185,10 +185,13 @@ cold-call stencil, wire-typed admission) DONE & VERIFIED 2026-08-28
 evalBranchMemForJit) DONE & VERIFIED 2026-08-28 — family eliminated,
 net recovery deferred (same programs still reject on tail ops 45/51/
 reason-8); typed-regs census corrected 1888→1880 (Test 13i pure-BRANCH
-filter compiles since item 3). Corpus census ~1234→160 across items
-1-5, 66/80 tests reject-free; residuals: kOpMod-unknown, MinusBigint,
-LOAD_DOUBLE_CONST(45), op-51, PROG_TOO_LARGE + by-design reason-8.
-Records in `ronsql_jit_plan.md`.
+filter compiles since item 3). Item 6 (F64 embedded
+compares OP_BRANCH_F64 + heap-mem reads OP_READ_MEM_TO_REG) DONE &
+VERIFIED 2026-08-28 — families 45/51 eliminated; next layer exposed:
+embedded arithmetic (ADD/MUL REG_REG) + a suspicious kOpEmbeddedInterp
+MALFORMED (r4/d28, possible length-accounting defect). Corpus census
+~1234→160 across items 1-6, 66/80 tests reject-free. Records in
+`ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

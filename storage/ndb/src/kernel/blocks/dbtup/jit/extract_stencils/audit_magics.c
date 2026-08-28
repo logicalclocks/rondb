@@ -134,6 +134,9 @@ static const struct {
   { "MAGIC_LLC_PT_NARROW",    "op_load_linked_col"        },
   { "MAGIC_LLC_DST_NARROW",   "op_load_linked_col"        },
   { "MAGIC_BMOA_OFF_NARROW",  "op_branch_mem_op_arg"      },
+  { "MAGIC_BF64_ARG_NARROW",  "op_branch_f64"             },
+  { "MAGIC_RMR_OFF_NARROW",   "op_read_mem_to_reg"        },
+  { "MAGIC_RMR_WD_NARROW",    "op_read_mem_to_reg"        },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { "MAGIC_BAOA_OFF_NARROW",  "op_branch_attr_op_arg"     },
   /* Phase 5C-2: op_load_col_ndb_f64 helper-argument holes (narrow for

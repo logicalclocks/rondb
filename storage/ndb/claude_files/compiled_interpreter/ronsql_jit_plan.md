@@ -567,3 +567,70 @@ into a different digit count. Not JIT-related (the fallback pin
 holds; no numeric path changed). Mikael has a fix on another
 branch (deterministic comparison/formatting); ignore until it
 lands.
+
+### Lowering item 6 — DONE & VERIFIED (2026-08-28): F64 embedded compares + heap-memory reads
+
+Targets: `LOAD_DOUBLE_CONST` (45, ≈8) — the WHERE
+`col <op> float_literal` family — and `READ_*_MEM_TO_REG` (49-52,
+≈4 as op 51) — RonSQL's legacy linked-value reads. Both were
+identified as the actual blockers left in the former-38/40
+programs (dd_filter, cte_case).
+
+Two new op kinds, both cold calls ⇒ **regen-stencils REQUIRED**:
+
+**OP_BRANCH_F64 = 67** — the F64 embedded compare model:
+- The bridge now tracks per-embedded-reg F64 state
+  (`emb_reg_f64[8]`) and the defining plain-READ_ATTR op index
+  (`emb_reg_read_attr[8]`), updated at EVERY reg write site
+  (READ_ATTR, LC16, LC64, op-43, op-44, 45, 49-52).
+- `LOAD_DOUBLE_CONST` lowers to plain `OP_LOAD_CONST_INT` with the
+  double's bit pattern (F64 lives bit-cast in regs_i64) and marks
+  the reg F64.
+- A REG_REG compare with either side F64-tracked takes the new arm:
+  a non-F64 side defined by a plain READ_ATTR is RETROACTIVELY
+  converted to `OP_LOAD_COL_NDB_F64` (same operand layout; its
+  helper per-row-falls-back on non-FLOAT/DOUBLE declared types, so
+  a mistyped program degrades per row, never miscompares); any
+  other int side converts signed-i64 → double at runtime — exactly
+  the interpreter's `compareTypedRegs` float arm (embedded int
+  values are non-negative-or-signed-exact by the admission rules).
+  NaN compares "equal" in both engines.
+- One packed narrow ARG hole (`MAGIC_BF64_ARG_NARROW 0x0ab8`,
+  HK_OP_IMM): cond 0-3 | side flags 4-5 | regs 8-15; op->a/b
+  duplicate the regs for the NB reader analysis; op->c target.
+  Chosen as a COLD CALL (like attr_op_arg) instead of fold-hole
+  inline compares — the fold-magic recipe comment does not
+  reproduce the historical constants, so no new fold magics.
+- The 5D-1 NB pass is unaffected (`op_from_emb` already excludes
+  embedded loads, incl. retroactively converted ones).
+
+**OP_READ_MEM_TO_REG = 68** — ops 49-52 in one kind:
+- a = dst slot, b = byte offset, c = (width_code << 8) | dst.
+  Narrow holes `MAGIC_RMR_OFF_NARROW 0x48e7` (HK_OP_B) /
+  `MAGIC_RMR_WD_NARROW 0x0ef6` (HK_OP_C).
+- New `Dbtup::readCheapMemForJit(off, width)`: 1/2/4-byte reads
+  zero-extend (< 2^33 — exact under signed compares; the
+  interpreter tags REG_TYPE_UINT but the values compare
+  identically), 8-byte reads raw Int64 — handler-for-handler
+  parity. The interpreter's runtime MAX_HEAP_OFFSET check becomes
+  a compile-time bound on the wire-constant offset (out-of-range
+  → MALFORMED → fallback → the interpreter reproduces the error).
+
+Tests: `bridge_tests` **T75a-e** — col-vs-literal GE (load
+converted to F64, ARG 0xA935), int-vs-literal LT (LC16 kept, ARG
+0xA922, runtime convert), mem-read u32 accept (a=9 b=4 c=0x209),
+offset-bound MALFORMED, scan-filter reject of op 45.
+
+**VERIFIED 2026-08-28 (all tests passed).** Families 45/51
+ELIMINATED from the harvest (T75 pins them at unit level); pins
+unchanged again — the onion peeled one more layer and exposed the
+next blockers in the same programs (worker-correlated to
+ronsql_basic): **embedded arithmetic** — `reason=1 detail=7`
+(ADD_REG_REG) and `detail=30` (MUL_REG_REG), i.e. WHERE-clause
+arithmetic — plus a suspicious `reason=4 detail=28` (outer
+namespace: kOpEmbeddedInterp MALFORMED — "declared emb_len runs
+past the program words"; a valid program should never trip it —
+possible program-length accounting defect for large DNF filters,
+investigate before treating as a family). Remaining tail: embedded
+arith (item 7), kOpMod-unknown ≈16, MinusBigint ≈16,
+PROG_TOO_LARGE ≈3, by-design reason-8 type-admissions.

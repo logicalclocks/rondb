@@ -185,6 +185,13 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
    * word-offset (same shape as BAOA) + branch target. */
   { "HOLE_BMOA_OFF",  HK_OP_B         },
   { "HOLE_BMOA_TGT",  HK_BRANCH_TAKE  },
+  /* ronsql_jit slice 2 item 6: op_branch_f64 packed argument
+   * (cond | side-f64 flags | reg indexes, from op->imm) + target;
+   * op_read_mem_to_reg offset (op->b) and width|dst pack (op->c). */
+  { "HOLE_BF64_ARG",  HK_OP_IMM       },
+  { "HOLE_BF64_TGT",  HK_BRANCH_TAKE  },
+  { "HOLE_RMR_OFF",   HK_OP_B         },
+  { "HOLE_RMR_WD",    HK_OP_C         },
   /* Overflow-checked arithmetic variants. */
   { "HOLE_ADD_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_DIV_OVF_TGT",   HK_OVERFLOW_TAKE },
@@ -408,6 +415,10 @@ static const size_t kHoleSymbolTableLen =
 /* ronsql_jit slice 2 item 5: op_branch_mem_op_arg word-offset hole
  * (v1 narrow salt). */
 #define MAGIC_BMOA_OFF_NARROW     0x51fdu
+/* ronsql_jit slice 2 item 6 (v1 narrow salt). */
+#define MAGIC_BF64_ARG_NARROW     0x0ab8u
+#define MAGIC_RMR_OFF_NARROW      0x48e7u
+#define MAGIC_RMR_WD_NARROW       0x0ef6u
 /* Phase 7 op_branch_attr_op_arg — instruction word-offset hole (narrow).
  * sha256("RONDB-1056-Phase4_5-narrow-magic-v1|MAGIC_BAOA_OFF_NARROW")[0:2] LE. */
 #define MAGIC_BAOA_OFF_NARROW     0xd4fbu
@@ -595,6 +606,10 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   { MAGIC_LLC_DST_NARROW,   HK_OP_A,  "MAGIC_LLC_DST_NARROW"   },
   /* ronsql_jit slice 2 item 5: op_branch_mem_op_arg word offset. */
   { MAGIC_BMOA_OFF_NARROW,  HK_OP_B,  "MAGIC_BMOA_OFF_NARROW"  },
+  /* ronsql_jit slice 2 item 6. */
+  { MAGIC_BF64_ARG_NARROW,  HK_OP_IMM, "MAGIC_BF64_ARG_NARROW"  },
+  { MAGIC_RMR_OFF_NARROW,   HK_OP_B,  "MAGIC_RMR_OFF_NARROW"   },
+  { MAGIC_RMR_WD_NARROW,    HK_OP_C,  "MAGIC_RMR_WD_NARROW"    },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { MAGIC_BAOA_OFF_NARROW,  HK_OP_B,  "MAGIC_BAOA_OFF_NARROW"  },
   /* Phase 5C-2: op_load_col_ndb_f64 helper arguments. */

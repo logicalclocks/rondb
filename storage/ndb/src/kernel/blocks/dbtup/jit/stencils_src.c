@@ -1477,6 +1477,36 @@ STENCIL op_branch_mem_op_arg(JitState *s) {
   TAIL_NEXT(s);
 }
 
+/* ronsql_jit slice 2 item 6 — F64 embedded compare. Cold call: the
+ * helper unpacks (cond | flags | regs) from the ARG hole, converts
+ * any non-double side signed-i64 → double (the interpreter's
+ * compareTypedRegs float arm), compares, and returns take/fall. */
+extern int ndb_jit_h_branch_f64(JitState *s, uint32_t arg);
+
+DECLARE_NARROW_HOLE(BF64_ARG);
+extern __attribute__((preserve_none)) void HOLE_BF64_TGT(JitState *);
+STENCIL op_branch_f64(JitState *s) {
+  if (ndb_jit_h_branch_f64(s, (uint32_t)HOLE_NARROW(BF64_ARG))) {
+    [[clang::musttail]] return HOLE_BF64_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+/* ronsql_jit slice 2 item 6 — heap-memory read into a register
+ * (embedded ops 49-52). Cold call: offset is compile-time
+ * bounds-checked; the helper zero-extends 1/2/4-byte reads and
+ * reads 8 bytes raw, writing s->regs_i64[dst] itself. */
+extern void ndb_jit_h_read_mem_to_reg(JitState *s, uint32_t mem_off,
+                                      uint32_t wd);
+
+DECLARE_NARROW_HOLE(RMR_OFF);
+DECLARE_NARROW_HOLE(RMR_WD);
+STENCIL op_read_mem_to_reg(JitState *s) {
+  ndb_jit_h_read_mem_to_reg(s, (uint32_t)HOLE_NARROW(RMR_OFF),
+                            (uint32_t)HOLE_NARROW(RMR_WD));
+  TAIL_NEXT(s);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
@@ -1551,4 +1581,6 @@ const StencilTailFn g_stencil_anchor[] = {
     op_set_reg_null_fb,
     op_load_linked_col,
     op_branch_mem_op_arg,
+    op_branch_f64,
+    op_read_mem_to_reg,
 };

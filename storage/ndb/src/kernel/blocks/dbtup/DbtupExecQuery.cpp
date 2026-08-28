@@ -5897,6 +5897,30 @@ int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
   }
 }
 
+Uint64 Dbtup::readCheapMemForJit(Uint32 byte_off, Uint32 width) {
+  const char *base = (const char *)&cheapMemory[0];
+  switch (width) {
+    case 1: {
+      return (Uint64)*(const Uint8 *)(base + byte_off);
+    }
+    case 2: {
+      Uint16 v16;
+      memcpy(&v16, base + byte_off, 2);
+      return (Uint64)v16;
+    }
+    case 4: {
+      Uint32 v32;
+      memcpy(&v32, base + byte_off, 4);
+      return (Uint64)v32;
+    }
+    default: {
+      Uint64 v64;
+      memcpy(&v64, base + byte_off, 8);
+      return v64;
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */

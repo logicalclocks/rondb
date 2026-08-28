@@ -1483,6 +1483,91 @@ ndb_jit_h_branch_mem_op_arg(JitState *s, uint32_t inst_word_off) {
   return rc;
 }
 
+
+/* ndb_jit_h_branch_f64 — ronsql_jit slice 2 item 6 cold-call F64
+ * compare (OP_BRANCH_F64). arg: bits 0-3 condition, bit 4 left-is-
+ * double-bits, bit 5 right-is-double-bits, bits 8-11 left reg,
+ * bits 12-15 right reg. A clear side flag converts signed i64 →
+ * double, mirroring the interpreter's compareTypedRegs float arm
+ * (embedded int registers are non-negative-or-signed i64 by the
+ * admission rules, so the signed convert is exact). NaN compares
+ * "equal" in both engines (l<r and l>r both false). Returns 1 to
+ * take the branch, 0 to fall through. */
+extern "C" int
+ndb_jit_h_branch_f64(JitState *s, uint32_t arg) {
+  const uint32_t a = (arg >> 8) & 0xFu;
+  const uint32_t b = (arg >> 12) & 0xFu;
+  const int64_t abits = s->regs_i64[a];
+  const int64_t bbits = s->regs_i64[b];
+  double l;
+  double r;
+  if (arg & 0x10u) {
+    std::memcpy(&l, &abits, sizeof(l));
+  } else {
+    l = (double)abits;
+  }
+  if (arg & 0x20u) {
+    std::memcpy(&r, &bbits, sizeof(r));
+  } else {
+    r = (double)bbits;
+  }
+  const int res = (l < r) ? -1 : (l > r) ? 1 : 0;
+  int take;
+  switch (arg & 0xFu) {
+    case 0:  take = (res == 0); break;   /* EQ */
+    case 1:  take = (res != 0); break;   /* NE */
+    case 2:  take = (res <  0); break;   /* LT */
+    case 3:  take = (res <= 0); break;   /* LE */
+    case 4:  take = (res >  0); break;   /* GT */
+    default: take = (res >= 0); break;   /* GE */
+  }
+#ifdef ERROR_INSERT
+  {
+    dbtup_jit_call_ctx *ctx =
+        static_cast<dbtup_jit_call_ctx *>(s->ctx);
+    if (ctx != nullptr && ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=branch_f64 arg=0x%x "
+          "l=%f r=%f take=%d",
+          ctx->trace_row_no, arg, l, r, take);
+    }
+  }
+#endif
+  return take;
+}
+
+/* ndb_jit_h_read_mem_to_reg — ronsql_jit slice 2 item 6 cold-call
+ * heap-memory read (OP_READ_MEM_TO_REG; embedded ops 49-52). The
+ * bridge bounds-checked the constant offset at compile time, so the
+ * read is unconditional; Dbtup::readCheapMemForJit zero-extends
+ * 1/2/4-byte widths and reads 8 bytes raw, mirroring the
+ * interpreter's handleRead*MemToReg family. wd packs
+ * (width_code << 8) | dst_slot. */
+extern "C" void
+ndb_jit_h_read_mem_to_reg(JitState *s, uint32_t mem_off, uint32_t wd) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_read_mem_to_reg: JitState.ctx is malformed "
+        "(mem_off=%u)", mem_off);
+    abort();
+  }
+  const uint32_t width_code = (wd >> 8) & 0x3u;
+  const uint32_t dst = wd & 0xFFu;
+  s->regs_i64[dst] = (int64_t)ctx->block_tup->readCheapMemForJit(
+      mem_off, 1u << width_code);
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=read_mem_to_reg off=%u "
+        "width=%u dst=r%u value=%lld",
+        ctx->trace_row_no, mem_off, 1u << width_code, dst,
+        (long long)s->regs_i64[dst]);
+  }
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper registration.                                               */
 /* ------------------------------------------------------------------ */
@@ -1527,6 +1612,10 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_linked_col));
   jit1_register_helper("ndb_jit_h_branch_mem_op_arg",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_mem_op_arg));
+  jit1_register_helper("ndb_jit_h_branch_f64",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_f64));
+  jit1_register_helper("ndb_jit_h_read_mem_to_reg",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_mem_to_reg));
 }
 
 /* ------------------------------------------------------------------ */

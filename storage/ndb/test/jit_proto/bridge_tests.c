@@ -3590,6 +3590,7 @@ static void test_divmod_typed_f64_reject(void) {
 /* ------------------------------------------------------------------ */
 #define EMB_READ_AGG_REG_TO_REG  43
 #define EMB_BRANCH_REG_NE_NULL_OP 11
+#define EMB_BRANCH_LT_REG_REG    14
 #define EMB_BRANCH_GE_REG_REG    17
 static uint32_t enc_emb_rar(uint32_t src_outer, uint32_t dst_emb) {
   return enc_emb_op_word(EMB_READ_AGG_REG_TO_REG,
@@ -4058,6 +4059,139 @@ static void test_branch_mem_truncated_reject(void) {
                   JIT_BRIDGE_MALFORMED, 1, EMB_BRANCH_MEM_OP_ARG);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 6 — LOAD_DOUBLE_CONST (45) + F64 compares  */
+/* and READ_*_MEM_TO_REG (49-52).                                     */
+/* ------------------------------------------------------------------ */
+#define EMB_LOAD_DOUBLE_CONST      45
+#define EMB_READ_UINT32_MEM_TO_REG 51
+#define EMB_READ_INT64_MEM_TO_REG  52
+static uint32_t enc_emb_load_double_hdr(uint32_t reg) {
+  return enc_emb_op_word(EMB_LOAD_DOUBLE_CONST, (reg & 0x7u) << 6);
+}
+static uint32_t enc_emb_read_mem(uint32_t op, uint32_t reg, uint32_t off) {
+  return enc_emb_op_word(op, ((reg & 0x7u) << 6) | (off << 16));
+}
+
+/* T75a: float column vs double literal — the plain READ_ATTR load is
+ * retroactively converted to the F64 load and the compare lowers to
+ * OP_BRANCH_F64 with both side flags set. 2.5 = 0x4004000000000000. */
+static void test_f64_compare_col_vs_literal(void) {
+  const char *name = "T75a f64_compare_col_vs_literal";
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+    enc_emb_read_attr(/*attr_id=*/3, /*reg=*/1),
+    enc_emb_load_double_hdr(/*reg=*/2),
+    0x00000000u,             /* double low  */
+    0x40040000u,             /* double high (2.5) */
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, /*left=*/1,
+                           /*right=*/2, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  /* F64 load + double const + BRANCH_F64 + EXIT(refuse) + tail. */
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_F64)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 9)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_CONST_INT)) return;
+  if (p.ops[1].imm != (int64_t)0x4004000000000000LL) {
+    mark_fail(name, "imm=%llx, want 4004000000000000",
+              (unsigned long long)p.ops[1].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_F64)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 9)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 10)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
+  if (p.ops[2].imm != (int64_t)0xA935) {   /* GE=5 | 0x30 | regs */
+    mark_fail(name, "arg=%llx, want a935",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T75b: int const vs double literal — mixed compare: the int side
+ * keeps its LC16 load and the helper converts it at runtime (left
+ * flag clear). */
+static void test_f64_compare_int_vs_literal(void) {
+  const char *name = "T75b f64_compare_int_vs_literal";
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_load_double_hdr(/*reg=*/2),
+    0x00000000u,
+    0x40040000u,
+    enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_F64)) return;
+  if (p.ops[2].imm != (int64_t)0xA922) {   /* LT=2 | 0x20 | regs */
+    mark_fail(name, "arg=%llx, want a922",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T75c: READ_UINT32_MEM_TO_REG lowers to the cold-call mem read. */
+static void test_read_mem_u32_accept(void) {
+  const char *name = "T75c read_mem_u32_accept";
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_read_mem(EMB_READ_UINT32_MEM_TO_REG, /*reg=*/1, /*off=*/4),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_READ_MEM_TO_REG)) return;
+  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 9)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 4)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c,
+                       (2u << 8) | 9u)) return;
+  mark_pass(name);
+}
+
+/* T75d: a constant offset past MAX_HEAP_OFFSET is MALFORMED (the
+ * interpreter would error the query at runtime; the fallback
+ * reproduces that). */
+static void test_read_mem_bound_reject(void) {
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_read_mem(EMB_READ_INT64_MEM_TO_REG, 1, /*off=*/65534),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T75d read_mem_bound_reject", prog, 3,
+                  JIT_BRIDGE_MALFORMED, 1, EMB_READ_INT64_MEM_TO_REG);
+}
+
+/* T75e: LOAD_DOUBLE_CONST is a reg op — rejected on the scan-filter
+ * path like the rest of the register family. */
+static void test_scan_filter_double_const_reject(void) {
+  uint32_t filter_prog[4] = {
+    enc_emb_load_double_hdr(1),
+    0x00000000u,
+    0x40040000u,
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_scan_filter_rejected("T75e scan_filter_double_const_reject",
+                              filter_prog, 4,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/1, EMB_LOAD_DOUBLE_CONST);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -4224,6 +4358,11 @@ int main(void) {
   test_branch_mem_like_reject();
   test_scan_filter_branch_mem_reject();
   test_branch_mem_truncated_reject();
+  test_f64_compare_col_vs_literal();
+  test_f64_compare_int_vs_literal();
+  test_read_mem_u32_accept();
+  test_read_mem_bound_reject();
+  test_scan_filter_double_const_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

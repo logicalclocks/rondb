@@ -3363,6 +3363,12 @@ public:
    * should fall the row back to the interpreter. */
   int evalBranchMemForJit(const Uint32 *inst);
 
+  /* ronsql_jit slice 2 item 6: raw heap-memory (cheapMemory) read for
+   * OP_READ_MEM_TO_REG. width 1/2/4 zero-extends; width 8 reads raw
+   * bits (Int64 semantics). The caller (bridge) bounds-checked the
+   * constant offset against MAX_HEAP_OFFSET at compile time. */
+  Uint64 readCheapMemForJit(Uint32 byte_off, Uint32 width);
+
 private:
 
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,

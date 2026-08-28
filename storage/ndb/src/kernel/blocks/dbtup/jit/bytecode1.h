@@ -388,7 +388,31 @@ typedef enum {
    * runtime decode failure (stale schema etc.) takes the per-row
    * fallback — the interpreter re-run produces the proper error. */
   OP_BRANCH_MEM_OP_ARG     = 66,
-  OP_KIND_MAX           = OP_BRANCH_MEM_OP_ARG
+
+  /* ronsql_jit slice 2 item 6 — F64 embedded compare (cold call).
+   * Lowers BRANCH_*_REG_REG when either side is F64-tracked (a
+   * LOAD_DOUBLE_CONST literal, or a READ_ATTR retroactively
+   * converted to the F64 load). op->imm packs the helper argument:
+   * bits 0-3 condition (EQ=0,NE,LT,LE,GT,GE), bit 4 = left side is
+   * double bits, bit 5 = right side is double bits (a clear flag
+   * means signed-i64 → double conversion at runtime, mirroring the
+   * interpreter's compareTypedRegs float arm), bits 8-11 left reg,
+   * bits 12-15 right reg. op->a/op->b duplicate the regs for the
+   * generic passes (NB reader analysis, diagnostics); op->c is the
+   * branch target. */
+  OP_BRANCH_F64            = 67,
+
+  /* ronsql_jit slice 2 item 6 — READ_UINT{8,16,32}/INT64_MEM_TO_REG
+   * (embedded ops 49-52): read from the interpreter heap
+   * (cheapMemory) at a constant byte offset into a register —
+   * RonSQL's legacy linked-value reads. op->a = dst slot, op->b =
+   * byte offset (compile-time bounds-checked against
+   * MAX_HEAP_OFFSET), op->c = (width_code << 8) | dst where
+   * width_code 0..3 = 1/2/4/8 bytes. 1/2/4-byte reads zero-extend
+   * (always < 2^33, exact under signed compares); 8-byte reads are
+   * raw Int64 — both mirror the interpreter handlers. */
+  OP_READ_MEM_TO_REG       = 68,
+  OP_KIND_MAX           = OP_READ_MEM_TO_REG
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -410,6 +434,7 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_LINKED_NE_NULL:
     case OP_BRANCH_ATTR_OP_ARG:
     case OP_BRANCH_MEM_OP_ARG:
+    case OP_BRANCH_F64:
     case OP_JUMP:
     case OP_LOAD_COL_NDB_NB:
     case OP_LOAD_COL_NDB_F64_NB:

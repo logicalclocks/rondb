@@ -196,6 +196,12 @@
  * (1 extra header word). Both lower to OP_BRANCH_MEM_OP_ARG. */
 #define BR_EMB_BRANCH_MEM_OP_ARG        38
 #define BR_EMB_BRANCH_MEM_OP_ARG_INLINE 40
+/* ronsql_jit slice 2 item 6: F64 literal + heap-memory reads. */
+#define BR_EMB_LOAD_DOUBLE_CONST        45   /* IEEE double in next 2 words */
+#define BR_EMB_READ_UINT8_MEM_TO_REG    49
+#define BR_EMB_READ_UINT16_MEM_TO_REG   50
+#define BR_EMB_READ_UINT32_MEM_TO_REG   51
+#define BR_EMB_READ_INT64_MEM_TO_REG    52
 /* Highest BinaryCondition the JIT lowers (EQ..GE); LIKE/mask reject. */
 #define BR_EMB_MAX_BINARY_COND       5
 /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
@@ -320,6 +326,11 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
     case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
     case BR_EMB_READ_LINKED_COL_TO_REG:return "READ_LINKED_COLUMN_TO_REG";
+    case BR_EMB_LOAD_DOUBLE_CONST:     return "LOAD_DOUBLE_CONST";
+    case BR_EMB_READ_UINT8_MEM_TO_REG: return "READ_UINT8_MEM_TO_REG";
+    case BR_EMB_READ_UINT16_MEM_TO_REG:return "READ_UINT16_MEM_TO_REG";
+    case BR_EMB_READ_UINT32_MEM_TO_REG:return "READ_UINT32_MEM_TO_REG";
+    case BR_EMB_READ_INT64_MEM_TO_REG: return "READ_INT64_MEM_TO_REG";
     case BR_EMB_BRANCH_MEM_OP_ARG:     return "BRANCH_MEM_OP_ARG";
     case BR_EMB_BRANCH_MEM_OP_ARG_INLINE:
       return "BRANCH_MEM_OP_ARG_INLINE_TYPE";
@@ -355,6 +366,8 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_LOAD_LINKED_TO_MEM:   return "load_linked_to_mem";
     case OP_LOAD_LINKED_COL:      return "load_linked_col";
     case OP_BRANCH_MEM_OP_ARG:    return "branch_mem_op_arg";
+    case OP_BRANCH_F64:           return "branch_f64";
+    case OP_READ_MEM_TO_REG:      return "read_mem_to_reg";
     case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
     case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
     case OP_ADD_INT_INT_CHECKED:  return "add_int_int_checked";
@@ -608,6 +621,20 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
           if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
           pc += 3;
           break;
+        /* ronsql_jit slice 2 item 6: double const writes like
+         * LOAD_CONST64; the heap-memory reads write their dst and
+         * read no registers. */
+        case BR_EMB_LOAD_DOUBLE_CONST:
+          if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
+          pc += 3;
+          break;
+        case BR_EMB_READ_UINT8_MEM_TO_REG:
+        case BR_EMB_READ_UINT16_MEM_TO_REG:
+        case BR_EMB_READ_UINT32_MEM_TO_REG:
+        case BR_EMB_READ_INT64_MEM_TO_REG:
+          if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
+          pc += 1;
+          break;
         /* ronsql_jit slice 2 item 3: the unconditional jump has ONE
          * successor — the target. (A zero offset stalls on visited[]
          * and ends the path; translate rejects it as MALFORMED before
@@ -777,6 +804,18 @@ static JitBridgeReason translate_embedded_block(
   uint8_t  read_attr_dst = 0;
   uint16_t read_attr_op_idx = 0;
 
+  /* ronsql_jit slice 2 item 6: per-embedded-reg F64 tracking.
+   * emb_reg_f64[r] — the reg holds double BITS (LOAD_DOUBLE_CONST,
+   * or a READ_ATTR retroactively converted to the F64 load).
+   * emb_reg_read_attr[r] — output-op index of the plain
+   * OP_LOAD_COL_NDB that last defined r (-1 otherwise); lets a
+   * later F64 compare convert that load in place. Every reg write
+   * updates both. */
+  uint8_t emb_reg_f64[8];
+  int16_t emb_reg_read_attr[8];
+  memset(emb_reg_f64, 0, sizeof(emb_reg_f64));
+  for (int tr = 0; tr < 8; ++tr) emb_reg_read_attr[tr] = -1;
+
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
   while (emb_pc < emb_len) {
@@ -847,6 +886,8 @@ static JitBridgeReason translate_embedded_block(
         read_attr_pending = 1;
         read_attr_dst = (uint8_t)dst_reg;
         read_attr_op_idx = out_op_idx;
+        emb_reg_f64[dst_reg] = 0;
+        emb_reg_read_attr[dst_reg] = (int16_t)out_op_idx;
         emb_pc += 1;
         break;
       }
@@ -1081,6 +1122,8 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         const16_valid[dst_emb] = 0;
+        emb_reg_f64[dst_emb] = 0;
+        emb_reg_read_attr[dst_emb] = -1;
         emb_pc += 1;
         break;
       }
@@ -1144,6 +1187,8 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         const16_valid[dst_emb] = 0;
+        emb_reg_f64[dst_emb] = 0;
+        emb_reg_read_attr[dst_emb] = -1;
         emb_pc += 1;
         break;
       }
@@ -1186,7 +1231,111 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         const16_valid[dst_reg] = 0;
+        emb_reg_f64[dst_reg] = 0;
+        emb_reg_read_attr[dst_reg] = -1;
         emb_pc += 3;
+        break;
+      }
+
+      case BR_EMB_LOAD_DOUBLE_CONST: {
+        /* ronsql_jit slice 2 item 6: IEEE double immediate (2 data
+         * words, low first — same shape as LOAD_CONST64). F64 values
+         * live bit-cast in regs_i64, so this IS OP_LOAD_CONST_INT
+         * with the double's bit pattern; the F64 tracking makes a
+         * following REG_REG compare take the OP_BRANCH_F64 arm. */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        if (emb_pc + 3 > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t dst_reg = (inst >> 6) & 0x7u;
+        uint64_t lo = emb_prog[emb_pc + 1];
+        uint64_t hi = emb_prog[emb_pc + 2];
+        int64_t  imm = (int64_t)(lo | (hi << 32));
+        if (!emit_op(out_prog, OP_LOAD_CONST_INT,
+                     (uint8_t)(BC_EMB_REG_BASE + dst_reg), 0, 0,
+                     imm)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        const16_valid[dst_reg] = 0;
+        emb_reg_f64[dst_reg] = 1;
+        emb_reg_read_attr[dst_reg] = -1;
+        emb_pc += 3;
+        break;
+      }
+
+      case BR_EMB_READ_UINT8_MEM_TO_REG:
+      case BR_EMB_READ_UINT16_MEM_TO_REG:
+      case BR_EMB_READ_UINT32_MEM_TO_REG:
+      case BR_EMB_READ_INT64_MEM_TO_REG: {
+        /* ronsql_jit slice 2 item 6: heap-memory read at a constant
+         * byte offset (RonSQL's legacy linked-value reads after
+         * READ_LINKED_TO_MEM). Zero-extension for 1/2/4 bytes and
+         * raw Int64 for 8 mirror the interpreter handlers; both are
+         * exact under the signed-i64 compare model (u32 < 2^33).
+         * The offset is a wire constant, so the interpreter's
+         * runtime MAX_HEAP_OFFSET check becomes a compile-time
+         * bound: out-of-range programs reject (the interpreter
+         * would error the query — the fallback reproduces that). */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t dst_reg = (inst >> 6) & 0x7u;
+        uint32_t mem_off = inst >> 16;
+        uint32_t width_code;
+        switch (emb_op) {
+          case BR_EMB_READ_UINT8_MEM_TO_REG:  width_code = 0; break;
+          case BR_EMB_READ_UINT16_MEM_TO_REG: width_code = 1; break;
+          case BR_EMB_READ_UINT32_MEM_TO_REG: width_code = 2; break;
+          default:                            width_code = 3; break;
+        }
+        if (mem_off + (1u << width_code) - 1u > 65535u) {
+          /* MAX_HEAP_OFFSET (DbtupExecQuery.cpp). */
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        if (!emit_op(out_prog, OP_READ_MEM_TO_REG,
+                     (uint8_t)(BC_EMB_REG_BASE + dst_reg),
+                     (uint16_t)mem_off,
+                     (uint16_t)((width_code << 8) |
+                                (BC_EMB_REG_BASE + dst_reg)),
+                     0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        const16_valid[dst_reg] = 0;
+        emb_reg_f64[dst_reg] = 0;
+        emb_reg_read_attr[dst_reg] = -1;
+        emb_pc += 1;
         break;
       }
 
@@ -1235,6 +1384,57 @@ static JitBridgeReason translate_embedded_block(
         }
         uint32_t left_reg  = (inst >> 6) & 0x7u;
         uint32_t right_reg = (inst >> 9) & 0x7u;
+        /* ronsql_jit slice 2 item 6: F64 arm. If either side is
+         * F64-tracked, the compare is a double compare (the
+         * interpreter's compareTypedRegs promotes the other side to
+         * double). A non-F64 side whose defining op is a plain
+         * READ_ATTR load is retroactively converted to the F64 load
+         * (same a/c operand layout; its helper per-row-falls-back on
+         * non-FLOAT/DOUBLE declared types, so a mistyped program
+         * degrades per row instead of miscomparing); any other int
+         * side (consts, imports, mem reads) converts signed-i64 →
+         * double at runtime via the helper flags. */
+        if (emb_reg_f64[left_reg] || emb_reg_f64[right_reg]) {
+          uint32_t sides[2] = { left_reg, right_reg };
+          for (int si = 0; si < 2; ++si) {
+            uint32_t r = sides[si];
+            if (!emb_reg_f64[r] && emb_reg_read_attr[r] >= 0 &&
+                out_prog->ops[emb_reg_read_attr[r]].kind ==
+                    OP_LOAD_COL_NDB) {
+              out_prog->ops[emb_reg_read_attr[r]].kind =
+                  OP_LOAD_COL_NDB_F64;
+              emb_reg_f64[r] = 1;
+            }
+          }
+          uint32_t cond;
+          switch (emb_op) {
+            case BR_EMB_BRANCH_EQ_REG_REG: cond = 0; break;
+            case BR_EMB_BRANCH_NE_REG_REG: cond = 1; break;
+            case BR_EMB_BRANCH_LT_REG_REG: cond = 2; break;
+            case BR_EMB_BRANCH_LE_REG_REG: cond = 3; break;
+            case BR_EMB_BRANCH_GT_REG_REG: cond = 4; break;
+            default:                       cond = 5; break;
+          }
+          uint32_t arg = cond |
+              (emb_reg_f64[left_reg]  ? 0x10u : 0u) |
+              (emb_reg_f64[right_reg] ? 0x20u : 0u) |
+              ((BC_EMB_REG_BASE + left_reg)  << 8) |
+              ((BC_EMB_REG_BASE + right_reg) << 12);
+          pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
+          if (!emit_op(out_prog, OP_BRANCH_F64,
+                       (uint8_t)(BC_EMB_REG_BASE + left_reg),
+                       (uint16_t)(BC_EMB_REG_BASE + right_reg),
+                       /*c=*/0, (int64_t)arg)) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          emb_pc += 1;
+          break;
+        }
         uint8_t out_kind;
         switch (emb_op) {
           case BR_EMB_BRANCH_EQ_REG_REG: out_kind = OP_BRANCH_EQ_INT_INT; break;
@@ -1685,6 +1885,8 @@ static JitBridgeReason translate_embedded_block(
         }
         const16_by_reg[reg] = (uint16_t)const16;
         const16_valid[reg] = 1;
+        emb_reg_f64[reg] = 0;
+        emb_reg_read_attr[reg] = -1;
         emb_pc += 1;
         break;
       }
@@ -2060,6 +2262,9 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
      * representable around it). */
     case OP_SET_REG_NULL_FB:
       return op->a == reg;
+    /* ronsql_jit slice 2 item 6: the F64 compare reads both regs. */
+    case OP_BRANCH_F64:
+      return op->a == reg || op->b == reg;
     default:
       return 0;
   }
@@ -2082,6 +2287,7 @@ static int nb_op_written_reg(const Op *op) {
     case OP_LOAD_COL_NDB_U64_NB:
     case OP_LOAD_COL_NDB_DEC:
     case OP_LOAD_LINKED_COL:
+    case OP_READ_MEM_TO_REG:
     case OP_MOV_INT_INT:
     case OP_ADD_INT_INT:
     case OP_MINUS_INT_INT:
