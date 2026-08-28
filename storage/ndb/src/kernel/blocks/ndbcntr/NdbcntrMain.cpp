@@ -2057,6 +2057,14 @@ void Ndbcntr::execCM_ADD_REP(Signal *signal) {
   if (m_restart_barrier_waiting &&
       !ndbd_restart_phase_110_barrier(getNodeInfo(nodeId).m_version)) {
     jam();
+    /**
+     * Mixed-version fail-open policy: an old node begins a restart
+     * while this node is parked. It cannot report the barrier, and
+     * waiting through its entire restart under mixed-version rules
+     * has little value, so complete the start immediately instead,
+     * as on a node failure with old members present
+     * (execNODE_FAILREP).
+     */
     g_eventLogger->info(
         "Node %u, which does not support the restart barrier, joined"
         " while this node was waiting; completing start without waiting",
@@ -3481,12 +3489,26 @@ void Ndbcntr::wait_sp_rep(Signal *signal) {
  * SUMA handover completed in phase 101) but before it reports started.
  * While parked the node still reports "starting" to the MGM server,
  * which keeps its Kubernetes pod not-ready and thereby stops further
- * pod restarts. The NDBCNTR master releases all parked nodes together
- * when every node currently in restart state has reached the barrier.
+ * pod restarts. The barrier is released when every node currently in
+ * restart state has reached it, decided in two redundant ways: the
+ * NDBCNTR master sends a Grant to all parked nodes, and every parked
+ * node also evaluates the same condition locally and releases itself
+ * (check_restart_barrier). The local release is what makes the
+ * barrier work in a mixed-version cluster, where the master is an
+ * old-version node for the entire rolling upgrade and never sends a
+ * Grant. In mixed clusters the barrier-entry report goes only to the
+ * barrier-capable members, and the barrier fails open on the first
+ * node failure while an old member remains (or on an old node
+ * joining), so old failure-handling code is never exposed to a
+ * long-lived recovered-but-starting node; a master failure whose
+ * successor is old still terminates the parked node in DBDIH, as
+ * before the barrier existed.
  *
- * The barrier-entry report is broadcast to all NDBCNTRs (not only the
- * master) into c_recoveredNodeSet, so that a master taking over after
- * a master failure already has the reports of all barrier waiters.
+ * The barrier-entry report is broadcast to all barrier-capable
+ * NDBCNTRs (not only the master) into c_recoveredNodeSet, so that a
+ * master taking over after a master failure already has the reports
+ * of all barrier waiters, and every parked node can evaluate its own
+ * release.
  * The release condition is evaluated over is_node_restarting(), which
  * covers the whole restart from QMGR membership (CM_ADD_REP) until
  * the CNTR_START_REP broadcast, but excludes nodes merely queued in
@@ -3502,7 +3524,7 @@ void Ndbcntr::wait_sp_rep(Signal *signal) {
  *   | (restore, REDO,     | (slower)           |                |
  *   |  copy frag, SUMA)   |                    |                |
  *   |                     |                    |                |
- *   | STTOR sp 110: all 6 members barrier-capable -> PARK       |
+ *   | STTOR sp 110 -> PARK (report to barrier-capable members)  |
  *   |   m_restart_barrier_waiting = true                        |
  *   |   NodeState = SL_STARTING sp 110                          |
  *   |   (MGM shows "starting", k8s pod not ready,               |
@@ -3553,27 +3575,34 @@ void Ndbcntr::handle_start_phase_110(Signal *signal) {
   }
 
   NdbNodeBitmask unsupportedNodes;
-  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
-    if (c_clusterNodes.get(n) &&
-        !ndbd_restart_phase_110_barrier(getNodeInfo(n).m_version)) {
-      unsupportedNodes.set(n);
-    }
-  }
+  get_barrier_incapable_nodes(unsupportedNodes);
   if (!unsupportedNodes.isclear()) {
     jam();
     /**
-     * Every current data-node member must understand both the barrier
-     * report and the recovered-node semantics. Any member can become
-     * master or president after a failure, so checking only the current
-     * master is insufficient in a mixed-version cluster.
+     * Mixed-version cluster, typically a rolling upgrade from a
+     * pre-barrier release. The old members neither understand the
+     * barrier report nor coordinate a release, and the master is one
+     * of them for the entire upgrade (mastership passes to the next
+     * oldest, still old, node). Park anyway, so that concurrent
+     * restarts during the upgrade are still serialized, with three
+     * adjustments:
+     * - the barrier-entry report below goes to the barrier-capable
+     *   members only (an old execCNTR_WAITREP hits systemErrorLab on
+     *   the unknown waitpoint),
+     * - the release is evaluated locally on every parked node in
+     *   check_restart_barrier(), since an old master never sends a
+     *   Grant,
+     * - the barrier fails open on the first node failure while an old
+     *   member remains (execNODE_FAILREP) and when an old node joins
+     *   (execCM_ADD_REP), so old failure-handling code never runs
+     *   against a long-lived recovered-but-starting node.
      */
     char buf[NdbNodeBitmask::TextLength + 1];
     g_eventLogger->info(
-        "Data nodes %s do not support the restart barrier,"
-        " completing start without waiting",
+        "Data nodes %s do not support the restart barrier, parking"
+        " with mixed-version semantics (release evaluated locally,"
+        " any node failure completes the start immediately)",
         unsupportedNodes.getText(buf));
-    sendSttorry(signal);
-    return;
   }
 
   m_restart_barrier_waiting = true;
@@ -3593,15 +3622,18 @@ void Ndbcntr::handle_start_phase_110(Signal *signal) {
   infoEvent("Waiting at restart barrier for all restarting nodes");
 
   /**
-   * Every current member supports the barrier (checked above), so
-   * the barrier-entry report goes to all of them.
+   * The barrier-entry report goes to the barrier-capable members
+   * only (which includes this node itself): an old execCNTR_WAITREP
+   * dies in systemErrorLab on the unknown waitpoint.
    */
   CntrWaitRep *rep = (CntrWaitRep *)signal->getDataPtrSend();
   rep->nodeId = getOwnNodeId();
   rep->waitPoint = CntrWaitRep::ZWAITPOINT_RESTART_BARRIER;
   rep->request = CntrWaitRep::WaitFor;
   rep->sp = ZSTART_PHASE_110;
-  NodeReceiverGroup rg(NDBCNTR, c_clusterNodes);
+  NdbNodeBitmask capableNodes = c_clusterNodes;
+  capableNodes.bitANDC(unsupportedNodes);
+  NodeReceiverGroup rg(NDBCNTR, capableNodes);
   sendSignal(rg, GSN_CNTR_WAITREP, signal, CntrWaitRep::SignalLength, JBB);
 }
 
@@ -3632,11 +3664,52 @@ void Ndbcntr::restart_barrier_rep(Signal *signal) {
   ndbabort();
 }
 
+void Ndbcntr::get_barrier_incapable_nodes(NdbNodeBitmask &incapable) {
+  incapable.clear();
+  for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+    if (c_clusterNodes.get(n) &&
+        !ndbd_restart_phase_110_barrier(getNodeInfo(n).m_version)) {
+      incapable.set(n);
+    }
+  }
+}
+
 void Ndbcntr::check_restart_barrier(Signal *signal) {
+  if (m_restart_barrier_waiting && !is_any_node_below_restart_barrier()) {
+    jam();
+    /**
+     * Local release: every barrier-capable node receives every
+     * barrier-entry report (c_recoveredNodeSet) and every
+     * CNTR_START_REP broadcast (c_startedNodeSet), so a parked node
+     * can conclude on its own that no restarting node remains below
+     * the barrier. This is the release path under an old-version
+     * master, which does not know the barrier protocol (rolling
+     * upgrade from a pre-barrier release). Under a barrier-capable
+     * master it merely anticipates the Grant. The master Grant below
+     * is kept nonetheless: the first barrier versions release on
+     * Grant only, and the master evaluation is sharper, since
+     * c_start.m_waiting is master-local a non-master parked node
+     * counts a queued same-node-group waiter as restarting and
+     * over-waits, which the Grant resolves (under an old master the
+     * RestartBarrierTimeout is the backstop for that case).
+     */
+    leave_restart_barrier(signal, "all restarting nodes have recovered");
+  }
   if (cmasterNodeId != getOwnNodeId()) {
     jam();
     return;
   }
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(1027)) {
+    jam();
+    /**
+     * Suppress the master Grant so that tests can verify parked
+     * nodes complete through the local release above, the release
+     * path used when the master is an old-version node.
+     */
+    return;
+  }
+#endif
   NdbNodeBitmask waiters;
   for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
     if (!is_node_restarting(n)) continue;
@@ -3842,19 +3915,15 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
    * handling completes) instead of the short-circuit reply used by
    * nodes that are still restarting (RONDB-1096).
    *
-   * No mixed-version check is needed to survive here: being parked
-   * implies that every data node in the cluster supports the restart
-   * barrier, so every survivor of this failure, including a successor
-   * master, can handle a restarting node that outlives it. The
-   * invariant holds because handle_start_phase_110 refuses to park
-   * while any incompatible node is a member, execCM_ADD_REP unparks
-   * the moment one joins (QMGR delivers CM_ADD_REP before any later
-   * cluster event, so there is no window where we act as parked in a
-   * mixed cluster), and a member cannot change version without
-   * rejoining. A recovered node that is NOT parked (it bailed out of
-   * parking in a mixed cluster or already left the barrier) can face
-   * an old-version successor master; that case keeps the pre-barrier
-   * behaviour and dies in Dbdih::execNODE_FAILREP on master takeover.
+   * No mixed-version decision is made at this early fork. A recovered
+   * node must take the full failure-handling path so that QMGR, DBDIH,
+   * and the other blocks see the failure. Near the end of this method,
+   * a parked node fails the barrier open if an incapable member remains.
+   * The exception is a master failure whose successor is incapable:
+   * NDBCNTR remains parked while DBDIH deliberately terminates the node
+   * with NDBD_EXIT_MASTER_FAILURE_DURING_NR. This preserves pre-barrier
+   * master-takeover behaviour because an old successor cannot handle a
+   * surviving restarting node.
    */
   const NodeState &st = getNodeState();
   if (st.startLevel == st.SL_STARTING && !st.getNodeRecovered()) {
@@ -3993,19 +4062,48 @@ void Ndbcntr::execNODE_FAILREP(Signal *signal) {
    * barrier reports are broadcast to all NDBCNTRs so we already have
    * them in c_recoveredNodeSet.
    */
-  if (tMasterFailed && m_restart_barrier_waiting &&
-      !ndbd_restart_phase_110_barrier(
-          getNodeInfo(cmasterNodeId).m_version)) {
-    jam();
-    g_eventLogger->info(
-        "New master node %u does not support the restart barrier,"
-        " completing start without waiting",
-        cmasterNodeId);
-    leave_restart_barrier(
-        signal, "new master does not support the restart barrier");
-  } else {
-    check_restart_barrier(signal);
+  if (m_restart_barrier_waiting) {
+    NdbNodeBitmask unsupportedNodes;
+    get_barrier_incapable_nodes(unsupportedNodes);
+    if (!unsupportedNodes.isclear()) {
+      if (tMasterFailed &&
+          !ndbd_restart_phase_110_barrier(
+              getNodeInfo(cmasterNodeId).m_version)) {
+        jam();
+        /**
+         * The successor master does not support the restart barrier.
+         * DBDIH terminates this node in its own NODE_FAILREP handling
+         * (NDBD_EXIT_MASTER_FAILURE_DURING_NR): an old master cannot
+         * handle a surviving restarting node. Keep the pre-barrier
+         * behaviour and await that termination, do not race it with a
+         * start completion.
+         */
+        g_eventLogger->info(
+            "Master failed and new master node %u does not support the"
+            " restart barrier, node will be terminated by DBDIH",
+            cmasterNodeId);
+        return;
+      }
+      jam();
+      /**
+       * Mixed-version fail-open policy: the old members were never
+       * hardened for failure handling with a long-lived
+       * recovered-but-starting node present, so complete the start
+       * immediately, reverting to pre-barrier behaviour for this
+       * failure. If the failed node was the last old member the
+       * member set is homogeneous again and this branch is not taken.
+       */
+      char buf[NdbNodeBitmask::TextLength + 1];
+      g_eventLogger->info(
+          "Node failure while data nodes %s without restart barrier"
+          " support are members, completing start without waiting",
+          unsupportedNodes.getText(buf));
+      leave_restart_barrier(signal,
+                            "node failure in a mixed-version cluster");
+      return;
+    }
   }
+  check_restart_barrier(signal);
 
   return;
 }  // Ndbcntr::execNODE_FAILREP()
@@ -4497,6 +4595,12 @@ void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
     infoEvent("Cntr: restart barrier waiting = %u, recovered nodes: %s",
               (Uint32)m_restart_barrier_waiting,
               c_recoveredNodeSet.getText(buf));
+    NdbNodeBitmask incapable;
+    get_barrier_incapable_nodes(incapable);
+    if (!incapable.isclear()) {
+      infoEvent("Cntr: members without restart barrier support: %s",
+                incapable.getText(buf));
+    }
   }
 
   if (arg == DumpStateOrd::NdbcntrTestStopOnError) {

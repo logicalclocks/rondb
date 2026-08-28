@@ -2758,6 +2758,7 @@ void Qmgr::execCM_ADD(Signal *signal) {
       break;
     case CmAdd::AddCommit: {
       jam();
+      CRASH_INSERTION(962);
       ndbrequire(addNodePtr.p->phase == ZSTARTING);
       addNodePtr.p->phase = ZRUNNING;
       DEB_STARTUP(("2:phase(%u) = ZRUNNING", addNodePtr.i));
@@ -5914,6 +5915,23 @@ void Qmgr::failReportLab(Signal *signal, Uint16 aFailedNode,
   ptrCheckGuard(myNodePtr, MAX_NDB_NODES, nodeRec);
   if (myNodePtr.p->phase != ZRUNNING) {
     jam();
+    /**
+     * A node that is joining receives FAIL_REP from the running members
+     * as soon as they have committed it as a member (CM_ADD(AddCommit)),
+     * which happens before the node regards itself as running
+     * (CM_ADD(CommitNew)). Receiving FAIL_REP in that window is normal,
+     * so die with the same graceful error as a not-yet-started node
+     * instead of a failed ndbrequire.
+     */
+    if (myNodePtr.p->phase == ZSTARTING || myNodePtr.p->phase == ZINIT) {
+      jam();
+      char buf[100];
+      BaseString::snprintf(buf, sizeof(buf),
+                           "Our node failed since Node %d failed before we"
+                           " joined the cluster",
+                           failedNodePtr.i);
+      progError(__LINE__, NDBD_EXIT_SR_OTHERNODEFAILED, buf);
+    }
     systemErrorLab(signal, __LINE__);
     return;
   }  // if
@@ -6075,6 +6093,18 @@ void Qmgr::execPREP_FAILREQ(Signal *signal) {
   ptrCheckGuard(myNodePtr, MAX_NDB_NODES, nodeRec);
   if (myNodePtr.p->phase != ZRUNNING) {
     jam();
+    /**
+     * Same window as in failReportLab: the president includes a node in
+     * the exclusion protocol as soon as the members have committed it
+     * (CM_ADD(AddCommit)), so PREP_FAILREQ can reach us before we regard
+     * ourselves as running. Die gracefully instead of asserting.
+     */
+    if (myNodePtr.p->phase == ZSTARTING || myNodePtr.p->phase == ZINIT) {
+      jam();
+      progError(__LINE__, NDBD_EXIT_SR_OTHERNODEFAILED,
+                "Our node failed since other nodes failed before we"
+                " joined the cluster");
+    }
     systemErrorLab(signal, __LINE__);
     return;
   }  // if
