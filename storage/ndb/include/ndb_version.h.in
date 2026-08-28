@@ -593,16 +593,33 @@ ndbd_send_started_bitmask(Uint32 x)
 /**
  * RonDB: node restarts park at the restart barrier in start phase 110
  * until all concurrently restarting nodes have completed recovery
- * (RONDB-1096). The barrier is only used when the NDBCNTR master and
- * the peer NDBCNTRs support it; against older nodes we fail open and
- * complete the start immediately as before.
+ * (RONDB-1096). The capability gates, per node:
+ * - whether a node understands the ZWAITPOINT_RESTART_BARRIER
+ *   CNTR_WAITREP report: it must never be sent to an older node,
+ *   which dies on the unknown waitpoint,
+ * - whether a restarting node surviving a master failure can face the
+ *   successor as master: an incapable successor terminates it
+ *   (Dbdih::execNODE_FAILREP), pre-barrier behaviour.
+ * The barrier ships in 25.10.18 and in 26.2.9 (the rondb-helm
+ * rondb.supportsRestartBarrier helper uses the same versions). A
+ * lower version must never be assumed to support the CNTR_WAITREP
+ * waitpoint.
  *
- * 26.2.9 is the first release in the 26.02 series that ships
- * RONDB-1096 (the rondb-helm rondb.supportsRestartBarrier helper must
- * use the same version). Earlier 26.02 releases, and every 25.10
- * release when seen from this series, are treated as not supporting
- * the barrier: a lower version must never be assumed to support the
- * new CNTR_WAITREP waitpoint, and against such nodes we fail open.
+ * Mixed-version upgrade support — parking even when older members
+ * exist: the report sent to the capable members only, the release
+ * evaluated locally on each parked node instead of relying on a
+ * Grant from the (old) master, and fail-open on the first node
+ * failure while an old member remains — is a later addition (26.2.10
+ * in the 26.02 series). It needs no capability gate of its own: all
+ * of its behaviours are local decisions of the restarting node, and
+ * every peer interaction it relies on (waitpoint understanding,
+ * master Grant, successor-master competence) is covered by this base
+ * gate. Operational consequence: a rolling upgrade from a
+ * pre-barrier release is protected by the barrier only when the
+ * target version carries the mixed-version support — 25.10.16 ->
+ * 26.2.10 is smooth, 25.10.16 -> 26.2.9 is not (its restarters fail
+ * open in a mixed cluster), while 25.10.18 -> 26.2.9 is smooth (all
+ * members barrier-capable, master Grant applies).
  */
 #define NDBD_RESTART_PHASE_110_BARRIER_2510 NDB_MAKE_VERSION(25,10,18)
 #define NDBD_RESTART_PHASE_110_BARRIER NDB_MAKE_VERSION(26,2,9)
