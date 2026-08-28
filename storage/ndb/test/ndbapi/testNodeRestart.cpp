@@ -10858,6 +10858,252 @@ int runTcTakeOverConfPartialBroadcast(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 /**
+ * Wait for the next checkpoint log event of type `type` on `handle`.
+ * Returns true and fills in `event` if it arrives within timeoutSec.
+ */
+static bool waitLcpEvent(NdbLogEventHandle handle, Ndb_logevent_type type,
+                         unsigned timeoutSec, struct ndb_logevent &event) {
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  while (NdbTick_CurrentMillisecond() - start < Uint64(timeoutSec) * 1000) {
+    const int rc = ndb_logevent_get_next(handle, &event, 1000);
+    if (rc < 0) return false;
+    if (rc > 0 && event.type == type) return true;
+  }
+  return false;
+}
+
+/**
+ * Make sure that no LCP is in progress: drive one LCP to completion
+ * and then check that no further LCP starts right after it (an LCP
+ * that was already running when this is called makes the immediate
+ * LCP start queue up a second one behind it).
+ */
+static int waitLcpIdle(NdbRestarter &res, NdbLogEventHandle handle) {
+  int dump[] = {DumpStateOrd::DihStartLcpImmediately};
+  struct ndb_logevent event;
+  CHECK(res.dumpStateAllNodes(dump, 1) == 0, "Failed to start an LCP");
+  CHECK(waitLcpEvent(handle, NDB_LE_LocalCheckpointCompleted, 300, event),
+        "LCP did not complete");
+  while (waitLcpEvent(handle, NDB_LE_LocalCheckpointStarted, 5, event)) {
+    ndbout_c("Waiting for LCP %u to complete",
+             event.LocalCheckpointStarted.lci);
+    CHECK(waitLcpEvent(handle, NDB_LE_LocalCheckpointCompleted, 300, event),
+          "LCP did not complete");
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Fail the LCP participant `victim` while the DIH master is still
+ * waiting for its START_LCP_CONF, and verify that the master and the
+ * other survivors stay up and that the LCP completes.
+ *
+ * DBDIH error insert 7236 makes the victim delay the end of its
+ * START_LCP_REQ handling (the last CONTINUEB(ZINIT_LCP) of
+ * initLcpLab) by 20 seconds, so its START_LCP_CONF stays outstanding
+ * at the master after all the other participants have confirmed. The
+ * victim is stopped with abort inside that window.
+ *
+ * On a broken build the master's NODE_FAILREP handling sees that the
+ * victim was an LCP participant and calls startNextChkpt() right away,
+ * although the START_LCP_REQ handshake is not complete. The synthetic
+ * START_LCP_CONF that the same NODE_FAILREP handling queues for the
+ * victim then completes the handshake, and startLcpRoundLoopLab fails
+ * ndbrequire(noOfStartedChkpt == 0) for the first live node (error
+ * 2341 in the master) if the premature call started any fragment
+ * checkpoints.
+ *
+ * Whether it does depends on the master's m_allReplicasQueuedLQH,
+ * which is only cleared in startLcpRoundLoopLab and is filled as the
+ * LCP round proceeds:
+ *
+ * - freshMaster: the current master is stopped with abort first and
+ *   the LCP is the first one the new master starts (the observed
+ *   production sequence). The new master has never run an LCP round
+ *   as master, its bitmask is empty, the premature startNextChkpt()
+ *   sends LCP_FRAG_ORD to the surviving LQHs and the master crashes.
+ * - !freshMaster: the master has completed an LCP round with the same
+ *   participants and still has all of them in the bitmask. The
+ *   premature call takes the allReplicaCheckpointsQueued branch and
+ *   sends nothing, since m_LAST_LCP_FRAG_ORD is empty between LCPs.
+ *   The bug is masked here; the case guards the normal path.
+ *
+ * The nodes stopped by this function are appended to `stopped`.
+ */
+static int lcpStartParticipantFail(NdbRestarter &res,
+                                   NdbLogEventHandle handle, bool freshMaster,
+                                   int master, int nextMaster, int victim,
+                                   int *stopped, int &numStopped) {
+  /**
+   * Start from an LCP idle cluster: with an LCP in progress the error
+   * insert could hit the wrong LCP, and a new master would take over
+   * an active LCP instead of starting one. DUMP 7099 also leaves the
+   * non-masters with an LCP counter that makes a new master start an
+   * LCP as soon as it has taken over.
+   */
+  ndbout_c("Waiting for the cluster to become LCP idle");
+  if (waitLcpIdle(res, handle) != NDBT_OK) return NDBT_FAILED;
+
+  /* Victim: delay the START_LCP_CONF of the next LCP by 20 seconds */
+  CHECK(res.insertErrorInNode(victim, 7236) == 0, "EI 7236 failed");
+
+  struct ndb_logevent event;
+  bool lcpStarted = false;
+  if (freshMaster) {
+    ndbout_c("Stopping master %d with abort", master);
+    CHECK(res.restartOneDbNode(master, /* initial */ false,
+                               /* nostart */ true, /* abort */ true) == 0,
+          "Failed to stop the master");
+    stopped[numStopped++] = master;
+    master = nextMaster;
+
+    /* The new master normally starts an LCP right after taking over */
+    lcpStarted =
+        waitLcpEvent(handle, NDB_LE_LocalCheckpointStarted, 15, event);
+  }
+  if (!lcpStarted) {
+    /* DUMP 7099 only acts on the master, so send it to all nodes */
+    int dump[] = {DumpStateOrd::DihStartLcpImmediately};
+    CHECK(res.dumpStateAllNodes(dump, 1) == 0, "Failed to start an LCP");
+    CHECK(waitLcpEvent(handle, NDB_LE_LocalCheckpointStarted, 60, event),
+          "LCP did not start");
+  }
+  const Uint32 lcpId = event.LocalCheckpointStarted.lci;
+  ndbout_c("LCP %u started, master %d now waits for START_LCP_CONF", lcpId,
+           master);
+
+  /**
+   * LocalCheckpointStarted is reported before the master sends
+   * START_LCP_REQ. Give it time to send the requests and the other
+   * participants time to confirm; the victim's confirmation is 20
+   * seconds away, so the master is now waiting for the victim alone.
+   */
+  NdbSleep_SecSleep(3);
+
+  ndbout_c("Stopping LCP participant %d with abort", victim);
+  CHECK(res.restartOneDbNode(victim, /* initial */ false, /* nostart */ true,
+                             /* abort */ true) == 0,
+        "Failed to stop the victim");
+  stopped[numStopped++] = victim;
+  CHECK(res.waitNodesNoStart(stopped, numStopped) == 0,
+        "Stopped nodes did not reach nostart");
+
+  /**
+   * Watch the survivors while the master handles the victim's failure
+   * and the LCP runs to completion.
+   */
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  bool lcpCompleted = false;
+  while (NdbTick_CurrentMillisecond() - start < Uint64(300) * 1000) {
+    const int rc = ndb_logevent_get_next(handle, &event, 1000);
+    CHECK(rc >= 0, "Failed to read log events");
+    for (int i = 0; i < res.getNumDbNodes(); i++) {
+      const int node = res.getDbNodeId(i);
+      bool isStopped = false;
+      for (int j = 0; j < numStopped; j++) {
+        if (stopped[j] == node) isStopped = true;
+      }
+      if (isStopped) continue;
+      if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
+        g_err << "Node " << node << " is no longer started: it crashed"
+              << " or restarted when LCP participant " << victim
+              << " failed during the START_LCP_REQ handshake of LCP "
+              << lcpId << " (master " << master << ")" << endl;
+        return NDBT_FAILED;
+      }
+    }
+    if (rc > 0 && event.type == NDB_LE_LocalCheckpointCompleted &&
+        event.LocalCheckpointCompleted.lci >= lcpId) {
+      lcpCompleted = true;
+      break;
+    }
+  }
+  CHECK(lcpCompleted, "LCP did not complete after the participant failure");
+  ndbout_c("LCP %u completed, master %d still started", lcpId, master);
+  return NDBT_OK;
+}
+
+/**
+ * Reproduce a DIH master crash when an LCP participant fails while the
+ * master is still waiting for its START_LCP_CONF (see
+ * lcpStartParticipantFail above).
+ *
+ * LcpStartParticipantFail (FreshMaster=1) stops the master first so
+ * that the LCP is the first one started by a master that has just
+ * taken over. This is the production sequence and it triggers the bug.
+ *
+ * LcpStartParticipantFailSettledMaster (FreshMaster=0) fails a
+ * participant of an LCP started by a master that has already run an
+ * LCP round. The bug is masked in this state; the case guards the
+ * normal path.
+ */
+int runLcpStartParticipantFail(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  const bool freshMaster = ctx->getProperty("FreshMaster", Uint32(1)) != 0;
+
+  if (res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+  if (freshMaster &&
+      (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2)) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  /* Release the log event handle on every return path */
+  struct LogEventHandleGuard {
+    NdbLogEventHandle handle = NULL;
+    ~LogEventHandleGuard() {
+      if (handle != NULL) ndb_mgm_destroy_logevent_handle(&handle);
+    }
+  } guard;
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_CHECKPOINT, 0};
+  guard.handle = ndb_mgm_create_logevent_handle(res.handle, filter);
+  CHECK(guard.handle != NULL, "Failed to create log event handle");
+
+  const int master = res.getMasterNodeId();
+  int nextMaster = -1;
+  int victim = -1;
+
+  if (freshMaster) {
+    nextMaster = res.getNextMasterNodeId(master);
+    /* The old master and the victim are dead at the same time, so the
+     * victim must belong to another node group than the old master. */
+    for (int i = 0; i < 50; i++) {
+      victim = res.getRandomNodeOtherNodeGroup(master, rand());
+      if (victim != -1 && victim != nextMaster) break;
+      victim = -1;
+    }
+    CHECK(victim != -1, "Failed to select a victim node");
+    ndbout_c("master = %d, next master = %d, victim = %d", master,
+             nextMaster, victim);
+  } else {
+    victim = res.getRandomNotMasterNodeId(rand());
+    CHECK(victim != -1, "Failed to select a victim node");
+    ndbout_c("master = %d, victim = %d", master, victim);
+  }
+
+  int stopped[2];
+  int numStopped = 0;
+  const int result =
+      lcpStartParticipantFail(res, guard.handle, freshMaster, master,
+                              nextMaster, victim, stopped, numStopped);
+
+  /* Bring the stopped nodes back, also after a failure */
+  res.insertErrorInAllNodes(0);
+  if (numStopped > 0) {
+    ndbout_c("Restarting the stopped nodes");
+    CHECK(res.startNodes(stopped, numStopped) == 0, "Failed to start nodes");
+    CHECK(res.waitNodesStarted(stopped, numStopped, 300) == 0,
+          "Stopped nodes did not rejoin");
+  }
+  CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return result;
+}
+
+/**
  * Bring the cluster back to fully started, starting any node that
  * ended up in not-started state (nodes stopped with nostart, or
  * crashed nodes when StopOnError is set).
@@ -12160,6 +12406,23 @@ TESTCASE("TcTakeOverConfLost",
          "master take over so the survivor is unblocked") {
   TC_PROPERTY("VictimIsNextMaster", Uint32(0));
   INITIALIZER(runTcTakeOverConfPartialBroadcast);
+}
+TESTCASE("LcpStartParticipantFail",
+         "The master fails and the new master starts its first LCP; a "
+         "participant of that LCP fails while the new master is still "
+         "waiting for its START_LCP_CONF. The master must not start "
+         "fragment checkpoints on the surviving nodes before the LCP start "
+         "handshake has completed, otherwise it crashes on entering the "
+         "LCP round") {
+  TC_PROPERTY("FreshMaster", 1);
+  INITIALIZER(runLcpStartParticipantFail);
+}
+TESTCASE("LcpStartParticipantFailSettledMaster",
+         "An LCP participant fails while a master that has already run an "
+         "LCP round is still waiting for its START_LCP_CONF. The master "
+         "must survive and complete the LCP") {
+  TC_PROPERTY("FreshMaster", Uint32(0));
+  INITIALIZER(runLcpStartParticipantFail);
 }
 TESTCASE("PreparedUpdatesNF",
          "Test node failure handling with prepared transactions with updates") {
