@@ -9648,10 +9648,29 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
    * This code cannot be called in master takeover case, in this
    * case we restart the LCP in DIH entirely, so no need to worry
    * here.
+   *
+   * It must also not be called before the master has entered the LCP
+   * round. m_participatingLQH is set at the very start of the LCP,
+   * before START_LCP_REQ is sent, so a participant can fail while the
+   * master is still waiting for START_LCP_CONF. Starting fragment
+   * checkpoints here in that case makes startLcpRoundLoopLab, which is
+   * reached through the START_LCP_CONF queued above for the failed
+   * node and the asynchronous release of the start LCP mutex, fail
+   * ndbrequire(noOfStartedChkpt == 0). There is nothing to drive
+   * here in that case either: the round starts with the reduced set
+   * of participants once the handshake completes.
+   *
+   * c_lcp_runs_with_pause_support is set when the master has passed
+   * the START_LCP_REQ step, right before the LCP round starts, both
+   * in the normal LCP start and in LCP master takeover, and it is
+   * cleared when the LCP completes.
    */
-  if (check_more_start_lcp && c_lcpMasterTakeOverState.state == LMTOS_IDLE) {
+  if (check_more_start_lcp && c_lcpMasterTakeOverState.state == LMTOS_IDLE &&
+      c_lcp_runs_with_pause_support) {
     jam();
     ndbrequire(isMaster());
+    /* The start LCP mutex is released before the LCP round starts */
+    ndbassert(c_startLcpMutexHandle.isNull());
     startNextChkpt(signal);
   }
 }  // Dbdih::execNODE_FAILREP()
