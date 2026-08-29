@@ -10993,25 +10993,39 @@ static int lcpStartParticipantFail(NdbRestarter &res,
    * and the LCP runs to completion.
    */
   const Uint64 start = NdbTick_CurrentMillisecond();
+  Uint64 lastCheck = 0;
   bool lcpCompleted = false;
   while (NdbTick_CurrentMillisecond() - start < Uint64(300) * 1000) {
     const int rc = ndb_logevent_get_next(handle, &event, 1000);
     CHECK(rc >= 0, "Failed to read log events");
-    for (int i = 0; i < res.getNumDbNodes(); i++) {
-      const int node = res.getDbNodeId(i);
-      bool isStopped = false;
-      for (int j = 0; j < numStopped; j++) {
-        if (stopped[j] == node) isStopped = true;
-      }
-      if (isStopped) continue;
-      if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
-        g_err << "Node " << node << " is no longer started: it crashed"
-              << " or restarted when LCP participant " << victim
-              << " failed during the START_LCP_REQ handshake of LCP "
-              << lcpId << " (master " << master << ")" << endl;
-        return NDBT_FAILED;
+
+    /**
+     * Check the survivors on a timer rather than once per event.
+     * getNodeStatus() is a full ndb_mgm_get_status() round trip per
+     * node, so doing it for every event makes this loop read the
+     * listener socket slower than the cluster fills it, and the
+     * completion this case waits for is never reached.
+     */
+    const Uint64 now = NdbTick_CurrentMillisecond();
+    if (now - lastCheck >= 1000) {
+      lastCheck = now;
+      for (int i = 0; i < res.getNumDbNodes(); i++) {
+        const int node = res.getDbNodeId(i);
+        bool isStopped = false;
+        for (int j = 0; j < numStopped; j++) {
+          if (stopped[j] == node) isStopped = true;
+        }
+        if (isStopped) continue;
+        if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
+          g_err << "Node " << node << " is no longer started: it crashed"
+                << " or restarted when LCP participant " << victim
+                << " failed during the START_LCP_REQ handshake of LCP "
+                << lcpId << " (master " << master << ")" << endl;
+          return NDBT_FAILED;
+        }
       }
     }
+
     if (rc > 0 && event.type == NDB_LE_LocalCheckpointCompleted &&
         event.LocalCheckpointCompleted.lci >= lcpId) {
       lcpCompleted = true;
@@ -11059,7 +11073,16 @@ int runLcpStartParticipantFail(NDBT_Context *ctx, NDBT_Step *step) {
       if (handle != NULL) ndb_mgm_destroy_logevent_handle(&handle);
     }
   } guard;
-  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_CHECKPOINT, 0};
+  /**
+   * Subscribe at log level 10, not 15. This case only reads
+   * LocalCheckpointStarted and LocalCheckpointCompleted, both of
+   * which have threshold 7, while LCPFragmentCompleted has threshold
+   * 11. At level 15 the handle also receives one LCPFragmentCompleted
+   * per fragment and LDM instance, which is hundreds of events per
+   * LCP on this cluster, and the events this case waits for end up
+   * queued behind them on the listener socket.
+   */
+  int filter[] = {10, NDB_MGM_EVENT_CATEGORY_CHECKPOINT, 0};
   guard.handle = ndb_mgm_create_logevent_handle(res.handle, filter);
   CHECK(guard.handle != NULL, "Failed to create log event handle");
 
