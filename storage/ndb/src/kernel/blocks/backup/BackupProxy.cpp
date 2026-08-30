@@ -22,6 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "BackupProxy.hpp"
+#include <EventLogger.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include "Backup.hpp"
 
@@ -234,6 +235,40 @@ void BackupProxy::execRESTORABLE_GCI_REP(Signal *signal) {
 void BackupProxy::execDEFINE_BACKUP_REQ(Signal *signal) {
   jamEntry();
 
+  {
+    const DefineBackupReq *req = (const DefineBackupReq *)signal->getDataPtr();
+    if (m_sweep_backup_id != 0 && m_sweep_backup_id == req->backupId &&
+        req->backupDataLen != ~(Uint32)0) {
+      jam();
+      /* LDM1 is removing the on-disk debris of a failed backup with
+       * this very id: a define fanned to the workers now would open
+       * files the sweep is about to unlink, and the doomed attempt's
+       * later cleanup could in turn remove a retry's files. Reject
+       * before any worker sees it - the sweep is short, a retry
+       * succeeds. (Never for DBLQH's one-time LCP define, which does
+       * not pass through the proxy's backup fan anyway and cannot
+       * handle a REF.)
+       */
+      g_eventLogger->warning(
+          "BACKUP proxy: DEFINE_BACKUP_REQ for backup %u while its"
+          " debris sweep is running - failing the backup",
+          req->backupId);
+      const BlockReference senderRef = signal->senderBlockRef();
+      const Uint32 ptrI = req->backupPtr;
+      const Uint32 backupId = req->backupId;
+      SectionHandle handle(this, signal);
+      releaseSections(handle);
+      DefineBackupRef *ref = (DefineBackupRef *)signal->getDataPtrSend();
+      ref->backupId = backupId;
+      ref->backupPtr = ptrI;
+      ref->errorCode = DefineBackupRef::FailedForDebrisSweepInProgress;
+      ref->nodeId = getOwnNodeId();
+      sendSignal(senderRef, GSN_DEFINE_BACKUP_REF, signal,
+                 DefineBackupRef::SignalLength, JBB);
+      return;
+    }
+  }
+
   bool found = false;
   Ss_DEFINE_BACKUP_REQ &ss =
       ssFindSeize<Ss_DEFINE_BACKUP_REQ>(BackupSignalSsId, &found);
@@ -247,6 +282,10 @@ void BackupProxy::execDEFINE_BACKUP_REQ(Signal *signal) {
   const DefineBackupReq *req = (const DefineBackupReq *)signal->getDataPtr();
   ss.m_req = *req;
   ss.masterRef = req->senderRef;
+  if (req->backupDataLen != ~(Uint32)0) {
+    jam();
+    m_backup_defined_since_start = true;
+  }
 
   SectionHandle handle(this, signal);
   saveSections(ss, handle);
@@ -448,6 +487,92 @@ void BackupProxy::sendSTOP_BACKUP_CONF(Signal *signal, Uint32 ssId) {
 
 void BackupProxy::execABORT_BACKUP_ORD(Signal *signal) {
   jamEntry();
+
+  {
+    AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtr();
+    const Uint32 requestType = ord->requestType;
+    if (requestType == AbortBackupOrd::RemoveFailedBackupFiles) {
+      jam();
+      /* Debris sweep order for this node: install the node-wide
+       * define barrier for its backup id, then hand the order to
+       * LDM1 (the sweep runs on one worker only - never fan it).
+       * LDM1's confirm/ref lifts the barrier on its way back to the
+       * master.
+       */
+      if (signal->getLength() < AbortBackupOrd::SignalLengthDebrisSweep ||
+          ord->backupId == 0) {
+        jam();
+        g_eventLogger->info(
+            "BACKUP proxy: ignoring malformed debris sweep order"
+            " length=%u backupId=%u",
+            signal->getLength(), ord->backupId);
+        return;
+      }
+      if (m_sweep_backup_id != 0 || m_backup_defined_since_start) {
+        jam();
+        /* A sweep is already in flight, or a backup DEFINE has been
+         * fanned to the workers at some point this boot (its files -
+         * or the unacknowledged cleanup tail of a failed attempt -
+         * may still be live): decline this order so its master keeps
+         * the entry and re-orders on the node's next restart, where
+         * no backup can have defined yet.
+         */
+        g_eventLogger->info(
+            "BACKUP proxy: declining debris sweep order for backup %u"
+            " (%s)",
+            ord->backupId,
+            m_sweep_backup_id != 0
+                ? "a sweep is in flight"
+                : "a backup has defined on this node since it started");
+        const Uint32 target = ord->senderRef;
+        ord->requestType = AbortBackupOrd::RemoveFailedBackupFilesRef;
+        ord->senderRef = reference();
+        sendSignal(target, GSN_ABORT_BACKUP_ORD, signal,
+                   AbortBackupOrd::SignalLengthDebrisSweep, JBB);
+        return;
+      }
+      m_sweep_backup_id = ord->backupId;
+      m_sweep_gen = ord->sweepGen;
+      m_sweep_master_ref = ord->senderRef;
+      ord->senderRef = reference();
+      sendSignal(workerRef(0), GSN_ABORT_BACKUP_ORD, signal,
+                 AbortBackupOrd::SignalLengthDebrisSweep, JBB);
+      return;
+    }
+    if (requestType == AbortBackupOrd::RemoveFailedBackupFilesConf ||
+        requestType == AbortBackupOrd::RemoveFailedBackupFilesRef) {
+      jam();
+      /* LDM1's response: lift the barrier and pass the verdict to the
+       * ordering master - but only the response to the order this
+       * barrier was armed for. A stale or foreign response must not
+       * lift a newer barrier while its sweep is still running.
+       */
+      if (signal->getLength() < AbortBackupOrd::SignalLengthDebrisSweep ||
+          signal->getSendersBlockRef() != workerRef(0) ||
+          m_sweep_backup_id == 0 || m_sweep_master_ref == 0 ||
+          ord->backupId != m_sweep_backup_id ||
+          ord->sweepGen != m_sweep_gen) {
+        jam();
+        g_eventLogger->info(
+            "BACKUP proxy: dropping uncorrelated debris sweep response"
+            " type=%u backup %u gen %u (barrier: backup %u gen %u)",
+            requestType, ord->backupId,
+            signal->getLength() >= AbortBackupOrd::SignalLengthDebrisSweep
+                ? ord->sweepGen
+                : 0,
+            m_sweep_backup_id, m_sweep_gen);
+        return;
+      }
+      const Uint32 target = m_sweep_master_ref;
+      m_sweep_backup_id = 0;
+      m_sweep_gen = 0;
+      m_sweep_master_ref = 0;
+      ord->senderRef = reference();
+      sendSignal(target, GSN_ABORT_BACKUP_ORD, signal,
+                 AbortBackupOrd::SignalLengthDebrisSweep, JBB);
+      return;
+    }
+  }
 
   bool found = false;
   Ss_ABORT_BACKUP_ORD &ss =

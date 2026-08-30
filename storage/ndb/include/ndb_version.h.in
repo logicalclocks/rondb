@@ -1409,4 +1409,65 @@ ndbd_replica_rowid_forwarding(Uint32 x) {
   }
   return false;
 }
+
+/**
+ * Whether the node understands the failed-backup cleanup orders: ONE
+ * capability covering AbortBackupOrd::CleanupFailedBackup (1330, every
+ * alive participant removes the failed backup's files),
+ * RemoveFailedBackupFiles (1331, a rejoining participant sweeps the
+ * debris of a backup that failed while it was dead) and its responses
+ * RemoveFailedBackupFilesConf (1332) / RemoveFailedBackupFilesRef
+ * (1333). All four ship together; any port must take them together or
+ * split this predicate. Nodes without
+ * support are never sent 1331 (they would misread its senderData as a
+ * record index) and get 1330 downgraded to BackupComplete, keeping
+ * their partial files exactly as before the fix - mixed-version
+ * operation is safe in both directions, full cleanup starts once all
+ * data nodes run a supporting version.
+ *
+ * Per-series floors: lands in the 25.10 maintenance series at 25.10.18
+ * (25.10.17 builds without the fix may already be deployed); forward-
+ * port floors for the series that already exist without it are
+ * 26.02.10, 26.04.2 and 26.05.1 (align each with the release that
+ * actually takes the port); series after 26.05 carry it from their
+ * first release.
+ */
+#define NDBD_BACKUP_FAILED_CLEANUP_ORD_2510 NDB_MAKE_VERSION(25,10,18)
+#define NDBD_BACKUP_FAILED_CLEANUP_ORD_2602 NDB_MAKE_VERSION(26,2,10)
+#define NDBD_BACKUP_FAILED_CLEANUP_ORD_2604 NDB_MAKE_VERSION(26,4,2)
+#define NDBD_BACKUP_FAILED_CLEANUP_ORD_2605 NDB_MAKE_VERSION(26,5,1)
+static inline
+bool
+ndbd_backup_failed_cleanup_ord(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    /* 25.10 is the only release in the 25 series. */
+    if (minor == 10) {
+      return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2510;
+    }
+    return false;
+  }
+  /* major == 26 */
+  if (minor > 5) {
+    /* Series after 26.05 carry the feature from their first release. */
+    return true;
+  }
+  if (minor == 5) {
+    return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2605;
+  }
+  if (minor == 4) {
+    return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2604;
+  }
+  if (minor == 2) {
+    return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2602;
+  }
+  return false;
+}
 #endif

@@ -96,6 +96,38 @@ cmd: testBackup
 args: -n FailSlave T1
 max-time: 180
 
+cmd: testBackup
+args: -n FailedBackupRemovesFiles T1
+max-time: 180
+
+cmd: testBackup
+args: -r 200000 -n FragmentRefWrongWorker T1
+max-time: 300
+
+cmd: testBackup
+args: -r 200000 -n FragmentRefDuplicate T1
+max-time: 300
+
+cmd: testBackup
+args: -n AbortRemovesAllNodesFiles T1
+max-time: 300
+
+cmd: testBackup
+args: -n DeadParticipantSwept T1
+max-time: 600
+
+cmd: testBackup
+args: -n DeadParticipantSweptAtStop T1
+max-time: 600
+
+cmd: testBackup
+args: -r 200000 -n SweepBlocksSameIdBackup T1
+max-time: 600
+
+cmd: testBackup
+args: -n StaleRecordFailsDefine T1
+max-time: 600
+
 cmd: testLimits
 args: -n DropSignalFragments T1
 max-time: 900
