@@ -4815,6 +4815,7 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
   }
 
   c_stopRec.stopReq = *req;
+  c_stopRec.stopPermGranted = false;
   c_stopRec.stopInitiatedTime = NdbTick_getCurrentTicks();
 
   if (ERROR_INSERTED(1022) || ERROR_INSERTED(1023) || ERROR_INSERTED(1024)) {
@@ -4867,7 +4868,7 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
        */
       StopPermReq *permReq = (StopPermReq *)&signal->theData[0];
       permReq->senderRef = reference();
-      permReq->senderData = 12;
+      permReq->senderData = StopPermReq::AcquireSenderData;
       sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
                  StopPermReq::SignalLength, JBB);
       return;
@@ -4923,6 +4924,41 @@ void Ndbcntr::StopRecord::checkTimeout(Signal *signal) {
     default:
       ndbabort();
   }
+}
+
+/**
+ * Return a granted graceful stop permission to the DIH master.
+ *
+ * The master keeps the stopping node in c_stopPermMaster.stoppingNodes
+ * after STOP_PERM_CONF and normally clears it when the node dies. When
+ * the stop is instead aborted (e.g. checkNodeFail finds that stopping
+ * would crash the cluster, as happens for the losing node of two
+ * concurrent single node stops) the node stays behind in the bitmask
+ * and every later STOP_PERM_REQ is refused with
+ * NodeShutdownInProgress. The requester retries the request every
+ * 100 ms, so a later graceful stop or restart of any node would hang
+ * forever without ever being reported back to the management client.
+ * Therefore an aborted stop must explicitly release the permission.
+ *
+ * An old master that does not understand the release treats it as an
+ * acquire: it refuses it since the stopping node is still in
+ * stoppingNodes, and the REF is recognized on ReleaseSenderData and
+ * ignored, so the release is safe in a mixed version cluster (the
+ * leak then remains on the old master, which is no worse than before).
+ */
+void Ndbcntr::StopRecord::sendStopPermRelease(Signal *signal) {
+  if (!stopPermGranted) {
+    jam();
+    return;
+  }
+  jam();
+  stopPermGranted = false;
+  StopPermReq *const req = (StopPermReq *)&signal->theData[0];
+  req->senderRef = cntr.reference();
+  req->senderData = StopPermReq::ReleaseSenderData;
+  req->requestType = StopPermReq::RT_RELEASE;
+  cntr.sendSignal(DBDIH_REF, GSN_STOP_PERM_REQ, signal,
+                  StopPermReq::SignalLengthWithType, JBB);
 }
 
 bool Ndbcntr::StopRecord::checkNodeFail(Signal *signal) {
@@ -4999,6 +5035,8 @@ bool Ndbcntr::StopRecord::checkNodeFail(Signal *signal) {
     cntr.sendSignal(bref, GSN_STOP_REF, signal, StopRef::SignalLength, JBB);
 
   stopReq.senderRef = 0;
+
+  sendStopPermRelease(signal);
 
   if (cntr.getNodeState().startLevel != NodeState::SL_SINGLEUSER &&
       cntr.getNodeState().startLevel != NodeState::SL_STARTED) {
@@ -5097,6 +5135,17 @@ void Ndbcntr::StopRecord::checkTcTimeout(Signal *signal) {
 void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
   jamEntry();
 
+  const StopPermRef *const refSig = (StopPermRef *)&signal->theData[0];
+  if (refSig->senderData == StopPermReq::ReleaseSenderData) {
+    jam();
+    /**
+     * An old master replied to a permission release with a REF since
+     * it took it for an acquire. The release is fire-and-forget,
+     * ignore the reply.
+     */
+    return;
+  }
+
   if (c_stopRec.stopReq.senderRef == 0) {
     jam();
     return;
@@ -5109,7 +5158,7 @@ void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
 
   StopPermReq *req = (StopPermReq *)&signal->theData[0];
   req->senderRef = reference();
-  req->senderData = 12;
+  req->senderData = StopPermReq::AcquireSenderData;
   sendSignalWithDelay(DBDIH_REF, GSN_STOP_PERM_REQ, signal, 100,
                       StopPermReq::SignalLength);
 }
@@ -5117,8 +5166,15 @@ void Ndbcntr::execSTOP_PERM_REF(Signal *signal) {
 void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
   jamEntry();
 
+  c_stopRec.stopPermGranted = true;
+
   if (c_stopRec.stopReq.senderRef == 0) {
     jam();
+    /**
+     * The stop this permission was requested for is already gone,
+     * return the permission so it does not block later stops.
+     */
+    c_stopRec.sendStopPermRelease(signal);
     return;
   }
 

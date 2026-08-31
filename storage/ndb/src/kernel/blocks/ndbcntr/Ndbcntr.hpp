@@ -482,13 +482,20 @@ class Ndbcntr : public SimulatedBlock {
  public:
   struct StopRecord {
   public:
-    StopRecord(Ndbcntr &_cntr) : cntr(_cntr) { stopReq.senderRef = 0; }
+    StopRecord(Ndbcntr &_cntr) : cntr(_cntr) {
+      stopReq.senderRef = 0;
+      stopPermGranted = false;
+    }
 
     Ndbcntr &cntr;
     StopReq stopReq;          // Signal data
     NDB_TICKS stopInitiatedTime; // When was the stop initiated
+    // A STOP_PERM_CONF has been received for the current stop and the
+    // permission has not yet been released back to the DIH master
+    bool stopPermGranted;
     
     bool checkNodeFail(Signal *signal);
+    void sendStopPermRelease(Signal *signal);
     void checkTimeout(Signal *signal);
     void checkApiTimeout(Signal *signal);
     void checkTcTimeout(Signal *signal);
