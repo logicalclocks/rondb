@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,6 +44,23 @@
   to that/those ndb_mgmd(s), then run testMgm
  */
 
+/**
+ * Connect a raw NdbMgmHandle to the management server.
+ *
+ * Retry the connect for a while: the management server port can be
+ * transiently unreachable, e.g. right after a previous test case has
+ * torn down its sessions and event listeners. Print the mgmapi error
+ * on failure so that a connect failure is never silent.
+ */
+static bool connect_mgmd(NdbMgmHandle h) {
+  if (ndb_mgm_connect_tls(h, 12, 1, 0, opt_mgm_tls) != 0) {
+    ndbout_c("Failed to connect to mgmd: error %d '%s'",
+             ndb_mgm_get_latest_error(h), ndb_mgm_get_latest_error_msg(h));
+    return false;
+  }
+  return true;
+}
+
 int runTestApiSession(NDBT_Context *ctx, NDBT_Step *step) {
   NdbMgmd mgmd;
   Uint64 session_id = 0;
@@ -55,7 +72,7 @@ int runTestApiSession(NDBT_Context *ctx, NDBT_Step *step) {
   h = ndb_mgm_create_handle();
   ndb_mgm_set_ssl_ctx(h, tlsKeyManager.ctx());
   ndb_mgm_set_connectstring(h, mgmd.getConnectString());
-  ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+  connect_mgmd(h);
   socket_t s = ndb_mgm_get_fd(h);
   session_id = ndb_mgm_get_session_id(h);
   ndbout << "MGM Session id: " << session_id << endl;
@@ -69,7 +86,7 @@ int runTestApiSession(NDBT_Context *ctx, NDBT_Step *step) {
   h = ndb_mgm_create_handle();
   ndb_mgm_set_connectstring(h, mgmd.getConnectString());
   ndb_mgm_set_ssl_ctx(h, tlsKeyManager.ctx());
-  ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+  connect_mgmd(h);
 
   NdbSleep_SecSleep(1);
 
@@ -143,7 +160,7 @@ int runTestApiTimeoutBasic(NDBT_Context *ctx, NDBT_Step *step) {
   for (int error_ins_no = 0; errs[error_ins_no] != -1; error_ins_no++) {
     int error_ins = errs[error_ins_no];
     ndbout << "trying error " << error_ins << endl;
-    ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+    connect_mgmd(h);
 
     if (ndb_mgm_check_connection(h) < 0) {
       result = NDBT_FAILED;
@@ -181,7 +198,7 @@ int runTestApiTimeoutBasic(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   ndbout << "TEST get_mgmd_nodeid" << endl;
-  ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+  connect_mgmd(h);
 
   if (ndb_mgm_insert_error(h, mgmd_nodeid, 0, &reply) < 0) {
     ndbout << "failed to remove inserted error " << endl;
@@ -248,7 +265,7 @@ int runTestApiGetStatusTimeout(NDBT_Context *ctx, NDBT_Step *step) {
 
   for (int error_ins_no = 0; errs[error_ins_no] != -1; error_ins_no++) {
     int error_ins = errs[error_ins_no];
-    ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+    connect_mgmd(h);
 
     if (ndb_mgm_check_connection(h) < 0) {
       result = NDBT_FAILED;
@@ -338,7 +355,7 @@ int runTestMgmApiGetConfigTimeout(NDBT_Context *ctx, NDBT_Step *step) {
 
   for (int error_ins_no = 0; errs[error_ins_no] != -1; error_ins_no++) {
     int error_ins = errs[error_ins_no];
-    ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+    connect_mgmd(h);
 
     if (ndb_mgm_check_connection(h) < 0) {
       result = NDBT_FAILED;
@@ -423,7 +440,7 @@ int runTestMgmApiEventTimeout(NDBT_Context *ctx, NDBT_Step *step) {
 
   for (int error_ins_no = 0; errs[error_ins_no] != -1; error_ins_no++) {
     int error_ins = errs[error_ins_no];
-    ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+    connect_mgmd(h);
 
     if (ndb_mgm_check_connection(h) < 0) {
       result = NDBT_FAILED;
@@ -529,7 +546,7 @@ int runTestMgmApiStructEventTimeout(NDBT_Context *ctx, NDBT_Step *step) {
 
   for (int error_ins_no = 0; errs[error_ins_no] != -1; error_ins_no++) {
     int error_ins = errs[error_ins_no];
-    ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+    connect_mgmd(h);
     if (ndb_mgm_check_connection(h) < 0) {
       result = NDBT_FAILED;
       goto done;
@@ -627,7 +644,7 @@ int runTestMgmApiReadErrorRestart(NDBT_Context *ctx, NDBT_Step *step) {
   ndb_mgm_set_connectstring(h, mgmd.getConnectString());
   ndb_mgm_set_ssl_ctx(h, tlsKeyManager.ctx());
 
-  ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls);
+  connect_mgmd(h);
 
   int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP, 0};
 
@@ -3320,17 +3337,24 @@ static int runReportCommandsUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) return NDBT_FAILED;
   int result = NDBT_OK;
+  Uint32 requests = 0;
   while (!ctx->isTestStopped() && result == NDBT_OK) {
     for (int i = 0; i < numEventTypes; i++) {
       events = ndb_mgm_dump_events(mgmd.handle(), types[i], 0, nullptr);
       if (!events) {
-        ndbout_c("Failed to get events");
+        ndbout_c("Failed to get events of type %d after %u requests: "
+                 "error %d '%s'",
+                 (int)types[i], requests,
+                 ndb_mgm_get_latest_error(mgmd.handle()),
+                 ndb_mgm_get_latest_error_msg(mgmd.handle()));
         result = NDBT_FAILED;
-        continue;
+        break;
       }
+      requests++;
       free(events);
     }
   }
+  ndbout_c("Performed %u dump events requests", requests);
   return result;
 }
 static int restartDataNode(NDBT_Context *ctx, NDBT_Step *step) {
