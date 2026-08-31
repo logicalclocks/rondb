@@ -279,6 +279,22 @@ class NdbAggregator {
   }
 
   /**
+   * Single-row CTE projection mode (cte_single_row_kernel_plan.md):
+   * the program declares every projected column as a GROUP BY column
+   * and carries ZERO aggregate slots — the materialized "group" IS the
+   * row.  Finalize() then accepts n_agg_results == 0 (normally
+   * kErrEmptyAggResult).  Only meaningful for a program passed to
+   * NdbQueryBuilder::defineCte() together with the CTE_SINGLE_ROW
+   * flag; the kernel stores the row as a key-only group record.
+   */
+  void SetSingleRowMode() {
+    single_row_mode_ = true;
+  }
+  bool single_row_mode() const {
+    return single_row_mode_;
+  }
+
+  /**
    * Initialize this aggregator for receiving results, given a program buffer.
    * Reads the program header to set n_gb_cols, n_agg_results, and allocates
    * the gb_map if needed. Must be called before ProcessRes() when the
@@ -459,6 +475,8 @@ class NdbAggregator {
   Uint32 result_size_est_;
   bool disk_columns_;
   bool uses_wide_type_;   // any LoadColumn type > 31 (DATETIME2/TIMESTAMP2)
+  bool single_row_mode_;  // single-row CTE projection program: GROUP BY
+                          // columns only, zero aggregate slots allowed
 
   // Vector Search
   Uint32 vec_top_n_;

@@ -30787,8 +30787,13 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       memset(cteNodes->m_aggStateKeys, 0, 2 * maxNodes * sizeof(Uint32));
       scanptr.p->m_cteAggNodeState[c] = cteNodes;
 
-      /* For single-row CTEs: send SETUP to one node only (round-robin).
-       * For normal CTEs: send to all connected DB nodes. */
+      /* Single-row CTEs (cte_single_row_kernel_plan.md) set up on ALL
+       * nodes like any CTE: the body scan feeds node-locally wherever
+       * the row is found, and the redistribute step ships it to the
+       * constant DBTC-node owner (the SINGLE_ROW flag below changes the
+       * DBLQH owner function, not the fan-out).  An earlier skeleton
+       * set up one node only, which left body rows found on other
+       * nodes with no state to feed. */
       const bool singleRow =
           (scanptr.p->m_cteInfos[c].m_flags &
            QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
@@ -30796,11 +30801,6 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
         if (!getNodeInfo(nodeId).m_connected) continue;
         if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
-
-        if (singleRow && !cteNodes->m_aggNodes.isclear()) {
-          /* Single-row CTE: already sent to one node, skip the rest */
-          break;
-        }
 
         JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
         req->senderRef = reference();
@@ -30812,7 +30812,8 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         req->expectedOpCount = 0;
         req->concurrencyStrategy =
             JoinAggSetupReq::STRATEGY_MUTEX_FREE |
-            JoinAggSetupReq::CTE_MODE_FLAG;
+            JoinAggSetupReq::CTE_MODE_FLAG |
+            (singleRow ? JoinAggSetupReq::CTE_SINGLE_ROW_FLAG : 0);
         req->resultRef = apiConnectptr.p->ndbapiBlockref;
         req->resultData = scanptr.p->m_aggReceiverId;
         req->routeRef = reference();
@@ -31728,12 +31729,12 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
     /* Only redistribute CTEs belonging to this phase */
     if (scanptr.p->m_cteInfos[c].phase != phase) continue;
 
-    /* Single-row CTEs: skip redistribution — only one node has data */
-    if (scanptr.p->m_cteInfos[c].m_flags &
-        QN_CteSubtreeNode::CTE_SINGLE_ROW) {
-      jam();
-      continue;
-    }
+    /* Single-row CTEs go through the same COMPLETE flow as any CTE:
+     * the merge -> redistribute -> CTE_READY transition is what makes
+     * the state consumable, and DBLQH's redistribute uses the constant
+     * DBTC-node owner for them (cte_single_row_kernel_plan.md).  An
+     * earlier skeleton skipped them here, which left their states
+     * stuck before CTE_READY forever. */
 
     auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
     if (cteNodes == nullptr) continue;

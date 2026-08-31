@@ -55,6 +55,7 @@
 #undef NONE
 #endif
 #include <Interpreter.hpp>
+#include <signaldata/QueryTree.hpp>
 
 #include <mysql.h>
 
@@ -72,6 +73,13 @@ static const char *TEST_DB = "test";
 static const char *SRC_TABLE = "cte_src";
 static const char *VIRTUAL_TABLE = "cte_virtual";
 static const char *SCALAR_VIRTUAL_TABLE = "cte_virtual_scalar";
+/* Single-row CTE materialization (Tests 23-26,
+ * cte_single_row_kernel_plan.md): a one-row source, an empty twin for
+ * the miss case, and a 2-column virtual table matching the projected
+ * (a, b) columns. */
+static const char *SROW_SRC_TABLE = "cte_srow_src";
+static const char *SROW_EMPTY_TABLE = "cte_srow_empty";
+static const char *SROW_VIRTUAL_TABLE = "cte_virtual_srow";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -112,6 +120,9 @@ createTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_scalar");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_srow_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_srow_empty");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_srow");
 
   if (sqlExec(conn,
       "CREATE TABLE cte_src ("
@@ -146,15 +157,37 @@ createTestTables(MYSQL *conn)
       "CREATE INDEX idx_cte_src_grp ON cte_src(grp) USING BTREE") != 0)
     return -1;
 
+  /* Single-row CTE tables (Tests 23-26): a one-row source, an empty
+   * twin, and the virtual table matching the projected (a, b). */
+  if (sqlExec(conn,
+      "CREATE TABLE cte_srow_src ("
+      "  pk INT NOT NULL PRIMARY KEY,"
+      "  a INT NOT NULL,"
+      "  b BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+  if (sqlExec(conn,
+      "CREATE TABLE cte_srow_empty ("
+      "  pk INT NOT NULL PRIMARY KEY,"
+      "  a INT NOT NULL,"
+      "  b BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+  if (sqlExec(conn,
+      "CREATE TABLE cte_virtual_srow ("
+      "  a INT NOT NULL PRIMARY KEY,"
+      "  b BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
   return 0;
 }
 
 static int
 insertTestData(MYSQL *conn)
 {
-  return sqlExec(conn,
+  if (sqlExec(conn,
       "INSERT INTO cte_src VALUES "
-      "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)");
+      "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)") != 0) return -1;
+  /* cte_srow_src holds exactly ONE row; cte_srow_empty stays empty. */
+  return sqlExec(conn, "INSERT INTO cte_srow_src VALUES (7,42,4200)");
 }
 
 static void
@@ -163,6 +196,9 @@ dropTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_scalar");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_srow_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_srow_empty");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_srow");
 }
 
 /* ------------------------------------------------------------------ */
@@ -6167,6 +6203,459 @@ testScanCteParentScanIndexChild(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Tests 23-26: single-row CTE materialization                         */
+/* (cte_single_row_kernel_plan.md)                                     */
+/*                                                                     */
+/* A single-row CTE ships a zero-aggregate projection program: every   */
+/* projected column is a GROUP BY column (SetSingleRowMode() lets      */
+/* Finalize() accept n_agg_results == 0) and defineCte carries         */
+/* QN_CteSubtreeNode::CTE_SINGLE_ROW.  The kernel stores the row as a  */
+/* key-only group record on the node that found it and the             */
+/* redistribute step ships it to the constant DBTC-node owner.         */
+/* ------------------------------------------------------------------ */
+
+/* Shared frame for Tests 23/24: single-row CTE over `srcName`
+ * consumed by a plain scanCte root (Test 8 consumer shape).  On a
+ * row, verifies (a, b) == (42, 4200).  Returns 0 with *rowsOut set,
+ * -1 on failure (message already printed). */
+static int
+runSingleRowCteScan(Ndb *ndb, const char *srcName, Uint32 *rowsOut)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(srcName);
+  dict->invalidateTable(SROW_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(srcName);
+  const NdbDictionary::Table *virtTab = dict->getTable(SROW_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* Single-row projection program: GROUP BY every projected column,
+   * zero aggregate slots. */
+  NdbAggregator srowAgg(srcTab);
+  srowAgg.SetSingleRowMode();
+  if (!srowAgg.GroupBy("a") ||
+      !srowAgg.GroupBy("b") ||
+      !srowAgg.Finalize()) {
+    printf("FAILED (srowAgg: %s)\n", srowAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: single-op body — scanTable with the projection
+   * program attached (the RonSQL arm-A shape). */
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions bodyOpts;
+    bodyOpts.setAggregation(srowAgg);
+    if (qb->scanTable(srcTab, &bodyOpts) == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(0, srcTab, srowAgg, /*depMask=*/0,
+                    QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(0) as root, no main aggregation. */
+  const NdbQueryCteScanOperationDef *mainScanCteOp =
+      qb->scanCte(0, 2, virtTab);
+  if (mainScanCteOp == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raA = nullptr;
+  NdbRecAttr *raB = nullptr;
+  if (mainOp != nullptr) {
+    raA = mainOp->getValue("a");
+    raB = mainOp->getValue("b");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 a = raA ? raA->int32_value() : -1;
+    Int64 b = raB ? raB->int64_value() : -1;
+    V("  row: a=%d b=%lld\n", a, (long long)b);
+    if (a != 42 || b != 4200) {
+      printf("FAILED (expected (42,4200), got (%d,%lld))\n",
+             a, (long long)b);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  *rowsOut = rowCount;
+  return 0;
+}
+
+/* Test 23: the one-row body materializes and scanCte emits exactly
+ * that row — feed, key-only group record, owner shipping, CTE_READY
+ * barrier and the scan emit all with zero aggregate slots. */
+static int
+testSingleRowCteScanRoot(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 23: single-row CTE, scanCte root ... ");
+  fflush(stdout);
+  Uint32 rows = 0;
+  if (runSingleRowCteScan(ndb, SROW_SRC_TABLE, &rows) != 0) return -1;
+  if (rows != 1) {
+    printf("FAILED (expected 1 row, got %u)\n", rows);
+    return -1;
+  }
+  printf("OK (1 row)\n");
+  return 0;
+}
+
+/* Test 24: an EMPTY body materializes an empty single-row CTE — the
+ * query completes cleanly with zero rows (the future CTE_LOOKUP miss
+ * semantics depend on the empty state being representable). */
+static int
+testSingleRowCteEmpty(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 24: single-row CTE, empty body ... ");
+  fflush(stdout);
+  Uint32 rows = 0;
+  if (runSingleRowCteScan(ndb, SROW_EMPTY_TABLE, &rows) != 0) return -1;
+  if (rows != 0) {
+    printf("FAILED (expected 0 rows, got %u)\n", rows);
+    return -1;
+  }
+  printf("OK (0 rows)\n");
+  return 0;
+}
+
+/* Test 25: single-row contract violation — the body (a scan of the
+ * 5-row cte_src projected as (grp, val)) materializes 5 distinct
+ * rows.  The kernel must FAIL the query cleanly
+ * (ZCTE_SINGLE_ROW_VIOLATION via JOIN_AGG_COMPLETE_REF), never crash
+ * and never return rows. */
+static int
+testSingleRowCteViolation(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 25: single-row CTE violation fails cleanly ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator srowAgg(srcTab);
+  srowAgg.SetSingleRowMode();
+  if (!srowAgg.GroupBy("grp") ||
+      !srowAgg.GroupBy("val") ||
+      !srowAgg.Finalize()) {
+    printf("FAILED (srowAgg: %s)\n", srowAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions bodyOpts;
+    bodyOpts.setAggregation(srowAgg);
+    if (qb->scanTable(srcTab, &bodyOpts) == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, srowAgg, /*depMask=*/0,
+                    QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+  if (qb->scanCte(0, 2, virtTab) == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQueryOperation *mainOp =
+      query->getQueryOperation(queryDef->getNoOfOperations() - 1);
+  if (mainOp != nullptr) {
+    (void)mainOp->getValue("grp");
+    (void)mainOp->getValue("total");
+  }
+
+  bool sawError = false;
+  Uint32 rowCount = 0;
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    sawError = true;
+    V("\n  execute failed as expected: trans err %d: %s\n",
+      trans->getNdbError().code, trans->getNdbError().message);
+  } else {
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {
+      rowCount++;
+    }
+    if (outcome == NdbQuery::NextResult_error) {
+      sawError = true;
+      V("\n  nextResult failed as expected: err %d: %s\n",
+        query->getNdbError().code, query->getNdbError().message);
+    }
+  }
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 0) {
+    printf("FAILED (violating query returned %u rows)\n", rowCount);
+    return -1;
+  }
+  if (!sawError) {
+    printf("FAILED (violating query completed without error)\n");
+    return -1;
+  }
+  printf("OK (clean error, 0 rows)\n");
+  return 0;
+}
+
+/* Test 26: single-row CTE feeding a MAIN aggregator through the
+ * CTE_SCAN agg feed (Test 15 consumer shape) — exercises
+ * buildCteLinkedBuffer with zero aggregate slots: the linked buffer
+ * carries only the GROUP BY key columns at positions 0..1. */
+static int
+testSingleRowCteFeedsAgg(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 26: single-row CTE feeds main aggregation ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SROW_SRC_TABLE);
+  dict->invalidateTable(SROW_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SROW_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(SROW_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *bCol = virtTab->getColumn("b");
+  if (bCol == nullptr) {
+    printf("FAILED (column lookup: b)\n");
+    return -1;
+  }
+
+  NdbAggregator srowAgg(srcTab);
+  srowAgg.SetSingleRowMode();
+  if (!srowAgg.GroupBy("a") ||
+      !srowAgg.GroupBy("b") ||
+      !srowAgg.Finalize()) {
+    printf("FAILED (srowAgg: %s)\n", srowAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Main aggregator: COUNT(*), SUM(r.b).  The CTE feed buffer is
+   * [GROUP BY keys], so position 1 = column b. */
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, bCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions bodyOpts;
+    bodyOpts.setAggregation(srowAgg);
+    if (qb->scanTable(srcTab, &bodyOpts) == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, srowAgg, /*depMask=*/0,
+                    QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  NdbQueryOptions mainScanOpts;
+  mainScanOpts.setAggregation(mainAgg);
+  if (qb->scanCte(0, 2, virtTab, &mainScanOpts) == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbAggregator::Result countRes = rec.FetchAggregationResult();
+  Int64 count = countRes.data_int64();
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 sum = sumRes.data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (count == 1 && sum == 4200) {
+    printf("OK (COUNT=1, SUM=4200)\n");
+    return 0;
+  }
+  printf("FAILED (expected COUNT=1 SUM=4200, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -6198,6 +6687,10 @@ static const TestEntry g_tests[] = {
     { 20, testCrossJoinTwoScalarCtes },
     { 21, testGreatestViaCaseAgg },
     { 22, testScanCteParentScanIndexChild },
+    { 23, testSingleRowCteScanRoot },
+    { 24, testSingleRowCteEmpty },
+    { 25, testSingleRowCteViolation },
+    { 26, testSingleRowCteFeedsAgg },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -6219,7 +6712,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..22)\n");
+      printf("  --only N    run only test number N (1..26)\n");
       return 0;
     }
   }

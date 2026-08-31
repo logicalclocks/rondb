@@ -19179,6 +19179,28 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     if (state->m_cte_num_nodes <= 1) {
       /* Single node — no redistribution needed */
       jam();
+      /* Single-row contract (cte_single_row_kernel_plan.md): more
+       * than one materialized row must fail the query cleanly.  The
+       * multi-node flow checks at redistribute entry and owner-side
+       * in checkCteReady; this arm bypasses both, so check here
+       * before the state becomes consumable. */
+      if (state->m_cte_single_row) {
+        JoinGBHashTable *gb_map = interp->gb_map_mutable();
+        if (gb_map != nullptr && gb_map->size() > 1) {
+          jam();
+          state->m_state.store(JoinAggregationState::ERROR);
+          JoinAggCompleteRef *ref =
+            (JoinAggCompleteRef *)signal->getDataPtrSend();
+          ref->senderRef = reference();
+          ref->senderData = senderData;
+          ref->requestId = requestId;
+          ref->errorCode = ZCTE_SINGLE_ROW_VIOLATION;
+          ref->errorLine = __LINE__;
+          sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                     signal, JoinAggCompleteRef::SignalLength, JBB);
+          return;
+        }
+      }
       DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
                instance()));
       AGGT(("AGGT(%u) DBLQH CTE_READY (single node) key=%u",
@@ -21684,6 +21706,19 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
     goto redistribution_done;
   }
 
+  /* Single-row contract (cte_single_row_kernel_plan.md): the body may
+   * materialize at most one row.  RonSQL guarantees this via a
+   * full-PK-equality body WHERE; the program is API-controlled, so a
+   * violation fails the query cleanly instead of crashing.  Checked on
+   * first entry only — the map can only shrink across CONTINUEB
+   * re-entries.  The cross-node case (several nodes each holding one
+   * row) is caught by the owner-side check in checkCteReady. */
+  if (state->m_cte_single_row && gb_map->size() > 1) {
+    jam();
+    abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
+    return;
+  }
+
   DEB_CTE(("(%u) CTE REDIST: aggStateKey=%u gb_map_size=%u ownNode=%u",
            instance(), aggStateKey, gb_map->size(), getOwnNodeId()));
 
@@ -21701,24 +21736,39 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
           data + keyLen);
       const Uint32 valLen = interp->redistributionValueLen(slots);
 
-      /* Determine hash owner (type-aware for complex character sets) */
-      Uint64 h = interp->hashGroupKey(data, keyLen,
-                                      c_tup->getAggXfrmBuf(),
-                                      c_tup->getAggXfrmBufLen());  // D26
-      Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
-      Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+      /* Determine the owner node.  Grouped CTEs hash the key
+       * (type-aware for complex character sets).  Single-row CTE
+       * states use a CONSTANT owner instead — the DBTC-co-located
+       * node, the scalar-CTE (I.17e) placement: a subset-key
+       * CTE_LOOKUP cannot recompute a full-row hash, so the row must
+       * live at a key-independent location every consumer can route
+       * to. */
+      Uint32 ownerNode;
+      if (state->m_cte_single_row) {
+        jam();
+        ownerNode = refToNode(state->m_senderRef);
+        DEB_CTE(("(%u) CTE REDIST: single-row owner=%u (DBTC node) "
+                 "keyLen=%u %s", instance(), ownerNode, keyLen,
+                 ownerNode == ownNodeId ? "LOCAL" : "REMOTE"));
+      } else {
+        Uint64 h = interp->hashGroupKey(data, keyLen,
+                                        c_tup->getAggXfrmBuf(),
+                                        c_tup->getAggXfrmBufLen());  // D26
+        Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
+        ownerNode = state->m_cte_node_list[ownerIdx];
 
 #ifdef DEBUG_CTE
-      {
-        const Uint32 *kw = reinterpret_cast<const Uint32 *>(data);
-        DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
-                 "keyLen=%u valLen=%u %s key[0]=0x%x key[1]=0x%x",
-                 instance(), (unsigned long long)h, ownerIdx, ownerNode,
-                 keyLen, valLen,
-                 ownerNode == ownNodeId ? "LOCAL" : "REMOTE",
-                 kw[0], keyLen > 4 ? kw[1] : 0));
-      }
+        {
+          const Uint32 *kw = reinterpret_cast<const Uint32 *>(data);
+          DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
+                   "keyLen=%u valLen=%u %s key[0]=0x%x key[1]=0x%x",
+                   instance(), (unsigned long long)h, ownerIdx, ownerNode,
+                   keyLen, valLen,
+                   ownerNode == ownNodeId ? "LOCAL" : "REMOTE",
+                   kw[0], keyLen > 4 ? kw[1] : 0));
+        }
 #endif
+      }
 
       if (ownerNode == ownNodeId) {
         jam();
@@ -21762,6 +21812,16 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       }
       lsp[1].p = valueBuf;
       lsp[1].sz = (valLen + 3) >> 2;
+      if (lsp[1].sz == 0) {
+        /* Zero-aggregate (single-row projection) record: valueLen == 0.
+         * Send one dummy word to avoid any 0-size-section quirks in
+         * the transporter / fragmentation layer (the scalar
+         * redistribute's precedent, see sendScalarRedistributeReq);
+         * the receiver consumes req->valueLen and ignores the word. */
+        jam();
+        valueBuf[0] = 0;
+        lsp[1].sz = 1;
+      }
 
       BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
       DEB_JOIN_AGG_REDIST_VERBOSE(
@@ -22243,6 +22303,24 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
                     ownNodeId));
       DEB_CTE(("(%u) checkCteReady: waiting for node %u",
                instance(), state->m_cte_node_list[i]));
+      return;
+    }
+  }
+
+  /* Single-row contract, owner side: every sender ships at most one
+   * row (its own redistribute checks that), but if the body produced
+   * distinct rows on SEVERAL nodes they all land here.  All inbound
+   * rows are merged by now — REDISTRIBUTE_REQs from a sender precede
+   * its FINAL_REP on the same signal path, and in CTE_REDISTRIBUTING
+   * they merge directly (no queue).  API-controlled input, so fail
+   * the query cleanly. */
+  if (state->m_cte_single_row) {
+    JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+    JoinGBHashTable *gb_map =
+        (interp != nullptr) ? interp->gb_map_mutable() : nullptr;
+    if (gb_map != nullptr && gb_map->size() > 1) {
+      jam();
+      abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
       return;
     }
   }
