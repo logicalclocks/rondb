@@ -560,8 +560,10 @@ DELIMITER ;|
 
 --echo
 --echo === gc-P3 (rejection): non-aggregating CTE body ===
-# CTE bodies must aggregate (analyze_ctes); lifting this is a separate
-# kernel-facing feature.
+# A non-aggregating body without a WHERE clause is not a single-row
+# key lookup (cte_single_row_kernel_plan.md), so it stays rejected
+# with the parse gate's coverage message.  The keyed single-row shape
+# itself is covered by the body_single_row_cte family.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH v AS (SELECT o_orderkey AS k FROM orders) SELECT c.c_custkey FROM customer AS c JOIN v ON v.k = c.c_custkey;' 2>&1
 

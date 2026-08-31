@@ -304,7 +304,13 @@ private:
     ExactPermuted,
     Partial,
     WrongColumns,
-    ScalarDummy
+    ScalarDummy,
+    // Single-row CTE (cte_single_row_kernel_plan.md): the bound keys
+    // name ANY SUBSET of the CTE's outputs, including none (comma
+    // cross join = existence probe).  pk_index_for_key[k] carries the
+    // OUTPUT POSITION each key binds; emit passes them to
+    // NdbQueryOptions::setCteKeyColumns.
+    SingleRowSubset
   };
   struct CteKeyCoverageResult {
     CteKeyCoverage state = CteKeyCoverage::WrongColumns;
@@ -433,6 +439,14 @@ private:
   // the gate's coverage check evaluates the post-rewrite tree.
   // Idempotent — a second call bails on the promoted CTE root.
   void maybe_rewrite_partial_key_cte_root();
+  /* Single-row key-lookup CTE bodies (cte_single_row_kernel_plan.md):
+   * parse-time candidacy marking (no AST rewrite — the kernel's
+   * CTE_SINGLE_ROW mode materializes the row natively), and the
+   * plan-time enforcement that the body WHERE binds every primary key
+   * column by equality with a constant (<= 1 row). */
+  void detect_single_row_ctes();
+  void enforce_single_row_cte_body(const CteDefinition* cte,
+                                   QueryScope& scope);
   /* Phase I.17h: synthesise a FROM clause from qualified column refs
    * to scalar CTEs when the parser produced a NULL root_table.  No-op
    * when an explicit FROM was given. */

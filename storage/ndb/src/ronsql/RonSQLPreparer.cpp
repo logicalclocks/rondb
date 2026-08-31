@@ -52,6 +52,7 @@
 #include "decimal.h"
 #include <decimal_utils.hpp>
 #include <kernel/Interpreter.hpp>
+#include <kernel/signaldata/QueryTree.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPREPARER 1
@@ -595,6 +596,13 @@ RonSQLPreparer::parse()
     promote_left_joins();
     m_is_aggregate_query = (has_aggregate_outputs || has_having_aggregates ||
                             has_subquery_agg_outputs);
+    // Single-row key-lookup CTE bodies (cte_single_row_kernel_plan.md):
+    // mark candidate CTEs BEFORE the projection-only gate and the
+    // partial-key root rewrite so cte_key_coverage can classify their
+    // consumers as SingleRowSubset.  Runs on aggregate main queries
+    // too (the gate is pass-through-only, but analyze_ctes()'s
+    // aggregate requirement applies to every path).
+    detect_single_row_ctes();
     if (!m_is_aggregate_query)
     {
       // Phase E.3: allow the narrowly-supported projection-only main
@@ -706,11 +714,14 @@ RonSQLPreparer::parse()
              join != NULL; join = join->next) {
           // Phase 4 (non_aggregate_phase_4.md, W1): a conditionless
           // join clause is acceptable only as the comma cross-join of
-          // a SCALAR CTE (the grammar's one conditionless production;
-          // a scalar CTE always produces exactly one row, so the
-          // cross join is a semantics-preserving 1-row multiplier —
-          // and its coverage state is ScalarDummy by construction).
-          // Real-table and grouped-CTE comma joins stay rejected.
+          // a no-GROUP-BY CTE (the grammar's one conditionless
+          // production).  A SCALAR CTE always produces exactly one
+          // row (1-row multiplier, coverage ScalarDummy); a
+          // SINGLE-ROW CTE (cte_single_row_kernel_plan.md) produces
+          // at most one — the comma join is a zero-key existence
+          // probe (coverage SingleRowSubset) with exact MySQL
+          // empty-CTE semantics.  Real-table and grouped-CTE comma
+          // joins stay rejected.
           const CteDefinition* join_cte =
               find_cte_definition(join->table.name);
           bool scalar_cte_cross_join =
@@ -803,16 +814,22 @@ RonSQLPreparer::parse()
             if (coverage.state == CteKeyCoverage::WrongColumns) {
               ndbrequire(m_conf.err_stream != NULL);
               std::basic_ostream<char>& err = *m_conf.err_stream;
-              err << "CTE lookup key references a CTE output column that"
-                     " is not part of the virtual primary key.  The"
-                     " virtual CTE primary key matches the CTE body's"
-                     " GROUP BY column list.\n";
+              if (join_cte->stmt->is_single_row_cte) {
+                err << "CTE lookup key references a column that is not"
+                       " an output of the single-row CTE.\n";
+              } else {
+                err << "CTE lookup key references a CTE output column"
+                       " that is not part of the virtual primary key."
+                       "  The virtual CTE primary key matches the CTE"
+                       " body's GROUP BY column list.\n";
+              }
               throw RonSQLPermanentError(
                   "CTE lookup key references a non-key CTE column.");
             }
             if (coverage.state != CteKeyCoverage::ExactOrdered &&
                 coverage.state != CteKeyCoverage::ExactPermuted &&
-                coverage.state != CteKeyCoverage::ScalarDummy) {
+                coverage.state != CteKeyCoverage::ScalarDummy &&
+                coverage.state != CteKeyCoverage::SingleRowSubset) {
               projection_only_join_chain = false;
               break;
             }
@@ -1476,13 +1493,17 @@ RonSQLPreparer::synthesize_from_for_scalar_ctes()
       }
     }
     if (match == NULL) continue;  // Not an outer-CTE qualifier; skip.
-    if (match->stmt->groupby_columns != NULL) {
+    if (match->stmt->groupby_columns != NULL ||
+        match->stmt->is_single_row_cte) {
       err << "Column qualifier '" << q.c_str()
-          << "' refers to a grouped CTE.  SELECT without an explicit "
-             "FROM clause supports only scalar (no-GROUP-BY) CTEs."
-          << std::endl;
+          << "' refers to a "
+          << (match->stmt->is_single_row_cte ? "single-row" : "grouped")
+          << " CTE.  SELECT without an explicit FROM clause supports "
+             "only scalar (aggregate-only) CTEs; add an explicit "
+             "comma cross join instead (FROM t, "
+          << q.c_str() << ")." << std::endl;
       throw RonSQLPermanentError(
-          "Grouped CTE referenced with no FROM clause.");
+          "Non-scalar CTE referenced with no FROM clause.");
     }
     matched_qualifiers.push(q);
   }
@@ -1556,6 +1577,36 @@ RonSQLPreparer::cte_key_coverage(
     out.pk_covered[i] = false;
   }
   if (cte == NULL || cte->stmt == NULL) return false;
+
+  /* Single-row CTE (cte_single_row_kernel_plan.md): keys may bind ANY
+   * SUBSET of the outputs, including none (comma cross join =
+   * existence probe).  pk_index_for_key[k] carries the OUTPUT
+   * POSITION each key binds, in the caller's key order — passed to
+   * NdbQueryOptions::setCteKeyColumns at emit.  An unknown name is
+   * still WrongColumns. */
+  if (cte->stmt->is_single_row_cte) {
+    bool wrong = false;
+    for (Uint32 k = 0; k < num_keys; k++) {
+      int pos = -1;
+      Uint32 oi = 0;
+      for (const Outputs* o = cte->stmt->outputs; o != NULL;
+           o = o->next, oi++) {
+        if (bound_cte_side_names[k] ==
+            o->output_name.to_LexCString(m_amalloc)) {
+          pos = (int)oi;
+          break;
+        }
+      }
+      out.pk_index_for_key[k] = pos;
+      if (pos < 0) {
+        if (!wrong) out.first_wrong_key = k;
+        wrong = true;
+      }
+    }
+    out.state = wrong ? CteKeyCoverage::WrongColumns
+                      : CteKeyCoverage::SingleRowSubset;
+    return true;
+  }
 
   LexCString pk_names[MAX_JOIN_KEY_COLS];
   for (const GroupbyColumns* gb = cte->stmt->groupby_columns;
@@ -1838,6 +1889,72 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         // original FROM name.
       }
     }
+  }
+}
+
+/* Single-row key-lookup CTE bodies (cte_single_row_kernel_plan.md).
+ *
+ * A CTE body with no aggregate functions and no GROUP BY is accepted
+ * when it is a single-row key lookup: a single-table SELECT of plain
+ * columns whose WHERE binds every primary key column of the source
+ * table by equality with a constant.  That guarantee is checked at
+ * plan time in enforce_single_row_cte_body() — the dictionary is not
+ * loaded yet here — but candidacy must be marked at parse time,
+ * before the projection-only gate evaluates CTE key coverage.
+ *
+ * NO AST rewrite: the CTE is emitted with the kernel's CTE_SINGLE_ROW
+ * mode — every projected column becomes a GROUP BY column with zero
+ * aggregate slots (the materialized "group" IS the row), and
+ * consumers bind ANY SUBSET of the outputs via subset-key CTE_LOOKUPs
+ * (including none: the comma cross join is a pure existence probe
+ * with exact MySQL empty-CTE semantics).
+ *
+ * Candidacy is pure AST; non-candidates fall through to the existing
+ * analyze_ctes() rejections unchanged (gc-P3 / cs-probe-5 baselines
+ * stay byte-identical).  Duplicate output columns are excluded: two
+ * outputs sharing one source column would need distinct virtual
+ * columns backed by the same stored key entry (virt-PK aliasing,
+ * deferred).
+ */
+void
+RonSQLPreparer::detect_single_row_ctes()
+{
+  for (CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL; cte = cte->next)
+  {
+    SelectStatement* stmt = cte->stmt;
+    if (stmt->groupby_columns != NULL) continue;
+    if (stmt->agg != NULL) continue;  // body parsed aggregate/arith exprs
+    if (stmt->having_expression != NULL) continue;
+    if (stmt->joins != NULL) continue;
+    if (stmt->where_expression == NULL) continue;
+    if (stmt->root_table == NULL) continue;
+    // Chained CTE bodies (FROM an earlier CTE) stay on the
+    // aggregating envelope.
+    if (find_cte_definition(stmt->root_table->name) != NULL) continue;
+    bool all_plain_columns = (stmt->outputs != NULL);
+    for (const Outputs* o = stmt->outputs;
+         o != NULL && all_plain_columns; o = o->next)
+    {
+      if (o->type != Outputs::Type::COLUMN)
+        all_plain_columns = false;
+    }
+    if (!all_plain_columns) continue;
+    bool has_duplicate = false;
+    for (const Outputs* o = stmt->outputs;
+         o != NULL && !has_duplicate; o = o->next)
+      for (const Outputs* p = o->next; p != NULL; p = p->next)
+        if (p->column.col_idx == o->column.col_idx)
+        {
+          has_duplicate = true;
+          break;
+        }
+    if (has_duplicate) continue;
+    // Subset keys are capped by the wire limit; more outputs than
+    // that is fine (consumers just can't bind them all at once), but
+    // the emit-side key count is checked per consumer join anyway
+    // (MAX_JOIN_KEY_COLS <= QN_CteLookupNode::MaxKeyPositions).
+    stmt->is_single_row_cte = true;
   }
 }
 
@@ -5007,19 +5124,27 @@ RonSQLPreparer::analyze_ctes()
         has_non_agg_column = true;
       }
     }
-    if (!has_agg)
+    /* Single-row key-lookup CTE bodies (cte_single_row_kernel_plan.md)
+     * are exempt from the aggregate requirement: the kernel's
+     * CTE_SINGLE_ROW mode materializes the (at most one) row natively.
+     * The <= 1-row guarantee (full PK equality with constants) is
+     * enforced at plan time in enforce_single_row_cte_body(). */
+    if (!cte->stmt->is_single_row_cte)
     {
-      err << "CTE '" << cte->name.c_str()
-          << "' must contain at least one aggregate function." << std::endl;
-      throw RonSQLPermanentError("CTE without aggregate function.");
-    }
-    if (!has_groupby && has_non_agg_column)
-    {
-      err << "CTE '" << cte->name.c_str()
-          << "' has non-aggregate output columns and must contain GROUP BY."
-          << std::endl;
-      throw RonSQLPermanentError(
-          "CTE has non-aggregate columns without GROUP BY.");
+      if (!has_agg)
+      {
+        err << "CTE '" << cte->name.c_str()
+            << "' must contain at least one aggregate function." << std::endl;
+        throw RonSQLPermanentError("CTE without aggregate function.");
+      }
+      if (!has_groupby && has_non_agg_column)
+      {
+        err << "CTE '" << cte->name.c_str()
+            << "' has non-aggregate output columns and must contain GROUP BY."
+            << std::endl;
+        throw RonSQLPermanentError(
+            "CTE has non-aggregate columns without GROUP BY.");
+      }
     }
 
     /* Validate: CTE must also have a FROM clause (enforced by parser) */
@@ -5037,6 +5162,58 @@ RonSQLPreparer::analyze_ctes()
         throw RonSQLPermanentError("Duplicate CTE name.");
       }
     }
+  }
+}
+
+/* Single-row CTE bodies: the parse-time candidacy
+ * (detect_single_row_ctes) is only sound when the body's WHERE
+ * guarantees <= 1 row.  Enforce that here, where the dictionary is
+ * loaded: every primary key column of the body's source table must be
+ * bound by equality with a plain constant.  The bound side must be
+ * constant — an expression containing another column (e.g.
+ * pk = other_col + 1) can hold on several rows.  The accepted
+ * constant set matches child_const_bound_op; I_SUBQUERY placeholders
+ * are substituted with literal constants before any emit path runs
+ * (a NULL substitute matches no row, which is the correct empty CTE).
+ * Residual conjuncts beside the PK equalities are fine (they can only
+ * reduce the row count) and stay on the body's normal bound/filter
+ * path. */
+void
+RonSQLPreparer::enforce_single_row_cte_body(const CteDefinition* cte,
+                                            QueryScope& scope)
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  const NdbDictionary::Table* tab =
+      (scope.join_plan.num_ops > 0) ? scope.join_plan.ops[0].table : NULL;
+  int nkeys = (tab != NULL) ? tab->getNoOfPrimaryKeys() : 0;
+  bool covered = (tab != NULL && nkeys > 0 &&
+                  scope.join_where_ce[0] != NULL);
+  if (covered)
+  {
+    ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
+    ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
+    collect_pk_equalities(w, tab, pk_const);
+    for (int k = 0; k < nkeys && covered; k++)
+    {
+      ConditionalExpression* c = pk_const[k];
+      if (c == NULL ||
+          (c->op != T_INT && c->op != T_FLOAT && c->op != T_STRING &&
+           c->op != I_MYSQL_TIME && c->op != I_SUBQUERY))
+        covered = false;
+    }
+  }
+  if (!covered)
+  {
+    err << "CTE '" << cte->name.c_str()
+        << "' has no aggregate functions and no GROUP BY, so it is"
+           " only supported as a single-row key lookup: its WHERE"
+           " clause must bind every primary key column of table '"
+        << ((tab != NULL) ? tab->getName() : "?")
+        << "' by equality with a constant.  Otherwise add GROUP BY"
+           " and aggregate functions to the CTE body." << std::endl;
+    throw RonSQLPermanentError(
+        "Non-aggregating CTE body is not a single-row key lookup.");
   }
 }
 
@@ -5079,6 +5256,11 @@ RonSQLPreparer::build_cte_scopes()
     // (TABLE_SCAN body, D4).  Reject it permanently before scan-config
     // selection and emit.  See check_no_cte_body_col_vs_col.
     check_no_cte_body_col_vs_col(cte->stmt->where_expression);
+    // Single-row CTE bodies: the parse-time candidacy is only sound
+    // when the body WHERE binds the full primary key by equality
+    // (<= 1 row).
+    if (cte->stmt->is_single_row_cte)
+      enforce_single_row_cte_body(cte, *scope);
     promote_left_to_inner_for_where(*scope);
     // child_bounds: constant bounds on multi-op CTE-body child index
     // scans (no-op for single-op bodies — the loop starts at op 1).
@@ -8037,7 +8219,29 @@ RonSQLPreparer::execute_join()
       NdbAggregator* cteAgg = new NdbAggregator(cte_leaf_table);
       cteAggs[c] = cteAgg;
 
-      programAggregator_join(cs, *cte->stmt, cteAgg, cteChildVT);
+      if (cte->stmt->is_single_row_cte) {
+        // Single-row projection program
+        // (cte_single_row_kernel_plan.md): every output is a GROUP BY
+        // column and there are ZERO aggregate slots — the kernel
+        // stores the (at most one) row as a key-only group record.
+        // Bodies are single-table by candidacy, so every output
+        // resolves to a stored column of the source table.
+        cteAgg->SetSingleRowMode();
+        for (const Outputs* o = cte->stmt->outputs; o != NULL;
+             o = o->next) {
+          const QueryScope::ResolvedColumnRef& ref =
+              cs.resolved_columns[o->column.col_idx];
+          require_prm(ref.kind ==
+                          QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                      "Single-row CTE output did not resolve to a "
+                      "stored column.");
+          require_prm(cteAgg->GroupBy((Int32)ref.attr_id),
+                      "Failed to program the single-row CTE projection "
+                      "(BLOB/TEXT columns cannot be projected).");
+        }
+      } else {
+        programAggregator_join(cs, *cte->stmt, cteAgg, cteChildVT);
+      }
       require_prm(cteAgg->Finalize(), "Failed to finalize CTE aggregator.");
 
       qb->beginCteSubtree(c);
@@ -8177,8 +8381,10 @@ RonSQLPreparer::execute_join()
           cteDepMask |= (Uint64(1) << cop.cte_def_idx);
         }
       }
-      require_run(qb->defineCte(c, defineSrcTab, *cteAgg,
-                                 cteDepMask) == 0,
+      require_run(qb->defineCte(c, defineSrcTab, *cteAgg, cteDepMask,
+                                 cte->stmt->is_single_row_cte
+                                     ? QN_CteSubtreeNode::CTE_SINGLE_ROW
+                                     : 0) == 0,
                   "Failed to defineCte.");
       // Don't delete cteChildVT entries here: qb's serialized scanCte
       // op retains raw NdbDictionary::Table* pointers into them.
@@ -8951,9 +9157,19 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     ConditionalExpression* root_pk_eq[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     ConditionalExpression* root_residual = NULL;
     bool root_has_scan_child = false;
+    // Single-row CTEs (cte_single_row_kernel_plan.md) also have no
+    // GROUP BY but are NOT scalar: as a FROM root they take the
+    // scanCte path below (WHERE as a jump-table filter).  The scalar
+    // dummy-key lookupCte arm and the full-virt-PK lookupCte arm are
+    // both wrong for them (no positions declared; the kernel's
+    // single-row probe rejects position-less keys).
+    bool root_cte_is_single_row =
+        (plan.ops[0].cte_def != NULL &&
+         plan.ops[0].cte_def->stmt->is_single_row_cte);
     bool root_cte_is_scalar =
         (plan.ops[0].cte_def != NULL &&
-         plan.ops[0].cte_def->stmt->groupby_columns == NULL);
+         plan.ops[0].cte_def->stmt->groupby_columns == NULL &&
+         !root_cte_is_single_row);
     if (root_cte_is_scalar && scope.join_where_ce[0] != NULL)
     {
       NdbInterpretedCode code(cteVirtualTables[0]);
@@ -9005,7 +9221,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                   "Failed to create scalar lookupCte root.");
       return;
     }
-    if (scope.join_where_ce[0] != NULL && !root_cte_is_scalar)
+    if (scope.join_where_ce[0] != NULL && !root_cte_is_scalar &&
+        !root_cte_is_single_row)
     {
       ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
       root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
@@ -9591,9 +9808,20 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       // Test 20's single-PK / single-dummy-key contract.  The
       // kernel ignores the key at scalar lookup (n_gb_cols == 0 →
       // returns m_agg_results directly).
-      bool cte_is_scalar = (cte->stmt->groupby_columns == NULL);
+      // Single-row CTEs (cte_single_row_kernel_plan.md) also have
+      // groupby_columns == NULL but are NOT scalar: kernel-side EVERY
+      // output is a GROUP BY (key) column of the key-only group
+      // record.  Mark them all PK (subset-key lookupCte skips the
+      // PK-count validation via setCteKeyColumns) and all nullable
+      // (source columns may be NULL, and LEFT-join NULL-fill writes
+      // NULLs regardless).
+      bool cte_is_single_row = cte->stmt->is_single_row_cte;
+      bool cte_is_scalar =
+          (cte->stmt->groupby_columns == NULL) && !cte_is_single_row;
       bool is_groupby = false;
-      if (cte_is_scalar) {
+      if (cte_is_single_row) {
+        is_groupby = true;
+      } else if (cte_is_scalar) {
         is_groupby = (o == cte->stmt->outputs);  // first output only
       } else if (o->type == Outputs::Type::COLUMN) {
         for (const GroupbyColumns* gb = cte->stmt->groupby_columns;
@@ -9850,7 +10078,9 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         vcol.setPrecision(derived_precision);
       }
       vcol.setPrimaryKey(is_groupby);
-      vcol.setNullable(cte_is_scalar ? true : !is_groupby);
+      vcol.setNullable((cte_is_scalar || cte_is_single_row)
+                           ? true
+                           : !is_groupby);
       vt->addColumn(vcol);
     }
     // NdbDictionary::Table aggregate counts (getNoOfPrimaryKeys etc.) are
@@ -9939,9 +10169,39 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           mut_impl.m_orgAttrSize = 3;
           mut_impl.m_arraySize = 2 + mut_col->getLength();
           break;
+        // Fixed-width temporals (single-row CTE bodies project source
+        // columns verbatim, so these appear as virt columns on the
+        // lookupCte path — e.g. a DATE watermark).
+        case NdbDictionary::Column::Year:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 1;
+          break;
+        case NdbDictionary::Column::Date:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 3;
+          break;
+        case NdbDictionary::Column::Time:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 3;
+          break;
+        case NdbDictionary::Column::Datetime:
+          mut_impl.m_attrSize = 8;
+          mut_impl.m_orgAttrSize = 6;
+          mut_impl.m_arraySize = 1;
+          break;
+        case NdbDictionary::Column::Timestamp:
+          mut_impl.m_attrSize = 4;
+          mut_impl.m_orgAttrSize = 5;
+          mut_impl.m_arraySize = 1;
+          break;
         default:
-          // DECIMAL etc.: existing scanCte path tolerated 0; lookupCte
-          // path with such PK types is not exercised yet by RonSQL.
+          // DECIMAL, fractional-second temporals (Datetime2 / Time2 /
+          // Timestamp2) etc.: existing scanCte path tolerated 0; the
+          // lookupCte path with such virt column types is not
+          // exercised yet by RonSQL.
           break;
         }
       }
@@ -11004,6 +11264,33 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
                     "Failed to create dummy scalar-CTE lookup key.");
         effective_keys[1] = nullptr;
         keys_to_use = effective_keys;
+      }
+      if (coverage.state == CteKeyCoverage::SingleRowSubset) {
+        // Single-row CTE (cte_single_row_kernel_plan.md): the keys
+        // bind ANY SUBSET of the outputs.  Declare the bound output
+        // positions so lookupCte binds each key operand to its
+        // projected column and the kernel compares at those stamped
+        // positions.  Zero keys = comma cross join = pure existence
+        // probe: no key operands at all (no dummy key), parent
+        // established via setParent on the tree parent (the
+        // ScalarDummy sibling-chaining rule).
+        Uint32 positions[MAX_JOIN_KEY_COLS];
+        for (Uint32 k = 0; k < op.num_key_cols; k++) {
+          require_run(coverage.pk_index_for_key[k] >= 0,
+                      "Single-row CTE key did not resolve to an "
+                      "output column.");
+          positions[k] = (Uint32)coverage.pk_index_for_key[k];
+        }
+        require_run(opts.setCteKeyColumns(positions,
+                                          op.num_key_cols) == 0,
+                    "Failed to declare single-row CTE key columns.");
+        if (op.num_key_cols == 0) {
+          require_run(opts.setParent(opDefs[op.tree_parent_op_idx]) == 0,
+                      "Failed to set parent for single-row CTE "
+                      "cross-join.");
+          effective_keys[0] = nullptr;
+          keys_to_use = effective_keys;
+        }
       }
       opDefs[i] = qb->lookupCte(
           op.cte_def_idx, numResultCols,
@@ -13440,7 +13727,12 @@ RonSQLPreparer::is_scalar_cte_qualifier(const LexCString& qualifier) const
     if (cte->name.len == qualifier.len &&
         strncmp(cte->name.str, qualifier.str, qualifier.len) == 0)
     {
-      return cte->stmt->groupby_columns == NULL;
+      /* Single-row CTEs also have no GROUP BY but are not scalar —
+       * the implicit top-level GREATEST/LEAST MAX-wrapping (I.17/I.21)
+       * stays scalar-only: over an EMPTY single-row CTE it would turn
+       * the empty result into a NULL row. */
+      return cte->stmt->groupby_columns == NULL &&
+             !cte->stmt->is_single_row_cte;
     }
   }
   return false;
@@ -14128,6 +14420,8 @@ RonSQLPreparer::print()
           << " — source: " << cte->stmt->table.c_str();
       if (cte->stmt->joins != NULL)
         out << " (with joins)";
+      if (cte->stmt->is_single_row_cte)
+        out << " [single-row key lookup body]";
       out << "\n    Outputs: ";
       Uint32 oc = 0;
       for (const Outputs *o = cte->stmt->outputs; o; o = o->next, oc++) {

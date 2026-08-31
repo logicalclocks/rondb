@@ -9,7 +9,10 @@ Commit 2 (subset-key CTE_LOOKUP + block tests 27-31) SHIPPED
 the API param serializer's unmasked packed numResultCols word — error
 20005 — and the pre-existing empty-intermediate-projection API
 starvation, fixed in the tests + named as a follow-up).  Commit 3
-(RonSQL + MTR) in progress.**
+(RonSQL emission + MTR ×5 topologies) SHIPPED (2026-08-31, recorded
+green ×5 suites; first record caught one test bug — a single-op
+FROM-root query prints no EXPLAIN join-plan tree, srb-13's grep
+re-pinned on the CTE-definitions section).  FEATURE COMPLETE.**
 
 ## Why kernel-native
 
@@ -178,25 +181,46 @@ The kernel was unusually well prepared:
   (suppress counting or reject empty intermediate projections on the
   pushed path) is a named follow-up.
 
-## Commit 3 — RonSQL + MTR (planned)
+## Commit 3 — RonSQL + MTR (shipped)
 
-No AST rewrite: parse-time candidacy (no aggregates / GROUP BY /
-HAVING, single stored table, WHERE present, plain-column outputs, no
-duplicate col_idx) marks the CTE single-row; plan-time enforcement in
-`build_cte_scopes` requires full PK-equality with plain constants;
-`analyze_ctes`' aggregate requirement gets a single-row exemption;
-`cte_key_coverage` gains a SingleRowSubset arm (any subset incl. empty
-⇒ comma joins admitted alongside scalar CTEs); emit programs
-GroupBy/GroupByLinked for every output + `SetSingleRowMode` +
-`defineCte(..., CTE_SINGLE_ROW)`; consumer `lookupCte` passes
-bound-column positions; virt table all-columns with the existing
-attr-size switch; EXPLAIN `[single-row]` annotation.  MTR
-`body_single_row_cte.inc` (srb-*) ×5 topology suites incl. the
-comma-join / watermark cases and pure-projection cross-join row-absent
-(exact empty semantics — no guard tricks needed), LEFT JOIN
-NULL-extension, multi-col PK, VARCHAR/DATE/nullable outputs,
-subset-key joins, rejection probes.  gc-P3 / cs-probe-5 /
-`ronsql_cte_scalar` Test 5 baselines stay byte-identical.
+No AST rewrite — `SelectStatement::is_single_row_cte` set by
+`detect_single_row_ctes()` in `parse()` (before the gate; candidacy:
+no aggregates / GROUP BY / HAVING / joins, WHERE present, stored-table
+source, plain-column outputs, no duplicate col_idx), enforced at plan
+time by `enforce_single_row_cte_body()` in `build_cte_scopes` (full
+PK-equality with plain constants — the `child_const_bound_op` set;
+`pk = other_col + 1` rejected).  `analyze_ctes`' aggregate
+requirement exempts single-row CTEs; `cte_key_coverage` gains the
+SingleRowSubset arm (any subset of outputs incl. NONE — the comma
+cross join; `pk_index_for_key[]` carries the bound OUTPUT POSITIONS);
+the gate accept-list takes SingleRowSubset, and the comma-join
+admission (`groupby_columns == NULL`) covers single-row CTEs
+natively.  Emit: the per-CTE loop programs `SetSingleRowMode()` +
+`GroupBy(attr_id)` per output (zero aggregate slots) and
+`defineCte(..., CTE_SINGLE_ROW)`; the CTE_LOOKUP child arm passes
+bound positions via `setCteKeyColumns` (zero keys ⇒ setParent on the
+tree parent, NO dummy key); `emit_root_op`'s scalar dummy-key and
+full-virt-PK lookupCte root arms exclude single-row roots — they take
+the scanCte + jump-table-filter path.  Virt tables: all columns PK
+(subset-key lookupCte skips PK validation) and all nullable; the
+attr-size switch gains fixed-width temporals (Year/Date/Time/
+Datetime/Timestamp) since single-row bodies project source columns
+verbatim onto the lookupCte path.  Scalar-site audit: single-row
+excluded from `is_scalar_cte_qualifier` (no implicit GREATEST/LEAST
+MAX-wrap — it would turn an empty CTE into a NULL row) and from the
+scalar auto-FROM convenience (clean message pointing at the explicit
+comma join); `select_cte_body_minmax_index` bails on WHERE-carrying
+bodies already.  EXPLAIN: `[single-row key lookup body]` on the CTE
+definitions line.
+
+MTR: `body_single_row_cte.inc` (srb-1..22 + P1..P11, local `srbk`
+table) ×5 topology suites — keyed joins (full/subset/second-output-
+only), LEFT JOIN NULL-extension, row-absent empties on every consumer
+style incl. the comma cross join (srb-20, exact MySQL semantics),
+watermark compare (srb-18), multi-col PK bodies, VARCHAR/DATE/
+nullable/DECIMAL outputs, FROM-root + filter, chained CTEs, GROUP BY
+over the CTE output.  gc-P3 / cs-probe-5 / `ronsql_cte_scalar` Test 5
+baselines stay byte-identical.
 
 ## Deferred (multi-row future — the design keeps these reachable)
 
