@@ -12,7 +12,9 @@ starvation, fixed in the tests + named as a follow-up).  Commit 3
 (RonSQL emission + MTR ×5 topologies) SHIPPED (2026-08-31, recorded
 green ×5 suites; first record caught one test bug — a single-op
 FROM-root query prints no EXPLAIN join-plan tree, srb-13's grep
-re-pinned on the CTE-definitions section).  FEATURE COMPLETE.**
+re-pinned on the CTE-definitions section).  FEATURE COMPLETE; full
+ronsql_cte_* regression pass green (untouched families
+byte-identical — non-candidate CTEs take exactly the old paths).**
 
 ## Why kernel-native
 
