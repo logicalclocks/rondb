@@ -869,3 +869,24 @@ Mul dst field) + one self-inflicted regression caught and reverted
 (word, errno, first-sighting hexdump). Residue for item 10:
 ronsql_basic 32 and dd_filter 24 did NOT move — attribute from the
 next harvest; v5's 16 = by-design reason-8 type admissions.
+
+### Item 10 — DONE (2026-08-31): residue classification; lowering campaign CLOSED
+
+The final harvest shows exactly FOUR reject families across the
+whole RonSQL corpus (census 88):
+
+| Family | ≈Count | Classification |
+|---|---|---|
+| `r8/d43 w4` + `r8/d44 w1` | ~52 (v5 16, dd_filter 24, dd stragglers) | **BY DESIGN** — the op-43/44 type admissions (GREATEST/LEAST and linked loads over F64/BIGUNSIGNED sources; the embedded signed-i64 compare model cannot represent them). Lowering these means an embedded F64-compare extension of the GL pair-op path — a design item, not a gap. |
+| `r8/d22 w34` (kOpMinusBigint) | ~16 (ronsql_basic) | **CORRECTLY REJECTED** — the operand register is F64-tracked (a generic-`/` conv result) feeding an optimizer-typed BIGINT minus. `RegMinusBigint`'s stated precondition is both-BIGINT (raw `val_int64`, no runtime dispatch), so routing this through ARITH_CONV_F64 would NOT match the interpreter; the interpreter/optimizer typing interplay here is RonSQL territory (flagged for the RonSQL owners: the optimizer emits kOpMinusBigint over a register the same program's generic `/` made DOUBLE). |
+| `r1/d6 w21` (kOpMod) | ~4 (ronsql_basic) | UNKNOWN/mixed-track operand in the kitchen-sink arith program — same optimizer-typing cluster as d22, tiny count. |
+
+`ronsql_basic`'s 32 = d22 + d6 + their per-fragment multiples;
+`dd_filter`'s 24 = the d43/d44 admissions. Nothing else remains.
+
+**The slice-2 lowering campaign closes at corpus census
+~1234 → 88** (93% of all rejects eliminated), every remaining
+reject classified as by-design type admission or a
+correctly-conservative reject pending upstream RonSQL typing work.
+Next: slice 3 — the "4060-lite" program-level error insert and
+suite-wide arming, locking in everything that now compiles.

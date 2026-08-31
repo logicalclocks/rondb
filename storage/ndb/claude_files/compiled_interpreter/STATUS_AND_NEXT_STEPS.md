@@ -201,9 +201,14 @@ real r4/d28), op_arith_fb early-ret ABI (redesigned branch-shaped),
 Interpreter::Mul dst at bits 12-14 not 16-18 (the M11 wrong-result;
 caught via the 4063 row-trace after the census gained
 word/errno/hexdump). Recovered 48 (subquery_agg_ext 22→0, correct
-values). Corpus census ~1234→88 across items 1-9. Residue:
-ronsql_basic 32, dd_filter 24 (attribute next), v5 16 (by-design
-reason-8). Records in `ronsql_jit_plan.md`.
+values). Corpus census ~1234→88 across items 1-9. Item 10
+DONE 2026-08-31: residue fully classified — ~52 by-design op-43/44
+type admissions (F64/BIGUNSIGNED GL + linked), ~16 kOpMinusBigint
+correctly-conservative rejects (RonSQL optimizer types BIGINT over a
+generic-/ DOUBLE result — flagged upstream), ~4 kOpMod mixed-track.
+**Lowering campaign CLOSED at 93% reject elimination.** Next:
+slice 3 ("4060-lite" program-level error insert + suite-wide
+arming). Records in `ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 
