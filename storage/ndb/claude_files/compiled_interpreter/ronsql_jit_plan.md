@@ -634,3 +634,93 @@ possible program-length accounting defect for large DNF filters,
 investigate before treating as a family). Remaining tail: embedded
 arith (item 7), kOpMod-unknown ≈16, MinusBigint ≈16,
 PROG_TOO_LARGE ≈3, by-design reason-8 type-admissions.
+
+### Lowering item 7 — DONE & VERIFIED (2026-08-31): embedded WHERE arithmetic + instrument word
+
+Target: the post-item-6 layer in ronsql_basic/overflow —
+`reason=1 detail=7` (ADD_REG_REG) and `detail=30` (MUL_REG_REG),
+WHERE-clause arithmetic; SUB_REG_REG (8) rides along.
+
+**OP_ARITH_FB = 69** (one new stencil ⇒ regen-stencils REQUIRED):
+- Cold call; wire src1 bits 6-8, src2 9-11, dst 16-18; op->imm
+  packs (code<<12)|(dst<<8)|(src1<<4)|src2, a/b/c carry dst/src1/
+  src2 for the generic passes. Narrow magic
+  `MAGIC_AFB_ARG_NARROW 0x6fd9`.
+- Signed-i64 math with __builtin_*_overflow. On overflow — and on
+  ANY NEGATIVE SUB RESULT — the helper sets row_fallback and the
+  stencil EXITS (plain ret, like op_exit): the interpreter re-run
+  applies its runtime-signedness-tagged semantics exactly
+  (typed-regs Test 19j: unsigned subtract underflow is a RUNTIME
+  ERROR — the bridge cannot see declared signedness, so the
+  negative-SUB ambiguity must replay; signed columns pay a per-row
+  fallback only on negative results).
+- F64-tracked operands reject TYPE_MISMATCH (double WHERE
+  arithmetic = future item); dst clears F64/read-attr tracking.
+- DFS scanner: sources are reads (unsafe), dst overwrite ends the
+  path. nb: reads b/c, writes a.
+- Tests **T76a-e**: full a+b>const shape (ARG 0xB9A), SUB/MUL
+  codes, F64-operand reject, scan-filter reject.
+
+**Instrument**: `dbtup_jit_note_fallback` now takes the offending
+WORD; the NEW-family line prints `word=` and the table dump prints
+`first_word=` — next harvest disambiguates the suspicious
+`reason=4 detail=28` (outer kOpEmbeddedInterp MALFORMED "emb_len
+past program end") by pinpointing the word.
+
+### Lowering item 8 — DONE & VERIFIED (2026-08-31): two real defects + capacity
+
+The word-instrumented harvest (item 7) cracked both mysteries:
+
+**Defect 1 — flat-format program length (the r4/d28 word=65546).**
+`DblqhProxy`'s JOIN_AGG_SETUP parser set the flat-format (0x0721)
+leaf's `m_agg_program_len = totalWords` (the SECTION size). The
+program's own header word 0 is `(0x0721 << 16) | progLen`, and a
+CTE consumer feed's section carries trailing data after the
+program. The interpreter never noticed — the base interpreter
+re-reads the header, and consumer rows end via the embedded
+STOP-or-skip — but the JIT bridge walks `[start, len)` at compile
+time and marched into the trailing words: out-of-bounds reads,
+garbage-guided leaps (words decoding as embedded blocks jump
+`pos += 1 + emb_len`), and a MALFORMED reject at positions like
+65546. FIX: the flat arm now uses `word0 & 0xFFFF` with
+validation (reject setup as InvalidRequest if < 8 or >
+totalWords); the new multi-leaf format's per-leaf lengths are now
+bounds-checked against the section the same way (hardening — a
+malformed frame can no longer walk out of the copied buffer).
+
+**Defect 2 — silent post-admission compile failures
+("aggregation compile reason=0").** `jit1_compile` can fail AFTER
+`admit_program` passes (codemem alloc, hole patch, fixups, seal),
+leaving the stale JIT_ADMIT_OK in the sidecar — the census logged
+reason=0. Root cause of the actual failures: cold-call-heavy
+programs (the newly lowered arith/compare families) at up to
+BC_MAX_OPS ops exceeded the LARGEST CODE CLASS (8 KB). FIXES:
+- `kClassBytes` + {16384, 32768} (both divide the 64 KB slab).
+- `BC_MAX_OPS` 64 → 128 (also recovers the bridge-side
+  PROG_TOO_LARGE ≈3 family — long GREATEST chains; op indices stay
+  well under the uint8 0xFF sentinel; no JitState/stencil
+  dependency ⇒ NO regen needed).
+- New sidecar reasons `JIT_ADMIT_CODEMEM = 7` /
+  `JIT_ADMIT_PATCH_FAILED = 8` recorded at every post-admission
+  failure path — "compile" fallback families are now diagnosable.
+
+No new stencils, no regen (items 7+8 verified together).
+
+**VERIFIED 2026-08-31 (all tests passed).** Measured:
+- **ronsql_overflow 24 → 0** (first real RonSQL pin drop since
+  item 4 — the full layered stack cleared it). Corpus census
+  **160 → 136**.
+- **Fleet pins: ndb_pushdown_agg 8 → 0, ndb_push_agg_case_null
+  8 → 0, ndb_join_pushdown_agg 1 → 0** (the BC_MAX_OPS raise —
+  their big CASE-trellis programs were op-cap blocked; hand-updated
+  pins). The ndb_push_agg_jit fleet is now reject-free outside the
+  deliberate canaries + typed-regs census (1880) +
+  ndb_join_pushdown_agg_types (1).
+- PROG_TOO_LARGE (r3) families GONE; arith families (7/30) GONE.
+- Survivors for item 9: `aggregation compile reason=8` (6 events —
+  hole-patch/fixup class; errno now logged as the family detail for
+  the next harvest), `r4/d28 word=65546` (STILL present — the
+  flat-format fix did not cover this path; colvscol-family CTE
+  tests; needs the 5119 setup dump or per-leaf logging),
+  kOpMod-unknown ≈16 (d6 w21), MinusBigint (d22 w34), by-design
+  reason-8 43/44.

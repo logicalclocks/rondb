@@ -145,6 +145,12 @@ typedef enum {
   JIT_ADMIT_UNSUPPORTED_OP  = 4,   /* opcode kind has no stencil */
   JIT_ADMIT_BACKWARD_BRANCH = 5,   /* op->c <= pc */
   JIT_ADMIT_BRANCH_OOR      = 6,   /* op->c >= n_ops */
+  /* ronsql_jit slice 2 item 8: post-admission compile failures also
+   * record a reason (previously the sidecar kept the stale
+   * JIT_ADMIT_OK and the fallback census logged reason=0). */
+  JIT_ADMIT_CODEMEM         = 7,   /* alloc/seal failed (cap, or blob >
+                                    * largest size class) */
+  JIT_ADMIT_PATCH_FAILED    = 8,   /* hole patch / fixup failure */
 } Jit1AdmitReason;
 
 typedef struct {

@@ -1507,6 +1507,22 @@ STENCIL op_read_mem_to_reg(JitState *s) {
   TAIL_NEXT(s);
 }
 
+/* ronsql_jit slice 2 item 7 — embedded WHERE arithmetic (cold call).
+ * The helper does signed-i64 add/sub/mul; on overflow (or a negative
+ * SUB result — possible unsigned underflow, which the interpreter
+ * treats as a runtime error) it sets row_fallback and returns 1 and
+ * the stencil EXITS the program (plain ret, like op_exit) — the
+ * interpreter re-run reproduces the exact typed semantics. */
+extern int ndb_jit_h_arith_fb(JitState *s, uint32_t arg);
+
+DECLARE_NARROW_HOLE(AFB_ARG);
+STENCIL op_arith_fb(JitState *s) {
+  if (ndb_jit_h_arith_fb(s, (uint32_t)HOLE_NARROW(AFB_ARG))) {
+    return;
+  }
+  TAIL_NEXT(s);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Force-keep symbols so the linker doesn't strip them out of         */
@@ -1583,4 +1599,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_branch_mem_op_arg,
     op_branch_f64,
     op_read_mem_to_reg,
+    op_arith_fb,
 };

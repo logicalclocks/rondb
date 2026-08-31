@@ -29,6 +29,7 @@
 #include <cstdlib>             /* malloc / free for cache products */
 #include <cstddef>              /* offsetof (targeted JitState init) */
 #include <cstring>
+#include <cerrno>              /* compile-failure detail in the census */
 #include <ctime>               /* rate-limited fallback logging */
 
 #ifndef _WIN32
@@ -123,6 +124,7 @@ struct JitFallbackFamily {
   const char *site;    /* interned literal from the call sites */
   int         reason;
   Uint32      detail;
+  Uint32      first_word;   /* offending word of the FIRST sighting */
   Uint64      count;
 };
 static constexpr unsigned NJT_FALLBACK_FAMILIES = 48;
@@ -143,12 +145,14 @@ static void jit_fallback_log_breakdown(Uint64 total) {
     const JitFallbackFamily &f = g_jit_fallback_families[i];
     g_eventLogger->info(
         "RONDB-1056 JIT fallback family: %s reason=%d detail=%u "
-        "count=%llu",
-        f.site, f.reason, f.detail, (unsigned long long)f.count);
+        "first_word=%u count=%llu",
+        f.site, f.reason, f.detail, f.first_word,
+        (unsigned long long)f.count);
   }
 }
 
-void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail) {
+void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail,
+                             Uint32 word) {
   const Uint64 n =
       g_jit_fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -173,6 +177,7 @@ void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail) {
       f.site = path;
       f.reason = reason;
       f.detail = detail;
+      f.first_word = word;
       f.count = 1;
     } else {
       g_jit_fallback_overflow++;
@@ -180,9 +185,10 @@ void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail) {
     /* First sighting of a distinct family always logs, unthrottled. */
     g_eventLogger->info(
         "RONDB-1056 JIT fallback NEW family: %s rejected (reason=%d "
-        "detail=%u) — the program runs on the interpreter. %llu JIT "
-        "fallbacks since node start.",
-        path, reason, (unsigned)detail, (unsigned long long)n);
+        "detail=%u word=%u) — the program runs on the interpreter. "
+        "%llu JIT fallbacks since node start.",
+        path, reason, (unsigned)detail, (unsigned)word,
+        (unsigned long long)n);
     pthread_mutex_unlock(&g_jit_fallback_mtx);
     return;
   }
@@ -1568,6 +1574,61 @@ ndb_jit_h_read_mem_to_reg(JitState *s, uint32_t mem_off, uint32_t wd) {
 #endif
 }
 
+
+/* ndb_jit_h_arith_fb — ronsql_jit slice 2 item 7 cold-call embedded
+ * WHERE arithmetic (OP_ARITH_FB). arg: bits 0-3 src2, 4-7 src1,
+ * 8-11 dst, 12-13 code (0 add, 1 sub, 2 mul). Signed-i64 math;
+ * returns 1 (exit the program, row_fallback set) on overflow, or on
+ * a negative SUB result — the interpreter dispatches on the
+ * registers' runtime signedness tags and errors on UNSIGNED
+ * underflow, which the bridge cannot rule out statically, so the
+ * ambiguous case replays on the interpreter for the exact
+ * semantics. Returns 0 to continue. */
+extern "C" int
+ndb_jit_h_arith_fb(JitState *s, uint32_t arg) {
+  const uint32_t src2 = arg & 0xFu;
+  const uint32_t src1 = (arg >> 4) & 0xFu;
+  const uint32_t dst  = (arg >> 8) & 0xFu;
+  const uint32_t code = (arg >> 12) & 0x3u;
+  const int64_t l = s->regs_i64[src1];
+  const int64_t r = s->regs_i64[src2];
+  int64_t res;
+  bool ovf;
+  switch (code) {
+    case 0:
+      ovf = __builtin_add_overflow(l, r, &res);
+      break;
+    case 1:
+      ovf = __builtin_sub_overflow(l, r, &res);
+      if (!ovf && res < 0) {
+        ovf = true;   /* possible unsigned underflow — replay */
+      }
+      break;
+    default:
+      ovf = __builtin_mul_overflow(l, r, &res);
+      break;
+  }
+  if (unlikely(ovf)) {
+    s->row_fallback = 1;
+    return 1;
+  }
+  s->regs_i64[dst] = res;
+#ifdef ERROR_INSERT
+  {
+    dbtup_jit_call_ctx *ctx =
+        static_cast<dbtup_jit_call_ctx *>(s->ctx);
+    if (ctx != nullptr && ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=arith_fb code=%u "
+          "l=%lld r=%lld res=%lld",
+          ctx->trace_row_no, code, (long long)l, (long long)r,
+          (long long)res);
+    }
+  }
+#endif
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper registration.                                               */
 /* ------------------------------------------------------------------ */
@@ -1616,6 +1677,8 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_f64));
   jit1_register_helper("ndb_jit_h_read_mem_to_reg",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_mem_to_reg));
+  jit1_register_helper("ndb_jit_h_arith_fb",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_arith_fb));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1781,14 +1844,15 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
       prog, n_words, &p, &berr, &reject_code);
   if (brc != JIT_BRIDGE_OK) {
     dbtup_jit_note_fallback("scan-filter bridge", (int)brc,
-                            berr.offending_op);
+                            berr.offending_op, berr.offending_word);
     return -1;
   }
   Jit1Timing jt;
   Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
   if (jp == nullptr) {
     dbtup_jit_note_fallback("scan-filter compile",
-                            (int)jit1_last_admit_error()->reason, 0);
+                            (int)jit1_last_admit_error()->reason,
+                            (Uint32)errno, 0);
     return -1;
   }
   dbtup_jit_note_compile_ns(jt.total_ns);
@@ -1796,7 +1860,7 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
       static_cast<ScanFilterProduct *>(malloc(sizeof(ScanFilterProduct)));
   if (sfp == nullptr) {
     jit1_free(jp);
-    dbtup_jit_note_fallback("scan-filter product-alloc", 0, 0);
+    dbtup_jit_note_fallback("scan-filter product-alloc", 0, 0, 0);
     return -1;
   }
   sfp->jp = jp;
@@ -1895,14 +1959,15 @@ static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
   JitBridgeReason brc = ndb_jit_bridge_translate(prog, n_words, &p, &berr);
   if (brc != JIT_BRIDGE_OK) {
     dbtup_jit_note_fallback("aggregation bridge", (int)brc,
-                            berr.offending_op);
+                            berr.offending_op, berr.offending_word);
     return -1;
   }
   Jit1Timing jt;
   Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
   if (jp == nullptr) {
     dbtup_jit_note_fallback("aggregation compile",
-                            (int)jit1_last_admit_error()->reason, 0);
+                            (int)jit1_last_admit_error()->reason,
+                            (Uint32)errno, 0);
     return -1;
   }
   dbtup_jit_note_compile_ns(jt.total_ns);

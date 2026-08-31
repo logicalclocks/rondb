@@ -192,6 +192,8 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BF64_TGT",  HK_BRANCH_TAKE  },
   { "HOLE_RMR_OFF",   HK_OP_B         },
   { "HOLE_RMR_WD",    HK_OP_C         },
+  /* ronsql_jit slice 2 item 7: op_arith_fb packed argument. */
+  { "HOLE_AFB_ARG",   HK_OP_IMM       },
   /* Overflow-checked arithmetic variants. */
   { "HOLE_ADD_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_DIV_OVF_TGT",   HK_OVERFLOW_TAKE },
@@ -419,6 +421,8 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_BF64_ARG_NARROW     0x0ab8u
 #define MAGIC_RMR_OFF_NARROW      0x48e7u
 #define MAGIC_RMR_WD_NARROW       0x0ef6u
+/* ronsql_jit slice 2 item 7 (v1 narrow salt). */
+#define MAGIC_AFB_ARG_NARROW      0x6fd9u
 /* Phase 7 op_branch_attr_op_arg — instruction word-offset hole (narrow).
  * sha256("RONDB-1056-Phase4_5-narrow-magic-v1|MAGIC_BAOA_OFF_NARROW")[0:2] LE. */
 #define MAGIC_BAOA_OFF_NARROW     0xd4fbu
@@ -610,6 +614,7 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   { MAGIC_BF64_ARG_NARROW,  HK_OP_IMM, "MAGIC_BF64_ARG_NARROW"  },
   { MAGIC_RMR_OFF_NARROW,   HK_OP_B,  "MAGIC_RMR_OFF_NARROW"   },
   { MAGIC_RMR_WD_NARROW,    HK_OP_C,  "MAGIC_RMR_WD_NARROW"    },
+  { MAGIC_AFB_ARG_NARROW,   HK_OP_IMM, "MAGIC_AFB_ARG_NARROW"   },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { MAGIC_BAOA_OFF_NARROW,  HK_OP_B,  "MAGIC_BAOA_OFF_NARROW"  },
   /* Phase 5C-2: op_load_col_ndb_f64 helper arguments. */

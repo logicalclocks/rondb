@@ -39,7 +39,12 @@
 
 /* Size classes. Smallest first; class_for_bytes returns the smallest
  * that holds the request. Top class == NDB_JIT_CODEMEM_MAX_BLOB. */
-static const uint32_t kClassBytes[] = {256u, 512u, 1024u, 2048u, 4096u, 8192u};
+/* ronsql_jit slice 2 item 8: +16K/32K — a BC_MAX_OPS(=128) program of
+ * cold-call stencils (~150-250 B each) exceeds 8K; the silent ENOMEM
+ * fallback showed up as "aggregation compile reason=0". Both divide
+ * the 64K slab evenly. */
+static const uint32_t kClassBytes[] = {256u, 512u, 1024u, 2048u,
+                                       4096u, 8192u, 16384u, 32768u};
 #define NJC_N_CLASSES ((int)(sizeof(kClassBytes) / sizeof(kClassBytes[0])))
 
 /* Target bytes reserved per slab. A multiple of every class size, so a

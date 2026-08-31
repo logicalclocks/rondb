@@ -1363,4 +1363,4 @@ DROP TABLE ta2, ta1;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ndb_join_pushdown_agg_jit_fallback_delta;
 ndb_join_pushdown_agg_jit_fallback_delta
-1
+0

@@ -2682,12 +2682,43 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       Uint32 progLen;
       Uint32 *progStart;
       if (pos == 0 && numLeaves == 1) {
-        // Old flat format: entire section is the program
-        progLen = totalWords;
+        /* Old flat format. The program's OWN header word 0 is
+         * (0x0721 << 16) | progLen — use THAT length, not the
+         * section size: a CTE consumer feed's section carries
+         * trailing data after the program, and the interpreter
+         * (which re-reads the header / ends every row via the
+         * embedded STOP-or-skip) never touches it, but the JIT
+         * bridge walks [start_pos, m_agg_program_len) at compile
+         * time — with the section size it marched past the program
+         * into the trailing words (out-of-bounds reads, then a
+         * garbage-guided MALFORMED reject at positions like 65546).
+         * ronsql_jit slice 2 item 8. */
+        progLen = word0 & 0xFFFF;
+        if (unlikely(progLen < 8 || progLen > totalWords)) {
+          jam();
+          lc_ndbd_pool_free(allProgsBuf);
+          state->m_all_programs_buf = nullptr;
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key);
+          return;
+        }
         progStart = allProgsBuf;
         pos = totalWords;
       } else {
         progLen = allProgsBuf[pos++];
+        /* New format: per-leaf lengths are explicit — bound them to
+         * the section so a malformed frame can never walk out of the
+         * copied buffer (same hardening rationale as above). */
+        if (unlikely(progLen < 8 || progLen > totalWords - pos)) {
+          jam();
+          lc_ndbd_pool_free(allProgsBuf);
+          state->m_all_programs_buf = nullptr;
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key);
+          return;
+        }
         progStart = &allProgsBuf[pos];
         pos += progLen;
       }
@@ -2980,7 +3011,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           }
         } else {
           dbtup_jit_note_fallback("join-agg bridge", (int)brc,
-                                  berr.offending_op);
+                                  berr.offending_op, berr.offending_word);
           Uint32 ow = (berr.offending_word < bc_words)
                          ? (lp.m_agg_program + bc_off)[berr.offending_word]
                          : 0u;

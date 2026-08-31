@@ -543,6 +543,7 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
   NdbJitCodeSlot slot;
   if (ndb_jit_codemem_alloc(mem, total, &slot) != 0) {
     errno = ENOMEM;   /* cap reached, or blob > largest size class */
+    g_last_admit = (Jit1AdmitError){ .reason = JIT_ADMIT_CODEMEM };
     return NULL;
   }
   uint8_t *blob_rw = (uint8_t *)slot.rw;
@@ -793,11 +794,18 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
 
 fail:
   /* Any failure after the slot was reserved returns it to the manager
-   * so a compile error never leaks code memory. errno is preserved. */
+   * so a compile error never leaks code memory. errno is preserved.
+   * Record a post-admission reason so the fallback census can
+   * distinguish this from a (stale) JIT_ADMIT_OK. */
   {
     int saved = errno;
     ndb_jit_codemem_free(mem, &slot);
     errno = saved;
+    g_last_admit = (Jit1AdmitError){
+      .reason = (saved == EFAULT || saved == ENOMEM)
+                    ? JIT_ADMIT_CODEMEM
+                    : JIT_ADMIT_PATCH_FAILED,
+    };
   }
   return NULL;
 }

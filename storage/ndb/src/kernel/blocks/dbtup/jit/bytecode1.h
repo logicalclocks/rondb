@@ -412,7 +412,20 @@ typedef enum {
    * (always < 2^33, exact under signed compares); 8-byte reads are
    * raw Int64 — both mirror the interpreter handlers. */
   OP_READ_MEM_TO_REG       = 68,
-  OP_KIND_MAX           = OP_READ_MEM_TO_REG
+
+  /* ronsql_jit slice 2 item 7 — embedded WHERE arithmetic:
+   * ADD/SUB/MUL_REG_REG (embedded ops 7/8/30). Cold call; op->imm
+   * packs the helper argument: bits 0-3 src2 slot, 4-7 src1 slot,
+   * 8-11 dst slot, 12-13 arith code (0 add, 1 sub, 2 mul). op->a =
+   * dst, op->b = src1, op->c = src2 for the generic passes. Signed
+   * i64 arithmetic; overflow — and for SUB any NEGATIVE result,
+   * because the interpreter errors on UNSIGNED underflow and the
+   * bridge cannot see the operands' declared signedness — takes the
+   * per-row fallback and EXITS (the interpreter re-run reproduces
+   * the exact typed semantics / runtime error). F64-tracked operands
+   * reject at admission (double WHERE-arithmetic is a future item). */
+  OP_ARITH_FB              = 69,
+  OP_KIND_MAX           = OP_ARITH_FB
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
@@ -458,8 +471,14 @@ typedef struct {
   int64_t  imm;        /* immediate (load_const_int) — 0 otherwise */
 } Op;
 
-/* Phase 1 hard limits — generously sized for the 30-op program. */
-#define BC_MAX_OPS   64
+/* Phase 1 hard limits — generously sized for the 30-op program.
+ * ronsql_jit slice 2 item 8: 64 → 128. RonSQL's WHERE-heavy
+ * aggregation programs (long GREATEST chains, DNF trellises + the
+ * newly lowered arithmetic/compare ops) hit 64 both in the bridge
+ * (JIT_BRIDGE_PROG_TOO_LARGE) and via blob size. Op indices are
+ * stored in uint8_t with 0xFF as "none" in the bridge's
+ * emb_pc_to_op_idx — the cap must stay ≤ 254. */
+#define BC_MAX_OPS   128
 /* ronsql_jit slice 2 item 2 (2026-08-27): 8 -> 16. The INTERPRETER
  * has two disjoint 8-register files — the outer aggregation
  * interpreter's m_registers and the embedded normal-interpreter's

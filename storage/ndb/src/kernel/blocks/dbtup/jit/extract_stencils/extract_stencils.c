@@ -1043,6 +1043,7 @@ static const OpkindMap kOpkindMap[] = {
   { "op_branch_mem_op_arg",     "OP_BRANCH_MEM_OP_ARG"     },
   { "op_branch_f64",            "OP_BRANCH_F64"            },
   { "op_read_mem_to_reg",       "OP_READ_MEM_TO_REG"       },
+  { "op_arith_fb",              "OP_ARITH_FB"              },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

@@ -937,6 +937,17 @@ static const Hole holes_op_read_mem_to_reg[] = {
   { .byte_offset = 16, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_read_mem_to_reg" },
 };
 
+/* op_arith_fb — 28 bytes, 2 holes */
+static const uint8_t bytes_op_arith_fb[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xe7, 0x48, 0xb8, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xd0, 0x85, 0xc0, 0x74,
+  0x02, 0x58, 0xc3, 0x58,
+};
+static const Hole holes_op_arith_fb[] = {
+  { .byte_offset = 2, .kind = HK_OP_IMM, .width = 4 },
+  { .byte_offset = 11, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_arith_fb" },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -1018,6 +1029,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_BRANCH_MEM_OP_ARG] = STENCIL_(op_branch_mem_op_arg),
   [OP_BRANCH_F64] = STENCIL_(op_branch_f64),
   [OP_READ_MEM_TO_REG] = STENCIL_(op_read_mem_to_reg),
+  [OP_ARITH_FB] = STENCIL_(op_arith_fb),
 };
 
 #endif /* NDB_JIT_STENCILS_X86_64_H */

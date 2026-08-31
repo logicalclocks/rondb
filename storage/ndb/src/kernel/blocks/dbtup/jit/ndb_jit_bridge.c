@@ -202,6 +202,10 @@
 #define BR_EMB_READ_UINT16_MEM_TO_REG   50
 #define BR_EMB_READ_UINT32_MEM_TO_REG   51
 #define BR_EMB_READ_INT64_MEM_TO_REG    52
+/* ronsql_jit slice 2 item 7: embedded WHERE arithmetic. */
+#define BR_EMB_ADD_REG_REG               7
+#define BR_EMB_SUB_REG_REG               8
+#define BR_EMB_MUL_REG_REG              30
 /* Highest BinaryCondition the JIT lowers (EQ..GE); LIKE/mask reject. */
 #define BR_EMB_MAX_BINARY_COND       5
 /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
@@ -326,6 +330,9 @@ const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
     case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
     case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
     case BR_EMB_READ_LINKED_COL_TO_REG:return "READ_LINKED_COLUMN_TO_REG";
+    case BR_EMB_ADD_REG_REG:           return "ADD_REG_REG";
+    case BR_EMB_SUB_REG_REG:           return "SUB_REG_REG";
+    case BR_EMB_MUL_REG_REG:           return "MUL_REG_REG";
     case BR_EMB_LOAD_DOUBLE_CONST:     return "LOAD_DOUBLE_CONST";
     case BR_EMB_READ_UINT8_MEM_TO_REG: return "READ_UINT8_MEM_TO_REG";
     case BR_EMB_READ_UINT16_MEM_TO_REG:return "READ_UINT16_MEM_TO_REG";
@@ -368,6 +375,7 @@ const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
     case OP_BRANCH_MEM_OP_ARG:    return "branch_mem_op_arg";
     case OP_BRANCH_F64:           return "branch_f64";
     case OP_READ_MEM_TO_REG:      return "read_mem_to_reg";
+    case OP_ARITH_FB:             return "arith_fb";
     case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
     case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
     case OP_ADD_INT_INT_CHECKED:  return "add_int_int_checked";
@@ -633,6 +641,17 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
         case BR_EMB_READ_UINT32_MEM_TO_REG:
         case BR_EMB_READ_INT64_MEM_TO_REG:
           if (((inst >> 6) & 0x7u) == reg) { pc = emb_len; break; }
+          pc += 1;
+          break;
+        /* ronsql_jit slice 2 item 7: arithmetic reads both sources
+         * (a read of the scanned reg is unsafe); a dst overwrite
+         * ends the path. */
+        case BR_EMB_ADD_REG_REG:
+        case BR_EMB_SUB_REG_REG:
+        case BR_EMB_MUL_REG_REG:
+          if (((inst >> 6) & 0x7u) == reg ||
+              ((inst >> 9) & 0x7u) == reg) return 0;
+          if (((inst >> 16) & 0x7u) == reg) { pc = emb_len; break; }
           pc += 1;
           break;
         /* ronsql_jit slice 2 item 3: the unconditional jump has ONE
@@ -1234,6 +1253,64 @@ static JitBridgeReason translate_embedded_block(
         emb_reg_f64[dst_reg] = 0;
         emb_reg_read_attr[dst_reg] = -1;
         emb_pc += 3;
+        break;
+      }
+
+      case BR_EMB_ADD_REG_REG:
+      case BR_EMB_SUB_REG_REG:
+      case BR_EMB_MUL_REG_REG: {
+        /* ronsql_jit slice 2 item 7: WHERE-clause arithmetic. Wire:
+         * src1 bits 6-8, src2 bits 9-11, dst bits 16-18. Lowers to
+         * the OP_ARITH_FB cold call — signed-i64 math whose overflow
+         * (and negative-SUB-result, see the op-kind doc) edge takes
+         * the per-row fallback and exits, replaying the row on the
+         * interpreter's typed semantics. F64-tracked operands reject
+         * (double WHERE-arithmetic is a future item). */
+        if (!allow_reg_ops) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t src1 = (inst >> 6) & 0x7u;
+        uint32_t src2 = (inst >> 9) & 0x7u;
+        uint32_t dst  = (inst >> 16) & 0x7u;
+        if (emb_reg_f64[src1] || emb_reg_f64[src2]) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_TYPE_MISMATCH;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_TYPE_MISMATCH;
+        }
+        uint32_t code;
+        switch (emb_op) {
+          case BR_EMB_ADD_REG_REG: code = 0; break;
+          case BR_EMB_SUB_REG_REG: code = 1; break;
+          default:                 code = 2; break;
+        }
+        uint32_t arg = (code << 12) |
+                       ((BC_EMB_REG_BASE + dst)  << 8) |
+                       ((BC_EMB_REG_BASE + src1) << 4) |
+                       (BC_EMB_REG_BASE + src2);
+        if (!emit_op(out_prog, OP_ARITH_FB,
+                     (uint8_t)(BC_EMB_REG_BASE + dst),
+                     (uint16_t)(BC_EMB_REG_BASE + src1),
+                     (uint16_t)(BC_EMB_REG_BASE + src2),
+                     (int64_t)arg)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        const16_valid[dst] = 0;
+        emb_reg_f64[dst] = 0;
+        emb_reg_read_attr[dst] = -1;
+        emb_pc += 1;
         break;
       }
 
@@ -2265,6 +2342,9 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
     /* ronsql_jit slice 2 item 6: the F64 compare reads both regs. */
     case OP_BRANCH_F64:
       return op->a == reg || op->b == reg;
+    /* ronsql_jit slice 2 item 7: arith reads both sources. */
+    case OP_ARITH_FB:
+      return op->b == reg || op->c == reg;
     default:
       return 0;
   }
@@ -2288,6 +2368,7 @@ static int nb_op_written_reg(const Op *op) {
     case OP_LOAD_COL_NDB_DEC:
     case OP_LOAD_LINKED_COL:
     case OP_READ_MEM_TO_REG:
+    case OP_ARITH_FB:
     case OP_MOV_INT_INT:
     case OP_ADD_INT_INT:
     case OP_MINUS_INT_INT:

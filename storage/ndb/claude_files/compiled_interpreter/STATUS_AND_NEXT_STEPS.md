@@ -186,12 +186,17 @@ evalBranchMemForJit) DONE & VERIFIED 2026-08-28 — family eliminated,
 net recovery deferred (same programs still reject on tail ops 45/51/
 reason-8); typed-regs census corrected 1888→1880 (Test 13i pure-BRANCH
 filter compiles since item 3). Item 6 (F64 embedded
-compares OP_BRANCH_F64 + heap-mem reads OP_READ_MEM_TO_REG) DONE &
-VERIFIED 2026-08-28 — families 45/51 eliminated; next layer exposed:
-embedded arithmetic (ADD/MUL REG_REG) + a suspicious kOpEmbeddedInterp
-MALFORMED (r4/d28, possible length-accounting defect). Corpus census
-~1234→160 across items 1-6, 66/80 tests reject-free. Records in
-`ronsql_jit_plan.md`.
+compares + heap-mem reads) DONE & VERIFIED 2026-08-28 — families
+45/51 eliminated. Items 7+8 DONE & VERIFIED 2026-08-31: embedded
+WHERE arithmetic (OP_ARITH_FB, overflow/negative-SUB → per-row
+fallback), instrument now logs offending word + compile errno, TWO
+REAL DEFECTS fixed (flat-format program length used section size —
+JIT walked out of bounds; silent post-admission compile failures =
+8KB code-class cap) + BC_MAX_OPS 64→128 + 16K/32K code classes.
+ronsql_overflow 24→0; fleet ndb_pushdown_agg/case_null/join 8/8/1→0.
+Corpus census ~1234→136 across items 1-8. Item 9: r4/d28 residue
+(colvscol), compile-r8 errno harvest, kOpMod-unknown, MinusBigint.
+Records in `ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

@@ -137,6 +137,7 @@ static const struct {
   { "MAGIC_BF64_ARG_NARROW",  "op_branch_f64"             },
   { "MAGIC_RMR_OFF_NARROW",   "op_read_mem_to_reg"        },
   { "MAGIC_RMR_WD_NARROW",    "op_read_mem_to_reg"        },
+  { "MAGIC_AFB_ARG_NARROW",   "op_arith_fb"               },
   /* Phase 7: instruction word-offset hole for op_branch_attr_op_arg. */
   { "MAGIC_BAOA_OFF_NARROW",  "op_branch_attr_op_arg"     },
   /* Phase 5C-2: op_load_col_ndb_f64 helper-argument holes (narrow for

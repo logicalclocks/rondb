@@ -134,4 +134,4 @@ DROP TABLE tbl;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_overflow_jit_fallback_delta;
 ronsql_overflow_jit_fallback_delta
-24
+0

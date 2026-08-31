@@ -4192,6 +4192,115 @@ static void test_scan_filter_double_const_reject(void) {
                               /*want_word=*/1, EMB_LOAD_DOUBLE_CONST);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 7 — embedded WHERE arithmetic              */
+/* (ADD/SUB/MUL_REG_REG, ops 7/8/30) -> OP_ARITH_FB cold call.        */
+/* ------------------------------------------------------------------ */
+#define EMB_ADD_REG_REG  7
+#define EMB_SUB_REG_REG  8
+#define EMB_MUL_REG_REG 30
+static uint32_t enc_emb_arith(uint32_t op, uint32_t dst, uint32_t s1,
+                              uint32_t s2) {
+  return enc_emb_op_word(op, ((s1 & 0x7u) << 6) | ((s2 & 0x7u) << 9) |
+                             ((dst & 0x7u) << 16));
+}
+
+/* T76a: WHERE a + b > const — the full shape. */
+static void test_arith_add_compare_accept(void) {
+  const char *name = "T76a arith_add_compare_accept";
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/1),
+    enc_emb_read_attr(/*attr_id=*/2, /*reg=*/2),
+    enc_emb_arith(EMB_ADD_REG_REG, /*dst=*/3, 1, 2),
+    enc_emb_load_const16(/*reg=*/4, /*val=*/100),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, /*left=*/3,
+                           /*right=*/4, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  /* 2 loads + ARITH_FB + LC16 + BRANCH_GT + EXIT(refuse) + tail. */
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_ARITH_FB)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 11)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 9)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 10)) return;
+  if (p.ops[2].imm != (int64_t)0x0B9A) {   /* add | dst 11 | 9,10 */
+    mark_fail(name, "arg=%llx, want b9a",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_BRANCH_GT_INT_INT)) return;
+  mark_pass(name);
+}
+
+/* T76b/c: SUB and MUL arith codes. */
+static void test_arith_sub_mul_codes(void) {
+  const char *name = "T76b arith_sub_mul_codes";
+  uint32_t sub_prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_read_attr(1, 1),
+    enc_emb_read_attr(2, 2),
+    enc_emb_arith(EMB_SUB_REG_REG, 3, 1, 2),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, sub_prog, 5, &p, /*expected_n_ops=*/4)) return;
+  if (p.ops[2].imm != (int64_t)0x1B9A) {   /* sub code 1 */
+    mark_fail(name, "sub arg=%llx, want 1b9a",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  uint32_t mul_prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_read_attr(1, 1),
+    enc_emb_read_attr(2, 2),
+    enc_emb_arith(EMB_MUL_REG_REG, 3, 1, 2),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  if (!expect_accepted("T76c arith_mul_code", mul_prog, 5, &p,
+                       /*expected_n_ops=*/4)) return;
+  if (p.ops[2].imm != (int64_t)0x2B9A) {   /* mul code 2 */
+    mark_fail("T76c arith_mul_code", "mul arg=%llx, want 2b9a",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  mark_pass(name);
+  mark_pass("T76c arith_mul_code");
+}
+
+/* T76d: an F64-tracked operand rejects — double WHERE-arithmetic is
+ * a future item; i64 math over double bits would be wrong. */
+static void test_arith_f64_operand_reject(void) {
+  uint32_t prog[7] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_load_double_hdr(/*reg=*/1),
+    0x00000000u,
+    0x40040000u,
+    enc_emb_read_attr(2, 2),
+    enc_emb_arith(EMB_ADD_REG_REG, 3, 1, 2),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T76d arith_f64_operand_reject", prog, 7,
+                  JIT_BRIDGE_TYPE_MISMATCH, 5, EMB_ADD_REG_REG);
+}
+
+/* T76e: rejected on the scan-filter path (reg ops). */
+static void test_scan_filter_arith_reject(void) {
+  uint32_t filter_prog[2] = {
+    enc_emb_arith(EMB_ADD_REG_REG, 3, 1, 2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_scan_filter_rejected("T76e scan_filter_arith_reject",
+                              filter_prog, 2,
+                              JIT_BRIDGE_UNSUPPORTED_OP,
+                              /*want_word=*/1, EMB_ADD_REG_REG);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -4363,6 +4472,10 @@ int main(void) {
   test_read_mem_u32_accept();
   test_read_mem_bound_reject();
   test_scan_filter_double_const_reject();
+  test_arith_add_compare_accept();
+  test_arith_sub_mul_codes();
+  test_arith_f64_operand_reject();
+  test_scan_filter_arith_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
