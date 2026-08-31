@@ -1253,4 +1253,4 @@ DROP TABLE customer;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_join_agg_jit_fallback_delta;
 ronsql_join_agg_jit_fallback_delta
-2
+0

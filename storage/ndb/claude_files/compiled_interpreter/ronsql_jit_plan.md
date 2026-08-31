@@ -724,3 +724,148 @@ No new stencils, no regen (items 7+8 verified together).
   tests; needs the 5119 setup dump or per-leaf logging),
   kOpMod-unknown ≈16 (d6 w21), MinusBigint (d22 w34), by-design
   reason-8 43/44.
+
+### Lowering item 9 — DONE & VERIFIED (2026-08-31): the defect-hunt cycle
+
+**r4/d28 round two.** With the flat-format fix in place, the
+persisting `word=65546` requires `n_words > 65546` — only possible
+via the MULTI-LEAF (0x0722) arm, whose frames also carry trailing
+consumer data after the program (the exact flat-format finding
+again). Fix: after framing, each leaf's `m_agg_program_len` now
+comes from the program's own `(0x0721 << 16) | hdrLen` header
+word (validated 8 ≤ hdrLen ≤ frame length; a present-but-invalid
+header rejects the setup as InvalidRequest). The interpreter is
+unaffected (its bound only tightens to the region it could ever
+execute — the base interpreter asserts hdrLen == prog_len on the
+non-join path).
+
+**Self-diagnosing census.** `dbtup_jit_note_fallback` now takes
+the program pointer/length; the FIRST sighting of each family also
+logs a hexdump of up to 16 words centred on the offending word
+(clamped to the buffer). Every remaining family — kOpMod-unknown
+(d6 w21), MinusBigint TYPE_MISMATCH (d22 w34), compile-r8 (errno
+now in detail) — becomes ground-truth-diagnosable from a normal
+run, no debug build needed.
+
+Verification: r4/d28 must vanish (colvscol-family consumer
+programs compile or reject in-bounds); the next harvest's dumps
+drive the kOpMod / MinusBigint / compile-r8 decisions.
+
+### Item 9 CORRECTION + the real fixes (2026-08-31, same session)
+
+The hexdump instrument (this item) immediately disproved the item-8/9
+framing theory and named both survivors:
+
+**r4/d28 was NEVER an out-of-bounds walk.** The dump shows
+`bc_words = 17` — tiny, in-bounds programs. The offending "word
+65546" is the pending-case-jump TARGET, not a position: the CASE
+trellis writes `LC16(0xFFFF)` → WRITE_INTERPRETER_OUTPUT, and
+0xFFFF is **AGG_EMBEDDED_INTERP_STOP_PROGRAM** ("skip the rest of
+this ROW's outer program"; the interpreter sets exec_pos =
+prog_len). The bridge computed `outer_after + 65535 = 65546` and
+the resolver rejected the unmatched target as MALFORMED — with the
+hardcoded detail BR_kOpEmbeddedInterp(28) and the target as the
+logged word. FIX: the WRITE case maps skip 0xFFFF to a
+`BR_CASE_JUMP_STOP` sentinel and the resolver points it at the
+tail OP_EXIT — exactly the interpreter's semantics. Test **T77**.
+(The two DblqhProxy framing changes from items 8/9 chased a
+phantom but stay as legitimate hardening: lengths are now
+validated and header-bounded.)
+
+**compile-r8 was ENOENT — helpers silently unregistered.**
+`J1_MAX_HELPERS` was 16; the registry held 15 before this
+milestone, so `load_linked_col` took the last slot and
+`branch_mem_op_arg` / `branch_f64` / `read_mem_to_reg` /
+`arith_fb` were dropped — `jit1_register_helper`'s ENOSPC return
+was ignored. Every program needing those helpers failed compile
+with ENOENT, which is why items 5-7's lowerings eliminated their
+BRIDGE families without moving pins (the programs died one stage
+later) — ronsql_basic's stubborn 32 in particular. FIX:
+J1_MAX_HELPERS 16 → 32, and `dbtup_jit_register_helpers` now
+aborts on any registration failure (a startup bug must not ship a
+JIT that ENOENTs at compile time).
+
+Bonus from this run's harvest: kOpMod-unknown (d6) and MinusBigint
+(d22) did NOT reappear — re-check after the helper fix; they may
+have been downstream shadows too.
+
+Expected next run: r4/d28 and compile-r8 GONE; ronsql_basic,
+dd_filter, cte_case, subquery_agg_ext, dtwide, chain_scalar,
+orderby_limit pins drop — potentially the corpus's first
+near-clean sweep outside the by-design reason-8 admissions.
+
+### Item 9 round three (2026-08-31): the M11 wrong-result post-mortem
+
+The verification run (first with all helpers REGISTERED) failed
+`ronsql_subquery_agg_ext` M11 with WRONG RESULTS (extra unfiltered
+rows) plus "overload" symptoms elsewhere. Root-cause work:
+
+1. **The multi-leaf hdrLen override (item 9 round two) was the
+   regression** — for filter-carrying leaves the FRAME length is
+   the execution length; truncating `m_agg_program_len` to the
+   header word's length cut the cross-table filter off the
+   interpreter-fallback path: rows aggregated UNFILTERED (M11's
+   count 4 = all rows). REVERTED — only the pure bounds validation
+   remains. (The flat-format fix from item 8 stands: it verified
+   green.)
+2. **False alarm withdrawn**: the "missing HK_BRANCH_TAKE holes" in
+   op_branch_f64 / op_branch_mem_op_arg were an artifact of a
+   truncated read of the generated header (sed window cut the hole
+   list). Verified by diffing a fresh extractor run against the
+   committed header: IDENTICAL, 4 holes each, extraction correct.
+3. **Real ABI defect fixed — op_arith_fb's early `return`**: byte
+   decode showed the fallback edge as ldp-own-frame + plain `ret`,
+   which skips the engine preamble's teardown (stp x20/x30 frame):
+   SP leaks 16 bytes and the C caller's callee-saved x20 comes back
+   clobbered whenever the overflow/negative-SUB edge fires.
+   Redesigned as a branch-shaped stencil: the edge tail-calls
+   HOLE_AFB_TGT and the bridge points op->c at the tail OP_EXIT via
+   the pending-case-jump STOP sentinel (src2 moved to op->d; nb
+   reader + bc_op_is_branch + extractor KEEP_ALL policy + T76
+   asserts updated). ⇒ **regen-stencils REQUIRED**.
+
+Standing fixes from rounds 1-2: helper registry 16→32 + fail-fast
+registrar (the items-5-7 silent unregistration), STOP_PROGRAM
+sentinel → tail OP_EXIT (the real r4/d28), errno + hexdump census.
+
+### Item 9 round four (2026-08-31): M11 root cause — Mul's dst field
+
+The 4063 row-trace (throwaway `tmp_m11_diag` wrapper, since removed)
+nailed it in one run: for the M11 row with price 20, the trace shows
+`read_mem dst=r10 value=3`, `arith_fb code=2 l=3 r=10 res=30` — the
+product computed CORRECTLY — and then `after reg[8]=30, reg[10]=3`:
+**the product landed in reg 8**, and the compare read the
+un-multiplied min_qty from reg 10 (20 > 3 → row passed).
+
+Root cause: **`Interpreter::Mul` encodes its destination at bits
+12-14 (`Dcoleg << 12`, `getReg3`) while `Add`/`Sub` use bits 16-18
+(`getReg4`)** — the encoders genuinely differ. The bridge's item-7
+arith case decoded all three at bits 16-18, so Mul's dst read as 0 →
+`8 + 0 = 8`. Why every earlier check missed it: the bridge unit
+tests' `enc_emb_arith` encoder copied the same wrong uniform-layout
+assumption, so T76 validated the bridge against itself; and M10
+(ADD) passed because Add's layout matched.
+
+Fixes: per-op dst decode in the translate case and the DFS scanner;
+`enc_emb_arith` in bridge_tests encodes per-op (T76 expected values
+unchanged — dst nibble is the same once both sides are correct).
+Bridge-only — no regen.
+
+Lesson recorded: when lowering a FAMILY of wire ops, verify EACH
+member's encoder against Interpreter.hpp — do not extrapolate the
+layout from one sibling (this is the second encoder-layout surprise
+after BR_EMB_BRANCH=3-vs-9 in item 3).
+
+**VERIFIED 2026-08-31 (full checklist green: record + repeat=2 +
+ndb_push_agg_jit + OFF arms).** With items 5-7's lowerings finally
+LIVE (helpers registered, STOP sentinel lowered, Mul dst correct,
+arith fallback edge ABI-sound): **48 more rejects recovered** —
+subquery_agg_ext 22→0 (M10/M11 values CORRECT), cte_case 10→0,
+greatest_least 2→0, join_agg 2→0, v5 28→16. Corpus census
+**136 → 88**. Item 9's net: four real defects fixed (helper-cap
+silent unregistration, STOP_PROGRAM sentinel, arith early-ret ABI,
+Mul dst field) + one self-inflicted regression caught and reverted
+(multi-leaf hdrLen override) + the census made self-diagnosing
+(word, errno, first-sighting hexdump). Residue for item 10:
+ronsql_basic 32 and dd_filter 24 did NOT move — attribute from the
+next harvest; v5's 16 = by-design reason-8 type admissions.

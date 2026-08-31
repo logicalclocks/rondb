@@ -1274,4 +1274,4 @@ order_id	min_qty	exact_count	exact_price
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_subquery_agg_ext_jit_fallback_delta;
 ronsql_subquery_agg_ext_jit_fallback_delta
-22
+0

@@ -319,6 +319,8 @@ static TailPolicy classify_tail(const char *name) {
   if (strcmp(name, "op_load_col_ndb_nb") == 0) return TAIL_KEEP_ALL;
   if (strcmp(name, "op_load_col_ndb_f64_nb") == 0) return TAIL_KEEP_ALL;
   if (strcmp(name, "op_load_col_ndb_u64_nb") == 0) return TAIL_KEEP_ALL;
+  /* item 9: the arith fallback edge is a HOLE_AFB_TGT tail-call. */
+  if (strcmp(name, "op_arith_fb") == 0) return TAIL_KEEP_ALL;
   return TAIL_STRIP_TAIL;
 }
 

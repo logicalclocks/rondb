@@ -314,7 +314,13 @@ static inline void patch_branch_disp(uint8_t *site, int32_t byte_disp) {
 /* construction without locks. */
 /* ------------------------------------------------------------------ */
 
-#define J1_MAX_HELPERS 16
+/* ronsql_jit slice 2 item 9: 16 → 32. The slice-2 lowering items
+ * pushed the count past 16 and jit1_register_helper's ENOSPC was
+ * silently ignored by the caller — four helpers went unregistered
+ * and every program needing them failed compile with ENOENT
+ * ("compile reason=8 detail=2" in the census). The registrar now
+ * also aborts on failure (below). */
+#define J1_MAX_HELPERS 32
 
 typedef struct {
   const char  *name;

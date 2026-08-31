@@ -194,9 +194,16 @@ REAL DEFECTS fixed (flat-format program length used section size —
 JIT walked out of bounds; silent post-admission compile failures =
 8KB code-class cap) + BC_MAX_OPS 64→128 + 16K/32K code classes.
 ronsql_overflow 24→0; fleet ndb_pushdown_agg/case_null/join 8/8/1→0.
-Corpus census ~1234→136 across items 1-8. Item 9: r4/d28 residue
-(colvscol), compile-r8 errno harvest, kOpMod-unknown, MinusBigint.
-Records in `ronsql_jit_plan.md`.
+Item 9 DONE & VERIFIED 2026-08-31 — the defect-hunt
+cycle: helper-registry cap (items 5-7 silently unregistered — root
+cause of the frozen pins), STOP_PROGRAM sentinel → tail exit (the
+real r4/d28), op_arith_fb early-ret ABI (redesigned branch-shaped),
+Interpreter::Mul dst at bits 12-14 not 16-18 (the M11 wrong-result;
+caught via the 4063 row-trace after the census gained
+word/errno/hexdump). Recovered 48 (subquery_agg_ext 22→0, correct
+values). Corpus census ~1234→88 across items 1-9. Residue:
+ronsql_basic 32, dd_filter 24 (attribute next), v5 16 (by-design
+reason-8). Records in `ronsql_jit_plan.md`.
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

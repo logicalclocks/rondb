@@ -1516,9 +1516,15 @@ STENCIL op_read_mem_to_reg(JitState *s) {
 extern int ndb_jit_h_arith_fb(JitState *s, uint32_t arg);
 
 DECLARE_NARROW_HOLE(AFB_ARG);
+extern __attribute__((preserve_none)) void HOLE_AFB_TGT(JitState *);
 STENCIL op_arith_fb(JitState *s) {
+  /* The fallback edge tail-calls the TAIL OP_EXIT (the bridge points
+   * op->c there via the STOP resolution) -- never a plain return: a
+   * mid-chain ret skips the engine preamble's teardown (the stp
+   * x20/x30 frame), leaking SP and clobbering the C caller's
+   * callee-saved x20. */
   if (ndb_jit_h_arith_fb(s, (uint32_t)HOLE_NARROW(AFB_ARG))) {
-    return;
+    [[clang::musttail]] return HOLE_AFB_TGT(s);
   }
   TAIL_NEXT(s);
 }

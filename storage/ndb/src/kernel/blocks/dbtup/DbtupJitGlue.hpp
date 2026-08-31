@@ -288,7 +288,8 @@ void dbtup_jit_dump_programs();
  * Both are compile-frequency paths (never per-row); DblqhProxy's
  * inline join-agg compile site uses them too. */
 void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail,
-                             Uint32 word);
+                             Uint32 word, const Uint32 *prog,
+                             Uint32 prog_len);
 void dbtup_jit_note_compile_ns(Uint64 ns);
 
 /* RONDB-1056 Phase 8 — CompiledInterpreter config gate (node-global).

@@ -2721,6 +2721,15 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         }
         progStart = &allProgsBuf[pos];
         pos += progLen;
+        /* item 9 post-mortem: do NOT override progLen with the
+         * program header's word-0 length here. For filter-carrying
+         * leaves the FRAME length is the execution length (base
+         * program + appended cross-table filter); truncating to the
+         * header length cut the filter off the interpreter path
+         * (rows aggregated unfiltered — the M11 wrong-result). The
+         * r4/d28 census family this override chased was actually the
+         * WRITE_INTERPRETER_OUTPUT STOP_PROGRAM sentinel, fixed in
+         * the bridge (BR_CASE_JUMP_STOP). */
       }
 
       // Read n_agg_results and n_gb_cols from program header word 1
@@ -3011,7 +3020,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           }
         } else {
           dbtup_jit_note_fallback("join-agg bridge", (int)brc,
-                                  berr.offending_op, berr.offending_word);
+                                  berr.offending_op, berr.offending_word,
+                                  lp.m_agg_program + bc_off, bc_words);
           Uint32 ow = (berr.offending_word < bc_words)
                          ? (lp.m_agg_program + bc_off)[berr.offending_word]
                          : 0u;

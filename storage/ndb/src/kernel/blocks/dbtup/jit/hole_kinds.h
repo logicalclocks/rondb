@@ -194,6 +194,7 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_RMR_WD",    HK_OP_C         },
   /* ronsql_jit slice 2 item 7: op_arith_fb packed argument. */
   { "HOLE_AFB_ARG",   HK_OP_IMM       },
+  { "HOLE_AFB_TGT",   HK_BRANCH_TAKE  },
   /* Overflow-checked arithmetic variants. */
   { "HOLE_ADD_OVF_TGT",   HK_OVERFLOW_TAKE },
   { "HOLE_DIV_OVF_TGT",   HK_OVERFLOW_TAKE },

@@ -421,9 +421,13 @@ typedef enum {
    * i64 arithmetic; overflow — and for SUB any NEGATIVE result,
    * because the interpreter errors on UNSIGNED underflow and the
    * bridge cannot see the operands' declared signedness — takes the
-   * per-row fallback and EXITS (the interpreter re-run reproduces
-   * the exact typed semantics / runtime error). F64-tracked operands
-   * reject at admission (double WHERE-arithmetic is a future item). */
+   * per-row fallback and TAIL-CALLS the tail OP_EXIT via op->c
+   * (HOLE_AFB_TGT; never a mid-chain ret, which would skip the
+   * engine preamble's teardown and clobber the caller's x20); the
+   * interpreter re-run reproduces the exact typed semantics /
+   * runtime error. op->a = dst, op->b = src1, op->d = src2 (op->c
+   * is the branch target). F64-tracked operands reject at admission
+   * (double WHERE-arithmetic is a future item). */
   OP_ARITH_FB              = 69,
   OP_KIND_MAX           = OP_ARITH_FB
 } OpKind;
@@ -448,6 +452,7 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_ATTR_OP_ARG:
     case OP_BRANCH_MEM_OP_ARG:
     case OP_BRANCH_F64:
+    case OP_ARITH_FB:
     case OP_JUMP:
     case OP_LOAD_COL_NDB_NB:
     case OP_LOAD_COL_NDB_F64_NB:

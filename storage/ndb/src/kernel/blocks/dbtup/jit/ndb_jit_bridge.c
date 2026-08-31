@@ -561,6 +561,14 @@ typedef struct {
   uint32_t target_word_pos;
 } PendingCaseJump;
 
+/* ronsql_jit slice 2 item 9: WRITE_INTERPRETER_OUTPUT's skip value
+ * 0xFFFF is AGG_EMBEDDED_INTERP_STOP_PROGRAM ("skip the rest of this
+ * ROW's outer program" — the interpreter sets exec_pos = prog_len).
+ * The bridge marks such jumps with this sentinel and the resolver
+ * points them at the tail OP_EXIT. Unambiguous: real skip offsets are
+ * bounded by the ≤1024-word program. */
+#define BR_CASE_JUMP_STOP 0xFFFFFFFFu
+
 /* exit_ok_kind sentinel: "emit no Op for EXIT_OK; the accepted row falls
  * through to whatever the outer translation emits next." Used by the
  * aggregation-embedded path, where accept continues into accumulator ops.
@@ -651,7 +659,11 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
         case BR_EMB_MUL_REG_REG:
           if (((inst >> 6) & 0x7u) == reg ||
               ((inst >> 9) & 0x7u) == reg) return 0;
-          if (((inst >> 16) & 0x7u) == reg) { pc = emb_len; break; }
+          /* dst: Add/Sub bits 16-18, Mul bits 12-14 (see the
+           * translate case). */
+          if (((scan_op == BR_EMB_MUL_REG_REG) ? (inst >> 12) & 0x7u
+                                               : (inst >> 16) & 0x7u) ==
+              reg) { pc = emb_len; break; }
           pc += 1;
           break;
         /* ronsql_jit slice 2 item 3: the unconditional jump has ONE
@@ -1276,7 +1288,14 @@ static JitBridgeReason translate_embedded_block(
         }
         uint32_t src1 = (inst >> 6) & 0x7u;
         uint32_t src2 = (inst >> 9) & 0x7u;
-        uint32_t dst  = (inst >> 16) & 0x7u;
+        /* Destination field differs per op (Interpreter.hpp encoders):
+         * Add/Sub put it at bits 16-18 (getReg4); Mul at bits 12-14
+         * (getReg3). Decoding Mul's dst from bits 16-18 read 0 and
+         * the product landed in the wrong register — the
+         * subquery_agg_ext M11 wrong-result. */
+        uint32_t dst  = (emb_op == BR_EMB_MUL_REG_REG)
+                            ? (inst >> 12) & 0x7u
+                            : (inst >> 16) & 0x7u;
         if (emb_reg_f64[src1] || emb_reg_f64[src2]) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_TYPE_MISMATCH;
@@ -1295,10 +1314,26 @@ static JitBridgeReason translate_embedded_block(
                        ((BC_EMB_REG_BASE + dst)  << 8) |
                        ((BC_EMB_REG_BASE + src1) << 4) |
                        (BC_EMB_REG_BASE + src2);
+        /* Fallback edge: op->c tail-calls the tail OP_EXIT, resolved
+         * via the pending-case-jump STOP sentinel; src2 rides in
+         * op->d (c is the branch target for bc_op_is_branch kinds). */
+        if (*n_pending_case_jumps >= BC_MAX_OPS) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        pending_case_jumps[*n_pending_case_jumps] = (PendingCaseJump){
+          .op_idx = out_prog->n_ops,
+          .target_word_pos = BR_CASE_JUMP_STOP,
+        };
+        (*n_pending_case_jumps)++;
         if (!emit_op(out_prog, OP_ARITH_FB,
                      (uint8_t)(BC_EMB_REG_BASE + dst),
                      (uint16_t)(BC_EMB_REG_BASE + src1),
-                     (uint16_t)(BC_EMB_REG_BASE + src2),
+                     /*c=*/0,
                      (int64_t)arg)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
@@ -1307,6 +1342,8 @@ static JitBridgeReason translate_embedded_block(
           }
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        out_prog->ops[out_prog->n_ops - 1].d =
+            (uint16_t)(BC_EMB_REG_BASE + src2);
         const16_valid[dst] = 0;
         emb_reg_f64[dst] = 0;
         emb_reg_read_attr[dst] = -1;
@@ -1986,6 +2023,10 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_UNSUPPORTED_OP;
         }
         uint16_t skip_offset = const16_by_reg[reg];
+        uint32_t case_target =
+            (skip_offset == 0xFFFFu /* AGG_EMBEDDED_INTERP_STOP_PROGRAM */)
+                ? BR_CASE_JUMP_STOP
+                : outer_after_emb_pos + (uint32_t)skip_offset;
         /* Phase 5A fix: emit the disposition jump for skip_offset 0 TOO.
          * "Emit nothing, fall through to the outer ops" is only correct
          * when this output block is the LAST thing in the embedded
@@ -2019,7 +2060,7 @@ static JitBridgeReason translate_embedded_block(
           }
           pending_case_jumps[*n_pending_case_jumps] = (PendingCaseJump){
             .op_idx = jump_op_idx,
-            .target_word_pos = outer_after_emb_pos + (uint32_t)skip_offset,
+            .target_word_pos = case_target,
           };
           (*n_pending_case_jumps)++;
         }
@@ -2342,9 +2383,10 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
     /* ronsql_jit slice 2 item 6: the F64 compare reads both regs. */
     case OP_BRANCH_F64:
       return op->a == reg || op->b == reg;
-    /* ronsql_jit slice 2 item 7: arith reads both sources. */
+    /* ronsql_jit slice 2 item 7: arith reads both sources (src2 in
+     * op->d -- c is the fallback branch target). */
     case OP_ARITH_FB:
-      return op->b == reg || op->c == reg;
+      return op->b == reg || op->d == reg;
     default:
       return 0;
   }
@@ -3575,7 +3617,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   for (uint16_t i = 0; i < n_pending_case_jumps; i++) {
     uint32_t target_word = pending_case_jumps[i].target_word_pos;
     uint16_t target_op = UINT16_MAX;
-    if (target_word == n_words) {
+    if (target_word == n_words || target_word == BR_CASE_JUMP_STOP) {
+      /* End-of-program, or the STOP_PROGRAM row-disposition sentinel
+       * (item 9) — both mean "this row is done": the tail OP_EXIT. */
       target_op = tail_exit_pc;
     } else {
       for (uint16_t m = 0; m < n_outer_map; m++) {

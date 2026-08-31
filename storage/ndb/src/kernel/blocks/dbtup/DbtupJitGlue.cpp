@@ -152,7 +152,8 @@ static void jit_fallback_log_breakdown(Uint64 total) {
 }
 
 void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail,
-                             Uint32 word) {
+                             Uint32 word, const Uint32 *prog,
+                             Uint32 prog_len) {
   const Uint64 n =
       g_jit_fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -189,6 +190,26 @@ void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail,
         "%llu JIT fallbacks since node start.",
         path, reason, (unsigned)detail, (unsigned)word,
         (unsigned long long)n);
+    /* ronsql_jit slice 2 item 9: ground truth for the harvest — dump
+     * up to 16 program words centred on the offending word, once per
+     * family. Clamped to the buffer; every remaining family becomes
+     * self-diagnosing without a debug build. */
+    if (prog != nullptr && prog_len != 0) {
+      Uint32 lo = (word > 8 && word < prog_len) ? word - 8 : 0;
+      if (lo >= prog_len) lo = 0;
+      Uint32 hi = lo + 16 <= prog_len ? lo + 16 : prog_len;
+      char dump[16 * 9 + 1];
+      Uint32 off = 0;
+      for (Uint32 w = lo; w < hi && off + 10 < sizeof(dump); w++) {
+        off += (Uint32)snprintf(dump + off, sizeof(dump) - off,
+                                "%08x ", (unsigned)prog[w]);
+      }
+      dump[off] = 0;
+      g_eventLogger->info(
+          "RONDB-1056 JIT fallback NEW family dump: words[%u..%u) of "
+          "%u: %s", (unsigned)lo, (unsigned)hi, (unsigned)prog_len,
+          dump);
+    }
     pthread_mutex_unlock(&g_jit_fallback_mtx);
     return;
   }
@@ -1638,47 +1659,43 @@ extern "C" void dbtup_jit_register_helpers(void) {
    * stores generic JitHelperFn pointers and the engine's
    * HK_COLDCALL patcher only uses the function's address, not its
    * signature. The stencil source's extern declarations are what
-   * enforce the call ABI at codegen time. */
-  jit1_register_helper("ndb_jit_h_load_col",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col));
-  jit1_register_helper("ndb_jit_h_load_col_f64",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64));
-  jit1_register_helper("ndb_jit_h_load_col_u64",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64));
-  jit1_register_helper("ndb_jit_h_load_col_nb",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_nb));
-  jit1_register_helper("ndb_jit_h_load_col_f64_nb",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_f64_nb));
-  jit1_register_helper("ndb_jit_h_load_col_u64_nb",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_u64_nb));
-  jit1_register_helper("ndb_jit_h_load_col_dec",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col_dec));
-  jit1_register_helper("ndb_jit_h_div_conv",
-                       reinterpret_cast<JitHelperFn>(ndb_jit_h_div_conv));
-  jit1_register_helper("ndb_jit_h_arith_conv",
-                       reinterpret_cast<JitHelperFn>(ndb_jit_h_arith_conv));
-  jit1_register_helper("ndb_jit_h_divmod_conv",
-                       reinterpret_cast<JitHelperFn>(ndb_jit_h_divmod_conv));
-  jit1_register_helper("ndb_jit_h_minmax_str",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_minmax_str));
-  jit1_register_helper("ndb_jit_h_branch_attr_null",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
-  jit1_register_helper("ndb_jit_h_branch_attr_op_arg",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_op_arg));
-  jit1_register_helper("ndb_jit_h_read_linked_to_mem",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_linked_to_mem));
-  jit1_register_helper("ndb_jit_h_branch_linked_null",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_linked_null));
-  jit1_register_helper("ndb_jit_h_load_linked_col",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_linked_col));
-  jit1_register_helper("ndb_jit_h_branch_mem_op_arg",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_mem_op_arg));
-  jit1_register_helper("ndb_jit_h_branch_f64",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_f64));
-  jit1_register_helper("ndb_jit_h_read_mem_to_reg",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_mem_to_reg));
-  jit1_register_helper("ndb_jit_h_arith_fb",
-                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_arith_fb));
+   * enforce the call ABI at codegen time.
+   *
+   * item 9: registration failures are startup bugs (table cap,
+   * duplicate name with a different fn) — fail FAST instead of
+   * shipping a JIT that ENOENTs at compile time (the silent-drop
+   * mode cost items 5-7 their runtime effect). */
+#define J1_REG(name, fn)                                                \
+  do {                                                                  \
+    if (jit1_register_helper((name),                                    \
+                             reinterpret_cast<JitHelperFn>(fn)) != 0) { \
+      g_eventLogger->error(                                             \
+          "dbtup_jit_register_helpers: registering %s failed "          \
+          "(errno=%d) — raise J1_MAX_HELPERS", (name), errno);          \
+      abort();                                                          \
+    }                                                                   \
+  } while (0)
+  J1_REG("ndb_jit_h_load_col", &ndb_jit_h_load_col);
+  J1_REG("ndb_jit_h_load_col_f64", &ndb_jit_h_load_col_f64);
+  J1_REG("ndb_jit_h_load_col_u64", &ndb_jit_h_load_col_u64);
+  J1_REG("ndb_jit_h_load_col_nb", &ndb_jit_h_load_col_nb);
+  J1_REG("ndb_jit_h_load_col_f64_nb", &ndb_jit_h_load_col_f64_nb);
+  J1_REG("ndb_jit_h_load_col_u64_nb", &ndb_jit_h_load_col_u64_nb);
+  J1_REG("ndb_jit_h_load_col_dec", &ndb_jit_h_load_col_dec);
+  J1_REG("ndb_jit_h_div_conv", &ndb_jit_h_div_conv);
+  J1_REG("ndb_jit_h_arith_conv", &ndb_jit_h_arith_conv);
+  J1_REG("ndb_jit_h_divmod_conv", &ndb_jit_h_divmod_conv);
+  J1_REG("ndb_jit_h_minmax_str", &ndb_jit_h_minmax_str);
+  J1_REG("ndb_jit_h_branch_attr_null", &ndb_jit_h_branch_attr_null);
+  J1_REG("ndb_jit_h_branch_attr_op_arg", &ndb_jit_h_branch_attr_op_arg);
+  J1_REG("ndb_jit_h_read_linked_to_mem", &ndb_jit_h_read_linked_to_mem);
+  J1_REG("ndb_jit_h_branch_linked_null", &ndb_jit_h_branch_linked_null);
+  J1_REG("ndb_jit_h_load_linked_col", &ndb_jit_h_load_linked_col);
+  J1_REG("ndb_jit_h_branch_mem_op_arg", &ndb_jit_h_branch_mem_op_arg);
+  J1_REG("ndb_jit_h_branch_f64", &ndb_jit_h_branch_f64);
+  J1_REG("ndb_jit_h_read_mem_to_reg", &ndb_jit_h_read_mem_to_reg);
+  J1_REG("ndb_jit_h_arith_fb", &ndb_jit_h_arith_fb);
+#undef J1_REG
 }
 
 /* ------------------------------------------------------------------ */
@@ -1844,7 +1861,8 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
       prog, n_words, &p, &berr, &reject_code);
   if (brc != JIT_BRIDGE_OK) {
     dbtup_jit_note_fallback("scan-filter bridge", (int)brc,
-                            berr.offending_op, berr.offending_word);
+                            berr.offending_op, berr.offending_word,
+                            prog, n_words);
     return -1;
   }
   Jit1Timing jt;
@@ -1852,7 +1870,7 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
   if (jp == nullptr) {
     dbtup_jit_note_fallback("scan-filter compile",
                             (int)jit1_last_admit_error()->reason,
-                            (Uint32)errno, 0);
+                            (Uint32)errno, 0, prog, n_words);
     return -1;
   }
   dbtup_jit_note_compile_ns(jt.total_ns);
@@ -1860,7 +1878,8 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
       static_cast<ScanFilterProduct *>(malloc(sizeof(ScanFilterProduct)));
   if (sfp == nullptr) {
     jit1_free(jp);
-    dbtup_jit_note_fallback("scan-filter product-alloc", 0, 0, 0);
+    dbtup_jit_note_fallback("scan-filter product-alloc", 0, 0, 0,
+                            nullptr, 0);
     return -1;
   }
   sfp->jp = jp;
@@ -1959,7 +1978,8 @@ static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
   JitBridgeReason brc = ndb_jit_bridge_translate(prog, n_words, &p, &berr);
   if (brc != JIT_BRIDGE_OK) {
     dbtup_jit_note_fallback("aggregation bridge", (int)brc,
-                            berr.offending_op, berr.offending_word);
+                            berr.offending_op, berr.offending_word,
+                            prog, n_words);
     return -1;
   }
   Jit1Timing jt;
@@ -1967,7 +1987,7 @@ static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
   if (jp == nullptr) {
     dbtup_jit_note_fallback("aggregation compile",
                             (int)jit1_last_admit_error()->reason,
-                            (Uint32)errno, 0);
+                            (Uint32)errno, 0, prog, n_words);
     return -1;
   }
   dbtup_jit_note_compile_ns(jt.total_ns);

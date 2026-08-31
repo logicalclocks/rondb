@@ -937,15 +937,18 @@ static const Hole holes_op_read_mem_to_reg[] = {
   { .byte_offset = 16, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_read_mem_to_reg" },
 };
 
-/* op_arith_fb — 28 bytes, 2 holes */
+/* op_arith_fb — 37 bytes, 4 holes */
 static const uint8_t bytes_op_arith_fb[] = {
   0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xe7, 0x48, 0xb8, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xd0, 0x85, 0xc0, 0x74,
-  0x02, 0x58, 0xc3, 0x58,
+  0x06, 0x58, 0xe9, 0x00, 0x00, 0x00, 0x00, 0x58, 0xe9, 0x00, 0x00, 0x00,
+  0x00,
 };
 static const Hole holes_op_arith_fb[] = {
   { .byte_offset = 2, .kind = HK_OP_IMM, .width = 4 },
   { .byte_offset = 11, .kind = HK_COLDCALL, .width = 8, .helper_name = "ndb_jit_h_arith_fb" },
+  { .byte_offset = 27, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 33, .kind = HK_BRANCH_FALL, .width = 4 },
 };
 
 #define STENCIL_(name) \

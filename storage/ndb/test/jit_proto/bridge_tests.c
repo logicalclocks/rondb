@@ -4202,8 +4202,11 @@ static void test_scan_filter_double_const_reject(void) {
 #define EMB_MUL_REG_REG 30
 static uint32_t enc_emb_arith(uint32_t op, uint32_t dst, uint32_t s1,
                               uint32_t s2) {
+  /* Interpreter.hpp: Add/Sub carry dst at bits 16-18 (getReg4), Mul
+   * at bits 12-14 (getReg3) — the encoders genuinely differ. */
+  uint32_t dst_shift = (op == EMB_MUL_REG_REG) ? 12u : 16u;
   return enc_emb_op_word(op, ((s1 & 0x7u) << 6) | ((s2 & 0x7u) << 9) |
-                             ((dst & 0x7u) << 16));
+                             ((dst & 0x7u) << dst_shift));
 }
 
 /* T76a: WHERE a + b > const — the full shape. */
@@ -4227,7 +4230,9 @@ static void test_arith_add_compare_accept(void) {
                        OP_ARITH_FB)) return;
   if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 11)) return;
   if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 9)) return;
-  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 10)) return;
+  if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 10)) return;
+  /* item 9: the fallback edge targets the tail OP_EXIT (op 6). */
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 6)) return;
   if (p.ops[2].imm != (int64_t)0x0B9A) {   /* add | dst 11 | 9,10 */
     mark_fail(name, "arg=%llx, want b9a",
               (unsigned long long)p.ops[2].imm);
@@ -4299,6 +4304,39 @@ static void test_scan_filter_arith_reject(void) {
                               filter_prog, 2,
                               JIT_BRIDGE_UNSUPPORTED_OP,
                               /*want_word=*/1, EMB_ADD_REG_REG);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit slice 2 item 9 — WRITE_INTERPRETER_OUTPUT's             */
+/* STOP_PROGRAM sentinel (0xFFFF): "skip the rest of this ROW's       */
+/* outer program". Lowers to a jump to the tail OP_EXIT. This was     */
+/* the r4/d28 word=65546 family: the bridge used to compute           */
+/* outer_after + 65535 and the resolver rejected it as MALFORMED.     */
+/* ------------------------------------------------------------------ */
+static void test_case_stop_program_sentinel(void) {
+  const char *name = "T77 case_stop_program_sentinel";
+  uint32_t prog[9] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0xFFFF),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* LC16 + JUMP(stop) + LC16 + JUMP(fallthrough) + load + SUM +
+   * tail EXIT + OVERFLOW_EXIT (the tail is emitted BEFORE the
+   * conditional overflow exit, so it sits at op 6). */
+  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 6)) return;  /* tail */
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 3, "c", p.ops[3].c, 4)) return;  /* load */
+  mark_pass(name);
 }
 
 int main(void) {
@@ -4476,6 +4514,7 @@ int main(void) {
   test_arith_sub_mul_codes();
   test_arith_f64_operand_reject();
   test_scan_filter_arith_reject();
+  test_case_stop_program_sentinel();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
