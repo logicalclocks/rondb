@@ -4,8 +4,12 @@
 (2026-08-31, testCteNdbApi 1-26 green; the single-node ndb_push_agg
 cluster exercises the fast path — the multi-node owner-shipping
 redistribute gets its coverage from the Commit 3 topology suites).
-Commit 2 (subset-key CTE_LOOKUP, K4) in progress; Commit 3
-(RonSQL + MTR) not started.**
+Commit 2 (subset-key CTE_LOOKUP + block tests 27-31) SHIPPED
+(2026-08-31, testCteNdbApi 1-31 green after two first-run findings:
+the API param serializer's unmasked packed numResultCols word — error
+20005 — and the pre-existing empty-intermediate-projection API
+starvation, fixed in the tests + named as a follow-up).  Commit 3
+(RonSQL + MTR) in progress.**
 
 ## Why kernel-native
 
@@ -115,29 +119,64 @@ The kernel was unusually well prepared:
   through the CTE_SCAN agg feed (zero-agg-slot
   `buildCteLinkedBuffer`).
 
-## Commit 2 — subset-key CTE_LOOKUP (planned)
+## Commit 2 — subset-key CTE_LOOKUP (implemented)
 
-- API: bound-column position list on `QN_CteLookupNode` (parseDA
-  optional region behind a new DABits NodeInfo bit; spare
-  `requestInfo` bits and param `optional[1]` exist), from a new
-  `NdbQueryOptions` setter naming each key operand's virt-column
-  position; relax key-count-vs-virt-PK validation for single-row CTEs
-  incl. the ZERO-key form (replacing the ScalarDummy dummy-key idiom
-  for this mode).
-- DBSPJ `cte_lookup_send`: `CteContext::m_flags & CTE_SINGLE_ROW` ⇒
-  route to `refToNode(m_senderRef)` (generalizing the scalar branch),
-  skip the key hash, stamp key AttributeHeaders with TRUE column
-  positions instead of the sequential 0..k-1 normalization; accept
-  zero-key requests.  Retire or repurpose the write-only
-  `m_singleNodeId`.
-- DBLQH `cteLookupReqImpl`: single-row arm gated BEFORE the scalar
-  `n_gb_cols == 0` always-emit arm — empty map ⇒ REF
-  `GROUP_NOT_FOUND`; else walk the request key entries, locate each
-  position in the stored key bytes (the `emitCteGroupOutput` walk),
-  compare via `gb_types[pos].cmpFn`, NULL ⇒ miss; hit ⇒ existing emit
-  paths untouched.
-- Block tests: subset-key hit/miss, zero-key existence probe, misses
-  under inner/LEFT consumers, CTE_LOOKUP agg feed.
+- **Wire**: bound-column positions ride `QN_CteLookupNode` — count in
+  bits 16-23 of the `numResultCols` word
+  (`NUM_RESULT_COLS_MASK`/`KEY_POSITIONS_SHIFT`/`KEY_POSITIONS_MASK`/
+  `MaxKeyPositions = 16`), one word per key operand appended directly
+  after the per-column virt-type block; 0 = not declared (the
+  grouped/scalar virt-PK contract, wire image unchanged).
+- **API**: `NdbQueryOptions::setCteKeyColumns(positions, count)`
+  (options-impl fields + copy-ctor); `lookupCte` with positions
+  declared validates exactly `count` keys and binds key i to the
+  projected column `positions[i]` (typed via `bindOperand`) instead of
+  the virt-PK loop — including the ZERO-key existence-probe form
+  (`keys = {nullptr}` + `setParent`; the base lookup-def ctor's
+  `assert(i > 0)` relaxed).  Serializer emits count + positions.
+- **DBSPJ**: `cte_lookup_build` decodes/validates the positions into
+  `CteLookupData::m_keyPositions` (numResultCols masked at every
+  consumer — INCLUDING the API's param-side reader in
+  `prepareAttrInfo`'s QN_CTE_LOOKUP case, which reads the count back
+  from the SERIALIZED node to build the PI_ATTR_LIST projection: the
+  first test run left it unmasked, so 2|(1<<16) columns exploded the
+  list and wrapped the 16-bit param length — param-stream desync ⇒
+  DBSPJ error 20005 on Tests 27/28).  `cte_lookup_send`: `CteContext::m_flags &
+  CTE_SINGLE_ROW` ⇒ route to the constant `refToNode(m_senderRef)`
+  owner (no key hash), stamp each key AttributeHeader with its TRUE
+  column position and `writeToSection` the stamped buffer back (the
+  grouped path only ever stamped a hash-local copy — DBLQH
+  re-normalized independently, which the single-row arm must not);
+  keyless probes send a 1-dummy-word key section with
+  `req->keyLen = 0`.  Defensive `InvalidRequest` on positions against
+  a non-single-row CTE and on a position/entry count mismatch.
+  Write-only `CteContext::m_singleNodeId` retired.
+- **DBLQH**: `cteLookupReqImpl` skips the sequential 0..k-1 key
+  normalization for single-row states and probes via the new
+  file-local `singleRowCteProbe`: empty map ⇒ MISS
+  (`GROUP_NOT_FOUND` — the scalar always-emit arm is bypassed);
+  `keyLen == 0` ⇒ existence HIT; else per-entry compare at the
+  stamped position against the stored record (charset columns via
+  `gb_types[pos].cmpFn`, others data-size + byte equality; NULL on
+  EITHER side ⇒ MISS — SQL equality, deliberately not findInBucket's
+  NULL==NULL group identity); malformed keys ⇒ REF
+  `ZCTE_LOOKUP_ATTRINFO_MALFORMED`.  On a hit, `req.keyLen` is
+  overridden to the STORED key length (the scalar override-to-0
+  precedent) since `buildCteLinkedBuffer` / the accumulators pointer /
+  `runCteFilter` all read it as the stored length.
+- **Block tests 27-31**: subset key binding ONLY position 1 (the case
+  sequential normalization would get wrong), position-0 value miss,
+  zero-key existence probe hit, zero-key probe against an empty body
+  (the empty-CTE MISS drops the parent — exact MySQL semantics),
+  two-column subset hit.  First run surfaced a PRE-EXISTING API sharp
+  edge (not a kernel defect — the probes themselves behaved exactly
+  right in the ndbd log): an intermediate scan op with NO getValue
+  projection produces no TRANSID_AI while DBSPJ/TC's completed-ops
+  accounting still announces its rows, so the API waits forever
+  (tests hung with the kernel fully completed).  Tests now project on
+  the parent op too (the Test 2 convention); a defensive fix
+  (suppress counting or reject empty intermediate projections on the
+  pushed path) is a named follow-up.
 
 ## Commit 3 — RonSQL + MTR (planned)
 

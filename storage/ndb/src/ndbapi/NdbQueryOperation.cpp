@@ -6324,7 +6324,13 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       {
         const QN_CteLookupNode *cteNode =
             reinterpret_cast<const QN_CteLookupNode *>(queryNode);
-        const Uint32 numCols = cteNode->numResultCols;
+        /* numResultCols packs the single-row subset-key position count
+         * in bits 16-23 (cte_single_row_kernel_plan.md) — mask it out
+         * or the PI_ATTR_LIST below explodes to 64K+ column reads and
+         * wraps the 16-bit param length (stream desync => DBSPJ error
+         * 20005). */
+        const Uint32 numCols =
+            cteNode->numResultCols & QN_CteLookupNode::NUM_RESULT_COLS_MASK;
 
         /* PI_ATTR_INTERPRET: when the user attached a WHERE-clause
          * filter via setInterpretedCode(), prepareInterpretedCode()

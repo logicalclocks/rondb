@@ -20320,6 +20320,109 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   }
 }
 
+/**
+ * Single-row CTE probe (cte_single_row_kernel_plan.md).
+ *
+ * The state holds at most one row, stored as a key-only group record:
+ * [AttributeHeader][data] per projected column, in projection order.
+ * The request key carries one such entry per BOUND column, with the
+ * AttributeHeader attrId stamped by DBSPJ to the projected-column
+ * position it binds (any subset; zero entries = existence probe).
+ *
+ * Returns the group record on a hit, nullptr on a miss (empty state,
+ * NULL on either side of a compare, or value mismatch).  *malformed
+ * is set when the request key is structurally invalid (position out
+ * of range / truncated entry) — the caller REFs instead of missing.
+ * *storedKeyLenOut returns the stored record's key byte length on a
+ * hit so the caller can substitute it for the (shorter) request
+ * keyLen that downstream consumers interpret as the stored length.
+ *
+ * Compare semantics per column: charset columns via the GB type
+ * metadata's collation cmpFn (respective byte lengths); other types
+ * require equal data size + byte equality (same rule as
+ * GBHashTable::findInBucket).  NULL never equals anything (SQL
+ * equality — deliberately NOT findInBucket's NULL==NULL group
+ * identity).
+ */
+static const char *
+singleRowCteProbe(JoinAggInterpreter *interp,
+                  const Uint32 *keyBuf, Uint32 keyLenBytes,
+                  bool *malformed, Uint32 *storedKeyLenOut)
+{
+  *malformed = false;
+  *storedKeyLenOut = 0;
+  JoinGBHashTable *gb_map = interp->gb_map_mutable();
+  if (gb_map == nullptr || gb_map->size() == 0) {
+    return nullptr;  /* empty CTE => MISS */
+  }
+  /* size() == 1 by construction: the single-row violation checks ran
+   * before the state reached CTE_READY (no ndbassert here — this is a
+   * file-local function without SimulatedBlock's progError). */
+  auto iter = gb_map->begin();
+  if (!iter.valid()) {
+    return nullptr;
+  }
+  const char *groupData = iter.data();
+  const Uint32 storedKeyLen = iter.keyLen();
+  *storedKeyLenOut = storedKeyLen;
+  if (keyLenBytes == 0) {
+    return groupData;  /* keyless existence probe: HIT */
+  }
+
+  const Uint32 nCols = interp->n_gb_cols();
+  const GBColTypeInfo *types = interp->gb_types();
+  const Uint32 *stored = reinterpret_cast<const Uint32 *>(groupData);
+  const Uint32 storedWords = (storedKeyLen + 3) >> 2;
+  const Uint32 keyWords = (keyLenBytes + 3) >> 2;
+  Uint32 kp = 0;
+  while (kp < keyWords) {
+    const AttributeHeader reqAh(keyBuf[kp]);
+    const Uint32 pos = reqAh.getAttributeId();
+    const Uint32 reqDataWords = reqAh.getDataSize();
+    if (unlikely(pos >= nCols || kp + 1 + reqDataWords > keyWords)) {
+      *malformed = true;
+      return nullptr;
+    }
+    if (reqAh.getByteSize() == 0) {
+      return nullptr;  /* NULL bound value: equality is UNKNOWN => MISS */
+    }
+    /* Locate stored entry #pos by walking the record's key entries */
+    Uint32 spos = 0;
+    for (Uint32 i = 0; i < pos; i++) {
+      if (unlikely(spos >= storedWords)) {
+        *malformed = true;
+        return nullptr;
+      }
+      spos += 1 + AttributeHeader::getDataSize(stored[spos]);
+    }
+    if (unlikely(spos >= storedWords)) {
+      *malformed = true;
+      return nullptr;
+    }
+    const AttributeHeader storedAh(stored[spos]);
+    if (storedAh.getByteSize() == 0) {
+      return nullptr;  /* stored NULL => MISS */
+    }
+    if (types != nullptr && types[pos].cs != nullptr) {
+      const int cmp = (*types[pos].cmpFn)(
+          types[pos].cs,
+          &keyBuf[kp + 1], reqAh.getByteSize(),
+          &stored[spos + 1], storedAh.getByteSize());
+      if (cmp != 0) {
+        return nullptr;
+      }
+    } else {
+      if (reqAh.getDataSize() != storedAh.getDataSize() ||
+          memcmp(&keyBuf[kp + 1], &stored[spos + 1],
+                 reqAh.getDataSize() * sizeof(Uint32)) != 0) {
+        return nullptr;
+      }
+    }
+    kp += 1 + reqDataWords;
+  }
+  return groupData;
+}
+
 void Dblqh::cteLookupReqImpl(Signal *signal) {
   const CteLookupReq req =
       *(const CteLookupReq *)signal->getDataPtr();
@@ -20418,7 +20521,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
   const Uint32 rawKey1ForDebug = keyWordsForDebug > 1 ? keyBuf[1] : 0;
 #endif
 
-  {
+  if (!state->m_cte_single_row) {
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 keyWords = (req.keyLen + 3) >> 2;
     Uint32 kp = 0;
@@ -20428,9 +20531,44 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       kp += 1 + dataSize;
     }
   }
+  /* Single-row states: DBSPJ already stamped each key AttributeHeader
+   * with the TRUE projected-column position it binds (subset keys,
+   * cte_single_row_kernel_plan.md) — the sequential rewrite above
+   * would destroy them. */
 
   const char *groupData;
-  if (interp->n_gb_cols() == 0) {
+  if (state->m_cte_single_row) {
+    /**
+     * Single-row CTE probe: the state holds at most ONE row (a
+     * key-only group record).  Empty state => MISS (an empty CTE
+     * drops INNER consumers and NULL-extends LEFT consumers, exactly
+     * like MySQL — the scalar always-emit arm below must NOT apply).
+     * keyLen == 0 => pure existence probe (comma-join consumers).
+     * Otherwise compare each bound column (position = the stamped
+     * attrId) against the stored row; NULL on either side is a
+     * mismatch (SQL equality).
+     */
+    jam();
+    bool malformed = false;
+    Uint32 storedKeyLen = 0;
+    groupData = singleRowCteProbe(interp, keyBuf, req.keyLen,
+                                  &malformed, &storedKeyLen);
+    if (unlikely(malformed)) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
+      return;
+    }
+    if (groupData != nullptr) {
+      /* Downstream consumers (buildCteLinkedBuffer, the accumulators
+       * pointer in cteLookupEmitResult, runCteFilter) all take
+       * req.keyLen as the STORED key length — true for full-key
+       * grouped probes, but a subset probe's key is shorter.
+       * Override with the stored length (the scalar arm's
+       * override-to-0 precedent). */
+      const_cast<CteLookupReq &>(req).keyLen = storedKeyLen;
+    }
+  } else if (interp->n_gb_cols() == 0) {
     /**
      * Scalar aggregate CTE (no GROUP BY): results are in m_agg_results
      * directly (gb_map is nullptr). Return the scalar result regardless

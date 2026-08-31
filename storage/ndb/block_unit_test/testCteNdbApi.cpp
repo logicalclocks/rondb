@@ -6656,6 +6656,287 @@ testSingleRowCteFeedsAgg(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Tests 27-31: single-row CTE subset-key CTE_LOOKUP                   */
+/* (cte_single_row_kernel_plan.md, commit 2)                           */
+/*                                                                     */
+/* A lookupCte against a single-row CTE may bind ANY SUBSET of the     */
+/* projected columns via NdbQueryOptions::setCteKeyColumns —           */
+/* including NONE (a pure existence probe).  DBSPJ routes the probe    */
+/* to the constant DBTC-node owner and stamps each key                 */
+/* AttributeHeader with the TRUE projected-column position; DBLQH      */
+/* compares against the stored row and MISSES on an empty state.       */
+/* ------------------------------------------------------------------ */
+
+/* Shared frame: single-row CTE over `srcName` probed by a lookupCte
+ * child under a scanTable(cte_srow_src) parent (1 parent row).
+ * keyPositions/numKeys select the bound subset; keyCols names the
+ * PARENT columns supplying the values (same order).  numKeys == 0 is
+ * the zero-key existence probe (setParent attaches the child).
+ * Expects `expectRows` result rows; each must read (42, 4200). */
+static int
+runSingleRowCteLookup(Ndb *ndb, const char *srcName,
+                      const Uint32 *keyPositions, Uint32 numKeys,
+                      const char *const *keyCols,
+                      Uint32 expectRows, const char *testName)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(srcName);
+  dict->invalidateTable(SROW_SRC_TABLE);
+  dict->invalidateTable(SROW_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(srcName);
+  const NdbDictionary::Table *parentTab = dict->getTable(SROW_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(SROW_VIRTUAL_TABLE);
+  if (srcTab == nullptr || parentTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator srowAgg(srcTab);
+  srowAgg.SetSingleRowMode();
+  if (!srowAgg.GroupBy("a") ||
+      !srowAgg.GroupBy("b") ||
+      !srowAgg.Finalize()) {
+    printf("FAILED (srowAgg: %s)\n", srowAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions bodyOpts;
+    bodyOpts.setAggregation(srowAgg);
+    if (qb->scanTable(srcTab, &bodyOpts) == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, srowAgg, /*depMask=*/0,
+                    QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: 1-row parent scan + lookupCte child */
+  const NdbQueryTableScanOperationDef *parentScan =
+      qb->scanTable(parentTab);
+  if (parentScan == nullptr) {
+    printf("FAILED (parent scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *keys[QN_CteLookupNode::MaxKeyPositions + 1];
+  for (Uint32 i = 0; i < numKeys; i++) {
+    keys[i] = qb->linkedValue(parentScan, keyCols[i]);
+    if (keys[i] == nullptr) {
+      printf("FAILED (linkedValue %s: %s)\n", keyCols[i],
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  keys[numKeys] = nullptr;
+
+  NdbQueryOptions lookupOpts;
+  lookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  if (lookupOpts.setCteKeyColumns(keyPositions, numKeys) != 0) {
+    printf("FAILED (setCteKeyColumns)\n");
+    qb->destroy();
+    return -1;
+  }
+  if (numKeys == 0) {
+    /* Zero-key probe carries no linked operand — attach the child to
+     * its parent explicitly (the ScalarDummy setParent precedent). */
+    lookupOpts.setParent(parentScan);
+  }
+  const NdbQueryCteLookupOperationDef *lookupOp =
+      qb->lookupCte(0, 2, virtTab, keys, &lookupOpts);
+  if (lookupOp == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Project on BOTH ops (the Test 2 convention): a scan op with no
+   * getValue produces no TRANSID_AI while the completed-ops accounting
+   * still announces its rows, so the API waits forever for them —
+   * the first run of these tests hung exactly there. */
+  const Uint32 parentOpNo = queryDef->getNoOfOperations() - 2;
+  const Uint32 lookupOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *parentOp = query->getQueryOperation(parentOpNo);
+  NdbQueryOperation *lkOp = query->getQueryOperation(lookupOpNo);
+  NdbRecAttr *raPk = nullptr;
+  NdbRecAttr *raA = nullptr;
+  NdbRecAttr *raB = nullptr;
+  if (parentOp != nullptr) {
+    raPk = parentOp->getValue("pk");
+  }
+  if (lkOp != nullptr) {
+    raA = lkOp->getValue("a");
+    raB = lkOp->getValue("b");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    /* MatchNonNull drops unmatched parents, so any row means a HIT
+     * and must carry the materialized values. */
+    if (raA == nullptr || raB == nullptr ||
+        raA->isNULL() != 0 || raB->isNULL() != 0) {
+      printf("FAILED (%s: NULL result on a hit)\n", testName);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    Int32 a = raA->int32_value();
+    Int64 b = raB->int64_value();
+    V("  row: pk=%d a=%d b=%lld\n",
+      raPk ? raPk->int32_value() : -1, a, (long long)b);
+    if (a != 42 || b != 4200) {
+      printf("FAILED (%s: expected (42,4200), got (%d,%lld))\n",
+             testName, a, (long long)b);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    rowCount++;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (%s: nextResult err %d: %s)\n", testName,
+           qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != expectRows) {
+    printf("FAILED (%s: expected %u rows, got %u)\n", testName,
+           expectRows, rowCount);
+    return -1;
+  }
+  return 0;
+}
+
+/* Test 27: subset key binding ONLY position 1 (column b).  The old
+ * sequential attrId normalization would have compared b's value
+ * against column a and missed — the position stamping is what makes
+ * this hit. */
+static int
+testSingleRowCteSubsetKeyHit(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 27: single-row CTE subset-key hit (position 1) ... ");
+  fflush(stdout);
+  static const Uint32 positions[] = { 1 };
+  static const char *const cols[] = { "b" };
+  if (runSingleRowCteLookup(ndb, SROW_SRC_TABLE, positions, 1, cols,
+                            1, "t27") != 0) return -1;
+  printf("OK (1 row)\n");
+  return 0;
+}
+
+/* Test 28: subset key binding position 0 (column a) to the parent's
+ * pk (7 != 42) — value mismatch => MISS, INNER drops the parent. */
+static int
+testSingleRowCteSubsetKeyMiss(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 28: single-row CTE subset-key miss ... ");
+  fflush(stdout);
+  static const Uint32 positions[] = { 0 };
+  static const char *const cols[] = { "pk" };
+  if (runSingleRowCteLookup(ndb, SROW_SRC_TABLE, positions, 1, cols,
+                            0, "t28") != 0) return -1;
+  printf("OK (0 rows)\n");
+  return 0;
+}
+
+/* Test 29: zero-key existence probe — HIT iff the row exists. */
+static int
+testSingleRowCteExistenceProbe(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 29: single-row CTE zero-key existence probe ... ");
+  fflush(stdout);
+  if (runSingleRowCteLookup(ndb, SROW_SRC_TABLE, nullptr, 0, nullptr,
+                            1, "t29") != 0) return -1;
+  printf("OK (1 row)\n");
+  return 0;
+}
+
+/* Test 30: zero-key probe against an EMPTY body — the empty-CTE MISS
+ * drops the (existing) parent row: exact MySQL cross-join-with-empty
+ * semantics, no guard tricks. */
+static int
+testSingleRowCteExistenceProbeEmpty(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 30: single-row CTE existence probe, empty body ... ");
+  fflush(stdout);
+  if (runSingleRowCteLookup(ndb, SROW_EMPTY_TABLE, nullptr, 0, nullptr,
+                            0, "t30") != 0) return -1;
+  printf("OK (0 rows)\n");
+  return 0;
+}
+
+/* Test 31: both columns bound ({0,1}) — multi-entry stamping + typed
+ * compare on INT and BIGINT. */
+static int
+testSingleRowCteFullSubsetHit(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 31: single-row CTE two-column subset hit ... ");
+  fflush(stdout);
+  static const Uint32 positions[] = { 0, 1 };
+  static const char *const cols[] = { "a", "b" };
+  if (runSingleRowCteLookup(ndb, SROW_SRC_TABLE, positions, 2, cols,
+                            1, "t31") != 0) return -1;
+  printf("OK (1 row)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -6691,6 +6972,11 @@ static const TestEntry g_tests[] = {
     { 24, testSingleRowCteEmpty },
     { 25, testSingleRowCteViolation },
     { 26, testSingleRowCteFeedsAgg },
+    { 27, testSingleRowCteSubsetKeyHit },
+    { 28, testSingleRowCteSubsetKeyMiss },
+    { 29, testSingleRowCteExistenceProbe },
+    { 30, testSingleRowCteExistenceProbeEmpty },
+    { 31, testSingleRowCteFullSubsetHit },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -6712,7 +6998,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..26)\n");
+      printf("  --only N    run only test number N (1..31)\n");
       return 0;
     }
   }

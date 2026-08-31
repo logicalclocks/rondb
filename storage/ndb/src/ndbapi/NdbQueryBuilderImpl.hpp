@@ -292,13 +292,19 @@ class NdbQueryOptionsImpl {
         m_aggColumns(nullptr),
         m_linkedProjection(0),
         m_maxRows(0),
-        m_fragsPerWorker(0) {}
+        m_fragsPerWorker(0),
+        m_hasCteKeyPositions(false),
+        m_numCteKeyPositions(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
   NdbQueryOptions::ScanOrdering getOrdering() const { return m_scanOrder; }
   Uint32 getMaxRows() const { return m_maxRows; }
   Uint32 getFragsPerWorker() const { return m_fragsPerWorker; }
+
+  bool hasCteKeyPositions() const { return m_hasCteKeyPositions; }
+  Uint32 getNumCteKeyPositions() const { return m_numCteKeyPositions; }
+  const Uint32 *getCteKeyPositions() const { return m_cteKeyPositions; }
 
   bool hasAggregation() const { return m_aggProgramBuffer != nullptr; }
   const Uint32 *getAggProgramBuffer() const { return m_aggProgramBuffer; }
@@ -348,6 +354,16 @@ class NdbQueryOptionsImpl {
   // (0 = unset => 1). Power of two, max 8 (2-bit log2 wire encoding in
   // SCAN_TABREQ storedProcId bits 16-17); normalized by the setter.
   Uint32 m_fragsPerWorker;
+
+  // Single-row CTE subset keys (cte_single_row_kernel_plan.md):
+  // projected-column position bound by each lookupCte key operand,
+  // in key order.  m_hasCteKeyPositions distinguishes "declared with
+  // zero keys" (a pure existence probe) from "not declared" (the
+  // grouped/scalar virt-PK key contract).  Array size must match
+  // QN_CteLookupNode::MaxKeyPositions (static_assert at the setter).
+  bool m_hasCteKeyPositions;
+  Uint32 m_numCteKeyPositions;
+  Uint32 m_cteKeyPositions[16];
 
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'

@@ -1603,7 +1603,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
      * CteContexts it needs to update are only created later when
      * cte_lookup_build() processes each QN_CTE_LOOKUP / QN_CTE_SCAN /
      * QN_CTE_SUBTREE node. We therefore parse the per-CTE metadata
-     * (depMask / flags / phase / singleNodeId) into a small local
+     * (depMask / flags / phase) into a small local
      * temp array here, and apply it to the CteContexts after build()
      * returns. Otherwise the phase update loop silently no-ops
      * (numCtes is 0 at parse time) and all CTEs end up at phase 0,
@@ -1615,7 +1615,6 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       Uint64 depMask;
       Uint32 flags;
       Uint32 phase;
-      Uint32 singleNodeId;  // 0 if not a single-row CTE
     };
     ParsedCteMeta parsedCteMeta[64];
     Uint32 parsedCteMetaCount = 0;
@@ -1717,7 +1716,6 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
           m.depMask = depMask;
           m.flags = perCteFlags;
           m.phase = phase;
-          m.singleNodeId = 0;
 
           for (Uint32 n = 0; n < cteNodeCount; n++) {
             Uint32 nodeId, cteAggKey, ownerInstance;
@@ -1730,12 +1728,6 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
                 ownerInstance;
             DEB_CTE(("(%u) CTE aggStateKey: cte[%u] node=%u key=%u",
                      instance(), c, nodeId, cteAggKey));
-            /* Track single-row CTE's node */
-            if ((perCteFlags &
-                 QN_CteSubtreeNode::CTE_SINGLE_ROW) &&
-                cteAggKey != 0) {
-              m.singleNodeId = nodeId;
-            }
           }
         }
       }
@@ -1768,7 +1760,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
        * Part A: build() has now created CteContexts via cte_lookup_build()
        * for each QN_CTE_LOOKUP / QN_CTE_SCAN / QN_CTE_SUBTREE node.
        * Apply the metadata we stashed earlier from the aggKeys
-       * section — depMask, flags, phase, singleNodeId — so that
+       * section — depMask, flags, phase — so that
        * checkPrepareComplete() and the phase-sequencing logic see
        * the real dependency values rather than the default phase=0.
        */
@@ -1779,10 +1771,6 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
             requestPtr.p->m_cteContexts[i].m_depMask = m.depMask;
             requestPtr.p->m_cteContexts[i].m_flags = m.flags;
             requestPtr.p->m_cteContexts[i].m_phase = m.phase;
-            if (m.singleNodeId != 0) {
-              requestPtr.p->m_cteContexts[i].m_singleNodeId =
-                  m.singleNodeId;
-            }
             DEB_CTE(("(%u) apply CteContext[%u]: cteId=%u "
                      "depMask=%llx flags=0x%x phase=%u",
                      instance(), i, m.cteId,
@@ -6224,14 +6212,26 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     // to the AttrInfo (depends on INNER_JOIN / linked attributes).
     // Do NOT set it unconditionally here.
 
-    // Store CTE-specific data
+    // Store CTE-specific data.  numResultCols packs the single-row
+    // subset-key position count in bits 16-23 (QN_CteLookupNode).
+    const Uint32 numResultCols =
+        node->numResultCols & QN_CteLookupNode::NUM_RESULT_COLS_MASK;
+    const Uint32 numKeyPositions =
+        (node->numResultCols >> QN_CteLookupNode::KEY_POSITIONS_SHIFT) &
+        QN_CteLookupNode::KEY_POSITIONS_MASK;
+    if (unlikely(numKeyPositions > QN_CteLookupNode::MaxKeyPositions)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
+    }
     treeNodePtr.p->m_cteLookup_data.m_cteId = node->cteId;
-    treeNodePtr.p->m_cteLookup_data.m_numResultCols = node->numResultCols;
+    treeNodePtr.p->m_cteLookup_data.m_numResultCols = numResultCols;
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
     treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
+    treeNodePtr.p->m_cteLookup_data.m_numKeyPositions = numKeyPositions;
     DEB_CTE(("(%u) cte_lookup_build: node=%u resultRef=0x%x resultData=0x%x "
              "rootResultData=0x%x",
              instance(), treeNodePtr.p->m_node_no,
@@ -6280,13 +6280,12 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
             requestPtr.p->m_cteContexts[requestPtr.p->m_numCtes];
         cctx.m_cteId = cteId;
         cctx.m_state = CteContext::CTE_NOT_STARTED;
-        cctx.m_numResultCols = node->numResultCols;
+        cctx.m_numResultCols = numResultCols;
         cctx.m_depMask = 0;  // Filled in later from aggKeys section
         cctx.m_phase = 0;    // Filled in later from aggKeys section
         cctx.m_flags = 0;
         cctx.m_cachedRowPtrI = RNIL;
         cctx.m_cachedRowLen = 0;
-        cctx.m_singleNodeId = 0;
         requestPtr.p->m_numCtes++;
         DEB_CTE(("(%u) numCtes: %u, newCount: %u",
           instance(), requestPtr.p->m_numCtes, newCount));
@@ -6304,10 +6303,12 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
      * the fixed header and the parseDA optional region (see
      * appendCteVirtTypeInfo in NdbQueryBuilder.cpp).  Copy into a
      * pool-allocated buffer kept on the TreeNode for the request
-     * lifetime; freed in cleanup_common.  Skip past in nodeDA before
-     * invoking parseDA. */
-    const Uint32 typeInfoWords = node->numResultCols * 2;
-    if (unlikely(node->len < QN_CteLookupNode::NodeSize + typeInfoWords)) {
+     * lifetime; freed in cleanup_common.  Directly after it: the
+     * single-row subset-key positions (numKeyPositions words).  Skip
+     * past both in nodeDA before invoking parseDA. */
+    const Uint32 typeInfoWords = numResultCols * 2;
+    if (unlikely(node->len < QN_CteLookupNode::NodeSize + typeInfoWords +
+                                 numKeyPositions)) {
       jam();
       err = DbspjErr::InvalidTreeNodeSpecification;
       break;
@@ -6325,10 +6326,23 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
       treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo =
           static_cast<Uint32 *>(mem);
     }
+    for (Uint32 i = 0; i < numKeyPositions; i++) {
+      const Uint32 pos = node->optional[typeInfoWords + i];
+      if (unlikely(pos >= numResultCols)) {
+        jam();
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
+      treeNodePtr.p->m_cteLookup_data.m_keyPositions[i] = pos;
+    }
+    if (unlikely(err != 0)) {
+      jam();
+      break;
+    }
 
     // Parse optional data (parent list, key pattern, etc.)
     struct DABuffer nodeDA, paramDA;
-    nodeDA.ptr = node->optional + typeInfoWords;
+    nodeDA.ptr = node->optional + typeInfoWords + numKeyPositions;
     nodeDA.end = node->optional + (node->len - QN_CteLookupNode::NodeSize);
     paramDA.ptr = param->optional;
     paramDA.end = paramDA.ptr + (param->len - QN_CteLookupParameters::NodeSize);
@@ -6684,6 +6698,10 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
     ndbrequire(cteIdx != RNIL);
+    const bool singleRowCte =
+        (requestPtr.p->m_cteContexts[cteIdx].m_flags &
+         QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
+    bool keylessProbe = false;
 
     // Expand key from parent row using key pattern
     if (treeNodePtr.p->m_bits & TreeNode::T_KEYINFO_CONSTRUCTED) {
@@ -6706,7 +6724,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         releaseSection(keyInfoPtrI);
         return;
       }
-    } else {
+    } else if (treeNodePtr.p->m_send.m_keyInfoPtrI != RNIL) {
       jam();
       // Pre-built key — duplicate for sending
       Uint32 tmp = RNIL;
@@ -6716,6 +6734,25 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         break;
       }
       keyInfoPtrI = tmp;
+    } else {
+      /* Zero-key single-row existence probe
+       * (cte_single_row_kernel_plan.md): no key operands at all — HIT
+       * iff the materialized row exists.  The key section carries one
+       * dummy word (the transporter dummy-word idiom) with
+       * req->keyLen = 0; DBLQH keys the existence arm off keyLen. */
+      jam();
+      if (unlikely(!singleRowCte)) {
+        jam();
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
+      Uint32 dummy = 0;
+      if (unlikely(!appendToSection(keyInfoPtrI, &dummy, 1))) {
+        jam();
+        err = DbspjErr::OutOfSectionMemory;
+        break;
+      }
+      keylessProbe = true;
     }
 
     /* Send CTE_LOOKUP_REQ directly to the owner DBLQH.  joinAggStateKey
@@ -6726,13 +6763,66 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
      * target aggregation keys for that owner node. */
     ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
 
-    // Compute key length in bytes
+    // Compute key length in bytes (0 for the keyless existence probe —
+    // its section holds only the dummy word)
     SegmentedSectionPtr keyPtr;
     getSection(keyPtr, keyInfoPtrI);
-    const Uint32 keyLenBytes = keyPtr.sz * sizeof(Uint32);
+    const Uint32 keyLenBytes =
+        keylessProbe ? 0 : keyPtr.sz * sizeof(Uint32);
+
+    /* Subset-key positions are only meaningful against a single-row
+     * CTE — on a grouped/scalar CTE they would be silently ignored
+     * (full-key sequential normalization), so reject the malformed
+     * definition instead. */
+    if (unlikely(!singleRowCte &&
+                 treeNodePtr.p->m_cteLookup_data.m_numKeyPositions > 0)) {
+      jam();
+      err = DbspjErr::InvalidRequest;
+      break;
+    }
 
     Uint32 targetNodeId = getOwnNodeId();
-    if (m_numDataNodes > 1) {
+    if (singleRowCte) {
+      jam();
+      /* Single-row CTE: the row lives at the constant DBTC-node owner
+       * (the redistribute shipped it there —
+       * cte_single_row_kernel_plan.md), so no key hash.  Stamp each
+       * key AttributeHeader with the TRUE projected-column position
+       * from the QueryTree subset-key list — replacing the sequential
+       * GROUP BY normalization — and write the stamped buffer back so
+       * DBLQH's compare arm reads the positions off the wire. */
+      if (m_numDataNodes > 1) {
+        jam();
+        targetNodeId = refToNode(requestPtr.p->m_senderRef);
+      }
+      if (keyLenBytes > 0) {
+        const CteLookupData &d = treeNodePtr.p->m_cteLookup_data;
+        Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
+        if (unlikely(keyPtr.sz > MAX_KEY_SIZE_IN_WORDS)) {
+          jam();
+          err = DbspjErr::InvalidRequest;
+          break;
+        }
+        copy(keyBuf, keyPtr);
+        Uint32 kp = 0;
+        Uint32 ki = 0;
+        while (ki < d.m_numKeyPositions && kp < keyPtr.sz) {
+          const Uint32 dataSize = AttributeHeader::getDataSize(keyBuf[kp]);
+          keyBuf[kp] = (d.m_keyPositions[ki] << 16) |
+                       (keyBuf[kp] & 0x0000FFFF);
+          kp += 1 + dataSize;
+          ki++;
+        }
+        /* Every key entry must be covered by a declared position and
+         * vice versa — a mismatch means a malformed definition. */
+        if (unlikely(kp != keyPtr.sz || ki != d.m_numKeyPositions)) {
+          jam();
+          err = DbspjErr::InvalidRequest;
+          break;
+        }
+        writeToSection(keyInfoPtrI, 0, keyBuf, keyPtr.sz);
+      }
+    } else if (m_numDataNodes > 1) {
       jam();
       const Uint32 localCteAggKey =
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + getOwnNodeId()];
@@ -7326,7 +7416,6 @@ Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
       cctx.m_flags = 0;
       cctx.m_cachedRowPtrI = RNIL;
       cctx.m_cachedRowLen = 0;
-      cctx.m_singleNodeId = 0;
       requestPtr.p->m_numCtes++;
       DEB_CTE(("(%u) numCtes: %u, newCount: %u",
         instance(), requestPtr.p->m_numCtes, newCount));

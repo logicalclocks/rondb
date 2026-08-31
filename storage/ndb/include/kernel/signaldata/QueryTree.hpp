@@ -473,7 +473,14 @@ struct QN_CteSubtreeNode  // Is a QueryNode subclass
   static constexpr Uint32 NodeSize = 4;
 
   enum RequestInfoBits {
-    CTE_SINGLE_ROW = 0x1  // CTE produces exactly one row (no GROUP BY)
+    CTE_SINGLE_ROW = 0x1  // Single-row CTE (cte_single_row_kernel_plan.md):
+                          // the body materializes AT MOST one row, stored as
+                          // a key-only group record (every projected column
+                          // a GROUP BY column, zero aggregate slots).
+                          // States on all nodes; redistribute owner is the
+                          // constant DBTC node; CTE_LOOKUP probes compare a
+                          // subset of the projected columns and MISS on an
+                          // empty state.
   };
 
   Uint32 optional[1];   // Embedded QueryNode structures follow
@@ -503,10 +510,22 @@ struct QN_CteLookupNode  // Is a QueryNode subclass
   Uint32 len;           // (length << 16) | QN_CTE_LOOKUP
   Uint32 requestInfo;   // DABits::NodeInfoBits flags
   Uint32 cteId;         // Which CTE to look up (matches CteSubtreeNode::cteId)
-  Uint32 numResultCols; // Number of result columns from CTE aggregation
+  Uint32 numResultCols; // Bits 0-15: number of result columns from the CTE.
+                        // Bits 16-23: number of key column POSITIONS that
+                        // follow the per-column virt-type block (single-row
+                        // CTE subset keys, cte_single_row_kernel_plan.md):
+                        // one word per key operand naming the projected
+                        // column it binds, in key order.  0 = no positions
+                        // present (grouped/scalar CTE lookups — unchanged
+                        // wire image).
   static constexpr Uint32 NodeSize = 4;
+  static constexpr Uint32 NUM_RESULT_COLS_MASK = 0xFFFF;
+  static constexpr Uint32 KEY_POSITIONS_SHIFT = 16;
+  static constexpr Uint32 KEY_POSITIONS_MASK = 0xFF;
+  static constexpr Uint32 MaxKeyPositions = 16;
 
-  Uint32 optional[1];   // Parent list, key pattern (same format as QN_LookupNode)
+  Uint32 optional[1];   // [virt-type block][key positions]
+                        // then parent list, key pattern (QN_LookupNode format)
 };
 
 /**
