@@ -6787,9 +6787,10 @@ runSingleRowCteLookup(Ndb *ndb, const char *srcName,
   }
 
   /* Project on BOTH ops (the Test 2 convention): a scan op with no
-   * getValue produces no TRANSID_AI while the completed-ops accounting
-   * still announces its rows, so the API waits forever for them —
-   * the first run of these tests hung exactly there. */
+   * getValue produces no TRANSID_AI — the first run of these tests
+   * hung exactly there (rows announced but never delivered).  That
+   * shape is now rejected at prepare with QRY_EMPTY_PROJECTION (4826);
+   * Tests 32-33 pin the rejection. */
   const Uint32 parentOpNo = queryDef->getNoOfOperations() - 2;
   const Uint32 lookupOpNo = queryDef->getNoOfOperations() - 1;
   NdbQueryOperation *parentOp = query->getQueryOperation(parentOpNo);
@@ -6937,6 +6938,211 @@ testSingleRowCteFullSubsetHit(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Tests 32-33: empty-projection rejection on scan-query ops           */
+/*                                                                     */
+/* A non-leaf op in a pushed SCAN query with no getValue/NdbRecord     */
+/* gets no PI_ATTR_LIST => no T_USER_PROJECTION / FLUSH_AI in the      */
+/* kernel: its rows never reach the API while the completed-ops        */
+/* accounting used to announce them, so nextResult starved until the   */
+/* 4008 receive timeout (the shape Tests 27-31 first hung on).  The    */
+/* API now rejects the shape at prepare with QRY_EMPTY_PROJECTION      */
+/* (4826) instead.                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Shared tail: execute `queryDef` with getValues registered on the
+ * LAST op only, expect execute() to fail with NDB error 4826. */
+static int
+expectEmptyProjectionReject(Ndb *ndb, const NdbQueryDef *queryDef,
+                            const char *childCol, const char *testName)
+{
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Deliberately NO getValue on the parent scan op — only the child. */
+  NdbQueryOperation *childOp =
+      query->getQueryOperation(queryDef->getNoOfOperations() - 1);
+  if (childOp == nullptr || childOp->getValue(childCol) == nullptr) {
+    printf("FAILED (%s: child getValue)\n", testName);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  int ret = 0;
+  if (trans->execute(NdbTransaction::NoCommit) == 0) {
+    printf("FAILED (%s: expected rejection, execute succeeded)\n", testName);
+    query->close();
+    ret = -1;
+  } else {
+    const int qErr = query->getNdbError().code;
+    const int tErr = trans->getNdbError().code;
+    if (qErr != 4826 && tErr != 4826) {
+      printf("FAILED (%s: expected err 4826, got query err %d / "
+             "trans err %d: %s)\n", testName, qErr, tErr,
+             trans->getNdbError().message);
+      ret = -1;
+    }
+  }
+  trans->close();
+  queryDef->destroy();
+  return ret;
+}
+
+/* Test 32: the exact original hang shape of Tests 27/28 minus the
+ * parent getValue — unprojected parent scan + projected CTE_LOOKUP
+ * child.  Must fail cleanly with 4826 at prepare, no hang. */
+static int
+testEmptyProjectionParentCteLookup(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 32: empty parent projection + CTE_LOOKUP child "
+         "rejected ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SROW_SRC_TABLE);
+  dict->invalidateTable(SROW_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SROW_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(SROW_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator srowAgg(srcTab);
+  srowAgg.SetSingleRowMode();
+  if (!srowAgg.GroupBy("a") ||
+      !srowAgg.GroupBy("b") ||
+      !srowAgg.Finalize()) {
+    printf("FAILED (srowAgg: %s)\n", srowAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions bodyOpts;
+    bodyOpts.setAggregation(srowAgg);
+    if (qb->scanTable(srcTab, &bodyOpts) == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, srowAgg, /*depMask=*/0,
+                    QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryTableScanOperationDef *parentScan = qb->scanTable(srcTab);
+  if (parentScan == nullptr) {
+    printf("FAILED (parent scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *keys[] = {
+    qb->linkedValue(parentScan, "b"), nullptr
+  };
+  static const Uint32 positions[] = { 1 };
+  NdbQueryOptions lookupOpts;
+  lookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  if (lookupOpts.setCteKeyColumns(positions, 1) != 0) {
+    printf("FAILED (setCteKeyColumns)\n");
+    qb->destroy();
+    return -1;
+  }
+  if (qb->lookupCte(0, 2, virtTab, keys, &lookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  if (expectEmptyProjectionReject(ndb, queryDef, "a", "t32") != 0)
+    return -1;
+  printf("OK (rejected with 4826)\n");
+  return 0;
+}
+
+/* Test 33: plain real-table pushed join, no CTE machinery —
+ * unprojected parent scan + projected PK-lookup child.  Pins the
+ * generic scan-query arm of the 4826 check. */
+static int
+testEmptyProjectionParentRealJoin(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 33: empty parent projection + real lookup child "
+         "rejected ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SROW_SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SROW_SRC_TABLE);
+  if (srcTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+  const NdbQueryTableScanOperationDef *parentScan = qb->scanTable(srcTab);
+  if (parentScan == nullptr) {
+    printf("FAILED (parent scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *key[] = {
+    qb->linkedValue(parentScan, "pk"), nullptr
+  };
+  NdbQueryOptions childOpts;
+  childOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  if (qb->readTuple(srcTab, key, &childOpts) == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  if (expectEmptyProjectionReject(ndb, queryDef, "a", "t33") != 0)
+    return -1;
+  printf("OK (rejected with 4826)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -6977,6 +7183,8 @@ static const TestEntry g_tests[] = {
     { 29, testSingleRowCteExistenceProbe },
     { 30, testSingleRowCteExistenceProbeEmpty },
     { 31, testSingleRowCteFullSubsetHit },
+    { 32, testEmptyProjectionParentCteLookup },
+    { 33, testEmptyProjectionParentRealJoin },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -6998,7 +7206,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..31)\n");
+      printf("  --only N    run only test number N (1..33)\n");
       return 0;
     }
   }

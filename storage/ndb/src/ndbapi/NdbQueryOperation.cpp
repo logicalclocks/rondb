@@ -6160,15 +6160,33 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
   }
 
   if (m_ndbRecord == nullptr && m_firstRecAttr == nullptr) {
-    // Leaf operations with empty projections are not supported,
-    // unless this is an aggregate leaf (results come via aggregation,
-    // not through the normal row projection path).
-    // has children (intermediate node providing linked attributes).
-    if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf() &&
-        !def.isQueryAggregation() &&
-        def.getType() != NdbQueryOperationDef::CteSubtree &&
-        def.getType() != NdbQueryOperationDef::CteLookup &&
-        !def.isCteEmbedded()) {
+    // Operations with empty projections are not supported, unless the
+    // op's rows legitimately bypass the normal row projection path:
+    // aggregate leaf / query aggregation (results come via the
+    // aggregation machinery), CTE materialization ops (CteSubtree,
+    // cte-embedded — rows never reach the API), or CteLookup (the
+    // virt-column projection is auto-serialized below regardless of
+    // user getValues, so its rows are always delivered).
+    const bool exempt =
+        def.isAggregateLeaf() || def.isQueryAggregation() ||
+        def.getType() == NdbQueryOperationDef::CteSubtree ||
+        def.getType() == NdbQueryOperationDef::CteLookup ||
+        def.isCteEmbedded();
+    if (getNoOfChildOperations() == 0) {
+      if (!exempt) {
+        return QRY_EMPTY_PROJECTION;
+      }
+    } else if (getQueryDef().isScanQuery() && !exempt &&
+               def.getType() != NdbQueryOperationDef::CteScan) {
+      /* An unprojected non-leaf op in a scan query gets no PI_ATTR_LIST,
+       * hence no T_USER_PROJECTION / FLUSH_AI in the kernel — its rows
+       * never reach the API.  That both breaks the per-worker row
+       * accounting (rows announced in SCAN_TABCONF but never delivered
+       * => nextResult starves until the 4008 receive timeout) and makes
+       * the op's subtree invisible to the API-side join assembly (an
+       * empty result stream matches nothing).  Fail loud at prepare
+       * instead.  CteScan is exempt here like CteLookup: its virt-column
+       * projection is auto-serialized below. */
       return QRY_EMPTY_PROJECTION;
     }
   } else if (def.getType() != NdbQueryOperationDef::CteLookup &&

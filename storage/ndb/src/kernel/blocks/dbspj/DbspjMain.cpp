@@ -13675,8 +13675,19 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
    * m_rows (which becomes SCAN_FRAGCONF::completedOps and then
    * the API's per-worker rowCount). Otherwise the API expects
    * more TRANSID_AI rows than will arrive, never reaches
-   * outstanding==0, and the scan hangs in nextResult. */
-  if ((requestPtr.p->m_aggNodes.isclear() ||
+   * outstanding==0, and the scan hangs in nextResult.
+   *
+   * The same invariant requires T_USER_PROJECTION on the
+   * non-aggregate branch: DBLQH's completedOps counts rows sent to
+   * SPJ (m_curr_batch_size_rows is bumped for the SPJ-bound
+   * TRANSID_AI too), but only rows flushed to the API via FLUSH_AI —
+   * i.e. nodes with a user projection — ever arrive there.  Counting
+   * a projection-less scan node's rows starves the API the same way.
+   * Mirrors lookup_execLQHKEYCONF and execCTE_SCAN_CONF path (b).
+   * Aggregate leaves keep their bit-independent counting: their
+   * output reaches the API through the aggregation result path. */
+  if (((requestPtr.p->m_aggNodes.isclear() &&
+        (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION)) ||
        (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) &&
       !(treeNodePtr.p->m_bits & TreeNode::T_CTE_INDIRECT_FEED)) {
     requestPtr.p->m_rows += rows;

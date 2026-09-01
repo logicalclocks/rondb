@@ -8,7 +8,8 @@ Commit 2 (subset-key CTE_LOOKUP + block tests 27-31) SHIPPED
 (2026-08-31, testCteNdbApi 1-31 green after two first-run findings:
 the API param serializer's unmasked packed numResultCols word — error
 20005 — and the pre-existing empty-intermediate-projection API
-starvation, fixed in the tests + named as a follow-up).  Commit 3
+starvation, first worked around in the tests, since FIXED — see the
+Commit 2 block-test bullet).  Commit 3
 (RonSQL emission + MTR ×5 topologies) SHIPPED (2026-08-31, recorded
 green ×5 suites; first record caught one test bug — a single-op
 FROM-root query prints no EXPLAIN join-plan tree, srb-13's grep
@@ -179,9 +180,30 @@ The kernel was unusually well prepared:
   projection produces no TRANSID_AI while DBSPJ/TC's completed-ops
   accounting still announces its rows, so the API waits forever
   (tests hung with the kernel fully completed).  Tests now project on
-  the parent op too (the Test 2 convention); a defensive fix
-  (suppress counting or reject empty intermediate projections on the
-  pushed path) is a named follow-up.
+  the parent op too (the Test 2 convention).  **The follow-up is FIXED
+  (September 2026)**: (1) fail-loud — `prepareAttrInfo`'s
+  `QRY_EMPTY_PROJECTION` (4826) check now also rejects unprojected
+  NON-LEAF ops of scan queries (NdbQueryOperation.cpp; the old check
+  was leaf-only, so the hang shape slipped through), with the leaf arm
+  and its exemption list unchanged and CteScan additionally exempt in
+  the new arm (CTE ops auto-serialize their full virt-column
+  PI_ATTR_LIST regardless of user getValues, so they always deliver —
+  which is also why `execCTE_LOOKUP_CONF` / `execCTE_SCAN_CONF`
+  counting needed no change); (2) kernel invariant —
+  `scanFrag_execSCAN_FRAGCONF`'s `m_rows` gate (DbspjMain.cpp) now
+  requires `T_USER_PROJECTION` on the non-aggregate branch, mirroring
+  `lookup_execLQHKEYCONF` and `execCTE_SCAN_CONF` path (b): DBLQH's
+  `completedOps` counts rows sent to SPJ, but only FLUSH_AI'd rows
+  reach the API, so a projection-less scan node must contribute 0
+  (defense for old/foreign API clients — hang becomes a well-defined
+  result; no wire change, no version gate).  Tests 32-33 pin the 4826
+  rejection (the exact Test 27/28 hang shape minus the parent
+  getValue, and a no-CTE real-table pushed join).  A count-only fix
+  would have been WRONG on its own: the API's join assembly walks
+  per-op result streams, so an undelivered op makes its subtree
+  invisible — RonSQL's dummy getValue
+  (`execute_passthrough_drain`) is load-bearing for assembly, not just
+  accounting, and stays.
 
 ## Commit 3 — RonSQL + MTR (shipped)
 
