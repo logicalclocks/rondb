@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2025, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -80,6 +80,15 @@ struct ConfigFactory {
       Properties node_settings;
       node_settings.put("NodeId", nodeId);
       if (ndbds == 1) node_settings.put("NoOfReplicas", 1);
+      /**
+       * Disable the arbitrator startup gate (RONDB-1058): these tests
+       * never start data nodes, so a just started mgmd would otherwise
+       * refuse ordinary MGM commands with "waiting for arbitrator
+       * selection" until cold start detection lifts the gate after 3
+       * seconds, making every test that issues a command directly
+       * after starting a mgmd racy.
+       */
+      node_settings.put("ArbitrationRankWait", Uint32(0));
 
       config.put("ndbd", nodeId, &node_settings);
     }

@@ -1803,9 +1803,6 @@ int runTestApiWithoutCert(NDBT_Context *ctx, NDBT_Step *step) {
   mgmd.common_args(mgmdArgs, wd.path());
 
   CHECK(mgmd.start(wd.path(), mgmdArgs));  // Start management node
-  // Wait out the arbitrator startup gate (lifted after 3 seconds when
-  // no data nodes connect), it blocks e.g. the 'get status' used below
-  NdbSleep_SecSleep(4);
   CHECK(mgmd.connect(config));             // Connect to management node
   CHECK(mgmd.wait_confirmed_config());     // Wait for configuration
 
@@ -1943,9 +1940,6 @@ int runTestStartTls(NDBT_Context *ctx, NDBT_Step *step) {
   mgmdArgs.add("--ndb-tls-search-path=", wd.path());
 
   CHECK(mgmd.start(wd.path(), mgmdArgs));  // Start management node
-  // Wait out the arbitrator startup gate (lifted after 3 seconds when
-  // no data nodes connect), it blocks e.g. the 'get status' used below
-  NdbSleep_SecSleep(4);
   CHECK(mgmd.connect(config));             // Connect to management node
   CHECK(mgmd.wait_confirmed_config());     // Wait for configuration
 
@@ -2009,11 +2003,7 @@ int runTestRequireTls(NDBT_Context *ctx, NDBT_Step *step) {
   mgmd.common_args(mgmdArgs, wd.path());
   mgmdArgs.add("--ndb-tls-search-path=", wd.path());
   CHECK(mgmd.start(wd.path(), mgmdArgs));  // Start management node
-  // Wait for confirmed config, and wait out the arbitrator startup
-  // gate (lifted after 3 seconds when no data nodes connect) which
-  // would otherwise reply to the gated commands below instead of the
-  // expected authorization errors
-  NdbSleep_SecSleep(4);
+  sleep(1);                                // Wait for confirmed config
 
   /* Our management client */
   NdbMgmHandle handle = ndb_mgm_create_handle();
