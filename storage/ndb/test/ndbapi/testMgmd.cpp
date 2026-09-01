@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1044,15 +1044,27 @@ int runBug56844(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 static bool get_status(const char *connectstring, Properties &status) {
-  NdbMgmd ndbmgmd;
-  if (!ndbmgmd.connect(connectstring)) return false;
-
-  Properties args;
-  if (!ndbmgmd.call("get status", args, "node status", status, NULL, true)) {
-    g_err << "fetch_mgmd_status: mgmd.call failed" << endl;
-    return false;
+  /**
+   * A just started mgmd may refuse 'get status' (and close the session)
+   * with "Management server is waiting for arbitrator selection" until
+   * the arbitrator startup gate is lifted, which happens within a few
+   * seconds when no data nodes connect (cold start detection). Retry
+   * with a fresh connection for a while before giving up.
+   */
+  const int max_attempts = 40;
+  for (int attempt = 1; attempt <= max_attempts; attempt++) {
+    NdbMgmd ndbmgmd;
+    if (ndbmgmd.connect(connectstring)) {
+      Properties args;
+      status.clear();
+      if (ndbmgmd.call("get status", args, "node status", status, NULL, true))
+        return true;
+    }
+    g_err << "fetch_mgmd_status: attempt " << attempt << " failed" << endl;
+    NdbSleep_MilliSleep(500);
   }
-  return true;
+  g_err << "fetch_mgmd_status: giving up" << endl;
+  return false;
 }
 
 static bool value_equal(Properties &status, int nodeid, const char *name,
@@ -1791,6 +1803,9 @@ int runTestApiWithoutCert(NDBT_Context *ctx, NDBT_Step *step) {
   mgmd.common_args(mgmdArgs, wd.path());
 
   CHECK(mgmd.start(wd.path(), mgmdArgs));  // Start management node
+  // Wait out the arbitrator startup gate (lifted after 3 seconds when
+  // no data nodes connect), it blocks e.g. the 'get status' used below
+  NdbSleep_SecSleep(4);
   CHECK(mgmd.connect(config));             // Connect to management node
   CHECK(mgmd.wait_confirmed_config());     // Wait for configuration
 
@@ -1928,6 +1943,9 @@ int runTestStartTls(NDBT_Context *ctx, NDBT_Step *step) {
   mgmdArgs.add("--ndb-tls-search-path=", wd.path());
 
   CHECK(mgmd.start(wd.path(), mgmdArgs));  // Start management node
+  // Wait out the arbitrator startup gate (lifted after 3 seconds when
+  // no data nodes connect), it blocks e.g. the 'get status' used below
+  NdbSleep_SecSleep(4);
   CHECK(mgmd.connect(config));             // Connect to management node
   CHECK(mgmd.wait_confirmed_config());     // Wait for configuration
 
@@ -1991,7 +2009,11 @@ int runTestRequireTls(NDBT_Context *ctx, NDBT_Step *step) {
   mgmd.common_args(mgmdArgs, wd.path());
   mgmdArgs.add("--ndb-tls-search-path=", wd.path());
   CHECK(mgmd.start(wd.path(), mgmdArgs));  // Start management node
-  sleep(1);                                // Wait for confirmed config
+  // Wait for confirmed config, and wait out the arbitrator startup
+  // gate (lifted after 3 seconds when no data nodes connect) which
+  // would otherwise reply to the gated commands below instead of the
+  // expected authorization errors
+  NdbSleep_SecSleep(4);
 
   /* Our management client */
   NdbMgmHandle handle = ndb_mgm_create_handle();
