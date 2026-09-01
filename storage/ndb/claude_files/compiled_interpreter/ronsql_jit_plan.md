@@ -890,3 +890,61 @@ reject classified as by-design type admission or a
 correctly-conservative reject pending upstream RonSQL typing work.
 Next: slice 3 — the "4060-lite" program-level error insert and
 suite-wide arming, locking in everything that now compiles.
+
+## Slice 3 — DONE & VERIFIED (2026-09-01): strict-compile enforcement, suite-wide
+
+The "4060-lite" design, finalized:
+
+**ERROR_INSERT 4064 (DBTUP, new)** — strict JIT compile for the
+non-join aggregation path: after PushdownInterpreterFactory::Create,
+a program with a compilable region whose m_jit_entry is null (bridge
+reject OR engine-compile failure) aborts the node with a diagnostic.
+Checked at the Create call site in DbtupExecQuery (instance access —
+no plumbing). Per-row fallbacks NEVER trip it (they don't go through
+the compile path), so whole suites can arm it — the property 4060
+lacks. Scan filters are out of scope by design (the SQL planner
+legitimately pushes non-JIT-able filters).
+
+**ERROR_INSERT 5120 (DBLQH proxy, existing)** — the join-agg per-leaf
+compile-fatal insert, LIFTED out of DEBUG_JIT (now plain
+ERROR_INSERT): suite arming must work on every test build. 5119
+(setup dump) stays DEBUG_JIT-gated.
+
+**Arming**: Cmvmi routes `all error N` by range (4xxx → DBTUP,
+5xxx → DBLQH), so `jit_strict_arm.inc` issues BOTH commands
+back-to-back (each block keeps its own value); `all error 0`
+broadcasts the clear. **71 of 81 corpus wrappers armed**
+(arm → source body → disarm around every clean test); results
+unchanged (exec lines emit nothing) — no re-record. Exempt (the
+classified residue, pins remain their enforcement): ronsql_basic,
+gl_v5, gl_v6, cte_scalar; dd_bigquery, dd_chain_scalar, dd_dtwide,
+dd_filter, dd_orderby_limit; plus ronsql_cte_jit_census (arms its
+own inserts).
+
+Enforcement model after slice 3: a regression that stops a corpus
+program from compiling now CRASHES the armed test's data node
+(loud, immediate) in ADDITION to moving the fallback-delta pin;
+the exempt tests keep pin-only enforcement until their residue is
+lowered or reclassified.
+
+**VERIFIED 2026-09-01: all 71 armed tests green (single run +
+repeat=2), OFF arms untouched.**
+
+# MILESTONE COMPLETE
+
+The ronsql_jit / ronsql_cte_jit milestone ("ensure that all queries
+in those categories are using compiled interpreter code") closes:
+- Corpus census ~1234 → 88 JIT rejects (93% eliminated) across ten
+  lowering/defect items; every residual classified (by-design type
+  admissions or correctly-conservative pending upstream RonSQL
+  typing).
+- 71/81 corpus tests run under strict-compile enforcement (4064 +
+  5120): any compile regression is an immediate node abort, not a
+  silent pin drift.
+- Five real defects fixed along the way (helper-registry silent
+  drop, STOP_PROGRAM sentinel, arith early-ret ABI,
+  Interpreter::Mul dst field, flat-format program length) plus the
+  BC_MAX_OPS/code-class capacity raises and the fleet pins
+  (pushdown_agg, case_null, join_pushdown_agg) going to zero.
+- The fallback census is permanently self-diagnosing (offending
+  word, compile errno, first-sighting hexdump).

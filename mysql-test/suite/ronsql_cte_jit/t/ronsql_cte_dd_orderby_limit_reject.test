@@ -8,6 +8,8 @@
 # EITHER direction is a coverage change: investigate, then re-record
 # deliberately.
 SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_cte_jit/include/jit_strict_arm.inc
 --source suite/ronsql_cte/t/ronsql_cte_dd_orderby_limit_reject.test
+--source suite/ronsql_cte_jit/include/jit_strict_disarm.inc
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
        AS ronsql_cte_dd_orderby_limit_reject_jit_fallback_delta;

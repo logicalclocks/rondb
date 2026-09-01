@@ -1065,6 +1065,28 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
             prepare_fragptr.p->fragmentId,
             getThreadId());
         ndbrequire(result.agg != nullptr || result.vs != nullptr);
+#ifdef ERROR_INSERT
+        /* ronsql_jit slice 3 — ERROR_INSERT 4064 "strict JIT compile":
+         * a PROGRAM-LEVEL compile reject (bridge reject or engine
+         * compile failure — anything that left m_jit_entry null for a
+         * program with a compilable region) is fatal. Unlike 4060
+         * this tolerates per-row fallbacks, so whole suites can arm
+         * it. Scan filters are out of scope by design (the SQL
+         * planner legitimately pushes non-JIT-able filters); the
+         * join-agg path's twin is DBLQH's 5120 (Cmvmi routes `all
+         * error` by range: 4xxx DBTUP, 5xxx DBLQH — arm both with
+         * two consecutive mgm commands). */
+        if (ERROR_INSERTED(4064) && result.agg != nullptr &&
+            result.agg->agg_prog_start_pos() < proc_len &&
+            result.agg->jitEntry() == nullptr) {
+          g_eventLogger->error(
+              "ERROR_INSERT 4064: aggregation program did not JIT-"
+              "compile (prog_len=%u start_pos=%u). Aborting per test "
+              "directive - strict compile is armed.",
+              proc_len, result.agg->agg_prog_start_pos());
+          ndbabort();
+        }
+#endif
         scan_rec_ptr->m_agg_interpreter = result.agg;
         scan_rec_ptr->m_vs_interpreter = result.vs;
       } else if (!scan_rec_ptr->m_has_pushdown) {

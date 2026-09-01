@@ -2875,24 +2875,28 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * Bytecode handed to the bridge starts at lp.m_agg_program +
    * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede
    * the actual aggregation instructions). */
-#ifdef DEBUG_JIT
 #ifdef ERROR_INSERT
-  /* 5119/5120, NOT the DBTUP-side 4061/4062: Cmvmi::execTAMPER_ORD
+  /* 5119/5120, NOT the DBTUP-side 4xxx inserts: Cmvmi::execTAMPER_ORD
    * routes `all error N` by number range (4000-4999 -> DBTUP,
    * 5000-5999 -> DBLQH), so a 4xxx insert can never arm this block's
-   * ERROR_INSERTED. The DBTUP-side JIT inserts (4060-4063) keep their
-   * numbers; the proxy's compile-time diagnostics live here:
+   * ERROR_INSERTED. The proxy's compile-time diagnostics:
    *   5119 = dump program + translation at JOIN_AGG_SETUP compile
-   *   5120 = compile failure is fatal (abort with the reject reason) */
-  const bool dump_jit_program = ERROR_INSERTED(5119);
+   *          (DEBUG_JIT builds only)
+   *   5120 = compile failure is fatal (abort with the reject reason).
+   *          ronsql_jit slice 3 lifted this out of DEBUG_JIT: the
+   *          suite-wide strict arming (paired with DBTUP's 4064)
+   *          must work on every ERROR_INSERT build. */
   const bool fatal_compile_failure = ERROR_INSERTED(5120);
 #else
-  const bool dump_jit_program = false;
   const bool fatal_compile_failure = false;
 #endif
-  const bool log_jit_decision = dump_jit_program || fatal_compile_failure;
+#ifdef DEBUG_JIT
+#ifdef ERROR_INSERT
+  const bool dump_jit_program = ERROR_INSERTED(5119);
 #else
-  const bool fatal_compile_failure = false;
+  const bool dump_jit_program = false;
+#endif
+  const bool log_jit_decision = dump_jit_program || fatal_compile_failure;
 #endif
   if (dbtup_jit_enabled()) {
     jam();

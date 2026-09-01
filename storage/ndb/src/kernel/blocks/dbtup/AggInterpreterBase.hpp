@@ -324,6 +324,9 @@ class AggInterpreterBase : public PushdownInterpreter {
    * use the same per-row dispatch glue once their setup path has
    * published a compiled entry. */
   void setJitEntry(JitEntry e) { m_jit_entry = e; }
+  /* ronsql_jit slice 3: lets the ERROR_INSERT 4064 strict-compile
+   * check see whether the program actually compiled. */
+  JitEntry jitEntry() const { return m_jit_entry; }
   /* Phase 8 RONDB-1056: opaque reuse-cache handle (NjpEntry*) for a
    * standalone aggregation program this interpreter OWNS. Set by
    * PushdownInterpreterFactory::Create; released in ~AggInterpreterBase.

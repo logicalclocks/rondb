@@ -206,9 +206,16 @@ DONE 2026-08-31: residue fully classified — ~52 by-design op-43/44
 type admissions (F64/BIGUNSIGNED GL + linked), ~16 kOpMinusBigint
 correctly-conservative rejects (RonSQL optimizer types BIGINT over a
 generic-/ DOUBLE result — flagged upstream), ~4 kOpMod mixed-track.
-**Lowering campaign CLOSED at 93% reject elimination.** Next:
-slice 3 ("4060-lite" program-level error insert + suite-wide
-arming). Records in `ronsql_jit_plan.md`.
+**Lowering campaign CLOSED at 93% reject elimination.**
+Slice 3 DONE & VERIFIED 2026-09-01: ERROR_INSERT 4064 (DBTUP
+strict compile, per-row-fallback-tolerant) + 5120 lifted out of
+DEBUG_JIT; 71/81 corpus wrappers armed (arm/disarm includes), the
+9 classified-residue tests + census exempt with pin-only
+enforcement. **MILESTONE COMPLETE** — full record in
+`ronsql_jit_plan.md`. Remaining backlog: phase_6_plan.md §4 (perf
+bench OFF vs ON, Phase 7 scan-filter expansion, backport PR,
+6-5 CTE filters, GL F64-compare extension for the by-design
+residue, RonSQL optimizer-typing flag for kOpMinusBigint).
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 
