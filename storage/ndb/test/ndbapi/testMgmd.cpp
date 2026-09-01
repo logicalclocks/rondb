@@ -1676,6 +1676,32 @@ int runTestSshKeySigning(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+
+  /* Skip this test unless passwordless ssh to localhost works:
+     ndb_sign_keys runs ssh without BatchMode, so on a host where ssh
+     asks for a password the signing process hangs forever on the
+     prompt (seen on a developer macOS with Remote Login enabled but
+     no authorized key).
+  */
+  {
+    NdbProcess::Args ssh_args;
+    ssh_args.add("-o");
+    ssh_args.add("BatchMode=yes");
+    ssh_args.add("-o");
+    ssh_args.add("ConnectTimeout=5");
+    ssh_args.add("localhost");
+    ssh_args.add("true");
+    auto probe =
+        NdbProcess::create("SshProbe", "/usr/bin/ssh", wd.path(), ssh_args);
+    int probe_ret = -1;
+    const bool probe_ok = probe && probe->wait(probe_ret, 10000);
+    if (probe && !probe_ok) probe->stop();
+    if (!probe_ok || probe_ret != 0) {
+      printf("Skipping test SshKeySigning, no passwordless ssh to localhost\n");
+      return NDBT_OK;
+    }
+  }
+
   Properties config = ConfigFactory::create();
   ConfigFactory::put(config, "ndb_mgmd", 1, "RequireCertificate", "true");
   BaseString cfg_path = path(wd.path(), "config.ini", nullptr);

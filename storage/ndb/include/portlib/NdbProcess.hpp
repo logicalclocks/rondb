@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2009, 2025, Oracle and/or its affiliates.
+  Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -610,10 +611,26 @@ inline bool NdbProcess::running() const { return (m_proc != InvalidHandle); }
 
 inline bool NdbProcess::stop() {
   int ret = kill(m_proc, 9);
-  if (ret)
+  if (ret) {
     fprintf(stderr, "Failed to kill process %d, ret: %d, errno: %d\n", m_proc,
             ret, errno);
-  return (ret == 0);
+    return false;
+  }
+  /**
+   * Reap the killed process so that running() no longer reports true:
+   * the destructor asserts that the process is gone, so without the
+   * reap every debug build caller of stop() aborted in the destructor.
+   * The wait is quick since the process was killed with SIGKILL.
+   */
+  int status;
+  const pid_t ret_pid = waitpid(m_proc, &status, 0);
+  if (ret_pid == m_proc) {
+    m_proc = InvalidHandle;
+  } else {
+    fprintf(stderr, "Failed to reap killed process %d, errno: %d\n", m_proc,
+            errno);
+  }
+  return true;
 }
 
 inline bool NdbProcess::wait(int &ret, int timeout) {
