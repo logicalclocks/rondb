@@ -45,6 +45,12 @@
 #      case — exact MySQL comma-join-with-empty semantics)
 #   21 COMMA cross join, row-absent body, aggregate main: COUNT = 0
 #   22 CTE as FROM root with a WHERE filter on its outputs
+#   23 DATE watermark compare via comma join (aggregate main) — the
+#      former P11 rejection, live since the DATE arm landed in the
+#      cross-column jump-table filter's typed-register set
+#   24 DATE watermark, pass-through twin (< direction, projection)
+#   25 DATE equality via the comma-join FILTER route (must agree with
+#      srb-14's subset-key equi-join route)
 #
 # Probes:
 #   P1 no WHERE: not a candidate; the parse gate's coverage message
@@ -63,9 +69,7 @@
 #      WrongColumns message
 #   P10 no-FROM qualified reference -> single-row CTEs excluded from
 #       the scalar auto-FROM convenience (clean message)
-#   P11 DATE watermark compare via comma join -> clean rejection (the
-#       cross-column jump-table filter's typed-register set has no
-#       DATE arm yet; DATE EQUI-joins work, see srb-14)
+#   (P11 retired: the DATE watermark rejection flipped live as srb-23)
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -493,6 +497,57 @@ WITH r AS (SELECT o_custkey AS k, o_shippriority AS sp FROM orders
            WHERE o_orderkey = 77)
 SELECT k FROM r WHERE sp >= 0|
 
+--echo
+--echo === srb-23: DATE watermark compare via comma join (aggregate) ===
+# The former P11 rejection: both sides of the filter compare are DATE
+# (the single-row CTE keeps the source type), loaded as the unsigned
+# 3-byte packed value via the new READ_LINKED_COLUMN_TO_REG DATE arm.
+let $QUERY=
+WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 77)
+SELECT COUNT(*)
+FROM orders AS o2, r
+WHERE o2.o_orderdate > r.d;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 77)
+SELECT COUNT(*)
+FROM orders AS o2, r
+WHERE o2.o_orderdate > r.d|
+
+--echo
+--echo === srb-24: DATE watermark, pass-through twin ===
+let $QUERY=
+WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 77)
+SELECT o2.o_orderkey
+FROM orders AS o2, r
+WHERE o2.o_orderdate < r.d;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 77)
+SELECT o2.o_orderkey
+FROM orders AS o2, r
+WHERE o2.o_orderdate < r.d|
+
+--echo
+--echo === srb-25: DATE equality via the comma-join filter route ===
+# Same predicate as srb-14 but spelled as a comma join + WHERE, so the
+# equality rides the jump-table FILTER instead of the subset-key
+# CTE_LOOKUP — the two routes must agree.
+let $QUERY=
+WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 30)
+SELECT COUNT(*)
+FROM orders AS o2, r
+WHERE o2.o_orderdate = r.d;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 30)
+SELECT COUNT(*)
+FROM orders AS o2, r
+WHERE o2.o_orderdate = r.d|
+
 DELIMITER ;|
 
 --echo
@@ -557,13 +612,6 @@ DELIMITER ;|
 # single-row CTEs; the message points at the explicit comma join.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_custkey AS k FROM orders WHERE o_orderkey = 77) SELECT MAX(r.k);' 2>&1
-
---echo
---echo === srb-P11 (rejection): DATE watermark compare via comma join ===
-# The cross-column jump-table filter's typed-register set has no DATE
-# arm yet; DATE equi-joins work via subset keys (srb-14).
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_orderdate AS d FROM orders WHERE o_orderkey = 77) SELECT COUNT(*) FROM orders AS o2, r WHERE o2.o_orderdate > r.d;' 2>&1
 
 --disable_query_log
 DROP TABLE srbk;

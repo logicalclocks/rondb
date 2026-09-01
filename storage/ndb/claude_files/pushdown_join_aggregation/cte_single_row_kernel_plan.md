@@ -237,14 +237,24 @@ comma join); `select_cte_body_minmax_index` bails on WHERE-carrying
 bodies already.  EXPLAIN: `[single-row key lookup body]` on the CTE
 definitions line.
 
-MTR: `body_single_row_cte.inc` (srb-1..22 + P1..P11, local `srbk`
+MTR: `body_single_row_cte.inc` (srb-1..25 + P1..P10, local `srbk`
 table) ×5 topology suites — keyed joins (full/subset/second-output-
 only), LEFT JOIN NULL-extension, row-absent empties on every consumer
 style incl. the comma cross join (srb-20, exact MySQL semantics),
 watermark compare (srb-18), multi-col PK bodies, VARCHAR/DATE/
 nullable/DECIMAL outputs, FROM-root + filter, chained CTEs, GROUP BY
 over the CTE output.  gc-P3 / cs-probe-5 / `ronsql_cte_scalar` Test 5
-baselines stay byte-identical.
+baselines stay byte-identical.  **The former srb-P11 DATE-watermark
+rejection is FIXED (September 2026)**: `handleReadLinkedColumnToReg`
+gained a DATE arm (uint3korr / REG_TYPE_UINT, the D17
+DATE==MEDIUMUNSIGNED encoding — one arm serves BOTH sides of a CTE
+jump-table filter compare since the CTE virt side loads through the
+same opcode) and RonSQL's `is_typed_reg_loadable` accepts Date; no
+version gate (8-bit type field, old nodes fail clean with
+ZNO_INSTRUCTION_ERROR, v3a Float/Double precedent).  srb-23/24/25 are
+the live cases (aggregate `>`, pass-through `<`, filter-route `=` vs
+srb-14's subset-key route) plus sc-19 in the scalar family (the
+MIN(o_orderdate) Bigunsigned-widening vs real Date mixed pairing).
 
 ## Deferred (multi-row future — the design keeps these reachable)
 

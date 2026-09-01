@@ -1140,6 +1140,38 @@ o_orderkey	c_mktsegment
 8	HOUSEHOLD
 9	MACHINERY
 
+=== sc-19: DATE watermark (MIN(date) scalar vs real DATE) ===
+== Query ==
+WITH s AS (SELECT MIN(o_orderdate) AS d FROM orders
+WHERE o_custkey = 5)
+SELECT o2.o_orderkey
+FROM orders AS o2, s
+WHERE o2.o_orderdate < s.d;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(o_orderdate) AS d FROM orders
+WHERE o_custkey = 5)
+SELECT o2.o_orderkey
+FROM orders AS o2, s
+WHERE o2.o_orderdate < s.d|
+o_orderkey
+1
+1000
+1001
+1002
+1003
+1004
+2
+3
+4
+
 === sc-P1 (rejection): non-ancestor real column vs scalar output ===
 Error handling: RPE
 ronsql_cli caught exception: Cross-table WHERE conditions (e.g., a.x > b.y) are only supported in queries with aggregation (GROUP BY / aggregate functions).  Split into separate conditions per table, or add aggregation.
@@ -1168,4 +1200,4 @@ ronsql_cli caught exception: Not an aggregate query.
 
 === sc-P4 (rejection): DECIMAL operand in real-vs-CTE compare ===
 Error handling: RPE
-ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: only integer, FLOAT and DOUBLE operands are supported — DECIMAL, string and temporal comparisons need a cast or a constant-vs-column form.
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: only integer, FLOAT, DOUBLE and DATE operands are supported — DECIMAL, string and other temporal comparisons need a cast or a constant-vs-column form.

@@ -10310,7 +10310,11 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
   };
 
   // Type envelope for typed register loads (READ_LINKED_COLUMN_TO_REG
-  // kernel arms: the 10 integer widths + Float + Double).
+  // kernel arms: the 10 integer widths + Float + Double + Date; DATE
+  // loads like Mediumunsigned — the 3-byte packed value is
+  // order-preserving as an unsigned int, and the Bigunsigned widening
+  // of MIN/MAX(date) CTE outputs carries the same encoding, so
+  // Date-vs-Bigunsigned watermark compares are exact).
   auto is_typed_reg_loadable = [](NdbDictionary::Column::Type t) -> bool {
     switch (t) {
     case NdbDictionary::Column::Tinyint:
@@ -10325,6 +10329,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     case NdbDictionary::Column::Bigunsigned:
     case NdbDictionary::Column::Float:
     case NdbDictionary::Column::Double:
+    case NdbDictionary::Column::Date:
       return true;
     default:
       return false;
@@ -10414,12 +10419,15 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     // TREE-ANCESTOR real-table column riding the linked projections
     // (buffer position = projection index, type from the dictionary
     // column).  READ_LINKED_COLUMN_TO_REG decodes with correct sign
-    // extension for all 10 integer widths plus Float / Double, and
-    // I.18's typed registers make the reg-vs-reg branches compare
-    // correctly across mixed signedness and int-vs-double
-    // (compareTypedRegs).  DECIMAL / string / temporal operands are
-    // rejected.  This flips both rpr-P1 (CTE-own-output col-vs-col
-    // beyond Bigint) and sc-P1 (real-vs-scalar-CTE watermarks).
+    // extension for all 10 integer widths plus Float / Double / Date
+    // (Date loads as the unsigned 3-byte packed value, matching the
+    // Bigunsigned widening of MIN/MAX(date) CTE outputs), and I.18's
+    // typed registers make the reg-vs-reg branches compare correctly
+    // across mixed signedness and int-vs-double (compareTypedRegs).
+    // DECIMAL / string / non-DATE temporal operands are rejected.
+    // This flips rpr-P1 (CTE-own-output col-vs-col beyond Bigint),
+    // sc-P1 (real-vs-scalar-CTE watermarks) and srb-P11 (DATE
+    // watermark).
     if (left->op == T_IDENTIFIER && right->op == T_IDENTIFIER) {
       require_run(scope.resolved_columns != NULL,
                   "CTE_LOOKUP filter: missing resolved columns.");
@@ -10469,10 +10477,10 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       resolve_side(right, pos_r, type_r);
       require_prm(is_typed_reg_loadable(type_l) &&
                   is_typed_reg_loadable(type_r),
-                  "CTE_LOOKUP filter col-vs-col: only integer, FLOAT "
-                  "and DOUBLE operands are supported — DECIMAL, string "
-                  "and temporal comparisons need a cast or a "
-                  "constant-vs-column form.");
+                  "CTE_LOOKUP filter col-vs-col: only integer, FLOAT, "
+                  "DOUBLE and DATE operands are supported — DECIMAL, "
+                  "string and other temporal comparisons need a cast "
+                  "or a constant-vs-column form.");
 
       // UNKNOWN rejects the row/disjunct: guard both operands' NULL
       // flags before the typed loads (a NULL register would raise

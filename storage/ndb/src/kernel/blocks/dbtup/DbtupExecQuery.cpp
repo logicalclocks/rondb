@@ -7970,6 +7970,13 @@ struct Dbtup::InterpreterContext {
         uval = uint3korr(data);
         is_unsigned = true;
         break;
+      case NDB_TYPE_DATE:
+        /* D17 precedent: a DATE is the 3-byte little-endian packed
+         * value (year<<9)|(month<<5)|day — order-preserving as an
+         * unsigned int, so it loads exactly like MEDIUMUNSIGNED. */
+        uval = uint3korr(data);
+        is_unsigned = true;
+        break;
       case NDB_TYPE_INT:
         sval = sint4korr(data);
         break;

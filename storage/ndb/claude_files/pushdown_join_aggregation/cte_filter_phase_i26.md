@@ -53,8 +53,11 @@ or the row emit.  Almost all machinery pre-existed:
   (buffer position, NDB type) — CTE output or tree-ancestor real
   column — and emits NULL guards + `read_linked_column_to_reg` +
   inverted typed reg-vs-reg branch.  Envelope: the 10 integer widths +
-  Float + Double; DECIMAL / string / temporal rejected with a clear
-  message (sc-P4).
+  Float + Double, plus Date since September 2026 (kernel
+  `handleReadLinkedColumnToReg` DATE arm = uint3korr/REG_TYPE_UINT,
+  the D17 encoding — flipped srb-P11 live and added the scalar
+  MIN/MAX(date) watermark sc-19); DECIMAL / string / other temporals
+  rejected with a clear message (sc-P4).
 - **W4 — classification**: `classify_where_by_table`'s cross-table arm
   routes a conjunct to the CTE op's filter when the scope is the main
   scope (CTE-body scopes deferred), the higher op is a CTE_LOOKUP, the
@@ -139,5 +142,6 @@ are the real proof of the new non-agg DBSPJ expansion flow.
   ... WHERE cu.x > cf.n`) — the real op is the child; needs the SPJ
   `branch_col_*_param` route or the cross-table machinery.
 - Cross-CTE comparisons (`a.m > b.n`); arithmetic on either side;
-  3+-table conjuncts; DECIMAL/string/temporal operands (sc-P4);
+  3+-table conjuncts; DECIMAL/string operands (sc-P4) and non-DATE
+  temporals (DATE landed September 2026 — srb-23/24/25 + sc-19);
   CTE-body scopes.

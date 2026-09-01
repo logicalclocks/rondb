@@ -6,12 +6,12 @@ with the kernel's CTE_SINGLE_ROW mode — every projected column a
 GROUP BY column, zero aggregate slots, states on all nodes with the
 constant DBTC-node redistribute owner, subset-key CTE_LOOKUP
 consumers (any subset of the outputs, including none = the comma
-cross join existence probe).  Cases srb-1..22 lock in the supported
-envelope; srb-P1..P11 pin the rejections.
+cross join existence probe).  Cases srb-1..25 lock in the supported
+envelope; srb-P1..P10 pin the rejections (P11 retired — see below).
 
 | Shape | Minimal repro query | Disposition | Notes | Location |
 |---|---|---|---|---|
-| DATE watermark compare via comma join | `... FROM orders AS o2, r WHERE o2.o_orderdate > r.d;` | rejection-assert (srb-P11) | the cross-column jump-table filter's typed-register set (10 int widths + Float/Double) has no DATE arm; DATE EQUI-joins work via subset keys (srb-14) | body_single_row_cte.inc |
+| DATE watermark compare via comma join | `... FROM orders AS o2, r WHERE o2.o_orderdate > r.d;` | FIXED (September 2026) — former srb-P11, live as srb-23/24/25 | the cross-column jump-table filter's typed-register set gained a DATE arm: kernel `handleReadLinkedColumnToReg` loads DATE like MEDIUMUNSIGNED (uint3korr, REG_TYPE_UINT — the packed value is order-preserving) and RonSQL's `is_typed_reg_loadable` accepts Date; also unlocks the scalar MIN/MAX(date) watermark (Bigunsigned widening vs Date, sc-19) | body_single_row_cte.inc, body_passthrough_scalar_cte.inc |
 | No-FROM qualified reference | `WITH r AS (...) SELECT MAX(r.k);` | rejection-assert (srb-P10) | the scalar-CTE auto-FROM convenience is deliberately not extended to single-row CTEs (an implicit MAX over an EMPTY single-row CTE would turn the empty result into a NULL row); the message points at the explicit comma join | body_single_row_cte.inc |
 | Duplicate output columns | `SELECT o_custkey AS a, o_custkey AS b ... WHERE pk = const` | rejection-assert (srb-P7) | not a candidate — needs virt-PK aliasing (deferred); srb-P7 is also the first pin of analyze_ctes' "must contain at least one aggregate function." | body_single_row_cte.inc |
 | HAVING in a single-row body | srb-P8 | rejection-assert | HAVING is parsed but unapplied in CTE bodies — the candidacy guard keeps that pre-existing gap from silently extending to single-row bodies | body_single_row_cte.inc |

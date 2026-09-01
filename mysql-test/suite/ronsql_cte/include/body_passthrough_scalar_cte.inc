@@ -49,6 +49,9 @@
 #      the linked-base offset (agg linked projections prepend ahead of
 #      the CTE outputs; positions must agree three ways)
 #   18 snowflake chain + watermark on the root column
+#   19 DATE watermark: MIN(o_orderdate) scalar (Bigunsigned widening)
+#      vs a real DATE ancestor column (the READ_LINKED_COLUMN_TO_REG
+#      DATE arm)
 #   P1 rejection: non-ancestor (sibling-branch) real column vs scalar
 #      output
 #   P2 rejection: comma cross-join of real tables
@@ -411,6 +414,27 @@ SELECT o.o_orderkey, cu.c_mktsegment
 FROM orders AS o
 JOIN customer AS cu ON cu.c_custkey = o.o_custkey, s
 WHERE o.o_orderkey > s.m AND o.o_orderkey < 20|
+
+--echo
+--echo === sc-19: DATE watermark (MIN(date) scalar vs real DATE) ===
+# The mixed-type pairing: the CTE side is the Bigunsigned widening of
+# MIN(o_orderdate) (D17 — same uint3korr packed encoding), the real
+# ancestor side is Date via the new READ_LINKED_COLUMN_TO_REG DATE
+# arm; compareTypedRegs orders them exactly.
+let $QUERY=
+WITH s AS (SELECT MIN(o_orderdate) AS d FROM orders
+           WHERE o_custkey = 5)
+SELECT o2.o_orderkey
+FROM orders AS o2, s
+WHERE o2.o_orderdate < s.d;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MIN(o_orderdate) AS d FROM orders
+           WHERE o_custkey = 5)
+SELECT o2.o_orderkey
+FROM orders AS o2, s
+WHERE o2.o_orderdate < s.d|
 
 DELIMITER ;|
 
