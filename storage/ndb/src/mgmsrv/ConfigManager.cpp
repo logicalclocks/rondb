@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1637,22 +1637,35 @@ void ConfigManager::execCONFIG_CHECK_REF(SignalSender &ss, SimpleSignal *sig) {
          ref->error == ConfigCheckRef::WrongChecksum);
   if((Uint32)m_config_state != ref->state)
   {
+    /**
+     * The config state changed while this check was in the air, or the
+     * other node deliberately returned a wrong state since it has a
+     * config change in progress. Drop the signal and thus cause the
+     * check to be retried later. A config change in progress on the
+     * other node is transient, so give up only if the mismatch has
+     * persisted for a long time: with a single retry the check raced
+     * with config changes taking longer than one check round trip,
+     * making this node exit during a normal start of multiple mgmds.
+     */
+    const NDB_TICKS now = NdbTick_getCurrentTicks();
     if (m_retry == 0)
     {
-      // The config state changed while this check was in the air
-      // drop the signal and thus cause it to run again later
-      m_retry++;
+      m_first_state_mismatch = now;
+    }
+    m_retry++;
+    if (NdbTick_Elapsed(m_first_state_mismatch, now).milliSec() < 30000)
+    {
       require(!m_checked.get(nodeId));
       m_waiting_for.clear(nodeId);
       return;
     }
-    else
-    {
-      g_eventLogger->error("Already retried, probably need to"
-                           " start with --initial, exiting...");
-      exit(1);
-    }
+    g_eventLogger->error("Config state mismatch has persisted for %u"
+                         " config checks during 30 seconds, probably need"
+                         " to start with --initial, exiting...",
+                         m_retry);
+    exit(1);
   }
+  m_retry = 0;
 
   switch (m_config_state) {
     default:
