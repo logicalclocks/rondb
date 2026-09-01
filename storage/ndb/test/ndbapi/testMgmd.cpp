@@ -1367,6 +1367,17 @@ int runTestUnresolvedHosts2(NDBT_Context *ctx, NDBT_Step *step) {
 
   Properties config;
   {
+    // Keep the one startable data node small, same footprint as the
+    // ConfigFactory configs: with automatic memory and thread
+    // configuration it would size itself for the whole machine
+    Properties db;
+    db.put("ArbitrationRankWait", Uint32(0));
+    db.put("AutomaticMemoryConfig", Uint32(0));
+    db.put("AutomaticThreadConfig", Uint32(0));
+    db.put("DataMemory", "30M");
+    config.put("DB Default", &db);
+  }
+  {
     // 144 ndbds, nodeid 1 -> 144
     for (int i = 1; i <= 144; i++) {
       Properties ndbd;
