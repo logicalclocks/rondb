@@ -1097,11 +1097,34 @@ void ConfigManager::execCONFIG_CHANGE_IMPL_CONF(SignalSender &ss,
       require(m_config_change.m_client_ref != RNIL);
       require(m_config_change.m_error);
       if (m_config_change.m_client_ref == ss.getOwnRef()) {
-        g_eventLogger->error(
-            "Configuration change failed! error: %d '%s'",
-            m_config_change.m_error,
-            ConfigChangeRef::errorMessage(m_config_change.m_error));
-        exit(1);
+        if (m_config_change.m_error == ConfigChangeRef::ConfigChangeOnGoing ||
+            m_config_change.m_error == ConfigChangeRef::InvalidGeneration) {
+          /**
+           * This node lost the race against a concurrent config change,
+           * typically when all mgmds are started with --reload and more
+           * than one of them tries to set the same changed config file.
+           * The error is transient: reload the config file and let the
+           * config manager loop try to set it again. If the winning
+           * change already set an equal config, the reloaded config is
+           * then simply dropped ("Config equal!").
+           */
+          g_eventLogger->warning(
+              "Configuration change failed with temporary error: %d '%s', "
+              "reloading the configuration file and retrying if it "
+              "still differs",
+              m_config_change.m_error,
+              ConfigChangeRef::errorMessage(m_config_change.m_error));
+          Config *new_conf = load_config();
+          if (new_conf != NULL && !m_config_change.config_loaded(new_conf)) {
+            delete new_conf;  // A loaded config is already pending
+          }
+        } else {
+          g_eventLogger->error(
+              "Configuration change failed! error: %d '%s'",
+              m_config_change.m_error,
+              ConfigChangeRef::errorMessage(m_config_change.m_error));
+          exit(1);
+        }
       } else {
         /* Send ref to the requestor */
         sendConfigChangeRef(ss, m_config_change.m_client_ref,
@@ -1885,14 +1908,25 @@ ConfigManager::run()
           if (print_state) ndbout_c("==CONFIRMED==");
 
           if (m_config_change.m_loaded_config != 0 &&
-              m_config_change.m_new_config == 0 && m_started.equal(m_all_mgm) &&
+              m_config_change.m_new_config == 0 &&
+              m_config_change.m_state == ConfigChangeState::IDLE &&
+              m_started.equal(m_all_mgm) &&
               m_checked.equal(m_started)) {
+            /**
+             * Note that the loaded config is only turned into a config
+             * change while no other config change is in progress: when
+             * another mgmd is setting the same changed config file the
+             * change of this node would lose the race anyway, and after
+             * the winning change the loaded config is found equal and
+             * dropped.
+             */
             Config *new_conf = m_config_change.m_loaded_config;
             m_config_change.m_loaded_config = 0;
             m_config_change.m_new_config = prepareLoadedConfig(new_conf);
           }
 
           if (m_config_change.m_new_config &&  // Updated config.ini was found
+              m_config_change.m_state == ConfigChangeState::IDLE &&
               m_started.equal(m_all_mgm) &&    // All mgmd started
               m_checked.equal(m_started))      // All nodes checked
           {
