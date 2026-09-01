@@ -99,6 +99,15 @@ struct ConfigFactory {
       node_settings.put("AutomaticMemoryConfig", Uint32(0));
       node_settings.put("AutomaticThreadConfig", Uint32(0));
       node_settings.put("DataMemory", "30M");
+      /**
+       * Keep the redo log small too, like default_ndbd.cnf: the
+       * defaults are 16 files of 1G per log part, so an initial start
+       * spends minutes initialising 64G of redo log files before the
+       * node reaches started, which times out wait_started() on a
+       * loaded machine.
+       */
+      node_settings.put("NoOfFragmentLogFiles", Uint32(4));
+      node_settings.put("FragmentLogFileSize", "64M");
 
       config.put("ndbd", nodeId, &node_settings);
     }

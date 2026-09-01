@@ -1853,7 +1853,7 @@ int runTestApiWithoutCert(NDBT_Context *ctx, NDBT_Step *step) {
   ndbd.args().add("--ndb-tls-search-path=", wd.path());
   ndbd.start(wd.path(), mgmd.connectstring(config));  // Start data node
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle));
+  CHECK(ndbd.wait_started(handle, 60));
 
   /* API has no TLS context and should fail to connect */
   Ndb_cluster_connection con(mgmd.connectstring(config).c_str());
@@ -1957,7 +1957,7 @@ int runTestNdbdWithCert(NDBT_Context *ctx, NDBT_Step *step) {
   ndbd.args().add("--ndb-mgm-tls=strict");
   ndbd.start(wd.path(), mgmd.connectstring(config));  // Start data node
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle));
+  CHECK(ndbd.wait_started(handle, 60));
 
   CHECK(mgmd.stop());
   CHECK(ndbd.stop());
