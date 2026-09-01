@@ -321,28 +321,58 @@ WHERE clk.mc IS NULL
 GROUP BY clk.k|
 
 # =====================================================================
-# Group 4 — CTE-body column-vs-column on SIGNED integers.
+# Group 4 — CTE-body column-vs-column WHERE (D4 + D12 — now SUPPORTED,
+# F-colvscol tier (a); cte_body_colvscol_plan.md).
 #
-# DISPOSITION (D4 + D12, fix-plan H3): col-vs-col in a CTE-body WHERE is
-# NOT yet supported and is now cleanly + PERMANENTLY rejected at prepare
-# time (RonSQLPreparer::check_no_cte_body_col_vs_col, called from
-# build_cte_scopes).  Previously it either retried 10x (indexed left
-# column -> mis-classified as an index bound, encode_constant fails on
-# the column RHS, thrown retryable; filter-12/D12) or hung the data node
-# (non-indexed left column -> TABLE_SCAN attr-vs-attr NdbScanFilter;
-# filter-13/D4).  Both are now rejection-asserts.  Supporting col-vs-col
-# in a CTE-body filter is tracked for a later phase.
+# Identical-type stored-column pairs on the body root op pass the
+# RonSQLPreparer::check_cte_body_col_vs_col gate and emit through
+# apply_filter_cmp's NdbScanFilter attr-vs-attr arm (BRANCH_ATTR_OP_ATTR,
+# SQL NULL semantics via setSqlCmpSemantics).  Gate and emit share the
+# NdbDictionary::Column::isBindable predicate (identical type, precision,
+# length, scale, charset; BLOB/TEXT excluded); mixed-type pairs and
+# pairs not both on the body root op stay rejected — matrix + rejection
+# probes in Group 8.
+# History: filter-12/D12 (indexed left) was bound-misclassified into a
+# 10x retry storm (since fixed by the join-root non-constant-RHS bound
+# hardening); filter-13/D4 (non-indexed left) was recorded as a
+# data-node hang in June 2026, re-verified September 2026 as a
+# stale-binary artifact (W0 probe: all shapes green on current
+# binaries; D19/D20 precedent).
 # =====================================================================
 
 --echo
---echo == filter-12 (D12): CTE-body col-vs-col on orders (indexed left) — permanent rejection ==
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t FROM orders WHERE o_custkey < o_orderkey GROUP BY o_custkey) SELECT sums.k, SUM(sums.n), SUM(sums.t) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
+--echo === filter-12 (D12): CTE-body col-vs-col on orders (indexed left) ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_custkey < o_orderkey GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_custkey < o_orderkey GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n), SUM(sums.t)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
 
 --echo
---echo == filter-13 (D4): CTE-body col-vs-col on lineitem (non-indexed left) — permanent rejection ==
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey) SELECT o.o_custkey, SUM(liq.n), SUM(liq.q) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;' 2>&1
+--echo === filter-13 (D4): CTE-body col-vs-col on lineitem (non-indexed left) ===
+let $QUERY=
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
+  FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n), SUM(liq.q)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n, SUM(l_quantity) AS q
+  FROM lineitem WHERE l_quantity < l_partkey GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n), SUM(liq.q)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey|
 
 # =====================================================================
 # Group 5 — CTE-body GREATEST / LEAST in WHERE (D11 — now supported).
@@ -865,13 +895,8 @@ WITH sums AS (
 SELECT sums.k, SUM(sums.n) AS sn
 FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
 
-# NEXT-PHASE: string column-vs-column in CTE-body WHERE — only signed-int
-#   col-vs-col is supported (matrix).  Two CHAR cols compared:
-#   WITH liq AS (
-#     SELECT l_orderkey AS k, COUNT(*) AS n
-#     FROM lineitem WHERE l_returnflag < l_returnflag GROUP BY l_orderkey)
-#   SELECT o.o_custkey, SUM(liq.n)
-#   FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;
+# (String col-vs-col in a CTE-body WHERE is now live — see the Group 8
+# matrix: filter-35 CHAR pair on cvc, filter-38 degenerate self-compare.)
 
 # filter-or-main (probe→SUPPORTED): top-level OR in the MAIN-query CTE filter,
 # across the CTE key (sums.k) and an aggregate output (sums.t).
@@ -934,6 +959,235 @@ GROUP BY sums.k|
 #   WHERE CASE WHEN sums.t > 50000 THEN 1 ELSE 0 END = 1
 #   GROUP BY sums.k;
 
+# =====================================================================
+# Group 8 — CTE-body col-vs-col type matrix (F-colvscol tier (a),
+# cte_body_colvscol_plan.md).  Extends the Group 4 INT cases across the
+# accepted identical-type envelope (nullable INT, CHAR, DATE, DECIMAL),
+# operators (=, <>, <, <=, >), OR/DNF, and a scalar-body residual; the
+# filter-P* probes pin the two refined rejections (mixed-type pair /
+# pair not on the body root op).
+#
+# Local table cvc: identical-type CHAR/DATE/DECIMAL column PAIRS the
+# shared TPC-H-lite schema lacks (each shared table has at most one
+# column per exact type), plus a both-nullable INT pair.  12 rows spread
+# <, =, > per pair; n1/n2 cover NULL-vs-set, set-vs-NULL, NULL-vs-NULL.
+# =====================================================================
+
 DELIMITER ;|
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE cvc (
+  pk  INT NOT NULL,
+  grp INT NOT NULL,
+  a   INT NOT NULL,
+  b   INT NOT NULL,
+  v1  CHAR(8) NOT NULL,
+  v2  CHAR(8) NOT NULL,
+  d1  DATE NOT NULL,
+  d2  DATE NOT NULL,
+  m1  DECIMAL(10,2) NOT NULL,
+  m2  DECIMAL(10,2) NOT NULL,
+  n1  INT NULL,
+  n2  INT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+INSERT INTO cvc VALUES
+  ( 1, 1, 1, 2, 'alpha', 'beta',  '2024-01-01', '2024-06-01', 10.50, 20.25,    1,    2),
+  ( 2, 1, 2, 2, 'beta',  'beta',  '2024-06-01', '2024-06-01', 20.25, 20.25, NULL,    2),
+  ( 3, 1, 3, 1, 'gamma', 'beta',  '2024-12-31', '2024-06-01', 30.00, 20.25,    3, NULL),
+  ( 4, 2, 5, 9, 'delta', 'omega', '2023-05-15', '2025-05-15',  5.05, 99.99, NULL, NULL),
+  ( 5, 2, 9, 5, 'omega', 'delta', '2025-05-15', '2023-05-15', 99.99,  5.05,    5,    4),
+  ( 6, 2, 7, 7, 'kappa', 'kappa', '2024-02-29', '2024-02-29', 42.42, 42.42,    6,    6),
+  ( 7, 3, 0, 1, 'aa',    'ab',    '2020-01-01', '2020-01-02',  0.01,  0.02, NULL,    1),
+  ( 8, 3, 1, 0, 'ab',    'aa',    '2020-01-02', '2020-01-01',  0.02,  0.01,    8, NULL),
+  ( 9, 3, 4, 8, 'mid',   'midz',  '2022-07-04', '2022-07-05', 12.34, 12.35,    9,   10),
+  (10, 3, 8, 4, 'midz',  'mid',   '2022-07-05', '2022-07-04', 12.35, 12.34,   10,    9),
+  (11, 1, 6, 6, 'same',  'same',  '2021-03-03', '2021-03-03',  7.77,  7.77,   11,   11),
+  (12, 2, 2, 9, 'aaa',   'zzz',   '2019-09-09', '2026-09-01',  1.00,  2.00,   12, NULL);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === filter-32: nullable INT vs NOT NULL INT (o_clerk < o_custkey, NULL rows rejected) ===
+let $QUERY=
+WITH clk AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_clerk < o_custkey GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c JOIN clk ON clk.k = c.c_custkey GROUP BY clk.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH clk AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_clerk < o_custkey GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c JOIN clk ON clk.k = c.c_custkey GROUP BY clk.k|
+
+--echo
+--echo === filter-33: col-vs-col inside body OR/DNF ===
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_custkey < o_orderkey OR o_shippriority = 0
+  GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_custkey < o_orderkey OR o_shippriority = 0
+  GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.n)
+FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k|
+
+--echo
+--echo === filter-33b: NULLABLE col-vs-col atom inside OR (UNKNOWN falls through to next disjunct) ===
+let $QUERY=
+WITH clk AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_clerk < o_custkey OR o_shippriority = 0
+  GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c JOIN clk ON clk.k = c.c_custkey GROUP BY clk.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH clk AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM orders WHERE o_clerk < o_custkey OR o_shippriority = 0
+  GROUP BY o_custkey)
+SELECT clk.k, SUM(clk.n)
+FROM customer AS c JOIN clk ON clk.k = c.c_custkey GROUP BY clk.k|
+
+--echo
+--echo === filter-34: scalar body, PK equality + col-vs-col residual ===
+let $QUERY=
+WITH s AS (
+  SELECT COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_orderkey = 5 AND o_custkey < o_orderkey)
+SELECT s.n, s.t FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (
+  SELECT COUNT(*) AS n, SUM(o_shippriority) AS t
+  FROM orders WHERE o_orderkey = 5 AND o_custkey < o_orderkey)
+SELECT s.n, s.t FROM s|
+
+--echo
+--echo === filter-35: CHAR(8) vs CHAR(8) (charset-aware kernel compare) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE v1 < v2 GROUP BY grp)
+SELECT f.g, f.n FROM f;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE v1 < v2 GROUP BY grp)
+SELECT f.g, f.n FROM f|
+
+--echo
+--echo === filter-36: DATE vs DATE (<=) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE d1 <= d2 GROUP BY grp)
+SELECT f.g, f.n FROM f;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE d1 <= d2 GROUP BY grp)
+SELECT f.g, f.n FROM f|
+
+--echo
+--echo === filter-37: DECIMAL(10,2) vs DECIMAL(10,2) (>) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE m1 > m2 GROUP BY grp)
+SELECT f.g, f.n FROM f;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE m1 > m2 GROUP BY grp)
+SELECT f.g, f.n FROM f|
+
+--echo
+--echo === filter-38: degenerate self-compare (l_returnflag < l_returnflag, empty CTE drops the join) ===
+let $QUERY=
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n
+  FROM lineitem WHERE l_returnflag < l_returnflag GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH liq AS (
+  SELECT l_orderkey AS k, COUNT(*) AS n
+  FROM lineitem WHERE l_returnflag < l_returnflag GROUP BY l_orderkey)
+SELECT o.o_custkey, SUM(liq.n)
+FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey|
+
+--echo
+--echo === filter-39: operator sweep on cvc INT pair (=, <>) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE a = b GROUP BY grp)
+SELECT f.g, f.n FROM f;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE a = b GROUP BY grp)
+SELECT f.g, f.n FROM f|
+
+--echo
+--echo === filter-39b: both-nullable INT pair (n1 <> n2; NULL on either side rejects) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE n1 <> n2 GROUP BY grp)
+SELECT f.g, f.n FROM f;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, COUNT(*) AS n FROM cvc WHERE n1 <> n2 GROUP BY grp)
+SELECT f.g, f.n FROM f|
+
+# --- Rejection probes: the two refined permanent errors. ---
+
+--echo
+--echo === filter-P1 (rejection): mixed INT vs SMALLINT UNSIGNED ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders WHERE o_custkey < o_shippriority GROUP BY o_custkey) SELECT sums.k, SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
+
+--echo
+--echo === filter-P2 (rejection): mixed FLOAT vs DOUBLE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n FROM lineitem WHERE l_discount < l_tax GROUP BY l_orderkey) SELECT o.o_custkey, SUM(liq.n) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo === filter-P3 (rejection): DECIMAL precision/scale mismatch (12,2 vs 8,0) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sup AS (SELECT s_nationkey AS k, COUNT(*) AS n FROM supplier WHERE s_acctbal < s_margin GROUP BY s_nationkey) SELECT sup.k, SUM(sup.n) FROM nation AS na JOIN sup ON sup.k = na.n_nationkey GROUP BY sup.k;' 2>&1
+
+--echo
+--echo === filter-P4 (rejection): pair on a non-root op of a join body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH j AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders JOIN lineitem ON l_orderkey = o_orderkey WHERE l_quantity < l_partkey GROUP BY o_custkey) SELECT j.k, SUM(j.n) FROM customer AS c JOIN j ON j.k = c.c_custkey GROUP BY j.k;' 2>&1
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE cvc;
+--enable_query_log
 
 --source suite/ronsql_cte/include/cte_drop.inc

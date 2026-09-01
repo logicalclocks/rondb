@@ -4106,24 +4106,29 @@ check_no_nested_exists(struct ConditionalExpression* ce)
 }
 
 /*
- * Walk a CTE-body WHERE tree and throw a permanent error if any
- * comparison predicate compares two columns (column-vs-column).
+ * F-colvscol W2 (cte_body_colvscol_plan.md): walk a CTE-body WHERE tree
+ * and validate every comparison predicate that compares two columns
+ * (column-vs-column).
  *
- * In a CTE body a col-vs-col WHERE predicate is not yet supported and
- * misbehaves two ways depending on whether the left column is indexed:
- *   - on an INDEX_SCAN body it is mis-classified as an index bound and
- *     encode_constant() then fails on the column RHS, thrown as the
- *     retryable RonSQLMaybeStaleSchema so RDRS retries it 10x (D12);
- *   - on a TABLE_SCAN body it is emitted as an NdbScanFilter attr-vs-attr
- *     program that hangs the data node (D4).
- * Reject it cleanly and permanently here so RonSQL fails fast instead of
- * retrying or hanging.  Column-vs-constant predicates are unaffected.
- * Supporting col-vs-col in a CTE-body filter is tracked for a later phase.
- * Main-query col-vs-col does not flow through build_cte_scopes and is
- * unaffected by this check.
+ * Tier (a): a col-vs-col comparison is accepted when both operands are
+ * stored columns of the body's root op and the pair passes
+ * NdbDictionary::Column::isBindable — identical type, precision, length,
+ * scale and character set, BLOB/TEXT excluded.  The emit is
+ * apply_filter_cmp's attr-vs-attr arm (NdbScanFilter::cmp(cond, attrId1,
+ * attrId2) -> BRANCH_ATTR_OP_ATTR), whose API-side validation is the
+ * same isBindable call — sharing the predicate keeps gate and emit from
+ * drifting (an emit-time 4557 would surface as a retryable
+ * RonSQLMaybeStaleSchema and turn into a client retry storm).
+ *
+ * Everything else throws a permanent error: mixed-type pairs (tier (b),
+ * deferred until a typed leaf-local register load exists) and pairs not
+ * both on the body's root op (child-op and cross-table compares in join
+ * bodies).  Column-vs-constant predicates are unaffected.  Main-query
+ * col-vs-col does not flow through build_cte_scopes and is unaffected.
  */
-static void
-check_no_cte_body_col_vs_col(struct ConditionalExpression* ce)
+void
+RonSQLPreparer::check_cte_body_col_vs_col(const QueryScope& scope,
+                                          ConditionalExpression* ce) const
 {
   if (ce == NULL) return;
   switch (ce->op)
@@ -4138,21 +4143,47 @@ check_no_cte_body_col_vs_col(struct ConditionalExpression* ce)
         ce->args.left->op == T_IDENTIFIER &&
         ce->args.right->op == T_IDENTIFIER)
     {
-      throw RonSQLPermanentError(
-          "Column-vs-column comparison in a CTE body WHERE clause is not "
-          "yet supported. Compare a column to a constant instead.");
+      require_run(scope.resolved_columns != NULL,
+                  "CTE-body col-vs-col check: missing resolved columns.");
+      const QueryScope::ResolvedColumnRef& left_ref =
+          scope.resolved_columns[ce->args.left->col_idx];
+      const QueryScope::ResolvedColumnRef& right_ref =
+          scope.resolved_columns[ce->args.right->col_idx];
+      if (left_ref.kind !=
+              QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+          right_ref.kind !=
+              QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+          left_ref.join_op_idx != 0 ||
+          right_ref.join_op_idx != 0)
+      {
+        throw RonSQLPermanentError(
+            "Column-vs-column comparison in a CTE body WHERE clause is "
+            "only supported between two stored columns of the body's first "
+            "FROM table. Compare a column to a constant instead.");
+      }
+      require_run(left_ref.dict_column != NULL &&
+                      right_ref.dict_column != NULL,
+                  "CTE-body col-vs-col check: missing column descriptors.");
+      if (left_ref.dict_column->isBindable(*right_ref.dict_column) != 0)
+      {
+        throw RonSQLPermanentError(
+            "Column-vs-column comparison in a CTE body WHERE clause "
+            "requires columns of identical type, precision, length, scale "
+            "and character set (BLOB/TEXT excluded) — cast one side or "
+            "compare against a constant.");
+      }
     }
     // A comparison's operands are scalar expressions, not boolean
     // connectives, so there is no nested comparison to recurse into.
     return;
   case T_IS:
-    check_no_cte_body_col_vs_col(ce->is.arg);
+    check_cte_body_col_vs_col(scope, ce->is.arg);
     return;
   case T_INTERVAL:
-    check_no_cte_body_col_vs_col(ce->interval.arg);
+    check_cte_body_col_vs_col(scope, ce->interval.arg);
     return;
   case T_EXTRACT:
-    check_no_cte_body_col_vs_col(ce->extract.arg);
+    check_cte_body_col_vs_col(scope, ce->extract.arg);
     return;
   case T_IDENTIFIER:
   case T_INT:
@@ -4165,8 +4196,8 @@ check_no_cte_body_col_vs_col(struct ConditionalExpression* ce)
   case I_CORR_SCALAR:
     return;
   default:
-    check_no_cte_body_col_vs_col(ce->args.left);
-    check_no_cte_body_col_vs_col(ce->args.right);
+    check_cte_body_col_vs_col(scope, ce->args.left);
+    check_cte_body_col_vs_col(scope, ce->args.right);
     return;
   }
 }
@@ -5251,11 +5282,12 @@ RonSQLPreparer::build_cte_scopes()
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope, *cte->stmt);
     classify_where_by_table(*scope, cte->stmt->where_expression);
-    // Col-vs-col in a CTE-body WHERE is not yet supported and otherwise
-    // either retries 10x (indexed left column, D12) or hangs the data node
-    // (TABLE_SCAN body, D4).  Reject it permanently before scan-config
-    // selection and emit.  See check_no_cte_body_col_vs_col.
-    check_no_cte_body_col_vs_col(cte->stmt->where_expression);
+    // Col-vs-col in a CTE-body WHERE: tier-(a) pairs (identical-type
+    // stored columns of the body root op) pass through to the
+    // NdbScanFilter attr-vs-attr emit; everything else is rejected
+    // permanently before scan-config selection and emit.  See
+    // check_cte_body_col_vs_col (F-colvscol, cte_body_colvscol_plan.md).
+    check_cte_body_col_vs_col(*scope, cte->stmt->where_expression);
     // Single-row CTE bodies: the parse-time candidacy is only sound
     // when the body WHERE binds the full primary key by equality
     // (<= 1 row).

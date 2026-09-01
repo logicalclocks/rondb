@@ -478,6 +478,13 @@ private:
   // list); dedups via find_or_add_linked_proj.
   void register_cte_filter_linked_projs(QueryScope& scope);
   void promote_left_to_inner_for_where(QueryScope& scope);
+  // F-colvscol W2 (cte_body_colvscol_plan.md): gate for col-vs-col
+  // comparisons in a CTE-body WHERE.  Accepts identical-type pairs
+  // (NdbDictionary::Column::isBindable — the emit-side predicate) of
+  // stored columns on the body root op; refined permanent errors
+  // otherwise.
+  void check_cte_body_col_vs_col(const QueryScope& scope,
+                                 ConditionalExpression* ce) const;
   static bool is_anti_join_promotable(const QueryScope& scope,
                                        Uint32 op_idx,
                                        const ConditionalExpression* ce);
