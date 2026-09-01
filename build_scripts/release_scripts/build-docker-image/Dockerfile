@@ -4,8 +4,16 @@
 
 ARG RONDB_TARBALL_LOCAL_REMOTE=remote
 
-# Download all required Ubuntu dependencies
-FROM ubuntu:22.04 AS rondb_runtime_dependencies
+# ---------------------------------------------------------------------------
+# Builder base.
+#
+# This stage only exists to fetch and unpack the tarball. Nothing from its
+# filesystem reaches the runtime image except the pruned tree COPYed out of the
+# "pruner" stage below. That is deliberate: the untar is a single ~1.65 GB
+# layer, so deleting files in a later layer of the same image would not have
+# reclaimed a single byte.
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04 AS tarball_base
 
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
@@ -21,38 +29,20 @@ RUN if [ "$TARGETARCH" != "arm64" ] && [ "$TARGETARCH" != "amd64" ]; then \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi
 
-RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt-$TARGETPLATFORM \
-    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists-$TARGETPLATFORM \
-    apt-get update -y \
-    && apt-get install -y wget tar gzip vim \
-    libaio1 libaio-dev \
-    libncurses5 libnuma-dev \
-    bc default-jdk maven libcurl4-openssl-dev \
-    sudo iproute2 dnsutils
-    # Java & Maven are required by YCSB
-    # bc is required by dbt2
-    # libaio is a dynamic library used by RonDB
-    # libncurses5 & libnuma-dev are required for x86 only
-    # sudo is required in the entrypoint
-    # iproute2 is for using the command `ss`
-    # dnsutils is for using the command `nslookup` in K8s
+# wget is needed to fetch the tarball in "remote" mode and ca-certificates to
+# verify the TLS chain. Both are build-time only and never reach the runtime
+# image, which is why the runtime stage no longer installs wget at all.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Let PATH survive through sudo
-RUN sed -ri '/secure_path/d' /etc/sudoers
-
-# Creating a cache dir for downloads to avoid redownloading
-ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
-RUN mkdir $DOWNLOADS_CACHE_DIR
-
-# Copying bare minimum of Hopsworks cloud environment for now
-FROM rondb_runtime_dependencies AS cloud_preparation
 ARG RONDB_VERSION=21.04.16
 ENV HOPSWORK_DIR=/srv/hops
 ENV RONDB_BIN_DIR=$HOPSWORK_DIR/mysql-$RONDB_VERSION
 RUN mkdir -p $RONDB_BIN_DIR
 
 # Get RonDB tarball from local path & unpack it
-FROM cloud_preparation AS local_tarball
+FROM tarball_base AS local_tarball
 ARG RONDB_X86_TARBALL_URI
 ARG RONDB_ARM_TARBALL_URI
 
@@ -66,7 +56,7 @@ RUN --mount=type=bind,source=.,target=/context \
     && tar xfz /context/${TARBALL_PATH} -C $RONDB_BIN_DIR --strip-components=1
 
 # Get RonDB tarball from remote url & unpack it
-FROM cloud_preparation AS remote_tarball
+FROM tarball_base AS remote_tarball
 ARG RONDB_X86_TARBALL_URI
 ARG RONDB_ARM_TARBALL_URI
 
@@ -78,7 +68,108 @@ RUN case "$TARGETARCH" in \
     && tar xfz ./temp_tarball.tar.gz -C $RONDB_BIN_DIR --strip-components=1 \
     && rm ./temp_tarball.tar.gz
 
-FROM ${RONDB_TARBALL_LOCAL_REMOTE}_tarball
+# ---------------------------------------------------------------------------
+# Remove test material from the tarball. Anything not named here is kept.
+#
+#   mysql-test/          the MTR suite. 778 MB.
+#   feature_store_test   Go test binary. 30 MB.
+#   api_key_test         Go test binary. 17 MB.
+#
+# The two Go binaries are named individually rather than matched by a pattern
+# because they are the only files in the image that a vulnerability scanner
+# flags: both embed the Go standard library, and trivy reports 28 findings
+# (20 HIGH) against each. Every other test binary in bin/ is C++ and carries
+# no findings, so there is no security reason to remove them.
+#
+# Comments must stay outside the RUN: a "#" line inside a backslash-continued
+# RUN is removed by the Dockerfile parser.
+# ---------------------------------------------------------------------------
+FROM ${RONDB_TARBALL_LOCAL_REMOTE}_tarball AS pruner
+
+ENV REQUIRED_BINS="mysqld ndb_mgmd ndbmtd ndb_mgm ndb_waiter mysql mysqladmin mysqldump mysqlpump ndb_restore rdrs rdrs2 bench_run.sh"
+
+ENV GO_TEST_BINS="feature_store_test api_key_test"
+
+RUN set -eu; \
+    cd "$RONDB_BIN_DIR"; \
+    before=$(du -sm . | cut -f1); \
+    rm -rf mysql-test; \
+    for f in $GO_TEST_BINS; do \
+        if [ -e "bin/$f" ]; then rm -f "bin/$f"; \
+        else echo "NOTE: bin/$f not in this tarball"; fi; \
+    done; \
+    missing=""; \
+    for k in $REQUIRED_BINS; do \
+        if [ ! -e "bin/$k" ] && [ ! -L "bin/$k" ]; then missing="$missing $k"; fi; \
+    done; \
+    if [ -n "$missing" ]; then \
+        echo "ERROR: prune removed or tarball lacks required binaries:$missing" >&2; \
+        exit 1; \
+    fi; \
+    after=$(du -sm . | cut -f1); \
+    echo "tarball tree: ${before} MB -> ${after} MB"
+
+# ---------------------------------------------------------------------------
+# Runtime image.
+#
+# A clean ubuntu:22.04 that receives only the pruned tree. ubuntu:22.04 is
+# already the minimal Ubuntu rootfs (78 MB) and is glibc 2.35; the binaries are
+# built against glibc 2.28 and glibc is backward-compatible only, so a newer
+# base is fine and Alpine/musl can never work.
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04
+
+ARG TARGETPLATFORM
+ARG RONDB_VERSION=21.04.16
+
+# Runtime shared-library dependencies only, derived from ldd/DT_NEEDED over the
+# kept binaries. Everything else they link is already in ubuntu:22.04
+# (libc, libdl, libgcc_s, libm, libpthread, libresolv, librt, libstdc++, libz,
+# libncurses.so.6, libtinfo.so.6), and so are the tools the scripts shell out
+# to (bash, awk, sed, grep, find, tar, gzip, timeout, seq, mktemp, tr, tee).
+#
+#   libnuma1    libnuma.so.1, needed by mysqld
+#   libcurl4    libcurl.so.4, needed by rdrs2
+#   libaio1     in no binary's NEEDED set; ~10 kB kept as insurance against a
+#               dlopen. The -dev variant it replaces was build-time only.
+#   libncurses6 already present via the base; named explicitly so a future base
+#               change cannot silently remove libncurses.so.6 / libtinfo.so.6.
+#               Note this replaces libncurses5 - the binaries link ncurses 6.
+#   dnsutils    nslookup. Required by the rondb-helm ndbmtd livenessProbe and
+#               every init container, and its output is parsed as /^Address: /,
+#               so a BusyBox nslookup would not do.
+#   iproute2    ss, used by rondb_scripts/mgm-server-start.sh
+#   bc          NOT only a dbt2 dependency, despite the old comment here:
+#               dbt2_install/scripts/run_oltp.sh line 760 pipes through bc to
+#               compute the standard deviation in the *sysbench* analyze step.
+#               Without it every benchmark run ends with "bc: command not found"
+#               and reports no summary.
+#
+# Dropped from the previous list: wget (builder-only now), vim, sudo,
+# default-jdk and maven (no YCSB ships in this image or the chart), plus the
+# -dev variants libaio-dev, libnuma-dev and libcurl4-openssl-dev.
+#
+# The apt lists are deleted in the same layer that creates them, so they never
+# enter the image. No --mount=type=cache: production builds with --no-cache
+# anyway, and a cache mount shared between two stages that buildx runs in
+# parallel deadlocks on /var/lib/apt/lists/lock.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+    libaio1 libnuma1 libcurl4 libncurses6 \
+    bc \
+    dnsutils iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Creating a cache dir for downloads to avoid redownloading
+ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
+RUN mkdir $DOWNLOADS_CACHE_DIR
+
+# Copying bare minimum of Hopsworks cloud environment for now
+ENV HOPSWORK_DIR=/srv/hops
+ENV RONDB_BIN_DIR=$HOPSWORK_DIR/mysql-$RONDB_VERSION
+
+# COPY preserves symlinks, so bin/rdrs -> rdrs2 survives.
+COPY --from=pruner $RONDB_BIN_DIR $RONDB_BIN_DIR
 
 WORKDIR $HOPSWORK_DIR
 
