@@ -1553,6 +1553,12 @@ int runTestMultiMGMDDisconnection(NDBT_Context *ctx, NDBT_Step *step) {
       ndbd.put("NodeId", i);
       ndbd.put("NoOfReplicas", 2);
       ndbd.put("HostName", hostname);
+      // Same small footprint and disabled arbitrator startup gate as
+      // the configs created by ConfigFactory
+      ndbd.put("ArbitrationRankWait", Uint32(0));
+      ndbd.put("AutomaticMemoryConfig", Uint32(0));
+      ndbd.put("AutomaticThreadConfig", Uint32(0));
+      ndbd.put("DataMemory", "30M");
       config.put("ndbd", i, &ndbd);
   }
   {
@@ -1586,10 +1592,11 @@ int runTestMultiMGMDDisconnection(NDBT_Context *ctx, NDBT_Step *step) {
   CHECK(mgmd3.connect(config));
   CHECK(mgmd3.wait_confirmed_config());
 
-  // Wait 15 secs for each data node to reach the started status
+  // Wait for each data node to reach the started status, allow time
+  // for an initial start of a debug build on a loaded machine
   NdbMgmHandle handle = mgmd1.handle();
-  CHECK(ndbd1.wait_started(handle, 15, 0));
-  CHECK(ndbd2.wait_started(handle, 15, 1));
+  CHECK(ndbd1.wait_started(handle, 60, 0));
+  CHECK(ndbd2.wait_started(handle, 60, 1));
 
   // Stop the ndb_mgmd(s)
   CHECK(mgmd3.stop());

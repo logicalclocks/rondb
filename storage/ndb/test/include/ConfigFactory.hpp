@@ -89,6 +89,16 @@ struct ConfigFactory {
        * after starting a mgmd racy.
        */
       node_settings.put("ArbitrationRankWait", Uint32(0));
+      /**
+       * Keep data nodes small, like mysql-test/include/default_ndbd.cnf:
+       * with automatic memory and thread configuration a data node
+       * sizes itself for the whole machine (tens of gigabytes of
+       * memory and all CPUs), making data node starts far too heavy
+       * and slow for these tests.
+       */
+      node_settings.put("AutomaticMemoryConfig", Uint32(0));
+      node_settings.put("AutomaticThreadConfig", Uint32(0));
+      node_settings.put("DataMemory", "30M");
 
       config.put("ndbd", nodeId, &node_settings);
     }
