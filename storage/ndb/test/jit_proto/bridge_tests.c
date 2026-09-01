@@ -3694,16 +3694,23 @@ static void test_gl_null_check_accept(void) {
   mark_pass(name);
 }
 
-/* T70c: import of an F64-tracked outer register rejects — the        */
-/* embedded compares are signed i64 (double bit-compare misorders).   */
-static void test_gl_import_f64_reject(void) {
+/* T70c: import of an F64-tracked outer register — GL Part A         */
+/* (2026-09-01) ADMITS it: the MOV is bit-preserving and the embedded */
+/* dst is F64-marked (compare routing pinned by T78).                 */
+static void test_gl_import_f64_accept(void) {
+  const char *name = "T70c gl_import_f64_accept";
   uint32_t prog[3] = {
     enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
     enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
     enc_emb_rar(0, 1),
   };
-  assert_rejected("T70c gl_import_f64_reject", prog, 3,
-                  JIT_BRIDGE_TYPE_MISMATCH, 2, EMB_READ_AGG_REG_TO_REG);
+  Program p;
+  /* F64 load + import MOV + tail EXIT (no aggregation ops). */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_MOV_INT_INT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 9)) return;
+  mark_pass(name);
 }
 
 /* T70d: BIGUNSIGNED import rejects (values >= 2^63 misorder under    */
@@ -3912,17 +3919,23 @@ static void test_linked_col_bigunsigned_reject(void) {
                   EMB_READ_LINKED_COL_TO_REG);
 }
 
-/* T73d: DOUBLE rejects (the interpreter handles it via typed
- * registers; the JIT's embedded compares are signed i64). */
-static void test_linked_col_double_reject(void) {
+/* T73d: DOUBLE linked load — GL Part A (2026-09-01) ADMITS it: the
+ * helper stores the double's bit pattern and the dst is F64-marked
+ * (compare routing pinned by T78c). */
+static void test_linked_col_double_accept(void) {
+  const char *name = "T73d linked_col_double_accept";
   uint32_t prog[3] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
     enc_emb_rlc(1, 0, NDB_TYPE_DOUBLE),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
-  assert_rejected("T73d linked_col_double_reject", prog, 3,
-                  JIT_BRIDGE_TYPE_MISMATCH, 1,
-                  EMB_READ_LINKED_COL_TO_REG);
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
+                       NDB_TYPE_DOUBLE)) return;
+  mark_pass(name);
 }
 
 /* T73e: rejected on the standalone scan-filter path — the linked
@@ -4339,6 +4352,246 @@ static void test_case_stop_program_sentinel(void) {
   mark_pass(name);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* GL Part A (2026-09-01) — F64 GREATEST/LEAST: F64 imports route the */
+/* GL body's compare through OP_BRANCH_F64 (item 6's typed compare).  */
+/* ------------------------------------------------------------------ */
+
+/* T78a: F64 GL fast path — two DOUBLE outer loads, imports, GE, the
+ * output trellis, trailing Mov + SumDouble. The compare is
+ * OP_BRANCH_F64 with BOTH double flags set. */
+static void test_f64_gl_fast_path(void) {
+  const char *name = "T78a f64_gl_fast_path";
+  uint32_t prog[14] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_rar(/*src_outer=*/0, /*dst_emb=*/1),
+    enc_emb_rar(/*src_outer=*/1, /*dst_emb=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, /*left=*/1,
+                           /*right=*/2, /*offset=*/4),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/1),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_2reg(kOpMov, /*dst=*/0, /*src=*/1),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + BRANCH_F64 + 2x(LC16+JUMP) + Mov +
+   * SUM_F64 + tail EXIT + OVERFLOW_EXIT (SumDouble is checked). */
+  if (!expect_accepted(name, prog, 14, &p, /*expected_n_ops=*/13)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MOV_INT_INT)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_BRANCH_F64)) return;
+  if (!expect_op_field(name, &p, 4, "c", p.ops[4].c, 7)) return;
+  if (p.ops[4].imm != (int64_t)0xA935) {  /* GE=5 | 0x30 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a935",
+              (unsigned long long)p.ops[4].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 10, "kind", p.ops[10].kind,
+                       OP_SUM_F64)) return;
+  mark_pass(name);
+}
+
+/* T78b: MIXED import — DOUBLE vs BIGINT: only the left double flag
+ * is set; the int side converts at runtime (compareTypedRegs' float
+ * arm). */
+static void test_f64_gl_mixed_import(void) {
+  const char *name = "T78b f64_gl_mixed_import";
+  uint32_t prog[9] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_rar(0, 1),
+    enc_emb_rar(1, 2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + BRANCH_F64 + EXIT(refuse) + SUM_F64 +
+   * tail EXIT + OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/9)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_BRANCH_F64)) return;
+  if (p.ops[4].imm != (int64_t)0xA912) {  /* LT=2 | 0x10 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a912",
+              (unsigned long long)p.ops[4].imm);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T78c: op-44 DOUBLE + FLOAT linked loads feeding a compare — both
+ * dsts are F64-marked, so the GT lowers to OP_BRANCH_F64. */
+static void test_f64_gl_linked_compare(void) {
+  const char *name = "T78c f64_gl_linked_compare";
+  uint32_t prog[6] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_DOUBLE),
+    enc_emb_rlc(/*dst=*/2, /*pos=*/1, /*NDB_TYPE_FLOAT=*/11),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  /* LLC + LLC + BRANCH_F64 + EXIT(refuse) + tail EXIT. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_F64)) return;
+  if (p.ops[2].imm != (int64_t)0xA934) {  /* GT=4 | 0x30 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a934",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 4)) return;
+  mark_pass(name);
+}
+
+/* T78d: MIXED GL trellis REJECTS — the merge-point guard. dest r0 is
+ * BIGINT, src r1 is DOUBLE. The fast-path body imports both (the
+ * compare itself is fine: OP_BRANCH_F64 with the right-side flag),
+ * then Mov(r0, r1) retypes r0 to F64 on the linear walk, so
+ * SumDouble(r0) passes BR_REQUIRE_F64 — yet the output=1 path SKIPS
+ * the Mov and reaches the SumDouble with r0's original int bits.
+ * Pre-guard this program was ACCEPTED (silently wrong for output=1
+ * rows); now the guard rejects on arrival at the SumDouble word (13),
+ * where the output=1 jump's snapshot (r0 int) disagrees with the
+ * linear tracker (r0 F64). */
+static void test_f64_gl_mixed_trellis_reject(void) {
+  uint32_t prog[14] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_rar(/*src_outer=*/0, /*dst_emb=*/1),
+    enc_emb_rar(/*src_outer=*/1, /*dst_emb=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, /*left=*/1,
+                           /*right=*/2, /*offset=*/4),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/1),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_2reg(kOpMov, /*dst=*/0, /*src=*/1),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T78d f64_gl_mixed_trellis_reject", prog, 14,
+                  JIT_BRIDGE_TYPE_MISMATCH, 13, kOpSumDouble);
+}
+
+/* T78e: the canonical NULLABLE GL shape over two DOUBLEs — imports,
+ * two folded reg-null guards, GE (→ OP_BRANCH_F64), three output
+ * blocks, Mov / Skip / SetRegNull, SumDouble. Pins that the merge
+ * guard stays silent on a same-class trellis: output=1 lands on the
+ * Skip with a LIVE linear predecessor (post-Mov, same class),
+ * output=2 lands on SetRegNull with a DEAD one (adopted), and the
+ * Skip's own jump merges at the SumDouble. */
+static void test_f64_gl_null_check_accept(void) {
+  const char *name = "T78e f64_gl_null_check_accept";
+  uint32_t prog[21] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/14),
+    enc_emb_rar(0, 1),
+    enc_emb_rar(1, 2),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/9),
+    enc_emb_branch_reg_eq_null(/*reg=*/2, /*offset=*/8),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, 1, 2, /*offset=*/4),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 1),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 2),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_2reg(kOpMov, 0, 1),
+    enc_op(kOpSkip, /*count=*/1),
+    enc_op(kOpSetRegNull, /*reg0 in bits 19-16=*/0),
+    enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + folds(0) + BRANCH_F64 + 3x(LC16+JUMP) +
+   * Mov + Skip-JUMP + SET_REG_NULL_FB + SUM_F64 + tail(2) = 17. */
+  if (!expect_accepted(name, prog, 21, &p, /*expected_n_ops=*/17)) return;
+  unsigned n_set = 0, n_f64 = 0, n_mov = 0, n_sum = 0;
+  for (unsigned i = 0; i < p.n_ops; i++) {
+    uint8_t k = p.ops[i].kind;
+    if (k == OP_SET_REG_NULL_FB) n_set++;
+    if (k == OP_BRANCH_F64) n_f64++;
+    if (k == OP_MOV_INT_INT) n_mov++;
+    if (k == OP_SUM_F64) n_sum++;
+  }
+  if (n_set != 1 || n_f64 != 1 || n_mov != 3 || n_sum != 1) {
+    mark_fail(name, "structure: set=%u f64=%u mov=%u sum=%u, want 1/1/3/1",
+              n_set, n_f64, n_mov, n_sum);
+    return;
+  }
+  if (p.ops[4].imm != (int64_t)0xA935) {  /* GE=5 | 0x30 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a935",
+              (unsigned long long)p.ops[4].imm);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T78f: the merge guard must NOT compare against a DEAD linear
+ * predecessor. r1 holds a DOUBLE before a two-arm CASE; arm 0 reloads
+ * r1 as BIGINT, sums it and Skips past arm 1; arm 1 (the output=3
+ * landing) reloads r1 as BIGINT too. Arriving at arm 1 the linear walk
+ * carries arm 0's leftovers (dead — the Skip left) while the jump
+ * carries the block-entry state (r1 F64): a naive compare would
+ * false-reject; the guard adopts the jump state instead. Accepted;
+ * both arms' sums lower to the I64 family of slot 1. */
+static void test_case_dead_arm_adopts_jump_state(void) {
+  const char *name = "T78f case_dead_arm_adopts_jump_state";
+  uint32_t prog[17] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/1, /*col=*/0),
+    enc_agg(kOpSumDouble, /*reg=*/1, /*agg=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/1),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/4),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 3),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),   /* arm 0 */
+    enc_sum(/*reg=*/1, /*agg=*/1),
+    enc_op(kOpSkip, /*count=*/2),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/2),   /* arm 1 */
+    enc_sum(/*reg=*/1, /*agg=*/1),
+  };
+  Program p;
+  /* load + SUM_F64 + 2xLC16 + BRANCH_LT + 2x(LC16+JUMP) + arm0(load,
+   * SUM, Skip-JUMP) + arm1(load, SUM) + tail(2) = 16. */
+  if (!expect_accepted(name, prog, 17, &p, /*expected_n_ops=*/16)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_F64)) return;
+  if (!expect_op_field(name, &p, 10, "kind", p.ops[10].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 11, "kind", p.ops[11].kind,
+                       OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 13, "kind", p.ops[13].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -4487,7 +4740,7 @@ int main(void) {
   test_divmod_typed_f64_reject();
   test_gl_fast_path_accept();
   test_gl_null_check_accept();
-  test_gl_import_f64_reject();
+  test_gl_import_f64_accept();
   test_gl_import_u64_bounds();
   test_gl_ne_null_jump();
   test_scan_filter_uncond_branch_accept();
@@ -4498,7 +4751,7 @@ int main(void) {
   test_linked_col_bigint_accept();
   test_linked_col_smallint_accept();
   test_linked_col_bigunsigned_reject();
-  test_linked_col_double_reject();
+  test_linked_col_double_accept();
   test_scan_filter_linked_col_reject();
   test_branch_mem_op_arg_accept();
   test_branch_mem_inline_type_accept();
@@ -4515,6 +4768,12 @@ int main(void) {
   test_arith_f64_operand_reject();
   test_scan_filter_arith_reject();
   test_case_stop_program_sentinel();
+  test_f64_gl_fast_path();
+  test_f64_gl_mixed_import();
+  test_f64_gl_linked_compare();
+  test_f64_gl_mixed_trellis_reject();
+  test_f64_gl_null_check_accept();
+  test_case_dead_arm_adopts_jump_state();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

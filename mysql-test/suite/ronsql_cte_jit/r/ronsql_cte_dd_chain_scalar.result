@@ -1638,4 +1638,4 @@ ronsql_cli caught exception: GREATEST/LEAST column operand must be an integer ty
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_chain_scalar_jit_fallback_delta;
 ronsql_cte_dd_chain_scalar_jit_fallback_delta
-4
+0

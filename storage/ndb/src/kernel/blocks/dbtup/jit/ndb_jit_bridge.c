@@ -559,6 +559,18 @@ static inline int embedded_filters_enabled(void) {
 typedef struct {
   uint16_t op_idx;
   uint32_t target_word_pos;
+  /* GL Part A (2026-09-01) merge-point guard: the OUTER register
+   * tracker (regs 0..BC_EMB_REG_BASE-1) as it stood at the jump's
+   * SOURCE. An embedded output-block jump's source state is the
+   * state at block entry (embedded code cannot write outer
+   * registers); an outer kOpSkip's is the state at the Skip.
+   * has_snap == 0 where there is no outer register file (standalone
+   * scan filters, the embedded-only test wrapper) and for edges that
+   * never land on an outer word (the arith fallback edge to the tail
+   * exit) — those entries take no part in the guard. */
+  uint8_t  has_snap;
+  uint8_t  reg_type_snap[BC_EMB_REG_BASE];
+  uint8_t  reg_u63_snap[BC_EMB_REG_BASE];
 } PendingCaseJump;
 
 /* ronsql_jit slice 2 item 9: WRITE_INTERPRETER_OUTPUT's skip value
@@ -763,6 +775,41 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
  * ndb_jit_bridge_translate. */
 enum { BR_REG_UNKNOWN = 0, BR_REG_I64 = 1, BR_REG_F64 = 2,
        BR_REG_U64 = 3, BR_REG_NNC = 4, BR_REG_STR = 5 };
+
+/* GL Part A (2026-09-01): the bit-REINTERPRETATION class of a track —
+ * the property two control-flow paths must agree on where they merge.
+ * I64 / U64 / NNC are all i64 bit patterns (signedness stays the
+ * linear tracker's call, exactly as before); F64 and STR registers are
+ * reinterpreted by their consumers (SUM_F64, the F64 branches, the
+ * string min/max), so a merge whose paths disagree on the class hands
+ * a typed consumer the wrong bits on one of them. 0 = unknown. */
+static uint8_t br_track_class(uint8_t track) {
+  switch (track) {
+    case BR_REG_UNKNOWN: return 0;
+    case BR_REG_F64:     return 2;
+    case BR_REG_STR:     return 3;
+    default:             return 1;
+  }
+}
+
+/* Records the outer tracker at a CASE-disposition jump's source into
+ * its PendingCaseJump (see the struct). reg_type == NULL = no outer
+ * register file on this path → the entry opts out of the guard. */
+static void br_snapshot_outer_tracker(PendingCaseJump *j,
+                                      const uint8_t *reg_type,
+                                      const uint8_t *reg_u63) {
+  if (reg_type == NULL) {
+    j->has_snap = 0;
+    return;
+  }
+  j->has_snap = 1;
+  memcpy(j->reg_type_snap, reg_type, BC_EMB_REG_BASE);
+  if (reg_u63 != NULL) {
+    memcpy(j->reg_u63_snap, reg_u63, BC_EMB_REG_BASE);
+  } else {
+    memset(j->reg_u63_snap, 0, BC_EMB_REG_BASE);
+  }
+}
 
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
@@ -1130,8 +1177,17 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         uint8_t track = outer_reg_type[src_outer];
+        /* GL Part A (2026-09-01): F64 outer sources are ADMITTED —
+         * the MOV is bit-preserving and the embedded dst is marked
+         * F64, so the GL body's compare takes the OP_BRANCH_F64 arm
+         * (double compare with runtime int→double promotion of any
+         * non-F64 side — the interpreter's compareTypedRegs float
+         * arm). Only BIGUNSIGNED-unsafe U64 / STR / UNKNOWN still
+         * reject (Part B territory). */
+        int import_f64 = (track == BR_REG_F64);
         int admissible =
             (track == BR_REG_I64 || track == BR_REG_NNC ||
+             import_f64 ||
              (track == BR_REG_U64 && outer_reg_u63 != NULL &&
               outer_reg_u63[src_outer]));
         if (!admissible) {
@@ -1153,7 +1209,7 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         const16_valid[dst_emb] = 0;
-        emb_reg_f64[dst_emb] = 0;
+        emb_reg_f64[dst_emb] = (uint8_t)import_f64;
         emb_reg_read_attr[dst_emb] = -1;
         emb_pc += 1;
         break;
@@ -1163,10 +1219,12 @@ static JitBridgeReason translate_embedded_block(
         /* ronsql_jit slice 2 item 4 — type-aware linked load into an
          * embedded register. The wire carries the NDB type, so
          * admission is static: signed widths sign-extend and narrow
-         * unsigned zero-extend to exact signed i64; BIGUNSIGNED /
-         * FLOAT / DOUBLE (and anything else) reject TYPE_MISMATCH —
-         * the same policy as the op-43 import (the embedded compares
-         * are signed i64). At runtime a NULL / missing-buffer /
+         * unsigned zero-extend to exact signed i64; GL Part A
+         * (2026-09-01): FLOAT/DOUBLE are ADMITTED too — the helper
+         * stores the value's double BITS and the dst is marked F64,
+         * routing any compare through the OP_BRANCH_F64 arm.
+         * BIGUNSIGNED (and anything else) rejects TYPE_MISMATCH —
+         * the op-43 policy (Part B territory). At runtime a NULL / missing-buffer /
          * out-of-range read takes the per-row fallback (the folded
          * reg-null guards' path replays on the interpreter). Gated
          * like every linked op: the buffer only exists on the
@@ -1183,6 +1241,7 @@ static JitBridgeReason translate_embedded_block(
         uint32_t position = (inst >> 16) & 0xFFu;
         uint32_t type_id  = (inst >> 24) & 0xFFu;
         int admissible;
+        int linked_f64 = 0;
         switch (type_id) {
           case BR_NDB_TYPE_TINYINT:
           case BR_NDB_TYPE_TINYUNSIGNED:
@@ -1194,6 +1253,11 @@ static JitBridgeReason translate_embedded_block(
           case BR_NDB_TYPE_UNSIGNED:
           case BR_NDB_TYPE_BIGINT:
             admissible = 1;
+            break;
+          case BR_NDB_TYPE_FLOAT:
+          case BR_NDB_TYPE_DOUBLE:
+            admissible = 1;
+            linked_f64 = 1;
             break;
           default:
             admissible = 0;
@@ -1218,7 +1282,7 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         const16_valid[dst_emb] = 0;
-        emb_reg_f64[dst_emb] = 0;
+        emb_reg_f64[dst_emb] = (uint8_t)linked_f64;
         emb_reg_read_attr[dst_emb] = -1;
         emb_pc += 1;
         break;
@@ -2062,6 +2126,12 @@ static JitBridgeReason translate_embedded_block(
             .op_idx = jump_op_idx,
             .target_word_pos = case_target,
           };
+          /* GL Part A: the outer walk's merge-point guard needs the
+           * tracker as it stands at this block's entry (= now: the
+           * block cannot write outer registers). */
+          br_snapshot_outer_tracker(
+              &pending_case_jumps[*n_pending_case_jumps],
+              outer_reg_type, outer_reg_u63);
           (*n_pending_case_jumps)++;
         }
         emb_pc += 1;
@@ -2650,6 +2720,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
    * nor skip over embedded ops. */
   uint8_t op_from_emb[BC_MAX_OPS];
   memset(op_from_emb, 0, sizeof(op_from_emb));
+  /* GL Part A: set by kOpSkip — the fall-through into the next word
+   * does not execute; cleared when a pending jump lands. */
+  int linear_dead = 0;
   while (pos < n_words) {
     uint32_t word = ndb_prog[pos];
     uint8_t  op   = (uint8_t)((word & 0xFC000000u) >> 26);
@@ -2662,6 +2735,53 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
     outer_word_pos[n_outer_map] = this_pos;
     outer_op_idx[n_outer_map] = out_prog->n_ops;
     n_outer_map++;
+
+    /* GL Part A (2026-09-01): control-flow MERGE guard for the linear
+     * register tracker. CASE-disposition jumps (embedded output blocks,
+     * outer kOpSkip) make some outer words reachable on more than one
+     * path, and the tracker only ever followed the linear one. Every
+     * pending jump landing HERE carries the tracker as it stood at its
+     * source; it must agree with the linear state on each register's
+     * bit-reinterpretation class wherever both know it — otherwise a
+     * typed consumer downstream reinterprets the bits of the path the
+     * tracker never saw. The motivating shape is the GREATEST/LEAST
+     * trellis: after `Mov(dest, src)` the tracker says dest has src's
+     * type, but the output=1 path SKIPS the Mov and arrives with dest's
+     * ORIGINAL type. Same-class pairs were always sound; Part A's F64
+     * admission made a DOUBLE-vs-BIGINT pair compilable, for which
+     * `SumDouble(dest)` would add int bits as a double on output=1
+     * rows (the interpreter's linear OptimizeProgramBuffer has the
+     * same blind spot — the JIT must not add a second wrong answer).
+     * Same-class disagreements (I64 / U64 / NNC) keep the linear value
+     * exactly as before; the u63 proof ANDs. A DEAD linear predecessor
+     * (previous word was kOpSkip) is not compared: the first arriving
+     * jump's state IS the state — a CASE arm may reuse a register the
+     * previous arm typed differently, which must not false-reject. */
+    {
+      int landed = 0;
+      for (uint16_t j = 0; j < n_pending_case_jumps; j++) {
+        const PendingCaseJump *pj = &pending_case_jumps[j];
+        if (!pj->has_snap || pj->target_word_pos != this_pos) continue;
+        if (linear_dead && !landed) {
+          memcpy(reg_type, pj->reg_type_snap, BC_EMB_REG_BASE);
+          memcpy(reg_u63_safe, pj->reg_u63_snap, BC_EMB_REG_BASE);
+        } else {
+          for (uint8_t r = 0; r < BC_EMB_REG_BASE; r++) {
+            uint8_t lc = br_track_class(reg_type[r]);
+            uint8_t jc = br_track_class(pj->reg_type_snap[r]);
+            if (lc == 0 || jc == 0) continue;
+            if (lc != jc) {
+              set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+              return JIT_BRIDGE_TYPE_MISMATCH;
+            }
+            reg_u63_safe[r] =
+                (uint8_t)(reg_u63_safe[r] & pj->reg_u63_snap[r]);
+          }
+        }
+        landed = 1;
+      }
+      if (landed) linear_dead = 0;
+    }
 
     switch (op) {
       case BR_kOpLoadConst: {
@@ -3548,10 +3668,18 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
-        pending_case_jumps[n_pending_case_jumps++] = (PendingCaseJump){
+        pending_case_jumps[n_pending_case_jumps] = (PendingCaseJump){
           .op_idx = jump_op_idx,
           .target_word_pos = this_pos + 1u + skip_count,
         };
+        br_snapshot_outer_tracker(&pending_case_jumps[n_pending_case_jumps],
+                                  reg_type, reg_u63_safe);
+        n_pending_case_jumps++;
+        /* The linear walk past an unconditional jump is DEAD until the
+         * next word some pending jump lands on (the merge guard at the
+         * loop head adopts that jump's state rather than comparing
+         * against this arm's leftovers). */
+        linear_dead = 1;
         pos += 1;
         break;
       }

@@ -217,6 +217,25 @@ bench OFF vs ON, Phase 7 scan-filter expansion, backport PR,
 6-5 CTE filters, GL F64-compare extension for the by-design
 residue, RonSQL optimizer-typing flag for kOpMinusBigint).
 
+**Backlog item GL Part A — VERIFIED on the five-suite run (2026-09-01
+evening; only the expected pin moves: dd_chain_scalar 4→0,
+dd_orderby_limit 2→0 — both now armed — and gl_v5 16→2; census
+88 → 68). Commit pending (bridge_tests re-run for T78a-f first).** — F64 GREATEST/LEAST imports (op-43) + FLOAT/DOUBLE linked
+loads (op-44) admitted; bridge + one helper widening, ZERO new
+stencils. The review of the change found and closed a soundness hole
+it opened: the linear outer register tracker vs the GL trellis's
+two-path merge for a MIXED DOUBLE/BIGINT pair → new merge-point
+guard in the bridge (`PendingCaseJump` snapshots; dead-arm adoption
+after `kOpSkip`). The interpreter's own `OptimizeProgramBuffer` has
+the same linear blind spot for mixed pairs — flagged upstream in the
+plan. Record, tests (T78a-f) and the verification list are in
+`ronsql_jit_plan.md` ("GL Part A"). Next: the attribution run for the six flat exempt tests
+(commands in the plan) — the harvest of this run's logs already shows
+a NEW cheap lowering class, "CASE arm family conflict" (THEN arm =
+BIGUNSIGNED column, ELSE arm = constant 0 → 5C-3 acc-family reject;
+candidate item 11: NNC operands adopt the slot's family) — then Part
+B (BIGUNSIGNED) / the rest of the phase_6_plan.md §4 backlog.
+
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 
 Three things happened after the 2026-06-22 state described below. **The

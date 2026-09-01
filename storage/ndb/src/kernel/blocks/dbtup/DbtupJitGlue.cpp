@@ -1450,6 +1450,21 @@ ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
     case NDB_TYPE_BIGINT:
       value = (Int64)sint8korr(data);
       break;
+    /* GL Part A (2026-09-01): float family — store the double's BIT
+     * pattern (F64 lives bit-cast in regs_i64; the bridge marked the
+     * dst F64 so consumers take the OP_BRANCH_F64 arm). FLOAT widens
+     * to double first, mirroring the interpreter's
+     * handleReadLinkedColumnToReg. */
+    case NDB_TYPE_FLOAT: {
+      double dval = (double)floatget(reinterpret_cast<const uchar *>(data));
+      std::memcpy(&value, &dval, sizeof(value));
+      break;
+    }
+    case NDB_TYPE_DOUBLE: {
+      double dval = doubleget(reinterpret_cast<const uchar *>(data));
+      std::memcpy(&value, &dval, sizeof(value));
+      break;
+    }
     default:
       /* Not admitted by the bridge — defensive. */
       s->row_fallback = 1;

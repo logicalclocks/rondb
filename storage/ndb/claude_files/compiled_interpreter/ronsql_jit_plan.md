@@ -948,3 +948,205 @@ in those categories are using compiled interpreter code") closes:
   (pushdown_agg, case_null, join_pushdown_agg) going to zero.
 - The fallback census is permanently self-diagnosing (offending
   word, compile errno, first-sighting hexdump).
+
+## Backlog design sketch: GL F64/BIGUNSIGNED compare extension (2026-09-01)
+
+The ~52 by-design reason-8 residues (op-43/44 admissions) and what
+lowering them takes. The GL/consumer-compare body imports operands
+into embedded registers and compares with the SIGNED-i64 stencils;
+sources whose values are not exact under a signed compare reject:
+BIGUNSIGNED / DATETIME2 / TIMESTAMP2 (sign-bit-set packs order
+negative) and FLOAT/DOUBLE (IEEE bits misorder as i64). The
+interpreter is immune via its typed registers + compareTypedRegs.
+
+**Part A — F64 GL (one normal item; item 6 built the machinery):**
+- op-43: admit BR_REG_F64 outer sources (the MOV is bit-preserving)
+  and mark the embedded dst in emb_reg_f64[] — the compare then
+  takes the existing OP_BRANCH_F64 arm automatically, incl. mixed
+  int-vs-double (runtime promotion = compareTypedRegs' float arm).
+- op-44: add FLOAT/DOUBLE arms to ndb_jit_h_load_linked_col
+  (mirror the interpreter handler: FLOAT widens to double; store
+  bits) + mark dst F64.
+- Null-guard folds and the outer trailer (Mov propagates F64
+  track) need no change. Likely ZERO new stencils.
+- Verification focus: NaN-pair "equal" parity, -0.0, FLOAT
+  widening. Unlocks most of dd_filter's 24 + v5's float share.
+
+**Part B — BIGUNSIGNED GL (a new compare mode):**
+- Generalize OP_BRANCH_F64 → OP_BRANCH_TYPED: per-side "unsigned"
+  ARG flags; helper implements compareTypedRegs' full lattice
+  (u64/u64 unsigned; mixed rule: negative signed < any unsigned).
+- Needs emb_reg_u64[] tracking fed by op-43 (outer BR_REG_U64) and
+  op-44 (BIGUNSIGNED wire type).
+- DATETIME2/TIMESTAMP2 admission additionally requires a per-type
+  proof that the packed wire format orders correctly under
+  unsigned-i64 compare.
+- Value is mostly synthetic (real GREATEST args ≥ 2^63 are rare) —
+  reject-forever remains defensible.
+
+Both parts stay measurable via the existing pins; exempt tests
+move under slice-3 strict arming as they go clean.
+
+### GL Part A — IMPLEMENTED (2026-09-01): F64 GREATEST/LEAST
+
+Exactly per the backlog sketch — bridge + one helper widening,
+ZERO new stencils, NO regen:
+- op-43: `BR_REG_F64` outer sources admitted (the MOV is
+  bit-preserving); the embedded dst is marked in `emb_reg_f64[]`,
+  so the GL body's compare takes item 6's OP_BRANCH_F64 arm
+  automatically — including mixed double-vs-int imports (runtime
+  int→double promotion = compareTypedRegs' float arm).
+- op-44: FLOAT/DOUBLE wire types admitted; the helper gained the
+  two arms mirroring handleReadLinkedColumnToReg (FLOAT widens to
+  double; the double's BITS land in regs_i64) and the dst is
+  F64-marked.
+- Unchanged by design: BIGUNSIGNED/DATETIME2/TIMESTAMP2 rejects
+  (Part B), STR/UNKNOWN rejects, null-guard folds (the invariant
+  is type-independent), the outer trailer (kOpMov propagates F64;
+  the F64 aggregate family consumes it).
+- Tests: T70c and T73d flipped from reject pins to accept pins;
+  new **T78a-c** (F64 GL fast path — BRANCH_F64 ARG 0xA935 with
+  both double flags; mixed import ARG 0xA912 with one flag;
+  op-44 DOUBLE+FLOAT linked compare ARG 0xA934).
+
+Expected on the pins: dd_filter 24 and v5's float share drop; the
+newly-clean tests then join the slice-3 strict arming. Verification
+focus: NaN-pair "equal" parity, -0.0, FLOAT widening equivalence —
+all inherited from the already-verified OP_BRANCH_F64/load-f64
+machinery.
+
+### GL Part A — review addendum (2026-09-01): T78b fix + the merge-point guard
+
+- **T78b was a test bug**: its `kOpEmbeddedInterp` header declared 6
+  embedded words for a 5-word body, so the bridge parsed the trailing
+  `kOpSumDouble` word as embedded opcode 0 (Mikael's run: reason 1,
+  word 8). Fixed (`emb_len` 5).
+- **A soundness hole Part A opened — CLOSED.** The outer register
+  tracker is linear, and the GL trellis merges two paths right after
+  `Mov(dest, src)` (output=0 runs the Mov, output=1 skips it).
+  Same-class pairs were always fine; Part A's F64 admission made a
+  DOUBLE-vs-BIGINT pair compilable, and for that pair the tracker's
+  post-Mov type is WRONG on the output=1 path — a trailing
+  `SumDouble(dest)` would add int bits as a double (or `SumBigint`
+  double bits as an int). RonSQL's operand check
+  (`validate_greatest_least_pair_loads`, RonSQLPreparer.cpp ~11758:
+  "GREATEST/LEAST column operand must be an integer type") covers
+  STORED columns only and explicitly SKIPS CTE-column / aggregate-
+  projection operands, so `GREATEST(cte.int_col, cte.double_col)` is
+  constructible today — the very op-43/44 F64 residue family Part A
+  lowers; the corpus has no mixed pair yet (its GL tests pair int
+  columns / int constants). Fix in the
+  bridge: `PendingCaseJump` now carries a snapshot of the outer
+  tracker at the jump's source (embedded output blocks: the block
+  entry state; outer `kOpSkip`: the state at the Skip). When the
+  outer walk arrives at a word that pending jumps target, each
+  snapshot must agree with the linear state on every register's
+  bit-reinterpretation CLASS (int / F64 / STR) wherever both know it
+  — else `TYPE_MISMATCH` at that word. Same-class disagreements
+  (I64/U64/NNC) keep the linear value exactly as before (u63 ANDs).
+  If the linear predecessor is DEAD (the previous word was an
+  unconditional `kOpSkip`), the first arriving jump's snapshot IS the
+  state: CASE arms may reuse a register the previous arm typed
+  differently, and that must not false-reject. (A join-to-UNKNOWN
+  lattice was rejected as the fix: the bridge's I64 consumers
+  TOLERATE UNKNOWN by design — kOpMin/MaxBigint treat it as i64 — so
+  a poisoned register would still reach a typed consumer.)
+- **Interpreter finding — flag upstream (same bucket as the
+  kOpMinusBigint typing flag):** `PushdownInterpreter::
+  OptimizeProgramBuffer` types registers the same linear way
+  (`kOpMov: reg_types[dst] = reg_types[src]`, embedded blocks
+  skipped) and rewrites `kOpSum` → `kOpSumDouble`/`kOpSumBigint`
+  statically, so a mixed GL pair mis-sums on the interpreter too
+  (`SumDouble` reads `val_double` of a BIGINT register on output=1
+  rows). The JIT now rejects the shape (fallback = the interpreter's
+  answer; no second wrong answer). The real fix is RonSQL-side:
+  operand-type unification for GREATEST/LEAST, or a parser reject of
+  mixed-class operand pairs.
+- Tests: **T78d** (mixed trellis, BIGINT dest / DOUBLE src → rejects
+  at the SumDouble word 13 with TYPE_MISMATCH — pre-guard this was
+  ACCEPTED), **T78e** (F64 nullable GL shape accepted: 17 ops, one
+  BRANCH_F64 0xA935, one SUM_F64, one SET_REG_NULL_FB), **T78f**
+  (dead-arm adoption: a two-arm CASE reloading a formerly-F64
+  register as BIGINT in both arms — accepted, 16 ops).
+- Accepted false-reject exposure of the guard (flagged): a LIVE merge
+  whose paths disagree on a register's class while the register is
+  dead afterwards — a fall-through-arm shape no real emitter
+  produces. It would cost a fallback and surface as a pin / 4064
+  move, not a wrong result.
+
+**First pin movement (Mikael's run, 2026-09-01 evening):**
+`ronsql_cte_jit.ronsql_cte_dd_chain_scalar` fallback delta **4 → 0**
+(all four residue rejects recovered). Re-pinned at 0 and the wrapper
+moved under slice-3 strict arming (arm/disarm includes) — first of
+the nine exempt tests to join; confirm with a re-run of that test.
+`ronsql_cte_jit.ronsql_cte_dd_orderby_limit` **2 → 0** — same
+treatment (re-pinned, armed).
+`ronsql_jit.ronsql_cte_greatest_least_v5` **16 → 2** — re-pinned at
+2, STAYS exempt: the residue is the BIGUNSIGNED op-43/44 share
+(`o_biguns` / `c_biguns`), Part B territory (confirm in the
+fallback log: `reason=8 detail=43|44` with a Bigunsigned source).
+Running tally of exempt tests joined: dd_chain_scalar,
+dd_orderby_limit.
+
+**Full-run result (Mikael, 2026-09-01 evening: `./mtr --suite=ronsql_jit,
+ronsql_cte_jit,ndb_push_agg_jit,ronsql,ronsql_cte --parallel=10
+--force`): exactly the three pin moves above, nothing else.** So:
+- The merge-point guard is SILENT corpus-wide, including every
+  mysqld CASE program in `ndb_push_agg_jit` (the false-reject
+  exposure did not materialise).
+- Part A recovered **20** rejects (dd_chain_scalar 4, dd_orderby_limit
+  2, gl_v5 14); corpus census 88 → **68**. Two exempt tests joined
+  strict arming (dd_chain_scalar, dd_orderby_limit).
+- dd_filter (24), dd_bigquery, dd_dtwide, cte_scalar (2), gl_v6 (2),
+  ronsql_basic did NOT move — item 10's "F64 GL / linked" attribution
+  of those was WRONG; they are not F64 admissions. Harvest of the run's
+  surviving ndbd logs (workers 2-4 + the failed-test copies) decodes
+  every family seen:
+  - `join-agg reason=8 detail=44 word=1`, 19-word program, op-44 word
+    `0a01006c` → wire type 0x0a = BIGUNSIGNED linked load — **v5's
+    residue 2 (Part B)**.
+  - `join-agg reason=8 detail=43 word=4`, 21-word program: outer
+    LoadCol BIGINT r0 / **BIGUNSIGNED r1**, GL body imports r1 →
+    `GREATEST(bigint, bigunsigned)` U64 non-u63 import — **Part B**
+    (last test on workers 3 and 4; gl_v6 / cte_scalar / dd_bigquery
+    territory — attribute in the follow-up run).
+  - `aggregation reason=1 detail=6 word=21` (kOpMod) and
+    `reason=8 detail=22 word=34 count=16` (kOpMinusBigint) — the
+    known ~4 / ~16.
+  - **NEW named class — CASE arm family conflict**: `join-agg reason=8
+    detail=16 word=23` (104-word program: `LoadCol BIGUNSIGNED r0;
+    MaxBigint(r0, slot 1); Skip 4; LoadConst BIGINT r1 = 0;
+    MaxBigint(r1, slot 1)`) and `detail=14 word=26` (27-word program,
+    same shape with SumBigint over slot 3). The THEN arm claims the
+    slot as U64, the ELSE arm's constant 0 is NNC → mapped to the I64
+    family → `BR_CLAIM_ACC_FAMILY` rejects (5C-3). Pre-existing and
+    correctly conservative in general, but a NON-NEGATIVE CONSTANT is
+    exactly representable in either family, so this is a cheap
+    **lowering candidate (item 11)**: an NNC operand ADOPTS the slot's
+    already-claimed family (emit the U64 op variant when the slot is
+    U64). Column-first / constant-second is the common CASE shape;
+    the constant-first order would need a pre-scan (defer). Likely
+    the bulk of dd_filter's 24 — confirm by attribution first.
+
+**Attribution run for the six flat exempt tests (Mikael):** run them
+sequentially on one cluster so one ndbd log accumulates first
+sightings in test order, then read the NEW-family lines + dumps
+against each test's known delta:
+```sh
+cd mysql-test
+./mtr --parallel=1 --suite=ronsql_cte_jit ronsql_cte_dd_filter ronsql_cte_dd_bigquery ronsql_cte_dd_dtwide
+./mtr --parallel=1 --suite=ronsql_jit ronsql_cte_scalar ronsql_cte_greatest_least_v6 ronsql_basic
+grep -h -A1 'JIT fallback NEW family' ../debug_build/mysql-test/var/mysql_cluster.1/ndbd.*/ndbd.log
+```
+(With `--parallel=1` the cluster log is `var/mysql_cluster.1/...`;
+with workers it is `var/<n>/mysql_cluster.1/...` and only the last
+test's log survives.)
+
+**Verification list for Part A (Mikael runs):** `bridge_tests`
+(T70c, T73d, T78a-f), then the exempt-pin tests under `ronsql_jit`
+/ `ronsql_cte_jit` (dd_filter, gl_v5, dd_bigquery, cte_scalar, …) —
+pins that DROP are the win; re-record them and move the tests that
+reach 0 under slice-3 strict arming (`jit_strict_arm.inc` /
+`jit_strict_disarm.inc` around the body include); then the full
+`ndb_push_agg_jit` mirror once (the guard also observes mysqld CASE
+programs — any pin move there is a shape worth looking at).
