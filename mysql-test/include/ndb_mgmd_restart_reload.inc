@@ -41,6 +41,31 @@ EOF
   }
 EOF
 
-# Step 4: Wait for data nodes to reconnect to the restarted mgmd
+# Step 4: Wait for the restarted ndb_mgmd to open the MGM client port.
+# The .expect file is removed by MTR just before ndb_mgmd is started, so
+# step 3 says nothing about the new mgmd being usable. On top of that the
+# mgmd keeps ordinary MGM client commands blocked until it has become
+# arbitrator (or ArbitrationRankWait, default 60s, expires) and answers them
+# with "Management server is waiting for arbitrator selection". Poll until
+# a plain 'show' gets through, otherwise the first mgm command issued by the
+# test races the arbitrator startup gate and fails with "Illegal node status".
+--perl
+  use strict;
+  my $ndb_mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+
+  my $timeout = 180;
+  my $start = time();
+  while (1) {
+    my $out = `$ndb_mgm -e "show" 2>&1`;
+    my $rc = $?;
+    last if ($rc == 0 && $out !~ /waiting for arbitrator selection/);
+    if (time() - $start > $timeout) {
+      die "Timeout waiting for restarted ndb_mgmd to accept commands: $out";
+    }
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+# Step 5: Wait for data nodes to reconnect to the restarted mgmd
 # and reach STARTED state (not just mgmd contactable)
 --exec $NDB_WAITER --timeout=120 > /dev/null 2>&1

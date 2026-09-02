@@ -136,17 +136,17 @@
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
 //#define DEBUG_ACTIVE_NODES 1
-#define DEBUG_RATE_LIST 1
-#define DEBUG_RATE_QUEUE 1
-#define DEBUG_RATE_DEF 1
-#define DEBUG_QUOTAS_REP 1
-#define DEBUG_RATE_QUEUE_SET 1
-#define DEBUG_QUOTAS 1
-#define DEBUG_RATE_QUEUE_DROP 1
-#define DEBUG_QUOTA_ABORT 1
+//#define DEBUG_RATE_LIST 1
+//#define DEBUG_RATE_QUEUE 1
+//#define DEBUG_RATE_DEF 1
+//#define DEBUG_QUOTAS_REP 1
+//#define DEBUG_RATE_QUEUE_SET 1
+//#define DEBUG_QUOTAS 1
+//#define DEBUG_RATE_QUEUE_DROP 1
+//#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
 //#define DEBUG_SCAN_MANY 1
-#define DEBUG_RATE_OVERFLOW 1
+//#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
 #endif
 
@@ -1896,7 +1896,14 @@ void Dbtc::execAPI_FAILREQ(Signal *signal) {
 
   capiFailRef = signal->theData[1];
   arrGuard(apiNodeId, MAX_NODES);
+
+  // Must not already be handling failure
+  ndbrequire(capiConnectClosing[apiNodeId] == 0);
+
+  // Offset ref count by one to delay CONF until all
+  // handling complete
   capiConnectClosing[apiNodeId] = 1;
+
   handleFailedApiNode(signal, apiNodeId, (UintR)0);
 }
 
@@ -1915,6 +1922,8 @@ void Dbtc::set_api_fail_state(Uint32 TapiFailedNode, bool apiNodeFailed,
                               ApiConnectRecord *const regApiPtr) {
   if (apiNodeFailed) {
     jam();
+    /* Must be in API failure handling state */
+    ndbrequire(capiConnectClosing[TapiFailedNode] > 0);
     capiConnectClosing[TapiFailedNode]++;
     regApiPtr->apiFailState = ApiConnectRecord::AFS_API_FAILED;
   } else {
@@ -2164,6 +2173,9 @@ void Dbtc::removeMarkerForFailedAPI(Signal *signal, NodeId nodeId,
       /**
        * Done with iteration
        */
+      /* Must be in API failure handling state */
+      ndbrequire(capiConnectClosing[nodeId] > 0);
+      /* Remove offset added in execAPIFAILREQ to cover handling */
       capiConnectClosing[nodeId]--;
       if (capiConnectClosing[nodeId] == 0) {
         jam();
@@ -2263,6 +2275,8 @@ void Dbtc::handleApiFailState(Signal *signal, UintR TapiConnectptr) {
   TlocalApiConnectptr.p->apiFailState = ApiConnectRecord::AFS_API_OK;
   releaseApiCon(signal, TapiConnectptr);
   if (apiFailState == ApiConnectRecord::AFS_API_FAILED) {
+    /* Must be in API failure handling state */
+    ndbrequire(capiConnectClosing[TfailedApiNode] > 0);
     capiConnectClosing[TfailedApiNode]--;
     if (capiConnectClosing[TfailedApiNode] == 0) {
       jam();
@@ -2355,6 +2369,11 @@ void Dbtc::execTCSEIZEREQ(Signal *signal) {
       }    // if
     }
   }
+
+  // API must not still be undergoing failure handling
+  ndbrequire(local || capiConnectClosing[senderNodeId] == 0);
+  // Requestor must be local data node or API.
+  ndbrequire(local || getNodeInfo(senderNodeId).getType() == NODE_TYPE_API);
 
   if (ERROR_INSERTED(8078) || ERROR_INSERTED(8079)) {
     /* Clear testing of API_FAILREQ behaviour */
@@ -4422,7 +4441,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   Uint32 TkeyIndex;
   Uint32 *TOptionalDataPtr = (Uint32 *)&tcKeyReq->scanInfo;
   {
-    Uint32 TscanInfoIndex = 
+    Uint32 TscanInfoIndex =
       (TcKeyReq::getUserIdFlag(Treqinfo) &&
        handle.m_cnt != 0) ? 2 : 0;
     Uint32 TDistrGHIndex = TcKeyReq::getScanIndFlag(Treqinfo);
@@ -12133,7 +12152,10 @@ void Dbtc::execNODE_FAILREP(Signal *signal) {
     }  // if
   }    // for
 
+  const Uint32 toldMasterId = cmasterNodeId;
   cmasterNodeId = tnewMasterId;
+  const bool masterTakeOver =
+      (toldMasterId != tnewMasterId && tnewMasterId == getOwnNodeId());
 
   if (ERROR_INSERTED(8098))
     SET_ERROR_INSERT_VALUE(8099); /* Disable 8098 on node failure */
@@ -12156,6 +12178,7 @@ void Dbtc::execNODE_FAILREP(Signal *signal) {
                      instance(),
                      myHostPtr.i));
     myHostPtr.p->m_nf_bits = HostRecord::NF_NODE_FAIL_BITS;
+    myHostPtr.p->m_fail_no = cfailure_nr;
     c_ongoing_take_over_cnt++;
     g_eventLogger->info("NODE_FAILREP(DBTC) for node %u"
                         ", c_ongoing_take_over_cnt: %u",
@@ -12204,6 +12227,22 @@ void Dbtc::execNODE_FAILREP(Signal *signal) {
                               myHostPtr.i, 0);
     Callback cb = {safe_cast(&Dbtc::ndbdFailBlockCleanupCallback), myHostPtr.i};
     simBlockNodeFailure(signal, myHostPtr.i, cb);
+  }
+  if (masterTakeOver &&
+      (instance() == 0 || instance() == TAKE_OVER_INSTANCE)) {
+    jam();
+    /**
+     * We have just become master.  The old master may have completed
+     * take overs and broadcast TAKE_OVERTCCONF without the broadcast
+     * reaching every node before it failed.  Re-announce every take
+     * over that we have seen complete so that no node is left waiting
+     * forever for a TAKE_OVERTCCONF that was lost with the old master
+     * (nodes that already received the original drop the duplicate).
+     * Take overs that we have not seen complete are still in our take
+     * over queue and are redone the normal way, which produces a
+     * TAKE_OVERTCCONF of its own.
+     */
+    rebroadcast_take_overtcconf(signal);
   }
   set_rate_limit_supported();
 
@@ -12506,6 +12545,34 @@ void Dbtc::execTAKE_OVERTCCONF(Signal *signal) {
 
   const Uint32 senderRef = conf->senderRef;
 
+  if (ERROR_INSERTED(8309)) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    g_eventLogger->info(
+        "DBTC %u: ERROR 8309: Discarding TAKE_OVERTCCONF for node %u"
+        " from 0x%x",
+        instance(), failedNodeId, senderRef);
+    return;
+  }
+
+  if (sig_len > TakeOverTcConf::SignalLength_v8_0_17 &&
+      conf->tcFailNo < hostptr.p->m_fail_no) {
+    jam();
+    /**
+     * The sender completed this take over before the node failed for
+     * the last time, thus the CONF concerns an older failure incident
+     * of a node that has since restarted and failed again.  It must
+     * not be matched against the take over queue entry of the current
+     * incident, drop it.
+     */
+    g_eventLogger->info(
+        "DBTC %u: Dropping stale TAKE_OVERTCCONF for node %u from 0x%x,"
+        " sender fail no %u, node failed at fail no %u",
+        instance(), failedNodeId, senderRef, conf->tcFailNo,
+        hostptr.p->m_fail_no);
+    return;
+  }
+
   if (senderRef != reference()) {
     jam();
 
@@ -12544,11 +12611,33 @@ void Dbtc::execTAKE_OVERTCCONF(Signal *signal) {
         jam();
         const Uint32 senderTcFailNo = conf->tcFailNo;
         const Uint32 tcFailNo = cfailure_nr;
-        /*
-         * If we have seen the failure number that sender have seen, we really
-         * should have queued the node failed for handling.
-         */
-        ndbrequire(tcFailNo < senderTcFailNo);
+        if (tcFailNo >= senderTcFailNo) {
+          jam();
+          /**
+           * We have seen every node failure that the sender had seen
+           * when it completed the take over, so the missing queue
+           * entry cannot be explained by a NODE_FAILREP that we have
+           * not yet received.  The consistent explanation is that
+           * this is a duplicate CONF: the previous master completed
+           * the take over and broadcast TAKE_OVERTCCONF, but failed
+           * before the broadcast reached all nodes.  The new master
+           * then took the node over again, or re-announced the
+           * completed take over at master take over, and broadcast a
+           * CONF of its own to all alive nodes since it cannot know
+           * which nodes the original broadcast reached.  We received
+           * the original, thus we have already handled the take over
+           * completion and can safely drop the duplicate.  Anything
+           * else is a protocol breakage caught by the ndbrequire
+           * below, since queue membership and the NF_TAKEOVER bit are
+           * maintained together.
+           */
+          ndbrequire((hostptr.p->m_nf_bits & HostRecord::NF_TAKEOVER) == 0);
+          g_eventLogger->info(
+              "DBTC %u: Dropping duplicate TAKE_OVERTCCONF for node %u"
+              " from 0x%x, sender fail no %u, own fail no %u",
+              instance(), hostptr.i, senderRef, senderTcFailNo, tcFailNo);
+          return;
+        }
       }
       /*
        * If we have not yet seen all failures that sender has, delay this
@@ -12634,6 +12723,76 @@ void Dbtc::insert_take_over_failed_node(Signal *signal, Uint32 failedNodeId) {
   ndbrequire(cmasterNodeId == getOwnNodeId());
   ndbrequire(instance() == 0 || instance() == TAKE_OVER_INSTANCE);
   startTakeOverLab(signal, 0, failedNodeId);
+}
+
+/**
+ * We have just become the master responsible for TC take over.  The
+ * TAKE_OVERTCCONF broadcast is not atomic: the old master may have
+ * completed a take over and failed while the broadcast was delivered
+ * to only a subset of the alive nodes.  A node that missed it would
+ * wait forever for the take over to complete (NF_TAKEOVER never done,
+ * c_ongoing_take_over_cnt never reaching zero and thus GCP completion
+ * blocked), since only nodes still present in our own take over queue
+ * are taken over again.
+ *
+ * Therefore re-announce the completion of every node failure take over
+ * that we have seen complete.  Receivers that already handled the
+ * original broadcast recognise the duplicate and drop it, see
+ * execTAKE_OVERTCCONF.  Old versions instead fail an ndbrequire on a
+ * duplicate, so the rebroadcast is only sent to nodes that run a
+ * version that drops duplicates; old-version nodes are skipped and
+ * keep the old behaviour in a mixed cluster.
+ */
+void Dbtc::rebroadcast_take_overtcconf(Signal *signal) {
+  NdbNodeBitmask receivers;
+  receivers.clear();
+  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+    if (!c_alive_nodes.get(nodeId) || nodeId == getOwnNodeId()) {
+      continue;
+    }
+    if (!ndbd_take_overtcconf_rebroadcast(getNodeInfo(nodeId).m_version)) {
+      jam();
+      jamData(nodeId);
+      g_eventLogger->info(
+          "DBTC %u: Not re-announcing completed take overs to node %u,"
+          " it runs a version that does not drop duplicates",
+          instance(), nodeId);
+      continue;
+    }
+    receivers.set(nodeId);
+  }
+  if (receivers.isclear()) {
+    jam();
+    return;
+  }
+  HostRecordPtr toHostPtr;
+  for (toHostPtr.i = 1; toHostPtr.i < MAX_NDB_NODES; toHostPtr.i++) {
+    ptrAss(toHostPtr, hostRecord);
+    if (toHostPtr.p->hostStatus != HS_DEAD ||
+        toHostPtr.p->m_fail_no == 0 ||
+        (toHostPtr.p->m_nf_bits & HostRecord::NF_TAKEOVER) != 0) {
+      /**
+       * Only re-announce nodes that failed during our lifetime and
+       * whose take over we have seen complete.  Failed nodes with
+       * NF_TAKEOVER still pending are in our take over queue and are
+       * taken over again the normal way.
+       */
+      continue;
+    }
+    jam();
+    jamData(toHostPtr.i);
+    g_eventLogger->info(
+        "DBTC %u: Re-announcing completed take over of node %u"
+        " at master take over, fail no %u",
+        instance(), toHostPtr.i, toHostPtr.p->m_fail_no);
+    NodeReceiverGroup rg(DBTC, receivers);
+    TakeOverTcConf *const conf = (TakeOverTcConf *)&signal->theData;
+    conf->failedNode = toHostPtr.i;
+    conf->senderRef = reference();
+    conf->tcFailNo = cfailure_nr;
+    sendSignal(rg, GSN_TAKE_OVERTCCONF, signal,
+               TakeOverTcConf::SignalLength, JBB);
+  }
 }
 
 /**
@@ -13492,6 +13651,22 @@ void Dbtc::completeTransAtTakeOverDoLast(Signal *signal, UintR TtakeOverInd) {
     // It is ok to send too long signal to old nodes (<8.0.18).
     sendSignal(rg, GSN_TAKE_OVERTCCONF, signal, TakeOverTcConf::SignalLength,
                JBB);
+
+    if (ERROR_INSERTED(8308)) {
+      jam();
+      /**
+       * Crash shortly after the TAKE_OVERTCCONF broadcast, delayed so
+       * that the broadcast is flushed to the other nodes first.
+       * Together with error 8309 on a chosen receiver this simulates a
+       * master failing with a partially delivered broadcast.
+       */
+      g_eventLogger->info(
+          "DBTC %u: ERROR 8308: Crashing after TAKE_OVERTCCONF broadcast",
+          instance());
+      signal->theData[0] = 9999;
+      sendSignalWithDelay(numberToRef(CMVMI, getOwnNodeId()), GSN_NDB_TAMPER,
+                          signal, 30, 1);
+    }
 
     if (tcNodeFailptr.p->queueIndex > 0) {
       jam();
@@ -16964,9 +17139,8 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
      * one signal to ensure we keep the rules of not executing
      * for more than 5-10 microseconds per signal.
      */
-    if (fragCnt >= DiGetNodesReq::MAX_DIGETNODESREQS ||
-        ERROR_INSERTED(8120))
-    {
+    if (fragCnt >= DiGetNodesReq::MAX_DIGETNODESREQS || ERROR_INSERTED(8120) ||
+        (ERROR_INSERTED(8128) && fragCnt >= 1)) {
       jam();
       signal->theData[0] = TcContinueB::ZSTART_FRAG_SCANS;
       signal->theData[1] = apiConnectptr.i;
@@ -16984,6 +17158,15 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
         sendSignal(CMVMI_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
         return;
       }
+      if (ERROR_INSERTED(8128)) {
+        jam();
+        g_eventLogger->info("TC %u : Delaying scan start %p", instance(),
+                            scanP);
+        /* Slow down gathering of locations */
+        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 4);
+        return;
+      }
+
       sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
       return;
     }
@@ -17566,10 +17749,9 @@ void Dbtc::sendFragScansLab(Signal *signal, ScanRecordPtr scanptr,
            * A max fanout of 1::4 of consumed::produced signals are allowed.
            * If we are about to produce more, we have to continue later.
            */
-	  if ((cntLocSignals > 4) ||
-              (ERROR_INSERTED(8121)) ||
-              (ERROR_INSERTED(8122) && fragCnt >= 1))
-          {
+          if ((cntLocSignals > 4) || (ERROR_INSERTED(8121)) ||
+              (ERROR_INSERTED(8122) && fragCnt >= 1) ||
+              (ERROR_INSERTED(8128) && fragCnt >= 1)) {
             jam();
             signal->theData[0] = TcContinueB::ZSEND_FRAG_SCANS;
             signal->theData[1] = apiConnectptr.i;
@@ -17587,6 +17769,14 @@ void Dbtc::sendFragScansLab(Signal *signal, ScanRecordPtr scanptr,
               signal->theData[0] = 900;
               signal->theData[1] = refToNode(apiConnectptr.p->ndbapiBlockref);
               sendSignal(CMVMI_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+              return;
+            }
+            if (ERROR_INSERTED(8128)) {
+              jam();
+              g_eventLogger->info("TC %u : Delaying scan send %p", instance(),
+                                  scanptr.p);
+              /* Slow down signal sending */
+              sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 4);
               return;
             }
 
@@ -18668,6 +18858,21 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
     sections.m_cnt = 2;  // and sometimes keyinfo
   }
 
+  {
+    HostRecordPtr host_ptr;
+    host_ptr.i = nodeId;
+    ptrCheckGuard(host_ptr, chostFilesize, hostRecord);
+    if (unlikely(host_ptr.p->hostStatus != HS_ALIVE)) {
+      jam();
+      /* Node has failed since DIH suggested it to scan
+       * whole scan will fail
+       */
+      sections.clear();
+      scanError(signal, scanptr, ZSCAN_LQH_ERROR);
+      return false;
+    }
+  }
+
   if (ScanFragReq::getMultiFragFlag(scanP->scanRequestInfo)) {
     jam();
     /**
@@ -18813,11 +19018,6 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
 
   // Encode variable part
   ndbassert(ScanFragReq::getCorrFactorFlag(requestInfo) == 0);
-
-  HostRecordPtr host_ptr;
-  host_ptr.i = nodeId;
-  ptrCheckGuard(host_ptr, chostFilesize, hostRecord);
-  ndbrequire(host_ptr.p->hostStatus == HS_ALIVE);
 
   {
     jamDebug();
@@ -19243,6 +19443,7 @@ void Dbtc::inithost(Signal *signal) {
     hostptr.p->lqh_pack_mask.clear();
     hostptr.p->m_af_state = HostRecord::AF_IDLE;
     hostptr.p->m_nf_bits = 0;
+    hostptr.p->m_fail_no = 0;
   }  // for
   c_alive_nodes.clear();
 }  // Dbtc::inithost()

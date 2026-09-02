@@ -1,0 +1,336 @@
+# ==========================================================================
+# ttl_replica3_mixed_version: per-hop version gating of replica rowid
+#                             forwarding on mixed-version 3-replica chains
+#                             (new-new-old and new-old-new)
+# ==========================================================================
+#
+# Background (storage/ndb/claude_files/ttl_899_rowid/ -- fix_design.md
+# section 6): the replica rowid forwarding + verification fix attaches the
+# primary's rowid to forwarded ZINSERT_TTL/ZUPDATE/ZDELETE/ZWRITE shapes and
+# lets every non-primary hop verify it (error 1245 on mismatch).  Because
+# the new rowid-carrying shapes were never validated against pre-fix
+# receivers, attaching is gated on the RECEIVING data node's version
+# (ndbd_replica_rowid_forwarding).  The original gate was evaluated by the
+# PRIMARY only, for ITS next replica: on a 3-replica chain a NEW middle
+# replica forwarded the received RowidFlag unconditionally, so a
+# new -> new -> old chain leaked the new shape to the old tail.  The fix
+# under test evaluates the gate PER HOP
+# (Dblqh::replica_rowid_forwarding_supported): the primary attaches only
+# toward a supporting first backup, and a middle replica STRIPS the flag
+# when its own next replica is unsupporting; a middle replica that received
+# no rowid (old primary) never self-attaches its local, non-authoritative
+# rowid.
+#
+# Real mixed-version binaries are not available under mtr, so the old node
+# is EMULATED with the send-side-only ERROR_INSERT 5119: armed on a node,
+# its per-hop capability check reports "unsupported" for every peer, making
+# that node behave toward its next replica exactly like a sender facing an
+# old receiver.  Receiver-side verification is NOT affected by the EI, so a
+# NEW receiver of a leaked rowid-carrying shape would still verify -- which
+# is precisely the tripwire this test uses: a placement fork seeded on the
+# TAIL (test-only ERROR_INSERT 4040, same choreography as
+# ttl_rowid_mismatch_1245) makes any rowid that reaches the tail fire 1245,
+# while correct per-hop stripping keeps the fork silent (bit-identical
+# legacy behavior toward "old" nodes).
+#
+# Scenarios:
+#   new-old-new  (EI 5119 on the PRIMARY's node): the primary must strip,
+#                and the (honest, new) middle must NOT self-attach --
+#                touching the tail-forked key stays silent.
+#   new-new-old  (EI 5119 on the MIDDLE's node -- the reported defect): the
+#                middle must strip the flag it received and verified;
+#                touching the tail-forked keys stays silent.  On the
+#                pre-fix tree the middle forwards the flag and these
+#                statements fail with 1245.
+#   upgraded     (no EI): the SAME still-live fork now fires permanent 1245
+#                at the tail -- proof the earlier silences came from
+#                per-hop stripping (not from a healed fork or dead
+#                verification), and that detection starts the moment the
+#                last hop "upgrades".  Mirrors a real rolling upgrade where
+#                a fork born next to an old node surfaces after completion.
+#
+# Needs NoOfReplicas=3 with 3 data nodes (ttl_replica3_mixed_version.cnf)
+# and a debug (WITH_ERROR_INSERT) build for ERROR_INSERT 4040/5119.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# The tail data node is gracefully restarted (initial) during the repair
+# phase; suppress restart-related client noise on both mysqlds.
+--disable_query_log
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+call mtr.add_suppression("Disconnecting lingering client");
+connection default;
+--enable_query_log
+
+# TTL expiry is evaluated in the data node against UTC; pin the session
+# time zone so ttl_col values written with NOW() stay LIVE throughout.
+SET time_zone = '+00:00';
+
+--echo # === 1. single-fragment TTL table, 10 rows in insertion order ==========
+--echo # One fragment => one primary + middle + tail replica chain; rows
+--echo # inserted one at a time land at page-0 slots in insertion order on
+--echo # ALL THREE replicas (normal inserts always forward the primary's
+--echo # chosen rowid).
+CREATE TABLE test.t1 (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY(id) PARTITIONS 1;
+
+--disable_query_log
+INSERT INTO test.t1 VALUES (1, NOW() + INTERVAL 1 HOUR, 1);
+INSERT INTO test.t1 VALUES (2, NOW() + INTERVAL 1 HOUR, 2);
+INSERT INTO test.t1 VALUES (3, NOW() + INTERVAL 1 HOUR, 3);
+INSERT INTO test.t1 VALUES (4, NOW() + INTERVAL 1 HOUR, 4);
+INSERT INTO test.t1 VALUES (5, NOW() + INTERVAL 1 HOUR, 5);
+INSERT INTO test.t1 VALUES (6, NOW() + INTERVAL 1 HOUR, 6);
+INSERT INTO test.t1 VALUES (7, NOW() + INTERVAL 1 HOUR, 7);
+INSERT INTO test.t1 VALUES (8, NOW() + INTERVAL 1 HOUR, 8);
+INSERT INTO test.t1 VALUES (9, NOW() + INTERVAL 1 HOUR, 9);
+INSERT INTO test.t1 VALUES (10, NOW() + INTERVAL 1 HOUR, 10);
+--enable_query_log
+SELECT COUNT(*) AS loaded_rows FROM test.t1;
+
+--echo # === 2. discover the replica CHAIN order (node ids kept out of result) ==
+# The LQHKEYREQ chain order is DIH's activeNodes[] order, which ndbinfo
+# exposes as current_primary / current_first_backup / current_second_backup
+# (DbdihMain table_fragments row fill): first backup == the MIDDLE hop
+# (seqNoReplica 1), second backup == the TAIL (seqNoReplica 2).
+--disable_query_log
+--let $tab_id = `SELECT table_id FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/t1' LIMIT 1`
+--let $primary_node = `SELECT DISTINCT current_primary FROM ndbinfo.table_fragments WHERE table_id = $tab_id AND fragment_id = 0`
+--let $middle_node = `SELECT DISTINCT current_first_backup FROM ndbinfo.table_fragments WHERE table_id = $tab_id AND fragment_id = 0`
+--let $tail_node = `SELECT DISTINCT current_second_backup FROM ndbinfo.table_fragments WHERE table_id = $tab_id AND fragment_id = 0`
+--enable_query_log
+if (`SELECT $primary_node = 0 OR $middle_node = 0 OR $tail_node = 0 OR $primary_node = $middle_node OR $primary_node = $tail_node OR $middle_node = $tail_node`)
+{
+  --echo # primary=$primary_node middle=$middle_node tail=$tail_node
+  --die Could not resolve distinct primary/middle/tail chain roles from ndbinfo.table_fragments
+}
+
+# Diagnostic markers logged by the data nodes.
+--let MIDDLE_LOG_FILE = $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.$middle_node/ndbd.log
+--let TAIL_LOG_FILE = $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.$tail_node/ndbd.log
+--let SEED_TEXT = ERROR_INSERT 4040 redirecting required rowid tab($tab_id,0)
+--let MISMATCH_TEXT = replica rowid mismatch tab($tab_id,0)
+
+--echo # === 3. seed placement fork A (id 100) on the TAIL =====================
+--echo # Delete the 2nd then the 3rd inserted row: free_record PREPENDS, so
+--echo # all three replicas' page free lists become head = slot(id 3) ->
+--echo # slot(id 2).  The armed tail redirects the forwarded required rowid
+--echo # slot(id 3) to the adjacent free slot(id 2); primary and middle place
+--echo # id 100 at slot(id 3).  The insert SUCCEEDS silently -- same row, two
+--echo # layouts, tail diverged.
+DELETE FROM test.t1 WHERE id = 2;
+DELETE FROM test.t1 WHERE id = 3;
+--exec $NDB_MGM -e "$tail_node ERROR 4040" > /dev/null
+INSERT INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 100);
+--exec $NDB_MGM -e "$tail_node ERROR 0" > /dev/null
+--let SEED_MIN = 1
+--perl
+  use strict;
+  my $file = $ENV{'TAIL_LOG_FILE'};
+  my $text = $ENV{'SEED_TEXT'};
+  my $want = $ENV{'SEED_MIN'};
+  my $deadline = time() + 30;
+  my $cnt = 0;
+  while (time() < $deadline) {
+    $cnt = 0;
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    exit 0 if $cnt >= $want;
+    select(undef, undef, undef, 0.2);
+  }
+  die "Only $cnt seed markers '$text' in $file (wanted >= $want) -- placement fork NOT fabricated";
+EOF
+--echo # seed marker found in the tail node log: fork A exists
+
+--echo # === 4. seed placement fork B (id 101) on the TAIL =====================
+--echo # Same choreography one slot pair up: deleting the 4th then the 5th row
+--echo # leaves free head = slot(id 5) -> slot(id 4) on primary and middle
+--echo # (their slot(id 2) sits below) and slot(id 5) -> slot(id 4) above
+--echo # slot(id 3) on the tail; the armed tail redirects the forwarded
+--echo # slot(id 5) to the free adjacent slot(id 4).
+DELETE FROM test.t1 WHERE id = 4;
+DELETE FROM test.t1 WHERE id = 5;
+--exec $NDB_MGM -e "$tail_node ERROR 4040" > /dev/null
+INSERT INTO test.t1 VALUES (101, NOW() + INTERVAL 1 HOUR, 101);
+--exec $NDB_MGM -e "$tail_node ERROR 0" > /dev/null
+--let SEED_MIN = 2
+--perl
+  use strict;
+  my $file = $ENV{'TAIL_LOG_FILE'};
+  my $text = $ENV{'SEED_TEXT'};
+  my $want = $ENV{'SEED_MIN'};
+  my $deadline = time() + 30;
+  my $cnt = 0;
+  while (time() < $deadline) {
+    $cnt = 0;
+    if (open(my $fh, '<', $file)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    exit 0 if $cnt >= $want;
+    select(undef, undef, undef, 0.2);
+  }
+  die "Only $cnt seed markers '$text' in $file (wanted >= $want) -- placement fork B NOT fabricated";
+EOF
+--echo # second seed marker found: fork B exists
+
+--echo # === 5. the count screen is blind to both placement forks ==============
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_expected_replicas = 3
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # === 6. NEW-OLD-NEW: EI 5119 on the PRIMARY emulates an old middle =====
+--echo # The primary must send the legacy rowid-less shapes to its "old" next
+--echo # replica, and the (new, honest) middle -- receiving no rowid -- must
+--echo # NOT self-attach its local rowid toward the tail.  Since the tail IS
+--echo # forked at id 100, any rowid reaching it would fire 1245: silent
+--echo # success proves the whole chain degraded to legacy behavior.
+--exec $NDB_MGM -e "$primary_node ERROR 5119" > /dev/null
+UPDATE test.t1 SET v = 1100 WHERE id = 100;
+REPLACE INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 1101);
+--exec $NDB_MGM -e "$primary_node ERROR 0" > /dev/null
+SELECT id, v FROM test.t1 WHERE id = 100;
+
+--echo # === 7. NEW-NEW-OLD: EI 5119 on the MIDDLE emulates an old tail ========
+--echo # THE REPORTED DEFECT SCENARIO.  The primary (unarmed) attaches the
+--echo # rowid toward the new middle; the middle verifies it (finds id 100 /
+--echo # id 101 at the wire rowids -- primary and middle agree) and must then
+--echo # STRIP the flag toward its "old" next replica.  On the pre-fix tree
+--echo # the middle forwards the flag unconditionally and every one of these
+--echo # statements fails with 1245 from the (actually new) tail.
+--exec $NDB_MGM -e "$middle_node ERROR 5119" > /dev/null
+UPDATE test.t1 SET v = 1200 WHERE id = 100;
+REPLACE INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 1201);
+DELETE FROM test.t1 WHERE id = 101;
+--exec $NDB_MGM -e "$middle_node ERROR 0" > /dev/null
+SELECT id, v FROM test.t1 WHERE id IN (100, 101) ORDER BY id;
+
+--echo # neither backup logged a mismatch during the emulated-old phases
+--perl
+  use strict;
+  my $text = $ENV{'MISMATCH_TEXT'};
+  for my $file ($ENV{'MIDDLE_LOG_FILE'}, $ENV{'TAIL_LOG_FILE'}) {
+    next unless -f $file;
+    open(my $fh, '<', $file) or next;
+    local $/; my $content = <$fh>; close($fh);
+    if (index($content, $text) >= 0) {
+      die "Unexpected '$text' in $file -- a verification rowid leaked to or through an emulated-old hop";
+    }
+  }
+  exit 0;
+EOF
+--echo # zero 1245 diagnostics so far: both emulated-old chains stayed legacy
+
+--echo # the fork survived the silent phases (placement-only, count screen
+--echo # still blind)
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_expected_replicas = 3
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # === 8. UPGRADE COMPLETE (no EI): the surviving fork now fires 1245 ====
+--echo # Every hop attaches/forwards again: the tail compares the PRIMARY's
+--echo # rowid slot(id 3) against its local slot(id 2) and rejects with
+--echo # permanent 1245 -- proof the phase-6/7 silences were per-hop
+--echo # stripping, not a healed fork or dead verification.
+--error ER_GET_ERRMSG
+UPDATE test.t1 SET v = 1300 WHERE id = 100;
+SHOW WARNINGS;
+
+--let $_wmsg = query_get_value(SHOW WARNINGS, Message, 1)
+if (`SELECT "$_wmsg" NOT LIKE "%Replica rowid mismatch%"`)
+{
+  --echo # Unexpected first warning: $_wmsg
+  --die 1245 signature warning (Replica rowid mismatch) not found after trapped UPDATE
+}
+
+--echo # DELETE of the diverged key: same permanent 1245
+--error ER_GET_ERRMSG
+DELETE FROM test.t1 WHERE id = 100;
+
+--echo # only the diverged key is poisoned; content rolled back cleanly
+UPDATE test.t1 SET v = 66 WHERE id = 6;
+SELECT id, v FROM test.t1 WHERE id IN (6, 100) ORDER BY id;
+
+--echo # the TAIL (and only the tail) logged the 1245 diagnostic
+--let MISMATCH_MIN = 1
+--perl
+  use strict;
+  my $text = $ENV{'MISMATCH_TEXT'};
+  my $want = $ENV{'MISMATCH_MIN'};
+  my $tail = $ENV{'TAIL_LOG_FILE'};
+  my $deadline = time() + 30;
+  my $cnt = 0;
+  while (time() < $deadline) {
+    $cnt = 0;
+    if (open(my $fh, '<', $tail)) {
+      local $/; my $content = <$fh>; close($fh);
+      my $pos = 0;
+      while (($pos = index($content, $text, $pos)) >= 0) { $cnt++; $pos++; }
+    }
+    last if $cnt >= $want;
+    select(undef, undef, undef, 0.2);
+  }
+  die "Only $cnt occurrences of '$text' in $tail (wanted >= $want)" if $cnt < $want;
+  my $middle = $ENV{'MIDDLE_LOG_FILE'};
+  if (open(my $fh, '<', $middle)) {
+    local $/; my $content = <$fh>; close($fh);
+    if (index($content, $text) >= 0) {
+      die "Unexpected '$text' in $middle -- primary and middle layouts should agree";
+    }
+  }
+  exit 0;
+EOF
+--echo # 1245 diagnostics confirmed on the tail only
+
+--echo # === 9. repair: INITIAL restart of the diverged tail ===================
+--exec $NDB_MGM -e "$tail_node RESTART -n -i" > /dev/null
+--exec $NDB_WAITER --wait-nodes=$tail_node --not-started --timeout=300 > /dev/null
+--exec $NDB_MGM -e "$tail_node START" > /dev/null
+--exec $NDB_WAITER --timeout=300 > /dev/null
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--echo # tail rebuilt from the live replicas at the primary's exact rowids
+
+--echo # === 10. the fork is healed ============================================
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_expected_replicas = 3
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+--echo # the previously poisoned key updates and deletes fine now
+UPDATE test.t1 SET v = 2000 WHERE id = 100;
+SELECT id, v FROM test.t1 WHERE id = 100;
+DELETE FROM test.t1 WHERE id = 100;
+
+--echo # === 11. final sweep: recycling the healed slots stays clean ===========
+INSERT INTO test.t1 VALUES (200, NOW() + INTERVAL 1 HOUR, 200);
+INSERT INTO test.t1 VALUES (201, NOW() + INTERVAL 1 HOUR, 201);
+INSERT INTO test.t1 VALUES (202, NOW() + INTERVAL 1 HOUR, 202);
+
+--let $ndb_db = test
+--let $ndb_table = t1
+--let $ndb_expected_replicas = 3
+--let $ndb_dump_on_fail = 1
+--source include/ndb_assert_frag_replica_consistency.inc
+
+SELECT id, v FROM test.t1 ORDER BY id;
+
+DROP TABLE test.t1;

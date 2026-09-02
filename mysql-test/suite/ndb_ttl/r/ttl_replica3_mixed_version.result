@@ -1,0 +1,117 @@
+SET time_zone = '+00:00';
+# === 1. single-fragment TTL table, 10 rows in insertion order ==========
+# One fragment => one primary + middle + tail replica chain; rows
+# inserted one at a time land at page-0 slots in insertion order on
+# ALL THREE replicas (normal inserts always forward the primary's
+# chosen rowid).
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY(id) PARTITIONS 1;
+SELECT COUNT(*) AS loaded_rows FROM test.t1;
+loaded_rows
+10
+# === 2. discover the replica CHAIN order (node ids kept out of result) ==
+# === 3. seed placement fork A (id 100) on the TAIL =====================
+# Delete the 2nd then the 3rd inserted row: free_record PREPENDS, so
+# all three replicas' page free lists become head = slot(id 3) ->
+# slot(id 2).  The armed tail redirects the forwarded required rowid
+# slot(id 3) to the adjacent free slot(id 2); primary and middle place
+# id 100 at slot(id 3).  The insert SUCCEEDS silently -- same row, two
+# layouts, tail diverged.
+DELETE FROM test.t1 WHERE id = 2;
+DELETE FROM test.t1 WHERE id = 3;
+INSERT INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 100);
+# seed marker found in the tail node log: fork A exists
+# === 4. seed placement fork B (id 101) on the TAIL =====================
+# Same choreography one slot pair up: deleting the 4th then the 5th row
+# leaves free head = slot(id 5) -> slot(id 4) on primary and middle
+# (their slot(id 2) sits below) and slot(id 5) -> slot(id 4) above
+# slot(id 3) on the tail; the armed tail redirects the forwarded
+# slot(id 5) to the free adjacent slot(id 4).
+DELETE FROM test.t1 WHERE id = 4;
+DELETE FROM test.t1 WHERE id = 5;
+INSERT INTO test.t1 VALUES (101, NOW() + INTERVAL 1 HOUR, 101);
+# second seed marker found: fork B exists
+# === 5. the count screen is blind to both placement forks ==============
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 3 replicas)
+# === 6. NEW-OLD-NEW: EI 5119 on the PRIMARY emulates an old middle =====
+# The primary must send the legacy rowid-less shapes to its "old" next
+# replica, and the (new, honest) middle -- receiving no rowid -- must
+# NOT self-attach its local rowid toward the tail.  Since the tail IS
+# forked at id 100, any rowid reaching it would fire 1245: silent
+# success proves the whole chain degraded to legacy behavior.
+UPDATE test.t1 SET v = 1100 WHERE id = 100;
+REPLACE INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 1101);
+SELECT id, v FROM test.t1 WHERE id = 100;
+id	v
+100	1101
+# === 7. NEW-NEW-OLD: EI 5119 on the MIDDLE emulates an old tail ========
+# THE REPORTED DEFECT SCENARIO.  The primary (unarmed) attaches the
+# rowid toward the new middle; the middle verifies it (finds id 100 /
+# id 101 at the wire rowids -- primary and middle agree) and must then
+# STRIP the flag toward its "old" next replica.  On the pre-fix tree
+# the middle forwards the flag unconditionally and every one of these
+# statements fails with 1245 from the (actually new) tail.
+UPDATE test.t1 SET v = 1200 WHERE id = 100;
+REPLACE INTO test.t1 VALUES (100, NOW() + INTERVAL 1 HOUR, 1201);
+DELETE FROM test.t1 WHERE id = 101;
+SELECT id, v FROM test.t1 WHERE id IN (100, 101) ORDER BY id;
+id	v
+100	1201
+# neither backup logged a mismatch during the emulated-old phases
+# zero 1245 diagnostics so far: both emulated-old chains stayed legacy
+# the fork survived the silent phases (placement-only, count screen
+# still blind)
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 3 replicas)
+# === 8. UPGRADE COMPLETE (no EI): the surviving fork now fires 1245 ====
+# Every hop attaches/forwards again: the tail compares the PRIMARY's
+# rowid slot(id 3) against its local slot(id 2) and rejects with
+# permanent 1245 -- proof the phase-6/7 silences were per-hop
+# stripping, not a healed fork or dead verification.
+UPDATE test.t1 SET v = 1300 WHERE id = 100;
+ERROR HY000: Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 1245 'Replica rowid mismatch detected' from NDB
+Error	1296	Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+# DELETE of the diverged key: same permanent 1245
+DELETE FROM test.t1 WHERE id = 100;
+ERROR HY000: Got error 1245 'Replica rowid mismatch detected' from NDBCLUSTER
+# only the diverged key is poisoned; content rolled back cleanly
+UPDATE test.t1 SET v = 66 WHERE id = 6;
+SELECT id, v FROM test.t1 WHERE id IN (6, 100) ORDER BY id;
+id	v
+6	66
+100	1201
+# the TAIL (and only the tail) logged the 1245 diagnostic
+# 1245 diagnostics confirmed on the tail only
+# === 9. repair: INITIAL restart of the diverged tail ===================
+# tail rebuilt from the live replicas at the primary's exact rowids
+# === 10. the fork is healed ============================================
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 3 replicas)
+# the previously poisoned key updates and deletes fine now
+UPDATE test.t1 SET v = 2000 WHERE id = 100;
+SELECT id, v FROM test.t1 WHERE id = 100;
+id	v
+100	2000
+DELETE FROM test.t1 WHERE id = 100;
+# === 11. final sweep: recycling the healed slots stays clean ===========
+INSERT INTO test.t1 VALUES (200, NOW() + INTERVAL 1 HOUR, 200);
+INSERT INTO test.t1 VALUES (201, NOW() + INTERVAL 1 HOUR, 201);
+INSERT INTO test.t1 VALUES (202, NOW() + INTERVAL 1 HOUR, 202);
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 3 replicas)
+SELECT id, v FROM test.t1 ORDER BY id;
+id	v
+1	1
+6	66
+7	7
+8	8
+9	9
+10	10
+200	200
+201	201
+202	202
+DROP TABLE test.t1;

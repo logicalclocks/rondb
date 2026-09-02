@@ -1,0 +1,101 @@
+# RONDB-1104: end-to-end data-node outage test for the REST server.
+#
+# The REST servers keep running while ALL data nodes are stopped and later
+# restarted. Two servers are probed:
+#   rdrs.1.1 (API keys on): /health must be 200 before, 503 during and 200
+#     after the outage - recovery WITHOUT an rdrs2 process restart is only
+#     possible if the RONDB-1104 reconnection cycle (trigger -> teardown ->
+#     new cluster connection) actually ran. Pokes with a dummy API key make
+#     the key lookup read RonDB and fail, exercising the production
+#     reconnection trigger path.
+#   rdrs.3.1 (InsecureAllowAll): pk-reads a real row this test creates,
+#     asserting the DATA path end to end - the row is served before the
+#     outage, the outage surfaces as HTTP 500 (never 200, never 404: a 404
+#     'table does not exist' here is the literal customer bug RONDB-1104
+#     fixes), and the same row is served again after the nodes return.
+#
+# Runs after rdrs2-golang_gotest (tests are collected alphabetically and
+# keep that order because both tests have identical MTR sort criteria -
+# same suite my.cnf, no .opt files; adding an .opt file to either test
+# would reorder them). It does not depend on the seeded test databases,
+# creates its own, and drops it again, so either order would also work.
+
+--source include/have_ndb.inc
+--source include/not_windows.inc
+
+# Ignore the error the ndbcluster binlog thread logs when the whole
+# cluster is restarted - on both mysqlds.
+--disable_query_log
+call mtr.add_suppression("The util tables has been lost");
+--enable_query_log
+
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+--disable_query_log
+call mtr.add_suppression("The util tables has been lost");
+--enable_query_log
+connection default;
+
+--echo # Create the row the data-path assertions read
+CREATE DATABASE rdrs_outage;
+CREATE TABLE rdrs_outage.t1 (id INT PRIMARY KEY, val INT) ENGINE=NDBCLUSTER;
+INSERT INTO rdrs_outage.t1 VALUES (1, 42);
+
+--echo # Wait for REST server to report healthy and serve the row
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+poll_health(200, 60, 'initial health');
+print "health: up\n";
+poll_data_readable(60, 'initial data read');
+print "data: row served before outage\n";
+END_OF_PERL
+
+--echo # Stop all data nodes
+--exec $NDB_MGM -e "all restart -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+
+--echo # The outage must surface as 503 health and 500 data reads
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+# Poke pk-read so a request-path failure triggers the reconnection.
+poll_health_with_poke(503, 120, 'health during outage');
+print "health: down during outage\n";
+poll_data_unavailable(120, 'data read during outage');
+print "data: outage reported as server error\n";
+END_OF_PERL
+
+--echo # Restart all data nodes
+--exec $NDB_MGM -e "all start" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --timeout=600 >> $NDB_TOOLS_OUTPUT
+
+--echo # REST servers must recover without a process restart
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+poll_health_with_poke(200, 180, 'health after recovery');
+print "health: recovered without restart\n";
+# These reads are also what triggers rdrs.3.1's own reconnection.
+poll_data_readable(180, 'data read after recovery');
+print "data: row served after recovery\n";
+END_OF_PERL
+
+# Wait until mysqld's ndbcluster engine has reconnected too, so the
+# cleanup below and the post-test checks can run their queries.
+--source include/ndb_wait_connected.inc
+connection mysqld2;
+--source include/ndb_wait_connected.inc
+--disconnect mysqld2
+connection default;
+
+--echo # Cleanup
+DROP DATABASE rdrs_outage;
+
+# The ndb tool output log is created by the --exec redirects above;
+# remove it so check-testcase does not see a new file (same convention as
+# the ndb suite's restart tests).
+--remove_file $NDB_TOOLS_OUTPUT

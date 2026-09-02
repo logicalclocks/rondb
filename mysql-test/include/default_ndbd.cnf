@@ -23,6 +23,10 @@ BackupLogBufferSize=           2M
 TwoPassInitialNodeRestartCopy=1
 TransactionDeadlockDetectionTimeout=3000
 Checksum=1
+# Fail fast when a leaked LCP_SCANNED_BIT is found in the DBTUP page
+# map, so any MTR test that provokes the leak fails also on production
+# builds where the ndbassert leak checks are compiled out.
+CrashOnLeakedLcpScannedBit=1
 SpinMethod=CostBasedSpinning
 AutomaticThreadConfig=0
 AutomaticMemoryConfig=0

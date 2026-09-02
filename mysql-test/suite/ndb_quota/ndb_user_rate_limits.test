@@ -1,0 +1,190 @@
+--source include/have_ndb.inc
+
+# RONDB-978: USER rate limits must actually throttle SQL traffic, and must
+# throttle only the account they name.
+#
+# ndb_user_lifecycle.test covers the mgm "USER" command family (SET/GET/LIST/
+# ALTER/DROP) but never checks that a provisioned limit has any effect. This
+# test covers the enforcement path that the RDRS Go tests cover for REST:
+#
+#   ha_ndbcluster::set_user_id  -> security_context()->user()  (the bare
+#   account name, no host suffix) -> NdbTransaction::setUserId -> the data
+#   nodes account the transaction against the $<account> USER entity.
+#
+# It needs both halves of the switch: ActivateRateLimits on the data nodes
+# (suite my_1rpl.cnf) and --ndb-user-rate-limits on the server
+# (ndb_user_rate_limits.cnf). Note the entity name is the MySQL account name
+# WITHOUT the '@host' part - the same string Hopsworks uses for the online
+# feature store accounts, which is what lets REST and SQL traffic of one
+# project-user share a single kernel bucket.
+
+CREATE DATABASE urlimit;
+CREATE TABLE urlimit.t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO urlimit.t1 VALUES
+  (1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),(8,0),(9,0),(10,0);
+
+# metered_user gets a USER entity, free_user deliberately does not: an identity
+# with no provisioned entity runs unmetered, which is what makes the feature
+# safe to roll out incrementally.
+CREATE USER 'metered_user'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'free_user'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON urlimit.* TO 'metered_user'@'%';
+GRANT ALL PRIVILEGES ON urlimit.* TO 'free_user'@'%';
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET metered_user --rate-per-sec=1"
+--enable_result_log
+
+connect (metered, 127.0.0.1, metered_user, pw, urlimit, $MASTER_MYPORT);
+connect (free,    127.0.0.1, free_user,    pw, urlimit, $MASTER_MYPORT);
+
+--echo #
+--echo # 1. The metered account is throttled once it exceeds its rate.
+--echo #
+# Rejection is not instantaneous: the data nodes only set the per-user abort
+# flag once the accumulated rate crosses the threshold, so drive enough
+# statements to get there rather than expecting the first one to fail.
+connection metered;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM urlimit.t1;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+
+if ($throttled)
+{
+  --echo metered_user: throttled as expected
+}
+if (!$throttled)
+{
+  --echo metered_user: NOT THROTTLED - USER rate limit had no effect
+}
+
+--echo #
+--echo # 2. An account with no USER entity is never throttled (per-account
+--echo #    attribution: the limit follows the identity, not the cluster).
+--echo #
+connection free;
+--disable_query_log
+--disable_result_log
+let $free_throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM urlimit.t1;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $free_throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+
+if ($free_throttled)
+{
+  --echo free_user: UNEXPECTEDLY THROTTLED - limit leaked across accounts
+}
+if (!$free_throttled)
+{
+  --echo free_user: not throttled as expected
+}
+
+--echo #
+--echo # 3. Raising the limit restores service for the metered account.
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "USER ALTER metered_user --rate-per-sec=1000000"
+--enable_result_log
+# Wait out the client-side backoff window (ClusterMgr keeps a rejected user in
+# backoff for 1s) plus the data nodes' own rate window before re-testing.
+--sleep 3
+
+connection metered;
+--disable_query_log
+--disable_result_log
+let $after_raise = 0;
+let $count = 50;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM urlimit.t1;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $after_raise;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+
+if ($after_raise)
+{
+  --echo metered_user: STILL THROTTLED after raising the limit
+}
+if (!$after_raise)
+{
+  --echo metered_user: served without throttling after raising the limit
+}
+
+--echo #
+--echo # 4. rate-per-sec = 0 means unlimited, not "block everything".
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "USER ALTER metered_user --rate-per-sec=0"
+--enable_result_log
+--sleep 3
+
+connection metered;
+--disable_query_log
+--disable_result_log
+let $zero_rate = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM urlimit.t1;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $zero_rate;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+
+if ($zero_rate)
+{
+  --echo metered_user: THROTTLED at rate 0 - zero must mean unlimited
+}
+if (!$zero_rate)
+{
+  --echo metered_user: unmetered at rate 0 as expected
+}
+
+# Cleanup
+connection default;
+disconnect metered;
+disconnect free;
+--disable_result_log
+--exec $NDB_MGM -e "USER DROP metered_user"
+--enable_result_log
+DROP USER 'metered_user'@'%';
+DROP USER 'free_user'@'%';
+DROP DATABASE urlimit;

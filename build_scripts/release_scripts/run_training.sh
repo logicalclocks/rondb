@@ -12,6 +12,6 @@ set +e
 ./mtr --suite=ndbcluster --force
 ./mtr --suite=ndb_rpl --force ndb_rpl_basic
 ./mtr --suite=innodb --force innodb-index
-#./mtr --suite=rdrs2-golang --force
+./mtr --suite=rdrs2-golang --force
 #./mtr --suite=ronsql --force ronsql_constants ronsql_date_sub ronsql_dbt3_1_2 ronsql_filtering ronsql_regressions
 set -e

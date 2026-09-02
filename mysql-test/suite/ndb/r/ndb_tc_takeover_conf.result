@@ -1,0 +1,10 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Duplicate TAKE_OVERTCCONF from a redone take over is dropped
+# Lost TAKE_OVERTCCONF is re-announced at master take over
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All TC take over CONF tests passed

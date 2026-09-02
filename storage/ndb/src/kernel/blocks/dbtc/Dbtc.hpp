@@ -1617,6 +1617,14 @@ class Dbtc : public SimulatedBlock {
     };
 
     Uint32 m_nf_bits; /* Node fail handling state */
+    /**
+     * Failure number (cfailure_nr) at which this node was last declared
+     * failed in NODE_FAILREP, 0 if the node has not failed during our
+     * lifetime.  Used to detect stale and duplicate TAKE_OVERTCCONF and
+     * to select nodes for the TAKE_OVERTCCONF rebroadcast at master
+     * take over.
+     */
+    Uint32 m_fail_no;
     NdbNodeBitmask _m_lqh_trans_conf;
     /**
      * Indicator if any history to track yet
@@ -2586,6 +2594,7 @@ class Dbtc : public SimulatedBlock {
                            ApiConnectRecordPtr apiConnectptr);
   void returnFromQueuedDeliveryLab(Signal *signal);
   void insert_take_over_failed_node(Signal *, Uint32 failedNodeId);
+  void rebroadcast_take_overtcconf(Signal *signal);
   void startTakeOverLab(Signal *signal, Uint32 instanceId, Uint32 failedNodeId);
   void toCompleteHandlingLab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
   void toCommitHandlingLab(Signal *signal, ApiConnectRecordPtr apiConnectptr);

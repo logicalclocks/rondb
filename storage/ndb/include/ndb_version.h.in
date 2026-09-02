@@ -593,23 +593,53 @@ ndbd_send_started_bitmask(Uint32 x)
 /**
  * RonDB: node restarts park at the restart barrier in start phase 110
  * until all concurrently restarting nodes have completed recovery
- * (RONDB-1096). The barrier is only used when the NDBCNTR master and
- * the peer NDBCNTRs support it; against older nodes we fail open and
- * complete the start immediately as before.
+ * (RONDB-1096). The capability gates, per node:
+ * - whether a node understands the ZWAITPOINT_RESTART_BARRIER
+ *   CNTR_WAITREP report: it must never be sent to an older node,
+ *   which dies on the unknown waitpoint,
+ * - whether a restarting node surviving a master failure can face the
+ *   successor as master: an incapable successor terminates it
+ *   (Dbdih::execNODE_FAILREP), pre-barrier behaviour.
+ * The barrier ships in 25.10.18 and in 26.2.9 (the rondb-helm
+ * rondb.supportsRestartBarrier helper uses the same versions). A
+ * lower version must never be assumed to support the CNTR_WAITREP
+ * waitpoint.
  *
- * 26.2.9 is the first release in the 26.02 series that ships
- * RONDB-1096 (the rondb-helm rondb.supportsRestartBarrier helper must
- * use the same version). Earlier 26.02 releases, and every 25.10
- * release when seen from this series, are treated as not supporting
- * the barrier: a lower version must never be assumed to support the
- * new CNTR_WAITREP waitpoint, and against such nodes we fail open.
+ * Mixed-version upgrade support — parking even when older members
+ * exist: the report sent to the capable members only, the release
+ * evaluated locally on each parked node instead of relying on a
+ * Grant from the (old) master, and fail-open on the first node
+ * failure while an old member remains — is a later addition (26.2.10
+ * in the 26.02 series). It needs no capability gate of its own: all
+ * of its behaviours are local decisions of the restarting node, and
+ * every peer interaction it relies on (waitpoint understanding,
+ * master Grant, successor-master competence) is covered by this base
+ * gate. Operational consequence: a rolling upgrade from a
+ * pre-barrier release is protected by the barrier only when the
+ * target version carries the mixed-version support — 25.10.16 ->
+ * 26.2.10 is smooth, 25.10.16 -> 26.2.9 is not (its restarters fail
+ * open in a mixed cluster), while 25.10.18 -> 26.2.9 is smooth (all
+ * members barrier-capable, master Grant applies).
  */
+#define NDBD_RESTART_PHASE_110_BARRIER_2510 NDB_MAKE_VERSION(25,10,18)
 #define NDBD_RESTART_PHASE_110_BARRIER NDB_MAKE_VERSION(26,2,9)
 static
 inline
 int
 ndbd_restart_phase_110_barrier(Uint32 x)
 {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    if (minor == 10 && rel >= 18) {
+      return true;
+    }
+    return false;
+  }
   return x >= NDBD_RESTART_PHASE_110_BARRIER;
 }
 
@@ -1007,6 +1037,37 @@ static inline bool ndbd_rate_limit_supported(Uint32 v) {
   return v >= NDBD_RATE_LIMIT_VERSION;
 }
 
+/**
+ * RonDB: DBTC drops duplicate TAKE_OVERTCCONF, and a new master
+ * re-announces completed TC take overs at master take over so that a
+ * TAKE_OVERTCCONF broadcast that was only partially delivered by a
+ * failing master can neither crash nodes (duplicate CONF) nor leave
+ * nodes waiting forever (lost CONF).  The rebroadcast may deliver a
+ * duplicate CONF to nodes that already handled the original, and old
+ * versions fail an ndbrequire on a duplicate, so the master sends
+ * the rebroadcast only to nodes that run a version that drops
+ * duplicates and skips older nodes.
+ *
+ * 25.10.18 is the first release in the 25.10 series that ships the
+ * fix.  When merging to the 26.02 series the constant below must be
+ * set to the first 26.02 release that ships the fix (assumed 26.2.10);
+ * a lower 26.02 version must never be assumed to support it.
+ */
+#define NDBD_TAKE_OVERTCCONF_REBROADCAST_2510 NDB_MAKE_VERSION(25, 10, 18)
+#define NDBD_TAKE_OVERTCCONF_REBROADCAST NDB_MAKE_VERSION(26, 2, 10)
+static inline bool ndbd_take_overtcconf_rebroadcast(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >> 8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    return (minor == 10 && rel >= 18);
+  }
+  return x >= NDBD_TAKE_OVERTCCONF_REBROADCAST;
+}
+
 /*
  * Data nodes reply to MGMD START BACKUP NOWAIT REQ from
  * MGMD with BACKUP_REF/CONF.
@@ -1325,6 +1386,63 @@ ndbd_support_user_rate_limits(Uint32 x) {
   }
   if ((major == 25) && (minor == 10) && (rel >= 2)) {
     return true;
+  }
+  return false;
+}
+
+/**
+ * Replica rowid forwarding + verification (TTL error 899 hardening).
+ *
+ * Principle: backup replicas must never receive a rowid-less operation for
+ * any INSERT, WRITE, UPDATE or DELETE. A data node that supports this feature
+ * accepts LQHKEYREQ with the RowidFlag set for operation shapes that were
+ * previously always rowid-less outside NR copy (ZINSERT_TTL forwarded as
+ * ZINSERT, TTL ZWRITE resolved to update, plain ZUPDATE/ZDELETE), verifies
+ * the wire rowid against its own ACC-resolved rowid, and rejects a mismatch
+ * with error 1245 (Replica rowid mismatch detected).
+ *
+ * EVERY forwarding DBLQH hop checks ITS OWN next replica's version with this
+ * function (Dblqh::replica_rowid_forwarding_supported): the primary before
+ * ATTACHING the rowid to those shapes, and every middle replica
+ * (NoOfReplicas >= 3) before passing the received flag on -- an unsupporting
+ * next replica gets today's rowid-less shape no matter where it sits in the
+ * chain (new->new->old strips at the middle hop; new->old->new strips at the
+ * primary, and the middle never self-attaches). Receivers accept BOTH shapes
+ * unconditionally, so mixed-version operation is safe in both directions
+ * (the divergence-detection guarantee only starts once all data nodes run a
+ * supporting version).
+ *
+ * Per-series floors: the feature lands in the 25.10 maintenance series at
+ * 25.10.16 and is forward-ported to the 26.02 series at 26.02.9; every
+ * series after 26.02 (26.04, 26.05, ...) carries it from its first release.
+ */
+#define NDBD_REPLICA_ROWID_FORWARDING_2510 NDB_MAKE_VERSION(25,10,16)
+#define NDBD_REPLICA_ROWID_FORWARDING_2602 NDB_MAKE_VERSION(26,2,9)
+static inline
+bool
+ndbd_replica_rowid_forwarding(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if (major < 25) {
+    return false;
+  }
+  if (major == 25) {
+    /* 25.10 is the only release in the 25 series. */
+    if (minor == 10) {
+      return x >= NDBD_REPLICA_ROWID_FORWARDING_2510;
+    }
+    return false;
+  }
+  /* major == 26 */
+  if (minor > 2) {
+    /* Series after 26.02 (26.04, 26.05, ...) always carry the feature. */
+    return true;
+  }
+  if (minor == 2) {
+    return x >= NDBD_REPLICA_ROWID_FORWARDING_2602;
   }
   return false;
 }

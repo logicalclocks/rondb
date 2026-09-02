@@ -69,7 +69,6 @@ class RonDBConnection {
   RonDBConnection &operator=(RonDBConnection &&other) = default;
   static RS_Status init_rondb_connection(RonDB &, RonDBMeta &, Uint32) noexcept;
   static RS_Status shutdown_rondb_connection() noexcept;
-  static RS_Status rondb_reconnect() noexcept;
 };
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_CONNECTION_HPP_

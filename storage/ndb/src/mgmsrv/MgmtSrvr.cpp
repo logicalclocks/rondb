@@ -4772,16 +4772,27 @@ bool MgmtSrvr::alloc_node_id_impl(NodeId &nodeid, enum ndb_mgm_node_type type,
                                   const ndb_sockaddr *client_addr,
                                   int &error_code, BaseString &error_string,
                                   Uint32 timeout_s) {
-  if (m_opts.no_nodeid_checks) {
-    if (nodeid == 0) {
-      error_string.appfmt(
-          "no-nodeid-checks set in management server. "
-          "node id must be set explicitly in connectstring");
-      error_code = NDB_MGM_ALLOCID_CONFIG_MISMATCH;
-      return false;
-    }
+  /* Skip all checks; just approve the requested node id. This error insert
+     replaces the original behavior of the --no-nodeid-checks option.
+  */
+  if (ERROR_INSERTED(901)) {
+    require(nodeid > 0);
     return true;
   }
+
+  /* Check the node id request. There are several stages of checks:
+      1) Fundamental checks: is the cluster configuration available, does the
+         requested id exist in it, does its configured type match the requested
+         type?
+      2) The address check: using the client's socket address, the configured
+         hostnames, and the DNS, match the request to a configured hostname.
+         This can be skipped using --skip-nodeid-address-checks.
+      3) The distributed availability check: every running mgm and db node must
+         confirm that the id is available (not currently connected, and not in
+         failure handling).
+  */
+
+  /* 1) Fundamental checks */
   /* Don't allow allocation of this ndb_mgmd's nodeid */
   assert(_ownNodeId);
   if (nodeid == _ownNodeId) {
@@ -4817,8 +4828,7 @@ bool MgmtSrvr::alloc_node_id_impl(NodeId &nodeid, enum ndb_mgm_node_type type,
       if (NdbTick_Elapsed(start, now).milliSec() > timeout_ms) {
         error_code = NDB_MGM_ALLOCID_ERROR;
         error_string.append(
-            "Unable to allocate nodeid as configuration"
-            " not yet confirmed");
+            "Unable to allocate nodeid as configuration not yet confirmed");
         return false;
       }
 
@@ -4851,8 +4861,20 @@ bool MgmtSrvr::alloc_node_id_impl(NodeId &nodeid, enum ndb_mgm_node_type type,
 
   /* Choose subset of candidates matching client address */
   Vector<PossibleNode> nodes;
-  match_client_addr_to_config_nodes(nodeid, type, client_addr, config_nodes,
-                                    nodes);
+
+  /* 2) The address check */
+  if (m_opts.nodeid_check_addr) {
+    match_client_addr_to_config_nodes(nodeid, type, client_addr, config_nodes,
+                                      nodes);
+  } else if (nodeid) {
+    nodes.push_back({nodeid, "", false});
+  } else {
+    error_string.appfmt(
+        "nodeid-address-check disabled in management server. "
+        "node id must be set explicitly in connectstring");
+    error_code = NDB_MGM_ALLOCID_CONFIG_MISMATCH;
+    return false;
+  }
 
   if (nodes.size() == 0) {
     /**
@@ -4958,6 +4980,7 @@ bool MgmtSrvr::alloc_node_id_impl(NodeId &nodeid, enum ndb_mgm_node_type type,
     }
   }
 
+  /* 3) The distributed availability check */
   const int try_alloc_rc = try_alloc_from_list(nodeid, type, timeout_ms, nodes,
                                                error_code, error_string);
   if (try_alloc_rc == 0) {
@@ -5677,7 +5700,7 @@ void MgmtSrvr::show_variables(NdbOut &out) {
   out << "config_filename: " << str_null(m_opts.config_filename) << endl;
   out << "mycnf: " << yes_no(m_opts.mycnf) << endl;
   out << "bind_address: " << str_null(m_opts.bind_address) << endl;
-  out << "no_nodeid_checks: " << yes_no(m_opts.no_nodeid_checks) << endl;
+  out << "check_address: " << yes_no(m_opts.nodeid_check_addr) << endl;
   out << "print_full_config: " << yes_no(m_opts.print_full_config) << endl;
   out << "configdir: " << str_null(m_opts.configdir) << endl;
   out << "config_cache: " << yes_no(m_opts.config_cache) << endl;
@@ -5758,12 +5781,26 @@ void MgmtSrvr::make_sync_req(SignalSender &ss, Uint32 nodeId) {
   }
 }
 
+/**
+ * Remove any events already collected from a node which is no longer
+ * part of the report, its report should not be partial.
+ */
+static void remove_events_from_node(Vector<SimpleSignal> &events,
+                                    NodeId nodeId) {
+  for (unsigned j = 0; j < events.size(); j++) {
+    const SimpleSignal &ssig = events[j];
+    if (refToNode(ssig.header.theSendersBlockRef) == nodeId) {
+      events.erase(j);
+      j--;
+    }
+  }
+}
+
 bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
-                              Uint32 dump_type, Vector<SimpleSignal> &events) {
+                              Uint32 dump_type, Uint32 event_type,
+                              Vector<SimpleSignal> &events) {
   int nodes_counter[ABS_MAX_NDB_NODES];
-#ifndef NDEBUG
-  NdbNodeBitmask save = nodes;
-#endif
+  Uint32 connect_count[ABS_MAX_NDB_NODES];
   SignalSender ss(theFacade);
   ss.lock();
 
@@ -5789,14 +5826,53 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
     if (ss.sendSignal(i, ssig, CMVMI, GSN_DUMP_STATE_ORD, 2) == SEND_OK) {
       nodes.set(i);
       nodes_counter[i] = (int)reports_per_node;
+      connect_count[i] = node.m_info.m_connectCount;
+    } else {
+      // Nothing sent, don't wait for a reply from this node
+      nodes.clear(i);
     }
   }
 
-  while (true) {
-    // Check if all nodes are done
-    if (nodes.isclear()) break;
+  /**
+   * Wait for the replies.
+   *
+   * A node is removed from the set of nodes waited for when it has
+   * delivered its report(s), when NODE_FAILREP arrives for it or when
+   * it is found (checked once per second) to no longer be a confirmed
+   * node of the same incarnation as the one the request was sent to.
+   * The wait must thus never depend solely on a NODE_FAILREP being
+   * delivered to this particular SignalSender, since there is no
+   * timeout on the client side that is shorter than the mgmapi
+   * timeout (60 seconds by default) and a session thread stuck here
+   * never returns to serve the client.
+   *
+   * EVENT_REPs that are not expected, i.e. from a node not waited for
+   * or of another event type than requested, are ignored. EVENT_REP is
+   * a fire-and-forget signal, and the block number of the SignalSender
+   * is reused by the next command as soon as this function returns.
+   * A late reply, e.g. from a node restarting while the report commands
+   * are executed, must therefore not be treated as an error.
+   */
+  while (!nodes.isclear()) {
+    SimpleSignal *signal = ss.waitFor(1000);
+    if (signal == nullptr) {
+      // Timeout, check that the nodes waited for can still reply
+      for (Uint32 i = nodes.find_first(); i != NdbNodeBitmask::NotFound;
+           i = nodes.find_next(i + 1)) {
+        const trp_node node = ss.getNodeInfo(i);
+        if (!node.is_confirmed() ||
+            node.m_info.m_connectCount != connect_count[i]) {
+          g_eventLogger->info(
+              "Node %u disconnected while waiting for its reply to "
+              "DUMP %u, it is not included in the report",
+              i, dump_type);
+          remove_events_from_node(events, i);
+          nodes.clear(i);
+        }
+      }
+      continue;
+    }
 
-    SimpleSignal *signal = ss.waitFor();
     switch (signal->readSignalNumber()) {
       case GSN_EVENT_REP: {
         /**
@@ -5807,18 +5883,18 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
         const EventReport *const event =
             (const EventReport *)signal->getDataPtr();
 
-        if (!nodes.get(nodeid)) {
-          // The reporting node was not expected
-#ifndef NDEBUG
-          ndbout_c("nodeid: %u", nodeid);
-          ndbout_c("save: %s", BaseString::getPrettyText(save).c_str());
-#endif
-          assert(false);
-          return false;
+        if (nodeid >= ABS_MAX_NDB_NODES || !nodes.get(nodeid) ||
+            (Uint32)event->getEventType() != event_type) {
+          // Not a reply which is waited for, ignore it
+          g_eventLogger->info(
+              "Ignoring unexpected EVENT_REP type %u from node %u while "
+              "waiting for replies of type %u to DUMP %u",
+              (Uint32)event->getEventType(), nodeid, event_type, dump_type);
+          break;
         }
 
-        if (event->getEventType() == NDB_LE_SavedEvent &&
-            signal->getDataPtr()[1] == 0) {
+        if (event_type == NDB_LE_SavedEvent && signal->getDataPtr()[1] == 0) {
+          // End of stream marker, the last report from this node
           nodes_counter[nodeid] = 1;
         } else {
           // Save signal
@@ -5848,14 +5924,7 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
 
             // Remove any previous reports from this node
             // it should not be reported
-            for (unsigned j = 0; j < events.size(); j++) {
-              const SimpleSignal &ssig = events[j];
-              const NodeId nodeid = refToNode(ssig.header.theSendersBlockRef);
-              if (nodeid == i) {
-                events.erase(j);
-                j--;
-              }
-            }
+            remove_events_from_node(events, i);
           }
         }
         break;
@@ -6385,13 +6454,17 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
         const GetDatabaseConf * conf =
           CAST_CONSTPTR(GetDatabaseConf, signal->getDataPtr());
 
-        /* First send the protocol part */
+        /*
+         * First send the protocol part. The client reads exactly num_rows
+         * newline-terminated rows off the socket, so num_rows must match the
+         * number of rows emitted below for this branch: a database record has
+         * 9 rows, a user record has 6. Declaring the wrong count hangs the
+         * client's socket read (timeout).
+         */
         out << "result: Ok" << endl;
-        out << "num_rows: 9" << endl;
-        out << endl;
-
-        /* Next send the result data with 9 rows */
         if (!is_user) {
+          out << "num_rows: 9" << endl;
+          out << endl;
           out << "Database Quotas for " << (const char*)&databaseName[0] << endl;
           out << "databaseId = " << conf->databaseId << endl;
           out << "databaseVersion = " << conf->databaseId << endl;
@@ -6404,6 +6477,8 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
           out << "MaxParallelComplexQueries = ";
           out << conf->MaxParallelComplexQueries << endl;
         } else {
+          out << "num_rows: 6" << endl;
+          out << endl;
           out << "User rate limits for " << (const char*)&databaseName[0] << endl;
           out << "userId = " << conf->databaseId << endl;
           out << "userVersion = " << conf->databaseId << endl;
@@ -6550,17 +6625,24 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
           out << endl;
           return;
         }
-        /* First send the protocol part */
+        /*
+         * First send the protocol part. num_rows must match the number of
+         * newline-terminated rows emitted for this branch (the client reads
+         * exactly that many off the socket): a database record has 10 rows
+         * (9 fields + trailing blank), a user record has 8 rows (7 fields +
+         * trailing blank). A wrong count hangs the client's socket read.
+         */
         nextDatabaseId = conf->databaseId + 1;
         out << "result: Ok" << endl;
-        out << "num_rows: 10" << endl;
-        if (!is_user)
+        if (!is_user) {
+          out << "num_rows: 10" << endl;
           out << "nextDatabaseId: " << nextDatabaseId << endl;
-        else
+        } else {
+          out << "num_rows: 8" << endl;
           out << "nextUserId: " << nextDatabaseId << endl;
+        }
         out << endl;
 
-        /* Next send the result data with 9 rows */
         if (!is_user) {
           const char *databaseName = (const char*)signal->ptr[0].p;
           out << "Database Quotas for " << databaseName << endl;

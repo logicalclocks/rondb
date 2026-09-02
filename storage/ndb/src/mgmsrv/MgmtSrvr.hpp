@@ -105,7 +105,7 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
     const char *cluster_config_suffix;
     int config_cache;
     const char *bind_address;
-    int no_nodeid_checks;
+    int nodeid_check_addr;
     int print_full_config;
     const char *configdir;
     int verbose;
@@ -679,7 +679,8 @@ public:
   }
 
   bool request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
-                      Uint32 dump_type, Vector<SimpleSignal> &events);
+                      Uint32 dump_type, Uint32 event_type,
+                      Vector<SimpleSignal> &events);
 };
 
 #endif  // MgmtSrvr_H

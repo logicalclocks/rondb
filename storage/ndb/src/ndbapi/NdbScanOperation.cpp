@@ -137,6 +137,18 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   m_scanFinalisedOk = false;
   m_readTuplesCalled = false;
   m_interpretedCodeOldApi = nullptr;
+  /**
+   * Scan operations are pooled, so the aggregation code must be cleared on
+   * reuse: it was only nulled in the constructor, so a recycled operation kept
+   * pointing at the caller's NdbAggregator from a previous scan. That object is
+   * typically stack-allocated by the aggregating caller (RonSQL keeps it in
+   * RonSQLPreparer::execute()), so it is long dead by the time the operation is
+   * handed to the next user. scanImpl() then saw a non-null m_aggregation_code
+   * and ran addAggregationCode() over freed memory, crashing an ordinary
+   * non-aggregating scan that shared the Ndb object pool with an earlier
+   * aggregation.
+   */
+  m_aggregation_code = nullptr;
   m_pruneState = SPS_UNKNOWN;
   m_pruningKeyPartitionId = false;
 

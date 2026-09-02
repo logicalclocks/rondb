@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,7 +35,10 @@
 // PUBLIC
 //
 LogHandler::LogHandler()
-    : m_errorCode(0), m_errorStr(nullptr), m_last_log_time() {
+    : m_errorCode(0),
+      m_errorStr(nullptr),
+      m_last_log_time(),
+      m_last_suppressed_time() {
   m_max_repeat_frequency = 3;  // repeat messages maximum every 3 seconds
   m_count_repeated_messages = 0;
   m_last_category[0] = 0;
@@ -48,8 +52,16 @@ void LogHandler::append(const char *pCategory, Logger::LoggerLevel level,
                         const char *pMsg, const std::timespec *now) {
   if (m_max_repeat_frequency == 0 || level != m_last_level ||
       strcmp(pCategory, m_last_category) || strcmp(pMsg, m_last_message)) {
-    if (m_count_repeated_messages > 0)  // print that message
-      append_impl(m_last_category, m_last_level, m_last_message, now);
+    if (m_count_repeated_messages > 0) {
+      /**
+       * Flush the pending repeated message, with the time it arrived
+       * rather than the time of the new message now being logged.
+       * Using the new message's time would back- or forward-date the
+       * repeated message, which is misleading when reading the log.
+       */
+      append_impl(m_last_category, m_last_level, m_last_message,
+                  &m_last_suppressed_time);
+    }
 
     m_last_level = level;
     if (cstrbuf_copy(m_last_category, pCategory) == 1) {
@@ -69,6 +81,7 @@ void LogHandler::append(const char *pCategory, Logger::LoggerLevel level,
 
     if (diff_sec < m_max_repeat_frequency) {
       m_count_repeated_messages++;
+      m_last_suppressed_time = *now;
       return;
     }
   }

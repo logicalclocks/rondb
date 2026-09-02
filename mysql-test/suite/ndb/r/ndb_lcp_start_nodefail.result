@@ -1,0 +1,10 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Participant fails during the first LCP of a master that just took over
+# Participant fails during an LCP of a master that has run an LCP round
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All LCP start node failure tests passed
