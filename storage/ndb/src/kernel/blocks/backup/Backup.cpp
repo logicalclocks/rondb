@@ -7589,6 +7589,25 @@ Backup::start_lcp_scan(Signal *signal,
       delay = 9000;
     }
   }
+#ifdef ERROR_INSERT
+  else if (ERROR_INSERTED(10063) &&
+           (ERROR_INSERT_EXTRA == 0 ||
+            ERROR_INSERT_EXTRA == tabPtr.p->tableId)) {
+    /**
+     * Delay the start of the LCP scan regardless of fragment size. In
+     * this window the TUP scan is started (m_lcp_scan_op is set, scan
+     * state is First) but no page has been scanned yet, so concurrent
+     * deletes and inserts exercise the LCP_SCANNED_BIT plant and
+     * consume paths. Used by the LcpScannedBitChurn tests.
+     */
+    jam();
+    g_eventLogger->info(
+        "(%u)Delay start of LCP scan on tab(%u,%u) 1000ms, max_page: %u",
+        instance(), tabPtr.p->tableId, fragPtrP->fragmentId,
+        ptr.p->m_lcp_max_page_cnt);
+    delay = 1000;
+  }
+#endif
   sendScanFragReq(signal, ptr, filePtr, tabPtr, fragPtrP, delay);
 }
 
@@ -9403,7 +9422,14 @@ void Backup::fragmentCompleted(Signal *signal, BackupFilePtr filePtr,
                       ptr.p->m_lcp_keep_delete_all_pages);
       }
 #endif
-      c_tup->stop_lcp_scan(tabPtr.p->tableId, fragPtrP->fragmentId);
+      /**
+       * errCode != 0 means the fragment LCP is being aborted because the
+       * table is dropped. In that case the LCP scan may not have swept
+       * all page map slots, so leftover LCP_SCANNED_BITs are expected
+       * and are cleared silently in stop_lcp_scan.
+       */
+      c_tup->stop_lcp_scan(tabPtr.p->tableId, fragPtrP->fragmentId,
+                           errCode != 0);
     }
 
     /* Save errCode for later checks */
@@ -16163,6 +16189,19 @@ void Backup::openFilesReplyLCP(Signal *signal, BackupRecordPtr ptr,
         delay = 3000;
       }
     }
+#ifdef ERROR_INSERT
+    else if (ERROR_INSERTED(10063) &&
+             (ERROR_INSERT_EXTRA == 0 ||
+              ERROR_INSERT_EXTRA == tabPtr.p->tableId)) {
+      /* See the same error insert in start_lcp_scan. */
+      jam();
+      g_eventLogger->info(
+          "(%u)Delay start of LCP scan on tab(%u,%u) 1000ms, max_page: %u",
+          instance(), tabPtr.p->tableId, fragPtrP->fragmentId,
+          ptr.p->m_lcp_max_page_cnt);
+      delay = 1000;
+    }
+#endif
     sendScanFragReq(signal, ptr, zeroFilePtr, tabPtr, fragPtrP, delay);
   }
 }

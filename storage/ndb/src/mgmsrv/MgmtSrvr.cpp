@@ -5688,12 +5688,26 @@ void MgmtSrvr::make_sync_req(SignalSender &ss, Uint32 nodeId) {
   }
 }
 
+/**
+ * Remove any events already collected from a node which is no longer
+ * part of the report, its report should not be partial.
+ */
+static void remove_events_from_node(Vector<SimpleSignal> &events,
+                                    NodeId nodeId) {
+  for (unsigned j = 0; j < events.size(); j++) {
+    const SimpleSignal &ssig = events[j];
+    if (refToNode(ssig.header.theSendersBlockRef) == nodeId) {
+      events.erase(j);
+      j--;
+    }
+  }
+}
+
 bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
-                              Uint32 dump_type, Vector<SimpleSignal> &events) {
+                              Uint32 dump_type, Uint32 event_type,
+                              Vector<SimpleSignal> &events) {
   int nodes_counter[ABS_MAX_NDB_NODES];
-#ifndef NDEBUG
-  NdbNodeBitmask save = nodes;
-#endif
+  Uint32 connect_count[ABS_MAX_NDB_NODES];
   SignalSender ss(theFacade);
   ss.lock();
 
@@ -5719,14 +5733,53 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
     if (ss.sendSignal(i, ssig, CMVMI, GSN_DUMP_STATE_ORD, 2) == SEND_OK) {
       nodes.set(i);
       nodes_counter[i] = (int)reports_per_node;
+      connect_count[i] = node.m_info.m_connectCount;
+    } else {
+      // Nothing sent, don't wait for a reply from this node
+      nodes.clear(i);
     }
   }
 
-  while (true) {
-    // Check if all nodes are done
-    if (nodes.isclear()) break;
+  /**
+   * Wait for the replies.
+   *
+   * A node is removed from the set of nodes waited for when it has
+   * delivered its report(s), when NODE_FAILREP arrives for it or when
+   * it is found (checked once per second) to no longer be a confirmed
+   * node of the same incarnation as the one the request was sent to.
+   * The wait must thus never depend solely on a NODE_FAILREP being
+   * delivered to this particular SignalSender, since there is no
+   * timeout on the client side that is shorter than the mgmapi
+   * timeout (60 seconds by default) and a session thread stuck here
+   * never returns to serve the client.
+   *
+   * EVENT_REPs that are not expected, i.e. from a node not waited for
+   * or of another event type than requested, are ignored. EVENT_REP is
+   * a fire-and-forget signal, and the block number of the SignalSender
+   * is reused by the next command as soon as this function returns.
+   * A late reply, e.g. from a node restarting while the report commands
+   * are executed, must therefore not be treated as an error.
+   */
+  while (!nodes.isclear()) {
+    SimpleSignal *signal = ss.waitFor(1000);
+    if (signal == nullptr) {
+      // Timeout, check that the nodes waited for can still reply
+      for (Uint32 i = nodes.find_first(); i != NdbNodeBitmask::NotFound;
+           i = nodes.find_next(i + 1)) {
+        const trp_node node = ss.getNodeInfo(i);
+        if (!node.is_confirmed() ||
+            node.m_info.m_connectCount != connect_count[i]) {
+          g_eventLogger->info(
+              "Node %u disconnected while waiting for its reply to "
+              "DUMP %u, it is not included in the report",
+              i, dump_type);
+          remove_events_from_node(events, i);
+          nodes.clear(i);
+        }
+      }
+      continue;
+    }
 
-    SimpleSignal *signal = ss.waitFor();
     switch (signal->readSignalNumber()) {
       case GSN_EVENT_REP: {
         /**
@@ -5737,18 +5790,18 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
         const EventReport *const event =
             (const EventReport *)signal->getDataPtr();
 
-        if (!nodes.get(nodeid)) {
-          // The reporting node was not expected
-#ifndef NDEBUG
-          ndbout_c("nodeid: %u", nodeid);
-          ndbout_c("save: %s", BaseString::getPrettyText(save).c_str());
-#endif
-          assert(false);
-          return false;
+        if (nodeid >= ABS_MAX_NDB_NODES || !nodes.get(nodeid) ||
+            (Uint32)event->getEventType() != event_type) {
+          // Not a reply which is waited for, ignore it
+          g_eventLogger->info(
+              "Ignoring unexpected EVENT_REP type %u from node %u while "
+              "waiting for replies of type %u to DUMP %u",
+              (Uint32)event->getEventType(), nodeid, event_type, dump_type);
+          break;
         }
 
-        if (event->getEventType() == NDB_LE_SavedEvent &&
-            signal->getDataPtr()[1] == 0) {
+        if (event_type == NDB_LE_SavedEvent && signal->getDataPtr()[1] == 0) {
+          // End of stream marker, the last report from this node
           nodes_counter[nodeid] = 1;
         } else {
           // Save signal
@@ -5778,14 +5831,7 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
 
             // Remove any previous reports from this node
             // it should not be reported
-            for (unsigned j = 0; j < events.size(); j++) {
-              const SimpleSignal &ssig = events[j];
-              const NodeId nodeid = refToNode(ssig.header.theSendersBlockRef);
-              if (nodeid == i) {
-                events.erase(j);
-                j--;
-              }
-            }
+            remove_events_from_node(events, i);
           }
         }
         break;

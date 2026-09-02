@@ -10993,25 +10993,39 @@ static int lcpStartParticipantFail(NdbRestarter &res,
    * and the LCP runs to completion.
    */
   const Uint64 start = NdbTick_CurrentMillisecond();
+  Uint64 lastCheck = 0;
   bool lcpCompleted = false;
   while (NdbTick_CurrentMillisecond() - start < Uint64(300) * 1000) {
     const int rc = ndb_logevent_get_next(handle, &event, 1000);
     CHECK(rc >= 0, "Failed to read log events");
-    for (int i = 0; i < res.getNumDbNodes(); i++) {
-      const int node = res.getDbNodeId(i);
-      bool isStopped = false;
-      for (int j = 0; j < numStopped; j++) {
-        if (stopped[j] == node) isStopped = true;
-      }
-      if (isStopped) continue;
-      if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
-        g_err << "Node " << node << " is no longer started: it crashed"
-              << " or restarted when LCP participant " << victim
-              << " failed during the START_LCP_REQ handshake of LCP "
-              << lcpId << " (master " << master << ")" << endl;
-        return NDBT_FAILED;
+
+    /**
+     * Check the survivors on a timer rather than once per event.
+     * getNodeStatus() is a full ndb_mgm_get_status() round trip per
+     * node, so doing it for every event makes this loop read the
+     * listener socket slower than the cluster fills it, and the
+     * completion this case waits for is never reached.
+     */
+    const Uint64 now = NdbTick_CurrentMillisecond();
+    if (now - lastCheck >= 1000) {
+      lastCheck = now;
+      for (int i = 0; i < res.getNumDbNodes(); i++) {
+        const int node = res.getDbNodeId(i);
+        bool isStopped = false;
+        for (int j = 0; j < numStopped; j++) {
+          if (stopped[j] == node) isStopped = true;
+        }
+        if (isStopped) continue;
+        if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
+          g_err << "Node " << node << " is no longer started: it crashed"
+                << " or restarted when LCP participant " << victim
+                << " failed during the START_LCP_REQ handshake of LCP "
+                << lcpId << " (master " << master << ")" << endl;
+          return NDBT_FAILED;
+        }
       }
     }
+
     if (rc > 0 && event.type == NDB_LE_LocalCheckpointCompleted &&
         event.LocalCheckpointCompleted.lci >= lcpId) {
       lcpCompleted = true;
@@ -11059,7 +11073,16 @@ int runLcpStartParticipantFail(NDBT_Context *ctx, NDBT_Step *step) {
       if (handle != NULL) ndb_mgm_destroy_logevent_handle(&handle);
     }
   } guard;
-  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_CHECKPOINT, 0};
+  /**
+   * Subscribe at log level 10, not 15. This case only reads
+   * LocalCheckpointStarted and LocalCheckpointCompleted, both of
+   * which have threshold 7, while LCPFragmentCompleted has threshold
+   * 11. At level 15 the handle also receives one LCPFragmentCompleted
+   * per fragment and LDM instance, which is hundreds of events per
+   * LCP on this cluster, and the events this case waits for end up
+   * queued behind them on the listener socket.
+   */
+  int filter[] = {10, NDB_MGM_EVENT_CATEGORY_CHECKPOINT, 0};
   guard.handle = ndb_mgm_create_logevent_handle(res.handle, filter);
   CHECK(guard.handle != NULL, "Failed to create log event handle");
 
@@ -11596,6 +11619,127 @@ int runRestartBarrierTimeout(NDBT_Context *ctx, NDBT_Step *step) {
   /* Release the stalled node and finish */
   if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
   if (res.waitClusterStarted(600)) return NDBT_FAILED;
+  return NDBT_OK;
+}
+
+/**
+ * Regression stress for a leaked LCP_SCANNED_BIT in the DBTUP page map.
+ * Crash signature of the bug: error 2341, the row count ndbrequire at
+ * the end of a full fragment LCP in Backup.cpp, with
+ * skip_all_page_lcp_scanned_bit set in the counter printout.
+ *
+ * The bit is planted in the page map when a page is dropped while the
+ * fragment's own LCP scan is active, and must be consumed by that same
+ * scan when it reaches the page slot. A bit that survives the scan makes
+ * the next LCP of the fragment skip a live page and lose its rows from
+ * the checkpoint. The workload that exposes the windows is a table
+ * whose rows are deleted and re-inserted wholesale at high frequency
+ * while LCPs run back to back, so that delete-all + re-insert cycles
+ * land inside every phase of the fragment LCP scan.
+ *
+ * One step churns, one step drives LCPs continuously. On debug builds
+ * the kernel leak detection (clear_leaked_lcp_scanned_bits at LCP scan
+ * end and the checks in the page map alloc/release paths) turns any
+ * leak into an immediate data node failure which fails the test. On
+ * production builds the same holds when the cluster is configured with
+ * CrashOnLeakedLcpScannedBit=1; otherwise a leak is healed and
+ * reported in the node log.
+ */
+int runLcpScannedBitChurn(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  int rows = (int)ctx->getProperty("ChurnRows", Uint32(0));
+  if (rows == 0) rows = ctx->getNumRecords();
+  HugoOperations hugoOps(*ctx->getTab());
+  /**
+   * NDB transactions are atomic, so a failed delete-all or insert-all
+   * leaves the row set unchanged and the phase can simply be retried.
+   */
+  bool rows_present = false;
+  Uint64 cycles = 0;
+  while (!ctx->isTestStopped()) {
+    const bool do_insert = !rows_present;
+    int res = hugoOps.startTransaction(pNdb);
+    if (res == 0) {
+      /**
+       * Define the delete-all or insert-all in chunks with NoCommit
+       * executes so a large ChurnRows setting does not exhaust
+       * operation records; the final Commit keeps the cycle atomic.
+       */
+      const int chunk = 256;
+      for (int r = 0; r < rows && res == 0; r += chunk) {
+        const int n = (rows - r) < chunk ? (rows - r) : chunk;
+        if (do_insert)
+          res = hugoOps.pkInsertRecord(pNdb, r, n, (int)cycles);
+        else
+          res = hugoOps.pkDeleteRecord(pNdb, r, n);
+        if (res == 0 && (r + n) < rows) res = hugoOps.execute_NoCommit(pNdb);
+      }
+      if (res == 0) res = hugoOps.execute_Commit(pNdb);
+    }
+    if (res == 0) {
+      rows_present = do_insert;
+      if (rows_present) cycles++;
+    } else {
+      if (hugoOps.getNdbError().status != NdbError::TemporaryError) {
+        g_err << "Churn " << (do_insert ? "insert" : "delete")
+              << " failed: " << hugoOps.getNdbError() << endl;
+        hugoOps.closeTransaction(pNdb);
+        ctx->stopTest();
+        return NDBT_FAILED;
+      }
+      NdbSleep_MilliSleep(10);
+    }
+    hugoOps.closeTransaction(pNdb);
+  }
+  g_err << "Churn cycles completed: " << cycles << endl;
+  if (cycles < 10) {
+    g_err << "Churn was too slow to exercise the LCP scan windows" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runLcpScannedBitLcps(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int loops = ctx->getNumLoops();
+  const int delay_ms = (int)ctx->getProperty("LcpDelayMs", Uint32(200));
+  int result = NDBT_OK;
+  for (int i = 0; i < loops && !ctx->isTestStopped(); i++) {
+    int val = DumpStateOrd::DihStartLcpImmediately;
+    if (restarter.dumpStateAllNodes(&val, 1) != 0) {
+      g_err << "Failed to start LCP, a data node may have failed" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    NdbSleep_MilliSleep(delay_ms);
+  }
+  ctx->stopTest();
+  return result;
+}
+
+int runLcpScannedBitErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int code = (int)ctx->getProperty("LcpErrorInsert", Uint32(0));
+  if (code == 0) return NDBT_OK;
+  const int tabId = (int)ctx->getTab()->getTableId();
+  g_err << "Insert error " << code << " with extra (table id) " << tabId
+        << endl;
+  int dump[] = {DumpStateOrd::BackupErrorInsert, code, tabId};
+  if (restarter.dumpStateAllNodes(dump, 3) != 0) {
+    g_err << "Failed to insert error " << code << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runLcpScannedBitFinish(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  int dump[] = {DumpStateOrd::BackupErrorInsert, 0, 0};
+  restarter.dumpStateAllNodes(dump, 3);
+  if (restarter.waitClusterStarted(120) != 0) {
+    g_err << "A data node failed during the test" << endl;
+    return NDBT_FAILED;
+  }
   return NDBT_OK;
 }
 
@@ -12209,6 +12353,46 @@ TESTCASE("LCP_with_many_parts", "Ensure that LCP has many parts") {
 TESTCASE("LCP_with_many_parts_drop_table", "Ensure that LCP has many parts") {
   TC_PROPERTY("DropTable", (Uint32)1);
   INITIALIZER(run_PLCP_many_parts);
+}
+TESTCASE("LcpScannedBitChurn",
+         "Delete-all + re-insert churn on a small table while LCPs run"
+         " back to back. Regression stress for leaked LCP_SCANNED_BIT in"
+         " the DBTUP page map (error 2341 at the Backup.cpp row count"
+         " check).") {
+  TC_PROPERTY("ChurnRows", (Uint32)12);
+  TC_PROPERTY("LcpDelayMs", (Uint32)200);
+  STEP(runLcpScannedBitChurn);
+  STEP(runLcpScannedBitLcps);
+  FINALIZER(runLcpScannedBitFinish);
+  FINALIZER(runClearTable);
+}
+TESTCASE("LcpScannedBitChurnPreScan",
+         "As LcpScannedBitChurn with error insert 10063 delaying the"
+         " start of each LCP scan of the test table by 1000ms, so churn"
+         " cycles land in the window where the TUP scan is started but"
+         " has not yet swept any page.") {
+  TC_PROPERTY("ChurnRows", (Uint32)12);
+  TC_PROPERTY("LcpErrorInsert", (Uint32)10063);
+  TC_PROPERTY("LcpDelayMs", (Uint32)500);
+  INITIALIZER(runLcpScannedBitErrorInsert);
+  STEP(runLcpScannedBitChurn);
+  STEP(runLcpScannedBitLcps);
+  FINALIZER(runLcpScannedBitFinish);
+  FINALIZER(runClearTable);
+}
+TESTCASE("LcpScannedBitChurnMidScan",
+         "As LcpScannedBitChurn with error insert 10042 delaying each"
+         " LCP scan batch of the test table by 10ms and enough rows for"
+         " the scan to span many batches, so churn cycles land in"
+         " mid-scan real-time break windows.") {
+  TC_PROPERTY("ChurnRows", (Uint32)3000);
+  TC_PROPERTY("LcpErrorInsert", (Uint32)10042);
+  TC_PROPERTY("LcpDelayMs", (Uint32)500);
+  INITIALIZER(runLcpScannedBitErrorInsert);
+  STEP(runLcpScannedBitChurn);
+  STEP(runLcpScannedBitLcps);
+  FINALIZER(runLcpScannedBitFinish);
+  FINALIZER(runClearTable);
 }
 TESTCASE("PLCP_R1", "Node restart while deleting rows") {
   TC_PROPERTY("Initial", (Uint32)0);

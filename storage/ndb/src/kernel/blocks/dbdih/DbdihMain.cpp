@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27756,6 +27756,39 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const BlockReference senderRef = req->senderRef;
   const NodeId nodeId = refToNode(senderRef);
+
+  if (signal->getLength() >= StopPermReq::SignalLengthWithType &&
+      req->requestType == StopPermReq::RT_RELEASE) {
+    /**
+     * The stopping node aborted its graceful stop after the stop
+     * permission had been granted. Release the permission, otherwise
+     * the node stays in c_stopPermMaster.stoppingNodes (normally only
+     * cleared when the stopping node dies) and every later
+     * STOP_PERM_REQ in the cluster is refused with
+     * NodeShutdownInProgress forever. Fire-and-forget, no reply.
+     */
+    jam();
+    if (!isMaster()) {
+      jam();
+      /* Forward to master, a release needs no proxy state */
+      sendSignal(cmasterdihref, GSN_STOP_PERM_REQ, signal,
+                 StopPermReq::SignalLengthWithType, JBB);
+      return;
+    }
+    if (c_stopPermMaster.clientRef != 0 &&
+        refToNode(c_stopPermMaster.clientRef) == nodeId) {
+      jam();
+      /* Grant to this node still in progress, complete it as refused */
+      if (c_stopPermMaster.returnValue == 0) {
+        jam();
+        c_stopPermMaster.returnValue =
+            StopPermRef::NF_CausedAbortOfStopProcedure;
+      }
+      return;
+    }
+    c_stopPermMaster.stoppingNodes.clear(nodeId);
+    return;
+  }
 
   if (isMaster()) {
     /**

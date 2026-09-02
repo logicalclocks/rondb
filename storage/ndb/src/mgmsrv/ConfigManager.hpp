@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,6 +34,7 @@
 #include <ConfigRetriever.hpp>
 
 #include <HashMap.hpp>
+#include <NdbTick.h>
 #include <NodeBitmask.hpp>
 #include <SignalSender.hpp>
 
@@ -210,7 +211,10 @@ class ConfigManager : public MgmtThread {
 
   } m_dynamic_ports;
 
+  // Number of consecutive CONFIG_CHECK_REFs with mismatching config
+  // state, and the time the first one in the streak was received
   Uint32 m_retry;
+  NDB_TICKS m_first_state_mismatch;
   void get_max_node_id(const Config *conf);
 
 public:

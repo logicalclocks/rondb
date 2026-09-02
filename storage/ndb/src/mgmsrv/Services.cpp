@@ -2736,7 +2736,7 @@ void MgmApiSession::dump_events(Parser_t::Context &,
   // Request the events
   Vector<SimpleSignal> events;
   if (!m_mgmsrv.request_events(nodes, request->reports_per_node,
-                               request->dump_type, events)) {
+                               request->dump_type, request->type, events)) {
     m_output->println("result: failed to dump events");
     m_output->println("%s", "");
     return;

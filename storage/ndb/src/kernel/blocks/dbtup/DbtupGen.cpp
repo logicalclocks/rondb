@@ -666,6 +666,11 @@ void Dbtup::execREAD_CONFIG_REQ(Signal *signal) {
     ndb_mgm_get_int_parameter(p, CFG_DB_CRASH_ON_CORRUPTED_TUPLE, &val);
     c_crashOnCorruptedTuple = val ? true : false;
   }
+  {
+    Uint32 val = 0;
+    ndb_mgm_get_int_parameter(p, CFG_DB_CRASH_ON_LEAKED_LCP_BIT, &val);
+    c_crashOnLeakedLcpScannedBit = val ? true : false;
+  }
   /**
    * Set up read buffer used by Drop Table
    */

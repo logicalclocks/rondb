@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,10 +52,26 @@ class StopPermReq {
 
  public:
   static constexpr Uint32 SignalLength = 2;
+  static constexpr Uint32 SignalLengthWithType = 3;
+
+  /**
+   * senderData values, echoed back in StopPermRef::senderData. A
+   * release must use a distinct value so that the requester can
+   * recognize (and ignore) a REF from an old master that does not
+   * understand the release request type and treats it as an acquire.
+   */
+  static constexpr Uint32 AcquireSenderData = 12;
+  static constexpr Uint32 ReleaseSenderData = 13;
+
+  enum RequestType {
+    RT_ACQUIRE = 0,  ///< Ask for permission to stop gracefully
+    RT_RELEASE = 1   ///< Return a granted permission, stop was aborted
+  };
 
  public:
   Uint32 senderRef;
   Uint32 senderData;
+  Uint32 requestType;  // Only present with SignalLengthWithType
 };
 
 class StopPermConf {

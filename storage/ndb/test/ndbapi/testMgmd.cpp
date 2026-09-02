@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1044,15 +1044,27 @@ int runBug56844(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 static bool get_status(const char *connectstring, Properties &status) {
-  NdbMgmd ndbmgmd;
-  if (!ndbmgmd.connect(connectstring)) return false;
-
-  Properties args;
-  if (!ndbmgmd.call("get status", args, "node status", status, NULL, true)) {
-    g_err << "fetch_mgmd_status: mgmd.call failed" << endl;
-    return false;
+  /**
+   * A just started mgmd may refuse 'get status' (and close the session)
+   * with "Management server is waiting for arbitrator selection" until
+   * the arbitrator startup gate is lifted, which happens within a few
+   * seconds when no data nodes connect (cold start detection). Retry
+   * with a fresh connection for a while before giving up.
+   */
+  const int max_attempts = 40;
+  for (int attempt = 1; attempt <= max_attempts; attempt++) {
+    NdbMgmd ndbmgmd;
+    if (ndbmgmd.connect(connectstring)) {
+      Properties args;
+      status.clear();
+      if (ndbmgmd.call("get status", args, "node status", status, NULL, true))
+        return true;
+    }
+    g_err << "fetch_mgmd_status: attempt " << attempt << " failed" << endl;
+    NdbSleep_MilliSleep(500);
   }
-  return true;
+  g_err << "fetch_mgmd_status: giving up" << endl;
+  return false;
 }
 
 static bool value_equal(Properties &status, int nodeid, const char *name,
@@ -1355,6 +1367,17 @@ int runTestUnresolvedHosts2(NDBT_Context *ctx, NDBT_Step *step) {
 
   Properties config;
   {
+    // Keep the one startable data node small, same footprint as the
+    // ConfigFactory configs: with automatic memory and thread
+    // configuration it would size itself for the whole machine
+    Properties db;
+    db.put("ArbitrationRankWait", Uint32(0));
+    db.put("AutomaticMemoryConfig", Uint32(0));
+    db.put("AutomaticThreadConfig", Uint32(0));
+    db.put("DataMemory", "30M");
+    config.put("DB Default", &db);
+  }
+  {
     // 144 ndbds, nodeid 1 -> 144
     for (int i = 1; i <= 144; i++) {
       Properties ndbd;
@@ -1541,6 +1564,12 @@ int runTestMultiMGMDDisconnection(NDBT_Context *ctx, NDBT_Step *step) {
       ndbd.put("NodeId", i);
       ndbd.put("NoOfReplicas", 2);
       ndbd.put("HostName", hostname);
+      // Same small footprint and disabled arbitrator startup gate as
+      // the configs created by ConfigFactory
+      ndbd.put("ArbitrationRankWait", Uint32(0));
+      ndbd.put("AutomaticMemoryConfig", Uint32(0));
+      ndbd.put("AutomaticThreadConfig", Uint32(0));
+      ndbd.put("DataMemory", "30M");
       config.put("ndbd", i, &ndbd);
   }
   {
@@ -1574,10 +1603,11 @@ int runTestMultiMGMDDisconnection(NDBT_Context *ctx, NDBT_Step *step) {
   CHECK(mgmd3.connect(config));
   CHECK(mgmd3.wait_confirmed_config());
 
-  // Wait 15 secs for each data node to reach the started status
+  // Wait for each data node to reach the started status, allow time
+  // for an initial start of a debug build on a loaded machine
   NdbMgmHandle handle = mgmd1.handle();
-  CHECK(ndbd1.wait_started(handle, 15, 0));
-  CHECK(ndbd2.wait_started(handle, 15, 1));
+  CHECK(ndbd1.wait_started(handle, 60, 0));
+  CHECK(ndbd2.wait_started(handle, 60, 1));
 
   // Stop the ndb_mgmd(s)
   CHECK(mgmd3.stop());
@@ -1657,6 +1687,32 @@ int runTestSshKeySigning(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+
+  /* Skip this test unless passwordless ssh to localhost works:
+     ndb_sign_keys runs ssh without BatchMode, so on a host where ssh
+     asks for a password the signing process hangs forever on the
+     prompt (seen on a developer macOS with Remote Login enabled but
+     no authorized key).
+  */
+  {
+    NdbProcess::Args ssh_args;
+    ssh_args.add("-o");
+    ssh_args.add("BatchMode=yes");
+    ssh_args.add("-o");
+    ssh_args.add("ConnectTimeout=5");
+    ssh_args.add("localhost");
+    ssh_args.add("true");
+    auto probe =
+        NdbProcess::create("SshProbe", "/usr/bin/ssh", wd.path(), ssh_args);
+    int probe_ret = -1;
+    const bool probe_ok = probe && probe->wait(probe_ret, 10000);
+    if (probe && !probe_ok) probe->stop();
+    if (!probe_ok || probe_ret != 0) {
+      printf("Skipping test SshKeySigning, no passwordless ssh to localhost\n");
+      return NDBT_OK;
+    }
+  }
+
   Properties config = ConfigFactory::create();
   ConfigFactory::put(config, "ndb_mgmd", 1, "RequireCertificate", "true");
   BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
@@ -1797,7 +1853,7 @@ int runTestApiWithoutCert(NDBT_Context *ctx, NDBT_Step *step) {
   ndbd.args().add("--ndb-tls-search-path=", wd.path());
   ndbd.start(wd.path(), mgmd.connectstring(config));  // Start data node
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle));
+  CHECK(ndbd.wait_started(handle, 60));
 
   /* API has no TLS context and should fail to connect */
   Ndb_cluster_connection con(mgmd.connectstring(config).c_str());
@@ -1901,7 +1957,7 @@ int runTestNdbdWithCert(NDBT_Context *ctx, NDBT_Step *step) {
   ndbd.args().add("--ndb-mgm-tls=strict");
   ndbd.start(wd.path(), mgmd.connectstring(config));  // Start data node
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle));
+  CHECK(ndbd.wait_started(handle, 60));
 
   CHECK(mgmd.stop());
   CHECK(ndbd.stop());
