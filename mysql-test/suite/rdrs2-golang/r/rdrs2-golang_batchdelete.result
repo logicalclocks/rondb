@@ -1,8 +1,0 @@
-## Run rdrs2-golang_batchdelete.test without TLS
-ok  	hopsworks.ai/rdrs2/internal/integrationtests/batchdelete
-
-Golang test for hopsworks.ai/rdrs2/internal/integrationtests/batchdelete exited with code 0
-## Run rdrs2-golang_batchdelete.test with TLS and server-side cert
-ok  	hopsworks.ai/rdrs2/internal/integrationtests/batchdelete
-
-Golang test for hopsworks.ai/rdrs2/internal/integrationtests/batchdelete exited with code 0

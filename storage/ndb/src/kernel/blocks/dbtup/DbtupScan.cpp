@@ -3358,7 +3358,7 @@ void Dbtup::removeAccLockOp(ScanOp &scan, Uint32 accLockOp) {
   checkPoolShrinkNeed(DBTUP_SCAN_LOCK_TRANSIENT_POOL_INDEX, c_scanLockPool);
 }
 
-void Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId) {
+void Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId, bool lcp_error) {
   jamEntry();
   FragrecordPtr fragPtr;
   fragPtr.i = RNIL;
@@ -3375,6 +3375,41 @@ void Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId) {
   fragPtr.p->m_lcp_scan_op = RNIL;
   scanPtr.p->m_fragPtrI = RNIL64;
   scanPtr.p->m_tableId = RNIL;
+
+  /**
+   * The LCP_SCANNED_BIT in the page map is only meaningful while this
+   * fragment's LCP scan is active: it is planted by releaseFragPage when
+   * a page is dropped during the scan and consumed by
+   * prepare_lcp_scan_page when the scan reaches the page slot. A bit
+   * that is still set when the scan stops would poison the next LCP of
+   * this fragment: the scan would skip a live page and produce a
+   * checkpoint with missing rows, caught only by the row count check at
+   * the end of that later fragment LCP (Backup.cpp) when the LCP is a
+   * full LCP, and not caught at all for partial LCPs.
+   *
+   * Sweep the page map here to catch such a leak at its source, while
+   * the per-thread jam trace still contains the scan that leaked the
+   * bit. The sweep self-heals by clearing the bit. When the fragment
+   * LCP was aborted because the table is being dropped, leftover bits
+   * are expected and cleared silently since the page map is about to be
+   * released.
+   */
+  const Uint32 leaked = clear_leaked_lcp_scanned_bits(fragPtr.p, !lcp_error);
+  if (unlikely(leaked > 0 && !lcp_error)) {
+    g_eventLogger->warning(
+        "(%u) tab(%u,%u): cleared %u leaked LCP_SCANNED_BIT(s) at LCP scan"
+        " end, please report a bug and attach node logs and trace files",
+        instance(), tableId, fragId, leaked);
+    /**
+     * With CrashOnLeakedLcpScannedBit set we fail fast also in
+     * production builds so that the leak is caught with trace files
+     * from the scan that leaked it; with the default false we rely on
+     * the self-heal above and only report. Debug builds always fail
+     * fast.
+     */
+    ndbrequire(!c_crashOnLeakedLcpScannedBit);
+    ndbassert(false);
+  }
 }
 
 void Dbtup::releaseScanOp(ScanOpPtr &scanPtr) {

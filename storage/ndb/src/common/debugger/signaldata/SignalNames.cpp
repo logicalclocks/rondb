@@ -418,8 +418,7 @@ const GsnName SignalNames[] = {
     ,
     {GSN_STOP_PERM_REQ, "STOP_PERM_REQ"},
     {GSN_STOP_PERM_REF, "STOP_PERM_REF"},
-    {GSN_STOP_PERM_CONF, "STOP_PERM_CONF"},
-    {GSN_STOP_PERM_REL, "STOP_PERM_REL"}
+    {GSN_STOP_PERM_CONF, "STOP_PERM_CONF"}
 
     ,
     {GSN_STOP_ME_REQ, "STOP_ME_REQ"},
@@ -1092,5 +1091,6 @@ const GsnName SignalNames[] = {
   ,{ GSN_DBACC_WAITFOR_REP, "DBACC_WAITFOR_REP" }
   ,{ GSN_TC_DEADLOCK_REP, "TC_DEADLOCK_REP" }
   ,{ GSN_MALICIOUS_SIGNAL_REPORT, "MALICIOUS_SIGNAL_REPORT" }
+  ,{GSN_STOP_PERM_REL, "STOP_PERM_REL"}
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames) / sizeof(GsnName);

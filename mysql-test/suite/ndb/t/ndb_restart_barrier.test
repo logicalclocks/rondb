@@ -63,6 +63,9 @@ EOF
 --echo # Barrier holds while a node is below phase 110, wave releases together
 --exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
+--echo # Parked nodes release themselves when the master Grant is suppressed
+--exec $TEST_NODE_RESTART -n RestartBarrierSelfRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
 --echo # Consecutive waves reset barrier and dictionary lock state
 --exec $TEST_NODE_RESTART -n RestartBarrierRepeatedWaves T1 >> $NDB_TOOLS_OUTPUT 2>&1
 

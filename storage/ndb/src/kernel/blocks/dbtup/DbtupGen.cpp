@@ -117,6 +117,10 @@ Dbtup::Dbtup(Block_context& ctx,
 {
   BLOCK_CONSTRUCTOR(Dbtup);
 
+  NdbTick_Invalidate(&m_rowid_899_window_start);
+  m_rowid_899_window_count = 0;
+  m_rowid_899_suppressed = 0;
+
   if (blockNo == DBTUP) {
     addRecSignal(GSN_DEBUG_SIG, &Dbtup::execDEBUG_SIG);
     addRecSignal(GSN_CONTINUEB, &Dbtup::execCONTINUEB);
@@ -671,6 +675,11 @@ void Dbtup::execREAD_CONFIG_REQ(Signal *signal) {
     Uint32 val = 0;
     ndb_mgm_get_int_parameter(p, CFG_DB_CRASH_ON_CORRUPTED_TUPLE, &val);
     c_crashOnCorruptedTuple = val ? true : false;
+  }
+  {
+    Uint32 val = 0;
+    ndb_mgm_get_int_parameter(p, CFG_DB_CRASH_ON_LEAKED_LCP_BIT, &val);
+    c_crashOnLeakedLcpScannedBit = val ? true : false;
   }
   /**
    * Set up read buffer used by Drop Table

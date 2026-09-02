@@ -1,0 +1,33 @@
+--source include/have_ndb.inc
+
+# RONDB-978: full lifecycle of a user rate-limit entity through ndb_mgm.
+#
+# This exercises the "USER" mgm command family (SET/GET/LIST/ALTER/DROP) end to
+# end. It is a regression test for three defects that made these commands
+# unusable:
+#   1. The client command parser discarded the sub-command token, so every
+#      "USER <sub>" command failed to dispatch.
+#   2. The server declared the wrong num_rows for USER GET / USER LIST, hanging
+#      the client's socket read.
+#   3. The kernel double-prefixed the internal "$username" on participant data
+#      nodes (and on restart), so USER DROP / USER ALTER failed with error 709
+#      on any node that had stored "$$username".
+#
+# The commands print variable ids/versions, so the data output is suppressed and
+# the test relies on exit codes: any failing ndb_mgm invocation (missing
+# --error) aborts the test.
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET alice --rate-per-sec=100"
+--exec $NDB_MGM -e "USER GET alice"
+--exec $NDB_MGM -e "USER LIST"
+--exec $NDB_MGM -e "USER ALTER alice --rate-per-sec=200"
+--exec $NDB_MGM -e "USER GET alice"
+--exec $NDB_MGM -e "USER DROP alice"
+
+# After the drop the user must be gone: GET now fails.
+--error 255,65280
+--exec $NDB_MGM -e "USER GET alice"
+--enable_result_log
+
+--echo USER lifecycle completed

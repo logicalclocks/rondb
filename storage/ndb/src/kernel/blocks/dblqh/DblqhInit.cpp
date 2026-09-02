@@ -598,6 +598,10 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
       m_databaseRecordHash(m_databaseRecordPool) {
   BLOCK_CONSTRUCTOR(Dblqh);
 
+  NdbTick_Invalidate(&m_rowid_mismatch_window_start);
+  m_rowid_mismatch_window_count = 0;
+  m_rowid_mismatch_suppressed = 0;
+
   if (blockNo == DBLQH) {
     addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dblqh::execQUOTA_OVERLOAD_REP);
     addRecSignal(GSN_CREATE_DB_REQ, &Dblqh::execCREATE_DB_REQ);

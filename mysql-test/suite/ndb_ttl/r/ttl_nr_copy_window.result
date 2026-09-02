@@ -1,0 +1,161 @@
+SET time_zone = '+00:00';
+# === 1. single-fragment TTL table ======================================
+CREATE TABLE test.t1 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+data    VARCHAR(64)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col"
+PARTITION BY KEY(id) PARTITIONS 1;
+# === 2. discover fragment roles (node ids kept out of the result) ======
+# === 3. stop the backup data node (graceful, keeps its data) ===========
+# backup data node stopped
+# === 4. load the fragment while the backup is down =====================
+# 1500 pre-expired rows (ids 1..1500) + 100 live rows (ids 2001..2100),
+# inserted in id order so rowid order ~ id order; all of it is newer
+# than the backup's restore GCI, so on restart every row MUST be
+# delivered through the copy scan.
+# visible (non-expired) rows now:
+SELECT COUNT(*) AS visible_rows FROM test.t1 WHERE id > 0;
+visible_rows
+100
+# === 5. arm the timing error insert; start the backup ==================
+# EI 5113 on the LIVE node: ~10 ms per copied row on TTL fragments and
+# copy start/complete log markers.  Pure timing: the same wide copy
+# window occurs naturally on large fragments.
+# === 6. wait until the copy of the TTL fragment has begun ==============
+# copy of the TTL fragment is now in progress on the live node
+# === 7. THE RACE: commit live TTL traffic against the half-copied ======
+# ===    fragment (everything below runs inside the copy window)   ======
+# (a) known transient: INSERT over an expired ALREADY-copied row is
+#     626-aborted while the fragment is in copy mode (SQL sees 1032);
+#     the identical insert will succeed after the copy completes.
+INSERT INTO test.t1 VALUES (2, NOW(), 'transient-attempt');
+ERROR HY000: Can't find record in 't1'
+# (b) D1 channel: INSERT over expired rows the copy has NOT yet reached
+INSERT INTO test.t1 VALUES (1496, NOW() + INTERVAL 1 HOUR, 'd1-race-1496');
+INSERT INTO test.t1 VALUES (1497, NOW() + INTERVAL 1 HOUR, 'd1-race-1497');
+INSERT INTO test.t1 VALUES (1498, NOW() + INTERVAL 1 HOUR, 'd1-race-1498');
+INSERT INTO test.t1 VALUES (1499, NOW() + INTERVAL 1 HOUR, 'd1-race-1499');
+INSERT INTO test.t1 VALUES (1500, NOW() + INTERVAL 1 HOUR, 'd1-race-1500');
+# (c) D2a channel: REPLACE over expired rows the copy has NOT yet reached
+REPLACE INTO test.t1 VALUES (1481, NOW() + INTERVAL 1 HOUR, 'd2-race-1481');
+REPLACE INTO test.t1 VALUES (1482, NOW() + INTERVAL 1 HOUR, 'd2-race-1482');
+REPLACE INTO test.t1 VALUES (1483, NOW() + INTERVAL 1 HOUR, 'd2-race-1483');
+REPLACE INTO test.t1 VALUES (1484, NOW() + INTERVAL 1 HOUR, 'd2-race-1484');
+REPLACE INTO test.t1 VALUES (1485, NOW() + INTERVAL 1 HOUR, 'd2-race-1485');
+# (d) purge-shaped deletes (ttl-ignored, the RDRS purge wire shape):
+#     one row the copy already delivered (id 3), one it has not
+#     reached yet (id 1490); both must physically delete on both
+#     replicas
+SET SESSION ttl_expired_rows_visible_in_delete = 1;
+affected rows: 0
+DELETE FROM test.t1 WHERE id IN (3, 1490);
+affected rows: 2
+SET SESSION ttl_expired_rows_visible_in_delete = 0;
+affected rows: 0
+# (e) fresh-key inserts (rowid-carrying control channel)
+INSERT INTO test.t1 VALUES
+(3001, NOW() + INTERVAL 1 HOUR, 'fresh-3001'),
+(3002, NOW() + INTERVAL 1 HOUR, 'fresh-3002'),
+(3003, NOW() + INTERVAL 1 HOUR, 'fresh-3003'),
+(3004, NOW() + INTERVAL 1 HOUR, 'fresh-3004'),
+(3005, NOW() + INTERVAL 1 HOUR, 'fresh-3005');
+# (f) deletes of live rows (frees slots on both replicas, backup-first)
+DELETE FROM test.t1 WHERE id IN (2001, 2002, 2003, 2004, 2005);
+# === 8. prove the race landed inside the copy window ===================
+# racing operations committed while the fragment copy was still running
+# === 9. let the copy finish and the backup rejoin ======================
+# cluster whole again, error insert disarmed
+# === 10. detection: replica rowid layouts must NOT have forked =========
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+# physical rows per replica (identical on both nodes by the assert
+# above; 1500 backlog + 100 live - 2 purged - 5 deleted + 5 fresh = 1598):
+SELECT MAX(cnt) AS physical_rows_per_replica FROM (
+SELECT node_id, SUM(fixed_elem_count) AS cnt
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t1'
+  GROUP BY node_id) per_node;
+physical_rows_per_replica
+1598
+# === 11. the copy-mode transient has cleared ===========================
+# the same insert-over-expired that 626-aborted mid-copy now succeeds
+INSERT INTO test.t1 VALUES (2, NOW() + INTERVAL 1 HOUR, 'insert-over-expired-after-copy');
+# === 12. 899 tripwire: recycle the race rows' rowids ===================
+# Delete the D1/D2a race rows and refill the freed slots with fresh
+# keys: the primary's free list hands out exactly those slots and
+# forwards each insert with a required rowid, so a replica that had
+# self-allocated during the race would abort one of these with the 899
+# signature (fake ER_LOCK_WAIT_TIMEOUT; see ttl_rowid_899_control).
+# Sequential statements on a quiesced healthy cluster: all must succeed.
+DELETE FROM test.t1 WHERE id IN (1496, 1497, 1498, 1499, 1500);
+INSERT INTO test.t1 VALUES
+(3006, NOW() + INTERVAL 1 HOUR, 'refill-3006'),
+(3007, NOW() + INTERVAL 1 HOUR, 'refill-3007'),
+(3008, NOW() + INTERVAL 1 HOUR, 'refill-3008'),
+(3009, NOW() + INTERVAL 1 HOUR, 'refill-3009'),
+(3010, NOW() + INTERVAL 1 HOUR, 'refill-3010');
+DELETE FROM test.t1 WHERE id IN (1481, 1482, 1483, 1484, 1485);
+INSERT INTO test.t1 VALUES
+(3011, NOW() + INTERVAL 1 HOUR, 'refill-3011'),
+(3012, NOW() + INTERVAL 1 HOUR, 'refill-3012'),
+(3013, NOW() + INTERVAL 1 HOUR, 'refill-3013'),
+(3014, NOW() + INTERVAL 1 HOUR, 'refill-3014'),
+(3015, NOW() + INTERVAL 1 HOUR, 'refill-3015');
+DELETE FROM test.t1 WHERE id IN (3001, 3002, 3003, 3004, 3005);
+INSERT INTO test.t1 VALUES
+(3016, NOW() + INTERVAL 1 HOUR, 'refill-3016'),
+(3017, NOW() + INTERVAL 1 HOUR, 'refill-3017'),
+(3018, NOW() + INTERVAL 1 HOUR, 'refill-3018'),
+(3019, NOW() + INTERVAL 1 HOUR, 'refill-3019'),
+(3020, NOW() + INTERVAL 1 HOUR, 'refill-3020');
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+# === 13. phase 2: INITIAL restart of the backup, race the full copy ====
+# The backup's file system is wiped, so the copy phase must deliver
+# EVERY row (restore GCI 0); race the window again on the initial-NR
+# code path.
+# initial-restart copy of the TTL fragment is in progress
+# mid-copy race, round 2: D1 + D2a on not-yet-copied expired rows,
+# fresh keys, live deletes
+INSERT INTO test.t1 VALUES (1471, NOW() + INTERVAL 1 HOUR, 'd1-race2-1471');
+INSERT INTO test.t1 VALUES (1472, NOW() + INTERVAL 1 HOUR, 'd1-race2-1472');
+REPLACE INTO test.t1 VALUES (1461, NOW() + INTERVAL 1 HOUR, 'd2-race2-1461');
+REPLACE INTO test.t1 VALUES (1462, NOW() + INTERVAL 1 HOUR, 'd2-race2-1462');
+INSERT INTO test.t1 VALUES
+(3021, NOW() + INTERVAL 1 HOUR, 'fresh-3021'),
+(3022, NOW() + INTERVAL 1 HOUR, 'fresh-3022');
+DELETE FROM test.t1 WHERE id IN (2006, 2007);
+# phase-2 racing operations committed while the full copy was running
+# backup rebuilt from scratch and rejoined
+# === 14. final detection and tripwire ==================================
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+# recycle the phase-2 race rows' slots as well
+DELETE FROM test.t1 WHERE id IN (1471, 1472, 1461, 1462);
+INSERT INTO test.t1 VALUES
+(3023, NOW() + INTERVAL 1 HOUR, 'refill-3023'),
+(3024, NOW() + INTERVAL 1 HOUR, 'refill-3024'),
+(3025, NOW() + INTERVAL 1 HOUR, 'refill-3025'),
+(3026, NOW() + INTERVAL 1 HOUR, 'refill-3026');
+# ndb_assert_frag_replica_consistency: PASS for test.t1 (all fragments identical on 2 replicas)
+# physical rows per replica: phase 1 left 1598; phase 2 added 2 fresh
+# and deleted 2 live rows, the tripwire freed 4 and refilled 4 => 1598
+SELECT MAX(cnt) AS physical_rows_per_replica FROM (
+SELECT node_id, SUM(fixed_elem_count) AS cnt
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'test/def/t1'
+  GROUP BY node_id) per_node;
+physical_rows_per_replica
+1598
+# visible rows: 100 live pool - 5 - 2 deleted + 1 (id 2) + 15 refills
+#               + 2 fresh + 4 refills = 115
+SELECT COUNT(*) AS visible_rows FROM test.t1 WHERE id > 0;
+visible_rows
+115
+# spot-check rows written during the two race windows
+SELECT id, data FROM test.t1 WHERE id IN (2, 2008, 3016, 3021, 3026) ORDER BY id;
+id	data
+2	insert-over-expired-after-copy
+2008	live-2008
+3016	refill-3016
+3021	fresh-3021
+3026	refill-3026
+DROP TABLE test.t1;

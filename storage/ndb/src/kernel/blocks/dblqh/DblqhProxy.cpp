@@ -2355,10 +2355,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
 
-  CRASH_INSERTION(5113);  // Crash node on SETUP_REQ for join agg NF testing
+  CRASH_INSERTION(5121);  // Crash node on SETUP_REQ for join agg NF testing
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5117)) {
+  if (ERROR_INSERTED(5125)) {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
@@ -2845,7 +2845,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   state->m_state.store(JoinAggregationState::SETUP_COMPLETE);
 
-  if (ERROR_INSERTED(5116)) {
+  if (ERROR_INSERTED(5126)) {
     jam();
     // Force eviction by limiting each interpreter to 3 groups max.
     // When a 4th distinct group arrives, processRecWithLinkedAttrs()
@@ -2892,7 +2892,7 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 noReply = req->noReply;
 
-  CRASH_INSERTION(5115);  // Crash node on RELEASE_REQ for join agg NF testing
+  CRASH_INSERTION(5123);  // Crash node on RELEASE_REQ for join agg NF testing
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state != nullptr) {

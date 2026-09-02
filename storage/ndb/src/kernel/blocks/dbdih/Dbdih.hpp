@@ -1154,11 +1154,29 @@ class Dbdih : public SimulatedBlock {
   void check_pause_state_lcp_idle(void);
 
   /**
-   * This is only true when an LCP is running and it is running with
-   * support for PAUSE LCP (all DIH nodes support it). Actually this
-   * is set when we have passed the START_LCP_REQ step. After this
-   * step we release the fragment info mutex if we can use the pause
-   * lcp protocol with all nodes.
+   * Master-side indication that the current LCP has entered the phase
+   * in which it can run using the PAUSE LCP protocol.
+   *
+   * The participating DIH and LQH node sets are established early in
+   * LCP preparation, before this flag becomes true. Thus, a node being
+   * present in m_participatingLQH does not by itself mean that fragment
+   * checkpoint scheduling has started or may safely be continued.
+   *
+   * For a normally started LCP, this flag remains false while the master
+   * is waiting for START_LCP_CONF. It is set after that handshake has
+   * completed and the start LCP mutex has been released, immediately
+   * before the initial LCP fragment round is started. During master
+   * takeover, it is set when the active or concluding LCP is resumed.
+   * It remains true until the LCP completes.
+   *
+   * While the flag is true, all participating DIH nodes support PAUSE
+   * LCP. The fragment info mutex can therefore be released, and node
+   * restart can pause the LCP instead of waiting for it to complete.
+   *
+   * The flag also provides a phase boundary for node-failure handling:
+   * before it becomes true, START_LCP_CONF processing is responsible for
+   * starting the fragment round; afterwards an interrupted round may be
+   * driven forward by calling startNextChkpt().
    */
   bool c_lcp_runs_with_pause_support; /* Master state */
 

@@ -1623,7 +1623,7 @@ testManyGroups(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 8: Forced eviction via ERROR_INSERT 4040                       */
+/* Test 8: Forced eviction via ERROR_INSERT 4041                       */
 /* ------------------------------------------------------------------ */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 
@@ -1631,7 +1631,7 @@ static int
 testForcedEviction(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn,
                    NdbRestarter &restarter)
 {
-  printf("Test 8: Forced eviction (ERROR_INSERT 4040) GROUP BY ... ");
+  printf("Test 8: Forced eviction (ERROR_INSERT 4041) GROUP BY ... ");
   fflush(stdout);
 
   ss.unlock();
@@ -1654,13 +1654,13 @@ testForcedEviction(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn,
     return -1;
   }
 
-  if (restarter.insertErrorInAllNodes(4040) != 0) {
-    fprintf(stderr, "FAIL: insertErrorInAllNodes(4040) failed\n");
+  if (restarter.insertErrorInAllNodes(4041) != 0) {
+    fprintf(stderr, "FAIL: insertErrorInAllNodes(4041) failed\n");
     dropTestTable3Col(conn);
     ss.lock();
     return -1;
   }
-  V("ERROR_INSERT 4040 set in all nodes\n");
+  V("ERROR_INSERT 4041 set in all nodes\n");
   ss.lock();
 
   Uint32 apiConnectPtr = 0, tcRef = 0;

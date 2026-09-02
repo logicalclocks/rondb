@@ -22,6 +22,7 @@
 
 #include "rdrs_dal.h"
 
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <NdbApi.hpp>
@@ -31,6 +32,12 @@
 class RDRSRonDBConnection {
   static constexpr int MAX_PARALLEL_KEY_OPS = 1024;
   static constexpr Uint32 expectedMagic = 0x52b5cb03;
+  /* How long GetNumReadyDataNodes() retries its try-lock, in 1 ms steps,
+   * before it reports the connection as not ready. Long enough that
+   * ordinary request-path contention on connectionMutex can never be
+   * mistaken for an unavailable cluster, short enough that a health probe
+   * still answers promptly. */
+  static constexpr Uint32 READY_NODES_TRYLOCK_ATTEMPTS = 20;
 
  private:
   Uint32 magic = 0;
@@ -59,6 +66,11 @@ class RDRSRonDBConnection {
   // This a list of all the NDB objects whether the objects
   // are in use or not
   std::list<Ndb *> allAvailableNdbObjects;
+
+  /* Incremented every time a reconnection starts. Ndb objects handed out
+   * under an older generation belong to a connection that is being (or has
+   * been) torn down and must be returned to the pool, never reused. */
+  std::atomic<Uint64> m_generation{0};
 
   inline void checkMagic() { require(magic == expectedMagic); }
 
@@ -99,6 +111,34 @@ class RDRSRonDBConnection {
    * Get status
    */
   void GetStats(RonDB_Stats&);
+
+  /**
+   * Reconnection generation of this connection. Compare with the value
+   * captured when an Ndb object was handed out to detect that the object
+   * belongs to a torn-down connection.
+   */
+  Uint64 GetGeneration() const {
+    return m_generation.load(std::memory_order_acquire);
+  }
+
+  /**
+   * Number of data nodes this connection can currently reach.
+   * 0 means the cluster cannot serve requests; -1 means there is no
+   * usable cluster connection at all.
+   */
+  int GetNumReadyDataNodes();
+
+  /**
+   * Callback invoked whenever a reconnection starts (any connection).
+   * Long-lived Ndb object holders - the cache event watchers, which may
+   * otherwise sit in pollEvents() forever if TE_CLUSTER_FAILURE is never
+   * delivered - use this to release their objects so the reconnection
+   * teardown converges instead of timing out and deleting Ndb objects
+   * with live event operations. Listeners must be cheap and non-blocking
+   * (typically: set an atomic flag).
+   */
+  typedef void (*ReconnectListener)();
+  static void RegisterReconnectListener(ReconnectListener listener);
 
   /**
    * Starts reconnection thread which calls the ReconnectHandler

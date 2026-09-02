@@ -8,8 +8,8 @@
 --echo # Tests that pushed join aggregation produces correct results
 --echo # when the NDB aggregation hash table is forced to evict groups
 --echo # mid-scan. Uses ERROR_INSERT codes:
---echo #   5116 - Forces maxGroups=3 (evicts when 4th group arrives)
---echo #   4040 - Intermittent eviction every ~7th row
+--echo #   5126 - Forces maxGroups=3 (evicts when 4th group arrives)
+--echo #   4041 - Intermittent eviction every ~7th row
 --echo #
 
 # Verify ndb_join_pushdown is enabled (required for pushed joins)
@@ -78,7 +78,7 @@ INSERT INTO t3 VALUES
   (51,5100, 51), (52,5200, 52), (53,5300, 53), (54,5400, 54), (55,5500, 55);
 
 --echo ============================================================
---echo Section A: ERROR_INSERT 5116 (maxGroups=3, forced eviction)
+--echo Section A: ERROR_INSERT 5126 (maxGroups=3, forced eviction)
 --echo ============================================================
 
 --echo ############################################################
@@ -91,8 +91,8 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---echo # With error insert 5116 (maxGroups=3) and pushdown
---exec $NDB_MGM -e "all error 5116" >> $NDB_TOOLS_OUTPUT
+--echo # With error insert 5126 (maxGroups=3) and pushdown
+--exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*)
@@ -109,7 +109,7 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 5116" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
@@ -126,7 +126,7 @@ SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 5116" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
@@ -143,7 +143,7 @@ SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), MIN(t3.qty), MAX(t3.qty)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 5116" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), MIN(t3.qty), MAX(t3.qty)
@@ -160,7 +160,7 @@ SELECT t2.cat, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t2.cat;
 
---exec $NDB_MGM -e "all error 5116" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t2.cat, SUM(t3.amount), COUNT(*)
@@ -169,7 +169,7 @@ GROUP BY t2.cat;
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ============================================================
---echo Section B: ERROR_INSERT 4040 (intermittent eviction)
+--echo Section B: ERROR_INSERT 4041 (intermittent eviction)
 --echo ============================================================
 
 --echo ############################################################
@@ -181,7 +181,7 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*)
@@ -199,7 +199,7 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount),
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount),
@@ -217,7 +217,7 @@ SELECT t1.grp, SUM(t2.discount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t2.discount), COUNT(*)
@@ -237,7 +237,7 @@ HAVING total > 5000
 ORDER BY total DESC
 LIMIT 4;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
@@ -249,11 +249,11 @@ LIMIT 4;
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ============================================================
---echo Section C: ERROR_INSERT 4040 additional tests
+--echo Section C: ERROR_INSERT 4041 additional tests
 --echo ============================================================
 
 --echo ############################################################
---echo # Test C1: 4040 intermittent eviction — all aggregates
+--echo # Test C1: 4041 intermittent eviction — all aggregates
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
 --sorted_result
@@ -261,7 +261,7 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
@@ -270,7 +270,7 @@ GROUP BY t1.grp;
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ############################################################
---echo # Test C2: 4040 intermittent eviction — 2-way join
+--echo # Test C2: 4041 intermittent eviction — 2-way join
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
 --sorted_result
@@ -278,7 +278,7 @@ SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
@@ -287,7 +287,7 @@ GROUP BY t1.grp;
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 
 --echo ############################################################
---echo # Test C3: 4040 intermittent eviction — all aggregates on both columns
+--echo # Test C3: 4041 intermittent eviction — all aggregates on both columns
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
 --sorted_result
@@ -296,7 +296,7 @@ SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), COUNT(*),
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4040" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), COUNT(*),

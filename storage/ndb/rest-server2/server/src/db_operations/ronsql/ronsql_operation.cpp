@@ -66,6 +66,25 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       DEB_TRACE();
       return RS_OK;
     }
+    catch (RonSQLRateLimitError& e) {
+      /*
+       * RONDB-978: the caller is over its USER rate limit. Report it with the
+       * same HTTP code the pk-read and scan endpoints use for the identical
+       * kernel rejection (429 via __RONDB_ERROR_CODE_HTTP_CODE) instead of a
+       * 500, and do not retry - the client-side backoff window outlives our
+       * retry budget, so a retry would only add load to an overflowing bucket.
+       */
+      DEB_TRACE();
+      err << "Caught RonSQLRateLimitError: " << e.what() << "\n";
+      return __RS_ERROR(__RONDB_ERROR_CODE_HTTP_CODE(e.get_ndb_error_code()),
+                        -1,
+                        -1,
+                        e.get_ndb_error_code(),
+                        -1,
+                        std::string(rdrsErrorMessage(ERROR_RONSQL_RATE_LIMIT)),
+                        __LINE__,
+                        __MYFILENAME__);
+    }
     catch (RonSQLRetryableError& e) {
       DEB_TRACE();
       if (is_last_attempt) {

@@ -931,7 +931,7 @@ zero32(Uint8* dstPtr, const Uint32 len)
       dst[3] = 0;
     }
   }
-} 
+}
 
 Uint32 Dbtup::keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   ndbassert(expectedLen > 0 || attrInfoIVal == RNIL);
@@ -1271,11 +1271,11 @@ bool Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
     ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
     req_struct->prevOpPtr.p = prevOpPtr.p;
 
-    regOperPtr.p->op_struct.bit_field.m_wait_log_buffer= 
+    regOperPtr.p->op_struct.bit_field.m_wait_log_buffer=
       prevOpPtr.p->op_struct.bit_field.m_wait_log_buffer;
-    regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit= 
+    regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit=
       prevOpPtr.p->op_struct.bit_field.m_load_diskpage_on_commit;
-    regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit= 
+    regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit=
       prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
     regOperPtr.p->op_struct.bit_field.m_gci_written=
       prevOpPtr.p->op_struct.bit_field.m_gci_written;
@@ -1445,7 +1445,7 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
      *
      * Tuple does not exist in read's view
      */
-    if((found && currOp == ZDELETE) || 
+    if((found && currOp == ZDELETE) ||
         ((dirty || !found) && is_insert))
     {
       /* Tuple not visible to this read operation */
@@ -1667,7 +1667,7 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   req.m_table_id = regFragPtr->fragTableId;
   req.m_fragment_id = regFragPtr->fragmentId;
   req.m_callback.m_callbackData= opRec;
-  req.m_callback.m_callbackFunction= 
+  req.m_callback.m_callbackFunction=
     safe_cast(&Dbtup::disk_page_load_extra_callback);
 
 #ifdef DEBUG_DISK
@@ -1715,7 +1715,7 @@ Dbtup::deref_disk_page(Signal *signal,
   req.m_table_id = regFragPtr->fragTableId;
   req.m_fragment_id = regFragPtr->fragmentId;
   req.m_callback.m_callbackData = operPtr.i;
-  req.m_callback.m_callbackFunction= 
+  req.m_callback.m_callbackFunction=
     safe_cast(&Dbtup::deref_disk_page_callback);
   Page_cache_client pgman(this, c_pgman);
   Uint32 flags = Page_cache_client::DEREF_REQ;
@@ -1767,7 +1767,7 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
       return;
     } else if (extra_page_id < 0) {
       /* Error happened when loading extra disk page */
-      c_lqh->acckeyconf_load_diskpage_callback(signal, 
+      c_lqh->acckeyconf_load_diskpage_callback(signal,
         operPtr.p->userpointer,
         0);
       return;
@@ -1784,7 +1784,7 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
     c_lqh->setup_key_pointers(operPtr.p->userpointer);
     operPtr.p->m_disk_callback_page = page_id;
   }
-  c_lqh->acckeyconf_load_diskpage_callback(signal, 
+  c_lqh->acckeyconf_load_diskpage_callback(signal,
       operPtr.p->userpointer,
       page_id);
 }
@@ -1818,7 +1818,7 @@ Dbtup::disk_page_load_extra_callback(Signal* signal,
       operPtr,
       regFragPtr,
       regTabPtr);
-  c_lqh->acckeyconf_load_diskpage_callback(signal, 
+  c_lqh->acckeyconf_load_diskpage_callback(signal,
       operPtr.p->userpointer,
       operPtr.p->m_disk_callback_page);
 }
@@ -1876,7 +1876,7 @@ Dbtup::load_diskpage_scan(Signal* signal,
     req.m_table_id = regFragPtr->fragTableId;
     req.m_fragment_id = regFragPtr->fragmentId;
     req.m_callback.m_callbackData= opRec;
-    req.m_callback.m_callbackFunction= 
+    req.m_callback.m_callbackFunction=
       safe_cast(&Dbtup::disk_page_load_scan_callback);
 
     Page_cache_client pgman(this, c_pgman);
@@ -1903,7 +1903,7 @@ Dbtup::load_diskpage_scan(Signal* signal,
 }
 
 void
-Dbtup::disk_page_load_scan_callback(Signal* signal, 
+Dbtup::disk_page_load_scan_callback(Signal* signal,
                                     Uint32 opRec,
                                     Uint32 page_id)
 {
@@ -1912,7 +1912,7 @@ Dbtup::disk_page_load_scan_callback(Signal* signal,
   jam();
   jamData(opRec);
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
-  c_lqh->next_scanconf_load_diskpage_callback(signal, 
+  c_lqh->next_scanconf_load_diskpage_callback(signal,
       operPtr.p->userpointer,
       page_id);
 }
@@ -2546,6 +2546,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   setup_fixed_tuple_ref_opt(&req_struct);
   setup_fixed_part(&req_struct, regOperPtr, regTabPtr);
   tuple_ptr = req_struct.m_tuple_ptr;
+  ndbassert(!(tuple_ptr->m_header_bits & Tuple_header::FREE));
 
   if (prepareActiveOpList(operPtr, &req_struct)) {
     m_base_header_bits = tuple_ptr->m_header_bits;
@@ -2899,8 +2900,6 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 
 void Dbtup::setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
                              Tablerec *regTabPtr) {
-  ndbassert(regOperPtr->op_type == ZINSERT ||
-            (!(req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
 
   Uint32* tab_descr = regTabPtr->tabDescriptor;
   NDB_PREFETCH_READ((char *)tab_descr);
@@ -3672,7 +3671,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
       jam();
       operPtrP->op_struct.bit_field.m_wait_log_buffer = 1;
       operPtrP->op_struct.bit_field.m_load_diskpage_on_commit = 1;
-      operPtrP->m_undo_buffer_space= 
+      operPtrP->m_undo_buffer_space=
         (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + sizes[DD] - 1;
       jamDataDebug(operPtrP->m_undo_buffer_space);
 
@@ -4072,13 +4071,13 @@ static Uint32 *shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
 /* ----------------------------- INSERT --------------------------- */
 /* ---------------------------------------------------------------- */
 void
-Dbtup::prepare_initial_insert(KeyReqStruct *req_struct, 
+Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
                               Operationrec* regOperPtr,
                               Tablerec* regTabPtr,
                               bool is_refresh)
 {
   Uint32 disk_undo = ((regTabPtr->m_no_of_disk_attributes > 0) &&
-      !is_refresh) ? 
+      !is_refresh) ?
     sizeof(Dbtup::Disk_undo::Alloc) >> 2 : 0;
   regOperPtr->m_undo_buffer_space= disk_undo;
   jamDebug();
@@ -4089,7 +4088,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
 
   Uint16* order = regTabPtr->m_real_order_descriptor;
   Uint32 *tab_descr = regTabPtr->tabDescriptor;
-  req_struct->attr_descr = tab_descr; 
+  req_struct->attr_descr = tab_descr;
 
   Uint32 bits = Tuple_header::COPY_TUPLE;
   bits |= disk_undo ? (Tuple_header::DISK_ALLOC|Tuple_header::DISK_INLINE) : 0;
@@ -4100,7 +4099,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
 
   if (regTabPtr->m_bits & Tablerec::TR_ForceVarPart)
   {
-    ref->m_page_no = RNIL; 
+    ref->m_page_no = RNIL;
     ref->m_page_idx = Tup_varsize_page::END_OF_FREE_LIST;
   }
 
@@ -4155,7 +4154,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
 
         // Disk/dynamic part is 32-bit aligned
         ptr = ALIGN_WORD(dst->m_data_ptr+pos);
-        ndbassert(ptr == ALIGN_WORD(dst->m_data_ptr + 
+        ndbassert(ptr == ALIGN_WORD(dst->m_data_ptr +
               regTabPtr->m_offsets[ind].m_max_var_offset));
       }
 
@@ -4389,9 +4388,9 @@ int Dbtup::handleInsertReq(Signal* signal,
       jamData(RfinalUpdateLen);
       // const Uint32 RfinalRLen= cinBuffer[3];
       // const Uint32 RsubLen= cinBuffer[4];
-  
+
       const Uint32 offset = 5 + RinitReadLen + RexecRegionLen;
-  
+
       if (unlikely((res = updateAttributes(req_struct, &cinBuffer[offset],
                 RfinalUpdateLen)) < 0)) {
         jam();
@@ -4481,8 +4480,8 @@ int Dbtup::handleInsertReq(Signal* signal,
             regTabPtr,
             &regOperPtr.p->m_tuple_location,
             &frag_page_id);
-      } 
-      else 
+      }
+      else
       {
         jam();
         regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
@@ -4508,6 +4507,42 @@ int Dbtup::handleInsertReq(Signal* signal,
         goto alloc_rowid_error;
       }
 
+      if (ERROR_INSERTED(4040) && is_ttl_table(regTabPtr))
+      {
+        jam();
+        /**
+         * Test-only seed: fabricate a replica PLACEMENT fork to positively
+         * test the replica-rowid-mismatch verification (error 1245; see
+         * storage/ndb/claude_files/ttl_899_rowid/).  Arm on a BACKUP node
+         * only: the required rowid of one TTL-table insert is redirected to
+         * the adjacent fixed-size slot (one slot = m_fix_header_size words)
+         * BEFORE allocation, so this replica materializes the row at a rowid
+         * the primary did not dictate -- silently recreating the pre-fix
+         * backup self-allocation defect under ERROR_INSERT control.  The
+         * redirect happens before alloc_fix_rowid, so the normal path (and
+         * the fragment page mutex taken inside it) covers the redirected
+         * slot and all bookkeeping is the ordinary required-rowid insert's.
+         * The test must have freed the redirected slot on this replica or
+         * the insert fails with 899 like any occupied required rowid.
+         * One-shot: cleared on first use.
+         */
+        const Uint32 slot_words = regTabPtr->m_offsets[MM].m_fix_header_size;
+        Uint32 redirect_idx = regOperPtr.p->m_tuple_location.m_page_idx;
+        redirect_idx = (redirect_idx >= slot_words)
+                           ? (redirect_idx - slot_words)
+                           : (redirect_idx + slot_words);
+        g_eventLogger->info(
+            "DBTUP %u: ERROR_INSERT 4040 redirecting required rowid"
+            " tab(%u,%u) row(%u,%u) -> row(%u,%u) to seed a replica"
+            " placement fork",
+            instance(), regFragPtr->fragTableId, regFragPtr->fragmentId,
+            regOperPtr.p->m_tuple_location.m_page_no,
+            regOperPtr.p->m_tuple_location.m_page_idx,
+            regOperPtr.p->m_tuple_location.m_page_no, redirect_idx);
+        regOperPtr.p->m_tuple_location.m_page_idx = redirect_idx;
+        CLEAR_ERROR_INSERT_VALUE;
+      }
+
       if (!varalloc)
       {
         jam();
@@ -4516,8 +4551,8 @@ int Dbtup::handleInsertReq(Signal* signal,
             regTabPtr,
             &regOperPtr.p->m_tuple_location,
             &frag_page_id);
-      } 
-      else 
+      }
+      else
       {
         jam();
         regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
@@ -4675,7 +4710,7 @@ int Dbtup::handleInsertReq(Signal* signal,
      */
     release_frag_mutex(regFragPtr, frag_page_id, jamBuffer());
   }
-  else 
+  else
   {
     /* ! mem_insert */
     if (ERROR_INSERTED(4020)) {
@@ -5218,8 +5253,8 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
                            bool is_refresh)
 {
   // Implement checking of updating all not null attributes in an insert here.
-  Bitmask<MAXNROFATTRIBUTESINWORDS> attributeMask;  
-  /* 
+  Bitmask<MAXNROFATTRIBUTESINWORDS> attributeMask;
+  /*
    * The idea here is maybe that changeMask is not-null attributes
    * and must contain notNullAttributeMask.  But:
    *
@@ -5433,7 +5468,7 @@ retry:
   state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(4040) &&
+  if (ERROR_INSERTED(4041) &&
       interp->gb_map_mutable() != nullptr &&
       interp->gb_map_mutable()->size() > 2 &&
       (state->m_completed_ops.load(std::memory_order_relaxed) % 7) == 0) {
@@ -5585,7 +5620,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       // a register-based virtual machine which can read and write attributes
       // to and from registers.
       /* ---------------------------------------------------------------- */
-      Uint32 RsubPC= RinstructionCounter + RexecRegionLen 
+      Uint32 RsubPC= RinstructionCounter + RexecRegionLen
         + RfinalUpdateLen + RfinalRLen;
       TnoDataRW= interpreterNextLab(signal,
           req_struct,
@@ -5896,7 +5931,7 @@ int Dbtup::sendLogAttrinfo(Signal* signal,
   ndbrequire( TlogSize > 0 );
   ndbassert(!m_is_query_block);
   Uint32 longSectionIVal= RNIL;
-  bool ok= appendToSection(longSectionIVal, 
+  bool ok= appendToSection(longSectionIVal,
       &clogMemBuffer[0],
       TlogSize);
   if (unlikely(!ok))
@@ -10964,9 +10999,9 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
  */
 static
 Uint32*
-expand_var_part(Dbtup::KeyReqStruct::Var_data *dst, 
-                const Uint32* src, 
-                const Uint32 * tabDesc, 
+expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
+                const Uint32* src,
+                const Uint32 * tabDesc,
                 const Uint16* order,
                 EmulatedJamBuffer *jamBuf)
 {
@@ -10984,7 +11019,7 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
     len= next_pos - tmp;
     require(next_pos >= tmp);
 
-    *dst_off_ptr++ = dst_off; 
+    *dst_off_ptr++ = dst_off;
     *dst_len_ptr++ = dst_off + len;
     memcpy(dst_ptr, src_ptr, len);
     src_ptr += len;
@@ -11428,7 +11463,7 @@ void Dbtup::dump_tuple(const KeyReqStruct *req_struct,
 }
 
 void
-Dbtup::prepare_read(KeyReqStruct* req_struct, 
+Dbtup::prepare_read(KeyReqStruct* req_struct,
 		    Tablerec* tabPtrP,
                     bool disk)
 {
@@ -11651,10 +11686,10 @@ void Dbtup::shrink_tuple(KeyReqStruct *req_struct, Uint32 sizes[2],
   ndbassert(req_struct->is_expanded);
   Tuple_header* ptr= req_struct->m_tuple_ptr;
   ndbassert(ptr->m_header_bits & Tuple_header::COPY_TUPLE);
-  
+
   const Uint16* order= tabPtrP->m_real_order_descriptor;
   const Uint32 * tabDesc = req_struct->attr_descr;
-  
+
   Uint32 *dst_ptr= ptr->get_end_of_fix_part_ptr(tabPtrP);
 
   /**
@@ -11833,12 +11868,12 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
 {
   /* ToDo: We could also do some checks here for any dynamic part. */
   Uint32 mm_vars= regTabPtr.p->m_attributes[MM].m_no_of_varsize;
-  Uint32 fix_sz= regTabPtr.p->m_offsets[MM].m_fix_header_size + 
+  Uint32 fix_sz= regTabPtr.p->m_offsets[MM].m_fix_header_size +
     Tuple_header::HeaderSize;
-    
+
   if(mm_vars == 0)
     return;
-  
+
   for(Uint32 F= 0; F < MAX_FRAG_PER_LQH; F++)
   {
     FragrecordPtr fragPtr;
@@ -11884,7 +11919,7 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
             operPtr.i = ptr->m_operation_ptr_i;
 	    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
 	  }
-	} 
+	}
 	else if(!(idx & Var_page::FREE))
 	{
 	  /**
@@ -11893,10 +11928,10 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
 	  Uint32 *part= page->get_ptr(i);
 	  Uint32 sz= ((mm_vars + 1) << 1) + (((Uint16*)part)[mm_vars]);
 	  ndbrequire(len >= ((sz + 3) >> 2));
-	} 
-	else 
+	}
+	else
 	{
-	  
+
 	}
       }
       if (p == 0 && page->high_index > 1) page->reorg((Var_page *)ctemp_page);
@@ -11919,7 +11954,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
 {
   Uint32 bits = m_base_header_bits;
   Uint32 copy_bits= req_struct->m_tuple_ptr->m_header_bits;
-  
+
   DEB_LCP(("(%u)size_change: tab(%u,%u), row_id(%u,%u), old: %u, new: %u",
           instance(),
           req_struct->fragPtrP->fragTableId,
@@ -12671,10 +12706,10 @@ Dbtup::nr_update_gci(Uint64 fragPtrI,
 }
 
 int
-Dbtup::nr_read_pk(Uint64 fragPtrI, 
+Dbtup::nr_read_pk(Uint64 fragPtrI,
 		  const Local_key* key, Uint32* dst, bool& copy)
 {
-  
+
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
   ndbrequire(c_fragment_pool.getPtr(fragPtr));
@@ -12697,7 +12732,7 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
   c_page_pool.getPtr(pagePtr);
   KeyReqStruct req_struct(this);
   Uint32* ptr= ((Fix_page*)pagePtr.p)->get_ptr(key->m_page_idx, 0);
-  
+
   req_struct.m_lqh = c_lqh;
   req_struct.m_page_ptr = pagePtr;
   req_struct.m_tuple_ptr = (Tuple_header *)ptr;
@@ -12970,7 +13005,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
       if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
       {
         jam();
-        sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
+        sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
           tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
       }
       else
@@ -13056,11 +13091,11 @@ void Dbtup::nr_delete_page_callback(Signal *signal, Uint32 userpointer,
   Ptr<Tablerec> tablePtr;
   tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-  
+
   Uint32 sz;
   if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
-    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
+    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
       tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
   }
   else
@@ -13111,7 +13146,7 @@ void Dbtup::nr_delete_log_buffer_callback(Signal *signal, Uint32 userpointer,
   jam();
   jamData(userpointer);
   c_lqh->get_nr_op_info(&op, RNIL);
-  
+
   FragrecordPtr fragPtr;
   fragPtr.i= op.m_tup_frag_ptr_i;
   ndbrequire(c_fragment_pool.getPtr(fragPtr));
@@ -13128,7 +13163,7 @@ void Dbtup::nr_delete_log_buffer_callback(Signal *signal, Uint32 userpointer,
   if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     jam();
-    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
+    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
       tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
   }
   else
@@ -13151,6 +13186,6 @@ void Dbtup::nr_delete_log_buffer_callback(Signal *signal, Uint32 userpointer,
                  op.m_gci_hi,
                  &op.m_row_id,
                  sz);
-  
+
   c_lqh->nr_delete_complete(signal, &op);
 }

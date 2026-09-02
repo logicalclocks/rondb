@@ -431,6 +431,8 @@ void ClusterMgr::threadMain() {
     Uint32 theAllNodes[NodeBitmask::Size];
     Uint32 noOfNodes = 0;
     NodeBitmask::clear(theAllNodes);
+    /* A connected data node to send the periodic user-id re-LIST to. */
+    NodeId userListNode = 0;
 
     for (int i = 1; i < ABS_MAX_NODES; i++) {
       /**
@@ -446,12 +448,28 @@ void ClusterMgr::threadMain() {
       if (!theNode.defined) continue;
 
       if (theNode.is_connected() == false) {
+        /**
+         * Only allow data node connection setup to be attempted
+         * if we have received NF_COMPLETEREP for previous connection
+         * incarnation so that cluster disconnect can be reliably
+         * detected
+         */
+        if (theNode.m_info.getType() == NodeInfo::DB &&
+            !theNode.nfCompleteRep) {
+          /* Data node failure notification not received yet */
+          continue;
+        }
+
         theFacade.startConnecting(nodeId);
         continue;
       }
 
       if (!theNode.compatible) {
         continue;
+      }
+
+      if (userListNode == 0 && theNode.m_info.m_type == NodeInfo::DB) {
+        userListNode = nodeId;
       }
 
       if (nodeId == getOwnNodeId()) {
@@ -521,6 +539,9 @@ void ClusterMgr::threadMain() {
         noOfNodes++;
         NodeBitmask::set(theAllNodes, nodeId);
       }
+    }
+    if (userListNode != 0) {
+      maybeReListUserIds(userListNode, now);
     }
     flush_send_buffers();
     unlock();
@@ -1042,9 +1063,16 @@ void ClusterMgr::execLIST_DATABASE_CONF(const Uint32 * theData,
   Uint32 senderRef = listDatabaseConf->senderRef;
   Uint32 databaseId = listDatabaseConf->databaseId;
   if (databaseId == RNIL) {
-    /* No more users */
+    /* No more users: this LIST walk is complete. */
     m_initialised_user_id_cache = true;
     m_initialising_user_id_cache = false;
+    if (m_user_id_relist_active) {
+      /* A periodic re-LIST just finished. Every user still present was
+         upserted with the current generation; anything left at an older
+         generation was dropped without a delivered DROP rep, so remove it. */
+      sweepStaleUserIds();
+      m_user_id_relist_active = false;
+    }
     DBUG_VOID_RETURN;
   }
   Uint32 databaseVersion = listDatabaseConf->databaseVersion;
@@ -1157,6 +1185,79 @@ void ClusterMgr::startUserIdCacheFill(Uint32 node_id) {
   DBUG_VOID_RETURN;
 }
 
+/* Re-LIST interval: a user provisioned or dropped without a delivered
+   announcement is reconciled within this long. The user table is tiny so
+   the walk is cheap; 60s keeps steady-state cost negligible. */
+#define USER_ID_RELIST_INTERVAL_MS 60000
+
+/**
+ * Backstop for a missed CREATE/DROP_DATABASE_REP. Called from threadMain
+ * while holding the trp_client lock (so raw_sendSignal is used directly, not
+ * safe_sendSignal, and startUserIdCacheFill's self-locking must be avoided).
+ * Starts at most one re-LIST at a time and only once the initial fill has
+ * completed; the walk continues through execLIST_DATABASE_CONF as usual and
+ * ends by sweeping users not seen in the new generation.
+ */
+void ClusterMgr::maybeReListUserIds(Uint32 node_id, NDB_TICKS now) {
+  DBUG_ENTER("ClusterMgr::maybeReListUserIds");
+  bool start = false;
+  NdbMutex_Lock(theUserIdMutex);
+  if (m_num_in_user_id_cache != RNIL &&
+      m_initialised_user_id_cache &&
+      !m_initialising_user_id_cache &&
+      !m_user_id_relist_active) {
+    if (!NdbTick_IsValid(m_next_user_id_relist)) {
+      /* Schedule the first re-LIST one interval from now. */
+      m_next_user_id_relist =
+        NdbTick_AddMilliseconds(now, USER_ID_RELIST_INTERVAL_MS);
+    } else if (NdbTick_Compare(now, m_next_user_id_relist) >= 0) {
+      m_user_id_generation++;
+      m_user_id_relist_active = true;
+      m_next_user_id_relist =
+        NdbTick_AddMilliseconds(now, USER_ID_RELIST_INTERVAL_MS);
+      start = true;
+    }
+  }
+  NdbMutex_Unlock(theUserIdMutex);
+  if (!start) {
+    DBUG_VOID_RETURN;
+  }
+  /* Caller holds the trp_client lock; send the first request directly. */
+  Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal tSignal(ref);
+  tSignal.setSignal(GSN_LIST_DATABASE_REQ, 0);
+  ListDatabaseReq * const req =
+    CAST_PTR(ListDatabaseReq, tSignal.getDataPtrSend());
+  req->senderRef = ref;
+  req->requestInfo = 1; //is_user
+  req->nextDatabaseId = 0;
+  raw_sendSignal(&tSignal, node_id);
+  DBUG_VOID_RETURN;
+}
+
+/* Remove users not stamped with the current generation by the just-finished
+   re-LIST walk (dropped without a delivered DROP rep). Called with
+   theUserIdMutex held. Entries with a thread waiting on them are left alone;
+   waiting only happens during warmup, before any re-LIST can run. */
+void ClusterMgr::sweepStaleUserIds() {
+  if (theUserIdHash == nullptr) {
+    return;
+  }
+  for (Uint32 i = 0; i < USER_ID_HASH_SIZE; i++) {
+    struct UserIdHashEntry **pp = &theUserIdHash[i];
+    while (*pp != nullptr) {
+      struct UserIdHashEntry *entry = *pp;
+      if (entry->m_generation != m_user_id_generation &&
+          !entry->m_wait_for_entry) {
+        *pp = entry->next_entry;
+        free(entry);
+      } else {
+        pp = &entry->next_entry;
+      }
+    }
+  }
+}
+
 void ClusterMgr::rateOverflowError(const char *username,
                                    Uint32 username_len) {
   DBUG_ENTER("ClusterMgr::rateOverflowError");
@@ -1246,19 +1347,28 @@ int ClusterMgr::retrieveUserId(const char *username,
     first = false;
   }
   /**
-   * No entry for this user, whether the cache is fully initialised or
-   * not. The user thread resolves the user itself with GET_DATABASE_REQ;
-   * the reply inserts the entry into the cache (updateUserId), so only
-   * the first transaction pays the round trip. This must not depend on
-   * the cache initialisation state: a user created after the cache was
-   * initialised would otherwise be unresolvable for the lifetime of the
-   * process (and thus never rate limited). A username with no user at
-   * all pays a GET_DATABASE round trip per transaction, which is the
-   * price of being unprovisioned.
+   * No entry for this user. Once the initial fill has completed the cache
+   * is authoritative: a miss means the user is genuinely unprovisioned, so
+   * run the transaction unmetered (userId RNIL) rather than paying a
+   * GET_DATABASE_REQ round trip on every transaction of an unprovisioned
+   * user (the common case when rate limits are not in use). Users created
+   * after startup arrive via CREATE_DATABASE_REP; the periodic re-LIST in
+   * threadMain is the backstop for a missed announcement, so such a user
+   * starts being metered within one re-LIST interval.
+   *
+   * Only while the cache is still being filled do we fall back to a
+   * per-transaction GET_DATABASE_REQ, so warmup requests resolve correctly
+   * before the initial LIST has completed.
    */
+  bool initialised = m_initialised_user_id_cache;
   NdbMutex_Unlock(theUserIdMutex);
   if (start_cache_fill) {
     startUserIdCacheFill(node_id);
+  }
+  if (initialised) {
+    userId = RNIL;
+    userIdVersion = 0;
+    DBUG_RETURN(0);
   }
   DBUG_RETURN(1);
 }
@@ -1273,17 +1383,36 @@ int ClusterMgr::insertUserId(const char *username,
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_RETURN(-1);
   }
+  Uint32 inx = calc_user_hash_index(username, username_len);
+  /**
+   * Upsert: a LIST walk can revisit a user already in the cache (the
+   * periodic re-LIST always does, and a REP may have raced the initial
+   * fill). Update the existing entry and stamp it with the current
+   * generation rather than inserting a duplicate.
+   */
+  for (struct UserIdHashEntry *entry = theUserIdHash[inx];
+       entry != nullptr;
+       entry = entry->next_entry) {
+    if (entry->m_username_len == username_len &&
+        memcmp(entry->m_username, username, username_len) == 0) {
+      entry->m_user_id = userId;
+      entry->m_user_id_version = userIdVersion;
+      entry->m_generation = m_user_id_generation;
+      NdbMutex_Unlock(theUserIdMutex);
+      DBUG_RETURN(0);
+    }
+  }
   struct UserIdHashEntry *new_entry = (struct UserIdHashEntry*)
     malloc(sizeof(struct UserIdHashEntry) + username_len + 1);
   if (new_entry == nullptr) {
     NdbMutex_Unlock(theUserIdMutex);
     DBUG_RETURN(-1);
   }
-  Uint32 inx = calc_user_hash_index(username, username_len);
   new_entry->next_entry = theUserIdHash[inx];
   new_entry->m_username_len = username_len;
   new_entry->m_user_id = userId;
   new_entry->m_user_id_version = userIdVersion;
+  new_entry->m_generation = m_user_id_generation;
   new_entry->m_wait_for_entry = false;
   NdbTick_Invalidate(&new_entry->m_error_time);
   std::memcpy(&new_entry->m_username[0],
@@ -1414,6 +1543,10 @@ void ClusterMgr::createUserIdHash() {
   }
   m_initialised_user_id_cache = false;
   m_initialising_user_id_cache = false;
+  /* Generation 1 is stamped by the initial fill; the first re-LIST uses 2. */
+  m_user_id_generation = 1;
+  m_user_id_relist_active = false;
+  NdbTick_Invalidate(&m_next_user_id_relist);
   DBUG_VOID_RETURN;
 }
 
@@ -1964,7 +2097,9 @@ void ClusterMgr::execNF_COMPLETEREP(const NdbApiSignal *signal,
   assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
   trp_node &node = theNodes[nodeId];
-  if (node.nfCompleteRep == false) {
+  /* Must have received a NODE_FAILREP prior to this */
+  assert(node.m_node_fail_rep);
+  if (!node.nfCompleteRep) {
     node.nfCompleteRep = true;
     theFacade.for_each(this, signal, ptr);
   }
@@ -2219,7 +2354,12 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
     NdbMutex_Unlock(m_node_state_mutex);
 
     if (node_failrep == false) {
+      /**
+       * First handling of node failure for this node
+       * Clear nfCompleteRep flag
+       */
       theNode.m_node_fail_rep = true;
+      theNode.nfCompleteRep = false;
       NodeBitmask::set(theAllNodes, i);
       noOfNodes++;
     }
@@ -2269,7 +2409,6 @@ void ClusterMgr::set_node_dead(trp_node &theNode) {
   theNode.m_state.m_connected_nodes.clear();
   theNode.m_state.startLevel = NodeState::SL_NOTHING;
   theNode.m_info.m_connectCount++;
-  theNode.nfCompleteRep = false;
 }
 
 void

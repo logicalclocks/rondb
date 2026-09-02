@@ -56,6 +56,10 @@ EOF
 # Try to start rdrs2 with NodeId=240 - data nodes don't know about it yet,
 # so it should fail to fully connect. We launch in background, wait briefly,
 # then clean up. Either outcome (start failure or partial start) is acceptable.
+#
+# rdrs2 is killed while it is still setting up its cluster connections, so
+# never wait for it without a bound: escalate TERM to KILL rather than let a
+# stuck rdrs2 turn into a 900 second test case timeout.
 --perl
   use strict;
   my $vardir = $ENV{'MYSQLTEST_VARDIR'};
@@ -64,6 +68,19 @@ EOF
   my $config_file = "$vardir/tmp/rdrs2_config.json";
   my $pid_file = "$vardir/tmp/rdrs2.pid";
   my $log_file = "$vardir/log/rdrs2_phase2.log";
+
+  # Reap $pid, giving it $timeout seconds after each signal before escalating.
+  sub stop_rdrs2 {
+    my ($pid, $timeout) = @_;
+    foreach my $sig ('TERM', 'KILL') {
+      kill($sig, $pid);
+      for (my $i = 0; $i < $timeout * 10; $i++) {
+        return 1 if waitpid($pid, 1) == $pid;  # WNOHANG
+        select(undef, undef, undef, 0.1);
+      }
+    }
+    return 0;
+  }
 
   # Launch rdrs2 in background
   my $pid = fork();
@@ -84,20 +101,13 @@ EOF
       unlink $pid_file if -f $pid_file;
       exit 0;
     }
-    if (-f $pid_file) {
-      # rdrs2 started (partial connect) - stop it
-      kill('TERM', $pid);
-      waitpid($pid, 0);
-      unlink $pid_file;
-      exit 0;
-    }
+    last if (-f $pid_file);  # rdrs2 started (partial connect) - stop it
     select(undef, undef, undef, 0.1);
   }
 
-  # Timeout - kill it
-  kill('TERM', $pid);
-  waitpid($pid, 0);
+  my $stopped = stop_rdrs2($pid, 30);
   unlink $pid_file if -f $pid_file;
+  die "rdrs2 (PID $pid) survived both TERM and KILL" unless $stopped;
   exit 0;
 EOF
 

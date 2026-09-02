@@ -26,6 +26,7 @@
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
 #include "api_key.hpp"
+#include "rate_limit.hpp"
 #include <metrics.hpp>
 #include <cstdio>
 
@@ -175,6 +176,7 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
+  std::string rl_identity;
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     /*
@@ -219,6 +221,13 @@ void RonSQLCtrl::ronsql(
       callback(resp);
       DEB_TRACE();
       return;
+    }
+    // Tag the executor's transactions with the rate limit identity
+    // (RONDB-978). rl_identity outlives ronsql_dal below.
+    rl_identity = get_rate_limit_identity(api_key);
+    if (!rl_identity.empty()) {
+      params.rate_limit_identity = rl_identity.c_str();
+      params.rate_limit_identity_len = (Uint32)rl_identity.size();
     }
   }
 
@@ -359,7 +368,13 @@ void RonSQLCtrl::ronsql(
   }
   else {
     DEB_TRACE();
-    resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+    /* Rate limit rejections (RONDB-978) must surface as 429 like on every
+       other endpoint, everything else keeps the historical 500 of this
+       endpoint. ronsql_op reports the throttling as TOO_MANY_REQUESTS and
+       does not retry it. */
+    resp->setStatusCode(status.http_code == TOO_MANY_REQUESTS
+                          ? drogon::HttpStatusCode::k429TooManyRequests
+                          : drogon::HttpStatusCode::k500InternalServerError);
     resp->setContentTypeCodeAndCustomString(
       drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
     DEB_TRACE();

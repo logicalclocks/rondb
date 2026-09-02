@@ -704,7 +704,8 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
       if (trpId == 0) trpId = 1;
       while (trpId <= globalTransporterRegistry.get_transporter_count()) {
         RdmaTransporterStats stats{};
-        if (!handles_this_trp(trpId) ||
+        if (globalTransporterRegistry.get_transporter(trpId) == nullptr ||
+            !handles_this_trp(trpId) ||
             globalTransporterRegistry.is_inactive_trp(trpId) ||
             !globalTransporterRegistry.get_rdma_stats(trpId, stats)) {
           trpId++;
@@ -778,8 +779,10 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
             ndb_sockaddr conn_addr;
 
             // Aggregate information over all (multi?) transporters
+            globalTransporterRegistry.lockMultiTransporters();
             for (unsigned i = 0; i < num_ids; i++) {
               const TrpId trpId = trp_ids[i];
+              if (!globalTransporterRegistry.trpIdIsValid(trpId)) continue;
               bytes_sent += globalTransporterRegistry.get_bytes_sent(trpId);
               bytes_received +=
                   globalTransporterRegistry.get_bytes_received(trpId);
@@ -792,6 +795,7 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
               perform_state = globalTransporterRegistry.getPerformState(trpId);
               is_encrypted = globalTransporterRegistry.is_encrypted_link(trpId);
             }
+            globalTransporterRegistry.unlockMultiTransporters();
 
             Ndbinfo::Row row(signal, req);
             row.write_uint32(getOwnNodeId());  // Node id
@@ -846,6 +850,7 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
       break;
     }
     case Ndbinfo::CERTIFICATES_TABLEID: {
+      if (instance() > 1) break;
       TlsKeyManager *keyMgr = globalTransporterRegistry.getTlsKeyManager();
       int peer_node_id = cursor->data[0];
       cert_table_entry entry;

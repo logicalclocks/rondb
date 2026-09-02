@@ -900,7 +900,7 @@ static const char* helpTextDebug =
 "SHOW PROPERTIES                       Print config properties object\n"
 "<id> LOGLEVEL {<category>=<level>}+   Set log level\n"
 #ifdef ERROR_INSERT
-"<id> ERROR <errorNo>                  Inject error into NDB node\n"
+"<id> ERROR <errorNo> [<extraNo>]      Inject error into NDB node\n"
 #endif
 "<id> LOG [BLOCK = {ALL|<block>+}]     Set logging on in & out signals\n"
 "<id> TESTON                           Start signal logging\n"
@@ -4412,18 +4412,29 @@ int CommandInterpreter::executeError(int processId, const char *parameters,
   Vector<BaseString> args;
   split_args(parameters, args);
 
-  if (args.size() >= 2) {
+  if (args.size() >= 3) {
     ndbout << "ERROR: Too many arguments." << endl;
     return -1;
   }
 
   int errorNo;
   if (!convert(args[0].c_str(), errorNo)) {
-    ndbout << "ERROR: Expected an integer." << endl;
+    ndbout << "ERROR: Expected an integer for error value '" << args[0] << "'"
+           << endl;
     return -1;
   }
 
-  return ndb_mgm_insert_error(m_mgmsrv, processId, errorNo, NULL);
+  if (args.size() == 1)
+    return ndb_mgm_insert_error(m_mgmsrv, processId, errorNo, nullptr);
+
+  int extraNo;
+  if (!convert(args[1].c_str(), extraNo)) {
+    ndbout << "ERROR: Expected an integer for extra value '" << args[1] << "'"
+           << endl;
+    return -1;
+  }
+
+  return ndb_mgm_insert_error2(m_mgmsrv, processId, errorNo, extraNo, nullptr);
 }
 
 //*****************************************************************************
@@ -4984,15 +4995,15 @@ int CommandInterpreter::setAlwaysEncryptBackup(bool on) {
 }
 
 int CommandInterpreter::executeUserGet(char* parameters) {
-  char *id = strchr(parameters, ' ');
-  if (emptyString(id)) {
+  /* "parameters" starts with the sub-command "GET"; the username follows. */
+  Vector<BaseString> command_list;
+  split_args_with_equal(parameters, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
     ndbout << "Expected a username as parameter" << endl;
     return -1;
   }
-  Vector<BaseString> command_list;
-  split_args_with_equal(id, command_list);
-
-  Uint32 command_list_size = command_list.size();
   if (command_list_size > 2) {
     ndbout << "Expected a username as parameter, nothing more" << endl;
     return -1;
@@ -5014,16 +5025,16 @@ int CommandInterpreter::executeUserGet(char* parameters) {
 static const char *user_backup_magic_str = "##USER BACKUP%%";
 
 int CommandInterpreter::executeUserRestore(char* parameters) {
-  char *id = strchr(parameters, ' ');
-  if (emptyString(id)) {
+  /* "parameters" starts with the sub-command "RESTORE"; the file name follows. */
+  Vector<BaseString> command_list;
+  split_args_with_equal(parameters, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
     ndbout << "Expected USER RESTORE file_name";
     ndbout << " in this command" << endl;
     return -1;
   }
-  Vector<BaseString> command_list;
-  split_args_with_equal(id, command_list);
-
-  Uint32 command_list_size = command_list.size();
   if (command_list_size > 2) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;
@@ -5071,16 +5082,16 @@ int CommandInterpreter::executeUserRestore(char* parameters) {
 }
 
 int CommandInterpreter::executeUserBackup(char* parameters) {
-  char *id = strchr(parameters, ' ');
-  if (emptyString(id)) {
+  /* "parameters" starts with the sub-command "BACKUP"; the file name follows. */
+  Vector<BaseString> command_list;
+  split_args_with_equal(parameters, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
     ndbout << "Expected USER BACKUP file_name";
     ndbout << " in this command" << endl;
     return -1;
   }
-  Vector<BaseString> command_list;
-  split_args_with_equal(id, command_list);
-
-  Uint32 command_list_size = command_list.size();
   if (command_list_size > 2) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;
@@ -5133,13 +5144,9 @@ int CommandInterpreter::executeUserBackup(char* parameters) {
 }
 
 int CommandInterpreter::executeUserList(char* parameters) {
-  char *id = strchr(parameters, ' ');
-  if (emptyString(id)) {
-    ndbout << "Expected LIST in this command, should never happen" << endl;
-    return -1;
-  }
+  /* "parameters" is just the sub-command "LIST" with no further arguments. */
   Vector<BaseString> command_list;
-  split_args_with_equal(id, command_list);
+  split_args_with_equal(parameters, command_list);
 
   Uint32 command_list_size = command_list.size();
   if (command_list_size > 1) {
@@ -5185,12 +5192,6 @@ int CommandInterpreter::executeUserDrop(char* parameters) {
 }
 
 int CommandInterpreter::executeUser(char* parameters, int type) {
-  char *id = strchr(parameters, ' ');
-  if (emptyString(id)) {
-    ndbout << "Expected at least a username as parameter" << endl;
-    return -1;
-  }
-
   const char *type_str = nullptr;
   if (type == SET_USER) {
     type_str = "SET";
@@ -5200,8 +5201,18 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
     require(type == DROP_USER);
     type_str = "DROP";
   }
+  /*
+   * Unlike "DATABASE QUOTA <sub>", the "USER <sub>" commands have no group
+   * word: "USER" is the dispatch keyword and "parameters" already starts with
+   * the sub-command (SET/ALTER/DROP). So parse "parameters" as-is; do not skip
+   * a leading token or the sub-command itself would be discarded.
+   */
   Vector<BaseString> command_list;
-  split_args_with_equal(id, command_list);
+  split_args_with_equal(parameters, command_list);
+  if (command_list.size() < 2) {
+    ndbout << "Expected at least a username as parameter" << endl;
+    return -1;
+  }
 
   Uint32 command_pos = 0;
   Uint32 command_list_size = command_list.size();

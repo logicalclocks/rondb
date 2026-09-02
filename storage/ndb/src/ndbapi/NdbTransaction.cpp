@@ -397,6 +397,25 @@ int NdbTransaction::init() {
   theTransactionIsStarted = false;
   theNext		  = nullptr;
 
+  /**
+   * Transactions are pooled and recycled through init(). The rate limit
+   * identity (RONDB-978) must not survive into the next transaction: a
+   * transaction whose next user sets no identity would otherwise be billed
+   * to - and throttled against - the previous user's bucket, and
+   * m_current_username would dangle into the previous request's freed
+   * identity string on the rate overflow reporting path.
+   *
+   * Untagged transactions are not an edge case. Every endpoint computes an
+   * identity only inside its useHopsworksAPIKeys branch, RDRS's own
+   * metadata reads (the api key cache, feature store metadata) set none at
+   * all, and Rondis traffic is never tagged - yet all of them draw from the
+   * same pool as tagged REST requests.
+   */
+  m_user_id               = RNIL;
+  m_user_id_version       = 0;
+  m_current_username      = nullptr;
+  m_current_username_len  = 0;
+
   theFirstOpInList	  = nullptr;
   theLastOpInList	  = nullptr;
 
@@ -416,6 +435,18 @@ int NdbTransaction::init() {
   theCompletionStatus     = NotCompleted;
 
   theError.code		  = 0;
+  /**
+   * Transactions are pooled, so details must be cleared here or a recycled
+   * transaction inherits the previous one's detail text - a pointer into a
+   * buffer that has since been freed. Only code was being reset, which is not
+   * enough for an error raised by setErrorCode(): that sets code alone, and
+   * ndberror_update() (via getNdbError()) then refills message, status and
+   * classification from the static error table but never touches details. The
+   * result was a stale non-null details pointer on a code-only error, and any
+   * caller that formats the error dereferenced it. Reached via
+   * setUserId()'s rate overflow report (RONDB-978).
+   */
+  theError.details	  = nullptr;
   theErrorLine		  = 0;
   theErrorOperation	  = nullptr;
 

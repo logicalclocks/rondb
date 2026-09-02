@@ -1774,7 +1774,7 @@ testHighCardinalityGroupBy(Ndb * /*ndb*/, SignalSender &ss,
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 4: Eviction via ERROR_INSERT 5116                              */
+/* Test 4: Eviction via ERROR_INSERT 5126                              */
 /* ------------------------------------------------------------------ */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 
@@ -1783,15 +1783,15 @@ testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
              Uint32 numRows, NdbRestarter &restarter)
 {
   V("\n=============================================\n");
-  V("Test 4: Eviction test (%u rows, ERROR_INSERT 5116)\n", numRows);
+  V("Test 4: Eviction test (%u rows, ERROR_INSERT 5126)\n", numRows);
   V("=============================================\n");
 
-  /* Inject error 5116 in all data nodes — limits max_groups to 3 */
-  if (restarter.insertErrorInAllNodes(5116) != 0) {
-    fprintf(stderr, "FAIL: insertErrorInAllNodes(5116) failed\n");
+  /* Inject error 5126 in all data nodes — limits max_groups to 3 */
+  if (restarter.insertErrorInAllNodes(5126) != 0) {
+    fprintf(stderr, "FAIL: insertErrorInAllNodes(5126) failed\n");
     return -1;
   }
-  V("ERROR_INSERT 5116 set in all nodes\n");
+  V("ERROR_INSERT 5126 set in all nodes\n");
 
   std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
 
@@ -3485,14 +3485,14 @@ testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
                        Uint32 numRows, NdbRestarter &restarter)
 {
   V("\n=============================================\n");
-  V("Test 18: Eviction MUTEX_FREE (%u rows, ERROR_INSERT 5116)\n", numRows);
+  V("Test 18: Eviction MUTEX_FREE (%u rows, ERROR_INSERT 5126)\n", numRows);
   V("=============================================\n");
 
-  if (restarter.insertErrorInAllNodes(5116) != 0) {
-    fprintf(stderr, "FAIL: insertErrorInAllNodes(5116) failed\n");
+  if (restarter.insertErrorInAllNodes(5126) != 0) {
+    fprintf(stderr, "FAIL: insertErrorInAllNodes(5126) failed\n");
     return -1;
   }
-  V("ERROR_INSERT 5116 set in all nodes\n");
+  V("ERROR_INSERT 5126 set in all nodes\n");
 
   std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);

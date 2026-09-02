@@ -2706,7 +2706,7 @@ testRejectAggOnRoot(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ================================================================== */
-/* Eviction test (Test 14): ERROR_INSERT 5116 with multi-leaf          */
+/* Eviction test (Test 14): ERROR_INSERT 5126 with multi-leaf          */
 /* Forces maxGroups=3 on AggInterpreter, triggering eviction when a    */
 /* 4th distinct group arrives. Tests combined accumulator eviction.    */
 /* ================================================================== */
@@ -2714,11 +2714,11 @@ testRejectAggOnRoot(Ndb *ndb, MYSQL * /*conn*/)
 static int
 testEvictionMultiLeaf(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 14: Eviction (ERROR_INSERT 5116) with 2-leaf star ... ");
+  printf("Test 14: Eviction (ERROR_INSERT 5126) with 2-leaf star ... ");
   fflush(stdout);
 
   /* Use star_root (6 rows, 3 groups) + star_leaf_a + star_leaf_b.
-   * ERROR_INSERT 5116 forces maxGroups=3, so with 3 groups no eviction
+   * ERROR_INSERT 5126 forces maxGroups=3, so with 3 groups no eviction
    * should be needed. But the combined accumulators (2 per group) still
    * exercise the multi-leaf hash map layout during eviction merge. */
 
@@ -2726,13 +2726,13 @@ testEvictionMultiLeaf(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   sqlExec(conn, "INSERT INTO star_root VALUES (7,4),(8,4),(9,5),(10,5)");
   sqlExec(conn, "INSERT INTO star_leaf_a VALUES (7,700),(8,800),(9,900),(10,1000)");
   sqlExec(conn, "INSERT INTO star_leaf_b VALUES (7,70),(8,80),(9,90),(10,100)");
-  /* Now: 5 groups (1-5), 2 rows each. 5116 forces maxGroups=3 → eviction. */
+  /* Now: 5 groups (1-5), 2 rows each. 5126 forces maxGroups=3 → eviction. */
 
-  if (restarter.insertErrorInAllNodes(5116) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5116))\n");
+  if (restarter.insertErrorInAllNodes(5126) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5126))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5116 set (maxGroups=3)\n");
+  V("\n  ERROR_INSERT 5126 set (maxGroups=3)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(ROOT_TABLE);
@@ -2944,7 +2944,7 @@ static const char *
 fakeOkLineForErrorInsertTest(int testNum)
 {
   switch (testNum) {
-    case 14: return "Test 14: Eviction (ERROR_INSERT 5116) with 2-leaf star ... OK (5 groups, eviction merge verified)";
+    case 14: return "Test 14: Eviction (ERROR_INSERT 5126) with 2-leaf star ... OK (5 groups, eviction merge verified)";
     default: return nullptr;
   }
 }
@@ -3220,7 +3220,7 @@ int main(int argc, char **argv)
           dropTestTables(conn);
         }
 
-        /* Test 14: Eviction with multi-leaf (ERROR_INSERT 5116) */
+        /* Test 14: Eviction with multi-leaf (ERROR_INSERT 5126) */
         if (shouldRun(14)) {
           NdbRestarter restarter(connectString);
           if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {

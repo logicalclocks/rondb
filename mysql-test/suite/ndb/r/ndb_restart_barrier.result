@@ -1,6 +1,7 @@
 "[shutting down mysqld 1]"
 "[shutting down mysqld 2]"
 # Barrier holds while a node is below phase 110, wave releases together
+# Parked nodes release themselves when the master Grant is suppressed
 # Consecutive waves reset barrier and dictionary lock state
 # Failure of the stalled starter releases the barrier
 "[dropping NDBT test table]"

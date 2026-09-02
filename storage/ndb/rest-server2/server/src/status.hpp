@@ -61,9 +61,14 @@ inline RS_Status __RS_ERROR(const HTTP_CODE http_code,
  * 243/2203 = write/read rate limit exceeded
  * (TcKeyRef::WriteRateOverflowError / ReadRateOverflowError),
  * 247/248 = too many operations / concurrent transactions for the quota.
+ *
+ * This is the single source of truth for the 429 set. The bare-code variant
+ * exists for callers that only have the code left, not the NdbError: RonSQL
+ * closes the transaction before its RonSQLRateLimitError escapes the executor
+ * and carries the code instead (ronsql_operation.cpp).
  */
-inline HTTP_CODE __RONDB_ERROR_HTTP_CODE(const struct NdbError &error) {
-  switch (error.code) {
+inline HTTP_CODE __RONDB_ERROR_CODE_HTTP_CODE(int error_code) {
+  switch (error_code) {
   case 243:
   case 2203:
   case 247:
@@ -72,6 +77,10 @@ inline HTTP_CODE __RONDB_ERROR_HTTP_CODE(const struct NdbError &error) {
   default:
     return SERVER_ERROR;
   }
+}
+
+inline HTTP_CODE __RONDB_ERROR_HTTP_CODE(const struct NdbError &error) {
+  return __RONDB_ERROR_CODE_HTTP_CODE(error.code);
 }
 
 inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error,

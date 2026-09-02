@@ -64,6 +64,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
@@ -196,6 +197,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
@@ -232,6 +234,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
@@ -267,6 +270,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=250M
 DiskPageBufferMemory=256M
@@ -302,6 +306,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
@@ -337,6 +342,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
@@ -402,6 +408,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
@@ -437,6 +444,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+CrashOnLeakedLcpScannedBit=1
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M

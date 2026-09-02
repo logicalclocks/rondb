@@ -938,7 +938,7 @@ Bolt Co	55
 Gear Inc	5
 
 
-=== Test 44: Group eviction with ERROR_INSERT 5116 ===
+=== Test 44: Group eviction with ERROR_INSERT 5126 ===
 == Query ==
 SELECT o.o_id, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id

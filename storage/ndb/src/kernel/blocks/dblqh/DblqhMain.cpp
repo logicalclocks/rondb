@@ -1182,6 +1182,63 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     resume_one_copy_fragment_process(signal);
     return;
   }
+#if defined ERROR_INSERT
+  case ZDELAY_NEXT_COPY_ROW:
+  {
+    jam();
+    /**
+     * ERROR_INSERT 5113 (timing only): the continuation of one NR copy
+     * fragment process was parked in a delayed CONTINUEB by nextRecordCopy
+     * to slow the copy scan of a TTL-table fragment down (the copy window
+     * that occurs naturally with large fragments, made deterministic).
+     * Nothing about the copy protocol state machine is changed; we simply
+     * reissue nextRecordCopy later than usual.
+     *
+     * Revalidate the copy process state before continuing, in the same way
+     * resume_one_copy_fragment_process() does: the copy may meanwhile have
+     * been closed (error/node failure), halted (UNDO log overload) or have
+     * had its continuation taken over by another LQHKEYCONF arrival.
+     */
+    TcConnectionrecPtr delayTcPtr;
+    delayTcPtr.i = signal->theData[1];
+    if (m_delay_copy_park_tc == delayTcPtr.i)
+    {
+      /* Release the single park slot: this signal IS the pending
+       * continuation for that copy process. */
+      m_delay_copy_park_tc = RNIL;
+    }
+    if (!tcConnect_pool.getValidPtr(delayTcPtr) ||
+        delayTcPtr.p->connectState != TcConnectionrec::COPY_CONNECTED ||
+        delayTcPtr.p->tcScanRec == RNIL)
+    {
+      jam();
+      return;
+    }
+    setup_scan_pointers_from_tc_con(delayTcPtr, __LINE__);
+    if (scanptr.p->scanState == ScanRecord::WAIT_LQHKEY_COPY)
+    {
+      if (scanptr.p->scanCompletedStatus == ZTRUE ||
+          scanptr.p->scanErrorCounter)
+      {
+        jam();
+        closeCopyLab(signal, delayTcPtr.p);
+      }
+      else if (is_ok_to_send_next_record(delayTcPtr.p))
+      {
+        jam();
+        /* nextRecordCopy itself handles c_copy_frag_live_node_halted by
+         * registering this process in the blocked list for later resume.
+         * m_delay_copy_reentry grants exactly ONE real execution; it is
+         * consumed (cleared) at the top of nextRecordCopy so the per-row
+         * calls deeper in the same chain park again. */
+        m_delay_copy_reentry = true;
+        nextRecordCopy(signal, delayTcPtr);
+      }
+    }
+    release_frag_access(prim_tab_fragptr.p);
+    return;
+  }
+#endif
   case ZHANDLE_TC_FAILED_SCANS:
   {
     jam();
@@ -9663,8 +9720,14 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   } else if (op == ZINSERT) {
     /*
      * TTL related
-     * For TTL table, replica needs to receive
-     * ZINSERT
+     * A rowid-less ZINSERT from a non-TC sender is the LEGACY shape of an
+     * insert-over-expired-row (ZINSERT_TTL) forwarded to a replica: the
+     * replica re-resolves it by primary key (DBACC dup-convert). Senders
+     * running with replica rowid forwarding (ndbd_replica_rowid_forwarding,
+     * TTL error 899 hardening) attach the overwritten row's rowid instead and
+     * take the branch above; this rowid-less shape remains accepted
+     * unconditionally for rolling upgrades from older primaries. Verification
+     * of the carried rowid happens in continueACCKEYCONF.
      */
     if (refToMain(senderRef) != DBTC) {
       ndbassert(is_ttl_table(tabptr.i));
@@ -10532,8 +10595,21 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
      * that overwrite unconditional, which is correct here because a replayed
      * duplicate insert in chronological REDO can only land on the expired row it
      * replaced (a plain insert onto a live row is preceded by its delete).
+     *
+     * Node-restart copy rows (NrCopyFlag) get the same NoTTLDupConvert as
+     * LCP-restore inserts, as a DEFENSIVE measure only: today the conversion
+     * is unreachable for them anyway, because handle_nr_copy always deletes
+     * both at the target rowid and by primary key (nr_copy_delete_row) before
+     * running a copy insert, so DBACC cannot find the key when the insert
+     * executes. Making the intent explicit protects the copy protocol against
+     * future refactoring of that delete-first logic. REDO replay deliberately
+     * remains convertible as described above; initReqinfoExecSr never sets
+     * NrCopyFlag, so replay is unaffected by this term.
      */
-    taccreq = AccKeyReq::setNoTTLDupConvert(taccreq, regTcPtr.p->m_restore_op);
+    taccreq = AccKeyReq::setNoTTLDupConvert(
+        taccreq,
+        regTcPtr.p->m_restore_op ||
+            LqhKeyReq::getNrCopyFlag(regTcPtr.p->reqinfo));
 
     AccKeyReq * const req = reinterpret_cast<AccKeyReq*>(&signal->theData[0]);
     req->requestInfo = taccreq;
@@ -11959,6 +12035,56 @@ void Dblqh::continueACCKEYCONF_zwrite_slow(Signal *signal,
   }
 }
 
+/**
+ * Rate-limited logging of a replica rowid mismatch rejection (error 1245).
+ *
+ * Every mismatch is a real divergence detection, but it can fire at scale
+ * (a latent multi-key fork surfacing after upgrade, or application retry
+ * loops hammering a poisoned key -- 1245 surfaces as generic ER_GET_ERRMSG,
+ * which retry logic does not recognize as permanent), so printing is
+ * throttled to two lines per 10 s window per instance with the suppressed
+ * count carried in the next line. Only the PRINTING is throttled: the
+ * caller always rejects the operation, and the ERROR_INSERT 5118
+ * escalation always fires. No started-gate is needed (unlike the DBTUP
+ * 899 logging): verification only runs with activeCreat == AC_NORMAL,
+ * never during copy, REDO replay or restore.
+ *
+ * Each printed line goes to the node log with full detail and, via
+ * warningEvent, to the cluster log in compact form.
+ */
+void Dblqh::log_replica_rowid_mismatch(const TcConnectionrec *regTcPtr,
+                                       Uint32 resolved_op, Uint32 localKey1,
+                                       Uint32 localKey2) {
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (!NdbTick_IsValid(m_rowid_mismatch_window_start) ||
+      NdbTick_Elapsed(m_rowid_mismatch_window_start, now).milliSec() >=
+          10000) {
+    m_rowid_mismatch_window_start = now;
+    m_rowid_mismatch_window_count = 0;
+  }
+  if (m_rowid_mismatch_window_count >= 2) {
+    m_rowid_mismatch_suppressed++;
+    return;
+  }
+  m_rowid_mismatch_window_count++;
+  g_eventLogger->error(
+      "DBLQH %u: replica rowid mismatch tab(%u,%u) operation: %u"
+      " wire row(%u,%u) local row(%u,%u) transid(0x%.8x,0x%.8x)"
+      " seqNoReplica: %u (%u occurrences suppressed) -- replica layouts"
+      " have diverged, rejecting operation with error %u",
+      instance(), regTcPtr->tableref, regTcPtr->fragmentid, resolved_op,
+      regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx, localKey1,
+      localKey2, regTcPtr->transid[0], regTcPtr->transid[1],
+      regTcPtr->seqNoReplica, m_rowid_mismatch_suppressed,
+      (Uint32)ZREPLICA_ROWID_MISMATCH);
+  warningEvent("DBLQH %u: 1245 replica rowid mismatch tab(%u,%u)"
+               " wire(%u,%u) local(%u,%u) supp=%u",
+               instance(), regTcPtr->tableref, regTcPtr->fragmentid,
+               regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx,
+               localKey1, localKey2, m_rowid_mismatch_suppressed);
+  m_rowid_mismatch_suppressed = 0;
+}
+
 void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
                                Uint32 localKey2,
                                const TcConnectionrecPtr tcConnectptr) {
@@ -11973,6 +12099,91 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
    * ----------------------------------------------------------------------- */
   if (unlikely(regTcPtr->operation == ZWRITE)) {
     continueACCKEYCONF_zwrite_slow(signal, regTcPtr);
+  }
+
+  /**
+   * Replica rowid verification (TTL error 899 hardening; see
+   * storage/ndb/claude_files/ttl_899_rowid/).
+   *
+   * Principle: a backup replica must never apply an INSERT, WRITE, UPDATE or
+   * DELETE at a row placement the primary did not dictate. The primary's
+   * rowid allocator (alloc_fix_rec) is only safe if backups never allocate
+   * rowids on their own: any backup-side self-allocation can occupy a slot
+   * the primary believes free, breaking the invariant
+   * free(primary) subset-of free(backup) that makes required-rowid inserts
+   * (alloc_fix_rowid) infallible in normal traffic. TTL tables re-resolve
+   * forwarded operations by primary key through the backup's own DBACC
+   * (dup-convert / ZWRITE resolution), which used to let found/not-found
+   * agreement silently replace rowid agreement as the replica-layout
+   * invariant. With the wire rowid attached (packLqhkeyreqLab) we verify it
+   * here, where DBACC has just resolved the key:
+   *
+   * - ACC FOUND the key (operation resolved to ZUPDATE/ZDELETE or
+   *   dup-converted to ZINSERT_TTL): localKey1/localKey2 is the row's rowid
+   *   on THIS replica, and regTcPtr->m_row_id still holds the wire rowid (it
+   *   is overwritten with the local key only later, in acckeyconf_tupkeyreq /
+   *   acckeyconf_load_diskpage). A difference is a detected replica-layout
+   *   divergence: REF with ZREPLICA_ROWID_MISMATCH (permanent, IE) so the
+   *   transaction aborts loudly at the true divergence point instead of
+   *   masking the fork. TTL expiry semantics (checkTTL / ttl_ignore) are
+   *   completely unaffected: on rowid agreement the operation proceeds
+   *   exactly as before.
+   * - ACC did NOT find the key: insert-family operations flow into the
+   *   pre-existing required-rowid TUP path (m_use_rowid was set from the wire
+   *   flag in execLQHKEYREQ) and either heal the missing row at the primary's
+   *   exact rowid or fail with 899 at the true divergence point -- no check
+   *   is needed here. Not-found ZUPDATE/ZDELETE keep today's loud
+   *   ZNO_TUPLE_FOUND (they never reach this point).
+   *
+   * Gating: only replica-chain hops (seqNoReplica != 0; RESTORE ops and REDO
+   * replay run with seqNoReplica == 0, and replay reqinfo never carries the
+   * rowid flag -- initReqinfoExecSr), only in steady state
+   * (activeCreat == AC_NORMAL; during NR copy handle_nr_copy deliberately
+   * reconciles mismatching placements, and AC_IGNORED ops apply nothing),
+   * never for copy rows (NrCopyFlag) and never for dirty ops (documented
+   * non-consistent; their not-found case still heals/trips via the
+   * required-rowid insert). The check runs on EVERY non-primary hop, so a
+   * middle replica (NoOfReplicas >= 3) only ever forwards a rowid that is
+   * verified equal to the primary's, never a locally-derived one.
+   */
+  if (unlikely(LqhKeyReq::getRowidFlag(regTcPtr->reqinfo) != 0 &&
+               regTcPtr->seqNoReplica != 0 &&
+               regTcPtr->activeCreat == Fragrecord::AC_NORMAL &&
+               LqhKeyReq::getNrCopyFlag(regTcPtr->reqinfo) == 0 &&
+               regTcPtr->dirtyOp == ZFALSE)) {
+    const Uint32 resolved_op = regTcPtr->operation;
+    if (resolved_op == ZUPDATE ||
+        resolved_op == ZDELETE ||
+        resolved_op == ZINSERT_TTL) {
+      jamDebug();
+      if (unlikely(regTcPtr->m_row_id.m_page_no != localKey1 ||
+                   regTcPtr->m_row_id.m_page_idx != localKey2)) {
+        jam();
+        log_replica_rowid_mismatch(regTcPtr, resolved_op, localKey1,
+                                   localKey2);
+#ifdef ERROR_INSERT
+        if (ERROR_INSERTED(5118)) {
+          /* Autotest escalation: die at the divergence point. */
+          ndbabort();
+        }
+#endif
+        /**
+         * Same synthesized-TUPKEYREF unwind as the disk-page failure path in
+         * acckeyconf_load_diskpage: the operation holds the ACC lock and a
+         * prepared TUP operation record; execTUPKEYREF in state WAIT_TUP runs
+         * the full abort machinery (including the ACC unlock) and routes the
+         * error code back to the requesting LQH/TC (replica-error path),
+         * which aborts the transaction.
+         */
+        regTcPtr->transactionState = TcConnectionrec::WAIT_TUP;
+        TupKeyRef *ref = (TupKeyRef *)signal->getDataPtr();
+        ref->userRef = tcConnectptr.i;
+        ref->errorCode = ZREPLICA_ROWID_MISMATCH;
+        ref->noExecInstructions = 0;
+        execTUPKEYREF(signal);
+        return;
+      }
+    }
   }
 
   /* ------------------------------------------------------------------------
@@ -12057,13 +12268,20 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
   regTcPtr->m_row_id.m_page_idx = page_idx;
   regTcPtr->transactionState = TcConnectionrec::WAIT_TUP;
   /*
-   * TTL related
-   * TODO (Zhao)
-   * Investigate what is m_use_rowid for...
+   * From here on m_use_rowid means "attach m_row_id to the LQHKEYREQ forwarded
+   * to the next replica" (the local TupKeyReq rowid flag was captured into
+   * use_rowid above, BEFORE this point). Operations that dictate row placement
+   * (ZINSERT/ZREFRESH) always forward the rowid; m_row_id holds the correct
+   * value in all cases: the TUP-chosen key for fresh inserts (accminupdate)
+   * and the ACC-found key for existing rows (set just above).
    *
-   * UPDATE:
-   * Seems it's used to handle insertion,
-   * ZINSERT_TTL is update, so shouldn't set m_use_rowid for ZINSERT_TTL here
+   * TTL related: ZINSERT_TTL must NOT be included here even though its wire
+   * operation is ZINSERT -- on THIS replica it executes as an in-place update
+   * of the expired row, and this flag would give a replica's local execution
+   * required-rowid INSERT semantics it must not have. Its verification rowid
+   * (and that of a TTL ZWRITE the primary resolved to an update) is attached
+   * on the primary in packLqhkeyreqLab instead, gated per hop on the next
+   * replica's version (replica rowid forwarding, TTL error 899 hardening).
    */
   regTcPtr->m_use_rowid |= (op == ZINSERT || op == ZREFRESH);
   /* ---------------------------------------------------------------------
@@ -12859,6 +13077,103 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
 
   regTcPtr->m_use_rowid |=
       fragptr.p->m_copy_started_state == Fragrecord::AC_NR_COPY;
+
+  /**
+   * Replica rowid forwarding (TTL error 899 hardening; see
+   * storage/ndb/claude_files/ttl_899_rowid/).
+   *
+   * Principle: backup replicas must never receive a rowid-less operation for
+   * any INSERT, WRITE, UPDATE or DELETE. The primary's rowid allocator is
+   * only safe if the backup never allocates rowids on its own -- any
+   * backup-side self-allocation means a slot can be occupied on the backup
+   * that the primary believes free, so the primary can no longer safely
+   * select rowids (invariant: free(primary) subset-of free(backup) at every
+   * point of the per-fragment operation stream).
+   *
+   * Plain ZINSERT/ZREFRESH have always carried their rowid (set in
+   * acckeyconf_tupkeyreq with m_row_id maintained by accminupdate), and
+   * during NR copy ALL operations carry it (just above). The TTL feature
+   * broke the discipline in steady state on two channels:
+   *  - D1: an insert over an expired row executes as ZINSERT_TTL (in-place
+   *    update at the existing rowid) but was forwarded as a rowid-less plain
+   *    ZINSERT; a backup missing the row silently self-allocated a different
+   *    rowid (alloc_fix_rec) -- a permanent, self-amplifying layout fork
+   *    whose delayed symptom is error 899 in unrelated traffic.
+   *  - D2a: a TTL-table ZWRITE the primary resolved to ZUPDATE was forwarded
+   *    as a rowid-less ZWRITE. The wire operation must STAY ZWRITE so that
+   *    replicas skip checkTTL (see [TTL Replication ZWRITE to replicas]
+   *    in continueACCKEYCONF) -- only the rowid is added here. A backup
+   *    missing the row resolved the ZWRITE to an insert and self-allocated.
+   *    (The resolved-to-ZINSERT ZWRITE shape already carries its rowid via
+   *    the acckeyconf_tupkeyreq assignment.)
+   *
+   * Attach the operation's actual local rowid (m_row_id: the ACC-found row
+   * for these shapes) so the receiving replica can verify placement
+   * agreement when it finds the key (continueACCKEYCONF, error 1245 on
+   * mismatch) or heal/fail-loudly at the exact slot when it does not
+   * (pre-existing required-rowid insert path, error 899 on occupied slot).
+   *
+   * The wire format is unchanged -- the RowidFlag bit and the two
+   * variableData words have existed since NDBD_ROWID_VERSION -- so this is
+   * gated only on the RECEIVING data node understanding the new semantics
+   * (rolling upgrade: older receivers keep getting today's rowid-less
+   * shapes, same pattern as ndbd_support_copy_frag_done). The gate is
+   * evaluated PER HOP, by every sender for ITS OWN next replica
+   * (replica_rowid_forwarding_supported): the primary ATTACHES only toward
+   * a supporting first backup, and a middle replica (NoOfReplicas >= 3)
+   * STRIPS the flag it received off the forwarded signal when its own next
+   * replica is unsupporting -- a new->new->old chain degrades to the legacy
+   * rowid-less shape exactly at the old tail hop instead of leaking the new
+   * shape to a receiver that was never validated with it. Only the PRIMARY
+   * ever attaches: a non-primary hop forwards the wire rowid it verified,
+   * never a locally-derived value (its m_use_rowid arrived set from the
+   * wire flag, and verification pinned m_row_id equal to the wire value),
+   * and a middle replica that received the legacy rowid-less shape from an
+   * old primary (new->old->new) must NOT self-attach -- its local rowid is
+   * not authoritative, and attaching it could abort healthy transactions
+   * with a false 1245 if the middle itself is the diverged replica. The
+   * legacy rowid-carrying shapes -- plain ZINSERT/ZREFRESH, the ZWRITE the
+   * primary resolved to an insert, and EVERYTHING while the fragment is
+   * under NR copy (AC_NR_COPY / NrCopyFlag) -- have carried their rowid to
+   * receivers of every version since NDBD_ROWID_VERSION and are never
+   * stripped (stripping copy-phase rowids would break handle_nr_copy).
+   *
+   * The REDO log is unaffected: the prepare-record header has always
+   * contained m_row_id for every operation class (writeLogHeader) and never
+   * reads m_use_rowid; REDO replay never reaches this forwarding code
+   * (lastReplicaNo == 0 takes the early return above).
+   *
+   * Full principle (second stage): plain forwarded ZUPDATE and ZDELETE on
+   * ANY table carry the affected row's rowid as a VERIFICATION rowid too.
+   * These shapes can never self-allocate (a backup that misses the row REFs
+   * with ZNO_TUPLE_FOUND, unchanged), but without the rowid a fork in which
+   * both replicas hold the row at DIFFERENT rowids stays invisible until
+   * insert-family traffic happens to touch the diverged slots; with it,
+   * every forwarded operation becomes a layout probe checked by the
+   * receiving replica in continueACCKEYCONF. This condition subsumes the
+   * TTL-ZWRITE-resolved-to-ZUPDATE clause of the first stage and also
+   * covers ZWRITE-resolved updates on non-TTL tables, dirty writes (their
+   * found case is excluded from verification on the receiver, but their
+   * not-found ZWRITE resolution now heals or trips at the wire rowid
+   * instead of self-allocating) and takeover-scan deletes such as the TTL
+   * purge. ZUPDATE/ZDELETE not-found semantics, checkTTL handling and the
+   * wire operation codes are all unchanged -- this stage only adds the two
+   * rowid words and the receiver-side comparison.
+   */
+  if ((regTcPtr->operation == ZINSERT_TTL ||
+       regTcPtr->operation == ZUPDATE ||
+       regTcPtr->operation == ZDELETE) &&
+      LqhKeyReq::getNrCopyFlag(regTcPtr->reqinfo) == 0 &&
+      fragptr.p->m_copy_started_state != Fragrecord::AC_NR_COPY) {
+    if (!replica_rowid_forwarding_supported(regTcPtr->nextReplica)) {
+      /* This hop's receiver predates the feature: legacy rowid-less shape. */
+      jamDebug();
+      regTcPtr->m_use_rowid = 0;
+    } else if (regTcPtr->seqNoReplica == 0) {
+      jamDebug();
+      regTcPtr->m_use_rowid = 1;
+    }
+  }
   LqhKeyReq::setRowidFlag(Treqinfo, regTcPtr->m_use_rowid);
 
   /*
@@ -12889,9 +13204,23 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
 
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
+    /*
+     * Rowid-carrying shapes: plain ZINSERT/ZREFRESH, everything during NR
+     * copy, and -- with replica rowid forwarding (TTL error 899 hardening) --
+     * ZINSERT_TTL forwarded as ZINSERT, TTL ZWRITE resolved to ZUPDATE
+     * (re-masked to ZWRITE below), and the further shapes added by later
+     * stages of that fix. No operation-shape assert is possible here.
+     */
     // ndbassert(LqhKeyReq::getOperation(Treqinfo) == ZINSERT);
   } else {
     if (fragptr.p->m_copy_started_state != Fragrecord::AC_IGNORED) {
+      /*
+       * A rowid-less ZINSERT to a live next replica is only legal as the
+       * LEGACY ZINSERT_TTL shape, sent when the receiver's version predates
+       * replica rowid forwarding (see the version gate above). Once the
+       * cluster version floor guarantees supporting receivers this can be
+       * tightened to exclude ZINSERT_TTL as well.
+       */
       Uint32 nextNodeId = regTcPtr->nextReplica;
       ndbassert(LqhKeyReq::getOperation(Treqinfo) != ZINSERT ||
                 regTcPtr->operation == ZINSERT_TTL ||
@@ -18741,10 +19070,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 maxBatchRows = req->maxBatchRows;
 
-  CRASH_INSERTION(5114);  // Crash node on COMPLETE_REQ for join agg NF testing
+  CRASH_INSERTION(5122);  // Crash node on COMPLETE_REQ for join agg NF testing
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5118)) {
+  if (ERROR_INSERTED(5124)) {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     JoinAggCompleteRef *ref =
@@ -24680,6 +25009,15 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   Uint32 extra_len_index = 0;
   const Uint32 par_ordered_scan_flag =
     ScanFragReq::getParallelOrderedScanFlag(reqinfo);
+  /**
+   * seizeTcrec recycles TcConnectionrec from LQH's own free list without
+   * re-construction, so m_user_ptr_i must be cleared unconditionally here
+   * (as execLQHKEYREQ does for key operations). A value left over from an
+   * earlier operation would otherwise be dereferenced by the rate usage
+   * accounting of this scan, and the user record it points to may have
+   * been released by DROP USER since.
+   */
+  regTcPtr->m_user_ptr_i = RNIL64;
   if (ScanFragReq::getUserIdFlag(reqinfo)) {
     jamDebug();
     /**
@@ -26257,6 +26595,46 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
   const Uint32 maxPage = copyFragReq->nodeList[nodeCount];
   const Uint32 requestInfo = copyFragReq->nodeList[nodeCount + 1];
 
+  if (unlikely(get_node_status(nodeId) != ZNODE_UP)) {
+    jam();
+    /**
+     * The copy target is already known to have failed. Refuse before
+     * touching the copy scan record: a COPY_FRAGREQ racing the node
+     * failure would otherwise re-initialize the scan record — wiping
+     * the scanCompletedStatus set by closeCopyRequestLab() for the
+     * previous fragment's close — and then stream copy operations to
+     * the dead node, re-inflating copyCountWords with credits that can
+     * never return and parking the scan in WAIT_LQHKEY_COPY forever
+     * (observed in ndb.ndb_TCtakeover_stall: 75 sends within seconds
+     * after the takeover close, then a permanent stall). The failure
+     * handling that is already underway cleans up everything else; the
+     * master's copy process handles the REF as it handles any failed
+     * copy target.
+     */
+    CopyFragRef *const ref = (CopyFragRef *)&signal->theData[0];
+    ref->userPtr = copyPtr;
+    ref->sendingNodeId = cownNodeid;
+    ref->startingNodeId = nodeId;
+    ref->tableId = tabptr.i;
+    ref->fragId = fragId;
+    ref->errorCode = ZNODE_FAILURE_ERROR;
+    sendSignal(userRef, GSN_COPY_FRAGREF, signal, CopyFragRef::SignalLength,
+               JBB);
+
+    /*
+     * start_new_copyFragReq() reserves an active slot before sending a
+     * queued request to this block. Release that reservation when the
+     * request is rejected before a copy scan is created.
+     */
+    if (from_queue)
+    {
+      ndbrequire(c_active_copyFragReq > 0);
+      adjust_copyFragReq_rates(false);
+      start_new_copyFragReq(signal);
+    }
+    return;
+  }
+
   if (requestInfo == CopyFragReq::CFR_NON_TRANSACTIONAL) {
     jam();
   } else {
@@ -26642,7 +27020,7 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
    * Start sending ROWID for all operations from now on
    */
   fragptr.p->m_copy_started_state = Fragrecord::AC_NR_COPY;
-  if (ERROR_INSERTED(5714)) {
+  if (ERROR_INSERTED(5714) || ERROR_INSERTED(5113)) {
     g_eventLogger->info("Starting copy of tab(%u,%u)", fragptr.p->tabRef,
                         fragptr.p->fragId);
   }
@@ -26696,6 +27074,25 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
 void Dblqh::nextScanConfCopyLab(Signal *signal,
                                 const TcConnectionrecPtr tcConnectptr) {
   NextScanConf *const nextScanConf = (NextScanConf *)&signal->theData[0];
+  if (unlikely(scanptr.p->scanCompletedStatus == ZTRUE ||
+               get_node_status(scanptr.p->scanNodeId) != ZNODE_UP)) {
+    jam();
+    /*
+     * The copy target failed while a local fetch was outstanding.
+     * Do not process the fetched record or send it to the failed node.
+     * Discard credits from any send that raced with the close request.
+     *
+     * The node-status check additionally catches a copy whose target
+     * died without scanCompletedStatus being (or staying) set: a
+     * COPY_FRAGREQ racing the node failure re-initializes the scan
+     * record, wiping the flag an earlier closeCopyRequestLab() set —
+     * observed as 75 copy sends to the dead node within seconds of the
+     * take-over close, ending in a permanent WAIT_LQHKEY_COPY stall.
+     */
+    tcConnectptr.p->copyCountWords = 0;
+    closeCopyLab(signal, tcConnectptr.p);
+    return;
+  }
   if (nextScanConf->fragId == RNIL) {
     jam();
     /*---------------------------------------------------------------------------*/
@@ -26808,12 +27205,6 @@ void Dblqh::nextScanConfCopyLab(Signal *signal,
     // If accOperationPtr == RNIL no record was returned by ACC
     if (nextScanConf->accOperationPtr == RNIL) {
       jam();
-      if (unlikely(scanptr.p->scanCompletedStatus == ZTRUE)) {
-        jam();
-        /* Copy is being abandoned, shut it down */
-        closeCopyLab(signal, tcConnectptr.p);
-        return;
-      }
 
       scanptr.p->scan_lastSeen = __LINE__;
       signal->theData[0] = scanptr.i;
@@ -27103,6 +27494,82 @@ void Dblqh::nextRecordCopy(Signal *signal,
                            const TcConnectionrecPtr tcConnectptr) {
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
 
+#if defined ERROR_INSERT
+  if (unlikely(ERROR_INSERTED(5113)))
+  {
+    if (m_delay_copy_reentry)
+    {
+      /**
+       * This call is the one real execution granted by the delayed
+       * CONTINUEB continuation (ZDELAY_NEXT_COPY_ROW).  Consume the grant
+       * HERE so that the per-row nextRecordCopy calls made deeper in the
+       * same EXECUTE_DIRECT chain (copyTupkeyConfLab after each sent row)
+       * are parked again -- otherwise one grant would release a whole
+       * words-window batch of rows and the throttle would be per-batch,
+       * not per-row.
+       */
+      jam();
+      m_delay_copy_reentry = false;
+    }
+    else
+    {
+      FragrecordPtr delayFragPtr;
+      delayFragPtr.i = regTcPtr->fragmentptr;
+      ndbrequire(c_fragment_pool.getPtr(delayFragPtr));
+      if (is_ttl_table(delayFragPtr.p->tabRef))
+      {
+        /**
+         * ERROR_INSERT 5113 (timing only): slow down the NR copy scan of
+         * TTL-table fragments by parking the next-copy-row fetch in a
+         * delayed CONTINUEB (~10 ms per copy row).  This widens the
+         * natural mid-copy window (which occurs anyway on large
+         * fragments) so tests can deterministically commit live
+         * operations against the fragment while it is being copied.
+         * No state is changed: the copy still delivers every row through
+         * the normal protocol; the parked continuation revalidates the
+         * scan state before resuming (see ZDELAY_NEXT_COPY_ROW in
+         * execCONTINUEB).
+         *
+         * At most ONE parked continuation exists per copy process
+         * (m_delay_copy_park_tc): while it is pending, further
+         * nextRecordCopy attempts for the same process (e.g. from
+         * copyCompletedLab when LQHKEYCONFs stream back) are plain no-ops
+         * -- the parked continuation re-checks scanState and
+         * is_ok_to_send_next_record when it fires, so no continuation is
+         * lost.  Without this single-slot rule every parked fetch spawns
+         * further parked fetches and the delay collapses into a signal
+         * storm instead of a pace.
+         */
+        if (m_delay_copy_park_tc == RNIL)
+        {
+          jam();
+          m_delay_copy_park_tc = tcConnectptr.i;
+          c_errorCounter++;
+          if ((c_errorCounter & 0x3FF) == 1)
+          {
+            g_eventLogger->info("EI5113 parked copy fetch #%u tab(%u,%u)",
+                                c_errorCounter, delayFragPtr.p->tabRef,
+                                delayFragPtr.p->fragId);
+          }
+          signal->theData[0] = ZDELAY_NEXT_COPY_ROW;
+          signal->theData[1] = tcConnectptr.i;
+          sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 2);
+          return;
+        }
+        if (m_delay_copy_park_tc == tcConnectptr.i)
+        {
+          jam();
+          /* A continuation for this copy process is already parked. */
+          return;
+        }
+        jam();
+        /* Another TTL copy process holds the park slot: run this one
+         * unthrottled rather than risk stalling it. */
+      }
+    }
+  }
+#endif
+
   fragptr.i = regTcPtr->fragmentptr;
   ndbrequire(c_fragment_pool.getPtr(fragptr));
   prim_tab_fragptr = fragptr;
@@ -27201,7 +27668,7 @@ void Dblqh::closeCopyLab(Signal *signal, TcConnectionrec *regTcPtr) {
    */
   fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
   fragptr.p->copyNode = ZNIL;
-  if (ERROR_INSERTED(5714))
+  if (ERROR_INSERTED(5714) || ERROR_INSERTED(5113))
   {
     g_eventLogger->info("Copy of tab(%u,%u) complete", fragptr.p->tabRef,
                         fragptr.p->fragId);
