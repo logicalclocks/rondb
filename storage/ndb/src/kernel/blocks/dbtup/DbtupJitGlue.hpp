@@ -87,6 +87,15 @@ struct dbtup_jit_call_ctx {
    * value_updated, so the masked writeback leaves them alone).
    * nullptr on the scan-filter path. */
   AggResItem         *agg_res_ptr;
+  /* ronsql_jit item 12: a cold-call helper whose kernel eval returned
+   * the interpreter's negative error (e.g. -40 "no comparator for this
+   * condition / type") records -(rc) here and raises row_fallback
+   * instead of aborting the node. Aggregation paths replay the row on
+   * the interpreter, which surfaces the same error; the scan-filter
+   * invoke hands the code back to interpreterStartLab, which
+   * TUPKEY_aborts with it — exactly interpreterNextLab's disposition.
+   * 0 = no error. */
+  int                 error_code;
 #ifdef ERROR_INSERT
   bool                trace_enabled;
   Uint32              trace_row_no;
@@ -310,15 +319,19 @@ constexpr Int32 NDB_JIT_ROW_FALLBACK = -7157;
 
 /* dbtup_jit_invoke_scan_filter runs a compiled scan filter against the
  * current row. Returns true to keep the row, false to reject it. The
- * caller maps a rejected row to TUPKEY_abort with
- * ZUSER_SEARCH_CONDITION_FALSE_CODE, matching the interpreter's
- * EXIT_REFUSE disposition for scans. No aggregation accumulators are
- * involved; ctx.agg / ctx.join_agg stay null and column reads go
- * through Dbtup::readSingleAttributeForJit. */
+ * caller maps a rejected row to TUPKEY_abort with the program's own
+ * refuse code, matching the interpreter's EXIT_REFUSE disposition for
+ * scans. *out_error is 0 on a verdict; non-zero (ronsql_jit item 12)
+ * when a helper's kernel eval failed with that error code — then the
+ * verdict is meaningless and the caller must TUPKEY_abort(*out_error),
+ * exactly as interpreterNextLab does for a negative handler return. No
+ * aggregation accumulators are involved; ctx.agg / ctx.join_agg stay
+ * null and column reads go through Dbtup::readSingleAttributeForJit. */
 bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
                                   JitEntry             entry_fn,
                                   const Uint32        *prog_buf,
-                                  const Uint32        *param_buf);
+                                  const Uint32        *param_buf,
+                                  int                 *out_error);
 
 #endif /* DBTUP_JIT_GLUE_HPP_ */

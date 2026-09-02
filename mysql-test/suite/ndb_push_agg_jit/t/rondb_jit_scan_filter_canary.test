@@ -109,6 +109,37 @@ SELECT pk, s FROM t2 WHERE s < 'cherry';
 --sorted_result
 SELECT pk, s FROM t2 WHERE s = 'cherry';
 
+--echo # Q13: WHERE s LIKE 'ch%' must JIT (ronsql_jit item 12: BRANCH_ATTR_OP_ARG
+--echo #      LIKE / NOT_LIKE through the type's m_like comparator).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q14: WHERE s NOT LIKE 'ch%' must JIT; the NULL row (pk 2) must NOT
+--echo #      appear — a NULL operand is "no match" for NOT LIKE as well.
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s NOT LIKE 'ch%';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q15: WHERE s LIKE '%e' must JIT (leading wildcard — no range, pure filter).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE '%e';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q16: WHERE s LIKE 'CH%' must JIT and match case-insensitively — the
+--echo #      column collation's wildcmp drives both engines.
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE 'CH%';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q17: differential — Q13's LIKE filter without the error insert.
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+
 DROP TABLE t2;
 
 --remove_file $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log

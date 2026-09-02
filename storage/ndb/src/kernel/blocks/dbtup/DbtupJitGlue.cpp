@@ -1273,14 +1273,19 @@ ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
   }
   int rc = ctx->block_tup->evalBranchColForJit(
       ctx->req_struct, ctx->prog_buf + inst_word_off, ctx->param_buf);
-  if (rc < 0) {
-    /* Read failure / unsupported type or condition. The bridge's admission
-     * is meant to keep these off the JIT path; if one surfaces, fail fast
-     * (same policy as the other helpers) rather than silently mis-filter. */
-    g_eventLogger->error(
-        "ndb_jit_h_branch_attr_op_arg: evalBranchColForJit failed "
-        "(inst_word_off=%u, rc=%d)", inst_word_off, rc);
-    abort();
+  if (unlikely(rc < 0)) {
+    /* Kernel-eval error: the interpreter's handleBranchAttrOp returns
+     * this same negative and its loop TUPKEY_aborts with -rc. ronsql_jit
+     * item 12 made this reachable in production — a LIKE pushed on a
+     * column type without an m_like comparator is error 40, a
+     * client-visible error, not a node crash (the NDB API does not
+     * guard branch_col_like; RonSQL does not either). Record the code
+     * and raise the per-row fallback: aggregation paths replay the row
+     * on the interpreter (same error there); dbtup_jit_invoke_scan_filter
+     * hands the code to interpreterStartLab for the TUPKEY_abort. */
+    ctx->error_code = -rc;
+    s->row_fallback = 1;
+    return 0;
   }
 #ifdef ERROR_INSERT
   if (ctx->trace_enabled) {
@@ -1741,6 +1746,7 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
   ctx.prog_buf   = agg->agg_program() + agg->agg_prog_start_pos();
   ctx.param_buf  = nullptr;
   ctx.agg_res_ptr = agg_res_ptr;
+  ctx.error_code = 0;
 #ifdef ERROR_INSERT
   ctx.trace_enabled = dbtup_jit_trace_start(agg, block_tup,
                                             &ctx.trace_row_no,
@@ -2235,7 +2241,9 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   Dbtup::KeyReqStruct *req_struct,
                                   JitEntry             entry_fn,
                                   const Uint32        *prog_buf,
-                                  const Uint32        *param_buf) {
+                                  const Uint32        *param_buf,
+                                  int                 *out_error) {
+  *out_error = 0;
   /* Per-row context: no aggregation instance. The cold-call helpers
    * (ndb_jit_h_load_col / ndb_jit_h_branch_attr_null /
    * ndb_jit_h_branch_attr_op_arg) reach the row through
@@ -2250,6 +2258,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   ctx.prog_buf   = prog_buf;
   ctx.param_buf  = param_buf;
   ctx.agg_res_ptr = nullptr;   /* scan filters have no aggregate slots */
+  ctx.error_code = 0;
 #ifdef ERROR_INSERT
   ctx.trace_enabled = false;   /* 4063 row trace is aggregation-only for now */
   ctx.trace_row_no  = 0;
@@ -2268,15 +2277,15 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
 
   entry_fn(&s);
 
-  /* A scan filter keeps the row unless OP_FILTER_REJECT_EXIT set the
-   * reject flag. The admitted NULL-branch subset performs no
-   * arithmetic, so row_overflowed cannot legitimately be set here;
-   * treat any unexpected overflow defensively as "reject" so a
-   * miscompiled program can never leak a row past the filter. */
-  if (s.row_overflowed != 0) {
-    return false;
-  }
   if (unlikely(s.row_fallback != 0)) {
+    if (ctx.error_code != 0) {
+      /* ronsql_jit item 12: a helper's kernel eval failed (e.g. LIKE on
+       * a type with no comparator = 40). There is no verdict; the
+       * caller TUPKEY_aborts with the code — the interpreter's exact
+       * disposition for the same program. */
+      *out_error = ctx.error_code;
+      return false;
+    }
     /* No per-row fallback exists on the scan-filter path (fallback is
      * per-program, at compile time), and the admitted helpers only set
      * this flag for a null tablePtrP — impossible for a real scanned
@@ -2286,6 +2295,14 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
     g_eventLogger->error(
         "dbtup_jit_invoke_scan_filter: unexpected row_fallback");
     abort();
+  }
+  /* A scan filter keeps the row unless OP_FILTER_REJECT_EXIT set the
+   * reject flag. The admitted NULL-branch subset performs no
+   * arithmetic, so row_overflowed cannot legitimately be set here;
+   * treat any unexpected overflow defensively as "reject" so a
+   * miscompiled program can never leak a row past the filter. */
+  if (s.row_overflowed != 0) {
+    return false;
   }
   return s.row_filter_rejected == 0;
 }

@@ -77,14 +77,14 @@ pk	a
 1	2
 4	10
 7	42
-# Q8: negative control — LIKE is bridge-rejected (cond > GE), so it
-#     must run on the interpreter and the compile counters must not
-#     move. No 4060 here: deliberate fallback is exempt anyway.
+# Q8: LIKE must JIT (ronsql_jit item 12 lowered LIKE / NOT LIKE for the
+#     attr-vs-arg branches): under 4060 the row must come back and the
+#     compile counters must MOVE (this was the negative control before).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT pk FROM t1 WHERE b LIKE 'c%';
 pk
 3
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q8_like_stays_on_interpreter;
-q8_like_stays_on_interpreter
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @c0 AS q8_like_compiles;
+q8_like_compiles
 1
 DROP TABLE t1;

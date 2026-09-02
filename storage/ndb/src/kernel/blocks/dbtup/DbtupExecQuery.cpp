@@ -5679,7 +5679,9 @@ retry:
  * condition mapping — so the JIT and interpreter agree bit-for-bit. The byte
  * comparison itself is NDB's own sqlType.m_cmp (no re-implementation, no
  * drift); only the small operand-resolution + null/cond glue is duplicated.
- * Returns 1 = take branch, 0 = fall through, <0 = fatal error. */
+ * Returns 1 = take branch, 0 = fall through, <0 = -(error code) — the
+ * same negative the interpreter's handler returns, which its loop turns
+ * into TUPKEY_abort(-rc); the JIT helper routes it the same way. */
 int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
                                const Uint32 *inst,
                                const Uint32 *param_buf) {
@@ -5788,13 +5790,35 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
 
   const Uint32 cond = Interpreter::getBinaryCondition(w0);
   int res1;
-  if (r1_null || r2_null) {
-    res1 = (r1_null && r2_null) ? 0 : (r1_null ? -1 : 1);
-  } else {
-    if (unlikely(sqlType.m_cmp == nullptr)) {
-      return -40;  // type has no comparator (matches interpreter)
+  if (cond <= Interpreter::GE) {
+    if (r1_null || r2_null) {
+      res1 = (r1_null && r2_null) ? 0 : (r1_null ? -1 : 1);
+    } else {
+      if (unlikely(sqlType.m_cmp == nullptr)) {
+        return -40;  // type has no comparator (matches interpreter)
+      }
+      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
     }
-    res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+  } else if (cond == Interpreter::LIKE || cond == Interpreter::NOT_LIKE) {
+    /* ronsql_jit item 12: LIKE / NOT LIKE — handleBranchAttrOp's arm
+     * verbatim. Under NULL_CMP_EQUAL semantics a NULL operand is a
+     * "match" only when BOTH are NULL (res1 0) and otherwise -1, which
+     * neither LIKE (== 0) nor NOT_LIKE (== 1) takes; a real pair goes
+     * through the type's own m_like (NdbSqlUtil likeChar / likeVarchar
+     * / likeLongvarchar + the binary siblings — the column charset's
+     * wildcmp). A type without m_like (numeric columns — the NDB API
+     * does not guard branch_col_like; mysqld's pushdown does, RonSQL's
+     * does not) is error 40, exactly as on the interpreter. */
+    if (r1_null || r2_null) {
+      res1 = (r1_null && r2_null) ? 0 : -1;
+    } else {
+      if (unlikely(sqlType.m_like == nullptr)) {
+        return -40;  // type has no LIKE comparator (matches interpreter)
+      }
+      res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
+    }
+  } else {
+    return -40;  // AND_*_MASK conditions are not JIT-admitted
   }
 
   switch ((Interpreter::BinaryCondition)cond) {
@@ -5804,8 +5828,10 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
     case Interpreter::LE: return (res1 >= 0) ? 1 : 0;
     case Interpreter::GT: return (res1 < 0) ? 1 : 0;
     case Interpreter::GE: return (res1 <= 0) ? 1 : 0;
+    case Interpreter::LIKE:     return (res1 == 0) ? 1 : 0;
+    case Interpreter::NOT_LIKE: return (res1 == 1) ? 1 : 0;
     default:
-      return -40;  // LIKE / mask conditions are not JIT-admitted
+      return -40;  // mask conditions (unreachable: rejected above)
   }
 }
 
@@ -6127,9 +6153,19 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
          * offset matches interpreterNextLab's RsubPC exactly. */
         const Uint32 RsubPC = RinstructionCounter + RexecRegionLen +
                               RfinalUpdateLen + RfinalRLen;
+        int jit_error = 0;
         bool accepted = dbtup_jit_invoke_scan_filter(
             this, req_struct, reinterpret_cast<JitEntry>(jit_filter),
-            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC]);
+            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC],
+            &jit_error);
+        if (unlikely(jit_error != 0)) {
+          jam();
+          /* A cold-call helper hit a kernel-eval error (ronsql_jit item
+           * 12 made this reachable: LIKE pushed on a column type with no
+           * comparator = 40). Same disposition interpreterNextLab gives
+           * a negative handler return: TUPKEY_abort with the code. */
+          return TUPKEY_abort(req_struct, jit_error);
+        }
         if (accepted) {
           jamDebug();
           RinstructionCounter += RexecRegionLen;

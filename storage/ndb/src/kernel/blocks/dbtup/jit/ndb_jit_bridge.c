@@ -206,8 +206,13 @@
 #define BR_EMB_ADD_REG_REG               7
 #define BR_EMB_SUB_REG_REG               8
 #define BR_EMB_MUL_REG_REG              30
-/* Highest BinaryCondition the JIT lowers (EQ..GE); LIKE/mask reject. */
+/* Highest BinaryCondition the MEM_OP_ARG family lowers (EQ..GE):
+ * evalBranchMemForJit has no LIKE arm; LIKE / mask reject there. */
 #define BR_EMB_MAX_BINARY_COND       5
+/* ronsql_jit item 12: the ATTR_OP_ARG / _PARAM / _ATTR family also
+ * lowers LIKE (6) and NOT_LIKE (7) — evalBranchColForJit carries the
+ * interpreter's m_like arm. AND_*_MASK (8+) still reject. */
+#define BR_EMB_MAX_ATTR_COND         7
 /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
 #define BR_EMB_WRITE_INTERP_OUTPUT 123
 #define BR_EMB_BRANCH_ATTR_EQ_NULL  24
@@ -1736,9 +1741,14 @@ static JitBridgeReason translate_embedded_block(
           }
           return JIT_BRIDGE_MALFORMED;
         }
-        /* Only EQ..GE (0..5) lower; LIKE / mask conditions reject. */
+        /* EQ..GE (0..5) and, since ronsql_jit item 12, LIKE / NOT_LIKE
+         * (6/7) lower — the helper's kernel eval has the interpreter's
+         * m_like arm and returns the interpreter's error (40) for a
+         * column type without one, so admission needs no type
+         * knowledge (the scan-filter cache is keyed on bytecode alone
+         * and cannot have any). AND_*_MASK conditions (8+) reject. */
         uint32_t cond = (inst >> 12) & 0xFu;
-        if (cond > BR_EMB_MAX_BINARY_COND) {
+        if (cond > BR_EMB_MAX_ATTR_COND) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;

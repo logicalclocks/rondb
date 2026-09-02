@@ -229,12 +229,20 @@ guard in the bridge (`PendingCaseJump` snapshots; dead-arm adoption
 after `kOpSkip`). The interpreter's own `OptimizeProgramBuffer` has
 the same linear blind spot for mixed pairs — flagged upstream in the
 plan. Record, tests (T78a-f) and the verification list are in
-`ronsql_jit_plan.md` ("GL Part A"). Next: the attribution run for the six flat exempt tests
-(commands in the plan) — the harvest of this run's logs already shows
-a NEW cheap lowering class, "CASE arm family conflict" (THEN arm =
-BIGUNSIGNED column, ELSE arm = constant 0 → 5C-3 acc-family reject;
-candidate item 11: NNC operands adopt the slot's family) — then Part
-B (BIGUNSIGNED) / the rest of the phase_6_plan.md §4 backlog.
+`ronsql_jit_plan.md` ("GL Part A"). Residue attribution COMPLETE (2026-09-01, per-test harvest; table
+in `ronsql_jit_plan.md`): 68 = LIKE/NOT LIKE scan filters 24 (item
+12, dd_filter) + CASE arm family conflict 4 (item 11, dd_bigquery) +
+COUNT over string columns 2 (item 13, dd_dtwide) + BIGUNSIGNED GL /
+linked 6 (Part B) + kOpMinusBigint/kOpMod 32 (not lowered,
+ronsql_basic). **Item 12 IMPLEMENTED (2026-09-01, pending Mikael's verify)**: LIKE
+arm in evalBranchColForJit, bridge cond cap 5 → 7 for the ATTR_OP
+family, and the helper's node-abort on eval errors replaced by the
+interpreter's TUPKEY_abort disposition (new ctx.error_code +
+invoke out_error) — required because LIKE on a non-string column is
+a legitimate client error (40), not a contract break. T42/T42b/T42c,
+canary Q13-Q17, dd_filter re-pinned 0 + armed. Verify list in the
+plan. Then items 11 and 13; then the phase_6_plan.md §4 backlog (perf
+bench OFF vs ON first).
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

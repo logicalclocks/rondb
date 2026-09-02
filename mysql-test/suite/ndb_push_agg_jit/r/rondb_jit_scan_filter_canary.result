@@ -86,4 +86,32 @@ SELECT pk, s FROM t2 WHERE s = 'cherry';
 pk	s
 3	cherry
 5	cherry
+# Q13: WHERE s LIKE 'ch%' must JIT (ronsql_jit item 12: BRANCH_ATTR_OP_ARG
+#      LIKE / NOT_LIKE through the type's m_like comparator).
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+pk	s
+3	cherry
+5	cherry
+# Q14: WHERE s NOT LIKE 'ch%' must JIT; the NULL row (pk 2) must NOT
+#      appear — a NULL operand is "no match" for NOT LIKE as well.
+SELECT pk, s FROM t2 WHERE s NOT LIKE 'ch%';
+pk	s
+1	apple
+4	date
+# Q15: WHERE s LIKE '%e' must JIT (leading wildcard — no range, pure filter).
+SELECT pk, s FROM t2 WHERE s LIKE '%e';
+pk	s
+1	apple
+4	date
+# Q16: WHERE s LIKE 'CH%' must JIT and match case-insensitively — the
+#      column collation's wildcmp drives both engines.
+SELECT pk, s FROM t2 WHERE s LIKE 'CH%';
+pk	s
+3	cherry
+5	cherry
+# Q17: differential — Q13's LIKE filter without the error insert.
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+pk	s
+3	cherry
+5	cherry
 DROP TABLE t2;

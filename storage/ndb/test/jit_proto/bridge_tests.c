@@ -1383,10 +1383,11 @@ static void test_scan_filter_attr_op_arg_lower(void) {
   mark_pass(name);
 }
 
-/* T42: BRANCH_ATTR_OP_ARG with a non-inequality condition (LIKE=6) is not
- * JIT-admitted — only EQ..GE (0..5) lower; the rest fall back to the
- * interpreter. */
-static void test_scan_filter_attr_op_arg_like_reject(void) {
+/* T42 (flipped in ronsql_jit item 12): BRANCH_ATTR_OP_ARG with LIKE (6)
+ * IS JIT-admitted — the same 4-op shape as T41; the condition is
+ * evaluated by the helper's kernel eval (m_like arm), not the bridge. */
+static void test_scan_filter_attr_op_arg_like_accept(void) {
+  const char *name = "T42 scan_filter_attr_op_arg_like_accept";
   uint32_t filter_prog[6] = {
     enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
                     (3u << 6) | (6u << 12) | (5u << 16)),  // cond = LIKE(6)
@@ -1396,11 +1397,64 @@ static void test_scan_filter_attr_op_arg_like_reject(void) {
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_scan_filter_rejected("T42 scan_filter_attr_op_arg_like_reject",
+  Program p;
+  if (!assert_scan_filter_accepted(name, filter_prog, 6, &p,
+                                   /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_ATTR_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 0)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_FILTER_REJECT_EXIT)) return;
+  mark_pass(name);
+}
+
+/* T42b: NOT_LIKE (7) — the wire form NdbScanFilter emits for a LIKE
+ * predicate in an AND group (branch-on-false to the reject label) —
+ * admits identically. This is dd_filter's real program word for word
+ * (`c_mktsegment LIKE 'A%'`): a 2-byte literal is ONE inline word
+ * (2 + ((argLen + 3) >> 2) = 3 instruction words), so EXIT_OK sits at
+ * emb_pc 3 and the branch (offset 4) targets EXIT_REFUSE 626 at 4. */
+static void test_scan_filter_attr_op_arg_notlike_accept(void) {
+  const char *name = "T42b scan_filter_attr_op_arg_notlike_accept";
+  uint32_t filter_prog[5] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
+                    (2u << 6) | (7u << 12) | (4u << 16)),  // NOT_LIKE(7)
+    (2u << 16) | 2u,                                       // attr 2, len 2
+    0x00002541u,                                           // 'A%'
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  Program p;
+  if (!assert_scan_filter_accepted(name, filter_prog, 5, &p,
+                                   /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_BRANCH_ATTR_OP_ARG)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  mark_pass(name);
+}
+
+/* T42c: the AND_*_MASK conditions (8+) still reject — no emitter, and
+ * the kernel eval has no mask arm. Encoding note: cond 8 sets bit 15,
+ * which Interpreter::getOpCode reads as the OVERFLOW bit (+64), so the
+ * word decodes as opcode 87 (= BRANCH_ATTR_OP_ARG + OVERFLOW_OPCODE —
+ * the kernel dispatches both to the same handler) and the bridge's
+ * default arm rejects it; the offending op reported is therefore 87. */
+static void test_scan_filter_attr_op_arg_mask_reject(void) {
+  uint32_t filter_prog[6] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
+                    (3u << 6) | (8u << 12) | (5u << 16)),  // AND_EQ_MASK(8)
+    (1u << 16) | 8u,
+    0x00000005u,
+    0x00000000u,
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_scan_filter_rejected("T42c scan_filter_attr_op_arg_mask_reject",
                               filter_prog, 6,
                               JIT_BRIDGE_UNSUPPORTED_OP,
                               /*want_word=*/UINT32_MAX,
-                              EMB_BRANCH_ATTR_OP_ARG);
+                              /*want_op=*/EMB_BRANCH_ATTR_OP_ARG + 64u);
 }
 
 /* T43: BRANCH_ATTR_OP_PARAM (WHERE col <op> ?param) lowers to the same
@@ -4642,7 +4696,9 @@ int main(void) {
   test_scan_filter_captures_refuse_code();
   test_scan_filter_mixed_refuse_codes_reject();
   test_scan_filter_attr_op_arg_lower();
-  test_scan_filter_attr_op_arg_like_reject();
+  test_scan_filter_attr_op_arg_like_accept();
+  test_scan_filter_attr_op_arg_notlike_accept();
+  test_scan_filter_attr_op_arg_mask_reject();
   test_scan_filter_attr_op_param_lower();
   test_scan_filter_attr_op_attr_lower();
   test_scan_filter_exit_ok_last_reject();

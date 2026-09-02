@@ -91,13 +91,15 @@ SELECT pk FROM t1 WHERE a > 5 AND b < 'x';
 --sorted_result
 SELECT pk, a FROM t1 WHERE a < 3 OR a > 9;
 
---echo # Q8: negative control — LIKE is bridge-rejected (cond > GE), so it
---echo #     must run on the interpreter and the compile counters must not
---echo #     move. No 4060 here: deliberate fallback is exempt anyway.
+--echo # Q8: LIKE must JIT (ronsql_jit item 12 lowered LIKE / NOT LIKE for the
+--echo #     attr-vs-arg branches): under 4060 the row must come back and the
+--echo #     compile counters must MOVE (this was the negative control before).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_compound_canary_mgm.log
 --sorted_result
 SELECT pk FROM t1 WHERE b LIKE 'c%';
-SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) = @c0 AS q8_like_stays_on_interpreter;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_compound_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) > @c0 AS q8_like_compiles;
 
 DROP TABLE t1;
 

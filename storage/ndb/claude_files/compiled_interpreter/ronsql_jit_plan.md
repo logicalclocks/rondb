@@ -1128,19 +1128,179 @@ ronsql_cte_jit,ndb_push_agg_jit,ronsql,ronsql_cte --parallel=10
     the constant-first order would need a pre-scan (defer). Likely
     the bulk of dd_filter's 24 — confirm by attribution first.
 
-**Attribution run for the six flat exempt tests (Mikael):** run them
-sequentially on one cluster so one ndbd log accumulates first
-sightings in test order, then read the NEW-family lines + dumps
-against each test's known delta:
+**Attribution run for the seven exempt tests (Mikael):** one mtr
+invocation PER TEST, so every test starts a fresh cluster and gets its
+own complete set of first-sighting lines (a "NEW family" line prints
+only once per node lifetime — several tests on one cluster would hide
+every class a later test shares with an earlier one). Fully qualified
+`suite.test` names; run from the build tree's mysql-test (that is
+where `var/` lives); harvest = the NEW-family lines with their dumps
+plus the last cumulative family table (the rate-limited "totals"
+block, printed while rejects keep occurring):
 ```sh
-cd mysql-test
-./mtr --parallel=1 --suite=ronsql_cte_jit ronsql_cte_dd_filter ronsql_cte_dd_bigquery ronsql_cte_dd_dtwide
-./mtr --parallel=1 --suite=ronsql_jit ronsql_cte_scalar ronsql_cte_greatest_least_v6 ronsql_basic
-grep -h -A1 'JIT fallback NEW family' ../debug_build/mysql-test/var/mysql_cluster.1/ndbd.*/ndbd.log
+cd /Users/mikael/mysql_trees/rondb_1056/debug_build/mysql-test
+OUT=/Users/mikael/mysql_trees/rondb_1056/jit_attribution.txt; : > $OUT
+for t in ronsql_cte_jit.ronsql_cte_dd_filter \
+         ronsql_cte_jit.ronsql_cte_dd_bigquery \
+         ronsql_cte_jit.ronsql_cte_dd_dtwide \
+         ronsql_jit.ronsql_cte_scalar \
+         ronsql_jit.ronsql_cte_greatest_least_v6 \
+         ronsql_jit.ronsql_basic \
+         ronsql_jit.ronsql_cte_greatest_least_v5; do
+  ./mtr --parallel=1 $t > /dev/null 2>&1
+  echo "##### $t" >> $OUT
+  grep -h -A1 'JIT fallback NEW family' $(find var -name ndbd.log) >> $OUT
+  grep -h 'JIT fallback family:' $(find var -name ndbd.log) | tail -24 >> $OUT
+done
 ```
-(With `--parallel=1` the cluster log is `var/mysql_cluster.1/...`;
-with workers it is `var/<n>/mysql_cluster.1/...` and only the last
-test's log survives.)
+Post `jit_attribution.txt`. Each block decodes as: `reason=` the
+JitBridgeReason (1 unsupported op, 8 type mismatch, 5 reg out of
+range …), `detail=` the offending opcode (outer kOp number, or the
+embedded op number when the site is an embedded word), `word=` its
+index in the compile region, and the dump = 16 program words around
+it (outer words: opcode in bits 31-26; embedded words: opcode in bits
+5-0 plus bit 15). Two data nodes may each print the same family —
+that is one class, not two.
+
+### Residue attribution — COMPLETE (2026-09-01, per-test harvest)
+
+Every one of the 68 remaining corpus rejects decoded from its
+first-sighting dump (`jit_attribution.txt`, one cluster per test):
+
+| Test | Pin | Family (site / reason / detail) | Decoded program | Class |
+|---|---|---|---|---|
+| dd_filter | 24 | scan-filter r=1 d=23 | 5-word `BRANCH_ATTR_OP_ARG` w0=`00047097`: cond field 7 = **NOT_LIKE**, nulls 2, attr 2, arg `'A%'` | **Item 12: LIKE / NOT LIKE scan filters** |
+| dd_bigquery | 4 | join-agg r=8 d=14 / d=16 | `LoadCol BIGUNSIGNED r; Max/SumBigint(r, slot); Skip; LoadConst 0; Max/SumBigint(const, slot)` | **Item 11: CASE arm family conflict** |
+| dd_dtwide | 2 | join-agg r=1 d=7 w=11 | wide COUNT program: `LoadCol VARCHAR r0; Count(r0)` — string load with a non-MIN/MAX consumer rejects at the load | **Item 13: COUNT over string columns** |
+| cte_scalar | 2 | join-agg r=8 d=43 w=4 | `LoadCol BIGINT r0 (linked); LoadCol BIGUNSIGNED r1 (linked); GL body imports r1` — a CTE COUNT slot is Bigunsigned (6-2 fix) | Part B |
+| gl_v6 | 2 | same | same shape, attrs 1/2 | Part B |
+| gl_v5 | 2 | join-agg r=8 d=44 w=1 | op-44 `0a01006c`: wire type 0x0a BIGUNSIGNED linked load | Part B |
+| ronsql_basic | 32 | aggregation r=8 d=22 (≈28) + r=1 d=6 (≈4) | kOpMinusBigint over a generic-`/` DOUBLE-track operand; kOpMod(u64, f64) | do NOT lower (RonSQL typing flag / fmod) |
+
+Item 10's "F64 GL / linked" attribution of dd_filter, dd_bigquery,
+dd_dtwide was wrong — none of them were F64; the F64 class was
+exactly the 20 Part A recovered.
+
+**Revised lowering backlog (ordered by payoff / cost):**
+
+- **Item 12 — LIKE / NOT LIKE in scan filters (24, dd_filter).**
+  `Dbtup::evalBranchColForJit` (DbtupExecQuery.cpp ~5648) implements
+  EQ..GE only and returns -40 for LIKE / mask; the interpreter's
+  handler (~9506) has the LIKE arm: `res1 = (*sqlType.m_like)(cs, s1,
+  attrLen, s2, argLen)` with the null rule `r1_null && r2_null ? 0 :
+  -1`, then `LIKE: res1 == 0`, `NOT_LIKE: res1 == 1`. Work: add that
+  arm to the JIT eval (mirror, incl. the -40 when `m_like == 0`) and
+  lift `BR_EMB_MAX_BINARY_COND` admission for cond 6/7 at the two
+  bridge sites (OP_ARG; OP_PARAM if the pattern can be a parameter —
+  OP_ATTR stays out). No stencils. Verification: bridge pin + a
+  `rondb_jit_scan_filter_canary` Q13 (LIKE / NOT LIKE, prefix and
+  `%x%`, NULL column, collation-sensitive case) under 4060 + the
+  dd_filter pin → 0 then armed. Mask conditions (AND_*) stay
+  rejected (no emitter).
+- **Item 11 — CASE arm family conflict (4, dd_bigquery).** NNC operand
+  adopts the slot's already-claimed family (emit the U64 op variant
+  when the slot is U64; a non-negative constant is exact in either).
+  Bridge-only; column-first order only, constant-first would need a
+  pre-scan (defer). Verification: bridge pin + dd_bigquery → 0, armed.
+- **Item 13 — COUNT over string columns (2, dd_dtwide).** The 5F-1
+  string-load fusion admits only kOpMin/kOpMax consumers. Extend the
+  fusion to kOpCount: emit a count-if-not-null op keyed on the
+  column (a cold-call helper reading only the AttrHeader null bit —
+  no value decode; one new op kind + stencil, or reuse the NB-load
+  null path with a "no decode" flag). Verification: bridge pin +
+  dd_dtwide → 0, armed.
+- **Part B — BIGUNSIGNED compare mode (6: cte_scalar, gl_v6, gl_v5).**
+  As sketched above (OP_BRANCH_TYPED lattice). Note the real-world
+  driver is CTE COUNT slots being Bigunsigned, i.e. `GREATEST(x,
+  COUNT(..))` — values never reach 2^63 in practice but the type says
+  so; still requires the typed compare to be correct.
+- **Not lowered (32, ronsql_basic):** kOpMinusBigint over a DOUBLE-track
+  operand = RonSQL optimizer typing (flagged upstream); kOpMod mixed
+  u64/f64 = fmod path (durable). ronsql_basic stays pin-only.
+
+After items 11-13 the corpus residue would be 38 (6 Part B + 32
+not-lowered), with 77 of 81 tests armed.
+
+### Item 12 — IMPLEMENTED (2026-09-01, pending verify): LIKE / NOT LIKE scan filters
+
+Target: dd_filter's 24 (one family: scan-filter `BRANCH_ATTR_OP_ARG`,
+cond 7 = NOT_LIKE — NdbScanFilter emits a LIKE predicate as its
+branch-on-false to the reject label — arg `'A%'` on `c_mktsegment`).
+
+- **Kernel eval** (`Dbtup::evalBranchColForJit`, DbtupExecQuery.cpp):
+  the interpreter's LIKE arm mirrored verbatim — `cond <= GE` keeps the
+  m_cmp path; LIKE / NOT_LIKE take `sqlType.m_like` (NdbSqlUtil
+  likeChar / likeVarchar / likeLongvarchar + binary siblings = the
+  column charset's wildcmp) with the null rule `r1_null && r2_null ? 0
+  : -1`, mapped `LIKE: res1 == 0`, `NOT_LIKE: res1 == 1`; a type without
+  m_like returns -40 exactly like handleBranchAttrOp; AND_*_MASK still
+  -40. Operand-source-agnostic, so OP_ARG / OP_PARAM / OP_ATTR all get
+  it (the bridge admits all three at the same site).
+- **The abort had to go.** The helper `ndb_jit_h_branch_attr_op_arg`
+  aborted the node on any negative eval ("admission keeps these off
+  the JIT path"). That premise breaks for LIKE: `m_like` exists only for
+  string types, the NDB API's `branch_col_like` does not guard the
+  column type, RonSQL's `apply_filter_like` checks only "stored column"
+  (mysqld's pushdown does require a string field), and the scan-filter
+  cache is keyed on bytecode alone so a program compiled against a
+  VARCHAR column can be reused where the same attrId is numeric. The
+  interpreter answers that with error 40 to the client. Now: the
+  helper records `-rc` in the new `dbtup_jit_call_ctx::error_code` and
+  raises `row_fallback`; aggregation paths replay the row on the
+  interpreter (same error there); `dbtup_jit_invoke_scan_filter` gained
+  an `int *out_error` and returns the code, and interpreterStartLab
+  `TUPKEY_abort(req_struct, jit_error)`s — interpreterNextLab's exact
+  disposition for a negative handler return. The fail-fast for a
+  row_fallback WITHOUT an error code is unchanged. No JitState change
+  (the code lives in the glue's ctx), so NO stencil regen.
+- **Bridge**: new `BR_EMB_MAX_ATTR_COND 7` for the ATTR_OP_ARG / _PARAM
+  / _ATTR site; `BR_EMB_MAX_BINARY_COND 5` stays for the MEM_OP_ARG
+  family (evalBranchMemForJit has no LIKE arm; no CTE-consumer LIKE
+  in the corpus).
+- **Tests**: T42 flipped to accept (LIKE, same 4-op shape as T41), new
+  **T42b** (NOT_LIKE with the real dd_filter word layout, attr 2,
+  `'A%'`), **T42c** (AND_EQ_MASK 8 still rejects).
+  `rondb_jit_scan_filter_canary` **Q13-Q17** under 4060 on t2
+  (apple / NULL / cherry / date / cherry): `LIKE 'ch%'` → 3,5;
+  `NOT LIKE 'ch%'` → 1,4 (NULL excluded); `LIKE '%e'` → 1,4 (leading
+  wildcard); `LIKE 'CH%'` → 3,5 (collation-driven case-insensitivity);
+  Q17 differential. Expected results hand-derived from the data.
+- **dd_filter re-pinned 24 → 0 and ARMED pre-emptively** (its only
+  family is this one); the run confirms or corrects it.
+- First bridge_tests run (Mikael): two TEST bugs, bridge right. T42b
+  gave a 2-byte literal two inline words (it is one: `2 + ((argLen +
+  3) >> 2)` = 3 instruction words) so the stray zero word decoded as
+  opcode 0 — rebuilt as dd_filter's exact 5-word program. T42c
+  expected op 23 but a mask condition (8+) sets bit 15 = the opcode's
+  OVERFLOW bit, so the word decodes as 87 (`BRANCH_ATTR_OP_ARG +
+  OVERFLOW_OPCODE`, which the kernel dispatches to the same handler)
+  and the bridge's default arm rejects it — pinned as 87. Worth
+  knowing: every cond ≥ 8 reaches the bridge as op 87, never as 23.
+- Suite run (Mikael, 2026-09-02): `ndb_push_agg_jit.testInterpreterTypedRegs`
+  pin **1880 → 1824** with every NDB API case OK — exactly its seven
+  LIKE / NOT LIKE cases (15l, 15m, 22h-j, 22n, 22o) × 8 compile
+  attempts now compiling, and the CHAR-padding / literal-percent /
+  NOT LIKE semantics holding on the JIT (the binary asserts row
+  outcomes). Re-pinned; the residual 1824 remains the Phase 7 subset
+  boundary (register ops, mask conditions 15n-q, memory ops …).
+  `rondb_jit_compound_canary` Q8 was the NEGATIVE control for exactly
+  this boundary ("LIKE stays on the interpreter, counters must not
+  move") — flipped into a positive control: `b LIKE 'c%'` under 4060,
+  `q8_like_compiles` = counters moved.
+
+**Verify (Mikael):**
+```sh
+cmake --build debug_build --target bridge_tests ndbmtd mysqld -j 8
+debug_build/storage/ndb/test/jit_proto/bridge_tests
+cd debug_build/mysql-test
+./mtr --parallel=1 ndb_push_agg_jit.rondb_jit_scan_filter_canary
+./mtr --parallel=1 ronsql_cte_jit.ronsql_cte_dd_filter ronsql_cte.ronsql_cte_dd_filter
+./mtr --suite=ronsql_jit,ronsql_cte_jit,ndb_push_agg_jit,ronsql,ronsql_cte --parallel=10 --force
+```
+Expected: bridge_tests all green (T42/T42b/T42c); canary Q13-Q17 pass
+under 4060 with the hand-derived rows; dd_filter delta 0 under arming
+with results identical to the OFF arm; no other pin moves. Corpus
+census 68 → 44.
 
 **Verification list for Part A (Mikael runs):** `bridge_tests`
 (T70c, T73d, T78a-f), then the exempt-pin tests under `ronsql_jit`
