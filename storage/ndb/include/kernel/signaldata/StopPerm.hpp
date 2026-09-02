@@ -1,6 +1,5 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -52,26 +51,10 @@ class StopPermReq {
 
  public:
   static constexpr Uint32 SignalLength = 2;
-  static constexpr Uint32 SignalLengthWithType = 3;
-
-  /**
-   * senderData values, echoed back in StopPermRef::senderData. A
-   * release must use a distinct value so that the requester can
-   * recognize (and ignore) a REF from an old master that does not
-   * understand the release request type and treats it as an acquire.
-   */
-  static constexpr Uint32 AcquireSenderData = 12;
-  static constexpr Uint32 ReleaseSenderData = 13;
-
-  enum RequestType {
-    RT_ACQUIRE = 0,  ///< Ask for permission to stop gracefully
-    RT_RELEASE = 1   ///< Return a granted permission, stop was aborted
-  };
 
  public:
   Uint32 senderRef;
   Uint32 senderData;
-  Uint32 requestType;  // Only present with SignalLengthWithType
 };
 
 class StopPermConf {
@@ -110,11 +93,48 @@ class StopPermRef {
     StopOK = 0,
     NodeStartInProgress = 1,
     NodeShutdownInProgress = 2,
-    NF_CausedAbortOfStopProcedure = 3
+    NF_CausedAbortOfStopProcedure = 3,
+    /**
+     * A node restart is still below the restart barrier in start phase
+     * 110 (RONDB-1096). Kept distinct from NodeStartInProgress so that
+     * the requester can tell an ordinary node start, which completes on
+     * its own, apart from a barrier wait, which is unbounded by default
+     * (RestartBarrierTimeout defaults to 0 = wait forever).
+     */
+    NodeBelowRestartBarrier = 4
   };
 
  private:
   Uint32 errorCode;
+  Uint32 senderData;
+};
+
+/**
+ * Sent by Ndbcntr to local DIH when it abandons a graceful stop after
+ * having requested or been granted stop permission. Local DIH forwards
+ * it to the master and stops acting as a proxy.
+ *
+ * Without it the master holds the permission until the requesting node
+ * fails, which blocks every later graceful stop in the cluster.
+ *
+ * @see StopPermReq
+ */
+class StopPermRel {
+  /**
+   * Sender(s) / Reciver(s)
+   */
+  friend class Dbdih;
+
+  /**
+   * Sender
+   */
+  friend class Ndbcntr;
+
+ public:
+  static constexpr Uint32 SignalLength = 2;
+
+ public:
+  Uint32 senderRef;
   Uint32 senderData;
 };
 

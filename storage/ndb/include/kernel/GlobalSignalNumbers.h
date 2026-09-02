@@ -33,7 +33,7 @@
  *
  * When adding a new signal, remember to update MAX_GSN and SignalNames.cpp
  */
-const GlobalSignalNumber MAX_GSN = 950;
+const GlobalSignalNumber MAX_GSN = 951;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1282,4 +1282,10 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_SET_CONFIG_PARAM_REQ        948
 #define GSN_SET_CONFIG_PARAM_CONF       949
 #define GSN_SET_CONFIG_PARAM_REF        950
+
+/**
+ * Sent by NDBCNTR when it abandons a graceful stop for which it has
+ * requested or been granted stop permission, see STOP_PERM_REQ (RONDB-1096).
+ */
+#define GSN_STOP_PERM_REL               951
 #endif
