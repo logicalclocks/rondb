@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2009, 2026, Oracle and/or its affiliates.
+  Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -149,6 +150,7 @@ class NdbProcess {
   process_handle_t m_proc{InvalidHandle, InvalidHandle, 0, 0};
 #else
   process_handle_t m_proc{InvalidHandle};
+  std::optional<int> m_stopped_ret;
 #endif
   BaseString m_name;
   Pipes *m_pipes;
@@ -492,6 +494,10 @@ inline void NdbProcess::printerror() {
 }
 
 inline bool NdbProcess::stop() {
+  if (!running()) {
+    fprintf(stderr, "Failed to stop process: invalid process handle\n");
+    return false;
+  }
   bool r = TerminateProcess(m_proc.hProcess, 9999);
   if (!r) printerror();
   return r;
@@ -609,14 +615,55 @@ inline bool NdbProcess::start_process(process_handle_t &pid, const char *path,
 inline bool NdbProcess::running() const { return (m_proc != InvalidHandle); }
 
 inline bool NdbProcess::stop() {
-  int ret = kill(m_proc, 9);
-  if (ret)
-    fprintf(stderr, "Failed to kill process %d, ret: %d, errno: %d\n", m_proc,
+  if (!running()) {
+    fprintf(stderr, "Failed to stop process: invalid process handle\n");
+    return false;
+  }
+
+  const pid_t proc = m_proc;
+  int ret = kill(proc, SIGKILL);
+  if (ret) {
+    fprintf(stderr, "Failed to kill process %d, ret: %d, errno: %d\n", proc,
             ret, errno);
-  return (ret == 0);
+    return false;
+  }
+
+  /**
+   * Reap the killed process so that running() no longer reports true:
+   * the destructor asserts that the process is gone, so without the
+   * reap every debug build caller of stop() aborted in the destructor.
+   * The wait is quick since the process was killed with SIGKILL.
+   */
+  int status;
+  const pid_t ret_pid = waitpid(proc, &status, 0);
+  if (ret_pid != proc) {
+    fprintf(stderr, "Failed to reap killed process %d, errno: %d\n", proc,
+            errno);
+    return false;
+  }
+
+  if (WIFEXITED(status))
+    m_stopped_ret = WEXITSTATUS(status);
+  else if (WIFSIGNALED(status))
+    m_stopped_ret = WTERMSIG(status);
+  else
+    m_stopped_ret = 37;  // Unknown exit status
+
+  m_proc = InvalidHandle;
+  return true;
 }
 
 inline bool NdbProcess::wait(int &ret, int timeout) {
+  if (!running()) {
+    if (m_stopped_ret) {
+      ret = *m_stopped_ret;
+      m_stopped_ret.reset();
+      return true;
+    }
+    fprintf(stderr, "Failed to wait for process: invalid process handle\n");
+    return false;
+  }
+
   int slept = 0;
   int status;
   while (true) {

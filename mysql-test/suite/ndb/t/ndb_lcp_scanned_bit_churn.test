@@ -1,0 +1,100 @@
+# Leaked LCP_SCANNED_BIT under delete-all + re-insert churn
+#
+# Regression stress for a leaked LCP_SCANNED_BIT in the DBTUP page map.
+# The bit is planted when a page is dropped while the fragment's own
+# LCP scan is active and must be consumed by that same scan; a bit that
+# survives the scan makes the next LCP of the fragment skip a live page
+# and lose its rows from the checkpoint. Observed in production as
+# error 2341 at the Backup.cpp row count ndbrequire at the end of a
+# full fragment LCP, with skip_all_page_lcp_scanned_bit set in the
+# counter printout.
+#
+# Runs the LcpScannedBitChurn cases from the testNodeRestart NDBT
+# program: one step deletes and re-inserts the whole table wholesale at
+# high frequency while another drives LCPs back to back. The PreScan
+# and MidScan variants use error inserts 10063 and 10042 to hold each
+# LCP scan of the test table open so churn cycles land inside the
+# pre-scan and mid-scan windows.
+#
+# The kernel leak detection (the page map sweep in Dbtup::stop_lcp_scan
+# and the checks in the page map alloc and release paths) turns any
+# leaked bit into an immediate data node failure which fails the test:
+# on debug builds through ndbassert, and on any build through the
+# CrashOnLeakedLcpScannedBit=1 setting in the default MTR cluster
+# configuration (include/default_ndbd.cnf).
+#
+# The error inserts need error-insert capable ndbmtd binaries, and the
+# testNodeRestart binary is only present in WITH_NDB_TEST builds.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its test table (TEST_DB.T1) directly via
+# the NDB API. Tables created outside of the MySQL Server crash the
+# MySQL Server, so both MySQL Servers are shut down while the NDBT
+# cases run and started again after the NDBT table has been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # Churn against back to back LCPs, natural windows
+--exec $TEST_NODE_RESTART -n LcpScannedBitChurn -l 100 T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Churn into the delayed pre-scan window (error insert 10063)
+--exec $TEST_NODE_RESTART -n LcpScannedBitChurnPreScan -l 20 T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Churn into stretched mid-scan batch windows (error insert 10042)
+--exec $TEST_NODE_RESTART -n LcpScannedBitChurnMidScan -l 20 T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops its auto-created table when a case
+# completes cleanly, so the table only exists here if the last case
+# left it behind; a missing table is not an error.
+--echo "[dropping NDBT test table]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # All LCP scanned bit churn tests passed

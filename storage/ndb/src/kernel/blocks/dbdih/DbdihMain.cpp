@@ -27841,8 +27841,8 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
        * restart window is already covered by the activeState check
        * above; this check covers the long database recovery part of
        * the restart. Aborting stops bypass the STOP_PERM protocol
-       * entirely, and a SIGTERM initiated stop escalates to an
-       * immediate stop after GracefulShutdownTimeout.
+       * entirely, and a stop that waited longer than
+       * GracefulShutdownTimeout is given up by the requester.
        */
       ref->senderData = senderData;
       ref->errorCode = StopPermRef::NodeBelowRestartBarrier;

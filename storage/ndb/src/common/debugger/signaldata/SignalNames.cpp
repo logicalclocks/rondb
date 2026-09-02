@@ -418,8 +418,7 @@ const GsnName SignalNames[] = {
     ,
     {GSN_STOP_PERM_REQ, "STOP_PERM_REQ"},
     {GSN_STOP_PERM_REF, "STOP_PERM_REF"},
-    {GSN_STOP_PERM_CONF, "STOP_PERM_CONF"},
-    {GSN_STOP_PERM_REL, "STOP_PERM_REL"}
+    {GSN_STOP_PERM_CONF, "STOP_PERM_CONF"}
 
     ,
     {GSN_STOP_ME_REQ, "STOP_ME_REQ"},
@@ -1061,5 +1060,6 @@ const GsnName SignalNames[] = {
   ,{ GSN_SET_CONFIG_PARAM_REQ, "SET_CONFIG_PARAM_REQ" }
   ,{ GSN_SET_CONFIG_PARAM_CONF, "SET_CONFIG_PARAM_CONF" }
   ,{ GSN_SET_CONFIG_PARAM_REF, "SET_CONFIG_PARAM_REF" }
+  ,{GSN_STOP_PERM_REL, "STOP_PERM_REL"}
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames) / sizeof(GsnName);
