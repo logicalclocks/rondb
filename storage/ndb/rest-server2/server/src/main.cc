@@ -51,6 +51,7 @@ constexpr const char* const usageHelp =
 #include "metrics.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <sys/errno.h>
 #include <unistd.h>
@@ -151,14 +152,13 @@ static void rondis_end_cmd(void *metrics_ptr) {
   delete metricsUpdater;
 }
 
+/*
+  Graceful shutdown. Only safe to call from a normal execution context, i.e.
+  from the Drogon event loop once Drogon is running, never from a POSIX
+  signal handler.
+*/
 static void handle_signal(int signal) {
   switch (signal) {
-    case SIGHUP:
-      printf("Received and ignored SIGHUP.\n");
-      return;
-    case SIGPIPE:
-      printf("Received and ignored SIGPIPE.\n");
-      return;
     case SIGINT:
       printf("Received SIGINT.\n");
       break;
@@ -179,12 +179,63 @@ static void handle_signal(int signal) {
   do_exit();
 }
 
+// write(2) is async-signal-safe, printf() is not.
+static void write_stdout(const char *msg) {
+  ssize_t ignored = write(STDOUT_FILENO, msg, strlen(msg));
+  (void)ignored;
+}
+
+/*
+  Real POSIX signal handler, installed for the window before Drogon runs the
+  event loop. It can interrupt the main thread anywhere, in particular inside
+  Ndb_cluster_connection::connect()/wait_until_ready(), which blocks for up to
+  a minute while the cluster connections are set up and holds NDB API and
+  allocator locks while doing so.
+
+  do_exit() is not async-signal-safe: it joins background threads, destroys
+  mutexes and calls ndb_end(), which tears down NDB API globals underneath the
+  very thread this handler interrupted. Running it from here deadlocks the
+  process instead of stopping it, so restrict this handler to async-signal-safe
+  work: report, drop the pidfile and leave. Anything the process still holds is
+  released by the kernel.
+
+  Once Drogon is running it installs its own handlers and invokes
+  handle_signal() from the event loop, where the full teardown is safe.
+*/
+static void handle_signal_async(int signal) {
+  switch (signal) {
+    case SIGHUP:
+      write_stdout("Received and ignored SIGHUP.\n");
+      return;
+    case SIGPIPE:
+      write_stdout("Received and ignored SIGPIPE.\n");
+      return;
+    case SIGINT:
+      write_stdout("Received SIGINT during startup, exiting.\n");
+      break;
+    case SIGQUIT:
+      write_stdout("Received SIGQUIT during startup, exiting.\n");
+      break;
+    case SIGTERM:
+      write_stdout("Received SIGTERM during startup, exiting.\n");
+      break;
+    default:
+      write_stdout("Received unexpected signal during startup, exiting.\n");
+      break;
+  }
+  if (g_pidfile != nullptr) {
+    unlink(g_pidfile);
+  }
+  // SIGTERM is used for clean exit, other signals keep the traditional code.
+  _exit(signal == SIGTERM ? 0 : 128 + signal);
+}
+
 int main(int argc, char *argv[]) {
-  signal(SIGHUP, handle_signal);
-  signal(SIGPIPE, handle_signal);
-  signal(SIGINT, handle_signal);
-  signal(SIGQUIT, handle_signal);
-  signal(SIGTERM, handle_signal);
+  signal(SIGHUP, handle_signal_async);
+  signal(SIGPIPE, handle_signal_async);
+  signal(SIGINT, handle_signal_async);
+  signal(SIGQUIT, handle_signal_async);
+  signal(SIGTERM, handle_signal_async);
 
   ndb_init();
   g_did_ndb_init = true;
