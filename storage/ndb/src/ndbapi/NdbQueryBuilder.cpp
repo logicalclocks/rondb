@@ -648,6 +648,32 @@ int NdbQueryOptions::setFragsPerWorker(Uint32 frags) {
   return 0;
 }
 
+int NdbQueryOptions::setCteKeyColumns(const Uint32 positions[],
+                                      Uint32 count) {
+  static_assert(sizeof(NdbQueryOptionsImpl::m_cteKeyPositions) /
+                    sizeof(Uint32) ==
+                QN_CteLookupNode::MaxKeyPositions,
+                "options array must match the wire limit");
+  if (unlikely(count > QN_CteLookupNode::MaxKeyPositions)) {
+    return QRY_DEFINITION_TOO_LARGE;
+  }
+  if (unlikely(count > 0 && positions == nullptr)) {
+    return QRY_REQ_ARG_IS_NULL;
+  }
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  m_pimpl->m_hasCteKeyPositions = true;
+  m_pimpl->m_numCteKeyPositions = count;
+  for (Uint32 i = 0; i < count; i++) {
+    m_pimpl->m_cteKeyPositions[i] = positions[i];
+  }
+  return 0;
+}
+
 int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   if (m_pimpl == &defaultOptions) {
     m_pimpl = new NdbQueryOptionsImpl;
@@ -698,7 +724,11 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_aggColumns(nullptr),
       m_linkedProjection(src.m_linkedProjection),
       m_maxRows(src.m_maxRows),
-      m_fragsPerWorker(src.m_fragsPerWorker) {
+      m_fragsPerWorker(src.m_fragsPerWorker),
+      m_hasCteKeyPositions(src.m_hasCteKeyPositions),
+      m_numCteKeyPositions(src.m_numCteKeyPositions) {
+  memcpy(m_cteKeyPositions, src.m_cteKeyPositions,
+         sizeof(m_cteKeyPositions));
   if (src.m_interpretedCode != nullptr) {
     copyInterpretedCode(*src.m_interpretedCode);
   }
@@ -1186,18 +1216,39 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
 
   const NdbTableImpl &tableImpl = NdbTableImpl::getImpl(*virtualTable);
 
-  // Check: keys[] are specified for all PK fields of the virtual table
-  int keyfields = virtualTable->getNoOfPrimaryKeys();
-  for (int i = 0; i < keyfields; ++i) {
-    returnErrIf(keys[i] == nullptr, QRY_TOO_FEW_KEY_VALUES);
+  /* Single-row CTE subset keys (cte_single_row_kernel_plan.md): when
+   * setCteKeyColumns() declared explicit bound-column positions, the
+   * key operands bind those projected columns — any subset, including
+   * NONE (a pure existence probe) — instead of the virtual table's
+   * primary-key columns. */
+  const NdbQueryOptionsImpl &optionsImpl =
+      options ? options->getImpl() : defaultOptions;
+  const bool hasKeyPositions = optionsImpl.hasCteKeyPositions();
+  const int colcount = virtualTable->getNoOfColumns();
+  int keyfields;
+  if (hasKeyPositions) {
+    keyfields = (int)optionsImpl.getNumCteKeyPositions();
+    for (int i = 0; i < keyfields; ++i) {
+      returnErrIf(keys[i] == nullptr, QRY_TOO_FEW_KEY_VALUES);
+      returnErrIf(optionsImpl.getCteKeyPositions()[i] >=
+                      (Uint32)colcount,
+                  QRY_NUM_OPERAND_RANGE /* position out of range */);
+    }
+    returnErrIf(keys[keyfields] != nullptr, QRY_TOO_MANY_KEY_VALUES);
+  } else {
+    // Check: keys[] are specified for all PK fields of the virtual table
+    keyfields = virtualTable->getNoOfPrimaryKeys();
+    for (int i = 0; i < keyfields; ++i) {
+      returnErrIf(keys[i] == nullptr, QRY_TOO_FEW_KEY_VALUES);
+    }
+    returnErrIf(keys[keyfields] != nullptr, QRY_TOO_MANY_KEY_VALUES);
   }
-  returnErrIf(keys[keyfields] != nullptr, QRY_TOO_MANY_KEY_VALUES);
 
   int error = 0;
   NdbQueryCteLookupOperationDefImpl *op =
       new NdbQueryCteLookupOperationDefImpl(
           tableImpl, keys, cteId, numResultCols,
-          options ? options->getImpl() : defaultOptions,
+          optionsImpl,
           ident, m_impl.m_operations.size(),
           m_impl.getNextInternalOpNo(), error);
 
@@ -1208,17 +1259,27 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
               cteId, (unsigned)(m_impl.m_operations.size() - 1),
               op->getInternalOpNo(), (int)isCteSubtreeRoot);
 
-  // Bind key operands to the virtual table's PK columns
-  Uint32 keyindex = 0;
-  int colcount = virtualTable->getNoOfColumns();
-  for (int i = 0; i < colcount; ++i) {
-    const NdbColumnImpl *col = tableImpl.getColumn(i);
-    if (col->getPrimaryKey()) {
-      assert(keyindex == col->m_keyInfoPos);
-      error = op->m_keys[col->m_keyInfoPos]->bindOperand(*col, *op);
+  if (hasKeyPositions) {
+    // Bind key operand i to the projected column at positions[i]
+    for (int i = 0; i < keyfields; ++i) {
+      const NdbColumnImpl *col =
+          tableImpl.getColumn(optionsImpl.getCteKeyPositions()[i]);
+      returnErrIf(col == nullptr, QRY_REQ_ARG_IS_NULL);
+      error = op->m_keys[i]->bindOperand(*col, *op);
       returnErrIf(error != 0, error);
-      keyindex++;
-      if (keyindex >= static_cast<Uint32>(keyfields)) break;
+    }
+  } else {
+    // Bind key operands to the virtual table's PK columns
+    Uint32 keyindex = 0;
+    for (int i = 0; i < colcount; ++i) {
+      const NdbColumnImpl *col = tableImpl.getColumn(i);
+      if (col->getPrimaryKey()) {
+        assert(keyindex == col->m_keyInfoPos);
+        error = op->m_keys[col->m_keyInfoPos]->bindOperand(*col, *op);
+        returnErrIf(error != 0, error);
+        keyindex++;
+        if (keyindex >= static_cast<Uint32>(keyfields)) break;
+      }
     }
   }
 
@@ -2134,7 +2195,9 @@ NdbQueryLookupOperationDefImpl::NdbQueryLookupOperationDefImpl(
     if (keys[i] == nullptr) break;
     m_keys[i] = &keys[i]->getImpl();
   }
-  assert(i > 0);
+  /* i == 0 is legal for a single-row CTE lookupCte existence probe
+   * (zero key operands, cte_single_row_kernel_plan.md); real-table
+   * lookups are pre-validated to carry >= 1 key by their builders. */
   assert(keys[i] == nullptr);
   m_keys[i] = nullptr;
 }
@@ -3287,7 +3350,11 @@ static void appendCteVirtTypeInfo(Uint32Buffer &serializedDef,
 
 int NdbQueryCteLookupOperationDefImpl::serializeOperation(
     const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {
-  assert(m_keys[0] != nullptr);
+  /* m_keys[0] == nullptr is legal here: the zero-key single-row
+   * existence probe (setCteKeyColumns with count 0,
+   * cte_single_row_kernel_plan.md) carries no key operands at all —
+   * appendKeyPattern below already no-ops on an empty key list. */
+  assert(m_keys[0] != nullptr || getOptions().hasCteKeyPositions());
   assert(!m_isPrepared);
   m_isPrepared = true;
 
@@ -3301,6 +3368,19 @@ int NdbQueryCteLookupOperationDefImpl::serializeOperation(
   // header and the parseDA optional region; cte_lookup_build skips
   // past it before invoking parseDA.
   appendCteVirtTypeInfo(serializedDef, getTable(), m_numResultCols);
+
+  /* Single-row CTE subset keys (cte_single_row_kernel_plan.md): the
+   * bound-column position per key operand, appended directly after
+   * the virt-type block.  The count travels in bits 16-23 of the
+   * numResultCols header word; 0 means no positions present (the
+   * grouped/scalar virt-PK key contract — unchanged wire image). */
+  const bool hasKeyPositions = getOptions().hasCteKeyPositions();
+  const Uint32 numKeyPositions =
+      hasKeyPositions ? getOptions().getNumCteKeyPositions() : 0;
+  assert(numKeyPositions <= QN_CteLookupNode::MaxKeyPositions);
+  for (Uint32 i = 0; i < numKeyPositions; i++) {
+    serializedDef.append(getOptions().getCteKeyPositions()[i]);
+  }
 
   if (getMatchType() & NdbQueryOptions::MatchNonNull) {
     requestInfo |= DABits::NI_INNER_JOIN;
@@ -3338,7 +3418,10 @@ int NdbQueryCteLookupOperationDefImpl::serializeOperation(
     return Err_MemoryAlloc;
   }
   node->cteId = m_cteId;
-  node->numResultCols = m_numResultCols;
+  assert((m_numResultCols & ~QN_CteLookupNode::NUM_RESULT_COLS_MASK) == 0);
+  node->numResultCols =
+      m_numResultCols |
+      (numKeyPositions << QN_CteLookupNode::KEY_POSITIONS_SHIFT);
   node->requestInfo = requestInfo;
   const Uint32 length = serializedDef.getSize() - startPos;
   if (unlikely(length > 0xFFFF)) {

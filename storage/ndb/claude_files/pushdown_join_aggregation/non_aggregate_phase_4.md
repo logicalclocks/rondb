@@ -131,8 +131,11 @@ avoid re-recording that family; covered here as sc-2).
 
 ## Deliberately out of scope (tracked)
 
-- **Real-table vs scalar-CTE comparisons** (`t.col > s.m`) — new
-  feature on both paths; sc-P1 pins the rejection.
+- ~~**Real-table vs scalar-CTE comparisons** (`t.col > s.m`)~~ —
+  **SHIPPED by `cte_filter_phase_i26.md`** (August 2026): routed to
+  the CTE_LOOKUP jump-table filter with the real column as a linked
+  parent projection; sc-11..18 cover it, the new sc-P1 pins the
+  non-ancestor rejection and sc-P4 the DECIMAL-operand rejection.
 - `LEFT JOIN <scalar cte>` — not expressible in the grammar.
 - Scalar CTE with ON conditions — `Partial` coverage, rejected (same
   as the aggregate path).

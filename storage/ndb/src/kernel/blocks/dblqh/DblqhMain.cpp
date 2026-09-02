@@ -19179,6 +19179,28 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     if (state->m_cte_num_nodes <= 1) {
       /* Single node — no redistribution needed */
       jam();
+      /* Single-row contract (cte_single_row_kernel_plan.md): more
+       * than one materialized row must fail the query cleanly.  The
+       * multi-node flow checks at redistribute entry and owner-side
+       * in checkCteReady; this arm bypasses both, so check here
+       * before the state becomes consumable. */
+      if (state->m_cte_single_row) {
+        JoinGBHashTable *gb_map = interp->gb_map_mutable();
+        if (gb_map != nullptr && gb_map->size() > 1) {
+          jam();
+          state->m_state.store(JoinAggregationState::ERROR);
+          JoinAggCompleteRef *ref =
+            (JoinAggCompleteRef *)signal->getDataPtrSend();
+          ref->senderRef = reference();
+          ref->senderData = senderData;
+          ref->requestId = requestId;
+          ref->errorCode = ZCTE_SINGLE_ROW_VIOLATION;
+          ref->errorLine = __LINE__;
+          sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                     signal, JoinAggCompleteRef::SignalLength, JBB);
+          return;
+        }
+      }
       DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
                instance()));
       AGGT(("AGGT(%u) DBLQH CTE_READY (single node) key=%u",
@@ -20298,6 +20320,109 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   }
 }
 
+/**
+ * Single-row CTE probe (cte_single_row_kernel_plan.md).
+ *
+ * The state holds at most one row, stored as a key-only group record:
+ * [AttributeHeader][data] per projected column, in projection order.
+ * The request key carries one such entry per BOUND column, with the
+ * AttributeHeader attrId stamped by DBSPJ to the projected-column
+ * position it binds (any subset; zero entries = existence probe).
+ *
+ * Returns the group record on a hit, nullptr on a miss (empty state,
+ * NULL on either side of a compare, or value mismatch).  *malformed
+ * is set when the request key is structurally invalid (position out
+ * of range / truncated entry) — the caller REFs instead of missing.
+ * *storedKeyLenOut returns the stored record's key byte length on a
+ * hit so the caller can substitute it for the (shorter) request
+ * keyLen that downstream consumers interpret as the stored length.
+ *
+ * Compare semantics per column: charset columns via the GB type
+ * metadata's collation cmpFn (respective byte lengths); other types
+ * require equal data size + byte equality (same rule as
+ * GBHashTable::findInBucket).  NULL never equals anything (SQL
+ * equality — deliberately NOT findInBucket's NULL==NULL group
+ * identity).
+ */
+static const char *
+singleRowCteProbe(JoinAggInterpreter *interp,
+                  const Uint32 *keyBuf, Uint32 keyLenBytes,
+                  bool *malformed, Uint32 *storedKeyLenOut)
+{
+  *malformed = false;
+  *storedKeyLenOut = 0;
+  JoinGBHashTable *gb_map = interp->gb_map_mutable();
+  if (gb_map == nullptr || gb_map->size() == 0) {
+    return nullptr;  /* empty CTE => MISS */
+  }
+  /* size() == 1 by construction: the single-row violation checks ran
+   * before the state reached CTE_READY (no ndbassert here — this is a
+   * file-local function without SimulatedBlock's progError). */
+  auto iter = gb_map->begin();
+  if (!iter.valid()) {
+    return nullptr;
+  }
+  const char *groupData = iter.data();
+  const Uint32 storedKeyLen = iter.keyLen();
+  *storedKeyLenOut = storedKeyLen;
+  if (keyLenBytes == 0) {
+    return groupData;  /* keyless existence probe: HIT */
+  }
+
+  const Uint32 nCols = interp->n_gb_cols();
+  const GBColTypeInfo *types = interp->gb_types();
+  const Uint32 *stored = reinterpret_cast<const Uint32 *>(groupData);
+  const Uint32 storedWords = (storedKeyLen + 3) >> 2;
+  const Uint32 keyWords = (keyLenBytes + 3) >> 2;
+  Uint32 kp = 0;
+  while (kp < keyWords) {
+    const AttributeHeader reqAh(keyBuf[kp]);
+    const Uint32 pos = reqAh.getAttributeId();
+    const Uint32 reqDataWords = reqAh.getDataSize();
+    if (unlikely(pos >= nCols || kp + 1 + reqDataWords > keyWords)) {
+      *malformed = true;
+      return nullptr;
+    }
+    if (reqAh.getByteSize() == 0) {
+      return nullptr;  /* NULL bound value: equality is UNKNOWN => MISS */
+    }
+    /* Locate stored entry #pos by walking the record's key entries */
+    Uint32 spos = 0;
+    for (Uint32 i = 0; i < pos; i++) {
+      if (unlikely(spos >= storedWords)) {
+        *malformed = true;
+        return nullptr;
+      }
+      spos += 1 + AttributeHeader::getDataSize(stored[spos]);
+    }
+    if (unlikely(spos >= storedWords)) {
+      *malformed = true;
+      return nullptr;
+    }
+    const AttributeHeader storedAh(stored[spos]);
+    if (storedAh.getByteSize() == 0) {
+      return nullptr;  /* stored NULL => MISS */
+    }
+    if (types != nullptr && types[pos].cs != nullptr) {
+      const int cmp = (*types[pos].cmpFn)(
+          types[pos].cs,
+          &keyBuf[kp + 1], reqAh.getByteSize(),
+          &stored[spos + 1], storedAh.getByteSize());
+      if (cmp != 0) {
+        return nullptr;
+      }
+    } else {
+      if (reqAh.getDataSize() != storedAh.getDataSize() ||
+          memcmp(&keyBuf[kp + 1], &stored[spos + 1],
+                 reqAh.getDataSize() * sizeof(Uint32)) != 0) {
+        return nullptr;
+      }
+    }
+    kp += 1 + reqDataWords;
+  }
+  return groupData;
+}
+
 void Dblqh::cteLookupReqImpl(Signal *signal) {
   const CteLookupReq req =
       *(const CteLookupReq *)signal->getDataPtr();
@@ -20396,7 +20521,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
   const Uint32 rawKey1ForDebug = keyWordsForDebug > 1 ? keyBuf[1] : 0;
 #endif
 
-  {
+  if (!state->m_cte_single_row) {
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 keyWords = (req.keyLen + 3) >> 2;
     Uint32 kp = 0;
@@ -20406,9 +20531,44 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       kp += 1 + dataSize;
     }
   }
+  /* Single-row states: DBSPJ already stamped each key AttributeHeader
+   * with the TRUE projected-column position it binds (subset keys,
+   * cte_single_row_kernel_plan.md) — the sequential rewrite above
+   * would destroy them. */
 
   const char *groupData;
-  if (interp->n_gb_cols() == 0) {
+  if (state->m_cte_single_row) {
+    /**
+     * Single-row CTE probe: the state holds at most ONE row (a
+     * key-only group record).  Empty state => MISS (an empty CTE
+     * drops INNER consumers and NULL-extends LEFT consumers, exactly
+     * like MySQL — the scalar always-emit arm below must NOT apply).
+     * keyLen == 0 => pure existence probe (comma-join consumers).
+     * Otherwise compare each bound column (position = the stamped
+     * attrId) against the stored row; NULL on either side is a
+     * mismatch (SQL equality).
+     */
+    jam();
+    bool malformed = false;
+    Uint32 storedKeyLen = 0;
+    groupData = singleRowCteProbe(interp, keyBuf, req.keyLen,
+                                  &malformed, &storedKeyLen);
+    if (unlikely(malformed)) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
+      return;
+    }
+    if (groupData != nullptr) {
+      /* Downstream consumers (buildCteLinkedBuffer, the accumulators
+       * pointer in cteLookupEmitResult, runCteFilter) all take
+       * req.keyLen as the STORED key length — true for full-key
+       * grouped probes, but a subset probe's key is shorter.
+       * Override with the stored length (the scalar arm's
+       * override-to-0 precedent). */
+      const_cast<CteLookupReq &>(req).keyLen = storedKeyLen;
+    }
+  } else if (interp->n_gb_cols() == 0) {
     /**
      * Scalar aggregate CTE (no GROUP BY): results are in m_agg_results
      * directly (gb_map is nullptr). Return the scalar result regardless
@@ -21684,6 +21844,19 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
     goto redistribution_done;
   }
 
+  /* Single-row contract (cte_single_row_kernel_plan.md): the body may
+   * materialize at most one row.  RonSQL guarantees this via a
+   * full-PK-equality body WHERE; the program is API-controlled, so a
+   * violation fails the query cleanly instead of crashing.  Checked on
+   * first entry only — the map can only shrink across CONTINUEB
+   * re-entries.  The cross-node case (several nodes each holding one
+   * row) is caught by the owner-side check in checkCteReady. */
+  if (state->m_cte_single_row && gb_map->size() > 1) {
+    jam();
+    abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
+    return;
+  }
+
   DEB_CTE(("(%u) CTE REDIST: aggStateKey=%u gb_map_size=%u ownNode=%u",
            instance(), aggStateKey, gb_map->size(), getOwnNodeId()));
 
@@ -21701,24 +21874,39 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
           data + keyLen);
       const Uint32 valLen = interp->redistributionValueLen(slots);
 
-      /* Determine hash owner (type-aware for complex character sets) */
-      Uint64 h = interp->hashGroupKey(data, keyLen,
-                                      c_tup->getAggXfrmBuf(),
-                                      c_tup->getAggXfrmBufLen());  // D26
-      Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
-      Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+      /* Determine the owner node.  Grouped CTEs hash the key
+       * (type-aware for complex character sets).  Single-row CTE
+       * states use a CONSTANT owner instead — the DBTC-co-located
+       * node, the scalar-CTE (I.17e) placement: a subset-key
+       * CTE_LOOKUP cannot recompute a full-row hash, so the row must
+       * live at a key-independent location every consumer can route
+       * to. */
+      Uint32 ownerNode;
+      if (state->m_cte_single_row) {
+        jam();
+        ownerNode = refToNode(state->m_senderRef);
+        DEB_CTE(("(%u) CTE REDIST: single-row owner=%u (DBTC node) "
+                 "keyLen=%u %s", instance(), ownerNode, keyLen,
+                 ownerNode == ownNodeId ? "LOCAL" : "REMOTE"));
+      } else {
+        Uint64 h = interp->hashGroupKey(data, keyLen,
+                                        c_tup->getAggXfrmBuf(),
+                                        c_tup->getAggXfrmBufLen());  // D26
+        Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
+        ownerNode = state->m_cte_node_list[ownerIdx];
 
 #ifdef DEBUG_CTE
-      {
-        const Uint32 *kw = reinterpret_cast<const Uint32 *>(data);
-        DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
-                 "keyLen=%u valLen=%u %s key[0]=0x%x key[1]=0x%x",
-                 instance(), (unsigned long long)h, ownerIdx, ownerNode,
-                 keyLen, valLen,
-                 ownerNode == ownNodeId ? "LOCAL" : "REMOTE",
-                 kw[0], keyLen > 4 ? kw[1] : 0));
-      }
+        {
+          const Uint32 *kw = reinterpret_cast<const Uint32 *>(data);
+          DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
+                   "keyLen=%u valLen=%u %s key[0]=0x%x key[1]=0x%x",
+                   instance(), (unsigned long long)h, ownerIdx, ownerNode,
+                   keyLen, valLen,
+                   ownerNode == ownNodeId ? "LOCAL" : "REMOTE",
+                   kw[0], keyLen > 4 ? kw[1] : 0));
+        }
 #endif
+      }
 
       if (ownerNode == ownNodeId) {
         jam();
@@ -21762,6 +21950,16 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       }
       lsp[1].p = valueBuf;
       lsp[1].sz = (valLen + 3) >> 2;
+      if (lsp[1].sz == 0) {
+        /* Zero-aggregate (single-row projection) record: valueLen == 0.
+         * Send one dummy word to avoid any 0-size-section quirks in
+         * the transporter / fragmentation layer (the scalar
+         * redistribute's precedent, see sendScalarRedistributeReq);
+         * the receiver consumes req->valueLen and ignores the word. */
+        jam();
+        valueBuf[0] = 0;
+        lsp[1].sz = 1;
+      }
 
       BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
       DEB_JOIN_AGG_REDIST_VERBOSE(
@@ -22243,6 +22441,24 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
                     ownNodeId));
       DEB_CTE(("(%u) checkCteReady: waiting for node %u",
                instance(), state->m_cte_node_list[i]));
+      return;
+    }
+  }
+
+  /* Single-row contract, owner side: every sender ships at most one
+   * row (its own redistribute checks that), but if the body produced
+   * distinct rows on SEVERAL nodes they all land here.  All inbound
+   * rows are merged by now — REDISTRIBUTE_REQs from a sender precede
+   * its FINAL_REP on the same signal path, and in CTE_REDISTRIBUTING
+   * they merge directly (no queue).  API-controlled input, so fail
+   * the query cleanly. */
+  if (state->m_cte_single_row) {
+    JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+    JoinGBHashTable *gb_map =
+        (interp != nullptr) ? interp->gb_map_mutable() : nullptr;
+    if (gb_map != nullptr && gb_map->size() > 1) {
+      jam();
+      abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
       return;
     }
   }

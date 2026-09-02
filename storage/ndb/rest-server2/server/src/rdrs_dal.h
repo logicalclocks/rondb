@@ -33,6 +33,7 @@ typedef enum HTTP_CODE {
   AUTH_ERROR        = 401,
   NOT_FOUND         = 404,
   CONFLICT          = 409,
+  PAYLOAD_TOO_LARGE = 413,
   TOO_MANY_REQUESTS = 429,
   SERVER_ERROR      = 500
 } HTTP_CODE;

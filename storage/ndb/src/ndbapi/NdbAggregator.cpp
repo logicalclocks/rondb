@@ -134,6 +134,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
                RESULT_ITEM_HEADER_SIZE * sizeof(Uint32)),
   disk_columns_(false),
   uses_wide_type_(false),
+  single_row_mode_(false),
   vec_top_n_(0), vec_result_(nullptr),
   userAttrs_(nullptr), n_userAttrs_(0),
   results_prepared_(false), results_left_(0),
@@ -1300,9 +1301,20 @@ bool NdbAggregator::Finalize() {
     gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
                       GBHashEntryCmp(&gb_cmp_ctx_));
   }
-  if (n_agg_results_ == 0) {
-    SetError(kErrEmptyAggResult);
+  if (single_row_mode_ && (n_agg_results_ != 0 || n_gb_cols_ == 0)) {
+    /* The single-row CTE projection contract is GROUP BY columns only:
+     * at least one projected column and zero aggregate slots. */
+    SetError(n_gb_cols_ == 0 ? kErrEmptyProgram : kErrTooManyAggResult);
     return false;
+  }
+  if (n_agg_results_ == 0) {
+    if (!single_row_mode_) {
+      SetError(kErrEmptyAggResult);
+      return false;
+    }
+    /* Single-row CTE projection program: the materialized "group" IS
+     * the row (key-only group record); there are no aggregate slots
+     * and hence no result-side accumulator array. */
   } else if (n_agg_results_ >= MAX_AGG_N_RESULTS) {
     SetError(kErrTooManyAggResult);
     return false;

@@ -234,3 +234,14 @@ reordering handles the important SQL shapes.
   clear RonSQL error.
 - The original Phase I.5 v6 linked-vs-linked query shape can be added
   as a positive MTR test once I.16b or equivalent support lands.
+
+## Addendum (August 2026 — non_aggregate_phase_6.md)
+
+The I.16b/c rewrite now also runs for NON-aggregate queries: extracted
+into `RonSQLPreparer::maybe_rewrite_partial_key_cte_root()` and called
+from `parse()` ahead of the projection-only gate (the original
+`load_join()` call site remains, now a no-op for rewritten queries via
+the `root_is_cte` bail).  The demoted-root JoinClause copy additionally
+clears its index-hint fields for parity across the two call sites.
+Pass-through coverage: gc-14..16 + gc-P1a/b/c in
+`body_passthrough_groupby_cte.inc`.

@@ -41,7 +41,7 @@ RS_Status ronsql_validate_database_name(std::string& database);
 
 RS_Status ronsql_validate_and_init_params(RonSQLParams& input,
                                           RonSQLExecParams& ep,
-                                          std::ostringstream* out_stream,
+                                          std::ostream* out_stream,
                                           std::ostringstream* err_stream,
                                           ArenaMalloc* amalloc,
                                           bool* do_explain);

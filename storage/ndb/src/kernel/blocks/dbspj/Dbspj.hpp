@@ -35,6 +35,7 @@
 #include <SimulatedBlock.hpp>
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/LqhKey.hpp>
+#include <signaldata/QueryTree.hpp>
 #include <signaldata/ScanFrag.hpp>
 #include <stat_utils.hpp>
 #include "../dbtc/Dbtc.hpp"
@@ -672,6 +673,14 @@ class Dbspj : public SimulatedBlock {
      * lc_ndbd_pool_malloc'd in cte_lookup_build, freed in
      * cleanup_common.  nullptr when m_numResultCols == 0. */
     Uint32 *m_virtTypeInfo;
+    /* Single-row CTE subset keys (cte_single_row_kernel_plan.md):
+     * projected-column position bound by each key operand, in key
+     * order, decoded from QN_CteLookupNode (count in bits 16-23 of
+     * the numResultCols word).  cte_lookup_send stamps these into
+     * the key AttributeHeaders in place of the sequential GROUP BY
+     * normalization.  0 = none declared. */
+    Uint32 m_numKeyPositions;
+    Uint32 m_keyPositions[QN_CteLookupNode::MaxKeyPositions];
   };
 
   /**
@@ -759,7 +768,9 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW
     Uint32 m_cachedRowPtrI;   // RNIL or section with cached row
     Uint32 m_cachedRowLen;    // Word count of cached row
-    Uint32 m_singleNodeId;    // Node where single-row CTE lives
+    /* No per-CTE node tracking for single-row CTEs: states exist on
+     * every node and the redistribute owner is the constant DBTC node
+     * (refToNode(m_senderRef)) — cte_single_row_kernel_plan.md. */
   };
 
   struct ScanFragHandle {

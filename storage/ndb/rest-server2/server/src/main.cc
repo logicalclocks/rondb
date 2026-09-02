@@ -33,6 +33,8 @@ constexpr const char* const usageHelp =
 
 #include "connection.hpp"
 #include "config_structs.hpp"
+#include "capped_ostream.hpp"
+#include "error_strings.h"
 #include "rdrs_dal.h"
 #include "json_parser.hpp"
 #include "json_printer.hpp"
@@ -211,7 +213,11 @@ static bool mysql_router_ronsql_handler(
   params.explain_mode = RonSQLExecParams::ExplainMode::ALLOW;
   params.output_format = RonSQLExecParams::OutputFormat::TEXT;
 
-  std::ostringstream out_stream;
+  // Internal.MaxRespSize bounds the accumulated result here just like
+  // on the /ronsql REST endpoint (see ronsql_ctrl.cpp): past the cap,
+  // writes are silently dropped with bounded memory and the exceeded()
+  // check below converts that into a clean error.
+  CappedOStream out_stream(globalConfigs.internal.maxRespSize);
   std::ostringstream err_stream;
   params.out_stream = &out_stream;
   params.err_stream = &err_stream;
@@ -232,7 +238,18 @@ static bool mysql_router_ronsql_handler(
     return false;
   }
 
-  result_out = out_stream.str();
+  if (out_stream.exceeded()) {
+    std::ostringstream msg;
+    msg << rdrsErrorMessage(ERROR_RESPONSE_TOO_LARGE)
+        << " (Internal.MaxRespSize = "
+        << globalConfigs.internal.maxRespSize
+        << " bytes). Narrow the query or add LIMIT, or raise"
+           " Internal.MaxRespSize in the RDRS configuration.";
+    error_out = msg.str();
+    return false;
+  }
+
+  result_out = out_stream.take();
   return true;
 }
 
@@ -636,6 +653,14 @@ int main(int argc, char *argv[]) {
                               globalConfigs.security.tls.privateKeyFile);
     drogon::app().setThreadNum(globalConfigs.rest.numThreads);
     drogon::app().setThreadStackSize(8 * 1024 * 1024);
+    // Install Internal.maxReqSize as the HTTP server's client body
+    // limit.  Without this, drogon's built-in 1 MB default silently
+    // SHADOWED the configurable limit: any request over 1 MB was
+    // refused with 413 before assembly regardless of maxReqSize, and
+    // raising maxReqSize had no effect.  With the two aligned, drogon
+    // refuses over-limit requests with 413 up front and the
+    // per-controller maxReqSize checks remain as backstops.
+    drogon::app().setClientMaxBodySize(globalConfigs.internal.maxReqSize);
     drogon::app().disableSession();
     drogon::app().registerBeginningAdvice([]() {
       auto addresses = drogon::app().getListeners();

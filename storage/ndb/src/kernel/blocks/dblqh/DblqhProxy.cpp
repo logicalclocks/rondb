@@ -2424,12 +2424,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_resultData = req->resultData;
   state->m_routeRef = req->routeRef;
 
-  // Concurrency strategy (CTE_MODE_FLAG in upper bit)
+  // Concurrency strategy (CTE_MODE_FLAG / CTE_SINGLE_ROW_FLAG in the
+  // upper bits)
   const Uint32 strategy = req->concurrencyStrategy;
   state->m_cte_mode =
       (strategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
+  state->m_cte_single_row =
+      (strategy & JoinAggSetupReq::CTE_SINGLE_ROW_FLAG) != 0;
   state->m_cte_index = req->cteIndex;
-  if ((strategy & ~JoinAggSetupReq::CTE_MODE_FLAG) ==
+  if ((strategy & ~(JoinAggSetupReq::CTE_MODE_FLAG |
+                    JoinAggSetupReq::CTE_SINGLE_ROW_FLAG)) ==
       JoinAggSetupReq::STRATEGY_MUTEX_FREE) {
     state->m_strategy = JoinAggregationState::MUTEX_FREE;
   } else {

@@ -343,6 +343,7 @@ cte_def:
     /* alloc_exc does not run default member initializers; the
      * FRAGS_PER_WORKER hint is main-statement-only. */
     $$->stmt->frags_per_worker = 0;
+    $$->stmt->is_single_row_cte = false;
     $$->stmt->sql_begin = (@5).begin;
     $$->stmt->sql_end = (@14).end;
     $$->next = NULL;
@@ -771,6 +772,7 @@ subquery:
     /* alloc_exc does not run default member initializers; the
      * FRAGS_PER_WORKER hint is main-statement-only. */
     $$->frags_per_worker = 0;
+    $$->is_single_row_cte = false;
     $$->sql_begin = (@2).begin;
     $$->sql_end = (@11).end;
   }

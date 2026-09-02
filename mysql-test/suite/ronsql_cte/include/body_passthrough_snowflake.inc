@@ -33,7 +33,10 @@
 #       [INNER] on the promoted op.
 #   P1  rejection: type-mismatch join columns (TINYINT vs INT)
 #   P2  rejection: join column with no usable index
-#   P3  rejection: cross-table WHERE residual on a pass-through join
+#   P3  rejection: cross-table WHERE residual
+#   P4  rejection: TEXT join column, pass-through (local blobt —
+#       the Phase 2 planner pre-check was code-covered only)
+#   P5  rejection: TEXT join column, aggregate path on a pass-through join
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -350,8 +353,37 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_orderkey FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey WHERE cu.c_acctbal > o.o_totalprice;' 2>&1
 
+--echo
+--echo === sn-P4 (rejection): TEXT join column, pass-through ===
+# The Phase 2 QueryPlanner linked-column pre-check was code-covered
+# only: the shared schema has no BLOB/TEXT columns.  Local blobt pins
+# the clean prepare-time message on both paths.
 --disable_query_log
 --disable_warnings
+CREATE TABLE blobt (
+  b_id  INT NOT NULL,
+  b_txt TEXT NOT NULL,
+  PRIMARY KEY (b_id)
+) ENGINE=NDB;
+INSERT INTO blobt VALUES (1, 'one'), (2, 'two');
+--enable_warnings
+--enable_query_log
+--error 1
+# blobt is the ROOT so the TEXT column is the PARENT side of the key:
+# the child (orders, keyed on indexed o_orderstatus) passes index
+# determination and the per-key BLOB/TEXT pre-check then fires with
+# its dedicated message (with TEXT as the child key column, the "no
+# suitable index" error would fire first instead).
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT b.b_id FROM blobt AS b JOIN orders AS o ON o.o_orderstatus = b.b_txt;' 2>&1
+
+--echo
+--echo === sn-P5 (rejection): TEXT join column, aggregate path ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM blobt AS b JOIN orders AS o ON o.o_orderstatus = b.b_txt;' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE blobt;
 DROP TABLE snow1;
 --enable_warnings
 --enable_query_log

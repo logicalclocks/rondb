@@ -18,6 +18,7 @@
  */
 
 #include "ronsql_ctrl.hpp"
+#include "capped_ostream.hpp"
 #include "error_strings.h"
 #include "rdrs_dal.hpp"
 #include "json_parser.hpp"
@@ -148,7 +149,14 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
-  std::ostringstream out_stream;
+  // Internal.MaxRespSize bounds the accumulated response body
+  // (0 = unlimited).  The engine's printers never inspect stream state,
+  // so past the cap the drain keeps running with writes silently
+  // no-oped (bounded memory); the exceeded() check after ronsql_dal
+  // converts that into a clean error.  The controller-written JSON
+  // prologue/epilogue go through the same stream, so the cap covers
+  // the whole body.
+  CappedOStream out_stream(globalConfigs.internal.maxRespSize);
   std::ostringstream err_stream;
 
   bool do_explain = false;
@@ -238,7 +246,30 @@ void RonSQLCtrl::ronsql(
     out_stream << "}\n";
   }
 
-  std::string out_str = out_stream.str();
+  if (out_stream.exceeded() &&
+      static_cast<drogon::HttpStatusCode>(status.http_code) ==
+        drogon::HttpStatusCode::k200OK) {
+    // Internal.MaxRespSize exceeded: the accumulated body was capped
+    // (writes past the cap were dropped), so the partial output is
+    // useless — discard it and fail cleanly.  A genuine execution
+    // error (status != 200) takes precedence below instead.
+    DEB_TRACE();
+    std::ostringstream msg;
+    msg << rdrsErrorMessage(ERROR_RESPONSE_TOO_LARGE)
+        << " (Internal.MaxRespSize = "
+        << globalConfigs.internal.maxRespSize
+        << " bytes). Narrow the query or add LIMIT, or raise"
+           " Internal.MaxRespSize in the RDRS configuration.\n";
+    resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+    resp->setContentTypeCodeAndCustomString(
+      drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+    resp->setBody(msg.str());
+    callback(resp);
+    DEB_TRACE();
+    return;
+  }
+
+  std::string out_str = out_stream.take();
   std::string err_str = err_stream.str();
   if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
       drogon::HttpStatusCode::k200OK) {
@@ -321,7 +352,9 @@ void RonSQLCtrl::ronsql(
 #ifdef RONSQL_PHASE_STATS
     resp->addHeader("x-ronsql-phases", ronsql_phase_stats_header(phase_stats));
 #endif
-    resp->setBody(out_str);
+    // Move — out_str came from CappedOStream::take(), avoiding one of
+    // the full-body copies of the old ostringstream flow.
+    resp->setBody(std::move(out_str));
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   }
   else {
@@ -365,7 +398,7 @@ RS_Status ronsql_validate_database_name(std::string& database) {
 
 RS_Status ronsql_validate_and_init_params(RonSQLParams& req,
                                           RonSQLExecParams& ep,
-                                          std::ostringstream* out_stream,
+                                          std::ostream* out_stream,
                                           std::ostringstream* err_stream,
                                           ArenaMalloc* amalloc,
                                           bool* do_explain) {

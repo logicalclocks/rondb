@@ -287,13 +287,30 @@ private:
     int* condition_handling_map = NULL;
     // An estimate of how performant the scan configuration will be.
     int goodness = 0;
+    // Phase 4b (ronsql_orderby_limit_plan.md): the ordered index of this
+    // candidate delivers the query's ORDER BY order directly (ORDER BY
+    // list == the index columns after any leading equality-bound
+    // columns, uniform direction), so the pass-through scan runs with
+    // SF_OrderBy [| SF_Descending] — the NDB API merge-sorts the
+    // per-fragment ordered scans — and streams rows in global index
+    // order with the Phase 2 LIMIT cutoff instead of buffering for the
+    // Phase 3 client-side sort.  Only ever set on the single-table
+    // pass-through path (index == NULL candidates never qualify).
+    bool index_order = false;
+    bool index_order_desc = false;
   };
   enum class CteKeyCoverage {
     ExactOrdered,
     ExactPermuted,
     Partial,
     WrongColumns,
-    ScalarDummy
+    ScalarDummy,
+    // Single-row CTE (cte_single_row_kernel_plan.md): the bound keys
+    // name ANY SUBSET of the CTE's outputs, including none (comma
+    // cross join = existence probe).  pk_index_for_key[k] carries the
+    // OUTPUT POSITION each key binds; emit passes them to
+    // NdbQueryOptions::setCteKeyColumns.
+    SingleRowSubset
   };
   struct CteKeyCoverageResult {
     CteKeyCoverage state = CteKeyCoverage::WrongColumns;
@@ -312,15 +329,26 @@ private:
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
   // Phase 1 (non_aggregate_phase_1.md, W2): single-row PK lookup for
-  // non-aggregate single-table queries whose WHERE is fully consumed
-  // as PK equalities.  When set, m_scan_config stays NULL and
-  // m_pk_lookup_const holds one constant per PK column (in PK order,
-  // arena-allocated).  Aggregate queries never set this — single-table
-  // aggregation needs the scan protocol (SO_AGGREGATION); a plain
-  // readTuple has no aggregator path (the single-table twin of the
-  // Phase 0 lookup-root rule).
+  // non-aggregate single-table queries whose WHERE covers the full
+  // primary key with equalities.  When set, m_scan_config stays NULL
+  // and m_pk_lookup_const holds one constant per PK column (in PK
+  // order, arena-allocated).  Aggregate queries never set this —
+  // single-table aggregation needs the scan protocol (SO_AGGREGATION);
+  // a plain readTuple has no aggregator path (the single-table twin of
+  // the Phase 0 lookup-root rule).
+  // PK+residual follow-up (non_aggregate_pk_residual_lookup.md):
+  // residual conjuncts no longer force the scan fallback — they ride
+  // the lookup as an NdbRecord OO_INTERPRETED filter program.
+  // m_pk_lookup_cond_map maps each m_toplevel_conditions entry to the
+  // PK ordinal it binds, or -1 for a residual filter conjunct (same
+  // idiom as ScanConfig::condition_handling_map, so EXPLAIN prints in
+  // the same format).  The scan fallback remains for residuals whose
+  // program exceeds the lookup word cap or uses types apply_filter /
+  // encode_constant cannot emit (trial build at detection time).
   bool m_pk_lookup = false;
+  bool m_pk_lookup_has_residual = false;
   struct ConditionalExpression** m_pk_lookup_const = NULL;
+  int* m_pk_lookup_cond_map = NULL;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -399,10 +427,26 @@ private:
   void parse();
   void resolve_orderby_aliases();
   void canonicalize_orderby_columns();
+  static bool same_resolved_column(const QueryScope::ResolvedColumnRef& a,
+                                   const QueryScope::ResolvedColumnRef& b);
   bool has_width(size_t pos);
   void load();
   void load_single_table();
   void load_join();
+  // Phase I.16b/c partial-key-CTE root rewrite, extracted from
+  // load_join() (non_aggregate_phase_6.md): also called from parse()
+  // ahead of the projection-only gate for non-aggregate queries, so
+  // the gate's coverage check evaluates the post-rewrite tree.
+  // Idempotent — a second call bails on the promoted CTE root.
+  void maybe_rewrite_partial_key_cte_root();
+  /* Single-row key-lookup CTE bodies (cte_single_row_kernel_plan.md):
+   * parse-time candidacy marking (no AST rewrite — the kernel's
+   * CTE_SINGLE_ROW mode materializes the row natively), and the
+   * plan-time enforcement that the body WHERE binds every primary key
+   * column by equality with a constant (<= 1 row). */
+  void detect_single_row_ctes();
+  void enforce_single_row_cte_body(const CteDefinition* cte,
+                                   QueryScope& scope);
   /* Phase I.17h: synthesise a FROM clause from qualified column refs
    * to scalar CTEs when the parser produced a NULL root_table.  No-op
    * when an explicit FROM was given. */
@@ -427,20 +471,111 @@ private:
                                    ConditionalExpression* ce) const;
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
+  // Phase i26: register linked projections for ancestor columns in
+  // routed CTE-op filters.  Runs after load_join's GROUP BY
+  // linked-projection block (GB projections must keep slots 0..n-1 —
+  // GroupByLinked positions are a sequential counter over the GROUP BY
+  // list); dedups via find_or_add_linked_proj.
+  void register_cte_filter_linked_projs(QueryScope& scope);
   void promote_left_to_inner_for_where(QueryScope& scope);
+  // F-colvscol W2 (cte_body_colvscol_plan.md): gate for col-vs-col
+  // comparisons in a CTE-body WHERE.  Accepts identical-type pairs
+  // (NdbDictionary::Column::isBindable — the emit-side predicate) of
+  // stored columns on the body root op; refined permanent errors
+  // otherwise.
+  void check_cte_body_col_vs_col(const QueryScope& scope,
+                                 ConditionalExpression* ce) const;
   static bool is_anti_join_promotable(const QueryScope& scope,
                                        Uint32 op_idx,
                                        const ConditionalExpression* ce);
-  void assign_cross_table_index_bounds();
+  // Child-op index bounds (child_bounds feature, next_steps.md items
+  // 2+3; formerly assign_cross_table_index_bounds): per non-root
+  // INDEX_SCAN op, walk index columns after the join-key prefix and
+  // bind consecutive columns from cross-table WHERE filters
+  // (parent-linked bounds) and child-local constant conjuncts
+  // (RangeBound::const_cond); consumed local conjuncts leave
+  // join_where_ce[op].  Re-selects the op's index when another
+  // join-key-prefix candidate binds strictly more columns.  Called
+  // for the main scope (load_join) and each CTE-body scope
+  // (build_cte_scopes); no-op for single-op plans.
+  void assign_child_index_bounds(QueryScope& scope);
+  // The normalized (child-side) comparison op if `ctf` provides a
+  // bound on column idx_col_name of op op_idx; (TokenKind)0 otherwise.
+  // Outputs child/parent column names + the parent op index.
+  TokenKind cross_table_bound_op(QueryScope& scope, Uint32 op_idx,
+                                 CrossTableFilter& ctf,
+                                 const char* idx_col_name,
+                                 const char** out_child_col,
+                                 const char** out_parent_col,
+                                 Uint32* out_parent_op);
+  // The comparison op if `ce` is a bound-eligible child-local constant
+  // conjunct (IDENT op CONST, identifier = column idx_col_name of op
+  // op_idx, constant in the encode_constant-servable set, column NOT
+  // NULL — the v1 nullability guard); (TokenKind)0 otherwise.
+  TokenKind child_const_bound_op(QueryScope& scope, Uint32 op_idx,
+                                 ConditionalExpression* ce,
+                                 const char* idx_col_name,
+                                 const NdbDictionary::Table* table);
+  // Dry-run of the assign walk for index re-selection scoring:
+  // EQ-bound column = +3 (walk continues), range-bound = +1 (walk
+  // stops), unmatched column stops.
+  Uint32 score_child_index_bounds(QueryScope& scope, Uint32 op_idx,
+                                  const NdbDictionary::Index* idx,
+                                  ConditionalExpression** local_conjuncts,
+                                  Uint32 num_local,
+                                  Uint32 num_key_cols,
+                                  const NdbDictionary::Table* table);
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
-  // Phase 1 W2: returns true (and sets m_pk_lookup + m_pk_lookup_const)
-  // when every top-level WHERE conjunct is a `pk_col = const` equality
-  // and together they cover the full primary key — the v1 policy: any
-  // residual conjunct, duplicate, partial cover or non-equality falls
-  // back to the scan-config path (always correct).
+  // Phase 1 W2 + PK+residual follow-up: returns true (and sets
+  // m_pk_lookup, m_pk_lookup_const, m_pk_lookup_cond_map,
+  // m_pk_lookup_has_residual) when the top-level WHERE conjuncts cover
+  // the full primary key with equalities.  Conjuncts not consumed as
+  // keys become residual filters carried by the lookup's interpreted
+  // program; a trial build gates on the lookup word cap and on
+  // emit-supported types, falling back to the scan-config path
+  // (always correct) when the program cannot be carried.
   bool detect_pk_lookup();
-  void generate_scan_config_candidates();
+  // `defer_force_check` (Phase 4b): skip build_scan_config_candidates'
+  // FORCE INDEX satisfiability throws so the ORDER BY index pass can
+  // still qualify the forced index; plan_index_and_filter then runs
+  // validate_force_hint_after_orderby().
+  void generate_scan_config_candidates(bool defer_force_check = false);
+  // Phase 4b (ronsql_orderby_limit_plan.md): ORDER BY-driven index-order
+  // candidates for single-table pass-through queries.  Resolves the ORDER
+  // BY list to stored columns + a uniform direction, then for every
+  // ordered index admitted by the table's index hint: an existing
+  // bound-based candidate whose index serves the order is tagged
+  // index_order and gets ORDERBY_INDEX_BONUS goodness (a tie-breaker
+  // below any bound's value — WHERE-selected indexes keep priority); an
+  // index with no bound candidate that serves the order is pushed as a
+  // bonus-only candidate (all conjuncts residual filters) so it beats
+  // the goodness-0 table scan.  No-op when any ORDER BY target is not a
+  // stored column, directions mix, or no index matches (the query then
+  // takes the Phase 3 buffered sort).
+  void add_orderby_scan_config_candidates();
+  // True when `index` delivers the ORDER BY order for candidate bounds
+  // `condition_handling_map` (NULL = no bounds): walking the ORDER BY
+  // list against the index columns, a non-matching index column may be
+  // skipped only if it carries an equality bound (constant within the
+  // scanned range).  `descending` receives the uniform direction.
+  bool index_serves_orderby(const NdbDictionary::Index* index,
+                            const int* condition_handling_map,
+                            bool& descending) const;
+  // The stored column an ORDER BY entry denotes on the single-table
+  // path (TABLE_COLUMN via the main scope; OUTPUT_REF via the SELECT
+  // output it names, a plain COLUMN under the pass-through gate); NULL
+  // when it does not resolve to a stored column.
+  static const NdbDictionary::Column* orderby_stored_column(
+      const SelectStatement& ast_root,
+      const QueryScope::ResolvedColumnRef* resolved,
+      const OrderbyColumns* ob);
+  // Deferred FORCE INDEX satisfiability check for the pass-through ORDER
+  // BY path (see defer_force_check); throws RonSQLPermanentError with
+  // the same messages as build_scan_config_candidates plus the
+  // ORDER BY-aware no-WHERE variant.
+  void validate_force_hint_after_orderby() const;
+  static const int ORDERBY_INDEX_BONUS = 10;
   // Phase 1 W4: the single-table scan setup shared by the aggregate
   // path and the pass-through drain — table or index scan per
   // m_scan_config, bounds from condition_handling_map (with the
@@ -455,6 +590,13 @@ private:
   void register_passthrough_getvalues(NdbOperation* op,
                                       const NdbRecAttr** attrs,
                                       Uint32 num_cols);
+  // PK+residual follow-up: the NdbRecord-lookup twin of
+  // register_passthrough_getvalues — same outputs walk and checks, but
+  // fills OO_GETVALUE GetValueSpec entries (an NdbRecord operation
+  // cannot take RecAttr getValue() calls; the specs' recAttr results
+  // are the same NdbRecAttr* the printer consumes).
+  void build_passthrough_getvalue_specs(NdbOperation::GetValueSpec* gets,
+                                        Uint32 num_cols);
   // Shared scan-config candidate generator used by both the
   // single-table path (`generate_scan_config_candidates`) and the
   // per-scope path (`select_root_scan_config`).  Pushes one TABLE_SCAN candidate
@@ -468,11 +610,25 @@ private:
   // (FORCE/USE/IGNORE INDEX) constrains which indexes are considered.  NULL
   // (or a hint of kind NONE) means "no hint".  A FORCE hint that names no
   // usable index throws RonSQLPermanentError.
+  //
+  // `table` is the scanned table (nullability authority for the guard
+  // below); `allow_nullable_high_bound` (findings/nullable_bounds.md):
+  // NULL sorts below every value in an NDB ordered index, so a HIGH-only
+  // bound on a NULLABLE column would scan the NULL entries at the index
+  // head while SQL comparison is UNKNOWN for NULL — wrong results.
+  // Callers whose emit can append a NULL-excluding low bound
+  // (single-table: setBound(col, BoundLT, NULL) = "col > NULL", the
+  // mysqld range-optimizer idiom) pass true and keep the bound; the
+  // NdbQueryBuilder-emitted roots cannot express a NULL bound operand
+  // and pass false — the conjunct then stays a residual filter.
   void build_scan_config_candidates(
       DynamicArray<const NdbDictionary::Index*>& indexes,
       DynamicArray<ConditionalExpression*>& toplevel_conditions,
       DynamicArray<ScanConfig>& out_candidates,
-      const TableRef* hint);
+      const TableRef* hint,
+      bool defer_force_check = false,
+      const NdbDictionary::Table* table = NULL,
+      bool allow_nullable_high_bound = false);
   // True if `index` is named in the table ref's index-hint list (case
   // insensitive).  Used to apply FORCE/USE/IGNORE INDEX.
   static bool index_named_in_hint(const NdbDictionary::Index* index,
@@ -702,9 +858,14 @@ private:
   Uint32 embedded_filter_expr_word_count(QueryScope& scope,
                                          struct ConditionalExpression* ce,
                                          Uint32 leaf_idx);
+  // `cur_pos` tracks the word position inside the embedded program
+  // (incremented per emitted word); `null_fail_target` is the position
+  // a nullable operand's NULL guard jumps to (UNKNOWN rejects the
+  // atom — findings/nullable_bounds.md, the nb-8 "code 1872" finding).
   void emit_embedded_filter_expr(NdbAggregator* agg, QueryScope& scope,
                                  struct ConditionalExpression* ce,
-                                 Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
+                                 Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg,
+                                 Uint32& cur_pos, Uint32 null_fail_target);
   void generate_embedded_filter_condition(NdbAggregator* aggregator,
                                           QueryScope& scope,
                                           struct ConditionalExpression* ce,

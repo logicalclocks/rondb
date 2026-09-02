@@ -225,6 +225,14 @@ struct JoinAggregationState {
   // so each group lives on exactly one node (its hash-partition owner).
   //------------------------------------------------------------------
   bool m_cte_mode;                          // True if this is a CTE materialization
+  bool m_cte_single_row;                    // Single-row CTE (cte_single_row_kernel_plan.md):
+                                            // at most one row stored as a key-only
+                                            // group record (zero aggregate slots);
+                                            // redistribute ships it to the constant
+                                            // DBTC-node owner instead of hashing;
+                                            // CTE_LOOKUP compares a subset of the
+                                            // projected columns and MISSES on an
+                                            // empty state (no scalar always-emit)
   Uint32 m_cte_index;                       // CTE index from SETUP_REQ (RNIL for main agg)
   NdbNodeBitmask m_cte_nodes_finalized;     // Bitmask of nodes that sent FINAL_REP
                                             // (prevents duplicate FINAL from same node)

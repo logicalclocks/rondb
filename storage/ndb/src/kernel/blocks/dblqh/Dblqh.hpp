@@ -502,6 +502,9 @@ class FsReadWriteReq;
 #define ZCTE_EVICT_IN_CTE_LEAF             1267
 #define ZCTE_LOOKUP_FILTER_ERROR           1268
 #define ZCTE_AGG_FEED_SELF_REFERENCE       1269
+/* 1270 = ZCTE_AGG_BATCH_PROTOCOL_ERROR (Dbtc.hpp); 1271 reserved
+ * (local_execution_mode_plan.md ZLOCAL_AGG_REMOTE_READ). */
+#define ZCTE_SINGLE_ROW_VIOLATION          1272
 
 /**
  * @class dblqh

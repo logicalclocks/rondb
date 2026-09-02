@@ -286,6 +286,28 @@ class NdbQueryOptions {
    */
   int setFragsPerWorker(Uint32 frags);
 
+  /**
+   * Declare which projected columns of a SINGLE-ROW CTE the key
+   * operands of a lookupCte() bind (cte_single_row_kernel_plan.md).
+   * positions[i] is the 0-based projected-column position bound by
+   * keys[i]; any subset of the columns may be bound, including NONE
+   * (count == 0, keys = {nullptr}) for a pure existence probe (the
+   * comma-cross-join consumer).  With this option set, lookupCte()
+   * validates exactly `count` key operands and binds them to the
+   * named columns instead of the virtual table's primary-key columns.
+   *
+   * Only meaningful against a CTE defined with
+   * QN_CteSubtreeNode::CTE_SINGLE_ROW; the kernel compares each bound
+   * column against the materialized row (NULL on either side is a
+   * mismatch) and treats an empty CTE as a lookup MISS.
+   *
+   * @param positions Projected-column position per key operand.
+   * @param count     Number of key operands
+   *                  (0..QN_CteLookupNode::MaxKeyPositions).
+   * @return 0 if ok, -1 in case of error.
+   */
+  int setCteKeyColumns(const Uint32 positions[], Uint32 count);
+
   int setParameters(const NdbQueryOperand *const parameters[]);
 
   const NdbQueryOptionsImpl &getImpl() const;

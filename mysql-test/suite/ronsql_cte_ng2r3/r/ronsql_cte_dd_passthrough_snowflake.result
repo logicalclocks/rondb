@@ -2429,3 +2429,13 @@ ronsql_cli caught exception: No suitable index for join columns.
 === sn-P3 (rejection): cross-table WHERE residual ===
 Error handling: RPE
 ronsql_cli caught exception: Cross-table WHERE conditions (e.g., a.x > b.y) are only supported in queries with aggregation (GROUP BY / aggregate functions).  Split into separate conditions per table, or add aggregation.
+
+=== sn-P4 (rejection): TEXT join column, pass-through ===
+BLOB/TEXT columns cannot be used as join columns.
+Error handling: RPE
+ronsql_cli caught exception: BLOB/TEXT join column.
+
+=== sn-P5 (rejection): TEXT join column, aggregate path ===
+BLOB/TEXT columns cannot be used as join columns.
+Error handling: RPE
+ronsql_cli caught exception: BLOB/TEXT join column.

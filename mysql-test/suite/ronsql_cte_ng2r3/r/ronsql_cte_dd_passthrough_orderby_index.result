@@ -1,0 +1,853 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== poi-1: equality prefix, ORDER BY next index column ASC + LIMIT ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_orderstatus = 'O' ORDER BY o_orderdate LIMIT 10;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=10
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_orderstatus = 'O' ORDER BY o_orderdate LIMIT 10|
+o_orderkey	o_orderdate
+1002	1995-01-03
+3	1995-01-04
+1005	1995-01-06
+6	1995-01-07
+1008	1995-01-09
+9	1995-01-10
+1011	1995-01-12
+12	1995-01-13
+1014	1995-01-15
+15	1995-01-16
+
+=== poi-2: equality prefix, ORDER BY next index column DESC + LIMIT ===
+== Query ==
+SELECT o_orderkey, o_orderdate, o_totalprice FROM orders
+WHERE o_orderstatus = 'O' ORDER BY o_orderdate DESC LIMIT 10;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=10
+== Expected result ==
+SELECT o_orderkey, o_orderdate, o_totalprice FROM orders
+WHERE o_orderstatus = 'O' ORDER BY o_orderdate DESC LIMIT 10|
+o_orderkey	o_orderdate	o_totalprice
+999	1997-09-26	13356.63
+996	1997-09-23	13316.52
+993	1997-09-20	13276.41
+990	1997-09-17	13236.30
+987	1997-09-14	13196.19
+984	1997-09-11	13156.08
+981	1997-09-08	13115.97
+978	1997-09-05	13075.86
+975	1997-09-02	13035.75
+972	1997-08-30	12995.64
+
+=== poi-3: range bound on the ORDER BY column, no LIMIT (streamed) ===
+== Query ==
+SELECT o_orderkey, o_orderdate, o_orderstatus FROM orders
+WHERE o_orderdate >= '1997-09-01' ORDER BY o_orderdate;
+
+Number of output lines, including header: 27
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=26
+== Expected result ==
+SELECT o_orderkey, o_orderdate, o_orderstatus FROM orders
+WHERE o_orderdate >= '1997-09-01' ORDER BY o_orderdate|
+o_orderkey	o_orderdate	o_orderstatus
+974	1997-09-01	P
+975	1997-09-02	O
+976	1997-09-03	F
+977	1997-09-04	P
+978	1997-09-05	O
+979	1997-09-06	F
+980	1997-09-07	P
+981	1997-09-08	O
+982	1997-09-09	F
+983	1997-09-10	P
+984	1997-09-11	O
+985	1997-09-12	F
+986	1997-09-13	P
+987	1997-09-14	O
+988	1997-09-15	F
+989	1997-09-16	P
+990	1997-09-17	O
+991	1997-09-18	F
+992	1997-09-19	P
+993	1997-09-20	O
+994	1997-09-21	F
+995	1997-09-22	P
+996	1997-09-23	O
+997	1997-09-24	F
+998	1997-09-25	P
+999	1997-09-26	O
+
+=== poi-4: no WHERE, ORDER BY DESC + LIMIT (ORDER BY-driven index choice) ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders
+ORDER BY o_orderdate DESC LIMIT 12;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=12
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders
+ORDER BY o_orderdate DESC LIMIT 12|
+o_orderkey	o_orderdate
+999	1997-09-26
+998	1997-09-25
+997	1997-09-24
+996	1997-09-23
+995	1997-09-22
+994	1997-09-21
+993	1997-09-20
+992	1997-09-19
+991	1997-09-18
+990	1997-09-17
+989	1997-09-16
+988	1997-09-15
+
+=== poi-5: no WHERE, ORDER BY ASC + LIMIT across tied dates (key-only projection) ===
+== Query ==
+SELECT o_orderdate FROM orders
+ORDER BY o_orderdate LIMIT 11;
+
+Number of output lines, including header: 12
+
+== Diff ==
+==========
+
+
+
+== Phase rows ==
+rows=11
+== Expected result ==
+SELECT o_orderdate FROM orders
+ORDER BY o_orderdate LIMIT 11|
+o_orderdate
+1995-01-01
+1995-01-02
+1995-01-02
+1995-01-03
+1995-01-03
+1995-01-04
+1995-01-04
+1995-01-05
+1995-01-05
+1995-01-06
+1995-01-06
+
+=== poi-6: NULLs first in ASC index order + LIMIT across the NULL run ===
+== Query ==
+SELECT o_clerk FROM orders
+WHERE o_totalprice < 1000 ORDER BY o_clerk LIMIT 13;
+
+Number of output lines, including header: 14
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=13
+== Expected result ==
+SELECT o_clerk FROM orders
+WHERE o_totalprice < 1000 ORDER BY o_clerk LIMIT 13|
+o_clerk
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+1
+2
+2
+
+=== poi-7: NULLs last in DESC index order, no LIMIT ===
+== Query ==
+SELECT o_clerk FROM orders
+WHERE o_totalprice < 400 ORDER BY o_clerk DESC;
+
+Number of output lines, including header: 30
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=29
+== Expected result ==
+SELECT o_clerk FROM orders
+WHERE o_totalprice < 400 ORDER BY o_clerk DESC|
+o_clerk
+30
+28
+27
+26
+25
+24
+23
+21
+20
+19
+18
+17
+16
+14
+13
+12
+11
+10
+9
+7
+6
+5
+4
+3
+2
+NULL
+NULL
+NULL
+NULL
+
+=== poi-8: LIMIT 260 crosses a fragment batch boundary under the ordered merge ===
+== Query ==
+SELECT o_orderdate FROM orders
+ORDER BY o_orderdate LIMIT 260;
+
+Number of output lines, including header: 261
+
+== Diff ==
+==========
+
+
+
+== Phase rows ==
+rows=260
+== Expected result ==
+SELECT o_orderdate FROM orders
+ORDER BY o_orderdate LIMIT 260|
+o_orderdate
+1995-01-01
+1995-01-02
+1995-01-02
+1995-01-03
+1995-01-03
+1995-01-04
+1995-01-04
+1995-01-05
+1995-01-05
+1995-01-06
+1995-01-06
+1995-01-07
+1995-01-07
+1995-01-08
+1995-01-08
+1995-01-09
+1995-01-09
+1995-01-10
+1995-01-10
+1995-01-11
+1995-01-11
+1995-01-12
+1995-01-12
+1995-01-13
+1995-01-13
+1995-01-14
+1995-01-14
+1995-01-15
+1995-01-15
+1995-01-16
+1995-01-16
+1995-01-17
+1995-01-17
+1995-01-18
+1995-01-18
+1995-01-19
+1995-01-19
+1995-01-20
+1995-01-20
+1995-01-21
+1995-01-21
+1995-01-22
+1995-01-22
+1995-01-23
+1995-01-23
+1995-01-24
+1995-01-24
+1995-01-25
+1995-01-25
+1995-01-26
+1995-01-26
+1995-01-27
+1995-01-27
+1995-01-28
+1995-01-28
+1995-01-29
+1995-01-29
+1995-01-30
+1995-01-30
+1995-01-31
+1995-01-31
+1995-02-01
+1995-02-01
+1995-02-02
+1995-02-02
+1995-02-03
+1995-02-03
+1995-02-04
+1995-02-04
+1995-02-05
+1995-02-05
+1995-02-06
+1995-02-06
+1995-02-07
+1995-02-07
+1995-02-08
+1995-02-08
+1995-02-09
+1995-02-09
+1995-02-10
+1995-02-10
+1995-02-11
+1995-02-11
+1995-02-12
+1995-02-12
+1995-02-13
+1995-02-13
+1995-02-14
+1995-02-14
+1995-02-15
+1995-02-15
+1995-02-16
+1995-02-16
+1995-02-17
+1995-02-17
+1995-02-18
+1995-02-18
+1995-02-19
+1995-02-19
+1995-02-20
+1995-02-20
+1995-02-21
+1995-02-21
+1995-02-22
+1995-02-22
+1995-02-23
+1995-02-23
+1995-02-24
+1995-02-24
+1995-02-25
+1995-02-25
+1995-02-26
+1995-02-26
+1995-02-27
+1995-02-27
+1995-02-28
+1995-02-28
+1995-03-01
+1995-03-01
+1995-03-02
+1995-03-02
+1995-03-03
+1995-03-03
+1995-03-04
+1995-03-04
+1995-03-05
+1995-03-05
+1995-03-06
+1995-03-06
+1995-03-07
+1995-03-07
+1995-03-08
+1995-03-08
+1995-03-09
+1995-03-09
+1995-03-10
+1995-03-10
+1995-03-11
+1995-03-11
+1995-03-12
+1995-03-12
+1995-03-13
+1995-03-13
+1995-03-14
+1995-03-14
+1995-03-15
+1995-03-15
+1995-03-16
+1995-03-16
+1995-03-17
+1995-03-17
+1995-03-18
+1995-03-18
+1995-03-19
+1995-03-19
+1995-03-20
+1995-03-20
+1995-03-21
+1995-03-21
+1995-03-22
+1995-03-22
+1995-03-23
+1995-03-23
+1995-03-24
+1995-03-24
+1995-03-25
+1995-03-25
+1995-03-26
+1995-03-26
+1995-03-27
+1995-03-27
+1995-03-28
+1995-03-28
+1995-03-29
+1995-03-29
+1995-03-30
+1995-03-30
+1995-03-31
+1995-03-31
+1995-04-01
+1995-04-01
+1995-04-02
+1995-04-02
+1995-04-03
+1995-04-03
+1995-04-04
+1995-04-04
+1995-04-05
+1995-04-05
+1995-04-06
+1995-04-06
+1995-04-07
+1995-04-07
+1995-04-08
+1995-04-08
+1995-04-09
+1995-04-09
+1995-04-10
+1995-04-10
+1995-04-11
+1995-04-11
+1995-04-12
+1995-04-12
+1995-04-13
+1995-04-13
+1995-04-14
+1995-04-14
+1995-04-15
+1995-04-15
+1995-04-16
+1995-04-16
+1995-04-17
+1995-04-17
+1995-04-18
+1995-04-18
+1995-04-19
+1995-04-19
+1995-04-20
+1995-04-20
+1995-04-21
+1995-04-21
+1995-04-22
+1995-04-22
+1995-04-23
+1995-04-23
+1995-04-24
+1995-04-24
+1995-04-25
+1995-04-25
+1995-04-26
+1995-04-26
+1995-04-27
+1995-04-27
+1995-04-28
+1995-04-28
+1995-04-29
+1995-04-29
+1995-04-30
+1995-04-30
+1995-05-01
+1995-05-01
+1995-05-02
+1995-05-02
+1995-05-03
+1995-05-03
+1995-05-04
+1995-05-04
+1995-05-05
+1995-05-05
+1995-05-06
+1995-05-06
+1995-05-07
+1995-05-07
+1995-05-08
+1995-05-08
+1995-05-09
+1995-05-09
+1995-05-10
+1995-05-10
+1995-05-11
+
+=== poi-9: equality prefix with reversed conjunct order + range on the ORDER BY column ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_orderdate >= '1996-01-01' AND o_orderstatus = 'P'
+ORDER BY o_orderdate LIMIT 8;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=8
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_orderdate >= '1996-01-01' AND o_orderstatus = 'P'
+ORDER BY o_orderdate LIMIT 8|
+o_orderkey	o_orderdate
+365	1996-01-01
+1367	1996-01-03
+368	1996-01-04
+1370	1996-01-06
+371	1996-01-07
+1373	1996-01-09
+374	1996-01-10
+1376	1996-01-12
+
+=== poi-10: mixed directions -> client-side sort ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_orderstatus = 'F'
+ORDER BY o_orderstatus ASC, o_orderdate DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=500
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders
+WHERE o_orderstatus = 'F'
+ORDER BY o_orderstatus ASC, o_orderdate DESC LIMIT 5|
+o_orderkey	o_orderdate
+997	1997-09-24
+994	1997-09-21
+991	1997-09-18
+988	1997-09-15
+985	1997-09-12
+
+=== poi-11: fs_history shape, WHERE-chosen index does not serve the ORDER BY -> client-side sort ===
+== Query ==
+SELECT o_orderkey, o_custkey, o_orderdate FROM orders
+WHERE o_custkey >= 10 AND o_custkey < 13
+ORDER BY o_orderdate DESC, o_orderkey DESC LIMIT 6;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=15
+== Expected result ==
+SELECT o_orderkey, o_custkey, o_orderdate FROM orders
+WHERE o_custkey >= 10 AND o_custkey < 13
+ORDER BY o_orderdate DESC, o_orderkey DESC LIMIT 6|
+o_orderkey	o_custkey	o_orderdate
+912	12	1997-07-01
+911	11	1997-06-30
+910	10	1997-06-29
+612	12	1996-09-04
+611	11	1996-09-03
+610	10	1996-09-02
+
+=== poi-12: second index column without a leading equality -> client-side sort ===
+== Query ==
+SELECT o_orderdate FROM orders
+WHERE o_orderstatus >= 'O' ORDER BY o_orderdate LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1000
+== Expected result ==
+SELECT o_orderdate FROM orders
+WHERE o_orderstatus >= 'O' ORDER BY o_orderdate LIMIT 5|
+o_orderdate
+1995-01-02
+1995-01-03
+1995-01-03
+1995-01-04
+1995-01-05
+
+=== poi-13: FORCE INDEX on an index serving only the ORDER BY (no WHERE) -> accepted ===
+== Query ==
+SELECT o_orderkey, o_orderdate FROM orders FORCE INDEX (idx_o_orderdate)
+ORDER BY o_orderdate DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=5
+== Expected result ==
+SELECT o_orderkey, o_orderdate FROM orders FORCE INDEX (idx_o_orderdate)
+ORDER BY o_orderdate DESC LIMIT 5|
+o_orderkey	o_orderdate
+999	1997-09-26
+998	1997-09-25
+997	1997-09-24
+996	1997-09-23
+995	1997-09-22
+
+=== poi-14: IGNORE INDEX on the ORDER BY index -> table scan + client-side sort ===
+== Query ==
+SELECT o_orderdate FROM orders IGNORE INDEX (idx_o_orderdate)
+ORDER BY o_orderdate LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=1500
+== Expected result ==
+SELECT o_orderdate FROM orders IGNORE INDEX (idx_o_orderdate)
+ORDER BY o_orderdate LIMIT 5|
+o_orderdate
+1995-01-01
+1995-01-02
+1995-01-02
+1995-01-03
+1995-01-03
+
+=== poi-15: index order + LIMIT 0 -> no output ===
+== Query ==
+SELECT o_orderkey FROM orders
+WHERE o_orderstatus = 'O' ORDER BY o_orderdate LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Phase rows ==
+rows=0
+== Expected result ==
+SELECT o_orderkey FROM orders
+WHERE o_orderstatus = 'O' ORDER BY o_orderdate LIMIT 0|
+o_orderkey
+
+=== poi-16: equality prefix + residual filter + LIMIT ===
+== Query ==
+SELECT o_orderkey, o_orderdate, o_shippriority FROM orders
+WHERE o_orderstatus = 'O' AND o_shippriority = 2
+ORDER BY o_orderdate LIMIT 6;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=6
+== Expected result ==
+SELECT o_orderkey, o_orderdate, o_shippriority FROM orders
+WHERE o_orderstatus = 'O' AND o_shippriority = 2
+ORDER BY o_orderdate LIMIT 6|
+o_orderkey	o_orderdate	o_shippriority
+1002	1995-01-03	2
+12	1995-01-13	2
+1017	1995-01-18	2
+27	1995-01-28	2
+1032	1995-02-02	2
+42	1995-02-12	2
+
+=== poi-17: VARCHAR index order (collation) + LIMIT across a value boundary ===
+== Query ==
+SELECT c_mktsegment FROM customer
+ORDER BY c_mktsegment LIMIT 62;
+
+Number of output lines, including header: 63
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=62
+== Expected result ==
+SELECT c_mktsegment FROM customer
+ORDER BY c_mktsegment LIMIT 62|
+c_mktsegment
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+AUTOMOBILE
+BUILDING
+BUILDING
+
+=== poi-18: ORDER BY alias (OUTPUT_REF) served by the index, DESC + LIMIT ===
+== Query ==
+SELECT o_orderdate AS d, o_orderkey AS k FROM orders
+WHERE o_orderstatus = 'F' ORDER BY d DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=5
+== Expected result ==
+SELECT o_orderdate AS d, o_orderkey AS k FROM orders
+WHERE o_orderstatus = 'F' ORDER BY d DESC LIMIT 5|
+d	k
+1997-09-24	997
+1997-09-21	994
+1997-09-18	991
+1997-09-15	988
+1997-09-12	985
+
+=== poi-P1 (rejection): FORCE INDEX serving neither a bound nor the ORDER BY (no WHERE) ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_o_custkey' cannot be used: the query has no WHERE condition that can serve as an index bound, and the ORDER BY is not a prefix of the index.
+
+=== poi-P2 (rejection): FORCE INDEX serving neither a bound nor the ORDER BY (residual WHERE) ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_o_custkey' cannot be used: no WHERE condition matches its leading column, and the ORDER BY is not a prefix of the index.

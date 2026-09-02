@@ -396,20 +396,27 @@ Lower priority; some may be intentional scope limits — confirm before building
 
 ## Deferred feature work (not bugs — capabilities to add later)
 
-- **F-colvscol — support col-vs-col in a CTE-body WHERE.** Currently rejected
-  permanently (H3 fix, `check_no_cte_body_col_vs_col`). To support it:
-    1. Stop `build_scan_config_candidates` from treating a comparison whose RHS
-       is a column (not a constant) as an index bound — route such conjuncts to
-       the residual InterpretedCode filter instead (guards the `encode_constant`
-       error path at `RonSQLPreparer.cpp:6033`).
-    2. Make the CTE-body scan's `NdbScanFilter` attr-vs-attr program
-       (`apply_filter_cmp:8595`) actually terminate on the data node — the D4
-       hang showed the attr-vs-attr filter inside a CTE-body materialisation scan
-       does not complete, unlike the same emit on a top-level main-query scan.
-       Investigate the CTE-body scan / self-join leaf interaction (kernel side).
-    3. Remove the `check_no_cte_body_col_vs_col` reject and convert filter-12/13 +
-       `ronsql_cte_dd_d4_colvscol` from rejection-asserts back to value-compare
-       cases (`ronsql_compare.inc`), re-record across all five topologies.
+- **F-colvscol — support col-vs-col in a CTE-body WHERE.  ✅ SHIPPED
+  (September 2026, `cte_body_colvscol_plan.md`; recorded green ×5
+  topologies).** How the three anticipated steps resolved:
+    1. Bound misrouting: already dead — the join-root non-constant-RHS bound
+       hardening (`join_root_index_scan_plan.md`) covers the CTE-body
+       candidate path; the D12 body plans as TABLE_SCAN + residual filter.
+    2. The D4 "hang" did NOT reproduce on current binaries — a W0 probe ran
+       the exact repro (plus isolated variants) green vs MySQL; stale-binary
+       artifact like D19/D20.  The body WHERE executes in the main
+       interpreter (`BRANCH_ATTR_OP_ATTR` → `handleBranchAttrOp`); no kernel
+       change was needed.
+    3. Done: `check_no_cte_body_col_vs_col` became the tier-(a) gate
+       `check_cte_body_col_vs_col` — identical-type stored-column pairs on
+       the body root op accepted via the PUBLIC
+       `NdbDictionary::Column::isBindable` (the emit-side predicate, shared
+       verbatim); refined permanent errors for mixed-type and non-root-op
+       pairs.  filter-12/13 + `ronsql_cte_dd_d4_colvscol` are value
+       compares again, plus the new `body_filter.inc` Group 8 matrix
+       (nullable/CHAR/DATE/DECIMAL/OR/scalar-residual + filter-P1..P4
+       rejection probes).  Mixed-type pairs (tier (b)) stay rejected until
+       a typed leaf-local register load exists.
 
 - **F-fanout — support fan-out aggregation across a real-table/CTE sibling
   (D5).** Currently rejected permanently (H6 fix, `linked_source_is_leaf_ancestor`

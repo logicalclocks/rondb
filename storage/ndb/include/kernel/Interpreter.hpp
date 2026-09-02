@@ -321,8 +321,10 @@ class Interpreter {
    *
    * Supported NdbColumnType values: Tinyint, Tinyunsigned, Smallint,
    * Smallunsigned, Mediumint, Mediumunsigned, Int, Unsigned, Bigint,
-   * Bigunsigned.  Any other type code is rejected at runtime with
-   * ZNO_INSTRUCTION_ERROR.
+   * Bigunsigned; Float and Double (Phase I.5 v3, widened to
+   * REG_TYPE_DOUBLE); Date (loads like Mediumunsigned — the 3-byte
+   * packed value is order-preserving as an unsigned int).  Any other
+   * type code is rejected at runtime with ZNO_INSTRUCTION_ERROR.
    *
    * NULL handling: if the linked-attr buffer is missing, the
    * position is out of range, or the AttributeHeader marks the

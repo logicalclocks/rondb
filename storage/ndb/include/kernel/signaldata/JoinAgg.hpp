@@ -38,6 +38,14 @@ struct JoinAggSetupReq {
   static constexpr Uint32 STRATEGY_MUTEX_BASED = 0;
   static constexpr Uint32 STRATEGY_MUTEX_FREE = 1;
   static constexpr Uint32 CTE_MODE_FLAG = 0x80000000;  // OR into concurrencyStrategy
+  // Single-row CTE materialization (cte_single_row_kernel_plan.md):
+  // the state stores at most one row as a key-only group record
+  // (zero-aggregate projection program), redistribute ships it to the
+  // constant DBTC-node owner instead of hashing, and CTE_LOOKUP probes
+  // compare a subset of the projected columns.  Only valid together
+  // with CTE_MODE_FLAG.  ORed into concurrencyStrategy like
+  // CTE_MODE_FLAG; decoders must mask it out of the strategy compare.
+  static constexpr Uint32 CTE_SINGLE_ROW_FLAG = 0x40000000;
 
   Uint32 senderRef;
   Uint32 senderData;

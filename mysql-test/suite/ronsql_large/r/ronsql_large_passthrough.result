@@ -1,0 +1,74 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Bulk-load large dataset (20000 cust, 100000 orders) ===
+PASSED
+
+=== Row-count sanity ===
+SELECT COUNT(*) AS lg_cust   FROM lg_cust;
+lg_cust
+20000
+SELECT COUNT(*) AS lg_orders FROM lg_orders;
+lg_orders
+100000
+
+=== lp-1: scan-scan chain, 100k rows through the repeat protocol ===
+== Query ==
+SELECT c.lc_id, c.lc_region, o.lg_id, o.lg_qty, o.lg_amount
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id;
+
+Number of output lines, including header: 100001
+
+== Diff ==
+==========
+
+
+
+(100000-row compare done via ronsql_compare strict diff)
+
+=== lp-2: LIMIT 5000 early close mid-repeat (rows= pin) ===
+== Phase rows ==
+rows=5000
+
+=== lp-3: bushy star, 4000 parents x 25-way cross product ===
+== Query ==
+SELECT c.lc_id, a.lg_id, b.lg_id
+FROM lg_cust AS c
+JOIN lg_orders AS a ON a.lg_cust = c.lc_id
+JOIN lg_orders AS b ON b.lg_cust = c.lc_id
+WHERE c.lc_id < 4001;
+
+Number of output lines, including header: 100001
+
+== Diff ==
+==========
+
+
+
+(100000-row bushy compare done via ronsql_compare strict diff)
+
+=== lp-4: aggregate twin (control) ===
+== Query ==
+SELECT c.lc_region, COUNT(*) AS cnt, SUM(o.lg_qty) AS q
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.lc_region, COUNT(*) AS cnt, SUM(o.lg_qty) AS q
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region|
+lc_region	cnt	q
+0	20000	1006633
+1	20000	1006924
+2	20000	1010330
+3	20000	1006400
+4	20000	1003962
+
+=== lp-5: ~10 MB response accepted under the DEFAULT caps ===
+200 OK with 100001 body lines

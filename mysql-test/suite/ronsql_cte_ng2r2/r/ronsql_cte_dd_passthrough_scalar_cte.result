@@ -294,7 +294,885 @@ WHERE cu.c_custkey < 4|
 c
 3
 
-=== sc-P1 (rejection): real column vs scalar output ===
+=== sc-11: the watermark shape (former sc-P1, seeded) ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m;
+
+Number of output lines, including header: 297
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m|
+c_custkey
+10
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+11
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+12
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+13
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+14
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+15
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+16
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+17
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+18
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+19
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+20
+200
+201
+202
+203
+204
+205
+206
+207
+208
+209
+21
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+22
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+23
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+24
+240
+241
+242
+243
+244
+245
+246
+247
+248
+249
+25
+250
+251
+252
+253
+254
+255
+256
+257
+258
+259
+26
+260
+261
+262
+263
+264
+265
+266
+267
+268
+269
+27
+270
+271
+272
+273
+274
+275
+276
+277
+278
+279
+28
+280
+281
+282
+283
+284
+285
+286
+287
+288
+289
+29
+290
+291
+292
+293
+294
+295
+296
+297
+298
+299
+30
+300
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+8
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+9
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+
+=== sc-12a: watermark operator sweep, <= ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey <= s.m;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey <= s.m|
+c_custkey
+1
+2
+3
+4
+
+=== sc-12b: watermark operator sweep, = ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey = s.m;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey = s.m|
+c_custkey
+4
+
+=== sc-12c: watermark operator sweep, != ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey != s.m AND cu.c_custkey < 8;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey != s.m AND cu.c_custkey < 8|
+c_custkey
+1
+2
+3
+5
+6
+7
+
+=== sc-13: NULL watermark -> empty result ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders
+WHERE o_orderkey > 999999)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders
+WHERE o_orderkey > 999999)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m|
+c_custkey
+
+=== sc-14: signed INT vs unsigned COUNT ===
+== Query ==
+WITH s AS (SELECT COUNT(*) AS n FROM orders WHERE o_custkey = 7)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey < s.n;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT COUNT(*) AS n FROM orders WHERE o_custkey = 7)
+SELECT cu.c_custkey
+FROM customer AS cu, s
+WHERE cu.c_custkey < s.n|
+c_custkey
+1
+2
+3
+4
+
+=== sc-15: mixed program — ancestor atom + CTE-vs-const atom ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m, COUNT(*) AS n FROM orders
+WHERE o_orderkey < 5)
+SELECT cu.c_custkey, s.n
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m AND s.n > 0;
+
+Number of output lines, including header: 297
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m, COUNT(*) AS n FROM orders
+WHERE o_orderkey < 5)
+SELECT cu.c_custkey, s.n
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m AND s.n > 0|
+c_custkey	n
+10	4
+100	4
+101	4
+102	4
+103	4
+104	4
+105	4
+106	4
+107	4
+108	4
+109	4
+11	4
+110	4
+111	4
+112	4
+113	4
+114	4
+115	4
+116	4
+117	4
+118	4
+119	4
+12	4
+120	4
+121	4
+122	4
+123	4
+124	4
+125	4
+126	4
+127	4
+128	4
+129	4
+13	4
+130	4
+131	4
+132	4
+133	4
+134	4
+135	4
+136	4
+137	4
+138	4
+139	4
+14	4
+140	4
+141	4
+142	4
+143	4
+144	4
+145	4
+146	4
+147	4
+148	4
+149	4
+15	4
+150	4
+151	4
+152	4
+153	4
+154	4
+155	4
+156	4
+157	4
+158	4
+159	4
+16	4
+160	4
+161	4
+162	4
+163	4
+164	4
+165	4
+166	4
+167	4
+168	4
+169	4
+17	4
+170	4
+171	4
+172	4
+173	4
+174	4
+175	4
+176	4
+177	4
+178	4
+179	4
+18	4
+180	4
+181	4
+182	4
+183	4
+184	4
+185	4
+186	4
+187	4
+188	4
+189	4
+19	4
+190	4
+191	4
+192	4
+193	4
+194	4
+195	4
+196	4
+197	4
+198	4
+199	4
+20	4
+200	4
+201	4
+202	4
+203	4
+204	4
+205	4
+206	4
+207	4
+208	4
+209	4
+21	4
+210	4
+211	4
+212	4
+213	4
+214	4
+215	4
+216	4
+217	4
+218	4
+219	4
+22	4
+220	4
+221	4
+222	4
+223	4
+224	4
+225	4
+226	4
+227	4
+228	4
+229	4
+23	4
+230	4
+231	4
+232	4
+233	4
+234	4
+235	4
+236	4
+237	4
+238	4
+239	4
+24	4
+240	4
+241	4
+242	4
+243	4
+244	4
+245	4
+246	4
+247	4
+248	4
+249	4
+25	4
+250	4
+251	4
+252	4
+253	4
+254	4
+255	4
+256	4
+257	4
+258	4
+259	4
+26	4
+260	4
+261	4
+262	4
+263	4
+264	4
+265	4
+266	4
+267	4
+268	4
+269	4
+27	4
+270	4
+271	4
+272	4
+273	4
+274	4
+275	4
+276	4
+277	4
+278	4
+279	4
+28	4
+280	4
+281	4
+282	4
+283	4
+284	4
+285	4
+286	4
+287	4
+288	4
+289	4
+29	4
+290	4
+291	4
+292	4
+293	4
+294	4
+295	4
+296	4
+297	4
+298	4
+299	4
+30	4
+300	4
+31	4
+32	4
+33	4
+34	4
+35	4
+36	4
+37	4
+38	4
+39	4
+40	4
+41	4
+42	4
+43	4
+44	4
+45	4
+46	4
+47	4
+48	4
+49	4
+5	4
+50	4
+51	4
+52	4
+53	4
+54	4
+55	4
+56	4
+57	4
+58	4
+59	4
+6	4
+60	4
+61	4
+62	4
+63	4
+64	4
+65	4
+66	4
+67	4
+68	4
+69	4
+7	4
+70	4
+71	4
+72	4
+73	4
+74	4
+75	4
+76	4
+77	4
+78	4
+79	4
+8	4
+80	4
+81	4
+82	4
+83	4
+84	4
+85	4
+86	4
+87	4
+88	4
+89	4
+9	4
+90	4
+91	4
+92	4
+93	4
+94	4
+95	4
+96	4
+97	4
+98	4
+99	4
+
+=== sc-16: aggregate twin of sc-11 ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT COUNT(*) AS c
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT COUNT(*) AS c
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m|
+c
+296
+
+=== sc-17: GROUP BY parent col + mixed atoms (base-offset pin) ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_mktsegment, COUNT(*) AS c
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m AND s.m > 0
+GROUP BY cu.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT cu.c_mktsegment, COUNT(*) AS c
+FROM customer AS cu, s
+WHERE cu.c_custkey > s.m AND s.m > 0
+GROUP BY cu.c_mktsegment|
+c_mktsegment	c
+AUTOMOBILE	60
+BUILDING	59
+FURNITURE	59
+HOUSEHOLD	59
+MACHINERY	59
+
+=== sc-18: snowflake chain + watermark on the root column ===
+== Query ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT o.o_orderkey, cu.c_mktsegment
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey, s
+WHERE o.o_orderkey > s.m AND o.o_orderkey < 20;
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders WHERE o_orderkey < 5)
+SELECT o.o_orderkey, cu.c_mktsegment
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey, s
+WHERE o.o_orderkey > s.m AND o.o_orderkey < 20|
+o_orderkey	c_mktsegment
+10	AUTOMOBILE
+11	BUILDING
+12	FURNITURE
+13	HOUSEHOLD
+14	MACHINERY
+15	AUTOMOBILE
+16	BUILDING
+17	FURNITURE
+18	HOUSEHOLD
+19	MACHINERY
+5	AUTOMOBILE
+6	BUILDING
+7	FURNITURE
+8	HOUSEHOLD
+9	MACHINERY
+
+=== sc-19: DATE watermark (MIN(date) scalar vs real DATE) ===
+== Query ==
+WITH s AS (SELECT MIN(o_orderdate) AS d FROM orders
+WHERE o_custkey = 5)
+SELECT o2.o_orderkey
+FROM orders AS o2, s
+WHERE o2.o_orderdate < s.d;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(o_orderdate) AS d FROM orders
+WHERE o_custkey = 5)
+SELECT o2.o_orderkey
+FROM orders AS o2, s
+WHERE o2.o_orderdate < s.d|
+o_orderkey
+1
+1000
+1001
+1002
+1003
+1004
+2
+3
+4
+
+=== sc-P1 (rejection): non-ancestor real column vs scalar output ===
 Error handling: RPE
 ronsql_cli caught exception: Cross-table WHERE conditions (e.g., a.x > b.y) are only supported in queries with aggregation (GROUP BY / aggregate functions).  Split into separate conditions per table, or add aggregation.
 
@@ -303,9 +1181,9 @@ This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only
 SELECTs: single-table, left-deep join chains over real tables and/or
 complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
-scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
-GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
-broader roadmap.
+scalar CTEs, and CTE_SCAN roots — all without GROUP BY /
+expressions (ORDER BY and LIMIT are supported).  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 
@@ -314,8 +1192,12 @@ This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only
 SELECTs: single-table, left-deep join chains over real tables and/or
 complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of
-scalar CTEs, and CTE_SCAN roots — all without ORDER BY / LIMIT /
-GROUP BY / expressions.  See non_aggregate_pushdown_plan.md for the
-broader roadmap.
+scalar CTEs, and CTE_SCAN roots — all without GROUP BY /
+expressions (ORDER BY and LIMIT are supported).  See
+non_aggregate_pushdown_plan.md for the broader roadmap.
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
+
+=== sc-P4 (rejection): DECIMAL operand in real-vs-CTE compare ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: only integer, FLOAT, DOUBLE and DATE operands are supported — DECIMAL, string and other temporal comparisons need a cast or a constant-vs-column form.

@@ -20,8 +20,10 @@
 # CTE_LOOKUP is outside the envelope, so every case below wraps the CTE
 # columns in MIN/MAX/SUM/COUNT(*).
 #
-# The EXPLAIN greps are kept NON-FATAL with `|| true` for now; the
-# orchestrator will tighten the exact EXPLAIN strings after recording.
+# The EXPLAIN greps are FATAL: the plan strings have been stable across
+# several recording rounds (the non-fatal form was only for the very
+# first --record).  Greps are --exec asserts, not recorded output, so
+# the flip needed no re-record.
 #
 # String / DATE literals (single-quoted SQL) go through the QUERY_FILE
 # path for BOTH compare and explain.  Note: both ronsql_compare.inc and
@@ -84,9 +86,9 @@ FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_nationkey = 7
 GROUP BY cu.c_nationkey;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE || true
---exec grep -qF 'Index: idx_c_nationkey' $EXPLAIN_FILE || true
---exec grep -qF 'CONDITIONS (1 bound)' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE
+--exec grep -qF 'Index: idx_c_nationkey' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (1 bound)' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -116,9 +118,9 @@ FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
 GROUP BY cu.c_nationkey;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE || true
---exec grep -qF 'Index: idx_c_nationkey' $EXPLAIN_FILE || true
---exec grep -qF 'CONDITIONS (2 bounds)' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE
+--exec grep -qF 'Index: idx_c_nationkey' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (2 bounds)' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -146,9 +148,9 @@ SELECT COUNT(*) AS c, SUM(cf.n) AS sn, MIN(cu.c_custkey) AS mn, MAX(cu.c_custkey
 FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10 AND cu.c_custkey > 150;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE || true
---exec grep -qF 'CONDITIONS (2 bounds and 1 filter)' $EXPLAIN_FILE || true
---exec grep -qF 'FILTER: >' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (2 bounds and 1 filter)' $EXPLAIN_FILE
+--exec grep -qF 'FILTER: >' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -177,9 +179,9 @@ SELECT COUNT(*) AS c, SUM(g.n) AS sn, SUM(g.s) AS ss,
 FROM acct AS a JOIN g ON g.k = a.a_grp
 WHERE a.a_id >= 50 AND a.a_id < 100;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN acct AS a' $EXPLAIN_FILE || true
---exec grep -qF 'Index: PRIMARY' $EXPLAIN_FILE || true
---exec grep -qF 'CONDITIONS (2 bounds)' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN acct AS a' $EXPLAIN_FILE
+--exec grep -qF 'Index: PRIMARY' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (2 bounds)' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -212,7 +214,7 @@ SELECT COUNT(*) AS c, SUM(g.n) AS sn, MAX(a.a_val) AS mv
 FROM acct AS a JOIN g ON g.k = a.a_grp
 WHERE a.a_id = 77;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] TABLE_SCAN acct AS a' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] TABLE_SCAN acct AS a' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -238,7 +240,7 @@ SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(cf.n) AS sn
 FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 GROUP BY cu.c_nationkey;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] TABLE_SCAN customer AS cu' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] TABLE_SCAN customer AS cu' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -271,8 +273,8 @@ FROM customer AS cu FORCE INDEX (idx_c_nationkey) JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
 GROUP BY cu.c_nationkey;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE || true
---exec grep -qF 'Index: idx_c_nationkey' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN customer AS cu' $EXPLAIN_FILE
+--exec grep -qF 'Index: idx_c_nationkey' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -302,7 +304,7 @@ FROM customer AS cu IGNORE INDEX (idx_c_nationkey) JOIN cf ON cf.k = cu.c_custke
 WHERE cu.c_nationkey >= 5 AND cu.c_nationkey < 10
 GROUP BY cu.c_nationkey;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] TABLE_SCAN customer AS cu' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] TABLE_SCAN customer AS cu' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -341,9 +343,9 @@ SELECT COUNT(*) AS c, SUM(g.n) AS sn
 FROM acct AS a JOIN g ON g.k = a.a_grp
 WHERE a.a_id > a.a_grp AND a.a_id >= 50 AND a.a_id < 100;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN acct AS a' $EXPLAIN_FILE || true
---exec grep -qF 'CONDITIONS (2 bounds and 1 filter)' $EXPLAIN_FILE || true
---exec grep -qF 'FILTER: >' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN acct AS a' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (2 bounds and 1 filter)' $EXPLAIN_FILE
+--exec grep -qF 'FILTER: >' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -380,9 +382,9 @@ FROM orders AS o JOIN li ON li.k = o.o_orderkey
 WHERE o.o_orderstatus = 'F' AND o.o_orderdate >= '1995-03-01';
 EOF
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[ROOT] INDEX_SCAN orders AS o' $EXPLAIN_FILE || true
---exec grep -qF 'Index: idx_o_status_date' $EXPLAIN_FILE || true
---exec grep -qF 'CONDITIONS (2 bounds)' $EXPLAIN_FILE || true
+--exec grep -qF '[ROOT] INDEX_SCAN orders AS o' $EXPLAIN_FILE
+--exec grep -qF 'Index: idx_o_status_date' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (2 bounds)' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result

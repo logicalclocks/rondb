@@ -521,14 +521,19 @@ cross product of shapes:
 
 ## Risks / notes
 
-- **Result volume**: non-aggregate queries can return arbitrarily many
-  rows. The drain streams (no buffering), so RonSQL itself is safe, but
-  RDRS/rondb-cli response handling should be sanity-checked with a
-  million-row result before calling Phase 2 done. LIMIT (other plan,
-  Phase 2) is the real mitigation.
-- **Scan-scan repeat protocol** is the one place where "the API already
-  supports it" needs proof at our layer — the multi-batch MTR cases in
-  2b/3b are mandatory, not nice-to-have.
+- **Result volume** (DONE): non-aggregate queries can return
+  arbitrarily many rows. The drain streams (no buffering), so RonSQL
+  itself is safe; RDRS response handling is sanity-checked at 100k
+  rows / ~10 MB (`ronsql_large_passthrough` lp-5) and — beyond the
+  original ask — RDRS gained configurable `Internal.maxReqSize`
+  (fixed effective) + `Internal.MaxRespSize` caps with clean errors
+  (`ronsql_size_limits`). LIMIT shipped via the ORDER BY/LIMIT plan
+  Phase 2.
+- **Scan-scan repeat protocol** (DONE): the one place where "the API
+  already supports it" needed proof at our layer — proven at genuine
+  multi-batch scale by `ronsql_large_passthrough` (lp-1 scan-scan
+  100k rows, lp-3 bushy sibling scans, lp-2 early close mid-repeat)
+  on top of the in-suite sn-9 / sr-7 stresses.
 - **Committed-read semantics**: no locks, re-reads between batches;
   same as every existing RonSQL query, but non-aggregate results make
   torn reads *visible* as rows rather than folded into aggregates.

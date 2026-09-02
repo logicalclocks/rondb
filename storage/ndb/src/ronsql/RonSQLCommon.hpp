@@ -320,6 +320,15 @@ struct SelectStatement
   Int32 sentinel_agg_slot = -1; // Hidden COUNT slot for cross-table filter
                                 // semantics: groups where this is 0 had no
                                 // rows pass the filter and must be suppressed.
+  // Single-row key-lookup CTE body (cte_single_row_kernel_plan.md).
+  // Meaningful only on a CTE body statement: a non-aggregating
+  // single-table body whose WHERE binds the full primary key by
+  // equality with constants (enforced at plan time in
+  // enforce_single_row_cte_body).  Emitted with the CTE_SINGLE_ROW
+  // kernel mode: every projected column a GROUP BY column, zero
+  // aggregate slots, subset-key CTE_LOOKUP consumers.  Set by
+  // detect_single_row_ctes() during parse(); no AST rewrite.
+  bool is_single_row_cte = false;
   char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
   char* sql_end = NULL;    // End of inner query SQL
 

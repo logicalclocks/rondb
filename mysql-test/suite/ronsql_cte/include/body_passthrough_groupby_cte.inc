@@ -36,8 +36,31 @@
 #   11 WHERE mix: root bound + CTE-output jump-table filter
 #   12 DATE + DECIMAL grouped outputs through the pass-through printer
 #   13 VARCHAR MIN/MAX grouped outputs through the pass-through printer
-#   P1 rejection: partial-key join to the 2-key CTE
-#   P2 rejection: multi-key CTE keyed off two different aliases
+#
+# Phase 6 (non_aggregate_phase_6.md) lifts the former P1/P2 kept
+# restrictions:
+#   14 partial-key INNER join to the 2-key CTE (the exact former gc-P1
+#      probe) — the I.16b/c rewrite now runs pre-gate for non-aggregate
+#      queries, promoting the CTE to CTE_SCAN root with the original
+#      root demoted to a keyed child
+#   15 3-key CTE, 1-of-3 partial key -> rewrite
+#   16 partial-key CTE + extra real join below the demoted root
+#   17 multi-key CTE keyed off two aliases (per-key parent sources;
+#      hits the (1,2)/(2,3)/(15,16)/(45,6) gckey groups)
+#   18 the exact former gc-P2 probe as a compare (empty result — no
+#      (custkey, clerk) group has clerk == custkey in the data)
+#   19 LEFT JOIN multi-alias multi-key CTE with a missing group
+#      (NULL-extended row)
+#   20 aggregate twin of 17 (SUM over the multi-alias CTE join — the
+#      planner lift applies to both paths)
+#   P1a rejection: LEFT JOIN on the partial-key CTE join itself (the
+#       rewrite is INNER-only; clean I.16a-mirror message)
+#   P1b rejection: partial-key CTE keyed off a non-root alias (the
+#       rewrite requires the original root as parent)
+#   P1c rejection: full-count key on a non-GROUP-BY column (I.20
+#       WrongColumns message)
+#   P2b rejection: key sources on unrelated sibling branches (single
+#       ancestor chain rule)
 #   P3 rejection: non-aggregating (projection-only) CTE body
 
 --source include/have_ndb.inc
@@ -340,28 +363,207 @@ FROM nation AS n
 JOIN sm ON sm.k = n.n_nationkey
 WHERE n.n_nationkey < 4|
 
+--echo
+--echo === gc-14: partial-key INNER join to the 2-key CTE (rewrite) ===
+# The exact former gc-P1 probe: the pre-gate I.16b/c rewrite promotes
+# pt to a CTE_SCAN root with gckey demoted to a PK_LOOKUP child.
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, pt.cnt
+FROM gckey AS g JOIN pt ON pt.k = g.g_a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_gc_14.out
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, pt.cnt
+FROM gckey AS g JOIN pt ON pt.k = g.g_a;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[ROOT] CTE_SCAN CTE:pt' $EXPLAIN_FILE
+--exec grep -qF 'PK_LOOKUP gckey AS g' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, pt.cnt
+FROM gckey AS g JOIN pt ON pt.k = g.g_a|
+
+--echo
+--echo === gc-15: 3-key CTE, 1-of-3 partial key (rewrite) ===
+let $QUERY=
+WITH p3 AS (SELECT o_custkey AS k, o_clerk AS cl, o_orderdate AS d,
+                   COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk, o_orderdate)
+SELECT g.g_a, p3.cnt
+FROM gckey AS g JOIN p3 ON p3.k = g.g_a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH p3 AS (SELECT o_custkey AS k, o_clerk AS cl, o_orderdate AS d,
+                   COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk, o_orderdate)
+SELECT g.g_a, p3.cnt
+FROM gckey AS g JOIN p3 ON p3.k = g.g_a|
+
+--echo
+--echo === gc-16: partial-key CTE + extra real join below the demoted root ===
+# Post-rewrite chain: pt (CTE_SCAN root) -> g (PK child) -> cu (child
+# keyed off g).
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, cu.c_mktsegment, pt.cnt
+FROM gckey AS g
+JOIN pt ON pt.k = g.g_a
+JOIN customer AS cu ON cu.c_custkey = g.g_a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT g.g_a, cu.c_mktsegment, pt.cnt
+FROM gckey AS g
+JOIN pt ON pt.k = g.g_a
+JOIN customer AS cu ON cu.c_custkey = g.g_a|
+
+--echo
+--echo === gc-17: multi-key CTE keyed off two aliases ===
+# Per-key parent sources: pt.k links from cu (the effective, deepest
+# parent is g; cu is on g's ancestor chain).  The gckey pairs
+# (1,2)/(2,3)/(15,16)/(45,6) hit real (custkey, clerk) groups;
+# (200,999) misses.
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT cu.c_custkey, pt.cnt
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_gc_17.out
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT cu.c_custkey, pt.cnt
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Key: k = cu.c_custkey, cl = g.g_b' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT cu.c_custkey, pt.cnt
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b|
+
+--echo
+--echo === gc-18: the exact former gc-P2 probe as a compare ===
+# Empty result by data construction: no (custkey, clerk) group has
+# clerk == custkey (mod-arithmetic proof in
+# findings/passthrough_groupby_cte.md) — the strict diff still pins
+# empty == empty vs MySQL.
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT o.o_orderkey, pt.cnt
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN pt ON pt.k = o.o_custkey AND pt.cl = cu.c_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT o.o_orderkey, pt.cnt
+FROM orders AS o
+JOIN customer AS cu ON cu.c_custkey = o.o_custkey
+JOIN pt ON pt.k = o.o_custkey AND pt.cl = cu.c_custkey|
+
+--echo
+--echo === gc-19: LEFT JOIN multi-alias multi-key CTE, missing group ===
+# (200,999) misses every group: the LEFT JOIN NULL-extends that row
+# (drain isRowNULL substitution).
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT cu.c_custkey, pt.cnt
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+LEFT JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT cu.c_custkey, pt.cnt
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+LEFT JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b|
+
+--echo
+--echo === gc-20: aggregate twin of gc-17 (multi-alias keys, SUM) ===
+# The per-key parent lift lands in the shared QueryPlanner, so the
+# aggregate path inherits it — this pins that side.
+let $QUERY=
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT SUM(pt.cnt) AS total
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey, o_clerk)
+SELECT SUM(pt.cnt) AS total
+FROM customer AS cu
+JOIN gckey AS g ON g.g_a = cu.c_custkey
+JOIN pt ON pt.k = cu.c_custkey AND pt.cl = g.g_b|
+
 DELIMITER ;|
 
 --echo
---echo === gc-P1 (rejection): partial-key join to the 2-key CTE ===
-# The gate requires complete-key coverage (ExactOrdered/ExactPermuted);
-# a partial key falls through to the generic non-aggregate rejection.
-# The aggregate path's I.16 root-rewrite never runs here — the gate
-# rejects at parse.
+--echo === gc-P1a (rejection): LEFT JOIN on the partial-key CTE join ===
+# The rewrite is INNER-only (the swap would lose unmatched rows); the
+# gate now throws the clean I.16a-mirror message instead of the
+# generic text.
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt FROM orders GROUP BY o_custkey, o_clerk) SELECT g.g_a, pt.cnt FROM gckey AS g JOIN pt ON pt.k = g.g_a;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt FROM orders GROUP BY o_custkey, o_clerk) SELECT g.g_a, pt.cnt FROM gckey AS g LEFT JOIN pt ON pt.k = g.g_a;' 2>&1
 
 --echo
---echo === gc-P2 (rejection): multi-key CTE keyed off two aliases ===
-# The planner requires all ON conditions of one JOIN to reference the
-# same parent table; per-key parent sources are a deferred feature.
+--echo === gc-P1b (rejection): partial-key CTE keyed off a non-root alias ===
+# The rewrite requires the original root as the partial join's parent.
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt FROM orders GROUP BY o_custkey, o_clerk) SELECT o.o_orderkey, pt.cnt FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey JOIN pt ON pt.k = o.o_custkey AND pt.cl = cu.c_custkey;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt FROM orders GROUP BY o_custkey, o_clerk) SELECT o.o_orderkey, pt.cnt FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey JOIN pt ON pt.k = cu.c_custkey;' 2>&1
+
+--echo
+--echo === gc-P1c (rejection): full-count key on a non-GROUP-BY column ===
+# Two keys but one names the COUNT output: WrongColumns, the I.20
+# message.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt FROM orders GROUP BY o_custkey, o_clerk) SELECT g.g_a FROM gckey AS g JOIN pt ON pt.k = g.g_a AND pt.cnt = g.g_b;' 2>&1
+
+--echo
+--echo === gc-P2b (rejection): key sources on unrelated sibling branches ===
+# o and n are sibling branches under cu: per-key parents must lie on a
+# single ancestor chain (the planner error fires before the API's
+# QRY_MULTIPLE_PARENTS would).
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pt AS (SELECT o_custkey AS k, o_clerk AS cl, COUNT(*) AS cnt FROM orders GROUP BY o_custkey, o_clerk) SELECT cu.c_custkey FROM customer AS cu JOIN orders AS o ON o.o_custkey = cu.c_custkey JOIN nation AS n ON n.n_nationkey = cu.c_nationkey JOIN pt ON pt.k = o.o_custkey AND pt.cl = n.n_nationkey;' 2>&1
 
 --echo
 --echo === gc-P3 (rejection): non-aggregating CTE body ===
-# CTE bodies must aggregate (analyze_ctes); lifting this is a separate
-# kernel-facing feature.
+# A non-aggregating body without a WHERE clause is not a single-row
+# key lookup (cte_single_row_kernel_plan.md), so it stays rejected
+# with the parse gate's coverage message.  The keyed single-row shape
+# itself is covered by the body_single_row_cte family.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH v AS (SELECT o_orderkey AS k FROM orders) SELECT c.c_custkey FROM customer AS c JOIN v ON v.k = c.c_custkey;' 2>&1
 

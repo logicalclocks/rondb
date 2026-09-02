@@ -116,9 +116,11 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 //     bounding the work to hundreds .. tens of thousands of source rows
 //     (online serving latencies, not full-table sweeps). RonSQL supports
 //     ORDER BY / LIMIT on aggregate queries (targets must be GROUP BY
-//     columns or aggregate aliases); fs_history stays MySQL-only until
-//     RonSQL supports single-table non-aggregate SELECT (see
-//     ronsql_orderby_limit_plan.md).
+//     columns or aggregate aliases) and on projection-only shapes — a
+//     buffered client-side sort (fs_topk, fs_history) or, when an ordered
+//     index serves the ORDER BY, SF_OrderBy index-order streaming with an
+//     early close at the LIMIT (fs_latest); see
+//     ronsql_orderby_limit_plan.md Phases 2-4b.
 //
 //   - offline_fs_*: offline feature materialization. Full-table CTEs
 //     (per-customer / per-supplier aggregates over all orders or lineitems)
@@ -252,27 +254,24 @@ GROUP BY c.c_mktsegment;`,
 	{
 		Name:        "fs_topk",
 		Category:    benchCatFS,
-		Description: "Top-100 recent spenders in one nation (aggregate-form CTE join, ORDER BY spend DESC LIMIT 100)",
+		Description: "Top-100 recent spenders in one nation (projection-only CTE join, ORDER BY spend DESC LIMIT 100)",
 		Database:    "tpch",
 		RandKey:     true,
 		KeySQL:      "SELECT MAX(c_nationkey) FROM tpch.customer",
 		KeyDefault:  24,
-		// Aggregate-form equivalent of the natural projection-only query
-		// (SELECT c_custkey, c_name, recent.cnt, recent.spend ... ORDER BY
-		// recent.spend DESC): c_custkey is unique, so grouping by
-		// (c_custkey, c_name) yields one group per customer and MAX() is
-		// the identity. RonSQL supports ORDER BY/LIMIT on aggregate
-		// queries only; the projection-only form needs
-		// ronsql_orderby_limit_plan.md Phase 3.
+		// Natural projection-only form, restored after
+		// ronsql_orderby_limit_plan.md Phase 3 shipped the buffered
+		// client-side sort for pass-through shapes (the interim
+		// aggregate-form rewrite grouped by (c_custkey, c_name) with
+		// MAX() as the per-unique-key identity).
 		SQL: `WITH recent AS (
   SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_totalprice) AS spend
   FROM orders WHERE o_orderdate >= '1998-06-01'
   GROUP BY o_custkey)
-SELECT c.c_custkey, c.c_name, MAX(recent.cnt) AS cnt, MAX(recent.spend) AS top_spend
+SELECT c.c_custkey, c.c_name, recent.cnt, recent.spend
 FROM customer AS c JOIN recent ON recent.k = c.c_custkey
 WHERE c.c_nationkey = {KEY}
-GROUP BY c.c_custkey, c.c_name
-ORDER BY top_spend DESC
+ORDER BY recent.spend DESC
 LIMIT 100;`,
 	},
 	{
@@ -321,9 +320,16 @@ WHERE c.c_custkey >= {KEY} AND c.c_custkey < {KEY2}
 GROUP BY c.c_nationkey;`,
 	},
 	{
-		Name:        "fs_history",
-		Category:    benchCatFS,
-		MySQLOnly:   true,
+		Name:     "fs_history",
+		Category: benchCatFS,
+		// Unlocked by ronsql_orderby_limit_plan.md Phase 3: single-table
+		// projection + ORDER BY + LIMIT runs on the pass-through path
+		// with the buffered client-side sort (~2k rows, well under the
+		// 1M-row / 256 MB sort cap).  Phase 4b's index-order streaming
+		// does not apply here: idx_orders_custkey serves the range bound
+		// and is not in o_orderdate order (.explain_ronsql fs_history:
+		// "ORDER BY: client-side sort"); fs_latest is the index-order
+		// counterpart.
 		Description: "Order-history page for a random 200-customer segment (~2k orders, ORDER BY o_orderdate DESC LIMIT 1000)",
 		Database:    "tpch",
 		RandKey:     true,
@@ -335,6 +341,24 @@ FROM orders
 WHERE o_custkey >= {KEY} AND o_custkey < {KEY2}
 ORDER BY o_orderdate DESC, o_orderkey DESC
 LIMIT 1000;`,
+	},
+	{
+		Name:     "fs_latest",
+		Category: benchCatFS,
+		// ronsql_orderby_limit_plan.md Phase 4b: ORDER BY on the leading
+		// column of an ordered index (idx_orders_orderdate) runs as an
+		// SF_OrderBy index-order scan — the NDB API merge-sorts the
+		// per-fragment ordered scans and the drain stops at the LIMIT
+		// (roughly one batch per fragment read, then early close), with
+		// no client-side sort.  MySQL's plan is the same top-N-via-index
+		// (backward index scan).  .explain_ronsql fs_latest shows
+		// "ORDER BY: index order (SF_OrderBy | SF_Descending ...".
+		Description: "Latest 100 orders (no WHERE, ORDER BY o_orderdate DESC LIMIT 100 — SF_OrderBy index-order streaming top-N, no client-side sort)",
+		Database:    "tpch",
+		SQL: `SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice
+FROM orders
+ORDER BY o_orderdate DESC
+LIMIT 100;`,
 	},
 
 	// ---------------------------------------------------------------
