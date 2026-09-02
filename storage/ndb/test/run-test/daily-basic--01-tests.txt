@@ -148,7 +148,6 @@ cmd: testSystemRestart
 args: -n SR1 T1
 max-time: 4140
 
-
 cmd: testNodeRestart
 args: -n RestartBarrierWaitRelease T1
 max-time: 900
@@ -188,3 +187,16 @@ max-time: 300
 cmd: testMgmd
 args: -n MgmTransporterConvertRetry
 max-time: 300
+
+cmd: testNodeRestart
+args: -n LcpScannedBitChurn -l 150 T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n LcpScannedBitChurnPreScan -l 60 T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n LcpScannedBitChurnMidScan -l 60 T1
+max-time: 600
+

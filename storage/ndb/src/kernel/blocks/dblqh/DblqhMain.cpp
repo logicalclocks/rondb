@@ -21637,6 +21637,46 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
   const Uint32 maxPage = copyFragReq->nodeList[nodeCount];
   const Uint32 requestInfo = copyFragReq->nodeList[nodeCount + 1];
 
+  if (unlikely(get_node_status(nodeId) != ZNODE_UP)) {
+    jam();
+    /**
+     * The copy target is already known to have failed. Refuse before
+     * touching the copy scan record: a COPY_FRAGREQ racing the node
+     * failure would otherwise re-initialize the scan record — wiping
+     * the scanCompletedStatus set by closeCopyRequestLab() for the
+     * previous fragment's close — and then stream copy operations to
+     * the dead node, re-inflating copyCountWords with credits that can
+     * never return and parking the scan in WAIT_LQHKEY_COPY forever
+     * (observed in ndb.ndb_TCtakeover_stall: 75 sends within seconds
+     * after the takeover close, then a permanent stall). The failure
+     * handling that is already underway cleans up everything else; the
+     * master's copy process handles the REF as it handles any failed
+     * copy target.
+     */
+    CopyFragRef *const ref = (CopyFragRef *)&signal->theData[0];
+    ref->userPtr = copyPtr;
+    ref->sendingNodeId = cownNodeid;
+    ref->startingNodeId = nodeId;
+    ref->tableId = tabptr.i;
+    ref->fragId = fragId;
+    ref->errorCode = ZNODE_FAILURE_ERROR;
+    sendSignal(userRef, GSN_COPY_FRAGREF, signal, CopyFragRef::SignalLength,
+               JBB);
+
+    /*
+     * start_new_copyFragReq() reserves an active slot before sending a
+     * queued request to this block. Release that reservation when the
+     * request is rejected before a copy scan is created.
+     */
+    if (from_queue)
+    {
+      ndbrequire(c_active_copyFragReq > 0);
+      adjust_copyFragReq_rates(false);
+      start_new_copyFragReq(signal);
+    }
+    return;
+  }
+
   if (requestInfo == CopyFragReq::CFR_NON_TRANSACTIONAL) {
     jam();
   } else {
@@ -22060,6 +22100,25 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
 void Dblqh::nextScanConfCopyLab(Signal *signal,
                                 const TcConnectionrecPtr tcConnectptr) {
   NextScanConf *const nextScanConf = (NextScanConf *)&signal->theData[0];
+  if (unlikely(scanptr.p->scanCompletedStatus == ZTRUE ||
+               get_node_status(scanptr.p->scanNodeId) != ZNODE_UP)) {
+    jam();
+    /*
+     * The copy target failed while a local fetch was outstanding.
+     * Do not process the fetched record or send it to the failed node.
+     * Discard credits from any send that raced with the close request.
+     *
+     * The node-status check additionally catches a copy whose target
+     * died without scanCompletedStatus being (or staying) set: a
+     * COPY_FRAGREQ racing the node failure re-initializes the scan
+     * record, wiping the flag an earlier closeCopyRequestLab() set —
+     * observed as 75 copy sends to the dead node within seconds of the
+     * take-over close, ending in a permanent WAIT_LQHKEY_COPY stall.
+     */
+    tcConnectptr.p->copyCountWords = 0;
+    closeCopyLab(signal, tcConnectptr.p);
+    return;
+  }
   if (nextScanConf->fragId == RNIL) {
     jam();
     /*---------------------------------------------------------------------------*/
@@ -22172,12 +22231,6 @@ void Dblqh::nextScanConfCopyLab(Signal *signal,
     // If accOperationPtr == RNIL no record was returned by ACC
     if (nextScanConf->accOperationPtr == RNIL) {
       jam();
-      if (unlikely(scanptr.p->scanCompletedStatus == ZTRUE)) {
-        jam();
-        /* Copy is being abandoned, shut it down */
-        closeCopyLab(signal, tcConnectptr.p);
-        return;
-      }
 
       scanptr.p->scan_lastSeen = __LINE__;
       signal->theData[0] = scanptr.i;

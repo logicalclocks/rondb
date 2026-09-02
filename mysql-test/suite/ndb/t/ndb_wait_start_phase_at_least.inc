@@ -1,7 +1,13 @@
 # Wait for node $_ndb_nodeid to be starting at phase
 # $_start_phase or a later phase.
+#
+# Set $_quiet_wait to suppress the progress echo, for callers whose
+# node id depends on runtime state (would break the result file).
 
---echo Waiting for node $_ndb_nodeid to reach start phase $_start_phase or later
+if (!$_quiet_wait)
+{
+  --echo Waiting for node $_ndb_nodeid to reach start phase $_start_phase or later
+}
 
 --let $success= 0
 --let $tmpfile= $MYSQLTEST_VARDIR/tmp/wait_start_phase_at_least.txt

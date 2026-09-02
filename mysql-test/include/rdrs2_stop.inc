@@ -30,18 +30,20 @@
     exit 0;
   }
 
-  # Send SIGTERM
-  kill('TERM', $pid)
-    or die "Cannot send TERM signal to rdrs2 (PID $pid): $!";
-
-  # Wait for process to exit
-  my $timeout = 30;  # seconds
-  for (my $i = 0; $i < $timeout * 10; $i++) {
-    if (!kill(0, $pid)) {
-      unlink $pid_file;
-      exit 0;
+  # Send SIGTERM, and escalate to SIGKILL if rdrs2 does not stop on its own.
+  # Leaving a stuck rdrs2 behind would make it interfere with later test cases.
+  my $timeout = 30;  # seconds to wait after each signal
+  foreach my $sig ('TERM', 'KILL') {
+    kill($sig, $pid)
+      or die "Cannot send $sig signal to rdrs2 (PID $pid): $!";
+    for (my $i = 0; $i < $timeout * 10; $i++) {
+      if (!kill(0, $pid)) {
+        unlink $pid_file;
+        die "rdrs2 (PID $pid) only stopped after SIGKILL" if $sig eq 'KILL';
+        exit 0;
+      }
+      select(undef, undef, undef, 0.1);
     }
-    select(undef, undef, undef, 0.1);
   }
   die "Timeout waiting for rdrs2 (PID $pid) to stop";
 EOF

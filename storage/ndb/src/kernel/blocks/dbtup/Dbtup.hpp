@@ -626,6 +626,9 @@ struct Fragoperrec {
   // Crash the node when a tuple got corrupted
   bool c_crashOnCorruptedTuple;
 
+  // Crash the node when a leaked LCP_SCANNED_BIT is found in the page map
+  bool c_crashOnLeakedLcpScannedBit;
+
   struct Page_request {
     Page_request() {}
     Uint64 m_frag_ptr_i;
@@ -2360,7 +2363,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   void execSTORED_PROCREQ(Signal *signal);
 
   void start_lcp_scan(Uint32 tableId, Uint32 fragmentId, Uint32 &max_page_cnt);
-  void stop_lcp_scan(Uint32 tableId, Uint32 fragmentId);
+  void stop_lcp_scan(Uint32 tableId, Uint32 fragmentId, bool lcp_error);
   void lcp_frag_watchdog_print(Uint32 tableId, Uint32 fragmentId);
 
   Uint64 get_restore_row_count(Uint32 tableId, Uint32 fragmentId);
@@ -3768,6 +3771,7 @@ private:
   bool get_lcp_scanned_bit(Uint32 *next_ptr);
   // void reset_lcp_scanned_bit(Fragrecord*, Uint32);
   void reset_lcp_scanned_bit(Uint32 *next_ptr);
+  Uint32 clear_leaked_lcp_scanned_bits(Fragrecord *fragPtrP, bool report);
 
   Uint32 getNoOfPages(Fragrecord* regFragPtr);
   Uint32 getEmptyPage(Fragrecord* regFragPtr);

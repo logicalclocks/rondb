@@ -1,19 +1,26 @@
-# RONDB-1096: restart barrier at start phase 110
+# LCP participant failure during the START_LCP_REQ handshake
 #
-# Runs the basic barrier semantics cases from the testNodeRestart NDBT
-# program against a cluster with 4 data nodes in 2 node groups (see
-# ndb_restart_barrier.cnf). The cases stall one restarting node below
-# the barrier with DUMP 71 (error insert 1002) and verify that a node
-# restarting in another node group parks at start phase 110, that the
-# wave releases together, that consecutive waves reset their state and
-# that the failure of the stalled starter releases the barrier.
+# Runs the LcpStartParticipantFail and
+# LcpStartParticipantFailSettledMaster cases from the testNodeRestart
+# NDBT program against a cluster with 4 data nodes in 2 node groups
+# (see ndb_lcp_start_nodefail.cnf). The cases delay the START_LCP_CONF
+# of one LCP participant (DBDIH error insert 7236) and stop that
+# participant with abort while the DIH master is waiting for its
+# confirmation. The master must handle the participant's failure
+# without starting fragment checkpoints on the surviving nodes before
+# the LCP start handshake has completed; a broken master fails
+# ndbrequire(noOfStartedChkpt == 0) in startLcpRoundLoopLab (error
+# 2341) once the handshake completes.
 #
-# The node failure and dictionary lock takeover cases run in
-# ndb_restart_barrier_failures and ndb_restart_barrier_dictlock; the
-# nine cases are split over three tests to keep each test's runtime
-# down.
+# The first case stops the master first so that the LCP is the first
+# one started by a master that has just taken over, as in the observed
+# production failure: only a master that has not yet run an LCP round
+# starts fragment checkpoints from the premature call, since a master
+# that has completed a round still has all participants in
+# m_allReplicasQueuedLQH and the premature call sends nothing. The
+# second case covers that masked, normal state.
 #
-# The stall mechanism needs error-insert capable ndbmtd binaries, and
+# The error insert needs error-insert capable ndbmtd binaries, and
 # the testNodeRestart binary is only present in WITH_NDB_TEST builds.
 
 --source include/have_ndb.inc
@@ -60,17 +67,11 @@ EOF
 
 --connection default
 
---echo # Barrier holds while a node is below phase 110, wave releases together
---exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Participant fails during the first LCP of a master that just took over
+--exec $TEST_NODE_RESTART -n LcpStartParticipantFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Parked nodes release themselves when the master Grant is suppressed
---exec $TEST_NODE_RESTART -n RestartBarrierSelfRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
-
---echo # Consecutive waves reset barrier and dictionary lock state
---exec $TEST_NODE_RESTART -n RestartBarrierRepeatedWaves T1 >> $NDB_TOOLS_OUTPUT 2>&1
-
---echo # Failure of the stalled starter releases the barrier
---exec $TEST_NODE_RESTART -n RestartBarrierStarterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Participant fails during an LCP of a master that has run an LCP round
+--exec $TEST_NODE_RESTART -n LcpStartParticipantFailSettledMaster T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 # The NDBT framework drops its auto-created table when a case
 # completes cleanly, so the table only exists here if the last case
@@ -90,4 +91,4 @@ EOF
 
 --remove_file $NDB_TOOLS_OUTPUT
 
---echo # All restart barrier tests passed
+--echo # All LCP start node failure tests passed

@@ -461,6 +461,49 @@ void Dbtup::reset_lcp_scanned_bit(Uint32 *next_ptr) {
   *next_ptr = (*next_ptr) & (Uint32)~LCP_SCANNED_BIT;
 }
 
+/**
+ * Walk the page map and clear any LCP_SCANNED_BIT still set. The bit is
+ * only meaningful while an LCP scan is active on the fragment; it is
+ * planted by releaseFragPage during the scan and consumed by
+ * prepare_lcp_scan_page when the scan reaches the page slot. Called from
+ * stop_lcp_scan where no bit is allowed to remain set: a leftover bit
+ * would make the next LCP scan of the fragment skip a live page and
+ * silently lose its rows from the checkpoint.
+ *
+ * Returns the number of leaked bits found. The walk touches the same
+ * page map entries the LCP scan itself just walked, so the entries are
+ * cache warm. Only reads and single word writes of existing entries are
+ * performed, no page map structure is allocated or released. To bound
+ * the execution time the sweep checks at most the first 1000 page
+ * slots; this fully covers small fragments such as the system tables
+ * where the leak was observed, while larger fragments remain covered
+ * by the leak checks in the page map allocation and release paths.
+ */
+Uint32 Dbtup::clear_leaked_lcp_scanned_bits(Fragrecord *fragPtrP,
+                                            bool report) {
+  DynArr256 map(c_page_map_pool_ptr, fragPtrP->m_page_map);
+  constexpr Uint32 MAX_PAGES_TO_CHECK = 1000;
+  const Uint32 max_page_cnt =
+      MIN(fragPtrP->m_max_page_cnt, MAX_PAGES_TO_CHECK);
+  Uint32 leaked = 0;
+  for (Uint32 page_no = 0; page_no < max_page_cnt; page_no++) {
+    Uint32 *ptr = map.get_dirty(2 * page_no);
+    if (ptr == 0 || (*ptr) == RNIL) continue;
+    if (unlikely(((*ptr) & LCP_SCANNED_BIT) != 0)) {
+      leaked++;
+      if (report && leaked <= 4) {
+        g_eventLogger->warning(
+            "(%u) tab(%u,%u) page(%u): leaked LCP_SCANNED_BIT,"
+            " entry: 0x%08x, clearing it",
+            instance(), fragPtrP->fragTableId, fragPtrP->fragmentId, page_no,
+            *ptr);
+      }
+      *ptr = (*ptr) & (Uint32)~LCP_SCANNED_BIT;
+    }
+  }
+  return leaked;
+}
+
 bool Dbtup::get_last_lcp_state(Uint32 *prev_ptr) {
   if (prev_ptr == 0) {
     jam();
@@ -532,6 +575,22 @@ Uint32 Dbtup::remove_first_free_from_page_map(EmulatedJamBuffer *jamBuf,
   ndbrequire((ptr_val & FREE_PAGE_BIT) != 0);
   Uint32 lcp_scanned_bit = ptr_val & LCP_SCANNED_BIT;
   Uint32 next = ptr_val & PAGE_BIT_MASK;
+  if (unlikely(lcp_scanned_bit != 0) && regFragPtr->m_lcp_scan_op == RNIL) {
+    /**
+     * The bit only has meaning while an LCP scan is active on the
+     * fragment (see stop_lcp_scan). Carrying a leaked bit onto a live
+     * page would make the next LCP scan skip the page and lose its rows
+     * from the checkpoint. Heal and report.
+     */
+    g_eventLogger->warning(
+        "(%u) tab(%u,%u) page(%u): leaked LCP_SCANNED_BIT found on page"
+        " allocation, clearing it, please report a bug",
+        instance(), regFragPtr->fragTableId, regFragPtr->fragmentId, pageId);
+    /* Fail fast also in production when CrashOnLeakedLcpScannedBit is set. */
+    ndbrequire(!c_crashOnLeakedLcpScannedBit);
+    lcp_scanned_bit = 0;
+    ndbassert(false);
+  }
   *ptr = (pagePtr.i | lcp_scanned_bit);
 
 #ifdef DEBUG_LCP_SCANNED_BIT
@@ -572,6 +631,22 @@ void Dbtup::remove_page_id_from_dll(Fragrecord *fragPtrP, Uint32 page_no,
      * we don't forget the LCP_SCANNED_BIT.
      */
     Uint32 lcp_scanned_bit = next & LCP_SCANNED_BIT;
+    if (unlikely(lcp_scanned_bit != 0) && fragPtrP->m_lcp_scan_op == RNIL) {
+      /**
+       * The bit only has meaning while an LCP scan is active on the
+       * fragment (see stop_lcp_scan). Carrying a leaked bit onto a live
+       * page would make the next LCP scan skip the page and lose its
+       * rows from the checkpoint. Heal and report.
+       */
+      g_eventLogger->warning(
+          "(%u) tab(%u,%u) page(%u): leaked LCP_SCANNED_BIT found on page"
+          " allocation by page id, clearing it, please report a bug",
+          instance(), fragPtrP->fragTableId, fragPtrP->fragmentId, page_no);
+      /* Fail fast also in production when CrashOnLeakedLcpScannedBit is set. */
+      ndbrequire(!c_crashOnLeakedLcpScannedBit);
+      lcp_scanned_bit = 0;
+      ndbassert(false);
+    }
     *ptr = pagePtrI | lcp_scanned_bit;
 #ifdef DEBUG_LCP_SCANNED_BIT
     if (lcp_scanned_bit) {
@@ -962,6 +1037,23 @@ void Dbtup::releaseFragPage(Fragrecord* fragPtrP,
   Uint32 lcp_scan_ptr_i = fragPtrP->m_lcp_scan_op;
   bool lcp_to_scan = false;
   bool rowid_in_remaining_lcp_set = false;
+  if (unlikely(lcp_scanned_bit != 0) && lcp_scan_ptr_i == RNIL) {
+    /**
+     * The bit only has meaning while an LCP scan is active on the
+     * fragment (see stop_lcp_scan). Do not carry a leaked bit into the
+     * free list entry, it would make a later LCP scan skip this page
+     * slot and lose rows from the checkpoint. Heal and report.
+     */
+    g_eventLogger->warning(
+        "(%u) tab(%u,%u) page(%u): leaked LCP_SCANNED_BIT found on page"
+        " release, clearing it, please report a bug",
+        instance(), fragPtrP->fragTableId, fragPtrP->fragmentId,
+        logicalPageId);
+    /* Fail fast also in production when CrashOnLeakedLcpScannedBit is set. */
+    ndbrequire(!c_crashOnLeakedLcpScannedBit);
+    lcp_scanned_bit = 0;
+    ndbassert(false);
+  }
   if (lcp_scan_ptr_i != RNIL) {
     /**
      * We use the method is_rowid_in_remaining_lcp_set. We set the

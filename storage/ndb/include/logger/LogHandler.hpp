@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -225,6 +226,9 @@ class LogHandler {
   unsigned m_count_repeated_messages;
   unsigned m_max_repeat_frequency;
   std::timespec m_last_log_time;
+  // Time the last suppressed repeated message arrived, used as the
+  // timestamp when the pending repeated message is finally flushed
+  std::timespec m_last_suppressed_time;
   char m_last_category[MAX_HEADER_LENGTH];
   char m_last_message[MAX_LOG_MESSAGE_SIZE];
   Logger::LoggerLevel m_last_level;

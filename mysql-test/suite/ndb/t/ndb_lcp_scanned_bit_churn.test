@@ -1,20 +1,30 @@
-# RONDB-1096: restart barrier at start phase 110
+# Leaked LCP_SCANNED_BIT under delete-all + re-insert churn
 #
-# Runs the basic barrier semantics cases from the testNodeRestart NDBT
-# program against a cluster with 4 data nodes in 2 node groups (see
-# ndb_restart_barrier.cnf). The cases stall one restarting node below
-# the barrier with DUMP 71 (error insert 1002) and verify that a node
-# restarting in another node group parks at start phase 110, that the
-# wave releases together, that consecutive waves reset their state and
-# that the failure of the stalled starter releases the barrier.
+# Regression stress for a leaked LCP_SCANNED_BIT in the DBTUP page map.
+# The bit is planted when a page is dropped while the fragment's own
+# LCP scan is active and must be consumed by that same scan; a bit that
+# survives the scan makes the next LCP of the fragment skip a live page
+# and lose its rows from the checkpoint. Observed in production as
+# error 2341 at the Backup.cpp row count ndbrequire at the end of a
+# full fragment LCP, with skip_all_page_lcp_scanned_bit set in the
+# counter printout.
 #
-# The node failure and dictionary lock takeover cases run in
-# ndb_restart_barrier_failures and ndb_restart_barrier_dictlock; the
-# nine cases are split over three tests to keep each test's runtime
-# down.
+# Runs the LcpScannedBitChurn cases from the testNodeRestart NDBT
+# program: one step deletes and re-inserts the whole table wholesale at
+# high frequency while another drives LCPs back to back. The PreScan
+# and MidScan variants use error inserts 10063 and 10042 to hold each
+# LCP scan of the test table open so churn cycles land inside the
+# pre-scan and mid-scan windows.
 #
-# The stall mechanism needs error-insert capable ndbmtd binaries, and
-# the testNodeRestart binary is only present in WITH_NDB_TEST builds.
+# The kernel leak detection (the page map sweep in Dbtup::stop_lcp_scan
+# and the checks in the page map alloc and release paths) turns any
+# leaked bit into an immediate data node failure which fails the test:
+# on debug builds through ndbassert, and on any build through the
+# CrashOnLeakedLcpScannedBit=1 setting in the default MTR cluster
+# configuration (include/default_ndbd.cnf).
+#
+# The error inserts need error-insert capable ndbmtd binaries, and the
+# testNodeRestart binary is only present in WITH_NDB_TEST builds.
 
 --source include/have_ndb.inc
 --source include/have_ndb_debug.inc
@@ -60,17 +70,14 @@ EOF
 
 --connection default
 
---echo # Barrier holds while a node is below phase 110, wave releases together
---exec $TEST_NODE_RESTART -n RestartBarrierWaitRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Churn against back to back LCPs, natural windows
+--exec $TEST_NODE_RESTART -n LcpScannedBitChurn -l 100 T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Parked nodes release themselves when the master Grant is suppressed
---exec $TEST_NODE_RESTART -n RestartBarrierSelfRelease T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Churn into the delayed pre-scan window (error insert 10063)
+--exec $TEST_NODE_RESTART -n LcpScannedBitChurnPreScan -l 20 T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
---echo # Consecutive waves reset barrier and dictionary lock state
---exec $TEST_NODE_RESTART -n RestartBarrierRepeatedWaves T1 >> $NDB_TOOLS_OUTPUT 2>&1
-
---echo # Failure of the stalled starter releases the barrier
---exec $TEST_NODE_RESTART -n RestartBarrierStarterFail T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # Churn into stretched mid-scan batch windows (error insert 10042)
+--exec $TEST_NODE_RESTART -n LcpScannedBitChurnMidScan -l 20 T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 # The NDBT framework drops its auto-created table when a case
 # completes cleanly, so the table only exists here if the last case
@@ -90,4 +97,4 @@ EOF
 
 --remove_file $NDB_TOOLS_OUTPUT
 
---echo # All restart barrier tests passed
+--echo # All LCP scanned bit churn tests passed
