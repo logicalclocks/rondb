@@ -33,13 +33,14 @@
  *
  * An empty result means rate limit tagging is disabled for this request.
  * By default the identity is the API key prefix (the part before the '.'),
- * NEVER the secret; the full key is only used when explicitly configured.
+ * NEVER the secret; the full key is only used when .RateLimit.FullAPIKey is
+ * configured.
  */
 inline std::string get_rate_limit_identity(const std::string &api_key) {
-  if (!globalConfigs.rest.userRateLimits || api_key.empty()) {
+  if (!globalConfigs.rateLimit.enable || api_key.empty()) {
     return {};
   }
-  if (globalConfigs.rest.rateLimitFullApiKey) {
+  if (globalConfigs.rateLimit.fullApiKey) {
     return api_key;
   }
   size_t dot_pos = api_key.find('.');

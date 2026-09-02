@@ -10199,6 +10199,140 @@ int runMixedLoadExtra(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Wait for a crashed node to come back to the started state, regardless of
+ * whether its angel brings it back in nostart mode (it is then started
+ * explicitly) or performs a full automatic restart.
+ */
+static int waitNodeBackToStarted(NdbRestarter &res, int node,
+                                 int timeoutSec) {
+  for (int elapsed = 0; elapsed < timeoutSec; elapsed++) {
+    const int status = res.getNodeStatus(node);
+    if (status == NDB_MGM_NODE_STATUS_STARTED) {
+      return 0;
+    }
+    if (status == NDB_MGM_NODE_STATUS_NOT_STARTED) {
+      if (res.startNodes(&node, 1) != 0) {
+        g_err << "startNodes(" << node << ") failed, retrying" << endl;
+      }
+    }
+    NdbSleep_SecSleep(1);
+  }
+  g_err << "Node " << node << " did not return to started state within "
+        << timeoutSec << " seconds" << endl;
+  return -1;
+}
+
+/**
+ * Reproduce the DBDIH m_NF_COMPLETE_REP leak: a node that dies while it is
+ * starting can never re-allocate its node id (error 1703) if any node that
+ * owed an NF_COMPLETEREP for its death dies before reporting it.
+ *
+ * Interleaving (all steps deterministic through error inserts armed
+ * before F starts - error inserts sent to a node that is already inside
+ * its early start phases are not delivered promptly):
+ * 1. Node F is stopped, armed with error insert 7121 (crash on receiving
+ *    START_PERMCONF) and started again.
+ * 2. Witness W (other node group) is armed with error insert 1006:
+ *    crash when NODE_FAILREP is received, at the entry of
+ *    Ndbcntr::execNODE_FAILREP, before the report reaches DBDIH.
+ * 3. F crashes at START_PERMCONF: the master grants start permission only
+ *    after every alive node acknowledged START_INFOREQ, and DIH inclusion
+ *    (which would make F ALIVE) comes much later - so F dies while it is
+ *    STARTING, not ALIVE, in DIH on every survivor. The survivors run the
+ *    "node not even started" branch of failedNodeSynchHandling: F is
+ *    marked DEAD but its m_NF_COMPLETE_REP mask was already armed with
+ *    all then-alive nodes.
+ * 4. W crashes while processing F's NODE_FAILREP, before broadcasting its
+ *    NF_COMPLETEREP for F. W's bit in F's mask stays set on every
+ *    survivor: DBDIH never sends NDB_FAILCONF, QMGR keeps failState
+ *    WAITING_FOR_NDB_FAILCONF and refuses F's node id with error 1703.
+ *
+ * On a broken build F's fresh process can never re-allocate its node id.
+ * On a fixed build the failure handling of W itself rescues F's record,
+ * and F rejoins within seconds.
+ */
+int runNodeFailLeakDuringNodeStart(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  if (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2 ||
+      res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups with at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  /* Keep the master out of the crash roles to avoid takeover noise */
+  const int master = res.getMasterNodeId();
+  const int nodeF = res.getRandomNotMasterNodeId(rand());
+  int nodeW = -1;
+  for (int i = 0; i < 50; i++) {
+    nodeW = res.getRandomNodeOtherNodeGroup(nodeF, rand());
+    if (nodeW != -1 && nodeW != master) break;
+  }
+  CHECK(nodeF != -1 && nodeW != -1 && nodeW != master,
+        "Failed to select test nodes");
+  ndbout_c("F (dies while starting) = %d, W (witness) = %d", nodeF, nodeW);
+
+  /* Make error insert crashes come back in nostart mode */
+  int dumpRestartOnEI[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  CHECK(res.dumpStateOneNode(nodeW, dumpRestartOnEI, 2) == 0,
+        "Failed to set RestartOnErrorInsert on W");
+
+  ndbout_c("Stopping node %d", nodeF);
+  CHECK(res.restartOneDbNode(nodeF, /* initial */ false, /* nostart */ true,
+                             /* abort */ true) == 0,
+        "Failed to stop F");
+  CHECK(res.waitNodesNoStart(&nodeF, 1) == 0, "F did not reach nostart");
+  CHECK(res.dumpStateOneNode(nodeF, dumpRestartOnEI, 2) == 0,
+        "Failed to set RestartOnErrorInsert on F");
+
+  /* F: crash on receiving START_PERMCONF, i.e. while every survivor
+   * regards F as STARTING (not ALIVE) in DIH */
+  CHECK(res.insertErrorInNode(nodeF, 7121) == 0, "EI 7121 in F failed");
+  /* W: crash when the next NODE_FAILREP (= F's death below) is received */
+  CHECK(res.insertErrorInNode(nodeW, 1006) == 0, "EI 1006 in W failed");
+
+  ndbout_c("Starting node %d; it will crash at START_PERMCONF", nodeF);
+  CHECK(res.startNodes(&nodeF, 1) == 0, "Failed to start F");
+
+  /**
+   * Prove the interleaving: W must crash on F's NODE_FAILREP. If W did not
+   * die, error insert 1006 never fired and the test setup is broken.
+   */
+  ndbout_c("Waiting for witness %d to crash on F's NODE_FAILREP", nodeW);
+  if (res.waitNodesNoStart(&nodeW, 1, 120) != 0) {
+    g_err << "Witness " << nodeW << " did not crash on NODE_FAILREP - "
+          << "test setup failed to produce the leak interleaving" << endl;
+    return NDBT_FAILED;
+  }
+
+  ndbout_c("Bringing witness %d back", nodeW);
+  CHECK(res.startNodes(&nodeW, 1) == 0, "Failed to start W");
+  CHECK(res.waitNodesStarted(&nodeW, 1, 300) == 0, "W did not restart");
+
+  /**
+   * The regression assert: F's fresh process must be able to re-allocate
+   * its node id. On a broken build the surviving nodes never conclude F's
+   * failure handling, so every allocation attempt is refused with error
+   * 1703 and F never reaches the nostart state.
+   */
+  ndbout_c("Checking that node %d can re-allocate its node id", nodeF);
+  if (res.waitNodesNoStart(&nodeF, 1, 180) != 0) {
+    g_err << "Node " << nodeF << " could not re-allocate its node id within"
+          << " 180s: m_NF_COMPLETE_REP leak (error 1703 wedge) reproduced"
+          << endl;
+    /* Dump the DIH node failure state to the cluster log for post-mortem
+     * (on the master; a dump to the dead node F itself would fail) */
+    int dumpNfState[] = {7019, nodeF};
+    res.dumpStateOneNode(res.getMasterNodeId(), dumpNfState, 2);
+    return NDBT_FAILED;
+  }
+  CHECK(res.startNodes(&nodeF, 1) == 0, "Failed to start F");
+  CHECK(res.waitNodesStarted(&nodeF, 1, 300) == 0, "F did not rejoin");
+  CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return NDBT_OK;
+}
+
 int runPrepareUpdatesTransaction(NDBT_Context *ctx, NDBT_Step *step) {
   ndb::scoped_barrier steps_barrier(*ctx->getStepsBarrierPtr());
   int result = NDBT_OK;
@@ -10476,7 +10610,7 @@ runJoinAggQuery(Ndb *ndb, const NdbDictionary::Table *tab)
 /**
  * Test join aggregation node failure handling.
  *
- * For each CRASH_INSERTION code (5113=SETUP, 5114=COMPLETE, 5115=RELEASE):
+ * For each CRASH_INSERTION code (5121=SETUP, 5122=COMPLETE, 5123=RELEASE):
  *   1. Enable auto-restart on error insert
  *   2. Inject the crash error on one data node
  *   3. Execute a join aggregation query (triggers the crash)
@@ -10499,7 +10633,7 @@ runJoinAggNodeRestart(NDBT_Context *ctx, NDBT_Step *step)
   }
 
   /* CRASH_INSERTION codes for the three join agg signal phases */
-  int crashCodes[] = { 5113, 5114, 5115 };
+  int crashCodes[] = { 5121, 5122, 5123 };
   const char *phaseNames[] = { "SETUP_REQ", "COMPLETE_REQ", "RELEASE_REQ" };
 
   for (int phase = 0; phase < 3; phase++) {
@@ -10591,8 +10725,8 @@ runJoinAggNodeRestart(NDBT_Context *ctx, NDBT_Step *step)
 /**
  * Test join aggregation with ERROR_INSERT (non-crash) error paths.
  *
- * 5117: SETUP_REQ returns REF (allocation failure simulation)
- * 5118: COMPLETE_REQ returns REF (state-not-found simulation)
+ * 5124: COMPLETE_REQ returns REF (state-not-found simulation)
+ * 5125: SETUP_REQ returns REF (allocation failure simulation)
  *
  * These don't crash the node - they just cause the query to fail gracefully.
  * Verify the query fails without crashing and subsequent queries still work.
@@ -10604,7 +10738,7 @@ runJoinAggErrorInsert(NDBT_Context *ctx, NDBT_Step *step)
   NdbRestarter restarter;
   const NdbDictionary::Table *tab = ctx->getTab();
 
-  int errorCodes[] = { 5117, 5118 };
+  int errorCodes[] = { 5124, 5125 };
   const char *errorNames[] = { "SETUP_REF", "COMPLETE_REF" };
 
   for (int i = 0; i < 2; i++) {
@@ -10811,6 +10945,540 @@ static int restartBarrierExpectNodeRestartLock(NDBT_Step *step,
 }
 
 /**
+ * Reproduce QMGR receiving FAIL_REP while the own node has not yet joined
+ * the cluster, and check that the node dies with the graceful error 2308
+ * (NDBD_EXIT_SR_OTHERNODEFAILED) instead of error 2341 (failed ndbrequire).
+ *
+ * Interleaving (deterministic through error insert 962):
+ * 1. Node X is stopped and started again.
+ * 2. Node Y (a running member in another node group) is armed with error
+ *    insert 962: crash when processing CM_ADD(AddCommit) for X. At that
+ *    point every running member starts regarding X as ZRUNNING, while X
+ *    itself is still ZSTARTING waiting for CM_ADD(CommitNew) - which the
+ *    president cannot send yet, since the CM_ACKADD it needs died with Y.
+ * 3. The members detect Y's death and broadcast FAIL_REP(Y) to every node
+ *    they consider running - X included. X receives FAIL_REP while its own
+ *    phase is still ZSTARTING.
+ *
+ * The forced shutdown of X is observed through the NDBStopForced cluster
+ * log event and its error code is asserted.
+ */
+int runFailRepBeforeJoin(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  if (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2 ||
+      res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups with at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  /* Keep the master out of the crash roles: if the president itself dies
+   * at AddCommit the add protocol unwinds differently and the FAIL_REP
+   * delivery to X is no longer deterministic. */
+  const int master = res.getMasterNodeId();
+  const int nodeX = res.getRandomNotMasterNodeId(rand());
+  int nodeY = -1;
+  for (int i = 0; i < 50; i++) {
+    nodeY = res.getRandomNodeOtherNodeGroup(nodeX, rand());
+    if (nodeY != -1 && nodeY != master) break;
+  }
+  CHECK(nodeX != -1 && nodeY != -1 && nodeY != master,
+        "Failed to select test nodes");
+  ndbout_c("X (joining) = %d, Y (fails during X's join) = %d", nodeX, nodeY);
+
+  int dumpRestartOnEI[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+
+  /**
+   * Y's crash also makes X observe a transporter disconnect. While X is
+   * not fully started, execDISCONNECT_REP has a pre-existing graceful
+   * 2308 exit of its own; if that raced ahead of the FAIL_REP the test
+   * would pass without exercising the FAIL_REP path at all. Error insert
+   * 932 sits in that execDISCONNECT_REP branch and turns such a run into
+   * an error-insert shutdown, which is retried instead of counted as a
+   * pass.
+   */
+  int result = NDBT_FAILED;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    ndbout_c("Attempt %d: stopping node %d", attempt, nodeX);
+    CHECK(res.restartOneDbNode(nodeX, /* initial */ false, /* nostart */ true,
+                               /* abort */ true) == 0,
+          "Failed to stop X");
+    CHECK(res.waitNodesNoStart(&nodeX, 1) == 0, "X did not reach nostart");
+
+    CHECK(res.dumpStateOneNode(nodeY, dumpRestartOnEI, 2) == 0,
+          "Failed to set RestartOnErrorInsert on Y");
+    /* Y: crash when processing CM_ADD(AddCommit) for the joining X */
+    CHECK(res.insertErrorInNode(nodeY, 962) == 0, "EI 962 in Y failed");
+    /* X: guard against a disconnect-first execution (see above) */
+    CHECK(res.insertErrorInNode(nodeX, 932) == 0, "EI 932 in X failed");
+
+    /* Watch the cluster log for forced node shutdowns */
+    int filter[] = {15, NDB_MGM_EVENT_CATEGORY_STARTUP, 0};
+    NdbLogEventHandle handle =
+        ndb_mgm_create_logevent_handle(res.handle, filter);
+    CHECK(handle != NULL, "Failed to create log event handle");
+
+    ndbout_c("Starting node %d", nodeX);
+    if (res.startNodes(&nodeX, 1) != 0) {
+      g_err << "Failed to start X" << endl;
+      ndb_mgm_destroy_logevent_handle(&handle);
+      return NDBT_FAILED;
+    }
+
+    bool seenStopX = false;
+    bool retry = false;
+    struct ndb_logevent event;
+    const time_t deadline = time(NULL) + 120;
+    while (!seenStopX && time(NULL) < deadline) {
+      const int r = ndb_logevent_get_next(handle, &event, 500);
+      if (r < 0) {
+        g_err << "Error reading log events" << endl;
+        break;
+      }
+      if (r == 0 || event.type != NDB_LE_NDBStopForced) {
+        continue;
+      }
+      if ((int)event.source_nodeid == nodeY) {
+        ndbout_c("Node %d stopped (error insert 962, expected), error %u",
+                 nodeY, event.NDBStopForced.error);
+        continue;
+      }
+      if ((int)event.source_nodeid != nodeX) {
+        continue;
+      }
+      seenStopX = true;
+      ndbout_c("Node %d forced shutdown: error %u in start phase %u", nodeX,
+               event.NDBStopForced.error, event.NDBStopForced.sphase);
+      if (event.NDBStopForced.error == 2341) {
+        g_err << "Defect reproduced: node " << nodeX << " died with error"
+              << " 2341 (failed ndbrequire) on a FAIL_REP received before"
+              << " joining, instead of the graceful error 2308" << endl;
+      } else if (event.NDBStopForced.error == 2308) {
+        result = NDBT_OK;
+      } else {
+        ndbout_c("Shutdown not caused by FAIL_REP (likely the DISCONNECT_REP"
+                 " guard, error insert 932) - retrying");
+        retry = true;
+      }
+    }
+    ndb_mgm_destroy_logevent_handle(&handle);
+
+    if (!seenStopX) {
+      ndbout_c("No forced shutdown of node %d observed - retrying", nodeX);
+      retry = true;
+    }
+
+    /* Recover the cluster before finishing or retrying. Both crashed
+     * nodes come back: Y in nostart mode (RestartOnErrorInsert), X either
+     * by a full angel restart or in nostart mode. */
+    CHECK(waitNodeBackToStarted(res, nodeY, 300) == 0, "Y did not rejoin");
+    CHECK(waitNodeBackToStarted(res, nodeX, 300) == 0, "X did not rejoin");
+    CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+
+    if (!retry) {
+      return result;
+    }
+  }
+  g_err << "Could not produce the FAIL_REP-before-join window in 3 attempts"
+        << endl;
+  return NDBT_FAILED;
+}
+
+/**
+ * Reproduce a TC take over master failing with a partially delivered
+ * TAKE_OVERTCCONF broadcast (DBTC error inserts 8308 + 8309) and check
+ * that the survivors handle both halves of the split broadcast:
+ *
+ * 1. Node A is stopped with abort. The master runs the TC take over of
+ *    A, completes it, broadcasts TAKE_OVERTCCONF and crashes shortly
+ *    after (error insert 8308, delayed so that the broadcast is
+ *    flushed to the other nodes first).
+ * 2. One chosen survivor, the victim, discards its copy of the
+ *    broadcast (error insert 8309), as if the master had died before
+ *    the send to it left the node.
+ *
+ * With the victim being the next master (TcTakeOverConfDuplicate) the
+ * new master still has A in its take over queue, takes A over again
+ * and broadcasts a second TAKE_OVERTCCONF: the other survivors, which
+ * received the original, must drop the duplicate instead of failing
+ * the ndbrequire in execTAKE_OVERTCCONF.
+ *
+ * With the victim being a non-master survivor (TcTakeOverConfLost)
+ * the new master has seen A's take over complete and must re-announce
+ * TAKE_OVERTCCONF at master take over: without that the victim's node
+ * failure handling for A never completes, A can never rejoin and GCP
+ * completion stays blocked on the victim.
+ *
+ * In both cases no survivor may crash and both stopped nodes must be
+ * able to rejoin.
+ */
+int runTcTakeOverConfPartialBroadcast(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  const bool victimIsNextMaster =
+      ctx->getProperty("VictimIsNextMaster", Uint32(0)) != 0;
+  if (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2 ||
+      res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups with at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  const int master = res.getMasterNodeId();
+  const int nextMaster = res.getNextMasterNodeId(master);
+
+  /* A is the node whose failure starts the take over. A and the master
+   * are dead at the same time, so A must belong to another node group
+   * than the master. */
+  int nodeA = -1;
+  for (int i = 0; i < 50; i++) {
+    nodeA = res.getRandomNodeOtherNodeGroup(master, rand());
+    if (nodeA != -1 && nodeA != nextMaster) break;
+    nodeA = -1;
+  }
+  CHECK(nodeA != -1, "Failed to select node A");
+
+  /* The victim discards the master's TAKE_OVERTCCONF broadcast */
+  int victim = -1;
+  if (victimIsNextMaster) {
+    victim = nextMaster;
+  } else {
+    for (int i = 0; i < res.getNumDbNodes(); i++) {
+      const int node = res.getDbNodeId(i);
+      if (node != master && node != nextMaster && node != nodeA) {
+        victim = node;
+        break;
+      }
+    }
+  }
+  CHECK(victim != -1, "Failed to select a victim node");
+  ndbout_c("master = %d, next master = %d, A (fails first) = %d,"
+           " victim (discards TAKE_OVERTCCONF) = %d",
+           master, nextMaster, nodeA, victim);
+
+  /* Make the master's error insert crash come back in nostart mode */
+  int dumpRestartOnEI[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+  CHECK(res.dumpStateOneNode(master, dumpRestartOnEI, 2) == 0,
+        "Failed to set RestartOnErrorInsert on the master");
+
+  /* Victim: discard one incoming TAKE_OVERTCCONF */
+  CHECK(res.insertErrorInNode(victim, 8309) == 0, "EI 8309 failed");
+  /* Master: crash shortly after broadcasting TAKE_OVERTCCONF */
+  CHECK(res.insertErrorInNode(master, 8308) == 0, "EI 8308 failed");
+
+  ndbout_c("Stopping node %d with abort", nodeA);
+  CHECK(res.restartOneDbNode(nodeA, /* initial */ false, /* nostart */ true,
+                             /* abort */ true) == 0,
+        "Failed to stop A");
+  CHECK(res.waitNodesNoStart(&nodeA, 1) == 0, "A did not reach nostart");
+
+  ndbout_c("Waiting for master %d to crash after the broadcast", master);
+  CHECK(res.waitNodesNoStart(&master, 1, 120) == 0,
+        "Master did not crash after broadcasting TAKE_OVERTCCONF");
+
+  /**
+   * Let the new master conclude the take overs of the failed master
+   * and of A (redone or re-announced) and the survivors process the
+   * resulting TAKE_OVERTCCONF.
+   */
+  NdbSleep_SecSleep(10);
+
+  /* No survivor may have crashed or restarted */
+  for (int i = 0; i < res.getNumDbNodes(); i++) {
+    const int node = res.getDbNodeId(i);
+    if (node == master || node == nodeA) continue;
+    if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
+      g_err << "Node " << node << " is no longer started: it crashed"
+            << " or restarted during the take over master failure" << endl;
+      return NDBT_FAILED;
+    }
+  }
+
+  CHECK(res.insertErrorInAllNodes(0) == 0, "Failed to clear error inserts");
+
+  /**
+   * Both stopped nodes must be able to rejoin. On a broken build the
+   * lost CONF wedges the victim's node failure handling for A, which
+   * blocks A from rejoining.
+   */
+  int startlist[] = {nodeA, master};
+  ndbout_c("Restarting nodes %d and %d", nodeA, master);
+  CHECK(res.startNodes(startlist, 2) == 0, "Failed to start nodes");
+  CHECK(res.waitNodesStarted(startlist, 2, 300) == 0,
+        "Stopped nodes did not rejoin");
+  CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return NDBT_OK;
+}
+
+/**
+ * Wait for the next checkpoint log event of type `type` on `handle`.
+ * Returns true and fills in `event` if it arrives within timeoutSec.
+ */
+static bool waitLcpEvent(NdbLogEventHandle handle, Ndb_logevent_type type,
+                         unsigned timeoutSec, struct ndb_logevent &event) {
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  while (NdbTick_CurrentMillisecond() - start < Uint64(timeoutSec) * 1000) {
+    const int rc = ndb_logevent_get_next(handle, &event, 1000);
+    if (rc < 0) return false;
+    if (rc > 0 && event.type == type) return true;
+  }
+  return false;
+}
+
+/**
+ * Make sure that no LCP is in progress: drive one LCP to completion
+ * and then check that no further LCP starts right after it (an LCP
+ * that was already running when this is called makes the immediate
+ * LCP start queue up a second one behind it).
+ */
+static int waitLcpIdle(NdbRestarter &res, NdbLogEventHandle handle) {
+  int dump[] = {DumpStateOrd::DihStartLcpImmediately};
+  struct ndb_logevent event;
+  CHECK(res.dumpStateAllNodes(dump, 1) == 0, "Failed to start an LCP");
+  CHECK(waitLcpEvent(handle, NDB_LE_LocalCheckpointCompleted, 300, event),
+        "LCP did not complete");
+  while (waitLcpEvent(handle, NDB_LE_LocalCheckpointStarted, 5, event)) {
+    ndbout_c("Waiting for LCP %u to complete",
+             event.LocalCheckpointStarted.lci);
+    CHECK(waitLcpEvent(handle, NDB_LE_LocalCheckpointCompleted, 300, event),
+          "LCP did not complete");
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Fail the LCP participant `victim` while the DIH master is still
+ * waiting for its START_LCP_CONF, and verify that the master and the
+ * other survivors stay up and that the LCP completes.
+ *
+ * DBDIH error insert 7236 makes the victim delay the end of its
+ * START_LCP_REQ handling (the last CONTINUEB(ZINIT_LCP) of
+ * initLcpLab) by 20 seconds, so its START_LCP_CONF stays outstanding
+ * at the master after all the other participants have confirmed. The
+ * victim is stopped with abort inside that window.
+ *
+ * On a broken build the master's NODE_FAILREP handling sees that the
+ * victim was an LCP participant and calls startNextChkpt() right away,
+ * although the START_LCP_REQ handshake is not complete. The synthetic
+ * START_LCP_CONF that the same NODE_FAILREP handling queues for the
+ * victim then completes the handshake, and startLcpRoundLoopLab fails
+ * ndbrequire(noOfStartedChkpt == 0) for the first live node (error
+ * 2341 in the master) if the premature call started any fragment
+ * checkpoints.
+ *
+ * Whether it does depends on the master's m_allReplicasQueuedLQH,
+ * which is only cleared in startLcpRoundLoopLab and is filled as the
+ * LCP round proceeds:
+ *
+ * - freshMaster: the current master is stopped with abort first and
+ *   the LCP is the first one the new master starts (the observed
+ *   production sequence). The new master has never run an LCP round
+ *   as master, its bitmask is empty, the premature startNextChkpt()
+ *   sends LCP_FRAG_ORD to the surviving LQHs and the master crashes.
+ * - !freshMaster: the master has completed an LCP round with the same
+ *   participants and still has all of them in the bitmask. The
+ *   premature call takes the allReplicaCheckpointsQueued branch and
+ *   sends nothing, since m_LAST_LCP_FRAG_ORD is empty between LCPs.
+ *   The bug is masked here; the case guards the normal path.
+ *
+ * The nodes stopped by this function are appended to `stopped`.
+ */
+static int lcpStartParticipantFail(NdbRestarter &res,
+                                   NdbLogEventHandle handle, bool freshMaster,
+                                   int master, int nextMaster, int victim,
+                                   int *stopped, int &numStopped) {
+  /**
+   * Start from an LCP idle cluster: with an LCP in progress the error
+   * insert could hit the wrong LCP, and a new master would take over
+   * an active LCP instead of starting one. DUMP 7099 also leaves the
+   * non-masters with an LCP counter that makes a new master start an
+   * LCP as soon as it has taken over.
+   */
+  ndbout_c("Waiting for the cluster to become LCP idle");
+  if (waitLcpIdle(res, handle) != NDBT_OK) return NDBT_FAILED;
+
+  /* Victim: delay the START_LCP_CONF of the next LCP by 20 seconds */
+  CHECK(res.insertErrorInNode(victim, 7236) == 0, "EI 7236 failed");
+
+  struct ndb_logevent event;
+  bool lcpStarted = false;
+  if (freshMaster) {
+    ndbout_c("Stopping master %d with abort", master);
+    CHECK(res.restartOneDbNode(master, /* initial */ false,
+                               /* nostart */ true, /* abort */ true) == 0,
+          "Failed to stop the master");
+    stopped[numStopped++] = master;
+    master = nextMaster;
+
+    /* The new master normally starts an LCP right after taking over */
+    lcpStarted =
+        waitLcpEvent(handle, NDB_LE_LocalCheckpointStarted, 15, event);
+  }
+  if (!lcpStarted) {
+    /* DUMP 7099 only acts on the master, so send it to all nodes */
+    int dump[] = {DumpStateOrd::DihStartLcpImmediately};
+    CHECK(res.dumpStateAllNodes(dump, 1) == 0, "Failed to start an LCP");
+    CHECK(waitLcpEvent(handle, NDB_LE_LocalCheckpointStarted, 60, event),
+          "LCP did not start");
+  }
+  const Uint32 lcpId = event.LocalCheckpointStarted.lci;
+  ndbout_c("LCP %u started, master %d now waits for START_LCP_CONF", lcpId,
+           master);
+
+  /**
+   * LocalCheckpointStarted is reported before the master sends
+   * START_LCP_REQ. Give it time to send the requests and the other
+   * participants time to confirm; the victim's confirmation is 20
+   * seconds away, so the master is now waiting for the victim alone.
+   */
+  NdbSleep_SecSleep(3);
+
+  ndbout_c("Stopping LCP participant %d with abort", victim);
+  CHECK(res.restartOneDbNode(victim, /* initial */ false, /* nostart */ true,
+                             /* abort */ true) == 0,
+        "Failed to stop the victim");
+  stopped[numStopped++] = victim;
+  CHECK(res.waitNodesNoStart(stopped, numStopped) == 0,
+        "Stopped nodes did not reach nostart");
+
+  /**
+   * Watch the survivors while the master handles the victim's failure
+   * and the LCP runs to completion.
+   */
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  Uint64 lastCheck = 0;
+  bool lcpCompleted = false;
+  while (NdbTick_CurrentMillisecond() - start < Uint64(300) * 1000) {
+    const int rc = ndb_logevent_get_next(handle, &event, 1000);
+    CHECK(rc >= 0, "Failed to read log events");
+
+    /**
+     * Check the survivors on a timer rather than once per event.
+     * getNodeStatus() is a full ndb_mgm_get_status() round trip per
+     * node, so doing it for every event makes this loop read the
+     * listener socket slower than the cluster fills it, and the
+     * completion this case waits for is never reached.
+     */
+    const Uint64 now = NdbTick_CurrentMillisecond();
+    if (now - lastCheck >= 1000) {
+      lastCheck = now;
+      for (int i = 0; i < res.getNumDbNodes(); i++) {
+        const int node = res.getDbNodeId(i);
+        bool isStopped = false;
+        for (int j = 0; j < numStopped; j++) {
+          if (stopped[j] == node) isStopped = true;
+        }
+        if (isStopped) continue;
+        if (res.getNodeStatus(node) != NDB_MGM_NODE_STATUS_STARTED) {
+          g_err << "Node " << node << " is no longer started: it crashed"
+                << " or restarted when LCP participant " << victim
+                << " failed during the START_LCP_REQ handshake of LCP "
+                << lcpId << " (master " << master << ")" << endl;
+          return NDBT_FAILED;
+        }
+      }
+    }
+
+    if (rc > 0 && event.type == NDB_LE_LocalCheckpointCompleted &&
+        event.LocalCheckpointCompleted.lci >= lcpId) {
+      lcpCompleted = true;
+      break;
+    }
+  }
+  CHECK(lcpCompleted, "LCP did not complete after the participant failure");
+  ndbout_c("LCP %u completed, master %d still started", lcpId, master);
+  return NDBT_OK;
+}
+
+/**
+ * Reproduce a DIH master crash when an LCP participant fails while the
+ * master is still waiting for its START_LCP_CONF (see
+ * lcpStartParticipantFail above).
+ *
+ * LcpStartParticipantFail (FreshMaster=1) stops the master first so
+ * that the LCP is the first one started by a master that has just
+ * taken over. This is the production sequence and it triggers the bug.
+ *
+ * LcpStartParticipantFailSettledMaster (FreshMaster=0) fails a
+ * participant of an LCP started by a master that has already run an
+ * LCP round. The bug is masked in this state; the case guards the
+ * normal path.
+ */
+int runLcpStartParticipantFail(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  const bool freshMaster = ctx->getProperty("FreshMaster", Uint32(1)) != 0;
+
+  if (res.getNumReplicas() < 2) {
+    g_err << "[SKIPPED] Test needs at least 2 replicas" << endl;
+    return NDBT_SKIPPED;
+  }
+  if (freshMaster &&
+      (res.getNumDbNodes() < 4 || res.getNumNodeGroups() < 2)) {
+    g_err << "[SKIPPED] Test needs at least 4 data nodes in at least 2"
+          << " node groups" << endl;
+    return NDBT_SKIPPED;
+  }
+
+  /* Release the log event handle on every return path */
+  struct LogEventHandleGuard {
+    NdbLogEventHandle handle = NULL;
+    ~LogEventHandleGuard() {
+      if (handle != NULL) ndb_mgm_destroy_logevent_handle(&handle);
+    }
+  } guard;
+  /**
+   * Subscribe at log level 10, not 15. This case only reads
+   * LocalCheckpointStarted and LocalCheckpointCompleted, both of
+   * which have threshold 7, while LCPFragmentCompleted has threshold
+   * 11. At level 15 the handle also receives one LCPFragmentCompleted
+   * per fragment and LDM instance, which is hundreds of events per
+   * LCP on this cluster, and the events this case waits for end up
+   * queued behind them on the listener socket.
+   */
+  int filter[] = {10, NDB_MGM_EVENT_CATEGORY_CHECKPOINT, 0};
+  guard.handle = ndb_mgm_create_logevent_handle(res.handle, filter);
+  CHECK(guard.handle != NULL, "Failed to create log event handle");
+
+  const int master = res.getMasterNodeId();
+  int nextMaster = -1;
+  int victim = -1;
+
+  if (freshMaster) {
+    nextMaster = res.getNextMasterNodeId(master);
+    /* The old master and the victim are dead at the same time, so the
+     * victim must belong to another node group than the old master. */
+    for (int i = 0; i < 50; i++) {
+      victim = res.getRandomNodeOtherNodeGroup(master, rand());
+      if (victim != -1 && victim != nextMaster) break;
+      victim = -1;
+    }
+    CHECK(victim != -1, "Failed to select a victim node");
+    ndbout_c("master = %d, next master = %d, victim = %d", master,
+             nextMaster, victim);
+  } else {
+    victim = res.getRandomNotMasterNodeId(rand());
+    CHECK(victim != -1, "Failed to select a victim node");
+    ndbout_c("master = %d, victim = %d", master, victim);
+  }
+
+  int stopped[2];
+  int numStopped = 0;
+  const int result =
+      lcpStartParticipantFail(res, guard.handle, freshMaster, master,
+                              nextMaster, victim, stopped, numStopped);
+
+  /* Bring the stopped nodes back, also after a failure */
+  res.insertErrorInAllNodes(0);
+  if (numStopped > 0) {
+    ndbout_c("Restarting the stopped nodes");
+    CHECK(res.startNodes(stopped, numStopped) == 0, "Failed to start nodes");
+    CHECK(res.waitNodesStarted(stopped, numStopped, 300) == 0,
+          "Stopped nodes did not rejoin");
+  }
+  CHECK(res.waitClusterStarted() == 0, "Cluster did not fully start");
+  return result;
+}
+
+/**
  * Bring the cluster back to fully started, starting any node that
  * ended up in not-started state (nodes stopped with nostart, or
  * crashed nodes when StopOnError is set).
@@ -10856,6 +11524,53 @@ int runRestartBarrierWaitRelease(NDBT_Context *ctx, NDBT_Step *step) {
   if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
   if (res.waitClusterStarted(600)) return NDBT_FAILED;
   return NDBT_OK;
+}
+
+int runRestartBarrierSelfRelease(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter res;
+  int r = restartBarrierCheckPrereqs(res);
+  if (r != NDBT_OK) return r;
+  int stalledNode, parkedNode;
+  if (restartBarrierPickNodes(res, stalledNode, parkedNode)) return NDBT_FAILED;
+
+  /**
+   * Suppress the master's barrier Grant (EI 1027). The parked nodes
+   * must then complete through the local release evaluation, which is
+   * the release path under an old-version master in a mixed-version
+   * cluster (a state this homogeneous test cluster cannot enter for
+   * real).
+   */
+  const int master = res.getMasterNodeId();
+  ndbout_c("suppressing restart barrier Grant on master %u", master);
+  if (res.insertErrorInNode(master, 1027)) return NDBT_FAILED;
+
+  int result = NDBT_FAILED;
+  do {
+    if (restartBarrierStallAndPark(res, stalledNode, parkedNode)) break;
+
+    /* The barrier must hold while the stalled node is below phase 110 */
+    NdbSleep_SecSleep(3);
+    if (res.getNodeStatus(parkedNode) != NDB_MGM_NODE_STATUS_STARTING) {
+      g_err << "Node " << parkedNode << " did not stay parked at the barrier"
+            << endl;
+      break;
+    }
+
+    /**
+     * Release the stall; with the Grant suppressed both nodes must
+     * still complete, each through its own local release.
+     */
+    if (restartBarrierClearStall(res, stalledNode)) break;
+    if (res.waitClusterStarted(600)) {
+      g_err << "Parked nodes did not release themselves with the master"
+            << " Grant suppressed" << endl;
+      break;
+    }
+    result = NDBT_OK;
+  } while (0);
+
+  res.insertErrorInAllNodes(0);
+  return result;
 }
 
 int runRestartBarrierRepeatedWaves(NDBT_Context *ctx, NDBT_Step *step) {
@@ -11256,6 +11971,127 @@ int runRestartBarrierTimeout(NDBT_Context *ctx, NDBT_Step *step) {
   /* Release the stalled node and finish */
   if (restartBarrierClearStall(res, stalledNode)) return NDBT_FAILED;
   if (res.waitClusterStarted(600)) return NDBT_FAILED;
+  return NDBT_OK;
+}
+
+/**
+ * Regression stress for a leaked LCP_SCANNED_BIT in the DBTUP page map.
+ * Crash signature of the bug: error 2341, the row count ndbrequire at
+ * the end of a full fragment LCP in Backup.cpp, with
+ * skip_all_page_lcp_scanned_bit set in the counter printout.
+ *
+ * The bit is planted in the page map when a page is dropped while the
+ * fragment's own LCP scan is active, and must be consumed by that same
+ * scan when it reaches the page slot. A bit that survives the scan makes
+ * the next LCP of the fragment skip a live page and lose its rows from
+ * the checkpoint. The workload that exposes the windows is a table
+ * whose rows are deleted and re-inserted wholesale at high frequency
+ * while LCPs run back to back, so that delete-all + re-insert cycles
+ * land inside every phase of the fragment LCP scan.
+ *
+ * One step churns, one step drives LCPs continuously. On debug builds
+ * the kernel leak detection (clear_leaked_lcp_scanned_bits at LCP scan
+ * end and the checks in the page map alloc/release paths) turns any
+ * leak into an immediate data node failure which fails the test. On
+ * production builds the same holds when the cluster is configured with
+ * CrashOnLeakedLcpScannedBit=1; otherwise a leak is healed and
+ * reported in the node log.
+ */
+int runLcpScannedBitChurn(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  int rows = (int)ctx->getProperty("ChurnRows", Uint32(0));
+  if (rows == 0) rows = ctx->getNumRecords();
+  HugoOperations hugoOps(*ctx->getTab());
+  /**
+   * NDB transactions are atomic, so a failed delete-all or insert-all
+   * leaves the row set unchanged and the phase can simply be retried.
+   */
+  bool rows_present = false;
+  Uint64 cycles = 0;
+  while (!ctx->isTestStopped()) {
+    const bool do_insert = !rows_present;
+    int res = hugoOps.startTransaction(pNdb);
+    if (res == 0) {
+      /**
+       * Define the delete-all or insert-all in chunks with NoCommit
+       * executes so a large ChurnRows setting does not exhaust
+       * operation records; the final Commit keeps the cycle atomic.
+       */
+      const int chunk = 256;
+      for (int r = 0; r < rows && res == 0; r += chunk) {
+        const int n = (rows - r) < chunk ? (rows - r) : chunk;
+        if (do_insert)
+          res = hugoOps.pkInsertRecord(pNdb, r, n, (int)cycles);
+        else
+          res = hugoOps.pkDeleteRecord(pNdb, r, n);
+        if (res == 0 && (r + n) < rows) res = hugoOps.execute_NoCommit(pNdb);
+      }
+      if (res == 0) res = hugoOps.execute_Commit(pNdb);
+    }
+    if (res == 0) {
+      rows_present = do_insert;
+      if (rows_present) cycles++;
+    } else {
+      if (hugoOps.getNdbError().status != NdbError::TemporaryError) {
+        g_err << "Churn " << (do_insert ? "insert" : "delete")
+              << " failed: " << hugoOps.getNdbError() << endl;
+        hugoOps.closeTransaction(pNdb);
+        ctx->stopTest();
+        return NDBT_FAILED;
+      }
+      NdbSleep_MilliSleep(10);
+    }
+    hugoOps.closeTransaction(pNdb);
+  }
+  g_err << "Churn cycles completed: " << cycles << endl;
+  if (cycles < 10) {
+    g_err << "Churn was too slow to exercise the LCP scan windows" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runLcpScannedBitLcps(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int loops = ctx->getNumLoops();
+  const int delay_ms = (int)ctx->getProperty("LcpDelayMs", Uint32(200));
+  int result = NDBT_OK;
+  for (int i = 0; i < loops && !ctx->isTestStopped(); i++) {
+    int val = DumpStateOrd::DihStartLcpImmediately;
+    if (restarter.dumpStateAllNodes(&val, 1) != 0) {
+      g_err << "Failed to start LCP, a data node may have failed" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    NdbSleep_MilliSleep(delay_ms);
+  }
+  ctx->stopTest();
+  return result;
+}
+
+int runLcpScannedBitErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int code = (int)ctx->getProperty("LcpErrorInsert", Uint32(0));
+  if (code == 0) return NDBT_OK;
+  const int tabId = (int)ctx->getTab()->getTableId();
+  g_err << "Insert error " << code << " with extra (table id) " << tabId
+        << endl;
+  int dump[] = {DumpStateOrd::BackupErrorInsert, code, tabId};
+  if (restarter.dumpStateAllNodes(dump, 3) != 0) {
+    g_err << "Failed to insert error " << code << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runLcpScannedBitFinish(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  int dump[] = {DumpStateOrd::BackupErrorInsert, 0, 0};
+  restarter.dumpStateAllNodes(dump, 3);
+  if (restarter.waitClusterStarted(120) != 0) {
+    g_err << "A data node failed during the test" << endl;
+    return NDBT_FAILED;
+  }
   return NDBT_OK;
 }
 
@@ -11870,6 +12706,46 @@ TESTCASE("LCP_with_many_parts_drop_table", "Ensure that LCP has many parts") {
   TC_PROPERTY("DropTable", (Uint32)1);
   INITIALIZER(run_PLCP_many_parts);
 }
+TESTCASE("LcpScannedBitChurn",
+         "Delete-all + re-insert churn on a small table while LCPs run"
+         " back to back. Regression stress for leaked LCP_SCANNED_BIT in"
+         " the DBTUP page map (error 2341 at the Backup.cpp row count"
+         " check).") {
+  TC_PROPERTY("ChurnRows", (Uint32)12);
+  TC_PROPERTY("LcpDelayMs", (Uint32)200);
+  STEP(runLcpScannedBitChurn);
+  STEP(runLcpScannedBitLcps);
+  FINALIZER(runLcpScannedBitFinish);
+  FINALIZER(runClearTable);
+}
+TESTCASE("LcpScannedBitChurnPreScan",
+         "As LcpScannedBitChurn with error insert 10063 delaying the"
+         " start of each LCP scan of the test table by 1000ms, so churn"
+         " cycles land in the window where the TUP scan is started but"
+         " has not yet swept any page.") {
+  TC_PROPERTY("ChurnRows", (Uint32)12);
+  TC_PROPERTY("LcpErrorInsert", (Uint32)10063);
+  TC_PROPERTY("LcpDelayMs", (Uint32)500);
+  INITIALIZER(runLcpScannedBitErrorInsert);
+  STEP(runLcpScannedBitChurn);
+  STEP(runLcpScannedBitLcps);
+  FINALIZER(runLcpScannedBitFinish);
+  FINALIZER(runClearTable);
+}
+TESTCASE("LcpScannedBitChurnMidScan",
+         "As LcpScannedBitChurn with error insert 10042 delaying each"
+         " LCP scan batch of the test table by 10ms and enough rows for"
+         " the scan to span many batches, so churn cycles land in"
+         " mid-scan real-time break windows.") {
+  TC_PROPERTY("ChurnRows", (Uint32)3000);
+  TC_PROPERTY("LcpErrorInsert", (Uint32)10042);
+  TC_PROPERTY("LcpDelayMs", (Uint32)500);
+  INITIALIZER(runLcpScannedBitErrorInsert);
+  STEP(runLcpScannedBitChurn);
+  STEP(runLcpScannedBitLcps);
+  FINALIZER(runLcpScannedBitFinish);
+  FINALIZER(runClearTable);
+}
 TESTCASE("PLCP_R1", "Node restart while deleting rows") {
   TC_PROPERTY("Initial", (Uint32)0);
   TC_PROPERTY("WaitStart", (Uint32)0);
@@ -12099,6 +12975,52 @@ TESTCASE("JoinAggErrorInsert",
   STEP(runJoinAggErrorInsert);
   FINALIZER(runClearTable);
 }
+TESTCASE("NodeFailLeakDuringNodeStart",
+         "Check that a node that dies while starting can re-allocate its "
+         "node id even when a node that owed an NF_COMPLETEREP for its "
+         "death dies before reporting it "
+         "(m_NF_COMPLETE_REP leak, node id refused with error 1703)") {
+  INITIALIZER(runNodeFailLeakDuringNodeStart);
+}
+TESTCASE("FailRepBeforeJoin",
+         "Check that a starting node that receives FAIL_REP before it has "
+         "joined the cluster dies with the graceful error 2308 instead of "
+         "the 2341 ndbrequire") {
+  INITIALIZER(runFailRepBeforeJoin);
+}
+TESTCASE("TcTakeOverConfDuplicate",
+         "The TC take over master fails right after broadcasting "
+         "TAKE_OVERTCCONF and the next master missed the broadcast: the "
+         "redone take over broadcasts a duplicate TAKE_OVERTCCONF that "
+         "the other survivors must drop instead of crashing") {
+  TC_PROPERTY("VictimIsNextMaster", 1);
+  INITIALIZER(runTcTakeOverConfPartialBroadcast);
+}
+TESTCASE("TcTakeOverConfLost",
+         "The TC take over master fails right after broadcasting "
+         "TAKE_OVERTCCONF and a non-master survivor missed the broadcast: "
+         "the new master must re-announce the completed take over at "
+         "master take over so the survivor is unblocked") {
+  TC_PROPERTY("VictimIsNextMaster", Uint32(0));
+  INITIALIZER(runTcTakeOverConfPartialBroadcast);
+}
+TESTCASE("LcpStartParticipantFail",
+         "The master fails and the new master starts its first LCP; a "
+         "participant of that LCP fails while the new master is still "
+         "waiting for its START_LCP_CONF. The master must not start "
+         "fragment checkpoints on the surviving nodes before the LCP start "
+         "handshake has completed, otherwise it crashes on entering the "
+         "LCP round") {
+  TC_PROPERTY("FreshMaster", 1);
+  INITIALIZER(runLcpStartParticipantFail);
+}
+TESTCASE("LcpStartParticipantFailSettledMaster",
+         "An LCP participant fails while a master that has already run an "
+         "LCP round is still waiting for its START_LCP_CONF. The master "
+         "must survive and complete the LCP") {
+  TC_PROPERTY("FreshMaster", Uint32(0));
+  INITIALIZER(runLcpStartParticipantFail);
+}
 TESTCASE("PreparedUpdatesNF",
          "Test node failure handling with prepared transactions with updates") {
   INITIALIZER(runLoadTable);
@@ -12112,6 +13034,13 @@ TESTCASE("RestartBarrierWaitRelease",
          "nodes complete together when the last one has recovered "
          "(RONDB-1096)") {
   INITIALIZER(runRestartBarrierWaitRelease);
+}
+TESTCASE("RestartBarrierSelfRelease",
+         "Verify that parked nodes release themselves through the local "
+         "release evaluation when the master never sends a Grant, the "
+         "release path under an old-version master in a rolling upgrade "
+         "(RONDB-1096)") {
+  INITIALIZER(runRestartBarrierSelfRelease);
 }
 TESTCASE("RestartBarrierRepeatedWaves",
          "Verify that consecutive restart barrier waves reset their "

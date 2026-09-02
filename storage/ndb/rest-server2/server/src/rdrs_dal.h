@@ -141,11 +141,6 @@ RS_Status set_metadata_cluster_op_retry_props(
 RS_Status shutdown_connection();
 
 /**
- * Reconnect. Closes the existing connection and then reconnects
- */
-RS_Status reconnect();
-
-/**
  * Batched primary key read operation
  * Also used for single key read operation
  *
@@ -236,6 +231,23 @@ RS_Status ronsql_dal(const char* database,
  * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
+
+/**
+ * Least number of data nodes in STARTED state or single-user mode, and
+ * version-compatible (as reported through
+ * Ndb_cluster_connection::get_no_ready(); nodes that are connected but
+ * still starting do not count) across the data cluster connections.
+ * 0 or -1 means requests cannot be served. Any value > 0 means the
+ * cluster is operational: a node is only STARTED inside a viable cluster,
+ * since losing a whole node group shuts down the surviving nodes too.
+ *
+ * There is no separate "cluster up" NDB API: get_no_ready() counts the
+ * same alive-node set that TransporterFacade::get_an_alive_node() scans,
+ * which is the serving path's own node-selection predicate (its 0 return
+ * is what produces error 4009). So > 0 here is exactly "the NDB API will
+ * attempt to serve requests".
+ */
+int get_num_ready_data_nodes();
 
 void* get_rdrs_ndb_object(int thread_index);
 void return_rdrs_ndb_object(void *ndb_object, int thread_index);

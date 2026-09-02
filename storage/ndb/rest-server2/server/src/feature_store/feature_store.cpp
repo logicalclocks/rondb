@@ -1300,7 +1300,8 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object,
 
   Uint64 length = 0;
   if (schema_blob->getLength(length) == -1) {
-    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+    ndb_object->closeTransaction(tx);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) +
                            std::string(" Reading column length failed.") +
                            std::string(" Column: ") +
                            std::string(schema_blob->getColumn()->getName()) +
@@ -1321,18 +1322,27 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object,
 
     if (bytes != 0) {
       if (-1 == schema_blob->setPos(pos)) {
+        /* This function is retried on temporary errors: free the schema
+         * buffer (the retry mallocs a fresh one) and close the
+         * transaction, or every retried attempt leaks both. */
+        free(*schema);
+        *schema = nullptr;
+        ndb_object->closeTransaction(tx);
         return RS_RONDB_SERVER_ERROR(
             schema_blob->getNdbError(),
-            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) +
             std::string(" Failed to set read position.") + std::string(" Column: ") +
             std::string(schema_blob->getColumn()->getName()) +
             " Type: " + std::to_string(schema_blob->getColumn()->getType()));
       }
 
       if (schema_blob->readData(tmp_buffer, bytes /*to read, also bytes read*/) == -1) {
+        free(*schema);
+        *schema = nullptr;
+        ndb_object->closeTransaction(tx);
         return RS_RONDB_SERVER_ERROR(
             schema_blob->getNdbError(),
-            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) +
             std::string(" Read data failed .") + std::string(" Column: ") +
             std::string(schema_blob->getColumn()->getName()) +
             " Type: " + std::to_string(schema_blob->getColumn()->getType()) +

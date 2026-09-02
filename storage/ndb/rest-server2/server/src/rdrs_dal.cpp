@@ -24,6 +24,7 @@
 #include "db_operations/ronsql/ronsql_operation.hpp"
 #include "rdrs_dal.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
+#include "ndb_api_helper.hpp"
 #include "retry_handler.hpp"
 #include "status.hpp"
 #include "logger.hpp"
@@ -156,10 +157,6 @@ RS_Status shutdown_connection() {
   return RS_OK;
 }
 
-RS_Status reconnect() {
-  return rdrsRonDBConnectionPool->Reconnect();
-}
-
 RS_Status pk_batch_read(void *amalloc_void,
                         unsigned int no_req,
                         bool is_batch,
@@ -176,6 +173,10 @@ RS_Status pk_batch_read(void *amalloc_void,
     return status;
   }
   DATA_OP_RETRY_HANDLER(
+    /* Declared inside the macro body on purpose: each retry attempt gets
+     * a fresh object, and ~BatchKeyOperations undoes the in-place request
+     * buffer mutations (addReadColumns) between attempts. Hoisting this
+     * out of the macro would corrupt retried batches. */
     BatchKeyOperations pkread;
     status = pkread.perform_operation(amalloc,
                                       no_req,
@@ -295,7 +296,14 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
   stats->ndb_objects_count = ret.ndb_objects_count;
   stats->ndb_objects_available = ret.ndb_objects_available;
   stats->connection_state = ret.connection_state;
+  stats->is_reconnection_in_progress = ret.is_reconnection_in_progress;
+  stats->is_shutdown = ret.is_shutdown;
+  stats->is_shutting_down = ret.is_shutting_down;
   return RS_OK;
+}
+
+int get_num_ready_data_nodes() {
+  return rdrsRonDBConnectionPool->GetMinReadyDataNodes();
 }
 
 void*
@@ -1842,8 +1850,17 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     return err;
   }
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+  ndb_dict_clear_error(dict);
   const NdbDictionary::Table* table = dict->getTable(scan_params.path.table.c_str());
   if (unlikely(table == nullptr)) {
+    if (unlikely(!ndb_dict_object_missing(dict->getNdbError().code))) {
+      /* Dictionary lookup failed (e.g. cluster unavailable); the table may
+       * exist, so report the real NDB error instead of 404. */
+      return RS_RONDB_SERVER_ERROR(dict->getNdbError(),
+        std::string(rdrsErrorMessage(ERROR_TABLE_METADATA_READ_FAILED)) +
+        std::string(" Database: ") + db +
+        std::string(" Table: ") + scan_params.path.table);
+    }
     RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
       std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
       std::string(" Database: ") + db +

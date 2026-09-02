@@ -459,9 +459,21 @@ public class ClusterConnectionImpl
      */
     public void unloadSchema(String databaseName, String tableName, boolean defaultDatabase) {
         // synchronize to avoid multiple threads unloading schema simultaneously
-        // it is possible although unlikely that another thread is adding an entry while 
+        // it is possible although unlikely that another thread is adding an entry while
         // we are removing entries; if this occurs an error will be signaled here
+        //
+        // The connection monitor must also be held: getCachedNdbRecordImpl
+        // guards NdbRecord builds with it, and both a record build and the
+        // dictionary invalidations below drive this connection's one shared
+        // dictionary Ndb (dictionaryForNdbRecord). Its native calls format
+        // table names into a buffer inside that Ndb object
+        // (Ndb::internalize_table_name), so two concurrent callers corrupt it
+        // and abort the process on an assertion in BaseString.cpp. Taking the
+        // connection monitor first matches the nesting used when a domain
+        // type handler is created (factory typeToHandlerMap, then connection),
+        // so no new lock-order cycle is introduced.
         boolean haveCachedTable = false;
+        synchronized(this) {
         synchronized(ndbRecordImplMap) {
             Dictionary dictionary = dictionaryForNdbRecord;
             if (!defaultDatabase) {
@@ -520,7 +532,8 @@ public class ClusterConnectionImpl
                     "db:" + databaseName + " " + tableName);
                 dictionary.invalidateTable(tableName);
             }
-        }
+        } // synchronized(ndbRecordImplMap)
+        } // synchronized(this)
     }
 
     public ValueHandlerFactory getSmartValueHandlerFactory() {

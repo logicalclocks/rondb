@@ -143,7 +143,12 @@ INSTALL(TARGETS ${PROJECT_NAME}
 INSTALL(FILES "$<TARGET_FILE_DIR:${PROJECT_NAME}>/rdrs"
     DESTINATION ${INSTALL_BINDIR} COMPONENT Server)
 
-add_library(rdrs2_lib STATIC ${SRC})
+# The test library must not contain main(); linking it next to gtest_main
+# would otherwise give a duplicate _main whenever an archive member that
+# main.cc.o satisfies gets pulled in.
+set(SRC_LIB ${SRC})
+list(REMOVE_ITEM SRC_LIB ${CMAKE_CURRENT_SOURCE_DIR}/main.cc)
+add_library(rdrs2_lib STATIC ${SRC_LIB})
 
 target_include_directories(rdrs2_lib PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
@@ -173,27 +178,36 @@ TARGET_LINK_LIBRARIES(rdrs2_lib
                       ronsql
                       libavro)
 
-# Install prometheus-cpp libraries
-get_target_property(lib_core_path prometheus-cpp::core IMPORTED_LOCATION_NOCONFIG)
-get_target_property(lib_push_path prometheus-cpp::push IMPORTED_LOCATION_NOCONFIG)
-INSTALL(FILES ${lib_core_path} DESTINATION lib
-      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                  GROUP_READ GROUP_EXECUTE
-                  WORLD_READ WORLD_EXECUTE
-)
-INSTALL(FILES ${lib_push_path} DESTINATION lib
-      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                  GROUP_READ GROUP_EXECUTE
-                  WORLD_READ WORLD_EXECUTE
-)
-EXECUTE_PROCESS(
-      COMMAND dirname "${lib_core_path}" OUTPUT_VARIABLE PROMETHEUS_CPP_DIR
-      OUTPUT_STRIP_TRAILING_WHITESPACE)
-INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-core.so.1.3" DESTINATION lib)
-INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-push.so.1.3" DESTINATION lib)
+# Install (bundle) prometheus-cpp libraries. Linux only:
+# there prometheus-cpp is built from source without a build type, so the
+# imported targets expose IMPORTED_LOCATION_NOCONFIG, and rdrs2 resolves the
+# bundled copies via RPATH/SONAME from the install's lib directory.
+# On macOS prometheus-cpp comes from Homebrew (IMPORTED_LOCATION_RELEASE, so
+# the lookup below returns NOTFOUND) and rdrs2 references the dylibs by
+# absolute path, so bundled copies would never be loaded anyway.
+IF(NOT APPLE)
+  get_target_property(lib_core_path prometheus-cpp::core IMPORTED_LOCATION_NOCONFIG)
+  get_target_property(lib_push_path prometheus-cpp::push IMPORTED_LOCATION_NOCONFIG)
+  INSTALL(FILES ${lib_core_path} DESTINATION lib
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                    GROUP_READ GROUP_EXECUTE
+                    WORLD_READ WORLD_EXECUTE
+  )
+  INSTALL(FILES ${lib_push_path} DESTINATION lib
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                    GROUP_READ GROUP_EXECUTE
+                    WORLD_READ WORLD_EXECUTE
+  )
+  EXECUTE_PROCESS(
+        COMMAND dirname "${lib_core_path}" OUTPUT_VARIABLE PROMETHEUS_CPP_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+  INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-core.so.1.3" DESTINATION lib)
+  INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-push.so.1.3" DESTINATION lib)
+ENDIF()
 
-# Install uuid library
-if(UUID_LIBRARY)
+# Install uuid library. Linux only: on macOS find_library picks up a static
+# libuuid.a (nothing to bundle) and the hardcoded .so names do not exist.
+if(UUID_LIBRARY AND NOT APPLE)
     message(STATUS "Found uuid_library: ${UUID_LIBRARY}")
     EXECUTE_PROCESS(
       COMMAND readlink -f "${UUID_LIBRARY}" OUTPUT_VARIABLE UUID_VERSION
@@ -209,8 +223,8 @@ if(UUID_LIBRARY)
     )
 endif()
 
-# Install ossp-uuid library
-if(OSSP_UUID_LIBRARY)
+# Install ossp-uuid library. Linux only, see uuid comment above.
+if(OSSP_UUID_LIBRARY AND NOT APPLE)
     message(STATUS "Found ossp_uuid_library: ${OSSP_UUID_LIBRARY}")
     EXECUTE_PROCESS(
       COMMAND readlink -f "${OSSP_UUID_LIBRARY}" OUTPUT_VARIABLE OSSP_UUID_VERSION

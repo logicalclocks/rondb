@@ -28,6 +28,7 @@
 #define DBTUP_H
 
 #include <ndb_limits.h>
+#include <NdbTick.h>
 #include <portlib/ndb_prefetch.h>
 #include <trigger_definitions.h>
 #include <AttributeDescriptor.hpp>
@@ -677,6 +678,9 @@ struct Fragoperrec {
 
   // Crash the node when a tuple got corrupted
   bool c_crashOnCorruptedTuple;
+
+  // Crash the node when a leaked LCP_SCANNED_BIT is found in the page map
+  bool c_crashOnLeakedLcpScannedBit;
 
   struct Page_request {
     Page_request() {}
@@ -2687,7 +2691,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   void execSTORED_PROCREQ(Signal *signal);
 
   void start_lcp_scan(Uint32 tableId, Uint32 fragmentId, Uint32 &max_page_cnt);
-  void stop_lcp_scan(Uint32 tableId, Uint32 fragmentId);
+  void stop_lcp_scan(Uint32 tableId, Uint32 fragmentId, bool lcp_error);
   void lcp_frag_watchdog_print(Uint32 tableId, Uint32 fragmentId);
 
   Uint64 get_restore_row_count(Uint32 tableId, Uint32 fragmentId);
@@ -4309,6 +4313,7 @@ private:
   bool get_lcp_scanned_bit(Uint32 *next_ptr);
   // void reset_lcp_scanned_bit(Fragrecord*, Uint32);
   void reset_lcp_scanned_bit(Uint32 *next_ptr);
+  Uint32 clear_leaked_lcp_scanned_bits(Fragrecord *fragPtrP, bool report);
 
   Uint32 getNoOfPages(Fragrecord* regFragPtr);
   Uint32 getEmptyPage(Fragrecord* regFragPtr);
@@ -4917,6 +4922,19 @@ private:
 
  private:
   bool c_started;
+
+  /**
+   * Rate-limited production logging of ZROWID_ALLOCATED (899) raised by
+   * alloc_fix_rowid, to both the node log and the cluster log
+   * (warningEvent). Silent until the node is started (REDO replay raises
+   * 899 on replayed inserts by design); thereafter at most two lines per
+   * 10 s window per instance with a suppressed-occurrence count.
+   */
+  NDB_TICKS m_rowid_899_window_start;
+  Uint32 m_rowid_899_window_count;
+  Uint32 m_rowid_899_suppressed;
+  void log_rowid_already_allocated(Fragrecord *fragPtrP, Uint32 page_no,
+                                   Uint32 page_idx, bool page_full);
 
   Pending_undo_page_pool c_pending_undo_page_pool;
   Pending_undo_page_hash c_pending_undo_page_hash;

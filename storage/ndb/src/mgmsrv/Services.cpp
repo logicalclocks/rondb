@@ -147,10 +147,10 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_CMD("get user", &MgmApiSession::getUser, "", &Basic),
     MGM_ARG("username", String, Mandatory, "User name"),
 
-    MGM_CMD("list users", &MgmApiSession::listUsers, "", &Basic),
+    MGM_CMD("list user", &MgmApiSession::listUsers, "", &Basic),
     MGM_ARG("nextUserId", Int, Mandatory, "next User Id"),
 
-    MGM_CMD("backup users", &MgmApiSession::backupUsers, "", &Basic),
+    MGM_CMD("backup user", &MgmApiSession::backupUsers, "", &Basic),
     MGM_ARG("nextUserId", Int, Mandatory, "next User Id"),
 
     MGM_CMD("set quotas", &MgmApiSession::setQuotas, "", &Basic),
@@ -1111,7 +1111,7 @@ MgmApiSession::backupUsers(Parser_t::Context &,
                            const class Properties &args) {
   Uint32 nextUserId = 0;
   args.get("nextUserId", &nextUserId);
-  m_output->println("backup users reply");
+  m_output->println("backup user reply");
   NdbOut socket_out(*m_output);
   m_mgmsrv.backup_quotas(nextUserId, true, socket_out);
 }
@@ -2944,7 +2944,7 @@ void MgmApiSession::dump_events(Parser_t::Context &,
   // Request the events
   Vector<SimpleSignal> events;
   if (!m_mgmsrv.request_events(nodes, request->reports_per_node,
-                               request->dump_type, events)) {
+                               request->dump_type, request->type, events)) {
     m_output->println("result: failed to dump events");
     m_output->println("%s", "");
     return;

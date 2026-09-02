@@ -1,0 +1,7 @@
+!include suite/ndb_quota/my_1rpl.cnf
+
+# RONDB-978: the mysqld side of USER rate limiting is opt-in and the sysvar is
+# PLUGIN_VAR_READONLY, so it can only be turned on at startup. Without this the
+# server never calls ha_ndbcluster::set_user_id and no SQL traffic is tagged.
+[mysqld.1.1]
+ndb-user-rate-limits=ON

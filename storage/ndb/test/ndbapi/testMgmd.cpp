@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -1054,15 +1054,27 @@ int runBug56844(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 static bool get_status(const char *connectstring, Properties &status) {
-  NdbMgmd ndbmgmd;
-  if (!ndbmgmd.connect(connectstring)) return false;
-
-  Properties args;
-  if (!ndbmgmd.call("get status", args, "node status", status, NULL, true)) {
-    g_err << "fetch_mgmd_status: mgmd.call failed" << endl;
-    return false;
+  /**
+   * A just started mgmd may refuse 'get status' (and close the session)
+   * with "Management server is waiting for arbitrator selection" until
+   * the arbitrator startup gate is lifted, which happens within a few
+   * seconds when no data nodes connect (cold start detection). Retry
+   * with a fresh connection for a while before giving up.
+   */
+  const int max_attempts = 40;
+  for (int attempt = 1; attempt <= max_attempts; attempt++) {
+    NdbMgmd ndbmgmd;
+    if (ndbmgmd.connect(connectstring)) {
+      Properties args;
+      status.clear();
+      if (ndbmgmd.call("get status", args, "node status", status, NULL, true))
+        return true;
+    }
+    g_err << "fetch_mgmd_status: attempt " << attempt << " failed" << endl;
+    NdbSleep_MilliSleep(500);
   }
-  return true;
+  g_err << "fetch_mgmd_status: giving up" << endl;
+  return false;
 }
 
 static bool value_equal(Properties &status, int nodeid, const char *name,
@@ -1365,6 +1377,17 @@ int runTestUnresolvedHosts2(NDBT_Context *ctx, NDBT_Step *step) {
 
   Properties config;
   {
+    // Keep the one startable data node small, same footprint as the
+    // ConfigFactory configs: with automatic memory and thread
+    // configuration it would size itself for the whole machine
+    Properties db;
+    db.put("ArbitrationRankWait", Uint32(0));
+    db.put("AutomaticMemoryConfig", Uint32(0));
+    db.put("AutomaticThreadConfig", Uint32(0));
+    db.put("DataMemory", "30M");
+    config.put("DB Default", &db);
+  }
+  {
     // 144 ndbds, nodeid 1 -> 144
     for (int i = 1; i <= 144; i++) {
       Properties ndbd;
@@ -1432,6 +1455,48 @@ int runTestUnresolvedHosts2(NDBT_Context *ctx, NDBT_Step *step) {
   Vector<BaseString> search_list;
   search_list.push_back("Unable to allocate nodeid for NDB");
   CHECK(Print_find_in_file(mgmdlog.c_str(), search_list) == true);
+
+  return NDBT_OK;
+}
+
+int runTestSkipNodeidCheck(NDBT_Context *ctx, NDBT_Step *step) {
+  NDBT_Workingdir wd("test_mgmd");
+  BaseString cf_ini = path(wd.path(), "config.ini", nullptr);
+
+  Properties config = ConfigFactory::create();
+  Properties api;
+  api.put("NodeId", 4);
+  api.put("HostName", "www.mysql.com");
+  config.put("mysqld", 4, &api);
+
+  CHECK(ConfigFactory::write_config_ini(config, cf_ini.c_str()));
+
+  /* Use error insert 904 to mix "localhost" with actual hostnames in config */
+  Mgmd mgmd(1);
+  CHECK(mgmd.start_from_config_ini(wd.path(), "--skip-nodeid-address-check",
+                                   "--error-insert=904", nullptr));
+  CHECK(mgmd.connect(config, 2, 5));     // Connect to management node
+  CHECK(mgmd.wait_confirmed_config(5));  // Wait for configuration
+
+  BaseString mgmd_conn_str = mgmd.connectstring(config);
+  Ndbd ndbd(2);
+  ndbd.start(wd.path(), mgmd_conn_str);  // Start the data node
+  {
+    NdbMgmHandle handle = mgmd.handle();
+    CHECK(ndbd.wait_started(handle));
+  }
+
+  /* Open an MGM API connection from localhost and request node id 4.  The id
+     is configured for www.mysql.com, but with --skip-nodeid-address-check
+     it should be granted.
+  */
+  NdbMgmHandle handle = ndb_mgm_create_handle();
+  BaseString conn_str("nodeid=4,");
+  conn_str.append(mgmd_conn_str);
+  unsigned int ver = ndbGetOwnVersion();
+  CHECK(ndb_mgm_set_connectstring(handle, conn_str.c_str()) == 0);
+  CHECK(ndb_mgm_connect(handle, 1, 5, 0) == 0);
+  CHECK(ndb_mgm_alloc_nodeid(handle, ver, NDB_MGM_NODE_TYPE_API, 0) == 4);
 
   return NDBT_OK;
 }
@@ -1551,6 +1616,12 @@ int runTestMultiMGMDDisconnection(NDBT_Context *ctx, NDBT_Step *step) {
       ndbd.put("NodeId", i);
       ndbd.put("NoOfReplicas", 2);
       ndbd.put("HostName", hostname);
+      // Same small footprint and disabled arbitrator startup gate as
+      // the configs created by ConfigFactory
+      ndbd.put("ArbitrationRankWait", Uint32(0));
+      ndbd.put("AutomaticMemoryConfig", Uint32(0));
+      ndbd.put("AutomaticThreadConfig", Uint32(0));
+      ndbd.put("DataMemory", "30M");
       config.put("ndbd", i, &ndbd);
   }
   {
@@ -1584,10 +1655,11 @@ int runTestMultiMGMDDisconnection(NDBT_Context *ctx, NDBT_Step *step) {
   CHECK(mgmd3.connect(config));
   CHECK(mgmd3.wait_confirmed_config());
 
-  // Wait 15 secs for each data node to reach the started status
+  // Wait for each data node to reach the started status, allow time
+  // for an initial start of a debug build on a loaded machine
   NdbMgmHandle handle = mgmd1.handle();
-  CHECK(ndbd1.wait_started(handle, 15, 0));
-  CHECK(ndbd2.wait_started(handle, 15, 1));
+  CHECK(ndbd1.wait_started(handle, 60, 0));
+  CHECK(ndbd2.wait_started(handle, 60, 1));
 
   // Stop the ndb_mgmd(s)
   CHECK(mgmd3.stop());
@@ -1658,15 +1730,55 @@ int runTestMyCnf(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 int runTestSshKeySigning(NDBT_Context *ctx, NDBT_Step *step) {
-  /* Skip this test in PB2 environments, where "ssh localhost"
-     does not necessarily work.
-  */
-  if (getenv("PB2WORKDIR")) {
-    printf("Skipping test SshKeySigning\n");
-    return NDBT_OK;
+  /* Skip this test where "ssh localhost" can not be run without user
+   * interaction. */
+  {
+    NdbProcess::Args args;
+    auto exe = "ssh";
+    args.add("-q");
+    args.add("-oBatchMode=yes");
+    args.add("localhost");
+    args.add("exit");
+    auto proc = NdbProcess::create(
+        "Probe if `ssh localhost` need user interaction", exe, nullptr, args);
+    int ret;
+    bool r = proc->wait(ret, 1000);
+    if (!r) proc->stop();
+    if (r && ret == 255) {
+      printf(
+          "Skipping test SshKeySigning since `ssh localhost` may need user "
+          "interaction.\n");
+      return NDBT_SKIPPED;
+    }
   }
 
   NDBT_Workingdir wd("test_mgmd");  // temporary working directory
+
+  /* Skip this test unless passwordless ssh to localhost works:
+     ndb_sign_keys runs ssh without BatchMode, so on a host where ssh
+     asks for a password the signing process hangs forever on the
+     prompt (seen on a developer macOS with Remote Login enabled but
+     no authorized key).
+  */
+  {
+    NdbProcess::Args ssh_args;
+    ssh_args.add("-o");
+    ssh_args.add("BatchMode=yes");
+    ssh_args.add("-o");
+    ssh_args.add("ConnectTimeout=5");
+    ssh_args.add("localhost");
+    ssh_args.add("true");
+    auto probe =
+        NdbProcess::create("SshProbe", "/usr/bin/ssh", wd.path(), ssh_args);
+    int probe_ret = -1;
+    const bool probe_ok = probe && probe->wait(probe_ret, 10000);
+    if (probe && !probe_ok) probe->stop();
+    if (!probe_ok || probe_ret != 0) {
+      printf("Skipping test SshKeySigning, no passwordless ssh to localhost\n");
+      return NDBT_OK;
+    }
+  }
+
   Properties config = ConfigFactory::create();
   ConfigFactory::put(config, "ndb_mgmd", 1, "RequireCertificate", "true");
   BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
@@ -1807,7 +1919,7 @@ int runTestApiWithoutCert(NDBT_Context *ctx, NDBT_Step *step) {
   ndbd.args().add("--ndb-tls-search-path=", wd.path());
   ndbd.start(wd.path(), mgmd.connectstring(config));  // Start data node
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle));
+  CHECK(ndbd.wait_started(handle, 60));
 
   /* API has no TLS context and should fail to connect */
   Ndb_cluster_connection con(mgmd.connectstring(config).c_str());
@@ -1911,7 +2023,7 @@ int runTestNdbdWithCert(NDBT_Context *ctx, NDBT_Step *step) {
   ndbd.args().add("--ndb-mgm-tls=strict");
   ndbd.start(wd.path(), mgmd.connectstring(config));  // Start data node
   NdbMgmHandle handle = mgmd.handle();
-  CHECK(ndbd.wait_started(handle));
+  CHECK(ndbd.wait_started(handle, 60));
 
   CHECK(mgmd.stop());
   CHECK(ndbd.stop());
@@ -2380,6 +2492,12 @@ TESTCASE("MultiMGMDDisconnection",
 TESTCASE("MyCnf", "Test reading config from my.cnf") {
   INITIALIZER(runTestMyCnf);
 }
+
+#if defined VM_TRACE || defined ERROR_INSERT
+TESTCASE("SkipNodeIdCheck", "Test mgmd with --skip-nodeid-address-check") {
+  INITIALIZER(runTestSkipNodeidCheck);
+}
+#endif
 
 #if OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL
 

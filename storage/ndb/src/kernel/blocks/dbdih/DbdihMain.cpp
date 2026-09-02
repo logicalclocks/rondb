@@ -9595,18 +9595,18 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
 
     /**
      * A node parked at the restart barrier in start phase 110 is
-     * fully recovered and can take over as master like a started
-     * node, so it must not die here (RONDB-1096).
+     * fully recovered and can survive master takeover like a started
+     * node when the successor supports the barrier (RONDB-1096).
      *
      * Surviving is only safe when the new master also supports the
      * restart barrier: an older master expects a restarting node to
      * die with the failed master, cannot accept a NodeRestartLock
      * re-registration, and lacks the master takeover fixes for a
-     * surviving restarting node. The parked state itself implies a
-     * barrier-capable master (a node never parks in a mixed-version
-     * cluster), but a recovered node that is completing its final
-     * start phases without having parked can face an old master, so
-     * keep the pre-barrier behaviour and die in that case.
+     * surviving restarting node. Mixed-version barrier nodes can park
+     * under an old master, so if that master fails and its successor
+     * is also incapable, the condition below deliberately terminates
+     * even a recovered parked node. This keeps the pre-barrier
+     * behaviour for an old successor.
      */
     if (getNodeState().getNodeRestartInProgress() &&
         (!getNodeState().getNodeRecovered() ||
@@ -9668,10 +9668,29 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
    * This code cannot be called in master takeover case, in this
    * case we restart the LCP in DIH entirely, so no need to worry
    * here.
+   *
+   * It must also not be called before the master has entered the LCP
+   * round. m_participatingLQH is set at the very start of the LCP,
+   * before START_LCP_REQ is sent, so a participant can fail while the
+   * master is still waiting for START_LCP_CONF. Starting fragment
+   * checkpoints here in that case makes startLcpRoundLoopLab, which is
+   * reached through the START_LCP_CONF queued above for the failed
+   * node and the asynchronous release of the start LCP mutex, fail
+   * ndbrequire(noOfStartedChkpt == 0). There is nothing to drive
+   * here in that case either: the round starts with the reduced set
+   * of participants once the handshake completes.
+   *
+   * c_lcp_runs_with_pause_support is set when the master has passed
+   * the START_LCP_REQ step, right before the LCP round starts, both
+   * in the normal LCP start and in LCP master takeover, and it is
+   * cleared when the LCP completes.
    */
-  if (check_more_start_lcp && c_lcpMasterTakeOverState.state == LMTOS_IDLE) {
+  if (check_more_start_lcp && c_lcpMasterTakeOverState.state == LMTOS_IDLE &&
+      c_lcp_runs_with_pause_support) {
     jam();
     ndbrequire(isMaster());
+    /* The start LCP mutex is released before the LCP round starts */
+    ndbassert(c_startLcpMutexHandle.isNull());
     startNextChkpt(signal);
   }
 }  // Dbdih::execNODE_FAILREP()
@@ -9892,7 +9911,8 @@ void Dbdih::failedNodeSynchHandling(Signal *signal,
       failedNodePtr.p->m_NF_COMPLETE_REP.setWaitingFor(nodePtr.i);
     } else {
       jam();
-      if ((nodePtr.p->nodeStatus == NodeRecord::DYING) &&
+      if ((nodePtr.p->nodeStatus == NodeRecord::DYING ||
+           nodePtr.p->nodeStatus == NodeRecord::DEAD) &&
           (nodePtr.p->m_NF_COMPLETE_REP.isWaitingFor(failedNodePtr.i))) {
         jam();
         /*----------------------------------------------------*/
@@ -9901,6 +9921,9 @@ void Dbdih::failedNodeSynchHandling(Signal *signal,
         /*       REPORT THAT NODE FAILURE HANDLING WAS        */
         /*       COMPLETED ON THE NEW FAILED NODE FOR THIS    */
         /*       PARTICULAR OLD FAILED NODE.                  */
+        /*       A DEAD NODE CAN ALSO BE WAITING: A NODE THAT */
+        /*       FAILED WHILE STARTING IS MARKED DEAD BELOW   */
+        /*       WITH ITS MASK STILL ARMED.                   */
         /*----------------------------------------------------*/
         NFCompleteRep *const nf = (NFCompleteRep *)&signal->theData[0];
         nf->blockNo = 0;

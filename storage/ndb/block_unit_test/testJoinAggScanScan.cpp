@@ -94,7 +94,7 @@ static const char *SS_STAT   = "ss_stat";
 static const char *SS_PROJECT = "ss_project";
 static const char *SS_TASK    = "ss_task";
 
-/* Group E tables (Test 9 — eviction via ERROR_INSERT 4040) */
+/* Group E tables (Test 9 — eviction via ERROR_INSERT 4041) */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 static const char *SS_STORE_E = "ss_store_e";
 static const char *SS_SALE_E  = "ss_sale_e";
@@ -2034,7 +2034,7 @@ dropGroupETables(MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 9: Forced eviction via ERROR_INSERT 4040 (scan-scan)           */
+/* Test 9: Forced eviction via ERROR_INSERT 4041 (scan-scan)           */
 /*                                                                     */
 /* SQL equivalent:                                                     */
 /*   SELECT s.region, SUM(l.amount)                                    */
@@ -2042,7 +2042,7 @@ dropGroupETables(MYSQL *conn)
 /*   GROUP BY s.region                                                 */
 /*                                                                     */
 /* 60 stores, 600 sales, 20 region groups (30 sales each).             */
-/* ERROR_INSERT 4040 forces intermittent group eviction (~every 7th    */
+/* ERROR_INSERT 4041 forces intermittent group eviction (~every 7th    */
 /* row when >=3 groups). With 20 groups and 600 rows, eviction fires   */
 /* frequently, creating many merge opportunities in DBSPJ.             */
 /* ------------------------------------------------------------------ */
@@ -2050,14 +2050,14 @@ dropGroupETables(MYSQL *conn)
 static int
 testEvictionScanScan(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 9: Forced eviction (ERROR_INSERT 4040) scan-scan ... ");
+  printf("Test 9: Forced eviction (ERROR_INSERT 4041) scan-scan ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(4040) != 0) {
-    printf("FAILED (insertErrorInAllNodes(4040))\n");
+  if (restarter.insertErrorInAllNodes(4041) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4041))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 4040 set\n");
+  V("\n  ERROR_INSERT 4041 set\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SS_STORE_E);

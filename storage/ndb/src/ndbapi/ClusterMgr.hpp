@@ -172,6 +172,9 @@ class ClusterMgr : public trp_client {
     Uint32 m_user_id;
     Uint32 m_user_id_version;
     Uint32 m_username_len;
+    /* Cache generation this entry was last seen in by a LIST walk. Used by
+       the periodic re-LIST to sweep users dropped without a DROP rep. */
+    Uint32 m_generation;
     bool m_wait_for_entry;
     char m_username[0];
   };
@@ -193,6 +196,12 @@ class ClusterMgr : public trp_client {
   void releaseUserIdHash();
   void fillingUserIdCache(Uint32 node_id, Uint32 nextDatabaseId);
   void startUserIdCacheFill(Uint32 node_id);
+  /* Backstop for a missed CREATE/DROP_DATABASE_REP: periodically re-LIST the
+     user table so a user provisioned (or dropped) without a delivered
+     announcement is picked up within one interval. Called from threadMain
+     while holding the trp_client lock. */
+  void maybeReListUserIds(Uint32 node_id, NDB_TICKS now);
+  void sweepStaleUserIds();
   Uint32 calc_user_hash_index(const char *username, Uint32 username_len);
   int insertUserId(const char *username,
                    Uint32 username_len,
@@ -206,6 +215,12 @@ class ClusterMgr : public trp_client {
   Uint32 m_num_in_user_id_cache;
   bool m_initialised_user_id_cache;
   bool m_initialising_user_id_cache;
+  /* Generation stamped on entries by the current LIST walk, and re-LIST
+     scheduling. A re-LIST is a full walk that upserts and then sweeps
+     entries not seen in the new generation. */
+  Uint32 m_user_id_generation;
+  bool m_user_id_relist_active;
+  NDB_TICKS m_next_user_id_relist;
   NdbMutex *theUserIdMutex;
   NdbCondition *theUserIdCond;
   struct UserIdHashEntry **theUserIdHash;

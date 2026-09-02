@@ -71,7 +71,7 @@ BaseBatchOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_numOperations = numOps;
   m_num_sent_operations = 0;
   m_single_transaction = globalConfigs.rest.useSingleTransaction;
-  m_user_rate_limits = globalConfigs.rest.userRateLimits;
+  m_user_rate_limits = globalConfigs.rateLimit.enable;
 
   // Allocate key operations array (derived class handles the type)
   status = allocate_key_ops(amalloc, numOps);

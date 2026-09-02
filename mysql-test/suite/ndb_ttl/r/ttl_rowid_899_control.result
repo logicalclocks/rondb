@@ -1,0 +1,34 @@
+SET time_zone = '+00:00';
+# --- create a small TTL table (TTL=300s, rows stay live throughout)
+CREATE TABLE test.t899 (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       INT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=300@ttl_col";
+# --- baseline: insert succeeds while no error insert is armed
+INSERT INTO test.t899 VALUES (1, NOW(), 0);
+# --- arm ERROR_INSERT 4019 on ALL data nodes: every rowid-specified
+#     (i.e. backup-replica) insert now fails with NDB error 899
+# --- the INSERT fails -- NDB 899 surfaces as ER_LOCK_WAIT_TIMEOUT (1205)
+INSERT INTO test.t899 VALUES (2, NOW(), 0);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+# --- the true cause is only visible in the warning stack: code 1297,
+#     "Got temporary error 899 'Rowid already allocated' from NDB"
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1297	Got temporary error 899 'Rowid already allocated' from NDB
+Error	1205	Lock wait timeout exceeded; try restarting transaction
+# --- the row was NOT inserted (transaction aborted cleanly)
+SELECT id, v FROM test.t899 ORDER BY id;
+id	v
+1	0
+# --- disarm the error insert on all nodes
+# --- inserts succeed again
+INSERT INTO test.t899 VALUES (2, NOW(), 0);
+SELECT id, v FROM test.t899 ORDER BY id;
+id	v
+1	0
+2	0
+# --- final invariant: the aborted insert left no replica divergence
+# ndb_assert_frag_replica_consistency: PASS for test.t899 (all fragments identical on 2 replicas)
+DROP TABLE test.t899;

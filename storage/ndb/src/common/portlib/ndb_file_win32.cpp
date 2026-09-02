@@ -146,7 +146,6 @@ int ndb_file::read_backward(void *buf, ndb_file::size_t count) const {
   }
 
   const DWORD size = count;
-  require(size > 0);
   DWORD dwBytesRead;
   BOOL bRead = ReadFile(m_handle, buf, size, &dwBytesRead, nullptr);
   if (!bRead) {

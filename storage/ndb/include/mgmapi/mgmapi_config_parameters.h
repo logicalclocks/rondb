@@ -307,8 +307,9 @@
 /* 704/705 belong to the restart barrier / graceful shutdown timeouts in
    released 26.02: on an id conflict the lower version always wins, so
    these two moved to 706/707 */
-#define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 706
-#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 707
+#define CFG_DB_CRASH_ON_LEAKED_LCP_BIT 706
+#define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 707
+#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 708
 
 /* End RonDB only configuration parameters */
 

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2023, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -192,7 +193,10 @@ void Test::run() {
   } else {
     r = proc->stop();
     ok(r, "force kill process");
-    ok(proc->wait(actualExitCode, 500), "wait() after kill");
+    r = proc->wait(actualExitCode, 500);
+    ok(r, "wait() after kill");
+    if (r)
+      ok(!proc->stop(), "stop() after reap fails safely");
   }
 }
 

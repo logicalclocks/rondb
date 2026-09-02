@@ -32,7 +32,9 @@
 #include "ArrayPool.hpp"
 #include <DL64HashTable.hpp>
 #include <NdbCondition.h>
+#include <NdbTick.h>
 #include <ndb_limits.h>
+#include <ndb_version.h>
 #include <DLHashTable.hpp>
 #include <IntrusiveList.hpp>
 #include <SectionReader.hpp>
@@ -358,12 +360,22 @@ class FsReadWriteReq;
 #define ZHANDLE_TC_FAILED_SCANS 42
 #define ZRESUME_BLOCKED_COPY_FRAGMENT 43
 #define ZUPDATE_CPU_USAGE 44
-#define ZCONTINUE_JOIN_AGG_SEND 45
-#define ZCONTINUE_JOIN_AGG_MERGE 46
-#define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
-#define ZCONTINUE_CTE_REDIST_DRAIN 48
-#define ZCONTINUE_CTE_SCAN_AGG_FEED 49
-#define ZCONTINUE_AGG_INTERP_TEARDOWN 50
+#if defined ERROR_INSERT
+/**
+ * Timing-only test aid (ERROR_INSERT 5113): delayed continuation of one
+ * NR copy fragment process, used to slow down the copy scan of TTL-table
+ * fragments without changing any protocol state transition.
+ * The reentry flag lets the delayed CONTINUEB run the real nextRecordCopy
+ * body instead of parking itself again (member defined in the Dblqh class).
+ */
+#define ZDELAY_NEXT_COPY_ROW 45
+#endif
+#define ZCONTINUE_JOIN_AGG_SEND 46
+#define ZCONTINUE_JOIN_AGG_MERGE 47
+#define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 48
+#define ZCONTINUE_CTE_REDIST_DRAIN 49
+#define ZCONTINUE_CTE_SCAN_AGG_FEED 50
+#define ZCONTINUE_AGG_INTERP_TEARDOWN 51
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -441,6 +453,13 @@ class FsReadWriteReq;
 #define ZNO_SUCH_FRAGMENT_ID 1235
 #define ZKEYINFO_NOT_COMPLETED_BEFORE_ATTRINFO 1236
 #define ZLQHKEY_PROTOCOL_ERROR 1237
+/**
+ * A non-primary replica found the affected row at a different rowid than the
+ * one the primary attached to the forwarded LQHKEYREQ: the replica layouts
+ * have diverged (TTL error 899 hardening; permanent error, classified IE in
+ * ndberror.cpp). 1238-1244 are already taken by API-level codes.
+ */
+#define ZREPLICA_ROWID_MISMATCH 1245
 #define ZDISK_GET_PAGE_ERROR 932
 
 /* ------------------------------------------------------------------------- */
@@ -4485,6 +4504,20 @@ public:
 
 #if defined ERROR_INSERT
   Uint32 delayOpenFilePtrI;
+  /**
+   * ERROR_INSERT 5113 (timing only, see ZDELAY_NEXT_COPY_ROW): true while
+   * the delayed CONTINUEB continuation executes the real nextRecordCopy
+   * body, so that call is not parked again (consumed at nextRecordCopy
+   * entry).
+   */
+  bool m_delay_copy_reentry = false;
+  /**
+   * ERROR_INSERT 5113: tc connect record i-value of the (single) parked
+   * copy-fetch continuation, RNIL when none is pending.  Enforces at most
+   * one delayed CONTINUEB per copy process so the throttle cannot turn
+   * into a self-amplifying signal storm.
+   */
+  Uint32 m_delay_copy_park_tc = RNIL;
 #endif
 
   // Configurable
@@ -4759,6 +4792,49 @@ public:
   Uint32 c_o_direct_sync_flag;
   Uint32 m_use_om_init;
   Uint32 c_error_insert_table_id;
+
+  /**
+   * Rate-limited logging of replica rowid mismatch rejections (error 1245,
+   * ZREPLICA_ROWID_MISMATCH), to both the node log and the cluster log
+   * (warningEvent). At most two lines per 10 s window per instance with a
+   * suppressed-occurrence count; the REF itself and the ERROR_INSERT 5118
+   * escalation are never throttled. Unlike the DBTUP 899 logging there is
+   * no started-gate: verification only runs in normal operation
+   * (activeCreat == AC_NORMAL), never during copy/replay/restore.
+   */
+  NDB_TICKS m_rowid_mismatch_window_start;
+  Uint32 m_rowid_mismatch_window_count;
+  Uint32 m_rowid_mismatch_suppressed;
+  void log_replica_rowid_mismatch(const TcConnectionrec *regTcPtr,
+                                  Uint32 resolved_op, Uint32 localKey1,
+                                  Uint32 localKey2);
+
+  /**
+   * Per-hop capability check for replica rowid forwarding: does the data
+   * node we are about to forward an LQHKEYREQ to understand the
+   * rowid-carrying ZINSERT_TTL/ZUPDATE/ZDELETE/ZWRITE shapes
+   * (ndbd_replica_rowid_forwarding)? Evaluated by EVERY forwarding hop in
+   * packLqhkeyreqLab -- the primary before attaching and every middle
+   * replica before passing the flag on -- so mixed-version chains degrade
+   * to the legacy rowid-less shapes exactly at the first unsupporting hop
+   * (new->new->old: the middle strips; new->old->new: the primary strips
+   * and the middle, having received no rowid, never self-attaches).
+   * Inline: sits on the per-forwarded-operation hot path.
+   *
+   * ERROR_INSERT 5119 makes this node treat EVERY peer as unsupporting,
+   * emulating an old-version next replica for mixed-version autotests on
+   * a homogeneous cluster (arm on the middle's node to emulate an old
+   * tail, on the primary's node to emulate an old middle). Send-side
+   * only; receiver verification is unaffected.
+   */
+  bool replica_rowid_forwarding_supported(Uint32 nodeId) const {
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(5119)) {
+      return false;
+    }
+#endif
+    return ndbd_replica_rowid_forwarding(getNodeInfo(nodeId).m_version);
+  }
 
   void evict(LogPartRecord::RedoPageCache &, Uint32 cnt,
              LogPartRecord *logPartPtrP);
