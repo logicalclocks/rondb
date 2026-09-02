@@ -214,6 +214,16 @@ RUN touch $MYSQL_UNIX_PORT
 COPY ./resources/entrypoints ./docker/rondb_standalone/entrypoints
 COPY ./resources/healthcheck.sh ./docker/rondb_standalone/healthcheck.sh
 
+# Machine-readable identity for vulnerability scanners (CycloneDX SBOM).
+# The template is the source of truth for the upstream MySQL base version of
+# this release branch; only the RonDB version is substituted here. The release
+# wrapper additionally attaches this same file to the pushed image as an OCI
+# referrer (oras attach), so keep the path stable.
+COPY ./resources/rondb.cdx.json.tpl /usr/share/sbom/rondb.cdx.json.tpl
+RUN sed "s/__RONDB_VERSION__/${RONDB_VERSION}/g" \
+      /usr/share/sbom/rondb.cdx.json.tpl > /usr/share/sbom/rondb.cdx.json \
+    && rm /usr/share/sbom/rondb.cdx.json.tpl
+
 # Can be used to mount SQL init scripts
 ENV SQL_INIT_SCRIPTS_DIR=$HOPSWORK_DIR/docker/rondb_standalone/sql_init_scripts
 RUN mkdir $SQL_INIT_SCRIPTS_DIR
