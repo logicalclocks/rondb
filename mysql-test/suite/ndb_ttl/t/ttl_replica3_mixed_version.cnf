@@ -1,0 +1,6 @@
+# ttl_replica3_mixed_version needs a 3-data-node, NoOfReplicas=3 cluster:
+# per-hop version gating of replica rowid forwarding can only be told apart
+# from the primary-only gate when a MIDDLE replica hop (seqNoReplica==1)
+# exists, i.e. at NoOfReplicas>=3 (primary -> middle -> tail chain).
+# Reuse the ttl_replica3_write 3-node config unchanged.
+!include suite/ndb_ttl/t/ttl_replica3_write.cnf

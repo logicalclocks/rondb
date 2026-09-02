@@ -67,7 +67,9 @@ void HealthCtrl::health(
     callback(resp);
     return;
   }
-  // Authenticate
+  // Authenticate. NOTE: with HealthRequiresAuth enabled, an outage makes
+  // the key validation itself fail against RonDB before the cluster-state
+  // check below runs, so /health reports 401/500 instead of 503 then.
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys &&
       globalConfigs.rest.healthRequiresAuth) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
@@ -82,7 +84,22 @@ void HealthCtrl::health(
   }
   RonDB_Stats stats;
   (void)get_rondb_stats(&stats);
-  if (stats.connection_state == CONNECTED) {
+  /* Healthy only when the connection is up AND at least one data node is
+   * in STARTED state: with all data nodes down the connection state alone
+   * stays CONNECTED until a failed request triggers reconnection, and a
+   * load balancer would keep routing traffic to a server that cannot
+   * answer.
+   *
+   * One STARTED node is sufficient, not just necessary: the NDB API only
+   * counts a data node once it reports SL_STARTED (ClusterMgr
+   * execAPI_REGCONF), and a data node can only be STARTED inside a viable
+   * cluster - losing a complete node group shuts down the surviving nodes
+   * too, taking the STARTED count to 0. A started-but-degraded cluster
+   * (some replicas down, every node group still covered) serves all data
+   * and is correctly reported healthy. */
+  if (stats.connection_state == CONNECTED &&
+      !stats.is_reconnection_in_progress &&
+      get_num_ready_data_nodes() > 0) {
     resp->setBody("1");
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   } else {

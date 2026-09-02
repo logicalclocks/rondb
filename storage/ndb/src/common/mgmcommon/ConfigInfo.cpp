@@ -55,6 +55,8 @@
 #define _STR_VALUE(x) #x
 #define STR_VALUE(x) _STR_VALUE(x)
 
+static int configErrorInsert = 0;
+
 /****************************************************************************
  * Section names
  ****************************************************************************/
@@ -1599,6 +1601,14 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 #endif
      "false", "true"},
 
+    {CFG_DB_CRASH_ON_LEAKED_LCP_BIT, "CrashOnLeakedLcpScannedBit", DB_TOKEN,
+     "To be failfast or not, when a leaked LCP_SCANNED_BIT is found in the"
+     " page map. With the default false the bit is cleared and a warning is"
+     " written to the node log; with true the node fails fast so that trace"
+     " files capture the LCP scan that leaked the bit.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false",
+     "true"},
+
     {CFG_DB_FREE_PCT, "MinFreePct", DB_TOKEN,
      "Keep 5% of database free to ensure that we don't get out of memory "
      "during restart",
@@ -2765,6 +2775,8 @@ ConfigInfo::ConfigInfo() : m_info(true), m_systemDefaults(true) {
   }
 }
 
+void ConfigInfo::insertError(int err) { configErrorInsert = err; }
+
 /****************************************************************************
  * Getters
  ****************************************************************************/
@@ -3457,7 +3469,7 @@ static bool checkLocalhostHostnameMix(InitConfigFileParser::Context &ctx,
     ctx.m_userProperties.put("$computer-localhost", hostname);
   }
 
-  if (localhost_used) {
+  if (localhost_used && configErrorInsert != 904) {
     ctx.reportError(
         "Mixing of localhost (default for [NDBD]HostName) with other "
         "hostname(%s) is illegal",

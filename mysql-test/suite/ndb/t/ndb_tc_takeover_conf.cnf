@@ -1,0 +1,34 @@
+!include ../my.cnf
+
+# The TC take over CONF tests need at least 4 data nodes in 2 node
+# groups: the node whose failure starts the take over must be in
+# another node group than the take over master (both are dead at the
+# same time), and at least two more nodes are needed as the next
+# master and as a surviving observer.
+
+[cluster_config.1]
+NoOfReplicas=                  2
+ndbd=,,,
+ndb_mgmd=
+mysqld=,
+ndbapi=,,,,,,,,,,,
+# The tests crash the take over master with an error insert and stop
+# another node with abort. With the default StopOnError=1 a node that
+# dies unexpectedly exits permanently and the test cannot bring the
+# cluster back; with StopOnError=0 the angel brings it back and the
+# recovery step just waits for it to rejoin.
+StopOnError=0
+
+[mysqld]
+# Make all mysqlds use cluster
+ndbcluster
+ndb-wait-connected=20
+ndb-wait-setup=60
+ndb-extra-logging=99
+skip-log-bin
+skip-log-replica-updates
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port

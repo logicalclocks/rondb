@@ -66,3 +66,13 @@ func TestRateLimitZeroIsUnlimited(t *testing.T) {
 	testutils.SkipIfRateLimitsDisabled(t)
 	testutils.RunZeroRateIsUnlimitedTest(t, pkReadRateLimitSender(t))
 }
+
+// TestRateLimitUserCreatedAfterServerStart verifies that a USER entity created
+// while the server is already running is enforced via the CREATE_DATABASE_REP
+// push announcement alone — the authoritative user-id cache sends no
+// per-transaction DICT probes. Endpoint-agnostic client behaviour, so it is
+// exercised once here via pk-read.
+func TestRateLimitUserCreatedAfterServerStart(t *testing.T) {
+	testutils.SkipIfRateLimitsDisabled(t)
+	testutils.RunUserCreatedAfterStartRateLimitTest(t, pkReadRateLimitSender(t))
+}

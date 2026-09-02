@@ -1,0 +1,11 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Churn against back to back LCPs, natural windows
+# Churn into the delayed pre-scan window (error insert 10063)
+# Churn into stretched mid-scan batch windows (error insert 10042)
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All LCP scanned bit churn tests passed

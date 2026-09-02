@@ -1,0 +1,37 @@
+!include ../my.cnf
+
+# The LCP start node failure tests need 2 replicas so that an LCP
+# participant can fail without the cluster going down. The master
+# take over variant additionally stops the master before the LCP
+# participant, so it needs at least 4 data nodes in 2 node groups:
+# the two dead nodes are chosen from different node groups and two
+# more nodes are needed as the new master and as a surviving
+# participant.
+
+[cluster_config.1]
+NoOfReplicas=                  2
+ndbd=,,,
+ndb_mgmd=
+mysqld=,
+ndbapi=,,,,,,,,,,,
+# The tests stop nodes with abort, and on a broken build the DIH
+# master dies with an ndbrequire failure. With the default
+# StopOnError=1 a node that dies unexpectedly exits permanently and
+# the test cannot bring the cluster back; with StopOnError=0 the
+# angel brings it back and the recovery step just waits for it to
+# rejoin.
+StopOnError=0
+
+[mysqld]
+# Make all mysqlds use cluster
+ndbcluster
+ndb-wait-connected=20
+ndb-wait-setup=60
+ndb-extra-logging=99
+skip-log-bin
+skip-log-replica-updates
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port

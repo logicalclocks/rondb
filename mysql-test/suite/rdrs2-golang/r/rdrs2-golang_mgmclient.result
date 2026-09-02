@@ -1,8 +1,0 @@
-## Run rdrs2-golang_mgmclient.test without TLS
-?   	hopsworks.ai/rdrs2/internal/mgmclient	[no test files]
-
-Golang test for hopsworks.ai/rdrs2/internal/mgmclient exited with code 0
-## Run rdrs2-golang_mgmclient.test with TLS and server-side cert
-?   	hopsworks.ai/rdrs2/internal/mgmclient	[no test files]
-
-Golang test for hopsworks.ai/rdrs2/internal/mgmclient exited with code 0

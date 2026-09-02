@@ -36,7 +36,7 @@ import (
 const HIGH_RATE_LIMIT = 1000000
 
 // APIKeyPrefix returns the public prefix of a Hopsworks API key (the part
-// before the '.'). With RateLimitIdentity=apikey and RateLimitFullAPIKey
+// before the '.'). With .RateLimit.Identity=apikey and .RateLimit.FullAPIKey
 // false (the defaults), this is the rate limit identity RDRS tags
 // transactions with.
 func APIKeyPrefix(apiKey string) string {
@@ -105,6 +105,15 @@ const (
 	// throttling for rate 0; a couple of seconds of full pressure is far
 	// beyond the point where a limited identity starts seeing 429s.
 	rateLimitZeroBurstDuration = 3 * time.Second
+	// rateLimitPushBurstMaxDuration bounds the burst that must observe the
+	// first 429 after a USER entity is created while the server is running.
+	// It must stay well below ClusterMgr's 60s periodic re-LIST backstop
+	// (USER_ID_RELIST_INTERVAL_MS): a 429 inside this window can only mean
+	// the identity reached the user-id caches through the
+	// CREATE_DATABASE_REP push announcement, which is what the push-path
+	// test pins down. With a working push the first 429 arrives within a
+	// few seconds; 15s is margin for slow machines.
+	rateLimitPushBurstMaxDuration = 15 * time.Second
 )
 
 // rateLimitSettleTime waits out the ~1s client-side overload backoff plus the
@@ -124,7 +133,7 @@ func SkipIfRateLimitsDisabled(t *testing.T) {
 	if !conf.REST.Enable {
 		t.Skip("Skipping test as REST is disabled")
 	}
-	if !conf.REST.UserRateLimits || conf.REST.RateLimitIdentity != "apikey" {
+	if !conf.RateLimit.Enable || conf.RateLimit.Identity != "apikey" {
 		t.Skip("Skipping test as API key rate limits are disabled")
 	}
 	if !*WithRonDB {
@@ -256,5 +265,63 @@ func RunZeroRateIsUnlimitedTest(t *testing.T, sendOne func(*http.Client) int) {
 	if numRateLimited != 0 {
 		t.Fatalf("expected no rate limiting at rate 0, got %d/%d rejected",
 			numRateLimited, numOk+numRateLimited)
+	}
+}
+
+// RunUserCreatedAfterStartRateLimitTest verifies that a USER entity created
+// while the server is already running (its user-id caches long initialised)
+// starts being enforced via the CREATE_DATABASE_REP push announcement alone.
+// The authoritative user-id cache never probes DICT per transaction: an
+// unknown identity runs unmetered until a push announcement (or the 60s
+// re-LIST backstop) delivers it. The test drops the provisioned user, shows
+// the identity is then unmetered, re-creates it with a tiny rate — a
+// genuinely new DICT entity with a new user id, so a stale cache entry from
+// before the drop cannot satisfy the lookup — and asserts a burst is
+// throttled well before the re-LIST backstop could have healed a missed
+// announcement (see rateLimitPushBurstMaxDuration).
+func RunUserCreatedAfterStartRateLimitTest(t *testing.T,
+	sendOne func(*http.Client) int) {
+	t.Helper()
+	client := setupBurstHttpClient(t)
+	defer restoreHighRateLimit(t)
+
+	mgm, err := connectMgmd()
+	if err != nil {
+		t.Fatalf("failed to connect to mgmd: %v", err)
+	}
+	defer mgm.Close()
+
+	identity := rateLimitIdentity()
+	if err := mgm.DropUser(identity); err != nil {
+		t.Fatalf("failed to drop user %q: %v", identity, err)
+	}
+	time.Sleep(rateLimitSettleTime) // DROP_DATABASE_REP propagation
+
+	// The dropped identity is unknown to every user-id cache and must run
+	// unmetered (and in particular must not be rejected or probed).
+	if code := sendOne(client); code != http.StatusOK {
+		t.Fatalf("expected unmetered 200 after user drop, got %d", code)
+	}
+
+	// Re-create the user with a tiny rate. SetUser (not alter) must succeed:
+	// the entity was just dropped, so this is a fresh create, announced to
+	// the running server only by CREATE_DATABASE_REP.
+	limits := mgmclient.UserLimits{RatePerSec: rateLimitLowRate}
+	if err := mgm.SetUser(identity, limits); err != nil {
+		t.Fatalf("failed to re-create user %q: %v", identity, err)
+	}
+	created := time.Now()
+	time.Sleep(rateLimitSettleTime)
+
+	numOk, numRateLimited := rateLimitBurst(client, sendOne, true,
+		rateLimitPushBurstMaxDuration)
+	elapsed := time.Since(created)
+	t.Logf("user created after server start -> %d ok, %d rate limited, %v "+
+		"after create", numOk, numRateLimited, elapsed)
+	if numRateLimited == 0 {
+		t.Fatalf("no 429 within %v of creating the user: the "+
+			"CREATE_DATABASE_REP push did not reach the user-id caches "+
+			"(only the 60s re-LIST backstop would eventually heal this)",
+			elapsed)
 	}
 }

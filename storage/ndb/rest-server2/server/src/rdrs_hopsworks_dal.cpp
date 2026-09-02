@@ -156,11 +156,20 @@ RS_Status find_api_key_int(Ndb *ndb_object,
   NdbRecAttr *secret = scanOp->getValue("secret");
   NdbRecAttr *salt = scanOp->getValue("salt");
   NdbRecAttr *name = scanOp->getValue("name");
-  NdbRecAttr *expiry = scanOp->getValue("expiry");
-  // getColumn() is nullptr on a pre-V73 schema without api_key.expiry; the
-  // getValue() above is then nullptr too and the check below reports it.
+  /*
+   * api_key.expiry only exists from Hopsworks schema V73
+   * (V73-HWORKS-2804-add_expiry_to_api_key). On an older schema the column is
+   * absent, which is not an error: keys simply never expire, which is exactly
+   * what expiry_epoch == 0 means downstream. Read it only when it is there --
+   * getColumn() returns nullptr otherwise, and dereferencing that segfaulted.
+   */
   const NdbDictionary::Column *expiry_col = table_dict->getColumn("expiry");
-  unsigned expiry_prec = expiry_col != nullptr ? expiry_col->getPrecision() : 0;
+  NdbRecAttr *expiry = nullptr;
+  unsigned expiry_prec = 0;
+  if (expiry_col != nullptr) {
+    expiry = scanOp->getValue("expiry");
+    expiry_prec = expiry_col->getPrecision();
+  }
 
   assert(API_KEY_SECRET_SIZE ==
          (Uint32)table_dict->getColumn("secret")->getSizeInBytes());
@@ -173,7 +182,7 @@ RS_Status find_api_key_int(Ndb *ndb_object,
                secret == nullptr ||
                salt == nullptr ||
                name == nullptr ||
-               expiry == nullptr)) {
+               (expiry_col != nullptr && expiry == nullptr))) {
     err = scanOp->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
@@ -231,7 +240,9 @@ RS_Status find_api_key_int(Ndb *ndb_object,
       api_key->salt[salt_attr_bytes] = '\0';
 
       api_key->user_id = user_id->int32_value();
-      api_key->expiry_epoch = datetime_attr_to_epoch(expiry, expiry_prec);
+      // No expiry column (pre-V73 schema) => key never expires.
+      api_key->expiry_epoch =
+        (expiry != nullptr) ? datetime_attr_to_epoch(expiry, expiry_prec) : 0;
     } while ((check = scanOp->nextResult(false)) == 0);
   }
   NdbError error = scanOp->getNdbError();
@@ -298,17 +309,20 @@ RS_Status find_all_api_keys_int(Ndb *ndb_object,
   NdbRecAttr *secret_attr = scanOp->getValue("secret");
   NdbRecAttr *salt_attr = scanOp->getValue("salt");
   NdbRecAttr *user_id_attr = scanOp->getValue("user_id");
-  NdbRecAttr *expiry_attr = scanOp->getValue("expiry");
-  // getColumn() is nullptr on a pre-V73 schema without api_key.expiry; the
-  // getValue() above is then nullptr too and the check below reports it.
+  // See find_api_key_int: expiry only exists from Hopsworks schema V73.
   const NdbDictionary::Column *expiry_col = table_dict->getColumn("expiry");
-  unsigned expiry_prec = expiry_col != nullptr ? expiry_col->getPrecision() : 0;
+  NdbRecAttr *expiry_attr = nullptr;
+  unsigned expiry_prec = 0;
+  if (expiry_col != nullptr) {
+    expiry_attr = scanOp->getValue("expiry");
+    expiry_prec = expiry_col->getPrecision();
+  }
 
   if (unlikely(prefix_attr == nullptr ||
                secret_attr == nullptr ||
                salt_attr == nullptr ||
                user_id_attr == nullptr ||
-               expiry_attr == nullptr)) {
+               (expiry_col != nullptr && expiry_attr == nullptr))) {
     err = scanOp->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err,
@@ -355,7 +369,9 @@ RS_Status find_all_api_keys_int(Ndb *ndb_object,
         std::string(secret_start, secret_bytes),
         std::string(salt_start, salt_bytes),
         user_id_attr->int32_value(),
-        datetime_attr_to_epoch(expiry_attr, expiry_prec)
+        // No expiry column (pre-V73 schema) => key never expires.
+        (expiry_attr != nullptr)
+          ? datetime_attr_to_epoch(expiry_attr, expiry_prec) : 0
       });
     } while ((check = scanOp->nextResult(false)) == 0);
   }
@@ -428,17 +444,20 @@ static RS_Status find_api_key_by_id_int(Ndb *ndb_object,
   NdbRecAttr *secret_attr = op->getValue("secret");
   NdbRecAttr *salt_attr   = op->getValue("salt");
   NdbRecAttr *user_id_attr = op->getValue("user_id");
-  NdbRecAttr *expiry_attr = op->getValue("expiry");
-  // getColumn() is nullptr on a pre-V73 schema without api_key.expiry; the
-  // getValue() above is then nullptr too and the check below reports it.
+  // See find_api_key_int: expiry only exists from Hopsworks schema V73.
   const NdbDictionary::Column *expiry_col = table_dict->getColumn("expiry");
-  unsigned expiry_prec = expiry_col != nullptr ? expiry_col->getPrecision() : 0;
+  NdbRecAttr *expiry_attr = nullptr;
+  unsigned expiry_prec = 0;
+  if (expiry_col != nullptr) {
+    expiry_attr = op->getValue("expiry");
+    expiry_prec = expiry_col->getPrecision();
+  }
 
   if (unlikely(prefix_attr == nullptr ||
                secret_attr == nullptr ||
                salt_attr == nullptr ||
                user_id_attr == nullptr ||
-               expiry_attr == nullptr)) {
+               (expiry_col != nullptr && expiry_attr == nullptr))) {
     err = op->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err,
@@ -480,7 +499,9 @@ static RS_Status find_api_key_by_id_int(Ndb *ndb_object,
   entry->secret = std::string(secret_start, secret_bytes);
   entry->salt = std::string(salt_start, salt_bytes);
   entry->user_id = user_id_attr->int32_value();
-  entry->expiry_epoch = datetime_attr_to_epoch(expiry_attr, expiry_prec);
+  // No expiry column (pre-V73 schema) => key never expires.
+  entry->expiry_epoch =
+    (expiry_attr != nullptr) ? datetime_attr_to_epoch(expiry_attr, expiry_prec) : 0;
 
   ndb_object->closeTransaction(tx);
   return RS_OK;

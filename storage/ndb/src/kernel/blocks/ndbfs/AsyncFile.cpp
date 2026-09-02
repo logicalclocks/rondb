@@ -263,24 +263,26 @@ void AsyncFile::openReq(Request *request) {
         kdf_iter_count = -1;  // Use PBKDF2 let ndb_ndbxfrm decide iter count
       }
       DEB_FSWRITEREQ(("File %s data_size: %llu, get_data_size: %llu,"
-                      " file_block_size: %lu",
-		      theFileName.c_str(),
-		      data_size,
-		      m_file.get_size(),
-		      file_block_size));
+                " file_block_size: %lu",
+                theFileName.c_str(),
+                data_size,
+                m_file.get_size(),
+                file_block_size));
       errno = 0;
+      bool partial_last_block = (flags & FsOpenReq::OM_PARTIAL_LAST_BLOCK);
       rc = m_xfile.create(
           m_file,
           use_gz,
           pwd,
-          pwd_len,
+          size_t(pwd_len),
           kdf_iter_count,
-          enc_cipher,
+          int(enc_cipher),
           -1,
           key_data_unit_size,
           file_block_size,
           data_size,
-          is_data_size_estimated);
+          is_data_size_estimated,
+          partial_last_block);
       if (rc < 0) NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
     }
     else
@@ -463,7 +465,7 @@ void AsyncFile::openReq(Request *request) {
                         index - 1,
                         ret_code,
                         request->theUserReference));
- 
+
         off += request->par.open.page_size;
         if (ret_code > 0)
         {
@@ -694,9 +696,6 @@ void AsyncFile::closeReq(Request *request) {
     int r = m_xfile.close(abort);
     if (r == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
-      if (request->error.code == 0) {
-        NDBFS_SET_REQUEST_ERROR(request, FsRef::fsErrUnknown);
-      }
     }
   }
   errno = 0;
@@ -706,9 +705,6 @@ void AsyncFile::closeReq(Request *request) {
     int r = m_file.close();
     if (r == -1 || sync_ret == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
-      if (request->error.code == 0) {
-        NDBFS_SET_REQUEST_ERROR(request, FsRef::fsErrUnknown);
-      }
     }
   }
 }
@@ -1086,9 +1082,6 @@ void AsyncFile::appendReq(Request *request) {
   int r = m_xfile.write_forward(&in);
   if (r == -1) {
     NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
-    if (request->error.code == 0) {
-      NDBFS_SET_REQUEST_ERROR(request, FsRef::fsErrUnknown);
-    }
     return;
   }
   if (!in.empty()) {

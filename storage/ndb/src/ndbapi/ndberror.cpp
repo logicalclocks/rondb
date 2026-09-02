@@ -455,6 +455,7 @@ ErrorBundle ErrorCodes[] = {
   { 298,  DMEC, IE, "Invalid distribution key" },
   { 416,  DMEC, IE, "Bad state handling unlock request" },
   { 1237, DMEC, IE, "LQHKEYREQ Protocol error" },
+  { 1245, DMEC, IE, "Replica rowid mismatch detected" },
 
   /**
    * Application error

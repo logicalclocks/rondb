@@ -24,6 +24,33 @@
 
 #include <NdbApi.hpp>
 
+/**
+ * Clear the dictionary's sticky error. Call before a getTable() whose
+ * error will be used to classify a failure: the NDB API never resets it
+ * on entry, and pooled Ndb objects keep it across unrelated requests.
+ */
+void ndb_dict_clear_error(const NdbDictionary::Dictionary *dict);
+
+/**
+ * Classify a dictionary lookup failure (getTable() returned nullptr).
+ * Returns true when the dictionary positively reports that the object does
+ * not exist. Returns false when the lookup itself failed (e.g. no data
+ * node was available to answer) and the object may well exist, in which
+ * case the failure must be reported as a server error, never as 404.
+ *
+ * @param dict_error_code dict->getNdbError().code after the failed lookup
+ */
+bool ndb_dict_object_missing(int dict_error_code);
+
+/**
+ * True for NdbError codes meaning this API node has lost connectivity to
+ * every data node - the states only a full reconnection of the cluster
+ * connection can recover from. Used to trigger reconnection; states with
+ * alive data nodes (single node failure, nodes stopping, single user
+ * mode, version mismatch) must not tear the connection down.
+ */
+bool ndb_error_cluster_unavailable(int error_code);
+
 RS_Status start_transaction(Ndb *ndb_object, NdbTransaction **tx);
 
 RS_Status select_table(Ndb *ndb_object,
