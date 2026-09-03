@@ -1,7 +1,33 @@
 # AVG in CTE Outputs (SUM+COUNT slots, redistribute, finalize-divide)
 
-**Status: V1-V4 + block test IMPLEMENTED (September 2026, pending user
-build + Test 25 re-run + RonSQL smoke); V6 MTR + docs pending.**
+**Status: V1-V5 SHIPPED (`8b8e69d89d4` on RONDB-1107-step4; Test 25
+green with Tests 1-24 regression after the single-node completion-arm
+fix); Test 26 + the V6 MTR family AUTHORED (pending user build +
+ndb_push_agg/_dist runs + first `--record` ×5); docs pending.**
+
+V5/V6 additions (September 2026):
+- **Test 26** (testCteNdbApiFilter): AVG at scale — 1500 groups × 2
+  rows with exact-in-double averages (avg = g+1); exceeds
+  ZCTE_AVG_FINALIZE_BATCH so the owner finalize takes ≥2 CONTINUEB
+  slices, and in ndb_push_agg_dist the groups reach the owner through
+  redistribute + inbound merge first.  Thresholds pin both
+  slice-visited regions (avg>1000 ⇒ COUNT=1002; avg<100 ⇒ COUNT=196);
+  restores the canonical 5-row cte_src afterwards.
+- **MTR family `body_avg.inc`** (`ronsql_cte_dd_avg` ×5 topology
+  suites): avg-01..10 + avg-P1..P3 — pass-through display of AVG(int)
+  scale-4 / AVG(DECIMAL) scale-6 / nullable-with-COUNT / mixed-aggregate
+  position stability / two-AVG CTEs; aggregate-path consumption via the
+  CTE_LOOKUP filter (int and DOUBLE args — the l_tax threshold sits at
+  0.045, between the 0.04/0.05 value points, and each group's two
+  l_tax rows are identical so double summation order cannot matter);
+  scalar all-NULL ⇒ NULL; the AVG watermark comma join (real INT vs
+  CTE DOUBLE via typed regs); SUM/MIN/MAX re-aggregation over the avg;
+  string/temporal/expression rejection probes.
+- Deliberate first-record scope choice: direct display rides
+  PASS-THROUGH shapes (CTE_SCAN root, the proven filter-45/gc-9
+  envelope) — a main-query `GROUP BY a.av` (grouping by a CTE
+  AGGREGATE output) is unproven and is left as a follow-up probe
+  rather than gambling a new family's record on it.
 
 Test 25 first-run finding (FIXED): `avg>30` returned COUNT=0 — the
 finalize never ran because the SINGLE-NODE completion arm

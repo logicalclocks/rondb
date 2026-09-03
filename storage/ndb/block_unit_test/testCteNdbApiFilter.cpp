@@ -3945,6 +3945,300 @@ testCteLookupAvg(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 26: AVG at scale — sliced finalize + redistribute              */
+/*          (cte_avg_plan.md V5 large-cardinality case)                */
+/*                                                                     */
+/* 1500 groups x 2 rows: group g holds val = g and val = g + 2, so     */
+/* avg = g + 1 exactly (all values exact in double).  1500 groups      */
+/* exceeds ZCTE_AVG_FINALIZE_BATCH (1024), so the owner-side finalize  */
+/* walk takes at least two CONTINUEB slices; on a multi-node cluster   */
+/* (ndb_push_agg_dist) the groups additionally arrive at the owner     */
+/* through the redistribute + inbound-merge path before the divide.    */
+/*                                                                     */
+/* Sub-cases pin both slice-visited regions of the hash:               */
+/*   (a) accept avg > 1000.0 -> g in [1000, 1500] = 501 groups         */
+/*       x 2 main rows -> COUNT=1002                                   */
+/*   (b) accept avg < 100.0  -> g in [1, 98] = 98 groups               */
+/*       x 2 main rows -> COUNT=196                                    */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupAvgLarge(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 26: CTE AVG at scale (sliced finalize) ... ");
+  fflush(stdout);
+
+  /* Re-seed cte_src with 1500 groups x 2 rows (bulk-insert in chunks
+   * of 100 rows, mirroring the Test 19 seeding pattern). */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  {
+    char sql[8192];
+    int pos = 0;
+    bool first = true;
+    int rows = 0;
+    for (int g = 1; g <= 1500; g++) {
+      for (int r = 0; r < 2; r++) {
+        if (first) {
+          pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+          first = false;
+        } else {
+          pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+        }
+        const int pk = 2 * g - 1 + r;
+        const int val = (r == 0) ? g : g + 2;
+        pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,%d)",
+                        pk, g, val);
+        rows++;
+        if (rows % 100 == 0) {
+          if (sqlExec(conn, sql) != 0) {
+            printf("FAILED (seed insert at g=%d)\n", g);
+            return -1;
+          }
+          first = true;
+        }
+      }
+    }
+    if (!first && sqlExec(conn, sql) != 0) {
+      printf("FAILED (seed insert tail)\n");
+      return -1;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  if (srcTab == nullptr) {
+    printf("FAILED (cte_src lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *valCol = srcTab->getColumn("val");
+  if (valCol == nullptr) {
+    printf("FAILED (cte_src.val lookup)\n");
+    return -1;
+  }
+
+  NdbDictionary::Table virtTabSyn("__cte_avg_lg_virt");
+  {
+    NdbDictionary::Column grpCol;
+    grpCol.setName("grp");
+    grpCol.setType(NdbDictionary::Column::Int);
+    grpCol.setLength(1);
+    grpCol.setPrimaryKey(true);
+    grpCol.setNullable(false);
+    virtTabSyn.addColumn(grpCol);
+
+    NdbDictionary::Column aCol;
+    aCol.setName("a");
+    aCol.setType(NdbDictionary::Column::Double);
+    aCol.setLength(1);
+    aCol.setPrimaryKey(false);
+    aCol.setNullable(true);
+    virtTabSyn.addColumn(aCol);
+  }
+  {
+    NdbError vtErr;
+    if (virtTabSyn.aggregate(vtErr) != 0) {
+      printf("FAILED (virtTab aggregate: %d %s)\n",
+             vtErr.code, vtErr.message);
+      return -1;
+    }
+  }
+  const NdbDictionary::Table *virtTab = &virtTabSyn;
+
+  struct SubCase {
+    const char *name;
+    double threshold;
+    bool useGe;      /* true: reject via _ge (accept avg > thr) */
+    Int64 expected;
+  };
+  const SubCase cases[] = {
+      { "avg>1000", 1000.0, true, 1002 },
+      { "avg<100", 100.0, false, 196 },
+  };
+
+  for (const SubCase &sc : cases) {
+    NdbAggregator cteAgg(srcTab);
+    if (!cteAgg.GroupBy("grp") ||
+        !cteAgg.LoadColumn(valCol->getAttrId(), 0) ||
+        !cteAgg.Avg(0, 0) ||
+        !cteAgg.Finalize()) {
+      printf("FAILED (%s cteAgg: %s)\n", sc.name,
+             cteAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    NdbAggregator mainAgg(srcTab);
+    if (!mainAgg.LoadUint64(1, 0) ||
+        !mainAgg.Count(0, 0) ||
+        !mainAgg.Finalize()) {
+      printf("FAILED (%s mainAgg: %s)\n", sc.name,
+             mainAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    Uint32 codeBuf[64];
+    NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
+                                  sizeof(codeBuf) / sizeof(codeBuf[0]));
+    const Uint32 REJECT = 0;
+    const Uint32 typeId =
+        static_cast<Uint32>(NdbDictionary::Column::Double);
+    double thr = sc.threshold;
+    int rc = sc.useGe
+        ? filterCode.branch_linked_inline_ge(1, typeId, 8, 0,
+                                             &thr, sizeof(thr), REJECT)
+        : filterCode.branch_linked_inline_le(1, typeId, 8, 0,
+                                             &thr, sizeof(thr), REJECT);
+    if (rc != 0 ||
+        filterCode.interpret_exit_ok() != 0 ||
+        filterCode.def_label(REJECT) != 0 ||
+        filterCode.interpret_exit_nok() != 0 ||
+        filterCode.finalise() != 0) {
+      printf("FAILED (%s build filter: %s)\n", sc.name,
+             filterCode.getNdbError().message);
+      return -1;
+    }
+
+    NdbQueryBuilder *qb = NdbQueryBuilder::create();
+    if (qb == nullptr) { printf("FAILED (%s create)\n", sc.name); return -1; }
+
+    qb->beginCteSubtree(0);
+    const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+    if (cteScanOp == nullptr) {
+      printf("FAILED (%s CTE scan: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteJoinKey[] = {
+        qb->linkedValue(cteScanOp, "pk"), nullptr
+    };
+    NdbQueryOptions cteLeafOpts;
+    cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLeafOpts.setAggregation(cteAgg);
+    if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+      printf("FAILED (%s CTE leaf: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+      printf("FAILED (%s defineCte)\n", sc.name);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+    if (mainScanOp == nullptr) {
+      printf("FAILED (%s main scan: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteKey[] = {
+        qb->linkedValue(mainScanOp, "grp"), nullptr
+    };
+    NdbQueryOptions cteLookupOpts;
+    cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLookupOpts.setInterpretedCode(filterCode);
+    cteLookupOpts.setAggregation(mainAgg);
+    if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+      printf("FAILED (%s lookupCte: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryDef *queryDef = qb->prepare(ndb);
+    if (queryDef == nullptr) {
+      printf("FAILED (%s prepare: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->destroy();
+
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      printf("FAILED (%s startTransaction)\n", sc.name);
+      queryDef->destroy();
+      return -1;
+    }
+    NdbQuery *query = trans->createQuery(queryDef);
+    if (query == nullptr) {
+      printf("FAILED (%s createQuery: %s)\n", sc.name,
+             trans->getNdbError().message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      const NdbError &tErr = trans->getNdbError();
+      const NdbError &qErr = query->getNdbError();
+      printf("FAILED (%s execute: trans %d:%s, query %d:%s)\n", sc.name,
+             tErr.code, tErr.message, qErr.code, qErr.message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {
+    }
+    if (outcome == NdbQuery::NextResult_error) {
+      printf("FAILED (%s nextResult drain: %s)\n", sc.name,
+             query->getNdbError().message);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbAggregator *resultAgg = query->getAggregator();
+    if (resultAgg == nullptr) {
+      printf("FAILED (%s getAggregator)\n", sc.name);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    Int64 count = -1;
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (!rec.end()) {
+      NdbAggregator::Result countRes = rec.FetchAggregationResult();
+      count = countRes.data_int64();
+    }
+
+    query->close();
+    trans->close();
+    queryDef->destroy();
+
+    if (count != sc.expected) {
+      printf("FAILED (%s: expected COUNT=%lld, got %lld)\n", sc.name,
+             (long long)sc.expected, (long long)count);
+      return -1;
+    }
+  }
+
+  /* Restore the small canonical dataset for any later test. */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO cte_src VALUES "
+              "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)") != 0) {
+    printf("FAILED (restore cte_src)\n");
+    return -1;
+  }
+
+  printf("OK (avg>1000 COUNT=1002, avg<100 COUNT=196)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -3979,6 +4273,7 @@ static const TestEntry g_tests[] = {
     { 23, testCteLookupFilterInlineTypeMax },
     { 24, testCteLookupFilterLinkedLinkedString },
     { 25, testCteLookupAvg },
+    { 26, testCteLookupAvgLarge },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
