@@ -1118,6 +1118,41 @@ bool NdbAggregator::Count(Uint32 agg_id, Uint32 reg_id) {
   return true;
 }
 
+bool NdbAggregator::Avg(Uint32 agg_id, Uint32 reg_id) {
+  /* AVG(x) as one program word (cte_avg_plan.md).  The kernel
+   * interpreter expands it: SUM into this visible slot plus COUNT into
+   * a hidden companion it allocates beyond n_agg_results_, merged and
+   * redistributed as ordinary commutative slots, divided into a DOUBLE
+   * (count == 0 => NULL) on the owner once the CTE redistribute
+   * completes.  v1 is CTE aggregators only — the API-side result/merge
+   * paths of plain join aggregation never see the finalized DOUBLE, so
+   * use Sum+Count slots there and divide client-side instead. */
+  if (!CheckAggAndReg(agg_id, reg_id)) {
+    return false;
+  }
+  if (isStringType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedStringOperation);
+    return false;
+  }
+  /* Same envelope as Sum: AVG over DATE/YEAR/DATETIME/TIME is
+   * meaningless — only MIN/MAX/COUNT. */
+  if (isTemporalType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedTemporalOperation);
+    return false;
+  }
+
+  buffer_[curr_prog_pos_++] =
+    (kOpAvg) << 26 |
+    (reg_id & 0x0F) << 16 |
+    agg_id;
+
+  agg_ops_[agg_id] = kOpAvg;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
+  n_agg_results_++;
+
+  return true;
+}
+
 bool NdbAggregator::GroupBy(const char* name) {
   if (name == nullptr) {
     SetError(kErrInvalidColumnName);

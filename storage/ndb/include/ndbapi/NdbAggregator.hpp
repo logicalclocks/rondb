@@ -341,6 +341,11 @@ class NdbAggregator {
   bool Max(Uint32 agg_id, Uint32 reg_id);
   bool Min(Uint32 agg_id, Uint32 reg_id);
   bool Count(Uint32 agg_id, Uint32 reg_id);
+  /* AVG(x): one visible DOUBLE result slot; the kernel carries a
+   * hidden SUM/COUNT pair through merge + CTE redistribute and divides
+   * on the owner at CTE_READY (count == 0 => NULL).  CTE aggregators
+   * only in v1 — see cte_avg_plan.md. */
+  bool Avg(Uint32 agg_id, Uint32 reg_id);
 
   bool GroupBy(const char* name);
   bool GroupBy(Int32 col_id);

@@ -143,6 +143,17 @@ enum InterpreterOp {
   kOpSkip,            // Unconditional forward skip in aggregation program
   kOpSetRegNull,      // Mark register NULL, preserving its value type
 
+  /* AVG(x) as one opcode (cte_avg_plan.md): per-row executes the Sum
+   * kernel into the VISIBLE dst slot (low 16 bits) and the Count
+   * kernel into a HIDDEN companion slot the kernel interpreter
+   * allocates at Init beyond the program header's n_agg_results (so
+   * visible slot positions stay stable).  Both slots merge and
+   * redistribute as ordinary commutative SUM/COUNT slots; the owner
+   * divides sum/count into the visible slot (as DOUBLE; COUNT==0 =>
+   * NULL) exactly once, after the CTE redistribute completes
+   * (Dblqh::checkCteReady).  JoinAggInterpreter-only in v1. */
+  kOpAvg,
+
   kOpTotal
 };
 

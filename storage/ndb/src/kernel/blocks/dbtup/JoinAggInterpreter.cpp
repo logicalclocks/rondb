@@ -107,21 +107,99 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
    * scalar-CTE redistribute paths to land entries even with
    * n_gb_cols == 0). */
   if (m_buf_block == nullptr) {
+    /* Tail layout: [Uint16 avg-hidden map, MAX entries] then
+     * [Uint8 cached-agg-ops, MAX entries].  The Uint16 array comes
+     * first so its 2-byte alignment is inherited from the block. */
     char* tail = initBufBlock(
         /*prog_words=*/m_prog_len,
         /*n_gb_cols_alloc=*/m_n_gb_cols,
         /*n_agg_results_alloc=*/MAX_AGG_N_RESULTS,
         /*alloc_gb_map=*/true,
-        /*extra_tail_bytes=*/MAX_AGG_N_RESULTS * sizeof(Uint8));
+        /*extra_tail_bytes=*/MAX_AGG_N_RESULTS *
+            (sizeof(Uint16) + sizeof(Uint8)));
     if (tail == nullptr) {
       g_eventLogger->error("Alloc mem for JoinAggInterpreter buffers failed");
       return false;
     }
-    m_cached_agg_ops = reinterpret_cast<Uint8*>(tail);
+    require((reinterpret_cast<uintptr_t>(tail) & 1) == 0);
+    m_avg_hidden_map = reinterpret_cast<Uint16*>(tail);
+    m_cached_agg_ops = reinterpret_cast<Uint8*>(
+        tail + MAX_AGG_N_RESULTS * sizeof(Uint16));
   }
 
   /* Common post-allocation steps. */
   initSharedAfterAlloc(prog);
+
+  /* kOpAvg hidden-slot assignment (cte_avg_plan.md).  Walk the agg
+   * program once: each kOpAvg's visible dst slot gets a hidden COUNT
+   * companion appended AFTER the header's slot count, so visible
+   * positions stay stable for every position-indexed consumer.
+   * m_n_agg_results becomes the TOTAL (layout / merge / redistribute
+   * width); m_n_visible_results (set by initSharedAfterAlloc) keeps
+   * the header count for the CTE emission paths. */
+  for (Uint32 i = 0; i < MAX_AGG_N_RESULTS; i++) {
+    m_avg_hidden_map[i] = AVG_NO_HIDDEN;
+  }
+  {
+    Uint32 n_avg = 0;
+    Uint32 scan_pos = m_agg_prog_start_pos;
+    bool bad_avg = false;
+    while (scan_pos < m_prog_len) {
+      Uint32 word = m_prog[scan_pos++];
+      Uint8 op = (word & 0xFC000000) >> 26;
+      switch (op) {
+        case kOpAvg: {
+          Uint32 dst = word & 0x0000FFFF;
+          if (dst >= m_n_visible_results ||
+              m_avg_hidden_map[dst] != AVG_NO_HIDDEN ||
+              m_n_visible_results + n_avg >= MAX_AGG_N_RESULTS) {
+            bad_avg = true;
+            break;
+          }
+          m_avg_hidden_map[dst] = (Uint16)(m_n_visible_results + n_avg);
+          n_avg++;
+          break;
+        }
+        case kOpLoadCol: {
+          Uint32 type = decodeLoadColType(word);
+          if (type == NDB_TYPE_DECIMAL ||
+              type == NDB_TYPE_DECIMALUNSIGNED) scan_pos++;
+          break;
+        }
+        case kOpLoadConst:
+          scan_pos += 2;
+          break;
+        case kOpEmbeddedInterp: {
+          Uint32 emb_len = word & 0xFFFF;
+          scan_pos += emb_len;
+          break;
+        }
+        default:
+          break;
+      }
+      if (bad_avg) break;
+    }
+    if (bad_avg) {
+      g_eventLogger->error(
+          "JoinAggInterpreter::Init: invalid kOpAvg program "
+          "(dst out of range, duplicate dst, or slot cap exceeded)");
+      return false;
+    }
+    if (n_avg > 0) {
+      m_n_hidden_slots = n_avg;
+      /* Extend the slot array with the hidden companions, initialised
+       * like initSharedAfterAlloc does for the visible ones.  The
+       * buffers are MAX-sized, so no reallocation. */
+      for (Uint32 i = m_n_agg_results;
+           i < m_n_agg_results + n_avg; i++) {
+        m_agg_results[i].type = NDB_TYPE_UNDEFINED;
+        m_agg_results[i].value.val_int64 = 0;
+        m_agg_results[i].is_unsigned = false;
+        m_agg_results[i].is_null = true;
+      }
+      m_n_agg_results += n_avg;
+    }
+  }
 
   /* Phase I.17: scalar aggregate (no GROUP BY) over empty input
    * must emit COUNT = 0 (not NULL) per MySQL semantics.  The
@@ -148,6 +226,22 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
             m_agg_results[agg_index].value.val_uint64 = 0;
             m_agg_results[agg_index].is_unsigned = true;
             m_agg_results[agg_index].is_null = false;
+          }
+          break;
+        }
+        case kOpAvg: {
+          /* Scalar AVG over empty input: pre-init the hidden COUNT
+           * companion to 0 so the finalize divide sees count == 0 and
+           * yields NULL (MySQL AVG-over-empty).  The visible SUM slot
+           * stays NULL like other SUM slots. */
+          Uint32 dst = word & 0x0000FFFF;
+          if (dst < m_n_visible_results &&
+              m_avg_hidden_map[dst] != AVG_NO_HIDDEN) {
+            AggResItem* c = &m_agg_results[m_avg_hidden_map[dst]];
+            c->type = NDB_TYPE_BIGINT;
+            c->value.val_uint64 = 0;
+            c->is_unsigned = true;
+            c->is_null = false;
           }
           break;
         }
@@ -190,7 +284,12 @@ void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
   require(m_inited);
   require(m_processed_rows == 0);
   require(total <= MAX_AGG_N_RESULTS);
+  /* Multi-leaf and kOpAvg hidden slots do not combine (multi-leaf is
+   * the merged select-list-subquery path; CTE programs are single-leaf).
+   * The override would clobber the hidden-slot layout. */
+  require(m_n_hidden_slots == 0);
   m_n_agg_results = total;
+  m_n_visible_results = total;
 
   // Re-initialize the non-GROUP-BY accumulator array for the new total
   m_agg_results = m_agg_results_buf;
@@ -200,6 +299,92 @@ void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
     m_agg_results[i].is_unsigned = false;
     m_agg_results[i].is_null = true;
   }
+}
+
+/* Divide one slot array's AVG pairs in place (cte_avg_plan.md).
+ * Sum slots accumulate as BIGINT (signed/unsigned) or DOUBLE; the
+ * result is always DOUBLE.  count == 0 / NULL, or a NULL sum, yields
+ * NULL — MySQL's AVG over empty or all-NULL input. */
+static void finalizeAvgSlotArray(AggResItem* slots,
+                                 const Uint16* avg_hidden_map,
+                                 Uint32 n_visible_results) {
+  for (Uint32 dst = 0; dst < n_visible_results; dst++) {
+    const Uint16 hid = avg_hidden_map[dst];
+    if (hid == AggInterpreterBase::AVG_NO_HIDDEN) continue;
+    const AggResItem& cnt = slots[hid];
+    AggResItem* sum = &slots[dst];
+    double result = 0.0;
+    bool is_null = true;
+    if (!cnt.is_null && cnt.value.val_uint64 > 0 && !sum->is_null) {
+      double s;
+      if (sum->type == NDB_TYPE_DOUBLE) {
+        s = sum->value.val_double;
+      } else if (sum->is_unsigned) {
+        s = static_cast<double>(sum->value.val_uint64);
+      } else {
+        s = static_cast<double>(sum->value.val_int64);
+      }
+      result = s / static_cast<double>(cnt.value.val_uint64);
+      is_null = false;
+    }
+    sum->type = NDB_TYPE_DOUBLE;
+    sum->value.val_double = result;
+    sum->is_unsigned = false;
+    sum->is_null = is_null;
+  }
+}
+
+bool JoinAggInterpreter::finalizeAvgSlotsSlice(Uint32 max_groups) {
+  if (m_n_hidden_slots == 0 || m_avg_finalized) {
+    return true;
+  }
+
+  if (m_n_gb_cols == 0) {
+    /* Scalar: a single record — no slicing needed. */
+    if (m_agg_results != nullptr) {
+      finalizeAvgSlotArray(m_agg_results, m_avg_hidden_map,
+                           m_n_visible_results);
+    }
+    m_avg_finalized = true;
+    m_avg_finalizing = false;
+    return true;
+  }
+
+  if (m_gb_map == nullptr) {
+    m_avg_finalized = true;
+    m_avg_finalizing = false;
+    return true;
+  }
+
+  /* Resume from the saved cursor, or start from the beginning.  The
+   * hash table is immutable for the whole FINAL_REP..CTE_READY window,
+   * so iteratorAt is safe across CONTINUEB slices. */
+  JoinGBHashTable::Iterator it;
+  if (!m_avg_finalizing) {
+    m_avg_finalizing = true;
+    it = m_gb_map->begin();
+  } else {
+    it = m_gb_map->iteratorAt(m_avg_fin_bucket, m_avg_fin_raw);
+  }
+
+  Uint32 processed = 0;
+  while (it.valid()) {
+    if (processed >= max_groups) {
+      /* Save the cursor; the caller schedules the next slice. */
+      m_avg_fin_bucket = it.bucket();
+      m_avg_fin_raw = it.raw();
+      return false;
+    }
+    AggResItem* slots =
+        reinterpret_cast<AggResItem*>(it.data() + it.keyLen());
+    finalizeAvgSlotArray(slots, m_avg_hidden_map, m_n_visible_results);
+    processed++;
+    m_gb_map->next(it);
+  }
+
+  m_avg_finalized = true;
+  m_avg_finalizing = false;
+  return true;
 }
 
 /**
@@ -987,7 +1172,9 @@ static Int32 decodeRedistributionStringSlots(
 
 static void extractAggOps(const Uint32* prog, Uint32 prog_len,
                           Uint32 agg_prog_start_pos,
-                          Uint8* agg_ops, Uint32 n_agg_results) {
+                          Uint8* agg_ops, Uint32 n_agg_results,
+                          const Uint16* avg_hidden_map,
+                          Uint32 n_visible_results) {
   memset(agg_ops, 0, n_agg_results);
   Uint32 exec_pos = agg_prog_start_pos;
   while (exec_pos < prog_len) {
@@ -1001,6 +1188,21 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
       case kOpCount:
         agg_index = value & 0x0000FFFF;
         if (agg_index < n_agg_results) agg_ops[agg_index] = op;
+        break;
+      case kOpAvg:
+        /* The visible dst merges as a SUM, the hidden companion as a
+         * COUNT — both commutative, so the merge machinery treats an
+         * AVG pair as two ordinary slots (cte_avg_plan.md). */
+        agg_index = value & 0x0000FFFF;
+        if (agg_index < n_visible_results) {
+          agg_ops[agg_index] = kOpSum;
+          if (avg_hidden_map != nullptr &&
+              avg_hidden_map[agg_index] !=
+                  AggInterpreterBase::AVG_NO_HIDDEN &&
+              avg_hidden_map[agg_index] < n_agg_results) {
+            agg_ops[avg_hidden_map[agg_index]] = kOpCount;
+          }
+        }
         break;
       case kOpLoadCol: {
         Uint32 type = AggInterpreterBase::decodeLoadColType(value);
@@ -1038,7 +1240,8 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
-                  m_cached_agg_ops, m_n_agg_results);
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
     m_agg_ops_cached = true;
   }
 
@@ -1143,7 +1346,8 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
 
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
-                  m_cached_agg_ops, m_n_agg_results);
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
     m_agg_ops_cached = true;
   }
 
@@ -1252,7 +1456,8 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
 
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
-                  m_cached_agg_ops, m_n_agg_results);
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
     m_agg_ops_cached = true;
   }
 

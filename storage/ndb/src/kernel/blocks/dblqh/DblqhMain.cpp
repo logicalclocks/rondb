@@ -1132,6 +1132,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueRedistQueueDrain(signal, data0);
     return;
   }
+  case ZCONTINUE_CTE_AVG_FINALIZE:
+  {
+    jam();
+    continueCteAvgFinalize(signal, data0);
+    return;
+  }
   case ZCONTINUE_AGG_INTERP_TEARDOWN:
   {
     jam();
@@ -19532,18 +19538,21 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       }
       DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
                instance()));
-      AGGT(("AGGT(%u) DBLQH CTE_READY (single node) key=%u",
-            instance(), aggStateKey));
-      state->m_state.store(JoinAggregationState::CTE_READY);
-      JoinAggCompleteConf *conf =
-        (JoinAggCompleteConf *)signal->getDataPtrSend();
-      conf->senderRef = reference();
-      conf->senderData = senderData;
-      conf->requestId = requestId;
-      conf->numResultRows = 0;
-      conf->resultBytes = 0;
-      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
-                 signal, JoinAggCompleteConf::SignalLength, JBB);
+      /* cte_avg_plan.md: route the single-node completion through
+       * checkCteReady instead of transitioning to CTE_READY inline.
+       * With one participating node the per-node FINAL_REP loop is a
+       * no-op, so checkCteReady degenerates to exactly the transition
+       * + CONF this arm used to do — PLUS the kOpAvg finalize divide
+       * (with its CONTINUEB slicing for large group counts), which the
+       * inline transition silently bypassed (Test 25's first run:
+       * unfinalized BIGINT sums read as doubles reject every filter
+       * row).  The sender info rides the same state fields the
+       * multi-node path uses. */
+      state->m_cte_complete_senderRef = senderRef;
+      state->m_cte_complete_senderData = senderData;
+      state->m_cte_complete_requestId = requestId;
+      state->m_cte_redistribution_done = true;
+      checkCteReady(signal, state);
     } else {
       /* Multi-node — save sender info, drain queue, verify nodes, redistribute */
       jam();
@@ -20004,7 +20013,10 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                                  Uint32 attrInfoLen,
                                  Uint32 *outBuf, Uint32 *lenOut) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
-  const Uint32 n_agg_results = interp->n_agg_results();
+  /* Visible slots only — hidden AVG-count companions (cte_avg_plan.md)
+   * sit after the visible slots in the group record and never leave
+   * the aggregation state. */
+  const Uint32 n_agg_results = interp->n_visible_results();
   Uint32 linkedPos = 0;
 
   /* Step 1: Prepend parent linked columns from AttrInfo subroutine section.
@@ -20429,7 +20441,8 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                                  const char *groupData,
                                  const Uint32 *cinBuf, Uint32 attrInfoLen) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
-  const Uint32 n_agg_results = interp->n_agg_results();
+  /* Visible slots only — hidden AVG-count companions never emit. */
+  const Uint32 n_agg_results = interp->n_visible_results();
   /* groupData == nullptr is the outer-chain NULL-row emit (big-07 fix):
    * every virtual-column read produces NULL, only CORR_FACTOR reads
    * carry data — the row exists solely to drive the chained next op
@@ -21450,7 +21463,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
   if (gb_map != nullptr && !gb_map->empty()) {
     jam();
     const Uint32 n_gb_cols = interp->n_gb_cols();
-    const Uint32 n_agg_results = interp->n_agg_results();
+    /* Visible slots only — hidden AVG-count companions never emit. */
+    const Uint32 n_agg_results = interp->n_visible_results();
 
     /* Resume from saved iterator position (O(1)) */
     Uint32 groupIdx = scanState->groupsSent;
@@ -21597,7 +21611,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
      * picks the single emitter — see Phase I.17.
      */
     jam();
-    const Uint32 n_agg_results = interp->n_agg_results();
+    /* Visible slots only — hidden AVG-count companions never emit. */
+    const Uint32 n_agg_results = interp->n_visible_results();
     const AggResItem *accumulators = interp->agg_results();
     Uint32 *outBuf = cevictBuffer;
 
@@ -21929,6 +21944,10 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
 /* ------------------------------------------------------------------ */
 
 static const Uint32 REDIST_GROUPS_PER_BATCH = 256;
+/* kOpAvg finalize divide: groups per CONTINUEB slice.  The divide is
+ * cheap (no serialization), so a larger batch than redistribute is
+ * fine while still bounding each real-time slice. */
+static const Uint32 ZCTE_AVG_FINALIZE_BATCH = 1024;
 static const Uint32 REDIST_MAX_BATCH_BYTES = 64 * 1024;
 
 /**
@@ -22735,6 +22754,38 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
  * loudly and the originating path can be removed; the silent return is
  * the production-build safety net.  See cte_filter_phase_l.md.
  */
+/* CONTINUEB slice driver for the kOpAvg finalize divide
+ * (cte_avg_plan.md).  Runs on the owner instance between the
+ * FINAL_REP barrier and the CTE_READY transition; each slice divides
+ * a bounded batch of groups, and completion re-invokes checkCteReady,
+ * which now sees avgFinalized() and performs the transition.  A
+ * missing state means the CTE was aborted/released mid-chain — drop. */
+void Dblqh::continueCteAvgFinalize(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    return;
+  }
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  if (interp == nullptr) {
+    jam();
+    return;
+  }
+  if (!interp->finalizeAvgSlotsSlice(ZCTE_AVG_FINALIZE_BATCH)) {
+    jam();
+    signal->theData[0] = ZCONTINUE_CTE_AVG_FINALIZE;
+    signal->theData[1] = aggStateKey;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+  jam();
+  checkCteReady(signal, state);
+}
+
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   /* Phase L (E.1): all callers — continueJoinAggRedistribute,
    * execJOIN_AGG_FINAL_REP — are already pinned to the owner LDM, so
@@ -22789,6 +22840,43 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
       jam();
       abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
       return;
+    }
+  }
+
+  /* kOpAvg finalize divide (cte_avg_plan.md): every node's SUM/COUNT
+   * contributions are merged into the owner's result interpreter by
+   * now (REDISTRIBUTE_REQs precede each sender's FINAL_REP on the same
+   * signal path), so this is the single window where AVG pairs become
+   * their final DOUBLE values — before CTE_READY makes the groups
+   * visible to probes, scans and linked loads.
+   *
+   * The group hash can hold millions of groups, so the walk is sliced
+   * via CONTINUEB (ZCONTINUE_CTE_AVG_FINALIZE): each slice divides a
+   * bounded batch and continueCteAvgFinalize re-calls checkCteReady
+   * when the walk completes.  Safe across real-time breaks: the hash
+   * table is immutable in this window and the chain stays on the
+   * owner instance.  While a chain is in flight, a re-entrant
+   * checkCteReady (e.g. a duplicate FINAL_REP) returns and lets the
+   * chain finish. */
+  {
+    JoinAggInterpreter *avgInterp = getJoinAggResultInterpreter(state);
+    if (avgInterp != nullptr && avgInterp->hasAvgSlots() &&
+        !avgInterp->avgFinalized()) {
+      if (avgInterp->avgFinalizing()) {
+        jam();
+        /* A finalize chain is already running; it will re-invoke
+         * checkCteReady on completion. */
+        return;
+      }
+      jam();
+      if (!avgInterp->finalizeAvgSlotsSlice(ZCTE_AVG_FINALIZE_BATCH)) {
+        jam();
+        signal->theData[0] = ZCONTINUE_CTE_AVG_FINALIZE;
+        signal->theData[1] = state->m_key;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+      /* Walk completed within the first slice — fall through. */
     }
   }
 

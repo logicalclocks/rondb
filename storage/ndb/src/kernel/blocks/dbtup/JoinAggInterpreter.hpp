@@ -60,7 +60,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
     m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
     /* Chunk allocator state + GB type metadata lifted to
      * AggInterpreterBase in Step 2a; base ctor initializes them. */
-    m_cached_agg_ops(nullptr), m_agg_ops_cached(false) {
+    m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
+    m_avg_finalizing(false), m_avg_fin_bucket(0), m_avg_fin_raw(nullptr) {
     /* m_attr_read_buf / m_prog_buf / m_gb_cols_buf / m_agg_results_buf /
      * m_gb_map_buf / m_buf_block initialised by the base ctor
      * (Step 3a-B). */
@@ -198,6 +199,34 @@ class JoinAggInterpreter : public AggInterpreterBase {
   void setTotalAggResults(Uint32 total);
   void cacheMultiLeafAggOps(const struct LeafProgram* leaves,
                             Uint32 num_leaves);
+
+  /**
+   * kOpAvg finalize divide (cte_avg_plan.md): convert every AVG pair —
+   * visible slot = accumulated SUM, hidden companion = COUNT — into
+   * the final DOUBLE average in the visible slot (count == 0 => NULL,
+   * matching MySQL AVG over empty / all-NULL input).  Driven by
+   * Dblqh::checkCteReady on the owner after the CTE redistribute
+   * barrier completes and before CTE_READY is stored, so every probe /
+   * scan / linked-load consumer only ever sees the finalized value.
+   *
+   * The group hash can hold millions of groups, so the walk is SLICED:
+   * each call processes up to max_groups groups and returns true when
+   * the walk is complete, false when a CONTINUEB slice should follow
+   * (ZCONTINUE_CTE_AVG_FINALIZE).  The saved (bucket, raw) cursor uses
+   * GBHashTable::iteratorAt, which requires the table to be immutable
+   * between slices — guaranteed in the FINAL_REP..CTE_READY window: all
+   * inbound redistributes have merged, nothing reads before CTE_READY,
+   * and the chain stays on the owner instance.
+   *
+   * avgFinalizing() lets checkCteReady ignore re-entrant invocations
+   * (e.g. a duplicate FINAL_REP) while a chain is in flight — the
+   * running chain re-calls checkCteReady when done.  A no-op
+   * (returns true immediately) for programs without kOpAvg.
+   */
+  bool finalizeAvgSlotsSlice(Uint32 max_groups);
+  bool hasAvgSlots() const { return m_n_hidden_slots > 0; }
+  bool avgFinalized() const { return m_avg_finalized; }
+  bool avgFinalizing() const { return m_avg_finalizing; }
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written,
                       uchar* xfrm_buf, Uint32 xfrm_buf_len);
@@ -264,6 +293,13 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // Lives in the extra-tail region of m_buf_block (Step 3a-B).
   Uint8* m_cached_agg_ops;
   bool m_agg_ops_cached;
+
+  /* kOpAvg sliced finalize (cte_avg_plan.md): in-flight flag + saved
+   * GBHashTable iterator cursor for the CONTINUEB walk.  Valid only in
+   * the FINAL_REP..CTE_READY window, when the hash table is immutable. */
+  bool m_avg_finalizing;
+  Uint32 m_avg_fin_bucket;
+  char* m_avg_fin_raw;
 
   /* Per-column GROUP BY type metadata (m_gb_types, m_gb_types_inited,
    * m_xfrm_buf, m_xfrm_buf_len) lifted to AggInterpreterBase in Step

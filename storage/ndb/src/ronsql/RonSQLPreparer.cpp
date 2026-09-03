@@ -885,8 +885,17 @@ RonSQLPreparer::parse()
           break;
         }
         case Outputs::Type::AVG:
-          co->avg.agg_index_sum = cte->stmt->agg->Sum(co->avg.arg);
-          co->avg.agg_index_count = cte->stmt->agg->Count(co->avg.arg);
+          // cte_avg_plan.md V4 (C2): a CTE-scope AVG compiles to ONE
+          // agg slot (SVM Avg -> NdbAggregator::Avg -> kernel kOpAvg,
+          // which adds the hidden COUNT companion and divides on the
+          // owner after the redistribute).  The old Sum+Count pair
+          // broke the one-column-per-slot virt-table mapping — that
+          // was the reason AVG in CTE outputs used to be rejected.
+          // agg_index_count is aliased: its PRINT_AVG readers are
+          // main-scope-only, where the main registration keeps the
+          // Sum+Count form.
+          co->avg.agg_index_sum = cte->stmt->agg->Avg(co->avg.arg);
+          co->avg.agg_index_count = co->avg.agg_index_sum;
           break;
         case Outputs::Type::SUBQUERY_AGG:
           // Disallowed in CTE bodies (would need nested subquery orchestration).
@@ -6524,7 +6533,32 @@ RonSQLPreparer::build_result_column_metadata()
     const QueryScope::ResolvedColumnRef& ref =
         m_main_scope.resolved_columns[col_idx];
     const NdbDictionary::Column* col = ref.dict_column;
-    if (col == NULL) continue;
+    if (col == NULL) {
+      // cte_avg_plan.md V4 (C8): AVG CTE outputs have no single source
+      // column to plumb back (their display scale is DERIVED from the
+      // argument: exact-type args show scale + 4, like MySQL).  Compute
+      // the display metadata from the resolved chained type instead so
+      // the GROUP-BY-column print and aggregate-arg-scale readers see
+      // the fixed-scale formatting.
+      if (ref.kind ==
+              QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+          ref.cte_output != NULL &&
+          ref.cte_output->type == Outputs::Type::AVG) {
+        NdbDictionary::Column::Type rt;
+        Uint32 rlen = 1;
+        const void* rcs = NULL;
+        Int32 rscale = 0;
+        Int32 rprecision = 0;
+        if (resolve_chained_column_type(m_main_scope, col_idx, rt, rlen,
+                                         rcs, rscale, rprecision) &&
+            rscale > 0) {
+          column_metadata[col_idx].precision = rprecision;
+          column_metadata[col_idx].scale = rscale;
+          column_metadata[col_idx].has_metadata = true;
+        }
+      }
+      continue;
+    }
     column_metadata[col_idx].charset = col->getCharset();
     column_metadata[col_idx].precision = col->getPrecision();
     column_metadata[col_idx].scale = col->getScale();
@@ -9806,6 +9840,63 @@ RonSQLPreparer::resolve_chained_column_type(
       }
     }
   }
+  if (o->type == Outputs::Type::AVG) {
+    // cte_avg_plan.md V4 (C7): the AVG output is finalized on the
+    // owner to an 8-byte DOUBLE (kOpAvg divide at checkCteReady).
+    // Display parity mirrors build_cte_virtual_tables: MySQL shows
+    // AVG over exact types with scale + 4 fraction digits (carried
+    // like the D15 display metadata); FLOAT / DOUBLE args keep the
+    // compact double formatting.  Unsupported source types return
+    // false here — build_cte_virtual_tables raises the clean
+    // per-type messages.
+    AggregationAPICompiler::Expr* arg = o->avg.arg;
+    if (arg == NULL || !arg->isLoad()) return false;
+    NdbDictionary::Column::Type arg_type;
+    Uint32 arg_length = 1;
+    const void* arg_cs = NULL;
+    Int32 arg_scale = 0;
+    Int32 arg_precision = 0;
+    if (!resolve_chained_column_type(*cs, arg->getLoadIdx(),
+                                      arg_type, arg_length, arg_cs,
+                                      arg_scale, arg_precision))
+      return false;
+    switch (arg_type) {
+      case NdbDictionary::Column::Tinyint:
+      case NdbDictionary::Column::Smallint:
+      case NdbDictionary::Column::Mediumint:
+      case NdbDictionary::Column::Int:
+      case NdbDictionary::Column::Bigint:
+      case NdbDictionary::Column::Tinyunsigned:
+      case NdbDictionary::Column::Smallunsigned:
+      case NdbDictionary::Column::Mediumunsigned:
+      case NdbDictionary::Column::Unsigned:
+      case NdbDictionary::Column::Bigunsigned:
+        out_type = NdbDictionary::Column::Double;
+        out_length = 1; out_cs = NULL;
+        out_scale = 4; out_precision = 15;
+        return true;
+      case NdbDictionary::Column::Float:
+      case NdbDictionary::Column::Double:
+        out_type = NdbDictionary::Column::Double;
+        out_length = 1; out_cs = NULL;
+        out_scale = 0; out_precision = 0;
+        return true;
+      case NdbDictionary::Column::Decimal:
+      case NdbDictionary::Column::Decimalunsigned:
+        require_prm(
+            decimal_minmax_fits_64bit(arg_type, arg_precision, arg_scale),
+            "AVG over scale-zero DECIMAL wider than the 64-bit integer "
+            "range is not yet supported.");
+        out_type = NdbDictionary::Column::Double;
+        out_length = 1; out_cs = NULL;
+        out_scale = (arg_scale + 4 > 30) ? 30 : arg_scale + 4;
+        out_precision =
+            (arg_precision + 4 > 65) ? 65 : arg_precision + 4;
+        return true;
+      default:
+        return false;
+    }
+  }
   return false;
 }
 
@@ -10101,7 +10192,85 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               "CTE aggregate over complex expression not yet supported.");
         }
       } else if (o->type == Outputs::Type::AVG) {
-        throw RonSQLPermanentError("AVG in CTE output not yet supported.");
+        // cte_avg_plan.md V4 (C5): an AVG output is one DOUBLE virt
+        // column.  The kernel's kOpAvg accumulates SUM into this slot
+        // plus a hidden COUNT companion and divides on the owner after
+        // the redistribute, so the wire value is always an 8-byte
+        // DOUBLE (NULL when the count is 0).  Display parity: MySQL
+        // shows AVG over exact types (integers, DECIMAL) with
+        // scale + 4 fraction digits, computed here and carried on the
+        // virt column like the D15 DECIMAL-widening display metadata;
+        // FLOAT / DOUBLE args keep the compact double formatting.
+        AggregationAPICompiler::Expr* arg = o->avg.arg;
+        require_prm(arg != NULL && arg->isLoad(),
+                    "AVG over an expression in a CTE output is not yet "
+                    "supported — the argument must be a plain column.");
+        Uint32 src_col_idx = arg->getLoadIdx();
+        NdbDictionary::Column::Type st;
+        Uint32 src_length = 1;
+        const void* src_cs = NULL;
+        Int32 src_scale = 0;
+        Int32 src_precision = 0;
+        require_prm(
+            resolve_chained_column_type(*cte_scope, src_col_idx,
+                                         st, src_length, src_cs,
+                                         src_scale, src_precision),
+            "CTE AVG references unresolved source column.");
+        switch (st) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Int:
+        case NdbDictionary::Column::Bigint:
+        case NdbDictionary::Column::Tinyunsigned:
+        case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Mediumunsigned:
+        case NdbDictionary::Column::Unsigned:
+        case NdbDictionary::Column::Bigunsigned:
+          derived_type = NdbDictionary::Column::Double;
+          derived_scale = 4;
+          derived_precision = 15;  // within the printer's exact-range gate
+          break;
+        case NdbDictionary::Column::Float:
+        case NdbDictionary::Column::Double:
+          derived_type = NdbDictionary::Column::Double;
+          break;
+        case NdbDictionary::Column::Decimal:
+        case NdbDictionary::Column::Decimalunsigned:
+          // The hidden SUM slot has exactly SUM's 64-bit exposure on
+          // scale-zero DECIMAL — apply the same I.22 range guard.
+          require_prm(
+              decimal_minmax_fits_64bit(st, src_precision, src_scale),
+              "AVG over scale-zero DECIMAL wider than the 64-bit integer "
+              "range is not yet supported.");
+          derived_type = NdbDictionary::Column::Double;
+          // MySQL result-type rule: scale + 4, precision capped at the
+          // DECIMAL maximum (the printer additionally gates fixed-scale
+          // formatting on precision <= 15).
+          // MySQL caps the result scale at 30 and precision at 65.
+          derived_scale = (src_scale + 4 > 30) ? 30 : src_scale + 4;
+          derived_precision =
+              (src_precision + 4 > 65) ? 65 : src_precision + 4;
+          break;
+        case NdbDictionary::Column::Char:
+        case NdbDictionary::Column::Varchar:
+        case NdbDictionary::Column::Longvarchar:
+          throw RonSQLPermanentError(
+              "AVG over string columns is not supported.");
+        case NdbDictionary::Column::Date:
+        case NdbDictionary::Column::Year:
+        case NdbDictionary::Column::Datetime2:
+        case NdbDictionary::Column::Time2:
+        case NdbDictionary::Column::Timestamp2:
+          throw RonSQLPermanentError(
+              "AVG over temporal columns is not supported — only "
+              "MIN / MAX / COUNT.");
+        default:
+          throw RonSQLPermanentError(
+              "AVG over this column type in CTE not yet supported.");
+        }
+        derived_length = 1;
+        have_derived = true;
       } else {
         throw RonSQLPermanentError(
             "Unsupported CTE output kind.");
@@ -10875,6 +11044,14 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                     "encoding in the inline opcode — deferred to "
                     "follow-up work.");
       }
+      use_inline_path = true;
+    } else if (o->type == Outputs::Type::AVG) {
+      // cte_avg_plan.md V4 (C6): the AVG output is finalized to an
+      // 8-byte DOUBLE on the owner before CTE_READY, so the filter
+      // compares an ordinary Double via the inline-type opcode.
+      require_prm(vtcol->getType() == NdbDictionary::Column::Double,
+                  "CTE_LOOKUP filter on AVG output: unexpected "
+                  "virt-table type.  Please report a bug.");
       use_inline_path = true;
     } else {
       require_prm(false,
@@ -12991,6 +13168,14 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::Avg:
+      // Only CTE scopes register SVM Avg (cte_avg_plan.md C2); the
+      // main scope keeps the Sum+Count decomposition + PRINT_AVG, so
+      // this single-table translation must never see it.
+      require_run(false,
+                  "AVG instruction reached the single-table program "
+                  "build.  Please report a bug.");
+      break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
     case AggregationAPICompiler::SVMInstrType::Least2:
       emit_pair_op_embedded(
@@ -13603,6 +13788,12 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       break;
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Avg:
+      // cte_avg_plan.md V4 (C3): one visible DOUBLE slot; the kernel's
+      // kOpAvg adds the hidden COUNT companion and divides on the
+      // owner after the CTE redistribute completes.
+      programAggregator_do_or_fail(aggregator->Avg(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
     case AggregationAPICompiler::SVMInstrType::Least2:

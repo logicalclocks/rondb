@@ -569,6 +569,11 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
     }
   }
 
+  /* Header count = visible count.  JoinAggInterpreter::Init may later
+   * append hidden AVG-count slots, bumping m_n_agg_results while this
+   * stays put (cte_avg_plan.md). */
+  m_n_visible_results = m_n_agg_results;
+
   m_inited = true;
   m_agg_prog_start_pos = m_cur_pos;
   memset(m_registers, 0, sizeof(m_registers));
@@ -2021,6 +2026,30 @@ Int32 AggInterpreterBase::executeStandardOpcode(
       agg_index = (value & 0x0000FFFF);
       Count(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
       return 0;
+
+    case kOpAvg: {
+      /* AVG(x) = Sum into the visible dst slot + Count into the hidden
+       * companion slot assigned by JoinAggInterpreter::Init
+       * (cte_avg_plan.md).  The owner divides at checkCteReady after
+       * the redistribute completes.  AggInterpreter never builds the
+       * hidden map, so kOpAvg fails cleanly there. */
+      reg_index = (value & 0x000F0000) >> 16;
+      agg_index = (value & 0x0000FFFF);
+      if (m_avg_hidden_map == nullptr ||
+          agg_index >= m_n_visible_results ||
+          m_avg_hidden_map[agg_index] == AVG_NO_HIDDEN) {
+        DEB_AGG(("kOpAvg without hidden-slot mapping"));
+        return ZAGG_OTHER_ERROR;
+      }
+      ret = Sum(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
+      if (ret < 0) {
+        DEB_AGG(("Overflow[AVG-SUM], value is out of range"));
+        return ZAGG_MATH_OVERFLOW;
+      }
+      Count(m_registers[reg_index],
+            &agg_res_ptr[m_avg_hidden_map[agg_index]], debug_print);
+      return 0;
+    }
 
     // Type-specific Sum operations
     case kOpSumBigint:

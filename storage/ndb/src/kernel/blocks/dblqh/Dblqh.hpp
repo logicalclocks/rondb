@@ -376,6 +376,7 @@ class FsReadWriteReq;
 #define ZCONTINUE_CTE_REDIST_DRAIN 49
 #define ZCONTINUE_CTE_SCAN_AGG_FEED 50
 #define ZCONTINUE_AGG_INTERP_TEARDOWN 51
+#define ZCONTINUE_CTE_AVG_FINALIZE 52
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -3533,6 +3534,7 @@ private:
   void execJOIN_AGG_FINAL_REP(Signal* signal);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
+  void continueCteAvgFinalize(Signal* signal, Uint32 aggStateKey);
   void continueAggInterpTeardown(Signal* signal, AggInterpreter* interp);
   void processRedistQueue(Signal* signal, JoinAggregationState* state,
                           Uint32 aggStateKey);

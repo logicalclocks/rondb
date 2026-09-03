@@ -51,11 +51,17 @@
 #define FORALL_PAIR_OPS(X) \
   X(Greatest2) \
   X(Least2)
+/* Avg (cte_avg_plan.md V4) compiles to ONE agg slot; the kernel's
+ * kOpAvg expands it into SUM + a hidden COUNT companion and divides
+ * on the owner after the CTE redistribute.  Only CTE scopes register
+ * it — the main scope keeps the Sum+Count decomposition + PRINT_AVG
+ * (client-side division). */
 #define FORALL_AGGS(X) \
   X(Sum) \
   X(Min) \
   X(Max) \
-  X(Count)
+  X(Count) \
+  X(Avg)
 #define FORALL_INSTRUCTIONS(X) \
   X(Load) \
   X(LoadConstantInteger) \

@@ -1212,6 +1212,7 @@ AggregationAPICompiler::print(Instr* instr)
   static const char* ucasestr_Min = "MIN";
   static const char* ucasestr_Max = "MAX";
   static const char* ucasestr_Count = "COUNT";
+  static const char* ucasestr_Avg = "AVG";
   switch (instr->type)
   {
   case SVMInstrType::Load:
