@@ -1,7 +1,9 @@
 # String Column-vs-Column Comparisons on CTE Outputs (main WHERE)
 
-**Status: S1–S4 SHIPPED (2026-09-03, recorded green ×5 topology suites
-+ full regression pass); S5 rondb-docs update pending.**
+**Status: SHIPPED (2026-09-03) — S1–S4 recorded green ×5 topology
+suites + full regression pass; S5 rondb-docs updated (commit `41d3640`
+on PR #104).  Landed as `791bd451f02` on RONDB-1107-step3, cherry-picked
+to RONDB-1107-step4 (based on 26.10-main) as `06f1a9155f0`.**
 
 Landing notes beyond the S-item logs below: the first record surfaced a
 PRE-EXISTING latent bug in the I.21 scalar dummy-key arm, fixed here —
