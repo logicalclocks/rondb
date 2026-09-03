@@ -4,9 +4,9 @@
 Test 25 + Test 26 green in ndb_push_agg AND ndb_push_agg_dist
 (multi-node redistribute + sliced finalize proven); `ronsql_cte_dd_avg`
 recorded green ×5 topology suites (after the avg-03 precision-gate
-fix).  Remaining: rondb-docs update; follow-up probes on file
-(main-query GROUP BY on a CTE aggregate output; wide-DECIMAL compact
-fallback display).**
+fix).  rondb-docs updated (commit `9e6e85a` on PR #104).
+Follow-up probes on file: main-query GROUP BY on a CTE aggregate
+output; wide-DECIMAL compact fallback display.**
 
 V5/V6 additions (September 2026):
 - **Test 26** (testCteNdbApiFilter): AVG at scale — 1500 groups × 2
