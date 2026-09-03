@@ -6,7 +6,7 @@ Building RonDB with Docker is possible with three different Dockerfiles:
 * [Dockerfile.oraclelinux9](../Dockerfile.oraclelinux9)
 * [Dockerfile.ubuntu22](../Dockerfile.ubuntu22)
 
-At Hopsworks, we use `Dockerfile.oraclelinux8` for our production builds in CentOS environment and `Dockerfile.ubuntu22´ for our x86 production builds in Ubuntu environments. All Dockerfiles can be used to build both x86_64 and ARM64 binary tarballs.
+At Hopsworks, we use `Dockerfile.oraclelinux9` for our production builds in CentOS environment and `Dockerfile.ubuntu22´ for our x86 production builds in Ubuntu environments. All Dockerfiles can be used to build both x86_64 and ARM64 binary tarballs.
 
 To build RonDB with the aim of **extracting the tarball**, use the Dockerfiles as follows:
 ```bash
@@ -14,7 +14,7 @@ To build RonDB with the aim of **extracting the tarball**, use the Dockerfiles a
 # Use any of the above Dockerfiles whether running this on an x86\_64 or ARM64 platform
 # Omit the RELEASE_TARBALL argument to create a simple build
 BUILDKIT_ENABLED=1 docker build . \
-    -f Dockerfile.oraclelinux8 \
+    -f Dockerfile.oraclelinux9 \
     --target get-package-all \
     --output <local-path-to-place-tarball> \
     --build-arg BUILD_THREADS=$(nproc) \
@@ -30,7 +30,7 @@ Run the following command from the repository root directory
 # Update the tag and version
 # Omit the RELEASE_TARBALL argument to create a simple build
 BUILDKIT_ENABLED=1 docker build . \
-    -f Dockerfile.oraclelinux8 \
+    -f Dockerfile.oraclelinux9 \
     --target rdrs \
     --tag rdrs:24.10 \
     --build-arg BUILD_THREADS=$(nproc) \
