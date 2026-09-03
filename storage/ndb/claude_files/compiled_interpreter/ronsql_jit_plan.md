@@ -1455,6 +1455,70 @@ kOpMod fmod); 79 of 81 tests under strict arming; every remaining
 reject classified as not lowerable with static accumulator families.
 The lowering campaign is closed for good: ~1234 → 34 (97%).
 
+### Item 14 — ATTEMPTED AND REVERTED (2026-09-03): negative-constant CASE arms
+
+Target: dd_bigquery's last 2 — `MAX/MIN(CASE .. THEN biguns_col ELSE
+-9 END)`. **Stays exempt, pin 2.**
+
+**The attempt**: lower the `-9` arm's aggregate to the per-row
+fallback (OP_SET_REG_NULL_FB) — rows taking the constant arm replay
+on the interpreter, column-arm rows stay native, slot family U64.
+bridge_tests green, then the MTR differential caught a WRONG RESULT:
+`MAX(CASE .. ELSE -9 END)` returned **18446744073709551607** (= 2^64
+- 9) instead of 5; the MIN sibling returned -9 correctly.
+
+**Why it is unsound — the general lesson.** The per-row fallback
+replays a row on the interpreter, which may MUTATE THE ACCUMULATOR
+INTO A STATE OUTSIDE THE JIT'S STATIC FAMILY: a MAX slot initialised
+by a `-9` row is a SIGNED AggResItem; the next column row runs the
+native OP_MAX_U64, which reinterprets those bits as unsigned
+(2^64 - 9), keeps them as the maximum, and the writeback stamps the
+slot unsigned. MIN passed only by row order (a later `-9` replay
+re-flipped it). Every earlier use of the per-row fallback is sound
+because the replayed row leaves the slots UNTOUCHED (GREATEST null
+rows: the aggregate skips a NULL register; kOpSetRegNull rows: same;
+item 12/13's error / NULL rows: aborted or skipped) — this was the
+first fallback that aggregates a value of a foreign family. **Rule
+for future lowerings: a per-row fallback is admissible only if the
+interpreter's replay cannot change any accumulator's family.**
+
+**What a sound lowering would take** (not done — 2 synthetic rejects
+on `ELSE -9` over a COUNT): a per-row DYNAMIC FAMILY GUARD in the
+dispatch glue — the bridge exports the program's static acc_family
+table into the compiled product, and for programs flagged "has a
+mixed-sign fallback arm" the glue checks each claimed slot's
+AggResItem (type, is_unsigned) against its static family before
+running the blob, falling the whole row back on any mismatch. Sound
+(the blob never sees a foreign-family slot), correct for MAX (the
+interpreter flips the slot back to unsigned on the next column row,
+so native execution resumes) and for MIN (once signed, every row
+falls back — the interpreter's answer), but it adds a per-row loop
+to the hot path and product/cache plumbing for a shape nobody
+writes. Reject-forever stands. Reverted to the committed state: the
+negative constant into a U64 slot rejects TYPE_MISMATCH (T79d), dd_
+bigquery pin 2, exempt.
+
+Final corpus state after Part B therefore holds: **34** rejects =
+dd_bigquery 2 (this) + ronsql_basic 32; 79 of 81 tests armed.
+
+**ronsql_basic's 32, re-read from the bridge's own rules (2026-09-03,
+Mikael's question "are they also deemed rejected" — yes):**
+- ≈28 = a typed `MinusBigint` over an UNSIGNED register and a SIGNED
+  variable (`unsigned_col * 1000000 - mediumint_col * 1000`). The
+  Phase 5C-4 classifier lowers unsigned arithmetic only when both
+  sides are U64 or a non-negative constant; with a signed variable
+  the kernel's result signedness depends on the runtime values —
+  the same dynamic-signedness limit as item 14, at the register
+  level. Reject-forever. (Item 10's "RonSQL optimizer typing" note
+  was imprecise: not an emitter bug; the interpreter's answer is
+  right.)
+- ≈4 = `kOpMod` with a DOUBLE operand (`x MOD (a / b)`): the
+  interpreter's fmod path, classified a durable negative. Lowerable
+  with a small cold-call fmod helper (mirror the double-mod
+  semantics incl. divide-by-zero → NULL → per-row fallback, which
+  is family-safe: the row is skipped) — on the backlog, not worth
+  doing for a shape nobody writes.
+
 **Verification list for Part A (Mikael runs):** `bridge_tests`
 (T70c, T73d, T78a-f), then the exempt-pin tests under `ronsql_jit`
 / `ronsql_cte_jit` (dd_filter, gl_v5, dd_bigquery, cte_scalar, …) —

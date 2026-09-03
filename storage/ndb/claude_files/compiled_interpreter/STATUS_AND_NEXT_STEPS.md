@@ -255,9 +255,16 @@ slot signedness can express; the pre-emptive arming caught it via
 compareTypedRegs' full lattice (per-side u64 flags, zero stencils);
 op-43 / op-44 admit BIGUNSIGNED with `emb_reg_u64` tracking; packed
 temporals gated by a new outer `reg_u64_pack` flag; T70d/T73c flipped,
-T81a-e; gl_v5 / gl_v6 / cte_scalar re-pinned 0 + armed. Corpus residue is
-34 = dd_bigquery 2 + ronsql_basic 32 (~1234 → 34, 97%) — nothing
-lowerable left — 79/81 armed. **NEXT: the phase_6_plan.md §4 backlog
+T81a-e; gl_v5 / gl_v6 / cte_scalar re-pinned 0 + armed. Corpus residue was
+34 = dd_bigquery 2 + ronsql_basic 32 (~1234 → 34, 97%), 79/81 armed;
+committed fb8fc77f58a. **Item 14 (negative-constant CASE arms) ATTEMPTED AND REVERTED
+(2026-09-03)**: the per-row-fallback lowering produced a WRONG RESULT
+(MAX = 2^64-9) because an interpreter-replayed `-9` row leaves the
+slot SIGNED and the next native unsigned MAX reinterprets it — a
+per-row fallback is admissible only when the replay cannot change an
+accumulator's family (post-mortem + the sound "dynamic family guard"
+design in `ronsql_jit_plan.md`). dd_bigquery stays pin 2, exempt;
+residue 34, 79/81 armed. **NEXT: the phase_6_plan.md §4 backlog
 (perf bench OFF vs ON first).**
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
