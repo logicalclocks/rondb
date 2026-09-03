@@ -331,16 +331,70 @@ JOIN stats ON stats.k = c.c_id
 WHERE stats.gross > stats.cnt
 GROUP BY stats.k|
 
+--echo
+--echo
+--echo === Test 10a: string col-vs-col (MIN <= MAX, VARCHAR — now supported) ===
+# Formerly a rejection pin ("only integer, FLOAT and DOUBLE operands").
+# String col-vs-col on CTE outputs now emits one BRANCH_LINKED_OP_LINKED
+# with the charset-aware kernel compare
+# (cte_output_string_colvscol_plan.md).  One row per group makes
+# MIN(c_name) == MAX(c_name), so <= keeps every group.
+
+let $QUERY=
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name <= stats.last_name
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name <= stats.last_name
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 10b: string col-vs-col (MIN < MAX — strict, empty result) ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < stats.last_name
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < stats.last_name
+GROUP BY stats.k|
+
 DELIMITER ;|
-
---echo
---echo
---echo === Test 10: rejection — string col-vs-col (MIN vs MAX) ===
---echo Expected error: only integer, FLOAT and DOUBLE operands
-
-# Strings stay outside the typed-register envelope (Phase i26).
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT c_id AS k, MIN(c_name) AS first_name, MAX(c_name) AS last_name FROM cte_customer GROUP BY c_id) SELECT stats.k, SUM(stats.k) FROM cte_customer AS c JOIN stats ON stats.k = c.c_id WHERE stats.first_name < stats.last_name GROUP BY stats.k;' 2>&1
 
 --disable_query_log
 DROP TABLE cte_orders;

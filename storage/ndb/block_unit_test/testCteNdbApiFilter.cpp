@@ -3409,6 +3409,284 @@ testCteLookupFilterInlineTypeMax(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 24: CTE_LOOKUP filter — BRANCH_LINKED_OP_LINKED string         */
+/*          column-vs-column (cte_output_string_colvscol_plan.md S1)   */
+/*                                                                     */
+/* CTE: SELECT grp, MIN(tag) AS mn, MAX(tag) AS mx                     */
+/*      FROM filter_src GROUP BY grp                                   */
+/* filter_src is reseeded so tag varies within some groups:            */
+/*   grp=1: alpha/delta        -> mn < mx  (2 main rows)               */
+/*   grp=2: beta/beta          -> mn = mx  (2 main rows)               */
+/*   grp=3: gamma/omega/kappa  -> mn < mx  (3 main rows)               */
+/*                                                                     */
+/* Two sub-cases run the same query shape with different filters on    */
+/* the CTE_LOOKUP op, comparing buffer positions 1 (mn) and 2 (mx)     */
+/* directly via the new one-instruction BRANCH_LINKED_OP_LINKED:       */
+/*   (a) accept mn < mx  -> reject via branch_linked_linked_le         */
+/*       (inverted convention: _le branches when L >= R) -> COUNT=5    */
+/*   (b) accept mn = mx  -> reject via branch_linked_linked_ne         */
+/*       -> COUNT=2                                                    */
+/* Result delivery via aggregator (COUNT(*) main agg), as in Test 22.  */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterLinkedLinkedString(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 24: CTE_LOOKUP filter (linked-vs-linked string) ... ");
+  fflush(stdout);
+
+  /* Reseed filter_src with per-group tag variety (the default seed
+   * has one distinct tag per group, making mn == mx everywhere). */
+  if (sqlExec(conn, "DELETE FROM filter_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO filter_src VALUES "
+              "(1,1,10,'alpha'),(2,1,20,'delta'),"
+              "(3,2,30,'beta'), (4,2,40,'beta'),"
+              "(5,3,50,'gamma'),(6,3,60,'omega'),(7,3,70,'kappa')") != 0) {
+    printf("FAILED (reseed filter_src)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  if (srcTab == nullptr) {
+    printf("FAILED (filter_src lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *tagSrcCol = srcTab->getColumn("tag");
+  if (tagSrcCol == nullptr) {
+    printf("FAILED (filter_src.tag lookup)\n");
+    return -1;
+  }
+  CHARSET_INFO *tagCharset = tagSrcCol->getCharset();
+  if (tagCharset == nullptr) {
+    printf("FAILED (filter_src.tag has no charset)\n");
+    return -1;
+  }
+  const Uint32 csNumber = (Uint32)tagCharset->number;
+
+  /* In-memory virt table: [grp INT PK, mn CHAR(8), mx CHAR(8)] —
+   * same synthetic-table pattern as Test 22. */
+  NdbDictionary::Table virtTabSyn("__cte_strcvc_virt");
+  {
+    NdbDictionary::Column grpCol;
+    grpCol.setName("grp");
+    grpCol.setType(NdbDictionary::Column::Int);
+    grpCol.setLength(1);
+    grpCol.setPrimaryKey(true);
+    grpCol.setNullable(false);
+    virtTabSyn.addColumn(grpCol);
+
+    for (const char *nm : { "mn", "mx" }) {
+      NdbDictionary::Column c;
+      c.setName(nm);
+      c.setType(NdbDictionary::Column::Char);
+      c.setLength(8);
+      c.setCharset(tagCharset);
+      c.setPrimaryKey(false);
+      c.setNullable(true);
+      virtTabSyn.addColumn(c);
+    }
+  }
+  {
+    NdbError vtErr;
+    if (virtTabSyn.aggregate(vtErr) != 0) {
+      printf("FAILED (virtTab aggregate: %d %s)\n",
+             vtErr.code, vtErr.message);
+      return -1;
+    }
+  }
+  const NdbDictionary::Table *virtTab = &virtTabSyn;
+
+  struct SubCase {
+    const char *name;
+    bool useLe;      /* true: reject via _le (accept mn < mx) */
+    Int64 expected;
+  };
+  const SubCase cases[] = {
+      { "mn<mx", true, 5 },
+      { "mn=mx", false, 2 },
+  };
+
+  for (const SubCase &sc : cases) {
+    /* CTE 0 = GROUP BY grp, MIN(tag), MAX(tag). */
+    NdbAggregator cteAgg(srcTab);
+    if (!cteAgg.GroupBy("grp") ||
+        !cteAgg.LoadColumn(tagSrcCol->getAttrId(), 0) ||
+        !cteAgg.Min(0, 0) ||
+        !cteAgg.Max(1, 0) ||
+        !cteAgg.Finalize()) {
+      printf("FAILED (%s cteAgg: %s)\n", sc.name,
+             cteAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    /* Main aggregator: COUNT(*) over surviving main rows. */
+    NdbAggregator mainAgg(srcTab);
+    if (!mainAgg.LoadUint64(1, 0) ||
+        !mainAgg.Count(0, 0) ||
+        !mainAgg.Finalize()) {
+      printf("FAILED (%s mainAgg: %s)\n", sc.name,
+             mainAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    /* Filter: one BRANCH_LINKED_OP_LINKED comparing buffer positions
+     * 1 (mn) and 2 (mx); position 0 is the GB key. */
+    Uint32 codeBuf[64];
+    NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
+                                  sizeof(codeBuf) / sizeof(codeBuf[0]));
+    const Uint32 REJECT = 0;
+    const Uint32 typeId =
+        static_cast<Uint32>(NdbDictionary::Column::Char);
+    int rc = sc.useLe
+        ? filterCode.branch_linked_linked_le(1, 2, typeId, csNumber,
+                                             8, 8, REJECT)
+        : filterCode.branch_linked_linked_ne(1, 2, typeId, csNumber,
+                                             8, 8, REJECT);
+    if (rc != 0 ||
+        filterCode.interpret_exit_ok() != 0 ||
+        filterCode.def_label(REJECT) != 0 ||
+        filterCode.interpret_exit_nok() != 0 ||
+        filterCode.finalise() != 0) {
+      printf("FAILED (%s build filter: %s)\n", sc.name,
+             filterCode.getNdbError().message);
+      return -1;
+    }
+
+    NdbQueryBuilder *qb = NdbQueryBuilder::create();
+    if (qb == nullptr) { printf("FAILED (%s create)\n", sc.name); return -1; }
+
+    qb->beginCteSubtree(0);
+    const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+    if (cteScanOp == nullptr) {
+      printf("FAILED (%s CTE scan: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteJoinKey[] = {
+        qb->linkedValue(cteScanOp, "pk"), nullptr
+    };
+    NdbQueryOptions cteLeafOpts;
+    cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLeafOpts.setAggregation(cteAgg);
+    if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+      printf("FAILED (%s CTE leaf: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+      printf("FAILED (%s defineCte)\n", sc.name);
+      qb->destroy();
+      return -1;
+    }
+
+    /* Main: scan filter_src; lookupCte by grp with the string
+     * col-vs-col filter. */
+    const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+    if (mainScanOp == nullptr) {
+      printf("FAILED (%s main scan: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteKey[] = {
+        qb->linkedValue(mainScanOp, "grp"), nullptr
+    };
+    NdbQueryOptions cteLookupOpts;
+    cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLookupOpts.setInterpretedCode(filterCode);
+    cteLookupOpts.setAggregation(mainAgg);
+    if (qb->lookupCte(0, 3, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+      printf("FAILED (%s lookupCte: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryDef *queryDef = qb->prepare(ndb);
+    if (queryDef == nullptr) {
+      printf("FAILED (%s prepare: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->destroy();
+
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      printf("FAILED (%s startTransaction)\n", sc.name);
+      queryDef->destroy();
+      return -1;
+    }
+    NdbQuery *query = trans->createQuery(queryDef);
+    if (query == nullptr) {
+      printf("FAILED (%s createQuery: %s)\n", sc.name,
+             trans->getNdbError().message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      const NdbError &tErr = trans->getNdbError();
+      const NdbError &qErr = query->getNdbError();
+      printf("FAILED (%s execute: trans %d:%s, query %d:%s)\n", sc.name,
+             tErr.code, tErr.message, qErr.code, qErr.message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {
+      /* nothing — main aggregator carries the count */
+    }
+    if (outcome == NdbQuery::NextResult_error) {
+      printf("FAILED (%s nextResult drain: %s)\n", sc.name,
+             query->getNdbError().message);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbAggregator *resultAgg = query->getAggregator();
+    if (resultAgg == nullptr) {
+      printf("FAILED (%s getAggregator)\n", sc.name);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    Int64 count = -1;
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (!rec.end()) {
+      NdbAggregator::Result countRes = rec.FetchAggregationResult();
+      count = countRes.data_int64();
+    }
+
+    query->close();
+    trans->close();
+    queryDef->destroy();
+
+    if (count != sc.expected) {
+      printf("FAILED (%s: expected COUNT=%lld, got %lld)\n", sc.name,
+             (long long)sc.expected, (long long)count);
+      return -1;
+    }
+  }
+
+  printf("OK (mn<mx COUNT=5, mn=mx COUNT=2)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -3441,6 +3719,7 @@ static const TestEntry g_tests[] = {
     { 21, testCteLookupFilterInlineTypeNumeric },
     { 22, testCteLookupFilterInlineTypeChar },
     { 23, testCteLookupFilterInlineTypeMax },
+    { 24, testCteLookupFilterLinkedLinkedString },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

@@ -10477,10 +10477,11 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     if (left->op == T_IDENTIFIER && right->op == T_IDENTIFIER) {
       require_run(scope.resolved_columns != NULL,
                   "CTE_LOOKUP filter: missing resolved columns.");
-      // Resolve one side to (buffer position, NDB type).
+      // Resolve one side to (buffer position, NDB type, descriptor).
       auto resolve_side =
           [&](ConditionalExpression* side, Uint32& out_pos,
-              NdbDictionary::Column::Type& out_type) -> void {
+              NdbDictionary::Column::Type& out_type,
+              const NdbDictionary::Column*& out_col) -> void {
         Uint32 cidx = side->col_idx;
         const QueryScope::ResolvedColumnRef& ref =
             scope.resolved_columns[cidx];
@@ -10495,6 +10496,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                       "column descriptor.");
           out_pos = linked_base + cte_idx;
           out_type = vc->getType();
+          out_col = vc;
           return;
         }
         if (ref.kind ==
@@ -10508,6 +10510,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
           out_pos = find_proj_pos(ref.join_op_idx,
                                   m_columns[cidx].c_str());
           out_type = ref.dict_column->getType();
+          out_col = ref.dict_column;
           return;
         }
         require_prm(false,
@@ -10519,14 +10522,100 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       Uint32 pos_l = 0, pos_r = 0;
       NdbDictionary::Column::Type type_l = NdbDictionary::Column::Bigint;
       NdbDictionary::Column::Type type_r = NdbDictionary::Column::Bigint;
-      resolve_side(left, pos_l, type_l);
-      resolve_side(right, pos_r, type_r);
+      const NdbDictionary::Column* col_l = NULL;
+      const NdbDictionary::Column* col_r = NULL;
+      resolve_side(left, pos_l, type_l, col_l);
+      resolve_side(right, pos_r, type_r, col_r);
+
+      // String col-vs-col (cte_output_string_colvscol_plan.md S3):
+      // same-type same-charset CHAR / VARCHAR / LONGVARCHAR pairs emit
+      // one BRANCH_LINKED_OP_LINKED comparing the two buffer entries
+      // directly with the charset-aware kernel compare.  Sizes follow
+      // the const-vs-col inline path's convention (getLength() on the
+      // descriptor); the kernel additionally clamps each side to the
+      // entry's actual payload.  NULL guards below apply to both arms,
+      // so the branch never sees a NULL entry (raw NdbInterpretedCode
+      // defaults to NULL_CMP_EQUAL, not SQL semantics).
+      auto is_string_t = [](NdbDictionary::Column::Type t) {
+        return t == NdbDictionary::Column::Char ||
+               t == NdbDictionary::Column::Varchar ||
+               t == NdbDictionary::Column::Longvarchar;
+      };
+      const bool l_str = is_string_t(type_l);
+      const bool r_str = is_string_t(type_r);
+      if (l_str || r_str) {
+        require_prm(l_str && r_str,
+                    "CTE_LOOKUP filter col-vs-col: cannot compare a "
+                    "string operand against a non-string operand — "
+                    "cast one side or compare against a constant.");
+        require_prm(type_l == type_r,
+                    "CTE_LOOKUP filter col-vs-col: string operands "
+                    "must both be the same string type (CHAR vs "
+                    "VARCHAR mixes are not yet supported) — cast one "
+                    "side or compare against a constant.");
+        Uint32 cs_l = (Uint32)col_l->getCharsetNumber();
+        Uint32 cs_r = (Uint32)col_r->getCharsetNumber();
+        require_prm(cs_l == cs_r && cs_l != 0,
+                    "CTE_LOOKUP filter col-vs-col: string operands "
+                    "must share one character set.");
+        const Uint32 size_l = (Uint32)col_l->getLength();
+        const Uint32 size_r = (Uint32)col_r->getLength();
+
+        require_prm(code.branch_linked_isnull(pos_l, fail_label) == 0,
+                    "CTE_LOOKUP filter col-vs-col: failed to emit left "
+                    "NULL guard (string).");
+        require_prm(code.branch_linked_isnull(pos_r, fail_label) == 0,
+                    "CTE_LOOKUP filter col-vs-col: failed to emit right "
+                    "NULL guard (string).");
+
+        // Pick the method that branches when the row should be
+        // REJECTED, per the project-wide inverted-inequality naming
+        // (branch_linked_linked_le branches when L >= R, etc.).
+        const Uint32 tid = (Uint32)type_l;
+        int src = -1;
+        switch (atom->op) {
+        case T_EQUALS:      // accept L =  R -> reject on L != R
+          src = code.branch_linked_linked_ne(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_NOT_EQUALS:  // accept L != R -> reject on L =  R
+          src = code.branch_linked_linked_eq(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_LT:          // accept L <  R -> reject on L >= R
+          src = code.branch_linked_linked_le(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_LE:          // accept L <= R -> reject on L >  R
+          src = code.branch_linked_linked_lt(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_GT:          // accept L >  R -> reject on L <= R
+          src = code.branch_linked_linked_ge(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_GE:          // accept L >= R -> reject on L <  R
+          src = code.branch_linked_linked_gt(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        default:
+          require_prm(false,
+                      "CTE_LOOKUP filter col-vs-col: unsupported "
+                      "operator (string).");
+        }
+        require_prm(src == 0,
+                    "CTE_LOOKUP filter col-vs-col: failed to emit "
+                    "linked-vs-linked string branch.");
+        return;
+      }
+
       require_prm(is_typed_reg_loadable(type_l) &&
                   is_typed_reg_loadable(type_r),
                   "CTE_LOOKUP filter col-vs-col: only integer, FLOAT, "
-                  "DOUBLE and DATE operands are supported — DECIMAL, "
-                  "string and other temporal comparisons need a cast "
-                  "or a constant-vs-column form.");
+                  "DOUBLE, DATE and matching string operands are "
+                  "supported — DECIMAL and non-DATE temporal "
+                  "comparisons need a cast or a constant-vs-column "
+                  "form.");
 
       // UNKNOWN rejects the row/disjunct: guard both operands' NULL
       // flags before the typed loads (a NULL register would raise
@@ -11305,12 +11394,24 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
           break;
         default: {
           // String (Char/Varchar/Longvarchar) or any other PK type: a
-          // zero buffer sized to the PK column (value ignored by the kernel).
+          // zero buffer (value ignored by the kernel).  The generic
+          // const operand's converter is arrayType-sensitive: FIXED
+          // columns require exactly getSizeInBytes() raw bytes, while
+          // VAR columns take the raw VALUE length and prepend the
+          // 1-or-2-byte length prefix themselves — passing
+          // getSizeInBytes() there overflows by the prefix size and
+          // fails bindOperand with QRY_CHAR_OPERAND_TRUNCATED (first
+          // surfaced by the sc-20 string scalar watermark, whose
+          // scalar virt PK is the VARCHAR output itself).  Pass an
+          // empty value for VAR columns instead.
           const Uint32 pksz = pkc->getSizeInBytes();
+          const Uint32 dummy_len =
+              (pkc->getArrayType() == NdbDictionary::Column::ArrayTypeFixed)
+                  ? pksz : 0;
           Uint8* zero = m_amalloc->alloc_exc<Uint8>(pksz == 0 ? 1 : pksz);
-          memset(zero, 0, pksz);
+          memset(zero, 0, pksz == 0 ? 1 : pksz);
           effective_keys[0] =
-              qb->constValue(static_cast<const void*>(zero), pksz);
+              qb->constValue(static_cast<const void*>(zero), dummy_len);
           break;
         }
         }
