@@ -9890,8 +9890,13 @@ RonSQLPreparer::resolve_chained_column_type(
         out_type = NdbDictionary::Column::Double;
         out_length = 1; out_cs = NULL;
         out_scale = (arg_scale + 4 > 30) ? 30 : arg_scale + 4;
+        // Display-gate rule mirrors build_cte_virtual_tables: format
+        // fixed-scale iff the SOURCE precision fits the DOUBLE-exact
+        // range (the average's magnitude is bounded by the source's).
         out_precision =
-            (arg_precision + 4 > 65) ? 65 : arg_precision + 4;
+            (arg_precision <= 15)
+                ? 15
+                : ((arg_precision + 4 > 65) ? 65 : arg_precision + 4);
         return true;
       default:
         return false;
@@ -10244,13 +10249,18 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               "AVG over scale-zero DECIMAL wider than the 64-bit integer "
               "range is not yet supported.");
           derived_type = NdbDictionary::Column::Double;
-          // MySQL result-type rule: scale + 4, precision capped at the
-          // DECIMAL maximum (the printer additionally gates fixed-scale
-          // formatting on precision <= 15).
-          // MySQL caps the result scale at 30 and precision at 65.
+          // MySQL result-type rule: scale + 4 (capped at 30).  The
+          // precision here is DISPLAY metadata: the printer formats
+          // fixed-scale only within the DOUBLE-exact range
+          // (precision <= 15), and an average's magnitude is bounded by
+          // the source's — so gate on the SOURCE precision.  Using
+          // p+4 spuriously tripped the gate (first record:
+          // AVG(DECIMAL(12,2)) printed compact instead of scale-6).
           derived_scale = (src_scale + 4 > 30) ? 30 : src_scale + 4;
           derived_precision =
-              (src_precision + 4 > 65) ? 65 : src_precision + 4;
+              (src_precision <= 15)
+                  ? 15
+                  : ((src_precision + 4 > 65) ? 65 : src_precision + 4);
           break;
         case NdbDictionary::Column::Char:
         case NdbDictionary::Column::Varchar:

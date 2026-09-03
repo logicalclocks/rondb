@@ -1,9 +1,12 @@
 # AVG in CTE Outputs (SUM+COUNT slots, redistribute, finalize-divide)
 
-**Status: V1-V5 SHIPPED (`8b8e69d89d4` on RONDB-1107-step4; Test 25
-green with Tests 1-24 regression after the single-node completion-arm
-fix); Test 26 + the V6 MTR family AUTHORED (pending user build +
-ndb_push_agg/_dist runs + first `--record` ×5); docs pending.**
+**Status: SHIPPED (September 2026, RONDB-1107-step4) — V1-V6 complete:
+Test 25 + Test 26 green in ndb_push_agg AND ndb_push_agg_dist
+(multi-node redistribute + sliced finalize proven); `ronsql_cte_dd_avg`
+recorded green ×5 topology suites (after the avg-03 precision-gate
+fix).  Remaining: rondb-docs update; follow-up probes on file
+(main-query GROUP BY on a CTE aggregate output; wide-DECIMAL compact
+fallback display).**
 
 V5/V6 additions (September 2026):
 - **Test 26** (testCteNdbApiFilter): AVG at scale — 1500 groups × 2
@@ -23,6 +26,14 @@ V5/V6 additions (September 2026):
   scalar all-NULL ⇒ NULL; the AVG watermark comma join (real INT vs
   CTE DOUBLE via typed regs); SUM/MIN/MAX re-aggregation over the avg;
   string/temporal/expression rejection probes.
+- First-record finding (FIXED): avg-03 (AVG(DECIMAL(12,2))) printed
+  compact doubles instead of scale-6 — the AVG arms set display
+  precision to p+4 = 16, tripping the printer's DOUBLE-exact gate
+  (precision <= 15).  The gate's semantics for AVG key on the SOURCE
+  precision (the divide bounds the average's magnitude by the
+  source's), so both arms now use `src_precision <= 15 ? 15 :
+  min(p+4, 65)`.  avg-01 (scale-4 INT display) and avg-02 (the DOUBLE
+  filter) were green on the same run.
 - Deliberate first-record scope choice: direct display rides
   PASS-THROUGH shapes (CTE_SCAN root, the proven filter-45/gc-9
   envelope) — a main-query `GROUP BY a.av` (grouping by a CTE
