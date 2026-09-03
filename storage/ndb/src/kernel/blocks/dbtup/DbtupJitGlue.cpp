@@ -324,6 +324,32 @@ static int jit_load_col_read(dbtup_jit_call_ctx *ctx, uint32_t col_id,
   return 0;
 }
 
+/* jit_col_presence — ronsql_jit item 13: presence-only column read for
+ * the COUNT-over-string fusion (NDB_JIT_COL_PRESENCE_FLAG, see
+ * ndb_jit_bridge.h). Linked columns keep the shared prologue (the linked
+ * walk hands back the header, no size limit); local columns go through
+ * Dbtup::readAttributeIsNullForJit into the block's full-size coutBuffer
+ * — a 4-word stack buffer would fail readSingleAttribute's max_read for
+ * any real string. Returns 1 = NULL, 0 = non-NULL, <0 = read failure
+ * (incl. the CTE-consumer null tablePtrP, per Phase 6-1). */
+static int jit_col_presence(dbtup_jit_call_ctx *ctx, uint32_t col_id) {
+  if ((col_id & 0x8000u) != 0) {
+    Uint32 w0 = 0;
+    Uint32 w1 = 0;
+    AttributeHeader *header = nullptr;
+    if (ctx->join_agg == nullptr ||
+        ctx->join_agg->jitReadLinkedAttr(col_id & 0x7FFFu, &header,
+                                         &w0, &w1) != 0) {
+      return -1;
+    }
+    return header->isNULL() ? 1 : 0;
+  }
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    return -1;
+  }
+  return ctx->block_tup->readAttributeIsNullForJit(ctx->req_struct, col_id);
+}
+
 extern "C" void
 ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   dbtup_jit_call_ctx *ctx =
@@ -340,6 +366,19 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
         "ndb_jit_h_load_col: JitState.ctx is malformed (col_id=%u)",
         col_id);
     abort();
+  }
+
+  if (unlikely((col_id & NDB_JIT_COL_PRESENCE_FLAG) != 0)) {
+    /* ronsql_jit item 13: presence-only load. NULL takes the same
+     * per-row fallback as a NULL value below (the NB form is the one
+     * that stays native on NULL); a read failure likewise. */
+    const int nul =
+        jit_col_presence(ctx, col_id & ~NDB_JIT_COL_PRESENCE_FLAG);
+    s->regs_i64[dst_reg] = 0;
+    if (nul != 0) {
+      s->row_fallback = 1;
+    }
+    return;
   }
 
   /* Read buffer: 1 word AttributeHeader + up to 2 words (8 bytes)
@@ -524,6 +563,29 @@ ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id, uint32_t dst_reg) {
         "ndb_jit_h_load_col_nb: JitState.ctx is malformed (col_id=%u)",
         col_id);
     abort();
+  }
+
+  if (unlikely((col_id & NDB_JIT_COL_PRESENCE_FLAG) != 0)) {
+    /* ronsql_jit item 13: presence-only load — NULL takes the null
+     * branch (COUNT's null-skip, still native); a read failure keeps
+     * the row_fallback defense. */
+    const int nul =
+        jit_col_presence(ctx, col_id & ~NDB_JIT_COL_PRESENCE_FLAG);
+    s->regs_i64[dst_reg] = 0;
+    if (unlikely(nul < 0)) {
+      s->row_fallback = 1;
+      return 0;
+    }
+#ifdef ERROR_INSERT
+    if (ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=load_col_nb col=%u dst=r%u "
+          "presence-only null=%d",
+          ctx->trace_row_no, col_id & ~NDB_JIT_COL_PRESENCE_FLAG,
+          dst_reg, nul);
+    }
+#endif
+    return nul;
   }
 
   Uint32 read_buf[4];
@@ -1455,6 +1517,12 @@ ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
     case NDB_TYPE_BIGINT:
       value = (Int64)sint8korr(data);
       break;
+    /* GL Part B (2026-09-03): BIGUNSIGNED — the raw 8 bytes, exactly as
+     * handleReadLinkedColumnToReg's memcpy into val_uint64; the bridge
+     * marks the dst U64 so the typed compare takes the unsigned arm. */
+    case NDB_TYPE_BIGUNSIGNED:
+      value = (Int64)uint8korr(data);
+      break;
     /* GL Part A (2026-09-01): float family — store the double's BIT
      * pattern (F64 lives bit-cast in regs_i64; the bridge marked the
      * dst F64 so consumers take the OP_BRANCH_F64 arm). FLOAT widens
@@ -1531,34 +1599,69 @@ ndb_jit_h_branch_mem_op_arg(JitState *s, uint32_t inst_word_off) {
 }
 
 
-/* ndb_jit_h_branch_f64 — ronsql_jit slice 2 item 6 cold-call F64
- * compare (OP_BRANCH_F64). arg: bits 0-3 condition, bit 4 left-is-
- * double-bits, bit 5 right-is-double-bits, bits 8-11 left reg,
- * bits 12-15 right reg. A clear side flag converts signed i64 →
- * double, mirroring the interpreter's compareTypedRegs float arm
- * (embedded int registers are non-negative-or-signed i64 by the
- * admission rules, so the signed convert is exact). NaN compares
- * "equal" in both engines (l<r and l>r both false). Returns 1 to
- * take the branch, 0 to fall through. */
+/* ndb_jit_h_branch_f64 — ronsql_jit slice 2 item 6 cold-call TYPED
+ * compare (OP_BRANCH_F64; the op kind keeps its name — the stencil is
+ * just this call + branch). arg: bits 0-3 condition, bit 4 left-is-
+ * double-bits, bit 5 right-is-double-bits, bit 6 left-is-u64 (GL Part
+ * B), bit 7 right-is-u64, bits 8-11 left reg, bits 12-15 right reg.
+ * This is the interpreter's compareTypedRegs lattice verbatim: any
+ * double side → double compare (an int side converts signed or
+ * unsigned per its flag); else both u64 → unsigned compare; both
+ * signed → signed compare; mixed → a negative signed operand is
+ * strictly less than any unsigned, otherwise unsigned compare (both
+ * fit). Unflagged int registers are non-negative-or-signed i64 by the
+ * admission rules. NaN compares "equal" in both engines (l<r and l>r
+ * both false). Returns 1 to take the branch, 0 to fall through. */
 extern "C" int
 ndb_jit_h_branch_f64(JitState *s, uint32_t arg) {
   const uint32_t a = (arg >> 8) & 0xFu;
   const uint32_t b = (arg >> 12) & 0xFu;
   const int64_t abits = s->regs_i64[a];
   const int64_t bbits = s->regs_i64[b];
-  double l;
-  double r;
-  if (arg & 0x10u) {
-    std::memcpy(&l, &abits, sizeof(l));
+  const bool l_f64 = (arg & 0x10u) != 0;
+  const bool r_f64 = (arg & 0x20u) != 0;
+  const bool l_u64 = (arg & 0x40u) != 0;
+  const bool r_u64 = (arg & 0x80u) != 0;
+  int res;
+  double l = 0.0;
+  double r = 0.0;
+  if (l_f64 || r_f64) {
+    if (l_f64) {
+      std::memcpy(&l, &abits, sizeof(l));
+    } else {
+      l = l_u64 ? (double)(uint64_t)abits : (double)abits;
+    }
+    if (r_f64) {
+      std::memcpy(&r, &bbits, sizeof(r));
+    } else {
+      r = r_u64 ? (double)(uint64_t)bbits : (double)bbits;
+    }
+    res = (l < r) ? -1 : (l > r) ? 1 : 0;
+  } else if (l_u64 == r_u64) {
+    if (l_u64) {
+      const uint64_t lu = (uint64_t)abits;
+      const uint64_t ru = (uint64_t)bbits;
+      res = (lu < ru) ? -1 : (lu > ru) ? 1 : 0;
+    } else {
+      res = (abits < bbits) ? -1 : (abits > bbits) ? 1 : 0;
+    }
+  } else if (l_u64) {
+    if (bbits < 0) {
+      res = 1;
+    } else {
+      const uint64_t lu = (uint64_t)abits;
+      const uint64_t ru = (uint64_t)bbits;
+      res = (lu < ru) ? -1 : (lu > ru) ? 1 : 0;
+    }
   } else {
-    l = (double)abits;
+    if (abits < 0) {
+      res = -1;
+    } else {
+      const uint64_t lu = (uint64_t)abits;
+      const uint64_t ru = (uint64_t)bbits;
+      res = (lu < ru) ? -1 : (lu > ru) ? 1 : 0;
+    }
   }
-  if (arg & 0x20u) {
-    std::memcpy(&r, &bbits, sizeof(r));
-  } else {
-    r = (double)bbits;
-  }
-  const int res = (l < r) ? -1 : (l > r) ? 1 : 0;
   int take;
   switch (arg & 0xFu) {
     case 0:  take = (res == 0); break;   /* EQ */
@@ -1575,8 +1678,8 @@ ndb_jit_h_branch_f64(JitState *s, uint32_t arg) {
     if (ctx != nullptr && ctx->trace_enabled) {
       g_eventLogger->info(
           "ERROR_INSERT 4063: row=%u helper=branch_f64 arg=0x%x "
-          "l=%f r=%f take=%d",
-          ctx->trace_row_no, arg, l, r, take);
+          "l=%f r=%f res=%d take=%d",
+          ctx->trace_row_no, arg, l, r, res, take);
     }
   }
 #endif

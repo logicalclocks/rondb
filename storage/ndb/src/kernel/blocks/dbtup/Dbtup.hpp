@@ -3339,6 +3339,22 @@ public:
     return readSingleAttribute(req_struct, attrId, outBuf, maxWords);
   }
 
+  /* ronsql_jit item 13: NULL-ness of a local column for the JIT's
+   * presence-only load (COUNT over a string column needs only "is it
+   * NULL"). Same fast path, but into the block's coutBuffer — sized for
+   * any attribute and free on the JIT path (it is the interpreter's
+   * tmpArea; evalBranchColForJit uses it the same way) — so no caller
+   * buffer can be too small for a wide CHAR / VARCHAR / LONGVARCHAR
+   * (readSingleAttribute fails the read past max_read).
+   * Returns 1 = NULL, 0 = non-NULL, <0 = error code. */
+  int readAttributeIsNullForJit(KeyReqStruct *req_struct, Uint32 attrId) {
+    const int rc = readSingleAttribute(
+        req_struct, attrId, coutBuffer,
+        (Uint32)(sizeof(coutBuffer) / sizeof(coutBuffer[0])));
+    if (unlikely(rc < 0)) return rc;
+    return AttributeHeader(coutBuffer[0]).isNULL() ? 1 : 0;
+  }
+
   /* RONDB-1056 Phase 7: evaluate a column-vs-value scan-filter branch for
    * the JIT cold-call helper — BRANCH_ATTR_OP_ARG (vs an inline literal),
    * BRANCH_ATTR_OP_PARAM (vs a parameter), and BRANCH_ATTR_OP_ATTR (vs a 2nd

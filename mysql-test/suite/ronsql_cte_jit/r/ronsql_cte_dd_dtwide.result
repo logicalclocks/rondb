@@ -558,4 +558,4 @@ grp#9	1	-350004	1995-01-28
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_dtwide_jit_fallback_delta;
 ronsql_cte_dd_dtwide_jit_fallback_delta
-2
+0

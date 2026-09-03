@@ -2503,13 +2503,14 @@ static void test_str_mixed_program(void) {
   mark_pass(name);
 }
 
-/* T59d: a string load whose consumer is NOT Min/Max keeps the
- * whole-program fallback (the planner never emits string Sum/Count
- * through this path). */
+/* T59d: a string load whose consumer is NOT Min/Max/Count keeps the
+ * whole-program fallback (the planner never emits string Sum through
+ * this path). Count was the original consumer here until ronsql_jit
+ * item 13 admitted it (presence-only load, pinned by T80a-c). */
 static void test_str_non_minmax_consumer_reject(void) {
   uint32_t prog[2] = {
     enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
-    enc_count(/*reg=*/0, /*agg=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
   };
   assert_rejected("T59d str_non_minmax_consumer_reject", prog, 2,
                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpLoadCol);
@@ -3767,18 +3768,22 @@ static void test_gl_import_f64_accept(void) {
   mark_pass(name);
 }
 
-/* T70d: BIGUNSIGNED import rejects (values >= 2^63 misorder under    */
-/* the signed compare); a NARROW unsigned source is u63-safe and      */
-/* imports fine.                                                      */
+/* T70d: a BIGUNSIGNED import — GL Part B (2026-09-03) ADMITS it (the  */
+/* MOV is bit-preserving; the dst is U64-marked so a compare takes the */
+/* typed helper's unsigned arm — pinned by T81); a NARROW unsigned     */
+/* source is u63-safe and imports as plain i64 as before.              */
 static void test_gl_import_u64_bounds(void) {
   const char *name = "T70d gl_import_u64_bounds";
-  uint32_t rej[3] = {
+  uint32_t big[3] = {
     enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0),
     enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
     enc_emb_rar(0, 1),
   };
-  assert_rejected("T70d gl_import_bigunsigned_reject", rej, 3,
-                  JIT_BRIDGE_TYPE_MISMATCH, 2, EMB_READ_AGG_REG_TO_REG);
+  Program pb;
+  if (!expect_accepted("T70d gl_import_bigunsigned_accept", big, 3, &pb,
+                       /*expected_n_ops=*/3)) return;
+  if (!expect_op_field("T70d gl_import_bigunsigned_accept", &pb, 1, "kind",
+                       pb.ops[1].kind, OP_MOV_INT_INT)) return;
   uint32_t acc[5] = {
     enc_load_col(NDB_TYPE_SMALLUNSIGNED, /*reg=*/0, /*col=*/0),
     enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
@@ -3960,17 +3965,23 @@ static void test_linked_col_smallint_accept(void) {
   mark_pass(name);
 }
 
-/* T73c: BIGUNSIGNED rejects — values >= 2^63 would misorder under
- * the embedded signed compares (same policy as the op-43 import). */
-static void test_linked_col_bigunsigned_reject(void) {
+/* T73c: BIGUNSIGNED linked load — GL Part B (2026-09-03) ADMITS it:
+ * the helper stores the raw 8 bytes and the dst is U64-marked (compare
+ * routing pinned by T81b). */
+static void test_linked_col_bigunsigned_accept(void) {
+  const char *name = "T73c linked_col_bigunsigned_accept";
   uint32_t prog[3] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
     enc_emb_rlc(1, 0, NDB_TYPE_BIGUNSIGNED),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
-  assert_rejected("T73c linked_col_bigunsigned_reject", prog, 3,
-                  JIT_BRIDGE_TYPE_MISMATCH, 1,
-                  EMB_READ_LINKED_COL_TO_REG);
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
+                       NDB_TYPE_BIGUNSIGNED)) return;
+  mark_pass(name);
 }
 
 /* T73d: DOUBLE linked load — GL Part A (2026-09-01) ADMITS it: the
@@ -4646,6 +4657,290 @@ static void test_case_dead_arm_adopts_jump_state(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* ronsql_jit item 11 — CASE arm family conflict: a non-negative       */
+/* constant adopts the slot's already-claimed unsigned family.         */
+/* ------------------------------------------------------------------ */
+
+/* T79a: dd_bigquery's MAX shape — `THEN biguns_col ELSE 0`: the ELSE
+ * arm's MaxBigint over constant 0 lowers to OP_MAX_U64 on the slot the
+ * column arm claimed U64 (pre-item-11: TYPE_MISMATCH at word 6). */
+static void test_case_arm_nnc_adopts_u64_max(void) {
+  const char *name = "T79a case_arm_nnc_adopts_u64_max";
+  uint32_t prog[7] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/2),
+    enc_agg(kOpMaxBigint, /*reg=*/0, /*agg=*/1),
+    enc_op(kOpSkip, /*count=*/4),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1),
+    0u, 0u,
+    enc_agg(kOpMaxBigint, /*reg=*/1, /*agg=*/1),
+  };
+  Program p;
+  /* load + MAX_U64 + JUMP + LOAD_CONST + MAX_U64 + tail EXIT = 6. */
+  if (!expect_accepted(name, prog, 7, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_MAX_U64)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_MAX_U64)) return;
+  mark_pass(name);
+}
+
+/* T79b: the SUM sibling (dd_bigquery's `SUM(CASE .. THEN biguns ELSE 0)`):
+ * both arms lower to OP_SUM_U64_CHECKED and share the overflow exit. */
+static void test_case_arm_nnc_adopts_u64_sum(void) {
+  const char *name = "T79b case_arm_nnc_adopts_u64_sum";
+  uint32_t prog[7] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/2),
+    enc_agg(kOpSumBigint, /*reg=*/0, /*agg=*/3),
+    enc_op(kOpSkip, /*count=*/4),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0),
+    0u, 0u,
+    enc_agg(kOpSumBigint, /*reg=*/0, /*agg=*/3),
+  };
+  Program p;
+  /* load + SUM_U64 + JUMP + LOAD_CONST + SUM_U64 + EXIT + OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 7, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T79c: the constant-FIRST order is the documented limit — the constant
+ * arm claims I64 before any column arm can claim U64, and the later
+ * BIGUNSIGNED arm still conflicts. Pinned so a future pre-scan flips it
+ * deliberately. */
+static void test_case_arm_const_first_still_rejects(void) {
+  uint32_t prog[7] = {
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/1),
+    0u, 0u,
+    enc_agg(kOpMaxBigint, /*reg=*/1, /*agg=*/1),
+    enc_op(kOpSkip, /*count=*/2),
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/2),
+    enc_agg(kOpMaxBigint, /*reg=*/0, /*agg=*/1),
+  };
+  assert_rejected("T79c case_arm_const_first_still_rejects", prog, 7,
+                  JIT_BRIDGE_TYPE_MISMATCH, 6, kOpMaxBigint);
+}
+
+/* T79d: a NEGATIVE constant is not NNC and must not adopt U64 — the
+ * `ELSE -1` arm over a U64 slot still rejects. */
+static void test_case_arm_negative_const_rejects(void) {
+  uint32_t prog[7] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/2),
+    enc_agg(kOpSumBigint, /*reg=*/0, /*agg=*/0),
+    enc_op(kOpSkip, /*count=*/4),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0),
+    0xFFFFFFFFu, 0xFFFFFFFFu,
+    enc_agg(kOpSumBigint, /*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T79d case_arm_negative_const_rejects", prog, 7,
+                  JIT_BRIDGE_TYPE_MISMATCH, 6, kOpSumBigint);
+}
+
+/* ------------------------------------------------------------------ */
+/* ronsql_jit item 13 — COUNT over a string column: presence-only load */
+/* (col | NDB_JIT_COL_PRESENCE_FLAG 0x4000) + COUNT, NB-converted.     */
+/* ------------------------------------------------------------------ */
+
+/* T80a: dd_dtwide's shape — `LoadCol VARCHAR; Count`. The load becomes
+ * the presence-only OP_LOAD_COL_NDB and nb_convert_loads turns it into
+ * the NB form (col moves to b, the null-branch target to c = the op
+ * after the COUNT), so NULL rows skip the COUNT natively. */
+static void test_str_count_presence_load(void) {
+  const char *name = "T80a str_count_presence_load";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* [0]LOAD_NB(presence) [1]COUNT [2]tail EXIT. */
+  if (!expect_accepted(name, prog, 2, &p, /*expected_n_ops=*/3)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 3u | 0x4000u)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 0)) return;
+  mark_pass(name);
+}
+
+/* T80b: COUNT + MIN over the same string column — presence load, the
+ * COUNT, then the fused MINMAX (never between the load and the COUNT:
+ * the null branch lands on the first non-reader after the COUNT). */
+static void test_str_count_and_min(void) {
+  const char *name = "T80b str_count_and_min";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_count(/*reg=*/0, /*agg=*/0),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]LOAD_NB(c=2) [1]COUNT [2]MINMAX_STR(min agg1) [3]EXIT. */
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 3)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 1)) return;
+  mark_pass(name);
+}
+
+/* T80c: MAX before COUNT on the wire — the emission order is still
+ * presence load, COUNT, MINMAX (the max bit set), and a jump resolving
+ * onto either consumed word lands on its own op. */
+static void test_str_max_then_count(void) {
+  const char *name = "T80c str_max_then_count";
+  uint32_t prog[3] = {
+    enc_load_col(NDB_TYPE_CHAR, /*reg=*/0, /*col=*/4),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/1),
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 4u | 0x4000u)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 0x101)) return;
+  mark_pass(name);
+}
+
+/* ------------------------------------------------------------------ */
+/* GL Part B (2026-09-03) — BIGUNSIGNED compare mode: U64 imports /   */
+/* linked loads route the compare through the typed helper with the   */
+/* per-side unsigned flags (bit 6 left, bit 7 right) — the            */
+/* interpreter's compareTypedRegs lattice.                             */
+/* ------------------------------------------------------------------ */
+
+/* T81a: the corpus shape — GREATEST(bigint_linked, biguns_linked) —
+ * cte_scalar / gl_v6's `GREATEST(x, COUNT(..))`: BIGINT r0, BIGUNSIGNED
+ * r1, imports, GE, trellis, Mov(0,1), Sum(r0). The compare is the typed
+ * helper with ONLY the right-u64 flag (0x80); after the Mov r0 is U64
+ * so the Sum lowers to SUM_U64_CHECKED, and the trellis merge is
+ * int-class on both paths. */
+static void test_u64_gl_fast_path(void) {
+  const char *name = "T81a u64_gl_fast_path";
+  uint32_t prog[14] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0x8000),
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/1, /*col=*/0x8001),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_rar(0, 1),
+    enc_emb_rar(1, 2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, 1, 2, /*offset=*/4),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 1),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_2reg(kOpMov, /*dst=*/0, /*src=*/1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + BRANCH_F64(typed) + 2x(LC16+JUMP) + Mov +
+   * SUM_U64_CHECKED + tail EXIT + OVERFLOW_EXIT = 13. */
+  if (!expect_accepted(name, prog, 14, &p, /*expected_n_ops=*/13)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_BRANCH_F64)) return;
+  if (p.ops[4].imm != (int64_t)0xA985) {  /* GE=5 | right-u64 0x80 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a985",
+              (unsigned long long)p.ops[4].imm);
+    return;
+  }
+  if (!expect_op_field(name, &p, 10, "kind", p.ops[10].kind,
+                       OP_SUM_U64_CHECKED)) return;
+  mark_pass(name);
+}
+
+/* T81b: op-44 BIGUNSIGNED linked load compared with a BIGINT linked
+ * load — left-u64 flag only (0x40). */
+static void test_u64_linked_compare(void) {
+  const char *name = "T81b u64_linked_compare";
+  uint32_t prog[6] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGUNSIGNED),
+    enc_emb_rlc(/*dst=*/2, /*pos=*/1, NDB_TYPE_BIGINT),
+    enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_BRANCH_F64)) return;
+  if (p.ops[2].imm != (int64_t)0xA942) {  /* LT=2 | left-u64 0x40 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a942",
+              (unsigned long long)p.ops[2].imm);
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T81c: a DATETIME2 outer register (U64 track, but a PACKED temporal —
+ * the unsigned-compare ordering of the pack is unproven) still rejects
+ * at the import. */
+static void test_u64_pack_import_reject(void) {
+  uint32_t prog[3] = {
+    /* Type 32 needs the wide encoding (bit 20 carries type bit 5). */
+    enc_load_col_wide(NDB_TYPE_DATETIME2, /*reg=*/0, /*col=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_emb_rar(0, 1),
+  };
+  assert_rejected("T81c u64_pack_import_reject", prog, 3,
+                  JIT_BRIDGE_TYPE_MISMATCH, 2, EMB_READ_AGG_REG_TO_REG);
+}
+
+/* T81d: embedded arithmetic over a U64-marked register rejects (the
+ * ARITH_FB stencil is signed i64; same policy as F64 operands). */
+static void test_u64_arith_operand_reject(void) {
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_rar(0, 1),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/5),
+    enc_emb_arith(EMB_ADD_REG_REG, /*dst=*/3, /*src1=*/1, /*src2=*/2),
+  };
+  assert_rejected("T81d u64_arith_operand_reject", prog, 5,
+                  JIT_BRIDGE_TYPE_MISMATCH, 4, EMB_ADD_REG_REG);
+}
+
+/* T81e: DOUBLE import vs BIGUNSIGNED import — both flags set on their
+ * sides (0x10 left-f64, 0x80 right-u64): the helper converts the
+ * unsigned side to double as UNSIGNED (compareTypedRegs' float arm). */
+static void test_f64_vs_u64_import(void) {
+  const char *name = "T81e f64_vs_u64_import";
+  uint32_t prog[8] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/1, /*col=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_rar(0, 1),
+    enc_emb_rar(1, 2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  /* loads(2) + imports(2) + BRANCH_F64 + EXIT(refuse) + tail EXIT = 7. */
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
+                       OP_BRANCH_F64)) return;
+  if (p.ops[4].imm != (int64_t)0xA994) {  /* GT=4 | 0x10 | 0x80 | r9,r10 */
+    mark_fail(name, "arg=%llx, want a994",
+              (unsigned long long)p.ops[4].imm);
+    return;
+  }
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -4806,7 +5101,7 @@ int main(void) {
   test_agg_uncond_branch_accept();
   test_linked_col_bigint_accept();
   test_linked_col_smallint_accept();
-  test_linked_col_bigunsigned_reject();
+  test_linked_col_bigunsigned_accept();
   test_linked_col_double_accept();
   test_scan_filter_linked_col_reject();
   test_branch_mem_op_arg_accept();
@@ -4830,6 +5125,18 @@ int main(void) {
   test_f64_gl_mixed_trellis_reject();
   test_f64_gl_null_check_accept();
   test_case_dead_arm_adopts_jump_state();
+  test_case_arm_nnc_adopts_u64_max();
+  test_case_arm_nnc_adopts_u64_sum();
+  test_case_arm_const_first_still_rejects();
+  test_case_arm_negative_const_rejects();
+  test_str_count_presence_load();
+  test_str_count_and_min();
+  test_str_max_then_count();
+  test_u64_gl_fast_path();
+  test_u64_linked_compare();
+  test_u64_pack_import_reject();
+  test_u64_arith_operand_reject();
+  test_f64_vs_u64_import();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -73,6 +73,16 @@ typedef struct {
   uint32_t        offending_op;     /* the kOp* value (bits 31-26) */
 } JitBridgeError;
 
+/* ronsql_jit item 13: bridge <-> glue contract on the col_id operand of
+ * OP_LOAD_COL_NDB / OP_LOAD_COL_NDB_NB. Bit 15 is NDB's linked-column
+ * flag; bit 14 (never set in an attribute id — tables have < 512
+ * attributes) marks a PRESENCE-ONLY load: the helper answers "is the
+ * column NULL" and stores 0, decoding nothing. The bridge emits it for a
+ * string column whose only value consumers are COUNT (the register is
+ * STR-poisoned, so nothing reads the bits); the NB form's null branch
+ * then gives COUNT(str_col) its null-skip. */
+#define NDB_JIT_COL_PRESENCE_FLAG 0x4000u
+
 /* Translate `ndb_prog[0..n_words)` into `out_prog`.
  *
  *   On JIT_BRIDGE_OK: out_prog->n_ops is set, out_prog->ops[] is

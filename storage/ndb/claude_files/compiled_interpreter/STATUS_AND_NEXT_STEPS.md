@@ -240,9 +240,25 @@ family, and the helper's node-abort on eval errors replaced by the
 interpreter's TUPKEY_abort disposition (new ctx.error_code +
 invoke out_error) — required because LIKE on a non-string column is
 a legitimate client error (40), not a contract break. T42/T42b/T42c,
-canary Q13-Q17, dd_filter re-pinned 0 + armed. Verify list in the
-plan. Then items 11 and 13; then the phase_6_plan.md §4 backlog (perf
-bench OFF vs ON first).
+canary Q13-Q17, dd_filter re-pinned 0 + armed. **VERIFIED + committed
+(8f88bb71dd4): dd_filter 24→0 armed, typed-regs 1880→1824, census
+68→44.** **Items 11 + 13 DONE & VERIFIED (2026-09-03, five-suite run green)**:
+NNC adopts the slot's claimed U64 family (bridge-only) and the
+presence-only string load for COUNT (bridge flag 0x4000 + glue +
+`Dbtup::readAttributeIsNullForJit`); T79a-d, T80a-c; dd_dtwide
+re-pinned 0 + armed; dd_bigquery 4 → 2 and EXEMPT (its remaining
+program is `MAX/MIN(CASE .. THEN biguns ELSE -9 END)` — a negative
+constant into an unsigned slot, which only the interpreter's dynamic
+slot signedness can express; the pre-emptive arming caught it via
+5120). Verified: corpus residue 40, 76/81 armed. **GL Part B DONE & VERIFIED
+(2026-09-03, five-suite run green)**: the typed compare helper is now
+compareTypedRegs' full lattice (per-side u64 flags, zero stencils);
+op-43 / op-44 admit BIGUNSIGNED with `emb_reg_u64` tracking; packed
+temporals gated by a new outer `reg_u64_pack` flag; T70d/T73c flipped,
+T81a-e; gl_v5 / gl_v6 / cte_scalar re-pinned 0 + armed. Corpus residue is
+34 = dd_bigquery 2 + ronsql_basic 32 (~1234 → 34, 97%) — nothing
+lowerable left — 79/81 armed. **NEXT: the phase_6_plan.md §4 backlog
+(perf bench OFF vs ON first).**
 
 ## Session 2026-08-18/19 — crash registry, upstream merge, test renumbering
 

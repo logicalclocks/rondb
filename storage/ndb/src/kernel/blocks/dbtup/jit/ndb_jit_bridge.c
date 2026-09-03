@@ -576,6 +576,7 @@ typedef struct {
   uint8_t  has_snap;
   uint8_t  reg_type_snap[BC_EMB_REG_BASE];
   uint8_t  reg_u63_snap[BC_EMB_REG_BASE];
+  uint8_t  reg_pack_snap[BC_EMB_REG_BASE];   /* GL Part B */
 } PendingCaseJump;
 
 /* ronsql_jit slice 2 item 9: WRITE_INTERPRETER_OUTPUT's skip value
@@ -802,7 +803,8 @@ static uint8_t br_track_class(uint8_t track) {
  * register file on this path → the entry opts out of the guard. */
 static void br_snapshot_outer_tracker(PendingCaseJump *j,
                                       const uint8_t *reg_type,
-                                      const uint8_t *reg_u63) {
+                                      const uint8_t *reg_u63,
+                                      const uint8_t *reg_pack) {
   if (reg_type == NULL) {
     j->has_snap = 0;
     return;
@@ -813,6 +815,11 @@ static void br_snapshot_outer_tracker(PendingCaseJump *j,
     memcpy(j->reg_u63_snap, reg_u63, BC_EMB_REG_BASE);
   } else {
     memset(j->reg_u63_snap, 0, BC_EMB_REG_BASE);
+  }
+  if (reg_pack != NULL) {
+    memcpy(j->reg_pack_snap, reg_pack, BC_EMB_REG_BASE);
+  } else {
+    memset(j->reg_pack_snap, 0, BC_EMB_REG_BASE);
   }
 }
 
@@ -836,7 +843,11 @@ static JitBridgeReason translate_embedded_block(
      * register file (scan filters, the embedded-only test wrapper) —
      * the import rejects there. */
     const uint8_t *outer_reg_type,
-    const uint8_t *outer_reg_u63) {
+    const uint8_t *outer_reg_u63,
+    /* GL Part B: per-outer-register "packed temporal" flag (DATETIME2 /
+     * TIMESTAMP2 loads) — such U64 registers are never imported. NULL
+     * wherever outer_reg_type is NULL. */
+    const uint8_t *outer_reg_pack) {
 
   if (emb_len == 0) {
     /* Empty embedded block — equivalent to "always pass". */
@@ -897,6 +908,14 @@ static JitBridgeReason translate_embedded_block(
   uint8_t emb_reg_f64[8];
   int16_t emb_reg_read_attr[8];
   memset(emb_reg_f64, 0, sizeof(emb_reg_f64));
+  /* GL Part B (2026-09-03): emb_reg_u64[r] — the reg holds an UNSIGNED
+   * 64-bit value that is not provably < 2^63 (a BIGUNSIGNED import or
+   * linked load). A compare with such a side takes the typed helper's
+   * unsigned arms (per-side flags 0x40 / 0x80); arithmetic over it
+   * rejects like F64. Every reg write updates it alongside
+   * emb_reg_f64. */
+  uint8_t emb_reg_u64[8];
+  memset(emb_reg_u64, 0, sizeof(emb_reg_u64));
   for (int tr = 0; tr < 8; ++tr) emb_reg_read_attr[tr] = -1;
 
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
@@ -970,6 +989,7 @@ static JitBridgeReason translate_embedded_block(
         read_attr_dst = (uint8_t)dst_reg;
         read_attr_op_idx = out_op_idx;
         emb_reg_f64[dst_reg] = 0;
+        emb_reg_u64[dst_reg] = 0;
         emb_reg_read_attr[dst_reg] = (int16_t)out_op_idx;
         emb_pc += 1;
         break;
@@ -1190,11 +1210,21 @@ static JitBridgeReason translate_embedded_block(
          * arm). Only BIGUNSIGNED-unsafe U64 / STR / UNKNOWN still
          * reject (Part B territory). */
         int import_f64 = (track == BR_REG_F64);
+        /* GL Part B (2026-09-03): a U64 outer source that is NOT u63-safe
+         * (BIGUNSIGNED column / constant, DECIMALUNSIGNED, u64
+         * arithmetic) is admitted too and marked U64 in the embedded
+         * tracker, so a compare takes the typed helper's unsigned arm.
+         * Packed temporals (DATETIME2 / TIMESTAMP2 — outer_reg_pack)
+         * stay rejected: the ordering of the loaded word under an
+         * unsigned compare is unproven for them. */
+        int u63_ok = (outer_reg_u63 != NULL && outer_reg_u63[src_outer]);
+        int import_u64 = (track == BR_REG_U64 && !u63_ok &&
+                          outer_reg_pack != NULL &&
+                          !outer_reg_pack[src_outer]);
         int admissible =
             (track == BR_REG_I64 || track == BR_REG_NNC ||
-             import_f64 ||
-             (track == BR_REG_U64 && outer_reg_u63 != NULL &&
-              outer_reg_u63[src_outer]));
+             import_f64 || import_u64 ||
+             (track == BR_REG_U64 && u63_ok));
         if (!admissible) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_TYPE_MISMATCH;
@@ -1215,6 +1245,7 @@ static JitBridgeReason translate_embedded_block(
         }
         const16_valid[dst_emb] = 0;
         emb_reg_f64[dst_emb] = (uint8_t)import_f64;
+        emb_reg_u64[dst_emb] = (uint8_t)import_u64;
         emb_reg_read_attr[dst_emb] = -1;
         emb_pc += 1;
         break;
@@ -1228,8 +1259,10 @@ static JitBridgeReason translate_embedded_block(
          * (2026-09-01): FLOAT/DOUBLE are ADMITTED too — the helper
          * stores the value's double BITS and the dst is marked F64,
          * routing any compare through the OP_BRANCH_F64 arm.
-         * BIGUNSIGNED (and anything else) rejects TYPE_MISMATCH —
-         * the op-43 policy (Part B territory). At runtime a NULL / missing-buffer /
+         * GL Part B (2026-09-03): BIGUNSIGNED is admitted as well — the
+         * helper stores the raw 8 bytes and the dst is marked U64 for
+         * the typed compare's unsigned arm. Anything else (strings,
+         * temporals …) rejects TYPE_MISMATCH. At runtime a NULL / missing-buffer /
          * out-of-range read takes the per-row fallback (the folded
          * reg-null guards' path replays on the interpreter). Gated
          * like every linked op: the buffer only exists on the
@@ -1247,6 +1280,7 @@ static JitBridgeReason translate_embedded_block(
         uint32_t type_id  = (inst >> 24) & 0xFFu;
         int admissible;
         int linked_f64 = 0;
+        int linked_u64 = 0;
         switch (type_id) {
           case BR_NDB_TYPE_TINYINT:
           case BR_NDB_TYPE_TINYUNSIGNED:
@@ -1263,6 +1297,10 @@ static JitBridgeReason translate_embedded_block(
           case BR_NDB_TYPE_DOUBLE:
             admissible = 1;
             linked_f64 = 1;
+            break;
+          case BR_NDB_TYPE_BIGUNSIGNED:
+            admissible = 1;
+            linked_u64 = 1;
             break;
           default:
             admissible = 0;
@@ -1288,6 +1326,7 @@ static JitBridgeReason translate_embedded_block(
         }
         const16_valid[dst_emb] = 0;
         emb_reg_f64[dst_emb] = (uint8_t)linked_f64;
+        emb_reg_u64[dst_emb] = (uint8_t)linked_u64;
         emb_reg_read_attr[dst_emb] = -1;
         emb_pc += 1;
         break;
@@ -1332,6 +1371,7 @@ static JitBridgeReason translate_embedded_block(
         }
         const16_valid[dst_reg] = 0;
         emb_reg_f64[dst_reg] = 0;
+        emb_reg_u64[dst_reg] = 0;
         emb_reg_read_attr[dst_reg] = -1;
         emb_pc += 3;
         break;
@@ -1365,7 +1405,8 @@ static JitBridgeReason translate_embedded_block(
         uint32_t dst  = (emb_op == BR_EMB_MUL_REG_REG)
                             ? (inst >> 12) & 0x7u
                             : (inst >> 16) & 0x7u;
-        if (emb_reg_f64[src1] || emb_reg_f64[src2]) {
+        if (emb_reg_f64[src1] || emb_reg_f64[src2] ||
+            emb_reg_u64[src1] || emb_reg_u64[src2]) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_TYPE_MISMATCH;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -1415,6 +1456,7 @@ static JitBridgeReason translate_embedded_block(
             (uint16_t)(BC_EMB_REG_BASE + src2);
         const16_valid[dst] = 0;
         emb_reg_f64[dst] = 0;
+        emb_reg_u64[dst] = 0;
         emb_reg_read_attr[dst] = -1;
         emb_pc += 1;
         break;
@@ -1458,6 +1500,7 @@ static JitBridgeReason translate_embedded_block(
         }
         const16_valid[dst_reg] = 0;
         emb_reg_f64[dst_reg] = 1;
+        emb_reg_u64[dst_reg] = 0;
         emb_reg_read_attr[dst_reg] = -1;
         emb_pc += 3;
         break;
@@ -1517,6 +1560,7 @@ static JitBridgeReason translate_embedded_block(
         }
         const16_valid[dst_reg] = 0;
         emb_reg_f64[dst_reg] = 0;
+        emb_reg_u64[dst_reg] = 0;
         emb_reg_read_attr[dst_reg] = -1;
         emb_pc += 1;
         break;
@@ -1577,11 +1621,20 @@ static JitBridgeReason translate_embedded_block(
          * degrades per row instead of miscomparing); any other int
          * side (consts, imports, mem reads) converts signed-i64 →
          * double at runtime via the helper flags. */
-        if (emb_reg_f64[left_reg] || emb_reg_f64[right_reg]) {
+        /* GL Part B (2026-09-03): a U64-marked side routes through the
+         * same typed helper with the per-side unsigned flags (0x40 left,
+         * 0x80 right) — the helper is compareTypedRegs' full lattice
+         * (double arm, both-unsigned, both-signed, mixed: negative
+         * signed < any unsigned). The READ_ATTR → F64-load conversion
+         * below only applies when a DOUBLE side is present. */
+        int any_f64 = (emb_reg_f64[left_reg] || emb_reg_f64[right_reg]);
+        int any_u64 = (emb_reg_u64[left_reg] || emb_reg_u64[right_reg]);
+        if (any_f64 || any_u64) {
           uint32_t sides[2] = { left_reg, right_reg };
-          for (int si = 0; si < 2; ++si) {
+          for (int si = 0; any_f64 && si < 2; ++si) {
             uint32_t r = sides[si];
-            if (!emb_reg_f64[r] && emb_reg_read_attr[r] >= 0 &&
+            if (!emb_reg_f64[r] && !emb_reg_u64[r] &&
+                emb_reg_read_attr[r] >= 0 &&
                 out_prog->ops[emb_reg_read_attr[r]].kind ==
                     OP_LOAD_COL_NDB) {
               out_prog->ops[emb_reg_read_attr[r]].kind =
@@ -1601,6 +1654,8 @@ static JitBridgeReason translate_embedded_block(
           uint32_t arg = cond |
               (emb_reg_f64[left_reg]  ? 0x10u : 0u) |
               (emb_reg_f64[right_reg] ? 0x20u : 0u) |
+              (emb_reg_u64[left_reg]  ? 0x40u : 0u) |
+              (emb_reg_u64[right_reg] ? 0x80u : 0u) |
               ((BC_EMB_REG_BASE + left_reg)  << 8) |
               ((BC_EMB_REG_BASE + right_reg) << 12);
           pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
@@ -2074,6 +2129,7 @@ static JitBridgeReason translate_embedded_block(
         const16_by_reg[reg] = (uint16_t)const16;
         const16_valid[reg] = 1;
         emb_reg_f64[reg] = 0;
+        emb_reg_u64[reg] = 0;
         emb_reg_read_attr[reg] = -1;
         emb_pc += 1;
         break;
@@ -2141,7 +2197,7 @@ static JitBridgeReason translate_embedded_block(
            * block cannot write outer registers). */
           br_snapshot_outer_tracker(
               &pending_case_jumps[*n_pending_case_jumps],
-              outer_reg_type, outer_reg_u63);
+              outer_reg_type, outer_reg_u63, outer_reg_pack);
           (*n_pending_case_jumps)++;
         }
         emb_pc += 1;
@@ -2318,7 +2374,8 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   &n_pending_case_jumps,
                                   /*out_exit_refuse_code=*/NULL,
                                   /*outer_reg_type=*/NULL,
-                                  /*outer_reg_u63=*/NULL);
+                                  /*outer_reg_u63=*/NULL,
+                                  /*outer_reg_pack=*/NULL);
 }
 
 JitBridgeReason ndb_jit_bridge_translate_scan_filter(
@@ -2354,7 +2411,8 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                &n_pending_case_jumps,
                                &refuse_code,
                                /*outer_reg_type=*/NULL,
-                               /*outer_reg_u63=*/NULL);
+                               /*outer_reg_u63=*/NULL,
+                                  /*outer_reg_pack=*/NULL);
   if (rc != JIT_BRIDGE_OK) {
     return rc;
   }
@@ -2687,6 +2745,17 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
    * dates — do not qualify). */
   uint8_t reg_u63_safe[BC_MAX_REGS];
   memset(reg_u63_safe, 0, sizeof(reg_u63_safe));
+  /* GL Part B (2026-09-03): per-register "packed temporal" flag — set
+   * by a DATETIME2 / TIMESTAMP2 LoadCol (U64 track, not u63-safe),
+   * cleared by the other register-defining loads / consts, propagated
+   * by kOpMov, OR-merged at CASE-jump targets. The embedded op-43
+   * import admits a non-u63 U64 register only when this is clear:
+   * whether the loaded word of a big-endian temporal pack orders
+   * correctly under an unsigned compare is unproven, and RonSQL never
+   * asks for GREATEST over a DATETIME2 anyway. Arithmetic results keep
+   * the dst's previous flag (conservative). */
+  uint8_t reg_u64_pack[BC_MAX_REGS];
+  memset(reg_u64_pack, 0, sizeof(reg_u64_pack));
 #define BR_REQUIRE_F64(r)                                          \
   do {                                                             \
     if (reg_type[(r)] != BR_REG_F64) {                             \
@@ -2775,6 +2844,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         if (linear_dead && !landed) {
           memcpy(reg_type, pj->reg_type_snap, BC_EMB_REG_BASE);
           memcpy(reg_u63_safe, pj->reg_u63_snap, BC_EMB_REG_BASE);
+          memcpy(reg_u64_pack, pj->reg_pack_snap, BC_EMB_REG_BASE);
         } else {
           for (uint8_t r = 0; r < BC_EMB_REG_BASE; r++) {
             uint8_t lc = br_track_class(reg_type[r]);
@@ -2786,6 +2856,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             }
             reg_u63_safe[r] =
                 (uint8_t)(reg_u63_safe[r] & pj->reg_u63_snap[r]);
+            /* A pack on either path keeps the register un-importable. */
+            reg_u64_pack[r] =
+                (uint8_t)(reg_u64_pack[r] | pj->reg_pack_snap[r]);
           }
         }
         landed = 1;
@@ -2845,6 +2918,11 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             (type == BR_NDB_TYPE_BIGUNSIGNED) ? BR_REG_U64 :
             (value >= 0)                      ? BR_REG_NNC :
                                                 BR_REG_I64;
+        /* GL Part B: a BIGUNSIGNED constant is u63-safe iff its top bit
+         * is clear (previously the flag went stale here); never a pack. */
+        reg_u63_safe[reg_index] =
+            (uint8_t)(type == BR_NDB_TYPE_BIGUNSIGNED && value >= 0);
+        reg_u64_pack[reg_index] = 0;
         pos += 3;
         break;
       }
@@ -2947,16 +3025,34 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
            * kOpMin/kOpMax consumers — one OP_MINMAX_STR_NDB per
            * consumer, each covering load + collation compare +
            * winner-buffer update via the interpreter's own kernel
-           * (jitMinMaxStringCol). A string load with any other (or
-           * no) consumer keeps the whole-program fallback — the
-           * planner only emits MIN/MAX over strings. The register is
-           * poisoned (BR_REG_STR) so nothing else can read it. */
+           * (jitMinMaxStringCol). ronsql_jit item 13 adds kOpCount
+           * consumers: COUNT reads no bits, only the column's
+           * NULL-ness, so the load becomes a PRESENCE-ONLY
+           * OP_LOAD_COL_NDB (col_id | NDB_JIT_COL_PRESENCE_FLAG — the
+           * helper checks the AttributeHeader and stores 0), followed
+           * by the plain OP_COUNT_BIGINT ops; nb_convert_loads then
+           * turns it into the null-branching form that skips the
+           * COUNTs on NULL, exactly the interpreter's Count null-skip.
+           * Emission order is presence load, COUNTs, then the MINMAX
+           * ops — the null branch targets the first op after the last
+           * reader of the register, and MINMAX (which re-reads the
+           * column itself and handles NULL in its kernel) is not a
+           * reader, so it must not sit between the load and a COUNT.
+           * Any other consumer (or none) keeps the whole-program
+           * fallback. The register is poisoned (BR_REG_STR) so nothing
+           * else can read it. */
+          if ((col_index & NDB_JIT_COL_PRESENCE_FLAG) != 0) {
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
           uint32_t look = pos + 1;
-          uint16_t n_fused = 0;
+          uint16_t n_count = 0;
+          uint16_t n_minmax = 0;
           while (look < n_words) {
             uint32_t cword = ndb_prog[look];
             uint8_t  cop   = (uint8_t)((cword & 0xFC000000u) >> 26);
-            if (cop != BR_kOpMin && cop != BR_kOpMax) break;
+            if (cop != BR_kOpMin && cop != BR_kOpMax &&
+                cop != BR_kOpCount) break;
             uint8_t c_reg = (uint8_t)((cword >> 16) & 0x0Fu);
             if (c_reg != reg_index) break;
             uint16_t c_agg = (uint16_t)(cword & 0xFFFFu);
@@ -2964,33 +3060,70 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
               set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, look, cop);
               return JIT_BRIDGE_REG_OUT_OF_RANGE;
             }
+            if (cop == BR_kOpCount) n_count++; else n_minmax++;
+            look++;
+          }
+          if (n_count == 0 && n_minmax == 0) {
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
+          uint32_t end = look;
+          if (n_count != 0) {
+            if (!emit_op(out_prog, OP_LOAD_COL_NDB, reg_index, 0,
+                         (uint16_t)(col_index | NDB_JIT_COL_PRESENCE_FLAG),
+                         0)) {
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+              return JIT_BRIDGE_PROG_TOO_LARGE;
+            }
+          }
+          /* Pass A: the COUNT consumers, right after the presence load. */
+          for (uint32_t w = pos + 1; w < end && n_count != 0; w++) {
+            uint32_t cword = ndb_prog[w];
+            uint8_t  cop   = (uint8_t)((cword & 0xFC000000u) >> 26);
+            if (cop != BR_kOpCount) continue;
+            uint16_t c_agg = (uint16_t)(cword & 0xFFFFu);
+            if (!emit_op(out_prog, OP_COUNT_BIGINT, (uint8_t)c_agg,
+                         reg_index, c_agg, 0)) {
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, w, cop);
+              return JIT_BRIDGE_PROG_TOO_LARGE;
+            }
+            if (n_outer_map >= BC_MAX_OPS) {
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, w, cop);
+              return JIT_BRIDGE_PROG_TOO_LARGE;
+            }
+            outer_word_pos[n_outer_map] = w;
+            outer_op_idx[n_outer_map] = (uint16_t)(out_prog->n_ops - 1);
+            n_outer_map++;
+          }
+          /* Pass B: the fused MIN/MAX consumers. */
+          for (uint32_t w = pos + 1; w < end && n_minmax != 0; w++) {
+            uint32_t cword = ndb_prog[w];
+            uint8_t  cop   = (uint8_t)((cword & 0xFC000000u) >> 26);
+            if (cop != BR_kOpMin && cop != BR_kOpMax) continue;
+            uint16_t c_agg = (uint16_t)(cword & 0xFFFFu);
             BR_CLAIM_ACC_FAMILY(c_agg, BR_ACC_STR);
             uint16_t packed = (uint16_t)(
                 ((cop == BR_kOpMax) ? 0x100u : 0u) | c_agg);
             if (!emit_op(out_prog, OP_MINMAX_STR_NDB, (uint8_t)c_agg,
                          col_index, packed, 0)) {
-              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, look, cop);
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, w, cop);
               return JIT_BRIDGE_PROG_TOO_LARGE;
             }
             /* Map the consumed word so CASE-jump resolution keeps
              * working (a jump landing on the Min word lands on its
              * fused op — the fused op IS the min). */
             if (n_outer_map >= BC_MAX_OPS) {
-              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, look, cop);
+              set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, w, cop);
               return JIT_BRIDGE_PROG_TOO_LARGE;
             }
-            outer_word_pos[n_outer_map] = look;
+            outer_word_pos[n_outer_map] = w;
             outer_op_idx[n_outer_map] = (uint16_t)(out_prog->n_ops - 1);
             n_outer_map++;
-            n_fused++;
-            look++;
-          }
-          if (n_fused == 0) {
-            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
-            return JIT_BRIDGE_UNSUPPORTED_OP;
           }
           reg_type[reg_index] = BR_REG_STR;
-          pos = look;
+          reg_u63_safe[reg_index] = 0;
+          reg_u64_pack[reg_index] = 0;
+          pos = end;
           break;
         }
         if (is_dec) {
@@ -3025,6 +3158,10 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           reg_type[reg_index] = (scale != 0) ? BR_REG_F64
                               : dec_uns      ? BR_REG_U64
                                              : BR_REG_I64;
+          /* GL Part B: a DECIMALUNSIGNED(scale 0) value is a plain
+           * integer, not provably < 2^63, never a pack. */
+          reg_u63_safe[reg_index] = 0;
+          reg_u64_pack[reg_index] = 0;
           pos += 2;
           break;
         }
@@ -3045,6 +3182,9 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
              type == BR_NDB_TYPE_DATE ||
              type == BR_NDB_TYPE_YEAR ||
              type == BR_NDB_TYPE_TIME2));
+        reg_u64_pack[reg_index] = (uint8_t)(is_u64 &&
+            (type == BR_NDB_TYPE_DATETIME2 ||
+             type == BR_NDB_TYPE_TIMESTAMP2));
         pos += 1;
         break;
       }
@@ -3087,6 +3227,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         /* A 64-bit register move is type-preserving (bits are bits). */
         reg_type[dst] = reg_type[src];
         reg_u63_safe[dst] = reg_u63_safe[src];
+        reg_u64_pack[dst] = reg_u64_pack[src];
         pos += 1;
         break;
       }
@@ -3473,7 +3614,16 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
           return JIT_BRIDGE_TYPE_MISMATCH;
         }
-        int sum_is_u64 = (reg_type[reg_index] == BR_REG_U64);
+        /* ronsql_jit item 11: a NON-NEGATIVE CONSTANT (NNC) is exact in
+         * either integer family, so it ADOPTS the family the slot has
+         * already claimed — the CASE shape `THEN unsigned_col ELSE 0`
+         * (column arm first, then the constant arm) no longer trips
+         * the 5C-3 family conflict. A constant-FIRST order still claims
+         * I64 and a later U64 arm rejects (would need a pre-scan; not
+         * a corpus shape). */
+        int sum_is_u64 = (reg_type[reg_index] == BR_REG_U64) ||
+                         (reg_type[reg_index] == BR_REG_NNC &&
+                          acc_family[agg_index] == BR_ACC_U64);
         BR_CLAIM_ACC_FAMILY(agg_index,
                             sum_is_u64 ? BR_ACC_U64 : BR_ACC_I64);
         if (!emit_op(out_prog,
@@ -3544,7 +3694,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
           return JIT_BRIDGE_TYPE_MISMATCH;
         }
-        int mm_is_u64 = (reg_type[reg_index] == BR_REG_U64);
+        /* ronsql_jit item 11: NNC adopts an already-claimed U64 slot
+         * (see kOpSumBigint) — dd_bigquery's `MAX(CASE WHEN .. THEN
+         * biguns_col ELSE 0 END)`. */
+        int mm_is_u64 = (reg_type[reg_index] == BR_REG_U64) ||
+                        (reg_type[reg_index] == BR_REG_NNC &&
+                         acc_family[agg_index] == BR_ACC_U64);
         BR_CLAIM_ACC_FAMILY(agg_index,
                             mm_is_u64 ? BR_ACC_U64 : BR_ACC_I64);
         uint8_t out_kind;
@@ -3584,7 +3739,14 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         uint8_t out_kind;
         uint8_t fam;
         int     is_checked;
-        switch (reg_type[reg_index]) {
+        /* ronsql_jit item 11: NNC adopts an already-claimed U64 slot
+         * (see kOpSumBigint). */
+        uint8_t eff_track = reg_type[reg_index];
+        if (eff_track == BR_REG_NNC &&
+            acc_family[agg_index] == BR_ACC_U64) {
+          eff_track = BR_REG_U64;
+        }
+        switch (eff_track) {
           case BR_REG_F64:
             out_kind = (op == BR_kOpSum) ? OP_SUM_F64
                      : (op == BR_kOpMin) ? OP_MIN_F64 : OP_MAX_F64;
@@ -3683,7 +3845,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           .target_word_pos = this_pos + 1u + skip_count,
         };
         br_snapshot_outer_tracker(&pending_case_jumps[n_pending_case_jumps],
-                                  reg_type, reg_u63_safe);
+                                  reg_type, reg_u63_safe, reg_u64_pack);
         n_pending_case_jumps++;
         /* The linear walk past an unconditional jump is DEAD until the
          * next word some pending jump lands on (the merge guard at the
@@ -3716,7 +3878,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
             /*allow_reg_ops=*/1,
             pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL,
-            reg_type, reg_u63_safe);
+            reg_type, reg_u63_safe, reg_u64_pack);
         if (rc != JIT_BRIDGE_OK) return rc;
         for (uint16_t m = emb_first_op; m < out_prog->n_ops; m++) {
           op_from_emb[m] = 1;

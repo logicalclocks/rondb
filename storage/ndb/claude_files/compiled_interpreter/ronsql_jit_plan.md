@@ -1302,6 +1302,159 @@ under 4060 with the hand-derived rows; dd_filter delta 0 under arming
 with results identical to the OFF arm; no other pin moves. Corpus
 census 68 → 44.
 
+### Items 11 + 13 — DONE & VERIFIED (2026-09-03: bridge_tests + five-suite run green)
+
+**Item 11 — CASE arm family conflict (dd_bigquery 4).** Bridge-only.
+In the three integer aggregate handlers (typed kOpSumBigint, typed
+kOpMin/MaxBigint, generic kOpSum/Min/Max) a BR_REG_NNC operand —
+a non-negative constant, exact in either integer family — ADOPTS
+the family the slot has already claimed: when `acc_family[slot] ==
+BR_ACC_U64` it lowers to the U64 op variant (OP_SUM_U64_CHECKED /
+OP_MIN_U64 / OP_MAX_U64) instead of forcing I64 into the 5C-3
+conflict. Column-arm-first is the CASE shape the emitters produce
+(`THEN unsigned_col ELSE 0`); the constant-FIRST order still claims
+I64 and rejects on the later U64 arm (would need a pre-scan; pinned
+as the documented limit). A negative constant is I64, not NNC, and
+still rejects. Interpreter parity: NdbAggregationCommon's Sum/Min/Max
+handle the mixed-signedness pair with the unsigned rule for a
+non-negative signed operand — identical outcome. Tests **T79a-d**.
+
+**Item 13 — COUNT over string columns (dd_dtwide 2).** The 5F-1
+string-load fusion admitted only kOpMin/kOpMax consumers; a
+`LoadCol VARCHAR; Count` rejected at the load. Now kOpCount consumers
+are admitted too via a PRESENCE-ONLY load: the bridge emits
+`OP_LOAD_COL_NDB` with `col_id | NDB_JIT_COL_PRESENCE_FLAG` (0x4000 —
+bit 14, never set in an attribute id; bit 15 stays the linked flag;
+new contract define in ndb_jit_bridge.h) followed by the plain
+`OP_COUNT_BIGINT` ops, then the fused MINMAX ops (emission order
+matters: the NB null branch lands on the first non-reader after the
+last COUNT, and MINMAX is not a reader). nb_convert_loads turns the
+presence load into the NB form (col moves c → b, flag rides along),
+so NULL rows skip the COUNTs natively — the interpreter's Count
+null-skip. Glue: `ndb_jit_h_load_col` / `_nb` detect the flag and call
+the new `jit_col_presence` (linked columns via the shared linked walk;
+local columns via the NEW public `Dbtup::readAttributeIsNullForJit`,
+which reads into the block's full-size coutBuffer — a 4-word stack
+buffer fails readSingleAttribute's max_read for any real string),
+store 0 and return the NULL-ness (NB: 1 = take the branch; non-NB:
+NULL = per-row fallback like a NULL value; read failure = fallback).
+NO stencil change (the flag rides the existing col operand). Tests
+**T80a-c** (presence load + COUNT; COUNT + MIN; MAX then COUNT).
+
+dd_bigquery and dd_dtwide re-pinned 4 → 0 / 2 → 0 and ARMED
+pre-emptively; the run confirms or corrects. **Corrected by the run
+(2026-09-03): dd_bigquery is 4 → 2, NOT 0, and stays EXEMPT.** The
+pre-emptive arming did its job loudly — 5120 aborted both nodes on
+the 104-word program at word 83: `LoadCol BIGUNSIGNED r1 (linked);
+MaxBigint(r1, slot 4); Skip 4; LoadConst r1 = -9; MaxBigint(r1, slot
+4)` and, at words 97-103, the same with MinBigint / slot 5 — i.e.
+`MAX/MIN(CASE .. THEN biguns_col ELSE -9 END)`. A NEGATIVE constant is
+I64, not NNC (T79d pins exactly this), and the shape is not lowerable
+with static accumulator families: the interpreter answers it by
+flipping the AggResItem's signedness at runtime (a -9 row makes MIN
+signed; MAX stays unsigned unless every row took the ELSE arm), which
+the JIT cannot represent. By-design residue, same bucket as Part B.
+The 27-word `ELSE 0` program (SumBigint, slot 3) does compile now, so
+the pin is 2 (one program × two nodes). Wrapper un-armed, pin 2.
+
+First bridge_tests run (Mikael, 2026-09-03): T59d — the 5F-1 negative
+pin "string load with a non-Min/Max consumer rejects" — used COUNT as
+its consumer, exactly the shape item 13 admits; re-pointed at a SUM
+consumer (still rejects), the accept side is T80a-c. No bridge change.
+Suite run (2026-09-03): `ndb_push_agg_jit.ndb_join_pushdown_agg_types`
+pin **1 → 0** with identical results — the mysqld join-pushdown types
+test's last reject (its string columns make this item 13's COUNT over
+a CHAR/VARCHAR, the only new admission that fits a mysqld program).
+Re-pinned (that suite is pin-only by convention; the fleet mirrors
+carry no arm includes).
+
+**Verify (Mikael):**
+```sh
+cmake --build debug_build --target bridge_tests ndbmtd -j 8
+debug_build/storage/ndb/test/jit_proto/bridge_tests
+cd debug_build/mysql-test
+./mtr --parallel=1 ronsql_cte_jit.ronsql_cte_dd_bigquery ronsql_cte_jit.ronsql_cte_dd_dtwide
+./mtr --suite=ronsql_jit,ronsql_cte_jit,ndb_push_agg_jit,ronsql,ronsql_cte --parallel=10 --force
+```
+Expected (revised): T79a-d / T80a-c green; dd_dtwide 0 under arming,
+dd_bigquery 2 unarmed, results identical to the OFF arm; no other pin
+moves (the fleet's join_pushdown_agg_types 1 → 0 already re-pinned).
+Corpus census 44 → 40 (6 Part B + 2 negative-constant CASE arms + 32
+not-lowered); 76 of 81 tests armed. Exempt for good: ronsql_basic,
+gl_v5, gl_v6, cte_scalar, dd_bigquery (+ the census).
+
+### GL Part B — DONE & VERIFIED (2026-09-03: bridge_tests + five-suite run green): BIGUNSIGNED compare mode
+
+Target: the last 6 lowerable rejects — cte_scalar 2 + gl_v6 2
+(`GREATEST(bigint_linked, biguns_linked)`: a CTE COUNT slot is
+Bigunsigned, so RonSQL emits an op-43 import of a non-u63 U64
+register) and gl_v5 2 (op-44 BIGUNSIGNED linked load).
+
+- **Typed compare helper = compareTypedRegs' full lattice.**
+  `ndb_jit_h_branch_f64` (OP_BRANCH_F64 keeps its name; the stencil is
+  just the call + branch — ZERO stencil change) gains per-side unsigned
+  flags (arg bit 6 left-u64, bit 7 right-u64, next to the F64 bits
+  4/5): any double side → double compare with the int side converted
+  signed or unsigned per its flag; both u64 → unsigned; both signed →
+  signed; mixed → a negative signed operand is strictly less than any
+  unsigned, else unsigned compare. Mirrors DbtupExecQuery.cpp's
+  compareTypedRegs arm for arm.
+- **Bridge, embedded tracker**: new `emb_reg_u64[8]` next to
+  `emb_reg_f64` (every reg-defining op clears it). op-43 admits a
+  non-u63 U64 outer source (BIGUNSIGNED column / constant,
+  DECIMALUNSIGNED, u64 arithmetic) and marks the dst U64; op-44 admits
+  the BIGUNSIGNED wire type (helper: raw 8 bytes) and marks the dst.
+  The REG_REG compare takes the typed helper when either side is F64
+  OR U64, with the four flags; the READ_ATTR → F64-load conversion
+  runs only when a DOUBLE side exists. Embedded ADD/SUB/MUL over a
+  U64-marked operand rejects like F64 (the ARITH_FB stencil is signed).
+- **Packed temporals stay out.** New outer `reg_u64_pack[]` flag —
+  set by DATETIME2 / TIMESTAMP2 loads, cleared by LoadConst / DEC /
+  string loads, propagated by kOpMov, OR-merged at CASE-jump targets
+  (new `reg_pack_snap` in PendingCaseJump), passed into the embedded
+  walker as `outer_reg_pack` — gates the import: whether a big-endian
+  temporal pack's loaded word orders under an unsigned compare is
+  unproven, and no emitter asks for it. Two stale-flag fixes on the
+  way: a BIGUNSIGNED LoadConst now sets u63 from its top bit
+  (previously left over from the register's last load), and a
+  DECIMALUNSIGNED(scale 0) load clears u63.
+- **Tests**: T70d / T73c flipped to accept; new **T81a** (the corpus GL
+  shape: right-u64 flag → arg 0xA985, Sum lowers to SUM_U64_CHECKED
+  after the trellis Mov, merge int-class), **T81b** (op-44 BIGUNSIGNED
+  vs BIGINT → left-u64 0xA942), **T81c** (DATETIME2 import still
+  rejects), **T81d** (embedded ADD over a U64 operand rejects),
+  **T81e** (DOUBLE vs BIGUNSIGNED imports → 0x10 | 0x80 = 0xA994).
+- gl_v5, gl_v6, cte_scalar re-pinned 2 → 0 and ARMED pre-emptively;
+  the run confirms or corrects (dd_bigquery taught us the arming
+  itself is the fastest diagnostic).
+- First bridge_tests run (Mikael): T81c was a test bug — DATETIME2 is
+  type 32 and the plain `enc_load_col` has a 5-bit type field, so the
+  load decoded as type 0 (NON_BIGINT, reason 2) before the import was
+  ever reached; `enc_load_col_wide` (bit 20 = type bit 5, as T68b)
+  fixes it. Bridge right.
+
+**Verify (Mikael):**
+```sh
+cmake --build debug_build --target bridge_tests ndbmtd -j 8
+debug_build/storage/ndb/test/jit_proto/bridge_tests
+cd debug_build/mysql-test
+./mtr --parallel=1 ronsql_jit.ronsql_cte_greatest_least_v5 ronsql_jit.ronsql_cte_greatest_least_v6 ronsql_jit.ronsql_cte_scalar
+./mtr --suite=ronsql_jit,ronsql_cte_jit,ndb_push_agg_jit,ronsql,ronsql_cte --parallel=10 --force
+```
+Expected: T70d / T73c / T81a-e green; the three deltas 0 under arming
+with results identical to the OFF arm (v6's `GREATEST(pairs.k,
+pairs.amt)` pairs a BIGINT with a COUNT — the unsigned arm on real
+values); no other pin moves. Corpus census 40 → **34** = dd_bigquery's
+negative-constant arms 2 + ronsql_basic's 32; 79 of 81 tests armed.
+Nothing lowerable remains in the corpus.
+
+**VERIFIED 2026-09-03 (all tests passed).** Final corpus state: 34
+rejects = dd_bigquery 2 (negative-constant CASE arms; needs dynamic
+slot signedness) + ronsql_basic 32 (kOpMinusBigint RonSQL typing +
+kOpMod fmod); 79 of 81 tests under strict arming; every remaining
+reject classified as not lowerable with static accumulator families.
+The lowering campaign is closed for good: ~1234 → 34 (97%).
+
 **Verification list for Part A (Mikael runs):** `bridge_tests`
 (T70c, T73d, T78a-f), then the exempt-pin tests under `ronsql_jit`
 / `ronsql_cte_jit` (dd_filter, gl_v5, dd_bigquery, cte_scalar, …) —
