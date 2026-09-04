@@ -6,6 +6,21 @@ L4 RonSQL + L5 MTR IMPLEMENTED (pending user build + first --record);
 L6 rondb-docs pending.**
 
 L5 outcome notes:
+- FOUND + FIXED BY THE SCALE CASE (ronsql_large_cte Q6, 100k groups —
+  data-node SIGSEGV): `GBHashTable::iteratorAt` returned iterators with
+  `m_prev_link = nullptr` (documented as not supporting eraseAndNext),
+  and `finalizeLimitSlice`'s truncation phase resumes mid-bucket via
+  iteratorAt then erases — the first RESUMED truncation slice's first
+  non-kept entry hit `*m_prev_link = nxt` through NULL.  Invisible at
+  block-test scale (5 groups = one slice, no resume); at 100k groups
+  phase 2 always spans slices.  Fixed in iteratorAt itself: reconstruct
+  m_prev_link by walking the saved bucket's chain (bounded ~size/1024
+  per resume; falls back to the old read-only iterator if the raw
+  pointer is not found), making every resume site erase-capable; the
+  read-only users (CTE-scan resume, AVG finalize, LIMIT select phase)
+  are unaffected.  The iteratorAt contract comment now states the real
+  requirement: the SAVED entry must still be live on resume — erasing
+  other entries is fine.
 - FOUND + FIXED ON FIRST RECORD (obc-11): chained aggregates over a
   DECIMAL-widened CTE output lost the D15 display metadata everywhere
   along the chain — `b AS (SELECT k, SUM(s) FROM a ...)` over `a`'s

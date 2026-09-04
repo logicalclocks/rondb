@@ -225,8 +225,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * each call processes up to max_groups groups and returns true when
    * the walk is complete, false when a CONTINUEB slice should follow
    * (ZCONTINUE_CTE_AVG_FINALIZE).  The saved (bucket, raw) cursor uses
-   * GBHashTable::iteratorAt, which requires the table to be immutable
-   * between slices — guaranteed in the FINAL_REP..CTE_READY window: all
+   * GBHashTable::iteratorAt, which requires the saved entry to still be
+   * live on resume — guaranteed in the FINAL_REP..CTE_READY window: all
    * inbound redistributes have merged, nothing reads before CTE_READY,
    * and the chain stays on the owner instance.
    *

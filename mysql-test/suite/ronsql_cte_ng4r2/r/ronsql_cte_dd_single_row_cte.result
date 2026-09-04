@@ -841,10 +841,9 @@ Syntax error in SQL statement: Unexpected at this point
 Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 
-=== srb-P6 (rejection): ORDER BY inside the body still rejected ===
-ORDER BY inside CTE body 'r' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
-Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
+=== srb-P6 (now accepted): body ORDER BY is a validated no-op ===
+c_custkey
+77
 
 === srb-P7 (rejection): duplicate output columns ===
 CTE 'r' must contain at least one aggregate function.
