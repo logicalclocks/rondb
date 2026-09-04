@@ -1589,6 +1589,21 @@ TEST_F(APIKeyTest, TestReconnectPreloadPicksUpNewEntry) {
   stop_api_key_cache();
 }
 
+// Poll until pred() returns true or timeout_ms elapses; returns whether the
+// predicate became true. For waits on the cache's background threads a fixed
+// sleep is load-sensitive: a refresh pass revalidates every cached key with
+// per-entry DB reads spread across the refresh interval, and the Go tests
+// leave hundreds of keys in hopsworks.api_key, so one pass can take many
+// seconds on a loaded machine.
+static bool wait_until(const std::function<bool()> &pred, int timeout_ms) {
+  static const int POLL_INTERVAL_MS = 200;
+  for (int waited_ms = 0;; waited_ms += POLL_INTERVAL_MS) {
+    if (pred()) return true;
+    if (waited_ms >= timeout_ms) return false;
+    NdbSleep_MilliSleep(POLL_INTERVAL_MS);
+  }
+}
+
 // Test that the refresh thread evicts a key that was deleted from DB during
 // an event gap.  On reconnect the event watcher wakes the refresh thread
 // (NdbCondition_Broadcast) so it runs immediately instead of waiting for
@@ -1640,12 +1655,15 @@ TEST_F(APIKeyTest, TestReconnectRefreshEvictsMissedDelete) {
   // because the DELETE happened before it subscribed.)
   apiKeyCachePtr->start_background_threads();
 
-  // Wait for: refresh cycle (1s) to find key missing from DB,
-  // mark IS_INVALID, then invalid entry TTL (5s) to expire,
-  // then next refresh cycle (1s) to evict.  Add margin.
-  NdbSleep_MilliSleep(9000);
+  // The first refresh pass that reaches the entry evicts it (nothing holds
+  // a reference, so there is no invalid-entry TTL wait), but one pass over
+  // a cache preloaded with hundreds of keys takes several seconds and
+  // stretches further under machine load — poll instead of sleeping a
+  // fixed time (a fixed 9s sleep here failed on a loaded machine).
+  const unsigned expected_size = size_before - 1;
+  wait_until([&] { return apiKeyCachePtr->size() == expected_size; }, 120000);
 
-  EXPECT_EQ(apiKeyCachePtr->size(), size_before - 1)
+  EXPECT_EQ(apiKeyCachePtr->size(), expected_size)
       << "Refresh thread should have evicted the deleted key";
 
   // Key should no longer validate

@@ -16,9 +16,11 @@
 #
 # Runs after rdrs2-golang_gotest (tests are collected alphabetically and
 # keep that order because both tests have identical MTR sort criteria -
-# same suite my.cnf, no .opt files; adding an .opt file to either test
-# would reorder them). It does not depend on the seeded test databases,
-# creates its own, and drops it again, so either order would also work.
+# same suite my.cnf, and the gotest .opt file contains only
+# --testcase-timeout, which mtr consumes before building the sort
+# criteria; a server option in either test's .opt file would reorder
+# them). It does not depend on the seeded test databases, creates its
+# own, and drops it again, so either order would also work.
 
 --source include/have_ndb.inc
 --source include/not_windows.inc
@@ -86,9 +88,16 @@ END_OF_PERL
 
 # Wait until mysqld's ndbcluster engine has reconnected too, so the
 # cleanup below and the post-test checks can run their queries.
+# ndb_wait_connected.inc alone is not enough for DDL: after a full
+# cluster restart the schema distribution setup lags the connection,
+# and the DROP DATABASE below then fails with ER_GET_ERRMSG 3604
+# ("Schema distribution is not ready"). ndb_not_readonly.inc retries
+# an actual NDB DDL until schema distribution works, on each mysqld.
 --source include/ndb_wait_connected.inc
+--source include/ndb_not_readonly.inc
 connection mysqld2;
 --source include/ndb_wait_connected.inc
+--source include/ndb_not_readonly.inc
 --disconnect mysqld2
 connection default;
 
