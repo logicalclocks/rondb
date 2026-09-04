@@ -38,6 +38,22 @@ suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
   deliberately NOT mirrored, like the bench tests. All other mirror
   sources resolve; the three my.cnf !includes resolve.
 - **Every mirror's --source target exists; no base test was renamed.**
+- **ROOT CAUSE of "every must-JIT canary aborts under 4060" after the
+  rebase: config-id collision, JIT silently OFF.** The 26.10 merge added
+  `CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 708` — the same id as
+  `CFG_DB_COMPILED_INTERPRETER` (which had already moved 705 → 708 at the
+  previous upstream merge for the same reason). ConfigInfo registers
+  both; the proxy's `ndb_mgm_get_int_parameter(p, 708, &jitMode)` then
+  yields the deadlock-detection value (0) → `dbtup_jit_set_mode(0)` →
+  every JIT compile site returns nullptr node-wide with NO census line
+  (OFF is not a fallback), the OFF-arm suites pass unchanged, and every
+  4060 canary (rondb_jit_canary, case_nullable, compound, decimal,
+  standalone, string, unsigned, ronsql, outer_join) aborts with
+  "m_jit_entry=0x0" and nothing else in the log — the exact signature
+  seen. Fixed: **CompiledInterpreter is id 709** (header comment records
+  the history). Check `grep -E 'define CFG_.* [0-9]+$' mgmapi_config_
+  parameters.h | awk '{print $3}' | sort | uniq -d` after every merge —
+  a duplicate id is silent at build and at cluster start.
 - **15 mirror .result files were STALE** — base tests whose OUTPUT changed
   in the rebase (renumbered ERROR_INSERT echo lines: the evict test's
   5116→5126 / 4040→4041; testJoinAggNdbApi / testStarJoinAggNdbApi grew
