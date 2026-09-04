@@ -242,8 +242,8 @@ static const ErrorEntry errorTable[] = {
     {ERROR_SCAN_FILTER_CMP_MISSING_COND, "[ScanFilter] Missing required field for the cmp op: cond"},
     {ERROR_SCAN_FILTER_CMP_MISSING_VALUE, "[ScanFilter] Missing required field for the cmp op: value"},
     {ERROR_SCAN_FILTER_ISNULL_MISSING_COLUMN, "[ScanFilter] Missing required field for the isnull op: column"},
-    {ERROR_SCAN_FILTER_UNKNOWN_OP, "[ScanFilter] Unknown op"},
     {ERROR_SCAN_FILTER_ISNOTNULL_MISSING_COLUMN, "[ScanFilter] Missing required field for the isnotnull op: column"},
+    {ERROR_SCAN_FILTER_UNKNOWN_OP, "[ScanFilter] Unknown op"},
     {ERROR_SCAN_FILTER_INVALID_COND, "[ScanFilter] Invalid condition"},
     {ERROR_SCAN_INVALID_VALUE, "[ScanFilter/ScanIndex] Invalid value"},
     {ERROR_SCAN_INDEX_MISSING_NAME, "[ScanIndex] Missing index name"},
@@ -263,16 +263,23 @@ static const ErrorEntry errorTable[] = {
     {ERROR_SCAN_MISSING_LIMIT, "[Scan] Must provide limit field"},
     {ERROR_SCAN_FILTER_TOO_DEEP, "[ScanFilter] Filter nesting too deep (max 32 levels)"},
     {ERROR_SCAN_TOO_MANY_RANGES, "[ScanIndex] Too many ranges (max 64)"},
-    {ERROR_DELETE_OPERATION_FAILED, "Failed to start delete operation."},
-    {ERROR_WRITE_OPERATION_FAILED, "Failed to start write operation."},
+    /* The entries below MUST stay in enum-code order: rdrsErrorMessage
+     * indexes this table by position.  A 26.05-main merge appended two
+     * branches' additions in different orders here than in the enum,
+     * scrambling every message for codes 107-116 (e.g. the
+     * MaxRespSize error printed the rate-limit text).  The lookup now
+     * verifies the entry's code and falls back to a scan, but keep the
+     * order correct so the O(1) path stays hot. */
     {ERROR_SCAN_INVALID_LIMIT, "[Scan] limit must be non-negative"},
     {ERROR_SCAN_INDEX_BOUND_VALUES_TOO_MANY, "[ScanIndex] Range bound has more values than the index has key columns"},
     {ERROR_SCAN_FILTER_VALUE_TYPE_MISMATCH, "[ScanFilter] CMP value JSON type does not match the target column data type"},
-    {ERROR_REQUEST_TOO_LARGE, "Request body exceeds the configured maxReqSize"},
-    {ERROR_RESPONSE_TOO_LARGE, "Response exceeds the configured MaxRespSize"},
     {ERROR_TABLE_METADATA_READ_FAILED, "Failed to read table metadata from RonDB."},
     {ERROR_RONDB_RECONNECT_THREAD_FAILED, "Failed to start the RonDB reconnection thread."},
     {ERROR_RONSQL_RATE_LIMIT, "RonSQL query rejected: rate limit exceeded"},
+    {ERROR_DELETE_OPERATION_FAILED, "Failed to start delete operation."},
+    {ERROR_WRITE_OPERATION_FAILED, "Failed to start write operation."},
+    {ERROR_REQUEST_TOO_LARGE, "Request body exceeds the configured maxReqSize"},
+    {ERROR_RESPONSE_TOO_LARGE, "Response exceeds the configured MaxRespSize"},
     {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };
 
@@ -280,8 +287,25 @@ static const ErrorEntry errorTable[] = {
 static inline const char *
 rdrsErrorMessage(ErrorCode code) {
   if (code > 0 && code <= __MAX_INDEX__) {
-    return errorTable[code].message ? errorTable[code].message
-                                    : "Unknown error";
+    /* Fast path: the table is kept in enum-code order so position ==
+     * code.  Verify it — a merge that interleaves two branches'
+     * additions in different enum/table orders would otherwise return
+     * a NEIGHBOR'S message silently (this happened to codes 107-116;
+     * see the comment in errorTable).  On mismatch, scan for the
+     * right entry instead of returning wrong text. */
+    if (errorTable[code].code == code) {
+      return errorTable[code].message ? errorTable[code].message
+                                      : "Unknown error";
+    }
+    {
+      size_t i;
+      for (i = 0; i < sizeof(errorTable) / sizeof(errorTable[0]); i++) {
+        if (errorTable[i].code == code) {
+          return errorTable[i].message ? errorTable[i].message
+                                       : "Unknown error";
+        }
+      }
+    }
   }
   return "Unknown error";
 }
