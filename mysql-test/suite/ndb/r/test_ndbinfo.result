@@ -1,3 +1,4 @@
 Running command
 Result of command: 0
 Test program success!
+DROP DATABASE IF EXISTS TEST_DB;
