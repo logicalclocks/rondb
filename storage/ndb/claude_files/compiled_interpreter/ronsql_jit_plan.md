@@ -1519,6 +1519,42 @@ Mikael's question "are they also deemed rejected" — yes):**
   is family-safe: the row is skipped) — on the backlog, not worth
   doing for a shape nobody writes.
 
+### Item 15 — BACKLOG (opened 2026-09-04): kOpAvg, the rebase's new opcode
+
+The rebase (RONDB-1107 "AVG in CTE outputs via SUM+COUNT slots and
+finalize divide") added aggregation opcode **kOpAvg = 31**: per row it
+runs the Sum kernel into the VISIBLE dst slot (low 16 bits) and the
+Count kernel into a HIDDEN companion slot; JoinAggInterpreter::Init
+scans the program, assigns the k-th kOpAvg the hidden slot
+`n_visible_results + k` (m_avg_hidden_map), and grows m_n_agg_results
+by the number of AVGs, so the hidden slots merge / redistribute as
+ordinary SUM / COUNT slots; the CTE owner divides once after the
+redistribute (finalizeAvgSlotsSlice). JoinAggInterpreter-only in v1.
+
+First sightings: `join-agg bridge rejected (reason=1 detail=31
+word=1)` on `LoadCol BIGINT r0; kOpAvg r0 -> slot 0` —
+testCteNdbApiFilter Tests 25/26 (pin 0 → **4**, re-pinned, that
+suite is pin-only); expect the same on the new ronsql_cte_jit dd_avg
+mirror and any RonSQL AVG-over-CTE query.
+
+Lowering sketch (no stencils): the bridge emits, for `kOpAvg r ->
+dst`, the typed SUM of the register's track into slot dst
+(SUM_BIGINT_CHECKED / SUM_U64_CHECKED / SUM_F64, claiming the family)
+plus OP_COUNT_BIGINT into slot `n_visible + ordinal` — it must know
+`n_visible_results` (the header's n_agg_results before Init grew it),
+which the translate entry point does not receive today: add a
+parameter (the proxy has `lp.m_n_agg_results`; Create has the
+header), and count kOpAvg ordinals in program order exactly like
+Init. Bounds: `n_visible + n_avg <= BC_MAX_ACCS` (32) else reject.
+The dispatch count must be the grown m_n_agg_results so the writeback
+covers the hidden slots (verify m_jit_leaf_n_agg / the standalone
+count are taken AFTER Init). Multi-leaf: hidden slots are per
+interpreter, appended after the TOTAL — check setTotalAggResults'
+new lines before trusting the per-leaf offset. Verification: a
+bridge pin (2-word program → SUM + COUNT with the right slots),
+testCteNdbApiFilter 4 → 0, dd_avg mirror → 0, results identical to
+the OFF arm (the divide is the owner's, untouched).
+
 **Verification list for Part A (Mikael runs):** `bridge_tests`
 (T70c, T73d, T78a-f), then the exempt-pin tests under `ronsql_jit`
 / `ronsql_cte_jit` (dd_filter, gl_v5, dd_bigquery, cte_scalar, …) —

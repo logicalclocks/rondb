@@ -54,6 +54,13 @@ suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
   the history). Check `grep -E 'define CFG_.* [0-9]+$' mgmapi_config_
   parameters.h | awk '{print $3}' | sort | uniq -d` after every merge —
   a duplicate id is silent at build and at cluster start.
+- **New coverage gap from the rebase: kOpAvg (opcode 31).** The AVG-in-
+  CTE work lowers AVG as one opcode (SUM into the visible slot + COUNT
+  into a hidden companion slot appended after the visible ones); the
+  bridge rejects it (reason 1 detail 31). testCteNdbApiFilter re-pinned
+  0 → 4 (its two new AVG cases); the dd_avg mirror will pin likewise.
+  Lowering sketch = **item 15** in `ronsql_jit_plan.md` (bridge-only
+  once the translate entry gets `n_visible_results`).
 - **15 mirror .result files were STALE** — base tests whose OUTPUT changed
   in the rebase (renumbered ERROR_INSERT echo lines: the evict test's
   5116→5126 / 4040→4041; testJoinAggNdbApi / testStarJoinAggNdbApi grew
