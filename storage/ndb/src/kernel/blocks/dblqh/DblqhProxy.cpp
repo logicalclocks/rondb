@@ -2876,11 +2876,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede
    * the actual aggregation instructions). */
 #ifdef ERROR_INSERT
-  /* 5119/5120, NOT the DBTUP-side 4xxx inserts: Cmvmi::execTAMPER_ORD
+  /* 5127/5120, NOT the DBTUP-side 4xxx inserts: Cmvmi::execTAMPER_ORD
    * routes `all error N` by number range (4000-4999 -> DBTUP,
    * 5000-5999 -> DBLQH), so a 4xxx insert can never arm this block's
    * ERROR_INSERTED. The proxy's compile-time diagnostics:
-   *   5119 = dump program + translation at JOIN_AGG_SETUP compile
+   *   5127 = dump program + translation at JOIN_AGG_SETUP compile
    *          (DEBUG_JIT builds only)
    *   5120 = compile failure is fatal (abort with the reject reason).
    *          ronsql_jit slice 3 lifted this out of DEBUG_JIT: the
@@ -2892,7 +2892,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 #endif
 #ifdef DEBUG_JIT
 #ifdef ERROR_INSERT
-  const bool dump_jit_program = ERROR_INSERTED(5119);
+  const bool dump_jit_program = ERROR_INSERTED(5127);
 #else
   const bool dump_jit_program = false;
 #endif
@@ -2917,7 +2917,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         Uint32 bc_words = lp.m_agg_program_len - bc_off;
   #ifdef DEBUG_JIT
         if (dump_jit_program) {
-          g_eventLogger->info("[RONDB-1056] ERROR_INSERT 5119: "
+          g_eventLogger->info("[RONDB-1056] ERROR_INSERT 5127: "
                               "dumping JIT setup for key=%u leaf=%u",
                               key, jit_leaf);
           ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
@@ -2954,7 +2954,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
          * reuse cache's compile callback (dbtup_jit_compile_agg below);
          * on a HIT neither runs. The translate right here is the
          * DIAGNOSTIC pass: it keeps the bridge-reject fallback site
-         * ("join-agg bridge"), the 5119 dump and the 5120 fatal detail
+         * ("join-agg bridge"), the 5127 dump and the 5120 fatal detail
          * exactly as before — a bridge-rejected program never reaches
          * the cache (negative results are not cached), and for accepted
          * programs this linear pass costs microseconds per setup.

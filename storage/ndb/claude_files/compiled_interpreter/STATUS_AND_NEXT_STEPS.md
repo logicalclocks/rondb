@@ -9,7 +9,37 @@
 > Phases 0–5.0, plus Phase 5.1a). Treat `plan.md` / `phase_*.md` as
 > *design intent*; treat the source tree as ground truth.
 
-## Session 2026-08-22 — 26.04-main rebase + Phase 6 plan
+## Session 2026-09-04 — rebase onto latest CTE development + stable merges
+
+Mikael rebased the branch (clean). Post-rebase repair of the JIT-specific
+suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
+
+- **ERROR_INSERT collision fixed: JIT setup dump 5119 → 5127.** The TTL
+  replica-rowid work (claude_files/ttl_899_rowid) took DBLQH 5119
+  (`Dblqh.hpp replica_rowid_forwarding_supported`: emulate an old-version
+  replica) and 5118; the registry's `Next DBLQH` was 5127 (the CTE branch's
+  join-agg NF/eviction inserts are 5121-5126). Since `all error N` reaches
+  every DBLQH instance incl. the proxy, our DEBUG_JIT-only dump insert moved
+  to **5127** (DblqhProxy.cpp, 5 sites). **5120 (join-agg compile-fatal) is
+  untouched** and was free; the arm includes still send 4064 + 5120.
+  DBTUP 4060 / 4063 / 4064 have no collision (DBTUP code goes up to 4041,
+  plus an unregistered 4050 that is not ours). All five JIT inserts are now
+  REGISTERED in `src/kernel/blocks/ERROR_codes.txt` (Next DBLQH → 5128;
+  Next DBTUP stays 4042 with a reservation note for 4060-4064). No test
+  change was needed: no MTR test arms 5119 (TTL uses it from NDB API
+  tests / DEBUG builds), and 5119 was never sent by ours.
+- **Seven new ronsql_cte base tests got mirrors** in ronsql_cte_jit
+  (dd_avg, dd_child_bounds, dd_nullable_bounds, dd_passthrough_limit,
+  dd_passthrough_orderby, dd_passthrough_orderby_index,
+  dd_single_row_cte): pin-only wrappers, result = base result + a
+  PRE-EMPTIVE pin of 0 — a mismatch on the first run shows the real
+  census number (re-pin, and arm those that are 0). `ronsql_size_limits`
+  (an RDRS size-cap test with its own .cnf, no JIT programs) is
+  deliberately NOT mirrored, like the bench tests. All other mirror
+  sources resolve; the three my.cnf !includes resolve.
+- **Every mirror's --source target exists; no base test was renamed.**
+
+
 
 The branch was rebased onto latest `26.04-main` (`3ac91d6a023`); the
 only conflict was `testJoinAggNdbApi` renumbering (our JIT canaries
