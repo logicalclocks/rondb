@@ -117,7 +117,7 @@ Uint32 ndbGetOwnVersion();
  * unchanged from NDB_DISK_V2, the per-page m_ndb_version stamp decides
  * whether the checksum field is valid to verify.
  */
-#define NDB_DISK_V3 NDB_MAKE_VERSION(26,4,2)
+#define NDB_DISK_V3 NDB_MAKE_VERSION(26,10,0)
 /**
  * From which version do we support rowid
  */
@@ -279,7 +279,6 @@ ndbd_support_fully_replicated(Uint32 x)
  */
 #define NDBD_SUPPORT_PARTITION_HASH_FANOUT_25_10 NDB_MAKE_VERSION(25,10,15)
 #define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_02 NDB_MAKE_VERSION(26,2,6)
-#define NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_04 NDB_MAKE_VERSION(26,4,2)
 
 static
 inline
@@ -306,16 +305,6 @@ ndbd_support_partition_hash_fanout(Uint32 x)
     {
       return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_02;
     }
-    if (minor == 3)
-    {
-      return 0;
-    }
-    if (minor == 4)
-    {
-      return x >= NDBD_SUPPORT_PARTITION_HASH_FANOUT_26_04;
-    }
-    /* > 26.04 */
-    return 1;
   }
   return 1;
 }
@@ -1096,7 +1085,7 @@ ndbd_pushdown_aggregation_supported(Uint32 v)
  * signal.  Only sent to API nodes that understand the new signal; the visible
  * error code (266/296) is unchanged for everyone.
  */
-#define NDBD_DEADLOCK_DETAIL_VERSION NDB_MAKE_VERSION(26, 4, 1)
+#define NDBD_DEADLOCK_DETAIL_VERSION NDB_MAKE_VERSION(26, 10, 0)
 static
 inline
 bool
@@ -1252,7 +1241,7 @@ ndbd_support_long_transid_ai(Uint32 x) {
   if (major > 26) {
     return true;
   }
-  if ((major == 26) && (minor >= 04)) {
+  if ((major == 26) && (minor >= 10)) {
     return true;
   }
   return false;
@@ -1267,10 +1256,7 @@ ndbd_support_scan_frag_rows_examined(Uint32 x) {
   if (major > 26) {
     return true;
   }
-  if ((major == 26) && (minor == 04) && (rel >= 2)) {
-    return true;
-  }
-  if ((major == 26) && (minor > 04)) {
+  if ((major == 26) && (minor >= 10)) {
     return true;
   }
   return false;
@@ -1308,9 +1294,6 @@ ndbd_support_arbitration_rank_wait(Uint32 x) {
   if ((major == 26) && (minor == 02) && (rel >= 4)) {
     return true;
   }
-  if ((major == 26) && (minor == 04) && (rel >= 2)) {
-    return true;
-  }
   return false;
 }
 
@@ -1324,10 +1307,7 @@ ndbd_support_pushdown_join_agg(Uint32 x) {
   if (major > 26) {
     return true;
   }
-  if ((major == 26) && (minor > 5)) {
-    return true;
-  }
-  if ((major == 26) && (minor == 04) && (rel >= 2)) {
+  if ((major == 26) && (minor >= 10)) {
     return true;
   }
   return false;
@@ -1355,10 +1335,7 @@ ndbd_support_agg_wide_type(Uint32 x) {
   if (major > 26) {
     return true;
   }
-  if ((major == 26) && (minor > 5)) {
-    return true;
-  }
-  if ((major == 26) && (minor == 04) && (rel >= 2)) {
+  if ((major == 26) && (minor >= 10)) {
     return true;
   }
   return false;
@@ -1384,10 +1361,7 @@ ndbd_support_joinagg_frags_per_worker(Uint32 x) {
   if (major > 26) {
     return true;
   }
-  if ((major == 26) && (minor > 5)) {
-    return true;
-  }
-  if ((major == 26) && (minor == 04) && (rel >= 2)) {
+  if ((major == 26) && (minor >= 10)) {
     return true;
   }
   return false;
@@ -1409,7 +1383,6 @@ ndb_heartbeat_send_twice_per_interval(Uint32 x)
   if (major < 26) return 0;
   /* major == 26 */
   if (minor >= 5) return 1;        /* 26.05 and every later line */
-  if (minor == 4) return rel >= 2; /* 26.04.2+ (26.04.0/1 shipped without) */
   if (minor == 2) return rel >= 5; /* 26.02.5+ */
   return 0;                        /* 26.00, 26.01, 26.03, sub-threshold */
 }
@@ -1431,7 +1404,6 @@ ndb_heartbeat_send_twice_per_interval(Uint32 x)
  */
 #define NDBD_DROP_TABLE_NOTIFICATION_2510 NDB_MAKE_VERSION(25,10,14)
 #define NDBD_DROP_TABLE_NOTIFICATION_2602 NDB_MAKE_VERSION(26,2,5)
-#define NDBD_DROP_TABLE_NOTIFICATION_2604 NDB_MAKE_VERSION(26,4,2)
 static inline
 bool
 ndbd_support_drop_table_notification(Uint32 x) {
@@ -1454,11 +1426,7 @@ ndbd_support_drop_table_notification(Uint32 x) {
   if (minor == 2) {
     return x >= NDBD_DROP_TABLE_NOTIFICATION_2602;
   }
-  if (minor == 4) {
-    /* 26.04.1 shipped without the feature; it lands in 26.04.2. */
-    return x >= NDBD_DROP_TABLE_NOTIFICATION_2604;
-  }
-  if (minor > 4) {
+  if (minor >= 5) {
     return true;
   }
   return false;
