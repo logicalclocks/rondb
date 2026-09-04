@@ -1798,6 +1798,86 @@ frames to look for on the ON side: dbtup_jit_invoke, ndb_jit_h_load_col
 _dec / jit_load_col_read, readLinkedAttrIntoBuf, and whether the
 DECIMAL→double conversion is done once per row in both arms.
 
+### q2 profile — what the 0.79x actually was (2026-09-04, prod_build, macOS `sample`)
+
+Method: each arm on its own `mtr --start` cluster (prod_build, sf 0.05),
+bench_q2 for 400 iterations while every ndbmtd process was sampled for
+25 s at 1 ms. Timings on the SAME cluster instance, unsampled vs
+sampled: OFF 22.9 / 23.6 ms median unsampled, 30.0 sampled; ON 29.7
+sampled. The sampler costs ≈25 %, and **under identical sampling the
+two arms are equal (29.7 vs 30.0)**. The harness's OFF median for q2
+was 14.5 on a different cluster instance — instance-to-instance
+variance of ±30-50 % on this shape dwarfs any engine effect, and the
+A/B/A/B runner below settles it.
+
+Inclusive samples in the working data node, same 400 iterations:
+
+| frame | ON | OFF | reading |
+|---|---|---|---|
+| Dbtup::execTUPKEYREQ (all TUP work) | 8606 | 9590 | same work, ON ≈10 % fewer samples |
+| JoinAggInterpreter::ProcessRec | 893 | 926 | the aggregation call, both arms |
+| per-row aggregation core | dbtup_jit_invoke **455** | AggInterpreterBase:: **466** | **equal** |
+| of which decimal2double | 301 | 304 | **65 % of the core in BOTH arms** |
+| of which bin2decimal | 129 | 73 | |
+| GBHashTable (GROUP BY) | 327 | 364 | same |
+| Dbtup::interpreterNextLab | 1563 | 1885 | ON is 322 lower … |
+| dbtup_jit_invoke_scan_filter | 69 | — | … because the part filter moved here: **≈4.7× cheaper** |
+
+Conclusions:
+1. **The JIT's per-row aggregation cost equals the interpreter's on
+   this shape** (455 vs 466); the dispatch it saves and the glue it adds
+   cancel for a 5-op program whose one load is a DECIMAL. The
+   "per-row glue diet" is worth ≈50 samples here (≈0.1 ms of a ~22 ms
+   iteration) — real but small; keep it on the backlog, not urgent.
+2. **`decimal2double` is the per-row cost, in both engines.** MySQL
+   implements it as decimal2string + my_strtod (mysys/decimal.cc:1075)
+   — a string round-trip per DECIMAL column per row. It is two thirds
+   of the aggregation core on both arms. A direct conversion (scale the
+   decimal_t to an integer with decimal_shift / decimal2longlong, one
+   double divide by 10^scale — exact for the ≤ 18-digit precisions TPC-H
+   uses; fall back to decimal2double above that) in
+   AggInterpreterBase's kOpLoadCol DECIMAL path AND in
+   ndb_jit_h_load_col_dec would cut the aggregation core by ~60 % for
+   every DECIMAL-heavy pushed query — a bigger win than the JIT itself
+   on TPC-H shapes, and shared. **Backlog: "DECIMAL fast path", flag
+   to the pushdown team (it is their kernel too).**
+3. **The scan-filter JIT is a clear win where it applies**: the `p_size
+   > 25` lookup filter costs ≈4.7× less compiled (69 vs the ≈322
+   samples it took inside interpreterNextLab) — ≈3 % of q2.
+4. The remaining ~90 % of q2 is DBSPJ / DBLQH / DBTUP row access and
+   transport, untouched by either engine. sql_agg_wide's 1.26x is the
+   shape where the program is long and the columns are cheap to load.
+
+**A/B/A/B (2026-09-04, prod_build, sf 0.05, q2 × 60 iterations on a FRESH
+cluster per arm per round, unsampled):**
+
+| round | OFF median | ON median | OFF min | ON min |
+|---|---|---|---|---|
+| 1 | 19.61 | 21.03 | 12.01 | 12.40 |
+| 2 | 19.02 | 20.34 | 13.58 | 13.13 |
+| 3 | 19.39 | 20.58 | 11.89 | 12.59 |
+
+ON is **6-7 % slower on the median in all three rounds** (intra-arm
+spread ±3 %), and **equal on the best iteration** (±5 %, mixed signs).
+So q2 carries a small, consistent median penalty under the JIT —
+1/3 of the harness's 21 % — while the data-node CPU profile shows the
+aggregation core equal and the filter cheaper. Wall time on this
+shape is a DBSPJ/DBLQH latency chain (the ON node used ≈10 % FEWER
+CPU samples for the same work at equal sampled wall time), so the
+median gap is a timing/batching interaction rather than per-row CPU;
+not worth chasing until a workload that matters shows it. Recorded,
+not acted on.
+
+**Verdict of the perf milestone (2026-09-04):** on TPC-H-style pushed
+joins the JIT is neutral (its per-row aggregation cost equals the
+interpreter's; both are dominated by DECIMAL→double); it wins where
+the per-row program is long over cheap columns (sql_agg_wide 1.26x)
+and on scan filters (≈4.7× on q2's lookup filter); compile cost is
+noise (1.8 µs). The largest per-row cost found is shared and outside
+the JIT: MySQL's string-round-trip decimal2double. Backlog, in order:
+**DECIMAL fast path** (both engines), then the **per-row glue diet**,
+then the aarch64 stencil tuning the plan already lists.
+
 **Next run (Mikael) — the one that counts:**
 ```sh
 cmake --build prod_build --target ndbmtd ndb_mgmd mysqld load_tpch bench_nogroup_ndbapi bench_minmax_ndbapi bench_datescan_ndbapi bench_orderscan_ndbapi bench_q2_ndbapi bench_q3_ndbapi bench_q4_ndbapi bench_q5_ndbapi bench_q9_ndbapi bench_q9_dbtc bench_q10_ndbapi bench_q11_ndbapi bench_q12_dbtc -j 8
@@ -1818,3 +1898,93 @@ reach 0 under slice-3 strict arming (`jit_strict_arm.inc` /
 `jit_strict_disarm.inc` around the body include); then the full
 `ndb_push_agg_jit` mirror once (the guard also observes mysqld CASE
 programs — any pin move there is a shape worth looking at).
+
+### Linux x86_64 prod run, sf 0.2 (2026-09-04): SIX ON benches FAILED — x86_64 constant-load truncation (FIXED; regen done, extractor-tests + coldcall_tests green; Linux JIT suites + sf 0.2 bench re-run pending)
+
+Mikael's Linux (x86_64, prod build, sf 0.2, 7 iterations) run: timings
+neutral (0.93–1.15x, sql_agg_wide 1.03x), ndbinfo ON delta
+programs_compiled=502 / programs_reused=4866 / programs_fallback=0 /
+rows_executed=39548191 — and **six benches FAILED their SQL cross-check
+under ON**: bench_datescan_ndbapi, bench_q3_ndbapi, bench_q5_ndbapi,
+bench_q9_dbtc, bench_q9_ndbapi, bench_q10_ndbapi. macOS (aarch64) passed
+the same benches at sf 0.05.
+
+**Pattern.** Every failing bench computes
+`SUM(l_extendedprice * (1 - l_discount))` and builds it as
+`LoadDouble(1.0, r1); Minus(r1, discount); Mul(price, r1); Sum`.
+Passing benches have no constant (nogroup / minmax / q11's
+`ps_supplycost * ps_availqty` is column × column). The difference is the
+**DOUBLE constant**: the bridge lowers `LoadDouble(1.0)` as
+`OP_LOAD_CONST_INT` with the bit pattern `0x3FF0000000000000` (a
+64-bit immediate), the only LoadConst class that needs more than 32 bits.
+
+**Root cause — x86_64 only, in the stencil, not the bridge.** On x86_64
+the stencil source materialises a hole as `(uint64_t)&HOLE_x`, and
+clang (-fno-pic, small code model) picks the shortest encoding of that
+link-time address: for `op_load_const_int` a sign-extended
+`mov qword [r12+rax*8], imm32` (R_X86_64_32S, 13-byte stencil,
+`HK_OP_IMM width 4`). `jit1.c`'s `patch_operand` then writes
+`(uint32_t)(int32_t)value` — its own comment said "out-of-range
+immediates … are out of scope for the Phase 1 microbench's value
+domain". So `1.0` → low 32 bits `0` → `0.0`, and revenue became
+`price * (0 - discount)`. aarch64 was never affected: its holes are
+4-slot MOVZ/MOVK chains carrying all 64 bits, and every macOS run
+exercised only those. A second latent x86_64 defect in the same fold:
+`op_load_const_uint32` also used the sign-extending qword store, so
+constants in [2^31, 2^32) came out negative. The proto host test T9
+(`OP_LOAD_CONST_INT INT64_MAX` + 1 → overflow) would have failed on
+Linux for the same reason; `coldcall_tests` was evidently never run on
+x86_64 after the LoadConst stencils were split.
+
+**Fix (source, this session):**
+- `stencils_src.c` (x86_64 section): two new value-hole macros with
+  pinned encodings — `HOLE_64(name)` = inline-asm `movabsq $HOLE_x, %r64`
+  (R_X86_64_64, 8-byte immediate) and `HOLE_U32(name)` = `movl $HOLE_x,
+  %r32` (R_X86_64_32, zero-extending). `op_load_const_int` uses
+  `HOLE_64(LCI_VAL)`, `op_load_const_uint32` uses `HOLE_U32(LCU32_VAL)`.
+  aarch64 aliases them to `HOLE` / `HOLE_32` → **arm64 header must come
+  out byte-identical** on regen.
+- `extract_stencils.c`: a `R_X86_64_64` relocation on a HOLE_* symbol is
+  accepted for `HK_OP_IMM` and recorded as `width 8` (other kinds / other
+  reloc types still die).
+- `jit1.c` (x86_64 branch of the operand-hole switch): `width == 8` →
+  `put_u64_le(patch, v)`; width 4 stays on `patch_operand`. Comments
+  corrected (the "always width 4 on x86_64" claim, the patch_operand
+  narrowing note).
+- Tests: `coldcall_tests` **T35 load_const_immediate_widths** (13
+  cases, one 2-op program each: int64 1.0-bits / MIN / MAX / negative
+  wide / 2^32, uint32 2^31+1 / max, int32 MIN / -32769, int16 MIN / -1,
+  uint16 max / 0 — asserts the register holds the exact value).
+  Extractor tests **T12** (x86_64 `holes_op_load_const_int` has
+  `HK_OP_IMM, .width = 8`) and **T13** (`bytes_op_load_const_uint32`
+  contains no `0x49, 0xc7` = `mov r/m64, imm32`).
+
+**Not touched:** every other x86_64 `HK_OP_IMM` hole carries ≤16-bit
+packed args or sign-extended int32-range values by construction
+(`op_branch_f64`, `op_arith_fb`, int16/uint16/int32 LoadConst);
+`op_load_const_int32` already goes through `mov r32, imm32; cdqe`.
+Cold-call holes were already `movabs` (width 8).
+
+**Regen result (2026-09-04):** `stencils_x86_64.h` changed in exactly the
+two stencils; `stencils_arm64.h` up-to-date (byte-identical, as required).
+`op_load_const_int` 13 → 19 bytes: `movabs rax, imm64` (HK_OP_IMM width
+8 at offset 2) + `mov ecx, A` + `mov [r12+rcx*8], rax`.
+`op_load_const_uint32` 13 → 14 bytes: `mov eax, imm32` (zero-extending,
+HK_OP_IMM width 4 at offset 1) + `mov ecx, A` + `mov [r12+rcx*8], rax` —
+no `0x49, 0xc7` store-imm32 left. extractor-tests (T12/T13) and
+coldcall_tests (T9/T35) green.
+
+**Verification (Mikael runs, in this order):**
+1. `cmake --build debug_build --target regen-stencils` (needs the pinned
+   upstream clang, `-DNDB_JIT_CLANG=…`). Expect: `[x86_64] REGENERATED
+   stencils_x86_64.h`, `[arm64] up-to-date`. In the x86_64 diff,
+   `op_load_const_int` should become ~19 bytes with `HK_OP_IMM, .width =
+   8` and `op_load_const_uint32` ~14 bytes with a `mov r32, imm32` +
+   `mov [r12+..], r64` (no `0x49, 0xc7`). Commit the header.
+2. `cmake --build debug_build --target extractor-tests` (or the ctest
+   name it registers): T12 / T13 must PASS.
+3. Rebuild + `debug_build/storage/ndb/test/jit_proto/coldcall_tests` on
+   BOTH machines: T9 and T35 must PASS on Linux (they are the detector).
+4. Linux: `./mtr --suite=ndb_push_agg_jit,ronsql_jit,ronsql_cte_jit
+   --parallel=10 --force` once (never run there before), then the sf
+   0.2 bench again — all 13 benches must PASS under ON.

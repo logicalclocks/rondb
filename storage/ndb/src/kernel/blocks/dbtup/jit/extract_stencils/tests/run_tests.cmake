@@ -202,7 +202,7 @@ endfunction()
 # Test cases.
 # ---------------------------------------------------------------------------
 
-message(STATUS "extractor-tests: starting (11 cases)")
+message(STATUS "extractor-tests: starting (13 cases)")
 
 # T1: extractor with no args → exit 2 (usage)
 assert_exit_stderr("T1 extractor_no_args" 2 "usage" COMMAND "${EXTRACTOR}")
@@ -287,6 +287,38 @@ string(REPLACE
 file(WRITE "${TMP_DIR}/x86_64_corrupt.h" "${X86_CORRUPT}")
 assert_exit_stderr("T11 audit_x86_64_detects_injected_literal" 1 "VIOLATION"
                     COMMAND "${AUDIT}" "${TMP_DIR}/x86_64_corrupt.h" "x86_64")
+
+# T12 — x86_64 op_load_const_int must carry its int64 immediate through
+# an 8-byte hole (HOLE_64 → `movabs r64, imm64`, R_X86_64_64). A width-4
+# hole here is the sign-extending `mov qword [..], imm32` fold that
+# truncated every non-int32 constant on Linux (2026-09-04: 1.0 → 0.0).
+file(READ "${GEN_X86}" GEN_X86_TXT)
+string(REGEX MATCH
+  "holes_op_load_const_int\\[\\] = {[^}]*HK_OP_IMM, \\.width = 8"
+  LCI_IMM64 "${GEN_X86_TXT}")
+if(LCI_IMM64)
+  math(EXPR N_PASS "${N_PASS} + 1")
+  message(STATUS "  PASS  T12 x86_64_load_const_int_imm64_hole")
+else()
+  math(EXPR N_FAIL "${N_FAIL} + 1")
+  set(FAIL_LOG "${FAIL_LOG}\n[T12 x86_64_load_const_int_imm64_hole] op_load_const_int's HK_OP_IMM hole is not width 8 in ${GEN_X86}")
+  message(STATUS "  FAIL  T12 x86_64_load_const_int_imm64_hole")
+endif()
+
+# T13 — x86_64 op_load_const_uint32 must not store its immediate with
+# `mov r/m64, imm32` (REX.WB 0x49 0xc7: sign-extends, so [2^31, 2^32)
+# came out negative). HOLE_U32 forces `mov r32, imm32` + a register store.
+string(REGEX MATCH
+  "static const uint8_t bytes_op_load_const_uint32\\[\\][^}]*}"
+  LCU32_BYTES "${GEN_X86_TXT}")
+if(LCU32_BYTES AND NOT LCU32_BYTES MATCHES "0x49, 0xc7")
+  math(EXPR N_PASS "${N_PASS} + 1")
+  message(STATUS "  PASS  T13 x86_64_load_const_uint32_zero_extends")
+else()
+  math(EXPR N_FAIL "${N_FAIL} + 1")
+  set(FAIL_LOG "${FAIL_LOG}\n[T13 x86_64_load_const_uint32_zero_extends] bytes_op_load_const_uint32 missing or still uses mov r/m64, imm32 (0x49 0xc7) in ${GEN_X86}")
+  message(STATUS "  FAIL  T13 x86_64_load_const_uint32_zero_extends")
+endif()
 
 # ---------------------------------------------------------------------------
 # Summary.

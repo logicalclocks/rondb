@@ -243,12 +243,13 @@ static inline void put_u64_le(uint8_t *dst, uint64_t v) {
 
 static inline void patch_operand(uint8_t *site, uint8_t slot, int64_t value) {
   (void)slot;
-  /* Phase 1+2 x86_64 stencils use 32-bit operand sites: `mov reg32,
-   * imm32` (zero-extended for register-index holes), `mov [...], imm32`
-   * (sign-extended for HK_OP_IMM in op_load_const_int's qword store).
-   * We narrow to int32 — out-of-range immediates would surprise the
-   * engine but are out of scope for the Phase 1 microbench's value
-   * domain. */
+  /* x86_64 width-4 operand sites: `mov reg32, imm32` (zero-extended
+   * register-index / uint32 holes) or `mov [...], imm32` (sign-extended
+   * — the uint16 / int16 / int32 LoadConst stores). Every value routed
+   * here fits by construction (bridge size classes). The full int64
+   * immediate of op_load_const_int is a width-8 `movabs` site patched
+   * by put_u64_le in the hole loop — until 2026-09-04 it landed here
+   * and lost its upper 32 bits (the Linux-only wrong-result bug). */
   put_u32_le(site, (uint32_t)(int32_t)value);
 }
 
@@ -594,8 +595,8 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
         case HK_OP_C:
         case HK_OP_IMM: {
           int64_t v = hole_value_from_op(hole->kind, op);
-          /* width discriminator (aarch64 only — x86_64 always
-           * has width=4 from the existing relocation path):
+          /* width discriminator (aarch64; x86_64 has width=4
+           * imm32 sites plus the width=8 HOLE_64 movabs site):
            *   width=1: Phase 4.7 LDR/STR imm12 fold. Operand
            *            value goes into bits 21..10 of one
            *            LDR/STR instruction. Slot counter
@@ -616,12 +617,15 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
             patch_operand(patch, slot, v);
           }
 #else  /* x86_64 */
-          (void)0; /* width is always 4 on x86_64; the
-                    * patch_operand call below handles all
-                    * Phase 4-era operand holes uniformly. */
-          if (hole->width == 2) {
-            patch_operand(patch, 0, v);
+          if (hole->width == 8) {
+            /* HOLE_64: `movabs r64, imm64` — op_load_const_int's
+             * full int64 immediate. All 8 bytes are patched; the
+             * imm32 path below would keep only the sign-extended
+             * low 32 bits (1.0's bit pattern 0x3FF0000000000000
+             * became 0.0 — the 2026-09-04 Linux bench failures). */
+            put_u64_le(patch, (uint64_t)v);
           } else {
+            /* width 4 (one imm32 site; no slot chain on x86_64). */
             uint8_t slot = slot_counter[hole->kind]++;
             patch_operand(patch, slot, v);
           }

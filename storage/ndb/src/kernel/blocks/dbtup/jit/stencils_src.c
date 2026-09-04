@@ -96,12 +96,45 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
 #  define HOLE(name)                 ((uint64_t)(uintptr_t)&HOLE_##name)
 /* On x86_64, narrow / fold holes share the same extern symbol +
  * R_X86_64_32 relocation pattern as wide holes. The 32-bit
- * immediate is wide enough for any operand value already; no
+ * immediate is wide enough for any INDEX operand already; no
  * compaction is possible. HOLE_NARROW / HOLE_LOAD_REG /
  * HOLE_STORE_REG fall back to the same `regs_i64[HOLE(...)]`
  * idiom — clang lowers the index into rip-relative addressing. */
 #  define HOLE_NARROW(name)          HOLE(name)
 #  define HOLE_32(name)              HOLE(name)
+/* VALUE holes (2026-09-04, found by the Linux x86_64 bench run).
+ * `(uint64_t)&HOLE_x` lets clang pick the shortest encoding for a
+ * link-time address, and under -fno-pic / small code model that is
+ * a sign-extended imm32 (R_X86_64_32S): op_load_const_int came out
+ * as `mov qword [r12+rax*8], imm32`. The patcher can only write 32
+ * bits into such a site, so every constant outside int32 — a DOUBLE
+ * bit pattern (1.0 = 0x3FF0000000000000 -> 0.0), a DATETIME2
+ * packing, a large BIGINT literal — was silently truncated on
+ * x86_64 (SUM(l_extendedprice * (1 - l_discount)) was wrong in six
+ * benches; aarch64 was never affected — its 4-slot MOVZ/MOVK chain
+ * carries all 64 bits). The same fold made op_load_const_uint32's
+ * qword store SIGN-extend, so values in [2^31, 2^32) came out
+ * negative. Inline asm pins the encoding:
+ *   HOLE_64  -> `movabs r64, imm64` (R_X86_64_64; extractor width 8;
+ *                jit1.c patches all 8 bytes)
+ *   HOLE_U32 -> `mov r32, imm32`    (R_X86_64_32; zero-extends into
+ *                the full 64-bit register)
+ * The `"i"` constraint substitutes the HOLE_* symbol as an absolute
+ * immediate (legal only because regen compiles with -fno-pic). */
+#  define HOLE_64(name)                                             \
+     __extension__ ({                                               \
+       uint64_t hole64_v_;                                          \
+       __asm__ ("movabsq %1, %0"                                    \
+                : "=r" (hole64_v_) : "i" (&HOLE_##name));           \
+       hole64_v_;                                                   \
+     })
+#  define HOLE_U32(name)                                            \
+     __extension__ ({                                               \
+       uint64_t holeu32_v_;                                         \
+       __asm__ ("movl %1, %k0"                                      \
+                : "=r" (holeu32_v_) : "i" (&HOLE_##name));          \
+       holeu32_v_;                                                  \
+     })
 #  define HOLE_LOAD_REG(name, state)  \
       ((state)->regs_i64[HOLE(name)])
 #  define HOLE_STORE_REG(name, state, value)  \
@@ -378,6 +411,12 @@ static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
 #  define HOLE(name)         aarch64_hole_(MAGIC_##name)
 #  define HOLE_NARROW(name)  aarch64_hole_narrow_(MAGIC_##name##_NARROW)
 #  define HOLE_32(name)      aarch64_hole32_(MAGIC_##name##_32)
+/* aarch64 already carries full-width values (see HOLE_64 / HOLE_U32
+ * in the x86_64 section): 4-slot chain for int64, zero-filling
+ * W-form 2-slot chain for uint32. Plain aliases — arm64 stencil
+ * bytes are unchanged. */
+#  define HOLE_64(name)      HOLE(name)
+#  define HOLE_U32(name)     HOLE_32(name)
 #  define HOLE_LOAD_REG(name, state)         \
       aarch64_load_reg_(MAGIC_##name##_FOLD * 8u, (state))
 #  define HOLE_STORE_REG(name, state, value) \
@@ -406,12 +445,15 @@ static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
 /* op_load_const_int : regs_i64[DST] = VAL                            */
 /*                                                                    */
 /* Phase 4.5: LCI_DST is a register index (≤8 bits) — narrow hole.    */
-/* LCI_VAL is the int64 immediate value — stays wide.                 */
+/* LCI_VAL is the int64 immediate value — stays wide, and on x86_64   */
+/* MUST be HOLE_64 (movabs imm64): the plain HOLE form let clang      */
+/* fold it into a sign-extended `mov qword [..], imm32`, truncating   */
+/* every constant outside int32 (see the HOLE_64 comment above).      */
 /* ------------------------------------------------------------------ */
 DECLARE_FOLD_HOLE(LCI_DST);
 DECLARE_HOLE(LCI_VAL);
 STENCIL op_load_const_int(JitState *s) {
-  HOLE_STORE_REG(LCI_DST, s, (int64_t)HOLE(LCI_VAL));
+  HOLE_STORE_REG(LCI_DST, s, (int64_t)HOLE_64(LCI_VAL));
   TAIL_NEXT(s);
 }
 
@@ -758,13 +800,16 @@ STENCIL op_load_const_int16(JitState *s) {
 /*                                                                    */
 /* uint32 form: MOVZ + MOVK + STR (no sign-extend; W-form 2-slot      */
 /*              chain zero-fills upper 32 bits of the X-register).    */
+/*              x86_64: HOLE_U32 = `mov r32, imm32` (zero-extends);   */
+/*              the plain HOLE_32 form folded into a sign-extending   */
+/*              qword store, so [2^31, 2^32) came out negative.       */
 /* int32 form:  MOVZ + MOVK + SXTW + STR (sign-extend the 32-bit      */
 /*              signed value to int64 before storing).                */
 /* ------------------------------------------------------------------ */
 DECLARE_FOLD_HOLE(LCU32_DST);
 DECLARE_HOLE(LCU32_VAL);
 STENCIL op_load_const_uint32(JitState *s) {
-  HOLE_STORE_REG(LCU32_DST, s, (int64_t)HOLE_32(LCU32_VAL));
+  HOLE_STORE_REG(LCU32_DST, s, (int64_t)HOLE_U32(LCU32_VAL));
   TAIL_NEXT(s);
 }
 

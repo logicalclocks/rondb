@@ -20,14 +20,14 @@
 #include "bytecode1.h"
 #include "hole_kinds.h"
 
-/* op_load_const_int — 13 bytes, 2 holes */
+/* op_load_const_int — 19 bytes, 2 holes */
 static const uint8_t bytes_op_load_const_int[] = {
-  0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0xc7, 0x04, 0xc4, 0x00, 0x00, 0x00,
-  0x00,
+  0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb9, 0x00,
+  0x00, 0x00, 0x00, 0x49, 0x89, 0x04, 0xcc,
 };
 static const Hole holes_op_load_const_int[] = {
-  { .byte_offset = 1, .kind = HK_OP_A, .width = 4 },
-  { .byte_offset = 9, .kind = HK_OP_IMM, .width = 4 },
+  { .byte_offset = 2, .kind = HK_OP_IMM, .width = 8 },
+  { .byte_offset = 11, .kind = HK_OP_A, .width = 4 },
 };
 
 /* op_load_col_int — 26 bytes, 2 holes */
@@ -268,14 +268,14 @@ static const Hole holes_op_load_const_int16[] = {
   { .byte_offset = 10, .kind = HK_OP_A, .width = 4 },
 };
 
-/* op_load_const_uint32 — 13 bytes, 2 holes */
+/* op_load_const_uint32 — 14 bytes, 2 holes */
 static const uint8_t bytes_op_load_const_uint32[] = {
-  0xb8, 0x00, 0x00, 0x00, 0x00, 0x49, 0xc7, 0x04, 0xc4, 0x00, 0x00, 0x00,
-  0x00,
+  0xb8, 0x00, 0x00, 0x00, 0x00, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x89,
+  0x04, 0xcc,
 };
 static const Hole holes_op_load_const_uint32[] = {
-  { .byte_offset = 1, .kind = HK_OP_A, .width = 4 },
-  { .byte_offset = 9, .kind = HK_OP_IMM, .width = 4 },
+  { .byte_offset = 1, .kind = HK_OP_IMM, .width = 4 },
+  { .byte_offset = 6, .kind = HK_OP_A, .width = 4 },
 };
 
 /* op_load_const_int32 — 16 bytes, 2 holes */

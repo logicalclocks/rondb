@@ -610,11 +610,21 @@ static ExtractedStencil extract_one_x86(
      * declared in stencils_src.c. */
     uint8_t kind = lookup_hole_kind(tname);
     if (kind != 0) {
-      if (type != R_X86_64_32 && type != R_X86_64_32S) {
-        die("%s: hole %s has unexpected reloc type %u (want R_X86_64_32 or 32S)",
+      uint8_t width;
+      if (type == R_X86_64_32 || type == R_X86_64_32S) {
+        width = 4;
+      } else if (type == R_X86_64_64 && kind == HK_OP_IMM) {
+        /* HOLE_64 (`movabs r64, imm64`): the full int64 immediate of
+         * op_load_const_int. jit1.c patches all 8 bytes — a width-4
+         * site here is the sign-extending imm32 fold that truncated
+         * every non-int32 constant on x86_64 (2026-09-04). */
+        width = 8;
+      } else {
+        die("%s: hole %s has unexpected reloc type %u "
+            "(want R_X86_64_32/32S, or R_X86_64_64 on an immediate hole)",
             name, tname, type);
       }
-      add_hole(&out.holes, local_off, kind, 4);
+      add_hole(&out.holes, local_off, kind, width);
       continue;
     }
 

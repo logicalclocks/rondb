@@ -11,6 +11,26 @@
 
 ## Session 2026-09-04 — rebase onto latest CTE development + stable merges
 
+**2026-09-04 (later) — x86_64 WRONG-RESULT defect found by the Linux bench
+run; fixed, stencils regenerated (x86_64 header changed in the two
+LoadConst stencils, arm64 byte-identical), extractor-tests + coldcall_tests
+green; the Linux JIT-suite run + sf 0.2 bench re-run are still pending.**
+Six ON-arm benches (datescan, q3, q5, q9_dbtc, q9_ndbapi, q10) failed
+their SQL cross-check on Linux x86_64 while passing on macOS aarch64.
+Cause: the x86_64 `op_load_const_int` stencil carried its int64
+immediate as a sign-extended imm32 (`mov qword [..], imm32`, hole width
+4), so every constant outside int32 was truncated — `LoadDouble(1.0)` =
+`0x3FF0000000000000` became `0.0` and `SUM(price * (1 - discount))` was
+wrong. `op_load_const_uint32` had the same sign-extending fold for
+[2^31, 2^32). aarch64 (4-slot MOVZ/MOVK chains) was never affected, and
+all verification so far ran on aarch64. Fix: `HOLE_64` / `HOLE_U32`
+inline-asm value holes in `stencils_src.c` (movabs imm64 / zero-extending
+mov r32), extractor accepts `R_X86_64_64` on immediate holes as width 8,
+`jit1.c` patches 8 bytes; tests `coldcall_tests` T35, extractor-tests
+T12/T13. **Next: on the Linux box, the three JIT MTR suites once and
+the sf 0.2 bench — all 13 benches must PASS under ON.** Full write-up + ordered verification list at the
+end of `ronsql_jit_plan.md`.
+
 Mikael rebased the branch (clean). Post-rebase repair of the JIT-specific
 suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
 
@@ -69,7 +89,14 @@ suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
 in both ndb_push_agg (OFF) and ndb_push_agg_jit (ON) over the TPC-H
 bench binaries + the driver `jit_bench_off_vs_on.py` that runs both
 arms and tabulates Scan+Join / Total / SQL medians and speedups.
-Numbers pending Mikael's run (see the plan's "Perf bench" section).
+**Prod-build numbers + q2 profile + A/B/A/B recorded in the plan
+(2026-09-04):** join-bound benches neutral (±5-10 % noise; q2 a
+consistent 6-7 % median penalty, equal best-case — a latency-chain
+interaction, not per-row CPU); sql_agg_wide 1.26x; scan filters ≈4.7×
+cheaper; compile 1.8 µs. The dominant per-row cost is SHARED and not
+the JIT: MySQL's decimal2double string round-trip (2/3 of the
+aggregation core in BOTH engines). **NEXT: the DECIMAL fast path (both
+engines; flag to the pushdown team), then the per-row glue diet.**
 - **15 mirror .result files were STALE** — base tests whose OUTPUT changed
   in the rebase (renumbered ERROR_INSERT echo lines: the evict test's
   5116→5126 / 4040→4041; testJoinAggNdbApi / testStarJoinAggNdbApi grew

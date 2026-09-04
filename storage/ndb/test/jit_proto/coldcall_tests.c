@@ -490,6 +490,68 @@ static void test_checked_add_overflow(void) {
   mark_pass("T9 checked_add_overflow");
 }
 
+/* T35: LoadConst immediate widths — every LoadConst stencil must
+ * carry its full value on both arches. Regression for the x86_64
+ * defect found by the 2026-09-04 Linux bench run: op_load_const_int
+ * folded its int64 immediate into a sign-extended `mov qword [..],
+ * imm32` (1.0's bit pattern 0x3FF0000000000000 became 0.0, so
+ * SUM(l_extendedprice * (1 - l_discount)) was wrong in six benches),
+ * and op_load_const_uint32's qword store sign-extended values in
+ * [2^31, 2^32). T9 (INT64_MAX + 1 overflow) failed on x86_64 for the
+ * same reason. One 2-op program per case so the check does not
+ * depend on the register-file size. */
+static void test_load_const_immediate_widths(void) {
+  const char *name = "T35 load_const_immediate_widths";
+  static const struct { OpKind kind; int64_t imm; const char *what; }
+  cases[] = {
+    { OP_LOAD_CONST_INT,    (int64_t)0x3FF0000000000000LL, "int64 1.0 bits" },
+    { OP_LOAD_CONST_INT,    INT64_MIN,                      "int64 min" },
+    { OP_LOAD_CONST_INT,    INT64_MAX,                      "int64 max" },
+    { OP_LOAD_CONST_INT,    -0x123456789ABLL,               "int64 neg wide" },
+    { OP_LOAD_CONST_INT,    0x100000000LL,                  "int64 2^32" },
+    { OP_LOAD_CONST_UINT32, 0x80000001LL,                   "uint32 2^31+1" },
+    { OP_LOAD_CONST_UINT32, 0xFFFFFFFFLL,                   "uint32 max" },
+    { OP_LOAD_CONST_INT32,  INT32_MIN,                      "int32 min" },
+    { OP_LOAD_CONST_INT32,  -32769,                         "int32 -32769" },
+    { OP_LOAD_CONST_INT16,  -32768,                         "int16 min" },
+    { OP_LOAD_CONST_INT16,  -1,                             "int16 -1" },
+    { OP_LOAD_CONST_UINT16, 0xFFFF,                         "uint16 max" },
+    { OP_LOAD_CONST_UINT16, 0,                              "uint16 zero" },
+  };
+  const size_t n = sizeof(cases) / sizeof(cases[0]);
+  for (size_t i = 0; i < n; ++i) {
+    Program p;
+    memset(&p, 0, sizeof(p));
+    p.n_ops = 2;
+    p.ops[0] = (Op){ .kind = cases[i].kind, .a = 0, .imm = cases[i].imm };
+    p.ops[1] = (Op){ .kind = OP_EXIT };
+
+    NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+    Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+    if (jp == NULL) {
+      mark_fail(name, "case %zu (%s): jit1_compile failed (errno=%d)",
+                i, cases[i].what, errno);
+      ndb_jit_codemem_destroy(arena);
+      return;
+    }
+    JitState s;
+    memset(&s, 0, sizeof(s));
+    s.regs_i64[0] = (int64_t)0x5A5A5A5A5A5A5A5ALL;   /* poison */
+    jit1_entry(jp)(&s);
+    const int64_t got = s.regs_i64[0];
+    jit1_free(jp);
+    ndb_jit_codemem_destroy(arena);
+    if (got != cases[i].imm) {
+      mark_fail(name, "case %zu (%s): reg0=0x%016llx, want 0x%016llx",
+                i, cases[i].what,
+                (unsigned long long)got,
+                (unsigned long long)cases[i].imm);
+      return;
+    }
+  }
+  mark_pass(name);
+}
+
 static void test_jump_skips_sum(void) {
   Program p;
   memset(&p, 0, sizeof(p));
@@ -1865,6 +1927,7 @@ int main(void) {
   test_registry_basics();
   test_checked_add_no_overflow();
   test_checked_add_overflow();
+  test_load_const_immediate_widths();
   test_jump_skips_sum();
   test_filter_reject_exit_sets_state();
   test_describe_pc_registry();
