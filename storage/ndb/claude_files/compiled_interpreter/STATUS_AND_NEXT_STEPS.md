@@ -14,7 +14,12 @@
 **2026-09-04 (later) — x86_64 WRONG-RESULT defect found by the Linux bench
 run; fixed, stencils regenerated (x86_64 header changed in the two
 LoadConst stencils, arm64 byte-identical), extractor-tests + coldcall_tests
-green; the Linux JIT-suite run + sf 0.2 bench re-run are still pending.**
+green; Linux sf 0.2 bench re-run: all 13 benches PASS under ON, medians
+0.90–1.34x, sql_agg_wide best-case 1.73x.** The ON arm's mtr exit 1 was
+check-testcase flagging the leftover `jit_bench/` output dir in
+MYSQL_TMP_DIR (also fails the test in a plain suite run) — fixed: output
+now under `$MYSQLTEST_VARDIR/log/jit_bench` (not listed by the check),
+driver updated.
 Six ON-arm benches (datescan, q3, q5, q9_dbtc, q9_ndbapi, q10) failed
 their SQL cross-check on Linux x86_64 while passing on macOS aarch64.
 Cause: the x86_64 `op_load_const_int` stencil carried its int64
@@ -27,8 +32,9 @@ all verification so far ran on aarch64. Fix: `HOLE_64` / `HOLE_U32`
 inline-asm value holes in `stencils_src.c` (movabs imm64 / zero-extending
 mov r32), extractor accepts `R_X86_64_64` on immediate holes as width 8,
 `jit1.c` patches 8 bytes; tests `coldcall_tests` T35, extractor-tests
-T12/T13. **Next: on the Linux box, the three JIT MTR suites once and
-the sf 0.2 bench — all 13 benches must PASS under ON.** Full write-up + ordered verification list at the
+T12/T13. **Next: re-run `ndb_push_agg_jit.jit_bench` (and the OFF
+twin) once to confirm the check-testcase pass, then the three JIT suites
+on Linux once.** Full write-up + ordered verification list at the
 end of `ronsql_jit_plan.md`.
 
 Mikael rebased the branch (clean). Post-rebase repair of the JIT-specific

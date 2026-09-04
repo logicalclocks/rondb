@@ -1605,7 +1605,7 @@ free". Built exactly that way:
   q9-dbtc q9 q10 q11 minmax nogroup orderscan datescan) and the
   self-loading q12-dbtc with `--iterations N`, each binary's stderr
   (its per-iteration "Scan+Join / Total / SQL query" timings)
-  redirected to `$MYSQL_TMP_DIR/jit_bench/<bench>.txt`; the .result
+  redirected to `$MYSQLTEST_VARDIR/log/jit_bench/<bench>.txt`; the .result
   holds only the echo lines + DROPs (deterministic). Parameters from
   the environment: JIT_BENCH_SF (0.05), JIT_BENCH_ITERS (5),
   JIT_BENCH_ORDERS (20000).
@@ -1973,6 +1973,30 @@ two stencils; `stencils_arm64.h` up-to-date (byte-identical, as required).
 HK_OP_IMM width 4 at offset 1) + `mov ecx, A` + `mov [r12+rcx*8], rax` —
 no `0x49, 0xc7` store-imm32 left. extractor-tests (T12/T13) and
 coldcall_tests (T9/T35) green.
+
+**Linux re-run after the fix (2026-09-04, prod, sf 0.2, 7 iters): all 13
+benches PASS under ON.** Scan+Join medians 0.90–1.34x (q12_dbtc 1.34x,
+minmax 1.26x, datescan 1.06x, nogroup 1.05x, q10 1.03x; q2 0.90x,
+orderscan 0.92x, q11 0.96x, the rest within ±3%); sql_agg_wide median
+1.03x, best-case 1.73x (32.8 vs 56.9 ms). Same picture as macOS: neutral
+on the join benches, the gain shows on aggregation-heavy scans.
+
+The ON arm's `mtr exit 1` in that run was NOT a bench failure: mtr's
+check-testcase flagged the `jit_bench/` output directory left in
+`MYSQL_TMP_DIR` for the driver to collect ("does not preserve the
+state"; the same failure hits the test inside a plain
+`--suite=ndb_push_agg_jit` run). Fixed by writing the output to
+`$MYSQLTEST_VARDIR/log/jit_bench` — check-testcase lists var/tmp and
+(with --parallel > 1) MYSQL_TMP_DIR, but deliberately not the contents
+of var/log; the driver now copies from `var/log/jit_bench`.
+
+Known pre-existing quirk, both arms, both machines: `bench_q9_dbtc` and
+`bench_q12_dbtc` print `Iteration N: PASS` only for odd N — the even
+iterations bail out of runBenchmark before printing (stale-signal
+handling after an iteration: "Unexpected GSN 29 waiting for
+TCRELEASECONF" at startup, then the drain loop). That is why those two
+rows show 4 iterations and why their binaries exit 1 (`--error 0,1` in
+the body). Not JIT-related; a dbtc-bench harness item for later.
 
 **Verification (Mikael runs, in this order):**
 1. `cmake --build debug_build --target regen-stencils` (needs the pinned

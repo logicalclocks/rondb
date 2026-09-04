@@ -8,7 +8,7 @@
 # correctness differential. Every bench binary prints its per-iteration
 # timings ("Iteration N: PASS", "Scan+Join: X ms", "Total: X ms", "SQL
 # query: X ms") on stderr, which the --exec lines below capture into
-# $MYSQL_TMP_DIR/jit_bench/<bench>.txt — NOT into the .result (only the
+# $MYSQLTEST_VARDIR/log/jit_bench/<bench>.txt — NOT into the .result (only the
 # echo lines and the DROPs are recorded, so the result is deterministic).
 # The driver claude_files/compiled_interpreter/jit_bench_off_vs_on.py
 # runs both arms, collects those files and prints the OFF-vs-ON table.
@@ -38,7 +38,13 @@ if (!$orders)
 {
   --let $orders = 20000
 }
---let $out = $MYSQL_TMP_DIR/jit_bench
+# Output goes under $MYSQLTEST_VARDIR/log (2026-09-04): mtr's check-testcase
+# lists MYSQLTEST_VARDIR/tmp and (with --parallel > 1) MYSQL_TMP_DIR before
+# and after every test, so a jit_bench/ left there for the driver to collect
+# failed the test with "does not preserve the state". The contents of
+# MYSQLTEST_VARDIR/log are deliberately not listed (see
+# include/check-testcase.test). The driver copies from var/log/jit_bench.
+--let $out = $MYSQLTEST_VARDIR/log/jit_bench
 --exec mkdir -p $out
 
 --echo Loading TPC-H data

@@ -4,7 +4,7 @@
 Runs mysql-test/suite/ndb_push_agg/include/jit_bench_body.inc under both
 arms — ndb_push_agg (CompiledInterpreter=OFF) and ndb_push_agg_jit (ON) —
 via mtr, collects the bench binaries' per-iteration timings from
-$MYSQL_TMP_DIR/jit_bench/*.txt after each run, and prints the OFF-vs-ON
+$MYSQLTEST_VARDIR/log/jit_bench/*.txt after each run, and prints the OFF-vs-ON
 table (median over iterations, the first iteration dropped as warm-up
 when there are more than two). Results are also written as Markdown.
 
@@ -35,7 +35,7 @@ def run_arm(arm, build, sf, iters, orders, out):
     print(f'== {arm.upper()} arm: {" ".join(cmd)}  (sf={sf} iters={iters} orders={orders})',
           flush=True)
     rc = subprocess.call(cmd, cwd=mtr_dir, env=env)
-    src = os.path.join(mtr_dir, 'var', 'tmp', 'jit_bench')
+    src = os.path.join(mtr_dir, 'var', 'log', 'jit_bench')   # not var/tmp: check-testcase lists that
     dst = os.path.join(out, arm)
     if os.path.isdir(dst):
         shutil.rmtree(dst)
