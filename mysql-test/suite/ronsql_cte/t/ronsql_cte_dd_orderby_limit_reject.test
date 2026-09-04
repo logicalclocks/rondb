@@ -1,20 +1,20 @@
-# ORDER BY / LIMIT in a CTE body or subquery is now cleanly + PERMANENTLY
-# rejected (was: parsed and SILENTLY IGNORED — wrong results vs MySQL).
+# ORDER BY / LIMIT in a SUBQUERY is cleanly + PERMANENTLY rejected
+# (was: parsed and SILENTLY IGNORED — wrong results vs MySQL).
 #
 # Phase 0 of ronsql_orderby_limit_plan.md.  The grammar stores
-# orderby_columns / limit on every SELECT body, but only the main
-# SELECT's are ever applied (ResultPrinter); a CTE body such as
-# `WITH c AS (SELECT ... ORDER BY x LIMIT 10)` ran WITHOUT the LIMIT and
-# returned different results than MySQL, silently.  The decorrelation
-# rewrites additionally stripped GROUP BY / ORDER BY / LIMIT textually
-# from EXISTS / correlated-scalar subqueries.  RonSQL now rejects all of
-# these at prepare time with a clean RonSQLPermanentError
+# orderby_columns / limit on every SELECT body; the main SELECT's are
+# applied by ResultPrinter, and CTE BODIES apply them in the kernel
+# since cte_orderby_limit_plan.md L4 (single-owner redistribution +
+# top-N at the CTE finalize barrier) — the former body arms obl-1..3
+# are therefore RETIRED, with the full body coverage (acceptance and
+# the rejections that remain valid) in ronsql_cte_dd_orderby_limit_cte
+# (obc-1..21 + obc-P1..P7).  Subqueries still never apply them: the
+# decorrelation rewrites additionally strip GROUP BY / ORDER BY / LIMIT
+# textually from EXISTS / correlated-scalar subqueries, so RonSQL
+# rejects those at prepare time with a clean RonSQLPermanentError
 # (reject_ignored_orderby_limit, checked on the ORIGINAL parsed
-# statements in analyze_ctes / analyze_subqueries_ce /
-# analyze_select_subqueries — before any rewrite can strip them).
-# Real body-level ORDER BY + LIMIT support (distributed top-N) is a later
-# phase of the same plan; main-SELECT-level ORDER BY / LIMIT is unchanged
-# and stays covered by the aggregate families (e.g. bigquery big-12).
+# statements in analyze_subqueries_ce / analyze_select_subqueries —
+# before any rewrite can strip them).
 #
 # This is a rejection-assert regression (prepare-time error -> no data
 # touched), run via $RONSQL_CLI_EXE with --error 1, mirroring
@@ -32,19 +32,8 @@ call mtr.add_suppression("Participant timeout");
 --source suite/ronsql_cte/include/cte_data.inc
 
 --echo
---echo === obl-1: CTE body with ORDER BY (no LIMIT) — permanent rejection ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey ORDER BY o_custkey) SELECT COUNT(*), SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey;' 2>&1
-
---echo
---echo === obl-2: CTE body with LIMIT (no ORDER BY) — permanent rejection ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey LIMIT 10) SELECT COUNT(*), SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey;' 2>&1
-
---echo
---echo === obl-3: CTE body with ORDER BY + LIMIT — permanent rejection ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey ORDER BY n DESC LIMIT 10) SELECT COUNT(*), SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey;' 2>&1
+--echo === obl-1..3: RETIRED — CTE-body ORDER BY / LIMIT is now supported ===
+--echo === (cte_orderby_limit_plan.md; see ronsql_cte_dd_orderby_limit_cte) ===
 
 --echo
 --echo === obl-4: scalar subquery with LIMIT — permanent rejection ===
