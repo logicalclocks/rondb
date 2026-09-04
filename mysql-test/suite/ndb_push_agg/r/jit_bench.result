@@ -1,0 +1,23 @@
+Loading TPC-H data
+Running bench_q2_ndbapi
+Running bench_q3_ndbapi
+Running bench_q4_ndbapi
+Running bench_q5_ndbapi
+Running bench_q9_dbtc
+Running bench_q9_ndbapi
+Running bench_q10_ndbapi
+Running bench_q11_ndbapi
+Running bench_minmax_ndbapi
+Running bench_nogroup_ndbapi
+Running bench_orderscan_ndbapi
+Running bench_datescan_ndbapi
+Running bench_q12_dbtc
+Running sql_agg benches
+DROP TABLE IF EXISTS tpch_lineitem;
+DROP TABLE IF EXISTS tpch_orders;
+DROP TABLE IF EXISTS tpch_partsupp;
+DROP TABLE IF EXISTS tpch_customer;
+DROP TABLE IF EXISTS tpch_supplier;
+DROP TABLE IF EXISTS tpch_part;
+DROP TABLE IF EXISTS tpch_nation;
+DROP TABLE IF EXISTS tpch_region;

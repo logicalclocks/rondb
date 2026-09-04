@@ -65,6 +65,11 @@ suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
   dispatch count now includes the hidden slots for single-leaf
   programs (they were excluded — the COUNT would have been dropped).
   T83a-d; testCteNdbApiFilter re-pinned 0; dd_avg mirror at 0. **Post-rebase repair complete: the three JIT suites are green again.**
+**Perf bench OFF vs ON — harness built (2026-09-04)**: `jit_bench` test
+in both ndb_push_agg (OFF) and ndb_push_agg_jit (ON) over the TPC-H
+bench binaries + the driver `jit_bench_off_vs_on.py` that runs both
+arms and tabulates Scan+Join / Total / SQL medians and speedups.
+Numbers pending Mikael's run (see the plan's "Perf bench" section).
 - **15 mirror .result files were STALE** — base tests whose OUTPUT changed
   in the rebase (renumbered ERROR_INSERT echo lines: the evict test's
   5116→5126 / 4040→4041; testJoinAggNdbApi / testStarJoinAggNdbApi grew

@@ -1596,6 +1596,220 @@ bridge pin (2-word program → SUM + COUNT with the right slots),
 testCteNdbApiFilter 4 → 0, dd_avg mirror → 0, results identical to
 the OFF arm (the divide is the owner's, untouched).
 
+## Perf bench OFF vs ON — harness built (2026-09-04), numbers pending
+
+phase_6_plan.md §4 item 1: "the two-suite structure makes it nearly
+free". Built exactly that way:
+- `suite/ndb_push_agg/include/jit_bench_body.inc` — loads TPC-H
+  (`load_tpch --sf`), runs the twelve TPC-H bench binaries (q2 q3 q4 q5
+  q9-dbtc q9 q10 q11 minmax nogroup orderscan datescan) and the
+  self-loading q12-dbtc with `--iterations N`, each binary's stderr
+  (its per-iteration "Scan+Join / Total / SQL query" timings)
+  redirected to `$MYSQL_TMP_DIR/jit_bench/<bench>.txt`; the .result
+  holds only the echo lines + DROPs (deterministic). Parameters from
+  the environment: JIT_BENCH_SF (0.05), JIT_BENCH_ITERS (5),
+  JIT_BENCH_ORDERS (20000).
+- `ndb_push_agg/t/jit_bench.test` (OFF arm) and
+  `ndb_push_agg_jit/t/jit_bench.test` (ON arm) source that body; the
+  suites' my.cnf do the arming. Native (no --source of a .test, so the
+  mirror-refresh script and the census leave them alone).
+- `claude_files/compiled_interpreter/jit_bench_off_vs_on.py` — runs
+  both arms via mtr (`--parallel=1`), collects the files after each
+  run, prints + writes (`jit_bench_out/summary.md`) the table: per
+  bench the median Total / Scan+Join / SQL-query ms under OFF and ON
+  and the speedups (first iteration dropped as warm-up), and flags any
+  FAIL. `--no-run` re-parses a previous run.
+
+What the three columns mean: **Scan+Join** is the data-node work
+(the per-row aggregation the JIT replaces — the number that matters);
+**Total** adds prepare + result transfer; **SQL query** is the same
+query through mysqld's pushdown (also JIT'd under ON). benchJoinAgg /
+bench_q12_tpch are left out (debug-only DUMP + duplicate shape).
+
+**Run (Mikael):**
+```sh
+cmake --build debug_build --target ndbmtd ndb_mgmd load_tpch -j 8   # + the bench_* targets if not built
+python3 storage/ndb/claude_files/compiled_interpreter/jit_bench_off_vs_on.py --sf 0.05 --iters 5
+# bigger: --sf 0.2 (≈1.2 M lineitems; DataMemory is 2G in the suite my.cnf) --iters 7
+```
+Expect a few minutes per arm (the TPC-H load dominates). Paste the
+table; the numbers get recorded here and arbitrate §4 items 4 / 6 /
+aarch64. A "-" in the SQL columns means that bench prints no SQL
+timing.
+
+### First run — DEBUG build, sf 0.05, 5 iterations (2026-09-04): inconclusive by construction
+
+Scan+Join medians (ms), OFF → ON, speed = OFF/ON: datescan 58→60
+0.97x, minmax 1.8→1.8 1.00x, nogroup 770→851 0.91x, orderscan 48→39
+1.25x, q10 1264→1210 1.04x, q11 100→100 1.00x, q12_dbtc 25→29 0.87x,
+q2 105→96 1.09x, q3 750→810 0.93x, q4 400→416 0.96x, q5 1526→1555
+0.98x, q9_dbtc 609→685 0.89x, q9 680→730 0.93x. Mikael's read:
+"mostly a slowdown". Why that is NOT the verdict:
+1. **Noise swamps the effect.** Per-iteration Scan+Join under the SAME
+   arm: nogroup OFF 524 / 790 / 700 / 751 / 813, ON 547 / 690 / 899 /
+   802 / 899; q9 OFF 561-761, ON 575-928. A ±30-55% spread per arm
+   against arm-to-arm medians that differ by 5-10%. Every "speedup"
+   in the table, both directions, is inside that band. (Oddly the
+   FIRST iteration is the fastest in both arms on every bench — the
+   SQL cross-check between iterations heats the machine / the debug
+   build's per-row allocations accumulate; a best-of column is the
+   robust estimator and the driver now prints it.)
+2. **It is a DEBUG build.** Only the stencil bytes are optimized. The
+   per-row dispatch glue (`dbtup_jit_invoke`: JitState prefix memset,
+   the copy-in loop over n_agg slots with four mask arrays, the
+   writeback loop), every cold-call helper (`ndb_jit_h_load_col` →
+   readSingleAttributeForJit → the read functions) and the interpreter
+   loop itself are all -O0 with jam/ndbassert. The JIT REPLACES the
+   interpreter's dispatch but ADDS the glue's fixed per-row work, and
+   at -O0 that fixed work is of the same order as the whole 3-op
+   interpreter program it replaces. A debug build is structurally
+   biased against the JIT; the comparison must run on `prod_build`
+   (RelWithDebInfo, no ERROR_INSERT — the bench needs none; the
+   driver takes `--build prod_build`).
+3. **These benches are join-bound, not aggregation-bound.** At sf 0.05
+   nogroup scans ~300 K lineitems in 770 ms ≈ 2.5 µs per row of TOTAL
+   pipeline (scan, DBSPJ lookups, DBLQH/DBTUP row access, transport);
+   the aggregation program is 2-4 ops, ~50-100 ns of it. The JIT can
+   only shave part of that slice: the expected effect on Scan+Join
+   for THESE shapes is single-digit percent even in a release build.
+   Expect it to show first on nogroup / minmax / datescan (scan +
+   scalar aggregates), least on q3/q5/q9 (deep joins).
+4. **Not yet proven that the ON arm JIT'd at all.** Nothing in this
+   run recorded ndbinfo.jit; the body now captures it before / after
+   and the driver prints the per-arm deltas (rows_executed and
+   programs_compiled must be > 0 under ON, 0 under OFF).
+
+Harness changes from this run: bench exit codes non-fatal
+(bench_q9_dbtc exits 1 after passing iterations — a DBTC-handshake
+quirk, "Unexpected GSN 29 waiting for TCRELEASECONF", pre-existing);
+`load_tpch` gained `idx_partsupp_suppkey` (Q2's SQL cross-check walked
+supplier → partsupp with a scan per supplier: 68 s → 143 ms); the
+driver prints min next to median and the ndbinfo deltas; default
+iterations 7.
+
+**Added while the prod build ran — aggregation-HEAVY SQL benches** in
+the same body, after the TPC-H binaries: four pushed-down aggregations
+over the loaded tpch_lineitem through mysqld (`ndb_pushdown_aggregate=
+ON`, the STANDALONE JIT path, no join), each `$iters` times, timed with
+NOW(6) into `$out/sql_agg_<name>.txt`: `sql_agg_wide` (12 aggregates:
+DECIMAL SUM/MIN/MAX + INT SUM/MAX), `sql_agg_case` (three CASE arms —
+string and DECIMAL compares in embedded blocks), `sql_agg_filter`
+(scan filter + 3 aggregates), `sql_agg_group` (GROUP BY two CHARs with
+DATE MIN/MAX). Their whole-query time is dominated by the per-row
+program, so this is the measurement that isolates the interpreter's
+share; the driver lists them in the same table (med / min per arm).
+
+### RESULTS — prod build (RelWithDebInfo), sf 0.05, 7 iterations (2026-09-04)
+
+Scan+Join ms (data-node work); sql_agg_* = whole pushed query.
+speed = OFF/ON.
+
+| bench | OFF med | ON med | speed | OFF min | ON min | speed |
+|---|---|---|---|---|---|---|
+| bench_datescan_ndbapi | 10.6 | 12.4 | 0.86x | 8.6 | 8.7 | 0.99x |
+| bench_minmax_ndbapi | 0.51 | 0.50 | 1.01x | 0.4 | 0.4 | 0.91x |
+| bench_nogroup_ndbapi | 112.2 | 117.5 | 0.95x | 99.5 | 105.3 | 0.94x |
+| bench_orderscan_ndbapi | 8.2 | 8.1 | 1.02x | 6.9 | 6.6 | 1.04x |
+| bench_q10_ndbapi | 231.6 | 244.7 | 0.95x | 205.4 | 191.5 | 1.07x |
+| bench_q11_ndbapi | 19.1 | 21.1 | 0.91x | 17.9 | 18.6 | 0.96x |
+| bench_q12_dbtc | 3.0 | 2.6 | 1.13x | 2.4 | 2.3 | 1.07x |
+| bench_q2_ndbapi | 14.5 | 18.3 | **0.79x** | 12.2 | 15.7 | **0.77x** |
+| bench_q3_ndbapi | 120.3 | 115.1 | 1.05x | 99.5 | 100.6 | 0.99x |
+| bench_q4_ndbapi | 79.5 | 91.6 | 0.87x | 71.4 | 67.8 | 1.05x |
+| bench_q5_ndbapi | 240.1 | 236.1 | 1.02x | 201.1 | 200.6 | 1.00x |
+| bench_q9_dbtc | 100.7 | 105.9 | 0.95x | 95.1 | 96.9 | 0.98x |
+| bench_q9_ndbapi | 119.9 | 113.9 | 1.05x | 86.6 | 93.3 | 0.93x |
+| sql_agg_case | 58.1 | 59.2 | 0.98x | 55.6 | 57.9 | 0.96x |
+| sql_agg_filter | 10.2 | 10.3 | 0.99x | 10.2 | 10.1 | 1.00x |
+| sql_agg_group | 91.3 | 91.8 | 0.99x | 90.5 | 91.8 | 0.99x |
+| sql_agg_wide | 44.4 | 35.1 | **1.26x** | 40.3 | 34.9 | **1.15x** |
+
+ndbinfo.jit, ON arm: programs_compiled 475, programs_reused 4794,
+programs_fallback **0**, rows_executed **37.6 M**, compile_ns_total
+0.85 ms (≈1.8 µs per compile), programs_cached 0 at the end. OFF arm:
+all zero. So the ON arm ran every program natively and NOTHING fell
+back — the numbers are a clean JIT-vs-interpreter comparison.
+
+**Reading.**
+- **Compile cost / caching is a non-issue.** 475 compiles cost 0.85 ms
+  in total over the run; the reuse cache dedups within an execution
+  (4794 hits — fragments / threads sharing one blob) but retains
+  nothing across executions unless the program is pinned (only RonSQL
+  sets AGG_PROG_FLAG_REUSABLE; mysqld ad-hoc SQL and the NDB API
+  benches recompile every time, at ~2 µs). No "first query slow"
+  effect exists at this cost; nothing to gain from pinning here.
+- **Join-bound benches: neutral, inside ±5-10 % noise** (q3 q5 q9 q10
+  q11 datescan orderscan minmax, and the CASE / filter / GROUP BY SQL
+  shapes).
+- **One clear WIN: sql_agg_wide 1.26x / 1.15x** — 12 aggregates per row
+  (≈24+ ops): the longer the per-row program, the more interpreter
+  dispatch the JIT removes.
+- **One clear LOSS: bench_q2 0.79x / 0.77x (median AND best)** — the
+  5-table pushed join with a 5-op aggregation leaf (DECIMAL
+  MIN/MAX/SUM + COUNT, GROUP BY r_name). The pattern across the table
+  is consistent with a FIXED PER-ROW COST in the dispatch glue that
+  exceeds the dispatch the JIT saves on short programs: per row
+  dbtup_jit_invoke memsets the JitState scalar prefix (all 16
+  registers + flags), copies n_agg accumulators in while clearing
+  four per-slot mask arrays, calls the blob (whose loads are
+  cold-call helpers — for q2 a DECIMAL→double conversion per row),
+  then walks the slots again for the writeback. For a 5-op program
+  that fixed work is of the order of the ~5 dispatches it replaces;
+  for a 24-op program it is amortised. NEXT: the "per-row glue diet"
+  (below) and a profile of q2's ON arm to confirm the split.
+
+**Per-row glue diet — the candidate fix (not done), and the profile that
+decides it.** What the JIT does per row that the interpreter does not:
+`dbtup_jit_invoke` builds the call ctx (8 fields), bumps the row
+counter (thread-local slot, cheap), memsets the JitState scalar prefix
+(all 16 registers + flags + ctx), copies EVERY accumulator in
+(`acc_i64[i] = AggResItem.value`) while clearing four per-slot mask
+arrays and computing `value_initialized` from the item's type/null,
+runs the blob (each load is a cold call into the same read helpers the
+interpreter uses), then walks the slots again stamping type /
+signedness / null into the AggResItem for every updated one. The
+interpreter's kernels update the AggResItem in place with no shadow
+copy. Estimated ≈30-40 ns per row for a 4-slot program; the ~5
+dispatches it saves are ≈15-25 ns. Shrinkable without any stencil
+change: (a) zero only the flags, not 16 registers (the bridge
+guarantees every register is defined before it is read — the NB
+null-branch skips the whole consumer chain); (b) stop clearing
+`value_unsigned` / `value_double` per row — the op that sets
+`value_updated` sets its family flag on the same row, and the writeback
+reads the flags only under `value_updated`; (c) compute
+`value_initialized` only for MIN/MAX slots (the product can carry the
+per-slot kind), skip it for SUM/COUNT; (d) copy in / write back only
+the slots the program touches (a per-product slot mask). The real fix
+— stencils operating on the AggResItem in place — is a stencil
+redesign; not now.
+
+But q2's measured extra is ≈87 ns per partsupp row (3.5 ms over ~40 K
+rows), MORE than the glue estimate, so profile before optimising:
+```sh
+cd debug_build/mysql-test  # or prod_build/mysql-test
+./mtr --start --suite=ndb_push_agg_jit jit_bench &   # ON cluster stays up
+sleep 60; ../runtime_output_directory/load_tpch -c localhost:13000 -m 13001 --sf 0.05
+sample ndbmtd 15 -file /tmp/q2_on.txt &               # macOS sampler, 15 s
+../runtime_output_directory/bench_q2_ndbapi -c localhost:13000 -m 13001 --iterations 400
+# then the same with --suite=ndb_push_agg (OFF) -> /tmp/q2_off.txt; diff the hot frames
+```
+(prod_build has no ERROR_INSERT; `mtr --start` works there too.) The
+frames to look for on the ON side: dbtup_jit_invoke, ndb_jit_h_load_col
+_dec / jit_load_col_read, readLinkedAttrIntoBuf, and whether the
+DECIMAL→double conversion is done once per row in both arms.
+
+**Next run (Mikael) — the one that counts:**
+```sh
+cmake --build prod_build --target ndbmtd ndb_mgmd mysqld load_tpch bench_nogroup_ndbapi bench_minmax_ndbapi bench_datescan_ndbapi bench_orderscan_ndbapi bench_q2_ndbapi bench_q3_ndbapi bench_q4_ndbapi bench_q5_ndbapi bench_q9_ndbapi bench_q9_dbtc bench_q10_ndbapi bench_q11_ndbapi bench_q12_dbtc -j 8
+python3 storage/ndb/claude_files/compiled_interpreter/jit_bench_off_vs_on.py --build prod_build --sf 0.2 --iters 7
+```
+If the release run still shows no gain on nogroup / minmax / datescan
+with rows_executed > 0, the next step is a profile of the ON arm's
+per-row path (the glue's copy-in / writeback loops and the cold-call
+loads are the candidates — the stencils themselves were measured at
+2.66× in Phase 1), and an aggregation-HEAVY bench (many aggregates per
+row over a wide scan) to isolate the interpreter's share.
+
 **Verification list for Part A (Mikael runs):** `bridge_tests`
 (T70c, T73d, T78a-f), then the exempt-pin tests under `ronsql_jit`
 / `ronsql_cte_jit` (dd_filter, gl_v5, dd_bigquery, cte_scalar, …) —
