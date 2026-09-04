@@ -22,6 +22,7 @@
  */
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -160,6 +161,29 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
           n_avg++;
           break;
         }
+        case kOpOrderBy: {
+          /* ORDER BY trailer entry (cte_orderby_limit_plan.md). */
+          if (m_n_order_cols >= MAX_ORDER_COLS) {
+            bad_avg = true;
+            break;
+          }
+          OrderCol& oc = m_order_spec[m_n_order_cols];
+          oc.is_agg = (word >> 25) & 1;
+          oc.desc = (word >> 24) & 1;
+          oc.idx = (Uint16)(word & 0xFFFF);
+          if ((oc.is_agg && oc.idx >= m_n_visible_results) ||
+              (!oc.is_agg && oc.idx >= m_n_gb_cols)) {
+            bad_avg = true;
+            break;
+          }
+          m_n_order_cols++;
+          break;
+        }
+        case kOpLimit:
+          /* LIMIT trailer entry.  Last one wins (the API emits one). */
+          m_limit = word & 0x03FFFFFF;
+          m_has_limit = true;
+          break;
         case kOpLoadCol: {
           Uint32 type = decodeLoadColType(word);
           if (type == NDB_TYPE_DECIMAL ||
@@ -385,6 +409,271 @@ bool JoinAggInterpreter::finalizeAvgSlotsSlice(Uint32 max_groups) {
   m_avg_finalized = true;
   m_avg_finalizing = false;
   return true;
+}
+
+/* Compare one GROUP BY key entry per side.  Entries are
+ * AttributeHeader-framed ([AH word][data words]); walk to entry
+ * `col_idx` on each side independently (VARCHAR entries differ in
+ * size between groups). */
+static const Uint32* keyEntryAt(const char* data, Uint32 key_len,
+                                Uint32 col_idx) {
+  const Uint32* p = reinterpret_cast<const Uint32*>(data);
+  const Uint32* end = p + (key_len >> 2);
+  Uint32 i = 0;
+  while (p < end) {
+    if (i == col_idx) return p;
+    p += 1 + AttributeHeader::getDataSize(*p);
+    i++;
+  }
+  return nullptr;
+}
+
+int JoinAggInterpreter::compareGroupsByOrderSpec(
+    const char* a_data, Uint32 a_key_len,
+    const char* b_data, Uint32 b_key_len) const {
+  for (Uint32 c = 0; c < m_n_order_cols; c++) {
+    const OrderCol& oc = m_order_spec[c];
+    int r = 0;
+    if (!oc.is_agg) {
+      const Uint32* ea = keyEntryAt(a_data, a_key_len, oc.idx);
+      const Uint32* eb = keyEntryAt(b_data, b_key_len, oc.idx);
+      if (ea == nullptr || eb == nullptr) continue;  /* defensive */
+      const AttributeHeader aha(*ea);
+      const AttributeHeader ahb(*eb);
+      const bool na = aha.isNULL();
+      const bool nb = ahb.isNULL();
+      if (na || nb) {
+        /* MySQL: NULLs order first ascending. */
+        r = (na && nb) ? 0 : (na ? -1 : 1);
+      } else if (m_gb_types_inited && oc.idx < m_n_gb_cols &&
+                 m_gb_types[oc.idx].cmpFn != nullptr) {
+        r = (*m_gb_types[oc.idx].cmpFn)(
+            m_gb_types[oc.idx].cs,
+            ea + 1, aha.getByteSize(),
+            eb + 1, ahb.getByteSize());
+      } else {
+        /* Types not initialised (no rows processed) — nothing to
+         * order; treat as equal. */
+        r = 0;
+      }
+    } else {
+      const AggResItem* sa = reinterpret_cast<const AggResItem*>(
+          a_data + a_key_len) + oc.idx;
+      const AggResItem* sb = reinterpret_cast<const AggResItem*>(
+          b_data + b_key_len) + oc.idx;
+      const bool na = sa->is_null || sa->type == NDB_TYPE_UNDEFINED;
+      const bool nb = sb->is_null || sb->type == NDB_TYPE_UNDEFINED;
+      if (na || nb) {
+        r = (na && nb) ? 0 : (na ? -1 : 1);
+      } else if (sa->type == NDB_TYPE_DOUBLE ||
+                 sb->type == NDB_TYPE_DOUBLE) {
+        const double va = (sa->type == NDB_TYPE_DOUBLE)
+            ? sa->value.val_double
+            : (sa->is_unsigned
+                   ? static_cast<double>(sa->value.val_uint64)
+                   : static_cast<double>(sa->value.val_int64));
+        const double vb = (sb->type == NDB_TYPE_DOUBLE)
+            ? sb->value.val_double
+            : (sb->is_unsigned
+                   ? static_cast<double>(sb->value.val_uint64)
+                   : static_cast<double>(sb->value.val_int64));
+        r = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+      } else if (sa->is_unsigned == sb->is_unsigned) {
+        if (sa->is_unsigned) {
+          r = (sa->value.val_uint64 < sb->value.val_uint64) ? -1
+              : (sa->value.val_uint64 > sb->value.val_uint64) ? 1 : 0;
+        } else {
+          r = (sa->value.val_int64 < sb->value.val_int64) ? -1
+              : (sa->value.val_int64 > sb->value.val_int64) ? 1 : 0;
+        }
+      } else {
+        /* Mixed signedness (SUM can flip per group): a negative
+         * signed side orders below any unsigned value. */
+        const AggResItem* su = sa->is_unsigned ? sa : sb;
+        const AggResItem* si = sa->is_unsigned ? sb : sa;
+        int ru;
+        if (si->value.val_int64 < 0) {
+          ru = 1;  /* unsigned > negative signed */
+        } else {
+          const Uint64 ui = static_cast<Uint64>(si->value.val_int64);
+          ru = (su->value.val_uint64 > ui) ? 1
+               : (su->value.val_uint64 < ui) ? -1 : 0;
+        }
+        r = (su == sa) ? ru : -ru;
+      }
+    }
+    if (oc.desc) r = -r;
+    if (r != 0) return r;
+  }
+  return 0;
+}
+
+/* Bounded candidate heap for the LIMIT select phase: the WORST kept
+ * group sits at the root, so a better-ordering arrival replaces the
+ * root and sifts down.  "a worse than b" == compare(a, b) > 0. */
+void JoinAggInterpreter::limitHeapSiftDown(Uint32 i) {
+  const Uint32 n = m_lim_cand_count;
+  while (true) {
+    Uint32 largest = i;
+    const Uint32 l = 2 * i + 1;
+    const Uint32 rgt = 2 * i + 2;
+    /* keyLen per entry: recompute from the record's link header — the
+     * candidate pointers are group DATA pointers; key length is
+     * stored in the group link header (GBHashTable layout). */
+    if (l < n &&
+        compareGroupsByOrderSpec(
+            m_lim_cand[l], JoinGBHashTable::dataKeyLen(m_lim_cand[l]),
+            m_lim_cand[largest],
+            JoinGBHashTable::dataKeyLen(m_lim_cand[largest])) > 0) {
+      largest = l;
+    }
+    if (rgt < n &&
+        compareGroupsByOrderSpec(
+            m_lim_cand[rgt], JoinGBHashTable::dataKeyLen(m_lim_cand[rgt]),
+            m_lim_cand[largest],
+            JoinGBHashTable::dataKeyLen(m_lim_cand[largest])) > 0) {
+      largest = rgt;
+    }
+    if (largest == i) return;
+    char* tmp = m_lim_cand[i];
+    m_lim_cand[i] = m_lim_cand[largest];
+    m_lim_cand[largest] = tmp;
+    i = largest;
+  }
+}
+
+static int cmpPtr(const void* a, const void* b) {
+  const char* pa = *static_cast<char* const*>(a);
+  const char* pb = *static_cast<char* const*>(b);
+  return (pa < pb) ? -1 : (pa > pb) ? 1 : 0;
+}
+
+int JoinAggInterpreter::finalizeLimitSlice(Uint32 max_groups,
+                                           Uint32 thread_id) {
+  if (!m_has_limit || m_limit_finalized) {
+    return 1;
+  }
+  if (m_n_gb_cols == 0 || m_gb_map == nullptr) {
+    /* Scalar / keyless states: RonSQL only emits LIMIT trailers for
+     * grouped CTEs; nothing to truncate. */
+    m_limit_finalized = true;
+    m_limit_finalizing = false;
+    return 1;
+  }
+  if (!m_limit_finalizing) {
+    if (m_limit >= m_gb_map->size()) {
+      /* Limit covers every group — no work. */
+      m_limit_finalized = true;
+      return 1;
+    }
+    m_limit_finalizing = true;
+    m_lim_select_done = false;
+    m_lim_cand_count = 0;
+    if (m_limit > 0) {
+      m_lim_cand = static_cast<char**>(lc_ndbd_pool_malloc(
+          sizeof(char*) * m_limit, RG_QUERY_MEMORY, thread_id, false));
+      if (m_lim_cand == nullptr) {
+        m_limit_finalizing = false;
+        return -1;
+      }
+    }
+    m_lim_bucket = 0;
+    m_lim_raw = nullptr;
+  }
+
+  Uint32 processed = 0;
+
+  if (!m_lim_select_done) {
+    /* Phase 1: bounded top-N selection over a sliced walk. */
+    JoinGBHashTable::Iterator it;
+    if (m_lim_raw == nullptr) {
+      it = m_gb_map->begin();
+    } else {
+      it = m_gb_map->iteratorAt(m_lim_bucket, m_lim_raw);
+    }
+    while (it.valid()) {
+      if (processed >= max_groups) {
+        m_lim_bucket = it.bucket();
+        m_lim_raw = it.raw();
+        return 0;
+      }
+      char* data = it.data();
+      const Uint32 klen = it.keyLen();
+      if (m_limit > 0) {
+        if (m_lim_cand_count < m_limit) {
+          m_lim_cand[m_lim_cand_count++] = data;
+          if (m_lim_cand_count == m_limit) {
+            /* Heapify once full (small N: sift each from the middle). */
+            for (Int32 i = (Int32)(m_lim_cand_count / 2) - 1; i >= 0; i--) {
+              limitHeapSiftDown((Uint32)i);
+            }
+          }
+        } else if (compareGroupsByOrderSpec(
+                       data, klen, m_lim_cand[0],
+                       JoinGBHashTable::dataKeyLen(m_lim_cand[0])) < 0) {
+          /* Better than the worst kept — replace the root. */
+          m_lim_cand[0] = data;
+          limitHeapSiftDown(0);
+        }
+      }
+      processed++;
+      m_gb_map->next(it);
+    }
+    /* Selection complete: sort candidates by pointer for the
+     * membership test in the truncation walk. */
+    if (m_lim_cand_count > 1) {
+      qsort(m_lim_cand, m_lim_cand_count, sizeof(char*), cmpPtr);
+    }
+    m_lim_select_done = true;
+    m_lim_bucket = 0;
+    m_lim_raw = nullptr;
+    /* Fall through into the truncation phase with the remaining
+     * slice budget. */
+  }
+
+  /* Phase 2: erase every group not in the kept set. */
+  {
+    JoinGBHashTable::Iterator it;
+    if (m_lim_raw == nullptr) {
+      it = m_gb_map->begin();
+    } else {
+      it = m_gb_map->iteratorAt(m_lim_bucket, m_lim_raw);
+    }
+    while (it.valid()) {
+      if (processed >= max_groups) {
+        m_lim_bucket = it.bucket();
+        m_lim_raw = it.raw();
+        return 0;
+      }
+      char* data = it.data();
+      bool kept = false;
+      if (m_lim_cand_count > 0) {
+        kept = (bsearch(&data, m_lim_cand, m_lim_cand_count,
+                        sizeof(char*), cmpPtr) != nullptr);
+      }
+      processed++;
+      if (kept) {
+        m_gb_map->next(it);
+      } else {
+        AggResItem* slots =
+            reinterpret_cast<AggResItem*>(data + it.keyLen());
+        if (hasStringSlots()) {
+          freeGroupStringSlots(slots);
+        }
+        m_gb_map->eraseAndNext(it);
+        freeGroupData(data);
+        if (m_n_groups > 0) m_n_groups--;
+      }
+    }
+  }
+
+  if (m_lim_cand != nullptr) {
+    lc_ndbd_pool_free(m_lim_cand);
+    m_lim_cand = nullptr;
+  }
+  m_limit_finalized = true;
+  m_limit_finalizing = false;
+  return 1;
 }
 
 /**

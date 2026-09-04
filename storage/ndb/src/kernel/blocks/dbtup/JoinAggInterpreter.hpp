@@ -61,14 +61,26 @@ class JoinAggInterpreter : public AggInterpreterBase {
     /* Chunk allocator state + GB type metadata lifted to
      * AggInterpreterBase in Step 2a; base ctor initializes them. */
     m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
-    m_avg_finalizing(false), m_avg_fin_bucket(0), m_avg_fin_raw(nullptr) {
+    m_avg_finalizing(false), m_avg_fin_bucket(0), m_avg_fin_raw(nullptr),
+    m_n_order_cols(0), m_limit(0), m_has_limit(false),
+    m_limit_finalizing(false), m_limit_finalized(false),
+    m_lim_select_done(false), m_lim_bucket(0), m_lim_raw(nullptr),
+    m_lim_cand(nullptr), m_lim_cand_count(0) {
     /* m_attr_read_buf / m_prog_buf / m_gb_cols_buf / m_agg_results_buf /
      * m_gb_map_buf / m_buf_block initialised by the base ctor
      * (Step 3a-B). */
   }
-  /* ~JoinAggInterpreter() default — base destructor handles
-   * release_string_results, freeAllChunks, and frees both m_xfrm_buf
-   * and m_buf_block. */
+  /* Base destructor handles release_string_results, freeAllChunks,
+   * and frees m_xfrm_buf + m_buf_block.  The override only releases
+   * the LIMIT-finalize candidate array, which is transient between
+   * checkCteReady slices and would otherwise leak if the CTE aborts
+   * mid-chain (cte_orderby_limit_plan.md). */
+  ~JoinAggInterpreter() override {
+    if (m_lim_cand != nullptr) {
+      lc_ndbd_pool_free(m_lim_cand);
+      m_lim_cand = nullptr;
+    }
+  }
 
   bool Init(const Uint32* prog);
 
@@ -227,6 +239,33 @@ class JoinAggInterpreter : public AggInterpreterBase {
   bool hasAvgSlots() const { return m_n_hidden_slots > 0; }
   bool avgFinalized() const { return m_avg_finalized; }
   bool avgFinalizing() const { return m_avg_finalizing; }
+
+  /**
+   * ORDER BY / LIMIT finalize (cte_orderby_limit_plan.md): the owner
+   * selects the top-m_limit groups under the program-trailer ORDER BY
+   * spec and erases the rest — after the FINAL_REP barrier (every
+   * per-node partial has merged, so aggregate-ordered ranks are
+   * final) and AFTER the AVG divide (AVG-ordered specs compare the
+   * finished DOUBLE).  Sliced like the AVG walk: phase 1 maintains a
+   * bounded <= m_limit candidate heap across a CONTINUEB-sliced walk
+   * (never a full sort); phase 2 erases non-kept groups.  Returns
+   * +1 done, 0 continue (schedule a slice), -1 allocation failure
+   * (caller aborts the CTE).  A no-op when no kOpLimit was declared
+   * or m_limit covers every group.
+   */
+  int finalizeLimitSlice(Uint32 max_groups, Uint32 thread_id);
+  bool hasLimit() const { return m_has_limit; }
+  bool limitFinalized() const { return m_limit_finalized; }
+  bool limitFinalizing() const { return m_limit_finalizing; }
+
+  /* Compare two group records under the ORDER BY spec (< 0: a orders
+   * before b).  GROUP BY columns compare via GBColTypeInfo::cmpFn on
+   * the AttributeHeader-framed key entries (NULL flag from the AH);
+   * aggregate slots compare as typed AggResItem.  MySQL NULL
+   * ordering: NULLs first ASC (DESC = full negation => NULLs last). */
+  int compareGroupsByOrderSpec(const char* a_data, Uint32 a_key_len,
+                               const char* b_data,
+                               Uint32 b_key_len) const;
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written,
                       uchar* xfrm_buf, Uint32 xfrm_buf_len);
@@ -300,6 +339,30 @@ class JoinAggInterpreter : public AggInterpreterBase {
   bool m_avg_finalizing;
   Uint32 m_avg_fin_bucket;
   char* m_avg_fin_raw;
+
+  /* ORDER BY / LIMIT trailer state (cte_orderby_limit_plan.md).
+   * m_order_spec entries come from kOpOrderBy program words;
+   * m_limit/m_has_limit from kOpLimit.  The m_lim_* fields drive the
+   * two sliced finalize phases on the owner: the bounded candidate
+   * heap (worst-kept at the root) and the truncation walk cursor. */
+  static constexpr Uint32 MAX_ORDER_COLS = 8;
+  struct OrderCol {
+    Uint16 idx;      /* GB column position or visible agg slot index */
+    Uint8 is_agg;    /* 0 = GROUP BY column, 1 = aggregate slot */
+    Uint8 desc;      /* 1 = descending */
+  };
+  void limitHeapSiftDown(Uint32 i);
+  OrderCol m_order_spec[MAX_ORDER_COLS];
+  Uint32 m_n_order_cols;
+  Uint32 m_limit;
+  bool m_has_limit;
+  bool m_limit_finalizing;
+  bool m_limit_finalized;
+  bool m_lim_select_done;
+  Uint32 m_lim_bucket;
+  char* m_lim_raw;
+  char** m_lim_cand;       /* heap of kept group data pointers */
+  Uint32 m_lim_cand_count;
 
   /* Per-column GROUP BY type metadata (m_gb_types, m_gb_types_inited,
    * m_xfrm_buf, m_xfrm_buf_len) lifted to AggInterpreterBase in Step

@@ -71,6 +71,15 @@ class GBHashTable {
   static const Uint32 KEY_LEN_OFFSET = 2 * sizeof(char*);
   static const Uint32 OVERHEAD = 24;
 
+  /* Key length of a group record given its DATA pointer (the pointer
+   * past the link header, as stored in iterators and candidate lists).
+   * Used by the ORDER BY/LIMIT finalize's comparator, which holds only
+   * data pointers (cte_orderby_limit_plan.md). */
+  static Uint32 dataKeyLen(const char* data_ptr) {
+    return *reinterpret_cast<const Uint32*>(
+        data_ptr - OVERHEAD + KEY_LEN_OFFSET);
+  }
+
   class Iterator {
     friend class GBHashTable;
     GBHashTable* m_ht;

@@ -1138,6 +1138,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueCteAvgFinalize(signal, data0);
     return;
   }
+  case ZCONTINUE_CTE_LIMIT_FINALIZE:
+  {
+    jam();
+    continueCteLimitFinalize(signal, data0);
+    return;
+  }
   case ZCONTINUE_AGG_INTERP_TEARDOWN:
   {
     jam();
@@ -20960,6 +20966,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * forward the request there instead of returning NOT_FOUND. */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
+        !state->m_cte_single_row && !state->m_cte_limit &&
         state->m_cte_num_nodes > 1 &&
         routeCteLookup(signal, state, interp,
                        keyBuf, keySection.sz,
@@ -22230,10 +22237,15 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
        * live at a key-independent location every consumer can route
        * to. */
       Uint32 ownerNode;
-      if (state->m_cte_single_row) {
+      if (state->m_cte_single_row || state->m_cte_limit) {
         jam();
+        /* Single-row AND ORDER BY/LIMIT CTEs use the constant
+         * DBTC-node owner: for LIMIT, every group must land on ONE
+         * node so the owner can select the top-N under the ORDER BY
+         * spec once all partials have merged
+         * (cte_orderby_limit_plan.md). */
         ownerNode = refToNode(state->m_senderRef);
-        DEB_CTE(("(%u) CTE REDIST: single-row owner=%u (DBTC node) "
+        DEB_CTE(("(%u) CTE REDIST: constant owner=%u (DBTC node) "
                  "keyLen=%u %s", instance(), ownerNode, keyLen,
                  ownerNode == ownNodeId ? "LOCAL" : "REMOTE"));
       } else {
@@ -22786,6 +22798,44 @@ void Dblqh::continueCteAvgFinalize(Signal *signal, Uint32 aggStateKey) {
   checkCteReady(signal, state);
 }
 
+/* CONTINUEB slice driver for the ORDER BY / LIMIT truncation
+ * (cte_orderby_limit_plan.md) — same shape as the AVG chain: each
+ * slice advances the bounded top-N selection or the erase walk, and
+ * completion re-invokes checkCteReady, which sees limitFinalized()
+ * and performs the CTE_READY transition. */
+void Dblqh::continueCteLimitFinalize(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    return;
+  }
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  if (interp == nullptr) {
+    jam();
+    return;
+  }
+  const int rc = interp->finalizeLimitSlice(ZCTE_AVG_FINALIZE_BATCH,
+                                            instance());
+  if (rc < 0) {
+    jam();
+    abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_ALLOC_FAILED);
+    return;
+  }
+  if (rc == 0) {
+    jam();
+    signal->theData[0] = ZCONTINUE_CTE_LIMIT_FINALIZE;
+    signal->theData[1] = aggStateKey;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+  jam();
+  checkCteReady(signal, state);
+}
+
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   /* Phase L (E.1): all callers — continueJoinAggRedistribute,
    * execJOIN_AGG_FINAL_REP — are already pinned to the owner LDM, so
@@ -22877,6 +22927,44 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
         return;
       }
       /* Walk completed within the first slice — fall through. */
+    }
+  }
+
+  /* ORDER BY / LIMIT truncation (cte_orderby_limit_plan.md): after
+   * the FINAL_REP barrier every per-node partial has merged, so
+   * aggregate-ordered ranks are final; and the AVG divide above has
+   * run, so AVG-ordered specs compare finished DOUBLEs.  The owner
+   * selects the top-N and erases the rest, CONTINUEB-sliced like the
+   * AVG walk (ZCONTINUE_CTE_LIMIT_FINALIZE).  Non-owner nodes hold no
+   * groups (constant-owner redistribution) and skip this trivially. */
+  {
+    JoinAggInterpreter *limInterp = getJoinAggResultInterpreter(state);
+    if (limInterp != nullptr && limInterp->hasLimit() &&
+        !limInterp->limitFinalized()) {
+      if (limInterp->limitFinalizing()) {
+        jam();
+        /* A truncation chain is already running; it will re-invoke
+         * checkCteReady on completion. */
+        return;
+      }
+      jam();
+      const int rc =
+          limInterp->finalizeLimitSlice(ZCTE_AVG_FINALIZE_BATCH,
+                                        instance());
+      if (rc < 0) {
+        jam();
+        abortCteRedistribution(signal, state,
+                               ZJOIN_AGG_STATE_ALLOC_FAILED);
+        return;
+      }
+      if (rc == 0) {
+        jam();
+        signal->theData[0] = ZCONTINUE_CTE_LIMIT_FINALIZE;
+        signal->theData[1] = state->m_key;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+      /* Completed within the first slice — fall through. */
     }
   }
 

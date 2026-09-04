@@ -2051,6 +2051,12 @@ Int32 AggInterpreterBase::executeStandardOpcode(
       return 0;
     }
 
+    case kOpOrderBy:
+    case kOpLimit:
+      /* Declarative ORDER BY / LIMIT trailer (cte_orderby_limit_plan.md)
+       * — no per-row work; JoinAggInterpreter::Init parsed them. */
+      return 0;
+
     // Type-specific Sum operations
     case kOpSumBigint:
       reg_index = (value & 0x000F0000) >> 16;

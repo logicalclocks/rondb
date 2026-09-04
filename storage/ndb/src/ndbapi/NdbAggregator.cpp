@@ -1153,6 +1153,41 @@ bool NdbAggregator::Avg(Uint32 agg_id, Uint32 reg_id) {
   return true;
 }
 
+bool NdbAggregator::OrderBy(Uint32 idx, bool is_agg_result,
+                            bool descending) {
+  /* ORDER BY trailer entry for a CTE aggregation program
+   * (cte_orderby_limit_plan.md).  Declarative: no per-row work; the
+   * kernel parses it at Init and applies it with Limit() during the
+   * owner-side top-N finalize.  idx is a GROUP BY column position
+   * (is_agg_result == false) or a visible aggregate slot index
+   * (is_agg_result == true); range-checked kernel-side against the
+   * finalized program. */
+  if (idx > 0xFFFF) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+    (kOpOrderBy) << 26 |
+    (is_agg_result ? 1u : 0u) << 25 |
+    (descending ? 1u : 0u) << 24 |
+    (idx & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::Limit(Uint32 n) {
+  /* LIMIT trailer entry: cap the CTE result to n groups, selected
+   * under the OrderBy() spec (or arbitrarily without one).  Capped at
+   * 2^26 - 1 by the single-word encoding. */
+  if (n > 0x03FFFFFF) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+    (kOpLimit) << 26 |
+    (n & 0x03FFFFFF);
+  return true;
+}
+
 bool NdbAggregator::GroupBy(const char* name) {
   if (name == nullptr) {
     SetError(kErrInvalidColumnName);
