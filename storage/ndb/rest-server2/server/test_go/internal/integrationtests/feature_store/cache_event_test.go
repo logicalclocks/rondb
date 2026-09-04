@@ -156,6 +156,13 @@ func restoreSimpleFV(t *testing.T) {
 	t.Helper()
 	_ = testutils.RunQueriesOnMetadataCluster(sqlDeleteDeps2059)
 	_ = testutils.RunQueriesOnMetadataCluster(sqlDeleteFV2059)
+	// Wait until the cache has processed the DELETE before re-inserting.
+	// Without this barrier, when the calling test ended with a valid cache
+	// entry the trailing pollSimpleUntilOK below is satisfied immediately
+	// by that stale entry while the DELETE event is still in flight; the
+	// eviction then lands after this restore has returned, and the FIRST
+	// request of the NEXT test transiently sees "Feature view was deleted".
+	pollSimpleUntilNotOK(t)
 	runSQL(t, "SET FOREIGN_KEY_CHECKS = 0;\n"+
 		sqlInsertAllDeps2059+"\n"+
 		sqlInsertFV2059+"\n"+

@@ -2,5 +2,3 @@
 PASS
 ## Go tests (without TLS, one simple test per package)
 PASS
-## C++ tests
-PASS

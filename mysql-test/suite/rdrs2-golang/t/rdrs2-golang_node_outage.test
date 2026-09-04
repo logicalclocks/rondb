@@ -14,13 +14,13 @@
 #     'table does not exist' here is the literal customer bug RONDB-1104
 #     fixes), and the same row is served again after the nodes return.
 #
-# Runs after rdrs2-golang_gotest (tests are collected alphabetically and
-# keep that order because both tests have identical MTR sort criteria -
-# same suite my.cnf, and the gotest .opt file contains only
-# --testcase-timeout, which mtr consumes before building the sort
-# criteria; a server option in either test's .opt file would reorder
-# them). It does not depend on the seeded test databases, creates its
-# own, and drops it again, so either order would also work.
+# Runs last (tests are collected alphabetically and keep that order
+# because all of the suite's tests have identical MTR sort criteria -
+# same suite my.cnf, and the .opt files contain only --testcase-timeout,
+# which mtr consumes before building the sort criteria; a server option
+# in any test's .opt file would reorder them). It does not depend on the
+# seeded test databases, creates its own, and drops it again, so any
+# order would also work.
 
 --source include/have_ndb.inc
 --source include/not_windows.inc
