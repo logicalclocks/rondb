@@ -34,24 +34,41 @@
 //	result: Ok\n            (or an error message)
 //	...
 //	\n
+//
+// "get user" additionally returns "num_rows: N" and, after the blank line,
+// N rows of the form "key = value"; see GetUser.
 package mgmclient
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// callTimeout bounds one management-server command. It has to cover a full
+// CallTimeout bounds one management-server command. It has to cover a full
 // schema transaction: "set user"/"alter user"/"drop user" run an
 // ALTER DATABASE through DBDICT, and DICT is single-threaded for schema
 // transactions, so a command issued while the cluster is still working off an
 // overload burst (as the rate limit tests deliberately create) can take tens
 // of seconds even though it eventually succeeds. Timing out and retrying only
 // adds another schema transaction to the queue, so wait generously instead.
-const callTimeout = 60 * time.Second
+//
+// The management server itself (MgmtSrvr::startSchemaTrans) keeps retrying
+// for up to 120 s while DICT reports the schema transaction lock busy, and
+// only then runs the transaction. The client deadline sits above that so
+// that a timeout here means something is broken, not merely slow.
+//
+// A command that hits this deadline is NOT cancelled by it: the management
+// server keeps waiting for the lock and applies the change whenever DICT gets
+// to it. A caller that sees a transport error therefore does not know the
+// entity's state and must read it back with GetUser before acting on it (see
+// testutils.setRateLimit), and must not reuse the connection, whose late
+// reply would otherwise be taken for the reply of the next command.
+const CallTimeout = 180 * time.Second
 
 // connectTimeout bounds establishing the TCP connection to the management
 // server, which does not depend on any cluster-side work.
@@ -60,6 +77,46 @@ const connectTimeout = 10 * time.Second
 type Client struct {
 	conn net.Conn
 	rd   *bufio.Reader
+	// broken is set after a transport error. The reply of the failed
+	// command may still arrive on the connection, so it cannot be used for
+	// another command.
+	broken bool
+}
+
+// CommandError is a reply whose result is not Ok. It is deliberately distinct
+// from a transport error (deadline exceeded, connection reset): a
+// CommandError means the management server has finished the command and
+// rejected it, whereas after a transport error the command may still be
+// running server side (see CallTimeout).
+type CommandError struct {
+	Cmd       string
+	Result    string
+	ErrorCode int
+}
+
+func (e *CommandError) Error() string {
+	return fmt.Sprintf("mgmclient: %q failed: result=%q error_code=%d",
+		e.Cmd, e.Result, e.ErrorCode)
+}
+
+// errNoSuchUser is the error_code "get user" reports for a USER entity that
+// does not exist (DropTableRef::NoSuchTable).
+const errNoSuchUser = 709
+
+// IsNoSuchUser reports whether err is the "get user" reply for a USER entity
+// that does not exist.
+func IsNoSuchUser(err error) bool {
+	var cmdErr *CommandError
+	return errors.As(err, &cmdErr) && cmdErr.Cmd == "get user" &&
+		cmdErr.ErrorCode == errNoSuchUser
+}
+
+// UserInfo is what "get user" reports for a USER entity. The management
+// server does not report MaxParallelComplexQueries for users, so that limit
+// is always 0 here.
+type UserInfo struct {
+	UserId uint32
+	Limits UserLimits
 }
 
 // UserLimits mirrors the ndb_mgm_set_user/ndb_mgm_alter_user arguments.
@@ -77,7 +134,11 @@ func Connect(addr string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mgmclient: connect to %s: %w", addr, err)
 	}
-	return &Client{conn: conn, rd: bufio.NewReader(conn)}, nil
+	return newClient(conn), nil
+}
+
+func newClient(conn net.Conn) *Client {
+	return &Client{conn: conn, rd: bufio.NewReader(conn)}
 }
 
 func (c *Client) Close() error {
@@ -89,9 +150,22 @@ type kv struct {
 	value string
 }
 
-// call sends one command and parses its reply into a key/value map.
+// call sends one command and parses its reply into a key/value map. A
+// transport error marks the connection unusable, see Client.broken.
 func (c *Client) call(cmd string, args []kv) (map[string]string, error) {
-	deadline := time.Now().Add(callTimeout)
+	if c.broken {
+		return nil, fmt.Errorf("mgmclient: cannot send %q: connection unusable "+
+			"after an earlier transport error", cmd)
+	}
+	reply, err := c.exchange(cmd, args)
+	if err != nil {
+		c.broken = true
+	}
+	return reply, err
+}
+
+func (c *Client) exchange(cmd string, args []kv) (map[string]string, error) {
+	deadline := time.Now().Add(CallTimeout)
 	if err := c.conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
@@ -146,11 +220,16 @@ func (c *Client) callChecked(cmd string, args []kv) error {
 	if err != nil {
 		return err
 	}
-	if result, ok := reply["result"]; !ok || result != "Ok" {
-		return fmt.Errorf("mgmclient: %q failed: result=%q error_code=%q",
-			cmd, reply["result"], reply["error_code"])
+	return checkResult(cmd, reply)
+}
+
+// checkResult turns a reply whose result is not Ok into a CommandError.
+func checkResult(cmd string, reply map[string]string) error {
+	if reply["result"] == "Ok" {
+		return nil
 	}
-	return nil
+	code, _ := strconv.Atoi(reply["error_code"])
+	return &CommandError{Cmd: cmd, Result: reply["result"], ErrorCode: code}
 }
 
 func limitArgs(username string, limits UserLimits) []kv {
@@ -178,7 +257,62 @@ func (c *Client) DropUser(username string) error {
 	return c.callChecked("drop user", []kv{{"username", username}})
 }
 
-// GetUser returns the reply map of "get user" for inspection.
-func (c *Client) GetUser(username string) (map[string]string, error) {
-	return c.call("get user", []kv{{"username", username}})
+// GetUser reads a USER entity back from DICT. It is a plain lookup, not a
+// schema transaction, so it is answered even while a set/alter/drop is queued
+// behind the schema transaction lock. IsNoSuchUser(err) identifies a missing
+// entity.
+//
+// The reply carries "num_rows: N" followed by a blank line and then exactly N
+// rows of the form "key = value" (the first row is a free-text heading) with
+// no terminating blank line. The generic reply parser stops at the blank
+// line, so the rows are read here; reading fewer than N would leave them in
+// the buffered reader and corrupt the next command on the connection.
+func (c *Client) GetUser(username string) (*UserInfo, error) {
+	const cmd = "get user"
+	reply, err := c.call(cmd, []kv{{"username", username}})
+	if err != nil {
+		return nil, err
+	}
+	if err := checkResult(cmd, reply); err != nil {
+		return nil, err
+	}
+	numRows, err := strconv.Atoi(reply["num_rows"])
+	if err != nil {
+		c.broken = true
+		return nil, fmt.Errorf("mgmclient: %q reply without num_rows: %v",
+			cmd, reply)
+	}
+	rows := make(map[string]string, numRows)
+	for i := 0; i < numRows; i++ {
+		line, err := c.rd.ReadString('\n')
+		if err != nil {
+			c.broken = true
+			return nil, fmt.Errorf("mgmclient: read row %d of %q: %w",
+				i, cmd, err)
+		}
+		key, value, found := strings.Cut(strings.TrimRight(line, "\n"), "=")
+		if !found {
+			continue // heading: "User rate limits for <name>"
+		}
+		rows[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+
+	info := &UserInfo{}
+	for _, f := range []struct {
+		key string
+		dst *uint32
+	}{
+		{"userId", &info.UserId},
+		{"RatePerSec", &info.Limits.RatePerSec},
+		{"MaxTransactionSize", &info.Limits.MaxTransactionSize},
+		{"MaxParallelTransactions", &info.Limits.MaxParallelTransactions},
+	} {
+		v, err := strconv.ParseUint(rows[f.key], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("mgmclient: %q reply: bad %s %q: %w",
+				cmd, f.key, rows[f.key], err)
+		}
+		*f.dst = uint32(v)
+	}
+	return info, nil
 }
