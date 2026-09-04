@@ -404,6 +404,7 @@ my @rdrs_rules = (
   { 'rondisport'    => \&fix_rondis_port },
   { 'myrouterport'  => \&fix_myrouter_port },
   { 'std-data'      => \&fix_std_data },
+  { '#cpubind'      => \&fix_cpubind },
 );
 
 if (IS_WINDOWS) {

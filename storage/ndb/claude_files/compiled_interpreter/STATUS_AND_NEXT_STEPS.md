@@ -11,6 +11,42 @@
 
 ## Session 2026-09-04 — rebase onto latest CTE development + stable merges
 
+- **CompiledInterpreter is now runtime-settable via MGM SET**:
+  `ndb_mgm -e "ALL SET CompiledInterpreter OFF|AUTO|ON"` (or `1 SET ...`,
+  0/1/2 accepted). Persists to the mgmd config and reaches the node-global
+  JIT mode word through Cmvmi::execSET_CONFIG_PARAM_REQ -> dbtup_jit_set_mode;
+  MTR `suite/ndb/t/ndb_set_compiled_interpreter.test` (pending build+run).
+
+**2026-09-04 (evening) — RonSQL vs MySQL vs compiled-interpreter matrix
+tooling (built, NOT yet run; Mikael builds + runs).** Start at
+`ronsql_bench_matrix.md`. Pieces: (1) MTR suite `mysql-test/suite/ronsqlcrunch`
+= ndbcrunch-style cluster (2 ndbmtd, 2 mysqld, AutomaticThreadConfig,
+`cpubind.cnf` through --defaults-extra-file) + RDRS with RonSQL, optional
+Rondis (`rondis.cnf`), `t/setup.test` for `--start-and-exit`; (2) mtr now
+applies `cpubind=` to `[rdrs.N.M]` too (`mysql-test-run.pl` rdrs_start,
+`ConfigFactory.pm` @rdrs_rules); (3) driver `ronsql_bench_matrix.py`: starts
+the cluster, loads TPC-H via rondb-cli `.load_tpch`, runs every
+`.bench_ronsql` / `.bench_sql` query for engine (ronsql / mysqld pushdown ON
+/ mysqld pushdown OFF) x compiler (OFF / ON via the new MGM SET, restart
+fallback) x threads, streams progress, and reports latency, throughput,
+RonSQL phases (x-ronsql-phases), mysqld NDB-wait split, ndbinfo.jit deltas
+(`<out>/report.md`, `results.json`). Two facts that shaped it: mysqld's
+`ndb_pushdown_aggregate` / `ndb_join_pushdown_aggregate[_outer_join]` default
+OFF and `.bench_sql` sets no session vars (the driver sets them GLOBAL), and
+RonSQL phase timing already exists (RONSQL_PHASE_STATS default on). First
+run: `python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build --quick`.
+Follow-ups spotted: RDRS never wires `RonSQLExecParams::schema_cache`
+(~400 us `load` per RonSQL request; lost in the 2026-07-31 upmerge #1024,
+was in PR #906); `Log.LogQueries` is dead config.
+First --quick run done (macOS, sf 0.1, 1 thread): tooling works end to end
+(28 queries x 3 engines x 2 arms). RonSQL OFF/ON within noise; mysqld's
+OFF/ON swings were plan drift (index stats) -> driver now ANALYZEs after
+load, interleaves arms per query (`--order query-major`, uses the SET) and
+baseline-corrects the NDB-wait counter. Product findings: JIT compile
+storm on correlated pushed-join child filters (mysqld tpch_q13: ~50k
+compiles/request, 36 ms); RonSQL plans for tpch_q22 / offline_fs_join_body
+/ fs_point far slower than mysqld's. Details: `ronsql_bench_matrix.md`.
+
 **2026-09-04 (later) — x86_64 WRONG-RESULT defect found by the Linux bench
 run; fixed, stencils regenerated (x86_64 header changed in the two
 LoadConst stencils, arm64 byte-identical), extractor-tests + coldcall_tests

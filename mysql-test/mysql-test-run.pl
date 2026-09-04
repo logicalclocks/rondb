@@ -7107,6 +7107,15 @@ sub rdrs_start ($$) {
     }
   }
 
+  # CPU binding (taskset) from a 'cpubind=' option in the [rdrs.N.M]
+  # group, the same way mysqld / ndbd / mysqltest honour it (see
+  # suite/ronsqlcrunch/cpubind.cnf).
+  my $cpu_list = $rdrs->if_exist('#cpubind');
+  if (defined $cpu_list) {
+    mtr_print("Applying cpu binding '$cpu_list' for: ", $name);
+    cpubind_arguments($args, \$exe, $cpu_list);
+  }
+
   # Add config file argument
   my $config_file = $rdrs->value('#config-json');
   mtr_add_arg($args, "--config");

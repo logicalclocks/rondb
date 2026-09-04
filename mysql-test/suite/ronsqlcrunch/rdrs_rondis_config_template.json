@@ -1,0 +1,39 @@
+{
+  "PIDFile": "@pid-file",
+  "REST": {
+    "ServerIP": "@bind-address",
+    "ServerPort": @port,
+    "NumThreads": @RESTNumThreads
+  },
+  "Rondis": {
+    "Enable": true,
+    "ServerIP": "@bind-address",
+    "ServerPort": @rondisport,
+    "NumThreads": 16,
+    "NumDatabases": 1,
+    "CreateTables": true,
+    "RequireTablesOnStartup": false,
+    "MySQLHost": "@mysqld.1.1.#host",
+    "MySQLPort": @mysqld.1.1.port,
+    "MySQLUser": "root",
+    "MySQLPassword": ""
+  },
+  "RonDB": {
+      "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+  },
+  "Security": {
+    "InsecureAllowAll": @InsecureAllowAll,
+    "TLS": {
+      "EnableTLS": false,
+      "RequireAndVerifyClientCert": false
+    },
+    "APIKey": {
+      "UseHopsworksAPIKeys": @UseHopsworksAPIKeys
+    }
+  },
+  "Log": {
+    "Level": "WARN",
+    "LogQueries": false
+  }
+}
