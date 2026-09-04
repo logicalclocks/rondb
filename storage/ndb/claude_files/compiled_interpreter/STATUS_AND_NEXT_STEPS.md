@@ -32,9 +32,9 @@ all verification so far ran on aarch64. Fix: `HOLE_64` / `HOLE_U32`
 inline-asm value holes in `stencils_src.c` (movabs imm64 / zero-extending
 mov r32), extractor accepts `R_X86_64_64` on immediate holes as width 8,
 `jit1.c` patches 8 bytes; tests `coldcall_tests` T35, extractor-tests
-T12/T13. **Next: re-run `ndb_push_agg_jit.jit_bench` (and the OFF
-twin) once to confirm the check-testcase pass, then the three JIT suites
-on Linux once.** Full write-up + ordered verification list at the
+T12/T13. Both jit_bench tests pass check-testcase after the output-dir
+move (confirmed 2026-09-04). **Next: the three JIT suites on Linux once
+(never run there before the x86_64 fix).** Full write-up + ordered verification list at the
 end of `ronsql_jit_plan.md`.
 
 Mikael rebased the branch (clean). Post-rebase repair of the JIT-specific
