@@ -1070,9 +1070,85 @@ void widen_fraction(int new_frac, decimal_t *d) {
 
   RETURN VALUE
     E_DEC_OK/E_DEC_OVERFLOW/E_DEC_TRUNCATED
+
+  RonDB DECIMAL fast path (decimal_fast_path_plan.md): the historical
+  implementation is decimal2string + my_strtod — a string round-trip
+  that profiles at ~2/3 of the pushed-aggregation core per DECIMAL
+  column per row, in both the NDB kernel interpreters and the mysqld
+  Item val_real() paths.  The fast path folds the base-10^9 digit
+  words into one scaled integer v (value = ±v / 10^frac) and performs
+  a single IEEE divide.  It is taken only when v <= 2^53 and
+  frac <= 22: then (double)v is exact, 10^frac is exactly
+  representable, and the IEEE division returns the correctly rounded
+  double of the real number v / 10^frac — the same value the
+  correctly rounded my_strtod produces, BIT FOR BIT (two correctly
+  rounded conversions of one real number are identical).  The sign is
+  applied by negation, matching decimal2string's unconditional '-'
+  (a signed zero becomes -0.0 on both paths).  Within the gate no
+  truncation or overflow is possible, so E_DEC_OK matches the string
+  path's return code.  Anything outside the gate falls through to the
+  unchanged string conversion.
 */
 
+/* Largest integer magnitude a double holds exactly. */
+#define DEC2DBL_MAX_EXACT (1ULL << 53)
+
 int decimal2double(const decimal_t *from, double *to) {
+  /* Exact powers of ten: 10^22 is the largest exactly representable. */
+  static const double dbl_p10[23] = {
+      1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
+      1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+      1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+  /* Integer powers of ten for the partial fraction word. */
+  static const uint32 int_p10[10] = {
+      1,       10,       100,       1000,      10000,
+      100000,  1000000,  10000000,  100000000, 1000000000};
+
+  const int frac = from->frac;
+  if (likely(frac >= 0 && frac <= 22)) {
+    const dec1 *buf = from->buf;
+    uint64 v = 0;
+    bool fits = true;
+    /* Integer part: the first word holds intg % 9 leading digits as a
+       plain value, so a uniform multiply-accumulate by 10^9 per word
+       is exact (the decimal2longlong folding pattern). */
+    for (int intg = from->intg; intg > 0; intg -= DIG_PER_DEC1) {
+      const uint64 w = (uint64)(*buf++);
+      if (unlikely(v > (DEC2DBL_MAX_EXACT - w) / DIG_BASE)) {
+        fits = false;
+        break;
+      }
+      v = v * DIG_BASE + w;
+    }
+    /* Fraction part: full words first; a partial LAST word stores its
+       r digits left-justified (value = digits * 10^(9-r)). */
+    if (fits) {
+      int f = frac;
+      for (; f >= DIG_PER_DEC1; f -= DIG_PER_DEC1) {
+        const uint64 w = (uint64)(*buf++);
+        if (unlikely(v > (DEC2DBL_MAX_EXACT - w) / DIG_BASE)) {
+          fits = false;
+          break;
+        }
+        v = v * DIG_BASE + w;
+      }
+      if (fits && f > 0) {
+        const uint64 w = (uint64)(*buf) / int_p10[DIG_PER_DEC1 - f];
+        const uint32 mult = int_p10[f];
+        if (unlikely(v > (DEC2DBL_MAX_EXACT - w) / mult)) {
+          fits = false;
+        } else {
+          v = v * mult + w;
+        }
+      }
+    }
+    if (likely(fits)) {
+      const double res = (double)v / dbl_p10[frac];
+      *to = from->sign ? -res : res;
+      return E_DEC_OK;
+    }
+  }
+
   char strbuf[FLOATING_POINT_BUFFER];
   int len = sizeof(strbuf);
   int rc, error;

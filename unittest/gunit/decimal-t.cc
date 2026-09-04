@@ -32,10 +32,14 @@
 #include <math.h>
 #include <string.h>
 
+#include <random>
+#include <string>
+
 #include "decimal.h"
 #include "m_string.h"
 #include "my_inttypes.h"
 #include "my_macros.h"
+#include "mysql/strings/dtoa.h"
 #include "mysql/strings/int2str.h"
 #include "sql-common/my_decimal.h"
 #include "template_utils.h"
@@ -1116,5 +1120,217 @@ static const DecimalToStringParam TO_STRING_OVERFLOW_TRUNCATE[] = {
 
 INSTANTIATE_TEST_SUITE_P(OverflowTruncate, DecimalToStringTest,
                          testing::ValuesIn(TO_STRING_OVERFLOW_TRUNCATE));
+
+/*
+  DECIMAL fast path oracle sweep (decimal_fast_path_plan.md W2).
+
+  decimal2double now takes a direct fold-and-divide fast path when the
+  scaled integer fits 2^53 and frac <= 22, falling back to the
+  historical decimal2string + my_strtod conversion beyond the gate.
+  Within the gate the result is provably bit-identical (two correctly
+  rounded conversions of the same real number); these sweeps enforce
+  BIT-FOR-BIT equality against the string conversion everywhere —
+  boundary shapes, every frac % 9 residue, gate straddles, signed
+  zero, kernel-style bin2decimal layouts with leading zero words, and
+  a large seeded random set — plus return-code parity.
+*/
+
+static int decimal2double_string_oracle(const decimal_t *from, double *to) {
+  char strbuf[FLOATING_POINT_BUFFER];
+  int len = sizeof(strbuf);
+  int rc, error;
+  rc = decimal2string(from, strbuf, &len);
+  const char *end = strbuf + len;
+  *to = my_strtod(strbuf, &end, &error);
+  return (rc != E_DEC_OK) ? rc : (error ? E_DEC_OVERFLOW : E_DEC_OK);
+}
+
+static uint64 double_bits(double d) {
+  uint64 bits;
+  memcpy(&bits, &d, sizeof(bits));
+  return bits;
+}
+
+static void check_d2d_bitexact(const decimal_t *d, const char *what) {
+  double fast_val = 0.0;
+  double oracle_val = 0.0;
+  const int fast_rc = decimal2double(d, &fast_val);
+  const int oracle_rc = decimal2double_string_oracle(d, &oracle_val);
+  EXPECT_EQ(oracle_rc, fast_rc) << what;
+  EXPECT_EQ(double_bits(oracle_val), double_bits(fast_val))
+      << what << " oracle=" << oracle_val << " fast=" << fast_val;
+}
+
+static void check_d2d_from_string(const char *s) {
+  decimal_t d;
+  decimal_digit_t dbuf[12];  // up to 108 digits
+  d.buf = dbuf;
+  d.len = array_elements(dbuf);
+  const char *end = strend(s);
+  const int res = string2decimal(s, &d, &end);
+  ASSERT_EQ(E_DEC_OK, res) << s;
+  check_d2d_bitexact(&d, s);
+}
+
+/* The kernel arms convert bin2decimal output, whose layout is the
+   declared column shape: intg = precision - scale, with leading zero
+   words for small values.  Round-trip through decimal2bin/bin2decimal
+   at (precision, scale) to reproduce exactly that shape. */
+static void check_d2d_bin_roundtrip(const char *s, int precision,
+                                    int scale) {
+  decimal_t d;
+  decimal_digit_t dbuf[12];
+  d.buf = dbuf;
+  d.len = array_elements(dbuf);
+  const char *end = strend(s);
+  ASSERT_EQ(E_DEC_OK, string2decimal(s, &d, &end)) << s;
+  uchar bin[120];
+  ASSERT_EQ(E_DEC_OK, decimal2bin(&d, bin, precision, scale)) << s;
+  decimal_t d2;
+  decimal_digit_t dbuf2[12];
+  d2.buf = dbuf2;
+  d2.len = array_elements(dbuf2);
+  ASSERT_EQ(E_DEC_OK, bin2decimal(bin, &d2, precision, scale)) << s;
+  check_d2d_bitexact(&d2, s);
+}
+
+TEST(DecimalFastPathTest, BitExactBoundaries) {
+  /* Zeros, signed zero (decimal2string prints the '-', so the string
+     path yields -0.0 — the fast path must match). */
+  check_d2d_from_string("0");
+  check_d2d_from_string("0.00");
+  check_d2d_from_string("-0.000000000");
+  check_d2d_from_string("0.000000000000000000000000000001");
+
+  /* Powers of ten and all-nines around every word boundary. */
+  for (int k = 1; k <= 20; k++) {
+    std::string p10("1");
+    p10.append(k, '0');
+    std::string nines(k, '9');
+    check_d2d_from_string(p10.c_str());
+    check_d2d_from_string(("-" + p10).c_str());
+    check_d2d_from_string(nines.c_str());
+    check_d2d_from_string(("-" + nines).c_str());
+    check_d2d_from_string(("0." + nines).c_str());
+    check_d2d_from_string(("9." + nines).c_str());
+  }
+
+  /* The 2^53 gate straddle: 9007199254740992 +/- 1, at several scale
+     placements (in and out of the fast path — equality must hold on
+     both sides of the gate). */
+  static const char *straddle[] = {
+      "9007199254740991",   "9007199254740992",   "9007199254740993",
+      "-9007199254740991",  "-9007199254740993",  "90071992547409.91",
+      "90071992547409.93",  "9.007199254740993",  "0.9007199254740993",
+      "900719925474099.3",  "9007199254740.993",
+  };
+  for (const char *s : straddle) check_d2d_from_string(s);
+
+  /* Every intg/frac digit-count residue combination: covers partial
+     first integer words, partial last fraction words (frac % 9 in
+     0..8), multi-word folds, and values beyond the gate. */
+  static const char digit_cycle[] = "918273645091827364509182736450";
+  static const int intg_counts[] = {0, 1, 5, 8, 9, 10, 18, 19, 27};
+  static const int frac_counts[] = {0,  1,  2,  8,  9,  10, 17,
+                                    18, 22, 23, 30};
+  for (const int ic : intg_counts) {
+    for (const int fc : frac_counts) {
+      if (ic == 0 && fc == 0) continue;
+      std::string s;
+      for (int i = 0; i < ic; i++) s += digit_cycle[i];
+      if (fc > 0) {
+        if (s.empty()) s = "0";
+        s += ".";
+        for (int i = 0; i < fc; i++) s += digit_cycle[i];
+      }
+      check_d2d_from_string(s.c_str());
+      check_d2d_from_string(("-" + s).c_str());
+    }
+  }
+
+  /* Kernel-style bin2decimal layouts (leading zero words). */
+  check_d2d_bin_roundtrip("5.00", 15, 2);
+  check_d2d_bin_roundtrip("0.01", 15, 2);
+  check_d2d_bin_roundtrip("-45983.16", 12, 2);
+  check_d2d_bin_roundtrip("99999999999999999.99", 19, 2);
+  check_d2d_bin_roundtrip("123456789.123456", 18, 6);
+  check_d2d_bin_roundtrip("0.000000000000000000000000000001", 65, 30);
+  check_d2d_bin_roundtrip("-1234567890123456789012345.67890", 65, 30);
+  check_d2d_bin_roundtrip("0", 10, 0);
+  check_d2d_bin_roundtrip("-7", 38, 10);
+}
+
+TEST(DecimalFastPathTest, BitExactRandom) {
+  std::mt19937_64 rng(20260904);
+  for (int iter = 0; iter < 100000; iter++) {
+    const int total = 1 + (int)(rng() % 40);
+    const int max_frac = total < 30 ? total : 30;
+    const int frac = (int)(rng() % (max_frac + 1));
+    const int intg = total - frac;
+    std::string s;
+    if (rng() & 1) s += "-";
+    for (int i = 0; i < intg; i++) s += (char)('0' + rng() % 10);
+    if (intg == 0) s += "0";
+    if (frac > 0) {
+      s += ".";
+      for (int i = 0; i < frac; i++) s += (char)('0' + rng() % 10);
+    }
+    check_d2d_from_string(s.c_str());
+    /* Kernel layout for a subset, at the value's declared shape. */
+    if ((iter % 16) == 0 && total <= 65) {
+      check_d2d_bin_roundtrip(s.c_str(), total, frac);
+    }
+  }
+}
+
+/* A/B microbenchmarks over the same TPC-H-like values: the shipped
+   decimal2double (fast path) vs the string-conversion oracle. */
+static void BM_Decimal2Double_FastPath(size_t iters) {
+  StopBenchmarkTiming();
+  constexpr size_t num_elements = array_elements(decimal_testdata);
+  decimal_t decimals[num_elements];
+  decimal_digit_t decimal_buf[num_elements][9];
+  for (size_t i = 0; i < num_elements; ++i) {
+    const char *end = strend(decimal_testdata[i]);
+    decimals[i].buf = decimal_buf[i];
+    decimals[i].len = array_elements(decimal_buf[i]);
+    int res = string2decimal(decimal_testdata[i], &decimals[i], &end);
+    ASSERT_EQ(E_DEC_OK, res) << decimal_testdata[i] << " wasn't converted";
+  }
+  StartBenchmarkTiming();
+
+  double sum = 0.0;
+  for (size_t i = 0; i < iters; ++i) {
+    double x;
+    decimal2double(&decimals[i % num_elements], &x);
+    sum += x;
+  }
+  ASSERT_NE(-1.0, sum);  // To keep the optimizer from removing the loop.
+}
+BENCHMARK(BM_Decimal2Double_FastPath)
+
+static void BM_Decimal2Double_StringPath(size_t iters) {
+  StopBenchmarkTiming();
+  constexpr size_t num_elements = array_elements(decimal_testdata);
+  decimal_t decimals[num_elements];
+  decimal_digit_t decimal_buf[num_elements][9];
+  for (size_t i = 0; i < num_elements; ++i) {
+    const char *end = strend(decimal_testdata[i]);
+    decimals[i].buf = decimal_buf[i];
+    decimals[i].len = array_elements(decimal_buf[i]);
+    int res = string2decimal(decimal_testdata[i], &decimals[i], &end);
+    ASSERT_EQ(E_DEC_OK, res) << decimal_testdata[i] << " wasn't converted";
+  }
+  StartBenchmarkTiming();
+
+  double sum = 0.0;
+  for (size_t i = 0; i < iters; ++i) {
+    double x;
+    decimal2double_string_oracle(&decimals[i % num_elements], &x);
+    sum += x;
+  }
+  ASSERT_NE(-1.0, sum);  // To keep the optimizer from removing the loop.
+}
+BENCHMARK(BM_Decimal2Double_StringPath)
 
 }  // namespace decimal_unittest
