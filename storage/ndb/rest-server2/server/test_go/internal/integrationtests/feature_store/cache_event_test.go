@@ -97,20 +97,31 @@ const (
 	pollInterval = 500 * time.Millisecond
 )
 
-// pollSimpleUntilNotOK polls the simple FV endpoint until the response is
-// NOT 200 OK, indicating the cache entry has been evicted.
-func pollSimpleUntilNotOK(t *testing.T) {
+// waitSimpleNotOK polls the simple FV endpoint until the response is NOT
+// 200 OK (the cache entry has been evicted) and reports whether that was
+// observed within the timeout. It never fails the test — restoreSimpleFV
+// must be able to continue past a missing eviction (see there).
+func waitSimpleNotOK(t *testing.T) bool {
 	t.Helper()
 	deadline := time.Now().Add(pollTimeout)
 	for time.Now().Before(deadline) {
 		status, _ := sendRawFSRequest(t, fsNameSimple, fvNameSimple,
 			fvVersionSimple, "id1", "1")
 		if status != http.StatusOK {
-			return
+			return true
 		}
 		time.Sleep(pollInterval)
 	}
-	t.Fatal("Timed out (30s) waiting for simple FV cache eviction")
+	return false
+}
+
+// pollSimpleUntilNotOK polls the simple FV endpoint until the response is
+// NOT 200 OK, indicating the cache entry has been evicted.
+func pollSimpleUntilNotOK(t *testing.T) {
+	t.Helper()
+	if !waitSimpleNotOK(t) {
+		t.Fatal("Timed out (30s) waiting for simple FV cache eviction")
+	}
 }
 
 // pollSimpleUntilOK polls the simple FV endpoint until it returns 200 OK,
@@ -162,7 +173,18 @@ func restoreSimpleFV(t *testing.T) {
 	// by that stale entry while the DELETE event is still in flight; the
 	// eviction then lands after this restore has returned, and the FIRST
 	// request of the NEXT test transiently sees "Feature view was deleted".
-	pollSimpleUntilNotOK(t)
+	//
+	// Not observing the eviction is deliberately NOT fatal: a test may end
+	// with the rows already deleted but a stale valid cache entry (a
+	// merged-away DELETE event, the outcome TestAssumption_*SameGCI
+	// tolerates), in which case the deletes above are no-ops and no event
+	// will ever come. The re-insert below must run regardless — restore is
+	// deferred, and aborting here would leave FV 2059 missing for every
+	// remaining test in the package.
+	if !waitSimpleNotOK(t) {
+		t.Log("restoreSimpleFV: no eviction observed within the timeout " +
+			"(rows may already have been deleted); re-inserting anyway")
+	}
 	runSQL(t, "SET FOREIGN_KEY_CHECKS = 0;\n"+
 		sqlInsertAllDeps2059+"\n"+
 		sqlInsertFV2059+"\n"+

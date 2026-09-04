@@ -1660,11 +1660,16 @@ TEST_F(APIKeyTest, TestReconnectRefreshEvictsMissedDelete) {
   // a cache preloaded with hundreds of keys takes several seconds and
   // stretches further under machine load — poll instead of sleeping a
   // fixed time (a fixed 9s sleep here failed on a loaded machine).
+  // Wait for the size to drop BELOW the pre-delete size rather than for
+  // exact equality: the refresh pass evicts any entry whose DB lookup
+  // fails, so an unrelated transient eviction in the same poll window
+  // would skip an exact target. The specific key is pinned by the
+  // validation check below.
   const unsigned expected_size = size_before - 1;
-  wait_until([&] { return apiKeyCachePtr->size() == expected_size; }, 120000);
-
-  EXPECT_EQ(apiKeyCachePtr->size(), expected_size)
-      << "Refresh thread should have evicted the deleted key";
+  ASSERT_TRUE(wait_until(
+      [&] { return apiKeyCachePtr->size() <= expected_size; }, 120000))
+      << "refresh thread did not evict the deleted key within 120s "
+      << "(cache size still " << apiKeyCachePtr->size() << ")";
 
   // Key should no longer validate
   status = apiKeyCachePtr->validate_api_key(fullKey, {DB001});
