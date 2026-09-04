@@ -107,6 +107,25 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                           Program       *out_prog,
                                           JitBridgeError *out_err);
 
+/* ronsql_jit item 15 (2026-09-04): the same translate with the program
+ * header's VISIBLE result-slot count (n_agg_results before the kernel
+ * interpreter's Init grows it). kOpAvg (31) lowers to a typed SUM into
+ * its visible dst slot plus a COUNT into the hidden companion slot
+ * `n_visible_results + k` for the k-th kOpAvg in program order — the
+ * exact slot JoinAggInterpreter::Init assigns. Pass
+ * NDB_JIT_NO_AVG_SLOTS to keep kOpAvg rejected (standalone programs,
+ * which never carry it, and multi-leaf join programs, whose hidden
+ * slots sit beyond the COMBINED total). The plain
+ * ndb_jit_bridge_translate is this with NDB_JIT_NO_AVG_SLOTS. */
+#ifndef NDB_JIT_NO_AVG_SLOTS
+#define NDB_JIT_NO_AVG_SLOTS 0xFFFFu
+#endif
+JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
+                                             uint32_t       n_words,
+                                             uint32_t       n_visible_results,
+                                             Program       *out_prog,
+                                             JitBridgeError *out_err);
+
 /* Phase 7: translate a standalone SCAN_FRAGREQ scan-filter interpreter
  * program into the internal Program/Op[] form. Wired into DBTUP via
  * Dbtup::scanCopyAttrinfo (compile) + Dbtup::interpreterStartLab (per-row

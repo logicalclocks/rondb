@@ -103,6 +103,9 @@
 #define BR_kOpEmbeddedInterp 28
 #define BR_kOpSkip          29
 #define BR_kOpSetRegNull    30
+/* ronsql_jit item 15: AVG as one opcode (RONDB-1107) — SUM into the
+ * visible dst slot + COUNT into a hidden companion slot. */
+#define BR_kOpAvg           31
 
 /* From storage/ndb/include/ndb_constants.h. */
 #define BR_NDB_TYPE_TINYINT          1
@@ -303,6 +306,7 @@ const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
     case BR_kOpEmbeddedInterp: return "kOpEmbeddedInterp";
     case BR_kOpSkip:           return "kOpSkip";
     case BR_kOpSetRegNull:     return "kOpSetRegNull";
+    case BR_kOpAvg:            return "kOpAvg";
     default:                   return "kOp?";
   }
 }
@@ -2696,6 +2700,16 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                           uint32_t       n_words,
                                           Program       *out_prog,
                                           JitBridgeError *out_err) {
+  return ndb_jit_bridge_translate_ex(ndb_prog, n_words,
+                                     NDB_JIT_NO_AVG_SLOTS, out_prog,
+                                     out_err);
+}
+
+JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
+                                             uint32_t       n_words,
+                                             uint32_t       n_visible_results,
+                                             Program       *out_prog,
+                                             JitBridgeError *out_err) {
   /* Defensive zero — caller may have left junk in here. */
   memset(out_prog, 0, sizeof(*out_prog));
   if (out_err != NULL) {
@@ -2776,6 +2790,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
          BR_ACC_U64 = 3, BR_ACC_STR = 4 };
   uint8_t acc_family[BC_MAX_ACCS];
   memset(acc_family, BR_ACC_UNSET, sizeof(acc_family));
+  /* ronsql_jit item 15: kOpAvg bookkeeping — the k-th kOpAvg (program
+   * order, like JoinAggInterpreter::Init's scan) owns hidden slot
+   * n_visible_results + k; a dst may carry at most one AVG. */
+  uint32_t avg_ordinal = 0;
+  uint8_t avg_dst_seen[BC_MAX_ACCS];
+  memset(avg_dst_seen, 0, sizeof(avg_dst_seen));
 #define BR_CLAIM_ACC_FAMILY(slot, family)                          \
   do {                                                             \
     if (acc_family[(slot)] == BR_ACC_UNSET) {                      \
@@ -3779,6 +3799,71 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         if (is_checked) {
           checked_arith_ops[n_checked_arith_ops++] =
               (uint16_t)(out_prog->n_ops - 1);
+        }
+        pos += 1;
+        break;
+      }
+
+      case BR_kOpAvg: {
+        /* ronsql_jit item 15: AVG(x) as one opcode (RONDB-1107 — CTE
+         * outputs). The interpreter runs its Sum kernel into the
+         * VISIBLE dst slot and its Count kernel into a HIDDEN companion
+         * slot that JoinAggInterpreter::Init assigns as
+         * n_visible_results + (ordinal of this kOpAvg in program order)
+         * and appends to m_n_agg_results; the CTE owner divides once
+         * after the redistribute. So the lowering is exactly the generic
+         * kOpSum lowering (typed by the register's track, family
+         * claimed on dst) followed by kOpCount's OP_COUNT_BIGINT on the
+         * hidden slot — both read the register, so an NB load's null
+         * branch skips both (the interpreter's null-skip). Needs the
+         * header's visible count, which only the join-agg proxy passes
+         * (single-leaf); everything else keeps the whole-program
+         * fallback. Duplicate dst / out-of-range mirror Init's
+         * rejections. */
+        uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
+        uint16_t dst = (uint16_t)(word & 0xFFFFu);
+        if (n_visible_results == NDB_JIT_NO_AVG_SLOTS) {
+          set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        uint32_t hidden = n_visible_results + avg_ordinal;
+        if (reg_index >= BC_EMB_REG_BASE || dst >= n_visible_results ||
+            dst >= BC_MAX_ACCS || avg_dst_seen[dst] ||
+            hidden >= BC_MAX_ACCS) {
+          set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        avg_dst_seen[dst] = 1;
+        avg_ordinal++;
+        uint8_t out_kind;
+        uint8_t fam;
+        uint8_t eff_track = reg_type[reg_index];
+        if (eff_track == BR_REG_NNC && acc_family[dst] == BR_ACC_U64) {
+          eff_track = BR_REG_U64;
+        }
+        switch (eff_track) {
+          case BR_REG_F64:
+            out_kind = OP_SUM_F64;           fam = BR_ACC_F64; break;
+          case BR_REG_U64:
+            out_kind = OP_SUM_U64_CHECKED;   fam = BR_ACC_U64; break;
+          case BR_REG_I64:
+          case BR_REG_NNC:
+            out_kind = OP_SUM_BIGINT_CHECKED; fam = BR_ACC_I64; break;
+          default:
+            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        BR_CLAIM_ACC_FAMILY(dst, fam);
+        if (!emit_op(out_prog, out_kind, (uint8_t)dst, reg_index, dst, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        checked_arith_ops[n_checked_arith_ops++] =
+            (uint16_t)(out_prog->n_ops - 1);
+        if (!emit_op(out_prog, OP_COUNT_BIGINT, (uint8_t)hidden, reg_index,
+                     (uint16_t)hidden, 0)) {
+          set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+          return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         pos += 1;
         break;

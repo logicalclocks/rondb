@@ -72,6 +72,7 @@
 #define kOpDiv            4
 #define kOpSkip          29
 #define kOpSetRegNull    30
+#define kOpAvg           31   /* ronsql_jit item 15 (RONDB-1107 AVG) */
 /* Phase 5C-2: the optimizer's DOUBLE-track rewrites. */
 #define kOpSumDouble     15
 #define kOpMaxDouble     17
@@ -206,6 +207,54 @@ static int expect_accepted(const char *name,
     return 0;
   }
   return 1;
+}
+
+/* ronsql_jit item 15: the visible-slot-aware translate. */
+static int expect_accepted_ex(const char *name,
+                              const uint32_t *prog, uint32_t n_words,
+                              uint32_t n_visible,
+                              Program *out_prog,
+                              uint16_t expected_n_ops) {
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate_ex(prog, n_words, n_visible,
+                                                  out_prog, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail(name, "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return 0;
+  }
+  if (out_prog->n_ops != expected_n_ops) {
+    mark_fail(name, "n_ops=%u, want %u", (unsigned)out_prog->n_ops,
+              (unsigned)expected_n_ops);
+    return 0;
+  }
+  return 1;
+}
+
+static void assert_rejected_ex(const char *name,
+                               const uint32_t *prog, uint32_t n_words,
+                               uint32_t n_visible,
+                               JitBridgeReason want_reason,
+                               uint32_t want_word, uint32_t want_op) {
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate_ex(prog, n_words, n_visible,
+                                                  &p, &err);
+  if (r != want_reason) {
+    mark_fail(name, "reason=%d, want %d", r, want_reason);
+    return;
+  }
+  if (want_word != UINT32_MAX && err.offending_word != want_word) {
+    mark_fail(name, "offending_word=%u, want %u",
+              err.offending_word, want_word);
+    return;
+  }
+  if (want_op != UINT32_MAX && err.offending_op != want_op) {
+    mark_fail(name, "offending_op=%u, want %u",
+              err.offending_op, want_op);
+    return;
+  }
+  mark_pass(name);
 }
 
 static void assert_rejected(const char *name,
@@ -4941,6 +4990,100 @@ static void test_f64_vs_u64_import(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* ronsql_jit item 15 — kOpAvg: typed SUM into the visible dst slot +   */
+/* COUNT into the hidden companion slot n_visible + ordinal.            */
+/* ------------------------------------------------------------------ */
+
+/* T83a: the rebase's first sighting — `LoadCol BIGINT r0; kOpAvg r0 ->
+ * slot 0` with one visible slot: SUM_BIGINT_CHECKED(0) + COUNT(1); the
+ * load NB-converts with its null branch past BOTH (target = op 3). */
+static void test_avg_bigint_single(void) {
+  const char *name = "T83a avg_bigint_single";
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/2),
+    enc_agg(kOpAvg, /*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  /* LOAD_NB + SUM + COUNT + EXIT + OVERFLOW_EXIT = 5. */
+  if (!expect_accepted_ex(name, prog, 2, /*n_visible=*/1, &p, 5)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 3)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 0)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 1)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 1)) return;
+  mark_pass(name);
+}
+
+/* T83b: two AVGs around a plain SUM, three visible slots — the hidden
+ * slots are 3 and 4 in program order; the DOUBLE AVG sums as SUM_F64. */
+static void test_avg_two_with_sum(void) {
+  const char *name = "T83b avg_two_with_sum";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
+    enc_agg(kOpAvg, /*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/1),
+    enc_agg(kOpAvg, /*reg=*/1, /*agg=*/2),
+  };
+  Program p;
+  /* LOAD + SUM_F64 + COUNT(3) + LOAD + SUM + SUM + COUNT(4) + EXIT +
+   * OVERFLOW_EXIT = 9. */
+  if (!expect_accepted_ex(name, prog, 5, /*n_visible=*/3, &p, 9)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_SUM_F64)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 3)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind,
+                       OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 5, "a", p.ops[5].a, 2)) return;
+  if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind,
+                       OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 6, "a", p.ops[6].a, 4)) return;
+  mark_pass(name);
+}
+
+/* T83c: without a visible count (the plain translate = standalone and
+ * multi-leaf callers) kOpAvg keeps the whole-program fallback. */
+static void test_avg_no_visible_count_rejects(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 2),
+    enc_agg(kOpAvg, 0, 0),
+  };
+  assert_rejected("T83c avg_no_visible_count_rejects", prog, 2,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 1, kOpAvg);
+}
+
+/* T83d: the hidden slot must fit BC_MAX_ACCS — 32 visible slots leave
+ * no room; a dst at or past the visible count is malformed; a second
+ * AVG on the same dst mirrors Init's duplicate rejection. */
+static void test_avg_slot_bounds(void) {
+  uint32_t full[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 2),
+    enc_agg(kOpAvg, 0, 0),
+  };
+  assert_rejected_ex("T83d avg_hidden_past_cap", full, 2, /*n_visible=*/32,
+                     JIT_BRIDGE_REG_OUT_OF_RANGE, 1, kOpAvg);
+  uint32_t oor[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 2),
+    enc_agg(kOpAvg, 0, /*agg=*/1),
+  };
+  assert_rejected_ex("T83d avg_dst_past_visible", oor, 2, /*n_visible=*/1,
+                     JIT_BRIDGE_REG_OUT_OF_RANGE, 1, kOpAvg);
+  uint32_t dup[3] = {
+    enc_load_col(NDB_TYPE_BIGINT, 0, 2),
+    enc_agg(kOpAvg, 0, 0),
+    enc_agg(kOpAvg, 0, 0),
+  };
+  assert_rejected_ex("T83d avg_duplicate_dst", dup, 3, /*n_visible=*/1,
+                     JIT_BRIDGE_REG_OUT_OF_RANGE, 2, kOpAvg);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -5137,6 +5280,10 @@ int main(void) {
   test_u64_pack_import_reject();
   test_u64_arith_operand_reject();
   test_f64_vs_u64_import();
+  test_avg_bigint_single();
+  test_avg_two_with_sum();
+  test_avg_no_visible_count_rejects();
+  test_avg_slot_bounds();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

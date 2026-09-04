@@ -1331,7 +1331,14 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
     m_acc_offset = leaf->m_acc_offset;
     m_jit_entry = leaf->m_jit_entry;
-    m_jit_leaf_n_agg = leaf->m_n_agg_results;
+    /* ronsql_jit item 15: a single-leaf program's JIT'd kOpAvg writes
+     * its COUNT into the hidden slots Init appended after the header's
+     * count, so the dispatch/writeback count must include them; in
+     * multi-leaf mode (m_agg_ops_cached) the hidden slots sit beyond
+     * the COMBINED total and kOpAvg is not lowered — keep the leaf's
+     * own slice count. */
+    m_jit_leaf_n_agg = leaf->m_n_agg_results +
+                       (m_agg_ops_cached ? 0 : m_n_hidden_slots);
   }
 
   m_linked_attr_data = linked_attr_data;
@@ -2066,7 +2073,8 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
      * here — this row never dispatches (m_null_local_columns), but a
      * stale entry must not survive into any future dispatch path. */
     m_jit_entry = leaf->m_jit_entry;
-    m_jit_leaf_n_agg = leaf->m_n_agg_results;
+    m_jit_leaf_n_agg = leaf->m_n_agg_results +
+                       (m_agg_ops_cached ? 0 : m_n_hidden_slots);  /* item 15 */
   }
 
   m_linked_attr_data = linked_attr_data;

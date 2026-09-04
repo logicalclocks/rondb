@@ -2095,11 +2095,19 @@ void dbtup_jit_release_scan_filter(void *cache_handle) {
 static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
                           NdbJitProgItem *out) {
   (void)ctx;
+  /* ronsql_jit item 15: the key is the bytecode words followed by ONE
+   * trailing word = n_visible_results (see dbtup_jit_compile_agg). */
   const Uint32 *prog = reinterpret_cast<const Uint32 *>(key);
-  const Uint32 n_words = key_len / (Uint32)sizeof(Uint32);
+  const Uint32 n_key_words = key_len / (Uint32)sizeof(Uint32);
+  if (unlikely(n_key_words < 2)) {
+    return -1;
+  }
+  const Uint32 n_words = n_key_words - 1;
+  const Uint32 n_visible = prog[n_words];
   Program p;
   JitBridgeError berr;
-  JitBridgeReason brc = ndb_jit_bridge_translate(prog, n_words, &p, &berr);
+  JitBridgeReason brc =
+      ndb_jit_bridge_translate_ex(prog, n_words, n_visible, &p, &berr);
   if (brc != JIT_BRIDGE_OK) {
     dbtup_jit_note_fallback("aggregation bridge", (int)brc,
                             berr.offending_op, berr.offending_word,
@@ -2134,7 +2142,8 @@ static NdbJitProgCache *agg_cache() {
 }
 
 void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
-                            void **out_cache_handle, bool pinned) {
+                            void **out_cache_handle, bool pinned,
+                            Uint32 n_visible_results) {
   if (out_cache_handle != nullptr) {
     *out_cache_handle = nullptr;
   }
@@ -2156,10 +2165,22 @@ void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
    * cache upgrades an existing entry to pinned and never downgrades.
    * Bounded by the code-memory cap: on OOM new compiles fail and fall
    * back (a memory-pressure sweep is future work). */
+  /* ronsql_jit item 15: the cache key is the bytecode plus ONE trailing
+   * word carrying n_visible_results — two identical instruction streams
+   * with different visible counts would place kOpAvg's hidden COUNT
+   * slot differently, so they must not share a blob. Cold path (one
+   * allocation per compile attempt); OOM = interpreter fallback. */
+  Uint32 *key = static_cast<Uint32 *>(malloc((n_words + 1) * sizeof(Uint32)));
+  if (key == nullptr) {
+    return nullptr;
+  }
+  std::memcpy(key, agg_prog, n_words * sizeof(Uint32));
+  key[n_words] = n_visible_results;
   NdbJitProgItem item;
   NjpEntry *handle = ndb_jit_progcache_acquire(
-      cache, reinterpret_cast<const uint8_t *>(agg_prog),
-      n_words * (Uint32)sizeof(Uint32), pinned ? 1 : 0, &item);
+      cache, reinterpret_cast<const uint8_t *>(key),
+      (n_words + 1) * (Uint32)sizeof(Uint32), pinned ? 1 : 0, &item);
+  free(key);
   if (handle == nullptr) {
     return nullptr;
   }

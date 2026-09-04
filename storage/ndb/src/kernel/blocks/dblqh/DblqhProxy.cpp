@@ -2925,6 +2925,14 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                     ndb_jit_event_logger, nullptr);
         }
   #endif
+        /* ronsql_jit item 15: kOpAvg's hidden COUNT slot is placed at
+         * n_visible_results + ordinal — the LeafProgram's header count
+         * (Init later grows the interpreter's own count). Single-leaf
+         * only: in multi-leaf mode the hidden slots sit beyond the
+         * COMBINED total, past the leaf's slice. */
+        const Uint32 n_vis = (state->m_num_leaves == 1)
+                                 ? lp.m_n_agg_results
+                                 : NDB_JIT_NO_AVG_SLOTS;
         Program p;
         JitBridgeError berr;
         /*
@@ -2960,8 +2968,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
          * programs this linear pass costs microseconds per setup.
          */
         JitBridgeReason brc =
-            ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
-                                      bc_words, &p, &berr);
+            ndb_jit_bridge_translate_ex(lp.m_agg_program + bc_off,
+                                         bc_words, n_vis, &p, &berr);
         if (brc == JIT_BRIDGE_OK) {
   #ifdef DEBUG_JIT
           if (dump_jit_program) {
@@ -2983,7 +2991,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           void *cache_handle = nullptr;
           void *entry = dbtup_jit_compile_agg(lp.m_agg_program + bc_off,
                                               bc_words, &cache_handle,
-                                              jit_pinned);
+                                              jit_pinned, n_vis);
           if (entry != nullptr) {
             lp.m_jit_cache_handle = cache_handle;
             lp.m_jit_entry = reinterpret_cast<JitEntry>(entry);

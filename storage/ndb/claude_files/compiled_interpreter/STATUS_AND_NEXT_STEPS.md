@@ -59,8 +59,12 @@ suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
   into a hidden companion slot appended after the visible ones); the
   bridge rejects it (reason 1 detail 31). testCteNdbApiFilter re-pinned
   0 → 4 (its two new AVG cases); the dd_avg mirror will pin likewise.
-  Lowering sketch = **item 15** in `ronsql_jit_plan.md` (bridge-only
-  once the translate entry gets `n_visible_results`).
+  **Item 15 DONE & VERIFIED (2026-09-04, three JIT suites green)**: kOpAvg lowers to
+  the typed SUM + a COUNT into the hidden slot (`translate_ex` with the
+  header's visible count, part of the agg cache key); the join-agg
+  dispatch count now includes the hidden slots for single-leaf
+  programs (they were excluded — the COUNT would have been dropped).
+  T83a-d; testCteNdbApiFilter re-pinned 0; dd_avg mirror at 0. **Post-rebase repair complete: the three JIT suites are green again.**
 - **15 mirror .result files were STALE** — base tests whose OUTPUT changed
   in the rebase (renumbered ERROR_INSERT echo lines: the evict test's
   5116→5126 / 4040→4041; testJoinAggNdbApi / testStarJoinAggNdbApi grew

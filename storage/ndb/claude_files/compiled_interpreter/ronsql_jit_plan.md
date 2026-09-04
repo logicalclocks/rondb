@@ -1519,7 +1519,48 @@ Mikael's question "are they also deemed rejected" — yes):**
   is family-safe: the row is skipped) — on the backlog, not worth
   doing for a shape nobody writes.
 
-### Item 15 — BACKLOG (opened 2026-09-04): kOpAvg, the rebase's new opcode
+### Item 15 — DONE & VERIFIED (2026-09-04: bridge_tests + the three JIT suites green): kOpAvg lowered
+
+Done per the sketch below, plus one precondition the sketch flagged
+and which turned out real: the join-agg per-row dispatch took the
+LEAF's header slot count (`m_jit_leaf_n_agg = leaf->m_n_agg_results`
+at both leaf switches), which does not include the hidden slots Init
+appends — the COUNT half of an AVG would have been dropped at
+writeback. Now single-leaf adds `m_n_hidden_slots` (multi-leaf,
+detected by `m_agg_ops_cached`, keeps the leaf's slice count and does
+not lower AVG).
+- Bridge: `BR_kOpAvg 31`; new `ndb_jit_bridge_translate_ex(prog, n,
+  n_visible_results, ...)` (the plain translate = `NDB_JIT_NO_AVG_SLOTS`,
+  which keeps kOpAvg rejected); the handler is the generic kOpSum
+  lowering into dst (typed by track, family claimed, overflow-checked)
+  followed by OP_COUNT_BIGINT into `n_visible + ordinal`; dst ≥
+  visible, duplicate dst, hidden ≥ BC_MAX_ACCS → REG_OUT_OF_RANGE.
+- Cache: `dbtup_jit_compile_agg` gains `n_visible_results`, appended
+  as ONE trailing key word (identical bytecode with a different
+  visible count must not share a blob); the callback decodes it.
+  Create passes the sentinel (standalone programs never carry kOpAvg);
+  the proxy passes `lp.m_n_agg_results` for single-leaf, the sentinel
+  otherwise, to both the diagnostic translate and the compile.
+- Tests: **T83a** (first-sighting program: SUM(0) + COUNT(1), NB null
+  branch past both), **T83b** (two AVGs around a SUM: hidden 3 and 4,
+  DOUBLE AVG = SUM_F64), **T83c** (plain translate still rejects),
+  **T83d** (cap / dst / duplicate bounds).
+- testCteNdbApiFilter re-pinned 4 → 0.
+
+**Verify (Mikael):**
+```sh
+cmake --build debug_build --target bridge_tests ndbmtd -j 8
+debug_build/storage/ndb/test/jit_proto/bridge_tests
+cd debug_build/mysql-test
+./mtr --parallel=1 ndb_push_agg_jit.testCteNdbApiFilter ronsql_cte_jit.ronsql_cte_dd_avg
+./mtr --suite=ndb_push_agg_jit,ronsql_jit,ronsql_cte_jit --parallel=6 --force
+```
+Expected: T83 green; testCteNdbApiFilter 0 (its Tests 25/26 assert the
+AVG values — the owner's finalize divide over JIT-written SUM/COUNT
+slots); dd_avg mirror 0 with results identical to the OFF arm; no
+other pin moves.
+
+Original backlog sketch (2026-09-04):
 
 The rebase (RONDB-1107 "AVG in CTE outputs via SUM+COUNT slots and
 finalize divide") added aggregation opcode **kOpAvg = 31**: per row it

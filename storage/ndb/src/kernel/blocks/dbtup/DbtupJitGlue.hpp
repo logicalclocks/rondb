@@ -235,8 +235,20 @@ void dbtup_jit_release_scan_filter(void *cache_handle);
  * keeps the entry cached at refcount 0 so a re-sent identical program
  * hits instead of recompiling (Phase 8 Slice 4); sticky on an existing
  * entry, never downgraded. */
+/* ronsql_jit item 15: "no visible count" sentinel — the same value the
+ * bridge defines (jit/ndb_jit_bridge.h); duplicated here under a guard so
+ * callers that only see this header (PushdownInterpreter.cpp) need not
+ * pull the bridge's Program/Op typedefs into the kernel namespace. */
+#ifndef NDB_JIT_NO_AVG_SLOTS
+#define NDB_JIT_NO_AVG_SLOTS 0xFFFFu
+#endif
 void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
-                            void **out_cache_handle, bool pinned);
+                            void **out_cache_handle, bool pinned,
+                            Uint32 n_visible_results);
+/* ronsql_jit item 15: `n_visible_results` is the program header's
+ * n_agg_results (before Init grows it for AVG's hidden slots) and is
+ * part of the cache key — kOpAvg's hidden-slot placement depends on it.
+ * NDB_JIT_NO_AVG_SLOTS keeps kOpAvg rejected. */
 
 /* Release an agg program acquired by dbtup_jit_compile_agg. Drops the
  * reuse-cache refcount; the blob + code-memory slot are freed when the
