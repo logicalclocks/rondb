@@ -44,7 +44,18 @@ import (
 	"time"
 )
 
-const callTimeout = 10 * time.Second
+// callTimeout bounds one management-server command. It has to cover a full
+// schema transaction: "set user"/"alter user"/"drop user" run an
+// ALTER DATABASE through DBDICT, and DICT is single-threaded for schema
+// transactions, so a command issued while the cluster is still working off an
+// overload burst (as the rate limit tests deliberately create) can take tens
+// of seconds even though it eventually succeeds. Timing out and retrying only
+// adds another schema transaction to the queue, so wait generously instead.
+const callTimeout = 60 * time.Second
+
+// connectTimeout bounds establishing the TCP connection to the management
+// server, which does not depend on any cluster-side work.
+const connectTimeout = 10 * time.Second
 
 type Client struct {
 	conn net.Conn
@@ -62,7 +73,7 @@ type UserLimits struct {
 
 // Connect opens a connection to the management server, e.g. "localhost:13000".
 func Connect(addr string) (*Client, error) {
-	conn, err := net.DialTimeout("tcp", addr, callTimeout)
+	conn, err := net.DialTimeout("tcp", addr, connectTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("mgmclient: connect to %s: %w", addr, err)
 	}

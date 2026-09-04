@@ -49,9 +49,16 @@ func connectMgmd() (*mgmclient.Client, error) {
 	return mgmclient.Connect(conf.RonDB.GenerateMgmdConnectString())
 }
 
-// SetOrAlterRateLimitUser creates the USER rate limit entity for the given
-// identity, or updates it if it already exists (e.g. from a previous test
-// run against the same cluster).
+// SetOrAlterRateLimitUser updates the USER rate limit entity for the given
+// identity, or creates it if it does not exist yet.
+//
+// Alter is tried first even though "set or alter" reads the other way round:
+// every mgm command here is a schema transaction, DICT runs one of those at a
+// time, and by the time any test changes a limit the entity has already been
+// provisioned by ProvisionDefaultRateLimitUsers. Creating first would
+// therefore mean a doomed CREATE (error 721, object already exists) plus an
+// ALTER on every single change - two serialised schema transactions where one
+// suffices, which is what makes these calls slow while the cluster is busy.
 func SetOrAlterRateLimitUser(identity string, ratePerSec uint32) error {
 	client, err := connectMgmd()
 	if err != nil {
@@ -59,10 +66,10 @@ func SetOrAlterRateLimitUser(identity string, ratePerSec uint32) error {
 	}
 	defer client.Close()
 	limits := mgmclient.UserLimits{RatePerSec: ratePerSec}
-	if setErr := client.SetUser(identity, limits); setErr != nil {
-		if alterErr := client.AlterUser(identity, limits); alterErr != nil {
-			return fmt.Errorf("set user failed: %v; alter user failed: %w",
-				setErr, alterErr)
+	if alterErr := client.AlterUser(identity, limits); alterErr != nil {
+		if setErr := client.SetUser(identity, limits); setErr != nil {
+			return fmt.Errorf("alter user failed: %v; set user failed: %w",
+				alterErr, setErr)
 		}
 	}
 	return nil
