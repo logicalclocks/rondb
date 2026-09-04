@@ -314,10 +314,12 @@ void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail,
 void dbtup_jit_note_compile_ns(Uint64 ns);
 
 /* RONDB-1056 Phase 8 — CompiledInterpreter config gate (node-global).
- * dbtup_jit_set_mode is called once at config read with the
- * NDB_COMPILED_INTERPRETER_* value; every compile site consults
- * dbtup_jit_enabled() and produces no JIT program when the mode is OFF
- * (so the program runs on the interpreter). Default is enabled (AUTO). */
+ * dbtup_jit_set_mode is called at config read with the
+ * NDB_COMPILED_INTERPRETER_* value, and again by CMVMI on the MGM
+ * client's `SET CompiledInterpreter` (Cmvmi::execSET_CONFIG_PARAM_REQ);
+ * every compile site consults dbtup_jit_enabled() and produces no JIT
+ * program when the mode is OFF (so the program runs on the interpreter).
+ * Default is enabled (AUTO). */
 void dbtup_jit_set_mode(Uint32 mode);
 bool dbtup_jit_enabled();
 

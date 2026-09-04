@@ -1,0 +1,111 @@
+-- source include/have_ndb.inc
+
+#
+# RONDB-1056: CompiledInterpreter (the JIT mode for pushed-down
+# interpreted programs) set online via the MGM client SET command.
+#
+# ndb_config_set.test covers the SET plumbing for the other dynamically
+# changeable parameters.  This parameter has its own test because it
+# also asserts the runtime effect through ndbinfo.jit, which needs a
+# pushed-down aggregation.
+#
+# config_param 709 = CFG_DB_COMPILED_INTERPRETER; values 0=OFF, 1=AUTO
+# (config default), 2=ON.
+#
+
+CREATE TABLE t1 (pk INT NOT NULL PRIMARY KEY, a BIGINT NOT NULL) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20),(3,30),(4,40),(5,50),(6,60),(7,70),(8,80);
+SET ndb_pushdown_aggregate=ON;
+
+#
+# Test 1: ALL SET CompiledInterpreter OFF -- every data node reports 0
+#
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter OFF"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 709
+  order by node_id;
+
+#
+# Test 2: with the JIT OFF a pushed-down aggregation compiles (and reuses)
+# no JIT program -- it runs on the interpreter.  The delta is exactly 0
+# because OFF gates every compile site before the program cache is touched.
+#
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(a) FROM t1;
+SELECT CAST((SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) - @c0 AS SIGNED) AS jit_programs_delta_when_off;
+
+#
+# Test 3: ALL SET CompiledInterpreter ON -- the same aggregation JIT-compiles
+# again (a reuse-cache hit of an identical program counts as well, as in
+# the rondb_jit_* canaries).
+#
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter ON"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 709
+  order by node_id;
+
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(a) FROM t1;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS jit_program_compiled_when_on;
+
+#
+# Test 4: single node SET; enum names are case-insensitive and the
+# numeric values 0/1/2 are accepted
+#
+--exec $NDB_MGM -e "1 SET CompiledInterpreter auto"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 709
+  order by node_id;
+
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter 0"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 709
+  order by node_id;
+
+#
+# Test 5: Error cases
+#
+
+# Number outside the enum
+--error 255
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter 3"
+
+# Unknown enum name
+--error 255
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter maybe"
+
+# Missing value
+--error 255
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter"
+
+# Verify config unchanged after the failed commands
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 709
+  order by node_id;
+
+#
+# Test 6: Restore the config default (AUTO)
+#
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter AUTO"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 709
+  order by node_id;
+
+DROP TABLE t1;

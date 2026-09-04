@@ -56,16 +56,30 @@ extern "C" {
 /* RONDB-1056 Phase 8 — CompiledInterpreter config gate.              */
 /*                                                                    */
 /* Node-global JIT mode from the CompiledInterpreter config param. Set */
-/* once at config read (DblqhProxy::execREAD_CONFIG_REQ) before any    */
-/* scan/aggregation traffic, then only read on the compile path — so a */
-/* plain word needs no synchronisation. Defaults to enabled (AUTO) so  */
-/* a compile before config read (none expected) still works. 0 is OFF  */
+/* at config read (DblqhProxy::execREAD_CONFIG_REQ, before any         */
+/* scan/aggregation traffic) and again from the CMVMI thread whenever  */
+/* the MGM client runs `SET CompiledInterpreter <OFF|AUTO|ON>`         */
+/* (Cmvmi::execSET_CONFIG_PARAM_REQ), while the LDM threads read it on */
+/* every compile decision. A relaxed atomic word (the same idiom as    */
+/* the counters below) makes that cross-thread write well-defined at   */
+/* no cost. No ordering is needed because the mode is consulted ONLY   */
+/* at compile-decision time: an in-flight compile may still see the    */
+/* old value (benign — one more or one less JIT program), and there is */
+/* no pointer or lifetime consequence since programs already compiled  */
+/* stay valid in the program cache and keep executing. OFF routes new  */
+/* executions to the interpreter without evicting the cache; a later   */
+/* ON resumes cache hits. Defaults to enabled (AUTO) so a compile      */
+/* before config read (none expected) still works. 0 is OFF            */
 /* (NDB_COMPILED_INTERPRETER_OFF); AUTO/ON are enabled.                */
-static Uint32 g_jit_mode = 1 /* NDB_COMPILED_INTERPRETER_AUTO */;
+static std::atomic<Uint32> g_jit_mode{1 /* NDB_COMPILED_INTERPRETER_AUTO */};
 
-void dbtup_jit_set_mode(Uint32 mode) { g_jit_mode = mode; }
+void dbtup_jit_set_mode(Uint32 mode) {
+  g_jit_mode.store(mode, std::memory_order_relaxed);
+}
 
-bool dbtup_jit_enabled() { return g_jit_mode != 0 /* != OFF */; }
+bool dbtup_jit_enabled() {
+  return g_jit_mode.load(std::memory_order_relaxed) != 0 /* != OFF */;
+}
 
 /* ------------------------------------------------------------------ */
 /* Phase 8 — observability counters (ndbinfo.jit) + fallback logging. */

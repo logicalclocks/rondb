@@ -102,6 +102,11 @@ Uint32 g_acc_pages_used[1 + MAX_NDBMT_LQH_WORKERS];
 extern void mt_init_receiver_cache();
 extern void mt_set_section_chunk_size();
 
+/* RONDB-1056: node-global JIT mode setter, defined in
+   dbtup/DbtupJitGlue.cpp (declared in dbtup/DbtupJitGlue.hpp, which is
+   not included here as it drags in Dbtup.hpp). */
+extern void dbtup_jit_set_mode(Uint32 mode);
+
 Cmvmi::Cmvmi(Block_context &ctx)
     : SimulatedBlock(CMVMI, ctx), subscribers(subscriberPool) {
   BLOCK_CONSTRUCTOR(Cmvmi);
@@ -3497,8 +3502,8 @@ void Cmvmi::execDEACTIVATE_REQ(Signal *signal)
 
 /**
  * Set a configuration parameter at runtime.
- * Updates the local ConfigValues (for ndbinfo reporting) and
- * dispatches the change to the appropriate block for runtime effect.
+ * Dispatches the change to the appropriate block for runtime effect and
+ * updates the local ConfigValues (for ndbinfo reporting).
  */
 void Cmvmi::execSET_CONFIG_PARAM_REQ(Signal *signal)
 {
@@ -3511,20 +3516,10 @@ void Cmvmi::execSET_CONFIG_PARAM_REQ(Signal *signal)
                         Uint64(req->configParamValueLow);
 
   /**
-   * Update the node's own ConfigValues so that ndbinfo config_values
-   * reports the new value.
-   */
-  ConfigValues *own_config_values = m_ctx.m_config.get_own_config_values_mutable();
-  ConfigValues::Iterator iter(*own_config_values);
-  if (iter.openSection(CFG_SECTION_NODE, 0))
-  {
-    jam();
-    iter.set(configKey, configValue);
-    iter.closeSection();
-  }
-
-  /**
    * Dispatch to the appropriate block based on the config parameter.
+   * A case that rejects the value replies with SET_CONFIG_PARAM_REF and
+   * returns from here, before the ConfigValues update below, so that
+   * ndbinfo never reports a value that was not applied.
    */
   switch (configKey)
   {
@@ -3541,11 +3536,72 @@ void Cmvmi::execSET_CONFIG_PARAM_REQ(Signal *signal)
     sendSignal(BACKUP_REF, GSN_DUMP_STATE_ORD, signal, 3, JBB);
     break;
   }
+  case CFG_DB_COMPILED_INTERPRETER:
+  {
+    jam();
+    /**
+     * RONDB-1056: CompiledInterpreter (JIT) mode, OFF=0 / AUTO=1 / ON=2.
+     * The mode is a node-global word consulted at every JIT compile
+     * decision (dbtup_jit_enabled()), so the new value applies to the
+     * next program compile on every LDM thread. Programs already compiled
+     * stay valid in the JIT program cache: OFF only routes new executions
+     * to the interpreter, a later AUTO/ON resumes cache hits.
+     */
+    if (configValue > NDB_COMPILED_INTERPRETER_ON)
+    {
+      jam();
+      g_eventLogger->warning("SET_CONFIG_PARAM_REQ: invalid "
+                             "CompiledInterpreter value %llu "
+                             "(use 0=OFF, 1=AUTO, 2=ON), ignored",
+                             (unsigned long long)configValue);
+      SetConfigParamRef* ref = (SetConfigParamRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->configParamKey = configKey;
+      ref->errorCode = 1;  // no per-cause codes; mgmd reports 5070 on any REF
+      sendSignal(senderRef,
+                 GSN_SET_CONFIG_PARAM_REF,
+                 signal,
+                 SetConfigParamRef::SignalLength,
+                 JBB);
+      return;
+    }
+    dbtup_jit_set_mode(Uint32(configValue));
+    g_eventLogger->info("CompiledInterpreter set to %u (0=OFF, 1=AUTO, 2=ON)",
+                        Uint32(configValue));
+    break;
+  }
   default:
     jam();
     g_eventLogger->info("SET_CONFIG_PARAM_REQ: unsupported config key %u",
                         configKey);
     break;
+  }
+
+  /**
+   * Update the node's own ConfigValues so that ndbinfo config_values
+   * reports the new value. An existing entry keeps its stored type
+   * (ConfigSection::set rejects a type change), so a 32-bit parameter
+   * (CI_INT/CI_BOOL/CI_ENUM, e.g. CompiledInterpreter) is written back as
+   * Uint32 and a 64-bit one (CI_INT64, e.g. MaxDiskWriteSpeed) as Uint64.
+   */
+  ConfigValues *own_config_values = m_ctx.m_config.get_own_config_values_mutable();
+  ConfigValues::Iterator iter(*own_config_values);
+  if (iter.openSection(CFG_SECTION_NODE, 0))
+  {
+    jam();
+    ConfigSection::ValueType type = ConfigSection::Int64TypeId;
+    iter.getTypeOf(configKey, &type);
+    if (type == ConfigSection::IntTypeId)
+    {
+      jam();
+      iter.set(configKey, Uint32(configValue));
+    }
+    else
+    {
+      jam();
+      iter.set(configKey, configValue);
+    }
+    iter.closeSection();
   }
 
   /**

@@ -1,0 +1,82 @@
+CREATE TABLE t1 (pk INT NOT NULL PRIMARY KEY, a BIGINT NOT NULL) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20),(3,30),(4,40),(5,50),(6,60),(7,70),(8,80);
+SET ndb_pushdown_aggregate=ON;
+Configuration updated for all data nodes
+CompiledInterpreter set to OFF on all data nodes
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 709
+order by node_id;
+node_id	config_value
+1	0
+2	0
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(a) FROM t1;
+SUM(a)
+360
+SELECT CAST((SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) - @c0 AS SIGNED) AS jit_programs_delta_when_off;
+jit_programs_delta_when_off
+0
+Configuration updated for all data nodes
+CompiledInterpreter set to ON on all data nodes
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 709
+order by node_id;
+node_id	config_value
+1	2
+2	2
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(a) FROM t1;
+SUM(a)
+360
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS jit_program_compiled_when_on;
+jit_program_compiled_when_on
+1
+Configuration updated for node 1
+CompiledInterpreter set to AUTO on node 1
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 709
+order by node_id;
+node_id	config_value
+1	1
+2	2
+Configuration updated for all data nodes
+CompiledInterpreter set to OFF on all data nodes
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 709
+order by node_id;
+node_id	config_value
+1	0
+2	0
+Invalid value: '3'. Use OFF, AUTO or ON (or 0, 1, 2)
+
+Invalid value: 'maybe'. Use OFF, AUTO or ON (or 0, 1, 2)
+
+Usage: <id> SET <parameter> <value>
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel, CompiledInterpreter
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 709
+order by node_id;
+node_id	config_value
+1	0
+2	0
+Configuration updated for all data nodes
+CompiledInterpreter set to AUTO on all data nodes
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 709
+order by node_id;
+node_id	config_value
+1	1
+2	1
+DROP TABLE t1;

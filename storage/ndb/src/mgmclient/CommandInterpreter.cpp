@@ -165,6 +165,8 @@ class CommandInterpreter {
                                                  const char *value_str,
                                                  bool all);
   int executeSetRdmaLogLevel(int processId, const char *value_str, bool all);
+  int executeSetCompiledInterpreter(int processId, const char *value_str,
+                                    bool all);
   Uint64 parse_size_value(const char *str, bool &ok);
   int executeSetDomain(int processId, const char *parameters, bool all);
   int executeHostname(int processId, const char *parameters, bool all);
@@ -542,12 +544,20 @@ static const char* helpTextSet =
 "                             Proactive deadlock discovery on/off.\n"
 "                             Value: 0/1 (also on/off, true/false).\n"
 "                             Updates the saved config (so new and restarting\n"
-"                             nodes pick it up) and toggles running nodes now.\n\n"
+"                             nodes pick it up) and toggles running nodes now.\n"
+"  CompiledInterpreter        JIT for pushed-down interpreted programs\n"
+"                             (scan filters and aggregation).\n"
+"                             Value: OFF, AUTO or ON (also 0, 1, 2).\n"
+"                             Updates the saved config and applies to the\n"
+"                             next program compile on running nodes now;\n"
+"                             already compiled programs keep running.\n\n"
 "Examples:\n"
 "  ALL SET MaxDiskWriteSpeed 100M    Set on all data nodes to 100 MB/s\n"
 "  1 SET MaxDiskWriteSpeed 50M       Set on node 1 to 50 MB/s\n"
 "  ALL SET EnableProactiveDeadlockDetection 1   Enable on all data nodes\n"
 "  ALL SET EnableProactiveDeadlockDetection 0   Disable on all data nodes\n"
+"  ALL SET CompiledInterpreter OFF   Run every program on the interpreter\n"
+"  1 SET CompiledInterpreter AUTO    Back to the default JIT mode on node 1\n"
 ;
 
 static const char* helpTextHostname =
@@ -2821,7 +2831,8 @@ CommandInterpreter::executeSet(int processId,
   {
     ndbout_c("Usage: <id> SET <parameter> <value>");
     ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
-             "EnableProactiveDeadlockDetection, RdmaLogLevel");
+             "EnableProactiveDeadlockDetection, RdmaLogLevel, "
+             "CompiledInterpreter");
     return -1;
   }
 
@@ -2833,7 +2844,8 @@ CommandInterpreter::executeSet(int processId,
   {
     ndbout_c("Usage: <id> SET <parameter> <value>");
     ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
-             "EnableProactiveDeadlockDetection, RdmaLogLevel");
+             "EnableProactiveDeadlockDetection, RdmaLogLevel, "
+             "CompiledInterpreter");
     return -1;
   }
 
@@ -2854,9 +2866,15 @@ CommandInterpreter::executeSet(int processId,
     return executeSetRdmaLogLevel(processId, value_str, all);
   }
 
+  if (native_strcasecmp(param_name, "CompiledInterpreter") == 0)
+  {
+    return executeSetCompiledInterpreter(processId, value_str, all);
+  }
+
   ndbout_c("Unknown SET parameter: '%s'", param_name);
   ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
-           "EnableProactiveDeadlockDetection, RdmaLogLevel");
+           "EnableProactiveDeadlockDetection, RdmaLogLevel, "
+           "CompiledInterpreter");
   return -1;
 }
 
@@ -3150,6 +3168,152 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
   else
     ndbout_c("EnableProactiveDeadlockDetection set to %u on node %d",
              new_value, processId);
+
+  return 0;
+}
+
+/*
+ * RONDB-1056: set the CompiledInterpreter (JIT) mode online.
+ *
+ * Same two-phase pattern as executeSetMaxDiskWriteSpeed: first update the
+ * permanent configuration on the management server (so nodes that (re)start
+ * later pick up the new value), then apply it to the running data nodes with
+ * ndb_mgm_set_config_param, which CMVMI turns into a write of the node-global
+ * JIT mode word (Cmvmi::execSET_CONFIG_PARAM_REQ).  The value is the enum name
+ * (OFF, AUTO, ON; case-insensitive) or its number (0, 1, 2).
+ */
+int
+CommandInterpreter::executeSetCompiledInterpreter(int processId,
+                                                  const char *value_str,
+                                                  bool all)
+{
+  static const char *const mode_names[] = {"OFF", "AUTO", "ON"};
+  Uint32 new_value;
+  if (native_strcasecmp(value_str, "off") == 0 ||
+      native_strcasecmp(value_str, "0") == 0)
+  {
+    new_value = NDB_COMPILED_INTERPRETER_OFF;
+  }
+  else if (native_strcasecmp(value_str, "auto") == 0 ||
+           native_strcasecmp(value_str, "1") == 0)
+  {
+    new_value = NDB_COMPILED_INTERPRETER_AUTO;
+  }
+  else if (native_strcasecmp(value_str, "on") == 0 ||
+           native_strcasecmp(value_str, "2") == 0)
+  {
+    new_value = NDB_COMPILED_INTERPRETER_ON;
+  }
+  else
+  {
+    ndbout_c("Invalid value: '%s'. Use OFF, AUTO or ON (or 0, 1, 2)",
+             value_str);
+    return -1;
+  }
+  const char *const mode_name = mode_names[new_value];
+
+  /*
+   * CompiledInterpreter is a data-node-only parameter, so when a specific
+   * node is given it must be a valid data node id.
+   */
+  if (!all && (processId == 0 || processId > ABS_MAX_NDB_NODES))
+  {
+    ndbout_c("Node %d is not a valid data node id (1..%d)", processId,
+             ABS_MAX_NDB_NODES);
+    return -1;
+  }
+
+  /*
+   * Step 1: Update the permanent configuration on the management server so the
+   * value survives node (re)starts.  Only data node sections are searched
+   * (data node ids are within ABS_MAX_NDB_NODES).
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                          NDB_VERSION);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config_values);
+  bool found_any = false;
+
+  if (all)
+  {
+    for (int i = 0; i < ABS_MAX_NDB_NODES; i++)
+    {
+      if (!iter.openSection(CFG_SECTION_NODE, i))
+        continue;
+      Uint32 node_type = 0;
+      iter.get(CFG_TYPE_OF_SECTION, &node_type);
+      if (node_type != (Uint32)NODE_TYPE_DB)
+      {
+        iter.closeSection();
+        continue;
+      }
+      iter.set(CFG_DB_COMPILED_INTERPRETER, new_value);
+      iter.closeSection();
+      found_any = true;
+    }
+  }
+  else
+  {
+    bool ret = get_node_section(iter, processId, 0);
+    if (!ret)
+    {
+      printError();
+      ndbout_c("Failed to get configuration of node %d", processId);
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    iter.set(CFG_DB_COMPILED_INTERPRETER, new_value);
+    iter.closeSection();
+    found_any = true;
+  }
+
+  if (!found_any)
+  {
+    ndbout_c("No data nodes found in configuration");
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  ndb_mgm_destroy_configuration(conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to update configuration");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("Configuration updated for all data nodes");
+  else
+    ndbout_c("Configuration updated for node %d", processId);
+
+  /*
+   * Step 2: Send the runtime update to the data node(s) so the new mode
+   * takes effect at the next program compile and ndbinfo reports it.
+   */
+  ret_code = ndb_mgm_set_config_param(m_mgmsrv,
+                                      all ? 0 : processId,
+                                      CFG_DB_COMPILED_INTERPRETER,
+                                      new_value);
+  if (ret_code < 0)
+  {
+    ndbout_c("Warning: Configuration saved but failed to update running "
+             "nodes. Restart nodes for the change to take effect.");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("CompiledInterpreter set to %s on all data nodes", mode_name);
+  else
+    ndbout_c("CompiledInterpreter set to %s on node %d", mode_name, processId);
 
   return 0;
 }

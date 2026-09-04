@@ -80,6 +80,11 @@ select node_id, config_value
 # ==========================================
 # Add new dynamic config parameter tests below
 # ==========================================
+#
+# CompiledInterpreter (RONDB-1056) is covered by
+# ndb_set_compiled_interpreter.test, which also asserts the JIT effect
+# through ndbinfo.jit.
+#
 
 # ==========================================
 # Test: SET RdmaLogLevel
