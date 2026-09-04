@@ -38,6 +38,16 @@ suites (ndb_push_agg_jit, ronsql_jit, ronsql_cte_jit):
   deliberately NOT mirrored, like the bench tests. All other mirror
   sources resolve; the three my.cnf !includes resolve.
 - **Every mirror's --source target exists; no base test was renamed.**
+- **15 mirror .result files were STALE** — base tests whose OUTPUT changed
+  in the rebase (renumbered ERROR_INSERT echo lines: the evict test's
+  5116→5126 / 4040→4041; testJoinAggNdbApi / testStarJoinAggNdbApi grew
+  new tests; several ronsql / ronsql_cte bodies gained queries) updated
+  the base .result but not the mirror's. Regenerated from the base
+  results with each pin preserved by the new
+  `refresh_jit_mirror_results.py` (this directory; run from mysql-test/
+  after ANY rebase — it is byte-wise, since some results carry non-UTF-8
+  bytes, and leaves the native canaries alone). Pins of the grown tests
+  may still move on the first run — that is the census number to re-pin.
 
 
 

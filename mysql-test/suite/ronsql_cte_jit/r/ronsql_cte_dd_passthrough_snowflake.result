@@ -2430,6 +2430,16 @@ ronsql_cli caught exception: No suitable index for join columns.
 === sn-P3 (rejection): cross-table WHERE residual ===
 Error handling: RPE
 ronsql_cli caught exception: Cross-table WHERE conditions (e.g., a.x > b.y) are only supported in queries with aggregation (GROUP BY / aggregate functions).  Split into separate conditions per table, or add aggregation.
+
+=== sn-P4 (rejection): TEXT join column, pass-through ===
+BLOB/TEXT columns cannot be used as join columns.
+Error handling: RPE
+ronsql_cli caught exception: BLOB/TEXT join column.
+
+=== sn-P5 (rejection): TEXT join column, aggregate path ===
+BLOB/TEXT columns cannot be used as join columns.
+Error handling: RPE
+ronsql_cli caught exception: BLOB/TEXT join column.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_passthrough_snowflake_jit_fallback_delta;
 ronsql_cte_dd_passthrough_snowflake_jit_fallback_delta
