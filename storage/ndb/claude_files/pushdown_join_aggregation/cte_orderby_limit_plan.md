@@ -1,9 +1,13 @@
 # ORDER BY / LIMIT in CTE Bodies (single-owner redistribution + top-N)
 
-**Status: L1 + L2 + block test IMPLEMENTED and green (September 2026,
-testCteNdbApiFilter Tests 1-27 in ndb_push_agg + ndb_push_agg_dist);
-L4 RonSQL + L5 MTR IMPLEMENTED (pending user build + first --record);
-L6 rondb-docs pending.**
+**Status: COMPLETE (September 2026).  L1 + L2 + block test green
+(testCteNdbApiFilter Tests 1-27 in ndb_push_agg + ndb_push_agg_dist);
+L4 RonSQL + L5 MTR recorded green ×5 topologies + ronsql_large_cte
+Q6/Q7 (commits `9c3b6115606` kernel/API, `1a5c685ed06` RonSQL/MTR,
+`29d173a5a1e` iteratorAt-resume crash fix + refreshed baselines); L6
+rondb-docs `acca566` (ronsql_cte + ronsql_limitations chapters).
+Remaining follow-ups on file: v2 eager bounded eviction for
+GB-key-ordered LIMIT, OFFSET, string MIN/MAX order keys.**
 
 L5 outcome notes:
 - FOUND + FIXED BY THE SCALE CASE (ronsql_large_cte Q6, 100k groups —
