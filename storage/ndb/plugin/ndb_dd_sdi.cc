@@ -102,13 +102,13 @@ static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   assert(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
   assert(mysqld_version_id.IsUint64());
-  if (mysqld_version_id.GetUint64() >= std::uint64_t(260500)) {
+  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID) &&
+      mysqld_version_id.GetUint64() > std::uint64_t(261100)) {
     /**
-     * We cannot handle deserialize from version newer than 26.04.
-     * We can handle tables created in earlier versions always.
-     *
-     * Since this code is only used in 24.10.7 and newer we need
-     * not check any more.
+     * We cannot deserialize an SDI serialized by a NEWER mysqld than
+     * ourselves; tables created by earlier (or equal) versions are
+     * always accepted. As long as it is before 26.11 and newer it
+     * will always be ok.
      */
     my_error(ER_IMP_INCOMPATIBLE_MYSQLD_VERSION, MYF(0),
              mysqld_version_id.GetUint64(), std::uint64_t(MYSQL_VERSION_ID));

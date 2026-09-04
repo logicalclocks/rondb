@@ -343,7 +343,36 @@ class Interpreter {
    * == REG_TYPE_INT) match the new typed convention. */
   static constexpr Uint32 LOAD_DOUBLE_CONST = 45;
   /* Overflow constant 45 free */
-  /* 46 free, both of them */
+
+  /**
+   * BRANCH_LINKED_OP_LINKED: Compare TWO linked-buffer entries (by
+   * position) with inline type metadata — the column-vs-column
+   * counterpart of BRANCH_MEM_OP_ARG_INLINE_TYPE.  Used by CTE filter
+   * mode for string comparisons between two CTE outputs, or between a
+   * linked ancestor projection and a CTE output (numeric pairs ride
+   * READ_LINKED_COLUMN_TO_REG + reg-vs-reg branches instead, which
+   * cannot carry strings — registers are 64-bit).
+   *
+   * Word layout:
+   *   Word 0: opcode | null_semantics | cond | branch offset
+   *           (same field packing as BranchMem — see BranchLinkedLinked)
+   *   Word 1: (posL << 16) | posR — entry positions in the linked
+   *           attribute buffer, the same position space as
+   *           READ_LINKED_TO_MEM / READ_LINKED_COLUMN_TO_REG.
+   *   Word 2: (typeId << 16) | csNumber — shared
+   *           NdbDictionary::Column::Type + CHARSET_INFO::number
+   *           (0 = no charset), resolved server-side via
+   *           all_charsets[csNumber].
+   *   Word 3: (columnSizeL << 16) | columnSizeR — per-side on-wire
+   *           data sizes in bytes.  The kernel clamps each to the
+   *           entry's AttributeHeader byte size, so a malformed
+   *           program cannot read past the linked buffer.
+   *
+   * NULL handling: a NULL entry — or a position beyond the buffer —
+   * follows the null_semantics field like the other branch ops.
+   */
+  static constexpr Uint32 BRANCH_LINKED_OP_LINKED = 46;
+  /* Overflow constant 46 free */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -672,6 +701,15 @@ class Interpreter {
   // Words 4..N: inline constant data
   static Uint32 BranchMem(BinaryCondition cond, NullSemantics nulls);
   static Uint32 BranchMem_2(Uint32 AttrId, Uint32 Len);
+
+  // BRANCH_LINKED_OP_LINKED
+  // Word 0: BranchLinkedLinked(cond, nulls) — same packing as BranchMem
+  // Word 1: BranchLinkedLinked_2(posL, posR)
+  // Word 2: (typeId << 16) | csNumber
+  // Word 3: (columnSizeL << 16) | columnSizeR
+  static Uint32 BranchLinkedLinked(BinaryCondition cond,
+                                   NullSemantics nulls);
+  static Uint32 BranchLinkedLinked_2(Uint32 PosL, Uint32 PosR);
 
   static Uint32 getNullSemantics(Uint32 op);
   static Uint32 getBinaryCondition(Uint32 op1);
@@ -1382,6 +1420,15 @@ inline Uint32 Interpreter::BranchMem_2(Uint32 AttrId, Uint32 Len) {
   return (AttrId << 16) + Len;
 }
 
+inline Uint32 Interpreter::BranchLinkedLinked(BinaryCondition cond,
+                                              NullSemantics nulls) {
+  return BRANCH_LINKED_OP_LINKED + (nulls << 6) + (cond << 12);
+}
+
+inline Uint32 Interpreter::BranchLinkedLinked_2(Uint32 PosL, Uint32 PosR) {
+  return (PosL << 16) + PosR;
+}
+
 inline Uint32 Interpreter::getNullSemantics(Uint32 op) {
   return ((op >> 6) & 0x3);
 }
@@ -1603,6 +1650,10 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
        */
       processing = LABEL_ADDRESS_REPLACEMENT;
       return op + 1;
+    case BRANCH_LINKED_OP_LINKED:
+      /* Fixed 4 words: header, positions, typeId|csNumber, sizes. */
+      processing = LABEL_ADDRESS_REPLACEMENT;
+      return op + 4;
     case EXIT_OK:
     case EXIT_OK_LAST:
     case EXIT_REFUSE:

@@ -22,6 +22,7 @@
  */
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -107,21 +108,122 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
    * scalar-CTE redistribute paths to land entries even with
    * n_gb_cols == 0). */
   if (m_buf_block == nullptr) {
+    /* Tail layout: [Uint16 avg-hidden map, MAX entries] then
+     * [Uint8 cached-agg-ops, MAX entries].  The Uint16 array comes
+     * first so its 2-byte alignment is inherited from the block. */
     char* tail = initBufBlock(
         /*prog_words=*/m_prog_len,
         /*n_gb_cols_alloc=*/m_n_gb_cols,
         /*n_agg_results_alloc=*/MAX_AGG_N_RESULTS,
         /*alloc_gb_map=*/true,
-        /*extra_tail_bytes=*/MAX_AGG_N_RESULTS * sizeof(Uint8));
+        /*extra_tail_bytes=*/MAX_AGG_N_RESULTS *
+            (sizeof(Uint16) + sizeof(Uint8)));
     if (tail == nullptr) {
       g_eventLogger->error("Alloc mem for JoinAggInterpreter buffers failed");
       return false;
     }
-    m_cached_agg_ops = reinterpret_cast<Uint8*>(tail);
+    require((reinterpret_cast<uintptr_t>(tail) & 1) == 0);
+    m_avg_hidden_map = reinterpret_cast<Uint16*>(tail);
+    m_cached_agg_ops = reinterpret_cast<Uint8*>(
+        tail + MAX_AGG_N_RESULTS * sizeof(Uint16));
   }
 
   /* Common post-allocation steps. */
   initSharedAfterAlloc(prog);
+
+  /* kOpAvg hidden-slot assignment (cte_avg_plan.md).  Walk the agg
+   * program once: each kOpAvg's visible dst slot gets a hidden COUNT
+   * companion appended AFTER the header's slot count, so visible
+   * positions stay stable for every position-indexed consumer.
+   * m_n_agg_results becomes the TOTAL (layout / merge / redistribute
+   * width); m_n_visible_results (set by initSharedAfterAlloc) keeps
+   * the header count for the CTE emission paths. */
+  for (Uint32 i = 0; i < MAX_AGG_N_RESULTS; i++) {
+    m_avg_hidden_map[i] = AVG_NO_HIDDEN;
+  }
+  {
+    Uint32 n_avg = 0;
+    Uint32 scan_pos = m_agg_prog_start_pos;
+    bool bad_avg = false;
+    while (scan_pos < m_prog_len) {
+      Uint32 word = m_prog[scan_pos++];
+      Uint8 op = (word & 0xFC000000) >> 26;
+      switch (op) {
+        case kOpAvg: {
+          Uint32 dst = word & 0x0000FFFF;
+          if (dst >= m_n_visible_results ||
+              m_avg_hidden_map[dst] != AVG_NO_HIDDEN ||
+              m_n_visible_results + n_avg >= MAX_AGG_N_RESULTS) {
+            bad_avg = true;
+            break;
+          }
+          m_avg_hidden_map[dst] = (Uint16)(m_n_visible_results + n_avg);
+          n_avg++;
+          break;
+        }
+        case kOpOrderBy: {
+          /* ORDER BY trailer entry (cte_orderby_limit_plan.md). */
+          if (m_n_order_cols >= MAX_ORDER_COLS) {
+            bad_avg = true;
+            break;
+          }
+          OrderCol& oc = m_order_spec[m_n_order_cols];
+          oc.is_agg = (word >> 25) & 1;
+          oc.desc = (word >> 24) & 1;
+          oc.idx = (Uint16)(word & 0xFFFF);
+          if ((oc.is_agg && oc.idx >= m_n_visible_results) ||
+              (!oc.is_agg && oc.idx >= m_n_gb_cols)) {
+            bad_avg = true;
+            break;
+          }
+          m_n_order_cols++;
+          break;
+        }
+        case kOpLimit:
+          /* LIMIT trailer entry.  Last one wins (the API emits one). */
+          m_limit = word & 0x03FFFFFF;
+          m_has_limit = true;
+          break;
+        case kOpLoadCol: {
+          Uint32 type = decodeLoadColType(word);
+          if (type == NDB_TYPE_DECIMAL ||
+              type == NDB_TYPE_DECIMALUNSIGNED) scan_pos++;
+          break;
+        }
+        case kOpLoadConst:
+          scan_pos += 2;
+          break;
+        case kOpEmbeddedInterp: {
+          Uint32 emb_len = word & 0xFFFF;
+          scan_pos += emb_len;
+          break;
+        }
+        default:
+          break;
+      }
+      if (bad_avg) break;
+    }
+    if (bad_avg) {
+      g_eventLogger->error(
+          "JoinAggInterpreter::Init: invalid kOpAvg program "
+          "(dst out of range, duplicate dst, or slot cap exceeded)");
+      return false;
+    }
+    if (n_avg > 0) {
+      m_n_hidden_slots = n_avg;
+      /* Extend the slot array with the hidden companions, initialised
+       * like initSharedAfterAlloc does for the visible ones.  The
+       * buffers are MAX-sized, so no reallocation. */
+      for (Uint32 i = m_n_agg_results;
+           i < m_n_agg_results + n_avg; i++) {
+        m_agg_results[i].type = NDB_TYPE_UNDEFINED;
+        m_agg_results[i].value.val_int64 = 0;
+        m_agg_results[i].is_unsigned = false;
+        m_agg_results[i].is_null = true;
+      }
+      m_n_agg_results += n_avg;
+    }
+  }
 
   /* Phase I.17: scalar aggregate (no GROUP BY) over empty input
    * must emit COUNT = 0 (not NULL) per MySQL semantics.  The
@@ -148,6 +250,22 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
             m_agg_results[agg_index].value.val_uint64 = 0;
             m_agg_results[agg_index].is_unsigned = true;
             m_agg_results[agg_index].is_null = false;
+          }
+          break;
+        }
+        case kOpAvg: {
+          /* Scalar AVG over empty input: pre-init the hidden COUNT
+           * companion to 0 so the finalize divide sees count == 0 and
+           * yields NULL (MySQL AVG-over-empty).  The visible SUM slot
+           * stays NULL like other SUM slots. */
+          Uint32 dst = word & 0x0000FFFF;
+          if (dst < m_n_visible_results &&
+              m_avg_hidden_map[dst] != AVG_NO_HIDDEN) {
+            AggResItem* c = &m_agg_results[m_avg_hidden_map[dst]];
+            c->type = NDB_TYPE_BIGINT;
+            c->value.val_uint64 = 0;
+            c->is_unsigned = true;
+            c->is_null = false;
           }
           break;
         }
@@ -190,7 +308,12 @@ void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
   require(m_inited);
   require(m_processed_rows == 0);
   require(total <= MAX_AGG_N_RESULTS);
+  /* Multi-leaf and kOpAvg hidden slots do not combine (multi-leaf is
+   * the merged select-list-subquery path; CTE programs are single-leaf).
+   * The override would clobber the hidden-slot layout. */
+  require(m_n_hidden_slots == 0);
   m_n_agg_results = total;
+  m_n_visible_results = total;
 
   // Re-initialize the non-GROUP-BY accumulator array for the new total
   m_agg_results = m_agg_results_buf;
@@ -200,6 +323,357 @@ void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
     m_agg_results[i].is_unsigned = false;
     m_agg_results[i].is_null = true;
   }
+}
+
+/* Divide one slot array's AVG pairs in place (cte_avg_plan.md).
+ * Sum slots accumulate as BIGINT (signed/unsigned) or DOUBLE; the
+ * result is always DOUBLE.  count == 0 / NULL, or a NULL sum, yields
+ * NULL — MySQL's AVG over empty or all-NULL input. */
+static void finalizeAvgSlotArray(AggResItem* slots,
+                                 const Uint16* avg_hidden_map,
+                                 Uint32 n_visible_results) {
+  for (Uint32 dst = 0; dst < n_visible_results; dst++) {
+    const Uint16 hid = avg_hidden_map[dst];
+    if (hid == AggInterpreterBase::AVG_NO_HIDDEN) continue;
+    const AggResItem& cnt = slots[hid];
+    AggResItem* sum = &slots[dst];
+    double result = 0.0;
+    bool is_null = true;
+    if (!cnt.is_null && cnt.value.val_uint64 > 0 && !sum->is_null) {
+      double s;
+      if (sum->type == NDB_TYPE_DOUBLE) {
+        s = sum->value.val_double;
+      } else if (sum->is_unsigned) {
+        s = static_cast<double>(sum->value.val_uint64);
+      } else {
+        s = static_cast<double>(sum->value.val_int64);
+      }
+      result = s / static_cast<double>(cnt.value.val_uint64);
+      is_null = false;
+    }
+    sum->type = NDB_TYPE_DOUBLE;
+    sum->value.val_double = result;
+    sum->is_unsigned = false;
+    sum->is_null = is_null;
+  }
+}
+
+bool JoinAggInterpreter::finalizeAvgSlotsSlice(Uint32 max_groups) {
+  if (m_n_hidden_slots == 0 || m_avg_finalized) {
+    return true;
+  }
+
+  if (m_n_gb_cols == 0) {
+    /* Scalar: a single record — no slicing needed. */
+    if (m_agg_results != nullptr) {
+      finalizeAvgSlotArray(m_agg_results, m_avg_hidden_map,
+                           m_n_visible_results);
+    }
+    m_avg_finalized = true;
+    m_avg_finalizing = false;
+    return true;
+  }
+
+  if (m_gb_map == nullptr) {
+    m_avg_finalized = true;
+    m_avg_finalizing = false;
+    return true;
+  }
+
+  /* Resume from the saved cursor, or start from the beginning.  The
+   * hash table is immutable for the whole FINAL_REP..CTE_READY window,
+   * so iteratorAt is safe across CONTINUEB slices. */
+  JoinGBHashTable::Iterator it;
+  if (!m_avg_finalizing) {
+    m_avg_finalizing = true;
+    it = m_gb_map->begin();
+  } else {
+    it = m_gb_map->iteratorAt(m_avg_fin_bucket, m_avg_fin_raw);
+  }
+
+  Uint32 processed = 0;
+  while (it.valid()) {
+    if (processed >= max_groups) {
+      /* Save the cursor; the caller schedules the next slice. */
+      m_avg_fin_bucket = it.bucket();
+      m_avg_fin_raw = it.raw();
+      return false;
+    }
+    AggResItem* slots =
+        reinterpret_cast<AggResItem*>(it.data() + it.keyLen());
+    finalizeAvgSlotArray(slots, m_avg_hidden_map, m_n_visible_results);
+    processed++;
+    m_gb_map->next(it);
+  }
+
+  m_avg_finalized = true;
+  m_avg_finalizing = false;
+  return true;
+}
+
+/* Compare one GROUP BY key entry per side.  Entries are
+ * AttributeHeader-framed ([AH word][data words]); walk to entry
+ * `col_idx` on each side independently (VARCHAR entries differ in
+ * size between groups). */
+static const Uint32* keyEntryAt(const char* data, Uint32 key_len,
+                                Uint32 col_idx) {
+  const Uint32* p = reinterpret_cast<const Uint32*>(data);
+  const Uint32* end = p + (key_len >> 2);
+  Uint32 i = 0;
+  while (p < end) {
+    if (i == col_idx) return p;
+    p += 1 + AttributeHeader::getDataSize(*p);
+    i++;
+  }
+  return nullptr;
+}
+
+int JoinAggInterpreter::compareGroupsByOrderSpec(
+    const char* a_data, Uint32 a_key_len,
+    const char* b_data, Uint32 b_key_len) const {
+  for (Uint32 c = 0; c < m_n_order_cols; c++) {
+    const OrderCol& oc = m_order_spec[c];
+    int r = 0;
+    if (!oc.is_agg) {
+      const Uint32* ea = keyEntryAt(a_data, a_key_len, oc.idx);
+      const Uint32* eb = keyEntryAt(b_data, b_key_len, oc.idx);
+      if (ea == nullptr || eb == nullptr) continue;  /* defensive */
+      const AttributeHeader aha(*ea);
+      const AttributeHeader ahb(*eb);
+      const bool na = aha.isNULL();
+      const bool nb = ahb.isNULL();
+      if (na || nb) {
+        /* MySQL: NULLs order first ascending. */
+        r = (na && nb) ? 0 : (na ? -1 : 1);
+      } else if (m_gb_types_inited && oc.idx < m_n_gb_cols &&
+                 m_gb_types[oc.idx].cmpFn != nullptr) {
+        r = (*m_gb_types[oc.idx].cmpFn)(
+            m_gb_types[oc.idx].cs,
+            ea + 1, aha.getByteSize(),
+            eb + 1, ahb.getByteSize());
+      } else {
+        /* Types not initialised (no rows processed) — nothing to
+         * order; treat as equal. */
+        r = 0;
+      }
+    } else {
+      const AggResItem* sa = reinterpret_cast<const AggResItem*>(
+          a_data + a_key_len) + oc.idx;
+      const AggResItem* sb = reinterpret_cast<const AggResItem*>(
+          b_data + b_key_len) + oc.idx;
+      const bool na = sa->is_null || sa->type == NDB_TYPE_UNDEFINED;
+      const bool nb = sb->is_null || sb->type == NDB_TYPE_UNDEFINED;
+      if (na || nb) {
+        r = (na && nb) ? 0 : (na ? -1 : 1);
+      } else if (sa->type == NDB_TYPE_DOUBLE ||
+                 sb->type == NDB_TYPE_DOUBLE) {
+        const double va = (sa->type == NDB_TYPE_DOUBLE)
+            ? sa->value.val_double
+            : (sa->is_unsigned
+                   ? static_cast<double>(sa->value.val_uint64)
+                   : static_cast<double>(sa->value.val_int64));
+        const double vb = (sb->type == NDB_TYPE_DOUBLE)
+            ? sb->value.val_double
+            : (sb->is_unsigned
+                   ? static_cast<double>(sb->value.val_uint64)
+                   : static_cast<double>(sb->value.val_int64));
+        r = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+      } else if (sa->is_unsigned == sb->is_unsigned) {
+        if (sa->is_unsigned) {
+          r = (sa->value.val_uint64 < sb->value.val_uint64) ? -1
+              : (sa->value.val_uint64 > sb->value.val_uint64) ? 1 : 0;
+        } else {
+          r = (sa->value.val_int64 < sb->value.val_int64) ? -1
+              : (sa->value.val_int64 > sb->value.val_int64) ? 1 : 0;
+        }
+      } else {
+        /* Mixed signedness (SUM can flip per group): a negative
+         * signed side orders below any unsigned value. */
+        const AggResItem* su = sa->is_unsigned ? sa : sb;
+        const AggResItem* si = sa->is_unsigned ? sb : sa;
+        int ru;
+        if (si->value.val_int64 < 0) {
+          ru = 1;  /* unsigned > negative signed */
+        } else {
+          const Uint64 ui = static_cast<Uint64>(si->value.val_int64);
+          ru = (su->value.val_uint64 > ui) ? 1
+               : (su->value.val_uint64 < ui) ? -1 : 0;
+        }
+        r = (su == sa) ? ru : -ru;
+      }
+    }
+    if (oc.desc) r = -r;
+    if (r != 0) return r;
+  }
+  return 0;
+}
+
+/* Bounded candidate heap for the LIMIT select phase: the WORST kept
+ * group sits at the root, so a better-ordering arrival replaces the
+ * root and sifts down.  "a worse than b" == compare(a, b) > 0. */
+void JoinAggInterpreter::limitHeapSiftDown(Uint32 i) {
+  const Uint32 n = m_lim_cand_count;
+  while (true) {
+    Uint32 largest = i;
+    const Uint32 l = 2 * i + 1;
+    const Uint32 rgt = 2 * i + 2;
+    /* keyLen per entry: recompute from the record's link header — the
+     * candidate pointers are group DATA pointers; key length is
+     * stored in the group link header (GBHashTable layout). */
+    if (l < n &&
+        compareGroupsByOrderSpec(
+            m_lim_cand[l], JoinGBHashTable::dataKeyLen(m_lim_cand[l]),
+            m_lim_cand[largest],
+            JoinGBHashTable::dataKeyLen(m_lim_cand[largest])) > 0) {
+      largest = l;
+    }
+    if (rgt < n &&
+        compareGroupsByOrderSpec(
+            m_lim_cand[rgt], JoinGBHashTable::dataKeyLen(m_lim_cand[rgt]),
+            m_lim_cand[largest],
+            JoinGBHashTable::dataKeyLen(m_lim_cand[largest])) > 0) {
+      largest = rgt;
+    }
+    if (largest == i) return;
+    char* tmp = m_lim_cand[i];
+    m_lim_cand[i] = m_lim_cand[largest];
+    m_lim_cand[largest] = tmp;
+    i = largest;
+  }
+}
+
+static int cmpPtr(const void* a, const void* b) {
+  const char* pa = *static_cast<char* const*>(a);
+  const char* pb = *static_cast<char* const*>(b);
+  return (pa < pb) ? -1 : (pa > pb) ? 1 : 0;
+}
+
+int JoinAggInterpreter::finalizeLimitSlice(Uint32 max_groups,
+                                           Uint32 thread_id) {
+  if (!m_has_limit || m_limit_finalized) {
+    return 1;
+  }
+  if (m_n_gb_cols == 0 || m_gb_map == nullptr) {
+    /* Scalar / keyless states: RonSQL only emits LIMIT trailers for
+     * grouped CTEs; nothing to truncate. */
+    m_limit_finalized = true;
+    m_limit_finalizing = false;
+    return 1;
+  }
+  if (!m_limit_finalizing) {
+    if (m_limit >= m_gb_map->size()) {
+      /* Limit covers every group — no work. */
+      m_limit_finalized = true;
+      return 1;
+    }
+    m_limit_finalizing = true;
+    m_lim_select_done = false;
+    m_lim_cand_count = 0;
+    if (m_limit > 0) {
+      m_lim_cand = static_cast<char**>(lc_ndbd_pool_malloc(
+          sizeof(char*) * m_limit, RG_QUERY_MEMORY, thread_id, false));
+      if (m_lim_cand == nullptr) {
+        m_limit_finalizing = false;
+        return -1;
+      }
+    }
+    m_lim_bucket = 0;
+    m_lim_raw = nullptr;
+  }
+
+  Uint32 processed = 0;
+
+  if (!m_lim_select_done) {
+    /* Phase 1: bounded top-N selection over a sliced walk. */
+    JoinGBHashTable::Iterator it;
+    if (m_lim_raw == nullptr) {
+      it = m_gb_map->begin();
+    } else {
+      it = m_gb_map->iteratorAt(m_lim_bucket, m_lim_raw);
+    }
+    while (it.valid()) {
+      if (processed >= max_groups) {
+        m_lim_bucket = it.bucket();
+        m_lim_raw = it.raw();
+        return 0;
+      }
+      char* data = it.data();
+      const Uint32 klen = it.keyLen();
+      if (m_limit > 0) {
+        if (m_lim_cand_count < m_limit) {
+          m_lim_cand[m_lim_cand_count++] = data;
+          if (m_lim_cand_count == m_limit) {
+            /* Heapify once full (small N: sift each from the middle). */
+            for (Int32 i = (Int32)(m_lim_cand_count / 2) - 1; i >= 0; i--) {
+              limitHeapSiftDown((Uint32)i);
+            }
+          }
+        } else if (compareGroupsByOrderSpec(
+                       data, klen, m_lim_cand[0],
+                       JoinGBHashTable::dataKeyLen(m_lim_cand[0])) < 0) {
+          /* Better than the worst kept — replace the root. */
+          m_lim_cand[0] = data;
+          limitHeapSiftDown(0);
+        }
+      }
+      processed++;
+      m_gb_map->next(it);
+    }
+    /* Selection complete: sort candidates by pointer for the
+     * membership test in the truncation walk. */
+    if (m_lim_cand_count > 1) {
+      qsort(m_lim_cand, m_lim_cand_count, sizeof(char*), cmpPtr);
+    }
+    m_lim_select_done = true;
+    m_lim_bucket = 0;
+    m_lim_raw = nullptr;
+    /* Fall through into the truncation phase with the remaining
+     * slice budget. */
+  }
+
+  /* Phase 2: erase every group not in the kept set. */
+  {
+    JoinGBHashTable::Iterator it;
+    if (m_lim_raw == nullptr) {
+      it = m_gb_map->begin();
+    } else {
+      it = m_gb_map->iteratorAt(m_lim_bucket, m_lim_raw);
+    }
+    while (it.valid()) {
+      if (processed >= max_groups) {
+        m_lim_bucket = it.bucket();
+        m_lim_raw = it.raw();
+        return 0;
+      }
+      char* data = it.data();
+      bool kept = false;
+      if (m_lim_cand_count > 0) {
+        kept = (bsearch(&data, m_lim_cand, m_lim_cand_count,
+                        sizeof(char*), cmpPtr) != nullptr);
+      }
+      processed++;
+      if (kept) {
+        m_gb_map->next(it);
+      } else {
+        AggResItem* slots =
+            reinterpret_cast<AggResItem*>(data + it.keyLen());
+        if (hasStringSlots()) {
+          freeGroupStringSlots(slots);
+        }
+        m_gb_map->eraseAndNext(it);
+        freeGroupData(data);
+        if (m_n_groups > 0) m_n_groups--;
+      }
+    }
+  }
+
+  if (m_lim_cand != nullptr) {
+    lc_ndbd_pool_free(m_lim_cand);
+    m_lim_cand = nullptr;
+  }
+  m_limit_finalized = true;
+  m_limit_finalizing = false;
+  return 1;
 }
 
 /**
@@ -987,7 +1461,9 @@ static Int32 decodeRedistributionStringSlots(
 
 static void extractAggOps(const Uint32* prog, Uint32 prog_len,
                           Uint32 agg_prog_start_pos,
-                          Uint8* agg_ops, Uint32 n_agg_results) {
+                          Uint8* agg_ops, Uint32 n_agg_results,
+                          const Uint16* avg_hidden_map,
+                          Uint32 n_visible_results) {
   memset(agg_ops, 0, n_agg_results);
   Uint32 exec_pos = agg_prog_start_pos;
   while (exec_pos < prog_len) {
@@ -1001,6 +1477,21 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
       case kOpCount:
         agg_index = value & 0x0000FFFF;
         if (agg_index < n_agg_results) agg_ops[agg_index] = op;
+        break;
+      case kOpAvg:
+        /* The visible dst merges as a SUM, the hidden companion as a
+         * COUNT — both commutative, so the merge machinery treats an
+         * AVG pair as two ordinary slots (cte_avg_plan.md). */
+        agg_index = value & 0x0000FFFF;
+        if (agg_index < n_visible_results) {
+          agg_ops[agg_index] = kOpSum;
+          if (avg_hidden_map != nullptr &&
+              avg_hidden_map[agg_index] !=
+                  AggInterpreterBase::AVG_NO_HIDDEN &&
+              avg_hidden_map[agg_index] < n_agg_results) {
+            agg_ops[avg_hidden_map[agg_index]] = kOpCount;
+          }
+        }
         break;
       case kOpLoadCol: {
         Uint32 type = AggInterpreterBase::decodeLoadColType(value);
@@ -1038,7 +1529,8 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
-                  m_cached_agg_ops, m_n_agg_results);
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
     m_agg_ops_cached = true;
   }
 
@@ -1143,7 +1635,8 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
 
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
-                  m_cached_agg_ops, m_n_agg_results);
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
     m_agg_ops_cached = true;
   }
 
@@ -1252,7 +1745,8 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
 
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
-                  m_cached_agg_ops, m_n_agg_results);
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
     m_agg_ops_cached = true;
   }
 

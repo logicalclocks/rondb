@@ -326,7 +326,72 @@ k	SUM(stats.gross)
 300	90
 
 
-=== Test 10: rejection — string col-vs-col (MIN vs MAX) ===
-Expected error: only integer, FLOAT and DOUBLE operands
-Error handling: RPE
-ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: only integer, FLOAT and DOUBLE operands are supported — DECIMAL, string and temporal comparisons need a cast or a constant-vs-column form.
+=== Test 10a: string col-vs-col (MIN <= MAX, VARCHAR — now supported) ===
+== Query ==
+WITH stats AS (
+SELECT c_id AS k,
+MIN(c_name) AS first_name,
+MAX(c_name) AS last_name
+FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name <= stats.last_name
+GROUP BY stats.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT c_id AS k,
+MIN(c_name) AS first_name,
+MAX(c_name) AS last_name
+FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name <= stats.last_name
+GROUP BY stats.k|
+k	SUM(stats.k)
+100	100
+200	200
+300	300
+
+
+=== Test 10b: string col-vs-col (MIN < MAX — strict, empty result) ===
+== Query ==
+WITH stats AS (
+SELECT c_id AS k,
+MIN(c_name) AS first_name,
+MAX(c_name) AS last_name
+FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < stats.last_name
+GROUP BY stats.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT c_id AS k,
+MIN(c_name) AS first_name,
+MAX(c_name) AS last_name
+FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < stats.last_name
+GROUP BY stats.k|
+k	SUM(stats.k)

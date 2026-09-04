@@ -885,8 +885,17 @@ RonSQLPreparer::parse()
           break;
         }
         case Outputs::Type::AVG:
-          co->avg.agg_index_sum = cte->stmt->agg->Sum(co->avg.arg);
-          co->avg.agg_index_count = cte->stmt->agg->Count(co->avg.arg);
+          // cte_avg_plan.md V4 (C2): a CTE-scope AVG compiles to ONE
+          // agg slot (SVM Avg -> NdbAggregator::Avg -> kernel kOpAvg,
+          // which adds the hidden COUNT companion and divides on the
+          // owner after the redistribute).  The old Sum+Count pair
+          // broke the one-column-per-slot virt-table mapping — that
+          // was the reason AVG in CTE outputs used to be rejected.
+          // agg_index_count is aliased: its PRINT_AVG readers are
+          // main-scope-only, where the main registration keeps the
+          // Sum+Count form.
+          co->avg.agg_index_sum = cte->stmt->agg->Avg(co->avg.arg);
+          co->avg.agg_index_count = co->avg.agg_index_sum;
           break;
         case Outputs::Type::SUBQUERY_AGG:
           // Disallowed in CTE bodies (would need nested subquery orchestration).
@@ -5112,10 +5121,124 @@ RonSQLPreparer::reject_ignored_orderby_limit(const SelectStatement* stmt,
   if (name != NULL)
     err << " '" << name << "'";
   err << " is not supported. It is only supported at the main SELECT"
-         " level; accepting it here would silently ignore it, changing"
-         " results compared to MySQL." << std::endl;
+         " level and in CTE bodies; accepting it here would silently"
+         " ignore it, changing results compared to MySQL." << std::endl;
   throw RonSQLPermanentError(
-      "ORDER BY / LIMIT in a CTE body or subquery is not supported.");
+      "ORDER BY / LIMIT in a subquery is not supported.");
+}
+
+/*
+ * CTE-body ORDER BY / LIMIT (cte_orderby_limit_plan.md L4).
+ *
+ * Analyze-time half: shape gate + alias conversion.  The kernel applies
+ * LIMIT (with the ORDER BY spec deciding the kept set) at the CTE
+ * finalize barrier after single-owner redistribution, so grouped bodies
+ * get real top-N semantics.  Bodies that produce at most one row make
+ * ORDER BY and LIMIT >= 1 provable no-ops:
+ *  - single-row bodies (full-PK-equality, kernel CTE_SINGLE_ROW) emit
+ *    the trailer anyway — the row is a group record, so LIMIT 0 empties
+ *    it correctly;
+ *  - scalar aggregate bodies accept ORDER BY / LIMIT >= 1 as validated
+ *    no-ops (nothing is emitted; the result is identical to MySQL), but
+ *    reject LIMIT 0 — the scalar result is not a group record, so the
+ *    kernel's group-walk truncation cannot empty it.
+ *
+ * Full ORDER BY resolution (outputs only, GB position / aggregate slot
+ * mapping, string MIN/MAX rejection) happens at emit time in
+ * emit_cte_orderby_limit where the body scope's resolved columns exist.
+ * Alias conversion must happen HERE, before scope building: the scoped
+ * resolver visits TABLE_COLUMN ORDER BY entries of the body
+ * (collect_scope_column_refs) and would fail to resolve an alias name;
+ * once converted to OUTPUT_REF the registry entry is no longer
+ * referenced from this scope, so no m_col_is_alias marking is needed
+ * (that machinery is main-scope-only in resolve_columns_for_scope).
+ */
+void
+RonSQLPreparer::analyze_cte_body_orderby_limit(CteDefinition* cte)
+{
+  SelectStatement* stmt = cte->stmt;
+  const bool has_orderby = (stmt->orderby_columns != NULL);
+  const bool has_limit = (stmt->limit >= 0);
+  if (!has_orderby && !has_limit)
+    return;
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  /* The LIMIT value rides the aggregation program as a 26-bit kOpLimit
+   * immediate (NdbAggregationCommon.hpp). */
+  if (has_limit && stmt->limit > (Int64)0x03FFFFFF)
+  {
+    err << "LIMIT " << stmt->limit << " in CTE body '" << cte->name.c_str()
+        << "' exceeds the supported maximum (67108863)." << std::endl;
+    throw RonSQLPermanentError("CTE body LIMIT value too large.");
+  }
+
+  const bool grouped = (stmt->groupby_columns != NULL);
+  if (!grouped && !stmt->is_single_row_cte)
+  {
+    /* Scalar aggregate body: exactly one result row. */
+    if (has_limit && stmt->limit == 0)
+    {
+      err << "LIMIT 0 in scalar aggregate CTE body '" << cte->name.c_str()
+          << "' is not supported (use a WHERE clause that matches no rows"
+             " instead)." << std::endl;
+      throw RonSQLPermanentError("LIMIT 0 on a scalar CTE body.");
+    }
+    /* ORDER BY / LIMIT >= 1 on one row: no-op; nothing will be emitted.
+     * Convert aliases anyway so scope resolution does not try to resolve
+     * an output alias as a table column. */
+  }
+
+  /* Cap from the kernel's order spec (JoinAggInterpreter MAX_ORDER_COLS). */
+  if (has_orderby)
+  {
+    Uint32 n = 0;
+    for (const OrderbyColumns* ob = stmt->orderby_columns; ob != NULL;
+         ob = ob->next)
+      n++;
+    if (n > 8)
+    {
+      err << "ORDER BY in CTE body '" << cte->name.c_str() << "' has " << n
+          << " columns; at most 8 are supported." << std::endl;
+      throw RonSQLPermanentError("Too many ORDER BY columns in CTE body.");
+    }
+  }
+
+  resolve_cte_body_orderby_aliases(stmt);
+}
+
+/*
+ * Convert unqualified TABLE_COLUMN ORDER BY entries of a CTE body that
+ * match a body output name into OUTPUT_REF entries (the body-scope twin
+ * of resolve_orderby_aliases, minus the m_col_is_alias marking — see
+ * analyze_cte_body_orderby_limit).
+ */
+void
+RonSQLPreparer::resolve_cte_body_orderby_aliases(SelectStatement* stmt)
+{
+  for (OrderbyColumns* ob = stmt->orderby_columns; ob != NULL; ob = ob->next)
+  {
+    if (ob->kind != OrderbyColumns::Kind::TABLE_COLUMN)
+      continue;
+    Uint32 col_idx = ob->col_idx;
+    // Only unqualified names can be aliases
+    if (m_column_qualifiers.size() > col_idx &&
+        m_column_qualifiers[col_idx].c_str() != NULL)
+      continue;
+    const char* name = m_columns[col_idx].c_str();
+    Uint32 output_pos = 0;
+    for (Outputs* out = stmt->outputs; out != NULL;
+         out = out->next, output_pos++)
+    {
+      if (out->output_name.len > 0 && out->output_name.str != NULL &&
+          strlen(name) == out->output_name.len &&
+          strncmp(name, out->output_name.str, out->output_name.len) == 0)
+      {
+        ob->kind = OrderbyColumns::Kind::OUTPUT_REF;
+        ob->output_idx = output_pos;
+        break;
+      }
+    }
+  }
 }
 
 void
@@ -5130,11 +5253,12 @@ RonSQLPreparer::analyze_ctes()
 
   for (; cte != NULL; cte = cte->next)
   {
-    /* Phase 0 of ronsql_orderby_limit_plan.md: the grammar parses
-     * ORDER BY / LIMIT on CTE bodies but nothing ever applied them —
-     * the body ran unordered and UNLIMITED, silently diverging from
-     * MySQL.  Reject until body-level support ships. */
-    reject_ignored_orderby_limit(cte->stmt, "CTE body", cte->name.c_str());
+    /* ORDER BY / LIMIT in CTE bodies is applied in the kernel at the
+     * CTE finalize barrier (cte_orderby_limit_plan.md) — validate the
+     * shape and convert output-alias ORDER BY names before scope
+     * building.  Replaces the Phase-0 blanket rejection
+     * (ronsql_orderby_limit_plan.md); subqueries keep it. */
+    analyze_cte_body_orderby_limit(cte);
 
     /* Phase I.17: a CTE without GROUP BY is valid as long as every
      * output column is an aggregate (scalar aggregate CTE — one
@@ -6524,7 +6648,39 @@ RonSQLPreparer::build_result_column_metadata()
     const QueryScope::ResolvedColumnRef& ref =
         m_main_scope.resolved_columns[col_idx];
     const NdbDictionary::Column* col = ref.dict_column;
-    if (col == NULL) continue;
+    if (col == NULL) {
+      // cte_avg_plan.md V4 (C8): AVG CTE outputs have no single source
+      // column to plumb back (their display scale is DERIVED from the
+      // argument: exact-type args show scale + 4, like MySQL).  Compute
+      // the display metadata from the resolved chained type instead so
+      // the GROUP-BY-column print and aggregate-arg-scale readers see
+      // the fixed-scale formatting.
+      //
+      // Generalized to EVERY CTE output without a plumbed dict_column
+      // (found by obc-11): a CHAINED aggregate output — e.g. b's
+      // SUM(s) over a's s = SUM(DECIMAL) — plumbs no stored column
+      // either, and resolve_chained_column_type now carries the D15
+      // scale/precision through aggregate layers.  rscale == 0 leaves
+      // has_metadata false, so integer/COUNT/string/temporal chains
+      // behave exactly as before.
+      if (ref.kind ==
+              QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+          ref.cte_output != NULL) {
+        NdbDictionary::Column::Type rt;
+        Uint32 rlen = 1;
+        const void* rcs = NULL;
+        Int32 rscale = 0;
+        Int32 rprecision = 0;
+        if (resolve_chained_column_type(m_main_scope, col_idx, rt, rlen,
+                                         rcs, rscale, rprecision) &&
+            rscale > 0) {
+          column_metadata[col_idx].precision = rprecision;
+          column_metadata[col_idx].scale = rscale;
+          column_metadata[col_idx].has_metadata = true;
+        }
+      }
+      continue;
+    }
     column_metadata[col_idx].charset = col->getCharset();
     column_metadata[col_idx].precision = col->getPrecision();
     column_metadata[col_idx].scale = col->getScale();
@@ -8288,6 +8444,9 @@ RonSQLPreparer::execute_join()
       } else {
         programAggregator_join(cs, *cte->stmt, cteAgg, cteChildVT);
       }
+      /* ORDER BY / LIMIT trailer (cte_orderby_limit_plan.md L4) — must
+       * precede Finalize.  True = pass CTE_LIMIT to defineCte below. */
+      const bool cteHasLimit = emit_cte_orderby_limit(cs, cte, cteAgg);
       require_prm(cteAgg->Finalize(), "Failed to finalize CTE aggregator.");
 
       qb->beginCteSubtree(c);
@@ -8427,10 +8586,12 @@ RonSQLPreparer::execute_join()
           cteDepMask |= (Uint64(1) << cop.cte_def_idx);
         }
       }
+      const Uint32 cteFlags =
+          (cte->stmt->is_single_row_cte ? QN_CteSubtreeNode::CTE_SINGLE_ROW
+                                        : 0) |
+          (cteHasLimit ? QN_CteSubtreeNode::CTE_LIMIT : 0);
       require_run(qb->defineCte(c, defineSrcTab, *cteAgg, cteDepMask,
-                                 cte->stmt->is_single_row_cte
-                                     ? QN_CteSubtreeNode::CTE_SINGLE_ROW
-                                     : 0) == 0,
+                                 cteFlags) == 0,
                   "Failed to defineCte.");
       // Don't delete cteChildVT entries here: qb's serialized scanCte
       // op retains raw NdbDictionary::Table* pointers into them.
@@ -9692,7 +9853,21 @@ RonSQLPreparer::resolve_chained_column_type(
         case NdbDictionary::Column::Double:
           out_type = NdbDictionary::Column::Double;
           out_length = 1; out_cs = NULL;
-          out_scale = 0; out_precision = 0; return true;
+          // Chained display metadata (obc-11): carry the fixed-scale
+          // display through further aggregate layers when the argument
+          // is itself a DECIMAL-widened CTE output; real FLOAT /
+          // DOUBLE columns keep the compact formatting.
+          if (arg_type == NdbDictionary::Column::Double &&
+              cs->resolved_columns != NULL &&
+              cs->resolved_columns[arg->getLoadIdx()].kind ==
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+              arg_scale > 0 && arg_scale <= 30 && arg_precision > 0) {
+            out_scale = arg_scale;
+            out_precision = arg_precision;
+          } else {
+            out_scale = 0; out_precision = 0;
+          }
+          return true;
         case NdbDictionary::Column::Decimal:
         case NdbDictionary::Column::Decimalunsigned:
           // D1: mirror the MIN/MAX DECIMAL widening below (kernel widens
@@ -9705,11 +9880,17 @@ RonSQLPreparer::resolve_chained_column_type(
             out_type = (arg_type == NdbDictionary::Column::Decimalunsigned)
                        ? NdbDictionary::Column::Bigunsigned
                        : NdbDictionary::Column::Bigint;
+            out_scale = 0; out_precision = 0;
           } else {
             out_type = NdbDictionary::Column::Double;
+            // D15 display metadata — mirror build_cte_virtual_tables'
+            // Decimal arm (found by obc-11: zeroing here starved every
+            // CHAINED layer of the fixed-scale display).
+            out_scale = arg_scale;
+            out_precision = arg_precision;
           }
           out_length = 1; out_cs = NULL;
-          out_scale = 0; out_precision = 0; return true;
+          return true;
         default:
           return false;
       }
@@ -9737,7 +9918,21 @@ RonSQLPreparer::resolve_chained_column_type(
         case NdbDictionary::Column::Double:
           out_type = NdbDictionary::Column::Double;
           out_length = 1; out_cs = NULL;
-          out_scale = 0; out_precision = 0; return true;
+          // Chained display metadata (obc-11): carry the fixed-scale
+          // display through further aggregate layers when the argument
+          // is itself a DECIMAL-widened CTE output; real FLOAT /
+          // DOUBLE columns keep the compact formatting.
+          if (arg_type == NdbDictionary::Column::Double &&
+              cs->resolved_columns != NULL &&
+              cs->resolved_columns[arg->getLoadIdx()].kind ==
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+              arg_scale > 0 && arg_scale <= 30 && arg_precision > 0) {
+            out_scale = arg_scale;
+            out_precision = arg_precision;
+          } else {
+            out_scale = 0; out_precision = 0;
+          }
+          return true;
         case NdbDictionary::Column::Decimal:
         case NdbDictionary::Column::Decimalunsigned:
           // Phase I.6 F.1: kernel `AggInterpreter::AlignedType`
@@ -9756,13 +9951,17 @@ RonSQLPreparer::resolve_chained_column_type(
             out_type = (arg_type == NdbDictionary::Column::Decimalunsigned)
                        ? NdbDictionary::Column::Bigunsigned
                        : NdbDictionary::Column::Bigint;
+            out_scale = 0;
+            out_precision = 0;
           } else {
             out_type = NdbDictionary::Column::Double;
+            // D15 display metadata — mirror build_cte_virtual_tables'
+            // Decimal arm (see the SUM arm above / obc-11).
+            out_scale = arg_scale;
+            out_precision = arg_precision;
           }
           out_length = 1;
           out_cs = NULL;
-          out_scale = 0;
-          out_precision = 0;
           return true;
         case NdbDictionary::Column::Char:
         case NdbDictionary::Column::Varchar:
@@ -9804,6 +10003,83 @@ RonSQLPreparer::resolve_chained_column_type(
           out_precision = arg_precision;
           return true;
       }
+    }
+  }
+  if (o->type == Outputs::Type::AVG) {
+    // cte_avg_plan.md V4 (C7): the AVG output is finalized on the
+    // owner to an 8-byte DOUBLE (kOpAvg divide at checkCteReady).
+    // Display parity mirrors build_cte_virtual_tables: MySQL shows
+    // AVG over exact types with scale + 4 fraction digits (carried
+    // like the D15 display metadata); FLOAT / DOUBLE args keep the
+    // compact double formatting.  Unsupported source types return
+    // false here — build_cte_virtual_tables raises the clean
+    // per-type messages.
+    AggregationAPICompiler::Expr* arg = o->avg.arg;
+    if (arg == NULL || !arg->isLoad()) return false;
+    NdbDictionary::Column::Type arg_type;
+    Uint32 arg_length = 1;
+    const void* arg_cs = NULL;
+    Int32 arg_scale = 0;
+    Int32 arg_precision = 0;
+    if (!resolve_chained_column_type(*cs, arg->getLoadIdx(),
+                                      arg_type, arg_length, arg_cs,
+                                      arg_scale, arg_precision))
+      return false;
+    switch (arg_type) {
+      case NdbDictionary::Column::Tinyint:
+      case NdbDictionary::Column::Smallint:
+      case NdbDictionary::Column::Mediumint:
+      case NdbDictionary::Column::Int:
+      case NdbDictionary::Column::Bigint:
+      case NdbDictionary::Column::Tinyunsigned:
+      case NdbDictionary::Column::Smallunsigned:
+      case NdbDictionary::Column::Mediumunsigned:
+      case NdbDictionary::Column::Unsigned:
+      case NdbDictionary::Column::Bigunsigned:
+        out_type = NdbDictionary::Column::Double;
+        out_length = 1; out_cs = NULL;
+        out_scale = 4; out_precision = 15;
+        return true;
+      case NdbDictionary::Column::Float:
+      case NdbDictionary::Column::Double:
+        out_type = NdbDictionary::Column::Double;
+        out_length = 1; out_cs = NULL;
+        // Chained display metadata — the AVG twin of the SUM/MIN/MAX
+        // carry above: over a DECIMAL-widened CTE output, apply the
+        // same scale + 4 rule as the Decimal arm below.
+        if (arg_type == NdbDictionary::Column::Double &&
+            cs->resolved_columns != NULL &&
+            cs->resolved_columns[arg->getLoadIdx()].kind ==
+                QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+            arg_scale > 0 && arg_scale <= 30 && arg_precision > 0) {
+          out_scale = (arg_scale + 4 > 30) ? 30 : arg_scale + 4;
+          out_precision =
+              (arg_precision <= 15)
+                  ? 15
+                  : ((arg_precision + 4 > 65) ? 65 : arg_precision + 4);
+        } else {
+          out_scale = 0; out_precision = 0;
+        }
+        return true;
+      case NdbDictionary::Column::Decimal:
+      case NdbDictionary::Column::Decimalunsigned:
+        require_prm(
+            decimal_minmax_fits_64bit(arg_type, arg_precision, arg_scale),
+            "AVG over scale-zero DECIMAL wider than the 64-bit integer "
+            "range is not yet supported.");
+        out_type = NdbDictionary::Column::Double;
+        out_length = 1; out_cs = NULL;
+        out_scale = (arg_scale + 4 > 30) ? 30 : arg_scale + 4;
+        // Display-gate rule mirrors build_cte_virtual_tables: format
+        // fixed-scale iff the SOURCE precision fits the DOUBLE-exact
+        // range (the average's magnitude is bounded by the source's).
+        out_precision =
+            (arg_precision <= 15)
+                ? 15
+                : ((arg_precision + 4 > 65) ? 65 : arg_precision + 4);
+        return true;
+      default:
+        return false;
     }
   }
   return false;
@@ -9948,6 +10224,24 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
             case NdbDictionary::Column::Float:
             case NdbDictionary::Column::Double:
               derived_type = NdbDictionary::Column::Double;
+              // Chained display metadata (found by obc-11): when the
+              // source is a CTE OUTPUT whose Double type is our own
+              // DECIMAL widening (scale carried below), a SUM over it
+              // must keep printing fixed-scale like MySQL's
+              // DECIMAL-typed re-sum — without this, b's virt column
+              // dropped the scale and SUM(b.t2) printed a compact
+              // double.  Guarded to virt-column sources with a sane
+              // carried scale so real FLOAT / DOUBLE columns (incl.
+              // NOT_FIXED_DEC dictionary scales) keep the compact
+              // double formatting.
+              if (st == NdbDictionary::Column::Double &&
+                  cte_scope->resolved_columns != NULL &&
+                  cte_scope->resolved_columns[src_col_idx].kind ==
+                      QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+                  src_scale > 0 && src_scale <= 30 && src_precision > 0) {
+                derived_scale = src_scale;
+                derived_precision = src_precision;
+              }
               break;
             case NdbDictionary::Column::Decimal:
             case NdbDictionary::Column::Decimalunsigned:
@@ -10012,6 +10306,17 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
             case NdbDictionary::Column::Double:
               derived_type = NdbDictionary::Column::Double;
               derived_length = 1;
+              // Chained display metadata — same rule as the SUM arm
+              // above: a MIN/MAX over a DECIMAL-widened CTE output
+              // keeps the carried fixed-scale display.
+              if (st == NdbDictionary::Column::Double &&
+                  cte_scope->resolved_columns != NULL &&
+                  cte_scope->resolved_columns[src_col_idx].kind ==
+                      QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+                  src_scale > 0 && src_scale <= 30 && src_precision > 0) {
+                derived_scale = src_scale;
+                derived_precision = src_precision;
+              }
               break;
             case NdbDictionary::Column::Decimal:
             case NdbDictionary::Column::Decimalunsigned:
@@ -10101,7 +10406,104 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               "CTE aggregate over complex expression not yet supported.");
         }
       } else if (o->type == Outputs::Type::AVG) {
-        throw RonSQLPermanentError("AVG in CTE output not yet supported.");
+        // cte_avg_plan.md V4 (C5): an AVG output is one DOUBLE virt
+        // column.  The kernel's kOpAvg accumulates SUM into this slot
+        // plus a hidden COUNT companion and divides on the owner after
+        // the redistribute, so the wire value is always an 8-byte
+        // DOUBLE (NULL when the count is 0).  Display parity: MySQL
+        // shows AVG over exact types (integers, DECIMAL) with
+        // scale + 4 fraction digits, computed here and carried on the
+        // virt column like the D15 DECIMAL-widening display metadata;
+        // FLOAT / DOUBLE args keep the compact double formatting.
+        AggregationAPICompiler::Expr* arg = o->avg.arg;
+        require_prm(arg != NULL && arg->isLoad(),
+                    "AVG over an expression in a CTE output is not yet "
+                    "supported — the argument must be a plain column.");
+        Uint32 src_col_idx = arg->getLoadIdx();
+        NdbDictionary::Column::Type st;
+        Uint32 src_length = 1;
+        const void* src_cs = NULL;
+        Int32 src_scale = 0;
+        Int32 src_precision = 0;
+        require_prm(
+            resolve_chained_column_type(*cte_scope, src_col_idx,
+                                         st, src_length, src_cs,
+                                         src_scale, src_precision),
+            "CTE AVG references unresolved source column.");
+        switch (st) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Int:
+        case NdbDictionary::Column::Bigint:
+        case NdbDictionary::Column::Tinyunsigned:
+        case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Mediumunsigned:
+        case NdbDictionary::Column::Unsigned:
+        case NdbDictionary::Column::Bigunsigned:
+          derived_type = NdbDictionary::Column::Double;
+          derived_scale = 4;
+          derived_precision = 15;  // within the printer's exact-range gate
+          break;
+        case NdbDictionary::Column::Float:
+        case NdbDictionary::Column::Double:
+          derived_type = NdbDictionary::Column::Double;
+          // Chained display metadata — the AVG twin of the SUM-arm
+          // rule: over a DECIMAL-widened CTE output, apply the same
+          // scale + 4 display rule as the Decimal arm below.
+          if (st == NdbDictionary::Column::Double &&
+              cte_scope->resolved_columns != NULL &&
+              cte_scope->resolved_columns[src_col_idx].kind ==
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+              src_scale > 0 && src_scale <= 30 && src_precision > 0) {
+            derived_scale = (src_scale + 4 > 30) ? 30 : src_scale + 4;
+            derived_precision =
+                (src_precision <= 15)
+                    ? 15
+                    : ((src_precision + 4 > 65) ? 65 : src_precision + 4);
+          }
+          break;
+        case NdbDictionary::Column::Decimal:
+        case NdbDictionary::Column::Decimalunsigned:
+          // The hidden SUM slot has exactly SUM's 64-bit exposure on
+          // scale-zero DECIMAL — apply the same I.22 range guard.
+          require_prm(
+              decimal_minmax_fits_64bit(st, src_precision, src_scale),
+              "AVG over scale-zero DECIMAL wider than the 64-bit integer "
+              "range is not yet supported.");
+          derived_type = NdbDictionary::Column::Double;
+          // MySQL result-type rule: scale + 4 (capped at 30).  The
+          // precision here is DISPLAY metadata: the printer formats
+          // fixed-scale only within the DOUBLE-exact range
+          // (precision <= 15), and an average's magnitude is bounded by
+          // the source's — so gate on the SOURCE precision.  Using
+          // p+4 spuriously tripped the gate (first record:
+          // AVG(DECIMAL(12,2)) printed compact instead of scale-6).
+          derived_scale = (src_scale + 4 > 30) ? 30 : src_scale + 4;
+          derived_precision =
+              (src_precision <= 15)
+                  ? 15
+                  : ((src_precision + 4 > 65) ? 65 : src_precision + 4);
+          break;
+        case NdbDictionary::Column::Char:
+        case NdbDictionary::Column::Varchar:
+        case NdbDictionary::Column::Longvarchar:
+          throw RonSQLPermanentError(
+              "AVG over string columns is not supported.");
+        case NdbDictionary::Column::Date:
+        case NdbDictionary::Column::Year:
+        case NdbDictionary::Column::Datetime2:
+        case NdbDictionary::Column::Time2:
+        case NdbDictionary::Column::Timestamp2:
+          throw RonSQLPermanentError(
+              "AVG over temporal columns is not supported — only "
+              "MIN / MAX / COUNT.");
+        default:
+          throw RonSQLPermanentError(
+              "AVG over this column type in CTE not yet supported.");
+        }
+        derived_length = 1;
+        have_derived = true;
       } else {
         throw RonSQLPermanentError(
             "Unsupported CTE output kind.");
@@ -10477,10 +10879,11 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     if (left->op == T_IDENTIFIER && right->op == T_IDENTIFIER) {
       require_run(scope.resolved_columns != NULL,
                   "CTE_LOOKUP filter: missing resolved columns.");
-      // Resolve one side to (buffer position, NDB type).
+      // Resolve one side to (buffer position, NDB type, descriptor).
       auto resolve_side =
           [&](ConditionalExpression* side, Uint32& out_pos,
-              NdbDictionary::Column::Type& out_type) -> void {
+              NdbDictionary::Column::Type& out_type,
+              const NdbDictionary::Column*& out_col) -> void {
         Uint32 cidx = side->col_idx;
         const QueryScope::ResolvedColumnRef& ref =
             scope.resolved_columns[cidx];
@@ -10495,6 +10898,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                       "column descriptor.");
           out_pos = linked_base + cte_idx;
           out_type = vc->getType();
+          out_col = vc;
           return;
         }
         if (ref.kind ==
@@ -10508,6 +10912,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
           out_pos = find_proj_pos(ref.join_op_idx,
                                   m_columns[cidx].c_str());
           out_type = ref.dict_column->getType();
+          out_col = ref.dict_column;
           return;
         }
         require_prm(false,
@@ -10519,14 +10924,100 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       Uint32 pos_l = 0, pos_r = 0;
       NdbDictionary::Column::Type type_l = NdbDictionary::Column::Bigint;
       NdbDictionary::Column::Type type_r = NdbDictionary::Column::Bigint;
-      resolve_side(left, pos_l, type_l);
-      resolve_side(right, pos_r, type_r);
+      const NdbDictionary::Column* col_l = NULL;
+      const NdbDictionary::Column* col_r = NULL;
+      resolve_side(left, pos_l, type_l, col_l);
+      resolve_side(right, pos_r, type_r, col_r);
+
+      // String col-vs-col (cte_output_string_colvscol_plan.md S3):
+      // same-type same-charset CHAR / VARCHAR / LONGVARCHAR pairs emit
+      // one BRANCH_LINKED_OP_LINKED comparing the two buffer entries
+      // directly with the charset-aware kernel compare.  Sizes follow
+      // the const-vs-col inline path's convention (getLength() on the
+      // descriptor); the kernel additionally clamps each side to the
+      // entry's actual payload.  NULL guards below apply to both arms,
+      // so the branch never sees a NULL entry (raw NdbInterpretedCode
+      // defaults to NULL_CMP_EQUAL, not SQL semantics).
+      auto is_string_t = [](NdbDictionary::Column::Type t) {
+        return t == NdbDictionary::Column::Char ||
+               t == NdbDictionary::Column::Varchar ||
+               t == NdbDictionary::Column::Longvarchar;
+      };
+      const bool l_str = is_string_t(type_l);
+      const bool r_str = is_string_t(type_r);
+      if (l_str || r_str) {
+        require_prm(l_str && r_str,
+                    "CTE_LOOKUP filter col-vs-col: cannot compare a "
+                    "string operand against a non-string operand — "
+                    "cast one side or compare against a constant.");
+        require_prm(type_l == type_r,
+                    "CTE_LOOKUP filter col-vs-col: string operands "
+                    "must both be the same string type (CHAR vs "
+                    "VARCHAR mixes are not yet supported) — cast one "
+                    "side or compare against a constant.");
+        Uint32 cs_l = (Uint32)col_l->getCharsetNumber();
+        Uint32 cs_r = (Uint32)col_r->getCharsetNumber();
+        require_prm(cs_l == cs_r && cs_l != 0,
+                    "CTE_LOOKUP filter col-vs-col: string operands "
+                    "must share one character set.");
+        const Uint32 size_l = (Uint32)col_l->getLength();
+        const Uint32 size_r = (Uint32)col_r->getLength();
+
+        require_prm(code.branch_linked_isnull(pos_l, fail_label) == 0,
+                    "CTE_LOOKUP filter col-vs-col: failed to emit left "
+                    "NULL guard (string).");
+        require_prm(code.branch_linked_isnull(pos_r, fail_label) == 0,
+                    "CTE_LOOKUP filter col-vs-col: failed to emit right "
+                    "NULL guard (string).");
+
+        // Pick the method that branches when the row should be
+        // REJECTED, per the project-wide inverted-inequality naming
+        // (branch_linked_linked_le branches when L >= R, etc.).
+        const Uint32 tid = (Uint32)type_l;
+        int src = -1;
+        switch (atom->op) {
+        case T_EQUALS:      // accept L =  R -> reject on L != R
+          src = code.branch_linked_linked_ne(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_NOT_EQUALS:  // accept L != R -> reject on L =  R
+          src = code.branch_linked_linked_eq(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_LT:          // accept L <  R -> reject on L >= R
+          src = code.branch_linked_linked_le(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_LE:          // accept L <= R -> reject on L >  R
+          src = code.branch_linked_linked_lt(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_GT:          // accept L >  R -> reject on L <= R
+          src = code.branch_linked_linked_ge(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        case T_GE:          // accept L >= R -> reject on L <  R
+          src = code.branch_linked_linked_gt(pos_l, pos_r, tid, cs_l,
+                                             size_l, size_r, fail_label);
+          break;
+        default:
+          require_prm(false,
+                      "CTE_LOOKUP filter col-vs-col: unsupported "
+                      "operator (string).");
+        }
+        require_prm(src == 0,
+                    "CTE_LOOKUP filter col-vs-col: failed to emit "
+                    "linked-vs-linked string branch.");
+        return;
+      }
+
       require_prm(is_typed_reg_loadable(type_l) &&
                   is_typed_reg_loadable(type_r),
                   "CTE_LOOKUP filter col-vs-col: only integer, FLOAT, "
-                  "DOUBLE and DATE operands are supported — DECIMAL, "
-                  "string and other temporal comparisons need a cast "
-                  "or a constant-vs-column form.");
+                  "DOUBLE, DATE and matching string operands are "
+                  "supported — DECIMAL and non-DATE temporal "
+                  "comparisons need a cast or a constant-vs-column "
+                  "form.");
 
       // UNKNOWN rejects the row/disjunct: guard both operands' NULL
       // flags before the typed loads (a NULL register would raise
@@ -10786,6 +11277,14 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                     "encoding in the inline opcode — deferred to "
                     "follow-up work.");
       }
+      use_inline_path = true;
+    } else if (o->type == Outputs::Type::AVG) {
+      // cte_avg_plan.md V4 (C6): the AVG output is finalized to an
+      // 8-byte DOUBLE on the owner before CTE_READY, so the filter
+      // compares an ordinary Double via the inline-type opcode.
+      require_prm(vtcol->getType() == NdbDictionary::Column::Double,
+                  "CTE_LOOKUP filter on AVG output: unexpected "
+                  "virt-table type.  Please report a bug.");
       use_inline_path = true;
     } else {
       require_prm(false,
@@ -11305,12 +11804,24 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
           break;
         default: {
           // String (Char/Varchar/Longvarchar) or any other PK type: a
-          // zero buffer sized to the PK column (value ignored by the kernel).
+          // zero buffer (value ignored by the kernel).  The generic
+          // const operand's converter is arrayType-sensitive: FIXED
+          // columns require exactly getSizeInBytes() raw bytes, while
+          // VAR columns take the raw VALUE length and prepend the
+          // 1-or-2-byte length prefix themselves — passing
+          // getSizeInBytes() there overflows by the prefix size and
+          // fails bindOperand with QRY_CHAR_OPERAND_TRUNCATED (first
+          // surfaced by the sc-20 string scalar watermark, whose
+          // scalar virt PK is the VARCHAR output itself).  Pass an
+          // empty value for VAR columns instead.
           const Uint32 pksz = pkc->getSizeInBytes();
+          const Uint32 dummy_len =
+              (pkc->getArrayType() == NdbDictionary::Column::ArrayTypeFixed)
+                  ? pksz : 0;
           Uint8* zero = m_amalloc->alloc_exc<Uint8>(pksz == 0 ? 1 : pksz);
-          memset(zero, 0, pksz);
+          memset(zero, 0, pksz == 0 ? 1 : pksz);
           effective_keys[0] =
-              qb->constValue(static_cast<const void*>(zero), pksz);
+              qb->constValue(static_cast<const void*>(zero), dummy_len);
           break;
         }
         }
@@ -12890,6 +13401,14 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::Avg:
+      // Only CTE scopes register SVM Avg (cte_avg_plan.md C2); the
+      // main scope keeps the Sum+Count decomposition + PRINT_AVG, so
+      // this single-table translation must never see it.
+      require_run(false,
+                  "AVG instruction reached the single-table program "
+                  "build.  Please report a bug.");
+      break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
     case AggregationAPICompiler::SVMInstrType::Least2:
       emit_pair_op_embedded(
@@ -13247,6 +13766,167 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
       Interpreter::ExitOK()));
 }
 
+/*
+ * CTE-body ORDER BY / LIMIT (cte_orderby_limit_plan.md L4), emit-time
+ * half.  Resolves each ORDER BY entry to a body OUTPUT and maps it to
+ * the kernel order spec: COLUMN outputs to their GROUP BY position
+ * (GroupBy registration order == groupby_columns list order; for
+ * single-row bodies the outputs themselves are the GROUP BY, in output
+ * order), aggregate outputs to their visible aggregate slot (AVG uses
+ * the sum slot — the finalize divide runs BEFORE the LIMIT select, so
+ * ordering by AVG compares the divided DOUBLE).  Emits
+ * NdbAggregator::OrderBy/Limit trailer words; the caller must still be
+ * before Finalize.  Returns true when a trailer was emitted — the
+ * caller then passes QN_CteSubtreeNode::CTE_LIMIT to defineCte so the
+ * redistribution targets the constant owner.
+ *
+ * ORDER BY without LIMIT emits nothing: the materialized SET is
+ * unchanged and a derived table's iteration order is unspecified in
+ * MySQL too, so dropping it is a provable no-op — and skipping the
+ * CTE_LIMIT flag keeps the normal hash-distributed redistribution.
+ */
+bool
+RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
+                                       CteDefinition* cte,
+                                       NdbAggregator* cteAgg)
+{
+  SelectStatement* stmt = cte->stmt;
+  if (stmt->limit < 0)
+    return false;
+  const bool grouped = (stmt->groupby_columns != NULL);
+  if (!grouped && !stmt->is_single_row_cte)
+    return false;  // scalar body: validated no-op (analyze_cte_body_...)
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  for (const OrderbyColumns* ob = stmt->orderby_columns; ob != NULL;
+       ob = ob->next)
+  {
+    /* Resolve the ORDER BY entry to a body output. */
+    const Outputs* out = NULL;
+    if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF)
+    {
+      Uint32 pos = 0;
+      for (out = stmt->outputs; out != NULL && pos < ob->output_idx;
+           out = out->next, pos++) {}
+      require_prm(out != NULL,
+                  "CTE body ORDER BY output reference out of range.");
+    }
+    else
+    {
+      require_prm(scope.resolved_columns != NULL,
+                  "CTE body ORDER BY: missing resolved columns.");
+      const QueryScope::ResolvedColumnRef& obr =
+          scope.resolved_columns[ob->col_idx];
+      for (const Outputs* o = stmt->outputs; o != NULL; o = o->next)
+      {
+        if (o->type != Outputs::Type::COLUMN)
+          continue;
+        if (same_resolved_column(scope.resolved_columns[o->column.col_idx],
+                                 obr))
+        {
+          out = o;
+          break;
+        }
+      }
+      if (out == NULL)
+      {
+        err << "ORDER BY column '" << m_columns[ob->col_idx].c_str()
+            << "' in CTE body '" << cte->name.c_str()
+            << "' must be one of the body's output columns." << std::endl;
+        throw RonSQLPermanentError(
+            "CTE body ORDER BY column is not a body output.");
+      }
+    }
+
+    /* Map the output to (aggregate slot | GROUP BY position). */
+    bool is_agg = false;
+    Uint32 idx = 0;
+    switch (out->type)
+    {
+    case Outputs::Type::COLUMN:
+    {
+      if (stmt->is_single_row_cte)
+      {
+        /* Single-row body: GroupBy() is registered per output, in
+         * output order. */
+        Uint32 pos = 0;
+        for (const Outputs* o = stmt->outputs; o != out; o = o->next)
+          pos++;
+        idx = pos;
+        break;
+      }
+      const QueryScope::ResolvedColumnRef& outr =
+          scope.resolved_columns[out->column.col_idx];
+      Uint32 pos = 0;
+      bool found = false;
+      for (const GroupbyColumns* gb = stmt->groupby_columns; gb != NULL;
+           gb = gb->next, pos++)
+      {
+        if (same_resolved_column(scope.resolved_columns[gb->col_idx], outr))
+        {
+          found = true;
+          break;
+        }
+      }
+      require_prm(found,
+                  "CTE body ORDER BY column output is not a GROUP BY "
+                  "column.");
+      idx = pos;
+      break;
+    }
+    case Outputs::Type::AGGREGATE:
+    {
+      is_agg = true;
+      idx = out->aggregate.agg_index;
+      /* String MIN/MAX slots hold val_ptr payloads the kernel's order
+       * comparator does not decode — reject them as order keys (v1;
+       * numeric, DECIMAL-widened and packed-temporal MIN/MAX order
+       * correctly as their widened 64-bit values). */
+      if ((out->aggregate.fun == T_MIN || out->aggregate.fun == T_MAX) &&
+          out->aggregate.arg != NULL && out->aggregate.arg->isLoad())
+      {
+        NdbDictionary::Column::Type st;
+        Uint32 slen = 1;
+        const void* scs = NULL;
+        Int32 sscale = 0;
+        Int32 sprecision = 0;
+        if (resolve_chained_column_type(scope,
+                                        out->aggregate.arg->getLoadIdx(),
+                                        st, slen, scs, sscale, sprecision) &&
+            (st == NdbDictionary::Column::Char ||
+             st == NdbDictionary::Column::Varchar ||
+             st == NdbDictionary::Column::Longvarchar))
+        {
+          err << "ORDER BY over string MIN/MAX output '"
+              << std::string(out->output_name.str, out->output_name.len)
+              << "' in CTE body '" << cte->name.c_str()
+              << "' is not yet supported." << std::endl;
+          throw RonSQLPermanentError(
+              "CTE body ORDER BY over a string MIN/MAX output.");
+        }
+      }
+      break;
+    }
+    case Outputs::Type::AVG:
+      is_agg = true;
+      idx = out->avg.agg_index_sum;
+      break;
+    case Outputs::Type::SUBQUERY_AGG:
+      err << "ORDER BY over subquery output in CTE body '"
+          << cte->name.c_str() << "' is not supported." << std::endl;
+      throw RonSQLPermanentError(
+          "CTE body ORDER BY over a subquery output.");
+    }
+
+    require_prm(cteAgg->OrderBy(idx, is_agg, !ob->ascending),
+                "Failed to program CTE body ORDER BY.");
+  }
+
+  require_prm(cteAgg->Limit((Uint32)stmt->limit),
+              "Failed to program CTE body LIMIT.");
+  return true;
+}
+
 void
 RonSQLPreparer::programAggregator_join(QueryScope& scope,
                                         SelectStatement& ast_root,
@@ -13502,6 +14182,12 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       break;
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Avg:
+      // cte_avg_plan.md V4 (C3): one visible DOUBLE slot; the kernel's
+      // kOpAvg adds the hidden COUNT companion and divides on the
+      // owner after the CTE redistribute completes.
+      programAggregator_do_or_fail(aggregator->Avg(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
     case AggregationAPICompiler::SVMInstrType::Least2:
@@ -14552,6 +15238,35 @@ RonSQLPreparer::print()
         out << "col_" << g->col_idx;
       }
       out << '\n';
+      /* Kernel-applied top-N (cte_orderby_limit_plan.md): printed only
+       * when a trailer is actually emitted — grouped or single-row
+       * bodies with LIMIT.  ORDER BY without LIMIT and scalar-body
+       * no-ops are dropped, so they are not printed. */
+      if (cte->stmt->limit >= 0 &&
+          (cte->stmt->groupby_columns != NULL ||
+           cte->stmt->is_single_row_cte)) {
+        out << "    ";
+        if (cte->stmt->orderby_columns != NULL) {
+          out << "ORDER BY ";
+          Uint32 obc = 0;
+          for (const OrderbyColumns* ob = cte->stmt->orderby_columns;
+               ob != NULL; ob = ob->next, obc++) {
+            if (obc > 0) out << ", ";
+            if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+              const Outputs* o = cte->stmt->outputs;
+              for (Uint32 p = 0; o != NULL && p < ob->output_idx;
+                   o = o->next, p++) {}
+              if (o != NULL)
+                out << std::string(o->output_name.str, o->output_name.len);
+            } else {
+              out << "col_" << ob->col_idx;
+            }
+            if (!ob->ascending) out << " DESC";
+          }
+          out << ' ';
+        }
+        out << "LIMIT " << cte->stmt->limit << '\n';
+      }
       if (cte_idx < m_cte_scopes.size()) {
         QueryScope* cte_scope = m_cte_scopes[cte_idx];
         if (cte_scope != NULL && cte_scope->join_plan.num_ops > 0) {

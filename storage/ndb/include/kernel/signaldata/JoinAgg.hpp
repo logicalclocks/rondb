@@ -46,6 +46,9 @@ struct JoinAggSetupReq {
   // with CTE_MODE_FLAG.  ORed into concurrencyStrategy like
   // CTE_MODE_FLAG; decoders must mask it out of the strategy compare.
   static constexpr Uint32 CTE_SINGLE_ROW_FLAG = 0x40000000;
+  /* cte_orderby_limit_plan.md: constant-owner redistribution + owner-side
+   * top-N truncation (spec rides the aggregation program trailer). */
+  static constexpr Uint32 CTE_LIMIT_FLAG = 0x20000000;
 
   Uint32 senderRef;
   Uint32 senderData;

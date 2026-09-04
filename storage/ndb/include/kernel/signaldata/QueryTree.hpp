@@ -473,7 +473,7 @@ struct QN_CteSubtreeNode  // Is a QueryNode subclass
   static constexpr Uint32 NodeSize = 4;
 
   enum RequestInfoBits {
-    CTE_SINGLE_ROW = 0x1  // Single-row CTE (cte_single_row_kernel_plan.md):
+    CTE_SINGLE_ROW = 0x1, // Single-row CTE (cte_single_row_kernel_plan.md):
                           // the body materializes AT MOST one row, stored as
                           // a key-only group record (every projected column
                           // a GROUP BY column, zero aggregate slots).
@@ -481,6 +481,12 @@ struct QN_CteSubtreeNode  // Is a QueryNode subclass
                           // constant DBTC node; CTE_LOOKUP probes compare a
                           // subset of the projected columns and MISS on an
                           // empty state.
+    CTE_LIMIT = 0x2       // ORDER BY / LIMIT CTE (cte_orderby_limit_plan.md):
+                          // every group redistributes to the constant DBTC
+                          // node, which selects the top-N under the ORDER BY
+                          // spec (carried in the aggregation program trailer)
+                          // and truncates before CTE_READY.  Probes route to
+                          // the constant owner; dropped groups are misses.
   };
 
   Uint32 optional[1];   // Embedded QueryNode structures follow

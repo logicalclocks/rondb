@@ -6701,6 +6701,9 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     const bool singleRowCte =
         (requestPtr.p->m_cteContexts[cteIdx].m_flags &
          QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
+    const bool limitCte =
+        (requestPtr.p->m_cteContexts[cteIdx].m_flags &
+         QN_CteSubtreeNode::CTE_LIMIT) != 0;
     bool keylessProbe = false;
 
     // Expand key from parent row using key pattern
@@ -6844,11 +6847,24 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
           kp += 1 + dataSize;
         }
-        const Uint64 h = cte_lookup_hash_key(
-            localCteInterp, reinterpret_cast<const char *>(keyBuf),
-            keyLenBytes, nGbCols);
-        const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
-        targetNodeId = m_dataNodeList[ownerIdx];
+        if (limitCte) {
+          jam();
+          /* ORDER BY / LIMIT CTE (cte_orderby_limit_plan.md): every
+           * group was redistributed to the constant DBTC-node owner
+           * and truncated there, so the key hash is meaningless for
+           * routing — non-owner states are empty, and a dropped group
+           * must MISS at the owner (not at some hash-owner that never
+           * held it).  The key section goes out un-normalized like
+           * the grouped hash path; DBLQH normalizes positions on its
+           * side as for any grouped CTE probe. */
+          targetNodeId = refToNode(requestPtr.p->m_senderRef);
+        } else {
+          const Uint64 h = cte_lookup_hash_key(
+              localCteInterp, reinterpret_cast<const char *>(keyBuf),
+              keyLenBytes, nGbCols);
+          const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
+          targetNodeId = m_dataNodeList[ownerIdx];
+        }
       } else {
         jam();
         /* D8: scalar CTE (no GROUP BY) cross-join child.  Its cluster-wide

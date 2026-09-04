@@ -1118,6 +1118,76 @@ bool NdbAggregator::Count(Uint32 agg_id, Uint32 reg_id) {
   return true;
 }
 
+bool NdbAggregator::Avg(Uint32 agg_id, Uint32 reg_id) {
+  /* AVG(x) as one program word (cte_avg_plan.md).  The kernel
+   * interpreter expands it: SUM into this visible slot plus COUNT into
+   * a hidden companion it allocates beyond n_agg_results_, merged and
+   * redistributed as ordinary commutative slots, divided into a DOUBLE
+   * (count == 0 => NULL) on the owner once the CTE redistribute
+   * completes.  v1 is CTE aggregators only — the API-side result/merge
+   * paths of plain join aggregation never see the finalized DOUBLE, so
+   * use Sum+Count slots there and divide client-side instead. */
+  if (!CheckAggAndReg(agg_id, reg_id)) {
+    return false;
+  }
+  if (isStringType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedStringOperation);
+    return false;
+  }
+  /* Same envelope as Sum: AVG over DATE/YEAR/DATETIME/TIME is
+   * meaningless — only MIN/MAX/COUNT. */
+  if (isTemporalType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedTemporalOperation);
+    return false;
+  }
+
+  buffer_[curr_prog_pos_++] =
+    (kOpAvg) << 26 |
+    (reg_id & 0x0F) << 16 |
+    agg_id;
+
+  agg_ops_[agg_id] = kOpAvg;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
+  n_agg_results_++;
+
+  return true;
+}
+
+bool NdbAggregator::OrderBy(Uint32 idx, bool is_agg_result,
+                            bool descending) {
+  /* ORDER BY trailer entry for a CTE aggregation program
+   * (cte_orderby_limit_plan.md).  Declarative: no per-row work; the
+   * kernel parses it at Init and applies it with Limit() during the
+   * owner-side top-N finalize.  idx is a GROUP BY column position
+   * (is_agg_result == false) or a visible aggregate slot index
+   * (is_agg_result == true); range-checked kernel-side against the
+   * finalized program. */
+  if (idx > 0xFFFF) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+    (kOpOrderBy) << 26 |
+    (is_agg_result ? 1u : 0u) << 25 |
+    (descending ? 1u : 0u) << 24 |
+    (idx & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::Limit(Uint32 n) {
+  /* LIMIT trailer entry: cap the CTE result to n groups, selected
+   * under the OrderBy() spec (or arbitrarily without one).  Capped at
+   * 2^26 - 1 by the single-word encoding. */
+  if (n > 0x03FFFFFF) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+    (kOpLimit) << 26 |
+    (n & 0x03FFFFFF);
+  return true;
+}
+
 bool NdbAggregator::GroupBy(const char* name) {
   if (name == nullptr) {
     SetError(kErrInvalidColumnName);

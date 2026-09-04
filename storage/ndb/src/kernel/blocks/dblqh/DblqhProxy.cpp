@@ -2431,9 +2431,12 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       (strategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
   state->m_cte_single_row =
       (strategy & JoinAggSetupReq::CTE_SINGLE_ROW_FLAG) != 0;
+  state->m_cte_limit =
+      (strategy & JoinAggSetupReq::CTE_LIMIT_FLAG) != 0;
   state->m_cte_index = req->cteIndex;
   if ((strategy & ~(JoinAggSetupReq::CTE_MODE_FLAG |
-                    JoinAggSetupReq::CTE_SINGLE_ROW_FLAG)) ==
+                    JoinAggSetupReq::CTE_SINGLE_ROW_FLAG |
+                    JoinAggSetupReq::CTE_LIMIT_FLAG)) ==
       JoinAggSetupReq::STRATEGY_MUTEX_FREE) {
     state->m_strategy = JoinAggregationState::MUTEX_FREE;
   } else {

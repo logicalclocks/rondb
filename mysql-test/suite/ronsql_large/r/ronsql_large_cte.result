@@ -152,5 +152,57 @@ FROM per_cust|
 first_d	last_d	total_rows	group_count
 2018-01-01	2022-12-28	100000	20000
 
+=== Q6: CTE-body ORDER BY + LIMIT at 100000 groups — sliced top-N
+===     select + sliced truncation on the constant owner ===
+== Query ==
+WITH top AS (
+SELECT lg_id AS k, SUM(lg_amount) AS a, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_id ORDER BY k DESC LIMIT 100)
+SELECT COUNT(*) AS kept, MIN(top.k) AS lo, MAX(top.k) AS hi,
+SUM(top.c) AS rows_kept
+FROM top;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH top AS (
+SELECT lg_id AS k, SUM(lg_amount) AS a, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_id ORDER BY k DESC LIMIT 100)
+SELECT COUNT(*) AS kept, MIN(top.k) AS lo, MAX(top.k) AS hi,
+SUM(top.c) AS rows_kept
+FROM top|
+kept	lo	hi	rows_kept
+100	99901	100000	100
+
+=== Q7: aggregate-ordered LIMIT at 20000 groups — the partial-merge
+===     rank case (multi-key: SUM DESC + unique tie-breaker) ===
+== Query ==
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust ORDER BY s DESC, k LIMIT 50)
+SELECT COUNT(*) AS kept, SUM(per_cust.s) AS tot, SUM(per_cust.c) AS rows_kept
+FROM per_cust;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust ORDER BY s DESC, k LIMIT 50)
+SELECT COUNT(*) AS kept, SUM(per_cust.s) AS tot, SUM(per_cust.c) AS rows_kept
+FROM per_cust|
+kept	tot	rows_kept
+50	2174921.34	250
+
 === Drop large dataset ===
 PASSED

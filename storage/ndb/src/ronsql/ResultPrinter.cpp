@@ -726,7 +726,22 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           print_float_or_double(out, column.data_float());
           break;
         case NdbDictionary::Column::Type::Double:
-          print_float_or_double(out, column.data_double());
+          // cte_avg_plan.md V4 (C8): a Double GROUP BY column carrying
+          // display scale metadata (an AVG or DECIMAL-widened CTE
+          // output) prints with fixed scale like MySQL, gated on the
+          // DOUBLE-exact precision range like print_passthrough_value.
+          {
+            int sc = cmd.print_group_by_column.scale;
+            int pr = cmd.print_group_by_column.precision;
+            if (sc > 0 && pr > 0 && pr <= 15) {
+              char fbuf[FLOATING_POINT_BUFFER];
+              snprintf(fbuf, sizeof(fbuf), "%.*f", sc,
+                       column.data_double());
+              out << fbuf;
+            } else {
+              print_float_or_double(out, column.data_double());
+            }
+          }
           break;
         case NdbDictionary::Column::Type::Olddecimal:
           feature_not_implemented("Print GROUP BY column of type Olddecimal");
@@ -1689,7 +1704,19 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           print_float_or_double(out, column.data_float());
           break;
         case NdbDictionary::Column::Type::Double:        ///< 64-bit float. 8 byte float
-          print_float_or_double(out, column.data_double());
+          // cte_avg_plan.md V4 (C8): see the buffered-path Double arm.
+          {
+            int sc = cmd.print_group_by_column.scale;
+            int pr = cmd.print_group_by_column.precision;
+            if (sc > 0 && pr > 0 && pr <= 15) {
+              char fbuf[FLOATING_POINT_BUFFER];
+              snprintf(fbuf, sizeof(fbuf), "%.*f", sc,
+                       column.data_double());
+              out << fbuf;
+            } else {
+              print_float_or_double(out, column.data_double());
+            }
+          }
           break;
         case NdbDictionary::Column::Type::Olddecimal:    ///< MySQL < 5.0 signed decimal,  Precision, Scale
           feature_not_implemented("Print GROUP BY column of type Olddecimal");

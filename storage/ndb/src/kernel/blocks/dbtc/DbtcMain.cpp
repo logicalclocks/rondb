@@ -30998,6 +30998,9 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       const bool singleRow =
           (scanptr.p->m_cteInfos[c].m_flags &
            QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
+      const bool limitCte =
+          (scanptr.p->m_cteInfos[c].m_flags &
+           QN_CteSubtreeNode::CTE_LIMIT) != 0;
 
       for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
         if (!getNodeInfo(nodeId).m_connected) continue;
@@ -31014,7 +31017,8 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         req->concurrencyStrategy =
             JoinAggSetupReq::STRATEGY_MUTEX_FREE |
             JoinAggSetupReq::CTE_MODE_FLAG |
-            (singleRow ? JoinAggSetupReq::CTE_SINGLE_ROW_FLAG : 0);
+            (singleRow ? JoinAggSetupReq::CTE_SINGLE_ROW_FLAG : 0) |
+            (limitCte ? JoinAggSetupReq::CTE_LIMIT_FLAG : 0);
         req->resultRef = apiConnectptr.p->ndbapiBlockref;
         req->resultData = scanptr.p->m_aggReceiverId;
         req->routeRef = reference();

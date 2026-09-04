@@ -143,6 +143,30 @@ enum InterpreterOp {
   kOpSkip,            // Unconditional forward skip in aggregation program
   kOpSetRegNull,      // Mark register NULL, preserving its value type
 
+  /* AVG(x) as one opcode (cte_avg_plan.md): per-row executes the Sum
+   * kernel into the VISIBLE dst slot (low 16 bits) and the Count
+   * kernel into a HIDDEN companion slot the kernel interpreter
+   * allocates at Init beyond the program header's n_agg_results (so
+   * visible slot positions stay stable).  Both slots merge and
+   * redistribute as ordinary commutative SUM/COUNT slots; the owner
+   * divides sum/count into the visible slot (as DOUBLE; COUNT==0 =>
+   * NULL) exactly once, after the CTE redistribute completes
+   * (Dblqh::checkCteReady).  JoinAggInterpreter-only in v1. */
+  kOpAvg,
+
+  /* ORDER BY / LIMIT trailer for CTE aggregation programs
+   * (cte_orderby_limit_plan.md).  Declarative no-ops per row; parsed
+   * by JoinAggInterpreter::Init into the order spec + limit used by
+   * the owner-side top-N finalize after the CTE redistribute.
+   *   kOpOrderBy: (op << 26) | (is_agg_slot << 25) | (desc << 24)
+   *               | (idx & 0xFFFF)
+   *               idx = GROUP BY column position (is_agg_slot == 0)
+   *               or visible aggregate slot index (is_agg_slot == 1).
+   *   kOpLimit:   (op << 26) | (n & 0x03FFFFFF) — the row limit,
+   *               capped at 2^26 - 1 by the API builder. */
+  kOpOrderBy,
+  kOpLimit,
+
   kOpTotal
 };
 

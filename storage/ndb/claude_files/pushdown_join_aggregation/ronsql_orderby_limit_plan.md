@@ -35,7 +35,14 @@ already existed); remaining Phase 4 value = the optional 4b SF_OrderBy
 index-order streaming top-N; Phases 5-6 partially delivered / deferred
 as noted inline.**
 Phase 0 (2026-08-20, RONDB-1107): body/subquery ORDER BY / LIMIT
-rejection.  Phase 1 (2026-08-21, commits `1d41ae61713` /
+rejection — **the CTE-BODY arm is LIFTED as of September 2026**:
+`cte_orderby_limit_plan.md` L4 applies body ORDER BY / LIMIT in the
+kernel (single-owner redistribution + finalize-barrier top-N); the
+`analyze_ctes` call is now the shape-gated
+`analyze_cte_body_orderby_limit`, obl-1..3 are retired, and body
+coverage lives in `ronsql_cte_dd_orderby_limit_cte` (obc family).
+Subquery arms keep the Phase-0 rejection unchanged.  Phase 1
+(2026-08-21, commits `1d41ae61713` /
 `8e3b7725493` / `9821d27f49c`): `body_orderby_limit.inc` ob-1..ob-22 +
 ob-P1..P3 plus the two engine fixes the first record surfaced —
 `canonicalize_orderby_columns` for mixed bare/qualified ORDER BY vs
