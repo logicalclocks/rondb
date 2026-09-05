@@ -24,11 +24,30 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs2/internal/log"
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
+
+// seedMaxAttempts and seedRetryDelay bound the per-database retries in
+// CreateDatabases when the cluster is still working through schema churn.
+const seedMaxAttempts = 4
+const seedRetryDelay = 5 * time.Second
+
+// isTransientSeedError reports whether a seeding failure is worth retrying:
+// lock wait timeouts and deadlocks (MySQL 1205/1213 — NDB maps busy-cluster
+// transaction timeouts to 1205 and the error text itself says "try
+// restarting transaction"), and 3604 ("Storage engine can't drop table"),
+// which a DROP DATABASE hits transiently while NDB binlog event teardown
+// from earlier churn is still settling.
+func isTransientSeedError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Error 1205") ||
+		strings.Contains(msg, "Error 1213") ||
+		strings.Contains(msg, "Error 3604")
+}
 
 func CreateDatabases(
 	registerAsHopsworksProjects bool,
@@ -73,10 +92,29 @@ func CreateDatabases(
 	}
 	for db, createSchema := range createSchemata {
 		var err error
-		if db == testdbs.HOPSWORKS_DB_NAME {
-			err = runQueriesWithConnection(createSchema, metadataDbConn)
-		} else {
-			err = runQueriesWithConnection(createSchema, dataDbConn)
+		// Heavy NDB schema churn (this seed can run right after another
+		// MTR test dropped all of these databases, and some tests re-seed
+		// in a loop) keeps the data nodes busy with background drop work,
+		// and a statement can then time out with 1205/1213 ("try
+		// restarting transaction") or a drop can transiently fail with
+		// 3604 while binlog event teardown settles. Every fixture starts
+		// with DROP DATABASE IF EXISTS, so re-running one database's whole
+		// schema is idempotent — retry it a few times before giving up.
+		for attempt := 1; ; attempt++ {
+			// Only the hopsworks database lives on the metadata cluster;
+			// every other database is written to the data cluster.
+			if db == testdbs.HOPSWORKS_DB_NAME {
+				err = runQueriesWithConnection(createSchema, metadataDbConn)
+			} else {
+				err = runQueriesWithConnection(createSchema, dataDbConn)
+			}
+			if err == nil || attempt >= seedMaxAttempts ||
+				!isTransientSeedError(err) {
+				break
+			}
+			log.Warnf("transient error seeding db '%s' (attempt %d/%d), "+
+				"retrying: %v", db, attempt, seedMaxAttempts, err)
+			time.Sleep(seedRetryDelay)
 		}
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
