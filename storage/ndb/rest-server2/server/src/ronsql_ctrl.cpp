@@ -28,6 +28,7 @@
 #include "api_key.hpp"
 #include "rate_limit.hpp"
 #include <metrics.hpp>
+#include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
 #include <cstdio>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -134,6 +135,10 @@ void RonSQLCtrl::ronsql(
 
   ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
   RonSQLExecParams params;
+  /* Restored after the 26.05 upmerge dropped it (the cache itself and
+   * its main.cc lifecycle survived; only this handoff was lost, so
+   * every query paid the ~400 µs listIndexes() slow path). */
+  params.schema_cache = g_schema_cache;
 #ifdef RONSQL_PHASE_STATS
   RonSQLPhaseStats phase_stats;
   params.phase_stats = &phase_stats;
