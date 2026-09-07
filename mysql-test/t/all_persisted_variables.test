@@ -50,7 +50,10 @@ let $total_global_vars=`SELECT COUNT(*)
    WHERE variable_name NOT LIKE 'ndb_%'
    AND variable_name NOT LIKE 'debug_%'
    AND variable_name NOT LIKE '%telemetry%'`;
-let $total_persistent_vars=441;
+# RonDB: 443 on 26.10 — two persistable variables beyond the upstream
+# count of 441 (last set upstream by WL#13965); the header above makes
+# bumping this the responsibility of whoever adds variables.
+let $total_persistent_vars=443;
 
 --echo ***************************************************************
 --echo * 0. Verify that variables present in performance_schema.global
