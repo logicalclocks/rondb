@@ -769,3 +769,58 @@ DBSPJ side — all delivered via SCAN_FRAGREQ sections.
 | `DbtcMain.cpp` | sendScanFragReq | Clear `m_aggKeysSectionPtrI` on last send |
 | `DbtcMain.cpp` | releaseScanResources | Release `m_aggKeysSectionPtrI` if non-RNIL |
 | `DbtcMain.cpp` | SCAN_TABCONF | Accumulate 64-bit examined rows for API reporting |
+
+---
+
+## Fire-and-forget JOIN_AGG_RELEASE on the happy path (September 2026)
+
+The main-completion tail no longer waits for JOIN_AGG_RELEASE_CONFs.
+Previously, when the last main JOIN_AGG_COMPLETE_CONF arrived, DBTC
+sent the EndOfData SCAN_TABCONF, parked the scan record in
+WAIT_JOIN_AGG_RELEASE, and only after every RELEASE_CONF ran the close
+path — which sent a SECOND, pure EndOfData SCAN_TABCONF (dropped at
+the API against the closed transaction) and finally freed the scan
+record.  That held TC's scan record + ApiConnectRecord (and the
+window's CS_START_SCAN state) one exchange (~90 µs) past client-visible
+completion, and a back-to-back SCAN_TABREQ reusing the connection
+could hit the state check with error 202.
+
+Now (execJOIN_AGG_COMPLETE_CONF, KIND_MAIN, no error):
+`sendJoinAggScanTabConf` → straight to `CLOSING_SCAN` +
+`close_scan_req_send_conf`.  The release rides the existing safety
+net: `releaseScanResources` → `releaseJoinAggResources` sends the
+RELEASE_REQs with `noReply = 1` (DblqhProxy frees the state and skips
+the CONF) for every node still in `m_aggNodes` —
+`sendJoinAggReleaseReqs` used to clear that bitmask, so the net was
+previously a no-op on this path.
+
+**Correction found on first suite run (agg-d2 hang): the second, pure
+EndOfData SCAN_TABCONF is NOT a wasted signal and must NOT be
+suppressed.**  The API's `receiveSCAN_TABCONF`
+(NdbTransactionScan.cpp) triggers `execCLOSE_SCAN_REP` — the thing
+that finalizes the scan workers and lets `awaitMoreResults` return
+EndOfData — only for a conf whose `requestInfo == EndOfData` exactly;
+the agg conf (`EndOfData | 1` + the agg ops entry) only feeds the
+aggregate receiver's expected-row accounting.  With the second conf
+suppressed, the client sat in `nextResult` forever while the nodes had
+drained, confirmed and released.  The two confs now go out
+back-to-back (safe: `awaitMoreResults` explicitly waits for promised
+aggregate TRANSID_AI rows that arrive after the final conf, and the
+transaction is still open for both — the client is blocked in
+`nextResult` and cannot close between them).
+
+The WAITED release (`sendJoinAggReleaseReqs` → WAIT_JOIN_AGG_RELEASE →
+`joinAggAbortAfterRelease`) survives for every error path, including
+the mixed CONF/REF case where the LAST reply is a CONF but an earlier
+COMPLETE_REF set `m_aggErrorCode`: that case now takes the waited
+branch WITHOUT the success conf, so `abortScanLab`'s SCAN_TABREF
+actually reaches the API (before, the EndOfData conf closed the
+transaction first and the error was silently swallowed).
+
+Preconditions verified: the COMPLETE phase only starts when all
+running/delivered/queued scan frags are done (DbtcMain.cpp
+sendScanTabConf EndOfData check), so the immediate close cannot
+early-return on `m_running_scan_frags`; `m_aggErrorCode` is reset at
+COMPLETE-phase start so it only reflects this phase.  Deferred (with
+the owner-side fusion): folding the release into JOIN_AGG_COMPLETE_REQ
+so nodes free state right after shipping their result.

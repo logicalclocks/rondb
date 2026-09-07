@@ -19950,6 +19950,12 @@ void Dbtc::close_scan_req_send_conf(Signal *signal, ScanRecordPtr scanPtr,
   Uint32 ref = apiConnectptr.p->ndbapiBlockref;
   if (!apiFail && ref) {
     jam();
+    /* For JoinAgg scans this pure EndOfData conf follows the agg conf
+     * (sendJoinAggScanTabConf) and is LOAD-BEARING: only a conf whose
+     * requestInfo == EndOfData exactly triggers the API's
+     * execCLOSE_SCAN_REP, which finalizes the scan workers — the agg
+     * conf (EndOfData | opcount) only feeds the aggregate receiver's
+     * row accounting (NdbTransactionScan.cpp receiveSCAN_TABCONF). */
     ScanTabConf *conf = (ScanTabConf *)&signal->theData[0];
     conf->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
     conf->requestInfo = ScanTabConf::EndOfData;
@@ -31392,7 +31398,14 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
  * outstanding hits 0:
  *   - KIND_CTE: --m_ctePhaseRemaining; if 0, advance to next phase /
  *               main query.
- *   - KIND_MAIN: send the JOIN_AGG_RELEASE_REQs.
+ *   - KIND_MAIN: send the agg SCAN_TABCONF and close immediately —
+ *               the close path sends the pure EndOfData conf (which
+ *               the API's completion requires) back-to-back and the
+ *               RELEASE_REQs go out fire-and-forget (noReply=1, via
+ *               releaseJoinAggResources).  Only the mixed CONF/REF
+ *               failure case still takes the waited
+ *               WAIT_JOIN_AGG_RELEASE round so the abort can report
+ *               the error.
  *
  * Stale or duplicate replies are caught and dropped silently — by
  * record-id mismatch (record already released), by record state
@@ -31496,8 +31509,34 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
     AGGT(("AGGT(%u) MAIN complete all nodes, results rows=%u "
           "scanPtr=%u",
           instance(), scanptr.p->m_aggResultRows, scanptr.i));
+    if (scanptr.p->m_aggErrorCode != 0) {
+      jam();
+      /* An earlier COMPLETE_REF recorded a failure and this last CONF
+       * only drained the count: keep the waited release so
+       * joinAggAbortAfterRelease reports the error to the API (no
+       * success conf — previously an EndOfData conf preceded the
+       * abort and the API dropped the SCAN_TABREF against the closed
+       * transaction, swallowing the error). */
+      sendJoinAggReleaseReqs(signal, scanptr);
+      return;
+    }
     sendJoinAggScanTabConf(signal, scanptr, apiConnectptr);
-    sendJoinAggReleaseReqs(signal, scanptr);
+    /* Fire-and-forget release: the nodes free their aggregation state
+     * unconditionally on JOIN_AGG_RELEASE_REQ — the CONFs were pure TC
+     * bookkeeping.  Skip WAIT_JOIN_AGG_RELEASE and close immediately:
+     * releaseJoinAggResources (called from releaseScanResources on the
+     * close path below) sends the noReply=1 RELEASE_REQs for every
+     * node still in m_aggNodes.  This returns the scan record and the
+     * ApiConnectRecord one exchange earlier and closes the window
+     * where a back-to-back SCAN_TABREQ on the reused API connection
+     * hit CS_START_SCAN (error 202).  The close path's pure EndOfData
+     * SCAN_TABCONF is still sent — the API completes only on it (it
+     * triggers execCLOSE_SCAN_REP, finalizing the scan workers; the
+     * agg conf above only sets the aggregate receiver's expected-row
+     * accounting), so the two confs now go out back-to-back. */
+    scanptr.p->scanState = ScanRecord::CLOSING_SCAN;
+    scanptr.p->m_close_scan_req = true;
+    close_scan_req_send_conf(signal, scanptr, apiConnectptr);
   }
 }
 
