@@ -1,8 +1,29 @@
 # Single-group CTEs: GROUP BY key equality-bound (the fs_point shape)
 
-**Status: G1 + G2a IMPLEMENTED (September 2026, pending user build +
-Test 28 run in ndb_push_agg + ndb_push_agg_dist); G2b re-scoped to a
-deferred protocol decision; G3-G5 pending.**
+**Status: G1 + G2a + G3 IMPLEMENTED (September 2026, pending user
+build + Test 28 + first --record of the sg family ×5); G2b re-scoped
+to a deferred protocol decision; G4-G5 pending.**
+
+G3 outcome notes: RonSQL classification `is_single_group_cte_body`
+(grouped body, not single-row, every GROUP BY column resolved and
+equality-bound to a constant in the ORIGINAL body WHERE — immune to
+plan-time conjunct consumption into index bounds; constant set =
+single-row's T_INT/T_FLOAT/T_STRING/I_MYSQL_TIME/I_SUBQUERY; AND-spine
+walk only, both literal orders, bare/qualified spellings unified via
+same_resolved_column) + `where_binds_column_to_const` helper.
+defineCte OR-composes CTE_SINGLE_GROUP with the single-row and LIMIT
+flags; EXPLAIN prints `[single-group body]` in the CTE-definitions
+section via the same helper.  Classification is purely an
+optimization: false negatives keep the grouped pipeline, a false
+positive would fail cleanly with 1273.  MTR
+`body_single_group_cte.inc` (sg-1..10 + controls sg-c1..c3, wrappers
+×5 topology suites): fs_point native + EXPLAIN tag pin, INNER/LEFT
+consumers with hit+miss, empty-group INNER/LEFT (srb-20 semantics
+family), pass-through CTE_SCAN root, multi-GB-column all-bound,
+AVG-in-body, ORDER BY/LIMIT composition, the G2a repeated-miss
+fan-out (300 probes against an empty CTE), and the
+correctly-NOT-flagged controls (partial bound with EXPLAIN absence
+pin, inequality, OR).
 
 G2 outcome notes — the audit re-scoped it honestly:
 - **The dormant row cache CANNOT be populated without a protocol

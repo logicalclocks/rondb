@@ -8590,7 +8590,10 @@ RonSQLPreparer::execute_join()
       const Uint32 cteFlags =
           (cte->stmt->is_single_row_cte ? QN_CteSubtreeNode::CTE_SINGLE_ROW
                                         : 0) |
-          (cteHasLimit ? QN_CteSubtreeNode::CTE_LIMIT : 0);
+          (cteHasLimit ? QN_CteSubtreeNode::CTE_LIMIT : 0) |
+          (is_single_group_cte_body(cs, cte->stmt)
+               ? QN_CteSubtreeNode::CTE_SINGLE_GROUP
+               : 0);
       require_run(qb->defineCte(c, defineSrcTab, *cteAgg, cteDepMask,
                                  cteFlags) == 0,
                   "Failed to defineCte.");
@@ -13928,6 +13931,96 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
   return true;
 }
 
+/*
+ * Single-group CTE classification (cte_single_group_plan.md G3).
+ *
+ * A grouped CTE body is SINGLE-GROUP when every GROUP BY column is
+ * equality-bound to a constant in the body's WHERE — the body then
+ * materializes at most one group (the fs_point shape) and the kernel
+ * takes the constant-owner fast path via defineCte(CTE_SINGLE_GROUP):
+ * per-node partials ship straight to the constant DBTC-node owner (no
+ * group hashing) and probes route there, with the G2a probe-outcome
+ * miss cache eligible on the consumers.
+ *
+ * Classified from the ORIGINAL body WHERE: a top-level AND conjunct
+ * `gb_col = const` restricts the body no matter whether the planner
+ * later consumes it as an index bound or a residual filter, so the
+ * walk is immune to plan-time conjunct consumption.  Constants are
+ * the single-row set (literals, temporal literals, substituted
+ * scalar-subquery values); bare/qualified spellings unify through
+ * resolved-column identity.  Purely an optimization: a false negative
+ * keeps the normal grouped pipeline; a false positive would fail the
+ * query cleanly with the kernel's ZCTE_SINGLE_GROUP_VIOLATION (1273),
+ * so the walk stays conservative (AND spine only — nothing under an
+ * OR guarantees anything).
+ */
+bool
+RonSQLPreparer::where_binds_column_to_const(
+    struct ConditionalExpression* ce, QueryScope& scope,
+    const QueryScope::ResolvedColumnRef& target)
+{
+  if (ce == NULL) return false;
+  if (ce->op == T_AND)
+  {
+    return where_binds_column_to_const(ce->args.left, scope, target) ||
+           where_binds_column_to_const(ce->args.right, scope, target);
+  }
+  if (ce->op != T_EQUALS) return false;
+
+  ConditionalExpression* col_side = NULL;
+  ConditionalExpression* const_side = NULL;
+  if (ce->args.left->op == T_IDENTIFIER &&
+      ce->args.right->op != T_IDENTIFIER)
+  {
+    col_side = ce->args.left;
+    const_side = ce->args.right;
+  }
+  else if (ce->args.right->op == T_IDENTIFIER &&
+           ce->args.left->op != T_IDENTIFIER)
+  {
+    col_side = ce->args.right;
+    const_side = ce->args.left;
+  }
+  else
+  {
+    return false;
+  }
+
+  /* Same constant-side acceptance as the single-row enforcement:
+   * genuine constants only — expressions do not count. */
+  if (const_side->op != T_INT && const_side->op != T_FLOAT &&
+      const_side->op != T_STRING && const_side->op != I_MYSQL_TIME &&
+      const_side->op != I_SUBQUERY)
+    return false;
+
+  const QueryScope::ResolvedColumnRef& r =
+      scope.resolved_columns[col_side->col_idx];
+  return same_resolved_column(r, target);
+}
+
+bool
+RonSQLPreparer::is_single_group_cte_body(QueryScope& scope,
+                                         const SelectStatement* stmt)
+{
+  if (stmt == NULL || stmt->groupby_columns == NULL) return false;
+  if (stmt->is_single_row_cte) return false;
+  if (scope.resolved_columns == NULL) return false;
+  if (stmt->where_expression == NULL) return false;
+  ConditionalExpression* w = simplify_ce(stmt->where_expression, -1);
+  for (const GroupbyColumns* gb = stmt->groupby_columns; gb != NULL;
+       gb = gb->next)
+  {
+    const QueryScope::ResolvedColumnRef& gbr =
+        scope.resolved_columns[gb->col_idx];
+    if (gbr.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+        gbr.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
+      return false;
+    if (!where_binds_column_to_const(w, scope, gbr))
+      return false;
+  }
+  return true;
+}
+
 void
 RonSQLPreparer::programAggregator_join(QueryScope& scope,
                                         SelectStatement& ast_root,
@@ -15226,6 +15319,9 @@ RonSQLPreparer::print()
         out << " (with joins)";
       if (cte->stmt->is_single_row_cte)
         out << " [single-row key lookup body]";
+      if (cte_idx < m_cte_scopes.size() && m_cte_scopes[cte_idx] != NULL &&
+          is_single_group_cte_body(*m_cte_scopes[cte_idx], cte->stmt))
+        out << " [single-group body]";
       out << "\n    Outputs: ";
       Uint32 oc = 0;
       for (const Outputs *o = cte->stmt->outputs; o; o = o->next, oc++) {

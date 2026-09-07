@@ -727,6 +727,14 @@ private:
   void resolve_cte_body_orderby_aliases(SelectStatement* stmt);
   bool emit_cte_orderby_limit(QueryScope& scope, CteDefinition* cte,
                               NdbAggregator* cteAgg);
+  // Single-group CTE classification (cte_single_group_plan.md G3):
+  // every GROUP BY column equality-bound to a constant in the body
+  // WHERE => at most one group => defineCte(CTE_SINGLE_GROUP).
+  bool is_single_group_cte_body(QueryScope& scope,
+                                const SelectStatement* stmt);
+  bool where_binds_column_to_const(
+      struct ConditionalExpression* ce, QueryScope& scope,
+      const QueryScope::ResolvedColumnRef& target);
   void merge_same_table_subqueries();
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();

@@ -1,0 +1,304 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sg-1: fs_point shape — scalar re-aggregation over the CTE ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+MAX(cf.d2) AS md2
+FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+MAX(cf.d2) AS md2
+FROM cf|
+mn	ms	md1	md2
+5	42917.70	1995-02-12	1997-07-31
+
+=== sg-2: INNER join consumer — one hit, 299 misses ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+1	5
+
+=== sg-3: LEFT JOIN consumer — 300 rows, SUM counts the hit ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu LEFT JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu LEFT JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+300	5
+
+=== sg-4: empty group, INNER join -> COUNT=0 ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c
+0
+
+=== sg-5: empty group, LEFT JOIN -> 300 rows, SUM NULL ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu LEFT JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu LEFT JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+300	NULL
+
+=== sg-6: pass-through main over the CTE_SCAN root ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT k, n FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT k, n FROM cf|
+k	n
+42	5
+
+=== sg-7: multi-column GROUP BY, both columns equality-bound ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n
+FROM orders
+WHERE o_custkey = 42 AND o_shippriority = 2
+GROUP BY o_custkey, o_shippriority)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n
+FROM orders
+WHERE o_custkey = 42 AND o_shippriority = 2
+GROUP BY o_custkey, o_shippriority)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+1	5
+
+=== sg-8: AVG output in a single-group body ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT MAX(cf.a) AS ma, MAX(cf.n) AS mn
+FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT MAX(cf.a) AS ma, MAX(cf.n) AS mn
+FROM cf|
+ma	mn
+8583.540000	5
+
+=== sg-9: composition with body ORDER BY / LIMIT (no-op at 1 group) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey
+ORDER BY n LIMIT 1)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey
+ORDER BY n LIMIT 1)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+1	5
+
+=== sg-10: repeated-miss fan-out (G2a miss cache) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c
+0
+
+=== sg-c1: control — partially-bound GROUP BY is NOT flagged ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42
+GROUP BY o_custkey, o_shippriority)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42
+GROUP BY o_custkey, o_shippriority)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+1	5
+
+=== sg-c2: control — inequality bound is NOT flagged ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey <= 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey <= 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+42	210
+
+=== sg-c3: control — OR of two equalities is NOT flagged ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders
+WHERE o_custkey = 42 OR o_custkey = 43
+GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders
+WHERE o_custkey = 42 OR o_custkey = 43
+GROUP BY o_custkey)
+SELECT COUNT(*) AS c, SUM(cf.n) AS sn
+FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+c	sn
+2	10
