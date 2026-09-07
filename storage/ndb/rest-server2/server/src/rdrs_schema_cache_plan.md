@@ -204,3 +204,29 @@ This halves the dictionary cost for join queries with no caching complexity.
 - Join queries: additional ~400µs saved per child table (was calling listIndexes twice)
 - Schema change handling: transparent via lazy invalidation + retry (existing mechanism)
 - Minimal memory overhead: only index names and version IDs, no NDB API object copies
+
+## September 2026 addendum: 26.05-upmerge restore + configurable TTL
+
+The 26.05->26.04 upmerge dropped the two ronsql_ctrl.cpp lines that pass
+g_schema_cache into RonSQLExecParams, silently disabling the cache
+(every query paid the listIndexes() slow path again).  Restored in
+commit "restore the schema-cache handoff lost in the 26.05 upmerge".
+
+While re-enabling, the open Step-6 question was settled: CREATE INDEX
+makes a separate dictionary object and does NOT bump the base table's
+schema version, and RDRS does not participate in schema distribution —
+so neither the (tableId, schemaVersion) check nor the schema-error
+invalidation ever notices a newly CREATED index on a warm RDRS
+(dropped indexes self-heal via the error path).  Mitigation: a
+configurable TTL, `Internal.SchemaCacheTTLSecs` (default 10, 0 = never
+expire).  An entry past its TTL re-runs listIndexes() on next access —
+one ~400 us call per table per TTL window; the hot path stays cached.
+
+The TTL makes concurrent refresh routine, so the entry's index vector
+is now held and returned as shared_ptr-to-const
+(`RdrsSchemaCache::IndexListPtr`): a reader that obtained the list
+keeps it alive even if another thread refreshes (TTL or version
+change) or invalidates the entry meanwhile — the previous raw-pointer
+return could in principle be destroyed under a concurrent
+invalidate(), a hazard that TTL churn would have promoted from
+theoretical to routine.

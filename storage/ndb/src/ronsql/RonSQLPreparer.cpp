@@ -1358,7 +1358,8 @@ RonSQLPreparer::load_single_table()
   ndbrequire(m_dict != NULL);
   ndbrequire(m_main_scope.table != NULL);
   const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
-  const auto* cached_indexes = (m_conf.schema_cache && db)
+  const RdrsSchemaCache::IndexListPtr cached_indexes =
+      (m_conf.schema_cache && db)
       ? m_conf.schema_cache->getIndexes(m_dict, m_main_scope.table, db,
                                          m_main_scope.table->getName())
       : nullptr;
@@ -3880,7 +3881,7 @@ RonSQLPreparer::load_cte_body_indexes(QueryScope& scope,
   if (m_conf.ndb == NULL || m_dict == NULL) return false;
 
   const char* db = m_conf.ndb->getDatabaseName();
-  const std::vector<RdrsSchemaCache::CachedIndex>* cached = NULL;
+  RdrsSchemaCache::IndexListPtr cached = nullptr;
   if (m_conf.schema_cache != NULL && db != NULL) {
     cached = m_conf.schema_cache->getIndexes(m_dict, tab, db,
                                              tab->getName());
