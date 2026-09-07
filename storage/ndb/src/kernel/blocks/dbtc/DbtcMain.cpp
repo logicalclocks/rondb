@@ -17509,18 +17509,17 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
         ScanTabReq::getFragsPerWorker(scanTabReq->storedProcId);
   }
   scanptr.p->m_numCtes = 0;
-  scanptr.p->m_ctePhaseCount = 0;
-  scanptr.p->m_cteCurrentPhase = 0;
+  scanptr.p->m_cteStartedMask = 0;
+  scanptr.p->m_cteReadyMask = 0;
+  scanptr.p->m_ctesReadyCount = 0;
   scanptr.p->m_cteSetupOutstanding = 0;
   scanptr.p->m_cteScanReportsExpected = 0;
-  scanptr.p->m_cteScanReportsReceived = 0;
   scanptr.p->m_cteInfos = nullptr;
   scanptr.p->m_cteAggNodeState = nullptr;
   /* Phase L (C): per-aggregation completion bookkeeping. */
   scanptr.p->m_aggRecordsHead = RNIL;
   scanptr.p->m_aggRecordsCount = 0;
   scanptr.p->m_mainAggRecI = RNIL;
-  scanptr.p->m_ctePhaseRemaining = 0;
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
@@ -19288,15 +19287,14 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                  status));
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
-    /* During CTE phase, suppress SCAN_TABCONF entirely — CTE scans
+    /* During the CTE stage, suppress SCAN_TABCONF entirely — CTE scans
      * don't participate in the fragment delivery lifecycle.  The per-batch
      * SCAN_NEXTREQ continuation is driven directly by DBSPJ (batchComplete),
-     * so DBTC never needs to act on these CTE-phase SCAN_FRAGCONFs. */
-    if (scanptr.p->m_numCtes > 0 &&
-        scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
+     * so DBTC never needs to act on these CTE-stage SCAN_FRAGCONFs. */
+    if (cteStageActive(scanptr.p)) {
       jam();
       DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
-                    "SCAN_TABCONF during CTE phase",
+                    "SCAN_TABCONF during CTE stage",
                     instance()));
     } else {
       if (scanptr.p->m_joinAgg &&
@@ -19711,9 +19709,7 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
                              old == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
                              old == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
                              (old == ScanRecord::RUNNING &&
-                              scanPtr.p->m_numCtes > 0 &&
-                              scanPtr.p->m_cteCurrentPhase <
-                                  scanPtr.p->m_ctePhaseCount));
+                              cteStageActive(scanPtr.p)));
   /**
    * Sticky: once the API has ordered the close there is no un-ordering
    * it.  A CTE / JoinAgg scan reaches close_scan_req() more than once -
@@ -19757,19 +19753,17 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
     if (unlikely(old != ScanRecord::RUNNING)) {
       g_eventLogger->info(
           "(%u)DBTC close_scan_req: closing JoinAgg scanPtr.i=%u in wait "
-          "state %u with no outstanding responses (numCtes=%u phase=%u/%u "
-          "cteReports=%u/%u aggNodesOutstanding=%u)",
+          "state %u with no outstanding responses (numCtes=%u ready=%u "
+          "workers=%u aggNodesOutstanding=%u)",
           instance(), scanPtr.i, (Uint32)old, scanPtr.p->m_numCtes,
-          scanPtr.p->m_cteCurrentPhase, scanPtr.p->m_ctePhaseCount,
-          scanPtr.p->m_cteScanReportsReceived,
+          scanPtr.p->m_ctesReadyCount,
           scanPtr.p->m_cteScanReportsExpected,
           scanPtr.p->m_aggNodesOutstanding);
     } else {
       DEB_JOIN_AGG(("(%u)DBTC close_scan_req: closing CTE scanPtr.i=%u, all "
-                    "workers retired (phase=%u/%u cteReports=%u/%u)",
-                    instance(), scanPtr.i, scanPtr.p->m_cteCurrentPhase,
-                    scanPtr.p->m_ctePhaseCount,
-                    scanPtr.p->m_cteScanReportsReceived,
+                    "workers retired (ready=%u/%u workers=%u)",
+                    instance(), scanPtr.i, scanPtr.p->m_ctesReadyCount,
+                    scanPtr.p->m_numCtes,
                     scanPtr.p->m_cteScanReportsExpected));
     }
   }
@@ -20072,7 +20066,7 @@ bool Dbtc::registerCteScanFragHandle(ScanRecordPtr scanptr,
   handlePtr.p->m_transId1 = apiConnectptr.p->transid[0];
   handlePtr.p->m_transId2 = apiConnectptr.p->transid[1];
   handlePtr.p->m_activeMask = 0;
-  handlePtr.p->m_lastCompletePhase = RNIL;
+  handlePtr.p->m_cteReportedMask = 0;
   handlePtr.p->m_completeMask = 0;
 
   Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
@@ -20102,7 +20096,8 @@ bool Dbtc::registerCteScanFragHandle(ScanRecordPtr scanptr,
  * CTE_PHASE_COMPLETE_REP will ever arrive for this handle.
  *
  * Leaving the handle registered keeps m_cteScanReportsExpected above
- * m_cteScanReportsReceived forever, which makes close_scan_req() defer
+ * every CTE's reachable report count forever, which makes
+ * close_scan_req() defer
  * the close for good: the scan stays RUNNING, the ApiConnectRecord
  * stays in CS_START_SCAN, and API node failure handling can never
  * complete.  QMGR then kills the node once ApiFailureHandlingTimeout
@@ -20138,16 +20133,21 @@ void Dbtc::retireCteScanFragHandle(ScanRecordPtr scanptr,
       }
       jam();
       /**
-       * Keep m_cteScanReportsReceived <= m_cteScanReportsExpected.  A
-       * handle that already reported for the current phase is counted
-       * in 'received', so both counters must drop together - otherwise
-       * 'received' could exceed 'expected' and the '==' test that
-       * advances the phase would never fire again.
+       * Keep every CTE's scanReports <= m_cteScanReportsExpected.  A
+       * handle that already reported CTE c is counted in that CTE's
+       * scanReports, so both sides must drop together - otherwise
+       * 'reports' could exceed 'expected' and the '==' test that
+       * triggers the CTE's redistribute would never fire again.
+       * (Retire paths set m_aggPhaseFailed, so a threshold newly
+       * satisfied by the shrunken 'expected' aborts at the next
+       * report rather than redistributing a partial CTE.)
        */
-      if (handlePtr.p->m_lastCompletePhase == scanptr.p->m_cteCurrentPhase &&
-          scanptr.p->m_cteScanReportsReceived > 0) {
-        jam();
-        scanptr.p->m_cteScanReportsReceived--;
+      for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+        if ((handlePtr.p->m_cteReportedMask & (Uint64(1) << c)) != 0 &&
+            scanptr.p->m_cteInfos[c].scanReports > 0) {
+          jamDebug();
+          scanptr.p->m_cteInfos[c].scanReports--;
+        }
       }
       ndbassert(scanptr.p->m_cteScanReportsExpected > 0);
       if (scanptr.p->m_cteScanReportsExpected > 0) {
@@ -20155,10 +20155,11 @@ void Dbtc::retireCteScanFragHandle(ScanRecordPtr scanptr,
       }
 
       DEB_JOIN_AGG(("(%u)DBTC CTE handle retired: scanPtr.i=%u "
-                    "scanFragPtr.i=%u dbspjRef=0x%x reports=%u/%u",
+                    "scanFragPtr.i=%u dbspjRef=0x%x reportedMask=0x%llx "
+                    "expected=%u",
                     instance(), scanptr.i, scanFragPtrI,
                     handlePtr.p->m_dbspjRef,
-                    scanptr.p->m_cteScanReportsReceived,
+                    (unsigned long long)handlePtr.p->m_cteReportedMask,
                     scanptr.p->m_cteScanReportsExpected));
 
       c_cteScanFragHandleHash.remove(handlePtr);
@@ -20203,17 +20204,16 @@ bool Dbtc::cteAggResponsesOutstanding(ScanRecordPtr scanPtr) {
     /* JOIN_AGG_{SETUP,COMPLETE,RELEASE}_{CONF,REF} still in flight */
     return true;
   }
-  ndbassert(scanPtr.p->m_cteScanReportsReceived <=
-            scanPtr.p->m_cteScanReportsExpected);
   /**
-   * A phase report can only come from a handle that is still
-   * registered, so an empty handle list means nothing is outstanding
-   * however the counters happen to read.
+   * A scan report or KIND_CTE COMPLETE reply can only come while a
+   * worker handle is still registered, so an empty handle list means
+   * nothing is outstanding however the counters happen to read.
+   * While the CTE stage is active (some CTE not yet redistributed
+   * cluster-wide) with live handles, responses can still arrive —
+   * per-CTE scan reports for scanning CTEs and JOIN_AGG_COMPLETE
+   * replies for redistributing ones.
    */
-  if (scanPtr.p->m_numCtes > 0 &&
-      scanPtr.p->m_cteCurrentPhase < scanPtr.p->m_ctePhaseCount &&
-      scanPtr.p->m_cteScanReportsReceived <
-          scanPtr.p->m_cteScanReportsExpected &&
+  if (cteStageActive(scanPtr.p) &&
       !scanPtr.p->m_cteScanFragHandles.isEmpty()) {
     jam();
     return true;
@@ -30552,7 +30552,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
         scanptr.p->m_cteInfos[c].columnMeta = nullptr;
         scanptr.p->m_cteInfos[c].columnMetaLen = 0;
         scanptr.p->m_cteInfos[c].depMask = 0;
-        scanptr.p->m_cteInfos[c].phase = 0;
+        scanptr.p->m_cteInfos[c].scanReports = 0;
         scanptr.p->m_cteInfos[c].m_flags = 0;
         scanptr.p->m_cteAggNodeState[c] = nullptr;
       }
@@ -30582,28 +30582,15 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       }
     }
 
-    /* Compute execution phases from dependency masks.
-     * phase[c] = 0 if depMask[c] == 0
-     * phase[c] = 1 + max(phase[d] for each bit d set in depMask[c])
-     */
-    Uint32 maxPhase = 0;
+    /* DAG scheduler: scheduling is purely depMask-driven.  Every
+     * dependency-free CTE is started by DBSPJ at prepare-complete —
+     * seed the started mask with those; dependents join it as their
+     * masks become satisfied (cteMarkReady). */
     for (Uint32 c = 0; c < numCtes; c++) {
-      Uint64 depMask = scanptr.p->m_cteInfos[c].depMask;
-      Uint32 phase = 0;
-      if (depMask != 0) {
-        for (Uint32 d = 0; d < numCtes; d++) {
-          if (depMask & (Uint64(1) << d)) {
-            Uint32 depPhase = scanptr.p->m_cteInfos[d].phase;
-            if (depPhase + 1 > phase) {
-              phase = depPhase + 1;
-            }
-          }
-        }
+      if (scanptr.p->m_cteInfos[c].depMask == 0) {
+        scanptr.p->m_cteStartedMask |= (Uint64(1) << c);
       }
-      scanptr.p->m_cteInfos[c].phase = phase;
-      if (phase > maxPhase) maxPhase = phase;
     }
-    scanptr.p->m_ctePhaseCount = maxPhase + 1;
     } // if (CTE_DEFS_MARKER)
     if (consumed < totalRemaining &&
         linBuf[consumed] == JOIN_AGG_META_MARKER) {
@@ -31102,7 +31089,6 @@ bool Dbtc::seizeAggCompleteRecord(AggCompleteRecordPtr &recPtr,
   recPtr.p->m_scanPtrI = scanptr.i;
   recPtr.p->m_kind = AggCompleteRecord::KIND_CTE;  // caller may overwrite
   recPtr.p->m_cteIndex = RNIL;
-  recPtr.p->m_phase = RNIL;
   memset(recPtr.p->m_aggStateKeys, 0, sizeof(recPtr.p->m_aggStateKeys));
   recPtr.p->m_aggNodesPending.clear();
   recPtr.p->m_outstanding = 0;
@@ -31138,7 +31124,6 @@ void Dbtc::releaseAggCompleteRecords(ScanRecordPtr scanptr) {
   scanptr.p->m_aggRecordsHead = RNIL;
   scanptr.p->m_aggRecordsCount = 0;
   scanptr.p->m_mainAggRecI = RNIL;
-  scanptr.p->m_ctePhaseRemaining = 0;
 }
 
 void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
@@ -31248,10 +31233,10 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
     const Uint32 maxNodes = MAX_NDB_NODES;
     const Uint32 numCtes = scanptr.p->m_numCtes;
-    /* Per CTE: cteId(1) + depMask(2) + flags(1) + phase(1)
+    /* Per CTE: cteId(1) + depMask(2) + flags(1)
      *           + nodeCount(1) + nodes(maxNodes*3) */
     const Uint32 keyDataSize = maxNodes * 2 + 3 +
-        numCtes * (6 + maxNodes * 3);
+        numCtes * (5 + maxNodes * 3);
     Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
         keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
         getThreadId(), true);
@@ -31309,7 +31294,6 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
           keyData[idx++] = (Uint32)(depMask >> 32);
         }
         keyData[idx++] = scanptr.p->m_cteInfos[c].m_flags;
-        keyData[idx++] = scanptr.p->m_cteInfos[c].phase;
         /* Count nodes for this CTE */
         Uint32 cteNodeCount = 0;
         NdbNodeBitmask cNodes = cteNodes->m_aggNodes;
@@ -31396,8 +31380,9 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
  * AggCompleteRecord, validate scan/node/aggKey/state, then drop the
  * pending bit and decrement m_outstanding.  When the record's
  * outstanding hits 0:
- *   - KIND_CTE: --m_ctePhaseRemaining; if 0, advance to next phase /
- *               main query.
+ *   - KIND_CTE: cteMarkReady — the CTE is redistributed cluster-wide;
+ *               broadcast READY so dependents start, and start the
+ *               main query once every CTE is READY (DAG scheduler).
  *   - KIND_MAIN: send the agg SCAN_TABCONF and close immediately —
  *               the close path sends the pure EndOfData conf (which
  *               the API's completion requires) back-to-back and the
@@ -31464,7 +31449,7 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   ndbrequire(rec.p->m_outstanding > 0);
   rec.p->m_outstanding--;
   /* Phase L commit 5: m_cteCompleteOutstanding retired (replaced by
-   * m_ctePhaseRemaining + per-record state).  Main-aggregation legacy
+   * per-record state).  Main-aggregation legacy
    * counters (m_aggNodesOutstanding / m_aggNodesPending) are still
    * mirrored here so the deferred node-failure path keeps a consistent
    * view; they are reset by sendJoinAggReleaseReqs before reuse. */
@@ -31486,17 +31471,15 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
     jam();
-    ndbrequire(scanptr.p->m_ctePhaseRemaining > 0);
-    scanptr.p->m_ctePhaseRemaining--;
-    if (scanptr.p->m_ctePhaseRemaining == 0) {
+    if (scanptr.p->m_aggPhaseFailed) {
       jam();
-      if (scanptr.p->m_aggPhaseFailed) {
-        jam();
-        scanptr.p->m_aggPhaseFailed = false;
-        // TODO: propagate CTE error to API
-      }
-      cteAdvancePhase(signal, scanptr);
+      scanptr.p->m_aggPhaseFailed = false;
+      // TODO: propagate CTE error to API
     }
+    /* DAG scheduler: this CTE is now redistributed cluster-wide —
+     * mark it READY, broadcast to workers so dependents can start,
+     * and start the main query once every CTE is READY. */
+    cteMarkReady(signal, scanptr, rec.p->m_cteIndex);
   } else {
     jam();
     if (scanptr.p->m_aggPhaseFailed) {
@@ -31619,12 +31602,18 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   rec.p->m_state = AggCompleteRecord::REC_FAILED;
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
     jam();
-    ndbrequire(scanptr.p->m_ctePhaseRemaining > 0);
-    scanptr.p->m_ctePhaseRemaining--;
-    if (scanptr.p->m_ctePhaseRemaining == 0) {
+    /* DAG scheduler: a CTE's redistribute failed.  Mirror the old
+     * behavior — skip any remaining CTE work (no dependents are
+     * started) and start the main query so it reports the error
+     * (probes against never-redistributed CTEs fail with
+     * STATE_NOT_READY). */
+    scanptr.p->m_aggPhaseFailed = false;
+    if (cteStageActive(scanptr.p)) {
       jam();
-      // Even on failure, start main query so it can report error
-      scanptr.p->m_aggPhaseFailed = false;
+      const Uint32 n = scanptr.p->m_numCtes;
+      scanptr.p->m_cteReadyMask =
+          (n >= 64) ? ~Uint64(0) : ((Uint64(1) << n) - 1);
+      scanptr.p->m_ctesReadyCount = n;
       sendCteStartMainReqs(signal, scanptr);
     }
   } else {
@@ -31707,9 +31696,8 @@ void Dbtc::stopCteScanFragTimer(ScanRecordPtr scanptr,
   scanFragPtr.p->stopFragTimer();
 
   DEB_JOIN_AGG(("(%u)DBTC stop CTE scan timer: scanPtr.i=%u "
-                "scanFragPtr.i=%u phase=%u",
-                instance(), scanptr.i, scanFragPtr.i,
-                scanptr.p->m_cteCurrentPhase));
+                "scanFragPtr.i=%u",
+                instance(), scanptr.i, scanFragPtr.i));
 }
 
 void Dbtc::startCteScanFragTimer(ScanRecordPtr scanptr,
@@ -31725,15 +31713,13 @@ void Dbtc::startCteScanFragTimer(ScanRecordPtr scanptr,
   updateBuddyTimer(apiConnectptr);
 
   DEB_JOIN_AGG(("(%u)DBTC start CTE scan timer: scanPtr.i=%u "
-                "scanFragPtr.i=%u phase=%u",
-                instance(), scanptr.i, scanFragPtr.i,
-                scanptr.p->m_cteCurrentPhase));
+                "scanFragPtr.i=%u",
+                instance(), scanptr.i, scanFragPtr.i));
 }
 
 bool Dbtc::isCteScanFragTimerStopped(ScanRecordPtr scanptr,
                                      ScanFragRecPtr scanFragPtr) {
-  if (scanptr.p->m_numCtes == 0 ||
-      scanptr.p->m_cteCurrentPhase >= scanptr.p->m_ctePhaseCount ||
+  if (!cteStageActive(scanptr.p) ||
       scanFragPtr.p->scanFragState != ScanFragRec::LQH_ACTIVE ||
       scanFragPtr.p->scanFragTimer != 0) {
     return false;
@@ -31744,14 +31730,17 @@ bool Dbtc::isCteScanFragTimerStopped(ScanRecordPtr scanptr,
   CteScanFragHandlePtr handlePtr;
   for (handles.first(handlePtr); !handlePtr.isNull();
        handles.next(handlePtr)) {
+    /* The worker's timer is deliberately stopped once it has reported
+     * every STARTED CTE — nothing is currently expected from it. */
     if (handlePtr.p->m_scanFragPtrI == scanFragPtr.i &&
         handlePtr.p->m_scanPtrI == scanptr.i &&
-        handlePtr.p->m_lastCompletePhase == scanptr.p->m_cteCurrentPhase) {
+        (handlePtr.p->m_cteReportedMask & scanptr.p->m_cteStartedMask) ==
+            scanptr.p->m_cteStartedMask) {
       jam();
       DEB_JOIN_AGG(("(%u)DBTC ignore SCAN_HBREP for stopped CTE timer: "
-                    "scanPtr.i=%u scanFragPtr.i=%u phase=%u",
+                    "scanPtr.i=%u scanFragPtr.i=%u reported=0x%llx",
                     instance(), scanptr.i, scanFragPtr.i,
-                    scanptr.p->m_cteCurrentPhase));
+                    (unsigned long long)handlePtr.p->m_cteReportedMask));
       return true;
     }
   }
@@ -31760,15 +31749,13 @@ bool Dbtc::isCteScanFragTimerStopped(ScanRecordPtr scanptr,
 }
 
 /**
- * CTE_PHASE_COMPLETE_REP — DBSPJ reports that all CTE scans for a
- * specific execution phase have completed on that DBSPJ instance.
+ * CTE_PHASE_COMPLETE_REP — a DBSPJ worker reports that ONE CTE's
+ * materialization subtree has finished locally (DAG scheduler,
+ * cte_dag_scheduler_plan.md).
  *
- * DBTC tracks these per phase from all DBSPJ instances.  When all
- * report, DBTC redistributes that phase's CTEs and either advances
- * to the next phase or starts the main query.
- *
- * Also handles the legacy CTE_SCAN_COMPLETE_REP (phase=0 implicit)
- * for backward compatibility during rolling upgrades.
+ * DBTC counts reps per (worker handle, cteId).  When every live
+ * worker has reported a CTE, that CTE alone is redistributed
+ * (sendCteCompleteReqsForCte) — independent CTEs keep scanning.
  */
 void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
   jamEntry();
@@ -31787,9 +31774,9 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
 #ifdef DEBUG_JOIN_AGG_TRACE
     DEB_JOIN_AGG(("(%u)DBTC drop CTE_PHASE_COMPLETE_REP: "
                   "unknown handle senderData=%u senderRef=0x%x "
-                  "transid=(%u,%u) phase=%u",
+                  "transid=(%u,%u) cteId=%u",
                   instance(), rep->senderData, rep->senderRef,
-                  rep->transId1, rep->transId2, rep->phase));
+                  rep->transId1, rep->transId2, rep->cteId));
 #endif
     return;
   }
@@ -31819,62 +31806,82 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
   }
   ndbrequire(scanptr.p->m_numCtes > 0);
 
-  /* Phase L (C.2): drop stale phase reports.  After cteAdvancePhase
-   * resets m_cteScanReportsReceived for the next phase and sets
-   * scanState back to RUNNING, a late REP from a *previous* phase
-   * could otherwise be counted as a current-phase report and
-   * trigger a premature advance.  Phase number is the discriminator.
-   * ndbassert in debug builds so the originating duplicate path is
-   * caught loudly; the silent return is the production safety net. */
-  if (unlikely(rep->phase != scanptr.p->m_cteCurrentPhase)) {
+  /* DAG scheduler: validate the reported cteId against the local view
+   * before any mask arithmetic (bounded < numCtes <= 64), and require
+   * the CTE to have been started. */
+  const Uint32 cteId = rep->cteId;
+  if (unlikely(cteId >= scanptr.p->m_numCtes || cteId >= 64)) {
     jam();
-    DEB_JOIN_AGG(("(%u)DBTC drop CTE_PHASE_COMPLETE_REP: phase=%u "
-                  "current=%u scanPtr.i=%u",
-                  instance(), rep->phase,
-                  scanptr.p->m_cteCurrentPhase, scanptr.i));
+    DEB_JOIN_AGG(("(%u)DBTC drop CTE_PHASE_COMPLETE_REP: bad cteId=%u "
+                  "numCtes=%u scanPtr.i=%u",
+                  instance(), cteId, scanptr.p->m_numCtes, scanptr.i));
     ndbassert(false);
     return;
   }
-
-  if (unlikely(handlePtr.p->m_lastCompletePhase == rep->phase)) {
+  const Uint64 cteBit = Uint64(1) << cteId;
+  if (unlikely((scanptr.p->m_cteStartedMask & cteBit) == 0)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop CTE_PHASE_COMPLETE_REP: cteId=%u not "
+                  "started (mask=0x%llx) scanPtr.i=%u",
+                  instance(), cteId,
+                  (unsigned long long)scanptr.p->m_cteStartedMask,
+                  scanptr.i));
+    ndbassert(false);
+    return;
+  }
+  if (unlikely(handlePtr.p->m_cteReportedMask & cteBit)) {
     jam();
     g_eventLogger->info(
         "(%u)DBTC duplicate CTE_PHASE_COMPLETE_REP: "
-        "scanPtr.i=%u senderData=%u phase=%u transid=(%u,%u)",
-        instance(), scanptr.i, rep->senderData, rep->phase,
+        "scanPtr.i=%u senderData=%u cteId=%u transid=(%u,%u)",
+        instance(), scanptr.i, rep->senderData, cteId,
         rep->transId1, rep->transId2);
     ndbrequire(false);
     return;
   }
-  handlePtr.p->m_lastCompletePhase = rep->phase;
+  handlePtr.p->m_cteReportedMask |= cteBit;
 
-  stopCteScanFragTimer(scanptr, handlePtr);
+  /* Timer: stopped once this worker has reported every started CTE
+   * (nothing currently expected from it — the READY broadcast that
+   * starts dependents rearms it); otherwise rearm as a progress
+   * heartbeat. */
+  if ((handlePtr.p->m_cteReportedMask & scanptr.p->m_cteStartedMask) ==
+      scanptr.p->m_cteStartedMask) {
+    jam();
+    stopCteScanFragTimer(scanptr, handlePtr);
+  } else {
+    jam();
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiPtr);
+    startCteScanFragTimer(scanptr, handlePtr, apiPtr);
+  }
 
-  scanptr.p->m_cteScanReportsReceived++;
+  scanptr.p->m_cteInfos[cteId].scanReports++;
 
 #ifdef DEBUG_JOIN_AGG_TRACE
   DEB_JOIN_AGG(("(%u)DBTC execCTE_PHASE_COMPLETE_REP: scanPtr.i=%u "
-                "phase=%u received=%u expected=%u",
-                instance(), scanptr.i, rep->phase,
-                scanptr.p->m_cteScanReportsReceived,
+                "cteId=%u reports=%u expected=%u",
+                instance(), scanptr.i, cteId,
+                scanptr.p->m_cteInfos[cteId].scanReports,
                 scanptr.p->m_cteScanReportsExpected));
 #endif
 
-  if (scanptr.p->m_cteScanReportsReceived ==
+  if (scanptr.p->m_cteInfos[cteId].scanReports ==
       scanptr.p->m_cteScanReportsExpected) {
     jam();
-    AGGT(("AGGT(%u) CTE phase=%u scans complete scanPtr=%u",
-          instance(), scanptr.p->m_cteCurrentPhase, scanptr.i));
+    AGGT(("AGGT(%u) CTE cteId=%u scans complete scanPtr=%u",
+          instance(), cteId, scanptr.i));
 
     if (scanptr.p->m_aggPhaseFailed) {
       jam();
       /**
-       * A worker failed during this phase (SCAN_FRAGREF, node failure
-       * or fragment timeout) and its handle was retired, so the
-       * surviving workers can now complete the report count.  The CTE
-       * result is incomplete - release the aggregation state the
-       * healthy nodes built and abort, rather than advancing the phase
-       * and answering from a partial CTE.
+       * A worker failed during the CTE stage (SCAN_FRAGREF, node
+       * failure or fragment timeout) and its handle was retired, so
+       * the surviving workers can now complete a report count.  The
+       * CTE result is incomplete - release the aggregation state the
+       * healthy nodes built and abort, rather than redistributing and
+       * answering from a partial CTE.
        */
       scanptr.p->m_aggPhaseFailed = false;
       Uint32 errorCode = scanptr.p->m_aggErrorCode;
@@ -31893,49 +31900,29 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
     }
 
     /**
-     * All DBSPJ instances completed this CTE phase.
-     * Redistribute this phase's CTEs.
+     * Every live worker completed THIS CTE's scans — redistribute it.
+     * Independent CTEs keep scanning; the scan record stays RUNNING
+     * (scans and redistributes overlap under the DAG scheduler).
      */
-    scanptr.p->scanState = ScanRecord::WAIT_CTE_COMPLETE;
-    scanptr.p->m_aggErrorCode = 0;
-    sendCteCompleteReqsForPhase(signal, scanptr,
-                                scanptr.p->m_cteCurrentPhase);
+    sendCteCompleteReqsForCte(signal, scanptr, cteId);
   }
 }
 
 /**
- * Legacy handler — translate CTE_SCAN_COMPLETE_REP to phase-aware path.
+ * Legacy CTE_SCAN_COMPLETE_REP — retired by the DAG scheduler.  The
+ * signal carried neither a cteId nor a transid, so it cannot be
+ * translated into the per-CTE report; nothing in-tree sends it (all
+ * 26.x DBSPJ workers send CTE_PHASE_COMPLETE_REP), and there is no
+ * cross-version support on this branch.  Log and drop.
  */
 void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
   jamEntry();
   const CteScanCompleteRep *rep =
       reinterpret_cast<const CteScanCompleteRep *>(signal->getDataPtr());
-
-  /* Build a CtePhaseCompleteRep with phase=current */
-  CtePhaseCompleteRep *phaseRep =
-      reinterpret_cast<CtePhaseCompleteRep *>(signal->getDataPtrSend());
-  phaseRep->senderRef = rep->senderRef;
-  phaseRep->senderData = rep->senderData;
-
-  ScanFragRecPtr scanFragPtr;
-  scanFragPtr.i = rep->senderData;
-  if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
-    jam();
-    return;
-  }
-  ScanRecordPtr scanptr;
-  scanptr.i = scanFragPtr.p->scanRec;
-  scanRecordPool.getPtr(scanptr);
-  phaseRep->phase = scanptr.p->m_cteCurrentPhase;
-  {
-    ApiConnectRecordPtr apiPtr;
-    apiPtr.i = scanptr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiPtr);
-    phaseRep->transId1 = apiPtr.p->transid[0];
-    phaseRep->transId2 = apiPtr.p->transid[1];
-  }
-
-  execCTE_PHASE_COMPLETE_REP(signal);
+  g_eventLogger->info(
+      "(%u)DBTC drop legacy CTE_SCAN_COMPLETE_REP: senderRef=0x%x "
+      "senderData=%u (sender predates the per-CTE DAG scheduler)",
+      instance(), rep->senderRef, rep->senderData);
 }
 
 Uint32
@@ -31961,31 +31948,28 @@ Dbtc::findJoinAggHeartbeatScanFrag(ScanRecordPtr scanptr, Uint32 nodeId) {
 }
 
 /**
- * Send JOIN_AGG_COMPLETE_REQ for CTEs in the specified phase.
- * This triggers hash table redistribution on multi-node clusters.
+ * Send JOIN_AGG_COMPLETE_REQ for ONE CTE (DAG scheduler).  This
+ * triggers that CTE's hash table redistribution on multi-node
+ * clusters; independent CTEs keep scanning concurrently.
  */
-void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
-                                        Uint32 phase) {
-  /* Phase L (C): authoritative per-phase counter.  Drives
-   * cteAdvancePhase together with per-record m_state. */
-  scanptr.p->m_ctePhaseRemaining = 0;
-  AGGT(("AGGT(%u) CTE COMPLETE send phase=%u scanPtr=%u",
-        instance(), phase, scanptr.i));
+void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
+                                     Uint32 cteId) {
+  AGGT(("AGGT(%u) CTE COMPLETE send cteId=%u scanPtr=%u",
+        instance(), cteId, scanptr.i));
 
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("(%u)DBTC sendCteCompleteReqsForPhase: scanPtr.i=%u "
-                 "phase=%u numCtes=%u",
-                 instance(), scanptr.i, phase, scanptr.p->m_numCtes));
+  DEB_JOIN_AGG(("(%u)DBTC sendCteCompleteReqsForCte: scanPtr.i=%u "
+                 "cteId=%u numCtes=%u",
+                 instance(), scanptr.i, cteId, scanptr.p->m_numCtes));
 #endif
 
-  for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
-    /* Only redistribute CTEs belonging to this phase */
-    if (scanptr.p->m_cteInfos[c].phase != phase) continue;
-
+  ndbrequire(cteId < scanptr.p->m_numCtes);
+  const Uint32 c = cteId;
+  do {
     /* Single-row CTEs go through the same COMPLETE flow as any CTE:
      * the merge -> redistribute -> CTE_READY transition is what makes
      * the state consumable, and DBLQH's redistribute uses the constant
@@ -31994,7 +31978,7 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
      * stuck before CTE_READY forever. */
 
     auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
-    if (cteNodes == nullptr) continue;
+    if (cteNodes == nullptr) break;
 
     NdbNodeBitmask nodes = cteNodes->m_aggNodes;
     cteNodes->m_aggNodesPending.clear();
@@ -32019,7 +32003,7 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       }
     }
 
-    /* Phase L (C): one AggCompleteRecord per CTE per phase.  Tracks
+    /* Phase L (C): one AggCompleteRecord per CTE redistribute.  Tracks
      * the connected-node bitmask so duplicate / stale CONFs are
      * detected by lookup-miss + bitmask check rather than crashing
      * the node.  Allocate before sending any REQ so the encoded
@@ -32029,11 +32013,10 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       jam();
       scanptr.p->m_aggPhaseFailed = true;
       scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
-      continue;
+      break;
     }
     cteRec.p->m_kind = AggCompleteRecord::KIND_CTE;
     cteRec.p->m_cteIndex = c;
-    cteRec.p->m_phase = phase;
     cteRec.p->m_state = AggCompleteRecord::REC_WAIT_COMPLETE;
 
     for (Uint32 nodeId = nodes.find_first();
@@ -32091,63 +32074,92 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
     }
     if (cteRec.p->m_outstanding == 0) {
       /* No reachable nodes for this CTE — record is dead-on-arrival.
-       * Mark complete so phase advance isn't blocked by it. */
+       * Mark complete and fall through to the READY transition so
+       * scheduling is not blocked by it. */
       jam();
       cteRec.p->m_state = AggCompleteRecord::REC_COMPLETE;
-    } else {
-      scanptr.p->m_ctePhaseRemaining++;
+      cteMarkReady(signal, scanptr, c);
+    }
+    return;
+  } while (0);
+
+  /* No aggregation state for this CTE (or record seize failed) —
+   * nothing to redistribute; mark it READY so scheduling proceeds
+   * (any seize failure left m_aggPhaseFailed set for the abort
+   * paths, mirroring the old per-phase leniency). */
+  jam();
+  cteMarkReady(signal, scanptr, c);
+}
+
+/**
+ * DAG scheduler: CTE `cteId` is redistributed cluster-wide (all its
+ * JOIN_AGG_COMPLETE replies are in).  Mark it READY; when every CTE
+ * is READY start the main query, otherwise broadcast the readiness to
+ * the DBSPJ workers if any other CTE depends on this one (the
+ * broadcast is what starts dependents whose masks become satisfied).
+ */
+void Dbtc::cteMarkReady(Signal *signal, ScanRecordPtr scanptr,
+                        Uint32 cteId) {
+  ndbrequire(cteId < scanptr.p->m_numCtes && cteId < 64);
+  const Uint64 bit = Uint64(1) << cteId;
+  if (unlikely(scanptr.p->m_cteReadyMask & bit)) {
+    jam();  // duplicate completion — idempotent
+    return;
+  }
+  scanptr.p->m_cteReadyMask |= bit;
+  scanptr.p->m_ctesReadyCount++;
+  AGGT(("AGGT(%u) CTE ready cteId=%u (%u/%u) scanPtr=%u",
+        instance(), cteId, scanptr.p->m_ctesReadyCount,
+        scanptr.p->m_numCtes, scanptr.i));
+
+  if (scanptr.p->m_ctesReadyCount == scanptr.p->m_numCtes) {
+    jam();
+    /* All CTEs READY — CTE_START_MAIN_REQ marks every context READY
+     * on the workers, so the last CTE needs no individual
+     * broadcast. */
+    sendCteStartMainReqs(signal, scanptr);
+    return;
+  }
+
+  bool hasDependents = false;
+  Uint64 newlyStartable = 0;
+  for (Uint32 d = 0; d < scanptr.p->m_numCtes; d++) {
+    const Uint64 dep = scanptr.p->m_cteInfos[d].depMask;
+    if (dep & bit) {
+      hasDependents = true;
+    }
+    if ((scanptr.p->m_cteStartedMask & (Uint64(1) << d)) == 0 &&
+        (dep & ~scanptr.p->m_cteReadyMask) == 0) {
+      newlyStartable |= (Uint64(1) << d);
     }
   }
-
-  if (scanptr.p->m_ctePhaseRemaining == 0) {
+  if (!hasDependents) {
     jam();
-    /**
-     * No CTEs in this phase have pending records (all dead or no CTE
-     * state).  Advance to next phase or start main query.
-     */
-    cteAdvancePhase(signal, scanptr);
+    /* Nobody waits on this CTE — its READY state reaches the workers
+     * with CTE_START_MAIN_REQ. */
+    return;
   }
+  scanptr.p->m_cteStartedMask |= newlyStartable;
+  broadcastCteReady(signal, scanptr, cteId);
 }
 
 /**
- * Advance to the next CTE phase or start the main query.
- * Called after redistribution for the current phase completes.
+ * DAG scheduler: broadcast "CTE `cteId` is READY" to every DBSPJ
+ * worker (CTE_PHASE_START_REQ).  Each worker marks the CTE READY and
+ * starts any not-yet-started CTE whose full dependency mask is now
+ * satisfied.
  */
-void Dbtc::cteAdvancePhase(Signal *signal, ScanRecordPtr scanptr) {
-  Uint32 nextPhase = scanptr.p->m_cteCurrentPhase + 1;
-  if (nextPhase < scanptr.p->m_ctePhaseCount) {
-    jam();
-    /**
-     * More CTE phases remain.  Reset per-phase counters and send
-     * CTE_PHASE_START_REQ to all DBSPJ instances to start the next phase.
-     */
-    scanptr.p->m_cteCurrentPhase = nextPhase;
-    scanptr.p->m_cteScanReportsReceived = 0;
-    scanptr.p->scanState = ScanRecord::RUNNING;
-    AGGT(("AGGT(%u) CTE ready, phase=%u start scanPtr=%u",
-          instance(), nextPhase, scanptr.i));
-    sendCtePhaseStartReqs(signal, scanptr, nextPhase);
-  } else {
-    jam();
-    /* All CTE phases complete — start the main query. */
-    AGGT(("AGGT(%u) CTE all ready, MAIN start scanPtr=%u",
-          instance(), scanptr.i));
-    sendCteStartMainReqs(signal, scanptr);
-  }
-}
-
-/**
- * Send CTE_PHASE_START_REQ to all DBSPJ instances for the given phase.
- */
-void Dbtc::sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
-                                  Uint32 phase) {
+void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
+                             Uint32 cteId) {
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("(%u)DBTC sendCtePhaseStartReqs: scanPtr.i=%u phase=%u",
-                 instance(), scanptr.i, phase));
+  DEB_JOIN_AGG(("(%u)DBTC broadcastCteReady: scanPtr.i=%u cteId=%u "
+                 "startedMask=0x%llx",
+                 instance(), scanptr.i, cteId,
+                 (unsigned long long)scanptr.p->m_cteStartedMask));
 #endif
 
   CtePhaseStartReq *req =
@@ -32155,15 +32167,21 @@ void Dbtc::sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
   req->senderRef = reference();
   req->transId1 = apiPtr.p->transid[0];
   req->transId2 = apiPtr.p->transid[1];
-  req->phase = phase;
+  req->cteId = cteId;
 
   Local_CteScanFragHandle_list handles(c_cteScanFragHandlePool,
                                        scanptr.p->m_cteScanFragHandles);
   CteScanFragHandlePtr handlePtr;
   for (handles.first(handlePtr); !handlePtr.isNull();
        handles.next(handlePtr)) {
-    startCteScanFragTimer(scanptr, handlePtr, apiPtr);
     jam();
+    /* Rearm the frag timer on workers that now have CTE scan work
+     * expected again (their reported mask no longer covers the grown
+     * started set). */
+    if ((handlePtr.p->m_cteReportedMask & scanptr.p->m_cteStartedMask) !=
+        scanptr.p->m_cteStartedMask) {
+      startCteScanFragTimer(scanptr, handlePtr, apiPtr);
+    }
     req->senderData = handlePtr.p->m_scanFragPtrI;
     sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_PHASE_START_REQ,
                signal, CtePhaseStartReq::SignalLength, JBB);
@@ -32207,10 +32225,10 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
                signal, CteStartMainReq::SignalLength, JBB);
   }
 
-  // Mark CTE phase as complete and transition to RUNNING for
-  // the main query. m_cteCurrentPhase = m_ctePhaseCount signals
-  // that SCAN_TABCONFs should now go to the API.
-  scanptr.p->m_cteCurrentPhase = scanptr.p->m_ctePhaseCount;
+  // The CTE stage is complete (m_ctesReadyCount == m_numCtes, so
+  // cteStageActive() is false and SCAN_TABCONFs now go to the API).
+  // Transition to RUNNING for the main query.
+  ndbassert(!cteStageActive(scanptr.p));
   scanptr.p->scanState = ScanRecord::RUNNING;
 }
 
@@ -32243,7 +32261,6 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   }
   mainRec.p->m_kind = AggCompleteRecord::KIND_MAIN;
   mainRec.p->m_cteIndex = RNIL;
-  mainRec.p->m_phase = RNIL;
   mainRec.p->m_state = AggCompleteRecord::REC_WAIT_COMPLETE;
   scanptr.p->m_mainAggRecI = mainRec.i;
 

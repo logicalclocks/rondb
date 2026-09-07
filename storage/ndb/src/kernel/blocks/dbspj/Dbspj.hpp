@@ -754,10 +754,13 @@ class Dbspj : public SimulatedBlock {
    */
   struct CteContext {
     enum State {
-      CTE_NOT_STARTED = 0,    // CTE scan not yet triggered
+      CTE_NOT_STARTED = 0,    // Waiting for its dependency masks' CTEs
       CTE_MATERIALIZING = 1,  // CTE scan in progress, hash table building
       CTE_READY = 2,          // Hash table complete, lookups can proceed
-      CTE_FAILED = 3          // CTE scan failed
+      CTE_FAILED = 3,         // CTE scan failed
+      CTE_LOCAL_DONE = 4      // Local scans done + reported to DBTC;
+                              // waiting for the cluster-wide READY
+                              // broadcast (redistribution complete)
     };
     /* G2a/G2b probe-outcome cache (cte_single_group_plan.md): for
      * single-row / single-group CTEs the post-READY state is immutable
@@ -788,7 +791,6 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_state;           // CteContext::State
     Uint32 m_numResultCols;   // Number of aggregate result columns
     Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
-    Uint32 m_phase;           // Execution phase (0 = no deps)
     Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW
     Uint32 m_cachedRowPtrI;   // RNIL or [fRef, fData, payload...] section (G2b)
     Uint32 m_cachedRowLen;    // Word count of the cached row section
@@ -1541,8 +1543,6 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
     Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
     Uint32 m_cteScansComplete; // Count of CTE scans fully completed
-    Uint32 m_cteCurrentPhase;  // CTE phase being executed (0 = first)
-    Uint32 m_ctePhaseCount;    // Total CTE execution phases
     bool m_cteScanAllNodes;    // CTE_SCAN must send to all nodes (instances < nodes)
     /**
      * Per-CTE per-node aggStateKeys.  Flat array indexed as
@@ -2050,7 +2050,7 @@ class Dbspj : public SimulatedBlock {
    */
   void execCTE_START_MAIN_REQ(Signal *);
   void execCTE_PHASE_START_REQ(Signal *);
-  void handleCtePhaseComplete(Signal *, Ptr<Request>);
+  void sendCteScanDoneRep(Signal *, Ptr<Request>, const CteContext &);
 
   /**
    * ScanFrag

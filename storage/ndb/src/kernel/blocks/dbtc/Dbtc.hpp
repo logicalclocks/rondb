@@ -1943,7 +1943,7 @@ class Dbtc : public SimulatedBlock {
           m_transId1(0),
           m_transId2(0),
           m_activeMask(0),
-          m_lastCompletePhase(RNIL),
+          m_cteReportedMask(0),
           m_completeMask(0) {}
 
     Uint32 m_magic;
@@ -1956,7 +1956,10 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_transId1;
     Uint32 m_transId2;
     Uint32 m_activeMask;
-    Uint32 m_lastCompletePhase;
+    // DAG scheduler: bit c set = this worker has reported CTE c's
+    // local scan completion (CTE_PHASE_COMPLETE_REP).  Dedup + timer
+    // coverage vs ScanRecord::m_cteStartedMask.
+    Uint64 m_cteReportedMask;
     Uint32 m_completeMask;
 
     Uint32 hashValue() const {
@@ -2051,7 +2054,10 @@ class Dbtc : public SimulatedBlock {
       WAIT_JOIN_AGG_SETUP = 6,
       WAIT_JOIN_AGG_COMPLETE = 7,
       WAIT_JOIN_AGG_RELEASE = 8,
-      WAIT_CTE_COMPLETE = 9
+      WAIT_CTE_COMPLETE = 9  // Retired by the DAG scheduler (scans and
+                             // redistributes overlap, so the scan stays
+                             // RUNNING through the CTE stage); value kept
+                             // so state dumps stay decodable.
     };
 
     // State of this scan
@@ -2211,21 +2217,25 @@ class Dbtc : public SimulatedBlock {
       Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
       Uint32 *columnMeta;       // QueryMemory copy of this CTE's metadata
       Uint32 columnMetaLen;
-      Uint32 phase;             // Execution phase (0 = no deps, computed)
+      Uint32 scanReports;       // Workers that reported this CTE's scans done
       Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW (no GROUP BY)
     };
 
     Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)
-    Uint32 m_ctePhaseCount;         // Total CTE execution phases
-    Uint32 m_cteCurrentPhase;       // Phase being waited on
+    // DAG scheduler (cte_dag_scheduler_plan.md): scheduling is purely
+    // depMask-driven — there are no phases.  The index into m_cteInfos
+    // IS the cteId (depMask bits index the same array).
+    Uint64 m_cteStartedMask;        // CTEs whose scans were kicked off
+    Uint64 m_cteReadyMask;          // CTEs redistributed cluster-wide
+    Uint32 m_ctesReadyCount;        // popcount of m_cteReadyMask
     CteInfo *m_cteInfos;            // nullptr when m_numCtes == 0
     JoinAggNodeState **m_cteAggNodeState;  // nullptr when m_numCtes == 0
     Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
 
     // CTE COMPLETE coordination (Step 3)
     CteScanFragHandle_list::Head m_cteScanFragHandles;
-    Uint32 m_cteScanReportsExpected;  // DBSPJ instances that will report
-    Uint32 m_cteScanReportsReceived;  // CTE_SCAN_COMPLETE_REPs received
+    Uint32 m_cteScanReportsExpected;  // Live DBSPJ workers (report threshold
+                                      // for every CTE's CteInfo::scanReports)
 
     // Phase L (C): per-aggregation completion records.  Singly-linked
     // list of AggCompleteRecord owned by this scan.  Records cover both
@@ -2235,15 +2245,13 @@ class Dbtc : public SimulatedBlock {
     // echoed in CONF/REF.  Stale or duplicate replies are detected by
     // record-state mismatch and dropped silently.
     //
-    // Phase coordination is handled inline: only one CTE phase is
-    // active per scan at a time, and m_cteCurrentPhase is the
-    // discriminator that drops stale CTE_PHASE_COMPLETE_REPs in
-    // execCTE_PHASE_COMPLETE_REP (C.2).  See cte_filter_phase_l.md.
+    // DAG scheduler: multiple KIND_CTE records may be in flight at
+    // once (one per redistributing CTE); stale CTE_PHASE_COMPLETE_REPs
+    // are dropped by the per-handle m_cteReportedMask instead of a
+    // phase discriminator.  See cte_dag_scheduler_plan.md.
     Uint32 m_aggRecordsHead;       // RNIL or first AggCompleteRecord
     Uint32 m_aggRecordsCount;      // Total live records on this scan
     Uint32 m_mainAggRecI;          // Main-SELECT aggregation record, RNIL if none
-    Uint32 m_ctePhaseRemaining;    // Records in current CTE phase not yet
-                                   // complete — phase-advance trigger
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;
@@ -2280,7 +2288,6 @@ class Dbtc : public SimulatedBlock {
       KIND_CTE = 1
     } m_kind;
     Uint32 m_cteIndex;                           // CTE index, RNIL for KIND_MAIN
-    Uint32 m_phase;                              // CTE phase, RNIL for KIND_MAIN
     Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];    // per-node aggKey we sent
     NdbNodeBitmask m_aggNodesPending;            // CONFs still expected
     Uint32 m_outstanding;                        // |m_aggNodesPending|
@@ -2432,8 +2439,8 @@ class Dbtc : public SimulatedBlock {
   void execJOIN_AGG_SEND_REQ(Signal *signal);
   void execCTE_SCAN_COMPLETE_REP(Signal *signal);
   void execCTE_PHASE_COMPLETE_REP(Signal *signal);
-  void sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
-                                    Uint32 phase);
+  void sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
+                                 Uint32 cteId);
 
   /* RONDB-1062 proactive deadlock discovery (DBACC wait-for edge). */
   void execDBACC_WAITFOR_REP(Signal *signal);
@@ -2459,9 +2466,16 @@ class Dbtc : public SimulatedBlock {
                               ScanRecordPtr scanptr);
   bool getValidAggCompleteRecord(AggCompleteRecordPtr &recPtr);
   void releaseAggCompleteRecords(ScanRecordPtr scanptr);
-  void cteAdvancePhase(Signal *signal, ScanRecordPtr scanptr);
-  void sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
-                              Uint32 phase);
+  /* DAG scheduler (cte_dag_scheduler_plan.md): per-CTE readiness. */
+  void cteMarkReady(Signal *signal, ScanRecordPtr scanptr, Uint32 cteId);
+  void broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
+                         Uint32 cteId);
+  /* True while the CTE stage is still driving (some CTE not yet
+   * redistributed cluster-wide). */
+  static bool cteStageActive(const ScanRecord *scanP) {
+    return scanP->m_numCtes > 0 &&
+           scanP->m_ctesReadyCount < scanP->m_numCtes;
+  }
   void sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execLQH_TRANSCONF(Signal *signal);
