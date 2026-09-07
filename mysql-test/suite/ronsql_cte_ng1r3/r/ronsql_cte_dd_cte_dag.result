@@ -1,0 +1,202 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== dag-1: skew shape — c depends on tiny a, big b independent ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey < 20 GROUP BY o_custkey),
+b AS (
+SELECT o_custkey AS bk, SUM(o_shippriority) AS spr, COUNT(*) AS bn
+FROM orders GROUP BY o_custkey),
+c AS (
+SELECT k, SUM(n) AS n2
+FROM a GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(c.n2) AS sn, SUM(b.spr) AS sp
+FROM customer AS cu
+JOIN c ON c.k = cu.c_custkey
+JOIN b ON b.bk = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey < 20 GROUP BY o_custkey),
+b AS (
+SELECT o_custkey AS bk, SUM(o_shippriority) AS spr, COUNT(*) AS bn
+FROM orders GROUP BY o_custkey),
+c AS (
+SELECT k, SUM(n) AS n2
+FROM a GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(c.n2) AS sn, SUM(b.spr) AS sp
+FROM customer AS cu
+JOIN c ON c.k = cu.c_custkey
+JOIN b ON b.bk = cu.c_custkey|
+cnt	sn	sp
+19	95	200
+
+=== dag-2: same DAG, probe order flipped (b before c) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey < 20 GROUP BY o_custkey),
+b AS (
+SELECT o_custkey AS bk, SUM(o_shippriority) AS spr, COUNT(*) AS bn
+FROM orders GROUP BY o_custkey),
+c AS (
+SELECT k, SUM(n) AS n2
+FROM a GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(b.bn) AS sb, SUM(c.n2) AS sn
+FROM customer AS cu
+JOIN b ON b.bk = cu.c_custkey
+JOIN c ON c.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey < 20 GROUP BY o_custkey),
+b AS (
+SELECT o_custkey AS bk, SUM(o_shippriority) AS spr, COUNT(*) AS bn
+FROM orders GROUP BY o_custkey),
+c AS (
+SELECT k, SUM(n) AS n2
+FROM a GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(b.bn) AS sb, SUM(c.n2) AS sn
+FROM customer AS cu
+JOIN b ON b.bk = cu.c_custkey
+JOIN c ON c.k = cu.c_custkey|
+cnt	sb	sn
+19	95	95
+
+=== dag-3: chained d<-a beside independent b (nation-keyed) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS na
+FROM orders WHERE o_shippriority = 2 GROUP BY o_custkey),
+b AS (
+SELECT c_nationkey AS nk, COUNT(*) AS nb
+FROM customer GROUP BY c_nationkey),
+d AS (
+SELECT k, SUM(na) AS s
+FROM a GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(d.s) AS sd, SUM(b.nb) AS snb
+FROM customer AS cu
+JOIN d ON d.k = cu.c_custkey
+JOIN b ON b.nk = cu.c_nationkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS na
+FROM orders WHERE o_shippriority = 2 GROUP BY o_custkey),
+b AS (
+SELECT c_nationkey AS nk, COUNT(*) AS nb
+FROM customer GROUP BY c_nationkey),
+d AS (
+SELECT k, SUM(na) AS s
+FROM a GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(d.s) AS sd, SUM(b.nb) AS snb
+FROM customer AS cu
+JOIN d ON d.k = cu.c_custkey
+JOIN b ON b.nk = cu.c_nationkey|
+cnt	sd	snb
+60	300	720
+
+=== dag-4: 3-chain a -> b -> c, each start gated by one READY ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, SUM(cnt) AS cnt2, MAX(s) AS mx
+FROM a GROUP BY k),
+c AS (
+SELECT k, SUM(cnt2) AS cnt3, MAX(mx) AS mx2
+FROM b GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(c.cnt3) AS sc, MAX(c.mx2) AS m
+FROM customer AS cu
+JOIN c ON c.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, COUNT(*) AS cnt, SUM(o_shippriority) AS s
+FROM orders GROUP BY o_custkey),
+b AS (
+SELECT k, SUM(cnt) AS cnt2, MAX(s) AS mx
+FROM a GROUP BY k),
+c AS (
+SELECT k, SUM(cnt2) AS cnt3, MAX(mx) AS mx2
+FROM b GROUP BY k)
+SELECT COUNT(*) AS cnt, SUM(c.cnt3) AS sc, MAX(c.mx2) AS m
+FROM customer AS cu
+JOIN c ON c.k = cu.c_custkey|
+cnt	sc	m
+300	1500	20
+
+=== dag-5: three independent CTEs — no READY broadcast at all ===
+== Query ==
+WITH x AS (
+SELECT o_custkey AS k, COUNT(*) AS nx
+FROM orders GROUP BY o_custkey),
+y AS (
+SELECT c_nationkey AS nk, COUNT(*) AS ny
+FROM customer GROUP BY c_nationkey),
+z AS (
+SELECT o_custkey AS zk, MAX(o_shippriority) AS mz
+FROM orders WHERE o_shippriority > 0 GROUP BY o_custkey)
+SELECT COUNT(*) AS cnt, SUM(x.nx) AS sx, SUM(y.ny) AS sy, SUM(z.mz) AS sz
+FROM customer AS cu
+JOIN x ON x.k = cu.c_custkey
+JOIN y ON y.nk = cu.c_nationkey
+JOIN z ON z.zk = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH x AS (
+SELECT o_custkey AS k, COUNT(*) AS nx
+FROM orders GROUP BY o_custkey),
+y AS (
+SELECT c_nationkey AS nk, COUNT(*) AS ny
+FROM customer GROUP BY c_nationkey),
+z AS (
+SELECT o_custkey AS zk, MAX(o_shippriority) AS mz
+FROM orders WHERE o_shippriority > 0 GROUP BY o_custkey)
+SELECT COUNT(*) AS cnt, SUM(x.nx) AS sx, SUM(y.ny) AS sy, SUM(z.mz) AS sz
+FROM customer AS cu
+JOIN x ON x.k = cu.c_custkey
+JOIN y ON y.nk = cu.c_nationkey
+JOIN z ON z.zk = cu.c_custkey|
+cnt	sx	sy	sz
+240	1200	2880	600
