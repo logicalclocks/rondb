@@ -230,6 +230,47 @@ FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
 c
 0
 
+=== sg-11: G4 keyed-probe root over an EMPTY single-group CTE ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_totalprice) AS m
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(cf.n) AS c, MAX(cf.m) AS mm
+FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_totalprice) AS m
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(cf.n) AS c, MAX(cf.m) AS mm
+FROM cf|
+c	mm
+0	NULL
+
+=== sg-12: G4 keyed-probe root, pass-through over an empty CTE ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT k, n FROM cf;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT k, n FROM cf|
+k	n
+
 === sg-c1: control — partially-bound GROUP BY is NOT flagged ===
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n
