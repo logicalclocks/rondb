@@ -117,11 +117,20 @@
 #define DEB_CTE_PHASE_VERBOSE(arglist) do { } while (0)
 #endif
 
-/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
- * Unconditionally enabled, also in release builds — grep "AGGT" in the
- * node out-logs and diff the logger's own µs timestamps.
- * Remove all AGGT sites when the investigation is done. */
+/* fs_batch phase-timing probes (RonSQL vs MySQL comparison), DISABLED:
+ * the investigation shipped as the x-ronsql-phases header, and the
+ * per-scan g_eventLogger->info calls polluted production logs and
+ * benchmark timings.  Re-enable by uncommenting DEBUG_AGGT (debug
+ * builds only, per the DEB_XXX house pattern).
+ */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_AGGT 1
+#endif
+#ifdef DEBUG_AGGT
 #define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define AGGT(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_SCAN_HB_SEND
 #define DEB_SCAN_HB_SEND(arglist) \
