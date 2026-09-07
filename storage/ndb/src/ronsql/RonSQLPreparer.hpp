@@ -738,6 +738,12 @@ private:
   struct ConditionalExpression* find_const_equality_for(
       struct ConditionalExpression* ce, QueryScope& scope,
       const QueryScope::ResolvedColumnRef& target);
+  // COUNT(*) fragment-stats shortcut
+  // (ronsql_count_star_shortcut_plan.md W1): answer
+  // SELECT COUNT(*) FROM t (no WHERE/GROUP BY/HAVING) from the
+  // per-fragment ROW_COUNT pseudo-column instead of scanning.
+  bool is_count_star_only_query();
+  void execute_count_star_shortcut();
   void merge_same_table_subqueries();
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();

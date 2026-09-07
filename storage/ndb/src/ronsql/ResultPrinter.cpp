@@ -1523,6 +1523,65 @@ ResultPrinter::print_passthrough_finish(std::basic_ostream<char>* out_stream)
 }
 
 void
+ResultPrinter::print_count_star_result(Uint64 count,
+                                       std::basic_ostream<char>* out_stream)
+{
+  DEB_TRACE();
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  /* One result row; LIMIT 0 suppresses it (TSV prints nothing at all,
+   * JSON prints the empty array) — the same behavior print_result's
+   * cutoff gives.  ORDER BY over one row is a no-op.  COUNT results
+   * print as Int64, matching PRINT_AGGREGATE's formatting. */
+  const bool suppressed = (m_query->limit == 0);
+  if (m_json_output)
+  {
+    out << '[';
+    if (!suppressed)
+    {
+      out << '{';
+      for (Uint32 i = 0; i < m_outputs.size(); i++)
+      {
+        if (i > 0) out << ',';
+        out << '"';
+        print_string(out, m_outputs[i]->output_name,
+                     &my_charset_utf8mb4_bin, true, m_utf8_output, false);
+        out << '"' << ':' << (Int64)count;
+      }
+      out << "}\n";
+    }
+    out << "]\n";
+  }
+  else if (m_tsv_output)
+  {
+    if (!suppressed)
+    {
+      if (m_tsv_headers)
+      {
+        bool first_column = true;
+        for (Uint32 i = 0; i < m_outputs.size(); i++)
+        {
+          if (first_column) first_column = false; else out << '\t';
+          out << m_outputs[i]->output_name;
+        }
+        out << '\n';
+      }
+      bool first_column = true;
+      for (Uint32 i = 0; i < m_outputs.size(); i++)
+      {
+        if (first_column) first_column = false; else out << '\t';
+        out << (Int64)count;
+      }
+      out << '\n';
+    }
+  }
+  else
+  {
+    abort();
+  }
+}
+
+void
 ResultPrinter::print_result(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream)
 {

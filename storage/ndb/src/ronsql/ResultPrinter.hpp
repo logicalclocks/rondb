@@ -212,6 +212,14 @@ public:
                 bool /*passthrough_marker*/);
   void print_result(NdbAggregator* aggregator,
                     std::basic_ostream<char>* out_stream);
+  // COUNT(*) fragment-stats shortcut
+  // (ronsql_count_star_shortcut_plan.md W1): print the scalar result
+  // without an NdbAggregator — every output is COUNT(*), so each
+  // prints the same summed per-fragment ROW_COUNT.  Format fidelity
+  // mirrors the compiled print program (JSON record {"name":value,..}
+  // inside [...]; TSV header + row; LIMIT 0 suppression).
+  void print_count_star_result(Uint64 count,
+                               std::basic_ostream<char>* out_stream);
   void print_passthrough_header(const class NdbRecAttr* const* attrs,
                                 Uint32 num_cols,
                                 std::basic_ostream<char>* out_stream);

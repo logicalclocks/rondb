@@ -1,0 +1,201 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cst-1: COUNT(*) over region + EXPLAIN pin ===
+== Query ==
+SELECT COUNT(*) AS c FROM region;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT COUNT(*) AS c FROM region|
+c
+5
+
+=== cst-2: COUNT(*) over orders (1500 rows, many fragments) ===
+== Query ==
+SELECT COUNT(*) AS c FROM orders;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM orders|
+c
+1500
+
+=== cst-3: COUNT(*) over an empty table -> 0 ===
+== Query ==
+SELECT COUNT(*) AS c FROM cstempty;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM cstempty|
+c
+0
+
+=== cst-4: LIMIT 0 suppression ===
+== Query ==
+SELECT COUNT(*) AS c FROM orders LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM orders LIMIT 0|
+c
+
+=== cst-5: COUNT(1) is the same shortcut ===
+== Query ==
+SELECT COUNT(1) AS c FROM orders;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(1) AS c FROM orders|
+c
+1500
+
+=== cst-6: several COUNT(*) outputs ===
+== Query ==
+SELECT COUNT(*) AS a, COUNT(*) AS b FROM region;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS a, COUNT(*) AS b FROM region|
+a	b
+5	5
+
+=== cst-7: ORDER BY alias — printer no-op on one row ===
+== Query ==
+SELECT COUNT(*) AS c FROM orders ORDER BY c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM orders ORDER BY c|
+c
+1500
+
+=== cst-8: COUNT(*) as an uncorrelated scalar subquery ===
+== Query ==
+SELECT COUNT(*) AS c FROM customer
+WHERE c_custkey <= (SELECT COUNT(*) FROM region);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM customer
+WHERE c_custkey <= (SELECT COUNT(*) FROM region)|
+c
+5
+
+=== cst-c1: control — COUNT(nullable) is NOT the shortcut ===
+== Query ==
+SELECT COUNT(o_clerk) AS c FROM orders;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT COUNT(o_clerk) AS c FROM orders|
+c
+1286
+
+=== cst-c2: control — WHERE forces the scan path ===
+== Query ==
+SELECT COUNT(*) AS c FROM orders WHERE o_custkey = 42;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM orders WHERE o_custkey = 42|
+c
+5
+
+=== cst-c3: control — GROUP BY forces the aggregation path ===
+== Query ==
+SELECT o_orderstatus AS s, COUNT(*) AS c FROM orders
+GROUP BY o_orderstatus;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_orderstatus AS s, COUNT(*) AS c FROM orders
+GROUP BY o_orderstatus|
+s	c
+F	500
+O	500
+P	500
+
+=== cst-c4: control — COUNT(*) alongside MAX is not eligible ===
+== Query ==
+SELECT COUNT(*) AS c, MAX(o_orderkey) AS m FROM orders;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c, MAX(o_orderkey) AS m FROM orders|
+c	m
+1500	1500

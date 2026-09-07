@@ -7293,6 +7293,17 @@ RonSQLPreparer::execute()
     }
     // Since ndb exists, m_main_scope.table should have been initialized in load()
     ndbrequire(m_main_scope.table != NULL);
+
+    if (is_count_star_only_query()) {
+      // ronsql_count_star_shortcut_plan.md W1: answer from the
+      // per-fragment ROW_COUNT statistic (one pseudo-row per fragment)
+      // instead of scanning every row — mysqld's own COUNT(*) fast
+      // path, so both engines read the same committed statistic.
+      execute_count_star_shortcut();
+      cleanup_trans();
+      return;
+    }
+
     NdbAggregator aggregator(m_main_scope.table);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
@@ -7321,6 +7332,88 @@ RonSQLPreparer::execute()
   catch (...) {
     handle_ronsql_exception(std::current_exception());
   }
+}
+
+/*
+ * COUNT(*) fragment-stats shortcut
+ * (ronsql_count_star_shortcut_plan.md W1).
+ *
+ * Eligibility is deliberately literal: a single-table aggregate query
+ * with no WHERE, no GROUP BY, no HAVING, no subqueries, whose every
+ * output is COUNT over a constant (the parser lowers COUNT(*) to
+ * COUNT(1); any integer constant counts every row, exactly like
+ * MySQL).  COUNT(col) is NOT eligible — it counts non-NULL values and
+ * must scan.  Main-level ORDER BY / LIMIT on the one result row are
+ * the printer's existing no-ops (LIMIT 0 still suppresses output).
+ */
+bool
+RonSQLPreparer::is_count_star_only_query()
+{
+  if (m_has_ctes || m_has_subqueries) return false;
+  if (is_join_query() || !m_is_aggregate_query) return false;
+  const SelectStatement& ast = m_context.ast_root;
+  if (ast.where_expression != NULL) return false;
+  if (ast.groupby_columns != NULL) return false;
+  if (ast.having_expression != NULL) return false;
+  if (ast.outputs == NULL) return false;
+  for (const Outputs* o = ast.outputs; o != NULL; o = o->next)
+  {
+    if (o->type != Outputs::Type::AGGREGATE) return false;
+    if (o->aggregate.fun != T_COUNT) return false;
+    AggregationAPICompiler_Expr* arg = o->aggregate.arg;
+    if (arg == NULL || !arg->isLoadConstantInt()) return false;
+  }
+  return true;
+}
+
+/*
+ * The mysqld reference mechanism (ndb_table_stats.cc): a scan whose
+ * interpreted program is exactly interpret_exit_last_row() — DBTUP
+ * then returns ONE pseudo-row per fragment — with a getValue of the
+ * ROW_COUNT pseudo-column under LM_CommittedRead.  Summing the
+ * per-fragment counts gives the committed COUNT(*), the same
+ * statistic mysqld's fast path reads (parity by construction).
+ */
+void
+RonSQLPreparer::execute_count_star_shortcut()
+{
+  STAT_TS(m_conf.phase_stats, s_scandef_start);
+  NdbScanOperation* scanOp =
+      DBG(m_trans->getNdbScanOperation(m_main_scope.table));
+  require_sch(scanOp != NULL, "Failed to get scan operation.");
+  require_prm(DBG(scanOp->readTuples(
+                  NdbOperation::LockMode::LM_CommittedRead)) == 0,
+              "Failed to initialize fragment-stats scan.");
+  NdbRecAttr* rowCount =
+      DBG(scanOp->getValue(NdbDictionary::Column::ROW_COUNT));
+  require_run(rowCount != NULL,
+              "Failed to read ROW_COUNT pseudo-column.");
+  const Uint32 codeWords = 1;
+  Uint32 codeSpace[codeWords];
+  NdbInterpretedCode code(nullptr /* table irrelevant */,
+                          &codeSpace[0], codeWords);
+  require_prm(code.interpret_exit_last_row() == 0 && code.finalise() == 0,
+              "Failed to build fragment-stats program.");
+  require_prm(DBG(scanOp->setInterpretedCode(&code)) == 0,
+              "Failed to set fragment-stats program.");
+  STAT_TS(m_conf.phase_stats, s_agg_start);
+  STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_agg_start);
+  require_run(DBG(m_trans->execute(NdbTransaction::NoCommit)) == 0,
+              "Failed to execute fragment-stats scan.");
+  Uint64 total = 0;
+  int check;
+  while ((check = DBG(scanOp->nextResult(true))) == 0)
+  {
+    total += rowCount->u_64_value();
+  }
+  require_run(check == 1, "Fragment-stats scan failed.");
+  STAT_TS(m_conf.phase_stats, s_agg_end);
+  STAT_SET(m_conf.phase_stats, firstbatch_us, s_agg_start, s_agg_end);
+
+  STAT_TS(m_conf.phase_stats, s_print_start);
+  m_resultprinter->print_count_star_result(total, m_conf.out_stream);
+  STAT_TS(m_conf.phase_stats, s_print_end);
+  STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
 }
 
 NdbScanOperation*
@@ -15878,6 +15971,10 @@ RonSQLPreparer::print()
     }
   } else if (m_scan_config == NULL) {
     // Join plan already printed at the top
+  } else if (is_count_star_only_query()) {
+    // ronsql_count_star_shortcut_plan.md W1: answered from the
+    // per-fragment ROW_COUNT statistic, no row scan.
+    out << "Execute as fragment-stats COUNT(*) (no row scan).\n";
   } else {
     ScanConfig& sc = *m_scan_config;
     if (sc.index == NULL) {
