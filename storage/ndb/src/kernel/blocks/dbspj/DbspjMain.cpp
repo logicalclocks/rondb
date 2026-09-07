@@ -6591,12 +6591,12 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
  * when the G2a miss cache shipped: it replayed the cached bytes with the
  * ORIGINAL probe's correlation (a replayed row must carry the CURRENT
  * parent's correlation) and its async self-TRANSID_AI held no
- * outstanding count, racing batch completion.  Row-payload caching also
- * needs a protocol extension first — result rows are FLUSH_AI'd from
- * DBLQH straight to the API and never transit DBSPJ, so DBSPJ has
- * nothing to cache without a dual-ship flag on the fill probe (G2b,
- * maintainer decision).  m_cachedRowPtrI/m_cachedRowLen stay reserved
- * for that design. */
+ * outstanding count, racing batch completion.  The shipped G2b row
+ * cache fixes both: CTE_LOOKUP_CACHE_FILL_FLAG makes DBLQH dual-ship
+ * the API payload on the CONF (destination-prefixed section), and the
+ * CACHE_ROW serve arm inside cte_lookup_send patches the correlation
+ * per-probe and sends synchronously with CONF-equivalent m_rows
+ * accounting. */
 
 Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
                                   const char *key,
@@ -6936,7 +6936,8 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         !(lookupFlags & CteLookupReq::CTE_LOOKUP_OUTER_CHAIN_FLAG) &&
         keyPtr.sz <= MAX_KEY_SIZE_IN_WORDS;
     if (cacheEligible &&
-        cacheCtx.m_cacheKind == CteContext::CACHE_MISS &&
+        (cacheCtx.m_cacheKind == CteContext::CACHE_MISS ||
+         cacheCtx.m_cacheKind == CteContext::CACHE_ROW) &&
         cacheCtx.m_cacheFillTreeNodeI == treeNodePtr.i &&
         cacheCtx.m_cachedKeyLen == keyPtr.sz) {
       Uint32 probeKey[MAX_KEY_SIZE_IN_WORDS + 1];
@@ -6945,7 +6946,8 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       SegmentedSectionPtr ckPtr;
       getSection(ckPtr, cacheCtx.m_cachedKeyPtrI);
       copy(cachedKey, ckPtr);
-      if (memcmp(probeKey, cachedKey, keyPtr.sz * sizeof(Uint32)) == 0) {
+      if (memcmp(probeKey, cachedKey, keyPtr.sz * sizeof(Uint32)) == 0 &&
+          cacheCtx.m_cacheKind == CteContext::CACHE_MISS) {
         jam();
         /* Served miss: nothing is sent, so no counter moves — the
          * probe never incremented outstanding.  Replicate the
@@ -6987,13 +6989,71 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         }
         return;
       }
+      if (memcmp(probeKey, cachedKey, keyPtr.sz * sizeof(Uint32)) == 0) {
+        jam();
+        /* G2b served row: impersonate DBLQH's API delivery from the
+         * cached [fRef, fData, payload...] section.  The payload is
+         * byte-identical to what DBLQH would flush for this key except
+         * for the correlation words, which carry the FILL probe's
+         * parent correlation — patch every CORR_FACTOR32/64 entry with
+         * THIS probe's correlation so the API joins the row to the
+         * right parent.  Nothing is sent to DBLQH, so no outstanding
+         * moves; the API row is accounted exactly like the CONF arm's
+         * m_rows++ (SCAN_FRAGCONF completedOps). */
+        DEB_CTE(("(%u) cte_lookup_send: cached ROW served, node=%u len=%u",
+                 instance(), treeNodePtr.p->m_node_no,
+                 cacheCtx.m_cachedRowLen));
+        releaseSection(keyInfoPtrI);
+        /* Scratch: m_buffer0 is free here — its only probe-path use is
+         * transient xfrm scratch inside cte_lookup_hash_key (m_buffer1
+         * may hold the CALLER's linearized parent row — never touch). */
+        ndbrequire(cacheCtx.m_cachedRowLen > 2 &&
+                   cacheCtx.m_cachedRowLen <= NDB_ARRAY_SIZE(m_buffer0));
+        SegmentedSectionPtr rowPtr;
+        getSection(rowPtr, cacheCtx.m_cachedRowPtrI);
+        ndbrequire(rowPtr.sz == cacheCtx.m_cachedRowLen);
+        copy(m_buffer0, rowPtr);
+        const Uint32 fRef = m_buffer0[0];
+        const Uint32 fData = m_buffer0[1];
+        Uint32 *payload = &m_buffer0[2];
+        const Uint32 payloadLen = cacheCtx.m_cachedRowLen - 2;
+        const Uint32 corrVal = treeNodePtr.p->m_send.m_correlation;
+        Uint32 p = 0;
+        while (p < payloadLen) {
+          const Uint32 attrId = AttributeHeader::getAttributeId(payload[p]);
+          const Uint32 dataSize = AttributeHeader::getDataSize(payload[p]);
+          if (attrId == AttributeHeader::CORR_FACTOR32 && dataSize >= 1) {
+            payload[p + 1] = corrVal;
+          } else if (attrId == AttributeHeader::CORR_FACTOR64 &&
+                     dataSize >= 2) {
+            payload[p + 1] = corrVal;
+            /* payload[p + 2] = root receiver id — unchanged. */
+          }
+          p += 1 + dataSize;
+        }
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = fData;
+        transIdAI->transId[0] = requestPtr.p->m_transId[0];
+        transIdAI->transId[1] = requestPtr.p->m_transId[1];
+        LinearSectionPtr lsp[1];
+        lsp[0].p = payload;
+        lsp[0].sz = payloadLen;
+        sendSignal(fRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        if (requestPtr.p->m_aggNodes.isclear() &&
+            treeNodePtr.p->m_cteId == RNIL) {
+          requestPtr.p->m_rows++;
+        }
+        return;
+      }
     } else if (cacheEligible &&
                cacheCtx.m_cacheKind == CteContext::CACHE_NONE) {
       jam();
       /* First eligible probe: claim the slot.  A GROUP_NOT_FOUND REF
-       * with this correlation turns it into a cached MISS; a CONF for
-       * this tree node parks it as ROW_EXISTS (terminal — CONF
-       * carries no correlation, see CacheKind). */
+       * with this correlation turns it into a cached MISS; a CONF with
+       * this correlation and a row section (the G2b dual-ship) turns
+       * it into a cached ROW; a CONF without a section parks it as
+       * ROW_EXISTS. */
       Uint32 dupKeyI = RNIL;
       if (dupSection(dupKeyI, keyInfoPtrI)) {
         cacheCtx.m_cachedKeyPtrI = dupKeyI;
@@ -7002,6 +7062,15 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         cacheCtx.m_cacheFillCorrelation =
             treeNodePtr.p->m_send.m_correlation;
         cacheCtx.m_cacheKind = CteContext::CACHE_FILLING;
+        /* G2b: when the probe is a row-delivery LEAF (result payload
+         * flushed straight to the API, nothing consumed in DBSPJ),
+         * ask DBLQH to dual-ship the API payload on the CONF so a
+         * hit becomes servable from cache too. */
+        if (treeNodePtr.p->isLeaf() &&
+            !(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+          jam();
+          lookupFlags |= CteLookupReq::CTE_LOOKUP_CACHE_FILL_FLAG;
+        }
       }
       /* dupSection failure: skip filling, probe proceeds normally. */
     }
@@ -7209,6 +7278,10 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   jamEntry();
   const CteLookupConf *conf =
       reinterpret_cast<const CteLookupConf *>(signal->getDataPtr());
+  /* Optional section 0: the G2b dual-shipped API payload
+   * ([fRef, fData, payload...]) — present only when the request
+   * carried CTE_LOOKUP_CACHE_FILL_FLAG and capture succeeded. */
+  SectionHandle handle(this, signal);
 
   Ptr<TreeNode> treeNodePtr;
   ndbrequire(m_treenode_pool.getPtr(treeNodePtr, conf->senderData));
@@ -7227,30 +7300,46 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   ndbrequire(requestPtr.p->m_outstanding > 0);
   requestPtr.p->m_outstanding--;
 
-  /* G2a probe-outcome cache: a CONF while FILLING for this tree node
-   * means SOME key has the row.  CONF carries no correlation, so it
-   * cannot be attributed to the fill probe — park the slot as
-   * ROW_EXISTS (terminal; misses for other keys lose only the
-   * optimization, never correctness). */
+  /* G2a/G2b probe-outcome cache: attribute the CONF to the fill probe
+   * via the echoed correlation.  With a dual-shipped row section the
+   * slot becomes CACHE_ROW (key kept — later byte-identical keys are
+   * served locally); without one it parks as ROW_EXISTS (terminal).
+   * A CONF for a DIFFERENT probe leaves the fill in flight. */
   {
     const Uint32 cacheCteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
     for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
       CteContext &cctx = requestPtr.p->m_cteContexts[i];
       if (cctx.m_cteId == cacheCteId) {
         if (cctx.m_cacheKind == CteContext::CACHE_FILLING &&
-            cctx.m_cacheFillTreeNodeI == treeNodePtr.i) {
-          jam();
-          cctx.m_cacheKind = CteContext::CACHE_ROW_EXISTS;
-          if (cctx.m_cachedKeyPtrI != RNIL) {
-            releaseSection(cctx.m_cachedKeyPtrI);
-            cctx.m_cachedKeyPtrI = RNIL;
-            cctx.m_cachedKeyLen = 0;
+            cctx.m_cacheFillTreeNodeI == treeNodePtr.i &&
+            cctx.m_cacheFillCorrelation == conf->correlation) {
+          SegmentedSectionPtr rowPtr;
+          if (handle.getSection(rowPtr, CteLookupConf::RowSectionNum) &&
+              rowPtr.sz > 2 && rowPtr.sz <= NDB_ARRAY_SIZE(m_buffer0)) {
+            jam();
+            /* Steal the section from the handle — owned by the cache
+             * slot from here on (released with the request, or when
+             * the CTE context resets). */
+            cctx.m_cachedRowPtrI = rowPtr.i;
+            cctx.m_cachedRowLen = rowPtr.sz;
+            handle.clear();
+            cctx.m_cacheKind = CteContext::CACHE_ROW;
+          } else {
+            jam();
+            cctx.m_cacheKind = CteContext::CACHE_ROW_EXISTS;
+            if (cctx.m_cachedKeyPtrI != RNIL) {
+              releaseSection(cctx.m_cachedKeyPtrI);
+              cctx.m_cachedKeyPtrI = RNIL;
+              cctx.m_cachedKeyLen = 0;
+            }
           }
         }
         break;
       }
     }
   }
+  /* Release any section not stolen by the cache fill above. */
+  releaseSections(handle);
 
   // Mark node complete when all CTE_LOOKUP responses received.
   // cte_lookup_send cleared the bit; restore it when done.

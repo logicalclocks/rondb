@@ -4675,6 +4675,203 @@ testCteSingleGroup(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 29: G2b row-payload probe cache (cte_single_group_plan.md)     */
+/*                                                                     */
+/* Test 19's pass-through shape (real-table main scan + CTE_LOOKUP     */
+/* leaf, rows to the API) over Test 28's single-group body (WHERE      */
+/* grp = 7 filter + CTE_SINGLE_GROUP).  Seed 600 rows: odd pk -> grp 7 */
+/* (300 rows, val=1), even pk -> grp 8.  The CTE holds ONE group       */
+/* (7, total=300).  Each DBSPJ instance's FIRST grp-7 probe is the     */
+/* flagged fill (DBLQH dual-ships the API payload on the CONF); later  */
+/* grp-7 probes on that instance are served from CACHE_ROW — DBSPJ     */
+/* re-sends the payload to the API with the CURRENT parent's patched   */
+/* correlation.  grp-8 probes exercise the G2a miss cache alongside.   */
+/* Correctness pin: every odd pk appears EXACTLY once with grp=7 and   */
+/* total=300 (a stale-correlation replay would misjoin rows to the     */
+/* wrong parent or lose them), even pks are dropped (inner join), and  */
+/* the multi-batch drain completes (row accounting: served rows must   */
+/* count into m_rows like CONF-delivered ones).                        */
+/* ------------------------------------------------------------------ */
+static int
+testCteLookupRowCache(Ndb *ndb, MYSQL *conn)
+{
+  const int NUM_ROWS = 600;
+  const int HIT_ROWS = NUM_ROWS / 2;         // odd pks, grp 7
+  const Int64 EXPECTED_TOTAL = HIT_ROWS;     // val=1 per grp-7 row
+  printf("Test 29: CTE_LOOKUP row-payload cache, %d rows ... ", NUM_ROWS);
+  fflush(stdout);
+
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[16384];
+  int pos = 0;
+  bool first = true;
+  for (int pk = 1; pk <= NUM_ROWS; pk++) {
+    int grp = (pk % 2 == 1) ? 7 : 8;
+    if (first) {
+      pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+      first = false;
+    } else {
+      pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+    }
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,1)", pk, grp);
+    if (pk % 200 == 0 || pk == NUM_ROWS) {
+      if (sqlExec(conn, sql) != 0) {
+        printf("FAILED (seed at pk=%d)\n", pk);
+        return -1;
+      }
+      first = true;
+      pos = 0;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *grpCol = srcTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup: grp)\n");
+    return -1;
+  }
+  const Uint32 grpColNo = grpCol->getColumnNo();
+
+  /* Body WHERE grp = 7 (Test 28 pattern). */
+  Uint32 codeBuf[32];
+  NdbInterpretedCode filterCode(srcTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  const Uint32 seven = 7;
+  if (filterCode.branch_col_eq(&seven, sizeof(seven), grpColNo, 0) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.def_label(0) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter: %s)\n", filterCode.getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) { printf("FAILED (create)\n"); return -1; }
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions bodyScanOpts;
+    bodyScanOpts.setInterpretedCode(filterCode);
+    const NdbQueryTableScanOperationDef *scan =
+        qb->scanTable(srcTab, &bodyScanOpts);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cteAgg, /*depMask=*/0,
+                    QN_CteSubtreeNode::CTE_SINGLE_GROUP) != 0) {
+    printf("FAILED (defineCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: real-table scan + pass-through CTE_LOOKUP by grp. */
+  const NdbQueryTableScanOperationDef *mainScan = qb->scanTable(srcTab);
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScan, "grp"), nullptr
+  };
+  NdbQueryOptions lookupOpts;
+  lookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &lookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 2;
+  const Uint32 cteOpNo  = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbQueryOperation *cteOp  = query->getQueryOperation(cteOpNo);
+  /* attrId order (see Test 19's note). */
+  NdbRecAttr *raPk  = mainOp->getValue("pk");
+  NdbRecAttr *raGrp = mainOp->getValue("grp");
+  NdbRecAttr *raCteGrp = cteOp->getValue("grp");
+  NdbRecAttr *raTotal = cteOp->getValue("total");
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  bool seenPk[601] = { false };
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 pk = raPk->int32_value();
+    Int32 grp = raGrp->int32_value();
+    Int32 cteGrp = raCteGrp->int32_value();
+    Int64 tot = raTotal->int64_value();
+    if (pk < 1 || pk > NUM_ROWS || seenPk[pk] || pk % 2 != 1 ||
+        grp != 7 || cteGrp != 7 || tot != EXPECTED_TOTAL) {
+      printf("FAILED (bad row pk=%d grp=%d cteGrp=%d total=%lld at row %u)\n",
+             pk, grp, cteGrp, (long long)tot, rowCount);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    seenPk[pk] = true;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != (Uint32)HIT_ROWS) {
+    printf("FAILED (expected %d rows, got %u)\n", HIT_ROWS, rowCount);
+    return -1;
+  }
+  printf("OK (%u rows, every odd pk exactly once)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -4712,6 +4909,7 @@ static const TestEntry g_tests[] = {
     { 26, testCteLookupAvgLarge },
     { 27, testCteOrderByLimit },
     { 28, testCteSingleGroup },
+    { 29, testCteLookupRowCache },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

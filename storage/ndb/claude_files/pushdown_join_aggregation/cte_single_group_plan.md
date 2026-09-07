@@ -3,8 +3,57 @@
 **Status: G1 + G2a + G3 + G4 IMPLEMENTED (September 2026; G1-G3
 validated — Test 28 green in both suites, sg family recorded green
 ×5; G4 pending user build + sg re-record ×5 with the new
-sg-11/sg-12); G2b re-scoped to a deferred protocol decision; G5
-benchmarks pending.**
+sg-11/sg-12); G2b IMPLEMENTED (September 2026, no version gate per
+maintainer direction — pending user build + Test 29 + regression);
+G5 benchmarks pending.**
+
+G2b outcome notes — the row-payload cache protocol extension, shipped
+as designed in the G2 audit:
+- **Wire**: `CteLookupReq::CTE_LOOKUP_CACHE_FILL_FLAG` (0x8);
+  `CteLookupConf` gains `correlation` (SignalLength 3 — echo of the
+  request, making CONF attribution as precise as REF's always was) and
+  an optional section 0 `[fRef, fData, payload words...]`.  No version
+  gate (26.04 alpha precedent).
+- **DBLQH dual-ship**: `CteOutputParams::captureSectionPtrI` — when
+  armed, `emitCteGroupOutput`'s FLUSH_AI arm mirrors the API-bound
+  payload into a section, destination-prefixed on first append.
+  Best-effort: append failure or a SECOND flush in one emit (a served
+  replay re-sends the capture as ONE TRANSID_AI, so only single-flush
+  payloads are replayable) drops the capture and serves normally.
+  `cteLookupEmitResult` arms it only for
+  `CACHE_FILL && joinAggStateKey == RNIL && groupData != nullptr`,
+  attaches the section on the CONF via SectionHandle, and releases it
+  on the output-overflow REF path.  All three CONF sites (row-emit,
+  agg-feed, anti-join bare) now echo `correlation`.
+- **DBSPJ fill**: the FILLING claim in `cte_lookup_send` sets the
+  flag only for row-delivery LEAVES (`isLeaf && !T_AGGREGATE_LEAF`) —
+  agg-feed/non-leaf fills stay G2a-only (miss caching).
+  `execCTE_LOOKUP_CONF` takes a SectionHandle: a CONF matching (tree
+  node, correlation) with a section >2 words steals it into
+  `m_cachedRowPtrI/Len` (kind = new `CACHE_ROW`; key KEPT); without a
+  section it parks ROW_EXISTS as before; a CONF for a different probe
+  leaves the fill in flight (the old blind parking is gone).
+- **DBSPJ serve**: `cte_lookup_send`'s cache arm now serves CACHE_ROW
+  alongside CACHE_MISS — byte-identical key + same tree node ⇒ copy
+  the cached section to `m_buffer0` (NOT m_buffer1, which may hold
+  the caller's linearized parent row), patch every
+  CORR_FACTOR32/64 entry's correlation word with the CURRENT probe's
+  `m_send.m_correlation` (root-receiver word unchanged), send
+  GSN_TRANSID_AI to the cached [fRef, fData] destination with the
+  request transId, and mirror the CONF arm's row accounting
+  (`m_rows++` when `m_aggNodes.isclear() && m_cteId == RNIL`).  No
+  outstanding movement — nothing was sent to DBLQH.  This fixes both
+  flaws of the removed skeleton: correlation is patched per-probe, and
+  the send is synchronous inside the probe path (no async self-send
+  racing batch completion).
+- **Test 29** (`testCteLookupRowCache`): Test 19's pass-through
+  main-scan + CTE_LOOKUP leaf over Test 28's single-group body; 600
+  rows (odd pk → grp 7, even → grp 8), so each DBSPJ instance's later
+  grp-7 probes serve from CACHE_ROW and grp-8 repeats exercise the
+  G2a miss cache in the same run.  Pins every odd pk delivered exactly
+  once with grp=7/total=300 (a stale-correlation replay would misjoin
+  or lose rows) and complete multi-batch drain (served-row m_rows
+  accounting).
 
 G4 outcome notes — FOUND + FIXED ON FIRST RECORD (sg-11, data-node
 ndbrequire DbspjMain.cpp:7404): a ROOT CTE_LOOKUP carrying the main
@@ -77,12 +126,11 @@ G2 outcome notes — the audit re-scoped it honestly:
   row must carry the CURRENT parent's correlation for API join
   assembly), and its async self-TRANSID_AI held no outstanding count,
   racing batch completion.  The function and its never-taken branch
-  are REMOVED; `m_cachedRowPtrI/Len` stay reserved.  **G2b (deferred,
-  maintainer decision)**: a CACHE_FILL flag on CteLookupReq making
-  DBLQH dual-ship the API payload to DBSPJ on the fill probe, plus
-  DBSPJ impersonating the per-probe API delivery — the riskiest
-  surface (receiver ids, correlation rewrite), only worth it if
-  repeated-HIT probe workloads profile as material.
+  are REMOVED; `m_cachedRowPtrI/Len` stay reserved.  **G2b — since
+  IMPLEMENTED (see the G2b outcome notes above)**: a CACHE_FILL flag
+  on CteLookupReq making DBLQH dual-ship the API payload to DBSPJ on
+  the fill probe, plus DBSPJ impersonating the per-probe API delivery
+  with a patched correlation.
 - **G2a (shipped): the MISS outcome is cacheable today.**  A miss
   arrives as CTE_LOOKUP_REF with the probe's correlation, needs no
   payload, and serving a repeated miss is a pure local skip — no send,
@@ -91,13 +139,14 @@ G2 outcome notes — the audit re-scoped it honestly:
   injection via the scan ancestor's buffered row) replicated at the
   serve site.  One slot per CteContext: `m_cachedKeyPtrI/Len` + fill
   tree node + fill correlation + `CacheKind`
-  (NONE/FILLING/MISS/ROW_EXISTS).  The first eligible probe claims the
-  slot (FILLING); a GROUP_NOT_FOUND REF matching (tree node,
-  correlation) makes it MISS; byte-identical keys from the same tree
-  node are then served in `cte_lookup_send` after key
-  expansion/stamping.  A CONF while FILLING parks the slot as
-  ROW_EXISTS (terminal — CONF carries no correlation, so it cannot be
-  attributed; other keys' misses lose only the optimization).
+  (NONE/FILLING/MISS/ROW_EXISTS/ROW — the last added by G2b).  The
+  first eligible probe claims the slot (FILLING); a GROUP_NOT_FOUND
+  REF matching (tree node, correlation) makes it MISS; byte-identical
+  keys from the same tree node are then served in `cte_lookup_send`
+  after key expansion/stamping.  A CONF originally parked FILLING as
+  ROW_EXISTS blindly (pre-G2b CONF carried no correlation); with G2b
+  the CONF echo makes parking exactly as precise as the REF arm, and
+  a dual-shipped section upgrades the slot to CACHE_ROW instead.
   Eligibility = (single-row || single-group) CTE, no
   `T_ATTRINFO_CONSTRUCTED` (a filter with parent linked operands makes
   outcomes row-dependent, and DBLQH maps filter-reject to

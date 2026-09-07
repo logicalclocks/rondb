@@ -759,7 +759,7 @@ class Dbspj : public SimulatedBlock {
       CTE_READY = 2,          // Hash table complete, lookups can proceed
       CTE_FAILED = 3          // CTE scan failed
     };
-    /* G2a probe-outcome cache (cte_single_group_plan.md): for
+    /* G2a/G2b probe-outcome cache (cte_single_group_plan.md): for
      * single-row / single-group CTEs the post-READY state is immutable
      * and holds at most one group, so a probe's outcome is a pure
      * function of its key bytes (guarded: no per-row-constructed
@@ -768,16 +768,20 @@ class Dbspj : public SimulatedBlock {
      * correlation (FILLING); a GROUP_NOT_FOUND REF for that probe
      * makes it a cached MISS, after which byte-identical keys from the
      * same tree node are served locally — no CTE_LOOKUP round-trip.
-     * A CONF while FILLING means some key has the row (CONF carries no
-     * correlation, so it cannot be attributed): ROW_EXISTS is a
-     * terminal do-nothing state — caching the ROW payload needs the
-     * G2b protocol extension (result rows are FLUSH_AI'd straight to
-     * the API and never transit DBSPJ). */
+     * G2b: for row-delivery leaves the fill probe additionally sets
+     * CTE_LOOKUP_CACHE_FILL_FLAG, and DBLQH dual-ships the API-bound
+     * payload as a CONF section ([fRef, fData, payload...]) — the slot
+     * then becomes CACHE_ROW and byte-identical keys are served by
+     * re-sending the payload to the API with a patched correlation.
+     * A CONF for the fill probe WITHOUT a section (agg-feed/non-leaf
+     * fill, or DBLQH capture failure) parks as ROW_EXISTS, a terminal
+     * do-nothing state. */
     enum CacheKind {
-      CACHE_NONE = 0,       // no fill attempted yet
-      CACHE_FILLING = 1,    // fill probe in flight
-      CACHE_MISS = 2,       // cached: key -> GROUP_NOT_FOUND
-      CACHE_ROW_EXISTS = 3  // terminal: a row exists, payload uncacheable
+      CACHE_NONE = 0,        // no fill attempted yet
+      CACHE_FILLING = 1,     // fill probe in flight
+      CACHE_MISS = 2,        // cached: key -> GROUP_NOT_FOUND
+      CACHE_ROW_EXISTS = 3,  // terminal: a row exists, payload not captured
+      CACHE_ROW = 4          // cached: key -> API payload (m_cachedRowPtrI)
     };
     Uint64 m_depMask;         // Bitmask: bit c set = depends on cteId c
     Uint32 m_cteId;           // CTE identifier (0-based)
@@ -786,8 +790,8 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
     Uint32 m_phase;           // Execution phase (0 = no deps)
     Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW
-    Uint32 m_cachedRowPtrI;   // RNIL or section with cached row (G2b, dormant)
-    Uint32 m_cachedRowLen;    // Word count of cached row (G2b, dormant)
+    Uint32 m_cachedRowPtrI;   // RNIL or [fRef, fData, payload...] section (G2b)
+    Uint32 m_cachedRowLen;    // Word count of the cached row section
     Uint32 m_cachedKeyPtrI;   // RNIL or key section of the cache slot
     Uint32 m_cachedKeyLen;    // Word count of the cached key
     Uint32 m_cacheFillTreeNodeI;    // Tree node owning the cache slot

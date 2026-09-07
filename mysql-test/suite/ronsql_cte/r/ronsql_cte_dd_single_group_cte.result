@@ -271,6 +271,32 @@ FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
 SELECT k, n FROM cf|
 k	n
 
+=== sg-13: pass-through join, repeated-HIT probes (G2b row cache) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT o.o_orderkey AS okey, o.o_custkey AS ck, cf.n AS n
+FROM orders AS o JOIN cf ON cf.k = o.o_custkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT o.o_orderkey AS okey, o.o_custkey AS ck, cf.n AS n
+FROM orders AS o JOIN cf ON cf.k = o.o_custkey|
+okey	ck	n
+1242	42	5
+342	42	5
+42	42	5
+642	42	5
+942	42	5
+
 === sg-c1: control — partially-bound GROUP BY is NOT flagged ===
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n

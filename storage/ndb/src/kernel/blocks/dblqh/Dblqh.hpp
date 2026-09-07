@@ -3488,6 +3488,13 @@ private:
     Uint32 correlation;     // CORR_FACTOR32/64 tuple correlation value
     Uint32 corrRootRcvr;    // CORR_FACTOR64 root receiver ID
     bool useFlushAiFromFinalR;  // true: read flushRef/Data from finalR section
+    /* G2b probe-result cache: when non-null, every FLUSH_AI payload
+     * sent to the API is ALSO appended to this section (prefixed with
+     * [fRef, fData] on first append), so the caller can attach the
+     * API-bound copy to CTE_LOOKUP_CONF for DBSPJ-side caching.
+     * Append failure clears the section and disables further capture
+     * (the probe still succeeds — caching is best-effort). */
+    Uint32 *captureSectionPtrI = nullptr;
   };
   Int32 emitCteGroupOutput(Signal* signal,
                            const CteOutputParams &params,

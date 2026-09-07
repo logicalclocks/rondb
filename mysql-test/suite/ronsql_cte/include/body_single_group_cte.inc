@@ -39,6 +39,10 @@
 #         (COUNT=0, MAX NULL) — identical to the empty-scan semantics
 #   sg-12 G4 keyed-probe root, pass-through main over an empty CTE:
 #         no rows
+#   sg-13 pass-through join with repeated-HIT probes (G2b row cache):
+#         row-delivery CTE_LOOKUP leaf, same key probed once per order
+#         of custkey 42 — later hits served from the DBSPJ row-payload
+#         cache with per-parent patched correlation
 #   sg-c1 control: partially-bound GROUP BY (second GB column unbound)
 #         — NOT flagged (EXPLAIN absence pin), normal path, results
 #         identical
@@ -262,6 +266,28 @@ SELECT k, n FROM cf;|
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
             FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
 SELECT k, n FROM cf|
+
+--echo
+--echo === sg-13: pass-through join, repeated-HIT probes (G2b row cache) ===
+# Row-delivery CTE_LOOKUP leaf (no aggregation): every order of
+# custkey 42 probes the SAME key, so after each DBSPJ instance's fill
+# probe the later hits are served from the G2b row-payload cache with
+# a per-parent patched correlation.  The o_orderkey column pins the
+# parent<->row pairing: a stale-correlation replay would misjoin or
+# drop rows.  Other custkeys' probes miss (the fill-winning key also
+# exercises the G2a miss cache alongside).
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT o.o_orderkey AS okey, o.o_custkey AS ck, cf.n AS n
+FROM orders AS o JOIN cf ON cf.k = o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT o.o_orderkey AS okey, o.o_custkey AS ck, cf.n AS n
+FROM orders AS o JOIN cf ON cf.k = o.o_custkey|
 
 --echo
 --echo === sg-c1: control — partially-bound GROUP BY is NOT flagged ===

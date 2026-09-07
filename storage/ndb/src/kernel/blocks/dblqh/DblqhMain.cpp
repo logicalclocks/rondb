@@ -20289,6 +20289,7 @@ retry_agg:
   CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = req.senderData;
+  conf->correlation = req.correlation;
   sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
              signal, CteLookupConf::SignalLength, JBB);
 }
@@ -20325,6 +20326,37 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
       }
 
       if (outPos > 0) {
+        /* G2b probe-result cache: mirror the API-bound payload into the
+         * caller's capture section, destination-prefixed.  Best-effort:
+         * on append failure, or on a SECOND flush (the served replay
+         * re-sends the capture as ONE TRANSID_AI, so only a
+         * single-flush payload is replayable), drop the capture and
+         * keep serving the probe normally. */
+        if (params.captureSectionPtrI != nullptr) {
+          jam();
+          bool capOk = true;
+          if (*params.captureSectionPtrI == RNIL) {
+            Uint32 dest[2] = { fRef, fData };
+            capOk = appendToSection(*params.captureSectionPtrI, dest, 2);
+            if (capOk) {
+              capOk = appendToSection(*params.captureSectionPtrI,
+                                      outBuf, outPos);
+            }
+          } else {
+            /* Second FLUSH_AI in one emit: not replayable. */
+            capOk = false;
+          }
+          if (unlikely(!capOk)) {
+            jam();
+            if (*params.captureSectionPtrI != RNIL) {
+              releaseSection(*params.captureSectionPtrI);
+              *params.captureSectionPtrI = RNIL;
+            }
+            /* Disable further capture for this emit. */
+            const_cast<CteOutputParams &>(params).captureSectionPtrI =
+                nullptr;
+          }
+        }
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
         transIdAI->connectPtr = fData;
         transIdAI->transId[0] = params.transId[0];
@@ -20497,6 +20529,16 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
   params.correlation = req.correlation;
   params.corrRootRcvr = req.resultData;
   params.useFlushAiFromFinalR = true;
+  /* G2b probe-result cache: on the flagged fill probe of a
+   * row-delivery lookup, mirror the API-bound payload into a section
+   * to attach on the CONF (destination-prefixed) so DBSPJ can serve
+   * later byte-identical-key probes locally. */
+  Uint32 captureSecI = RNIL;
+  if ((req.flags & CteLookupReq::CTE_LOOKUP_CACHE_FILL_FLAG) &&
+      req.joinAggStateKey == RNIL && groupData != nullptr) {
+    jam();
+    params.captureSectionPtrI = &captureSecI;
+  }
 
   Uint32 *outBuf = cevictBuffer;
   const Uint32 *finalR = &cinBuf[finalRStart];
@@ -20508,6 +20550,10 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                                     accumulators, outBuf);
   if (outPos < 0) {
     jam();
+    if (captureSecI != RNIL) {
+      jam();
+      releaseSection(captureSecI);
+    }
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
     return;
@@ -20530,13 +20576,25 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                TransIdAI::HeaderLength, JBB, lsp, 1);
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x",
-           instance(), req.senderRef, req.senderData));
+  DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x "
+           "captureSecI=0x%x",
+           instance(), req.senderRef, req.senderData, captureSecI));
   CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = req.senderData;
-  sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
-             signal, CteLookupConf::SignalLength, JBB);
+  conf->correlation = req.correlation;
+  if (captureSecI != RNIL) {
+    jam();
+    /* G2b: attach the destination-prefixed API payload copy. */
+    SectionHandle handle(this);
+    getSection(handle.m_ptr[CteLookupConf::RowSectionNum], captureSecI);
+    handle.m_cnt = 1;
+    sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+               signal, CteLookupConf::SignalLength, JBB, &handle);
+  } else {
+    sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+               signal, CteLookupConf::SignalLength, JBB);
+  }
 }
 
 /**
@@ -21050,6 +21108,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
       conf->senderRef = reference();
       conf->senderData = req.senderData;
+      conf->correlation = req.correlation;
       sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
                  signal, CteLookupConf::SignalLength, JBB);
       return;
