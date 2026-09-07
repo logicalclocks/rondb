@@ -42,18 +42,25 @@
 
 struct NjpEntry {
   struct NjpEntry *next;     /* bucket chain */
+  struct NjpEntry *idle_prev; /* shard idle LRU (head = most recently released) */
+  struct NjpEntry *idle_next;
   uint64_t         hash;     /* full key hash (shard + bucket derive from it) */
   uint8_t         *key;      /* copy of the bytecode bytes */
   uint32_t         key_len;
   uint32_t         refcount;
-  uint8_t          pinned;   /* retained at refcount 0 for reuse */
+  uint8_t          pinned;   /* retained at refcount 0 until teardown */
+  uint8_t          in_idle;  /* on the shard's idle LRU list */
   NdbJitProgItem   item;     /* caller's compiled product */
 };
 
 typedef struct {
   pthread_mutex_t mtx;
   NjpEntry       *buckets[NJP_N_BUCKETS];
-  uint32_t        live;      /* entries in this shard */
+  NjpEntry       *idle_head; /* most recently released idle entry */
+  NjpEntry       *idle_tail; /* least recently released — evicted first */
+  uint32_t        live;      /* entries in this shard (incl. idle + pinned) */
+  uint32_t        idle;      /* entries on the idle list */
+  uint32_t        idle_limit;/* retained idle entries per shard */
   uint64_t        compiles;  /* successful misses */
   uint64_t        hits;      /* reuses */
 } NjpShard;
@@ -86,6 +93,63 @@ static uint32_t bucket_of(uint64_t hash) {
   return (uint32_t)(hash >> NJP_SHARD_BITS) & (NJP_N_BUCKETS - 1u);
 }
 
+static uint32_t per_shard_limit(unsigned total) {
+  if (total == 0) return 0;
+  uint32_t per = (uint32_t)((total + NJP_N_SHARDS - 1u) / NJP_N_SHARDS);
+  return per == 0 ? 1u : per;
+}
+
+/* ------------------------------------------------------------------ */
+/* Idle LRU + eviction (shard lock held by the caller).               */
+/* ------------------------------------------------------------------ */
+
+static void idle_unlink(NjpShard *sh, NjpEntry *e) {
+  if (!e->in_idle) return;
+  if (e->idle_prev != NULL) e->idle_prev->idle_next = e->idle_next;
+  else sh->idle_head = e->idle_next;
+  if (e->idle_next != NULL) e->idle_next->idle_prev = e->idle_prev;
+  else sh->idle_tail = e->idle_prev;
+  e->idle_prev = e->idle_next = NULL;
+  e->in_idle = 0;
+  sh->idle--;
+}
+
+static void idle_push_head(NjpShard *sh, NjpEntry *e) {
+  e->idle_prev = NULL;
+  e->idle_next = sh->idle_head;
+  if (sh->idle_head != NULL) sh->idle_head->idle_prev = e;
+  else sh->idle_tail = e;
+  sh->idle_head = e;
+  e->in_idle = 1;
+  sh->idle++;
+}
+
+/* Unlink @p e from its bucket chain and the idle list, destroy the
+ * product, free the bookkeeping. */
+static void evict_entry(NdbJitProgCache *cache, NjpShard *sh, NjpEntry *e) {
+  uint32_t b = bucket_of(e->hash);
+  NjpEntry **pp = &sh->buckets[b];
+  while (*pp != NULL && *pp != e) pp = &(*pp)->next;
+  if (*pp == e) {
+    *pp = e->next;
+    sh->live--;
+  }
+  idle_unlink(sh, e);
+  cache->destroy(cache->cb_ctx, &e->item);
+  free(e->key);
+  free(e);
+}
+
+/* Evict from the idle tail until at most @p keep idle entries remain. */
+static unsigned trim_idle(NdbJitProgCache *cache, NjpShard *sh, uint32_t keep) {
+  unsigned n = 0;
+  while (sh->idle > keep && sh->idle_tail != NULL) {
+    evict_entry(cache, sh, sh->idle_tail);
+    n++;
+  }
+  return n;
+}
+
 /* ------------------------------------------------------------------ */
 /* Lifecycle.                                                         */
 /* ------------------------------------------------------------------ */
@@ -100,6 +164,7 @@ NdbJitProgCache *ndb_jit_progcache_create(NjpCompileFn compile,
   cache->destroy = destroy;
   cache->cb_ctx = cb_ctx;
   for (unsigned i = 0; i < NJP_N_SHARDS; ++i) {
+    cache->shards[i].idle_limit = per_shard_limit(NJP_IDLE_LIMIT_DEFAULT);
     if (pthread_mutex_init(&cache->shards[i].mtx, NULL) != 0) {
       for (unsigned j = 0; j < i; ++j) pthread_mutex_destroy(&cache->shards[j].mtx);
       free(cache);
@@ -129,42 +194,96 @@ void ndb_jit_progcache_destroy(NdbJitProgCache *cache) {
   free(cache);
 }
 
+void ndb_jit_progcache_set_idle_limit(NdbJitProgCache *cache,
+                                      unsigned max_idle) {
+  if (cache == NULL) return;
+  uint32_t per = per_shard_limit(max_idle);
+  for (unsigned i = 0; i < NJP_N_SHARDS; ++i) {
+    NjpShard *sh = &cache->shards[i];
+    pthread_mutex_lock(&sh->mtx);
+    sh->idle_limit = per;
+    trim_idle(cache, sh, per);
+    pthread_mutex_unlock(&sh->mtx);
+  }
+}
+
+unsigned ndb_jit_progcache_evict_idle(NdbJitProgCache *cache, unsigned keep) {
+  if (cache == NULL) return 0;
+  uint32_t per = per_shard_limit(keep);
+  unsigned n = 0;
+  for (unsigned i = 0; i < NJP_N_SHARDS; ++i) {
+    NjpShard *sh = &cache->shards[i];
+    pthread_mutex_lock(&sh->mtx);
+    n += trim_idle(cache, sh, per);
+    pthread_mutex_unlock(&sh->mtx);
+  }
+  return n;
+}
+
 /* ------------------------------------------------------------------ */
 /* Acquire / release.                                                 */
 /* ------------------------------------------------------------------ */
 
-NjpEntry *ndb_jit_progcache_acquire(NdbJitProgCache *cache,
-                                    const uint8_t *key, uint32_t key_len,
-                                    int pinned, NdbJitProgItem *out_item) {
+static NjpEntry *find_locked(NjpShard *sh, uint32_t b, uint64_t hash,
+                             const uint8_t *key, uint32_t key_len) {
+  for (NjpEntry *e = sh->buckets[b]; e != NULL; e = e->next) {
+    if (e->hash == hash && e->key_len == key_len &&
+        memcmp(e->key, key, key_len) == 0) {
+      return e;
+    }
+  }
+  return NULL;
+}
+
+NjpEntry *ndb_jit_progcache_acquire_ex(NdbJitProgCache *cache,
+                                       const uint8_t *key, uint32_t key_len,
+                                       int pinned, NdbJitProgItem *out_item,
+                                       int *out_rc) {
+  if (out_rc != NULL) *out_rc = NJP_COMPILE_REFUSE;
   if (cache == NULL || key == NULL || key_len == 0) return NULL;
   uint64_t hash = njp_hash(key, key_len);
   NjpShard *sh = shard_of(cache, hash);
   uint32_t b = bucket_of(hash);
+  NdbJitProgItem item;
+  int rc;
+  int swept = 0;
 
   pthread_mutex_lock(&sh->mtx);
-
-  for (NjpEntry *e = sh->buckets[b]; e != NULL; e = e->next) {
-    if (e->hash == hash && e->key_len == key_len &&
-        memcmp(e->key, key, key_len) == 0) {
+  for (;;) {
+    NjpEntry *e = find_locked(sh, b, hash, key, key_len);
+    if (e != NULL) {
+      /* Hit — an idle entry comes back to life. */
+      idle_unlink(sh, e);
       e->refcount++;
       if (pinned) e->pinned = 1;
       sh->hits++;
       if (out_item != NULL) *out_item = e->item;
+      if (out_rc != NULL) *out_rc = NJP_COMPILE_OK;
       pthread_mutex_unlock(&sh->mtx);
       return e;
     }
-  }
-
-  /* Miss: compile under the shard lock so two concurrent acquirers of
-   * the same program can't both compile + insert. Compile is ~µs and
-   * off the per-row path; it only blocks this 1/NJP_N_SHARDS section. */
-  NdbJitProgItem item;
-  memset(&item, 0, sizeof(item));
-  if (cache->compile(cache->cb_ctx, key, key_len, &item) != 0) {
+    /* Miss: compile under the shard lock so two concurrent acquirers of
+     * the same program can't both compile + insert. Compile is ~µs and
+     * off the per-row path; it only blocks this 1/NJP_N_SHARDS section. */
+    memset(&item, 0, sizeof(item));
+    rc = cache->compile(cache->cb_ctx, key, key_len, &item);
+    if (rc == NJP_COMPILE_OK) break;
+    if (rc == NJP_COMPILE_NOMEM && !swept) {
+      /* Code memory full: give the retained (idle) programs back and
+       * retry once. Sweep with our shard UNLOCKED — the sweep takes every
+       * shard lock in turn, so no two shard locks are ever nested. After
+       * re-locking, re-check the bucket: another thread may have inserted
+       * this very key meanwhile. */
+      pthread_mutex_unlock(&sh->mtx);
+      ndb_jit_progcache_evict_idle(cache, 0);
+      swept = 1;
+      pthread_mutex_lock(&sh->mtx);
+      continue;
+    }
     pthread_mutex_unlock(&sh->mtx);
-    return NULL;   /* compile refused -> caller falls back */
+    if (out_rc != NULL) *out_rc = rc;
+    return NULL;   /* compile refused (or still no code memory) -> caller falls back */
   }
-
   NjpEntry *e = (NjpEntry *)malloc(sizeof(*e));
   uint8_t *key_copy = (uint8_t *)malloc(key_len);
   if (e == NULL || key_copy == NULL) {
@@ -176,37 +295,41 @@ NjpEntry *ndb_jit_progcache_acquire(NdbJitProgCache *cache,
   }
   memcpy(key_copy, key, key_len);
   e->next = sh->buckets[b];
+  e->idle_prev = e->idle_next = NULL;
   e->hash = hash;
   e->key = key_copy;
   e->key_len = key_len;
   e->refcount = 1;
   e->pinned = pinned ? 1 : 0;
+  e->in_idle = 0;
   e->item = item;
   sh->buckets[b] = e;
   sh->live++;
   sh->compiles++;
   if (out_item != NULL) *out_item = item;
+  if (out_rc != NULL) *out_rc = NJP_COMPILE_OK;
   pthread_mutex_unlock(&sh->mtx);
   return e;
+}
+
+NjpEntry *ndb_jit_progcache_acquire(NdbJitProgCache *cache,
+                                    const uint8_t *key, uint32_t key_len,
+                                    int pinned, NdbJitProgItem *out_item) {
+  return ndb_jit_progcache_acquire_ex(cache, key, key_len, pinned, out_item,
+                                      NULL);
 }
 
 void ndb_jit_progcache_release(NdbJitProgCache *cache, NjpEntry *handle) {
   if (cache == NULL || handle == NULL) return;
   NjpShard *sh = shard_of(cache, handle->hash);
-  uint32_t b = bucket_of(handle->hash);
-
   pthread_mutex_lock(&sh->mtx);
   if (handle->refcount > 0) handle->refcount--;
   if (handle->refcount == 0 && !handle->pinned) {
-    /* Unlink from its bucket chain, then destroy outside the structure. */
-    NjpEntry **pp = &sh->buckets[b];
-    while (*pp != NULL && *pp != handle) pp = &(*pp)->next;
-    if (*pp == handle) {
-      *pp = handle->next;
-      sh->live--;
-      cache->destroy(cache->cb_ctx, &handle->item);
-      free(handle->key);
-      free(handle);
+    if (sh->idle_limit == 0) {
+      evict_entry(cache, sh, handle);         /* Phase 8 behaviour */
+    } else {
+      idle_push_head(sh, handle);             /* retain, most recent first */
+      trim_idle(cache, sh, sh->idle_limit);   /* evict the least recent */
     }
   }
   pthread_mutex_unlock(&sh->mtx);
@@ -222,6 +345,17 @@ unsigned ndb_jit_progcache_live_count(NdbJitProgCache *cache) {
   for (unsigned i = 0; i < NJP_N_SHARDS; ++i) {
     pthread_mutex_lock(&cache->shards[i].mtx);
     total += cache->shards[i].live;
+    pthread_mutex_unlock(&cache->shards[i].mtx);
+  }
+  return total;
+}
+
+unsigned ndb_jit_progcache_idle_count(NdbJitProgCache *cache) {
+  if (cache == NULL) return 0;
+  unsigned total = 0;
+  for (unsigned i = 0; i < NJP_N_SHARDS; ++i) {
+    pthread_mutex_lock(&cache->shards[i].mtx);
+    total += cache->shards[i].idle;
     pthread_mutex_unlock(&cache->shards[i].mtx);
   }
   return total;

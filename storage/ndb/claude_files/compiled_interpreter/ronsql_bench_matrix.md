@@ -164,3 +164,13 @@ rows/req; RonSQL 54 ms scanning 315k rows) and offline_fs_join_body
 (RonSQL 996 ms vs 241 ms). JIT compile storms: mysqld tpch_q13 compiles
 ~50k programs per request (correlated pushed-join child filters defeat
 the program cache; 36.7 ms = 3.6% of the request), tpch_q2 ~1k.
+
+## Program-cache retention (2026-09-07)
+
+The compile storms above were not SPJ rewriting programs (it appends
+linked parent values after an unchanged program, and the JIT keys on the
+program words only) but the reuse cache evicting unpinned entries at
+refcount 0. `jit_progcache` now keeps them on an idle LRU (1024 per
+cache by default) and sweeps them on code-memory pressure. In table E,
+`compiled/req` for mysqld should fall from 1.00 to about 0 and
+`reused/req` rise accordingly; tpch_q13's compile share from 3.5% to 0.

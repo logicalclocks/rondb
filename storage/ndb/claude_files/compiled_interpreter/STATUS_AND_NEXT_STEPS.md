@@ -17,6 +17,26 @@
   JIT mode word through Cmvmi::execSET_CONFIG_PARAM_REQ -> dbtup_jit_set_mode;
   MTR `suite/ndb/t/ndb_set_compiled_interpreter.test` (pending build+run).
 
+**2026-09-07 — JIT program cache: idle-LRU retention (built, NOT yet
+run).** The reuse cache evicted every unpinned program at refcount 0, so
+one-shot programs recompiled on each use: a pushed-join child scan is one
+SCAN_FRAGREQ per parent row per fragment (mysqld tpch_q13 at sf 0.1:
+~50k compiles/request = 15k parents x 4 fragments, 36 ms = 3.5% of the
+request; every plain mysqld scan recompiled 4x per query). DBSPJ does NOT
+rewrite program words: linked parent values go to the subroutine/param
+section after the program (BRANCH_ATTR_OP_PARAM / linked buffer), and the
+JIT keys exclude that section already. Fix in `jit_progcache.{c,h}`:
+unpinned entries stay on a per-shard idle LRU up to a budget
+(NJP_IDLE_LIMIT_DEFAULT 1024 per cache; set_idle_limit(0) = old
+behaviour); a compile that fails for code memory returns
+NJP_COMPILE_NOMEM and acquire sweeps all idle entries (outside its shard
+lock) and retries once; glue reports "code-memory full" fallbacks only
+when the retry fails too. Host tests: progcache_tests T8-T12. Verify:
+`progcache_tests`, then the quick matrix — expect mysqld compiled/req to
+drop from 1.00 (4 fragments, 1 compile + 3 hits) to ~0 and tpch_q13's
+50k to ~0. Note for canaries: any test pinning an exact
+`programs_compiled` delta will now see hits instead.
+
 **2026-09-04 (evening) — RonSQL vs MySQL vs compiled-interpreter matrix
 tooling (built, NOT yet run; Mikael builds + runs).** Start at
 `ronsql_bench_matrix.md`. Pieces: (1) MTR suite `mysql-test/suite/ronsqlcrunch`

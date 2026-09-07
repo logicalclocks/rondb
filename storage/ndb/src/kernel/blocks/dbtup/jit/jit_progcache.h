@@ -40,10 +40,23 @@
  *     bucket array protected by its own mutex (striped locking): a
  *     lookup/insert locks only one shard.
  *   - Entries are refcounted. acquire() bumps the count (compiling on
- *     miss); release() drops it and, at zero, evicts the entry and frees
- *     its compiled product. A `pinned` entry is retained at refcount 0
- *     for future reuse (the RonSQL PREPARE hint) and reclaimed only at
- *     cache teardown (or a future memory-pressure sweep).
+ *     miss); release() drops it. At zero a `pinned` entry (the RonSQL
+ *     PREPARE hint) is retained until cache teardown; an unpinned entry
+ *     is RETAINED on the shard's idle LRU list up to an idle budget
+ *     (ndb_jit_progcache_set_idle_limit, default NJP_IDLE_LIMIT_DEFAULT
+ *     entries per cache, spread over the shards), the least recently
+ *     released being evicted first. Without this (the Phase 8 design,
+ *     evict at refcount 0) every one-shot program recompiled on each
+ *     use: a pushed-join child scan is one SCAN_FRAGREQ per parent row
+ *     per fragment, so tpch_q13 compiled ~50k identical programs per
+ *     request (3.5% of the request) with only the concurrently live
+ *     fragment instances hitting. Retention turns that into one compile
+ *     per distinct program. Keys are exact bytecode, so a retained
+ *     entry can never be stale.
+ *   - Code-memory pressure: a compile callback that fails for lack of
+ *     code memory returns NJP_COMPILE_NOMEM; acquire() then evicts every
+ *     idle entry (all shards, outside its own shard lock) and retries
+ *     the compile once, so retained programs never starve a live one.
  *
  * The cache is deliberately decoupled from the code-memory manager and
  * from NDB: the caller supplies a compile callback (run on miss, e.g.
@@ -81,10 +94,23 @@ typedef struct {
 } NdbJitProgItem;
 
 /* Compile callback — invoked on a cache miss, under the shard lock, to
- * produce *out for @p key[0..key_len). Return 0 on success, -1 to refuse
- * (acquire() then returns NULL and the caller falls back). */
+ * produce *out for @p key[0..key_len). Return NJP_COMPILE_OK on success,
+ * NJP_COMPILE_REFUSE to refuse permanently (acquire() returns NULL and
+ * the caller falls back), or NJP_COMPILE_NOMEM when the only problem is
+ * code memory (acquire() sweeps the idle entries and retries once). The
+ * callback must not call back into the cache (its shard lock is held). */
+#define NJP_COMPILE_OK      0
+#define NJP_COMPILE_REFUSE (-1)
+#define NJP_COMPILE_NOMEM  (-2)
 typedef int (*NjpCompileFn)(void *cb_ctx, const uint8_t *key,
                             uint32_t key_len, NdbJitProgItem *out);
+
+/* Default idle budget per cache: unpinned entries retained at refcount 0
+ * (spread over the shards). Compiled blobs are at most
+ * NDB_JIT_CODEMEM_MAX_BLOB (8 KB) and typically a few hundred bytes, so
+ * 1024 retained blobs stay well inside the 16 MB default code memory;
+ * the NOMEM sweep covers the rest. 0 restores evict-at-refcount-0. */
+#define NJP_IDLE_LIMIT_DEFAULT 1024u
 
 /* Destroy callback — invoked when an entry is evicted (refcount hit 0
  * and not pinned) or at cache teardown, to release the product's
@@ -124,16 +150,46 @@ NjpEntry *ndb_jit_progcache_acquire(NdbJitProgCache *cache,
 
 /**
  * Release a handle from acquire(). Drops the refcount; at zero, a
- * non-pinned entry is evicted (destroy callback runs) and @p handle
- * becomes invalid. Safe with NULL. Do not use @p handle after a release
- * that may have evicted it.
+ * non-pinned entry moves to the idle LRU (or is evicted at once when the
+ * idle budget is 0 / exceeded — destroy callback runs). @p handle must
+ * not be used after release: it may be evicted at any later time.
+ * Safe with NULL.
  */
 void ndb_jit_progcache_release(NdbJitProgCache *cache, NjpEntry *handle);
 
+/**
+ * Like acquire(), and additionally reports why NULL came back in
+ * @p out_rc (when non-NULL): NJP_COMPILE_REFUSE (callback refused, or
+ * bookkeeping allocation failed) or NJP_COMPILE_NOMEM (code memory still
+ * full after the idle sweep + retry). 0 on success.
+ */
+NjpEntry *ndb_jit_progcache_acquire_ex(NdbJitProgCache *cache,
+                                       const uint8_t *key, uint32_t key_len,
+                                       int pinned, NdbJitProgItem *out_item,
+                                       int *out_rc);
+
+/**
+ * Set the idle budget: at most @p max_idle unpinned refcount-0 entries
+ * are retained per cache (split evenly over the shards, at least one
+ * per shard unless @p max_idle is 0). Trims immediately. Thread-safe.
+ */
+void ndb_jit_progcache_set_idle_limit(NdbJitProgCache *cache,
+                                      unsigned max_idle);
+
+/**
+ * Evict idle (unpinned, refcount 0) entries until at most @p keep remain
+ * per cache (spread over the shards; 0 = evict all idle). Returns the
+ * number evicted. Never touches live or pinned entries. Thread-safe;
+ * must not be called from a compile callback.
+ */
+unsigned ndb_jit_progcache_evict_idle(NdbJitProgCache *cache, unsigned keep);
+
 /* ---- Diagnostics (feed NDBINFO counters in a later slice) -------- */
 
-/* Number of entries currently in the cache (live + pinned-idle). */
+/* Number of entries currently in the cache (live + idle + pinned-idle). */
 unsigned ndb_jit_progcache_live_count(NdbJitProgCache *cache);
+/* Number of unpinned refcount-0 entries currently retained. */
+unsigned ndb_jit_progcache_idle_count(NdbJitProgCache *cache);
 
 /* Total successful compiles (cache misses that produced an entry). */
 uint64_t ndb_jit_progcache_compile_count(NdbJitProgCache *cache);

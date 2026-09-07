@@ -25,7 +25,12 @@
  *   2. A capstone INTEGRATION test wiring the cache to the real
  *      jit_codemem manager: the compile callback emits a "return N"
  *      stub into a codemem slot; eviction frees the slot. Proves
- *      reuse maps to one slot and release-to-zero reclaims it.
+ *      reuse maps to one slot and release-to-zero (idle budget 0)
+ *      reclaims it.
+ *   3. Idle-LRU retention (2026-09-07): one-shot programs are reused
+ *      without recompiling, the idle budget trims least-recent first,
+ *      budget 0 restores evict-at-zero, and a NOMEM from the compiler
+ *      sweeps the idle entries and retries once.
  */
 
 #include "jit_codemem.h"
@@ -58,12 +63,19 @@ typedef struct {
   int compiles;
   int destroys;
   int refuse;     /* when set, compile callback refuses */
+  int nomem_once; /* when set, the next compile reports NOMEM (then clears) */
+  int nomem_calls;
 } Mock;
 
 static int mock_compile(void *ctx, const uint8_t *key, uint32_t key_len,
                         NdbJitProgItem *out) {
   Mock *m = (Mock *)ctx;
-  if (m->refuse) return -1;
+  if (m->refuse) return NJP_COMPILE_REFUSE;
+  if (m->nomem_once) {
+    m->nomem_once = 0;
+    m->nomem_calls++;
+    return NJP_COMPILE_NOMEM;
+  }
   m->compiles++;
   /* A fake "compiled product": a heap block tagged with the key len. */
   int *blk = (int *)malloc(sizeof(int));
@@ -102,15 +114,132 @@ static void test_miss_then_hit(void) {
   ndb_jit_progcache_release(c, h1);
   check(m.destroys == 0, "release with refcount remaining does not evict");
   ndb_jit_progcache_release(c, h2);
-  check(m.destroys == 1, "release to refcount 0 evicts (destroy called)");
-  check(ndb_jit_progcache_live_count(c) == 0, "no live entries after eviction");
+  /* Idle retention (2026-09-07): refcount 0 keeps the entry on the idle
+   * LRU within the budget; the Phase 8 evict-at-zero behaviour is the
+   * idle_limit == 0 setting, covered by test_idle_limit_zero. */
+  check(m.destroys == 0 && ndb_jit_progcache_idle_count(c) == 1,
+        "release to refcount 0 retains the entry as idle");
+  check(ndb_jit_progcache_live_count(c) == 1, "idle entry still counted as cached");
 
+  ndb_jit_progcache_destroy(c);
+  check(m.destroys == 1, "teardown frees the idle entry");
+}
+
+/* Idle retention: a one-shot program (acquire, run, release) is reused
+ * by the next acquire without recompiling — the pushed-join child scan
+ * pattern (one SCAN_FRAGREQ per parent row per fragment). */
+static void test_idle_retention_reuse(void) {
+  Mock m = {0, 0, 0, 0, 0};
+  NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
+  const uint8_t key[] = {9, 8, 7, 6, 5};
+  for (int i = 0; i < 50; ++i) {
+    NjpEntry *h = ndb_jit_progcache_acquire(c, key, sizeof(key), 0, NULL);
+    ndb_jit_progcache_release(c, h);
+  }
+  check(m.compiles == 1, "50 one-shot acquires of one program compile once");
+  check(ndb_jit_progcache_hit_count(c) == 49, "49 hits on the retained program");
+  check(m.destroys == 0 && ndb_jit_progcache_idle_count(c) == 1,
+        "retained entry not destroyed between uses");
+  NjpEntry *h = ndb_jit_progcache_acquire(c, key, sizeof(key), 0, NULL);
+  check(h != NULL && ndb_jit_progcache_idle_count(c) == 0 &&
+        ndb_jit_progcache_live_count(c) == 1,
+        "acquire of an idle entry leaves the idle list");
+  ndb_jit_progcache_release(c, h);
+  ndb_jit_progcache_destroy(c);
+  check(m.destroys == 1, "teardown frees the retained entry");
+}
+
+/* Idle budget: distinct programs beyond the budget are evicted, least
+ * recently released first, and lowering the budget trims at once. */
+static void test_idle_limit_trims_lru(void) {
+  Mock m = {0, 0, 0, 0, 0};
+  NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
+  ndb_jit_progcache_set_idle_limit(c, 16);   /* one per shard */
+  for (int i = 0; i < 256; ++i) {
+    uint8_t key[4] = {(uint8_t)i, (uint8_t)(i >> 8), 0x55, 0xaa};
+    NjpEntry *h = ndb_jit_progcache_acquire(c, key, sizeof(key), 0, NULL);
+    ndb_jit_progcache_release(c, h);
+  }
+  unsigned idle = ndb_jit_progcache_idle_count(c);
+  check(m.compiles == 256, "256 distinct programs compiled once each");
+  check(idle <= 16 && idle > 0, "idle entries capped by the budget");
+  check(m.destroys == 256 - (int)idle, "the rest were evicted on the way");
+  check(ndb_jit_progcache_live_count(c) == idle, "only idle entries remain cached");
+  {
+    uint8_t last[4] = {255, 0, 0x55, 0xaa};
+    int before = m.compiles;
+    NjpEntry *h = ndb_jit_progcache_acquire(c, last, sizeof(last), 0, NULL);
+    check(h != NULL && m.compiles == before,
+          "most recently released program is still retained");
+    ndb_jit_progcache_release(c, h);
+  }
+  ndb_jit_progcache_set_idle_limit(c, 0);
+  check(ndb_jit_progcache_idle_count(c) == 0 && ndb_jit_progcache_live_count(c) == 0,
+        "set_idle_limit(0) evicts every idle entry");
+  ndb_jit_progcache_destroy(c);
+}
+
+/* idle_limit 0 = the Phase 8 behaviour: evict at refcount 0. */
+static void test_idle_limit_zero(void) {
+  Mock m = {0, 0, 0, 0, 0};
+  NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
+  ndb_jit_progcache_set_idle_limit(c, 0);
+  const uint8_t key[] = {4, 2};
+  NjpEntry *h = ndb_jit_progcache_acquire(c, key, sizeof(key), 0, NULL);
+  ndb_jit_progcache_release(c, h);
+  check(m.destroys == 1 && ndb_jit_progcache_live_count(c) == 0,
+        "with idle budget 0 release to refcount 0 evicts at once");
+  h = ndb_jit_progcache_acquire(c, key, sizeof(key), 0, NULL);
+  check(m.compiles == 2, "and the next acquire recompiles");
+  ndb_jit_progcache_release(c, h);
+  ndb_jit_progcache_destroy(c);
+}
+
+/* Code-memory pressure: a NOMEM from the compiler sweeps the idle
+ * entries and retries once; live and pinned entries are untouched. */
+static void test_nomem_sweeps_idle_and_retries(void) {
+  Mock m = {0, 0, 0, 0, 0};
+  NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
+  const uint8_t a[] = {1, 1}, b[] = {2, 2}, d[] = {3, 3};
+  const uint8_t live[] = {4, 4}, pin[] = {5, 5};
+  ndb_jit_progcache_release(c, ndb_jit_progcache_acquire(c, a, sizeof(a), 0, NULL));
+  ndb_jit_progcache_release(c, ndb_jit_progcache_acquire(c, b, sizeof(b), 0, NULL));
+  ndb_jit_progcache_release(c, ndb_jit_progcache_acquire(c, d, sizeof(d), 0, NULL));
+  NjpEntry *hl = ndb_jit_progcache_acquire(c, live, sizeof(live), 0, NULL);
+  ndb_jit_progcache_release(c, ndb_jit_progcache_acquire(c, pin, sizeof(pin), 1, NULL));
+  check(ndb_jit_progcache_idle_count(c) == 3 && ndb_jit_progcache_live_count(c) == 5,
+        "3 idle + 1 live + 1 pinned before the pressure");
+  m.nomem_once = 1;
+  const uint8_t fresh[] = {6, 6};
+  int rc = 99;
+  NdbJitProgItem item;
+  NjpEntry *hf = ndb_jit_progcache_acquire_ex(c, fresh, sizeof(fresh), 0, &item, &rc);
+  check(hf != NULL && rc == NJP_COMPILE_OK, "NOMEM then retry succeeds");
+  check(m.nomem_calls == 1 && m.compiles == 6, "compiler asked twice, one product made");
+  check(m.destroys == 3 && ndb_jit_progcache_idle_count(c) == 0,
+        "the sweep evicted exactly the 3 idle entries");
+  check(ndb_jit_progcache_live_count(c) == 3, "live + pinned + new entry remain");
+  ndb_jit_progcache_release(c, hf);
+  ndb_jit_progcache_release(c, hl);
+  ndb_jit_progcache_destroy(c);
+  check(m.destroys == 6, "teardown frees the remaining three");
+}
+
+/* acquire_ex reports a permanent refuse distinctly from NOMEM. */
+static void test_acquire_ex_reports_refuse(void) {
+  Mock m = {0, 0, 1 /*refuse*/, 0, 0};
+  NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
+  const uint8_t key[] = {8};
+  int rc = 0;
+  NjpEntry *h = ndb_jit_progcache_acquire_ex(c, key, sizeof(key), 0, NULL, &rc);
+  check(h == NULL && rc == NJP_COMPILE_REFUSE, "refuse reported as NJP_COMPILE_REFUSE");
   ndb_jit_progcache_destroy(c);
 }
 
 static void test_distinct_keys(void) {
-  Mock m = {0, 0, 0};
+  Mock m = {0, 0, 0, 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
+  ndb_jit_progcache_set_idle_limit(c, 0);   /* evict-at-zero semantics under test */
   const uint8_t a[] = {1, 2, 3, 4};
   const uint8_t b[] = {9, 9, 9, 9};
 
@@ -250,6 +379,7 @@ static void code_destroy(void *ctx, NdbJitProgItem *item) {
 static void test_codemem_integration(void) {
   CodeCtx cc = {ndb_jit_codemem_create(0), 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(code_compile, code_destroy, &cc);
+  ndb_jit_progcache_set_idle_limit(c, 0);   /* release-to-zero must free the slot here */
   const uint8_t key[] = {55, 0, 1, 2};   /* key[0]=55 -> stub returns 55 */
 
   NdbJitProgItem i1, i2;
@@ -282,6 +412,11 @@ int main(void) {
   test_pinned_survives_zero();
   test_compile_refuse();
   test_destroy_frees_live();
+  test_idle_retention_reuse();
+  test_idle_limit_trims_lru();
+  test_idle_limit_zero();
+  test_nomem_sweeps_idle_and_retries();
+  test_acquire_ex_reports_refuse();
   test_codemem_integration();
   printf("\n%d passed, %d failed\n", n_pass, n_fail);
   return n_fail == 0 ? 0 : 1;

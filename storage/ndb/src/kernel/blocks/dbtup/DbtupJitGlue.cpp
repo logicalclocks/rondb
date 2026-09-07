@@ -2006,10 +2006,16 @@ static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
   Jit1Timing jt;
   Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
   if (jp == nullptr) {
+    if (errno == ENOMEM) {
+      /* Code memory full: not a fallback yet — the cache evicts its
+       * idle (retained) programs and retries once; the caller notes the
+       * fallback only if the retry fails too. */
+      return NJP_COMPILE_NOMEM;
+    }
     dbtup_jit_note_fallback("scan-filter compile",
                             (int)jit1_last_admit_error()->reason,
                             (Uint32)errno, 0, prog, n_words);
-    return -1;
+    return NJP_COMPILE_REFUSE;
   }
   dbtup_jit_note_compile_ns(jt.total_ns);
   ScanFilterProduct *sfp =
@@ -2074,10 +2080,17 @@ void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
    * scan_filter_compile_cb translates + compiles. nullptr => not
    * JIT-eligible / OOM => caller runs the interpreter. */
   NdbJitProgItem item;
-  NjpEntry *handle = ndb_jit_progcache_acquire(
+  int rc = NJP_COMPILE_OK;
+  NjpEntry *handle = ndb_jit_progcache_acquire_ex(
       cache, reinterpret_cast<const uint8_t *>(filter_prog),
-      n_words * (Uint32)sizeof(Uint32), /*pinned=*/0, &item);
+      n_words * (Uint32)sizeof(Uint32), /*pinned=*/0, &item, &rc);
   if (handle == nullptr) {
+    if (rc == NJP_COMPILE_NOMEM) {
+      /* Still no code memory after the cache gave its idle programs
+       * back: this program runs on the interpreter. */
+      dbtup_jit_note_fallback("scan-filter code-memory full", 0, ENOMEM, 0,
+                              filter_prog, n_words);
+    }
     return nullptr;
   }
 
@@ -2131,10 +2144,13 @@ static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
   Jit1Timing jt;
   Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
   if (jp == nullptr) {
+    if (errno == ENOMEM) {
+      return NJP_COMPILE_NOMEM;   /* see scan_filter_compile_cb */
+    }
     dbtup_jit_note_fallback("aggregation compile",
                             (int)jit1_last_admit_error()->reason,
                             (Uint32)errno, 0, prog, n_words);
-    return -1;
+    return NJP_COMPILE_REFUSE;
   }
   dbtup_jit_note_compile_ns(jt.total_ns);
   out->entry_fn = reinterpret_cast<void *>(jit1_entry(jp));
@@ -2191,11 +2207,16 @@ void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
   std::memcpy(key, agg_prog, n_words * sizeof(Uint32));
   key[n_words] = n_visible_results;
   NdbJitProgItem item;
-  NjpEntry *handle = ndb_jit_progcache_acquire(
+  int rc = NJP_COMPILE_OK;
+  NjpEntry *handle = ndb_jit_progcache_acquire_ex(
       cache, reinterpret_cast<const uint8_t *>(key),
-      (n_words + 1) * (Uint32)sizeof(Uint32), pinned ? 1 : 0, &item);
+      (n_words + 1) * (Uint32)sizeof(Uint32), pinned ? 1 : 0, &item, &rc);
   free(key);
   if (handle == nullptr) {
+    if (rc == NJP_COMPILE_NOMEM) {
+      dbtup_jit_note_fallback("aggregation code-memory full", 0, ENOMEM, 0,
+                              agg_prog, n_words);
+    }
     return nullptr;
   }
   if (out_cache_handle != nullptr) {
