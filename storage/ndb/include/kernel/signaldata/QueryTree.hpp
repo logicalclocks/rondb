@@ -481,12 +481,20 @@ struct QN_CteSubtreeNode  // Is a QueryNode subclass
                           // constant DBTC node; CTE_LOOKUP probes compare a
                           // subset of the projected columns and MISS on an
                           // empty state.
-    CTE_LIMIT = 0x2       // ORDER BY / LIMIT CTE (cte_orderby_limit_plan.md):
+    CTE_LIMIT = 0x2,      // ORDER BY / LIMIT CTE (cte_orderby_limit_plan.md):
                           // every group redistributes to the constant DBTC
                           // node, which selects the top-N under the ORDER BY
                           // spec (carried in the aggregation program trailer)
                           // and truncates before CTE_READY.  Probes route to
                           // the constant owner; dropped groups are misses.
+    CTE_SINGLE_GROUP = 0x4 // Single-group CTE (cte_single_group_plan.md):
+                          // every GROUP BY column is equality-bound to a
+                          // constant in the body WHERE, so the body
+                          // materializes AT MOST one group (with REAL
+                          // aggregate slots, unlike CTE_SINGLE_ROW).
+                          // Per-node partials ship to the constant DBTC-node
+                          // owner (no group hashing); probes route to the
+                          // constant owner; an empty state is a probe miss.
   };
 
   Uint32 optional[1];   // Embedded QueryNode structures follow

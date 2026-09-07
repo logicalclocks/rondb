@@ -526,6 +526,11 @@ class FsReadWriteReq;
 /* 1270 = ZCTE_AGG_BATCH_PROTOCOL_ERROR (Dbtc.hpp); 1271 reserved
  * (local_execution_mode_plan.md ZLOCAL_AGG_REMOTE_READ). */
 #define ZCTE_SINGLE_ROW_VIOLATION          1272
+/* cte_single_group_plan.md: a CTE flagged CTE_SINGLE_GROUP (every
+ * GROUP BY column equality-bound to a constant) produced more than one
+ * group — a classification violation; API-controlled input, so the
+ * query fails cleanly. */
+#define ZCTE_SINGLE_GROUP_VIOLATION        1273
 
 /**
  * @class dblqh

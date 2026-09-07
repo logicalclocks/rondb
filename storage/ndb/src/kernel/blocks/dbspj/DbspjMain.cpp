@@ -6704,6 +6704,9 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     const bool limitCte =
         (requestPtr.p->m_cteContexts[cteIdx].m_flags &
          QN_CteSubtreeNode::CTE_LIMIT) != 0;
+    const bool singleGroupCte =
+        (requestPtr.p->m_cteContexts[cteIdx].m_flags &
+         QN_CteSubtreeNode::CTE_SINGLE_GROUP) != 0;
     bool keylessProbe = false;
 
     // Expand key from parent row using key pattern
@@ -6847,16 +6850,18 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
           kp += 1 + dataSize;
         }
-        if (limitCte) {
+        if (limitCte || singleGroupCte) {
           jam();
-          /* ORDER BY / LIMIT CTE (cte_orderby_limit_plan.md): every
-           * group was redistributed to the constant DBTC-node owner
-           * and truncated there, so the key hash is meaningless for
-           * routing — non-owner states are empty, and a dropped group
-           * must MISS at the owner (not at some hash-owner that never
-           * held it).  The key section goes out un-normalized like
-           * the grouped hash path; DBLQH normalizes positions on its
-           * side as for any grouped CTE probe. */
+          /* ORDER BY / LIMIT CTE (cte_orderby_limit_plan.md) and
+           * single-group CTE (cte_single_group_plan.md): every group
+           * was redistributed to the constant DBTC-node owner (LIMIT
+           * additionally truncates there), so the key hash is
+           * meaningless for routing — non-owner states are empty, and
+           * a dropped/absent group must MISS at the owner (not at
+           * some hash-owner that never held it).  The key section
+           * goes out un-normalized like the grouped hash path; DBLQH
+           * normalizes positions on its side as for any grouped CTE
+           * probe. */
           targetNodeId = refToNode(requestPtr.p->m_senderRef);
         } else {
           const Uint64 h = cte_lookup_hash_key(

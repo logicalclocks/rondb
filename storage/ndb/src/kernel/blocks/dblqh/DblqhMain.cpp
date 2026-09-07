@@ -19525,7 +19525,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
        * multi-node flow checks at redistribute entry and owner-side
        * in checkCteReady; this arm bypasses both, so check here
        * before the state becomes consumable. */
-      if (state->m_cte_single_row) {
+      if (state->m_cte_single_row || state->m_cte_single_group) {
         JoinGBHashTable *gb_map = interp->gb_map_mutable();
         if (gb_map != nullptr && gb_map->size() > 1) {
           jam();
@@ -19535,7 +19535,9 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
           ref->senderRef = reference();
           ref->senderData = senderData;
           ref->requestId = requestId;
-          ref->errorCode = ZCTE_SINGLE_ROW_VIOLATION;
+          ref->errorCode = state->m_cte_single_row
+                               ? ZCTE_SINGLE_ROW_VIOLATION
+                               : ZCTE_SINGLE_GROUP_VIOLATION;
           ref->errorLine = __LINE__;
           sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
                      signal, JoinAggCompleteRef::SignalLength, JBB);
@@ -20967,6 +20969,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
         !state->m_cte_single_row && !state->m_cte_limit &&
+        !state->m_cte_single_group &&
         state->m_cte_num_nodes > 1 &&
         routeCteLookup(signal, state, interp,
                        keyBuf, keySection.sz,
@@ -22206,9 +22209,16 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
    * first entry only — the map can only shrink across CONTINUEB
    * re-entries.  The cross-node case (several nodes each holding one
    * row) is caught by the owner-side check in checkCteReady. */
-  if (state->m_cte_single_row && gb_map->size() > 1) {
+  if ((state->m_cte_single_row || state->m_cte_single_group) &&
+      gb_map->size() > 1) {
     jam();
-    abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
+    /* Single-group CTEs (cte_single_group_plan.md) share the contract:
+     * all rows carry the same equality-bound GROUP BY key, so each
+     * node's merged state holds at most one group too. */
+    abortCteRedistribution(signal, state,
+                           state->m_cte_single_row
+                               ? ZCTE_SINGLE_ROW_VIOLATION
+                               : ZCTE_SINGLE_GROUP_VIOLATION);
     return;
   }
 
@@ -22237,13 +22247,16 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
        * live at a key-independent location every consumer can route
        * to. */
       Uint32 ownerNode;
-      if (state->m_cte_single_row || state->m_cte_limit) {
+      if (state->m_cte_single_row || state->m_cte_limit ||
+          state->m_cte_single_group) {
         jam();
-        /* Single-row AND ORDER BY/LIMIT CTEs use the constant
-         * DBTC-node owner: for LIMIT, every group must land on ONE
-         * node so the owner can select the top-N under the ORDER BY
-         * spec once all partials have merged
-         * (cte_orderby_limit_plan.md). */
+        /* Single-row, ORDER BY/LIMIT AND single-group CTEs use the
+         * constant DBTC-node owner: for LIMIT, every group must land
+         * on ONE node so the owner can select the top-N under the
+         * ORDER BY spec once all partials have merged
+         * (cte_orderby_limit_plan.md); for single-group, the one
+         * group's per-node partials merge there without hashing
+         * (cte_single_group_plan.md). */
         ownerNode = refToNode(state->m_senderRef);
         DEB_CTE(("(%u) CTE REDIST: constant owner=%u (DBTC node) "
                  "keyLen=%u %s", instance(), ownerNode, keyLen,
@@ -22882,13 +22895,16 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
    * its FINAL_REP on the same signal path, and in CTE_REDISTRIBUTING
    * they merge directly (no queue).  API-controlled input, so fail
    * the query cleanly. */
-  if (state->m_cte_single_row) {
+  if (state->m_cte_single_row || state->m_cte_single_group) {
     JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
     JoinGBHashTable *gb_map =
         (interp != nullptr) ? interp->gb_map_mutable() : nullptr;
     if (gb_map != nullptr && gb_map->size() > 1) {
       jam();
-      abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
+      abortCteRedistribution(signal, state,
+                             state->m_cte_single_row
+                                 ? ZCTE_SINGLE_ROW_VIOLATION
+                                 : ZCTE_SINGLE_GROUP_VIOLATION);
       return;
     }
   }

@@ -4447,6 +4447,230 @@ testCteOrderByLimit(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 28: single-group CTE (cte_single_group_plan.md G1)             */
+/*                                                                     */
+/* (a) Legit: cte_src = (1,7,10),(2,7,20),(3,7,30),(4,8,99); the body  */
+/*     root scan carries the WHERE grp = 7 filter, so GROUP BY grp     */
+/*     materializes exactly ONE group (grp7, SUM=60).  defineCte with  */
+/*     CTE_SINGLE_GROUP: per-node partials ship to the constant        */
+/*     DBTC-node owner (no group hashing) and probes route there.      */
+/*     Main scan probes each row's grp: the three grp-7 rows HIT, the  */
+/*     grp-8 row MISSES (empty at the owner) -> COUNT = 3.             */
+/* (b) Violation: the same body WITHOUT the filter materializes TWO    */
+/*     groups under the flag -> ZCTE_SINGLE_GROUP_VIOLATION (1273)     */
+/*     must fail the query cleanly (redistribute-entry check when one  */
+/*     node holds both groups; owner-side checkCteReady check when     */
+/*     they arrive from different nodes), never crash, zero rows.      */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteSingleGroup(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 28: single-group CTE (constant owner) ... ");
+  fflush(stdout);
+
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO cte_src VALUES "
+              "(1,7,10),(2,7,20),(3,7,30),(4,8,99)") != 0) {
+    printf("FAILED (reseed cte_src)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *grpCol = srcTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup: grp)\n");
+    return -1;
+  }
+  const Uint32 grpColNo = grpCol->getColumnNo();
+
+  for (int subCase = 0; subCase < 2; subCase++) {
+    const bool legit = (subCase == 0);
+    const char *scName = legit ? "single-group" : "violation";
+
+    /* Body WHERE grp = 7 (legit only): branch_col_eq is NOT inverted,
+     * so branch-to-PASS on equal, exit_nok otherwise. */
+    Uint32 codeBuf[32];
+    NdbInterpretedCode filterCode(srcTab, codeBuf,
+                                  sizeof(codeBuf) / sizeof(codeBuf[0]));
+    if (legit) {
+      const Uint32 seven = 7;
+      if (filterCode.branch_col_eq(&seven, sizeof(seven), grpColNo, 0) != 0 ||
+          filterCode.interpret_exit_nok() != 0 ||
+          filterCode.def_label(0) != 0 ||
+          filterCode.interpret_exit_ok() != 0 ||
+          filterCode.finalise() != 0) {
+        printf("FAILED (%s build filter: %s)\n", scName,
+               filterCode.getNdbError().message);
+        return -1;
+      }
+    }
+
+    NdbAggregator cteAgg(srcTab);
+    if (!cteAgg.GroupBy("grp") ||
+        !cteAgg.LoadColumn("val", 0) ||
+        !cteAgg.Sum(0, 0) ||
+        !cteAgg.Finalize()) {
+      printf("FAILED (%s cteAgg: %s)\n", scName, cteAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    NdbAggregator mainAgg(srcTab);
+    if (!mainAgg.LoadUint64(1, 0) ||
+        !mainAgg.Count(0, 0) ||
+        !mainAgg.Finalize()) {
+      printf("FAILED (%s mainAgg: %s)\n", scName,
+             mainAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    NdbQueryBuilder *qb = NdbQueryBuilder::create();
+    if (qb == nullptr) { printf("FAILED (%s create)\n", scName); return -1; }
+
+    qb->beginCteSubtree(0);
+    NdbQueryOptions bodyScanOpts;
+    if (legit) {
+      bodyScanOpts.setInterpretedCode(filterCode);
+    }
+    const NdbQueryTableScanOperationDef *cteScanOp =
+        qb->scanTable(srcTab, legit ? &bodyScanOpts : nullptr);
+    if (cteScanOp == nullptr) {
+      printf("FAILED (%s CTE scan: %s)\n", scName,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteJoinKey[] = {
+        qb->linkedValue(cteScanOp, "pk"), nullptr
+    };
+    NdbQueryOptions cteLeafOpts;
+    cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLeafOpts.setAggregation(cteAgg);
+    if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+      printf("FAILED (%s CTE leaf: %s)\n", scName,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(0, srcTab, cteAgg, /*depMask=*/0,
+                      QN_CteSubtreeNode::CTE_SINGLE_GROUP) != 0) {
+      printf("FAILED (%s defineCte)\n", scName);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+    if (mainScanOp == nullptr) {
+      printf("FAILED (%s main scan: %s)\n", scName,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteKey[] = {
+        qb->linkedValue(mainScanOp, "grp"), nullptr
+    };
+    NdbQueryOptions cteLookupOpts;
+    cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLookupOpts.setAggregation(mainAgg);
+    if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+      printf("FAILED (%s lookupCte: %s)\n", scName,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryDef *queryDef = qb->prepare(ndb);
+    if (queryDef == nullptr) {
+      printf("FAILED (%s prepare: %s)\n", scName,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->destroy();
+
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      printf("FAILED (%s startTransaction)\n", scName);
+      queryDef->destroy();
+      return -1;
+    }
+    NdbQuery *query = trans->createQuery(queryDef);
+    if (query == nullptr) {
+      printf("FAILED (%s createQuery: %s)\n", scName,
+             trans->getNdbError().message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    bool sawError = false;
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      sawError = true;
+      V("\n  %s execute error: trans %d: %s\n", scName,
+        trans->getNdbError().code, trans->getNdbError().message);
+    } else {
+      NdbQuery::NextResultOutcome outcome;
+      while ((outcome = query->nextResult(true)) ==
+             NdbQuery::NextResult_gotRow) {
+      }
+      if (outcome == NdbQuery::NextResult_error) {
+        sawError = true;
+        V("\n  %s drain error: %d: %s\n", scName,
+          query->getNdbError().code, query->getNdbError().message);
+      }
+    }
+
+    Int64 count = -1;
+    if (!sawError) {
+      NdbAggregator *resultAgg = query->getAggregator();
+      if (resultAgg != nullptr) {
+        NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+        if (!rec.end()) {
+          NdbAggregator::Result countRes = rec.FetchAggregationResult();
+          count = countRes.data_int64();
+        }
+      }
+    }
+
+    query->close();
+    trans->close();
+    queryDef->destroy();
+
+    if (legit) {
+      if (sawError) {
+        printf("FAILED (%s: unexpected error)\n", scName);
+        return -1;
+      }
+      if (count != 3) {
+        printf("FAILED (%s: expected COUNT=3, got %lld)\n", scName,
+               (long long)count);
+        return -1;
+      }
+    } else {
+      if (!sawError) {
+        printf("FAILED (%s: two-group body under CTE_SINGLE_GROUP "
+               "completed without error, COUNT=%lld)\n", scName,
+               (long long)count);
+        return -1;
+      }
+    }
+  }
+
+  printf("OK (hit+miss COUNT=3, violation fails cleanly)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -4483,6 +4707,7 @@ static const TestEntry g_tests[] = {
     { 25, testCteLookupAvg },
     { 26, testCteLookupAvgLarge },
     { 27, testCteOrderByLimit },
+    { 28, testCteSingleGroup },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
