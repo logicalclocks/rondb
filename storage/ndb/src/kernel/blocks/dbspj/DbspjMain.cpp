@@ -6951,7 +6951,10 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
             (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) == 0;
         const bool missAggFeed =
             (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
-        if (missOuterJoin && missAggFeed) {
+        /* Root probes (no scan ancestor) have no parent row to
+         * NULL-extend — mirror the REF arm's root guard. */
+        if (missOuterJoin && missAggFeed &&
+            treeNodePtr.p->m_scanAncestorPtrI != RNIL) {
           jam();
           Ptr<TreeNode> scanAncestorPtr;
           ndbrequire(m_treenode_pool.getPtr(
@@ -7397,7 +7400,15 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   const bool isAggFeed =
       (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
 
-  if (isOuterJoin && isAggFeed) {
+  /* A ROOT CTE_LOOKUP (G4: single-group CTE as FROM root with the
+   * main aggregator attached) has no scan ancestor and no parent row
+   * to NULL-extend — a miss simply feeds ZERO rows to the aggregation
+   * and the Init-prepared per-node agg results (COUNT=0, others NULL)
+   * deliver the empty-input semantics, identical to scanning an empty
+   * CTE.  Found by sg-11 on first record: the injection arm fired for
+   * the root and died on getPtr(RNIL). */
+  if (isOuterJoin && isAggFeed &&
+      treeNodePtr.p->m_scanAncestorPtrI != RNIL) {
     jam();
     Ptr<TreeNode> scanAncestorPtr;
     ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,

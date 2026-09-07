@@ -735,6 +735,9 @@ private:
   bool where_binds_column_to_const(
       struct ConditionalExpression* ce, QueryScope& scope,
       const QueryScope::ResolvedColumnRef& target);
+  struct ConditionalExpression* find_const_equality_for(
+      struct ConditionalExpression* ce, QueryScope& scope,
+      const QueryScope::ResolvedColumnRef& target);
   void merge_same_table_subqueries();
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();

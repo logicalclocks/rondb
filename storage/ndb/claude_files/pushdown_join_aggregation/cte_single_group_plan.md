@@ -1,8 +1,49 @@
 # Single-group CTEs: GROUP BY key equality-bound (the fs_point shape)
 
-**Status: G1 + G2a + G3 IMPLEMENTED (September 2026, pending user
-build + Test 28 + first --record of the sg family ×5); G2b re-scoped
-to a deferred protocol decision; G4-G5 pending.**
+**Status: G1 + G2a + G3 + G4 IMPLEMENTED (September 2026; G1-G3
+validated — Test 28 green in both suites, sg family recorded green
+×5; G4 pending user build + sg re-record ×5 with the new
+sg-11/sg-12); G2b re-scoped to a deferred protocol decision; G5
+benchmarks pending.**
+
+G4 outcome notes — FOUND + FIXED ON FIRST RECORD (sg-11, data-node
+ndbrequire DbspjMain.cpp:7404): a ROOT CTE_LOOKUP carrying the main
+aggregator has T_AGGREGATE_LEAF set and T_INNER_JOIN clear, so a probe
+MISS entered execCTE_LOOKUP_REF's outer-join agg-feed NULL-injection
+arm — which dereferences the scan ancestor a root does not have
+(getPtr on m_scanAncestorPtrI == RNIL).  There is no parent row to
+NULL-extend at a root: the correct semantics is zero rows fed to the
+aggregation, with the Init-prepared per-node agg results (COUNT=0,
+others NULL) delivering the empty-input answer — identical to
+scanning an empty CTE (the sc-6 precedent).  Fixed by guarding the
+injection arm (and its G2a serve-miss replica) with
+m_scanAncestorPtrI != RNIL.  Notably sg-1..10 all PASSED before the
+crash — the lookupCte-root + main-aggregator shape works on probe
+hits; only the root-miss path was unexercised kernel territory.
+
+The fs_point main rewrite reuses the I.7
+lookupCte-root machinery almost whole — that arm already builds typed
+const keys, attaches the residual jump-table filter AND the main
+aggregator on a CTE_LOOKUP root.  G4 adds a body-sourced key arm in
+`emit_root_op`'s CTE_SCAN-root branch: when the main WHERE did not
+cover the virt PK and the root CTE classifies single-group, each virt
+PK column's constant is fetched from the BODY WHERE via
+`find_const_equality_for` (the classification walk, refactored to
+return the const CE; `where_binds_column_to_const` is now a wrapper).
+The whole main WHERE (if any) rides as the residual filter.  Constant
+kinds are pre-validated against the typed key builder's expectations
+(int cols need T_INT, float cols T_FLOAT/T_INT, other types
+T_STRING/I_MYSQL_TIME) so any mismatch falls back to scanCte — the
+rewrite can never turn a previously-working query into an error.
+Applies to aggregate AND pass-through mains, and to chained CTE
+bodies reading a single-group predecessor (the branch is
+scope-agnostic; lookupCte as a CTE-materialization root is the I.11
+T12 shape).  MTR: sg-11 (scalar re-aggregation over an EMPTY
+single-group CTE through the keyed-probe root — COUNT=0/MAX NULL,
+identical to empty-scan semantics) and sg-12 (pass-through over
+empty — no rows); the existing sg-1/6/8/9 now execute via the
+lookupCte root with byte-identical outputs, so their recorded values
+double as the rewrite's regression net.
 
 G3 outcome notes: RonSQL classification `is_single_group_cte_body`
 (grouped body, not single-row, every GROUP BY column resolved and

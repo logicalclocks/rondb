@@ -34,6 +34,11 @@
 #   sg-10 repeated-miss fan-out (G2a): empty CTE joined against all
 #         300 customers — every probe misses, later ones served from
 #         the DBSPJ miss cache
+#   sg-11 G4 keyed-probe root over an EMPTY single-group CTE: scalar
+#         re-aggregation sees the probe miss as zero fed rows
+#         (COUNT=0, MAX NULL) — identical to the empty-scan semantics
+#   sg-12 G4 keyed-probe root, pass-through main over an empty CTE:
+#         no rows
 #   sg-c1 control: partially-bound GROUP BY (second GB column unbound)
 #         — NOT flagged (EXPLAIN absence pin), normal path, results
 #         identical
@@ -226,6 +231,37 @@ WITH cf AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
             FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
 SELECT COUNT(*) AS c
 FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey|
+
+--echo
+--echo === sg-11: G4 keyed-probe root over an EMPTY single-group CTE ===
+# The FROM-root access is a single keyed probe to the constant owner
+# (body-sourced key 9999); the miss feeds zero rows to the scalar main
+# aggregation — COUNT=0, MAX NULL, exactly the empty-scan semantics.
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_totalprice) AS m
+            FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(cf.n) AS c, MAX(cf.m) AS mm
+FROM cf;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, MAX(o_totalprice) AS m
+            FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT COUNT(cf.n) AS c, MAX(cf.m) AS mm
+FROM cf|
+
+--echo
+--echo === sg-12: G4 keyed-probe root, pass-through over an empty CTE ===
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT k, n FROM cf;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT k, n FROM cf|
 
 --echo
 --echo === sg-c1: control — partially-bound GROUP BY is NOT flagged ===

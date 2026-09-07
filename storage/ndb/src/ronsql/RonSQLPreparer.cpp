@@ -9461,16 +9461,117 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       {
         root_pk_covered = false;
       }
-      if (root_pk_covered)
+    }
+
+    // G4 (cte_single_group_plan.md): a SINGLE-GROUP CTE as FROM root —
+    // the virt-PK constants are known from the BODY's equality bounds,
+    // so even with no main WHERE (the fs_point shape) the all-node
+    // scanCte becomes ONE keyed probe to the constant owner.  Any main
+    // WHERE that did not supply the keys itself rides as the residual
+    // jump-table filter, unchanged.  Constants are restricted to the
+    // literal kinds the typed key builder below handles; anything else
+    // falls back to scanCte (no regression).
+    if (!root_pk_covered && !root_cte_is_scalar && !root_cte_is_single_row &&
+        plan.ops[0].cte_def != NULL &&
+        plan.ops[0].cte_def_idx < m_cte_scopes.size() &&
+        m_cte_scopes[plan.ops[0].cte_def_idx] != NULL &&
+        is_single_group_cte_body(*m_cte_scopes[plan.ops[0].cte_def_idx],
+                                 plan.ops[0].cte_def->stmt))
+    {
+      QueryScope& body_scope = *m_cte_scopes[plan.ops[0].cte_def_idx];
+      const SelectStatement* body = plan.ops[0].cte_def->stmt;
+      ConditionalExpression* bw = simplify_ce(body->where_expression, -1);
+      root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
+      bool body_pk_covered = (root_nkeys > 0);
+      for (int k = 0; k < root_nkeys && body_pk_covered; k++)
       {
-        for (Uint32 ci = 1; ci < plan.num_ops; ci++)
+        root_pk_const[k] = NULL;
+        const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
+        // The virt PK column is a GROUP BY column exposed as a body
+        // output; its bound constant lives in the BODY's WHERE and is
+        // found by the same resolved-identity walk the classification
+        // used.
+        const Outputs* out = NULL;
+        for (const Outputs* o = body->outputs; o != NULL; o = o->next)
         {
-          if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
-              plan.ops[ci].type == JoinOp::TABLE_SCAN)
+          if (o->type == Outputs::Type::COLUMN &&
+              o->output_name.len == strlen(pk_name) &&
+              strncmp(o->output_name.str, pk_name, o->output_name.len) == 0)
           {
-            root_has_scan_child = true;
+            out = o;
             break;
           }
+        }
+        if (out == NULL ||
+            body_scope.resolved_columns == NULL)
+        {
+          body_pk_covered = false;
+          break;
+        }
+        const QueryScope::ResolvedColumnRef& r =
+            body_scope.resolved_columns[out->column.col_idx];
+        ConditionalExpression* c = find_const_equality_for(bw, body_scope, r);
+        if (c == NULL)
+        {
+          body_pk_covered = false;
+          break;
+        }
+        // Pre-validate constant kind vs column type against the typed
+        // key builder's expectations — a mismatch must fall back to
+        // scanCte, never turn a previously-working query into an error.
+        const NdbDictionary::Column* pk_col =
+            cteVirtualTables[0]->getColumn(pk_name);
+        bool kind_ok = false;
+        if (pk_col != NULL)
+        {
+          switch (pk_col->getType()) {
+          case NdbDictionary::Column::Tinyint:
+          case NdbDictionary::Column::Smallint:
+          case NdbDictionary::Column::Mediumint:
+          case NdbDictionary::Column::Int:
+          case NdbDictionary::Column::Bigint:
+          case NdbDictionary::Column::Tinyunsigned:
+          case NdbDictionary::Column::Smallunsigned:
+          case NdbDictionary::Column::Mediumunsigned:
+          case NdbDictionary::Column::Unsigned:
+          case NdbDictionary::Column::Bigunsigned:
+            kind_ok = (c->op == T_INT);
+            break;
+          case NdbDictionary::Column::Float:
+          case NdbDictionary::Column::Double:
+            kind_ok = (c->op == T_FLOAT || c->op == T_INT);
+            break;
+          default:
+            kind_ok = (c->op == T_STRING || c->op == I_MYSQL_TIME);
+            break;
+          }
+        }
+        if (!kind_ok)
+        {
+          body_pk_covered = false;
+          break;
+        }
+        root_pk_const[k] = c;
+      }
+      if (body_pk_covered)
+      {
+        root_pk_covered = true;
+        // The whole main WHERE (if any) becomes the residual filter.
+        root_residual = (scope.join_where_ce[0] != NULL)
+                            ? simplify_ce(scope.join_where_ce[0], -1)
+                            : NULL;
+      }
+    }
+
+    if (root_pk_covered)
+    {
+      for (Uint32 ci = 1; ci < plan.num_ops; ci++)
+      {
+        if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
+            plan.ops[ci].type == JoinOp::TABLE_SCAN)
+        {
+          root_has_scan_child = true;
+          break;
         }
       }
     }
@@ -13954,18 +14055,20 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
  * so the walk stays conservative (AND spine only — nothing under an
  * OR guarantees anything).
  */
-bool
-RonSQLPreparer::where_binds_column_to_const(
+struct ConditionalExpression*
+RonSQLPreparer::find_const_equality_for(
     struct ConditionalExpression* ce, QueryScope& scope,
     const QueryScope::ResolvedColumnRef& target)
 {
-  if (ce == NULL) return false;
+  if (ce == NULL) return NULL;
   if (ce->op == T_AND)
   {
-    return where_binds_column_to_const(ce->args.left, scope, target) ||
-           where_binds_column_to_const(ce->args.right, scope, target);
+    ConditionalExpression* c =
+        find_const_equality_for(ce->args.left, scope, target);
+    if (c != NULL) return c;
+    return find_const_equality_for(ce->args.right, scope, target);
   }
-  if (ce->op != T_EQUALS) return false;
+  if (ce->op != T_EQUALS) return NULL;
 
   ConditionalExpression* col_side = NULL;
   ConditionalExpression* const_side = NULL;
@@ -13983,7 +14086,7 @@ RonSQLPreparer::where_binds_column_to_const(
   }
   else
   {
-    return false;
+    return NULL;
   }
 
   /* Same constant-side acceptance as the single-row enforcement:
@@ -13991,11 +14094,19 @@ RonSQLPreparer::where_binds_column_to_const(
   if (const_side->op != T_INT && const_side->op != T_FLOAT &&
       const_side->op != T_STRING && const_side->op != I_MYSQL_TIME &&
       const_side->op != I_SUBQUERY)
-    return false;
+    return NULL;
 
   const QueryScope::ResolvedColumnRef& r =
       scope.resolved_columns[col_side->col_idx];
-  return same_resolved_column(r, target);
+  return same_resolved_column(r, target) ? const_side : NULL;
+}
+
+bool
+RonSQLPreparer::where_binds_column_to_const(
+    struct ConditionalExpression* ce, QueryScope& scope,
+    const QueryScope::ResolvedColumnRef& target)
+{
+  return find_const_equality_for(ce, scope, target) != NULL;
 }
 
 bool
