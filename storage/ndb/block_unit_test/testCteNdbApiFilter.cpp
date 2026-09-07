@@ -4449,13 +4449,17 @@ testCteOrderByLimit(Ndb *ndb, MYSQL *conn)
 /* ------------------------------------------------------------------ */
 /* Test 28: single-group CTE (cte_single_group_plan.md G1)             */
 /*                                                                     */
-/* (a) Legit: cte_src = (1,7,10),(2,7,20),(3,7,30),(4,8,99); the body  */
+/* (a) Legit: cte_src = three grp-7 rows + three grp-8 rows; the body  */
 /*     root scan carries the WHERE grp = 7 filter, so GROUP BY grp     */
 /*     materializes exactly ONE group (grp7, SUM=60).  defineCte with  */
 /*     CTE_SINGLE_GROUP: per-node partials ship to the constant        */
 /*     DBTC-node owner (no group hashing) and probes route there.      */
 /*     Main scan probes each row's grp: the three grp-7 rows HIT, the  */
-/*     grp-8 row MISSES (empty at the owner) -> COUNT = 3.             */
+/*     three grp-8 rows MISS -> COUNT = 3.  The repeated grp-8 misses  */
+/*     also exercise the G2a probe-outcome cache (first 8-miss fills   */
+/*     the slot, later ones serve locally) when probe order permits    */
+/*     (a 7-CONF arriving first parks the slot as ROW_EXISTS — either  */
+/*     order must give COUNT = 3).                                     */
 /* (b) Violation: the same body WITHOUT the filter materializes TWO    */
 /*     groups under the flag -> ZCTE_SINGLE_GROUP_VIOLATION (1273)     */
 /*     must fail the query cleanly (redistribute-entry check when one  */
@@ -4472,7 +4476,7 @@ testCteSingleGroup(Ndb *ndb, MYSQL *conn)
   if (sqlExec(conn, "DELETE FROM cte_src") != 0 ||
       sqlExec(conn,
               "INSERT INTO cte_src VALUES "
-              "(1,7,10),(2,7,20),(3,7,30),(4,8,99)") != 0) {
+              "(1,7,10),(2,7,20),(3,7,30),(4,8,99),(5,8,98),(6,8,97)") != 0) {
     printf("FAILED (reseed cte_src)\n");
     return -1;
   }

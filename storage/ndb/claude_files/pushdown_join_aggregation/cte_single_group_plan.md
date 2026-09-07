@@ -1,7 +1,49 @@
 # Single-group CTEs: GROUP BY key equality-bound (the fs_point shape)
 
-**Status: G1 IMPLEMENTED (September 2026, pending user build + Test 28
-run in ndb_push_agg + ndb_push_agg_dist); G2-G5 pending.**
+**Status: G1 + G2a IMPLEMENTED (September 2026, pending user build +
+Test 28 run in ndb_push_agg + ndb_push_agg_dist); G2b re-scoped to a
+deferred protocol decision; G3-G5 pending.**
+
+G2 outcome notes — the audit re-scoped it honestly:
+- **The dormant row cache CANNOT be populated without a protocol
+  extension.**  CTE_LOOKUP result rows are FLUSH_AI'd from DBLQH
+  straight to the API (`cteLookupEmitResult` final-read routing);
+  DBSPJ receives only CONF/REF and residual bookkeeping TRANSID_AI —
+  there is no row payload to cache.  The skeleton
+  `cte_lookup_serve_cached_row` was also doubly flawed: it replayed
+  the cached bytes with the ORIGINAL probe's correlation (a replayed
+  row must carry the CURRENT parent's correlation for API join
+  assembly), and its async self-TRANSID_AI held no outstanding count,
+  racing batch completion.  The function and its never-taken branch
+  are REMOVED; `m_cachedRowPtrI/Len` stay reserved.  **G2b (deferred,
+  maintainer decision)**: a CACHE_FILL flag on CteLookupReq making
+  DBLQH dual-ship the API payload to DBSPJ on the fill probe, plus
+  DBSPJ impersonating the per-probe API delivery — the riskiest
+  surface (receiver ids, correlation rewrite), only worth it if
+  repeated-HIT probe workloads profile as material.
+- **G2a (shipped): the MISS outcome is cacheable today.**  A miss
+  arrives as CTE_LOOKUP_REF with the probe's correlation, needs no
+  payload, and serving a repeated miss is a pure local skip — no send,
+  no counter movement (the probe never incremented outstanding), with
+  the REF arm's one side effect (outer-join agg-feed NULL-row
+  injection via the scan ancestor's buffered row) replicated at the
+  serve site.  One slot per CteContext: `m_cachedKeyPtrI/Len` + fill
+  tree node + fill correlation + `CacheKind`
+  (NONE/FILLING/MISS/ROW_EXISTS).  The first eligible probe claims the
+  slot (FILLING); a GROUP_NOT_FOUND REF matching (tree node,
+  correlation) makes it MISS; byte-identical keys from the same tree
+  node are then served in `cte_lookup_send` after key
+  expansion/stamping.  A CONF while FILLING parks the slot as
+  ROW_EXISTS (terminal — CONF carries no correlation, so it cannot be
+  attributed; other keys' misses lose only the optimization).
+  Eligibility = (single-row || single-group) CTE, no
+  `T_ATTRINFO_CONSTRUCTED` (a filter with parent linked operands makes
+  outcomes row-dependent, and DBLQH maps filter-reject to
+  GROUP_NOT_FOUND), no OUTER_CHAIN protocol (its miss is a row +
+  CONF), per-tree-node slot ownership (nodes can carry different
+  constant filters).  Test 28's seed extended with repeated grp-8
+  misses (COUNT pinned identically whichever probe order wins the
+  slot).
 
 G1 outcome notes: `QN_CteSubtreeNode::CTE_SINGLE_GROUP` (0x4) →
 `JoinAggSetupReq::CTE_SINGLE_GROUP_FLAG` (bit 28) → DBTC encode →

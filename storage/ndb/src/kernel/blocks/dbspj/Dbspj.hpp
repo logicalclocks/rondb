@@ -759,6 +759,26 @@ class Dbspj : public SimulatedBlock {
       CTE_READY = 2,          // Hash table complete, lookups can proceed
       CTE_FAILED = 3          // CTE scan failed
     };
+    /* G2a probe-outcome cache (cte_single_group_plan.md): for
+     * single-row / single-group CTEs the post-READY state is immutable
+     * and holds at most one group, so a probe's outcome is a pure
+     * function of its key bytes (guarded: no per-row-constructed
+     * attrinfo, no outer-chain protocol, one owning tree node).  One
+     * slot per CTE: the first eligible probe records its key and
+     * correlation (FILLING); a GROUP_NOT_FOUND REF for that probe
+     * makes it a cached MISS, after which byte-identical keys from the
+     * same tree node are served locally — no CTE_LOOKUP round-trip.
+     * A CONF while FILLING means some key has the row (CONF carries no
+     * correlation, so it cannot be attributed): ROW_EXISTS is a
+     * terminal do-nothing state — caching the ROW payload needs the
+     * G2b protocol extension (result rows are FLUSH_AI'd straight to
+     * the API and never transit DBSPJ). */
+    enum CacheKind {
+      CACHE_NONE = 0,       // no fill attempted yet
+      CACHE_FILLING = 1,    // fill probe in flight
+      CACHE_MISS = 2,       // cached: key -> GROUP_NOT_FOUND
+      CACHE_ROW_EXISTS = 3  // terminal: a row exists, payload uncacheable
+    };
     Uint64 m_depMask;         // Bitmask: bit c set = depends on cteId c
     Uint32 m_cteId;           // CTE identifier (0-based)
     Uint32 m_state;           // CteContext::State
@@ -766,8 +786,13 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
     Uint32 m_phase;           // Execution phase (0 = no deps)
     Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW
-    Uint32 m_cachedRowPtrI;   // RNIL or section with cached row
-    Uint32 m_cachedRowLen;    // Word count of cached row
+    Uint32 m_cachedRowPtrI;   // RNIL or section with cached row (G2b, dormant)
+    Uint32 m_cachedRowLen;    // Word count of cached row (G2b, dormant)
+    Uint32 m_cachedKeyPtrI;   // RNIL or key section of the cache slot
+    Uint32 m_cachedKeyLen;    // Word count of the cached key
+    Uint32 m_cacheFillTreeNodeI;    // Tree node owning the cache slot
+    Uint32 m_cacheFillCorrelation;  // Correlation of the fill probe
+    Uint32 m_cacheKind;             // CacheKind
     /* No per-CTE node tracking for single-row CTEs: states exist on
      * every node and the redistribute owner is the constant DBTC node
      * (refToNode(m_senderRef)) — cte_single_row_kernel_plan.md. */
@@ -1941,8 +1966,6 @@ class Dbspj : public SimulatedBlock {
   void cte_lookup_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_lookup_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
   void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
-  void cte_lookup_serve_cached_row(Signal *, Ptr<Request>,
-                                   Ptr<TreeNode>, const CteContext &);
   Uint64 cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
                              Uint32, Uint32);
   void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,

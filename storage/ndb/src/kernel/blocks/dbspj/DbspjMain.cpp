@@ -4597,11 +4597,15 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     requestPtr.p->m_cteAggOwnerInstances = nullptr;
   }
   if (requestPtr.p->m_cteContexts != nullptr) {
-    /* Release any cached single-row CTE sections */
+    /* Release any cached CTE probe-cache sections */
     for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
       if (requestPtr.p->m_cteContexts[i].m_cachedRowPtrI != RNIL) {
         releaseSection(requestPtr.p->m_cteContexts[i].m_cachedRowPtrI);
         requestPtr.p->m_cteContexts[i].m_cachedRowPtrI = RNIL;
+      }
+      if (requestPtr.p->m_cteContexts[i].m_cachedKeyPtrI != RNIL) {
+        releaseSection(requestPtr.p->m_cteContexts[i].m_cachedKeyPtrI);
+        requestPtr.p->m_cteContexts[i].m_cachedKeyPtrI = RNIL;
       }
     }
     lc_ndbd_pool_free(requestPtr.p->m_cteContexts);
@@ -6286,6 +6290,11 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
         cctx.m_flags = 0;
         cctx.m_cachedRowPtrI = RNIL;
         cctx.m_cachedRowLen = 0;
+        cctx.m_cachedKeyPtrI = RNIL;
+        cctx.m_cachedKeyLen = 0;
+        cctx.m_cacheFillTreeNodeI = RNIL;
+        cctx.m_cacheFillCorrelation = 0;
+        cctx.m_cacheKind = CteContext::CACHE_NONE;
         requestPtr.p->m_numCtes++;
         DEB_CTE(("(%u) numCtes: %u, newCount: %u",
           instance(), requestPtr.p->m_numCtes, newCount));
@@ -6527,23 +6536,20 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
 
   switch (cteCtx->m_state) {
   case CteContext::CTE_READY:
+  {
     jam();
-    if (cteCtx->m_cachedRowPtrI != RNIL) {
-      /* Single-row CTE: serve cached result directly */
-      jam();
-      cte_lookup_serve_cached_row(signal, requestPtr,
-                           treeNodePtr, *cteCtx);
-    } else {
-      /* Set correlation from parent row — same pattern as
-       * lookup_parent_row sets m_send.m_correlation. */
-      Uint32 corrVal = rowRef.m_src_correlation;
-      treeNodePtr.p->m_send.m_correlation =
-          (corrVal << 16) | (corrVal & 0xFFFF);
+    /* Set correlation from parent row — same pattern as
+     * lookup_parent_row sets m_send.m_correlation.  Any probe-cache
+     * serving (G2a cached misses) happens inside cte_lookup_send,
+     * after the key is expanded and finalized. */
+    Uint32 corrVal = rowRef.m_src_correlation;
+    treeNodePtr.p->m_send.m_correlation =
+        (corrVal << 16) | (corrVal & 0xFFFF);
 
-      cte_lookup_send(signal, requestPtr,
-                      treeNodePtr, rowRef);
-    }
+    cte_lookup_send(signal, requestPtr,
+                    treeNodePtr, rowRef);
     break;
+  }
 
   case CteContext::CTE_MATERIALIZING:
   case CteContext::CTE_NOT_STARTED:
@@ -6571,39 +6577,17 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
   }
 }
 
-/**
- * Serve a cached single-row CTE result directly from DBSPJ
- * memory, avoiding the CTE_LOOKUP_REQ round-trip to DBLQH.
- * Constructs a TRANSID_AI signal from the cached section
- * and delivers it to the tree node's row processing pipeline.
- */
-void Dbspj::cte_lookup_serve_cached_row(Signal *signal,
-                                  Ptr<Request> requestPtr,
-                                  Ptr<TreeNode> treeNodePtr,
-                                  const CteContext &cteCtx) {
-  jam();
-  ndbrequire(cteCtx.m_cachedRowPtrI != RNIL);
-  ndbrequire(cteCtx.m_cachedRowLen > 0);
-
-  /* Build TRANSID_AI from cached section */
-  SegmentedSectionPtr cachedPtr;
-  getSection(cachedPtr, cteCtx.m_cachedRowPtrI);
-
-  /* Copy to linear buffer for row processing */
-  copy(m_buffer1, cachedPtr);
-
-  TransIdAI *transIdAI =
-      (TransIdAI *)signal->getDataPtrSend();
-  transIdAI->connectPtr = treeNodePtr.i;
-  transIdAI->transId[0] = requestPtr.p->m_transId[0];
-  transIdAI->transId[1] = requestPtr.p->m_transId[1];
-
-  LinearSectionPtr lsp[3];
-  lsp[0].p = m_buffer1;
-  lsp[0].sz = cteCtx.m_cachedRowLen;
-  sendSignal(reference(), GSN_TRANSID_AI, signal,
-             TransIdAI::HeaderLength, JBB, lsp, 1);
-}
+/* NOTE (G2a/G2b, cte_single_group_plan.md): a cte_lookup_serve_cached_row
+ * helper existed here as never-populated skeleton code.  It was removed
+ * when the G2a miss cache shipped: it replayed the cached bytes with the
+ * ORIGINAL probe's correlation (a replayed row must carry the CURRENT
+ * parent's correlation) and its async self-TRANSID_AI held no
+ * outstanding count, racing batch completion.  Row-payload caching also
+ * needs a protocol extension first — result rows are FLUSH_AI'd from
+ * DBLQH straight to the API and never transit DBSPJ, so DBSPJ has
+ * nothing to cache without a dual-ship flag on the fill probe (G2b,
+ * maintainer decision).  m_cachedRowPtrI/m_cachedRowLen stay reserved
+ * for that design. */
 
 Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
                                   const char *key,
@@ -6925,6 +6909,91 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
              instance(), targetNodeId,
              cteIdx, targetAggKey, keyLenBytes, lookupFlags));
 
+    /* G2a probe-outcome cache (cte_single_group_plan.md): for
+     * single-row / single-group CTEs, serve a repeated byte-identical
+     * MISSING key locally instead of round-tripping to the owner.
+     * Eligibility mirrors the determinism argument: the post-READY
+     * state is immutable and holds at most one group, so a probe's
+     * outcome is a pure function of its key bytes — PROVIDED the
+     * attrinfo is not per-row-constructed (a jump-table filter with
+     * parent linked operands makes outcomes row-dependent), the
+     * outer-chain protocol is not in play (its miss is a NULL row +
+     * CONF, nothing cacheable in G2a), and the probing tree node owns
+     * the slot (each node can carry a different constant filter). */
+    CteContext &cacheCtx = requestPtr.p->m_cteContexts[cteIdx];
+    const bool cacheEligible =
+        (singleRowCte || singleGroupCte) &&
+        !(treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) &&
+        !(lookupFlags & CteLookupReq::CTE_LOOKUP_OUTER_CHAIN_FLAG) &&
+        keyPtr.sz <= MAX_KEY_SIZE_IN_WORDS;
+    if (cacheEligible &&
+        cacheCtx.m_cacheKind == CteContext::CACHE_MISS &&
+        cacheCtx.m_cacheFillTreeNodeI == treeNodePtr.i &&
+        cacheCtx.m_cachedKeyLen == keyPtr.sz) {
+      Uint32 probeKey[MAX_KEY_SIZE_IN_WORDS + 1];
+      Uint32 cachedKey[MAX_KEY_SIZE_IN_WORDS + 1];
+      copy(probeKey, keyPtr);
+      SegmentedSectionPtr ckPtr;
+      getSection(ckPtr, cacheCtx.m_cachedKeyPtrI);
+      copy(cachedKey, ckPtr);
+      if (memcmp(probeKey, cachedKey, keyPtr.sz * sizeof(Uint32)) == 0) {
+        jam();
+        /* Served miss: nothing is sent, so no counter moves — the
+         * probe never incremented outstanding.  Replicate the
+         * GROUP_NOT_FOUND REF arm's only side effect: the outer-join
+         * agg-feed NULL-row injection (inner joins drop the row;
+         * direct-to-API outer joins NULL-fill by correlation absence
+         * at the API). */
+        DEB_CTE(("(%u) cte_lookup_send: cached MISS served, node=%u",
+                 instance(), treeNodePtr.p->m_node_no));
+        releaseSection(keyInfoPtrI);
+        const bool missOuterJoin =
+            (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) == 0;
+        const bool missAggFeed =
+            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
+        if (missOuterJoin && missAggFeed) {
+          jam();
+          Ptr<TreeNode> scanAncestorPtr;
+          ndbrequire(m_treenode_pool.getPtr(
+              scanAncestorPtr, treeNodePtr.p->m_scanAncestorPtrI));
+          ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_ANY);
+          ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MAP);
+          RowPtr parentRow;
+          getBufferedRow(scanAncestorPtr,
+                         (treeNodePtr.p->m_send.m_correlation >> 16),
+                         &parentRow);
+          ndbassert(treeNodePtr.p->m_node_no < 64);
+          const Uint64 nullNodes = 1ULL << treeNodePtr.p->m_node_no;
+          Uint32 nerr = sendJoinAggNullRow(signal, requestPtr, treeNodePtr,
+                                           parentRow,
+                                           /*parentLevelAdjust=*/0,
+                                           nullNodes);
+          if (unlikely(nerr != 0)) {
+            jam();
+            abort(signal, requestPtr, nerr);
+          }
+        }
+        return;
+      }
+    } else if (cacheEligible &&
+               cacheCtx.m_cacheKind == CteContext::CACHE_NONE) {
+      jam();
+      /* First eligible probe: claim the slot.  A GROUP_NOT_FOUND REF
+       * with this correlation turns it into a cached MISS; a CONF for
+       * this tree node parks it as ROW_EXISTS (terminal — CONF
+       * carries no correlation, see CacheKind). */
+      Uint32 dupKeyI = RNIL;
+      if (dupSection(dupKeyI, keyInfoPtrI)) {
+        cacheCtx.m_cachedKeyPtrI = dupKeyI;
+        cacheCtx.m_cachedKeyLen = keyPtr.sz;
+        cacheCtx.m_cacheFillTreeNodeI = treeNodePtr.i;
+        cacheCtx.m_cacheFillCorrelation =
+            treeNodePtr.p->m_send.m_correlation;
+        cacheCtx.m_cacheKind = CteContext::CACHE_FILLING;
+      }
+      /* dupSection failure: skip filling, probe proceeds normally. */
+    }
+
     // Duplicate AttrInfo section (reused across lookups)
     Uint32 attrInfoPtrI = RNIL;
     if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
@@ -7146,6 +7215,31 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   ndbrequire(requestPtr.p->m_outstanding > 0);
   requestPtr.p->m_outstanding--;
 
+  /* G2a probe-outcome cache: a CONF while FILLING for this tree node
+   * means SOME key has the row.  CONF carries no correlation, so it
+   * cannot be attributed to the fill probe — park the slot as
+   * ROW_EXISTS (terminal; misses for other keys lose only the
+   * optimization, never correctness). */
+  {
+    const Uint32 cacheCteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      CteContext &cctx = requestPtr.p->m_cteContexts[i];
+      if (cctx.m_cteId == cacheCteId) {
+        if (cctx.m_cacheKind == CteContext::CACHE_FILLING &&
+            cctx.m_cacheFillTreeNodeI == treeNodePtr.i) {
+          jam();
+          cctx.m_cacheKind = CteContext::CACHE_ROW_EXISTS;
+          if (cctx.m_cachedKeyPtrI != RNIL) {
+            releaseSection(cctx.m_cachedKeyPtrI);
+            cctx.m_cachedKeyPtrI = RNIL;
+            cctx.m_cachedKeyLen = 0;
+          }
+        }
+        break;
+      }
+    }
+  }
+
   // Mark node complete when all CTE_LOOKUP responses received.
   // cte_lookup_send cleared the bit; restore it when done.
   if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
@@ -7279,6 +7373,24 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   //     back in CteLookupRef; build-plan ensures T_BUFFER_MAP on the
   //     scan ancestor so getBufferedRow works here.
   ndbassert(refCorrelation != ~Uint32(0));  // DBLQH echoed something
+
+  /* G2a probe-outcome cache: a GROUP_NOT_FOUND for the fill probe
+   * turns the slot into a served MISS for byte-identical keys. */
+  {
+    const Uint32 cacheCteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      CteContext &cctx = requestPtr.p->m_cteContexts[i];
+      if (cctx.m_cteId == cacheCteId) {
+        if (cctx.m_cacheKind == CteContext::CACHE_FILLING &&
+            cctx.m_cacheFillTreeNodeI == treeNodePtr.i &&
+            cctx.m_cacheFillCorrelation == refCorrelation) {
+          jam();
+          cctx.m_cacheKind = CteContext::CACHE_MISS;
+        }
+        break;
+      }
+    }
+  }
 
   const bool isOuterJoin =
       (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) == 0;
@@ -7437,6 +7549,11 @@ Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
       cctx.m_flags = 0;
       cctx.m_cachedRowPtrI = RNIL;
       cctx.m_cachedRowLen = 0;
+      cctx.m_cachedKeyPtrI = RNIL;
+      cctx.m_cachedKeyLen = 0;
+      cctx.m_cacheFillTreeNodeI = RNIL;
+      cctx.m_cacheFillCorrelation = 0;
+      cctx.m_cacheKind = CteContext::CACHE_NONE;
       requestPtr.p->m_numCtes++;
       DEB_CTE(("(%u) numCtes: %u, newCount: %u",
         instance(), requestPtr.p->m_numCtes, newCount));
