@@ -15,8 +15,10 @@ Hopsworks Feature Store online-serving builder generates.
   `tools/rondb-cli/internal/fsq`, spec model, emitter-port contract,
   binding, executors, canonicalization, vector folds, CLI surface,
   MTR contract, unit-test matrix.
-- Later:
-  `random_generator.md` (P4), `benchmarks.md` (P5), `phase_e<N>.md`.
+- `random_generator.md` — P4: spec-level and envelope-level fuzzers,
+  seeding, outcome classification (RDRS error mapping), expectation
+  table, hazards, shrinking, findings ledger, CLI.
+- Later: `benchmarks.md` (P5), `phase_e<N>.md`.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.
 Reusable infrastructure this framework builds on:

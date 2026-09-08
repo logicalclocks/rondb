@@ -234,11 +234,15 @@ type Outcome int // OK, CleanReject, Retryable, Timeout, Crash, Error
 - **RDRS** (`rdrs.go`): `POST /<APIVersion>/ronsql` with
   `{query, database, outputFormat:"TEXT", explainMode:"ALLOW"|"FORCE"}`
   through `client.RestClient.PostWithHeader` (header
-  `x-ronsql-phases`); per-request timeout from `--timeout`; HTTP ≥ 400
-  with a RonSQL error body → `CleanReject` when the body matches a
-  `RonSQLPermanentError`, `Retryable` for retryable errors (retried
-  up to 3× with 50 ms sleep, like `ronsql_cli`), else `Error`; a
-  transport failure followed by a failed `Probe()` → `Crash`.
+  `x-ronsql-phases`); per-request timeout from `--timeout`. RDRS
+  answers every RonSQL error with HTTP 500 and a text body
+  (`ronsql_operation.cpp`): `Caught exception: <msg>` for a
+  `RonSQLPermanentError` → `CleanReject`; `Caught RonSQLRetryableError
+  after 10 attempts: <msg>` (RDRS already retried) → `Retryable`;
+  HTTP 429 → rate limited (retried after a pause); HTTP 400 → request
+  or database validation error (`Error`); anything else → `Error`; a
+  transport failure or timeout followed by a failed `Probe()` →
+  `Crash`. The classification table lives in `random_generator.md` §3.
 - **CLI** (`cli.go`): `ronsql_cli --connect-string C -D db
   --output-format TEXT --execute-file f`; exit code 1 → `CleanReject`,
   3 → `Retryable`. Off by default for join shapes (dictionary-cache
@@ -421,9 +425,9 @@ cluster and are exercised through MTR.
 1. Whether `Join.Index == 0` for the left FG is always present in
    persisted feature views (the Hopsworks tree treats index 0 as the
    star root); the spec model requires exactly one join with index 0.
-2. RDRS error body format for `RonSQLPermanentError` vs retryable
-   errors (needed for `Outcome` classification) — read from
-   `rest-server2/server/src/ronsql_ctrl.cpp` in E3.
+2. (settled in P4) RDRS error bodies: HTTP 500 for every RonSQL error,
+   `Caught exception:` = permanent, `Caught RonSQLRetryableError after
+   10 attempts:` = retryable exhausted; see `random_generator.md` §3.
 3. Header naming of unaliased aggregates on both engines (affects
    `HEADER-ONLY` frequency) — the Hopsworks templates alias every
    output, so only E7 probes are affected.

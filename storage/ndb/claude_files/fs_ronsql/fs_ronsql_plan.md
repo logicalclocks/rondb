@@ -1,8 +1,8 @@
 # RONDB-1121 — Feature-Store RonSQL Test & Benchmark Framework: Master Plan
 
 **Status: P0 (this document), P1 (`shape_catalog.md`, draft v1),
-P2 (`data_model.md`, v1) and P3 (`framework_design.md`, v1) complete —
-2026-09-08. Engine gaps found by
+P2 (`data_model.md`, v1), P3 (`framework_design.md`, v1) and P4
+(`random_generator.md`, v1) complete — 2026-09-08. Engine gaps found by
 the framework (e.g. R1) are handled in a separate tree; this framework
 records them and moves on. Nothing has been built yet. No cluster was started and no
 build or test was run while writing this plan.
@@ -400,7 +400,7 @@ starts. Estimated effort is for one engineer (or one agent session).
 - Exit: package/API skeleton agreed; test matrix for the Go unit tests.
 - Effort: 1 day.
 
-### P4 — Random generator design (`random_generator.md`)
+### P4 — Random generator design (`random_generator.md`) — DONE (v1)
 
 - Spec-level grammar: distributions over topology depth (1-3), children
   per node (1-3), join types, feature counts, aggregate specs (respect
