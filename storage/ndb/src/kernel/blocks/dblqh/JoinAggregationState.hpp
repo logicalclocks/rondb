@@ -126,6 +126,14 @@ struct LeafProgram {
  *   Bits 31..24: leaf index (0..255)
  *   Bits 23..0:  base state key (pool index)
  */
+/* RONDB-1120 P2: Dblqh CONTINUEB tags for the waiter-queue parking
+ * (joinagg_setup_overlap_plan.md 2.2).  Shared here because
+ * DblqhProxy sends the flush tag to Dblqh instances while Dblqh.hpp's
+ * Z-define region is DBLQH_C-guarded.  Values continue Dblqh.hpp's
+ * ZCONTINUE_* numbering (53 = ZCONTINUE_CTE_LIMIT_FINALIZE). */
+#define ZCONTINUE_JOIN_AGG_PARK_SWEEP 54
+#define ZCONTINUE_JOIN_AGG_FLUSH_PARKED 55
+
 struct JoinAggregationState {
   //------------------------------------------------------------------
   // ArrayPool free-list link
@@ -462,6 +470,27 @@ struct JoinAggregationState {
   static Uint32 encodeAggStateKey(Uint32 baseKey, Uint32 leafIndex) {
     return (leafIndex << 24) | (baseKey & 0x00FFFFFF);
   }
+  /* RONDB-1120 P1: the consumer identity word — ONE variableData word
+   * carrying everything the identity lookup needs beyond the transid
+   * (which the signals already have):
+   *   [0:15]  queryTag  (DBTC scan record index; the TC scan pool is
+   *                      config-capped far below 64k)
+   *   [16:22] cteId     (0x7F = main aggregation / RNIL)
+   *   [23:30] leafIdx   (8 bits, same width as encodeAggStateKey's)
+   *   [31]    spare
+   */
+  static constexpr Uint32 IDENT_CTE_MAIN = 0x7F;
+  static Uint32 packIdentWord(Uint32 queryTag, Uint32 cteId,
+                              Uint32 leafIdx) {
+    const Uint32 cte7 = (cteId == RNIL) ? IDENT_CTE_MAIN : cteId;
+    return (queryTag & 0xFFFF) | (cte7 << 16) | ((leafIdx & 0xFF) << 23);
+  }
+  static Uint32 identWordQueryTag(Uint32 w) { return w & 0xFFFF; }
+  static Uint32 identWordCteId(Uint32 w) {
+    const Uint32 c = (w >> 16) & 0x7F;
+    return (c == IDENT_CTE_MAIN) ? RNIL : c;
+  }
+  static Uint32 identWordLeafIdx(Uint32 w) { return (w >> 23) & 0xFF; }
   static Uint32 decodeBaseKey(Uint32 aggStateKey) {
     return aggStateKey & 0x00FFFFFF;
   }

@@ -31133,7 +31133,32 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
   ScanRecordPtr scanptr;
   scanptr.i = conf->senderData;
-  scanRecordPool.getPtr(scanptr);
+
+  /* RONDB-1120 P2 (H3): once execution no longer gates on the setup
+   * round, a CONF can arrive with the scan RUNNING, CLOSING, or GONE
+   * (a tiny query plus the fire-and-forget release can free the scan
+   * record before the slowest node confirms).  Drop stale replies
+   * with the Phase L discipline instead of requiring the old
+   * WAIT_JOIN_AGG_SETUP state. */
+  if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop SETUP_CONF: stale scanPtr.i=%u",
+                  instance(), conf->senderData));
+    return;
+  }
+  if (unlikely(scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_SETUP &&
+               scanptr.p->scanState != ScanRecord::RUNNING)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop SETUP_CONF: scanPtr.i=%u state=%u",
+                  instance(), scanptr.i, (Uint32)scanptr.p->scanState));
+    return;
+  }
+  if (unlikely(!scanptr.p->m_joinAgg || scanptr.p->m_joinAggNodes == nullptr)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop SETUP_CONF: scanPtr.i=%u not JoinAgg",
+                  instance(), scanptr.i));
+    return;
+  }
 
   DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_SETUP_CONF: "
                 "scanPtr.i=%u cteIndex=%u aggStateKey=%u "
@@ -31141,8 +31166,6 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
                 instance(), scanptr.i,
                 conf->cteIndex, conf->aggStateKey,
                 refToNode(signal->getSendersBlockRef())));
-
-  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
 
   const Uint32 nodeId = refToNode(conf->senderRef);
   const Uint32 cteIndex = conf->cteIndex;
@@ -31229,13 +31252,18 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       return;
     }
 
-    /* Pack main aggStateKeys: [nodeId, aggStateKey] pairs */
+    /* Pack the queryTag block + main aggStateKeys [nodeId, key]
+     * pairs.  RONDB-1120 P1: [QUERY_TAG_MARKER, scanptr.i] leads the
+     * section — the same per-query discriminator sent as
+     * JoinAggSetupReq::senderData, letting DBLQH resolve states by
+     * identity (transid, queryTag, cteId). */
     static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+    static constexpr Uint32 QUERY_TAG_MARKER = 0xCCEE0001;
     const Uint32 maxNodes = MAX_NDB_NODES;
     const Uint32 numCtes = scanptr.p->m_numCtes;
     /* Per CTE: cteId(1) + depMask(2) + flags(1)
      *           + nodeCount(1) + nodes(maxNodes*3) */
-    const Uint32 keyDataSize = maxNodes * 2 + 3 +
+    const Uint32 keyDataSize = 2 + maxNodes * 2 + 3 +
         numCtes * (5 + maxNodes * 3);
     Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
         keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
@@ -31249,6 +31277,8 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       return;
     }
     Uint32 idx = 0;
+    keyData[idx++] = QUERY_TAG_MARKER;
+    keyData[idx++] = scanptr.i;
     NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
     for (Uint32 nid = nodes.find_first();
          nid != NdbNodeBitmask::NotFound;
@@ -31333,9 +31363,24 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
 
   ScanRecordPtr scanptr;
   scanptr.i = ref->senderData;
-  scanRecordPool.getPtr(scanptr);
 
-  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
+  /* RONDB-1120 P2 (H3): same stale-drop discipline as SETUP_CONF —
+   * a REF can arrive after the scan finished and was released. */
+  if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop SETUP_REF: stale scanPtr.i=%u",
+                  instance(), ref->senderData));
+    return;
+  }
+  if (unlikely((scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_SETUP &&
+                scanptr.p->scanState != ScanRecord::RUNNING) ||
+               !scanptr.p->m_joinAgg ||
+               scanptr.p->m_joinAggNodes == nullptr)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop SETUP_REF: scanPtr.i=%u state=%u",
+                  instance(), scanptr.i, (Uint32)scanptr.p->scanState));
+    return;
+  }
 
   Uint32 nodeId = refToNode(ref->senderRef);
   scanptr.p->m_joinAggNodes->m_aggNodes.clear(nodeId);

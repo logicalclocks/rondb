@@ -171,6 +171,16 @@ class ScanFragReq {
 
   static void setOuterJoinAggFlag(Uint32 &requestInfo, Uint32 val);
   static Uint32 getOuterJoinAggFlag(const Uint32 &requestInfo);
+
+  /* RONDB-1120 P1: ONE extra variableData word (the identity word,
+   * JoinAggregationState::packIdentWord — queryTag/cteId/leafIdx;
+   * transid comes from the signal) follows the aggStateKey word,
+   * letting DBLQH resolve the shared JoinAggregationState by
+   * identity.  Set only by DBSPJ; direct-DBLQH block tests / benches
+   * keep the pool-key-only form (they gate on their own
+   * SETUP_CONF). */
+  static void setJoinAggIdentityFlag(Uint32 &requestInfo, Uint32 val);
+  static Uint32 getJoinAggIdentityFlag(const Uint32 &requestInfo);
 };
 
 /*
@@ -432,6 +442,7 @@ class ScanFragNextReq {
 #define SF_USER_ID_SHIFT (27)
 #define SF_JOIN_AGG_SHIFT (28)
 #define SF_OUTER_JOIN_AGG_SHIFT (29)
+#define SF_JOIN_AGG_IDENTITY_SHIFT (30)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -701,6 +712,17 @@ inline void ScanFragReq::setOuterJoinAggFlag(Uint32 &requestInfo, UintR val) {
 
 inline Uint32 ScanFragReq::getOuterJoinAggFlag(const Uint32 &requestInfo) {
   return (requestInfo >> SF_OUTER_JOIN_AGG_SHIFT) & 1;
+}
+
+inline void ScanFragReq::setJoinAggIdentityFlag(Uint32 &requestInfo,
+                                                UintR val) {
+  ASSERT_BOOL(val, "ScanFragReq::setJoinAggIdentityFlag");
+  requestInfo = (requestInfo & ~(1 << SF_JOIN_AGG_IDENTITY_SHIFT)) |
+                (val << SF_JOIN_AGG_IDENTITY_SHIFT);
+}
+
+inline Uint32 ScanFragReq::getJoinAggIdentityFlag(const Uint32 &requestInfo) {
+  return (requestInfo >> SF_JOIN_AGG_IDENTITY_SHIFT) & 1;
 }
 
 inline

@@ -1153,6 +1153,20 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueCteLimitFinalize(signal, data0);
     return;
   }
+  case ZCONTINUE_JOIN_AGG_PARK_SWEEP:
+  {
+    jam();
+    /* RONDB-1120 P2: placeholder failure sweeper (plan 2.2). */
+    joinAggParkSweep(signal);
+    return;
+  }
+  case ZCONTINUE_JOIN_AGG_FLUSH_PARKED:
+  {
+    jam();
+    /* RONDB-1120 P2: re-execute a parked consumer request. */
+    joinAggFlushParked(signal, signal->theData[1]);
+    return;
+  }
   case ZCONTINUE_AGG_INTERP_TEARDOWN:
   {
     jam();
@@ -9218,6 +9232,242 @@ void Dblqh::handle_release_exclusive_frag_access(Fragrecord *fragPtrP) {
 /* THIS SIGNAL CONTAINS A LOT OF INFORMATION ABOUT WHAT TYPE OF OPERATION,   */
 /* KEY INFORMATION, ATTRIBUTE INFORMATION, NODE INFORMATION AND A LOT MORE   */
 /* ------------------------------------------------------------------------- */
+/**
+ * RONDB-1120 P1: resolve a consumer's JoinAggregationState key by
+ * identity (transid, queryTag, cteId) and cross-check it against the
+ * pool key on the wire.  The wire key stays authoritative in P1 — any
+ * anomaly (identity miss or mismatch) is loud but falls back to the
+ * wire key, so a hash bug cannot affect results while the machinery
+ * is validated under full load.  identWord layout: see
+ * JoinAggregationState::packIdentWord (queryTag/cteId/leafIdx in one
+ * word; the transid comes from the signal itself).
+ */
+Uint32 Dblqh::jaiResolveConsumerKey(const Uint32 *transid,
+                                    Uint32 identWord,
+                                    Uint32 wireKey) {
+  const Uint32 queryTag = JoinAggregationState::identWordQueryTag(identWord);
+  const Uint32 cteId = JoinAggregationState::identWordCteId(identWord);
+  const Uint32 leafIdx = JoinAggregationState::identWordLeafIdx(identWord);
+  const Uint32 baseKey =
+      SimulatedBlock::joinAggIdentityLookup(transid, queryTag, cteId);
+  if (likely(baseKey != RNIL)) {
+    const Uint32 resolved =
+        JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+    if (likely(resolved == wireKey)) {
+      return resolved;
+    }
+    g_eventLogger->info(
+        "(%u)DBLQH JoinAgg identity MISMATCH: transid=(0x%x,0x%x) "
+        "queryTag=%u cteId=%u leafIdx=%u resolved=0x%x wire=0x%x",
+        instance(), transid[0], transid[1], queryTag, cteId, leafIdx,
+        resolved, wireKey);
+    ndbassert(false);
+  } else {
+    g_eventLogger->info(
+        "(%u)DBLQH JoinAgg identity MISS: transid=(0x%x,0x%x) "
+        "queryTag=%u cteId=%u wire=0x%x",
+        instance(), transid[0], transid[1], queryTag, cteId, wireKey);
+    ndbassert(false);
+  }
+  return wireKey;
+}
+
+/**
+ * RONDB-1120 P2: park an identity-authoritative consumer whose lookup
+ * missed (plan 2.2).  Saves the ORIGINAL signal (words + header
+ * sender) and moves the section IVals off the op record into a
+ * JoinAggParkRec, then runs the mutex-held resolve-or-park:
+ *
+ *  - JAI_ROP_RESOLVED: SETUP won the race.  With keepRecOnResolve the
+ *    filled record is kept (parkRecIOut) so the caller can re-execute
+ *    it via the flush path; otherwise sections are restored to the op
+ *    record, the park record freed, and *keyOut holds the resolved
+ *    encoded key for inline continuation.
+ *  - JAI_ROP_PARKED / _NEW: the request is queued on the placeholder;
+ *    the caller unwinds its partial parse WITHOUT sending a REF.  For
+ *    _NEW the 10 ms failure sweeper is scheduled here (clobbers
+ *    signal->theData — legal, both callers' unwinds use locals only).
+ *  - JAI_ROP_FAILED: no park capacity; sections restored, record
+ *    freed, caller takes its normal error path.
+ */
+SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
+    Signal *signal, Uint32 gsn, Uint32 sigLen, Uint32 identWord,
+    TcConnectionrecPtr tcConnectptr, Uint32 *keyOut,
+    bool keepRecOnResolve, Uint32 *parkRecIOut) {
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  if (parkRecIOut != nullptr) {
+    *parkRecIOut = RNIL;
+  }
+  const Uint32 queryTag = JoinAggregationState::identWordQueryTag(identWord);
+  const Uint32 cteId = JoinAggregationState::identWordCteId(identWord);
+  const Uint32 leafIdx = JoinAggregationState::identWordLeafIdx(identWord);
+
+  const Uint32 parkI = joinAggSeizeParkRec();
+  if (unlikely(parkI == RNIL)) {
+    jam();
+    return SimulatedBlock::JAI_ROP_FAILED;
+  }
+  JoinAggParkRec *const rec = joinAggGetParkRec(parkI);
+  rec->m_gsn = gsn;
+  rec->m_sigLen = sigLen;
+  rec->m_senderRef = signal->senderBlockRef();
+  rec->m_destRef = reference();
+  ndbrequire(sigLen <= NDB_ARRAY_SIZE(rec->m_theData));
+  memcpy(rec->m_theData, signal->getDataPtr(), sigLen * sizeof(Uint32));
+  /* Section order mirrors each signal's section numbering so the
+   * flush path re-attaches them verbatim:
+   *   LQHKEYREQ:    KeyInfo = 0, AttrInfo = 1
+   *   SCAN_FRAGREQ: AttrInfo = 0, KeyInfo = 1
+   */
+  Uint32 n = 0;
+  if (gsn == GSN_LQHKEYREQ) {
+    if (regTcPtr->keyInfoIVal != RNIL) {
+      rec->m_sections[n++] = regTcPtr->keyInfoIVal;
+    }
+    if (regTcPtr->attrInfoIVal != RNIL) {
+      rec->m_sections[n++] = regTcPtr->attrInfoIVal;
+    }
+  } else {
+    ndbrequire(gsn == GSN_SCAN_FRAGREQ);
+    if (regTcPtr->attrInfoIVal != RNIL) {
+      rec->m_sections[n++] = regTcPtr->attrInfoIVal;
+    }
+    if (regTcPtr->keyInfoIVal != RNIL) {
+      rec->m_sections[n++] = regTcPtr->keyInfoIVal;
+    }
+  }
+  regTcPtr->keyInfoIVal = RNIL;
+  regTcPtr->attrInfoIVal = RNIL;
+  rec->m_noOfSections = n;
+
+  Uint32 baseKey = RNIL;
+  const SimulatedBlock::JoinAggResolveOrParkResult res =
+      joinAggIdentityResolveOrPark(regTcPtr->transid, queryTag, cteId,
+                                   parkI, &baseKey);
+  if (res == SimulatedBlock::JAI_ROP_RESOLVED ||
+      res == SimulatedBlock::JAI_ROP_FAILED) {
+    jam();
+    if (res == SimulatedBlock::JAI_ROP_RESOLVED) {
+      *keyOut = JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+      if (keepRecOnResolve) {
+        jam();
+        /* Caller re-executes the saved request via the flush path. */
+        if (parkRecIOut != nullptr) {
+          *parkRecIOut = parkI;
+        }
+        return res;
+      }
+    }
+    /* Restore the sections to the op record and drop the park rec. */
+    if (gsn == GSN_LQHKEYREQ) {
+      Uint32 k = 0;
+      if (k < n) regTcPtr->keyInfoIVal = rec->m_sections[k++];
+      if (k < n) regTcPtr->attrInfoIVal = rec->m_sections[k++];
+    } else {
+      Uint32 k = 0;
+      if (k < n) regTcPtr->attrInfoIVal = rec->m_sections[k++];
+      if (k < n) regTcPtr->keyInfoIVal = rec->m_sections[k++];
+    }
+    joinAggFreeParkRec(parkI);
+    return res;
+  }
+
+  if (res == SimulatedBlock::JAI_ROP_PARKED_NEW) {
+    jam();
+    /* Schedule this placeholder's 10 ms failure sweeper on this LDM
+     * (plan 2.2: closes the SETUP_REF abort deadlock). */
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_PARK_SWEEP;
+    signal->theData[1] = regTcPtr->transid[0];
+    signal->theData[2] = regTcPtr->transid[1];
+    signal->theData[3] = queryTag;
+    signal->theData[4] = cteId;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 5);
+  }
+  return res;
+}
+
+/**
+ * RONDB-1120 P2: the placeholder failure sweeper.  If the identity is
+ * still an unfilled placeholder after 10 ms, SETUP never arrived
+ * (SETUP_REF or loss) — abort every parked request with a REF so
+ * DBTC's abort (which waits for the CONF/REF of every in-flight
+ * request) cannot deadlock, and release the parked sections.
+ */
+void Dblqh::joinAggParkSweep(Signal *signal) {
+  const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
+  const Uint32 queryTag = signal->theData[3];
+  const Uint32 cteId = signal->theData[4];
+  Uint32 chain = joinAggIdentitySweep(transid, queryTag, cteId);
+  if (chain == RNIL) {
+    jam();  // filled or already released — nothing to do
+    return;
+  }
+  while (chain != RNIL) {
+    jam();
+    JoinAggParkRec *const rec = joinAggGetParkRec(chain);
+    const Uint32 next = rec->m_next;
+    for (Uint32 k = 0; k < rec->m_noOfSections; k++) {
+      releaseSection(rec->m_sections[k]);
+    }
+    g_eventLogger->info(
+        "(%u)DBLQH JoinAgg park sweep aborts parked %s: "
+        "transid=(0x%x,0x%x) queryTag=%u cteId=%u",
+        instance(),
+        (rec->m_gsn == GSN_LQHKEYREQ) ? "LQHKEYREQ" : "SCAN_FRAGREQ",
+        transid[0], transid[1], queryTag, cteId);
+    if (rec->m_gsn == GSN_LQHKEYREQ) {
+      const LqhKeyReq *req =
+          reinterpret_cast<const LqhKeyReq *>(rec->m_theData);
+      LqhKeyRef *const ref = (LqhKeyRef *)signal->getDataPtrSend();
+      ref->userRef = req->clientConnectPtr;
+      /* DBSPJ feeds assert SameClientAndTcFlag == 0 at send time. */
+      ref->connectPtr = req->clientConnectPtr;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->transId1 = req->transId1;
+      ref->transId2 = req->transId2;
+      ref->flags = 0;
+      sendSignal(rec->m_senderRef, GSN_LQHKEYREF, signal,
+                 LqhKeyRef::SignalLength, JBB);
+    } else {
+      const ScanFragReq *req =
+          reinterpret_cast<const ScanFragReq *>(rec->m_theData);
+      send_scan_fragref(signal, req->transId1, req->transId2,
+                        req->senderData, rec->m_senderRef,
+                        ZJOIN_AGG_STATE_NOT_FOUND);
+    }
+    joinAggFreeParkRec(chain);
+    chain = next;
+  }
+}
+
+/**
+ * RONDB-1120 P2: re-execute a parked request.  Rebuilds the ORIGINAL
+ * signal — words, length, header sender (SCAN_FRAGCONF targets the
+ * header sender, so it must read as the original DBSPJ requester,
+ * not this block) and the detached sections — then invokes our own
+ * handler directly (the DBTC legacy-translator precedent).
+ */
+void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
+  JoinAggParkRec *const rec = joinAggGetParkRec(parkRecI);
+  const Uint32 gsn = rec->m_gsn;
+  const Uint32 sigLen = rec->m_sigLen;
+  memcpy(signal->getDataPtrSend(), rec->m_theData, sigLen * sizeof(Uint32));
+  signal->header.theLength = sigLen;
+  signal->header.theSendersBlockRef = rec->m_senderRef;
+  signal->header.m_noOfSections = rec->m_noOfSections;
+  for (Uint32 k = 0; k < rec->m_noOfSections; k++) {
+    signal->m_sectionPtrI[k] = rec->m_sections[k];
+  }
+  joinAggFreeParkRec(parkRecI);
+  if (gsn == GSN_LQHKEYREQ) {
+    jam();
+    execLQHKEYREQ(signal);
+  } else {
+    jam();
+    execSCAN_FRAGREQ(signal);
+  }
+}
+
 void Dblqh::execLQHKEYREQ(Signal *signal) {
   if (unlikely(!assembleFragments(signal))) {
     jamDebug();
@@ -9721,6 +9971,66 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     jam();
     regTcPtr->m_join_agg_state_key = lqhKeyReq->variableData[nextPos];
     nextPos++;
+    if (LqhKeyReq::getJoinAggIdentityFlag(attrLenFlags)) {
+      jam();
+      const Uint32 identWord = lqhKeyReq->variableData[nextPos];
+      nextPos++;
+      const Uint32 wireKey = regTcPtr->m_join_agg_state_key;
+      if (likely(wireKey != RNIL)) {
+        /* RONDB-1120 P1: dual addressing — resolve by identity,
+         * cross-check the wire key. */
+        regTcPtr->m_join_agg_state_key =
+            jaiResolveConsumerKey(regTcPtr->transid, identWord, wireKey);
+      } else {
+        /* RONDB-1120 P2: identity-authoritative (no wire key — the
+         * feed signal was built before SETUP_CONF returned). */
+        const Uint32 base = joinAggIdentityLookup(
+            regTcPtr->transid,
+            JoinAggregationState::identWordQueryTag(identWord),
+            JoinAggregationState::identWordCteId(identWord));
+        if (likely(base != RNIL)) {
+          jam();
+          regTcPtr->m_join_agg_state_key =
+              JoinAggregationState::encodeAggStateKey(
+                  base, JoinAggregationState::identWordLeafIdx(identWord));
+        } else {
+          jam();
+          /* SETUP not yet processed on this node — park (plan 2.2). */
+          Uint32 keyOut = RNIL;
+          const SimulatedBlock::JoinAggResolveOrParkResult pr =
+              parkJoinAggConsumer(signal, GSN_LQHKEYREQ,
+                                  signal->getLength(), identWord,
+                                  tcConnectptr, &keyOut,
+                                  /* keepRecOnResolve */ false, nullptr);
+          if (pr == SimulatedBlock::JAI_ROP_RESOLVED) {
+            jam();
+            regTcPtr->m_join_agg_state_key = keyOut;
+          } else if (pr == SimulatedBlock::JAI_ROP_FAILED) {
+            jam();
+            earlyKeyReqAbort_simple(signal, lqhKeyReq,
+                                    ZJOIN_AGG_STATE_NOT_FOUND,
+                                    __LINE__, tcConnectptr);
+            return;
+          } else {
+            jam();
+            /* Parked.  Unwind the partial parse WITHOUT a REF — the
+             * record half of earlyKeyReqAbort (sections already moved
+             * into the park record).  The saved request re-executes
+             * from scratch when SETUP fills the placeholder. */
+            remove_commit_marker(regTcPtr);
+            ndbrequire(regTcPtr->m_dealloc_state ==
+                       TcConnectionrec::DA_IDLE);
+            ndbrequire(regTcPtr->m_dealloc_data.m_unused == RNIL);
+            releaseOprec(signal, tcConnectptr);
+            ndbrequire(regTcPtr->tableref == RNIL);
+            ndbrequire(regTcPtr->nextHashRec == RNIL);
+            ndbrequire(regTcPtr->prevHashRec == RNIL);
+            releaseTcrec(signal, tcConnectptr);
+            return;
+          }
+        }
+      }
+    }
     JoinAggregationState *aggState =
         getJoinAggState(
             JoinAggregationState::decodeBaseKey(
@@ -23102,6 +23412,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
   }
 
   ScanFragReq * const scanFragReq = (ScanFragReq *)&signal->theData[0];
+  bool ja_parked = false;
   bool release_scan = false;
   Uint32 errorCode= 0;
   TcConnectionrec * regTcPtr;
@@ -23346,6 +23657,38 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
     errorCode = initScanrec(scanFragReq, aiLen, tcConnectptr, signal->length());
     if (unlikely(errorCode != ZOK)) {
       jam();
+      if (unlikely(errorCode == ZJOIN_AGG_PARKED)) {
+        jam();
+        /* RONDB-1120 P2: identity-authoritative scan whose lookup
+         * missed — park the ORIGINAL request (plan 2.2) and unwind
+         * the partial setup WITHOUT sending SCAN_FRAGREF.  The saved
+         * request re-executes from scratch when SETUP fills the
+         * placeholder (or is REF'd by the 10 ms sweeper). */
+        Uint32 keyOut = RNIL;
+        Uint32 parkRecI = RNIL;
+        const SimulatedBlock::JoinAggResolveOrParkResult pr =
+            parkJoinAggConsumer(signal, GSN_SCAN_FRAGREQ, signal->length(),
+                                scanptr.p->m_join_agg_ident_word,
+                                tcConnectptr, &keyOut,
+                                /* keepRecOnResolve */ true, &parkRecI);
+        if (unlikely(pr == SimulatedBlock::JAI_ROP_FAILED)) {
+          jam();
+          errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+          goto error_handler2;
+        }
+        if (pr == SimulatedBlock::JAI_ROP_RESOLVED) {
+          jam();
+          /* SETUP won the race after initScanrec's miss.  The whole
+           * request is saved in the park record — re-execute it via
+           * the flush path (initScanrec aborted midway, so inline
+           * continuation is not possible). */
+          signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_PARKED;
+          signal->theData[1] = parkRecI;
+          sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        }
+        ja_parked = true;
+        goto error_handler2;
+      }
       goto error_handler2;
     }  // if
 
@@ -23422,6 +23765,12 @@ error_handler:
     c_scanRecordPool.release(scanptr);
     checkPoolShrinkNeed(DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX,
                         c_scanRecordPool);
+  }
+  if (unlikely(ja_parked)) {
+    jam();
+    /* RONDB-1120 P2: the request is parked, not failed — no REF.
+     * It re-executes (or is REF'd by the sweeper) later. */
+    return;
   }
   send_scan_fragref(signal,
                     transid1,
@@ -25360,6 +25709,39 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     scanPtr->m_join_agg_state_key =
       scanFragReq->variableData[extra_len_index];
     extra_len_index++;
+    if (ScanFragReq::getJoinAggIdentityFlag(reqinfo)) {
+      jam();
+      const Uint32 identWord = scanFragReq->variableData[extra_len_index];
+      extra_len_index++;
+      scanPtr->m_join_agg_ident_word = identWord;
+      const Uint32 transid[2] = { scanFragReq->transId1,
+                                  scanFragReq->transId2 };
+      const Uint32 wireKey = scanPtr->m_join_agg_state_key;
+      if (likely(wireKey != RNIL)) {
+        /* RONDB-1120 P1: dual addressing — resolve by identity,
+         * cross-check the wire key. */
+        scanPtr->m_join_agg_state_key =
+            jaiResolveConsumerKey(transid, identWord, wireKey);
+      } else {
+        /* RONDB-1120 P2: identity-authoritative.  The parking
+         * decision needs the Signal, which initScanrec does not
+         * have — probe the fast path here; on a miss hand the
+         * sentinel to execSCAN_FRAGREQ, which parks. */
+        const Uint32 base = joinAggIdentityLookup(
+            transid,
+            JoinAggregationState::identWordQueryTag(identWord),
+            JoinAggregationState::identWordCteId(identWord));
+        if (likely(base != RNIL)) {
+          jam();
+          scanPtr->m_join_agg_state_key =
+              JoinAggregationState::encodeAggStateKey(
+                  base, JoinAggregationState::identWordLeafIdx(identWord));
+        } else {
+          jam();
+          return ZJOIN_AGG_PARKED;
+        }
+      }
+    }
     JoinAggregationState *aggState =
         getJoinAggState(
             JoinAggregationState::decodeBaseKey(

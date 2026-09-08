@@ -311,6 +311,8 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_JOIN_AGG_STATE_POOL_SIZE,
                             &joinAggPoolSize);
   initJoinAggStatePool(joinAggPoolSize);
+  /* RONDB-1120 P0: identity hash (fixed 16384 entries, ~500 kB). */
+  initJoinAggIdentityHash();
 
   /* RONDB-1056 Phase 8: CompiledInterpreter (JIT) mode. Node-global; set
    * here once (before any scan/aggregation traffic) and consulted at every
@@ -3220,6 +3222,63 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   AGGT(("AGGT(%u) PROXY SETUP done key=%u cte=%u",
         instance(), key, (Uint32)state->m_cte_mode));
+  /* RONDB-1120 P0 (joinagg_setup_overlap_plan.md): register the
+   * identity -> aggStateKey mapping.  Placed after FULL state
+   * construction and before the CONF, per plan 2.2 — under the P2
+   * un-gating this ordering (plus the partition mutex inside the
+   * insert) is what publishes the constructed state to consumer
+   * threads.  A failed insert is a failed SETUP: from P1 on the
+   * identity IS how consumers find the state, and a DUPLICATE means a
+   * lookup would resolve to the wrong live state (the mis-addressing
+   * bug class) — so REF now, keeping P0 -> P1 failure semantics
+   * identical.  sendJoinAggSetupRef releases the partial state; its
+   * safety-net identity removal is key-qualified, so the other live
+   * entry survives the duplicate case. */
+  Uint32 jaWaiters = RNIL;
+  const JoinAggIdentityInsertResult idRes = joinAggIdentityInsert(
+      state->m_transid, state->m_senderData, state->m_cte_index, key,
+      &jaWaiters);
+  if (unlikely(idRes != JAI_INSERT_OK)) {
+    jam();
+    g_eventLogger->info(
+        "DblqhProxy: JoinAgg identity insert failed (%s): "
+        "transid=(0x%x,0x%x) queryTag=%u cteId=%u key=%u",
+        (idRes == JAI_INSERT_DUPLICATE) ? "duplicate" : "no memory",
+        state->m_transid[0], state->m_transid[1], state->m_senderData,
+        state->m_cte_index, key);
+    /* Duplicate identity indicates a bug (queryTag collision or a
+     * missed removal) — crash debug builds; memory exhaustion is a
+     * legal resource failure. */
+    ndbassert(idRes != JAI_INSERT_DUPLICATE);
+    sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                        (idRes == JAI_INSERT_DUPLICATE)
+                            ? DbspjErr::InvalidRequest
+                            : DbspjErr::OutOfQueryMemory,
+                        __LINE__, key);
+    return;
+  }
+
+  if (unlikely(jaWaiters != RNIL)) {
+    jam();
+    /* RONDB-1120 P2: consumers raced ahead of this SETUP and parked
+     * on the placeholder we just filled.  Wake each one on the LDM
+     * that parked it — a flush CONTINUEB carrying the park record;
+     * the LDM rebuilds the ORIGINAL signal (incl. the original
+     * header sender, which SCAN_FRAGCONF targets) and re-executes.
+     * Read m_next BEFORE sending: once the flush is in flight the
+     * LDM owns (and frees) the record. */
+    Uint32 i = jaWaiters;
+    while (i != RNIL) {
+      JoinAggParkRec *rec = joinAggGetParkRec(i);
+      const Uint32 next = rec->m_next;
+      const Uint32 destRef = rec->m_destRef;
+      signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_PARKED;
+      signal->theData[1] = i;
+      sendSignal(destRef, GSN_CONTINUEB, signal, 2, JBB);
+      i = next;
+    }
+  }
+
   // Send CONF with the pool key
   JoinAggSetupConf *conf =
     (JoinAggSetupConf *)signal->getDataPtrSend();
@@ -3255,6 +3314,23 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state != nullptr) {
     jam();
+    /* RONDB-1120 P0: unregister the identity at RELEASE processing
+     * time — NOT at the end of the CONTINUEB-sliced teardown — so a
+     * back-to-back query on the same transaction can re-register
+     * immediately (plan 2.2).  Idempotent; releaseJoinAggState keeps
+     * a safety-net removal for bypassing release paths. */
+#ifdef VM_TRACE
+    {
+      const Uint32 lookedUp = joinAggIdentityLookup(
+          state->m_transid, state->m_senderData, state->m_cte_index);
+      /* Node-failure cleanup can send duplicate RELEASEs — a missing
+       * entry (RNIL) is legal; a DIFFERENT live key for this identity
+       * is not. */
+      ndbassert(lookedUp == aggStateKey || lookedUp == RNIL);
+    }
+#endif
+    joinAggIdentityRemove(state->m_transid, state->m_senderData,
+                          state->m_cte_index, aggStateKey);
     // Free aggregation program buffer(s)
     if (state->m_all_programs_buf != nullptr) {
       lc_ndbd_pool_free(state->m_all_programs_buf);

@@ -2368,6 +2368,86 @@ public:
   static void initJoinAggStatePool(Uint32 max_recs);
   static Uint32 getJoinAggStatePoolSize();
 
+  //------------------------------------------------------------------
+  // JoinAgg identity hash (RONDB-1120, joinagg_setup_overlap_plan.md)
+  //
+  // Maps identity = (transid[2], queryTag, cteId) -> aggStateKey so
+  // consumers can resolve the shared aggregation state without the
+  // SETUP_CONF round-trip.  queryTag is DBTC's per-query
+  // discriminator (JoinAggSetupReq::senderData = the TC scan record
+  // index); cteId is JoinAggSetupReq::cteIndex (RNIL for the main
+  // aggregation).  Partitioned by transid, one mutex per partition;
+  // the mutex hand-off is the happens-before edge publishing the
+  // proxy-constructed state to LDM threads (plan 2.2/2.5 H1).
+  //
+  // P0 (dual addressing): insert at SETUP processing (immediately
+  // before CONF, after full state construction), remove at RELEASE
+  // processing plus a safety net inside releaseJoinAggState — both
+  // removals are idempotent.  Lookup is one probe per consumer
+  // attach, never per row.  All 16384 entries (~500 kB/node) are
+  // allocated up front; exhaustion refuses the setup
+  // (JOIN_AGG_SETUP_REF).  Placeholder entries with waiter queues
+  // (aggStateKey == RNIL) are reserved for P2.
+  //------------------------------------------------------------------
+  enum JoinAggIdentityInsertResult {
+    JAI_INSERT_OK = 0,
+    JAI_INSERT_DUPLICATE = 1,  // identity already live (collision / missed
+                               // removal) — a bug class, caller REFs
+    JAI_INSERT_NO_MEMORY = 2   // chunk cap or RG_QUERY_MEMORY exhausted —
+                               // a resource failure, caller REFs
+  };
+  static void initJoinAggIdentityHash();
+  // Insert resolves three cases: absent -> new entry; present as a
+  // consumer PLACEHOLDER (aggStateKey == RNIL, P2) -> filled in place
+  // with the parked-request queue returned via waitersOut for
+  // re-dispatch; present with a live key -> JAI_INSERT_DUPLICATE.
+  static JoinAggIdentityInsertResult joinAggIdentityInsert(
+      const Uint32 *transid, Uint32 queryTag, Uint32 cteId,
+      Uint32 aggStateKey, Uint32 *waitersOut = nullptr);
+  static Uint32 joinAggIdentityLookup(const Uint32 *transid, Uint32 queryTag,
+                                      Uint32 cteId);
+  static void joinAggIdentityRemove(const Uint32 *transid, Uint32 queryTag,
+                                    Uint32 cteId, Uint32 aggStateKey);
+
+  //------------------------------------------------------------------
+  // RONDB-1120 P2: waiter-queue parking (plan 2.2).  A consumer
+  // (LQHKEYREQ / SCAN_FRAGREQ on an LDM) whose identity lookup misses
+  // parks its ORIGINAL signal (words + detached sections + header
+  // sender) in a JoinAggParkRec queued on a placeholder entry
+  // (aggStateKey == RNIL).  SETUP fills the placeholder and hands the
+  // queue back (joinAggIdentityInsert waitersOut) for re-dispatch on
+  // the parking LDM; a 10 ms sweeper aborts still-unfilled
+  // placeholders so a SETUP_REF can never deadlock DBTC's abort.
+  //------------------------------------------------------------------
+  struct JoinAggParkRec {
+    Uint32 m_gsn;
+    Uint32 m_sigLen;
+    Uint32 m_senderRef;    // original requester (header sender; REF
+                           // target on sweep, restored on re-dispatch)
+    Uint32 m_destRef;      // parking block instance (re-dispatch site)
+    Uint32 m_noOfSections;
+    Uint32 m_sections[3];
+    Uint32 m_next;         // waiter chain / free list link
+    Uint32 m_theData[25];
+  };
+  enum JoinAggResolveOrParkResult {
+    JAI_ROP_RESOLVED = 0,   // *keyOut valid, park rec NOT consumed
+    JAI_ROP_PARKED = 1,     // queued on an existing placeholder
+    JAI_ROP_PARKED_NEW = 2, // queued on a NEW placeholder (caller
+                            // schedules the 10 ms sweeper)
+    JAI_ROP_FAILED = 3      // no entry space, park rec NOT consumed
+  };
+  static Uint32 joinAggSeizeParkRec();  // RNIL when exhausted
+  static JoinAggParkRec *joinAggGetParkRec(Uint32 i);
+  static void joinAggFreeParkRec(Uint32 i);
+  static JoinAggResolveOrParkResult joinAggIdentityResolveOrPark(
+      const Uint32 *transid, Uint32 queryTag, Uint32 cteId,
+      Uint32 parkRecI, Uint32 *keyOut);
+  // Failure sweep: if the identity is still an unfilled placeholder,
+  // unlink + remove it and return the waiter chain (else RNIL).
+  static Uint32 joinAggIdentitySweep(const Uint32 *transid, Uint32 queryTag,
+                                     Uint32 cteId);
+
  protected:
   /**
    * SegmentUtils methods

@@ -1313,6 +1313,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
   requestP->m_cteScansComplete = 0;
+  requestP->m_joinAggQueryTag = RNIL;
   requestP->m_cteScanAllNodes = false;
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
@@ -1646,11 +1647,31 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
 
       /**
+       * RONDB-1120 P1: optional leading [QUERY_TAG_MARKER, queryTag]
+       * block — DBTC's per-query discriminator for identity-based
+       * JoinAggregationState resolution in DBLQH.
+       */
+      static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+      static constexpr Uint32 QUERY_TAG_MARKER = 0xCCEE0001;
+      Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
+      {
+        Uint32 peekTag;
+        if (totalWords >= 2 && reader.peekWord(&peekTag) &&
+            peekTag == QUERY_TAG_MARKER) {
+          jam();
+          Uint32 marker, tag;
+          ndbrequire(reader.getWord(&marker));
+          ndbrequire(reader.getWord(&tag));
+          requestPtr.p->m_joinAggQueryTag = tag;
+          totalWords -= 2;
+          DEB_CTE(("(%u) JoinAgg queryTag=%u", instance(), tag));
+        }
+      }
+
+      /**
        * Read main aggregation [nodeId, aggStateKey] pairs until we hit
        * CTE_KEYS_MARKER or exhaust the section.
        */
-      static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-      const Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
       Uint32 wordsRead = 0;
       while (wordsRead + 2 <= totalWords) {
         Uint32 word0;
@@ -1848,6 +1869,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
   requestP->m_cteScansComplete = 0;
+  requestP->m_joinAggQueryTag = RNIL;
   requestP->m_cteScanAllNodes = false;
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
@@ -9076,6 +9098,16 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
     req->variableData[var_index + 4] = cteAggKey;
     agg_extra = 1;
+    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+      jam();
+      /* RONDB-1120 P1: identity word — CTE-feed lookups use the raw
+       * base key (leaf 0). */
+      LqhKeyReq::setJoinAggIdentityFlag(req->attrLen, 1);
+      req->variableData[var_index + 5] =
+          JoinAggregationState::packIdentWord(
+              requestPtr.p->m_joinAggQueryTag, cteId, 0);
+      agg_extra = 2;
+    }
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_AGGREGATE_LEAF",
@@ -9113,6 +9145,15 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
                   encodedKey,
                   nodeId));
     agg_extra = 1;
+    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+      jam();
+      /* RONDB-1120 P1: identity word — main aggregation. */
+      LqhKeyReq::setJoinAggIdentityFlag(req->attrLen, 1);
+      req->variableData[var_index + 5] =
+          JoinAggregationState::packIdentWord(
+              requestPtr.p->m_joinAggQueryTag, RNIL, leafIdx);
+      agg_extra = 2;
+    }
   }
 
   Uint32 err = 0;
@@ -13054,14 +13095,26 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
      */
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
+    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+      jam();
+      /* RONDB-1120 P1: + identity word */
+      ScanFragReq::setJoinAggIdentityFlag(req->requestInfo, 1);
+      agg_extra += 1;
+    }
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
+    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+      jam();
+      /* RONDB-1120 P1: + identity word */
+      ScanFragReq::setJoinAggIdentityFlag(req->requestInfo, 1);
+      agg_extra += 1;
+    }
     if (!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
       jam();
       ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 1);
-      agg_extra = 2;  // aggStateKey + rangeCount
+      agg_extra += 1;  // + rangeCount
       DEB_MATCH(("(%u)DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
                  "reqPtrI: %u, treeNode=%u rangeCount=%u",
                  instance(),
@@ -13360,7 +13413,16 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
           Uint32 cteAggKey =
               requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
-          req->variableData[var_index + 2] = cteAggKey;
+          Uint32 vpos = var_index + 2;
+          req->variableData[vpos++] = cteAggKey;
+          if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
+            jam();
+            /* RONDB-1120 P1: identity word — CTE body scans feed the
+             * CTE's state with the raw base key (leaf 0). */
+            req->variableData[vpos++] =
+                JoinAggregationState::packIdentWord(
+                    requestPtr.p->m_joinAggQueryTag, cteId, 0);
+          }
           DEB_CTE(("(%u) Send SCAN_FRAGREQ from node: %u with T_CTE_SCAN",
             instance(), treeNodePtr.p->m_node_no));
         } else {
@@ -13370,7 +13432,15 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
           Uint32 scanEncodedKey =
               JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
-          req->variableData[var_index + 2] = scanEncodedKey;
+          Uint32 vpos = var_index + 2;
+          req->variableData[vpos++] = scanEncodedKey;
+          if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
+            jam();
+            /* RONDB-1120 P1: identity word — main aggregation. */
+            req->variableData[vpos++] =
+                JoinAggregationState::packIdentWord(
+                    requestPtr.p->m_joinAggQueryTag, RNIL, leafIdx);
+          }
           DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u, node=%u"
                         " leafIdx=%u baseKey=%u encodedKey=0x%08x nodeId=%u",
                         instance(),
@@ -13380,9 +13450,9 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
                         baseKey,
                         scanEncodedKey,
                         nodeId));
-          if (agg_extra > 1) {
+          if (ScanFragReq::getOuterJoinAggFlag(req->requestInfo)) {
             jam();
-            req->variableData[var_index + 3] = data.m_agg_range_cnt;
+            req->variableData[vpos++] = data.m_agg_range_cnt;
           }
         }
       }

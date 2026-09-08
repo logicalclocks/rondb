@@ -378,6 +378,10 @@ class FsReadWriteReq;
 #define ZCONTINUE_AGG_INTERP_TEARDOWN 51
 #define ZCONTINUE_CTE_AVG_FINALIZE 52
 #define ZCONTINUE_CTE_LIMIT_FINALIZE 53
+/* RONDB-1120 P2: ZCONTINUE_JOIN_AGG_PARK_SWEEP (54) and
+ * ZCONTINUE_JOIN_AGG_FLUSH_PARKED (55) live in
+ * JoinAggregationState.hpp — DblqhProxy sends the flush tag to Dblqh
+ * instances, and this define region is DBLQH_C-guarded. */
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -512,6 +516,10 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_RESULT_TOO_LARGE         1256
 #define ZJOIN_AGG_TIMEOUT                  1257
 #define ZJOIN_AGG_ALREADY_FINALIZED        1258
+/* RONDB-1120 P2: internal sentinel from initScanrec — the identity
+ * lookup missed on an identity-authoritative scan; the caller parks
+ * or aborts.  Never sent on the wire. */
+#define ZJOIN_AGG_PARKED                   1279
 #define ZJOIN_AGG_MUTEX_ERROR              1259
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
@@ -916,6 +924,8 @@ class Dblqh : public SimulatedBlock {
     Uint16 m_jit_filter_reject_code;
     Uint8 m_jit_filter_ineligible;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
+    Uint32 m_join_agg_ident_word;   // RONDB-1120 P2: identity word saved by
+                                    // initScanrec for the parked-scan flow
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
     Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
@@ -3717,6 +3727,16 @@ private:
   void sendAttrinfoLoop(Signal *signal);
   void sendAttrinfoSignal(Signal *signal);
   void sendLqhAttrinfoSignal(Signal *signal);
+  /* RONDB-1120 P2: waiter-queue parking (plan 2.2).  Shared by the
+   * LQHKEYREQ and SCAN_FRAGREQ identity-authoritative paths. */
+  SimulatedBlock::JoinAggResolveOrParkResult parkJoinAggConsumer(
+      Signal *signal, Uint32 gsn, Uint32 sigLen, Uint32 identWord,
+      TcConnectionrecPtr tcConnectptr, Uint32 *keyOut,
+      bool keepRecOnResolve, Uint32 *parkRecIOut);
+  Uint32 jaiResolveConsumerKey(const Uint32 *transid, Uint32 identWord,
+                               Uint32 wireKey);
+  void joinAggParkSweep(Signal *signal);
+  void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
   Uint32 initScanrec(const class ScanFragReq *,
                      Uint32 aiLen,
                      TcConnectionrecPtr,

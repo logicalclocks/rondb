@@ -1543,6 +1543,12 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
     Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
     Uint32 m_cteScansComplete; // Count of CTE scans fully completed
+    /* RONDB-1120 P1: DBTC's per-query discriminator (its scan record
+     * index, = JoinAggSetupReq::senderData) from the aggKeys section.
+     * Forwarded to DBLQH beside every joinAggStateKey word so DBLQH
+     * resolves the state by identity (transid, queryTag, cteId).
+     * RNIL when the aggKeys section carried no tag. */
+    Uint32 m_joinAggQueryTag;
     bool m_cteScanAllNodes;    // CTE_SCAN must send to all nodes (instances < nodes)
     /**
      * Per-CTE per-node aggStateKeys.  Flat array indexed as

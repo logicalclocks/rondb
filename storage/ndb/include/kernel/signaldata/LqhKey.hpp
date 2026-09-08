@@ -114,6 +114,11 @@ class LqhKeyReq {
   static void setJoinAggFlag(UintR &scanData, UintR val);
   static Uint8 getOuterJoinAggFlag(const UintR &scanData);
   static void setOuterJoinAggFlag(UintR &scanData, UintR val);
+  /* RONDB-1120 P1: ONE identity word (packIdentWord) follows the
+   * aggStateKey variableData word — identity resolution in DBLQH.
+   * DBSPJ-only. */
+  static Uint8 getJoinAggIdentityFlag(const UintR &scanData);
+  static void setJoinAggIdentityFlag(UintR &scanData, UintR val);
 
   static UintR getTableId(const UintR &tableSchemaVersion);
   static UintR getSchemaVersion(const UintR &tableSchemaVersion);
@@ -300,6 +305,7 @@ class LqhKeyReq {
     SI_REORG_MASK = 3,
     SI_JOIN_AGG_SHIFT = 28,
     SI_OUTER_JOIN_AGG_SHIFT = 29,
+    SI_JOIN_AGG_IDENTITY_SHIFT = 30,
     SI_RING_BUFFER_OP_SHIFT = 31,
   };
 };
@@ -495,6 +501,15 @@ inline void LqhKeyReq::setJoinAggFlag(UintR &scanData, UintR val) {
 
 inline Uint8 LqhKeyReq::getOuterJoinAggFlag(const UintR &scanData) {
   return (Uint8)((scanData >> SI_OUTER_JOIN_AGG_SHIFT) & 1);
+}
+
+inline Uint8 LqhKeyReq::getJoinAggIdentityFlag(const UintR &scanData) {
+  return (Uint8)((scanData >> SI_JOIN_AGG_IDENTITY_SHIFT) & 1);
+}
+
+inline void LqhKeyReq::setJoinAggIdentityFlag(UintR &scanData, UintR val) {
+  ASSERT_BOOL(val, "LqhKeyReq::setJoinAggIdentityFlag");
+  scanData |= (val << SI_JOIN_AGG_IDENTITY_SHIFT);
 }
 
 inline void LqhKeyReq::setOuterJoinAggFlag(UintR &scanData, UintR val) {
