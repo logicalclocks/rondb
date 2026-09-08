@@ -18,7 +18,10 @@ Hopsworks Feature Store online-serving builder generates.
 - `random_generator.md` — P4: spec-level and envelope-level fuzzers,
   seeding, outcome classification (RDRS error mapping), expectation
   table, hazards, shrinking, findings ledger, CLI.
-- Later: `benchmarks.md` (P5), `phase_e<N>.md`.
+- `benchmarks.md` — P5: the `fs_hw` registry entries generated from the
+  emitter, placeholder scheme, runners, matrix-driver changes, plan pins,
+  results and regression rule.
+- Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.
 Reusable infrastructure this framework builds on:

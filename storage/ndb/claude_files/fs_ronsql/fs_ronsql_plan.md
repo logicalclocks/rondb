@@ -1,8 +1,9 @@
 # RONDB-1121 — Feature-Store RonSQL Test & Benchmark Framework: Master Plan
 
-**Status: P0 (this document), P1 (`shape_catalog.md`, draft v1),
-P2 (`data_model.md`, v1), P3 (`framework_design.md`, v1) and P4
-(`random_generator.md`, v1) complete — 2026-09-08. Engine gaps found by
+**Status: planning track complete — P0 (this document), P1
+(`shape_catalog.md`, draft v1), P2 (`data_model.md`), P3
+(`framework_design.md`), P4 (`random_generator.md`), P5
+(`benchmarks.md`), all 2026-09-08. Next: E1. Engine gaps found by
 the framework (e.g. R1) are handled in a separate tree; this framework
 records them and moves on. Nothing has been built yet. No cluster was started and no
 build or test was run while writing this plan.
@@ -416,7 +417,7 @@ starts. Estimated effort is for one engineer (or one agent session).
 - Exit: grammar + classification table reviewed.
 - Effort: 1 day.
 
-### P5 — Benchmark design (`benchmarks.md`)
+### P5 — Benchmark design (`benchmarks.md`) — DONE (v1)
 
 - Final list of `fs_hw_*` entries with their spec, key domain, batch
   sizes, expected row counts, and the MySQL twin; how the registry is
