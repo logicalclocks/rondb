@@ -1,0 +1,105 @@
+# Idle-server variant of rdrs2-golang_node_outage.test.
+#
+# The sibling test drives every phase with pk-read pokes, so the failing
+# request is what calls Reconnect(). This test removes the pokes from the
+# recovery phase: after the data nodes come back, /health must return to
+# 200 on a REST server that receives NO traffic at all.
+#
+# That is the Kubernetes case. The readiness probe polls /health and
+# nothing else talks to the server, so an rdrs2 that only reconnects on
+# the request path never recovers: the probe keeps failing, the pod never
+# becomes Ready, and the liveness probe (0.1.0/ping) still answers, so
+# nothing restarts it either.
+#
+# Sorts after rdrs2-golang_node_outage and keeps the suite's single sort
+# criteria (no .opt file), so it still runs last. It creates and drops its
+# own database and does not depend on the seeded test databases.
+
+--source include/have_ndb.inc
+--source include/not_windows.inc
+
+# Ignore the error the ndbcluster binlog thread logs when the whole
+# cluster is restarted - on both mysqlds.
+--disable_query_log
+call mtr.add_suppression("The util tables has been lost");
+--enable_query_log
+
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+--disable_query_log
+call mtr.add_suppression("The util tables has been lost");
+--enable_query_log
+connection default;
+
+--echo # Create the row the data-path assertions read
+CREATE DATABASE rdrs_outage;
+CREATE TABLE rdrs_outage.t1 (id INT PRIMARY KEY, val INT) ENGINE=NDBCLUSTER;
+INSERT INTO rdrs_outage.t1 VALUES (1, 42);
+
+--echo # Wait for REST server to report healthy and serve the row
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+poll_health(200, 60, 'initial health');
+print "health: up\n";
+poll_data_readable(60, 'initial data read');
+print "data: row served before outage\n";
+END_OF_PERL
+
+--echo # Stop all data nodes
+--exec $NDB_MGM -e "all restart -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+
+--echo # The outage must surface as 503 without any request driving it
+# No poke: get_num_ready_data_nodes() alone must report the outage, which
+# is what the readiness probe sees in production.
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+poll_health(503, 120, 'health during outage');
+print "health: down during outage\n";
+END_OF_PERL
+
+--echo # Restart all data nodes
+--exec $NDB_MGM -e "all start" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --timeout=600 >> $NDB_TOOLS_OUTPUT
+
+--echo # An idle REST server must recover on its own - no pokes here
+# The assertion: health only, no pk-read. If reconnection is reachable
+# only from the request path, this is where the test fails.
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+poll_health(200, 180, 'health after recovery without traffic');
+print "health: recovered while idle\n";
+END_OF_PERL
+
+--echo # And the data path must work once it reports healthy
+perl END_OF_PERL;
+use strict;
+use warnings;
+require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
+poll_data_readable(60, 'data read after idle recovery');
+print "data: row served after recovery\n";
+END_OF_PERL
+
+# Wait until mysqld's ndbcluster engine has reconnected too, so the
+# cleanup below and the post-test checks can run their queries.
+--source include/ndb_wait_connected.inc
+--source include/ndb_not_readonly.inc
+connection mysqld2;
+--source include/ndb_wait_connected.inc
+--source include/ndb_not_readonly.inc
+--disconnect mysqld2
+connection default;
+
+--echo # Cleanup
+DROP DATABASE rdrs_outage;
+
+# The ndb tool output log is created by the --exec redirects above;
+# remove it so check-testcase does not see a new file (same convention as
+# the ndb suite's restart tests).
+--remove_file $NDB_TOOLS_OUTPUT

@@ -24,6 +24,9 @@
 #include "rdrs_rondb_connection.hpp"
 #include "constants.hpp"
 
+#include <NdbCondition.h>
+#include "NdbThread.h"
+
 class alignas(64) ThreadContext {
  public:
   ThreadContext();
@@ -40,6 +43,14 @@ class alignas(64) ThreadContext {
 };
 
 class RDRSRonDBConnectionPool {
+  /* How often the reconnection watchdog re-checks whether the cluster is
+   * reachable, in milliseconds. Short enough that a REST server rejoins
+   * the cluster promptly after a cluster restart, long enough that the
+   * check itself - a try-lock plus get_no_ready() per connection - is
+   * free. A reconnection attempt is far longer than this interval, and
+   * Reconnect() is idempotent, so the interval does not pace retries. */
+  static constexpr Uint32 RECONNECT_WATCHDOG_INTERVAL_MS = 5000;
+
  private:
   RDRSRonDBConnection **dataConnections;
   RDRSRonDBConnection *metadataConnection;
@@ -47,6 +58,14 @@ class RDRSRonDBConnectionPool {
   Uint32 m_num_threads;
   Uint32 m_num_data_connections;
   bool is_shutdown = true;
+
+  /* Reconnection watchdog thread; see ReconnectWatchdogJob(). Guarded by
+   * m_watchdog_sleep_lock: the flag is also the wake-up condition, so the
+   * thread never sleeps out a shutdown. */
+  NdbThread *m_watchdog_thread;
+  NdbMutex *m_watchdog_sleep_lock;
+  NdbCondition *m_watchdog_sleep_cond;
+  bool m_watchdog_stopped;
 
   /**
    * Start reconnection of a data connection (idempotent) and hand its
@@ -56,12 +75,44 @@ class RDRSRonDBConnectionPool {
    */
   void TriggerReconnect(Uint32 connection);
 
+  /**
+   * Reconnection watchdog. Losing every data node strands the NDB API in
+   * a state only a full reconnection recovers from, and every other
+   * trigger for that reconnection sits on the request path. A REST server
+   * that is idle across the outage - which under Kubernetes is every
+   * unhealthy server, because the readiness gate removes it from the
+   * Service the moment /health reports 503 - would otherwise never
+   * reconnect, and stay unhealthy for the life of the process.
+   *
+   * So poll the same predicate /health reports on, and drive the
+   * reconnection from here when no data node is reachable. Triggering is
+   * idempotent and skipped while a reconnection is already running, so a
+   * cluster that stays down costs one attempt at a time, not one per
+   * tick.
+   */
+  static void *_ReconnectWatchdogJob(void *arg);
+  void ReconnectWatchdogJob();
+
+  /**
+   * Stop the watchdog and join it. Idempotent, and safe when the watchdog
+   * was never started.
+   */
+  void StopReconnectWatchdog();
+
  public:
   static const Uint32 kNoTTLPurgeThreads = 2;
   RDRSRonDBConnectionPool();
   ~RDRSRonDBConnectionPool();
 
   void shutdown();
+
+  /**
+   * @brief Start the reconnection watchdog.
+   *
+   * Call once, after every connection has been added. Recovery from a
+   * total cluster outage depends on it: see ReconnectWatchdogJob().
+   */
+  void StartReconnectWatchdog();
 
   /**
    * @brief Init RonDB Client API
