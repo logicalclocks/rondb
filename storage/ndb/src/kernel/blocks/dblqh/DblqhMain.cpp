@@ -9311,7 +9311,14 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
   rec->m_gsn = gsn;
   rec->m_sigLen = sigLen;
   rec->m_senderRef = signal->senderBlockRef();
-  rec->m_destRef = reference();
+  /* Re-dispatch target = the receiver the ORIGINAL sender addressed
+   * (V_QUERY instance or DBLQH LDM instance, packed with its
+   * instance in the header) — NOT reference(), which under a
+   * query-thread execution does not identify the originally
+   * addressed virtual block; the flush must re-execute on the same
+   * query thread the request came in on, never on the proxy. */
+  rec->m_destRef =
+      numberToRef(signal->header.theReceiversBlockNumber, getOwnNodeId());
   ndbrequire(sigLen <= NDB_ARRAY_SIZE(rec->m_theData));
   memcpy(rec->m_theData, signal->getDataPtr(), sigLen * sizeof(Uint32));
   /* Section order mirrors each signal's section numbering so the
@@ -9374,14 +9381,15 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
 
   if (res == SimulatedBlock::JAI_ROP_PARKED_NEW) {
     jam();
-    /* Schedule this placeholder's 10 ms failure sweeper on this LDM
+    /* Schedule this placeholder's 10 ms failure sweeper on the same
+     * originally-addressed block instance as the re-dispatch target
      * (plan 2.2: closes the SETUP_REF abort deadlock). */
     signal->theData[0] = ZCONTINUE_JOIN_AGG_PARK_SWEEP;
     signal->theData[1] = regTcPtr->transid[0];
     signal->theData[2] = regTcPtr->transid[1];
     signal->theData[3] = queryTag;
     signal->theData[4] = cteId;
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 5);
+    sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
   }
   return res;
 }
@@ -9454,6 +9462,7 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
   memcpy(signal->getDataPtrSend(), rec->m_theData, sigLen * sizeof(Uint32));
   signal->header.theLength = sigLen;
   signal->header.theSendersBlockRef = rec->m_senderRef;
+  signal->header.theReceiversBlockNumber = refToBlock(rec->m_destRef);
   signal->header.m_noOfSections = rec->m_noOfSections;
   for (Uint32 k = 0; k < rec->m_noOfSections; k++) {
     signal->m_sectionPtrI[k] = rec->m_sections[k];
@@ -23681,10 +23690,13 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
           /* SETUP won the race after initScanrec's miss.  The whole
            * request is saved in the park record — re-execute it via
            * the flush path (initScanrec aborted midway, so inline
-           * continuation is not possible). */
+           * continuation is not possible).  Target the ORIGINAL
+           * receiver block (same query thread), not reference(). */
+          const Uint32 jaDestRef = numberToRef(
+              signal->header.theReceiversBlockNumber, getOwnNodeId());
           signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_PARKED;
           signal->theData[1] = parkRecI;
-          sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+          sendSignal(jaDestRef, GSN_CONTINUEB, signal, 2, JBB);
         }
         ja_parked = true;
         goto error_handler2;

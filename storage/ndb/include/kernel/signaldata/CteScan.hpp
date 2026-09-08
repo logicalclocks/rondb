@@ -59,6 +59,20 @@ struct CteStartMainReq {
   Uint32 transId2;
 
   static constexpr Uint32 SignalLength = 4;
+
+  /* RONDB-1120 P2b: optional section 0 — aggregation key/owner
+   * transport (joinagg_setup_overlap_plan.md).  Once execution stops
+   * gating on SETUP_CONF the SCAN_FRAGREQ aggKeys section can no
+   * longer carry keys (built pre-CONF), so DBSPJ's post-READY
+   * consumers (CTE probe routing, feed wire keys) learn them from
+   * the enabling signals instead.  Format: repeated blocks of
+   *   [cteId (0xFFFFFFFF = main aggregation), count,
+   *    count x (nodeId, aggStateKey, ownerInstance)]
+   * CTE_START_MAIN_REQ carries the main block + every CTE's block;
+   * each CTE_PHASE_START_REQ (READY broadcast) carries that one
+   * CTE's block. */
+  enum { KeysSectionNum = 0 };
+  static constexpr Uint32 KEYS_CTE_ID_MAIN = 0xFFFFFFFF;
 };
 
 /**
@@ -104,6 +118,11 @@ struct CtePhaseStartReq {
   Uint32 cteId;         // Which CTE is READY
 
   static constexpr Uint32 SignalLength = 5;
+
+  /* RONDB-1120 P2b: optional section 0 — this CTE's per-node
+   * [nodeId, aggStateKey, ownerInstance] block; format shared with
+   * CteStartMainReq::KeysSectionNum. */
+  enum { KeysSectionNum = 0 };
 };
 
 /**

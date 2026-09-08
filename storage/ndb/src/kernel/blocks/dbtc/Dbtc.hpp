@@ -2468,6 +2468,11 @@ class Dbtc : public SimulatedBlock {
   void releaseAggCompleteRecords(ScanRecordPtr scanptr);
   /* DAG scheduler (cte_dag_scheduler_plan.md): per-CTE readiness. */
   void cteMarkReady(Signal *signal, ScanRecordPtr scanptr, Uint32 cteId);
+  /* RONDB-1120 P2b: build the key/owner transport section (format:
+   * CteStartMainReq::KeysSectionNum).  onlyCteId selects one CTE's
+   * block; RNIL emits the main block (when the main query aggregates)
+   * plus every CTE's block.  Returns RNIL on alloc failure. */
+  Uint32 buildJoinAggKeySection(ScanRecordPtr scanptr, Uint32 onlyCteId);
   void broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
                          Uint32 cteId);
   /* True while the CTE stage is still driving (some CTE not yet

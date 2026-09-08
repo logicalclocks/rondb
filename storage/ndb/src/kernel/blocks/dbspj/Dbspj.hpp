@@ -2056,6 +2056,10 @@ class Dbspj : public SimulatedBlock {
    */
   void execCTE_START_MAIN_REQ(Signal *);
   void execCTE_PHASE_START_REQ(Signal *);
+  /* RONDB-1120 P2b: parse the key/owner transport section (format:
+   * CteStartMainReq::KeysSectionNum) into the request's key maps.
+   * Releases the handle's sections. */
+  void parseJoinAggKeySection(SectionHandle &handle, Ptr<Request>);
   void sendCteScanDoneRep(Signal *, Ptr<Request>, const CteContext &);
 
   /**

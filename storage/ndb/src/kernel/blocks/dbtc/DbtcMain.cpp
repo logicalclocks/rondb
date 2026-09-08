@@ -32189,6 +32189,82 @@ void Dbtc::cteMarkReady(Signal *signal, ScanRecordPtr scanptr,
 }
 
 /**
+ * RONDB-1120 P2b: build the aggregation key/owner transport section
+ * (joinagg_setup_overlap_plan.md).  Repeated blocks of
+ * [cteId (KEYS_CTE_ID_MAIN = main), count, count x (nodeId, aggKey,
+ * ownerInstance)].  All values come from the SETUP_CONFs, which have
+ * provably arrived by READY / START_MAIN time (H2).
+ */
+Uint32 Dbtc::buildJoinAggKeySection(ScanRecordPtr scanptr,
+                                    Uint32 onlyCteId) {
+  Uint32 sectionI = RNIL;
+  bool ok = true;
+
+  const bool includeMain =
+      (onlyCteId == RNIL && scanptr.p->m_joinAggNodes != nullptr &&
+       !scanptr.p->m_joinAggNodes->m_aggNodes.isclear());
+  if (includeMain) {
+    jam();
+    Uint32 hdr[2] = { CteStartMainReq::KEYS_CTE_ID_MAIN, 0 };
+    NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
+    Uint32 cnt = 0;
+    for (Uint32 n = nodes.find_first(); n != NdbNodeBitmask::NotFound;
+         n = nodes.find_next(n + 1)) {
+      if (getNodeInfo(n).m_connected) cnt++;
+    }
+    hdr[1] = cnt;
+    ok = ok && appendToSection(sectionI, hdr, 2);
+    for (Uint32 n = nodes.find_first();
+         ok && n != NdbNodeBitmask::NotFound;
+         n = nodes.find_next(n + 1)) {
+      if (!getNodeInfo(n).m_connected) continue;
+      Uint32 triple[3] = {
+        n,
+        scanptr.p->m_joinAggNodes->m_aggStateKeys[n],
+        scanptr.p->m_joinAggNodes->m_aggOwnerInstances[n]
+      };
+      ok = ok && appendToSection(sectionI, triple, 3);
+    }
+  }
+
+  for (Uint32 c = 0; ok && c < scanptr.p->m_numCtes; c++) {
+    if (onlyCteId != RNIL && c != onlyCteId) continue;
+    auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
+    if (cteNodes == nullptr) continue;
+    jam();
+    Uint32 hdr[2] = { c, 0 };
+    NdbNodeBitmask nodes = cteNodes->m_aggNodes;
+    Uint32 cnt = 0;
+    for (Uint32 n = nodes.find_first(); n != NdbNodeBitmask::NotFound;
+         n = nodes.find_next(n + 1)) {
+      if (getNodeInfo(n).m_connected) cnt++;
+    }
+    hdr[1] = cnt;
+    ok = ok && appendToSection(sectionI, hdr, 2);
+    for (Uint32 n = nodes.find_first();
+         ok && n != NdbNodeBitmask::NotFound;
+         n = nodes.find_next(n + 1)) {
+      if (!getNodeInfo(n).m_connected) continue;
+      Uint32 triple[3] = {
+        n,
+        cteNodes->m_aggStateKeys[n],
+        cteNodes->m_aggOwnerInstances[n]
+      };
+      ok = ok && appendToSection(sectionI, triple, 3);
+    }
+  }
+
+  if (unlikely(!ok)) {
+    jam();
+    if (sectionI != RNIL) {
+      releaseSection(sectionI);
+    }
+    return RNIL;
+  }
+  return sectionI;
+}
+
+/**
  * DAG scheduler: broadcast "CTE `cteId` is READY" to every DBSPJ
  * worker (CTE_PHASE_START_REQ).  Each worker marks the CTE READY and
  * starts any not-yet-started CTE whose full dependency mask is now
@@ -32206,6 +32282,12 @@ void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
                  instance(), scanptr.i, cteId,
                  (unsigned long long)scanptr.p->m_cteStartedMask));
 #endif
+
+  /* RONDB-1120 P2b: attach this CTE's key/owner block — the READY
+   * broadcast is the enabling event for probes against it, so the
+   * keys ride the same signal (dual with the SCAN_FRAGREQ section
+   * while execution still gates on SETUP_CONF). */
+  const Uint32 keysSectionI = buildJoinAggKeySection(scanptr, cteId);
 
   CtePhaseStartReq *req =
       reinterpret_cast<CtePhaseStartReq *>(signal->getDataPtrSend());
@@ -32228,8 +32310,21 @@ void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
       startCteScanFragTimer(scanptr, handlePtr, apiPtr);
     }
     req->senderData = handlePtr.p->m_scanFragPtrI;
-    sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_PHASE_START_REQ,
-               signal, CtePhaseStartReq::SignalLength, JBB);
+    Uint32 dupI = RNIL;
+    if (keysSectionI != RNIL && dupSection(dupI, keysSectionI)) {
+      jam();
+      SectionHandle handle(this);
+      getSection(handle.m_ptr[CtePhaseStartReq::KeysSectionNum], dupI);
+      handle.m_cnt = 1;
+      sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_PHASE_START_REQ,
+                 signal, CtePhaseStartReq::SignalLength, JBB, &handle);
+    } else {
+      sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_PHASE_START_REQ,
+                 signal, CtePhaseStartReq::SignalLength, JBB);
+    }
+  }
+  if (keysSectionI != RNIL) {
+    releaseSection(keysSectionI);
   }
 }
 
@@ -32247,6 +32342,12 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
   DEB_JOIN_AGG(("(%u)DBTC sendCteStartMainReqs: scanPtr.i=%u",
                  instance(), scanptr.i));
 #endif
+
+  /* RONDB-1120 P2b: full key/owner transport — the main block plus
+   * every CTE's block (covers CTEs whose READY broadcast was skipped
+   * for lack of dependents).  Dual with the SCAN_FRAGREQ section
+   * while execution still gates on SETUP_CONF. */
+  const Uint32 keysSectionI = buildJoinAggKeySection(scanptr, RNIL);
 
   /**
    * Iterate through all stable CTE handles.  The senderData carries the
@@ -32266,8 +32367,21 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
     startCteScanFragTimer(scanptr, handlePtr, apiPtr);
     jam();
     req->senderData = handlePtr.p->m_scanFragPtrI;
-    sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_START_MAIN_REQ,
-               signal, CteStartMainReq::SignalLength, JBB);
+    Uint32 dupI = RNIL;
+    if (keysSectionI != RNIL && dupSection(dupI, keysSectionI)) {
+      jam();
+      SectionHandle handle(this);
+      getSection(handle.m_ptr[CteStartMainReq::KeysSectionNum], dupI);
+      handle.m_cnt = 1;
+      sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_START_MAIN_REQ,
+                 signal, CteStartMainReq::SignalLength, JBB, &handle);
+    } else {
+      sendSignal(handlePtr.p->m_dbspjRef, GSN_CTE_START_MAIN_REQ,
+                 signal, CteStartMainReq::SignalLength, JBB);
+    }
+  }
+  if (keysSectionI != RNIL) {
+    releaseSection(keysSectionI);
   }
 
   // The CTE stage is complete (m_ctesReadyCount == m_numCtes, so

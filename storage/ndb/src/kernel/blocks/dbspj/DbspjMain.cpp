@@ -8592,10 +8592,76 @@ void Dbspj::sendCteScanDoneRep(Signal *signal, Ptr<Request> requestPtr,
              signal, CtePhaseCompleteRep::SignalLength, JBB);
 }
 
+/**
+ * RONDB-1120 P2b: parse the key/owner transport section riding the
+ * per-CTE READY broadcast and CTE_START_MAIN_REQ (format documented
+ * at CteStartMainReq::KeysSectionNum).  While execution still gates
+ * on SETUP_CONF this duplicates the SCAN_FRAGREQ aggKeys section —
+ * values are cross-checked (debug) and overwritten (idempotent);
+ * after the P2c un-gating these carriers are the ONLY key source.
+ */
+void Dbspj::parseJoinAggKeySection(SectionHandle &handle,
+                                   Ptr<Request> requestPtr) {
+  SegmentedSectionPtr secPtr;
+  if (!handle.getSection(secPtr, CteStartMainReq::KeysSectionNum)) {
+    jam();
+    releaseSections(handle);
+    return;
+  }
+  SectionReader reader(secPtr, getSectionSegmentPool());
+  const Uint32 max_nodes = MAX_NDB_NODES;
+  Uint32 remaining = reader.getSize();
+  while (remaining >= 2) {
+    Uint32 blockCteId, cnt;
+    ndbrequire(reader.getWord(&blockCteId));
+    ndbrequire(reader.getWord(&cnt));
+    remaining -= 2;
+    ndbrequire(remaining >= cnt * 3);
+    Uint32 cteIdx = RNIL;
+    if (blockCteId != CteStartMainReq::KEYS_CTE_ID_MAIN) {
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId == blockCteId) {
+          cteIdx = i;
+          break;
+        }
+      }
+      ndbrequire(cteIdx != RNIL);
+      ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+    }
+    for (Uint32 k = 0; k < cnt; k++) {
+      Uint32 nodeId, aggKey, owner;
+      ndbrequire(reader.getWord(&nodeId));
+      ndbrequire(reader.getWord(&aggKey));
+      ndbrequire(reader.getWord(&owner));
+      ndbrequire(nodeId < max_nodes);
+      if (blockCteId == CteStartMainReq::KEYS_CTE_ID_MAIN) {
+        ndbassert(!requestPtr.p->m_aggNodes.get(nodeId) ||
+                  requestPtr.p->m_aggStateKeys[nodeId] == aggKey);
+        requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
+        requestPtr.p->m_aggNodes.set(nodeId);
+      } else {
+        ndbassert(
+            requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId] ==
+                aggKey ||
+            requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId] ==
+                RNIL);
+        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId] =
+            aggKey;
+        requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + nodeId] =
+            owner;
+      }
+    }
+    remaining -= cnt * 3;
+  }
+  ndbrequire(remaining == 0);
+  releaseSections(handle);
+}
+
 void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
   jamEntry();
   const CtePhaseStartReq *req =
       reinterpret_cast<const CtePhaseStartReq *>(signal->getDataPtr());
+  SectionHandle handle(this, signal);
 
   Request key;
   key.m_senderData = req->senderData;
@@ -8603,7 +8669,16 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
   key.m_transId[1] = req->transId2;
 
   Ptr<Request> requestPtr;
-  ndbrequire(m_scan_request_hash.find(requestPtr, key));
+  if (unlikely(!m_scan_request_hash.find(requestPtr, key))) {
+    jam();
+    releaseSections(handle);
+    ndbrequire(false);
+    return;
+  }
+
+  /* RONDB-1120 P2b: install this CTE's key/owner block before the
+   * READY transition — dependents started below may probe it. */
+  parseJoinAggKeySection(handle, requestPtr);
 
   const Uint32 readyCteId = req->cteId;
 
@@ -8669,6 +8744,7 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   jamEntry();
   const CteStartMainReq *req =
       reinterpret_cast<const CteStartMainReq *>(signal->getDataPtr());
+  SectionHandle handle(this, signal);
 
   Request key;
   key.m_senderData = req->senderData;
@@ -8676,7 +8752,17 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   key.m_transId[1] = req->transId2;
 
   Ptr<Request> requestPtr;
-  ndbrequire(m_scan_request_hash.find(requestPtr, key));
+  if (unlikely(!m_scan_request_hash.find(requestPtr, key))) {
+    jam();
+    releaseSections(handle);
+    ndbrequire(false);
+    return;
+  }
+
+  /* RONDB-1120 P2b: install the main + all-CTE key/owner blocks
+   * before the main root starts — main probes and feed wire keys
+   * consume them. */
+  parseJoinAggKeySection(handle, requestPtr);
 
   // Transition all CTE contexts to READY
   for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {

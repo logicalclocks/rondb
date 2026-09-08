@@ -1,8 +1,8 @@
 # RONDB-1120: overlapping JOIN_AGG_SETUP with query execution
 
-**Status: P0 + P1 + P2a IMPLEMENTED (September 2026, pending user
-build + block suites + full ronsql regression — zero behavior change
-expected while the gate holds); P2b/P2c + P3 planned.  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
+**Status: P0 + P1 + P2a + P2b IMPLEMENTED (September 2026, pending
+user build + block suites + full ronsql regression — zero behavior
+change expected while the gate holds); P2c + P3 planned.  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
 execution immediately, letting LQHKEYREQ / SCAN_FRAGREQ (and the CTE
 probe/scan signals) find the JoinAggregationState by identity instead
 of by the pool keys returned in SETUP_CONF.**
@@ -18,6 +18,39 @@ DBSPJ's post-READY needs (CTE probe keys / owners riding the per-CTE
 READY broadcast + CTE_START_MAIN_REQ, dual with the section keys for
 verification); **P2c** = flip the gate + the H2 COMPLETE-boundary
 straggler wait + ERROR_INSERTs + benchmarks.
+
+P2b outcome notes (key/owner transport on the enabling signals, dual
+while gated):
+- Section format at `CteStartMainReq::KeysSectionNum` (shared with
+  `CtePhaseStartReq`): repeated blocks [cteId (0xFFFFFFFF = main),
+  count, count x (nodeId, aggStateKey, ownerInstance)].
+  `Dbtc::buildJoinAggKeySection` builds it from the SETUP_CONF-filled
+  maps (provably present by READY/START_MAIN time — H2); the per-CTE
+  READY broadcast carries that CTE's block (probes against it are
+  enabled by the very same signal), CTE_START_MAIN_REQ carries the
+  main block + every CTE's block (covering CTEs whose broadcast was
+  skipped for lack of dependents).  One section built per event,
+  dupSection per worker.
+- `Dbspj::parseJoinAggKeySection` installs the blocks into
+  m_aggStateKeys/m_aggNodes and m_cteAggStateKeys/
+  m_cteAggOwnerInstances before the READY transition / main start;
+  while dual, values are ndbassert-cross-checked against what the
+  SCAN_FRAGREQ aggKeys section installed (P2c relaxes the CTE-entry
+  equality assert when that source disappears, and must also keep the
+  m_cteAggStateKeys array allocation alive in the key-less CTE_KEYS
+  metadata block).  Non-CTE queries need no transport at all — their
+  only key consumers are the feed signals, covered by identity.
+- Flush/sweeper routing fix (maintainer review): the re-dispatch
+  target captured at park time is now the ORIGINAL receiver
+  (`numberToRef(signal->header.theReceiversBlockNumber, ownNodeId)`)
+  — the exact V_QUERY / LDM instance the sender addressed — instead
+  of reference(), which under a query-thread execution does not
+  identify the originally-addressed virtual block; the sweeper
+  CONTINUEB and the scan RESOLVED self-flush use the same target, so
+  parked requests always re-execute on the query thread they
+  originally arrived on and never on the proxy.
+  joinAggFlushParked also restores theReceiversBlockNumber on the
+  reconstructed signal.
 
 P2a outcome notes:
 - **Park machinery (plan 2.2)**: `JoinAggParkRec` pool (64, shared
