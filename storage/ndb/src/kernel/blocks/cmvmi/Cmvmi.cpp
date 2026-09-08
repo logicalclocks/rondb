@@ -106,6 +106,7 @@ extern void mt_set_section_chunk_size();
    dbtup/DbtupJitGlue.cpp (declared in dbtup/DbtupJitGlue.hpp, which is
    not included here as it drags in Dbtup.hpp). */
 extern void dbtup_jit_set_mode(Uint32 mode);
+extern bool dbtup_jit_platform_supported();
 
 Cmvmi::Cmvmi(Block_context &ctx)
     : SimulatedBlock(CMVMI, ctx), subscribers(subscriberPool) {
@@ -3558,6 +3559,26 @@ void Cmvmi::execSET_CONFIG_PARAM_REQ(Signal *signal)
       ref->senderRef = reference();
       ref->configParamKey = configKey;
       ref->errorCode = 1;  // no per-cause codes; mgmd reports 5070 on any REF
+      sendSignal(senderRef,
+                 GSN_SET_CONFIG_PARAM_REF,
+                 signal,
+                 SetConfigParamRef::SignalLength,
+                 JBB);
+      return;
+    }
+    if (configValue != NDB_COMPILED_INTERPRETER_OFF &&
+        !dbtup_jit_platform_supported())
+    {
+      jam();
+      g_eventLogger->warning("SET_CONFIG_PARAM_REQ: CompiledInterpreter=%u "
+                             "rejected: this CPU architecture has no JIT "
+                             "backend (only x86_64 and aarch64 do); OFF is "
+                             "the only valid value here",
+                             Uint32(configValue));
+      SetConfigParamRef* ref = (SetConfigParamRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->configParamKey = configKey;
+      ref->errorCode = 2;  // unsupported on this platform (mgmd reports 5070)
       sendSignal(senderRef,
                  GSN_SET_CONFIG_PARAM_REF,
                  signal,

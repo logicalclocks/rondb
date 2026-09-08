@@ -33,6 +33,12 @@ IF(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   MESSAGE(STATUS "RONDB-1056: jit_proto excluded on macOS x86_64")
   RETURN()
 ENDIF()
+# The host tests execute compiled programs; without a stencil backend
+# (see dbtup/jit/ndb_jit_platform.h) there is nothing to test.
+IF(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|aarch64|arm64|ARM64")
+  MESSAGE(STATUS "RONDB-1056: jit_proto excluded on ${CMAKE_SYSTEM_PROCESSOR} (no JIT backend)")
+  RETURN()
+ENDIF()
 
 ADD_EXECUTABLE(proto_smoke proto_smoke.c)
 SET_TARGET_PROPERTIES(proto_smoke PROPERTIES

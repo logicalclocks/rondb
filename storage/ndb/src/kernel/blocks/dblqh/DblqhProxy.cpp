@@ -29,6 +29,8 @@
 #include "dbtup/JoinAggInterpreter.hpp"
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include "dbtup/DbtupJitGlue.hpp"
+#include <ndbd_exit_codes.h>   /* NDBD_EXIT_INVALID_CONFIG */
+#include <BaseString.hpp>
 #include "dbtup/jit/jit1.h"
 #include "dbtup/jit/ndb_jit_bridge.h"
 
@@ -312,9 +314,24 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
 
   /* RONDB-1056 Phase 8: CompiledInterpreter (JIT) mode. Node-global; set
    * here once (before any scan/aggregation traffic) and consulted at every
-   * JIT compile site. Default AUTO (enabled) if unset. */
-  Uint32 jitMode = NDB_COMPILED_INTERPRETER_AUTO;
+   * JIT compile site. Default OFF (2026-09-08) if unset. AUTO / ON are
+   * only valid on CPUs with a stencil backend (x86_64, aarch64): on any
+   * other architecture the node refuses to start with such a config
+   * rather than silently running the interpreter — the operator must
+   * set CompiledInterpreter=OFF for that node. */
+  Uint32 jitMode = NDB_COMPILED_INTERPRETER_OFF;
   ndb_mgm_get_int_parameter(p, CFG_DB_COMPILED_INTERPRETER, &jitMode);
+  if (jitMode != NDB_COMPILED_INTERPRETER_OFF &&
+      !dbtup_jit_platform_supported()) {
+    char buf[256];
+    BaseString::snprintf(buf, sizeof(buf),
+                         "CompiledInterpreter=%s is not supported on this "
+                         "CPU architecture (no JIT backend; only x86_64 and "
+                         "aarch64 have one). Set CompiledInterpreter=OFF "
+                         "for this node.",
+                         jitMode == NDB_COMPILED_INTERPRETER_ON ? "ON" : "AUTO");
+    progError(__LINE__, NDBD_EXIT_INVALID_CONFIG, buf);
+  }
   dbtup_jit_set_mode(jitMode);
 
   backREAD_CONFIG_REQ(signal);

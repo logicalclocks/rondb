@@ -46,6 +46,7 @@
 extern "C" {
 #include "jit/ndb_jit_bridge.h"   /* ndb_jit_bridge_translate_scan_filter */
 #include "jit/jit_progcache.h"    /* program-reuse cache (Phase 8 Slice 3) */
+#include "jit/ndb_jit_platform.h" /* NDB_JIT_HAVE_BACKEND */
 }
 
 #ifndef ZAGG_MATH_OVERFLOW
@@ -73,12 +74,26 @@ extern "C" {
 /* (NDB_COMPILED_INTERPRETER_OFF); AUTO/ON are enabled.                */
 static std::atomic<Uint32> g_jit_mode{1 /* NDB_COMPILED_INTERPRETER_AUTO */};
 
+bool dbtup_jit_platform_supported() {
+  return NDB_JIT_HAVE_BACKEND != 0;
+}
+
 void dbtup_jit_set_mode(Uint32 mode) {
+#if !NDB_JIT_HAVE_BACKEND
+  /* No backend on this CPU: OFF is the only mode. The callers
+   * (DblqhProxy at config read, Cmvmi at SET) reject AUTO/ON before
+   * getting here; this clamp is the last line of defence. */
+  mode = NDB_COMPILED_INTERPRETER_OFF;
+#endif
   g_jit_mode.store(mode, std::memory_order_relaxed);
 }
 
 bool dbtup_jit_enabled() {
+#if !NDB_JIT_HAVE_BACKEND
+  return false;
+#else
   return g_jit_mode.load(std::memory_order_relaxed) != 0 /* != OFF */;
+#endif
 }
 
 /* ------------------------------------------------------------------ */

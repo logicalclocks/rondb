@@ -9,8 +9,10 @@
 # also asserts the runtime effect through ndbinfo.jit, which needs a
 # pushed-down aggregation.
 #
-# config_param 709 = CFG_DB_COMPILED_INTERPRETER; values 0=OFF, 1=AUTO
-# (config default), 2=ON.
+# config_param 709 = CFG_DB_COMPILED_INTERPRETER; values 0=OFF (config
+# default since 2026-09-08), 1=AUTO, 2=ON.  AUTO/ON are only accepted on
+# x86_64 / aarch64 data nodes (the only CPUs with a JIT backend); this
+# test runs there.
 #
 
 CREATE TABLE t1 (pk INT NOT NULL PRIMARY KEY, a BIGINT NOT NULL) ENGINE=NDB;
@@ -98,9 +100,9 @@ select node_id, config_value
   order by node_id;
 
 #
-# Test 6: Restore the config default (AUTO)
+# Test 6: Restore the config default (OFF)
 #
---exec $NDB_MGM -e "ALL SET CompiledInterpreter AUTO"
+--exec $NDB_MGM -e "ALL SET CompiledInterpreter OFF"
 
 --sorted_result
 select node_id, config_value

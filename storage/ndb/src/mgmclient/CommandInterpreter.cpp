@@ -556,8 +556,9 @@ static const char* helpTextSet =
 "  1 SET MaxDiskWriteSpeed 50M       Set on node 1 to 50 MB/s\n"
 "  ALL SET EnableProactiveDeadlockDetection 1   Enable on all data nodes\n"
 "  ALL SET EnableProactiveDeadlockDetection 0   Disable on all data nodes\n"
-"  ALL SET CompiledInterpreter OFF   Run every program on the interpreter\n"
-"  1 SET CompiledInterpreter AUTO    Back to the default JIT mode on node 1\n"
+"  ALL SET CompiledInterpreter AUTO  JIT every eligible program (x86_64 /\n"
+"                                    aarch64 data nodes only; others reject)\n"
+"  1 SET CompiledInterpreter OFF     Back to the default (interpreter) on node 1\n"
 ;
 
 static const char* helpTextHostname =
@@ -3306,6 +3307,12 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
   {
     ndbout_c("Warning: Configuration saved but failed to update running "
              "nodes. Restart nodes for the change to take effect.");
+    if (new_value != NDB_COMPILED_INTERPRETER_OFF)
+    {
+      ndbout_c("Note: CompiledInterpreter=%s is only accepted by x86_64 "
+               "and aarch64 data nodes; a node on another CPU rejects it "
+               "(and refuses to start with it in its config).", mode_name);
+    }
     printError();
     return -1;
   }

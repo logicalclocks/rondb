@@ -70,13 +70,13 @@ node_id	config_value
 1	0
 2	0
 Configuration updated for all data nodes
-CompiledInterpreter set to AUTO on all data nodes
+CompiledInterpreter set to OFF on all data nodes
 
 select node_id, config_value
 from ndbinfo.config_values
 where config_param = 709
 order by node_id;
 node_id	config_value
-1	1
-2	1
+1	0
+2	0
 DROP TABLE t1;

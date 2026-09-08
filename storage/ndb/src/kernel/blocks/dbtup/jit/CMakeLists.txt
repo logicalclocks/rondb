@@ -35,6 +35,14 @@ IF(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   MESSAGE(STATUS "RONDB-1056: JIT arena excluded on macOS x86_64")
   RETURN()
 ENDIF()
+# Any other CPU (RISC-V is next) builds the JIT tree as a STUB: the
+# arch-neutral libraries compile as usual, jit1.c picks stencils_none.h
+# (jit1_compile fails with ENOTSUP) and the data node refuses
+# CompiledInterpreter=AUTO|ON — see ndb_jit_platform.h.
+IF(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|aarch64|arm64|ARM64")
+  MESSAGE(STATUS "RONDB-1056: no JIT backend for ${CMAKE_SYSTEM_PROCESSOR}; "
+                 "building the stub engine (CompiledInterpreter is OFF-only)")
+ENDIF()
 
 # jit_codemem.c (Phase 8) is the node-global free-capable code-memory
 # manager layered on the arena substrate; it lives in the same static

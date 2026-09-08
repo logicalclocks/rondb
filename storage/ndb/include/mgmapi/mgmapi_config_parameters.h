@@ -319,8 +319,8 @@
 /* Values for CFG_DB_COMPILED_INTERPRETER (CompiledInterpreter enum param):
  * controls the RONDB-1056 JIT for pushed-down interpreted programs (scan
  * filters + standalone and join aggregation). */
-#define NDB_COMPILED_INTERPRETER_OFF   0  /* JIT disabled (interpreter only) */
-#define NDB_COMPILED_INTERPRETER_AUTO  1  /* JIT every eligible program (default) */
+#define NDB_COMPILED_INTERPRETER_OFF   0  /* JIT disabled (interpreter only) — default */
+#define NDB_COMPILED_INTERPRETER_AUTO  1  /* JIT every eligible program (x86_64 / aarch64 only) */
 #define NDB_COMPILED_INTERPRETER_ON    2  /* force JIT (reserved; == AUTO today) */
 
 /* End RonDB only configuration parameters */

@@ -249,7 +249,7 @@ static const ConfigInfo::Typelib arbit_method_typelib[] = {
     {nullptr, 0}};
 
 /* RONDB-1056: CompiledInterpreter (JIT) mode for pushed-down interpreted
- * programs. OFF disables the JIT; AUTO (default) compiles every eligible
+ * programs. OFF (default) disables the JIT; AUTO compiles every eligible
  * program; ON is reserved (treated as AUTO today). */
 static const ConfigInfo::Typelib compiled_interpreter_typelib[] = {
     {"OFF", NDB_COMPILED_INTERPRETER_OFF},
@@ -951,12 +951,14 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "CompiledInterpreter",
     DB_TOKEN,
     "RONDB-1056 JIT for pushed-down interpreted programs (scan filters and "
-    "aggregation): OFF = interpreter only; AUTO (default) = JIT every "
-    "eligible program; ON = force JIT (reserved, same as AUTO today)",
+    "aggregation): OFF (default) = interpreter only; AUTO = JIT every "
+    "eligible program; ON = force JIT (reserved, same as AUTO today). "
+    "AUTO/ON are accepted only on x86_64 and aarch64 data nodes; other "
+    "CPUs have no JIT backend and reject them",
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_ENUM,
-    "AUTO",   /* default */
+    "OFF",    /* default (2026-09-08; was AUTO during development) */
     compiled_interpreter_typelib },
 
     /* End RonDB additions */

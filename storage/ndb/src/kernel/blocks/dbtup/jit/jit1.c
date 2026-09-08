@@ -43,12 +43,18 @@
 #include <string.h>
 #include <time.h>
 
-#if defined(__x86_64__)
+#include "ndb_jit_platform.h"
+#if !NDB_JIT_HAVE_BACKEND
+/* No stencils for this target (e.g. RISC-V, macOS x86_64): build the
+ * engine as a stub. jit1_compile() fails with ENOTSUP, the data node
+ * pins CompiledInterpreter to OFF (DbtupJitGlue / DblqhProxy / Cmvmi). */
+#  include "stencils_none.h"
+#elif defined(__x86_64__)
 #  include "stencils_x86_64.h"
 #elif defined(__aarch64__)
 #  include "stencils_arm64.h"
 #else
-#  error "RONDB-1056 jit1: unsupported architecture"
+#  error "RONDB-1056 jit1: NDB_JIT_HAVE_BACKEND set for an unknown architecture"
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -65,7 +71,11 @@
 /* bytes (kX86Terminator / kArm64Terminator in extract_stencils.c).   */
 /* ------------------------------------------------------------------ */
 
-#if defined(__x86_64__)
+#if !NDB_JIT_HAVE_BACKEND
+/* Stub target: no preamble (never emitted). */
+static const uint8_t kPreamble[1] = { 0 };
+#define PREAMBLE_SIZE 0u
+#elif defined(__x86_64__)
 /*   00: 41 54           push r12          ; save caller's r12
  *   02: 48 83 ec 08     sub  rsp, 8       ; stencil-entry stack parity
  *   06: 49 89 fc        mov  r12, rdi     ; r12 = state
@@ -91,7 +101,9 @@ static const uint8_t kPreamble[] = {
 };
 #endif
 
+#ifndef PREAMBLE_SIZE
 #define PREAMBLE_SIZE ((uint32_t)sizeof(kPreamble))
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Internal types.                                                    */
@@ -226,7 +238,23 @@ static inline int op_has_overflow_target(uint8_t kind) {
 /* movz-then-3×movk emission order within a chain).                   */
 /* ------------------------------------------------------------------ */
 
-#if defined(__x86_64__)
+#if !NDB_JIT_HAVE_BACKEND
+
+/* Stub target: the patchers are never reached (jit1_compile bails with
+ * ENOTSUP before the emit pass) but the emit pass below must compile. */
+static inline void put_u32_le(uint8_t *dst, uint32_t v) { (void)dst; (void)v; }
+static inline void put_u64_le(uint8_t *dst, uint64_t v) { (void)dst; (void)v; }
+static inline void rmw_insn_word(uint8_t *site, uint32_t mask_clear, uint32_t bits_set) {
+  (void)site; (void)mask_clear; (void)bits_set;
+}
+static inline void patch_operand(uint8_t *site, uint8_t slot, int64_t value) {
+  (void)site; (void)slot; (void)value;
+}
+static inline void patch_branch_disp(uint8_t *site, int32_t byte_disp) {
+  (void)site; (void)byte_disp;
+}
+
+#elif defined(__x86_64__)
 
 /* Write a 4-byte little-endian value at `dst`. */
 static inline void put_u32_le(uint8_t *dst, uint32_t v) {
@@ -496,6 +524,14 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
     errno = EINVAL;
     return NULL;
   }
+#if !NDB_JIT_HAVE_BACKEND
+  /* No stencils for this CPU: the caller runs the interpreter. The
+   * data node never gets here with CompiledInterpreter != OFF (the
+   * config read and the runtime SET reject it), so this is only reached
+   * by host tools. */
+  errno = ENOTSUP;
+  return NULL;
+#endif
 
   /* Admission walk runs before any allocation. Rejected programs
    * cost only the walk's work and never touch the arena. */

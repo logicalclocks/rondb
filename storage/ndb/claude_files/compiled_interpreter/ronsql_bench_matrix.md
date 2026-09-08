@@ -101,7 +101,8 @@ feature-store lookups; the aggregation-heavy `offline_fs_*` and
   variables, so a plain `.bench_sql` never reaches the (compiled)
   interpreter. The driver sets them GLOBAL per engine; the suite my.cnf
   also turns them on for manual sessions.
-- **Compiler toggle.** `CompiledInterpreter` is read once at data-node
+- **Compiler toggle.** `CompiledInterpreter` (config default OFF since
+  2026-09-08; AUTO/ON only on x86_64 / aarch64) is read once at data-node
   config read; the runtime `ALL SET CompiledInterpreter` command exists
   since 2026-09-04 (this branch). Older builds need `--toggle restart`
   (two starts, two loads). After a SET the driver prints

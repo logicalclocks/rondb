@@ -97,7 +97,7 @@ static void mock_destroy(void *ctx, NdbJitProgItem *item) {
 /* ------------------------------------------------------------------ */
 
 static void test_miss_then_hit(void) {
-  Mock m = {0, 0, 0};
+  Mock m = {0, 0, 0, 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
   const uint8_t key[] = {1, 2, 3, 4};
 
@@ -257,7 +257,7 @@ static void test_distinct_keys(void) {
 }
 
 static void test_exact_key_no_false_reuse(void) {
-  Mock m = {0, 0, 0};
+  Mock m = {0, 0, 0, 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
   /* Same length, last byte differs — must not alias. */
   const uint8_t a[] = {1, 2, 3, 4};
@@ -274,7 +274,7 @@ static void test_exact_key_no_false_reuse(void) {
 }
 
 static void test_pinned_survives_zero(void) {
-  Mock m = {0, 0, 0};
+  Mock m = {0, 0, 0, 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
   const uint8_t key[] = {7, 7, 7};
 
@@ -293,7 +293,7 @@ static void test_pinned_survives_zero(void) {
 }
 
 static void test_compile_refuse(void) {
-  Mock m = {0, 0, 1 /*refuse*/};
+  Mock m = {0, 0, 1 /*refuse*/, 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
   const uint8_t key[] = {3, 1, 4};
 
@@ -305,7 +305,7 @@ static void test_compile_refuse(void) {
 }
 
 static void test_destroy_frees_live(void) {
-  Mock m = {0, 0, 0};
+  Mock m = {0, 0, 0, 0, 0};
   NdbJitProgCache *c = ndb_jit_progcache_create(mock_compile, mock_destroy, &m);
   const uint8_t a[] = {1}, b[] = {2}, d[] = {3};
   /* Acquire and DON'T release — still-live at teardown. */

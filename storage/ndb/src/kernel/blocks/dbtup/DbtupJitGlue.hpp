@@ -319,9 +319,14 @@ void dbtup_jit_note_compile_ns(Uint64 ns);
  * client's `SET CompiledInterpreter` (Cmvmi::execSET_CONFIG_PARAM_REQ);
  * every compile site consults dbtup_jit_enabled() and produces no JIT
  * program when the mode is OFF (so the program runs on the interpreter).
- * Default is enabled (AUTO). */
+ * The config default is OFF (2026-09-08). dbtup_jit_platform_supported()
+ * is false on CPUs without a stencil backend (anything but x86_64 /
+ * aarch64, see jit/ndb_jit_platform.h): there AUTO/ON are rejected at
+ * config read and at runtime SET, and dbtup_jit_enabled() is always
+ * false. */
 void dbtup_jit_set_mode(Uint32 mode);
 bool dbtup_jit_enabled();
+bool dbtup_jit_platform_supported();
 
 /* Sentinel return of dbtup_jit_invoke: the row hit a condition the JIT
  * cannot represent (JitState::row_fallback — e.g. a NULL column value).

@@ -17,6 +17,21 @@
   JIT mode word through Cmvmi::execSET_CONFIG_PARAM_REQ -> dbtup_jit_set_mode;
   MTR `suite/ndb/t/ndb_set_compiled_interpreter.test` (pending build+run).
 
+**2026-09-08 — CompiledInterpreter default OFF + platform gate (built, NOT
+yet run).** For the 26.10 merge: the config default is now OFF
+(ConfigInfo.cpp); AUTO/ON are accepted only on x86_64 / aarch64 (the CPUs
+with stencils, `jit/ndb_jit_platform.h` NDB_JIT_HAVE_BACKEND). On any other
+CPU (RISC-V is next) a node refuses to start with AUTO/ON in its config
+(DblqhProxy READ_CONFIG -> NDBD_EXIT_INVALID_CONFIG) and a runtime SET
+AUTO/ON gets SET_CONFIG_PARAM_REF (Cmvmi); `dbtup_jit_enabled()` is
+compile-time false there. The JIT tree builds as a stub on those CPUs
+(`stencils_none.h`, jit1_compile -> ENOTSUP; jit_proto host tests skipped
+by CMake). Tests: ndb_set_compiled_interpreter restores OFF now (result
+updated); suites pin OFF/ON explicitly so nothing else depends on the
+default — run `--suite=ndb ndb_set_compiled_interpreter ndb_config_set`
+plus one full pass of ndb + the three JIT suites with the new default.
+Verified to compile? NO — needs a build (ndbmtd ndb_mgmd ndb_mgm).
+
 **2026-09-07 — JIT program cache: idle-LRU retention (built, NOT yet
 run).** The reuse cache evicted every unpinned program at refcount 0, so
 one-shot programs recompiled on each use: a pushed-join child scan is one
