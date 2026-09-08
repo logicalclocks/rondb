@@ -80,12 +80,102 @@ RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
   m_num_data_connections = 0;
   dataConnections = nullptr;
   metadataConnection = nullptr;
+  m_watchdog_thread = nullptr;
+  /* Stopped until StartReconnectWatchdog() runs, so a shutdown before the
+   * watchdog was ever started finds nothing to stop. */
+  m_watchdog_stopped = true;
+  m_watchdog_sleep_lock = NdbMutex_Create();
+  check_startup(m_watchdog_sleep_lock != nullptr);
+  m_watchdog_sleep_cond = NdbCondition_Create();
+  check_startup(m_watchdog_sleep_cond != nullptr);
 }
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
+  /* shutdown() has already joined the watchdog, so nothing is waiting on
+   * these any more. */
+  require(m_watchdog_thread == nullptr);
+  NdbCondition_Destroy(m_watchdog_sleep_cond);
+  NdbMutex_Destroy(m_watchdog_sleep_lock);
+}
+
+void *RDRSRonDBConnectionPool::_ReconnectWatchdogJob(void *arg) {
+  ((RDRSRonDBConnectionPool *)arg)->ReconnectWatchdogJob();
+  return nullptr;
+}
+
+void RDRSRonDBConnectionPool::ReconnectWatchdogJob() {
+  while (true) {
+    {
+      NdbMutex_Lock(m_watchdog_sleep_lock);
+      if (!m_watchdog_stopped) {
+        NdbCondition_WaitTimeout(m_watchdog_sleep_cond,
+                                 m_watchdog_sleep_lock,
+                                 RECONNECT_WATCHDOG_INTERVAL_MS);
+      }
+      const bool stopped = m_watchdog_stopped;
+      NdbMutex_Unlock(m_watchdog_sleep_lock);
+      if (stopped) {
+        return;
+      }
+    }
+    /* Per connection: each one has its own Ndb_cluster_connection and is
+     * stranded, or not, on its own. */
+    for (Uint32 i = 0; i < m_num_data_connections; i++) {
+      if (!dataConnections[i]->IsStranded()) {
+        continue;
+      }
+      g_eventLogger->info(
+        "Reconnection watchdog: data connection %u has lost every data node"
+        " and cannot recover on its own. Triggering reconnection.", i);
+      TriggerReconnect(i);
+    }
+    if (metadataConnection != dataConnections[0] &&
+        metadataConnection->IsStranded()) {
+      /* A dedicated metadata cluster: no thread-cached Ndb objects to
+       * reclaim, so reconnect the connection directly rather than through
+       * TriggerReconnect(), which only addresses data connections. */
+      g_eventLogger->info(
+        "Reconnection watchdog: the metadata connection has lost every data"
+        " node and cannot recover on its own. Triggering reconnection.");
+      metadataConnection->Reconnect();
+    }
+  }
+}
+
+void RDRSRonDBConnectionPool::StartReconnectWatchdog() {
+  require(m_watchdog_thread == nullptr);
+  {
+    NdbMutex_Lock(m_watchdog_sleep_lock);
+    m_watchdog_stopped = false;
+    NdbMutex_Unlock(m_watchdog_sleep_lock);
+  }
+  m_watchdog_thread =
+    NdbThread_Create(RDRSRonDBConnectionPool::_ReconnectWatchdogJob,
+                     (NDB_THREAD_ARG *)this,
+                     0, "ReconnectWatchdog",
+                     NDB_THREAD_PRIO_MEAN);
+  check_startup(m_watchdog_thread != nullptr);
+}
+
+void RDRSRonDBConnectionPool::StopReconnectWatchdog() {
+  {
+    NdbMutex_Lock(m_watchdog_sleep_lock);
+    m_watchdog_stopped = true;
+    NdbCondition_Signal(m_watchdog_sleep_cond);
+    NdbMutex_Unlock(m_watchdog_sleep_lock);
+  }
+  if (m_watchdog_thread != nullptr) {
+    void *thread_status = nullptr;
+    NdbThread_WaitFor(m_watchdog_thread, &thread_status);
+    NdbThread_Destroy(&m_watchdog_thread);
+    m_watchdog_thread = nullptr;
+  }
 }
 
 void RDRSRonDBConnectionPool::shutdown() {
+  /* Before is_shutdown is published and the connections are deleted: the
+   * watchdog dereferences them on every tick. */
+  StopReconnectWatchdog();
   is_shutdown = true;
   if (m_thread_context != nullptr) {
     for (Uint32 i = 0; i < m_num_threads; i++) {
